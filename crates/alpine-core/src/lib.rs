@@ -1,0 +1,152 @@
+//! Backend-neutral geometry and color types for Alpine GPUI.
+
+/// A two-dimensional point in logical pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Point {
+    /// Horizontal coordinate.
+    pub x: f32,
+    /// Vertical coordinate.
+    pub y: f32,
+}
+
+impl Point {
+    /// Creates a point when both coordinates are finite.
+    #[must_use]
+    pub fn new(x: f32, y: f32) -> Option<Self> {
+        (x.is_finite() && y.is_finite()).then_some(Self { x, y })
+    }
+}
+
+/// A two-dimensional extent in logical pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Size {
+    /// Horizontal extent.
+    pub width: f32,
+    /// Vertical extent.
+    pub height: f32,
+}
+
+impl Size {
+    /// Creates a non-negative finite size.
+    #[must_use]
+    pub fn new(width: f32, height: f32) -> Option<Self> {
+        (width.is_finite() && height.is_finite() && width >= 0.0 && height >= 0.0)
+            .then_some(Self { width, height })
+    }
+
+    /// Returns whether either extent is zero.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.width == 0.0 || self.height == 0.0
+    }
+}
+
+/// An axis-aligned rectangle in logical pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Rect {
+    /// Top-left origin.
+    pub origin: Point,
+    /// Rectangle extent.
+    pub size: Size,
+}
+
+impl Rect {
+    /// Creates a rectangle from validated components.
+    #[must_use]
+    pub const fn new(origin: Point, size: Size) -> Self {
+        Self { origin, size }
+    }
+
+    /// Returns the intersection of two rectangles.
+    #[must_use]
+    pub fn intersection(self, other: Self) -> Option<Self> {
+        let left = self.origin.x.max(other.origin.x);
+        let top = self.origin.y.max(other.origin.y);
+        let right = (self.origin.x + self.size.width).min(other.origin.x + other.size.width);
+        let bottom = (self.origin.y + self.size.height).min(other.origin.y + other.size.height);
+
+        (right > left && bottom > top).then_some(Self {
+            origin: Point { x: left, y: top },
+            size: Size {
+                width: right - left,
+                height: bottom - top,
+            },
+        })
+    }
+}
+
+/// Linear RGBA color with unpremultiplied channels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LinearRgba {
+    /// Red channel.
+    pub red: f32,
+    /// Green channel.
+    pub green: f32,
+    /// Blue channel.
+    pub blue: f32,
+    /// Alpha channel.
+    pub alpha: f32,
+}
+
+impl LinearRgba {
+    /// Creates a color when every channel is finite and within `0.0..=1.0`.
+    #[must_use]
+    pub fn new(red: f32, green: f32, blue: f32, alpha: f32) -> Option<Self> {
+        [red, green, blue, alpha]
+            .into_iter()
+            .all(|channel| channel.is_finite() && (0.0..=1.0).contains(&channel))
+            .then_some(Self {
+                red,
+                green,
+                blue,
+                alpha,
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LinearRgba, Point, Rect, Size};
+
+    #[test]
+    fn rejects_non_finite_geometry() {
+        assert!(Point::new(f32::NAN, 0.0).is_none());
+        assert!(Size::new(1.0, f32::INFINITY).is_none());
+        assert!(Size::new(-1.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn intersects_overlapping_rectangles() {
+        let first = Rect::new(
+            Point { x: 0.0, y: 0.0 },
+            Size {
+                width: 10.0,
+                height: 10.0,
+            },
+        );
+        let second = Rect::new(
+            Point { x: 5.0, y: 4.0 },
+            Size {
+                width: 10.0,
+                height: 2.0,
+            },
+        );
+
+        assert_eq!(
+            first.intersection(second),
+            Some(Rect::new(
+                Point { x: 5.0, y: 4.0 },
+                Size {
+                    width: 5.0,
+                    height: 2.0,
+                },
+            ))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_color_channels() {
+        assert!(LinearRgba::new(1.1, 0.0, 0.0, 1.0).is_none());
+        assert!(LinearRgba::new(0.0, 0.0, 0.0, f32::NAN).is_none());
+    }
+}

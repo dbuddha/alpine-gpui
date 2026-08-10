@@ -1,0 +1,13 @@
+[package]
+name = "alpine-renderer"
+version = "0.0.0"
+description = "Renderer contracts and capability reports for Alpine GPUI"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+alpine-scene = { path = "../alpine-scene" }
+
+[lints]
+workspace = true
