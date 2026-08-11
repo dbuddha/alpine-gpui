@@ -1,39 +1,79 @@
 # Alpine GPUI
 
-Alpine GPUI is a proprietary, high-performance desktop UI framework written in
-Rust. It owns its runtime, scene protocol, renderer boundaries, and native
-platform integrations.
+Alpine GPUI is a proprietary, high-performance desktop application framework
+written in Rust. It owns its runtime, scheduling, scene protocol, renderer
+policy, resource lifetimes, and native platform integrations.
 
-The flagship implementation targets Apple Silicon Macs with a direct Metal
-backend. Linux and Windows remain first-class architectural targets, with
-direct Vulkan and D3D12 backends planned after the macOS foundation is proven.
+The flagship implementation targets Apple Silicon Macs running macOS 15 or
+newer through a direct Metal backend. Direct Vulkan on Linux and direct D3D12 on
+Windows follow after the Metal and shared semantic contracts are proven. Intel
+Macs, web, and mobile are outside the version 1 scope.
 
-## Status
+## Product direction
 
-The project is in foundation phase. The current workspace establishes:
+Alpine is optimized first for editors, terminals, database tools, and
+data-heavy productivity applications. Its public programming model may feel
+familiar to GPUI users, but source compatibility is not a goal.
 
-- backend-neutral geometry and scene crates;
-- a zero-cost renderer contract based on associated types;
-- an explicit architecture and upstream provenance policy;
-- repository-owned, pinned CI for Linux, macOS ARM64, and Windows;
-- a dependency-free baseline from which every external dependency must be
-  justified.
+The framework will provide:
+
+- transactional application state and scoped invalidation;
+- hybrid immediate and retained view construction;
+- layout, text, input, accessibility, animation, and virtualization;
+- direct native windowing and rendering backends;
+- headless behavior and renderer conformance harnesses;
+- typed Rust styling and theme tokens;
+- headless UI primitives plus an application-ready component library;
+- embedded native GPU surfaces and custom material support;
+- first-party diagnostics through Alpine Lab and Alpine Inspector.
+
+## Current status
+
+The project is in its foundation milestone. The workspace currently contains:
+
+- `alpine-core`: backend-neutral geometry and color types;
+- `alpine-scene`: immutable renderer input and painter ordering;
+- `alpine-renderer`: backend contracts and observable frame reports;
+- pinned Rust 1.97.1;
+- strict lint, test, documentation, and three-platform CI gates;
+- branch protection and immutable GitHub Actions policy;
+- architecture, provenance, dependency, hardware, and agentic workflow policy.
 
 No upstream GPUI implementation is vendored or linked into the product.
 
-## Start here
+## Documentation map
+
+Start with the [internal engineering guide](docs/README.md). It contains the
+architecture, source-influence, frame-lifecycle, and agentic change-flow
+diagrams.
 
 - [Architecture](ARCHITECTURE.md)
-- [Roadmap](docs/ROADMAP.md)
+- [Crate architecture](crates/README.md)
+- [Master plan](docs/MASTER_PLAN.md)
+- [Milestone roadmap](docs/ROADMAP.md)
+- [Source influence map](docs/research/source-map.md)
 - [Upstream analysis](docs/research/upstream-analysis.md)
-- [CI strategy](docs/ci/strategy.md)
+- [Provenance ledger](docs/research/provenance-ledger.md)
 - [Dependency policy](docs/DEPENDENCIES.md)
+- [CI and hardware strategy](docs/ci/strategy.md)
+- [Agentic engineering workflow](docs/engineering/agentic-workflow.md)
+- [Changelog policy](docs/engineering/changelog.md)
+- [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## Development
+
+Run the complete local acceptance gate:
 
 ```sh
 scripts/check.sh
 ```
 
+The same policy, lint, test, and documentation commands run in CI. Native tests
+also run on Linux, Apple Silicon macOS, and Windows.
+
+## Ownership and license
+
 The repository is private and proprietary. No license to use, copy, modify, or
-distribute the source is granted.
+distribute its source is granted. Third-party influences and any approved source
+incorporation are tracked separately with immutable provenance.

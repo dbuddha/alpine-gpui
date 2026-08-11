@@ -45,7 +45,7 @@ needed for offscreen validation. It is not a trustworthy performance baseline.
 
 ## Metal runner qualification
 
-The future `rock-metal-probe` binary and workflow must record:
+The future `alpine-metal-probe` binary and workflow must record:
 
 - OS build, Xcode, Rust, CPU, memory, and runner provider;
 - Metal device name, registry ID, unified-memory status, GPU families, limits,
@@ -114,14 +114,13 @@ family. It may be owned, rented as a dedicated host, or scheduled periodically.
 | Frame-time regression | No | Informational | Required later | Yes |
 | Display and input latency | No | No | Release | Yes |
 
-## Repository settings after the first push
+## Repository settings
 
-- Set `main` as the default branch.
-- Require pull requests and `CI / ci-pass` before merge.
-- Disallow force pushes and branch deletion.
-- Require conversation resolution.
-- Restrict Actions to GitHub-owned actions plus explicitly approved pinned
-  actions.
-- Set the workflow token to read-only by default.
+- `main` is the default protected branch.
+- Pull requests and a strict, up-to-date `ci-pass` are required.
+- Linear history and conversation resolution are required.
+- Force pushes, branch deletion, and administrator bypass are disabled.
+- Actions are restricted to GitHub-owned actions and full-length commit SHAs.
+- The workflow token is read-only by default.
 - Configure an Actions budget with stop-on-limit enabled.
 - Keep artifact retention short.

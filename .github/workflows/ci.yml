@@ -26,8 +26,15 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
       - name: Show toolchain
         run: rustc --version --verbose
+      - name: Check repository policy
+        env:
+          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/check-policy.sh
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint all targets

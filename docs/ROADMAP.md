@@ -1,72 +1,79 @@
-# Roadmap
+# Milestone Roadmap
 
-Milestones are gated by evidence, not dates.
+This is the compact milestone view. `MASTER_PLAN.md` contains implementation
+order and detailed gates. Milestones are evidence-gated, not date-gated.
 
-## M0: Foundation
+## M0: Governed foundation
 
-- Architecture, provenance, dependency, and CI policies
+- Architecture, product contract, provenance, dependency, CI, and agent policy
 - Dependency-free core, scene, and renderer seams
-- Three-OS compile and test matrix
-- Managed Metal runner qualification specification
+- Protected pull request workflow and three-platform CI
+- Change-fragment and release-changelog mechanism
 
-Exit gate: every committed file is reproducible from the repository and the
-full baseline gate passes on Linux, macOS ARM64, and Windows.
+Exit: local and hosted gates agree, durable decisions are discoverable, and no
+unapproved dependency or source incorporation exists.
 
-## M1: Metal offscreen kernel
+## M1: Direct Metal offscreen kernel
 
 - Approved native binding dependencies
-- Device and capability enumeration
-- Command queue, pipeline, buffer, texture, and lifetime ownership
-- Quad clear and readback without a visible window
-- Validation-enabled negative and device-loss tests
-- Golden image harness with exact and perceptual comparison modes
+- Device, queue, pipeline, resource, submission, and teardown ownership
+- Offscreen primitives, readback, validation, and failure injection
+- Golden image harness and observable work counters
 
-Exit gate: deterministic offscreen fixtures pass on a qualified Apple Silicon
-GPU runner with zero Metal validation findings.
+Exit: deterministic fixtures pass on qualified Apple Silicon with zero Metal
+validation findings and bounded resource growth.
 
 ## M2: Native macOS presentation
 
-- AppKit lifecycle and window creation in Rust
-- CAMetalLayer ownership and resize handling
-- Display link, frame coalescing, and occlusion behavior
-- Retina scaling, color space, input, and clipboard foundations
+- AppKit lifecycle, windows, CAMetalLayer, displays, scale, and color
+- Demand-driven display clock and frame coalescing
+- Occlusion, resize, multi-window, input, and clipboard foundations
+- Embedded Metal surfaces and custom materials
 
-Exit gate: a visible laboratory window remains idle when unchanged and presents
-correctly at 60 Hz and 120 Hz without unbounded allocations.
+Exit: settled windows remain idle and 60 Hz or 120 Hz presentation has bounded
+allocation, correct teardown, and no redundant submissions.
 
-## M3: Text, input, and accessibility
+## M3: Runtime, layout, and events
 
-- Font discovery, shaping, fallback, rasterization, and atlas policy
-- IME, selection, clipboard, bidi, CJK, emoji, and line breaking
-- Focus graph and AccessKit-backed semantic tree
+- Entities, transactions, subscriptions, tasks, and scoped invalidation
+- Element lifecycle, provider-isolated layout, hit testing, focus, and commands
+- Animation scheduling and virtualized collections
 
-Exit gate: the text and accessibility conformance corpus passes with bounded
-memory and deterministic semantic snapshots.
+Exit: unchanged subtrees do no work, ownership teardown is deterministic, and a
+million logical rows remain proportional to the visible window.
 
-## M4: Runtime and UI system
+## M4: Text, IME, and accessibility
 
-- Entity state and transaction model
-- Dependency tracking and scoped invalidation
-- Element lifecycle, layout, hit testing, styling, animation, and virtualization
-- Headless primitive layer separate from styled components
+- CoreText behind a portable Alpine contract
+- Fallback, shaping, glyph cache, line breaking, selection, bidi, CJK, and emoji
+- Marked text, IME, clipboard, semantic tree, and native accessibility bridge
 
-Exit gate: one million logical rows remain memory-proportional to the visible
-window, and unchanged subtrees perform no layout or paint work.
+Exit: the text, IME, and accessibility corpora pass with bounded memory and
+deterministic semantic snapshots.
 
-## M5: Dogfood applications
+## M5: Components and dogfood
 
-- Alpine Lab for conformance fixtures
-- Alpine Inspector for frame, scene, allocation, and GPU diagnostics
-- Workspace stress application combining editor, table, canvas, terminal grid,
-  docking, multi-window behavior, and accessibility
+- Headless primitives separate from typed styled components
+- Essential controls, overlays, text input, virtual lists, tables, trees, and docking
+- Alpine Lab, Alpine Inspector, and Alpine Workspace
 
-Exit gate: the profiler and inspector are built with the public framework API.
+Exit: diagnostics use public APIs, every interactive component has accessibility
+from inception, and the workspace meets calibrated performance budgets.
 
-## M6: Additional platforms
+## M6: Additional desktop platforms
 
-- Direct Vulkan with Wayland first, then X11 compatibility
+- Direct Vulkan with Wayland first, then X11
 - Direct D3D12 with Win32
-- Optional WGPU oracle backend for differential testing
+- Optional WGPU differential oracle
 
-Exit gate: shared conformance scenes and semantic tests pass across backends,
-with platform-specific tolerances and capability manifests.
+Exit: shared scene, event, semantic, and component suites pass with explicit
+backend capabilities and tolerances.
+
+## M7: Version 1
+
+- Declared public API and compatibility policy
+- Release candidate, migration, rollback, long-session, and fixed-hardware gates
+- Signing, notarization, SBOM, and artifact attestations
+
+Exit: the owner approves a fully reproducible, supported desktop framework
+release.

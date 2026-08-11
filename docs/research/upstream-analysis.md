@@ -1,7 +1,7 @@
 # GPUI Ecosystem Analysis
 
 - Research date: 2026-08-09
-- Purpose: identify concepts, failure modes, and conformance material for Rock
+- Purpose: identify concepts, failure modes, and conformance material for Alpine
   GPUI without selecting an upstream implementation dependency.
 
 ## Executive decision
@@ -25,14 +25,15 @@ Implement Alpine GPUI independently with direct Metal ownership.
 
 | Project | Reviewed commit | Role | Assessment |
 | --- | --- | --- | --- |
-| [Zed GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) | `1271f8b0` | Original production framework | Best proof of the core programming model and native Metal viability; coupled to Zed priorities and workspace evolution |
-| [awesome-gpui](https://github.com/zed-industries/awesome-gpui) | `b22321c8` | Ecosystem catalog | Workload and API demand inventory, not framework source |
-| [GPUI-CE](https://github.com/gpui-ce/gpui-ce) | `b172d695` | Community edition | Strongest backend-crate decomposition; complex upstream synchronization and dependency ownership remain unresolved |
-| [mdeand/gpui-wgpu](https://github.com/mdeand/gpui-wgpu) | `a2158ca3` | WGPU plus winit fork | Useful unified-backend experiment; weak CI and unresolved redraw work |
-| [nestrilabs/gpui-wgpu](https://github.com/nestrilabs/gpui-wgpu) | `49d46d31` | Fork of mdeand | Same lineage with a small point-in-time divergence, not an independent architecture |
-| [WGPUI](https://github.com/Far-Beyond-Pulsar/WGPUI) | `fd087f64` | Active WGPU plus winit fork | Most active unified-backend specimen; current CI is too narrow to establish cross-platform correctness |
-| [Kael](https://github.com/Augani/kael) | `4d67872d` | Independent GPUI descendant | Broadest feature and test ambition; very large, young surface and draft shader API make it unsuitable as a trusted base |
-| [gpui-unofficial](https://github.com/iamnbutler/gpui-unofficial) | `76d3fc3b` | Automated release transform | Useful provenance and packaging lesson, not an architectural foundation |
+| [Zed GPUI](https://github.com/zed-industries/zed/tree/1271f8b0e8f3278eed5dd3fc12ad4bd30dce2c5d/crates/gpui) | `1271f8b0` | Original production framework | Best proof of the core programming model and native Metal viability; coupled to Zed priorities and workspace evolution |
+| [awesome-gpui](https://github.com/zed-industries/awesome-gpui/tree/cf11f85a1420dfc5a7f64bc159aacba8133a2f35) | `cf11f85a` | Ecosystem catalog | Workload and API demand inventory, not framework source |
+| [GPUI-CE](https://github.com/gpui-ce/gpui-ce/tree/b172d695cd2f6d0ad70caedfc3d78d95c6b5d02b) | `b172d695` | Community edition | Strongest backend-crate decomposition; complex upstream synchronization and dependency ownership remain unresolved |
+| [gpui-component](https://github.com/longbridge/gpui-component/tree/55968d167bd6959551c3417c3622899c33ecda20) | `55968d16` | Downstream component system | Best current catalog of production component behavior and data-heavy workloads; unsuitable as Alpine's component foundation |
+| [mdeand/gpui-wgpu](https://github.com/mdeand/gpui-wgpu/tree/a2158ca36a0f46b32c3a66423b6498a3f0ed6ae1) | `a2158ca3` | WGPU plus winit fork | Useful unified-backend experiment; weak CI and unresolved redraw work |
+| [nestrilabs/gpui-wgpu](https://github.com/nestrilabs/gpui-wgpu/tree/49d46d31a14f2f11efe17a3157a0f0ef4c825bd4) | `49d46d31` | Fork of mdeand | Same lineage with a small point-in-time divergence, not an independent architecture |
+| [WGPUI](https://github.com/Far-Beyond-Pulsar/WGPUI/tree/fd087f643f749e11f29ef53307b2fdcd83c1202a) | `fd087f64` | Active WGPU plus winit fork | Most active unified-backend specimen; current CI is too narrow to establish cross-platform correctness |
+| [Kael](https://github.com/Augani/kael/tree/4d67872d678454b06d7f7a3bebf7ef5f82a78c6c) | `4d67872d` | Independent GPUI descendant | Broadest feature and test ambition; very large, young surface and draft shader API make it unsuitable as a trusted base |
+| [gpui-unofficial](https://github.com/iamnbutler/gpui-unofficial/tree/76d3fc3b5d4b10e218fa24431ecad0669e320dcc) | `76d3fc3b` | Automated release transform | Useful provenance and packaging lesson, not an architectural foundation |
 
 ## Zed GPUI
 
@@ -132,6 +133,43 @@ the direct native-backend control that Alpine GPUI requires.
 
 Conclusion: use as a differential behavior oracle later, especially for
 embedded surfaces and WASM. Do not make it a production dependency.
+
+## gpui-component
+
+`gpui-component` is the most useful reviewed downstream requirements corpus. At
+the reviewed commit it contains more than 60 component families, including
+text input and editor behavior, menus, overlays, docking, theming, stories,
+virtual lists, and tables that virtualize both rows and columns. The repository
+contains 349 Rust files and approximately 126,000 lines of Rust, so adopting it
+would also adopt a large product and dependency surface before Alpine's runtime
+and renderer contracts are proven.
+
+Useful material:
+
+- typed theme tokens and platform-adaptive component states;
+- keyboard, focus, input, overlay, portal, and docking behavior;
+- row and column virtualization workloads for data-heavy applications;
+- a story catalog that can become Alpine Lab scenarios;
+- accessibility expectations that can become semantic and interaction tests.
+
+Risks observed:
+
+- its public surface and initialization model are designed around current GPUI,
+  not an independently owned runtime;
+- its dependency graph includes broad functionality and Git-sourced framework
+  relationships that conflict with Alpine's shipping dependency policy;
+- its cross-platform CI is useful evidence, but its workflow uses mutable action
+  references, mutable runner images, installed tools, and less strict lockfile
+  handling than Alpine requires;
+- [issue 2532](https://github.com/longbridge/gpui-component/issues/2532)
+  records a Git version mismatch in the ecosystem dependency graph;
+- [issue 2475](https://github.com/longbridge/gpui-component/issues/2475)
+  reports a historical transitive GPL licensing concern. That report is a
+  prompt for an independent license audit, not proof about the current graph.
+
+Conclusion: translate its visible behavior into Alpine-owned specifications,
+state-machine tests, accessibility tests, and Alpine Lab workloads. Do not copy
+the library wholesale or make it a runtime dependency.
 
 ## Kael
 

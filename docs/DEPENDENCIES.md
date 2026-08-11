@@ -46,11 +46,12 @@ These are development-only and must be pinned independently of product code.
 
 Unicode shaping, bidi, segmentation, line breaking, font parsing, and
 accessibility are standards-heavy areas where a reviewed pure Rust dependency
-can be safer than a new implementation. Each capability remains behind a Rock
-GPUI facade and receives its own conformance corpus.
+can be safer than a new implementation. Each capability remains behind an
+Alpine GPUI facade and receives its own conformance corpus.
 
 ### Layout
 
-Taffy is a candidate oracle or initial implementation behind a facade, not an
-architectural dependency. We will decide after measuring its invalidation,
-allocation, grid, and pathological-layout behavior against our target workloads.
+Taffy is approved as a candidate oracle or temporary provider behind an Alpine
+facade, not as a permanent architectural dependency. Adoption still requires a
+separate dependency review. Replacement or retention is decided from measured
+invalidation, allocation, grid, and pathological-layout behavior.

@@ -11,6 +11,19 @@ input, accessibility, animation, windowing, rendering, diagnostics, and native
 desktop services. Cross-platform support must not reduce Metal to the least
 common denominator.
 
+## Product contract
+
+- Optimize first for editors, terminals, database tools, and data-heavy
+  productivity applications.
+- Use familiar GPUI concepts without promising source compatibility.
+- Use typed Rust styling and theme tokens without a CSS runtime.
+- Adapt platform appearance and behavior while sharing portable semantics.
+- Treat accessibility as part of every interactive component contract.
+- Keep web, mobile, and Intel Macs outside the version 1 scope.
+- Permit audited native bindings and standards-heavy Rust libraries behind
+  Alpine-owned facades.
+- Make embedded native GPU surfaces and custom materials first-class.
+
 ## Architectural shape
 
 ```text
@@ -51,6 +64,26 @@ Backend contracts and capability reports. Associated types keep the production
 path monomorphized. The contract reports actual work, rather than hiding
 allocation, upload, or submission costs.
 
+## Planned crates
+
+Crates are added only when a vertical slice needs the boundary. Empty
+architecture crates are not created speculatively.
+
+| Crate | Responsibility |
+| --- | --- |
+| `alpine-platform` | Portable event, display, clipboard, and window contracts |
+| `alpine-macos` | AppKit, CoreText, accessibility, and presentation integration |
+| `alpine-metal` | Metal devices, resources, pipelines, encoding, and readback |
+| `alpine-runtime` | Entities, transactions, invalidation, tasks, and subscriptions |
+| `alpine-layout` | Layout contract and measured provider boundary |
+| `alpine-text` | Portable text semantics and platform shaping provider contract |
+| `alpine-input` | Keyboard, pointer, IME, focus, command, and gesture semantics |
+| `alpine-ui` | Headless elements, state machines, overlays, and accessibility |
+| `alpine-components` | Typed themes and application-ready styled components |
+| `alpine-test` | Deterministic runtime, scene, renderer, and platform harnesses |
+| `alpine-lab` | Conformance stories and diagnostic workload application |
+| `alpine-inspector` | Public-API diagnostics for frames, resources, and semantics |
+
 ## Planned ownership boundaries
 
 | Layer | Owns | Must not own |
@@ -80,6 +113,9 @@ allocation, upload, or submission costs.
 9. Steady-state rendering has explicit allocation and upload budgets.
 10. Performance gates compare distributions on pinned hardware, not a single
     timing sample on an ephemeral runner.
+11. Accessibility semantics exist before visual polish for an interactive
+    component.
+12. Public behavior is specified independently of any upstream implementation.
 
 ## Frame lifecycle
 
