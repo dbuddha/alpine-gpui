@@ -3,6 +3,10 @@
 This ledger records source incorporated into Alpine GPUI. Architectural research
 that does not copy source belongs in `upstream-analysis.md`.
 
+Zed GPUI is Alpine's primary conceptual influence. That acknowledgement records
+lineage, not source incorporation. Exact research inputs and permitted influence
+modes are maintained in `source-map.md`.
+
 ## Incorporated source
 
 None.

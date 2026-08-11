@@ -11,6 +11,22 @@ input, accessibility, animation, windowing, rendering, diagnostics, and native
 desktop services. Cross-platform support must not reduce Metal to the least
 common denominator.
 
+## Lineage and implementation boundary
+
+Alpine's programming model is strongly inspired by the public architecture and
+behavior of [Zed GPUI](https://github.com/zed-industries/zed/tree/1271f8b0e8f3278eed5dd3fc12ad4bd30dce2c5d/crates/gpui).
+Entity-owned state, context-mediated mutation, hybrid immediate and retained UI
+construction, element lifecycle phases, immutable renderer input, direct Metal,
+headless testing, and virtualized workloads are the primary conceptual lineage.
+
+Alpine independently specifies and implements those ideas. It does not inherit
+Zed's workspace, API compatibility, release cadence, platform policy, or source
+tree. GPUI-CE, `gpui-component`, WGPUI, the `gpui-wgpu` lineage, and Kael are
+secondary specimens. Their permitted influence is recorded in the
+[source map](docs/research/source-map.md), while actual copied or adapted source
+would require an entry in the
+[provenance ledger](docs/research/provenance-ledger.md).
+
 ## Product contract
 
 - Optimize first for editors, terminals, database tools, and data-heavy
@@ -26,24 +42,94 @@ common denominator.
 
 ## Architectural shape
 
-```text
-application and component libraries
-                |
-        runtime and view system
-                |
-    layout, text, input, accessibility
-                |
-        immutable scene snapshot
-                |
-      renderer capability contract
-         /          |          \
-      Metal       Vulkan      D3D12
-         \          |          /
-       native platform and presentation
+```mermaid
+flowchart TB
+    apps["Desktop applications and Alpine Workspace"]
+    components["Styled components and typed themes"]
+    ui["Headless UI elements and state machines"]
+    runtime["Entities, transactions, tasks, and invalidation"]
+    layout["Layout contract"]
+    text["Text and IME contract"]
+    input["Input, focus, and commands"]
+    semantics["Accessibility semantics"]
+    scene["Immutable scene snapshot"]
+    renderer["Renderer capability contract"]
+    platform["Window and platform contract"]
+
+    apps --> components --> ui --> runtime
+    runtime --> layout
+    runtime --> text
+    runtime --> input
+    runtime --> semantics
+    runtime --> scene --> renderer
+    platform --> runtime
+    semantics --> platform
+
+    subgraph backends["Native backend implementations"]
+        metal["Direct Metal"]
+        vulkan["Direct Vulkan"]
+        d3d12["Direct D3D12"]
+    end
+
+    renderer --> metal
+    renderer --> vulkan
+    renderer --> d3d12
+    platform --> metal
+    platform --> vulkan
+    platform --> d3d12
 ```
 
 Portable semantics live above the scene boundary. Backend-specific capability
 and performance decisions live below it.
+
+## Contract and platform mapping
+
+Shared contracts define observable behavior without erasing native capability.
+Each platform implementation can specialize algorithms, resource formats, and
+presentation while passing the same semantic conformance suite.
+
+```mermaid
+flowchart LR
+    subgraph contracts["Portable Alpine contracts"]
+        window_contract["Window and event semantics"]
+        text_contract["Text, selection, and IME semantics"]
+        accessibility_contract["Accessibility tree and actions"]
+        scene_contract["Scene primitives and resource identities"]
+        renderer_contract["Renderer lifecycle and capability report"]
+    end
+
+    subgraph mac["macOS first"]
+        appkit["AppKit and CoreText"]
+        nsaccessibility["Native accessibility bridge"]
+        metal_backend["Metal renderer and CAMetalLayer"]
+    end
+
+    subgraph linux["Linux after shared contracts stabilize"]
+        linux_platform["Wayland, then X11"]
+        linux_services["Qualified text and accessibility providers"]
+        vulkan_backend["Vulkan renderer"]
+    end
+
+    subgraph windows["Windows after shared contracts stabilize"]
+        win32["Win32 platform services"]
+        windows_services["Qualified text and accessibility providers"]
+        d3d12_backend["D3D12 renderer"]
+    end
+
+    window_contract --> appkit
+    window_contract --> linux_platform
+    window_contract --> win32
+    text_contract --> appkit
+    text_contract --> linux_services
+    text_contract --> windows_services
+    accessibility_contract --> nsaccessibility
+    accessibility_contract --> linux_services
+    accessibility_contract --> windows_services
+    scene_contract --> renderer_contract
+    renderer_contract --> metal_backend
+    renderer_contract --> vulkan_backend
+    renderer_contract --> d3d12_backend
+```
 
 ## Initial crates
 
@@ -117,19 +203,54 @@ architecture crates are not created speculatively.
     component.
 12. Public behavior is specified independently of any upstream implementation.
 
+## Ownership and lifetime model
+
+The principal safety boundary is the immutable scene snapshot. Application and
+view objects remain runtime-owned. The renderer may retain only backend
+resources addressed by stable scene identities, and the platform owns native
+windows and presentation surfaces.
+
+```mermaid
+flowchart LR
+    app_state["Application state"] -->|"owned through entities"| runtime_owner["Runtime"]
+    view_state["View state"] -->|"owned through entities"| runtime_owner
+    runtime_owner -->|"builds values"| scene_snapshot["Immutable scene snapshot"]
+    scene_snapshot -->|"borrowed for one submission"| renderer_owner["Renderer"]
+    renderer_owner -->|"owns and retires"| gpu_resources["GPU resources and pipelines"]
+    platform_owner["Platform"] -->|"owns"| windows["Windows and presentation surfaces"]
+    renderer_owner -->|"presents into, never owns"| windows
+
+    app_state -.->|"no native GPU handles"| gpu_resources
+    view_state -.->|"never retained by renderer"| renderer_owner
+```
+
 ## Frame lifecycle
 
-```text
-event or state change
-  -> invalidate affected state
-  -> schedule at most one frame
-  -> render affected views
-  -> layout affected subtrees
-  -> build immutable scene
-  -> diff resources and prepare uploads
-  -> encode and submit GPU work
-  -> present on the native display clock
-  -> remain idle until new work exists
+```mermaid
+sequenceDiagram
+    participant Platform
+    participant Runtime
+    participant UI
+    participant Scene
+    participant Renderer
+    participant GPU
+
+    Platform->>Runtime: Input, task completion, or display change
+    Runtime->>Runtime: Mutate transaction and invalidate affected state
+    Runtime->>Platform: Request one frame if none is pending
+    Note over Runtime,Platform: Additional requests coalesce
+    Platform->>Runtime: Native display opportunity
+    Runtime->>UI: Render and layout dirty subtrees
+    UI-->>Scene: Produce immutable snapshot
+    Scene->>Renderer: Submit snapshot and resource revisions
+    Renderer->>Renderer: Prepare uploads and encode commands
+    Renderer->>GPU: Submit native GPU work
+    GPU-->>Platform: Present native surface
+    alt New invalidation exists
+        Runtime->>Platform: Request the next frame
+    else No active work
+        Runtime-->>Runtime: Remain idle with zero submissions
+    end
 ```
 
 The scheduler owns frame coalescing. The renderer never requests continuous
@@ -144,6 +265,23 @@ redraw merely because a window exists.
   contracts have survived the Metal implementation.
 - Shader source is backend-owned. MSL is permitted for Metal. A portable shader
   IR is a later decision and must not delay the direct Metal path.
+
+```mermaid
+flowchart TD
+    conformance["Shared scene and behavior conformance"]
+    renderer_api["Alpine renderer contract"]
+    metal["Metal flagship backend"]
+    vulkan["Vulkan backend"]
+    d3d12["D3D12 backend"]
+    wgpu["Optional WGPU differential oracle"]
+    native_tests["Backend-specific validation and pixel tolerances"]
+
+    conformance --> renderer_api
+    renderer_api --> metal --> native_tests
+    renderer_api --> vulkan --> native_tests
+    renderer_api --> d3d12 --> native_tests
+    conformance -.->|"comparison only"| wgpu
+```
 
 ## Dependency strategy
 

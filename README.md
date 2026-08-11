@@ -1,8 +1,16 @@
 # Alpine GPUI
 
-Alpine GPUI is a proprietary, high-performance desktop application framework
-written in Rust. It owns its runtime, scheduling, scene protocol, renderer
-policy, resource lifetimes, and native platform integrations.
+Alpine GPUI is a private, proprietary, high-performance desktop application
+framework written in Rust. Its programming model is strongly inspired by
+[Zed's GPUI](https://github.com/zed-industries/zed/tree/1271f8b0e8f3278eed5dd3fc12ad4bd30dce2c5d/crates/gpui),
+whose production architecture demonstrates entity-owned state, hybrid
+immediate and retained UI construction, element phases, GPU rendering, and
+headless testing at application scale.
+
+Alpine is an independent implementation, not a fork or source-compatible
+distribution of Zed GPUI. It owns its runtime, scheduling, scene protocol,
+renderer policy, resource lifetimes, and native platform integrations. The
+project is not affiliated with or endorsed by Zed Industries.
 
 The flagship implementation targets Apple Silicon Macs running macOS 15 or
 newer through a direct Metal backend. Direct Vulkan on Linux and direct D3D12 on
@@ -72,8 +80,23 @@ scripts/check.sh
 The same policy, lint, test, and documentation commands run in CI. Native tests
 also run on Linux, Apple Silicon macOS, and Windows.
 
-## Ownership and license
+## Lineage, ownership, and license
 
-The repository is private and proprietary. No license to use, copy, modify, or
-distribute its source is granted. Third-party influences and any approved source
-incorporation are tracked separately with immutable provenance.
+Proprietary describes how Alpine GPUI is distributed, not an absence of open
+source influence. Zed GPUI is the primary conceptual influence, and GPUI-CE,
+`gpui-component`, WGPUI, `gpui-wgpu` descendants, and Kael provide additional
+architecture, behavior, workload, and failure-mode evidence. The exact reviewed
+commits and permitted influence paths are recorded in the
+[source influence map](docs/research/source-map.md).
+
+At the reviewed commit, Zed's `gpui` crate declares the
+[Apache-2.0 license](https://github.com/zed-industries/zed/blob/1271f8b0e8f3278eed5dd3fc12ad4bd30dce2c5d/crates/gpui/Cargo.toml).
+That license governs Zed GPUI source. Alpine's independently written source
+remains under Alpine's own private distribution policy.
+
+No upstream GPUI implementation source is currently copied, vendored, or linked
+into Alpine. Any future adaptation of upstream source requires explicit
+approval, license review, and symbol-level recording in the
+[provenance ledger](docs/research/provenance-ledger.md). The repository remains
+private and proprietary, and no license to use, copy, modify, or distribute its
+source is granted.
