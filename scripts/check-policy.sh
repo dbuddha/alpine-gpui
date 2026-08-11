@@ -53,7 +53,7 @@ done
 
 if [ -n "${ALPINE_BASE_SHA:-}" ] && [ -n "${ALPINE_HEAD_SHA:-}" ]; then
     changed_files=$(git diff --name-only "$ALPINE_BASE_SHA...$ALPINE_HEAD_SHA")
-    shipping_changes=$(printf '%s\n' "$changed_files" | grep -E '^(crates/|shaders/|Cargo\.toml$|Cargo\.lock$)' || true)
+    shipping_changes=$(printf '%s\n' "$changed_files" | grep -E '^(Cargo\.toml$|Cargo\.lock$|crates/.+/Cargo\.toml$|crates/.+\.rs$|shaders/)' || true)
     fragment_changes=$(printf '%s\n' "$changed_files" | grep -E '^changes/[A-Za-z0-9][A-Za-z0-9-]*\.(added|changed|deprecated|removed|fixed|performance|security)\.md$' || true)
 
     if [ -n "$shipping_changes" ] && [ -z "$fragment_changes" ]; then
