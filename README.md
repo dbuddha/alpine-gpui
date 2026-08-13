@@ -38,7 +38,9 @@ development. The workspace currently provides:
 - `alpine-renderer`, with a backend-generic renderer contract, capabilities,
   and observable frame reports;
 - a pinned Rust toolchain and locked dependency graph;
-- policy, formatting, lint, unit test, doctest, rustdoc, and three-platform CI.
+- policy, formatting, lint, unit test, doctest, rustdoc, coverage, changed-code
+  mutation, selected Kani proofs, and three-platform CI;
+- risk-selected Miri and Metal validation plus scheduled exhaustive assurance.
 
 There is no native backend, window, runtime, layout engine, input system, text
 stack, or component system yet. The exact implemented boundaries and binding
@@ -55,7 +57,7 @@ scripts/check.sh
 GitHub is the operational system for this project:
 
 - [Project](https://github.com/users/dbuddha/projects/1) for priority and state;
-- [issues](https://github.com/dbuddha/alpine-gpui/issues) for journeys,
+- [issues](https://github.com/dbuddha/alpine-gpui/issues) for capabilities,
   requirements, tasks, decisions, defects, and research;
 - [Actions](https://github.com/dbuddha/alpine-gpui/actions/workflows/ci.yml) for
   CI evidence and private rustdoc artifacts;

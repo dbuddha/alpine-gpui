@@ -1,0 +1,45 @@
+name: Assurance failure routing
+
+on:
+  workflow_run:
+    workflows: [CI, Nightly assurance, Weekly assurance]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  route:
+    name: route-failures
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Create or update deduplicated defects
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs" --paginate \
+            --jq '.jobs[] | select(.conclusion == "failure") | [.name, ([.steps[] | select(.conclusion == "failure") | .name] | join(", "))] | @tsv' |
+          while IFS="$(printf '\t')" read -r job steps; do
+            key=$(printf '%s\n' "$RUN_NAME|$job|$steps" | sha256sum | cut -d' ' -f1)
+            marker="alpine-ci-failure-$key"
+            title="[Defect] $RUN_NAME: $job"
+            existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label kind:defect --search "$marker in:body" --json number --jq '.[0].number // empty')
+            details=$(printf 'Workflow: %s\nJob: %s\nFailing steps: %s\nCommit: `%s`\nRun: %s' "$RUN_NAME" "$job" "$steps" "$HEAD_SHA" "$RUN_URL")
+            if test -n "$existing"; then
+              gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$details"
+            else
+              body=$(printf '<!-- %s -->\n\n### Observed behavior\n\nAn authoritative assurance workflow failed on main.\n\n### Failure identity\n\n%s\n\n### Expected behavior\n\nThe failing check returns to green through a root-cause fix. Do not rerun or weaken the check merely to obtain a passing result.\n\n### Regression acceptance\n\nAdd or identify the narrowest deterministic regression test, proof, mutation, or hardware check that fails before the fix and passes after it.' "$marker" "$details")
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+                --label kind:defect --label area:tooling --label release:none \
+                --body "$body"
+            fi
+          done

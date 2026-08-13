@@ -22,26 +22,56 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
-  policy:
-    name: policy
+  classify:
+    name: classify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      base_sha: ${{ steps.classify.outputs.base_sha }}
+      head_sha: ${{ steps.classify.outputs.head_sha }}
+      coverage: ${{ steps.classify.outputs.coverage }}
+      mutation: ${{ steps.classify.outputs.mutation }}
+      kani: ${{ steps.classify.outputs.kani }}
+      miri: ${{ steps.classify.outputs.miri }}
+      metal: ${{ steps.classify.outputs.metal }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - id: classify
+        name: Select required evidence
+        env:
+          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ALPINE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: scripts/classify-ci.sh
+
+  quality:
+    name: quality
+    needs: classify
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+      - name: Install policy tools
+        run: cargo install --locked cargo-deny --version 0.20.2
       - name: Show toolchain
         run: rustc --version --verbose
       - name: Check repository policy
         env:
-          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ALPINE_BASE_SHA: ${{ needs.classify.outputs.base_sha }}
+          ALPINE_HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
           ALPINE_PR_BODY: ${{ github.event.pull_request.body }}
           ALPINE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           ALPINE_PR_TITLE: ${{ github.event.pull_request.title }}
           GH_TOKEN: ${{ github.token }}
         run: scripts/check-policy.sh
+      - name: Check dependencies and licenses
+        run: cargo deny check bans licenses sources
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint all targets
@@ -55,7 +85,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps --locked
       - name: Upload private rustdoc
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: rustdoc-${{ github.sha }}
           path: target/doc
@@ -64,6 +94,7 @@ jobs:
 
   native:
     name: native-${{ matrix.name }}
+    needs: classify
     strategy:
       fail-fast: false
       matrix:
@@ -78,23 +109,176 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Show target
         run: rustc --version --verbose
       - name: Test workspace
         run: cargo test --workspace --all-targets --all-features --locked
 
+  coverage:
+    name: coverage
+    needs: classify
+    if: needs.classify.outputs.coverage == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Install coverage tools
+        run: cargo install --locked cargo-llvm-cov --version 0.8.7
+      - name: Install LLVM tools
+        run: rustup component add llvm-tools-preview
+      - name: Measure base coverage
+        env:
+          BASE_SHA: ${{ needs.classify.outputs.base_sha }}
+        run: |
+          mkdir -p target
+          git worktree add --detach "$RUNNER_TEMP/alpine-coverage-base" "$BASE_SHA"
+          cd "$RUNNER_TEMP/alpine-coverage-base"
+          CARGO_TARGET_DIR="$RUNNER_TEMP/alpine-coverage-base-target" cargo llvm-cov --workspace --all-features --locked --json --summary-only --output-path "$GITHUB_WORKSPACE/target/coverage-base.json"
+      - name: Measure head coverage
+        run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov --workspace --all-features --locked --no-report
+          cargo llvm-cov report --json --summary-only --output-path target/coverage-head.json
+          cargo llvm-cov report --lcov --output-path target/lcov.info
+          cargo llvm-cov report --html --output-dir target/coverage-html
+      - name: Enforce coverage contracts
+        env:
+          ALPINE_HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
+        run: scripts/check-coverage.sh target/coverage-base.json target/coverage-head.json target/lcov.info ${{ needs.classify.outputs.base_sha }}
+      - name: Upload coverage evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-${{ github.sha }}
+          path: |
+            target/coverage-head.json
+            target/lcov.info
+            target/coverage-html
+          retention-days: 7
+          if-no-files-found: warn
+
+  mutation-diff:
+    name: mutation-diff
+    needs: classify
+    if: needs.classify.outputs.mutation == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Install mutation tools
+        run: cargo install --locked cargo-mutants --version 27.1.0
+      - name: Build changed-code mutation set
+        run: git diff ${{ needs.classify.outputs.base_sha }}...${{ needs.classify.outputs.head_sha }} > target/alpine.diff
+      - name: Require changed mutants to be killed
+        run: cargo mutants --workspace --no-shuffle --in-diff target/alpine.diff --output target/mutants.out -- --locked
+      - name: Upload mutation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: mutation-${{ github.sha }}
+          path: target/mutants.out
+          retention-days: 7
+          if-no-files-found: warn
+
+  kani:
+    name: kani
+    needs: classify
+    if: needs.classify.outputs.kani == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install pinned Kani
+        run: |
+          cargo install --locked kani-verifier --version 0.67.0
+          cargo kani setup
+      - name: Verify bounded Rust properties
+        run: cargo kani -Z unstable-options --workspace --tests --output-format=terse --output-into-files --target-dir target/kani
+      - name: Upload proof evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: kani-${{ github.sha }}
+          path: target/kani
+          retention-days: 7
+          if-no-files-found: warn
+
+  miri:
+    name: miri
+    needs: classify
+    if: needs.classify.outputs.miri == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install pinned Miri toolchain
+        run: rustup toolchain install nightly-2026-08-01 --profile minimal --component miri
+      - name: Check host-testable memory behavior
+        run: cargo +nightly-2026-08-01 miri test --workspace --lib --locked
+
+  metal-validation:
+    name: metal-validation
+    needs: classify
+    if: needs.classify.outputs.metal == 'true'
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Run Metal API and shader validation
+        run: scripts/check-metal.sh
+
   ci-pass:
     name: ci-pass
     if: always()
-    needs: [policy, native]
+    needs: [classify, quality, native, coverage, mutation-diff, kani, miri, metal-validation]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require successful gates
+      - name: Require selected evidence
         env:
-          POLICY_RESULT: ${{ needs.policy.result }}
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
           NATIVE_RESULT: ${{ needs.native.result }}
+          COVERAGE_REQUIRED: ${{ needs.classify.outputs.coverage }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
+          MUTATION_REQUIRED: ${{ needs.classify.outputs.mutation }}
+          MUTATION_RESULT: ${{ needs.mutation-diff.result }}
+          KANI_REQUIRED: ${{ needs.classify.outputs.kani }}
+          KANI_RESULT: ${{ needs.kani.result }}
+          MIRI_REQUIRED: ${{ needs.classify.outputs.miri }}
+          MIRI_RESULT: ${{ needs.miri.result }}
+          METAL_REQUIRED: ${{ needs.classify.outputs.metal }}
+          METAL_RESULT: ${{ needs.metal-validation.result }}
         run: |
-          test "$POLICY_RESULT" = success
-          test "$NATIVE_RESULT" = success
+          require_success() {
+            test "$2" = success || {
+              echo "$1 required success but was $2" >&2
+              exit 1
+            }
+          }
+          require_selected() {
+            if test "$2" = true; then
+              require_success "$1" "$3"
+            elif test "$3" != skipped && test "$3" != success; then
+              echo "$1 was not selected but ended as $3" >&2
+              exit 1
+            fi
+          }
+          require_success classify "$CLASSIFY_RESULT"
+          require_success quality "$QUALITY_RESULT"
+          require_success native "$NATIVE_RESULT"
+          require_selected coverage "$COVERAGE_REQUIRED" "$COVERAGE_RESULT"
+          require_selected mutation-diff "$MUTATION_REQUIRED" "$MUTATION_RESULT"
+          require_selected kani "$KANI_REQUIRED" "$KANI_RESULT"
+          require_selected miri "$MIRI_REQUIRED" "$MIRI_RESULT"
+          require_selected metal-validation "$METAL_REQUIRED" "$METAL_RESULT"

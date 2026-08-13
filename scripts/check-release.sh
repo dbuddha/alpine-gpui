@@ -18,6 +18,11 @@ for manifest in crates/*/Cargo.toml; do
         printf 'release error: %s must inherit the workspace version\n' "$manifest" >&2
         exit 1
     fi
+
+    if grep -qE 'path[[:space:]]*=' "$manifest" && grep -E 'path[[:space:]]*=' "$manifest" | grep -Ev "version[[:space:]]*=[[:space:]]*\"=$workspace_version\"" >/dev/null; then
+        printf 'release error: %s path dependencies must pin the unified version =%s\n' "$manifest" "$workspace_version" >&2
+        exit 1
+    fi
 done
 
 if [ "$#" -gt 0 ]; then

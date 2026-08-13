@@ -17,6 +17,11 @@ if [ -n "$workflow_files" ]; then
         printf '%s\n' "$action_refs" | grep -Ev '@[0-9a-f]{40}([[:space:]]|$)' >&2 || true
     fi
 
+    if [ -n "$action_refs" ] && printf '%s\n' "$action_refs" | grep -Ev 'uses:[[:space:]]+(actions|github)/' >/dev/null; then
+        fail 'only GitHub-owned Actions are permitted'
+        printf '%s\n' "$action_refs" | grep -Ev 'uses:[[:space:]]+(actions|github)/' >&2 || true
+    fi
+
     if grep -nE 'continue-on-error:[[:space:]]*true' $workflow_files >/dev/null; then
         fail 'CI gates may not use continue-on-error: true'
         grep -nE 'continue-on-error:[[:space:]]*true' $workflow_files >&2 || true
@@ -75,6 +80,10 @@ if [ "$issue_form_count" -ne 5 ]; then
     fail "exactly five structured issue forms are required, found $issue_form_count"
 fi
 
+if [ ! -f .github/ISSUE_TEMPLATE/capability.yml ] || [ -f .github/ISSUE_TEMPLATE/user-journey.yml ]; then
+    fail 'the top-level work item must be the capability issue form'
+fi
+
 for release_label in release:breaking release:feature release:fix release:none; do
     if ! grep -q -- "- $release_label" .github/release.yml; then
         fail "release-note configuration is missing $release_label"
@@ -93,7 +102,7 @@ if [ -n "${ALPINE_PR_BODY:-}" ] || [ -n "${ALPINE_PR_TITLE:-}" ]; then
 
     for heading in \
         '## Closing issue' \
-        '## Parent journey' \
+        '## Parent capability' \
         '## Decision or research' \
         '## Acceptance evidence' \
         '## Risk and scope' \
@@ -110,25 +119,104 @@ if [ -n "${ALPINE_PR_BODY:-}" ] || [ -n "${ALPINE_PR_TITLE:-}" ]; then
 fi
 
 if [ -n "${ALPINE_BASE_SHA:-}" ] && [ -n "${ALPINE_HEAD_SHA:-}" ]; then
-    changed_files=$(git diff --name-only "$ALPINE_BASE_SHA...$ALPINE_HEAD_SHA")
+    if [ -n "${ALPINE_CHANGED_FILES:-}" ]; then
+        changed_files=$ALPINE_CHANGED_FILES
+    else
+        changed_files=$(git diff --name-only "$ALPINE_BASE_SHA...$ALPINE_HEAD_SHA")
+    fi
     implementation_changes=$(printf '%s\n' "$changed_files" | grep -E '^(Cargo\.toml$|Cargo\.lock$|crates/.+/Cargo\.toml$|crates/.+\.rs$|shaders/)' || true)
 
-    if [ -n "$implementation_changes" ]; then
+    if [ -n "$implementation_changes" ] && { [ -n "${ALPINE_PR_BODY:-}" ] || [ -n "${ALPINE_PR_TITLE:-}" ]; }; then
         closing_issue=$(printf '%s\n' "${ALPINE_PR_BODY:-}" | sed -nE 's/.*([Cc]loses|[Cc]ontributes to)[[:space:]]+#([0-9]+).*/\2/p' | head -n 1)
         if [ -z "$closing_issue" ]; then
             fail 'implementation pull requests must close or contribute to a requirement or task issue'
         elif [ -n "${GH_REPOSITORY:-}" ] && command -v gh >/dev/null 2>&1; then
-            issue_kind=$(gh issue view "$closing_issue" --repo "$GH_REPOSITORY" --json labels --jq '.labels[].name' 2>/dev/null | grep -E '^kind:(requirement|task)$' || true)
+            issue_labels=$(gh issue view "$closing_issue" --repo "$GH_REPOSITORY" --json labels --jq '.labels[].name' 2>/dev/null || true)
+            issue_state=$(gh issue view "$closing_issue" --repo "$GH_REPOSITORY" --json state --jq .state 2>/dev/null || true)
+            issue_kind=$(printf '%s\n' "$issue_labels" | grep -E '^kind:(requirement|task)$' || true)
             if [ -z "$issue_kind" ]; then
                 fail "linked issue #$closing_issue must have kind:requirement or kind:task"
+            elif [ "$issue_state" != OPEN ]; then
+                fail "linked issue #$closing_issue must be open"
+            else
+                issue_body=$(gh issue view "$closing_issue" --repo "$GH_REPOSITORY" --json body --jq .body 2>/dev/null || true)
+                if printf '%s\n' "$issue_kind" | grep -Fxq kind:task; then
+                    requirement_issue=$(printf '%s\n' "$issue_body" | awk '/^### Parent capability or requirement$/{capture=1; next} /^### /{if (capture) exit} capture' | grep -Eo '#[0-9]+' | tr -d '#' | head -n 1 || true)
+                else
+                    requirement_issue=$closing_issue
+                fi
+
+                if [ -z "${requirement_issue:-}" ]; then
+                    fail "linked task #$closing_issue must name its parent requirement"
+                else
+                    if printf '%s\n' "$issue_kind" | grep -Fxq kind:task; then
+                        native_requirement=$(gh api "repos/$GH_REPOSITORY/issues/$closing_issue/parent" --jq .number 2>/dev/null || true)
+                        if [ "$native_requirement" != "$requirement_issue" ]; then
+                            fail "task #$closing_issue must be a native sub-issue of requirement #$requirement_issue"
+                        fi
+                    fi
+
+                    requirement_labels=$(gh issue view "$requirement_issue" --repo "$GH_REPOSITORY" --json labels --jq '.labels[].name' 2>/dev/null || true)
+                    requirement_state=$(gh issue view "$requirement_issue" --repo "$GH_REPOSITORY" --json state --jq .state 2>/dev/null || true)
+                    if ! printf '%s\n' "$requirement_labels" | grep -Fxq kind:requirement; then
+                        fail "parent issue #$requirement_issue must have kind:requirement"
+                    fi
+                    if [ "$requirement_state" != OPEN ]; then
+                        fail "requirement #$requirement_issue must be open"
+                    fi
+                    if ! printf '%s\n' "$requirement_labels" | grep -Fxq owner:approved; then
+                        fail "requirement #$requirement_issue requires owner:approved"
+                    fi
+
+                    requirement_body=$(gh issue view "$requirement_issue" --repo "$GH_REPOSITORY" --json body --jq .body 2>/dev/null || true)
+                    capability_issue=$(printf '%s\n' "$requirement_body" | awk '/^### Parent capability or requirement$/{capture=1; next} /^### /{if (capture) exit} capture' | grep -Eo '#[0-9]+' | tr -d '#' | head -n 1 || true)
+                    if [ -z "$capability_issue" ]; then
+                        fail "requirement #$requirement_issue must name its parent capability"
+                    else
+                        native_capability=$(gh api "repos/$GH_REPOSITORY/issues/$requirement_issue/parent" --jq .number 2>/dev/null || true)
+                        if [ "$native_capability" != "$capability_issue" ]; then
+                            fail "requirement #$requirement_issue must be a native sub-issue of capability #$capability_issue"
+                        fi
+
+                        capability_labels=$(gh issue view "$capability_issue" --repo "$GH_REPOSITORY" --json labels --jq '.labels[].name' 2>/dev/null || true)
+                        capability_state=$(gh issue view "$capability_issue" --repo "$GH_REPOSITORY" --json state --jq .state 2>/dev/null || true)
+                        if ! printf '%s\n' "$capability_labels" | grep -Fxq kind:capability; then
+                            fail "parent issue #$capability_issue must have kind:capability"
+                        fi
+                        if [ "$capability_state" != OPEN ]; then
+                            fail "capability #$capability_issue must be open"
+                        fi
+                        if ! printf '%s\n' "$capability_labels" | grep -Fxq owner:approved; then
+                            fail "capability #$capability_issue requires owner:approved"
+                        fi
+
+                        pr_capability_section=$(printf '%s\n' "${ALPINE_PR_BODY:-}" | awk '/^## Parent capability$/{capture=1; next} /^## /{if (capture) exit} capture')
+                        pr_capability=$(printf '%s\n' "$pr_capability_section" | grep -Eo '(#[0-9]+|https://github\.com/[^/]+/[^/]+/issues/[0-9]+)' | sed -E 's#^.*/issues/##; s/^#//' | head -n 1 || true)
+                        if [ "$pr_capability" != "$capability_issue" ]; then
+                            fail "pull request must link parent capability #$capability_issue"
+                        fi
+                    fi
+                fi
             fi
         fi
     fi
 
-    if printf '%s\n' "$changed_files" | grep -Fxq ARCHITECTURE.md; then
+    if { [ -n "${ALPINE_PR_BODY:-}" ] || [ -n "${ALPINE_PR_TITLE:-}" ]; } && printf '%s\n' "$changed_files" | grep -Fxq ARCHITECTURE.md; then
         decision_section=$(printf '%s\n' "${ALPINE_PR_BODY:-}" | awk '/^## Decision or research$/{capture=1; next} /^## /{if (capture) exit} capture')
-        if ! printf '%s\n' "$decision_section" | grep -Eq '(#[0-9]+|https://github\.com/[^/]+/[^/]+/issues/[0-9]+)'; then
+        decision_issues=$(printf '%s\n' "$decision_section" | grep -Eo '(#[0-9]+|https://github\.com/[^/]+/[^/]+/issues/[0-9]+)' | sed -E 's#^.*/issues/##; s/^#//' | awk '!seen[$0]++' || true)
+        if [ -z "$decision_issues" ]; then
             fail 'architecture changes must link an accepted decision issue'
+        elif [ -n "${GH_REPOSITORY:-}" ] && command -v gh >/dev/null 2>&1; then
+            accepted_decision=false
+            for decision_issue in $decision_issues; do
+                decision_metadata=$(gh issue view "$decision_issue" --repo "$GH_REPOSITORY" --json labels,state,stateReason --jq '[.state, .stateReason, (.labels[].name)] | @tsv' 2>/dev/null || true)
+                if printf '%s\n' "$decision_metadata" | grep -Fq CLOSED && printf '%s\n' "$decision_metadata" | grep -Fq COMPLETED && printf '%s\n' "$decision_metadata" | grep -Fq kind:decision; then
+                    accepted_decision=true
+                fi
+            done
+            if [ "$accepted_decision" != true ]; then
+                fail 'architecture changes require a closed kind:decision issue'
+            fi
         fi
     fi
 fi
@@ -137,8 +225,21 @@ if printf '%s\n' "${ALPINE_PR_LABELS:-}" | tr ',' '\n' | grep -Fxq review:proven
     if [ ! -f provenance.toml ]; then
         fail 'review:provenance requires provenance.toml in the same pull request'
     fi
-    if ! printf '%s\n' "${ALPINE_PR_BODY:-}" | grep -Eq '(#[0-9]+|https://github\.com/[^/]+/[^/]+/issues/[0-9]+)'; then
+    research_section=$(printf '%s\n' "${ALPINE_PR_BODY:-}" | awk '/^## Decision or research$/{capture=1; next} /^## /{if (capture) exit} capture')
+    research_issues=$(printf '%s\n' "$research_section" | grep -Eo '(#[0-9]+|https://github\.com/[^/]+/[^/]+/issues/[0-9]+)' | sed -E 's#^.*/issues/##; s/^#//' | awk '!seen[$0]++' || true)
+    if [ -z "$research_issues" ]; then
         fail 'source-level influence must link its research issue'
+    elif [ -n "${GH_REPOSITORY:-}" ] && command -v gh >/dev/null 2>&1; then
+        accepted_research=false
+        for research_issue in $research_issues; do
+            research_metadata=$(gh issue view "$research_issue" --repo "$GH_REPOSITORY" --json labels,state,stateReason --jq '[.state, .stateReason, (.labels[].name)] | @tsv' 2>/dev/null || true)
+            if printf '%s\n' "$research_metadata" | grep -Fq CLOSED && printf '%s\n' "$research_metadata" | grep -Fq COMPLETED && printf '%s\n' "$research_metadata" | grep -Fq kind:research; then
+                accepted_research=true
+            fi
+        done
+        if [ "$accepted_research" != true ]; then
+            fail 'source-level influence requires a closed kind:research issue'
+        fi
     fi
 fi
 

@@ -167,34 +167,62 @@ must invalidate affected resources before another submission.
 
 ## Testing and evidence
 
-Current unit tests cover value validation, rectangle intersection, color
-validation, scene revision, and painter order. The repository acceptance command
-runs policy, formatting, Clippy, all-target tests, and rustdoc. Hosted CI repeats
-the locked tests on Linux, Apple Silicon macOS, and Windows and aggregates them
-under `ci-pass`.
+Current unit tests cover valid and invalid values, rectangle intersection and
+contact, color bounds, scene revision and painter order, empty scenes, and the
+renderer contract through a mock backend. Kani proof harnesses exhaust bounded
+geometry and color domains against the Rust implementation. The repository
+acceptance command runs policy tests, formatting, Clippy, all-target tests,
+doctests, and rustdoc.
+
+Hosted CI classifies the changed paths and review labels, then runs the required
+evidence fail-closed under one `ci-pass` result. Locked native tests always run
+on Linux, Apple Silicon macOS, and Windows. Rust implementation changes add
+coverage, changed-code mutation, and Kani as selected. Unsafe and native Metal
+paths additionally select Miri or Metal API and shader validation. Scheduled
+suites expand proofs, Miri, dependency advisories, mutation, coverage, fuzzing
+when a target exists, and Metal validation when its backend exists.
 
 ```mermaid
 flowchart TB
-    policy["Repository policy"]
-    unit["Unit tests<br/>core and scene"]
-    lint["Format and Clippy"]
-    docs["Rustdoc and doctests"]
+    classify["Evidence classifier<br/>paths and review labels"]
+    policy["Quality<br/>policy, dependencies, format, Clippy"]
+    unit["Unit, integration, doctest, rustdoc"]
     native["Locked native matrix<br/>Linux, macOS arm64, Windows"]
+    coverage["Coverage ratchet<br/>workspace, critical files, changed lines"]
+    mutation["Changed pure-Rust mutation"]
+    kani["Selected bounded Rust proofs"]
+    miri["Selected Miri lifetime checks"]
+    metal["Selected Metal validation"]
     aggregate["ci-pass"]
-    risk["Risk-triggered evidence<br/>property, model, readback, Miri, Loom,<br/>fuzz, mutation, coverage, fixed hardware"]
+    scheduled["Nightly and weekly expansion<br/>proofs, mutation, fuzz, advisories"]
 
+    classify --> policy
+    classify --> unit
+    classify --> native
+    classify --> coverage
+    classify --> mutation
+    classify --> kani
+    classify --> miri
+    classify --> metal
     policy --> aggregate
     unit --> aggregate
-    lint --> aggregate
-    docs --> aggregate
     native --> aggregate
-    risk -. "added when relevant code exists" .-> aggregate
+    coverage --> aggregate
+    mutation --> aggregate
+    kani --> aggregate
+    miri --> aggregate
+    metal --> aggregate
+    scheduled -. "failures create deduplicated issues" .-> policy
 ```
 
 Tests must use the narrowest layer that proves the behavior. Renderer work will
 require semantic scene checks, CPU geometry oracles, offscreen readback with
 tolerances, lifecycle failure injection, and fixed-hardware distributions for
 performance gates. Exact cross-GPU pixel hashes are not a sufficient oracle.
+Coverage identifies unexercised code but does not prove correctness; mutation
+tests whether assertions reject injected faults. Kani proves selected bounded
+properties of Rust code. None of these substitutes for native driver behavior,
+visual semantics, or qualified performance measurements.
 
 ## Binding invariants
 
