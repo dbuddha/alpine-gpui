@@ -111,8 +111,18 @@ mod tests {
     #[test]
     fn rejects_non_finite_geometry() {
         assert!(Point::new(f32::NAN, 0.0).is_none());
+        assert!(Point::new(0.0, f32::NEG_INFINITY).is_none());
         assert!(Size::new(1.0, f32::INFINITY).is_none());
         assert!(Size::new(-1.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn accepts_valid_geometry_and_identifies_empty_sizes() {
+        assert_eq!(Point::new(-4.0, 8.5), Some(Point { x: -4.0, y: 8.5 }));
+
+        assert_eq!(Size::new(12.0, 3.0).map(Size::is_empty), Some(false));
+        assert_eq!(Size::new(0.0, 3.0).map(Size::is_empty), Some(true));
+        assert_eq!(Size::new(3.0, 0.0).map(Size::is_empty), Some(true));
     }
 
     #[test]
@@ -145,8 +155,61 @@ mod tests {
     }
 
     #[test]
+    fn intersection_is_symmetric_and_excludes_empty_contact() {
+        let first = Rect::new(
+            Point { x: -2.0, y: -1.0 },
+            Size {
+                width: 4.0,
+                height: 3.0,
+            },
+        );
+        let contained = Rect::new(
+            Point { x: -1.0, y: 0.0 },
+            Size {
+                width: 1.0,
+                height: 1.0,
+            },
+        );
+        let touching = Rect::new(
+            Point { x: 2.0, y: -1.0 },
+            Size {
+                width: 2.0,
+                height: 3.0,
+            },
+        );
+        let touching_below = Rect::new(
+            Point { x: -2.0, y: 2.0 },
+            Size {
+                width: 4.0,
+                height: 1.0,
+            },
+        );
+
+        assert_eq!(first.intersection(contained), Some(contained));
+        assert_eq!(contained.intersection(first), Some(contained));
+        assert_eq!(first.intersection(touching), None);
+        assert_eq!(touching.intersection(first), None);
+        assert_eq!(first.intersection(touching_below), None);
+        assert_eq!(touching_below.intersection(first), None);
+    }
+
+    #[test]
     fn rejects_invalid_color_channels() {
         assert!(LinearRgba::new(1.1, 0.0, 0.0, 1.0).is_none());
+        assert!(LinearRgba::new(-0.1, 0.0, 0.0, 1.0).is_none());
         assert!(LinearRgba::new(0.0, 0.0, 0.0, f32::NAN).is_none());
+    }
+
+    #[test]
+    fn accepts_color_range_endpoints() {
+        assert_eq!(
+            LinearRgba::new(0.0, 0.25, 1.0, 1.0),
+            Some(LinearRgba {
+                red: 0.0,
+                green: 0.25,
+                blue: 1.0,
+                alpha: 1.0,
+            })
+        );
     }
 }

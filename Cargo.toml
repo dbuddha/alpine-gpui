@@ -9,15 +9,18 @@ resolver = "3"
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.97.1"
+rust-version = "1.93.0"
 publish = false
+license-file = "LICENSE.md"
 
 [workspace.lints.rust]
 missing_docs = "deny"
 unsafe_code = "deny"
+unexpected_cfgs = { level = "deny", check-cfg = ['cfg(kani)'] }
 
 [workspace.lints.clippy]
 all = "deny"
+pedantic = { level = "deny", priority = -1 }
 dbg_macro = "deny"
 expect_used = "deny"
 panic = "deny"

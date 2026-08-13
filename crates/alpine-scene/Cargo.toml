@@ -5,9 +5,10 @@ description = "Immutable backend-neutral scene protocol for Alpine GPUI"
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [dependencies]
-alpine-core = { path = "../alpine-core" }
+alpine-core = { path = "../alpine-core", version = "=0.0.0" }
 
 [lints]
 workspace = true

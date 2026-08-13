@@ -42,9 +42,98 @@ pub trait Renderer {
     fn capabilities(&self) -> RendererCapabilities;
 
     /// Renders an immutable scene into the target.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend error when validation, allocation, encoding, or
+    /// submission cannot complete. The caller owns recovery policy.
     fn render(
         &mut self,
         scene: &Scene,
         target: &mut Self::Target,
     ) -> Result<FrameReport, Self::Error>;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt;
+
+    use alpine_scene::{SceneBuilder, SceneRevision};
+
+    use super::{FrameReport, Renderer, RendererCapabilities};
+
+    #[derive(Debug)]
+    struct MockError;
+
+    impl fmt::Display for MockError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("mock render failure")
+        }
+    }
+
+    impl std::error::Error for MockError {}
+
+    #[derive(Default)]
+    struct MockRenderer {
+        submission: u64,
+    }
+
+    impl Renderer for MockRenderer {
+        type Error = MockError;
+        type Target = Vec<u64>;
+
+        fn capabilities(&self) -> RendererCapabilities {
+            RendererCapabilities {
+                max_texture_dimension_2d: 16_384,
+                timestamps: true,
+                offscreen_readback: true,
+            }
+        }
+
+        fn render(
+            &mut self,
+            scene: &alpine_scene::Scene,
+            target: &mut Self::Target,
+        ) -> Result<FrameReport, Self::Error> {
+            self.submission += 1;
+            target.push(scene.revision().get());
+            Ok(FrameReport {
+                submission: self.submission,
+                primitives: scene.primitives().len(),
+                draw_calls: usize::from(!scene.primitives().is_empty()),
+                uploaded_bytes: 0,
+            })
+        }
+    }
+
+    #[test]
+    fn renderer_contract_exposes_capabilities_and_frame_evidence() -> Result<(), MockError> {
+        let viewport = alpine_core::Size {
+            width: 64.0,
+            height: 64.0,
+        };
+        let scene = SceneBuilder::new(SceneRevision::new(9), viewport).finish();
+        let mut renderer = MockRenderer::default();
+        let mut target = Vec::new();
+
+        assert_eq!(
+            renderer.capabilities(),
+            RendererCapabilities {
+                max_texture_dimension_2d: 16_384,
+                timestamps: true,
+                offscreen_readback: true,
+            }
+        );
+        assert_eq!(
+            renderer.render(&scene, &mut target)?,
+            FrameReport {
+                submission: 1,
+                primitives: 0,
+                draw_calls: 0,
+                uploaded_bytes: 0,
+            }
+        );
+        assert_eq!(target, [9]);
+        Ok(())
+    }
 }

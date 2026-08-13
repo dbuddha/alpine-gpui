@@ -147,4 +147,17 @@ mod tests {
         assert_eq!(scene.viewport(), viewport);
         assert_eq!(scene.primitives(), &[first, second]);
     }
+
+    #[test]
+    fn freezes_an_empty_scene_without_allocated_primitives() {
+        let viewport = Size {
+            width: 0.0,
+            height: 0.0,
+        };
+        let scene = SceneBuilder::new(SceneRevision::new(0), viewport).finish();
+
+        assert_eq!(scene.revision().get(), 0);
+        assert_eq!(scene.viewport(), viewport);
+        assert!(scene.primitives().is_empty());
+    }
 }
