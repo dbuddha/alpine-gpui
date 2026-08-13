@@ -1,25 +1,25 @@
-name: User journey
-description: Define an end-to-end outcome before deriving requirements.
-title: "[Journey] "
+name: Capability
+description: Define an owner-approved end-to-end outcome before deriving requirements.
+title: "[Capability] "
 labels:
-  - kind:journey
+  - kind:capability
   - release:none
 body:
   - type: markdown
     attributes:
-      value: Keep this issue at the observable user level. Derive requirement sub-issues after the journey is accepted.
+      value: Keep this issue at the observable outcome level. The owner approves this capability before requirements become Ready.
   - type: textarea
     id: persona-outcome
     attributes:
       label: Persona and desired outcome
-      description: Who is acting, and what outcome are they trying to achieve?
+      description: Who benefits, and what complete capability do they need?
     validations:
       required: true
   - type: textarea
     id: trigger-preconditions
     attributes:
       label: Trigger and preconditions
-      description: What begins the journey, and what must already be true?
+      description: What begins the capability, and what must already be true?
     validations:
       required: true
   - type: textarea
@@ -33,35 +33,35 @@ body:
     id: alternate-failure
     attributes:
       label: Alternate and failure paths
-      description: Describe cancellation, degraded behavior, recovery, and terminal failure.
+      description: Describe cancellation, degradation, recovery, cleanup, and terminal failure.
     validations:
       required: true
   - type: textarea
     id: accessibility
     attributes:
       label: Accessibility expectations
-      description: State semantics, actions, focus, announcements, and non-pointer operation.
+      description: State semantics, actions, focus, announcements, and non-pointer operation, or explain why none apply.
     validations:
       required: true
   - type: textarea
     id: performance-memory
     attributes:
       label: Performance and memory expectations
-      description: State user-visible latency, idle-work, throughput, and memory expectations.
+      description: State user-visible latency, idle-work, throughput, allocation, and retained-memory budgets.
     validations:
       required: true
   - type: textarea
     id: acceptance
     attributes:
       label: Observable acceptance scenarios
-      description: Use testable Given, When, Then scenarios.
+      description: Use testable Given, When, Then scenarios and name the evidence class for each.
     validations:
       required: true
   - type: textarea
     id: diagram
     attributes:
-      label: Activity or sequence diagram
-      description: Required when the journey has multiple states, actors, branches, or ownership transitions.
+      label: Activity, state, or sequence diagram
+      description: Required when multiple states, actors, branches, or ownership transitions exist.
       placeholder: |-
         flowchart TD
             start["Trigger"] --> action["Observable action"]
@@ -71,6 +71,6 @@ body:
     id: requirements
     attributes:
       label: Derived requirement sub-issues
-      description: Link derived requirements after creating them, or list the expected split.
+      description: Link native GitHub sub-issues after creating them, or list the expected split.
     validations:
       required: true

@@ -5,9 +5,13 @@ description = "Renderer contracts and capability reports for Alpine GPUI"
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [dependencies]
-alpine-scene = { path = "../alpine-scene" }
+alpine-scene = { path = "../alpine-scene", version = "=0.0.0" }
+
+[dev-dependencies]
+alpine-core = { path = "../alpine-core", version = "=0.0.0" }
 
 [lints]
 workspace = true

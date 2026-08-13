@@ -1,0 +1,28 @@
+name: Issue hierarchy
+
+on:
+  issues:
+    types: [closed, reopened]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: issue-hierarchy-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile-parent:
+    name: reconcile-parent
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Reconcile native parent state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALPINE_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ALPINE_ISSUE_ACTION: ${{ github.event.action }}
+        run: scripts/reconcile-issue-hierarchy.sh

@@ -10,6 +10,7 @@ version = "0.0.0"
 name = "alpine-renderer"
 version = "0.0.0"
 dependencies = [
+ "alpine-core",
  "alpine-scene",
 ]
 

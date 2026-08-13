@@ -1,0 +1,94 @@
+name: Nightly assurance
+
+on:
+  schedule:
+    - cron: "23 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-assurance
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  kani:
+    name: kani-all
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install pinned Kani
+        run: |
+          cargo install --locked kani-verifier --version 0.67.0
+          cargo kani setup
+      - name: Verify all bounded Rust properties
+        run: cargo kani --workspace --tests --output-format=terse
+
+  miri:
+    name: miri-all
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install pinned Miri toolchain
+        run: rustup toolchain install nightly-2026-08-01 --profile minimal --component miri
+      - name: Check workspace memory behavior
+        run: cargo +nightly-2026-08-01 miri test --workspace --lib --locked
+
+  advisories:
+    name: dependency-advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install dependency policy tool
+        run: cargo install --locked cargo-deny --version 0.20.2
+      - name: Check dependency advisories
+        run: cargo deny check advisories
+
+  fuzz-smoke:
+    name: fuzz-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install pinned fuzz toolchain
+        if: ${{ hashFiles('fuzz/Cargo.toml') != '' }}
+        run: |
+          rustup toolchain install nightly-2026-08-01 --profile minimal
+          cargo +nightly-2026-08-01 install --locked cargo-fuzz --version 0.13.2
+      - name: Run each configured fuzz target
+        run: |
+          if test ! -f fuzz/Cargo.toml; then
+            echo "No fuzz target is required by an implemented subsystem yet."
+            exit 0
+          fi
+          cargo +nightly-2026-08-01 fuzz list | while read -r target; do
+            cargo +nightly-2026-08-01 fuzz run "$target" -- -max_total_time=60
+          done
+
+  metal-validation:
+    name: metal-validation
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Validate Metal when implemented
+        run: |
+          if cargo metadata --format-version 1 --no-deps | grep -q '"name":"alpine-metal"'; then
+            scripts/check-metal.sh
+          else
+            echo "Metal validation activates when alpine-metal is implemented."
+          fi

@@ -6,9 +6,9 @@ What changes, in one concise paragraph?
 
 Closes #
 
-## Parent journey
+## Parent capability
 
-Link the parent journey, or write `None` for foundation work.
+Link the owner-approved capability at the root of the closing issue's parent chain.
 
 ## Decision or research
 
@@ -17,7 +17,7 @@ Link accepted decisions and research required by this change, or write `None`.
 ## Acceptance evidence
 
 Map the linked issue's observable acceptance criteria to tests, artifacts,
-screenshots, traces, or benchmark results.
+proofs, screenshots, traces, or benchmark results. Identify the evidence class.
 
 ## Risk and scope
 
@@ -52,7 +52,7 @@ hypotheses considered, and how each was resolved or accepted.
 ## Checklist
 
 - [ ] The pull request has one coherent scope and no unrelated cleanup.
-- [ ] The linked issue and parent chain define observable acceptance.
+- [ ] The linked issue and approved parent chain define observable acceptance.
 - [ ] New behavior has tests at the narrowest useful layer.
 - [ ] Architecture changes update `ARCHITECTURE.md` and link an accepted decision.
 - [ ] `scripts/check.sh` passes locally, or the exception is documented above.

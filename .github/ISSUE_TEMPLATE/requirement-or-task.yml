@@ -18,8 +18,8 @@ body:
   - type: input
     id: parent
     attributes:
-      label: Parent journey or requirement
-      description: Link the direct parent. Use None only for accepted foundation work.
+      label: Parent capability or requirement
+      description: Link the direct parent through GitHub native sub-issues.
       placeholder: "#123"
     validations:
       required: true
@@ -28,6 +28,13 @@ body:
     attributes:
       label: Required observable behavior
       description: State what must be true without prescribing unnecessary implementation detail.
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Acceptance contract
+      description: State Given preconditions, When stimulus, Then result, and the deterministic evidence class.
     validations:
       required: true
   - type: checkboxes
@@ -53,7 +60,7 @@ body:
     id: acceptance
     attributes:
       label: Acceptance test or benchmark
-      description: Name the exact automated evidence and qualified hardware when relevant.
+      description: Name exact commands, tests, proofs, artifacts, measurements, and qualified hardware when relevant.
     validations:
       required: true
   - type: textarea
