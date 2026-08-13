@@ -1,6 +1,6 @@
 [package]
 name = "alpine-renderer"
-version = "0.0.0"
+version.workspace = true
 description = "Renderer contracts and capability reports for Alpine GPUI"
 edition.workspace = true
 rust-version.workspace = true

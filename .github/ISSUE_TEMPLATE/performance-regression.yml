@@ -1,0 +1,57 @@
+name: Performance regression
+description: Report a reproducible latency, throughput, idle-work, or memory regression.
+title: "[Performance] "
+labels:
+  - kind:performance
+  - release:fix
+  - needs-hardware
+body:
+  - type: input
+    id: parent
+    attributes:
+      label: Affected requirement or journey
+      placeholder: "#123"
+    validations:
+      required: true
+  - type: textarea
+    id: metric
+    attributes:
+      label: Metric and threshold
+      description: Name the measured distribution, budget, baseline, and regression threshold.
+    validations:
+      required: true
+  - type: textarea
+    id: workload
+    attributes:
+      label: Workload and procedure
+      description: Provide deterministic inputs, warmup, sample count, commands, and comparison method.
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Qualified hardware and environment
+      description: Include machine identity, CPU, GPU, memory, OS, display state, toolchain, and power conditions.
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Baseline and current results
+      description: Include distributions and artifact links, not a single timing sample.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance benchmark
+      description: Define the automated comparison and permitted variance.
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Correctness and memory risk
+      description: Describe tradeoffs that an optimization must not hide.
+    validations:
+      required: true

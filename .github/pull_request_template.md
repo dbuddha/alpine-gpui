@@ -2,53 +2,59 @@
 
 What changes, in one concise paragraph?
 
-## Context
+## Closing issue
 
-Why is this change needed now?
+Closes #
 
-## Decision or root cause
+## Parent journey
 
-For a feature or architecture change, record the decision and alternatives.
-For a bug fix, record the root cause.
+Link the parent journey, or write `None` for foundation work.
 
-## Evidence
+## Decision or research
 
-Link specifications, ADRs, research notes, benchmark output, traces, screenshots,
-or issue reproduction as applicable.
+Link accepted decisions and research required by this change, or write `None`.
+
+## Acceptance evidence
+
+Map the linked issue's observable acceptance criteria to tests, artifacts,
+screenshots, traces, or benchmark results.
 
 ## Risk and scope
 
-Describe affected ownership boundaries, compatibility risk, and explicitly
-excluded work.
+Describe affected ownership boundaries, failure modes, explicitly excluded work,
+and remaining risk.
 
 ## Test plan
 
-List the exact commands and hardware-backed checks that passed. Explain any
+List exact commands, CI jobs, and hardware-backed checks that passed. Explain any
 required gate that did not run.
 
 ## Performance and memory
 
-Record benchmark impact for hot-path changes, or explain why the change cannot
-affect performance, allocations, idle work, or binary size.
+Record measured impact for hot-path changes, or explain why this change cannot
+affect latency, throughput, allocations, idle work, memory, or binary size.
+
+## Release impact
+
+Name exactly one applied label: `release:breaking`, `release:feature`,
+`release:fix`, or `release:none`.
 
 ## Dependencies, provenance, and unsafe code
 
-List dependency changes, external source influence or incorporation, and unsafe
+List dependency changes, external influence or source incorporation, and unsafe
 code changes. Write `None` when the section does not apply.
 
-## Change record
+## Adversarial review
 
-Name the fragment under `changes/`, or explain why this is an internal-only
-change that does not require one.
+Record the independent or agent-assisted challenge pass, the strongest failure
+hypotheses considered, and how each was resolved or accepted.
 
 ## Checklist
 
-- [ ] This PR has one coherent scope and no unrelated cleanup.
-- [ ] I read the nearest applicable `AGENTS.md` files.
-- [ ] Architecture and behavior changes have durable specifications or ADRs.
+- [ ] The pull request has one coherent scope and no unrelated cleanup.
+- [ ] The linked issue and parent chain define observable acceptance.
 - [ ] New behavior has tests at the narrowest useful layer.
+- [ ] Architecture changes update `ARCHITECTURE.md` and link an accepted decision.
 - [ ] `scripts/check.sh` passes locally, or the exception is documented above.
-- [ ] Shipping changes include a valid change fragment.
-- [ ] Dependency additions received owner approval and are recorded.
-- [ ] External source incorporation has license and symbol-level provenance.
-- [ ] Unsafe code has a documented safety contract and focused tests.
+- [ ] Exact CI and relevant hardware results are recorded.
+- [ ] Dependency, provenance, unsafe, and release-impact policy is satisfied.

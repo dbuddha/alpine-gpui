@@ -1,220 +1,120 @@
-# Alpine GPUI Operating Contract
+---
+schema: alpine-agent-policy/v1
+scope: repository
+---
 
-This file is the repository-wide instruction source for coding agents and human
-contributors. More specific `AGENTS.md` files refine these rules for their
-directory. The nearest applicable file wins only where it is more specific; it
-does not relax repository safety, provenance, or verification requirements.
+# Alpine GPUI Change Policy
 
-## Mission
+## Scope
 
-Build a proprietary, Rust-first desktop application framework that owns its
-runtime, scheduling, scene protocol, renderer policy, resource lifetimes, and
-native platform integrations. Apple Silicon on macOS 15 or newer is the
-flagship target. Direct Vulkan on Linux and direct D3D12 on Windows follow once
-the Metal and shared semantic contracts are proven.
+This file is the complete repository operating contract for humans and agents.
+Do not create nested `AGENTS.md` files. Keep stable project facts in `README.md`
+and implemented technical truth in `ARCHITECTURE.md`. GitHub owns planning,
+decisions, research, delivery state, and shipped history.
 
-Alpine GPUI is optimized first for editors, terminals, database tools, and
-data-heavy productivity applications. Web, mobile, and Intel Macs are outside
-the version 1 scope.
+## Required context
 
-## Accepted product decisions
+Before changing anything:
 
-- Use familiar GPUI concepts without source compatibility.
-- Deliver essential components through measured vertical slices.
-- Use typed Rust styling and theme tokens, with no CSS runtime.
-- Keep layout behind an Alpine facade. Taffy may be an oracle or temporary
-  provider, not an unquestioned permanent dependency.
-- Use CoreText first behind a portable Alpine text contract.
-- Make embedded Metal surfaces and custom materials first-class capabilities.
-- Share semantics across platforms while adapting appearance and behavior.
-- Permit audited native bindings and standards-heavy Rust libraries behind
-  Alpine-owned facades.
-- Permit only permissive shipping licenses such as Apache-2.0, MIT, BSD, ISC,
-  and Zlib unless the owner approves an exception.
-- Treat accessibility as part of every interactive component from its first
-  implementation.
-- Dogfood with Alpine Lab and a data-heavy Alpine Workspace.
-- Define aggressive provisional performance budgets, then calibrate them on
-  fixed M1-class hardware.
+1. Identify the repository, branch, upstream, and dirty state.
+2. Read this file completely.
+3. Read the linked GitHub issue and follow its parent links, stopping after the
+   journey, requirement, and task levels.
+4. Read `ARCHITECTURE.md` for subsystem, contract, ownership, unsafe, renderer,
+   platform, or architecture work.
+5. Read only decision or research issues explicitly linked from the task.
+6. Fetch `origin` before comparing the branch with its base.
 
-## Required reading
+If no issue defines observable acceptance, stop and ask the owner to clarify or
+authorize an issue. Do not infer a durable product requirement from chat alone.
 
-Before non-trivial work, read in this order:
+## Safety and ownership
 
-1. `docs/README.md`
-2. `ARCHITECTURE.md`
-3. `docs/MASTER_PLAN.md`
-4. `docs/ROADMAP.md`
-5. The nearest scoped `AGENTS.md`
-6. Relevant ADRs, research notes, dependency decisions, and CI documentation
+- Preserve user changes and unrelated dirty files.
+- Never force push, delete branches, rewrite published history, or bypass a
+  required check.
+- Never commit secrets, credentials, tokens, private data, generated build
+  output, or machine-specific configuration.
+- Keep safe Rust as the default. Unsafe code requires owner approval, a written
+  safety contract, focused tests, and the `review:unsafe` label.
+- Treat native handles, callbacks, queues, surfaces, and resource teardown as
+  explicit ownership boundaries.
+- Do not hide allocation, upload, synchronization, or continuous redraw in a
+  convenience abstraction.
 
-Do not rely on chat history when a repository artifact contains the decision.
-If code and documentation conflict, stop and report the conflict.
+## Dependencies and external influence
 
-## Repository map
+- Ask the owner before adding, removing, or materially reconfiguring a
+  dependency.
+- Shipping Cargo manifests must not use Git dependencies.
+- Prefer the standard library and existing workspace code. Admit a crate only
+  behind a narrow Alpine-owned boundary after license, maintenance, feature,
+  transitive dependency, lifecycle, and performance review.
+- Architecture and observable behavior may be studied from linked research.
+  Do not copy or adapt upstream source without explicit owner approval.
+- A source-level adaptation must add `review:provenance`, `provenance.toml`, and
+  any required `THIRD_PARTY_NOTICES.md` in the same pull request. Record the
+  destination symbol, immutable source URL and commit, license, modifications,
+  reviewer, and independent tests.
+- Do not create empty provenance or notice placeholders.
 
-| Path | Responsibility |
-| --- | --- |
-| `crates/` | Shipping Rust crates and their tests |
-| `docs/adr/` | Durable architectural decisions |
-| `docs/research/` | Upstream evidence, source map, and provenance |
-| `docs/engineering/` | Contribution, release, and agentic workflow |
-| `docs/ci/` | CI, runner, and performance-gate policy |
-| `changes/` | Per-PR user-facing change fragments |
-| `.github/` | Pull request templates and pinned CI workflows |
-| `scripts/` | Repository-owned deterministic gates |
+## Branches, commits, and pull requests
 
-## Architectural boundaries
+- Work on a focused branch and keep one coherent concern per pull request.
+- Use Conventional Commit summaries. Keep commit messages concise, with no AI
+  attribution.
+- Inspect status, staged and unstaged diffs, untracked files, and recent commit
+  style before committing.
+- Ask the owner immediately before every push and before publishing a release.
+- Every implementation pull request closes or contributes to one requirement or
+  task issue and links its parent journey when one exists.
+- Every pull request has exactly one of `release:breaking`, `release:feature`,
+  `release:fix`, or `release:none`.
+- Architecture changes link an accepted decision. Upstream-influenced changes
+  link the research record and describe the influence mode.
+- Complete every pull request template section with concrete evidence. Write
+  `None` only when the section genuinely does not apply.
+- Squash merge after required checks pass and review conversations are resolved.
 
-- Keep scene types independent of windowing and graphics APIs.
-- Keep platform policy out of renderer contracts.
-- Keep native GPU handles out of application, view, and scene state.
-- A renderer may retain backend resources, but never application or view
-  objects.
-- Portable semantics live above the scene boundary. Backend capability and
-  specialization live below it.
-- Do not force Metal through a least-common-denominator GPU abstraction.
-- Rendering is demand-driven. A settled application does not redraw merely
-  because an event loop or display clock ticks.
-- Scene construction, resource preparation, encoding, submission, and present
-  must remain separately observable.
-- Device loss, allocation failure, unsupported capabilities, and platform
-  failures are structured errors, not process panics.
+## Owner approval required
 
-## Source and provenance rules
+Get explicit owner approval before:
 
-GPUI, GPUI-CE, `gpui-component`, WGPUI, the `gpui-wgpu` lineage, Kael, and
-other projects are specimens, not product dependencies.
+- pushing, publishing a release, changing repository settings, or granting an
+  external service access;
+- adding or removing dependencies, unsafe code, source-level external
+  adaptation, or license terms;
+- changing a public contract, supported platform, architecture boundary,
+  performance budget, CI provider, secret, or required merge gate;
+- deleting data or files outside the exact scope of an accepted issue.
 
-- Prefer a clean implementation informed by public architecture and behavior.
-- Record every researched repository at an immutable commit in
-  `docs/research/source-map.md`.
-- Record behavioral lessons and test cases in the relevant research note.
-- Do not copy source merely because its license permits copying.
-- Before incorporating source, obtain owner approval and add a provenance
-  ledger entry naming the destination symbol, exact source URL and commit,
-  license, modifications, tests, reviewer, and date.
-- Do not copy names, trademarks, private assets, or product-specific behavior.
-- Do not introduce GPUI, WGPU, winit, Blade, or a GPUI fork as a production
-  dependency without a new ADR and explicit owner approval.
+Approval must be visible in the issue or pull request when it affects future
+reviewers. A label applied by the owner may represent approval where policy
+defines that meaning.
 
-## Dependency and unsafe-code rules
+## Implementation and verification
 
-- Add or remove no dependency without owner approval.
-- Production manifests may not use Git dependencies.
-- Disable default features unless each enabled feature is intentional.
-- Review license, maintenance, transitive graph, unsafe surface, runtime policy,
-  allocator behavior, and replacement strategy before admission.
-- Keep `unsafe` out of safe crates. Native FFI belongs in narrowly scoped crates.
-- Every unsafe block must state its safety invariant immediately above it.
-- Safe wrappers must prevent invalid lifetime, thread, ownership, and aliasing
-  states rather than merely documenting them.
-
-## Rust implementation rules
-
-- Use the pinned toolchain and committed lockfile.
-- Treat all warnings as errors.
-- Do not use `unwrap`, `expect`, `panic`, `todo`, or `dbg` in shipping paths.
-- Prefer explicit domain errors over strings.
-- Avoid hidden allocation, cloning, reference counting, dynamic dispatch, and
-  synchronization in hot paths.
-- Use newtypes for units, coordinate spaces, resource identities, and revisions.
-- Make ownership and lifetime transitions visible in APIs.
-- Keep public APIs minimal until a vertical slice proves their shape.
-- Do not add abstraction without at least two concrete consumers or a documented
-  boundary requirement.
-
-## Performance evidence
-
-- Make no performance claim without a reproducible benchmark and raw results.
-- Record hardware, OS, toolchain, display, power state, sample count, warmup,
-  distribution, and variance.
-- Compare distributions on pinned hardware. Ephemeral CI is for correctness and
-  smoke measurements, not merge-blocking microbenchmarks.
-- Instrument allocations, uploads, draw calls, command buffers, submitted
-  frames, and cache growth before optimizing them.
-- Performance fixes must include a regression test or benchmark that fails on
-  the prior behavior.
-
-## Testing contract
-
-Define the acceptance gate before implementation. Use the smallest useful test
-first, then run the repository gate before handoff or commit.
-
-Required baseline:
+- Define the acceptance evidence before implementation.
+- Add tests at the narrowest useful layer: unit or property tests for pure
+  behavior, model or integration tests for boundaries, and native validation
+  for backend behavior.
+- Rendering changes require offscreen evidence before visual comparison.
+- Concurrency, unsafe, parser, and hot-path changes add Miri, Loom, fuzzing,
+  mutation, coverage, or fixed-hardware evidence according to risk.
+- Never weaken a gate to make a change pass. Fix the cause or document the
+  blocker in the issue.
+- Run the complete repository gate before commit and again before requesting a
+  push:
 
 ```sh
 scripts/check.sh
 ```
 
-Add risk-proportional evidence:
-
-- Geometry and state machines: unit and property tests.
-- Scheduling and lifetimes: deterministic model tests and adversarial ordering.
-- Renderer work: semantic scene snapshots, CPU oracles, offscreen readback, and
-  GPU validation.
-- Components: keyboard, pointer, focus, accessibility, scale, theme, and visual
-  fixtures.
-- Unsafe or FFI changes: boundary tests, negative tests, and platform validation.
-- Performance changes: before-and-after benchmark distributions.
-
-A flaky test is a defect. Do not retry it into green or mark a security,
-validation, or correctness gate non-blocking without an owner and expiry.
-
-## Branch, commit, and pull request workflow
-
-- Never work directly on protected `main` after the initial foundation.
-- Use a short-lived branch containing one coherent change.
-- Before editing, inspect branch, status, remote tracking, and relevant history.
-- Before pushing, fetch `origin` and compare the branch with `origin/main`.
-- Ask before every push, pull request, release, or external publication.
-- Use Conventional Commit form for commit subjects and PR titles:
-  `type(scope): imperative summary`.
-- Allowed types are `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `build`,
-  `ci`, `chore`, and `revert`.
-- Keep commits independently understandable. Temporary fixup commits may exist
-  on a branch, but the PR is squash-merged as one logical main-branch commit.
-- Never include AI attribution in commits, source, changelogs, or PR text.
-- Complete every applicable section of the pull request template.
-- Add a change fragment for user-visible behavior, performance, security, API,
-  or compatibility changes. Documentation-only and internal test changes may
-  state `Not applicable` in the PR.
-
-## Durable record selection
-
-Put information in the narrowest artifact future contributors will load:
-
-- Product goal or invariant: `ARCHITECTURE.md` or `docs/MASTER_PLAN.md`
-- Architectural choice: ADR
-- Upstream observation: research note
-- Copied or adapted source: provenance ledger
-- Dependency choice: `docs/DEPENDENCIES.md` and an ADR when architectural
-- User-visible change: `changes/` fragment, then `CHANGELOG.md` at release
-- Workflow correction: relevant `AGENTS.md` or engineering runbook
-- Benchmark fact: checked-in benchmark definition and results artifact policy
-
-## Human-owned decisions
-
-Stop and ask before:
-
-- adding or removing dependencies;
-- expanding supported platforms or version 1 scope;
-- accepting a non-permissive license;
-- copying upstream source;
-- changing public API compatibility policy;
-- installing a runner provider or changing paid CI budgets;
-- introducing signing or notarization credentials;
-- pushing, creating a PR, releasing, publishing, or distributing artifacts;
-- weakening a test, security, provenance, or performance gate.
+Hosted `ci-pass` is authoritative. Local success is evidence, not a substitute.
 
 ## Definition of done
-
-A change is done only when:
-
-1. scope and acceptance gates are explicit;
-2. implementation respects ownership boundaries;
-3. tests cover the relevant failure modes;
-4. documentation, ADRs, provenance, and change fragments are updated as needed;
-5. `scripts/check.sh` passes;
-6. status, staged and unstaged diffs, and untracked files are reviewed;
-7. the final report names evidence, limitations, and work not performed.
+A change is done only when scope and acceptance match the linked issue, tests
+cover new behavior and failures, `scripts/check.sh` passes, architecture truth
+is current, dependency and provenance requirements are satisfied, the pull
+request records exact evidence and remaining risk, `ci-pass` succeeds, and the
+linked issue is closed by the merged pull request.

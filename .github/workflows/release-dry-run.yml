@@ -1,0 +1,57 @@
+name: Release dry run
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Immutable SemVer tag to validate, such as v0.1.0
+        required: true
+        type: string
+      target:
+        description: Commit or branch used to generate notes
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-dry-run-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: prepare-without-publishing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+      - name: Validate unified version and immutable tag
+        env:
+          TAG_NAME: ${{ inputs.tag }}
+        run: scripts/check-release.sh "$TAG_NAME"
+      - name: Generate categorized notes without creating a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ inputs.tag }}
+          TARGET_COMMITISH: ${{ inputs.target }}
+        run: |
+          mkdir -p target/release-dry-run
+          gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$TAG_NAME" \
+            -f target_commitish="$TARGET_COMMITISH" \
+            > target/release-dry-run/generated-release.json
+          jq -r '.name, "", .body' \
+            target/release-dry-run/generated-release.json \
+            > target/release-dry-run/generated-release-notes.md
+      - name: Upload release preview
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-dry-run-${{ inputs.tag }}
+          path: target/release-dry-run
+          retention-days: 7
+          if-no-files-found: error

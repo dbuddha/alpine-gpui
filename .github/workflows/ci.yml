@@ -2,12 +2,15 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
   push:
     branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -34,6 +37,10 @@ jobs:
         env:
           ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ALPINE_PR_BODY: ${{ github.event.pull_request.body }}
+          ALPINE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          ALPINE_PR_TITLE: ${{ github.event.pull_request.title }}
+          GH_TOKEN: ${{ github.token }}
         run: scripts/check-policy.sh
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -41,10 +48,19 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test all targets
         run: cargo test --workspace --all-targets --all-features --locked
+      - name: Test documentation examples
+        run: cargo test --workspace --doc --all-features --locked
       - name: Build documentation
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps --locked
+      - name: Upload private rustdoc
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rustdoc-${{ github.sha }}
+          path: target/doc
+          retention-days: 7
+          if-no-files-found: error
 
   native:
     name: native-${{ matrix.name }}

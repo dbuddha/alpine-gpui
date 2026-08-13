@@ -1,0 +1,71 @@
+name: Requirement or technical task
+description: Specify testable behavior or a bounded implementation task.
+title: "[Requirement] "
+labels:
+  - kind:requirement
+  - release:none
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Work kind
+      description: Change the issue label to kind:task after submission when this is an implementation task.
+      options:
+        - Requirement
+        - Technical task
+    validations:
+      required: true
+  - type: input
+    id: parent
+    attributes:
+      label: Parent journey or requirement
+      description: Link the direct parent. Use None only for accepted foundation work.
+      placeholder: "#123"
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Required observable behavior
+      description: State what must be true without prescribing unnecessary implementation detail.
+    validations:
+      required: true
+  - type: checkboxes
+    id: platforms
+    attributes:
+      label: Platform scope
+      options:
+        - label: Portable contract
+        - label: Apple Silicon macOS and Metal
+        - label: Linux, Wayland, or Vulkan
+        - label: Windows, Win32, or D3D12
+        - label: Repository tooling only
+    validations:
+      required: true
+  - type: textarea
+    id: failure
+    attributes:
+      label: Failure behavior
+      description: Define errors, recovery, cleanup, and user-visible degradation.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance test or benchmark
+      description: Name the exact automated evidence and qualified hardware when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Explicit non-goals
+      description: Bound the work and name adjacent behavior that remains out of scope.
+    validations:
+      required: true
+  - type: textarea
+    id: diagram
+    attributes:
+      label: State or ownership diagram
+      description: Include only when multiple states, actors, branches, or ownership transitions need clarification.
+      render: mermaid
