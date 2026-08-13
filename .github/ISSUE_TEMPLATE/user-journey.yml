@@ -1,0 +1,76 @@
+name: User journey
+description: Define an end-to-end outcome before deriving requirements.
+title: "[Journey] "
+labels:
+  - kind:journey
+  - release:none
+body:
+  - type: markdown
+    attributes:
+      value: Keep this issue at the observable user level. Derive requirement sub-issues after the journey is accepted.
+  - type: textarea
+    id: persona-outcome
+    attributes:
+      label: Persona and desired outcome
+      description: Who is acting, and what outcome are they trying to achieve?
+    validations:
+      required: true
+  - type: textarea
+    id: trigger-preconditions
+    attributes:
+      label: Trigger and preconditions
+      description: What begins the journey, and what must already be true?
+    validations:
+      required: true
+  - type: textarea
+    id: primary-path
+    attributes:
+      label: Primary path
+      description: Describe observable steps from trigger to outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternate-failure
+    attributes:
+      label: Alternate and failure paths
+      description: Describe cancellation, degraded behavior, recovery, and terminal failure.
+    validations:
+      required: true
+  - type: textarea
+    id: accessibility
+    attributes:
+      label: Accessibility expectations
+      description: State semantics, actions, focus, announcements, and non-pointer operation.
+    validations:
+      required: true
+  - type: textarea
+    id: performance-memory
+    attributes:
+      label: Performance and memory expectations
+      description: State user-visible latency, idle-work, throughput, and memory expectations.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Observable acceptance scenarios
+      description: Use testable Given, When, Then scenarios.
+    validations:
+      required: true
+  - type: textarea
+    id: diagram
+    attributes:
+      label: Activity or sequence diagram
+      description: Required when the journey has multiple states, actors, branches, or ownership transitions.
+      placeholder: |-
+        flowchart TD
+            start["Trigger"] --> action["Observable action"]
+            action --> outcome["Desired outcome"]
+      render: mermaid
+  - type: textarea
+    id: requirements
+    attributes:
+      label: Derived requirement sub-issues
+      description: Link derived requirements after creating them, or list the expected split.
+    validations:
+      required: true

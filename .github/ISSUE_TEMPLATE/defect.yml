@@ -1,0 +1,56 @@
+name: Defect
+description: Report reproducible incorrect behavior.
+title: "[Defect] "
+labels:
+  - kind:defect
+  - release:fix
+body:
+  - type: input
+    id: parent
+    attributes:
+      label: Affected requirement or journey
+      placeholder: "#123"
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Include exact errors, artifacts, and frequency.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Link the contract or acceptance scenario when available.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide deterministic steps, inputs, and commands.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and hardware
+      description: Include Alpine revision, OS, architecture, GPU, display, and toolchain as relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and failure boundary
+      description: Add logs, traces, screenshots, readback, or the narrowest suspected owner.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Regression acceptance
+      description: Define the automated test that must fail before and pass after the fix.
+    validations:
+      required: true

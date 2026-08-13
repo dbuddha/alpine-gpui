@@ -1,0 +1,64 @@
+name: Architecture decision or upstream research
+description: Preserve consequential rationale or time-bounded external evidence.
+title: "[Decision or research] "
+labels:
+  - kind:decision
+  - release:none
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Record kind
+      description: Change the issue label to kind:research after submission for research records.
+      options:
+        - Architecture decision
+        - Upstream research
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and constraints
+      description: Explain why the decision or investigation is necessary now.
+    validations:
+      required: true
+  - type: textarea
+    id: sources-alternatives
+    attributes:
+      label: Considered alternatives or sources
+      description: For research, include repository, exact commit, license, files, and behavior inspected.
+    validations:
+      required: true
+  - type: textarea
+    id: conclusion
+    attributes:
+      label: Chosen decision or research conclusion
+      description: State what Alpine will do and the permitted influence mode.
+    validations:
+      required: true
+  - type: textarea
+    id: consequences
+    attributes:
+      label: Consequences, risks, and rejected patterns
+      description: Include costs, failure modes, and patterns Alpine must not inherit.
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Independent Alpine tests
+      description: List tests or benchmarks derived from the decision or research.
+    validations:
+      required: true
+  - type: textarea
+    id: reversal
+    attributes:
+      label: Reversal conditions
+      description: State what evidence would justify reconsideration.
+    validations:
+      required: true
+  - type: textarea
+    id: implementation
+    attributes:
+      label: Implementing pull requests
+      description: Add links when implemented. Accepted records close and lock after current architecture is updated.

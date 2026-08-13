@@ -1,117 +1,215 @@
 # Alpine GPUI Architecture
 
-## Objective
+This document records implemented technical truth and binding invariants. Future
+designs remain in linked GitHub issues until code makes them current.
 
-Build a complete desktop application framework whose hot paths, resource
-ownership, scheduling, native renderer, and platform integration are controlled
-by this repository. The flagship target is Apple Silicon on macOS 15 or newer.
+## Implemented system
 
-The framework must eventually support application state, views, layout, text,
-input, accessibility, animation, windowing, rendering, diagnostics, and native
-desktop services. Cross-platform support must not reduce Metal to the least
-common denominator.
+The workspace currently has three safe Rust library crates and no external
+dependencies. `alpine-core` has no workspace dependencies. `alpine-scene`
+depends on `alpine-core`, and `alpine-renderer` depends on `alpine-scene`.
 
-## Architectural shape
+```mermaid
+flowchart LR
+    caller["Application or test caller<br/>not implemented by Alpine"]
+    core["alpine-core<br/>Point, Size, Rect, LinearRgba"]
+    scene["alpine-scene<br/>SceneRevision, Primitive, SceneBuilder, Scene"]
+    renderer["alpine-renderer<br/>Renderer, capabilities, FrameReport"]
+    backend["Concrete backend and Target<br/>not implemented"]
 
-```text
-application and component libraries
-                |
-        runtime and view system
-                |
-    layout, text, input, accessibility
-                |
-        immutable scene snapshot
-                |
-      renderer capability contract
-         /          |          \
-      Metal       Vulkan      D3D12
-         \          |          /
-       native platform and presentation
+    core --> scene --> renderer
+    caller -. "constructs values" .-> core
+    caller -. "builds immutable snapshot" .-> scene
+    caller -. "invokes" .-> renderer
+    backend -. "implements" .-> renderer
 ```
 
-Portable semantics live above the scene boundary. Backend-specific capability
-and performance decisions live below it.
+`alpine-core` validates finite geometry, non-negative extents, rectangle
+intersection, and normalized linear RGBA values. `alpine-scene` freezes a
+viewport, monotonically identified revision, and boxed painter-ordered primitive
+slice. Its only primitive today is a solid axis-aligned quad.
 
-## Initial crates
+`alpine-renderer` defines a monomorphized `Renderer` trait with backend-specific
+`Target` and `Error` associated types. `render` borrows an immutable `Scene` and
+mutable target, then returns a `FrameReport` containing submission, primitive,
+draw-call, and upload counts. No renderer implementation or shared renderer
+error taxonomy exists yet.
 
-### `alpine-core`
+## Ownership from state to submission
 
-Typed geometry and color primitives. This crate has no allocator policy,
-windowing, platform, or GPU dependencies.
+Application state and invalidation are outside the implemented workspace. The
+current ownership boundary begins when a caller creates values and finishes a
+`Scene`. Finishing transfers builder storage into an immutable snapshot. A
+renderer may borrow that snapshot for one call but may not retain application
+or view objects.
 
-### `alpine-scene`
+```mermaid
+flowchart LR
+    state["Application state<br/>external today"]
+    builder["SceneBuilder<br/>single owner and mutable"]
+    snapshot["Scene<br/>immutable owner of primitives"]
+    renderer["Renderer implementation<br/>owns backend resources"]
+    target["Target<br/>owned by caller"]
+    report["FrameReport<br/>returned value"]
 
-The immutable renderer input protocol. It owns primitive ordering and scene
-identity, but not GPU resources. A scene must be serializable into a diagnostic
-form eventually, even if the optimized in-memory representation differs.
-
-### `alpine-renderer`
-
-Backend contracts and capability reports. Associated types keep the production
-path monomorphized. The contract reports actual work, rather than hiding
-allocation, upload, or submission costs.
-
-## Planned ownership boundaries
-
-| Layer | Owns | Must not own |
-| --- | --- | --- |
-| Core | Units, geometry, color | GPU handles, windows |
-| Scene | Ordered primitives, clips, stable identity | Native objects, queues |
-| Renderer | GPU resources, pipelines, uploads, submission | App state, event loops |
-| Platform | Windows, events, displays, presentation clock | UI state, layout |
-| Runtime | Entities, invalidation, tasks, subscriptions | Native GPU handles |
-| Text | Shaping, fallback, glyph cache policy | Window event loop |
-| UI | Elements, layout, focus, semantics | Backend-specific commands |
-| Lab | Conformance scenes and diagnostics | Product-only behavior |
-
-## Non-negotiable invariants
-
-1. Rendering is demand-driven. An idle application does not redraw on every
-   event-loop tick.
-2. Scene construction and GPU submission are separately measurable.
-3. Renderer input is immutable for the duration of submission.
-4. A renderer cannot retain application or view objects.
-5. Capabilities are queried at runtime and tested by behavior.
-6. Device loss, allocation failure, and unsupported capabilities are errors,
-   not process panics.
-7. No cross-platform abstraction may prevent a Metal-specific fast path.
-8. Safe crates contain no unsafe code. Native FFI is isolated behind reviewed
-   safe APIs.
-9. Steady-state rendering has explicit allocation and upload budgets.
-10. Performance gates compare distributions on pinned hardware, not a single
-    timing sample on an ephemeral runner.
-
-## Frame lifecycle
-
-```text
-event or state change
-  -> invalidate affected state
-  -> schedule at most one frame
-  -> render affected views
-  -> layout affected subtrees
-  -> build immutable scene
-  -> diff resources and prepare uploads
-  -> encode and submit GPU work
-  -> present on the native display clock
-  -> remain idle until new work exists
+    state -. "derive values" .-> builder
+    builder -->|"finish consumes builder"| snapshot
+    snapshot -->|"borrowed for render call"| renderer
+    target -->|"mutably borrowed for render call"| renderer
+    renderer --> report
 ```
 
-The scheduler owns frame coalescing. The renderer never requests continuous
-redraw merely because a window exists.
+Binding ownership rules:
 
-## Backend strategy
+1. Renderer input is immutable for the duration of submission.
+2. A renderer cannot retain application or view objects.
+3. Native handles and GPU resources remain below the renderer boundary.
+4. Scene values contain no native handles or backend-specific commands.
+5. Scene construction and GPU submission remain separately measurable.
 
-- Metal is implemented first and directly.
-- WGPU is permitted later as a development oracle or optional compatibility
-  backend, never as the authority for Metal behavior.
-- Vulkan and D3D12 receive direct backends after the scene and capability
-  contracts have survived the Metal implementation.
-- Shader source is backend-owned. MSL is permitted for Metal. A portable shader
-  IR is a later decision and must not delay the direct Metal path.
+## Invalidation to present contract
 
-## Dependency strategy
+There is no Alpine runtime, scheduler, native event loop, or presentation path
+yet. The solid nodes below are implemented. Dashed nodes mark required future
+owners, not current capabilities.
 
-Owning the stack does not mean rewriting Unicode standards or native API
-bindings. It means owning policy, scheduling, lifetime, and performance-critical
-paths. Pure Rust standards libraries and generated FFI bindings may be adopted
-behind narrow facades after review. See `docs/DEPENDENCIES.md`.
+```mermaid
+sequenceDiagram
+    participant App as Application state (external)
+    participant Scheduler as Scheduler (not implemented)
+    participant Builder as SceneBuilder
+    participant Scene
+    participant Renderer
+    participant Backend as Native backend (not implemented)
+
+    App-->>Scheduler: State mutation invalidates visible output
+    Scheduler-->>Scheduler: Coalesce one pending frame
+    Scheduler-->>Builder: Begin requested frame
+    Builder->>Scene: finish()
+    Scene->>Renderer: render(&Scene, &mut Target)
+    Renderer-->>Backend: Backend-specific encoding and submission
+    Renderer-->>App: Result<FrameReport, Error>
+    Backend-->>Scheduler: Present completion or failure
+```
+
+Future scheduling must be demand-driven: no invalidation means no scene build,
+submission, or present. Wakeups coalesce, and the renderer never creates a
+continuous redraw loop merely because a window exists.
+
+## Resource lifetime contract
+
+The current trait deliberately leaves resource representation to each backend.
+There is no cache or eviction implementation. Every backend must nevertheless
+obey this lifecycle and expose enough accounting to test it.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created: Backend validates capability and allocates
+    Created --> Retained: Resource becomes backend-owned
+    Retained --> Retained: Reuse while identity and revision match
+    Retained --> Evictable: No in-flight submission references it
+    Evictable --> Retained: Referenced again before eviction
+    Evictable --> Teardown: Budget pressure, surface loss, or shutdown
+    Teardown --> [*]: Native completion makes destruction safe
+```
+
+Creation failure is returned, not panicked. Resources cannot be evicted or
+destroyed while referenced by in-flight work. Steady-state allocation, upload,
+retention, and eviction must be observable and bounded.
+
+## Portable contracts and native specialization
+
+Portable semantics stop at `Scene` and `Renderer`. Associated types prevent the
+portable contract from dictating a target or error representation. A backend is
+free to specialize formats, batching, atlases, synchronization, and
+presentation while preserving observable behavior.
+
+```mermaid
+flowchart TB
+    core["Portable value contracts<br/>alpine-core"]
+    scene["Portable immutable scene<br/>alpine-scene"]
+    contract["Portable renderer call and evidence<br/>alpine-renderer"]
+    metal["Direct Metal specialization<br/>not implemented"]
+    vulkan["Direct Vulkan specialization<br/>not implemented"]
+    d3d12["Direct D3D12 specialization<br/>not implemented"]
+
+    core --> scene --> contract
+    contract -.-> metal
+    contract -.-> vulkan
+    contract -.-> d3d12
+```
+
+No portable abstraction may prevent a Metal-specific fast path. WGPU may be a
+future differential oracle or optional compatibility backend, but it does not
+define Metal behavior.
+
+## Error and device-loss propagation
+
+The implemented API returns `Result<FrameReport, Renderer::Error>` directly to
+the caller. The caller, not the renderer, owns recovery policy. A shared error
+classification is not implemented, so device loss cannot yet be handled
+portably.
+
+```mermaid
+flowchart TD
+    call["Renderer::render"] --> outcome{"Result"}
+    outcome -->|"Ok"| report["FrameReport"]
+    outcome -->|"Err"| backend_error["Backend-specific Error"]
+    backend_error --> caller["Caller recovery policy"]
+    caller -. "future classification" .-> retry["Retry or rebuild"]
+    caller -. "future classification" .-> recreate["Recreate device or surface"]
+    caller -. "future classification" .-> terminate["Controlled termination"]
+```
+
+Future native errors must distinguish unsupported capability, transient surface
+loss, device loss, and out-of-memory conditions without process panics. Recovery
+must invalidate affected resources before another submission.
+
+## Testing and evidence
+
+Current unit tests cover value validation, rectangle intersection, color
+validation, scene revision, and painter order. The repository acceptance command
+runs policy, formatting, Clippy, all-target tests, and rustdoc. Hosted CI repeats
+the locked tests on Linux, Apple Silicon macOS, and Windows and aggregates them
+under `ci-pass`.
+
+```mermaid
+flowchart TB
+    policy["Repository policy"]
+    unit["Unit tests<br/>core and scene"]
+    lint["Format and Clippy"]
+    docs["Rustdoc and doctests"]
+    native["Locked native matrix<br/>Linux, macOS arm64, Windows"]
+    aggregate["ci-pass"]
+    risk["Risk-triggered evidence<br/>property, model, readback, Miri, Loom,<br/>fuzz, mutation, coverage, fixed hardware"]
+
+    policy --> aggregate
+    unit --> aggregate
+    lint --> aggregate
+    docs --> aggregate
+    native --> aggregate
+    risk -. "added when relevant code exists" .-> aggregate
+```
+
+Tests must use the narrowest layer that proves the behavior. Renderer work will
+require semantic scene checks, CPU geometry oracles, offscreen readback with
+tolerances, lifecycle failure injection, and fixed-hardware distributions for
+performance gates. Exact cross-GPU pixel hashes are not a sufficient oracle.
+
+## Binding invariants
+
+1. Public behavior is specified independently of upstream implementations.
+2. Safe crates deny unsafe code; native FFI must be isolated behind reviewed
+   safe APIs and focused tests.
+3. Capabilities are queried at runtime and verified by behavior.
+4. Unsupported capability, allocation failure, surface loss, and device loss
+   become structured errors rather than panics.
+5. The committed lockfile is validated with `--locked`; CI never updates it.
+6. Git dependencies are prohibited in shipping manifests.
+7. Architecture boundaries are added only when an implemented vertical slice
+   needs them.
+8. Accessibility is part of every future interactive component contract.
+9. Performance claims require reproducible evidence, and blocking regression
+   gates require qualified fixed hardware.
+10. Any architecture-changing pull request updates this document in the same
+    change and links the accepted decision that authorized it.
