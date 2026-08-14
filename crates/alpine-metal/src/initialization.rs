@@ -29,10 +29,16 @@ impl MetalBackend {
     /// Returns a stage-classified [`InitializationError`] without panicking or
     /// terminating the process.
     pub fn new() -> Result<Self, InitializationError> {
-        platform::new_backend().map(|(native, capabilities)| Self {
+        platform::new_backend().map(Self::from_platform_parts)
+    }
+
+    fn from_platform_parts(
+        (native, capabilities): (platform::NativeBackend, MetalCapabilities),
+    ) -> Self {
+        Self {
             _native: native,
             capabilities,
-        })
+        }
     }
 
     /// Returns the capabilities captured during initialization.
@@ -622,9 +628,9 @@ mod tests {
 
         for (failure_point, expected_stage) in cases {
             let driver = MockDriver::new(failure_point);
-            let Err(error) = initialize(&driver) else {
-                return Err("failure injection unexpectedly initialized".into());
-            };
+            let error = initialize(&driver)
+                .err()
+                .ok_or("failure injection unexpectedly initialized")?;
             assert_eq!(error.stage(), expected_stage);
             drop(error);
             driver.assert_balanced();
@@ -650,6 +656,78 @@ mod tests {
 
         let library = InitializationError::LibraryLoadFailed(native);
         assert_eq!(library.stage(), InitializationStage::Library);
+        assert_eq!(
+            library.to_string(),
+            "offline Metal library load failed: MockDomain error 17: injected"
+        );
         assert!(library.source().is_some());
+
+        let errors = [
+            (
+                InitializationError::UnsupportedPlatform {
+                    architecture: "fixture-arch",
+                    operating_system: "fixture-os",
+                },
+                "Direct Metal requires Apple Silicon macOS, found fixture-arch-fixture-os",
+                false,
+            ),
+            (
+                InitializationError::DeviceUnavailable,
+                "Metal returned no default device",
+                false,
+            ),
+            (
+                InitializationError::CapabilityQueryFailed(failure()),
+                "Metal capability query failed: MockDomain error 17: injected",
+                true,
+            ),
+            (
+                InitializationError::UnsupportedDevice {
+                    device_name: "Fixture GPU".to_owned(),
+                    reason: "fixture reason",
+                },
+                "Metal device Fixture GPU is unsupported: fixture reason",
+                false,
+            ),
+            (
+                InitializationError::CommandQueueUnavailable,
+                "Metal command-queue creation failed",
+                false,
+            ),
+            (
+                InitializationError::MissingFunction {
+                    stage: InitializationStage::FragmentFunction,
+                    name: FRAGMENT_ENTRY_POINT,
+                },
+                "offline Metal library is missing alpine_quad_fragment",
+                false,
+            ),
+            (
+                InitializationError::PipelineCreationFailed(failure()),
+                "Metal render-pipeline creation failed: MockDomain error 17: injected",
+                true,
+            ),
+        ];
+
+        for (error, expected, has_source) in errors {
+            assert_eq!(error.to_string(), expected);
+            assert_eq!(error.source().is_some(), has_source);
+        }
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[test]
+    fn assembles_the_safe_owner_from_validated_platform_parts() {
+        let capabilities = MetalCapabilities::new("Fixture GPU".to_owned(), 73)
+            .with_metal3(true)
+            .with_unified_memory(true)
+            .with_low_power(true)
+            .with_removable(false);
+        let backend = MetalBackend::from_platform_parts((
+            crate::unsupported::NativeBackend,
+            capabilities.clone(),
+        ));
+
+        assert_eq!(backend.capabilities(), &capabilities);
     }
 }
