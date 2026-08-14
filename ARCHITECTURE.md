@@ -19,7 +19,8 @@ qualification manifests. It also validates versioned renderer A/A calibration
 records: exact workload and identical-revision identity, four or more distinct
 hardware windows, twenty or more runs, balanced paired execution order, strict
 separation of cold and warm samples, measurement stage and clock identity,
-ordered window times, raw CSV structure, and recomputed artifact SHA-256. Its deterministic integer
+ordered window times, repository-normalized LF raw CSV structure, and recomputed
+artifact SHA-256. Its deterministic integer
 report is descriptive only and cannot establish an equivalence margin, sample
 size, confidence interval, or performance claim.
 

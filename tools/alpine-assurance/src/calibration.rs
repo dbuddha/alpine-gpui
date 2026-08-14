@@ -818,12 +818,13 @@ fn valid_utc_timestamp(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::validate_artifact_identity;
     use super::{
         CSV_HEADER, Calibration, MAXIMUM_RAW_BYTES, Order, Sample, extract_sha256, load_samples,
         load_toml, nearest_rank, relative_delta_ppm, render_report, resolve_repository_path, run,
         valid_git_sha, valid_raw_artifact_shape, valid_slug, valid_utc_timestamp,
-        validate_artifact_identity, validate_identity, validate_runs, validate_samples,
-        validate_windows,
+        validate_identity, validate_runs, validate_samples, validate_windows,
     };
     use std::{
         fs,

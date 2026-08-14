@@ -28,7 +28,7 @@ across four distinct windows, unique randomization identities, both execution
 orders with at most one-pair imbalance per run, qualified offline-shader
 environments, an explicit measurement stage and clock, separate cold or warm
 samples with a declared warmup count, ordered window times, and a recomputed
-hash of strict raw paired samples. Its report
+hash of strict LF-normalized raw paired samples. Its report
 uses deterministic integer parts-per-million deltas only to expose observed
 drift and order effects. Fixture reports say `fixture-only`; physical records
 may say `protocol-ready`. Neither status is a confidence interval, equivalence
