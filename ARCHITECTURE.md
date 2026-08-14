@@ -15,7 +15,13 @@ On Apple Silicon macOS only, `alpine-metal` uses narrowly featured, exact-versio
 targets neither compile nor link those dependencies.
 The non-shipping `alpine-assurance` tool depends on audited `serde` and `toml`
 crates to validate the evidence registry and versioned golden-workload
-qualification manifests.
+qualification manifests. It also validates versioned renderer A/A calibration
+records: exact workload and identical-revision identity, four or more distinct
+hardware windows, twenty or more runs, balanced paired execution order, strict
+separation of cold and warm samples, measurement stage and clock identity,
+ordered window times, raw CSV structure, and recomputed artifact SHA-256. Its deterministic integer
+report is descriptive only and cannot establish an equivalence margin, sample
+size, confidence interval, or performance claim.
 
 ```mermaid
 flowchart LR
@@ -320,7 +326,12 @@ the Rust implementation. TLA+ models
 check finite value-admission, assurance, qualification, and renderer-lifecycle
 designs, including known-fault controls. The evidence registry maps atomic AEP
 claims to qualified artifacts, bounds, assumptions, exclusions, and dynamic
-companions. The repository
+companions. Calibration fixtures exercise exact artifact identity, environment
+qualification, minimum window and run counts, paired-order balance, and stable
+fail-closed diagnostics. The boundary also binds sample class, warmup count,
+measurement stage, clock, and window times while identifying fixtures as
+synthetic and making no
+hardware or performance claim. The repository
 acceptance command validates policy and the registry, tests automation and core
 contracts, then runs formatting, Clippy, all-target tests, doctests, and
 rustdoc. mdBook builds the durable engineering guide as a private CI artifact.
@@ -400,7 +411,10 @@ operations and actions, comparison level, equivalence evidence, environment
 identity, raw measurement references, assumptions, exclusions, and independent
 hardware-window counts. Unsupported operations and measurement before
 correctness fail closed. These manifests make no native or performance claim by
-themselves, and no shipping crate depends on them.
+themselves. The separate `alpine-aa-calibration/v1` boundary admits only
+identical-revision A/A evidence with verified raw samples and qualified
+environments; its report remains non-inferential until physical data supports a
+later statistical decision. No shipping crate depends on either boundary.
 
 ## Binding invariants
 

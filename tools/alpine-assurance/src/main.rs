@@ -1,5 +1,6 @@
 //! Validates and reports Alpine's claim-to-evidence graph.
 
+mod calibration;
 mod qualification;
 
 use serde::Deserialize;
@@ -131,13 +132,22 @@ fn run() -> Result<String, Vec<String>> {
     }
     if matches!(
         command.as_str(),
-        "validate-qualification" | "qualification-report"
+        "validate-qualification"
+            | "qualification-report"
+            | "validate-aa-calibration"
+            | "aa-calibration-report"
     ) {
         let Some(path) = arguments.next() else {
             return Err(vec![format!("{command} requires a manifest path")]);
         };
         if arguments.next().is_some() {
             return Err(vec![format!("{command} accepts exactly one manifest path")]);
+        }
+        if matches!(
+            command.as_str(),
+            "validate-aa-calibration" | "aa-calibration-report"
+        ) {
+            return calibration::run(&command, Path::new(&path), Path::new("."));
         }
         return qualification::run(&command, Path::new(&path), Path::new("."));
     }
@@ -167,7 +177,7 @@ fn run() -> Result<String, Vec<String>> {
         )),
         "report" => Ok(render_report(&registry)),
         other => Err(vec![format!(
-            "unknown command {other:?}; expected validate, report, validate-qualification, qualification-report, or upstream-radar"
+            "unknown command {other:?}; expected validate, report, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, or upstream-radar"
         )]),
     }
 }
