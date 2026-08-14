@@ -34,7 +34,7 @@ if matches '^(Cargo\.toml$|Cargo\.lock$|crates/.+\.rs$|crates/.+/Cargo\.toml$)';
     coverage=true
 fi
 
-if matches '^crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal)/.+\.rs$'; then
+if matches '^crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal|alpine-platform)/.+\.rs$'; then
     mutation=true
     kani=true
 fi

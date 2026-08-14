@@ -5,11 +5,12 @@ designs remain in linked GitHub issues until code makes them current.
 
 ## Implemented system
 
-The workspace currently has four Rust shipping library crates. `alpine-core`,
-`alpine-scene`, and `alpine-renderer` are fully safe and have no external
-dependencies. `alpine-core` has no workspace dependencies.
+The workspace currently has five Rust shipping library crates. `alpine-core`,
+`alpine-scene`, `alpine-renderer`, and `alpine-platform` are fully safe and have
+no external dependencies. `alpine-core` has no workspace dependencies.
 `alpine-scene` depends on `alpine-core`, `alpine-renderer` depends on
-`alpine-scene`, and `alpine-metal` depends on all three portable crates.
+`alpine-scene`, `alpine-platform` is dependency-free, and `alpine-metal`
+depends on the core, scene, and renderer crates.
 On Apple Silicon macOS only, `alpine-metal` uses narrowly featured, exact-version
 `objc2`, `objc2-foundation`, `objc2-metal`, and `dispatch2` bindings. Other
 targets neither compile nor link those dependencies.
@@ -23,11 +24,13 @@ flowchart LR
     core["alpine-core<br/>Point, Size, Rect, LinearRgba"]
     scene["alpine-scene<br/>SceneRevision, Primitive, SceneBuilder, Scene"]
     renderer["alpine-renderer<br/>Renderer, capabilities, FrameReport"]
+    platform["alpine-platform<br/>portable presentation lifecycle"]
     metal["alpine-metal safe boundary<br/>validation, pixels, FrameReport"]
     native["Private Direct Metal specialization<br/>pipeline, one submission, readback"]
     assurance["alpine-assurance<br/>non-shipping evidence and qualification validator"]
 
     core --> scene --> renderer
+    platform -. "drives future native owner" .-> metal
     core --> metal
     scene --> metal
     renderer --> metal
@@ -54,6 +57,15 @@ omission, draw-call, upload, allocation, retention, and readback counts.
 portable `OffscreenTarget` owns only the descriptor and latest completed image;
 all native resources remain private. A failed render clears any stale target
 image before returning its structured `RenderError`.
+
+`alpine-platform` is an allocation-free, `no_std` transition system for one
+presentation surface. It owns monotonic invalidation revisions, surface epochs,
+visibility and size eligibility, display-link intent, opaque frame tokens,
+phase-to-resource ownership, command and direct-presentation counts, terminal
+classification, and shutdown drain state. Disabled, stale, exhausted, or
+token-mismatched actions restore the exact prior state and return structured
+errors. This portable state is implemented and tested on every host, but no
+native window, layer, display link, or onscreen presentation owner exists yet.
 
 `alpine-metal` validates a
 non-empty BGRA8 offscreen descriptor, proves its logical viewport and rounded
@@ -88,15 +100,17 @@ completed work.
 
 ## Ownership from state to submission
 
-Application state and invalidation are outside the implemented workspace. The
-current ownership boundary begins when a caller creates values and finishes a
-`Scene`. Finishing transfers builder storage into an immutable snapshot. A
-renderer may borrow that snapshot for one call but may not retain application
-or view objects.
+Application state remains outside the implemented workspace. Portable
+invalidation and one-surface attempt ownership are implemented in
+`alpine-platform`. Scene construction remains caller-owned. Finishing a
+`SceneBuilder` transfers builder storage into an immutable snapshot. A renderer
+may borrow that snapshot for one call but may not retain application or view
+objects.
 
 ```mermaid
 flowchart LR
     state["Application state<br/>external today"]
+    presentation["PresentationState<br/>revision, epoch, token, pacing intent"]
     builder["SceneBuilder<br/>single owner and mutable"]
     snapshot["Scene<br/>immutable owner of primitives"]
     plan["ValidatedFrame<br/>owns checked lowered quads"]
@@ -106,7 +120,9 @@ flowchart LR
     accounting["BackendAccounting<br/>terminal work and retained bytes"]
     result["OffscreenFrame<br/>owned pixels and FrameReport"]
 
+    state -. "invalidate" .-> presentation
     state -. "derive values" .-> builder
+    presentation -. "correlates future native attempt" .-> lifecycle
     builder -->|"finish consumes builder"| snapshot
     snapshot -->|"borrowed during validation"| plan
     plan -->|"immutable encoding input"| renderer
@@ -126,14 +142,15 @@ Binding ownership rules:
 
 ## Invalidation to present contract
 
-There is no Alpine runtime, scheduler, native event loop, or presentation path
-yet. Offscreen submission is implemented. The solid nodes below are
-implemented; dashed messages mark future owners or behavior.
+There is no Alpine runtime, native event loop, or onscreen presentation path
+yet. Portable coalescing and lifecycle transitions plus offscreen submission
+are implemented. The solid nodes below are implemented; dashed messages mark
+future owners or behavior.
 
 ```mermaid
 sequenceDiagram
     participant App as Application state (external)
-    participant Scheduler as Scheduler (not implemented)
+    participant Scheduler as PresentationState
     participant Builder as SceneBuilder
     participant Scene
     participant Plan as ValidatedFrame
@@ -141,7 +158,7 @@ sequenceDiagram
     participant Backend as Initialized Metal backend
 
     App-->>Scheduler: State mutation invalidates visible output
-    Scheduler-->>Scheduler: Coalesce one pending frame
+    Scheduler->>Scheduler: Coalesce newest revision and epoch
     Scheduler-->>Builder: Begin requested frame
     Builder->>Scene: finish()
     Scene->>Plan: validate and lower
@@ -154,8 +171,9 @@ sequenceDiagram
     Backend-->>Scheduler: Future present completion or failure
 ```
 
-Future scheduling must be demand-driven: no invalidation means no scene build,
-submission, or present. Wakeups coalesce, and the renderer never creates a
+The portable contract is demand-driven: no dirty eligible surface can prepare
+a frame, and clean idle state requires paused pacing. The future native owner
+must enact its resume, pause, and invalidate directives without introducing a
 continuous redraw loop merely because a window exists.
 
 ## Resource lifetime contract
