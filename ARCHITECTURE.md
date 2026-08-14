@@ -5,9 +5,11 @@ designs remain in linked GitHub issues until code makes them current.
 
 ## Implemented system
 
-The workspace currently has three safe Rust library crates and no external
-dependencies. `alpine-core` has no workspace dependencies. `alpine-scene`
-depends on `alpine-core`, and `alpine-renderer` depends on `alpine-scene`.
+The workspace currently has three safe Rust shipping library crates with no
+external dependencies. `alpine-core` has no workspace dependencies.
+`alpine-scene` depends on `alpine-core`, and `alpine-renderer` depends on
+`alpine-scene`. The non-shipping `alpine-assurance` tool depends on audited
+`serde` and `toml` crates to validate the evidence registry.
 
 ```mermaid
 flowchart LR
@@ -16,12 +18,14 @@ flowchart LR
     scene["alpine-scene<br/>SceneRevision, Primitive, SceneBuilder, Scene"]
     renderer["alpine-renderer<br/>Renderer, capabilities, FrameReport"]
     backend["Concrete backend and Target<br/>not implemented"]
+    assurance["alpine-assurance<br/>non-shipping evidence validator"]
 
     core --> scene --> renderer
     caller -. "constructs values" .-> core
     caller -. "builds immutable snapshot" .-> scene
     caller -. "invokes" .-> renderer
     backend -. "implements" .-> renderer
+    assurance -. "validates repository artifacts" .-> core
 ```
 
 `alpine-core` validates finite geometry, non-negative extents, rectangle
@@ -170,14 +174,20 @@ must invalidate affected resources before another submission.
 Current unit tests cover valid and invalid values, rectangle intersection and
 contact, color bounds, scene revision and painter order, empty scenes, and the
 renderer contract through a mock backend. Kani proof harnesses exhaust bounded
-geometry and color domains against the Rust implementation. The repository
-acceptance command runs policy tests, formatting, Clippy, all-target tests,
-doctests, and rustdoc.
+geometry and color domains against the Rust implementation. TLA+ models check
+finite value-admission and assurance-lifecycle designs, including known-fault
+controls. The evidence registry maps atomic AEP claims to qualified artifacts,
+bounds, assumptions, exclusions, and dynamic companions. The repository
+acceptance command validates policy and the registry, tests automation and core
+contracts, then runs formatting, Clippy, all-target tests, doctests, and
+rustdoc. mdBook builds the durable engineering guide as a private CI artifact.
 
 Hosted CI classifies the changed paths and review labels, then runs the required
 evidence fail-closed under one `ci-pass` result. Locked native tests always run
 on Linux, Apple Silicon macOS, and Windows. Rust implementation changes add
-coverage, changed-code mutation, and Kani as selected. Unsafe and native Metal
+shipping-crate coverage, changed-code mutation, and Kani as selected. The
+non-shipping assurance tool has a separate coverage floor and fixture suite.
+Unsafe and native Metal
 paths additionally select Miri or Metal API and shader validation. Scheduled
 suites expand proofs, Miri, dependency advisories, mutation, coverage, fuzzing
 when a target exists, and Metal validation when its backend exists.
@@ -191,6 +201,9 @@ flowchart TB
     coverage["Coverage ratchet<br/>workspace, critical files, changed lines"]
     mutation["Changed pure-Rust mutation"]
     kani["Selected bounded Rust proofs"]
+    tla["Selected finite TLA+ models<br/>plus faulty controls"]
+    registry["Evidence registry<br/>claims, bounds, exclusions"]
+    guide["mdBook guide<br/>links and examples"]
     miri["Selected Miri lifetime checks"]
     metal["Selected Metal validation"]
     aggregate["ci-pass"]
@@ -202,6 +215,7 @@ flowchart TB
     classify --> coverage
     classify --> mutation
     classify --> kani
+    classify --> tla
     classify --> miri
     classify --> metal
     policy --> aggregate
@@ -212,6 +226,9 @@ flowchart TB
     kani --> aggregate
     miri --> aggregate
     metal --> aggregate
+    registry --> policy
+    guide --> policy
+    tla --> aggregate
     scheduled -. "failures create deduplicated issues" .-> policy
 ```
 

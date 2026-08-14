@@ -54,7 +54,7 @@ do
     fi
 done
 
-for retired_directory in changes docs; do
+for retired_directory in changes; do
     if [ -d "$retired_directory" ] && find "$retired_directory" -type f -print -quit | grep -q .; then
         fail "unexpected files under retired directory: $retired_directory"
     fi
@@ -74,6 +74,22 @@ fi
 if ! sed -n '1,4p' AGENTS.md | grep -q '^schema: alpine-agent-policy/v1$'; then
     fail 'AGENTS.md must declare schema alpine-agent-policy/v1 in frontmatter'
 fi
+
+for required_path in \
+    book.toml \
+    docs/SUMMARY.md \
+    docs/vision.md \
+    docs/concepts/traceability.md \
+    docs/quality/assurance.md \
+    assurance/evidence.toml \
+    scripts/test-assurance.sh \
+    scripts/check-tla.sh \
+    .cargo/mutants.toml
+do
+    if [ ! -f "$required_path" ]; then
+        fail "required assurance artifact is missing: $required_path"
+    fi
+done
 
 issue_form_count=$(find .github/ISSUE_TEMPLATE -maxdepth 1 -type f -name '*.yml' ! -name config.yml | wc -l | tr -d ' ')
 if [ "$issue_form_count" -ne 5 ]; then
@@ -103,6 +119,7 @@ if [ -n "${ALPINE_PR_BODY:-}" ] || [ -n "${ALPINE_PR_TITLE:-}" ]; then
     for heading in \
         '## Closing issue' \
         '## Parent capability' \
+        '## Claims and evidence' \
         '## Decision or research' \
         '## Acceptance evidence' \
         '## Risk and scope' \

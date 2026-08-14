@@ -46,6 +46,11 @@ There is no native backend, window, runtime, layout engine, input system, text
 stack, or component system yet. The exact implemented boundaries and binding
 invariants are documented in [Architecture](ARCHITECTURE.md).
 
+The [engineering guide](docs/SUMMARY.md) owns durable mission principles, user
+journeys, case-study conclusions, enhancement proposals, and the assurance
+method. GitHub issues remain authoritative for active research, approvals, and
+delivery state. The guide describes accepted knowledge, not a second roadmap.
+
 ## Development and project state
 
 Run the repository acceptance gate:
@@ -63,7 +68,11 @@ GitHub is the operational system for this project:
   CI evidence and private rustdoc artifacts;
 - [releases](https://github.com/dbuddha/alpine-gpui/releases) for shipped
   history;
-- [agent and contributor policy](AGENTS.md) for how changes are made.
+- [agent and contributor policy](AGENTS.md) for how changes are made;
+- [engineering guide](docs/SUMMARY.md) for durable requirements and assurance
+  concepts;
+- [evidence registry](assurance/evidence.toml) for machine-checked claim and
+  evidence traceability.
 
 ## Ownership and license
 

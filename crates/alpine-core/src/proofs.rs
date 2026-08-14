@@ -1,21 +1,27 @@
 //! Bounded Kani proofs for Alpine core value contracts.
 
-#![cfg(kani)]
+use crate::{LinearRgba, Point, Rect, Size};
 
-use alpine_core::{LinearRgba, Point, Rect, Size};
-
+/// AEP-0016-C01, EV-0016-KANI01.
 #[kani::proof]
 fn bounded_sizes_preserve_constructor_contract() {
     let width = f32::from(kani::any::<u16>());
     let height = f32::from(kani::any::<u16>());
-    let size =
-        Size::new(width, height).expect("bounded unsigned values are finite and non-negative");
+    let Some(size) = Size::new(width, height) else {
+        unreachable!("u16 values are finite and non-negative");
+    };
 
+    kani::cover!(width == 0.0 && height == 0.0, "empty boundary is reachable");
+    kani::cover!(
+        width > 0.0 && height > 0.0,
+        "non-empty values are reachable"
+    );
     assert_eq!(size.width, width);
     assert_eq!(size.height, height);
     assert_eq!(size.is_empty(), width == 0.0 || height == 0.0);
 }
 
+/// AEP-0016-C02, EV-0016-KANI02.
 #[kani::proof]
 fn byte_colors_always_normalize_to_valid_channels() {
     let red = f32::from(kani::any::<u8>()) / 255.0;
@@ -23,9 +29,12 @@ fn byte_colors_always_normalize_to_valid_channels() {
     let blue = f32::from(kani::any::<u8>()) / 255.0;
     let alpha = f32::from(kani::any::<u8>()) / 255.0;
 
+    kani::cover!(red == 0.0 && alpha == 0.0, "zero endpoints are reachable");
+    kani::cover!(red == 1.0 && alpha == 1.0, "one endpoints are reachable");
     assert!(LinearRgba::new(red, green, blue, alpha).is_some());
 }
 
+/// AEP-0016-C03, EV-0016-KANI03.
 #[kani::proof]
 fn bounded_intersections_remain_inside_both_inputs() {
     let first_x = f32::from(kani::any::<u8>());
@@ -57,8 +66,11 @@ fn bounded_intersections_remain_inside_both_inputs() {
             height: second_height,
         },
     );
+    let intersection = first.intersection(second);
 
-    if let Some(intersection) = first.intersection(second) {
+    kani::cover!(intersection.is_some(), "overlap is reachable");
+    kani::cover!(intersection.is_none(), "empty intersection is reachable");
+    if let Some(intersection) = intersection {
         assert!(intersection.size.width > 0.0);
         assert!(intersection.size.height > 0.0);
         assert!(intersection.origin.x >= first.origin.x);

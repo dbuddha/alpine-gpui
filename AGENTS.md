@@ -9,8 +9,9 @@ scope: repository
 
 This is the complete repository operating contract. Do not add nested agent
 files. `README.md` owns stable purpose, `ARCHITECTURE.md` owns implemented
-truth, rustdoc owns APIs, and GitHub owns capabilities, requirements, tasks,
-decisions, research, delivery state, evidence, and releases.
+truth, the engineering guide owns durable product knowledge, rustdoc owns APIs,
+the evidence registry owns claim mappings, and GitHub owns live capabilities,
+requirements, tasks, decisions, research, results, and releases.
 
 ## Required context
 
@@ -23,7 +24,8 @@ Before changing anything:
 4. Confirm the capability and requirement have `owner:approved`.
 5. Read `ARCHITECTURE.md` for subsystem, ownership, unsafe, renderer, platform,
    or architecture work.
-6. Read only decisions or research explicitly linked from the task.
+6. Read the linked AEP and registry claims for consequential design or formal
+   work. Read only case studies, decisions, or research linked by that chain.
 7. Fetch `origin` before comparing the branch with its base.
 
 If observable acceptance or required approval is missing, stop and ask. Do not
@@ -61,6 +63,7 @@ turn chat into a durable requirement without an approved GitHub issue.
   or `release:none` label.
 - Architecture changes link an accepted decision. Upstream influence links the
   exact research record and states the influence mode.
+- Consequential behavior lists exact AEP claim and evidence IDs in the PR.
 - Complete every PR template section with concrete evidence and remaining risk.
 - Squash merge only after required checks and conversations are resolved.
 
@@ -79,6 +82,12 @@ release. Approval must be visible on the relevant issue or pull request.
   explicit ownership, common traits, `must_use`, and documented failure modes.
 - Add the narrowest proof: unit or property tests for pure behavior, model or
   integration tests for boundaries, and native validation for backend behavior.
+- TLA+ models declare finite bounds, fairness, exclusions, mapped Rust events,
+  and a faulty configuration that must expose a known invariant violation.
+- Kani harnesses live in crate-local `cfg(kani)` modules, use stable explicit
+  proofs and cover statements, disclose assumptions, and link dynamic tests.
+- Report model checking separately from implementation verification. Never
+  claim refinement unless an accepted decision introduces a verified proof.
 - Rendering changes require semantic or CPU oracles and offscreen readback
   before image comparison. A cross-GPU pixel hash is not a sufficient oracle.
 - Concurrency, unsafe, parser, lifecycle, and hot-path changes add Kani, Miri,

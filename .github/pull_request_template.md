@@ -10,6 +10,11 @@ Closes #
 
 Link the owner-approved capability at the root of the closing issue's parent chain.
 
+## Claims and evidence
+
+List exact AEP claim IDs changed or satisfied and the matching evidence registry
+IDs. State `Not applicable` only for issue-only or prose-only maintenance.
+
 ## Decision or research
 
 Link accepted decisions and research required by this change, or write `None`.
@@ -53,6 +58,7 @@ hypotheses considered, and how each was resolved or accepted.
 
 - [ ] The pull request has one coherent scope and no unrelated cleanup.
 - [ ] The linked issue and approved parent chain define observable acceptance.
+- [ ] Every consequential claim maps to qualified registry evidence with stated bounds and exclusions.
 - [ ] New behavior has tests at the narrowest useful layer.
 - [ ] Architecture changes update `ARCHITECTURE.md` and link an accepted decision.
 - [ ] `scripts/check.sh` passes locally, or the exception is documented above.

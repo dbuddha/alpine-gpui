@@ -1,0 +1,24 @@
+schema = "alpine-evidence/v1"
+
+[[claims]]
+id = "AEP-0016-C01"
+mission = "MP-03"
+capability_issue = 16
+aep = "docs/aep/0016-portable-value-contracts.md"
+requirement_issue = 17
+claim_type = "safety"
+risk = "high"
+kani_applicability = "required"
+tla_properties = ["AcceptedIsValid"]
+platform_scope = ["portable"]
+required_evidence = ["kani"]
+
+[[evidence]]
+id = "EV-0016-KANI99"
+claim = "AEP-0016-C01"
+kind = "kani"
+artifact = "crates/alpine-core/src/proofs.rs#bounded_sizes_preserve_constructor_contract"
+assertion = "A Kani record without dynamic playback must fail."
+scope = "Fixture."
+bounds = ["complete u16 domain"]
+exclusions = ["native behavior"]

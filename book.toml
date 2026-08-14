@@ -1,0 +1,13 @@
+[book]
+title = "Alpine GPUI Engineering Guide"
+authors = ["Alpine GPUI"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "target/mdbook"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/dbuddha/alpine-gpui"
+no-section-label = false

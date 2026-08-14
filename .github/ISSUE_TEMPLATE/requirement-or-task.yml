@@ -24,6 +24,30 @@ body:
     validations:
       required: true
   - type: textarea
+    id: origins
+    attributes:
+      label: Origins and atomic claims
+      description: Link mission IDs, use cases, case-study finding IDs, and exact AEP claim IDs. Tasks inherit these from the parent Requirement.
+    validations:
+      required: true
+  - type: dropdown
+    id: claim-type
+    attributes:
+      label: Claim type
+      options:
+        - Functional
+        - Safety or lifecycle
+        - Concurrency
+        - Native backend
+        - Accessibility
+        - Performance
+        - Memory
+        - Visual
+        - Compatibility
+        - Repository tooling
+    validations:
+      required: true
+  - type: textarea
     id: behavior
     attributes:
       label: Required observable behavior
@@ -61,6 +85,13 @@ body:
     attributes:
       label: Acceptance test or benchmark
       description: Name exact commands, tests, proofs, artifacts, measurements, and qualified hardware when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Required evidence and formal applicability
+      description: Select unit, property, integration, E2E, TLA+, Kani, Loom, Miri, fuzz, mutation, coverage, benchmark, or native evidence. State Kani applicability, TLA+ properties, bounds, commands, and hardware.
     validations:
       required: true
   - type: textarea

@@ -16,6 +16,13 @@ body:
     validations:
       required: true
   - type: textarea
+    id: origins
+    attributes:
+      label: Mission, use cases, and case-study findings
+      description: Link durable use cases and stable mission or case-study IDs that motivate this outcome.
+    validations:
+      required: true
+  - type: textarea
     id: trigger-preconditions
     attributes:
       label: Trigger and preconditions
@@ -72,5 +79,12 @@ body:
     attributes:
       label: Derived requirement sub-issues
       description: Link native GitHub sub-issues after creating them, or list the expected split.
+    validations:
+      required: true
+  - type: textarea
+    id: qualification
+    attributes:
+      label: Capability qualification
+      description: Name the required end-to-end, native, accessibility, performance, memory, and release evidence.
     validations:
       required: true

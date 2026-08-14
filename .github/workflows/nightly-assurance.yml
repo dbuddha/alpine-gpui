@@ -18,6 +18,29 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  tla:
+    name: tla-all
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install pinned Java runtime
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Check expanded TLA+ models and faulty controls
+        run: scripts/check-tla.sh nightly
+      - name: Upload model-checking evidence and counterexamples
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: tla-nightly-${{ github.sha }}
+          path: target/tla
+          retention-days: 14
+          if-no-files-found: error
+
   kani:
     name: kani-all
     runs-on: ubuntu-24.04
@@ -30,7 +53,20 @@ jobs:
           cargo install --locked kani-verifier --version 0.67.0
           cargo kani setup
       - name: Verify all bounded Rust properties
-        run: cargo kani --workspace --tests --output-format=terse
+        run: |
+          cargo kani list --format json
+          mkdir -p target/kani
+          mv kani-list.json target/kani/harnesses.json
+          set -o pipefail
+          cargo kani --workspace --output-format=terse 2>&1 | tee target/kani/proofs.log
+      - name: Upload proof inventory and results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: kani-nightly-${{ github.sha }}
+          path: target/kani
+          retention-days: 14
+          if-no-files-found: error
 
   miri:
     name: miri-all

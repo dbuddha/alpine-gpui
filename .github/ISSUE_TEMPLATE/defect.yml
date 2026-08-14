@@ -12,6 +12,12 @@ body:
       placeholder: "#123"
     validations:
       required: true
+  - type: input
+    id: claims
+    attributes:
+      label: Violated AEP claims or requirements
+      description: Link exact claim IDs and Requirement issues when known.
+      placeholder: "AEP-0016-C03, #17"
   - type: textarea
     id: observed
     attributes:

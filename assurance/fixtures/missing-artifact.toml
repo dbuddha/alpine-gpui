@@ -1,0 +1,21 @@
+schema = "alpine-evidence/v1"
+
+[[claims]]
+id = "AEP-0009-C01"
+mission = "MP-03"
+capability_issue = 9
+aep = "docs/aep/0009-multi-layer-assurance.md"
+requirement_issue = 14
+claim_type = "functional"
+risk = "low"
+kani_applicability = "not_applicable"
+platform_scope = ["tooling"]
+required_evidence = ["unit"]
+
+[[evidence]]
+id = "EV-0009-UNIT99"
+claim = "AEP-0009-C01"
+kind = "unit"
+artifact = "missing/evidence.rs"
+assertion = "A missing artifact must fail."
+scope = "Fixture."

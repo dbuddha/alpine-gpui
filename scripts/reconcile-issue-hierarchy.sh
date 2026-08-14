@@ -45,6 +45,19 @@ if ! printf '%s\n' "$parent_labels" | grep -Fxq owner:approved; then
     exit 1
 fi
 
+if [ "${ALPINE_ENFORCE_EVIDENCE:-true}" = true ]; then
+    if printf '%s\n' "$parent_labels" | grep -Fxq kind:requirement; then
+        registry_field=requirement_issue
+    else
+        registry_field=capability_issue
+    fi
+    if ! grep -Eq "^$registry_field = $parent$" assurance/evidence.toml; then
+        printf 'Issue hierarchy error: parent #%s has no registered assurance claims.\n' \
+            "$parent" >&2
+        exit 1
+    fi
+fi
+
 parent_subissues=$(gh api -H "X-GitHub-Api-Version: $api_version" \
     "repos/$repository/issues/$parent/sub_issues?per_page=100")
 parent_children_closed=$(printf '%s\n' "$parent_subissues" | \

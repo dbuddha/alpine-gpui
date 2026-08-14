@@ -28,6 +28,7 @@ mutation=false
 kani=false
 miri=false
 metal=false
+tla=false
 
 if matches '^(Cargo\.toml$|Cargo\.lock$|crates/.+\.rs$|crates/.+/Cargo\.toml$)'; then
     coverage=true
@@ -36,6 +37,10 @@ fi
 if matches '^crates/(alpine-core|alpine-scene|alpine-renderer)/.+\.rs$'; then
     mutation=true
     kani=true
+fi
+
+if matches '^(formal/tla/|docs/aep/|assurance/evidence\.toml$|tools/alpine-assurance/)'; then
+    tla=true
 fi
 
 if has_label review:unsafe || matches '^crates/.+/(unsafe|ffi|resource|lifetime)'; then
@@ -55,8 +60,9 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
         printf 'kani=%s\n' "$kani"
         printf 'miri=%s\n' "$miri"
         printf 'metal=%s\n' "$metal"
+        printf 'tla=%s\n' "$tla"
     } >> "$GITHUB_OUTPUT"
 else
-    printf 'base_sha=%s\nhead_sha=%s\ncoverage=%s\nmutation=%s\nkani=%s\nmiri=%s\nmetal=%s\n' \
-        "$base_sha" "$head_sha" "$coverage" "$mutation" "$kani" "$miri" "$metal"
+    printf 'base_sha=%s\nhead_sha=%s\ncoverage=%s\nmutation=%s\nkani=%s\nmiri=%s\nmetal=%s\ntla=%s\n' \
+        "$base_sha" "$head_sha" "$coverage" "$mutation" "$kani" "$miri" "$metal" "$tla"
 fi

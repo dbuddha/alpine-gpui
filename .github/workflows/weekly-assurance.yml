@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: weekly-assurance
@@ -18,6 +19,19 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  upstream-radar:
+    name: upstream-radar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Detect material upstream movement
+        env:
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: cargo run --locked -p alpine-assurance -- upstream-radar
+
   mutation:
     name: mutation-full
     runs-on: ubuntu-24.04
@@ -28,7 +42,7 @@ jobs:
       - name: Install mutation tools
         run: cargo install --locked cargo-mutants --version 27.1.0
       - name: Require all workspace mutants to be killed
-        run: cargo mutants --workspace --no-shuffle --output target/mutants.out -- --locked
+        run: cargo mutants --workspace --exclude alpine-assurance --no-shuffle --output target/mutants.out -- --locked
       - name: Upload mutation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -49,8 +63,12 @@ jobs:
         run: cargo install --locked cargo-llvm-cov --version 0.8.7
       - name: Install LLVM tools
         run: rustup component add llvm-tools-preview
-      - name: Measure and enforce workspace coverage
-        run: cargo llvm-cov --workspace --all-features --locked --html --output-dir target/coverage-html --fail-under-lines 85 --fail-under-functions 90
+      - name: Measure and enforce shipping workspace coverage
+        run: cargo llvm-cov --workspace --exclude alpine-assurance --all-features --locked --html --output-dir target/coverage-html --fail-under-lines 85 --fail-under-functions 90
+      - name: Enforce assurance-tool coverage floor
+        run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov -p alpine-assurance --locked --fail-under-lines 55 --fail-under-functions 60
       - name: Upload coverage evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

@@ -1,0 +1,308 @@
+schema = "alpine-evidence/v1"
+
+[[claims]]
+id = "AEP-0009-C01"
+mission = "MP-03"
+capability_issue = 9
+aep = "docs/aep/0009-multi-layer-assurance.md"
+requirement_issue = 14
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = ["QualifiedClosure"]
+platform_scope = ["tooling"]
+required_evidence = ["tla", "unit", "integration"]
+
+[[claims]]
+id = "AEP-0009-C02"
+mission = "MP-04"
+capability_issue = 9
+aep = "docs/aep/0009-multi-layer-assurance.md"
+requirement_issue = 14
+claim_type = "lifecycle"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = ["CapabilityClosure"]
+platform_scope = ["tooling"]
+required_evidence = ["tla", "integration"]
+
+[[claims]]
+id = "AEP-0009-C03"
+mission = "MP-03"
+capability_issue = 9
+aep = "docs/aep/0009-multi-layer-assurance.md"
+requirement_issue = 14
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["tooling"]
+required_evidence = ["unit", "integration"]
+
+[[claims]]
+id = "AEP-0009-C04"
+mission = "MP-03"
+capability_issue = 9
+aep = "docs/aep/0009-multi-layer-assurance.md"
+requirement_issue = 14
+claim_type = "compatibility"
+risk = "medium"
+kani_applicability = "not_applicable"
+platform_scope = ["tooling"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0009-C05"
+mission = "MP-04"
+capability_issue = 9
+aep = "docs/aep/0009-multi-layer-assurance.md"
+requirement_issue = 14
+claim_type = "functional"
+risk = "critical"
+kani_applicability = "not_applicable"
+platform_scope = ["tooling"]
+required_evidence = ["integration", "e2e"]
+
+[[claims]]
+id = "AEP-0016-C01"
+mission = "MP-02"
+capability_issue = 16
+aep = "docs/aep/0016-portable-value-contracts.md"
+requirement_issue = 17
+claim_type = "safety"
+risk = "medium"
+case_study_findings = ["CS-ZED-002"]
+kani_applicability = "required"
+tla_properties = ["AcceptedIsValid"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "kani", "unit"]
+
+[[claims]]
+id = "AEP-0016-C02"
+mission = "MP-02"
+capability_issue = 16
+aep = "docs/aep/0016-portable-value-contracts.md"
+requirement_issue = 17
+claim_type = "safety"
+risk = "medium"
+kani_applicability = "required"
+tla_properties = ["AcceptedIsValid"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "kani", "unit"]
+
+[[claims]]
+id = "AEP-0016-C03"
+mission = "MP-03"
+capability_issue = 16
+aep = "docs/aep/0016-portable-value-contracts.md"
+requirement_issue = 17
+claim_type = "safety"
+risk = "high"
+case_study_findings = ["CS-WGPU-002"]
+kani_applicability = "required"
+tla_properties = ["AllIntersectionsSafe"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "kani", "unit", "e2e"]
+
+[[evidence]]
+id = "EV-0009-TLA01"
+claim = "AEP-0009-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0009/AssuranceLifecycle.tla#QualifiedClosure"
+assertion = "A closed Requirement has approval, implementation, and every required evidence kind."
+scope = "Finite monotonic workflow with the configured Requirement and evidence-kind sets."
+bounds = ["pull request: 2 Requirements by 2 kinds", "nightly: 3 Requirements by 3 kinds"]
+assumptions = ["evidence-kind membership represents an independently passing qualified check", "weak fairness for enabled workflow progress"]
+exclusions = ["GitHub API failures", "semantic validity of a test or proof", "validator implementation defects"]
+companion = "tools/alpine-assurance/src/main.rs#validate_registry"
+
+[[evidence]]
+id = "EV-0009-UNIT01"
+claim = "AEP-0009-C01"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/main.rs#validates_identifier_shapes"
+assertion = "The validator rejects malformed and duplicate registry structures through focused tests and fixtures."
+scope = "Registry parsing and structural rules."
+exclusions = ["GitHub availability", "external tool semantics"]
+
+[[evidence]]
+id = "EV-0009-INTEGRATION01"
+claim = "AEP-0009-C01"
+kind = "integration"
+artifact = "scripts/test-assurance.sh"
+assertion = "The valid registry succeeds and deliberately invalid fixtures fail with the expected diagnostic."
+scope = "Repository-root command behavior."
+exclusions = ["Native platform behavior"]
+
+[[evidence]]
+id = "EV-0009-TLA02"
+claim = "AEP-0009-C02"
+kind = "tla"
+artifact = "formal/tla/aep-0009/AssuranceLifecycle.tla#CapabilityClosure"
+assertion = "Capability closure requires all modeled Requirements to be closed."
+scope = "Finite monotonic capability hierarchy."
+bounds = ["pull request: 2 Requirements", "nightly: 3 Requirements"]
+assumptions = ["the modeled set contains every native child Requirement"]
+exclusions = ["GitHub eventual consistency", "manual out-of-band state changes"]
+companion = "scripts/test-hierarchy.sh"
+
+[[evidence]]
+id = "EV-0009-INTEGRATION02"
+claim = "AEP-0009-C02"
+kind = "integration"
+artifact = "scripts/reconcile-issue-hierarchy.sh"
+assertion = "Hierarchy validation checks approval and native Capability to Requirement parenting."
+scope = "GitHub issues reachable by the authenticated repository workflow."
+exclusions = ["GitHub service unavailability"]
+
+[[evidence]]
+id = "EV-0009-UNIT03"
+claim = "AEP-0009-C03"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/main.rs#validate_registry"
+assertion = "Formal records require bounds, exclusions, artifacts, and implementation companions."
+scope = "Committed evidence records."
+exclusions = ["Truth of prose qualifications"]
+
+[[evidence]]
+id = "EV-0009-INTEGRATION03"
+claim = "AEP-0009-C03"
+kind = "integration"
+artifact = "scripts/check-tla.sh"
+assertion = "Pinned TLC checks good configurations and must detect each deliberately faulty model."
+scope = "Committed finite TLA+ models."
+exclusions = ["Unmodeled behavior", "formal refinement to Rust"]
+
+[[evidence]]
+id = "EV-0009-UNIT04"
+claim = "AEP-0009-C04"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/main.rs#EVIDENCE_KINDS"
+assertion = "The evidence-kind allowlist excludes research and case-study findings."
+scope = "Registry evidence classification."
+exclusions = ["Human misrepresentation outside the registry"]
+
+[[evidence]]
+id = "EV-0009-INTEGRATION05"
+claim = "AEP-0009-C05"
+kind = "integration"
+artifact = ".github/workflows/ci.yml#ci-pass"
+assertion = "The aggregate job requires all unconditional and selected jobs to succeed."
+scope = "GitHub pull-request and main-branch CI."
+exclusions = ["GitHub platform outages", "scheduled workflows"]
+
+[[evidence]]
+id = "EV-0009-E2E05"
+claim = "AEP-0009-C05"
+kind = "e2e"
+artifact = "scripts/check.sh"
+assertion = "The repository acceptance command traverses policy, fixtures, registry validation, Rust quality, tests, and documentation."
+scope = "Host-portable repository acceptance before push."
+exclusions = ["Hosted job orchestration", "native GPU behavior", "fixed-hardware performance"]
+
+[[evidence]]
+id = "EV-0016-TLA01"
+claim = "AEP-0016-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0016/PortableValues.tla#AcceptedIsValid"
+assertion = "The finite constructor model never admits a scalar outside its valid interval."
+scope = "Integer abstraction of size admission."
+bounds = ["pull request: raw model values 0 through 3, valid 1 through 2", "nightly: raw model values 0 through 6, valid 2 through 4"]
+assumptions = ["integer validity represents the sign and range admission predicate"]
+exclusions = ["IEEE-754 encoding", "multi-field correlation", "Rust conformance beyond companion tests"]
+companion = "crates/alpine-core/src/lib.rs#bounded_size_constructor_companion"
+
+[[evidence]]
+id = "EV-0016-KANI01"
+claim = "AEP-0016-C01"
+kind = "kani"
+artifact = "crates/alpine-core/src/proofs.rs#bounded_sizes_preserve_constructor_contract"
+assertion = "Every u16-derived width and height is accepted, preserved, and classified empty exactly at zero."
+scope = "Compiled Rust Size constructor and is_empty implementation."
+bounds = ["width and height each cover the complete u16 domain"]
+assumptions = ["u16 to f32 conversion is exact for the domain"]
+exclusions = ["negative values", "non-finite values", "values above u16::MAX", "timing and allocation"]
+companion = "crates/alpine-core/src/lib.rs#bounded_size_constructor_companion"
+
+[[evidence]]
+id = "EV-0016-UNIT01"
+claim = "AEP-0016-C01"
+kind = "unit"
+artifact = "crates/alpine-core/src/lib.rs#bounded_size_constructor_companion"
+assertion = "Representative zero, one, and maximum bounded sizes replay the proof contract dynamically."
+scope = "Executable Rust test cases."
+exclusions = ["Exhaustive input coverage"]
+
+[[evidence]]
+id = "EV-0016-TLA02"
+claim = "AEP-0016-C02"
+kind = "tla"
+artifact = "formal/tla/aep-0016/PortableValues.tla#AcceptedIsValid"
+assertion = "The finite constructor model admits only values inside its normalized interval."
+scope = "Integer abstraction of normalized color admission."
+bounds = ["pull request: valid model values 1 through 2", "nightly: valid model values 2 through 4"]
+assumptions = ["finite interval membership represents normalized channel validation"]
+exclusions = ["division rounding", "four-channel correlation", "color-space semantics"]
+companion = "crates/alpine-core/src/lib.rs#byte_color_constructor_companion"
+
+[[evidence]]
+id = "EV-0016-KANI02"
+claim = "AEP-0016-C02"
+kind = "kani"
+artifact = "crates/alpine-core/src/proofs.rs#byte_colors_always_normalize_to_valid_channels"
+assertion = "Every four-channel u8 tuple divided by 255 is accepted by LinearRgba."
+scope = "Compiled Rust color constructor over four complete u8 domains."
+bounds = ["red, green, blue, and alpha each cover the complete u8 domain"]
+assumptions = ["channels are constructed by f32::from(byte) divided by 255.0"]
+exclusions = ["arbitrary f32 inputs", "premultiplication", "native color management", "shader behavior"]
+companion = "crates/alpine-core/src/lib.rs#byte_color_constructor_companion"
+
+[[evidence]]
+id = "EV-0016-UNIT02"
+claim = "AEP-0016-C02"
+kind = "unit"
+artifact = "crates/alpine-core/src/lib.rs#byte_color_constructor_companion"
+assertion = "Representative byte-normalized endpoints and interior values are accepted dynamically."
+scope = "Executable Rust test cases."
+exclusions = ["Exhaustive channel tuples"]
+
+[[evidence]]
+id = "EV-0016-TLA03"
+claim = "AEP-0016-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0016/PortableValues.tla#AllIntersectionsSafe"
+assertion = "Every finite one-dimensional overlap has positive extent and remains within both intervals."
+scope = "Integer interval abstraction, applied independently to each rectangle axis."
+bounds = ["pull request bounds derive from MinValid through MaxRaw", "nightly expands the same interval"]
+assumptions = ["two-dimensional containment is the conjunction of independent axis containment"]
+exclusions = ["IEEE-754 rounding", "overflow", "transforms", "empty-contact representation"]
+companion = "crates/alpine-core/src/lib.rs#bounded_intersection_companion"
+
+[[evidence]]
+id = "EV-0016-KANI03"
+claim = "AEP-0016-C03"
+kind = "kani"
+artifact = "crates/alpine-core/src/proofs.rs#bounded_intersections_remain_inside_both_inputs"
+assertion = "Every returned bounded rectangle intersection has positive size and is contained by both inputs."
+scope = "Compiled Rust over eight complete u8-derived coordinate and extent domains."
+bounds = ["two origins and two extents per axis each cover the complete u8 domain"]
+assumptions = ["u8-derived inputs avoid f32 overflow and non-finite arithmetic"]
+exclusions = ["negative origins", "arbitrary f32 values", "transforms", "native coordinates"]
+companion = "crates/alpine-core/src/lib.rs#bounded_intersection_companion"
+
+[[evidence]]
+id = "EV-0016-UNIT03"
+claim = "AEP-0016-C03"
+kind = "unit"
+artifact = "crates/alpine-core/src/lib.rs#bounded_intersection_companion"
+assertion = "Representative empty, overlapping, contained, and bounded-edge rectangles replay containment dynamically."
+scope = "Executable Rust test cases."
+exclusions = ["Exhaustive rectangle tuples"]
+
+[[evidence]]
+id = "EV-0016-E2E03"
+claim = "AEP-0016-C03"
+kind = "e2e"
+artifact = "scripts/test-core-contracts.sh"
+assertion = "The portable-core contract suite executes the public constructors and intersection behavior through the crate test boundary."
+scope = "alpine-core on every supported host in the native CI matrix."
+exclusions = ["Native backend behavior", "GPU conversion", "arbitrary floating-point completeness"]

@@ -13,6 +13,14 @@ body:
       placeholder: "#123"
     validations:
       required: true
+  - type: input
+    id: claims
+    attributes:
+      label: Performance or memory claim
+      description: Link the exact AEP claim and Requirement that define the qualified budget.
+      placeholder: "AEP-0000-C00, #123"
+    validations:
+      required: true
   - type: textarea
     id: metric
     attributes:

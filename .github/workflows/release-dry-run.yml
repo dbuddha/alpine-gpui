@@ -24,7 +24,7 @@ jobs:
   prepare:
     name: prepare-without-publishing
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 60
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -34,6 +34,25 @@ jobs:
         env:
           TAG_NAME: ${{ inputs.tag }}
         run: scripts/check-release.sh "$TAG_NAME"
+      - name: Install pinned Java runtime
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install pinned Kani
+        run: |
+          cargo install --locked kani-verifier --version 0.67.0
+          cargo kani setup
+      - name: Qualify formal and implementation evidence
+        run: |
+          cargo run --locked -p alpine-assurance -- validate
+          scripts/check-tla.sh nightly
+          cargo kani list --format json
+          mkdir -p target/kani target/assurance
+          mv kani-list.json target/kani/harnesses.json
+          set -o pipefail
+          cargo kani --workspace --output-format=terse 2>&1 | tee target/kani/proofs.log
+          cargo run --quiet --locked -p alpine-assurance -- report > target/assurance/report.md
       - name: Generate categorized notes without creating a release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,6 +71,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-dry-run-${{ inputs.tag }}
-          path: target/release-dry-run
+          path: |
+            target/release-dry-run
+            target/assurance
+            target/kani
+            target/tla
           retention-days: 7
           if-no-files-found: error

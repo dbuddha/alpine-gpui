@@ -34,6 +34,7 @@ jobs:
       kani: ${{ steps.classify.outputs.kani }}
       miri: ${{ steps.classify.outputs.miri }}
       metal: ${{ steps.classify.outputs.metal }}
+      tla: ${{ steps.classify.outputs.tla }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -51,7 +52,7 @@ jobs:
     name: quality
     needs: classify
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -59,6 +60,8 @@ jobs:
           fetch-depth: 0
       - name: Install policy tools
         run: cargo install --locked cargo-deny --version 0.20.2
+      - name: Install documentation tools
+        run: cargo install --locked mdbook --version 0.5.4
       - name: Show toolchain
         run: rustc --version --verbose
       - name: Check repository policy
@@ -70,6 +73,23 @@ jobs:
           ALPINE_PR_TITLE: ${{ github.event.pull_request.title }}
           GH_TOKEN: ${{ github.token }}
         run: scripts/check-policy.sh
+      - name: Test repository automation
+        run: |
+          scripts/test-policy.sh
+          scripts/test-classifier.sh
+          scripts/test-hierarchy.sh
+          scripts/test-assurance.sh
+          scripts/check-release.sh
+          scripts/test-core-contracts.sh
+      - name: Validate qualified evidence and GitHub hierarchy
+        env:
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: cargo run --locked -p alpine-assurance -- validate --github
+      - name: Build and test engineering guide
+        run: |
+          mdbook build
+          mdbook test
       - name: Check dependencies and licenses
         run: cargo deny check bans licenses sources
       - name: Check formatting
@@ -84,6 +104,19 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps --locked
+      - name: Render assurance report
+        run: |
+          mkdir -p target/assurance
+          cargo run --quiet --locked -p alpine-assurance -- report > target/assurance/report.md
+      - name: Upload engineering documentation and assurance report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: engineering-evidence-${{ github.sha }}
+          path: |
+            target/mdbook
+            target/assurance/report.md
+          retention-days: 7
+          if-no-files-found: error
       - name: Upload private rustdoc
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -137,11 +170,15 @@ jobs:
           mkdir -p target
           git worktree add --detach "$RUNNER_TEMP/alpine-coverage-base" "$BASE_SHA"
           cd "$RUNNER_TEMP/alpine-coverage-base"
-          CARGO_TARGET_DIR="$RUNNER_TEMP/alpine-coverage-base-target" cargo llvm-cov --workspace --all-features --locked --json --summary-only --output-path "$GITHUB_WORKSPACE/target/coverage-base.json"
+          coverage_scope=--workspace
+          if cargo metadata --format-version 1 --no-deps | grep -q '"name":"alpine-assurance"'; then
+            coverage_scope="$coverage_scope --exclude alpine-assurance"
+          fi
+          CARGO_TARGET_DIR="$RUNNER_TEMP/alpine-coverage-base-target" cargo llvm-cov $coverage_scope --all-features --locked --json --summary-only --output-path "$GITHUB_WORKSPACE/target/coverage-base.json"
       - name: Measure head coverage
         run: |
           cargo llvm-cov clean --workspace
-          cargo llvm-cov --workspace --all-features --locked --no-report
+          cargo llvm-cov --workspace --exclude alpine-assurance --all-features --locked --no-report
           cargo llvm-cov report --json --summary-only --output-path target/coverage-head.json
           cargo llvm-cov report --lcov --output-path target/lcov.info
           cargo llvm-cov report --html --output-dir target/coverage-html
@@ -149,6 +186,10 @@ jobs:
         env:
           ALPINE_HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
         run: scripts/check-coverage.sh target/coverage-base.json target/coverage-head.json target/lcov.info ${{ needs.classify.outputs.base_sha }}
+      - name: Enforce assurance-tool coverage floor
+        run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov -p alpine-assurance --locked --fail-under-lines 55 --fail-under-functions 60
       - name: Upload coverage evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -179,7 +220,7 @@ jobs:
           mkdir -p target
           git diff ${{ needs.classify.outputs.base_sha }}...${{ needs.classify.outputs.head_sha }} > target/alpine.diff
       - name: Require changed mutants to be killed
-        run: cargo mutants --workspace --no-shuffle --in-diff target/alpine.diff --output target/mutants.out -- --locked
+        run: cargo mutants --workspace --exclude alpine-assurance --no-shuffle --in-diff target/alpine.diff --output target/mutants.out -- --locked
       - name: Upload mutation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -203,7 +244,12 @@ jobs:
           cargo install --locked kani-verifier --version 0.67.0
           cargo kani setup
       - name: Verify bounded Rust properties
-        run: cargo kani -Z unstable-options --workspace --tests --output-format=terse --output-into-files --target-dir target/kani
+        run: |
+          cargo kani list --format json
+          mkdir -p target/kani
+          mv kani-list.json target/kani/harnesses.json
+          set -o pipefail
+          cargo kani --workspace --output-format=terse 2>&1 | tee target/kani/proofs.log
       - name: Upload proof evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -212,6 +258,31 @@ jobs:
           path: target/kani
           retention-days: 7
           if-no-files-found: warn
+
+  tla:
+    name: tla
+    needs: classify
+    if: needs.classify.outputs.tla == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install pinned Java runtime
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Check bounded TLA+ models and faulty controls
+        run: scripts/check-tla.sh pull-request
+      - name: Upload model-checking evidence and counterexamples
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: tla-${{ github.sha }}
+          path: target/tla
+          retention-days: 7
+          if-no-files-found: error
 
   miri:
     name: miri
@@ -242,7 +313,7 @@ jobs:
   ci-pass:
     name: ci-pass
     if: always()
-    needs: [classify, quality, native, coverage, mutation-diff, kani, miri, metal-validation]
+    needs: [classify, quality, native, coverage, mutation-diff, kani, tla, miri, metal-validation]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -257,6 +328,8 @@ jobs:
           MUTATION_RESULT: ${{ needs.mutation-diff.result }}
           KANI_REQUIRED: ${{ needs.classify.outputs.kani }}
           KANI_RESULT: ${{ needs.kani.result }}
+          TLA_REQUIRED: ${{ needs.classify.outputs.tla }}
+          TLA_RESULT: ${{ needs.tla.result }}
           MIRI_REQUIRED: ${{ needs.classify.outputs.miri }}
           MIRI_RESULT: ${{ needs.miri.result }}
           METAL_REQUIRED: ${{ needs.classify.outputs.metal }}
@@ -282,5 +355,6 @@ jobs:
           require_selected coverage "$COVERAGE_REQUIRED" "$COVERAGE_RESULT"
           require_selected mutation-diff "$MUTATION_REQUIRED" "$MUTATION_RESULT"
           require_selected kani "$KANI_REQUIRED" "$KANI_RESULT"
+          require_selected tla "$TLA_REQUIRED" "$TLA_RESULT"
           require_selected miri "$MIRI_REQUIRED" "$MIRI_RESULT"
           require_selected metal-validation "$METAL_REQUIRED" "$METAL_RESULT"

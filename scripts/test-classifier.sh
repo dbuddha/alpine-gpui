@@ -25,11 +25,16 @@ docs=$(run_fixture README.md)
 assert_output "$docs" coverage=false
 assert_output "$docs" mutation=false
 assert_output "$docs" kani=false
+assert_output "$docs" tla=false
 
 core=$(run_fixture crates/alpine-core/src/lib.rs)
 assert_output "$core" coverage=true
 assert_output "$core" mutation=true
 assert_output "$core" kani=true
+
+formal=$(run_fixture formal/tla/aep-0009/AssuranceLifecycle.tla)
+assert_output "$formal" tla=true
+assert_output "$formal" kani=false
 
 unsafe=$(run_fixture README.md review:unsafe)
 assert_output "$unsafe" miri=true

@@ -1,0 +1,21 @@
+schema = "alpine-evidence/v1"
+
+[[claims]]
+id = "AEP-0009-C01"
+mission = "MP-05"
+capability_issue = 9
+aep = "docs/aep/0009-multi-layer-assurance.md"
+requirement_issue = 14
+claim_type = "performance"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["tooling"]
+required_evidence = ["unit"]
+
+[[evidence]]
+id = "EV-0009-UNIT98"
+claim = "AEP-0009-C01"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/main.rs"
+assertion = "An executable test cannot substitute for a qualified benchmark."
+scope = "Fixture."

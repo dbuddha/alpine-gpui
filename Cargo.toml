@@ -3,6 +3,7 @@ members = [
   "crates/alpine-core",
   "crates/alpine-renderer",
   "crates/alpine-scene",
+  "tools/alpine-assurance",
 ]
 resolver = "3"
 
