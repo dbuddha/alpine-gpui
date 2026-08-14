@@ -97,6 +97,13 @@ performance win over Zed. It does not copy GPUI or Zed source.
   `CAMetalLayer`, callback drawables, and unsafe ownership remain inside the
   native platform and Metal boundaries. Applications and portable crates see
   safe Alpine window, invalidation, scene, and outcome contracts only.
+- **AEP-0064-C09:** The portable presentation transition system rejects every
+  disabled action atomically and preserves the executable counterparts of
+  link ownership, phase-to-resource ownership, single commit, single direct
+  presentation call, commit eligibility, presentation ordering, current-state
+  qualification, clean-idle pacing, and drained shutdown. This bounded Rust
+  refinement claim excludes native API behavior, callback timing, pixels,
+  color, memory, and performance.
 
 ## Platform and pacing decision
 
@@ -273,6 +280,7 @@ hardware. Hosted timing remains informational.
 | AEP-0064-C06 | evidence-schema tests, native timestamp correlation, accounting, coverage, mutation |
 | AEP-0064-C07 | later multi-window model extension, isolation E2E, Loom if concurrency exists |
 | AEP-0064-C08 | dependency and feature audit, provenance review, unsafe review, portable contract builds |
+| AEP-0064-C09 | TLA+, Kani, exhaustive state and action oracle, model-trace replay, public integration test, coverage, mutation |
 
 The proposal's TLC result is design evidence only. Claims enter
 `assurance/evidence.toml` only with their actual implementation evidence. No
