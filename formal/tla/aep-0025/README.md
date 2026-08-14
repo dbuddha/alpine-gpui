@@ -12,8 +12,8 @@ renderer, one synchronous frame, and one exclusively owned frame resource.
 - `releaseCount` maps to the one terminal release of frame-owned resources.
 - `outcome` maps to the safe public success, error, or cancellation result.
 - `BeginFrame`, `Encode`, `Submit`, `Complete`, `Fail`, and
-  `CancelBeforeSubmit` map to explicit pure Rust transition functions and their
-  native integration boundaries.
+  `FailBeforeSubmit` and `CancelBeforeSubmit` map to explicit pure Rust
+  transition functions and their native integration boundaries.
 - `BeginShutdown` and `StopAfterDrain` map to admission closure, in-flight drain,
   and native object teardown.
 
@@ -23,7 +23,9 @@ supports the two progress properties. It assumes Metal eventually supplies a
 terminal callback or wait result for committed work. The model excludes scene
 contents, pointer and byte arithmetic, Objective-C retain behavior, actual GPU
 execution, pixels, allocation failure details, device discovery, recovery into
-a new backend generation, concurrency, and elapsed time.
+a new backend generation, concurrency, and elapsed time. `FailBeforeSubmit`
+distinguishes allocation or encoding failure from a committed command failure
+without qualifying either path as success.
 
 Conformance requires Rust transition tests that replay every mapped action,
 Kani for bounded state and arithmetic properties, and native tests for actual

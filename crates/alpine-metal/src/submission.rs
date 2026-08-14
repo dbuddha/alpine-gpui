@@ -4,9 +4,28 @@ use alpine_renderer::{FrameReport, Renderer, RendererCapabilities};
 use alpine_scene::Scene;
 
 use crate::{
-    Bgra8Image, NativeFailure, OffscreenDescriptor, OffscreenError, ValidatedFrame,
+    BackendGeneration, BackendState, Bgra8Image, FrameLifecycle, InitializationError,
+    LifecycleAction, NativeFailure, OffscreenDescriptor, OffscreenError, ValidatedFrame,
+    accounting::{AccountingOutcome, FrameOperationUsage, FrameResourceUsage},
     initialization::MetalBackend,
 };
+
+/// Caller action appropriate for a classified render failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryClassification {
+    /// Correct the request before trying again.
+    FixRequest,
+    /// A later frame may be retried without rebuilding the backend.
+    RetryFrame,
+    /// Consume and recreate the invalid backend generation.
+    RecreateBackend,
+    /// The current target cannot support Direct Metal.
+    Unsupported,
+    /// The owner already stopped this backend.
+    Stopped,
+    /// Internal accounting or ownership invariants failed closed.
+    Fatal,
+}
 
 /// Native stage at which an offscreen render stopped.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,8 +83,17 @@ pub enum RenderError {
         /// Compile-time operating system.
         operating_system: &'static str,
     },
+    /// The backend generation no longer admits work.
+    BackendUnavailable {
+        /// Generation that rejected the call.
+        generation: BackendGeneration,
+        /// Terminal backend state.
+        state: BackendState,
+    },
     /// The next submission sequence could not be represented.
     SubmissionSequenceExhausted,
+    /// Cumulative evidence could not represent another operation.
+    AccountingOverflow,
     /// Metal could not allocate a required resource.
     ResourceUnavailable {
         /// Resource-creation stage.
@@ -93,6 +121,8 @@ pub enum RenderError {
         status: CommandStatus,
         /// Copied native details when Metal supplied them.
         failure: Option<NativeFailure>,
+        /// Stable recovery policy derived at the native boundary.
+        recovery: RecoveryClassification,
     },
     /// Waiting returned without a successful or failed terminal status.
     UnexpectedCommandStatus {
@@ -120,8 +150,12 @@ impl RenderError {
     #[must_use]
     pub const fn stage(&self) -> RenderStage {
         match self {
-            Self::Validation(_) | Self::UnsupportedPlatform { .. } => RenderStage::Validation,
-            Self::SubmissionSequenceExhausted => RenderStage::SubmissionSequence,
+            Self::Validation(_)
+            | Self::UnsupportedPlatform { .. }
+            | Self::BackendUnavailable { .. } => RenderStage::Validation,
+            Self::SubmissionSequenceExhausted | Self::AccountingOverflow => {
+                RenderStage::SubmissionSequence
+            }
             Self::TextureExtentUnsupported { .. } => RenderStage::RenderTexture,
             Self::ResourceUnavailable { stage, .. } | Self::EncoderUnavailable { stage } => *stage,
             Self::CommandFailed { .. } | Self::UnexpectedCommandStatus { .. } => {
@@ -131,6 +165,38 @@ impl RenderError {
                 RenderStage::Readback
             }
             Self::SubmissionInvariantViolated => RenderStage::CommandBuffer,
+        }
+    }
+
+    /// Returns the caller recovery class without exposing native objects.
+    #[must_use]
+    pub const fn recovery(&self) -> RecoveryClassification {
+        match self {
+            Self::Validation(_) | Self::TextureExtentUnsupported { .. } => {
+                RecoveryClassification::FixRequest
+            }
+            Self::UnsupportedPlatform { .. } => RecoveryClassification::Unsupported,
+            Self::BackendUnavailable {
+                state: BackendState::Stopped,
+                ..
+            } => RecoveryClassification::Stopped,
+            Self::BackendUnavailable {
+                state: BackendState::DeviceLost,
+                ..
+            } => RecoveryClassification::RecreateBackend,
+            Self::BackendUnavailable {
+                state: BackendState::Ready,
+                ..
+            }
+            | Self::SubmissionSequenceExhausted
+            | Self::AccountingOverflow
+            | Self::UnexpectedCommandStatus { .. }
+            | Self::ReadbackLengthMismatch { .. }
+            | Self::SubmissionInvariantViolated => RecoveryClassification::Fatal,
+            Self::ResourceUnavailable { .. }
+            | Self::EncoderUnavailable { .. }
+            | Self::ReadbackAllocationFailed { .. } => RecoveryClassification::RetryFrame,
+            Self::CommandFailed { recovery, .. } => *recovery,
         }
     }
 }
@@ -146,9 +212,15 @@ impl fmt::Display for RenderError {
                 formatter,
                 "Direct Metal requires Apple Silicon macOS, found {architecture}-{operating_system}"
             ),
+            Self::BackendUnavailable { generation, state } => write!(
+                formatter,
+                "Metal backend generation {} is {state}",
+                generation.get()
+            ),
             Self::SubmissionSequenceExhausted => {
                 formatter.write_str("Metal submission sequence exhausted")
             }
+            Self::AccountingOverflow => formatter.write_str("Metal accounting exhausted"),
             Self::ResourceUnavailable {
                 stage,
                 requested_bytes,
@@ -170,7 +242,9 @@ impl fmt::Display for RenderError {
             Self::EncoderUnavailable { stage } => {
                 write!(formatter, "Metal returned no encoder at {stage:?}")
             }
-            Self::CommandFailed { status, failure } => match failure {
+            Self::CommandFailed {
+                status, failure, ..
+            } => match failure {
                 Some(failure) => write!(formatter, "Metal command ended as {status:?}: {failure}"),
                 None => write!(
                     formatter,
@@ -206,7 +280,9 @@ impl Error for RenderError {
                 ..
             } => Some(failure),
             Self::UnsupportedPlatform { .. }
+            | Self::BackendUnavailable { .. }
             | Self::SubmissionSequenceExhausted
+            | Self::AccountingOverflow
             | Self::ResourceUnavailable { .. }
             | Self::TextureExtentUnsupported { .. }
             | Self::EncoderUnavailable { .. }
@@ -216,6 +292,80 @@ impl Error for RenderError {
             | Self::ReadbackAllocationFailed { .. }
             | Self::SubmissionInvariantViolated => None,
         }
+    }
+}
+
+/// Error returned while replacing a device-lost backend generation.
+#[derive(Debug)]
+pub enum RecoveryError {
+    /// Recovery was requested from a backend that was not device-lost.
+    BackendNotDeviceLost {
+        /// Generation that rejected recovery.
+        generation: BackendGeneration,
+        /// Current backend state.
+        state: BackendState,
+    },
+    /// The next generation identifier cannot be represented.
+    GenerationExhausted,
+    /// Creating the replacement native owner failed.
+    Initialization(InitializationError),
+}
+
+impl fmt::Display for RecoveryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BackendNotDeviceLost { generation, state } => write!(
+                formatter,
+                "backend generation {} is {state}, not device-lost",
+                generation.get()
+            ),
+            Self::GenerationExhausted => formatter.write_str("Metal backend generation exhausted"),
+            Self::Initialization(error) => write!(formatter, "Metal recovery failed: {error}"),
+        }
+    }
+}
+
+impl Error for RecoveryError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Initialization(error) => Some(error),
+            Self::BackendNotDeviceLost { .. } | Self::GenerationExhausted => None,
+        }
+    }
+}
+
+/// Evidence returned when a validated frame is cancelled before submission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CancellationReport {
+    generation: BackendGeneration,
+    primitives: usize,
+    omitted_primitives: usize,
+    uploaded_bytes_avoided: usize,
+}
+
+impl CancellationReport {
+    /// Returns the generation that accepted the cancellation.
+    #[must_use]
+    pub const fn generation(self) -> BackendGeneration {
+        self.generation
+    }
+
+    /// Returns consumed source primitives.
+    #[must_use]
+    pub const fn primitives(self) -> usize {
+        self.primitives
+    }
+
+    /// Returns primitives omitted during pure lowering.
+    #[must_use]
+    pub const fn omitted_primitives(self) -> usize {
+        self.omitted_primitives
+    }
+
+    /// Returns native upload bytes avoided by cancellation.
+    #[must_use]
+    pub const fn uploaded_bytes_avoided(self) -> usize {
+        self.uploaded_bytes_avoided
     }
 }
 
@@ -283,6 +433,9 @@ impl OffscreenFrame {
 
 pub(crate) struct NativeRenderAttempt {
     pub(crate) committed: bool,
+    pub(crate) device_lost: bool,
+    pub(crate) operations: FrameOperationUsage,
+    pub(crate) resources: FrameResourceUsage,
     pub(crate) result: Result<Bgra8Image, RenderError>,
 }
 
@@ -301,23 +454,190 @@ impl MetalBackend {
         scene: &Scene,
         descriptor: OffscreenDescriptor,
     ) -> Result<OffscreenFrame, RenderError> {
-        let frame = ValidatedFrame::new(scene, descriptor)?;
+        let frame = self.admit_frame(scene, descriptor)?;
         self.submit_validated(&frame)
+    }
+
+    /// Validates and cancels one frame before native allocation or submission.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation, admission, or accounting error. A successful
+    /// cancellation performs no native allocation, upload, or submission.
+    pub fn cancel_offscreen(
+        &mut self,
+        scene: &Scene,
+        descriptor: OffscreenDescriptor,
+    ) -> Result<CancellationReport, RenderError> {
+        let frame = self.admit_frame(scene, descriptor)?;
+        verify_cancellation_lifecycle(FrameLifecycle::new())?;
+        self.accounting
+            .record_accepted(
+                &frame,
+                AccountingOutcome::Cancelled,
+                false,
+                FrameOperationUsage::default(),
+                FrameResourceUsage::default(),
+            )
+            .map_err(|()| RenderError::AccountingOverflow)?;
+        Ok(CancellationReport {
+            generation: self.accounting.generation(),
+            primitives: frame.consumed_primitives(),
+            omitted_primitives: frame.omitted_primitives(),
+            uploaded_bytes_avoided: frame.upload_bytes(),
+        })
+    }
+
+    /// Stops admitting work after the synchronous backend is fully drained.
+    pub fn shutdown(&mut self) {
+        self.accounting.stop();
+    }
+
+    /// Consumes a device-lost backend and creates the next generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless this generation is device-lost, its sequence can
+    /// advance, and the replacement native backend initializes successfully.
+    pub fn recover(self) -> Result<Self, RecoveryError> {
+        let state = self.accounting.state();
+        let generation = self.accounting.generation();
+        if state != BackendState::DeviceLost {
+            return Err(RecoveryError::BackendNotDeviceLost { generation, state });
+        }
+        let next = generation
+            .next()
+            .ok_or(RecoveryError::GenerationExhausted)?;
+        crate::initialization::new_backend_generation(next).map_err(RecoveryError::Initialization)
     }
 
     /// Returns the number of command buffers committed by this backend.
     #[must_use]
     pub const fn submission_count(&self) -> u64 {
-        self.submissions
+        self.accounting.submitted_frames()
     }
 
     fn submit_validated(&mut self, frame: &ValidatedFrame) -> Result<OffscreenFrame, RenderError> {
-        let next_submission = self
-            .submissions
-            .checked_add(1)
-            .ok_or(RenderError::SubmissionSequenceExhausted)?;
+        let Some(next_submission) = self.accounting.submitted_frames().checked_add(1) else {
+            self.accounting
+                .record_accepted(
+                    frame,
+                    AccountingOutcome::Failed,
+                    false,
+                    FrameOperationUsage::default(),
+                    FrameResourceUsage::default(),
+                )
+                .map_err(|()| RenderError::AccountingOverflow)?;
+            return Err(RenderError::SubmissionSequenceExhausted);
+        };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let attempt = objc2::rc::autoreleasepool(|_| self.native.render(frame));
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         let attempt = self.native.render(frame);
-        complete_attempt(&mut self.submissions, next_submission, frame, attempt)
+        record_attempt(&mut self.accounting, frame, &attempt)?;
+        complete_attempt(next_submission, frame, attempt)
+    }
+
+    fn admit_frame(
+        &mut self,
+        scene: &Scene,
+        descriptor: OffscreenDescriptor,
+    ) -> Result<ValidatedFrame, RenderError> {
+        if self.accounting.state() != BackendState::Ready {
+            self.accounting
+                .record_admission_rejection()
+                .map_err(|()| RenderError::AccountingOverflow)?;
+            return Err(RenderError::BackendUnavailable {
+                generation: self.accounting.generation(),
+                state: self.accounting.state(),
+            });
+        }
+        match ValidatedFrame::new(scene, descriptor) {
+            Ok(frame) => Ok(frame),
+            Err(error) => {
+                self.accounting
+                    .record_validation_rejection()
+                    .map_err(|()| RenderError::AccountingOverflow)?;
+                Err(RenderError::Validation(error))
+            }
+        }
+    }
+}
+
+fn record_attempt(
+    accounting: &mut crate::BackendAccounting,
+    frame: &ValidatedFrame,
+    attempt: &NativeRenderAttempt,
+) -> Result<(), RenderError> {
+    let outcome = verify_attempt_lifecycle(attempt)?;
+    let result = accounting
+        .record_accepted(
+            frame,
+            outcome,
+            attempt.committed,
+            attempt.operations,
+            attempt.resources,
+        )
+        .map_err(|()| RenderError::AccountingOverflow);
+    if attempt.device_lost {
+        accounting.invalidate_device();
+    } else if result.is_err() && attempt.committed {
+        accounting.stop();
+    }
+    result
+}
+
+fn verify_cancellation_lifecycle(mut lifecycle: FrameLifecycle) -> Result<(), RenderError> {
+    lifecycle
+        .apply(LifecycleAction::BeginFrame)
+        .and_then(|()| lifecycle.apply(LifecycleAction::CancelBeforeSubmit))
+        .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+    verify_terminal_release(lifecycle)
+}
+
+fn verify_attempt_lifecycle(
+    attempt: &NativeRenderAttempt,
+) -> Result<AccountingOutcome, RenderError> {
+    let mut lifecycle = FrameLifecycle::new();
+    lifecycle
+        .apply(LifecycleAction::BeginFrame)
+        .and_then(|()| lifecycle.apply(LifecycleAction::Encode))
+        .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+    if attempt.committed {
+        lifecycle
+            .apply(LifecycleAction::Submit)
+            .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+    }
+    let outcome = match (&attempt.result, attempt.committed) {
+        (Ok(_), true) => {
+            lifecycle
+                .apply(LifecycleAction::Complete)
+                .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+            AccountingOutcome::Completed
+        }
+        (Err(_), true) => {
+            lifecycle
+                .apply(LifecycleAction::Fail)
+                .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+            AccountingOutcome::Failed
+        }
+        (Err(_), false) => {
+            lifecycle
+                .apply(LifecycleAction::FailBeforeSubmit)
+                .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+            AccountingOutcome::Failed
+        }
+        (Ok(_), false) => return Err(RenderError::SubmissionInvariantViolated),
+    };
+    verify_terminal_release(lifecycle)?;
+    Ok(outcome)
+}
+
+fn verify_terminal_release(lifecycle: FrameLifecycle) -> Result<(), RenderError> {
+    if lifecycle.invariants_hold() && lifecycle.release_count() == 1 {
+        Ok(())
+    } else {
+        Err(RenderError::SubmissionInvariantViolated)
     }
 }
 
@@ -344,14 +664,10 @@ impl Renderer for MetalBackend {
 }
 
 fn complete_attempt(
-    submissions: &mut u64,
     next_submission: u64,
     frame: &ValidatedFrame,
     attempt: NativeRenderAttempt,
 ) -> Result<OffscreenFrame, RenderError> {
-    if attempt.committed {
-        *submissions = next_submission;
-    }
     let image = attempt.result?;
     if !attempt.committed {
         return Err(RenderError::SubmissionInvariantViolated);
@@ -362,8 +678,12 @@ fn complete_attempt(
         report: FrameReport {
             submission: next_submission,
             primitives: frame.consumed_primitives(),
-            draw_calls: usize::from(!frame.quads().is_empty()),
-            uploaded_bytes: frame.upload_bytes(),
+            omitted_primitives: frame.omitted_primitives(),
+            draw_calls: attempt.operations.draw_calls,
+            uploaded_bytes: attempt.operations.uploaded_bytes,
+            allocated_bytes: attempt.resources.allocated_bytes,
+            retained_bytes: attempt.resources.peak_retained_bytes,
+            readback_bytes: attempt.resources.readback_bytes,
         },
     })
 }
@@ -436,20 +756,37 @@ mod tests {
     use std::error::Error as _;
 
     use alpine_core::{LinearRgba, Size};
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    use alpine_core::{Point, Rect};
     use alpine_renderer::FrameReport;
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     use alpine_renderer::Renderer;
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    use alpine_scene::Primitive;
     use alpine_scene::{SceneBuilder, SceneRevision};
 
     use super::{
-        CommandStatus, NativeRenderAttempt, OffscreenFrame, OffscreenTarget, RenderError,
-        RenderStage, compact_readback, compact_readback_with_control, complete_attempt,
-        map_readback_reservation_failure, store_render_result,
+        CommandStatus, NativeRenderAttempt, OffscreenFrame, OffscreenTarget,
+        RecoveryClassification, RenderError, RenderStage, compact_readback,
+        compact_readback_with_control, complete_attempt, map_readback_reservation_failure,
+        record_attempt, store_render_result, verify_terminal_release,
     };
-    use crate::{Bgra8Image, OffscreenDescriptor, ValidatedFrame};
+    use crate::{
+        Bgra8Image, OffscreenDescriptor, ValidatedFrame,
+        accounting::{FrameOperationUsage, FrameResourceUsage},
+    };
 
     fn image(byte: u8) -> Bgra8Image {
         Bgra8Image::from_compact_parts(1, 1, vec![byte; 4])
+    }
+
+    fn resources() -> FrameResourceUsage {
+        FrameResourceUsage {
+            allocated_bytes: 512,
+            peak_retained_bytes: 512,
+            current_retained_bytes: 0,
+            readback_bytes: 256,
+        }
     }
 
     fn empty_frame(width: u16, height: u16) -> Result<ValidatedFrame, RenderError> {
@@ -519,19 +856,18 @@ mod tests {
     #[test]
     fn completed_attempt_reports_work_and_advances_sequence() -> Result<(), RenderError> {
         let frame = empty_frame(1, 1)?;
-        let mut submissions = 4;
-
         let result = complete_attempt(
-            &mut submissions,
             5,
             &frame,
             NativeRenderAttempt {
                 committed: true,
+                device_lost: false,
+                operations: FrameOperationUsage::default(),
+                resources: resources(),
                 result: Ok(image(7)),
             },
         );
 
-        assert_eq!(submissions, 5);
         assert_eq!(
             result,
             Ok(OffscreenFrame {
@@ -539,8 +875,12 @@ mod tests {
                 report: FrameReport {
                     submission: 5,
                     primitives: 0,
+                    omitted_primitives: 0,
                     draw_calls: 0,
                     uploaded_bytes: 0,
+                    allocated_bytes: 512,
+                    retained_bytes: 512,
+                    readback_bytes: 256,
                 },
             })
         );
@@ -553,8 +893,12 @@ mod tests {
             Ok(FrameReport {
                 submission: 5,
                 primitives: 0,
+                omitted_primitives: 0,
                 draw_calls: 0,
                 uploaded_bytes: 0,
+                allocated_bytes: 512,
+                retained_bytes: 512,
+                readback_bytes: 256,
             })
         );
         Ok(())
@@ -563,43 +907,42 @@ mod tests {
     #[test]
     fn committed_failure_advances_sequence_without_returning_pixels() -> Result<(), RenderError> {
         let frame = empty_frame(1, 1)?;
-        let mut submissions = 8;
-
         let result = complete_attempt(
-            &mut submissions,
             9,
             &frame,
             NativeRenderAttempt {
                 committed: true,
+                device_lost: false,
+                operations: FrameOperationUsage::default(),
+                resources: resources(),
                 result: Err(RenderError::CommandFailed {
                     status: CommandStatus::Error,
                     failure: None,
+                    recovery: RecoveryClassification::RetryFrame,
                 }),
             },
         );
 
         assert!(matches!(result, Err(RenderError::CommandFailed { .. })));
-        assert_eq!(submissions, 9);
         Ok(())
     }
 
     #[test]
     fn uncommitted_success_is_rejected_without_advancing_sequence() -> Result<(), RenderError> {
         let frame = empty_frame(1, 1)?;
-        let mut submissions = 12;
-
         let result = complete_attempt(
-            &mut submissions,
             13,
             &frame,
             NativeRenderAttempt {
                 committed: false,
+                device_lost: false,
+                operations: FrameOperationUsage::default(),
+                resources: resources(),
                 result: Ok(image(3)),
             },
         );
 
         assert_eq!(result.err(), Some(RenderError::SubmissionInvariantViolated));
-        assert_eq!(submissions, 12);
         Ok(())
     }
 
@@ -610,8 +953,12 @@ mod tests {
         let report = FrameReport {
             submission: 2,
             primitives: 1,
+            omitted_primitives: 0,
             draw_calls: 1,
             uploaded_bytes: 32,
+            allocated_bytes: 512,
+            retained_bytes: 512,
+            readback_bytes: 256,
         };
 
         let returned = store_render_result(
@@ -731,6 +1078,7 @@ mod tests {
                 RenderError::CommandFailed {
                     status: CommandStatus::Error,
                     failure: Some(native),
+                    recovery: RecoveryClassification::RecreateBackend,
                 },
                 RenderStage::Completion,
                 true,
@@ -784,6 +1132,7 @@ mod tests {
             RenderError::CommandFailed {
                 status: CommandStatus::Error,
                 failure: None,
+                recovery: RecoveryClassification::RetryFrame,
             },
         ];
 
@@ -870,12 +1219,269 @@ mod tests {
         )
         .finish();
         let mut backend = portable_backend();
-        backend.submissions = u64::MAX;
+        backend.accounting.exhaust_submission_sequence();
 
         let error = backend.render_offscreen(&scene, frame.descriptor()).err();
 
         assert_eq!(error, Some(RenderError::SubmissionSequenceExhausted));
         assert_eq!(backend.submission_count(), u64::MAX);
+        assert!(backend.accounting().invariants_hold());
         Ok(())
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[test]
+    fn portable_cancellation_shutdown_and_recovery_contracts_are_balanced()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let frame = empty_frame(1, 1)?;
+        let mut builder = SceneBuilder::new(
+            SceneRevision::new(1),
+            Size::new(1.0, 1.0).ok_or(RenderError::SubmissionInvariantViolated)?,
+        );
+        let color =
+            LinearRgba::new(1.0, 0.0, 0.0, 1.0).ok_or(RenderError::SubmissionInvariantViolated)?;
+        let origin = Point::new(0.0, 0.0).ok_or(RenderError::SubmissionInvariantViolated)?;
+        builder.push(Primitive::Quad {
+            bounds: Rect::new(
+                origin,
+                Size::new(1.0, 1.0).ok_or(RenderError::SubmissionInvariantViolated)?,
+            ),
+            color,
+        });
+        builder.push(Primitive::Quad {
+            bounds: Rect::new(
+                origin,
+                Size::new(0.0, 0.0).ok_or(RenderError::SubmissionInvariantViolated)?,
+            ),
+            color,
+        });
+        builder.push(Primitive::Quad {
+            bounds: Rect::new(
+                Point::new(2.0, 2.0).ok_or(RenderError::SubmissionInvariantViolated)?,
+                Size::new(1.0, 1.0).ok_or(RenderError::SubmissionInvariantViolated)?,
+            ),
+            color,
+        });
+        let scene = builder.finish();
+        let mut backend = portable_backend();
+
+        let cancellation = backend.cancel_offscreen(&scene, frame.descriptor())?;
+        assert_eq!(cancellation.generation().get(), 1);
+        assert_eq!(cancellation.primitives(), 3);
+        assert_eq!(cancellation.omitted_primitives(), 2);
+        assert_eq!(cancellation.uploaded_bytes_avoided(), 32);
+        assert_eq!(backend.accounting().cancelled_frames(), 1);
+        assert_eq!(backend.accounting().draw_calls(), 0);
+        assert_eq!(backend.accounting().uploaded_bytes(), 0);
+        assert_eq!(backend.submission_count(), 0);
+        assert!(backend.accounting().invariants_hold());
+
+        backend.shutdown();
+        let stopped = backend
+            .render_offscreen(&scene, frame.descriptor())
+            .err()
+            .ok_or("stopped backend must reject")?;
+        assert!(matches!(
+            stopped,
+            RenderError::BackendUnavailable {
+                state: crate::BackendState::Stopped,
+                ..
+            }
+        ));
+        assert_eq!(stopped.recovery(), RecoveryClassification::Stopped);
+        assert!(backend.accounting().invariants_hold());
+        assert!(matches!(
+            backend.recover(),
+            Err(super::RecoveryError::BackendNotDeviceLost {
+                state: crate::BackendState::Stopped,
+                ..
+            })
+        ));
+
+        let mut lost = portable_backend();
+        lost.accounting.invalidate_device();
+        assert!(matches!(
+            lost.recover(),
+            Err(super::RecoveryError::Initialization(
+                crate::InitializationError::UnsupportedPlatform { .. }
+            ))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn attempt_recording_invalidates_device_loss_and_rejects_false_success()
+    -> Result<(), RenderError> {
+        let frame = empty_frame(1, 1)?;
+        let mut healthy = crate::BackendAccounting::new(crate::BackendGeneration::INITIAL);
+        let committed_success = NativeRenderAttempt {
+            committed: true,
+            device_lost: false,
+            operations: FrameOperationUsage::default(),
+            resources: resources(),
+            result: Ok(image(2)),
+        };
+        record_attempt(&mut healthy, &frame, &committed_success)?;
+        assert_eq!(healthy.state(), crate::BackendState::Ready);
+
+        let mut accounting = crate::BackendAccounting::new(crate::BackendGeneration::INITIAL);
+        let device_loss = NativeRenderAttempt {
+            committed: true,
+            device_lost: true,
+            operations: FrameOperationUsage::default(),
+            resources: resources(),
+            result: Err(RenderError::CommandFailed {
+                status: CommandStatus::Error,
+                failure: None,
+                recovery: RecoveryClassification::RecreateBackend,
+            }),
+        };
+        record_attempt(&mut accounting, &frame, &device_loss)?;
+        assert_eq!(accounting.state(), crate::BackendState::DeviceLost);
+        assert!(accounting.invariants_hold());
+
+        let mut false_success = crate::BackendAccounting::new(crate::BackendGeneration::INITIAL);
+        let attempt = NativeRenderAttempt {
+            committed: false,
+            device_lost: false,
+            operations: FrameOperationUsage::default(),
+            resources: resources(),
+            result: Ok(image(1)),
+        };
+        assert_eq!(
+            record_attempt(&mut false_success, &frame, &attempt),
+            Err(RenderError::SubmissionInvariantViolated)
+        );
+        assert_eq!(false_success.accepted_frames(), 0);
+
+        let mut exhausted = crate::BackendAccounting::new(crate::BackendGeneration::INITIAL);
+        exhausted.exhaust_render_sequence();
+        assert_eq!(
+            record_attempt(&mut exhausted, &frame, &committed_success),
+            Err(RenderError::AccountingOverflow)
+        );
+        assert_eq!(exhausted.state(), crate::BackendState::Stopped);
+        assert!(exhausted.invariants_hold());
+
+        let mut exhausted_loss = crate::BackendAccounting::new(crate::BackendGeneration::INITIAL);
+        exhausted_loss.exhaust_render_sequence();
+        let committed_loss = NativeRenderAttempt {
+            committed: true,
+            device_lost: true,
+            operations: FrameOperationUsage::default(),
+            resources: resources(),
+            result: Err(RenderError::CommandFailed {
+                status: CommandStatus::Error,
+                failure: None,
+                recovery: RecoveryClassification::RecreateBackend,
+            }),
+        };
+        assert_eq!(
+            record_attempt(&mut exhausted_loss, &frame, &committed_loss),
+            Err(RenderError::AccountingOverflow)
+        );
+        assert_eq!(exhausted_loss.state(), crate::BackendState::DeviceLost);
+        assert!(exhausted_loss.invariants_hold());
+        Ok(())
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "fixed invalid descriptor must be rejected"
+    )]
+    fn recovery_and_backend_errors_expose_stable_sources_and_messages() {
+        let generation = crate::BackendGeneration::INITIAL;
+        let errors = [
+            super::RecoveryError::BackendNotDeviceLost {
+                generation,
+                state: crate::BackendState::Ready,
+            },
+            super::RecoveryError::GenerationExhausted,
+            super::RecoveryError::Initialization(crate::InitializationError::DeviceUnavailable),
+        ];
+        assert!(errors[0].source().is_none());
+        assert!(errors[1].source().is_none());
+        assert!(errors[2].source().is_some());
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+        }
+
+        let cases = [
+            RenderError::BackendUnavailable {
+                generation,
+                state: crate::BackendState::Ready,
+            },
+            RenderError::BackendUnavailable {
+                generation,
+                state: crate::BackendState::DeviceLost,
+            },
+            RenderError::AccountingOverflow,
+        ];
+        assert_eq!(cases[0].recovery(), RecoveryClassification::Fatal);
+        assert_eq!(cases[1].recovery(), RecoveryClassification::RecreateBackend);
+        assert_eq!(cases[2].stage(), RenderStage::SubmissionSequence);
+        for error in cases {
+            assert!(!error.to_string().is_empty());
+        }
+
+        let validation_error = crate::OffscreenDescriptor::new(
+            0,
+            1,
+            1.0,
+            LinearRgba::new(0.0, 0.0, 0.0, 0.0).expect("fixture color must be valid"),
+        )
+        .expect_err("zero width must fail");
+        let converted = RenderError::from(validation_error);
+        assert_eq!(converted.recovery(), RecoveryClassification::FixRequest);
+        assert_eq!(
+            RenderError::TextureExtentUnsupported {
+                width: 1,
+                height: 1,
+                limit: 0,
+            }
+            .recovery(),
+            RecoveryClassification::FixRequest
+        );
+        assert_eq!(
+            RenderError::UnsupportedPlatform {
+                architecture: "fixture",
+                operating_system: "fixture",
+            }
+            .recovery(),
+            RecoveryClassification::Unsupported
+        );
+        assert_eq!(
+            RenderError::ResourceUnavailable {
+                stage: RenderStage::UploadBuffer,
+                requested_bytes: Some(1),
+            }
+            .recovery(),
+            RecoveryClassification::RetryFrame
+        );
+        assert_eq!(
+            RenderError::CommandFailed {
+                status: CommandStatus::Error,
+                failure: None,
+                recovery: RecoveryClassification::RetryFrame,
+            }
+            .recovery(),
+            RecoveryClassification::RetryFrame
+        );
+        assert_eq!(
+            verify_terminal_release(crate::FrameLifecycle::new()),
+            Err(RenderError::SubmissionInvariantViolated)
+        );
+        let mut stopped = crate::FrameLifecycle::new();
+        assert!(stopped.apply(crate::LifecycleAction::BeginShutdown).is_ok());
+        assert!(
+            stopped
+                .apply(crate::LifecycleAction::StopAfterDrain)
+                .is_ok()
+        );
+        assert_eq!(
+            super::verify_cancellation_lifecycle(stopped),
+            Err(RenderError::SubmissionInvariantViolated)
+        );
     }
 }

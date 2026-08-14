@@ -1,5 +1,7 @@
 use std::{error::Error, fmt};
 
+use crate::{BackendAccounting, BackendGeneration};
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::native as platform;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -18,7 +20,7 @@ pub(crate) const FRAGMENT_ENTRY_POINT: &str = "alpine_quad_fragment";
 pub struct MetalBackend {
     pub(crate) native: platform::NativeBackend,
     capabilities: MetalCapabilities,
-    pub(crate) submissions: u64,
+    pub(crate) accounting: BackendAccounting,
 }
 
 impl MetalBackend {
@@ -36,10 +38,17 @@ impl MetalBackend {
     pub(crate) fn from_platform_parts(
         (native, capabilities): (platform::NativeBackend, MetalCapabilities),
     ) -> Self {
+        Self::from_platform_generation((native, capabilities), BackendGeneration::INITIAL)
+    }
+
+    pub(crate) fn from_platform_generation(
+        (native, capabilities): (platform::NativeBackend, MetalCapabilities),
+        generation: BackendGeneration,
+    ) -> Self {
         Self {
             native,
             capabilities,
-            submissions: 0,
+            accounting: BackendAccounting::new(generation),
         }
     }
 
@@ -47,6 +56,28 @@ impl MetalBackend {
     #[must_use]
     pub fn capabilities(&self) -> &MetalCapabilities {
         &self.capabilities
+    }
+
+    /// Returns balanced cumulative work for this backend generation.
+    #[must_use]
+    pub const fn accounting(&self) -> BackendAccounting {
+        self.accounting
+    }
+}
+
+pub(crate) fn new_backend_generation(
+    generation: BackendGeneration,
+) -> Result<MetalBackend, InitializationError> {
+    assemble_backend_generation(platform::new_backend(), generation)
+}
+
+fn assemble_backend_generation(
+    result: Result<(platform::NativeBackend, MetalCapabilities), InitializationError>,
+    generation: BackendGeneration,
+) -> Result<MetalBackend, InitializationError> {
+    match result {
+        Ok(parts) => Ok(MetalBackend::from_platform_generation(parts, generation)),
+        Err(error) => Err(error),
     }
 }
 
@@ -792,6 +823,7 @@ mod tests {
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     #[test]
+    #[allow(clippy::expect_used, reason = "fixed test generation must advance")]
     fn assembles_the_safe_owner_from_validated_platform_parts() {
         let capabilities = MetalCapabilities::new("Fixture GPU".to_owned(), 73)
             .with_metal3(true)
@@ -804,5 +836,14 @@ mod tests {
         ));
 
         assert_eq!(backend.capabilities(), &capabilities);
+
+        let generated = super::assemble_backend_generation(
+            Ok((crate::unsupported::NativeBackend, capabilities)),
+            crate::BackendGeneration::INITIAL
+                .next()
+                .expect("fixture generation must advance"),
+        )
+        .expect("validated fixture parts must assemble");
+        assert_eq!(generated.accounting().generation().get(), 2);
     }
 }

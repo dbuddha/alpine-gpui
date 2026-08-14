@@ -27,3 +27,13 @@ export MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1
 export MTL_SHADER_VALIDATION_ABORT_ON_FAULT=1
 
 cargo test --locked -p alpine-metal
+/usr/bin/env \
+    -u MTL_DEBUG_LAYER \
+    -u MTL_DEBUG_LAYER_ERROR_MODE \
+    -u MTL_SHADER_VALIDATION \
+    -u MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING \
+    -u MTL_SHADER_VALIDATION_REPORT_TO_STDERR \
+    -u MTL_SHADER_VALIDATION_ABORT_ON_FAULT \
+    ALPINE_CAPTURE_RSS=1 cargo test --locked -p alpine-metal \
+    native::tests::cancellation_shutdown_and_steady_state_have_no_hidden_native_work \
+    -- --exact --nocapture --test-threads=1

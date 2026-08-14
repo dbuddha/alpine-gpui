@@ -199,6 +199,48 @@ platform_scope = ["portable", "macos-metal"]
 required_evidence = ["kani", "unit", "property", "integration", "e2e", "native", "miri", "mutation", "coverage"]
 
 [[claims]]
+id = "AEP-0025-C04"
+mission = "MP-02"
+capability_issue = 25
+aep = "docs/aep/0025-direct-metal-offscreen.md"
+requirement_issue = 52
+claim_type = "lifecycle"
+risk = "critical"
+case_study_findings = ["CS-ZED-003", "CS-ZED-006"]
+kani_applicability = "required"
+tla_properties = ["InFlightOwnsResource", "FreeResourceIsInactive", "TerminalRelease", "StoppedIsDrained", "SubmissionEventuallyTerminates", "ShutdownEventuallyStops"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+
+[[claims]]
+id = "AEP-0025-C06"
+mission = "MP-03"
+capability_issue = 25
+aep = "docs/aep/0025-direct-metal-offscreen.md"
+requirement_issue = 52
+claim_type = "safety"
+risk = "critical"
+case_study_findings = ["CS-ZED-003", "CS-ZED-006"]
+kani_applicability = "required"
+tla_properties = ["TerminalRelease", "FailureIsNotSuccess", "StoppedIsDrained"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+
+[[claims]]
+id = "AEP-0025-C07"
+mission = "MP-04"
+capability_issue = 25
+aep = "docs/aep/0025-direct-metal-offscreen.md"
+requirement_issue = 52
+claim_type = "memory"
+risk = "critical"
+case_study_findings = ["CS-ZED-005", "CS-ZED-006"]
+kani_applicability = "required"
+tla_properties = ["SingleSubmission", "TerminalRelease"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage", "benchmark"]
+
+[[claims]]
 id = "AEP-0025-C08"
 mission = "MP-03"
 capability_issue = 25
@@ -1096,3 +1138,378 @@ artifact = "scripts/check-coverage.sh"
 assertion = "Coverage ratchets include compact readback success, both length mismatches, and the finite row grid."
 scope = "Linux-hosted safe readback transformation and error contract."
 exclusions = ["macOS-only native lines", "semantic proof"]
+
+[[evidence]]
+id = "EV-0025-TLA04A"
+claim = "AEP-0025-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#InFlightOwnsResource"
+assertion = "A submitted frame retains the exclusive resource owner until a terminal transition."
+scope = "One renderer, one synchronous frame, and one resource owner."
+bounds = ["submission and release counts are zero through one"]
+assumptions = ["Submit represents one retained Metal command buffer"]
+exclusions = ["Objective-C retain counts", "driver behavior", "multiple in-flight frames"]
+companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
+
+[[evidence]]
+id = "EV-0025-TLA04B"
+claim = "AEP-0025-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#FreeResourceIsInactive"
+assertion = "A free resource is associated only with an idle or terminal frame."
+scope = "One synchronous frame resource lifecycle."
+bounds = ["one finite resource state"]
+assumptions = ["resource abstracts the complete native frame owner"]
+exclusions = ["allocator caches", "actual GPU residency"]
+companion = "crates/alpine-metal/src/lifecycle.rs#exhaustive_state_oracle_checks_invariants_and_actions"
+
+[[evidence]]
+id = "EV-0025-TLA04C"
+claim = "AEP-0025-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#TerminalRelease"
+assertion = "Completed, failed, and cancelled frames release their owner exactly once."
+scope = "Every terminal state in the finite lifecycle."
+bounds = ["release count is zero through one"]
+assumptions = ["one modeled release maps to Rust owner teardown"]
+exclusions = ["native framework retain-count internals"]
+companion = "crates/alpine-metal/src/native.rs#injected_precommit_failures_release_once_and_balance_accounting"
+
+[[evidence]]
+id = "EV-0025-TLA04D"
+claim = "AEP-0025-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#StoppedIsDrained"
+assertion = "A stopped renderer has no submitted frame or retained resource."
+scope = "One synchronous shutdown path."
+bounds = ["one renderer, frame, and resource"]
+assumptions = ["synchronous Rust prevents concurrent admission"]
+exclusions = ["future asynchronous queues", "process teardown"]
+companion = "crates/alpine-metal/src/native.rs#cancellation_shutdown_and_steady_state_have_no_hidden_native_work"
+
+[[evidence]]
+id = "EV-0025-TLA04E"
+claim = "AEP-0025-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#SubmissionEventuallyTerminates"
+assertion = "Every submitted frame eventually completes or fails."
+scope = "Finite synchronous lifecycle under weak fairness."
+bounds = ["one submitted frame"]
+assumptions = ["Metal wait eventually returns a terminal status"]
+exclusions = ["driver hangs", "wall-clock duration"]
+companion = "crates/alpine-metal/src/native.rs#injected_terminal_failures_never_return_pixels_and_classify_recovery"
+
+[[evidence]]
+id = "EV-0025-TLA04F"
+claim = "AEP-0025-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#ShutdownEventuallyStops"
+assertion = "Requested shutdown eventually stops after drain."
+scope = "Finite synchronous shutdown under weak fairness."
+bounds = ["one renderer and one frame"]
+assumptions = ["terminal completion remains enabled during shutdown"]
+exclusions = ["concurrent admission", "driver hangs"]
+companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
+
+[[evidence]]
+id = "EV-0025-KANI04"
+claim = "AEP-0025-C04"
+kind = "kani"
+artifact = "crates/alpine-metal/src/proofs.rs#lifecycle_actions_preserve_invariants"
+assertion = "Arbitrary actions preserve ownership, release, and drained-shutdown invariants."
+scope = "Compiled pure Rust transitions across all action choices."
+bounds = ["six steps", "nine actions per symbolic choice"]
+assumptions = ["each Rust action maps to its TLA+ counterpart"]
+exclusions = ["native handles", "concurrency", "longer traces"]
+companion = "crates/alpine-metal/src/lifecycle.rs#exhaustive_state_oracle_checks_invariants_and_actions"
+
+[[evidence]]
+id = "EV-0025-UNIT04"
+claim = "AEP-0025-C04"
+kind = "unit"
+artifact = "crates/alpine-metal/src/lifecycle.rs#exhaustive_state_oracle_checks_invariants_and_actions"
+assertion = "An independent oracle checks every finite state and enabled action."
+scope = "All bounded lifecycle state combinations."
+exclusions = ["native resources", "concurrency"]
+
+[[evidence]]
+id = "EV-0025-INTEGRATION04"
+claim = "AEP-0025-C04"
+kind = "integration"
+artifact = "crates/alpine-metal/tests/offscreen_contract.rs#public_backend_enforces_apple_silicon_baseline"
+assertion = "The public API completes, cancels, balances, drains, and rejects work after shutdown."
+scope = "External API on Apple Silicon or explicit capability rejection."
+exclusions = ["multiple in-flight frames", "window surfaces"]
+
+[[evidence]]
+id = "EV-0025-E2E04"
+claim = "AEP-0025-C04"
+kind = "e2e"
+artifact = "scripts/check-metal.sh"
+assertion = "Metal validation runs resource faults, cancellation, shutdown, and soak controls."
+scope = "GitHub-hosted Apple Silicon Metal execution."
+exclusions = ["fixed-hardware latency", "asynchronous ownership"]
+
+[[evidence]]
+id = "EV-0025-NATIVE04"
+claim = "AEP-0025-C04"
+kind = "native"
+artifact = "crates/alpine-metal/src/native.rs#injected_precommit_failures_release_once_and_balance_accounting"
+assertion = "Every precommit failure releases one frame owner with zero active owners on return."
+scope = "Allocation, command-buffer, and encoder stages."
+exclusions = ["Objective-C internal retain counts", "multiple in-flight frames"]
+
+[[evidence]]
+id = "EV-0025-MIRI04"
+claim = "AEP-0025-C04"
+kind = "miri"
+artifact = ".github/workflows/ci.yml#miri"
+assertion = "Miri exercises portable lifecycle, cancellation, shutdown, and accounting."
+scope = "Host-testable safe Rust on Linux."
+exclusions = ["Objective-C runtime", "Metal resources"]
+
+[[evidence]]
+id = "EV-0025-MUTATION04"
+claim = "AEP-0025-C04"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#metal-validation"
+assertion = "Viable native resource and shutdown mutations must be killed."
+scope = "Changed native and portable lifecycle code."
+exclusions = ["generated bindings", "unviable mutants"]
+
+[[evidence]]
+id = "EV-0025-COVERAGE04"
+claim = "AEP-0025-C04"
+kind = "coverage"
+artifact = "scripts/check-coverage.sh"
+assertion = "Coverage ratchets include all portable lifecycle and accounting branches."
+scope = "Linux-hosted safe Rust."
+exclusions = ["macOS-only native lines", "semantic proof"]
+
+[[evidence]]
+id = "EV-0025-TLA06A"
+claim = "AEP-0025-C06"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#TerminalRelease"
+assertion = "Success, precommit failure, submitted failure, and cancellation release once."
+scope = "Finite terminal frame states."
+bounds = ["one frame and release count zero through one"]
+assumptions = ["FailBeforeSubmit and Fail map to distinct Rust boundaries"]
+exclusions = ["native error codes", "allocator behavior"]
+companion = "crates/alpine-metal/src/native.rs#injected_precommit_failures_release_once_and_balance_accounting"
+
+[[evidence]]
+id = "EV-0025-TLA06B"
+claim = "AEP-0025-C06"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#FailureIsNotSuccess"
+assertion = "No failed frame carries a successful outcome."
+scope = "Precommit and submitted terminal failures."
+bounds = ["one finite frame outcome"]
+assumptions = ["Rust rejects pixels and success reports on error"]
+exclusions = ["native status semantics", "error message contents"]
+companion = "crates/alpine-metal/src/submission.rs#attempt_recording_invalidates_device_loss_and_rejects_false_success"
+
+[[evidence]]
+id = "EV-0025-TLA06C"
+claim = "AEP-0025-C06"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#StoppedIsDrained"
+assertion = "Failure followed by shutdown cannot stop with a retained resource."
+scope = "One failed or submitted frame during shutdown."
+bounds = ["one renderer, frame, and resource"]
+assumptions = ["terminal failure remains enabled during drain"]
+exclusions = ["driver hangs", "concurrent callers"]
+companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
+
+[[evidence]]
+id = "EV-0025-KANI06"
+claim = "AEP-0025-C06"
+kind = "kani"
+artifact = "crates/alpine-metal/src/proofs.rs#lifecycle_actions_preserve_invariants"
+assertion = "Arbitrary actions preserve failure, cancellation, release, and shutdown invariants."
+scope = "Compiled pure Rust lifecycle transitions."
+bounds = ["six steps", "nine action choices"]
+assumptions = ["native events map to the corresponding action"]
+exclusions = ["native error production", "unbounded traces"]
+companion = "crates/alpine-metal/src/lifecycle.rs#invalid_actions_are_atomic_and_descriptive"
+
+[[evidence]]
+id = "EV-0025-UNIT06"
+claim = "AEP-0025-C06"
+kind = "unit"
+artifact = "crates/alpine-metal/src/submission.rs#recovery_and_backend_errors_expose_stable_sources_and_messages"
+assertion = "Errors expose stable stages, recovery classes, owned details, sources, and messages."
+scope = "Portable public error taxonomy."
+exclusions = ["actual driver error generation"]
+
+[[evidence]]
+id = "EV-0025-INTEGRATION06"
+claim = "AEP-0025-C06"
+kind = "integration"
+artifact = "crates/alpine-metal/tests/offscreen_contract.rs#public_backend_enforces_apple_silicon_baseline"
+assertion = "The public boundary rejects work after shutdown and retains balanced accounting."
+scope = "External crate API on Apple Silicon."
+exclusions = ["actual device removal"]
+
+[[evidence]]
+id = "EV-0025-E2E06"
+claim = "AEP-0025-C06"
+kind = "e2e"
+artifact = "scripts/check-metal.sh"
+assertion = "Metal validation runs the complete injected failure matrix."
+scope = "Native Apple Silicon validation job."
+exclusions = ["physical device removal", "window surface loss"]
+
+[[evidence]]
+id = "EV-0025-NATIVE06A"
+claim = "AEP-0025-C06"
+kind = "native"
+artifact = "crates/alpine-metal/src/native.rs#injected_terminal_failures_never_return_pixels_and_classify_recovery"
+assertion = "Injected command failures return no pixels and classify retry, unsupported, or recreation."
+scope = "Four documented Metal command error codes after real completion."
+exclusions = ["physical device removal", "driver-generated page fault"]
+
+[[evidence]]
+id = "EV-0025-NATIVE06B"
+claim = "AEP-0025-C06"
+kind = "native"
+artifact = "crates/alpine-metal/src/native.rs#device_loss_invalidates_generation_and_recovery_is_guarded"
+assertion = "Device loss invalidates generation one, rejects work, and guards generation two recreation."
+scope = "Injected device removal with actual Metal setup and submission."
+exclusions = ["physical device replacement", "automatic retry"]
+
+[[evidence]]
+id = "EV-0025-MIRI06"
+claim = "AEP-0025-C06"
+kind = "miri"
+artifact = ".github/workflows/ci.yml#miri"
+assertion = "Miri exercises portable failure ownership and recovery state."
+scope = "Safe Rust supported by Miri."
+exclusions = ["native pointers", "Metal errors"]
+
+[[evidence]]
+id = "EV-0025-MUTATION06"
+claim = "AEP-0025-C06"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#metal-validation"
+assertion = "Viable classification, invalidation, and fail-closed mutations must be killed."
+scope = "Changed native and portable error paths."
+exclusions = ["generated bindings", "unviable mutants"]
+
+[[evidence]]
+id = "EV-0025-COVERAGE06"
+claim = "AEP-0025-C06"
+kind = "coverage"
+artifact = "scripts/check-coverage.sh"
+assertion = "Coverage ratchets include every portable recovery and failure transition."
+scope = "Linux-hosted safe Rust."
+exclusions = ["macOS-only native lines", "driver behavior"]
+
+[[evidence]]
+id = "EV-0025-TLA07A"
+claim = "AEP-0025-C07"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#SingleSubmission"
+assertion = "The modeled frame cannot hide more than one submission."
+scope = "One accepted synchronous frame."
+bounds = ["submission count zero through one"]
+assumptions = ["implementation counts every command commit"]
+exclusions = ["byte accounting", "multiple frames"]
+companion = "crates/alpine-metal/src/native.rs#cancellation_shutdown_and_steady_state_have_no_hidden_native_work"
+
+[[evidence]]
+id = "EV-0025-TLA07B"
+claim = "AEP-0025-C07"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#TerminalRelease"
+assertion = "Terminal work has one release, preventing modeled retained-resource growth."
+scope = "One terminal frame resource."
+bounds = ["release count zero through one"]
+assumptions = ["one release maps to frame-local teardown"]
+exclusions = ["driver-private memory not visible in process RSS"]
+companion = "crates/alpine-metal/src/native.rs#cancellation_shutdown_and_steady_state_have_no_hidden_native_work"
+
+[[evidence]]
+id = "EV-0025-KANI07"
+claim = "AEP-0025-C07"
+kind = "kani"
+artifact = "crates/alpine-metal/src/proofs.rs#accepted_frame_accounting_is_atomic_and_balanced"
+assertion = "Symbolic frame totals update atomically with balanced terminal and submission counts or remain unchanged."
+scope = "One accepted frame with symbolic outcome, commit flag, counts, and bytes."
+bounds = ["u8 primitive and draw counts", "u16 upload, allocation, and readback bytes"]
+assumptions = ["omissions and draws do not exceed primitives", "readback does not exceed allocation"]
+exclusions = ["native allocation truth", "multiple-frame overflow", "elapsed time"]
+companion = "crates/alpine-metal/src/accounting.rs#balances_rejections_and_every_terminal_outcome"
+
+[[evidence]]
+id = "EV-0025-UNIT07"
+claim = "AEP-0025-C07"
+kind = "unit"
+artifact = "crates/alpine-metal/src/accounting.rs#balances_rejections_and_every_terminal_outcome"
+assertion = "Accounting balances rejections, terminal outcomes, submissions, allocations, retention, and readback."
+scope = "Portable cumulative accounting transitions."
+exclusions = ["native allocation measurement", "process RSS"]
+
+[[evidence]]
+id = "EV-0025-INTEGRATION07"
+claim = "AEP-0025-C07"
+kind = "integration"
+artifact = "crates/alpine-metal/tests/offscreen_contract.rs#public_backend_enforces_apple_silicon_baseline"
+assertion = "Public reports expose primitive, omission, draw, upload, allocation, retention, and readback evidence."
+scope = "External API over actual Metal rendering."
+exclusions = ["performance thresholds", "process RSS"]
+
+[[evidence]]
+id = "EV-0025-E2E07"
+claim = "AEP-0025-C07"
+kind = "e2e"
+artifact = "scripts/check-metal.sh"
+assertion = "The Metal gate runs full accounting and repeated-frame retention under API validation, then captures an isolated production-like resident-memory distribution without validation-layer allocations."
+scope = "Apple Silicon native CI."
+exclusions = ["qualified timing", "energy"]
+
+[[evidence]]
+id = "EV-0025-NATIVE07"
+claim = "AEP-0025-C07"
+kind = "native"
+artifact = "crates/alpine-metal/src/native.rs#cancellation_shutdown_and_steady_state_have_no_hidden_native_work"
+assertion = "One cancellation plus 512 validation-soak frames balance submissions, bytes, and releases with zero current retention; after 4,096 memory-soak warmup frames, process RSS cannot grow by more than one host page."
+scope = "Repeated identical Metal workload and ownership probe."
+exclusions = ["driver-private caches", "fixed performance budget"]
+
+[[evidence]]
+id = "EV-0025-BENCHMARK07"
+claim = "AEP-0025-C07"
+kind = "benchmark"
+artifact = "crates/alpine-metal/src/native.rs#cancellation_shutdown_and_steady_state_have_no_hidden_native_work"
+assertion = "The repeated-frame workload records constant retained bytes, cumulative allocation and readback totals, and a 256-frame resident-memory distribution after 4,096 warmup frames."
+scope = "Correctness-mode resource soak on Apple Silicon."
+exclusions = ["latency claim", "fixed hardware", "cross-machine performance budget"]
+
+[[evidence]]
+id = "EV-0025-MIRI07"
+claim = "AEP-0025-C07"
+kind = "miri"
+artifact = ".github/workflows/ci.yml#miri"
+assertion = "Miri exercises portable accounting arithmetic and atomic failure."
+scope = "Safe Rust accounting on Linux."
+exclusions = ["native resources", "resident memory"]
+
+[[evidence]]
+id = "EV-0025-MUTATION07"
+claim = "AEP-0025-C07"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#mutation-diff"
+assertion = "Viable accounting total and invariant mutations must be killed."
+scope = "Portable accounting and frame-report code."
+exclusions = ["unviable mutants", "native-only branches"]
+
+[[evidence]]
+id = "EV-0025-COVERAGE07"
+claim = "AEP-0025-C07"
+kind = "coverage"
+artifact = "scripts/check-coverage.sh"
+assertion = "Coverage ratchets include every portable accounting outcome and invariant."
+scope = "Linux-hosted safe Rust."
+exclusions = ["macOS-only allocation queries", "proof of bounded memory"]

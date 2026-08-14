@@ -1,5 +1,6 @@
 use crate::{
     InitializationError, MetalCapabilities, ValidatedFrame,
+    accounting::{FrameOperationUsage, FrameResourceUsage},
     submission::{NativeRenderAttempt, RenderError},
 };
 
@@ -20,6 +21,9 @@ impl NativeBackend {
     pub(crate) fn render(&mut self, _frame: &ValidatedFrame) -> NativeRenderAttempt {
         NativeRenderAttempt {
             committed: false,
+            device_lost: false,
+            operations: FrameOperationUsage::default(),
+            resources: FrameResourceUsage::default(),
             result: Err(RenderError::UnsupportedPlatform {
                 architecture: std::env::consts::ARCH,
                 operating_system: std::env::consts::OS,

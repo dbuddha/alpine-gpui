@@ -75,6 +75,16 @@ Fail ==
     /\ outcome' = "Error"
     /\ UNCHANGED <<renderer, submitCount>>
 
+FailBeforeSubmit ==
+    /\ renderer = "Ready"
+    /\ frame \in {"Lowered", "Encoded"}
+    /\ resource = "Encoding"
+    /\ frame' = "Failed"
+    /\ resource' = "Free"
+    /\ releaseCount' = 1
+    /\ outcome' = "Error"
+    /\ UNCHANGED <<renderer, submitCount>>
+
 CancelBeforeSubmit ==
     /\ renderer = "Ready"
     /\ frame \in {"Lowered", "Encoded"}
@@ -112,6 +122,7 @@ Next ==
     \/ Submit
     \/ Complete
     \/ Fail
+    \/ FailBeforeSubmit
     \/ CancelBeforeSubmit
     \/ BeginShutdown
     \/ StopAfterDrain
