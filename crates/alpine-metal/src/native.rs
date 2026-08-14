@@ -1235,6 +1235,9 @@ mod tests {
         let mut expected_readback = 0_u128;
         let mut retained = None;
         let capture_resident_distribution = std::env::var_os("ALPINE_CAPTURE_RSS").is_some();
+        if capture_resident_distribution {
+            let _ = resident_bytes()?;
+        }
         let warmup_frames = if capture_resident_distribution {
             RSS_WARMUP_FRAMES
         } else {

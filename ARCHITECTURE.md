@@ -302,7 +302,9 @@ After 4,096 warmup frames, the isolated native memory soak records process
 resident bytes every 16 frames across a 256-frame measurement window. Those
 samples must not grow beyond the baseline by more than one host virtual-memory page,
 which accounts for RSS measurement granularity without claiming a qualified
-performance budget. Metal API and shader validation cover the full suite first;
+performance budget. The RSS probe itself is primed before warmup so its lazy
+measurement allocation cannot contaminate the renderer baseline. Metal API and
+shader validation cover the full suite first;
 the process-memory sample then runs without validation-layer instrumentation so
 debug allocations cannot be mistaken for shipping renderer retention. Exact
 Alpine-owned retention remains the primary leak invariant.
