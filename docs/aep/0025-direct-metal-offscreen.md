@@ -1,6 +1,6 @@
 # AEP 0025: Direct Metal offscreen renderer
 
-- Status: proposed
+- Status: accepted 2026-08-14
 - Capability: [#25](https://github.com/dbuddha/alpine-gpui/issues/25)
 - Decision: [#46](https://github.com/dbuddha/alpine-gpui/issues/46)
 - Research: [#45](https://github.com/dbuddha/alpine-gpui/issues/45), [#27](https://github.com/dbuddha/alpine-gpui/issues/27)

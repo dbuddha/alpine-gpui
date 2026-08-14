@@ -14,14 +14,11 @@ An accepted AEP is historical. Later design creates a superseding AEP and links
 the old one instead of rewriting the original rationale. Current implemented
 truth always moves into `ARCHITECTURE.md` and rustdoc.
 
-Proposed AEPs:
-
-- [AEP 0025: Direct Metal offscreen renderer](0025-direct-metal-offscreen.md)
-
 Accepted AEPs:
 
 - [AEP 0009: Multi-layer assurance](0009-multi-layer-assurance.md)
 - [AEP 0016: Portable value contracts](0016-portable-value-contracts.md)
+- [AEP 0025: Direct Metal offscreen renderer](0025-direct-metal-offscreen.md)
 - [AEP 0028: Zed golden qualification](0028-zed-golden-qualification.md)
 
 Required sections are motivation, journeys, goals, non-goals, atomic claims,
