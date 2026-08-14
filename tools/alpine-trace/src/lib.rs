@@ -311,20 +311,24 @@ mod tests {
             quads: vec![quad(0), quad(1)],
         }
         .decode();
-        assert!(decoded.is_ok(), "{decoded:#?}");
-        if let Ok(decoded) = decoded {
-            assert_eq!(decoded.scene().revision().get(), 9);
-            assert_eq!(decoded.scene().primitives().len(), 2);
-            assert_eq!(decoded.descriptor().pixel_width(), 8);
-            assert_eq!(decoded.descriptor().pixel_height(), 4);
-            assert_eq!(decoded.descriptor().scale().to_bits(), 2.0_f32.to_bits());
-            let frame = decoded.validated_frame();
-            assert!(frame.is_ok(), "{frame:#?}");
-            if let Ok(frame) = frame {
-                assert_eq!(frame.consumed_primitives(), 2);
-                assert_eq!(frame.omitted_primitives(), 0);
-            }
-        }
+        assert_eq!(
+            decoded.as_ref().map(|decoded| (
+                decoded.scene().revision().get(),
+                decoded.scene().primitives().len(),
+                decoded.descriptor().pixel_width(),
+                decoded.descriptor().pixel_height(),
+                decoded.descriptor().scale().to_bits(),
+            )),
+            Ok((9, 2, 8, 4, 2.0_f32.to_bits()))
+        );
+        assert_eq!(
+            decoded.as_ref().map(|decoded| {
+                decoded
+                    .validated_frame()
+                    .map(|frame| (frame.consumed_primitives(), frame.omitted_primitives()))
+            }),
+            Ok(Ok((2, 0)))
+        );
     }
 
     #[test]
