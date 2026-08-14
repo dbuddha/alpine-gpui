@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::{cell::Cell, rc::Rc};
 use std::{ffi::c_void, mem::size_of, ptr::NonNull, slice};
 
 use dispatch2::DispatchData;
@@ -5,10 +7,10 @@ use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_foundation::{NSError, NSString};
 use objc2_metal::{
     MTLBlendFactor, MTLBlitCommandEncoder, MTLBuffer, MTLClearColor, MTLCommandBuffer,
-    MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLCreateSystemDefaultDevice,
-    MTLDevice, MTLFunction, MTLGPUFamily, MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat,
-    MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResourceOptions, MTLSize,
+    MTLCommandBufferError, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
+    MTLCreateSystemDefaultDevice, MTLDevice, MTLFunction, MTLGPUFamily, MTLLibrary, MTLLoadAction,
+    MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
+    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResource, MTLResourceOptions, MTLSize,
     MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
 };
 
@@ -17,9 +19,12 @@ use crate::initialization::{
     MetalCapabilities, NativeFailure, VERTEX_ENTRY_POINT, initialize,
 };
 use crate::submission::{
-    CommandStatus, NativeRenderAttempt, RenderError, RenderStage, compact_readback,
+    CommandStatus, NativeRenderAttempt, RecoveryClassification, RenderError, RenderStage,
+    compact_readback,
 };
-use crate::{Bgra8Image, MAX_METAL3_TEXTURE_DIMENSION_2D, ValidatedFrame};
+use crate::{
+    Bgra8Image, MAX_METAL3_TEXTURE_DIMENSION_2D, ValidatedFrame, accounting::FrameResourceUsage,
+};
 
 static OFFLINE_LIBRARY: &[u8] = include_bytes!(env!("ALPINE_METALLIB_PATH"));
 
@@ -50,23 +55,110 @@ pub(crate) struct NativeBackend {
         reason = "the initialized objects must remain retained for the backend lifetime"
     )]
     initialized: Initialized<NativeDriver>,
+    #[cfg(test)]
+    fault: NativeFault,
+    #[cfg(test)]
+    probe: ResourceProbe,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeFault {
+    None,
+    TextureAllocation,
+    ReadbackAllocation,
+    UploadAllocation,
+    CommandBuffer,
+    RenderEncoder,
+    BlitEncoder,
+    TerminalError(i64),
+    UnexpectedStatus,
+    ReadbackLength,
+}
+
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct ResourceProbe(Rc<ResourceProbeState>);
+
+#[cfg(test)]
+#[derive(Default)]
+struct ResourceProbeState {
+    acquired: Cell<u64>,
+    released: Cell<u64>,
+    active: Cell<u64>,
+}
+
+#[cfg(test)]
+impl ResourceProbe {
+    fn acquire(&self) -> ResourceLease {
+        self.0.acquired.set(self.0.acquired.get() + 1);
+        self.0.active.set(self.0.active.get() + 1);
+        ResourceLease(self.clone())
+    }
+
+    fn counts(&self) -> (u64, u64, u64) {
+        (
+            self.0.acquired.get(),
+            self.0.released.get(),
+            self.0.active.get(),
+        )
+    }
+}
+
+#[cfg(test)]
+struct ResourceLease(ResourceProbe);
+
+#[cfg(test)]
+impl Drop for ResourceLease {
+    fn drop(&mut self) {
+        self.0.0.released.set(self.0.0.released.get() + 1);
+        self.0.0.active.set(self.0.0.active.get() - 1);
+    }
 }
 
 impl NativeBackend {
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::too_many_lines,
+        reason = "the linear command ownership protocol remains visible in one audited boundary"
+    )]
     pub(crate) fn render(&mut self, frame: &ValidatedFrame) -> NativeRenderAttempt {
-        let resources = match FrameResources::new(&self.initialized.device, frame) {
+        let resources = match FrameResources::new(
+            &self.initialized.device,
+            frame,
+            #[cfg(test)]
+            self.fault,
+            #[cfg(test)]
+            &self.probe,
+        ) {
             Ok(resources) => resources,
-            Err(error) => {
+            Err(failure) => {
                 return NativeRenderAttempt {
                     committed: false,
-                    result: Err(error),
+                    device_lost: false,
+                    usage: failure.usage,
+                    result: Err(failure.error),
                 };
             }
         };
+        let usage = resources.usage;
+        #[cfg(test)]
+        if self.fault == NativeFault::CommandBuffer {
+            return NativeRenderAttempt {
+                committed: false,
+                device_lost: false,
+                usage,
+                result: Err(RenderError::ResourceUnavailable {
+                    stage: RenderStage::CommandBuffer,
+                    requested_bytes: None,
+                }),
+            };
+        }
         let Some(command) = self.initialized.queue.commandBuffer() else {
             return NativeRenderAttempt {
                 committed: false,
+                device_lost: false,
+                usage,
                 result: Err(RenderError::ResourceUnavailable {
                     stage: RenderStage::CommandBuffer,
                     requested_bytes: None,
@@ -74,17 +166,44 @@ impl NativeBackend {
             };
         };
 
+        #[cfg(test)]
+        if self.fault == NativeFault::RenderEncoder {
+            return NativeRenderAttempt {
+                committed: false,
+                device_lost: false,
+                usage,
+                result: Err(RenderError::EncoderUnavailable {
+                    stage: RenderStage::RenderEncoder,
+                }),
+            };
+        }
+
         if let Err(error) =
             encode_render_pass(&command, &self.initialized.pipeline, &resources, frame)
         {
             return NativeRenderAttempt {
                 committed: false,
+                device_lost: false,
+                usage,
                 result: Err(error),
+            };
+        }
+        #[cfg(test)]
+        if self.fault == NativeFault::BlitEncoder {
+            return NativeRenderAttempt {
+                committed: false,
+                device_lost: false,
+                usage,
+                result: Err(RenderError::EncoderUnavailable {
+                    stage: RenderStage::BlitEncoder,
+                }),
             };
         }
         if let Err(error) = encode_readback(&command, &resources, frame) {
             return NativeRenderAttempt {
                 committed: false,
+                device_lost: false,
+                usage,
                 result: Err(error),
             };
         }
@@ -92,17 +211,30 @@ impl NativeBackend {
         command.commit();
         command.waitUntilCompleted();
         let status = command_status(command.status());
-        let result = match status {
-            CommandStatus::Completed => read_compact_image(&resources.readback, frame),
-            CommandStatus::Error => Err(RenderError::CommandFailed {
-                status,
-                failure: command.error().map(|error| copy_error(&error)),
-            }),
-            status => Err(RenderError::UnexpectedCommandStatus { status }),
+        let terminal = match status {
+            CommandStatus::Completed => (read_compact_image(&resources.readback, frame), false),
+            CommandStatus::Error => {
+                let failure = command.error().map(|error| copy_error(&error));
+                let (recovery, device_lost) = classify_command_failure(failure.as_ref());
+                (
+                    Err(RenderError::CommandFailed {
+                        status,
+                        failure,
+                        recovery,
+                    }),
+                    device_lost,
+                )
+            }
+            status => (Err(RenderError::UnexpectedCommandStatus { status }), false),
         };
+        #[cfg(test)]
+        let terminal = injected_terminal_result(self.fault, terminal.0, frame);
+        let (result, device_lost) = terminal;
 
         NativeRenderAttempt {
             committed: true,
+            device_lost,
+            usage,
             result,
         }
     }
@@ -111,7 +243,16 @@ impl NativeBackend {
 pub(crate) fn new_backend() -> Result<(NativeBackend, MetalCapabilities), InitializationError> {
     initialize(&NativeDriver::production()).map(|initialized| {
         let capabilities = initialized.capabilities.clone();
-        (NativeBackend { initialized }, capabilities)
+        (
+            NativeBackend {
+                initialized,
+                #[cfg(test)]
+                fault: NativeFault::None,
+                #[cfg(test)]
+                probe: ResourceProbe::default(),
+            },
+            capabilities,
+        )
     })
 }
 
@@ -211,18 +352,50 @@ struct FrameResources {
     texture: Texture,
     readback: Buffer,
     upload: Option<Buffer>,
+    usage: FrameResourceUsage,
+    #[cfg(test)]
+    _lease: ResourceLease,
+}
+
+struct ResourceBuildFailure {
+    error: RenderError,
+    usage: FrameResourceUsage,
 }
 
 impl FrameResources {
-    fn new(device: &Device, frame: &ValidatedFrame) -> Result<Self, RenderError> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "partial native allocation and its exact accounting remain one linear transaction"
+    )]
+    fn new(
+        device: &Device,
+        frame: &ValidatedFrame,
+        #[cfg(test)] fault: NativeFault,
+        #[cfg(test)] probe: &ResourceProbe,
+    ) -> Result<Self, ResourceBuildFailure> {
+        #[cfg(test)]
+        let lease = probe.acquire();
         let descriptor = frame.descriptor();
         if descriptor.pixel_width() > MAX_METAL3_TEXTURE_DIMENSION_2D
             || descriptor.pixel_height() > MAX_METAL3_TEXTURE_DIMENSION_2D
         {
-            return Err(RenderError::TextureExtentUnsupported {
-                width: descriptor.pixel_width(),
-                height: descriptor.pixel_height(),
-                limit: MAX_METAL3_TEXTURE_DIMENSION_2D,
+            return Err(ResourceBuildFailure {
+                error: RenderError::TextureExtentUnsupported {
+                    width: descriptor.pixel_width(),
+                    height: descriptor.pixel_height(),
+                    limit: MAX_METAL3_TEXTURE_DIMENSION_2D,
+                },
+                usage: FrameResourceUsage::default(),
+            });
+        }
+        #[cfg(test)]
+        if fault == NativeFault::TextureAllocation {
+            return Err(ResourceBuildFailure {
+                error: RenderError::ResourceUnavailable {
+                    stage: RenderStage::RenderTexture,
+                    requested_bytes: None,
+                },
+                usage: FrameResourceUsage::default(),
             });
         }
         // SAFETY: OffscreenDescriptor rejects zero dimensions and dimensions
@@ -237,24 +410,74 @@ impl FrameResources {
         };
         texture_descriptor.setStorageMode(MTLStorageMode::Private);
         texture_descriptor.setUsage(MTLTextureUsage::RenderTarget);
-        let texture = device.newTextureWithDescriptor(&texture_descriptor).ok_or(
-            RenderError::ResourceUnavailable {
-                stage: RenderStage::RenderTexture,
-                requested_bytes: None,
-            },
-        )?;
+        let texture = device
+            .newTextureWithDescriptor(&texture_descriptor)
+            .ok_or_else(|| ResourceBuildFailure {
+                error: RenderError::ResourceUnavailable {
+                    stage: RenderStage::RenderTexture,
+                    requested_bytes: None,
+                },
+                usage: FrameResourceUsage::default(),
+            })?;
+        let texture_bytes = texture.allocatedSize();
 
         let layout = frame.readback_layout();
+        #[cfg(test)]
+        if fault == NativeFault::ReadbackAllocation {
+            return Err(ResourceBuildFailure {
+                error: RenderError::ResourceUnavailable {
+                    stage: RenderStage::ReadbackBuffer,
+                    requested_bytes: Some(layout.buffer_len()),
+                },
+                usage: FrameResourceUsage {
+                    allocated_bytes: texture_bytes,
+                    peak_retained_bytes: texture_bytes,
+                    current_retained_bytes: 0,
+                    readback_bytes: 0,
+                },
+            });
+        }
         let readback = device
             .newBufferWithLength_options(layout.buffer_len(), MTLResourceOptions::StorageModeShared)
-            .ok_or(RenderError::ResourceUnavailable {
-                stage: RenderStage::ReadbackBuffer,
-                requested_bytes: Some(layout.buffer_len()),
+            .ok_or_else(|| ResourceBuildFailure {
+                error: RenderError::ResourceUnavailable {
+                    stage: RenderStage::ReadbackBuffer,
+                    requested_bytes: Some(layout.buffer_len()),
+                },
+                usage: FrameResourceUsage {
+                    allocated_bytes: texture_bytes,
+                    peak_retained_bytes: texture_bytes,
+                    current_retained_bytes: 0,
+                    readback_bytes: 0,
+                },
             })?;
+        let readback_bytes = readback.allocatedSize();
+        let base_allocated =
+            texture_bytes
+                .checked_add(readback_bytes)
+                .ok_or_else(|| ResourceBuildFailure {
+                    error: RenderError::AccountingOverflow,
+                    usage: FrameResourceUsage::default(),
+                })?;
 
         let upload = if frame.quads().is_empty() {
             None
         } else {
+            #[cfg(test)]
+            if fault == NativeFault::UploadAllocation {
+                return Err(ResourceBuildFailure {
+                    error: RenderError::ResourceUnavailable {
+                        stage: RenderStage::UploadBuffer,
+                        requested_bytes: Some(frame.upload_bytes()),
+                    },
+                    usage: FrameResourceUsage {
+                        allocated_bytes: base_allocated,
+                        peak_retained_bytes: base_allocated,
+                        current_retained_bytes: 0,
+                        readback_bytes: readback.length(),
+                    },
+                });
+            }
             let first = NonNull::from(&frame.quads()[0]).cast::<c_void>();
             // SAFETY: `first` points to `frame.upload_bytes()` initialized,
             // contiguous bytes because LoweredQuad is Copy and repr(C). Metal
@@ -266,17 +489,42 @@ impl FrameResources {
                     MTLResourceOptions::StorageModeShared,
                 )
             }
-            .ok_or(RenderError::ResourceUnavailable {
-                stage: RenderStage::UploadBuffer,
-                requested_bytes: Some(frame.upload_bytes()),
+            .ok_or_else(|| ResourceBuildFailure {
+                error: RenderError::ResourceUnavailable {
+                    stage: RenderStage::UploadBuffer,
+                    requested_bytes: Some(frame.upload_bytes()),
+                },
+                usage: FrameResourceUsage {
+                    allocated_bytes: base_allocated,
+                    peak_retained_bytes: base_allocated,
+                    current_retained_bytes: 0,
+                    readback_bytes: readback.length(),
+                },
             })?
             .into()
+        };
+
+        let allocated_bytes = upload.as_deref().map_or(Some(base_allocated), |upload| {
+            base_allocated.checked_add(upload.allocatedSize())
+        });
+        let allocated_bytes = allocated_bytes.ok_or_else(|| ResourceBuildFailure {
+            error: RenderError::AccountingOverflow,
+            usage: FrameResourceUsage::default(),
+        })?;
+        let usage = FrameResourceUsage {
+            allocated_bytes,
+            peak_retained_bytes: allocated_bytes,
+            current_retained_bytes: 0,
+            readback_bytes: readback.length(),
         };
 
         Ok(Self {
             texture,
             readback,
             upload,
+            usage,
+            #[cfg(test)]
+            _lease: lease,
         })
     }
 }
@@ -415,9 +663,80 @@ fn copy_error(error: &NSError) -> NativeFailure {
     )
 }
 
+fn classify_command_failure(failure: Option<&NativeFailure>) -> (RecoveryClassification, bool) {
+    let Some(failure) = failure else {
+        return (RecoveryClassification::Fatal, false);
+    };
+    if failure.domain() != "MTLCommandBufferErrorDomain" {
+        return (RecoveryClassification::Fatal, false);
+    }
+    let code = failure.code();
+    let device_removed = i64::try_from(MTLCommandBufferError::DeviceRemoved.0).ok();
+    let access_revoked = i64::try_from(MTLCommandBufferError::AccessRevoked.0).ok();
+    if Some(code) == device_removed || Some(code) == access_revoked {
+        return (RecoveryClassification::RecreateBackend, true);
+    }
+    let out_of_memory = i64::try_from(MTLCommandBufferError::OutOfMemory.0).ok();
+    let memoryless = i64::try_from(MTLCommandBufferError::Memoryless.0).ok();
+    if Some(code) == out_of_memory || Some(code) == memoryless {
+        return (RecoveryClassification::RetryFrame, false);
+    }
+    let not_permitted = i64::try_from(MTLCommandBufferError::NotPermitted.0).ok();
+    if Some(code) == not_permitted {
+        return (RecoveryClassification::Unsupported, false);
+    }
+    (RecoveryClassification::Fatal, false)
+}
+
+#[cfg(test)]
+fn injected_terminal_result(
+    fault: NativeFault,
+    result: Result<Bgra8Image, RenderError>,
+    frame: &ValidatedFrame,
+) -> (Result<Bgra8Image, RenderError>, bool) {
+    match fault {
+        NativeFault::TerminalError(code) => {
+            let failure = NativeFailure::new(
+                "MTLCommandBufferErrorDomain".to_owned(),
+                code,
+                "injected terminal command failure".to_owned(),
+            );
+            let (recovery, device_lost) = classify_command_failure(Some(&failure));
+            (
+                Err(RenderError::CommandFailed {
+                    status: CommandStatus::Error,
+                    failure: Some(failure),
+                    recovery,
+                }),
+                device_lost,
+            )
+        }
+        NativeFault::UnexpectedStatus => (
+            Err(RenderError::UnexpectedCommandStatus {
+                status: CommandStatus::Scheduled,
+            }),
+            false,
+        ),
+        NativeFault::ReadbackLength => (
+            Err(RenderError::ReadbackLengthMismatch {
+                expected: frame.readback_layout().buffer_len(),
+                actual: frame.readback_layout().buffer_len() + 1,
+            }),
+            false,
+        ),
+        NativeFault::None
+        | NativeFault::TextureAllocation
+        | NativeFault::ReadbackAllocation
+        | NativeFault::UploadAllocation
+        | NativeFault::CommandBuffer
+        | NativeFault::RenderEncoder
+        | NativeFault::BlitEncoder => (result, false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::error::Error;
+    use std::{error::Error, process::Command};
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_renderer::Renderer;
@@ -426,11 +745,14 @@ mod tests {
     use crate::initialization::{
         InitializationError, InitializationStage, MetalBackend, initialize_for_native_validation,
     };
-    use crate::{Bgra8Image, OffscreenDescriptor, OffscreenTarget, RenderStage, ValidatedFrame};
+    use crate::{
+        BackendState, Bgra8Image, OffscreenDescriptor, OffscreenTarget, RecoveryClassification,
+        RenderError, RenderStage, ValidatedFrame,
+    };
 
     use super::{
-        BlendConfiguration, FRAGMENT_ENTRY_POINT, NativeBackend, NativeDriver, OFFLINE_LIBRARY,
-        VERTEX_ENTRY_POINT, command_status, new_backend,
+        BlendConfiguration, FRAGMENT_ENTRY_POINT, NativeBackend, NativeDriver, NativeFault,
+        OFFLINE_LIBRARY, ResourceProbe, VERTEX_ENTRY_POINT, command_status, new_backend,
     };
 
     static CORRUPT_LIBRARY: &[u8] = b"not a Metal library";
@@ -448,6 +770,20 @@ mod tests {
     }
 
     fn validation_backend(blend: BlendConfiguration) -> Result<MetalBackend, InitializationError> {
+        validation_backend_with_fault(blend, NativeFault::None)
+    }
+
+    fn validation_backend_with_fault(
+        blend: BlendConfiguration,
+        fault: NativeFault,
+    ) -> Result<MetalBackend, InitializationError> {
+        validation_backend_and_probe(blend, fault).map(|(backend, _probe)| backend)
+    }
+
+    fn validation_backend_and_probe(
+        blend: BlendConfiguration,
+        fault: NativeFault,
+    ) -> Result<(MetalBackend, ResourceProbe), InitializationError> {
         let driver = NativeDriver {
             library: OFFLINE_LIBRARY,
             vertex_name: VERTEX_ENTRY_POINT,
@@ -456,10 +792,16 @@ mod tests {
         };
         let initialized = initialize_for_native_validation(&driver)?;
         let capabilities = initialized.capabilities.clone();
-        Ok(MetalBackend::from_platform_parts((
-            NativeBackend { initialized },
+        let probe = ResourceProbe::default();
+        let backend = MetalBackend::from_platform_parts((
+            NativeBackend {
+                initialized,
+                fault,
+                probe: probe.clone(),
+            },
             capabilities,
-        )))
+        ));
+        Ok((backend, probe))
     }
 
     fn assert_pixels_within(actual: &Bgra8Image, expected: &Bgra8Image, tolerance: u8) {
@@ -472,6 +814,28 @@ mod tests {
                 "channel {index} differs: actual {actual}, expected {expected}, tolerance {tolerance}"
             );
         }
+    }
+
+    fn resident_bytes() -> Result<u64, Box<dyn Error>> {
+        let pid = std::process::id().to_string();
+        let output = Command::new("/bin/ps")
+            .args(["-o", "rss=", "-p", pid.as_str()])
+            .output()?;
+        if !output.status.success() {
+            return Err(format!("ps exited with {}", output.status).into());
+        }
+        let kibibytes = String::from_utf8(output.stdout)?.trim().parse::<u64>()?;
+        Ok(kibibytes
+            .checked_mul(1_024)
+            .ok_or("resident byte overflow")?)
+    }
+
+    fn host_page_bytes() -> Result<u64, Box<dyn Error>> {
+        let output = Command::new("/usr/bin/getconf").arg("PAGESIZE").output()?;
+        if !output.status.success() {
+            return Err(format!("getconf exited with {}", output.status).into());
+        }
+        Ok(String::from_utf8(output.stdout)?.trim().parse::<u64>()?)
     }
 
     fn discriminating_scene() -> Result<(Scene, OffscreenDescriptor), Box<dyn Error>> {
@@ -689,5 +1053,253 @@ mod tests {
             command_status(MTLCommandBufferStatus(99)),
             crate::CommandStatus::Unknown(99)
         );
+    }
+
+    #[test]
+    fn injected_precommit_failures_release_once_and_balance_accounting()
+    -> Result<(), Box<dyn Error>> {
+        let (scene, descriptor) = discriminating_scene()?;
+        let cases = [
+            (NativeFault::TextureAllocation, RenderStage::RenderTexture),
+            (NativeFault::ReadbackAllocation, RenderStage::ReadbackBuffer),
+            (NativeFault::UploadAllocation, RenderStage::UploadBuffer),
+            (NativeFault::CommandBuffer, RenderStage::CommandBuffer),
+            (NativeFault::RenderEncoder, RenderStage::RenderEncoder),
+            (NativeFault::BlitEncoder, RenderStage::BlitEncoder),
+        ];
+
+        for (fault, expected_stage) in cases {
+            let (mut backend, probe) =
+                validation_backend_and_probe(BlendConfiguration::PremultipliedSourceOver, fault)?;
+            let error = backend
+                .render_offscreen(&scene, descriptor)
+                .err()
+                .ok_or("fault must fail")?;
+            let accounting = backend.accounting();
+
+            assert_eq!(error.stage(), expected_stage, "{fault:?}");
+            assert_eq!(error.recovery(), RecoveryClassification::RetryFrame);
+            assert_eq!(backend.submission_count(), 0);
+            assert_eq!(accounting.accepted_frames(), 1);
+            assert_eq!(accounting.failed_frames(), 1);
+            assert_eq!(accounting.completed_frames(), 0);
+            assert_eq!(accounting.current_retained_bytes(), 0);
+            assert!(accounting.invariants_hold());
+            assert_eq!(probe.counts(), (1, 1, 0));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn injected_terminal_failures_never_return_pixels_and_classify_recovery()
+    -> Result<(), Box<dyn Error>> {
+        use objc2_metal::MTLCommandBufferError;
+
+        let (scene, descriptor) = discriminating_scene()?;
+        let cases = [
+            (
+                i64::try_from(MTLCommandBufferError::OutOfMemory.0)?,
+                RecoveryClassification::RetryFrame,
+                BackendState::Ready,
+            ),
+            (
+                i64::try_from(MTLCommandBufferError::NotPermitted.0)?,
+                RecoveryClassification::Unsupported,
+                BackendState::Ready,
+            ),
+            (
+                i64::try_from(MTLCommandBufferError::DeviceRemoved.0)?,
+                RecoveryClassification::RecreateBackend,
+                BackendState::DeviceLost,
+            ),
+            (
+                i64::try_from(MTLCommandBufferError::AccessRevoked.0)?,
+                RecoveryClassification::RecreateBackend,
+                BackendState::DeviceLost,
+            ),
+        ];
+
+        for (code, recovery, state) in cases {
+            let (mut backend, probe) = validation_backend_and_probe(
+                BlendConfiguration::PremultipliedSourceOver,
+                NativeFault::TerminalError(code),
+            )?;
+            let error = backend
+                .render_offscreen(&scene, descriptor)
+                .err()
+                .ok_or("terminal injection must fail")?;
+            let accounting = backend.accounting();
+
+            assert!(matches!(error, RenderError::CommandFailed { .. }));
+            assert_eq!(error.recovery(), recovery);
+            assert_eq!(backend.submission_count(), 1);
+            assert_eq!(accounting.state(), state);
+            assert_eq!(accounting.failed_frames(), 1);
+            assert_eq!(accounting.current_retained_bytes(), 0);
+            assert!(accounting.allocated_bytes() > 0);
+            assert!(accounting.invariants_hold());
+            assert_eq!(probe.counts(), (1, 1, 0));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unexpected_completion_and_readback_mismatch_fail_closed() -> Result<(), Box<dyn Error>> {
+        let (scene, descriptor) = discriminating_scene()?;
+        for fault in [NativeFault::UnexpectedStatus, NativeFault::ReadbackLength] {
+            let (mut backend, probe) =
+                validation_backend_and_probe(BlendConfiguration::PremultipliedSourceOver, fault)?;
+            let error = backend
+                .render_offscreen(&scene, descriptor)
+                .err()
+                .ok_or("terminal control must fail")?;
+
+            assert_eq!(error.recovery(), RecoveryClassification::Fatal);
+            assert_eq!(backend.submission_count(), 1);
+            assert_eq!(backend.accounting().failed_frames(), 1);
+            assert!(backend.accounting().invariants_hold());
+            assert_eq!(probe.counts(), (1, 1, 0));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_shutdown_and_steady_state_have_no_hidden_native_work()
+    -> Result<(), Box<dyn Error>> {
+        const WARMUP_FRAMES: u16 = 256;
+        const MEASURED_FRAMES: u16 = 256;
+        const TOTAL_FRAMES: u16 = WARMUP_FRAMES + MEASURED_FRAMES;
+
+        let (scene, descriptor) = discriminating_scene()?;
+        let (mut backend, probe) = validation_backend_and_probe(
+            BlendConfiguration::PremultipliedSourceOver,
+            NativeFault::None,
+        )?;
+
+        let cancellation = backend.cancel_offscreen(&scene, descriptor)?;
+        assert_eq!(cancellation.generation().get(), 1);
+        assert_eq!(cancellation.primitives(), 4);
+        assert_eq!(cancellation.omitted_primitives(), 1);
+        assert_eq!(cancellation.uploaded_bytes_avoided(), 3 * 32);
+        assert_eq!(probe.counts(), (0, 0, 0));
+
+        let mut expected_allocated = 0_u128;
+        let mut expected_readback = 0_u128;
+        let mut retained = None;
+        let capture_resident_distribution = std::env::var_os("ALPINE_CAPTURE_RSS").is_some();
+        let mut resident_samples = Vec::with_capacity(17);
+        for frame_index in 1_u16..=TOTAL_FRAMES {
+            let completed = backend.render_offscreen(&scene, descriptor)?;
+            let report = completed.report();
+            expected_allocated += report.allocated_bytes as u128;
+            expected_readback += report.readback_bytes as u128;
+            assert_eq!(
+                retained.get_or_insert(report.retained_bytes),
+                &report.retained_bytes
+            );
+            assert_eq!(backend.accounting().current_retained_bytes(), 0);
+            if capture_resident_distribution
+                && frame_index >= WARMUP_FRAMES
+                && (frame_index - WARMUP_FRAMES).is_multiple_of(16)
+            {
+                resident_samples.push((frame_index - WARMUP_FRAMES, resident_bytes()?));
+            }
+        }
+        let accounting = backend.accounting();
+        assert_eq!(accounting.accepted_frames(), 1 + u128::from(TOTAL_FRAMES));
+        assert_eq!(accounting.cancelled_frames(), 1);
+        assert_eq!(accounting.completed_frames(), u128::from(TOTAL_FRAMES));
+        assert_eq!(accounting.submitted_frames(), u64::from(TOTAL_FRAMES));
+        assert_eq!(accounting.allocated_bytes(), expected_allocated);
+        assert_eq!(accounting.readback_bytes(), expected_readback);
+        assert_eq!(
+            accounting.peak_retained_bytes(),
+            retained.ok_or("retained sample")?
+        );
+        assert_eq!(
+            probe.counts(),
+            (u64::from(TOTAL_FRAMES), u64::from(TOTAL_FRAMES), 0)
+        );
+        assert!(accounting.invariants_hold());
+        if capture_resident_distribution {
+            assert_eq!(resident_samples.len(), 17);
+            let baseline = resident_samples[0].1;
+            let page_bytes = host_page_bytes()?;
+            let maximum = baseline
+                .checked_add(page_bytes)
+                .ok_or("resident ceiling overflow")?;
+            for (frame, bytes) in &resident_samples {
+                assert!(*bytes > 0);
+                assert!(
+                    *bytes <= maximum,
+                    "resident bytes grew beyond one host page after warmup: baseline {baseline}, frame {frame}, actual {bytes}, page {page_bytes}"
+                );
+                println!("alpine-memory-sample frame={frame} resident_bytes={bytes}");
+            }
+        }
+
+        backend.shutdown();
+        assert_eq!(backend.accounting().state(), BackendState::Stopped);
+        let error = backend
+            .render_offscreen(&scene, descriptor)
+            .err()
+            .ok_or("stopped backend must reject work")?;
+        assert_eq!(error.recovery(), RecoveryClassification::Stopped);
+        assert_eq!(backend.submission_count(), u64::from(TOTAL_FRAMES));
+        assert_eq!(
+            probe.counts(),
+            (u64::from(TOTAL_FRAMES), u64::from(TOTAL_FRAMES), 0)
+        );
+        assert!(backend.accounting().invariants_hold());
+        Ok(())
+    }
+
+    #[test]
+    fn device_loss_invalidates_generation_and_recovery_is_guarded() -> Result<(), Box<dyn Error>> {
+        use objc2_metal::MTLCommandBufferError;
+
+        let (scene, descriptor) = discriminating_scene()?;
+        let code = i64::try_from(MTLCommandBufferError::DeviceRemoved.0)?;
+        let mut backend = validation_backend_with_fault(
+            BlendConfiguration::PremultipliedSourceOver,
+            NativeFault::TerminalError(code),
+        )?;
+        let _ = backend.render_offscreen(&scene, descriptor).err();
+        assert_eq!(backend.accounting().state(), BackendState::DeviceLost);
+        assert_eq!(backend.accounting().generation().get(), 1);
+
+        let rejected = backend
+            .render_offscreen(&scene, descriptor)
+            .err()
+            .ok_or("device-lost generation must reject")?;
+        assert!(matches!(
+            rejected,
+            RenderError::BackendUnavailable {
+                state: BackendState::DeviceLost,
+                ..
+            }
+        ));
+        assert_eq!(backend.submission_count(), 1);
+
+        match backend.recover() {
+            Ok(recovered) => {
+                assert_eq!(recovered.accounting().generation().get(), 2);
+                assert_eq!(recovered.accounting().state(), BackendState::Ready);
+            }
+            Err(crate::RecoveryError::Initialization(InitializationError::UnsupportedDevice {
+                ..
+            })) => {}
+            Err(error) => return Err(error.into()),
+        }
+
+        let ready = validation_backend(BlendConfiguration::PremultipliedSourceOver)?;
+        assert!(matches!(
+            ready.recover(),
+            Err(crate::RecoveryError::BackendNotDeviceLost {
+                state: BackendState::Ready,
+                ..
+            })
+        ));
+        Ok(())
     }
 }

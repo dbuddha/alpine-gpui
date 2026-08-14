@@ -1,5 +1,7 @@
 use std::{error::Error, fmt};
 
+use crate::{BackendAccounting, BackendGeneration};
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::native as platform;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -18,7 +20,7 @@ pub(crate) const FRAGMENT_ENTRY_POINT: &str = "alpine_quad_fragment";
 pub struct MetalBackend {
     pub(crate) native: platform::NativeBackend,
     capabilities: MetalCapabilities,
-    pub(crate) submissions: u64,
+    pub(crate) accounting: BackendAccounting,
 }
 
 impl MetalBackend {
@@ -36,10 +38,17 @@ impl MetalBackend {
     pub(crate) fn from_platform_parts(
         (native, capabilities): (platform::NativeBackend, MetalCapabilities),
     ) -> Self {
+        Self::from_platform_generation((native, capabilities), BackendGeneration::INITIAL)
+    }
+
+    pub(crate) fn from_platform_generation(
+        (native, capabilities): (platform::NativeBackend, MetalCapabilities),
+        generation: BackendGeneration,
+    ) -> Self {
         Self {
             native,
             capabilities,
-            submissions: 0,
+            accounting: BackendAccounting::new(generation),
         }
     }
 
@@ -48,6 +57,18 @@ impl MetalBackend {
     pub fn capabilities(&self) -> &MetalCapabilities {
         &self.capabilities
     }
+
+    /// Returns balanced cumulative work for this backend generation.
+    #[must_use]
+    pub const fn accounting(&self) -> BackendAccounting {
+        self.accounting
+    }
+}
+
+pub(crate) fn new_backend_generation(
+    generation: BackendGeneration,
+) -> Result<MetalBackend, InitializationError> {
+    platform::new_backend().map(|parts| MetalBackend::from_platform_generation(parts, generation))
 }
 
 /// Capabilities observed from the selected physical Metal device.

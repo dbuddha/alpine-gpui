@@ -49,7 +49,8 @@ slice. Its only primitive today is a solid axis-aligned quad.
 `alpine-renderer` defines a monomorphized `Renderer` trait with backend-specific
 `Target` and `Error` associated types. `render` borrows an immutable `Scene` and
 mutable target, then returns a `FrameReport` containing submission, primitive,
-draw-call, and upload counts. `MetalBackend` is the first implementation. Its
+omission, draw-call, upload, allocation, retention, and readback counts.
+`MetalBackend` is the first implementation. Its
 portable `OffscreenTarget` owns only the descriptor and latest completed image;
 all native resources remain private. A failed render clears any stale target
 image before returning its structured `RenderError`.
@@ -74,7 +75,13 @@ resources, encodes one instanced quad draw and one texture-to-buffer blit in one
 retained command buffer, commits once, and waits for terminal completion. Only
 then does it remove row padding and return owned compact pixels plus a monotonic
 `FrameReport`. Each accepted target is bounded by the Metal 3 guaranteed 16,384
-pixel dimension. Resource reuse and asynchronous submission are not implemented.
+pixel dimension. Every native attempt runs inside a frame-local Objective-C
+autorelease pool; no native object escapes, while the owned image, copied error
+data, and accounting report remain valid after the pool drains. Resource reuse
+and asynchronous submission are not implemented.
+Every render call updates a generation-scoped `BackendAccounting` snapshot.
+Validated cancellation performs no native allocation or submission. Shutdown is
+synchronous and closes admission only after the current exclusive call returns.
 
 ## Ownership from state to submission
 
@@ -93,6 +100,7 @@ flowchart LR
     lifecycle["FrameLifecycle<br/>pure ownership state"]
     renderer["MetalBackend<br/>owns initialized native resources"]
     resources["Frame-local resources<br/>texture, upload, readback"]
+    accounting["BackendAccounting<br/>terminal work and retained bytes"]
     result["OffscreenFrame<br/>owned pixels and FrameReport"]
 
     state -. "derive values" .-> builder
@@ -101,6 +109,7 @@ flowchart LR
     plan -->|"immutable encoding input"| renderer
     lifecycle -. "constrains transitions" .-> renderer
     renderer -->|"owns until terminal completion"| resources
+    resources -->|"records allocation and one release"| accounting
     resources -->|"padding removed after wait"| result
 ```
 
@@ -161,7 +170,12 @@ qualify the virtual device as supported. Each synchronous render owns one
 private texture, one shared readback buffer, an optional immutable upload
 buffer, one retained command buffer, and its encoders until terminal completion.
 No resource is reused or exposed while in flight. Frame-local resources then
-drop exactly once. There is no cache or eviction implementation.
+drop exactly once. Native `allocatedSize` and buffer length values populate the
+frame report; cumulative accounting must return to zero current retention at
+every synchronous API boundary. A test-only owner probe independently checks
+one acquisition and one release across partial allocation, encoder, command,
+terminal failure, cancellation, shutdown, and repeated-frame paths. There is no
+cache or eviction implementation.
 `FrameLifecycle` is the executable pure-Rust counterpart of this accepted
 single-frame protocol.
 
@@ -171,8 +185,10 @@ stateDiagram-v2
     ReadyIdle --> ReadyLowered: BeginFrame
     ReadyLowered --> ReadyEncoded: Encode
     ReadyLowered --> ReadyCancelled: CancelBeforeSubmit
+    ReadyLowered --> ReadyFailed: FailBeforeSubmit and release
     ReadyEncoded --> ReadySubmitted: Submit once
     ReadyEncoded --> ReadyCancelled: CancelBeforeSubmit
+    ReadyEncoded --> ReadyFailed: FailBeforeSubmit and release
     ReadySubmitted --> ReadyCompleted: Complete and release
     ReadySubmitted --> ReadyFailed: Fail and release
     ReadyIdle --> DrainingIdle: BeginShutdown
@@ -235,23 +251,29 @@ error domain, code, and description values are copied into Alpine-owned memory.
 submission-sequence exhaustion, texture limits, allocation stages, missing
 encoders, terminal command failures, unexpected statuses, and readback length
 or allocation failures. A committed failure increments observable submission
-count but never returns pixels or a success report. Detailed device-loss
-recovery classification is not implemented yet.
+count but never returns pixels or a success report. Every error exposes a stable
+recovery classification. Documented Metal command-domain codes distinguish
+retryable memory pressure, unsupported access, fatal inconsistency, and device
+loss. Device removal or access revocation invalidates the current backend
+generation; later work is rejected until the owner consumes it through guarded
+recovery into the next generation. Explicit shutdown similarly rejects later
+work without hidden native activity. If cumulative accounting cannot represent
+an already committed attempt, the backend stops admission so an unrecorded
+submission sequence cannot continue.
 
 ```mermaid
 flowchart TD
     call["Initialization or render_offscreen"] --> outcome{"Result"}
     outcome -->|"Ok"| report["Owned pixels and FrameReport"]
     outcome -->|"Err"| backend_error["Structured validation, initialization, or render error"]
-    backend_error --> caller["Caller recovery policy"]
-    caller -. "future classification" .-> retry["Retry or rebuild"]
-    caller -. "future classification" .-> recreate["Recreate device or surface"]
-    caller -. "future classification" .-> terminate["Controlled termination"]
+    backend_error --> classify["RecoveryClassification"]
+    classify --> retry["Fix request or retry frame"]
+    classify --> recreate["Consume lost generation and recreate"]
+    classify --> terminate["Stopped, unsupported, or fatal"]
 ```
 
-Future native errors must distinguish unsupported capability, transient surface
-loss, device loss, and out-of-memory conditions without process panics. Recovery
-must invalidate affected resources before another submission.
+Future surface errors must add their own classification without weakening the
+current device-loss generation boundary.
 
 ## Testing and evidence
 
@@ -269,6 +291,16 @@ coverage edges, painter order, translucent overlap, aligned padding removal,
 two sequential submission identifiers, validation before submission, and the
 Metal 3 texture limit. GPU bytes agree with the independent CPU oracle within
 one channel value, while a deliberately disabled-blend control is detected.
+Native fault controls cover each allocation, encoder, command, unexpected
+status, readback mismatch, memory-pressure, permission, and device-loss class.
+A 512-frame correctness soak requires constant per-frame retained accounting,
+balanced cumulative totals, and zero active owner probes after every return.
+After 256 warmup frames, the isolated native soak also records process resident
+bytes every 16 frames across a 256-frame measurement window. Those samples
+must not grow beyond the baseline by more than one host virtual-memory page,
+which accounts for RSS measurement granularity without claiming a qualified
+performance budget. Exact Alpine-owned retention remains the primary leak
+invariant.
 Public integration tests exercise the safe offscreen contract without
 crate-private access, render through the production constructor on supported
 Apple Silicon, and reject Metal construction on portable targets. The checked-in
@@ -276,7 +308,8 @@ offline library is bound to its source, deployment
 target, SDK, Xcode, and compiler identity by a strict manifest, SHA-256 checks,
 a Metal-library magic check, and negative verifier fixtures. Kani proof harnesses
 exhaust bounded geometry and color domains, complete `u16` readback extents, and
-six arbitrary lifecycle actions against the Rust implementation. TLA+ models
+six arbitrary lifecycle actions plus symbolic frame-accounting updates against
+the Rust implementation. TLA+ models
 check finite value-admission, assurance, qualification, and renderer-lifecycle
 designs, including known-fault controls. The evidence registry maps atomic AEP
 claims to qualified artifacts, bounds, assumptions, exclusions, and dynamic

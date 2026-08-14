@@ -1,3 +1,5 @@
+use crate::accounting::{AccountingOutcome, FrameResourceUsage};
+use crate::{BackendAccounting, BackendGeneration};
 use crate::{FrameLifecycle, LifecycleAction, READBACK_ROW_ALIGNMENT, ReadbackLayout};
 
 #[kani::proof]
@@ -46,7 +48,7 @@ fn lifecycle_actions_preserve_invariants() {
     let mut lifecycle = FrameLifecycle::new();
     for _ in 0..6 {
         let choice: u8 = kani::any();
-        let action = match choice % 8 {
+        let action = match choice % 9 {
             0 => LifecycleAction::BeginFrame,
             1 => LifecycleAction::Encode,
             2 => LifecycleAction::Submit,
@@ -54,7 +56,8 @@ fn lifecycle_actions_preserve_invariants() {
             4 => LifecycleAction::Fail,
             5 => LifecycleAction::CancelBeforeSubmit,
             6 => LifecycleAction::BeginShutdown,
-            _ => LifecycleAction::StopAfterDrain,
+            7 => LifecycleAction::StopAfterDrain,
+            _ => LifecycleAction::FailBeforeSubmit,
         };
         let _ = lifecycle.apply(action);
         assert!(lifecycle.invariants_hold());
@@ -63,4 +66,53 @@ fn lifecycle_actions_preserve_invariants() {
     kani::cover!(lifecycle.frame() == crate::FrameState::Failed);
     kani::cover!(lifecycle.frame() == crate::FrameState::Cancelled);
     kani::cover!(lifecycle.renderer() == crate::RendererState::Stopped);
+}
+
+#[kani::proof]
+fn accepted_frame_accounting_is_atomic_and_balanced() {
+    let outcome_choice: u8 = kani::any();
+    let outcome = match outcome_choice % 3 {
+        0 => AccountingOutcome::Completed,
+        1 => AccountingOutcome::Failed,
+        _ => AccountingOutcome::Cancelled,
+    };
+    let committed: bool = kani::any();
+    let primitives: u8 = kani::any();
+    let omitted: u8 = kani::any();
+    let draw_calls: u8 = kani::any();
+    let uploaded_bytes: u16 = kani::any();
+    let allocated_bytes: u16 = kani::any();
+    let readback_bytes: u16 = kani::any();
+    kani::assume(omitted <= primitives);
+    kani::assume(draw_calls <= primitives);
+    kani::assume(readback_bytes <= allocated_bytes);
+
+    let mut accounting = BackendAccounting::new(BackendGeneration::INITIAL);
+    assert!(accounting.invariants_hold());
+    let before = accounting;
+    let result = accounting.record_symbolic(
+        outcome,
+        committed,
+        usize::from(primitives),
+        usize::from(omitted),
+        usize::from(draw_calls),
+        usize::from(uploaded_bytes),
+        FrameResourceUsage {
+            allocated_bytes: usize::from(allocated_bytes),
+            peak_retained_bytes: usize::from(allocated_bytes),
+            current_retained_bytes: 0,
+            readback_bytes: usize::from(readback_bytes),
+        },
+    );
+
+    if result.is_ok() {
+        assert!(accounting.invariants_hold());
+    } else {
+        assert_eq!(accounting, before);
+        assert!(accounting.invariants_hold());
+    }
+    kani::cover!(result.is_ok() && outcome == AccountingOutcome::Completed && committed);
+    kani::cover!(result.is_ok() && outcome == AccountingOutcome::Failed && !committed);
+    kani::cover!(result.is_ok() && outcome == AccountingOutcome::Cancelled && !committed);
+    kani::cover!(result.is_err() && outcome == AccountingOutcome::Completed && !committed);
 }

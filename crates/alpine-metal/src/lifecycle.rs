@@ -67,6 +67,8 @@ pub enum LifecycleAction {
     Complete,
     /// Record terminal submission failure.
     Fail,
+    /// Record allocation or encoding failure before submission.
+    FailBeforeSubmit,
     /// Cancel before submission.
     CancelBeforeSubmit,
     /// Stop admitting new frames.
@@ -128,6 +130,7 @@ impl FrameLifecycle {
             LifecycleAction::Submit => self.submit(),
             LifecycleAction::Complete => self.complete(),
             LifecycleAction::Fail => self.fail(),
+            LifecycleAction::FailBeforeSubmit => self.fail_before_submit(),
             LifecycleAction::CancelBeforeSubmit => self.cancel_before_submit(),
             LifecycleAction::BeginShutdown => self.begin_shutdown(),
             LifecycleAction::StopAfterDrain => self.stop_after_drain(),
@@ -222,15 +225,12 @@ impl FrameLifecycle {
                 ),
                 (ResourceState::Free, FrameOutcome::Success, 1, 1)
             ),
-            FrameState::Failed => matches!(
-                (
-                    self.resource,
-                    self.outcome,
-                    self.submit_count,
-                    self.release_count
-                ),
-                (ResourceState::Free, FrameOutcome::Failure, 1, 1)
-            ),
+            FrameState::Failed => {
+                matches!(
+                    (self.resource, self.outcome, self.release_count),
+                    (ResourceState::Free, FrameOutcome::Failure, 1)
+                ) && self.submit_count <= 1
+            }
             FrameState::Cancelled => matches!(
                 (
                     self.resource,
@@ -321,6 +321,23 @@ impl FrameLifecycle {
             (
                 RendererState::Ready | RendererState::ShuttingDown,
                 FrameState::Submitted
+            )
+        ) {
+            return false;
+        }
+        self.frame = FrameState::Failed;
+        self.resource = ResourceState::Free;
+        self.release_count = 1;
+        self.outcome = FrameOutcome::Failure;
+        true
+    }
+
+    fn fail_before_submit(&mut self) -> bool {
+        if !matches!(
+            (self.renderer, self.frame),
+            (
+                RendererState::Ready,
+                FrameState::Lowered | FrameState::Encoded
             )
         ) {
             return false;
@@ -463,12 +480,13 @@ mod tests {
         FrameOutcome::Failure,
         FrameOutcome::Cancelled,
     ];
-    const ACTIONS: [LifecycleAction; 8] = [
+    const ACTIONS: [LifecycleAction; 9] = [
         LifecycleAction::BeginFrame,
         LifecycleAction::Encode,
         LifecycleAction::Submit,
         LifecycleAction::Complete,
         LifecycleAction::Fail,
+        LifecycleAction::FailBeforeSubmit,
         LifecycleAction::CancelBeforeSubmit,
         LifecycleAction::BeginShutdown,
         LifecycleAction::StopAfterDrain,
@@ -512,15 +530,12 @@ mod tests {
                 ),
                 (ResourceState::Free, FrameOutcome::Success, 1, 1)
             ),
-            FrameState::Failed => matches!(
-                (
-                    state.resource,
-                    state.outcome,
-                    state.submit_count,
-                    state.release_count
-                ),
-                (ResourceState::Free, FrameOutcome::Failure, 1, 1)
-            ),
+            FrameState::Failed => {
+                matches!(
+                    (state.resource, state.outcome, state.release_count),
+                    (ResourceState::Free, FrameOutcome::Failure, 1)
+                ) && state.submit_count <= 1
+            }
             FrameState::Cancelled => matches!(
                 (
                     state.resource,
@@ -592,6 +607,14 @@ mod tests {
                     ResourceState::InFlight
                 )
             ),
+            LifecycleAction::FailBeforeSubmit => matches!(
+                (state.renderer, state.frame, state.resource),
+                (
+                    RendererState::Ready,
+                    FrameState::Lowered | FrameState::Encoded,
+                    ResourceState::Encoding
+                )
+            ),
             LifecycleAction::CancelBeforeSubmit => matches!(
                 (state.renderer, state.frame, state.resource),
                 (
@@ -644,7 +667,7 @@ mod tests {
                 state.release_count = 1;
                 state.outcome = FrameOutcome::Success;
             }
-            LifecycleAction::Fail => {
+            LifecycleAction::Fail | LifecycleAction::FailBeforeSubmit => {
                 state.frame = FrameState::Failed;
                 state.resource = ResourceState::Free;
                 state.release_count = 1;
@@ -844,6 +867,21 @@ mod tests {
             ],
         );
         assert_eq!(failed_while_ready.outcome(), FrameOutcome::Failure);
+
+        let mut failed_before_submit = FrameLifecycle::new();
+        apply_all(
+            &mut failed_before_submit,
+            &[
+                LifecycleAction::BeginFrame,
+                LifecycleAction::Encode,
+                LifecycleAction::FailBeforeSubmit,
+                LifecycleAction::BeginShutdown,
+                LifecycleAction::StopAfterDrain,
+            ],
+        );
+        assert_eq!(failed_before_submit.outcome(), FrameOutcome::Failure);
+        assert_eq!(failed_before_submit.submit_count(), 0);
+        assert_eq!(failed_before_submit.release_count(), 1);
         Ok(())
     }
 }

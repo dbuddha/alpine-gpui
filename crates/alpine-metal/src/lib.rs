@@ -5,6 +5,7 @@
 //! lifecycle, and renders an independent CPU reference image. Native objects
 //! remain behind safe Alpine-owned types.
 
+mod accounting;
 mod frame;
 mod initialization;
 mod lifecycle;
@@ -18,6 +19,7 @@ mod unsupported;
 #[cfg(kani)]
 mod proofs;
 
+pub use accounting::{BackendAccounting, BackendGeneration, BackendState};
 pub use frame::{
     BGRA_BYTES_PER_PIXEL, LoweredQuad, MAX_METAL3_TEXTURE_DIMENSION_2D, OffscreenDescriptor,
     OffscreenError, READBACK_ROW_ALIGNMENT, ReadbackLayout, ValidatedFrame,
@@ -30,4 +32,7 @@ pub use lifecycle::{
     TransitionError,
 };
 pub use oracle::Bgra8Image;
-pub use submission::{CommandStatus, OffscreenFrame, OffscreenTarget, RenderError, RenderStage};
+pub use submission::{
+    CancellationReport, CommandStatus, OffscreenFrame, OffscreenTarget, RecoveryClassification,
+    RecoveryError, RenderError, RenderStage,
+};

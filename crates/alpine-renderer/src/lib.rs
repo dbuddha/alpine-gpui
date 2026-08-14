@@ -22,10 +22,18 @@ pub struct FrameReport {
     pub submission: u64,
     /// Number of scene primitives consumed.
     pub primitives: usize,
+    /// Number of consumed primitives omitted after clipping or validation.
+    pub omitted_primitives: usize,
     /// Number of encoded draw calls.
     pub draw_calls: usize,
     /// Bytes uploaded during this submission.
     pub uploaded_bytes: usize,
+    /// Native resource bytes allocated for this frame.
+    pub allocated_bytes: usize,
+    /// Peak native resource bytes retained until terminal completion.
+    pub retained_bytes: usize,
+    /// Bytes in the native readback allocation.
+    pub readback_bytes: usize,
 }
 
 /// A renderer with a backend-specific target and error type.
@@ -100,8 +108,12 @@ mod tests {
             Ok(FrameReport {
                 submission: self.submission,
                 primitives: scene.primitives().len(),
+                omitted_primitives: 0,
                 draw_calls: usize::from(!scene.primitives().is_empty()),
                 uploaded_bytes: 0,
+                allocated_bytes: 0,
+                retained_bytes: 0,
+                readback_bytes: 0,
             })
         }
     }
@@ -127,8 +139,12 @@ mod tests {
             FrameReport {
                 submission: 1,
                 primitives: 0,
+                omitted_primitives: 0,
                 draw_calls: 0,
                 uploaded_bytes: 0,
+                allocated_bytes: 0,
+                retained_bytes: 0,
+                readback_bytes: 0,
             }
         );
         assert_eq!(target, [9]);

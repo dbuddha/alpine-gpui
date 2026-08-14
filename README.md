@@ -39,7 +39,8 @@ development. The workspace currently provides:
   and observable frame reports;
 - `alpine-metal`, with deterministic frame planning and a private Apple Silicon
   Metal device, offline pipeline, one synchronous command submission, and
-  deterministic compact BGRA8 readback;
+  deterministic compact BGRA8 readback, cancellation, shutdown, device-loss
+  generations, and complete frame-resource accounting;
 - a pinned Rust toolchain and locked dependency graph;
 - policy, formatting, lint, unit test, doctest, rustdoc, coverage, changed-code
   mutation, selected Kani proofs, and three-platform CI;
