@@ -52,6 +52,7 @@ run_fixture() {
     ALPINE_ISSUE_ACTION=$action \
     ALPINE_HIERARCHY_FIXTURE=$fixture \
     ALPINE_HIERARCHY_LOG=$log \
+    ALPINE_ENFORCE_EVIDENCE=false \
     scripts/reconcile-issue-hierarchy.sh
 }
 

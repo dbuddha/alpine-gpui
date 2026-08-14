@@ -1,5 +1,8 @@
 //! Backend-neutral geometry and color types for Alpine GPUI.
 
+#[cfg(kani)]
+mod proofs;
+
 /// A two-dimensional point in logical pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Point {
@@ -126,6 +129,23 @@ mod tests {
     }
 
     #[test]
+    fn bounded_size_constructor_companion() {
+        for width in [0_u16, 1, u16::MAX] {
+            for height in [0_u16, 1, u16::MAX] {
+                let width = f32::from(width);
+                let height = f32::from(height);
+                let size = Size::new(width, height);
+                assert!(size.is_some());
+                if let Some(size) = size {
+                    assert_eq!(size.width.to_bits(), width.to_bits());
+                    assert_eq!(size.height.to_bits(), height.to_bits());
+                    assert_eq!(size.is_empty(), width == 0.0 || height == 0.0);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn intersects_overlapping_rectangles() {
         let first = Rect::new(
             Point { x: 0.0, y: 0.0 },
@@ -211,5 +231,72 @@ mod tests {
                 alpha: 1.0,
             })
         );
+    }
+
+    #[test]
+    fn byte_color_constructor_companion() {
+        for byte in [0_u8, 1, 127, 254, u8::MAX] {
+            let channel = f32::from(byte) / 255.0;
+            assert!(LinearRgba::new(channel, channel, channel, channel).is_some());
+        }
+    }
+
+    #[test]
+    fn bounded_intersection_companion() {
+        let samples = [
+            Rect::new(
+                Point { x: 0.0, y: 0.0 },
+                Size {
+                    width: 0.0,
+                    height: 0.0,
+                },
+            ),
+            Rect::new(
+                Point { x: 0.0, y: 0.0 },
+                Size {
+                    width: 1.0,
+                    height: 1.0,
+                },
+            ),
+            Rect::new(
+                Point {
+                    x: f32::from(u8::MAX - 1),
+                    y: f32::from(u8::MAX - 1),
+                },
+                Size {
+                    width: 1.0,
+                    height: 1.0,
+                },
+            ),
+        ];
+
+        for first in samples {
+            for second in samples {
+                if let Some(intersection) = first.intersection(second) {
+                    assert!(intersection.size.width > 0.0);
+                    assert!(intersection.size.height > 0.0);
+                    assert!(intersection.origin.x >= first.origin.x);
+                    assert!(intersection.origin.x >= second.origin.x);
+                    assert!(intersection.origin.y >= first.origin.y);
+                    assert!(intersection.origin.y >= second.origin.y);
+                    assert!(
+                        intersection.origin.x + intersection.size.width
+                            <= first.origin.x + first.size.width
+                    );
+                    assert!(
+                        intersection.origin.x + intersection.size.width
+                            <= second.origin.x + second.size.width
+                    );
+                    assert!(
+                        intersection.origin.y + intersection.size.height
+                            <= first.origin.y + first.size.height
+                    );
+                    assert!(
+                        intersection.origin.y + intersection.size.height
+                            <= second.origin.y + second.size.height
+                    );
+                }
+            }
+        }
     }
 }

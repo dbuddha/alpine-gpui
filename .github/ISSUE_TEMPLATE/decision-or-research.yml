@@ -37,6 +37,13 @@ body:
     validations:
       required: true
   - type: textarea
+    id: findings-claims
+    attributes:
+      label: Finding IDs and candidate claims
+      description: For research, assign stable candidate finding IDs and link any Capability, AEP, or Requirement that may consume them. Findings are not verification evidence.
+    validations:
+      required: true
+  - type: textarea
     id: consequences
     attributes:
       label: Consequences, risks, and rejected patterns

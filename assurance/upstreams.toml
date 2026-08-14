@@ -1,0 +1,85 @@
+schema = "alpine-upstreams/v1"
+
+[[upstreams]]
+name = "Zed GPUI"
+repository = "zed-industries/zed"
+baseline_commit = "1271f8b0e8f3278eed5dd3fc12ad4bd30dce2c5d"
+research_issue = 18
+
+[[upstreams]]
+name = "GPUI-CE"
+repository = "gpui-ce/gpui-ce"
+baseline_commit = "b172d695cd2f6d0ad70caedfc3d78d95c6b5d02b"
+research_issue = 19
+
+[[upstreams]]
+name = "gpui-component"
+repository = "longbridge/gpui-component"
+baseline_commit = "55968d167bd6959551c3417c3622899c33ecda20"
+research_issue = 20
+
+[[upstreams]]
+name = "Nestri gpui-wgpu"
+repository = "nestrilabs/gpui-wgpu"
+baseline_commit = "49d46d31a14f2f11efe17a3157a0f0ef4c825bd4"
+research_issue = 21
+
+[[upstreams]]
+name = "mdeand gpui-wgpu"
+repository = "mdeand/gpui-wgpu"
+baseline_commit = "a2158ca36a0f46b32c3a66423b6498a3f0ed6ae1"
+research_issue = 22
+
+[[upstreams]]
+name = "WGPU"
+repository = "gfx-rs/wgpu"
+baseline_commit = "ee5cfb074fd0c4e318b5f8608df504678e4e17ac"
+research_issue = 23
+
+[[upstreams]]
+name = "awesome-gpui"
+repository = "zed-industries/awesome-gpui"
+baseline_commit = "cf11f85a1420dfc5a7f64bc159aacba8133a2f35"
+research_issue = 24
+
+[[upstreams]]
+name = "Rust"
+repository = "rust-lang/rust"
+baseline_commit = "254b59607d4417e9dffbc307138ae5c86280fe4c"
+research_issue = 8
+
+[[upstreams]]
+name = "Kani"
+repository = "model-checking/kani"
+baseline_commit = "4feaaad1d6a2378a6ff6caa3b4fc5d6999c7bb5d"
+research_issue = 8
+
+[[upstreams]]
+name = "TLA+"
+repository = "tlaplus/tlaplus"
+baseline_commit = "5a47802b5c391f59ecdd44117981f4ff8c0656ba"
+research_issue = 8
+
+[[upstreams]]
+name = "Vulkan specifications"
+repository = "KhronosGroup/Vulkan-Docs"
+baseline_commit = "090f1b190d60ced4a1d198fd3747d071cc271b1c"
+research_issue = 8
+
+[[upstreams]]
+name = "Windows Rust bindings"
+repository = "microsoft/windows-rs"
+baseline_commit = "5f8e1504dea507f1d86af7bf5a824eb49ff8b5a5"
+research_issue = 8
+
+[[upstreams]]
+name = "GitHub runner images"
+repository = "actions/runner-images"
+baseline_commit = "ca3228e1079108a51fdd31799231c9ae4dde95d7"
+research_issue = 8
+
+[[manual_sources]]
+name = "Apple Metal and platform"
+url = "https://developer.apple.com/documentation/metal"
+next_review_on = "2026-09-13"
+research_issue = 8

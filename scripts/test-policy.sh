@@ -68,6 +68,10 @@ Closes #100
 
 #80
 
+## Claims and evidence
+
+AEP-0009-C05 and EV-0009-INTEGRATION05.
+
 ## Decision or research
 
 #70

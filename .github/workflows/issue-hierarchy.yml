@@ -20,9 +20,22 @@ jobs:
     steps:
       - name: Check out policy
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Validate registered evidence and approved hierarchy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: cargo run --locked -p alpine-assurance -- validate --github
       - name: Reconcile native parent state
         env:
           GH_TOKEN: ${{ github.token }}
           ALPINE_ISSUE_NUMBER: ${{ github.event.issue.number }}
           ALPINE_ISSUE_ACTION: ${{ github.event.action }}
         run: scripts/reconcile-issue-hierarchy.sh
+      - name: Lock accepted decision or research record
+        if: >-
+          github.event.action == 'closed' &&
+          (contains(github.event.issue.labels.*.name, 'kind:decision') ||
+          contains(github.event.issue.labels.*.name, 'kind:research'))
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method PUT "repos/$GITHUB_REPOSITORY/issues/${{ github.event.issue.number }}/lock"
