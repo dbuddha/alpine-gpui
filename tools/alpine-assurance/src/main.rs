@@ -746,7 +746,7 @@ fn discover_kani_harnesses(
                         .next()
                         .unwrap_or_default();
                     if let Ok(relative) = path.strip_prefix(root) {
-                        harnesses.insert(format!("{}#{name}", relative.display()));
+                        harnesses.insert(format!("{}#{name}", registry_path(relative)));
                     }
                     expects_harness = false;
                 } else if !trimmed.is_empty() && !trimmed.starts_with("///") {
@@ -755,6 +755,13 @@ fn discover_kani_harnesses(
             }
         }
     }
+}
+
+fn registry_path(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn render_report(registry: &Registry) -> String {
@@ -814,8 +821,8 @@ fn display_list(items: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        artifact_anchor, artifact_path, load_registry, render_report, valid_identifier,
-        validate_registry,
+        artifact_anchor, artifact_path, load_registry, registry_path, render_report,
+        valid_identifier, validate_registry,
     };
     use std::path::{Path, PathBuf};
 
@@ -839,12 +846,22 @@ mod tests {
     }
 
     #[test]
+    fn renders_registry_paths_with_portable_separators() {
+        let path = Path::new("crates")
+            .join("alpine-core")
+            .join("src")
+            .join("proofs.rs");
+        assert_eq!(registry_path(&path), "crates/alpine-core/src/proofs.rs");
+    }
+
+    #[test]
     fn validates_and_renders_the_committed_registry() {
         let root = repository_root();
         let registry = load_registry(&root.join("assurance/evidence.toml"));
         assert!(registry.is_ok());
         if let Ok(registry) = registry {
-            assert!(validate_registry(&registry, &root, false).is_empty());
+            let errors = validate_registry(&registry, &root, false);
+            assert!(errors.is_empty(), "{errors:#?}");
             let report = render_report(&registry);
             assert!(report.contains("AEP-0009-C01"));
             assert!(report.contains("Model checked does not mean implementation verified"));
