@@ -8,6 +8,7 @@ scripts/test-hierarchy.sh
 scripts/test-assurance.sh
 scripts/test-qualification.sh
 scripts/test-core-contracts.sh
+scripts/test-metal-contracts.sh
 scripts/check-release.sh
 mdbook build
 mdbook test

@@ -44,13 +44,13 @@ if [ -s "$base_summary" ]; then
     }
 fi
 
-critical_file_count=$(jq '[.data[0].files[] | select(.filename | test("/crates/alpine-(core|scene)/src/"))] | length' "$head_summary")
-if [ "$critical_file_count" -lt 2 ]; then
-    printf 'coverage error: expected core and scene critical-file evidence, found %s files\n' "$critical_file_count" >&2
+critical_file_count=$(jq '[.data[0].files[] | select(.filename | test("/crates/alpine-(core|scene|metal)/src/"))] | length' "$head_summary")
+if [ "$critical_file_count" -lt 5 ]; then
+    printf 'coverage error: expected core, scene, and Metal critical-file evidence, found %s files\n' "$critical_file_count" >&2
     exit 1
 fi
 
-jq -r '.data[0].files[] | select(.filename | test("/crates/alpine-(core|scene)/src/")) | [.filename, .summary.lines.percent, .summary.functions.percent] | @tsv' "$head_summary" |
+jq -r '.data[0].files[] | select(.filename | test("/crates/alpine-(core|scene|metal)/src/")) | [.filename, .summary.lines.percent, .summary.functions.percent] | @tsv' "$head_summary" |
 while IFS="$(printf '\t')" read -r filename lines functions; do
     awk -v value="$lines" 'BEGIN { exit !(value + 0 >= 95) }' || {
         printf 'coverage error: critical file %s has %.2f%% line coverage, requires 95%%\n' "$filename" "$lines" >&2

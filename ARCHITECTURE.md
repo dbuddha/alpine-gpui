@@ -5,12 +5,13 @@ designs remain in linked GitHub issues until code makes them current.
 
 ## Implemented system
 
-The workspace currently has three safe Rust shipping library crates with no
+The workspace currently has four safe Rust shipping library crates with no
 external dependencies. `alpine-core` has no workspace dependencies.
-`alpine-scene` depends on `alpine-core`, and `alpine-renderer` depends on
-`alpine-scene`. The non-shipping `alpine-assurance` tool depends on audited
-`serde` and `toml` crates to validate the evidence registry and versioned
-golden-workload qualification manifests.
+`alpine-scene` depends on `alpine-core`, `alpine-renderer` depends on
+`alpine-scene`, and `alpine-metal` depends on `alpine-core` and `alpine-scene`.
+The non-shipping `alpine-assurance` tool depends on audited `serde` and `toml`
+crates to validate the evidence registry and versioned golden-workload
+qualification manifests.
 
 ```mermaid
 flowchart LR
@@ -18,14 +19,18 @@ flowchart LR
     core["alpine-core<br/>Point, Size, Rect, LinearRgba"]
     scene["alpine-scene<br/>SceneRevision, Primitive, SceneBuilder, Scene"]
     renderer["alpine-renderer<br/>Renderer, capabilities, FrameReport"]
-    backend["Concrete backend and Target<br/>not implemented"]
+    metal["alpine-metal<br/>validated frame, lifecycle, CPU oracle"]
+    native["Native Metal device and commands<br/>not implemented"]
     assurance["alpine-assurance<br/>non-shipping evidence and qualification validator"]
 
     core --> scene --> renderer
+    core --> metal
+    scene --> metal
+    metal -. "future safe implementation" .-> renderer
+    metal -. "future native boundary" .-> native
     caller -. "constructs values" .-> core
     caller -. "builds immutable snapshot" .-> scene
     caller -. "invokes" .-> renderer
-    backend -. "implements" .-> renderer
     assurance -. "validates repository artifacts" .-> core
 ```
 
@@ -39,8 +44,18 @@ slice. Its only primitive today is a solid axis-aligned quad.
 `alpine-renderer` defines a monomorphized `Renderer` trait with backend-specific
 `Target` and `Error` associated types. `render` borrows an immutable `Scene` and
 mutable target, then returns a `FrameReport` containing submission, primitive,
-draw-call, and upload counts. No renderer implementation or shared renderer
-error taxonomy exists yet.
+draw-call, and upload counts. No implementation of that trait or shared
+renderer error taxonomy exists yet.
+
+`alpine-metal` currently performs pure, host-portable work only. It validates a
+non-empty BGRA8 offscreen descriptor, proves its logical viewport and rounded
+physical extent agree, computes compact and 256-byte-aligned readback layouts,
+clips and lowers all current solid quads in painter order, and accounts for
+omitted primitives and upload bytes. Its deterministic CPU oracle samples pixel
+centers and evaluates linear source-over composition into premultiplied BGRA8.
+Its single-frame lifecycle is an executable transition system corresponding to
+AEP 0025's finite TLA+ model. The crate does not create a Metal device, compile
+shaders, submit GPU work, or return native pixels yet.
 
 ## Ownership from state to submission
 
@@ -55,13 +70,17 @@ flowchart LR
     state["Application state<br/>external today"]
     builder["SceneBuilder<br/>single owner and mutable"]
     snapshot["Scene<br/>immutable owner of primitives"]
-    renderer["Renderer implementation<br/>owns backend resources"]
+    plan["ValidatedFrame<br/>owns checked lowered quads"]
+    lifecycle["FrameLifecycle<br/>pure ownership state"]
+    renderer["Future native renderer<br/>owns backend resources"]
     target["Target<br/>owned by caller"]
     report["FrameReport<br/>returned value"]
 
     state -. "derive values" .-> builder
     builder -->|"finish consumes builder"| snapshot
-    snapshot -->|"borrowed for render call"| renderer
+    snapshot -->|"borrowed during validation"| plan
+    plan -->|"future immutable encoding input"| renderer
+    lifecycle -. "constrains future transitions" .-> renderer
     target -->|"mutably borrowed for render call"| renderer
     renderer --> report
 ```
@@ -76,9 +95,9 @@ Binding ownership rules:
 
 ## Invalidation to present contract
 
-There is no Alpine runtime, scheduler, native event loop, or presentation path
-yet. The solid nodes below are implemented. Dashed nodes mark required future
-owners, not current capabilities.
+There is no Alpine runtime, scheduler, native event loop, submission, or
+presentation path yet. The solid nodes below are implemented. Dashed nodes mark
+required future owners, not current capabilities.
 
 ```mermaid
 sequenceDiagram
@@ -86,6 +105,7 @@ sequenceDiagram
     participant Scheduler as Scheduler (not implemented)
     participant Builder as SceneBuilder
     participant Scene
+    participant Plan as ValidatedFrame
     participant Renderer
     participant Backend as Native backend (not implemented)
 
@@ -93,6 +113,8 @@ sequenceDiagram
     Scheduler-->>Scheduler: Coalesce one pending frame
     Scheduler-->>Builder: Begin requested frame
     Builder->>Scene: finish()
+    Scene->>Plan: validate and lower
+    Plan-->>Scene: structured error before native work
     Scene->>Renderer: render(&Scene, &mut Target)
     Renderer-->>Backend: Backend-specific encoding and submission
     Renderer-->>App: Result<FrameReport, Error>
@@ -105,19 +127,32 @@ continuous redraw loop merely because a window exists.
 
 ## Resource lifetime contract
 
-The current trait deliberately leaves resource representation to each backend.
-There is no cache or eviction implementation. Every backend must nevertheless
-obey this lifecycle and expose enough accounting to test it.
+The renderer trait deliberately leaves resource representation to each backend.
+There is no native resource, cache, or eviction implementation. `FrameLifecycle`
+implements the accepted synchronous single-frame state machine so future native
+work has an executable ownership contract before handles exist.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Created: Backend validates capability and allocates
-    Created --> Retained: Resource becomes backend-owned
-    Retained --> Retained: Reuse while identity and revision match
-    Retained --> Evictable: No in-flight submission references it
-    Evictable --> Retained: Referenced again before eviction
-    Evictable --> Teardown: Budget pressure, surface loss, or shutdown
-    Teardown --> [*]: Native completion makes destruction safe
+    [*] --> ReadyIdle
+    ReadyIdle --> ReadyLowered: BeginFrame
+    ReadyLowered --> ReadyEncoded: Encode
+    ReadyLowered --> ReadyCancelled: CancelBeforeSubmit
+    ReadyEncoded --> ReadySubmitted: Submit once
+    ReadyEncoded --> ReadyCancelled: CancelBeforeSubmit
+    ReadySubmitted --> ReadyCompleted: Complete and release
+    ReadySubmitted --> ReadyFailed: Fail and release
+    ReadyIdle --> DrainingIdle: BeginShutdown
+    ReadySubmitted --> DrainingSubmitted: BeginShutdown, resource stays in flight
+    ReadyCompleted --> DrainingCompleted: BeginShutdown
+    ReadyFailed --> DrainingFailed: BeginShutdown
+    ReadyCancelled --> DrainingCancelled: BeginShutdown
+    DrainingSubmitted --> DrainingCompleted: Complete and release
+    DrainingSubmitted --> DrainingFailed: Fail and release
+    DrainingIdle --> Stopped: StopAfterDrain
+    DrainingCompleted --> Stopped: StopAfterDrain
+    DrainingFailed --> Stopped: StopAfterDrain
+    DrainingCancelled --> Stopped: StopAfterDrain
 ```
 
 Creation failure is returned, not panicked. Resources cannot be evicted or
@@ -136,12 +171,15 @@ flowchart TB
     core["Portable value contracts<br/>alpine-core"]
     scene["Portable immutable scene<br/>alpine-scene"]
     contract["Portable renderer call and evidence<br/>alpine-renderer"]
-    metal["Direct Metal specialization<br/>not implemented"]
+    metal_plan["Direct Metal safe plan<br/>implemented"]
+    metal_native["Direct Metal native specialization<br/>not implemented"]
     vulkan["Direct Vulkan specialization<br/>not implemented"]
     d3d12["Direct D3D12 specialization<br/>not implemented"]
 
     core --> scene --> contract
-    contract -.-> metal
+    scene --> metal_plan
+    contract -.-> metal_native
+    metal_plan -.-> metal_native
     contract -.-> vulkan
     contract -.-> d3d12
 ```
@@ -152,16 +190,18 @@ define Metal behavior.
 
 ## Error and device-loss propagation
 
-The implemented API returns `Result<FrameReport, Renderer::Error>` directly to
-the caller. The caller, not the renderer, owns recovery policy. A shared error
-classification is not implemented, so device loss cannot yet be handled
-portably.
+The renderer contract returns `Result<FrameReport, Renderer::Error>` directly
+to the caller. `alpine-metal` now returns exhaustive `OffscreenError` values for
+its pure descriptor, viewport, coordinate, byte-layout, capacity, and CPU-oracle
+boundaries. Disabled lifecycle actions return `TransitionError` without partial
+state mutation. Native error classification is not implemented, so device loss
+cannot yet be handled.
 
 ```mermaid
 flowchart TD
-    call["Renderer::render"] --> outcome{"Result"}
+    call["Frame validation or Renderer::render"] --> outcome{"Result"}
     outcome -->|"Ok"| report["FrameReport"]
-    outcome -->|"Err"| backend_error["Backend-specific Error"]
+    outcome -->|"Err"| backend_error["Pure structured or future backend error"]
     backend_error --> caller["Caller recovery policy"]
     caller -. "future classification" .-> retry["Retry or rebuild"]
     caller -. "future classification" .-> recreate["Recreate device or surface"]
@@ -175,12 +215,17 @@ must invalidate affected resources before another submission.
 ## Testing and evidence
 
 Current unit tests cover valid and invalid values, rectangle intersection and
-contact, color bounds, scene revision and painter order, empty scenes, and the
-renderer contract through a mock backend. Kani proof harnesses exhaust bounded
-geometry and color domains against the Rust implementation. TLA+ models check
-finite value-admission and assurance-lifecycle designs, including known-fault
-controls. The evidence registry maps atomic AEP claims to qualified artifacts,
-bounds, assumptions, exclusions, and dynamic companions. The repository
+contact, color bounds, scene revision and painter order, empty scenes, checked
+offscreen target and readback layouts, clipping and omission, CPU pixel-center
+source-over semantics, deliberately reversed painter order, atomic lifecycle
+rejection, and all terminal lifecycle paths. Public integration tests exercise
+the safe offscreen contract without crate-private access. Kani proof harnesses
+exhaust bounded geometry and color domains, complete `u16` readback extents, and
+six arbitrary lifecycle actions against the Rust implementation. TLA+ models
+check finite value-admission, assurance, qualification, and renderer-lifecycle
+designs, including known-fault controls. The evidence registry maps atomic AEP
+claims to qualified artifacts, bounds, assumptions, exclusions, and dynamic
+companions. The repository
 acceptance command validates policy and the registry, tests automation and core
 contracts, then runs formatting, Clippy, all-target tests, doctests, and
 rustdoc. mdBook builds the durable engineering guide as a private CI artifact.
@@ -190,8 +235,9 @@ evidence fail-closed under one `ci-pass` result. Locked native tests always run
 on Linux, Apple Silicon macOS, and Windows. Rust implementation changes add
 shipping-crate coverage, changed-code mutation, and Kani as selected. The
 non-shipping assurance tool has a separate coverage floor and fixture suite.
-Unsafe and native Metal
-paths additionally select Miri or Metal API and shader validation. Scheduled
+Unsafe and native Metal paths additionally select Miri or Metal API and shader
+validation. `alpine-metal` currently contains no unsafe or native code, so its
+selected Metal job exercises only the portable contract. Scheduled
 suites expand proofs, Miri, dependency advisories, mutation, coverage, fuzzing
 when a target exists, and Metal validation when its backend exists.
 

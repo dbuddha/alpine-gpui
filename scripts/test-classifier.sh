@@ -52,6 +52,8 @@ assert_output "$unsafe" miri=true
 
 metal=$(run_fixture crates/alpine-metal/src/lib.rs)
 assert_output "$metal" coverage=true
+assert_output "$metal" mutation=true
+assert_output "$metal" kani=true
 assert_output "$metal" metal=true
 
 printf 'CI classifier tests passed\n'
