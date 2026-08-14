@@ -56,4 +56,10 @@ assert_output "$metal" mutation=true
 assert_output "$metal" kani=true
 assert_output "$metal" metal=true
 
+shader=$(run_fixture shaders/offscreen.metal)
+assert_output "$shader" coverage=false
+assert_output "$shader" mutation=false
+assert_output "$shader" kani=false
+assert_output "$shader" metal=true
+
 printf 'CI classifier tests passed\n'

@@ -6,6 +6,8 @@ if ! cargo metadata --format-version 1 --no-deps | grep -q '"name":"alpine-metal
     exit 1
 fi
 
+scripts/build-metal-shaders.sh target/metal/offscreen.metallib
+
 export MTL_DEBUG_LAYER=1
 export MTL_DEBUG_LAYER_ERROR_MODE=assert
 export MTL_SHADER_VALIDATION=1

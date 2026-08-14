@@ -313,8 +313,25 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install the optional Metal toolchain when absent
+        run: |
+          if ! xcrun --sdk macosx --find metal >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk macosx --find metal
+          xcrun --sdk macosx --find metallib
       - name: Run Metal API and shader validation
         run: scripts/check-metal.sh
+      - name: Upload compiled shader evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: metal-shader-${{ github.sha }}
+          path: |
+            target/metal/offscreen.metallib
+            target/metal/offscreen.metallib.manifest.txt
+          retention-days: 7
+          if-no-files-found: error
 
   ci-pass:
     name: ci-pass
