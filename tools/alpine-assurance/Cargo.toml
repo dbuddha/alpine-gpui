@@ -8,8 +8,8 @@ publish.workspace = true
 license-file.workspace = true
 
 [dependencies]
-alpine-metal = { path = "../../crates/alpine-metal" }
-alpine-trace = { path = "../alpine-trace" }
+alpine-metal = { path = "../../crates/alpine-metal", version = "=0.0.0" }
+alpine-trace = { path = "../alpine-trace", version = "=0.0.0" }
 serde = { version = "=1.0.229", features = ["derive"] }
 toml = "=1.1.4"
 
