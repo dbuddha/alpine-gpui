@@ -299,8 +299,10 @@ After 256 warmup frames, the isolated native soak also records process resident
 bytes every 16 frames across a 256-frame measurement window. Those samples
 must not grow beyond the baseline by more than one host virtual-memory page,
 which accounts for RSS measurement granularity without claiming a qualified
-performance budget. Exact Alpine-owned retention remains the primary leak
-invariant.
+performance budget. Metal API and shader validation cover the full suite first;
+the process-memory sample then runs without validation-layer instrumentation so
+debug allocations cannot be mistaken for shipping renderer retention. Exact
+Alpine-owned retention remains the primary leak invariant.
 Public integration tests exercise the safe offscreen contract without
 crate-private access, render through the production constructor on supported
 Apple Silicon, and reject Metal construction on portable targets. The checked-in

@@ -1465,7 +1465,7 @@ id = "EV-0025-E2E07"
 claim = "AEP-0025-C07"
 kind = "e2e"
 artifact = "scripts/check-metal.sh"
-assertion = "The Metal gate runs full accounting, repeated-frame retention checks, and an isolated resident-memory distribution capture."
+assertion = "The Metal gate runs full accounting and repeated-frame retention under API validation, then captures an isolated production-like resident-memory distribution without validation-layer allocations."
 scope = "Apple Silicon native CI."
 exclusions = ["qualified timing", "energy"]
 
