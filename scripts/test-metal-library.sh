@@ -14,18 +14,18 @@ hash_file() {
 }
 
 write_manifest() {
-    library_file=$1
-    manifest_file=$2
-    source_hash=$3
+    manifest_library_file=$1
+    manifest_output_file=$2
+    manifest_source_hash=$3
     {
         printf 'source=shaders/offscreen.metal\n'
         printf 'deployment_target=15.0\n'
-        printf 'source_sha256=%s\n' "$source_hash"
-        printf 'metallib_sha256=%s\n' "$(hash_file "$library_file")"
+        printf 'source_sha256=%s\n' "$manifest_source_hash"
+        printf 'metallib_sha256=%s\n' "$(hash_file "$manifest_library_file")"
         printf 'sdk_path=/fixture/MacOSX.sdk\n'
         printf 'xcode_version=Xcode fixture\n'
         printf 'metal_version=Apple metal fixture\n'
-    } > "$manifest_file"
+    } > "$manifest_output_file"
 }
 
 source_file="$repository_root/shaders/offscreen.metal"

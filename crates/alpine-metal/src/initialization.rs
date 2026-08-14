@@ -581,22 +581,48 @@ mod tests {
     }
 
     #[test]
-    fn initializes_supported_device_and_releases_every_handle_once()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn initializes_supported_device_and_releases_every_handle_once() {
         let driver = MockDriver::new(FailurePoint::None);
-        let initialized = initialize(&driver)?;
+        let initialized = initialize(&driver);
 
-        assert_eq!(initialized.capabilities.name(), "Mock GPU");
-        assert_eq!(initialized.capabilities.registry_id(), 42);
-        assert!(initialized.capabilities.supports_metal3());
-        assert!(initialized.capabilities.has_unified_memory());
-        assert!(initialized.capabilities.is_low_power());
-        assert!(!initialized.capabilities.is_removable());
+        assert_eq!(
+            initialized.as_ref().map(|value| value.capabilities.name()),
+            Ok("Mock GPU")
+        );
+        assert_eq!(
+            initialized
+                .as_ref()
+                .map(|value| value.capabilities.registry_id()),
+            Ok(42)
+        );
+        assert_eq!(
+            initialized
+                .as_ref()
+                .map(|value| value.capabilities.supports_metal3()),
+            Ok(true)
+        );
+        assert_eq!(
+            initialized
+                .as_ref()
+                .map(|value| value.capabilities.has_unified_memory()),
+            Ok(true)
+        );
+        assert_eq!(
+            initialized
+                .as_ref()
+                .map(|value| value.capabilities.is_low_power()),
+            Ok(true)
+        );
+        assert_eq!(
+            initialized
+                .as_ref()
+                .map(|value| value.capabilities.is_removable()),
+            Ok(false)
+        );
         assert_eq!(*driver.dropped.borrow(), [0, 0, 0, 1, 1, 0]);
 
         drop(initialized);
         driver.assert_balanced();
-        Ok(())
     }
 
     #[test]
