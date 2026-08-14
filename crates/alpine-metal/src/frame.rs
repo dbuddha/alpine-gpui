@@ -9,6 +9,9 @@ pub const BGRA_BYTES_PER_PIXEL: usize = 4;
 /// Required byte alignment for one Metal texture-to-buffer row.
 pub const READBACK_ROW_ALIGNMENT: usize = 256;
 
+/// Guaranteed two-dimensional texture limit for the required Metal 3 family.
+pub const MAX_METAL3_TEXTURE_DIMENSION_2D: u32 = 16_384;
+
 /// A validated deterministic offscreen target.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OffscreenDescriptor {

@@ -12,6 +12,25 @@ pub struct Bgra8Image {
 }
 
 impl Bgra8Image {
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn from_compact_parts(width: u32, height: u32, bytes: Vec<u8>) -> Self {
+        debug_assert_eq!(
+            bytes.len(),
+            usize::try_from(width)
+                .ok()
+                .and_then(|width| usize::try_from(height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height)))
+                .and_then(|pixels| pixels.checked_mul(4))
+                .unwrap_or(usize::MAX)
+        );
+        Self {
+            width,
+            height,
+            bytes,
+        }
+    }
+
     /// Returns the image width in physical pixels.
     #[must_use]
     pub const fn width(&self) -> u32 {

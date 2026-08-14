@@ -9,13 +9,14 @@ license-file.workspace = true
 
 [dependencies]
 alpine-core = { path = "../alpine-core", version = "=0.0.0" }
+alpine-renderer = { path = "../alpine-renderer", version = "=0.0.0" }
 alpine-scene = { path = "../alpine-scene", version = "=0.0.0" }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 dispatch2 = { version = "=0.3.0", default-features = false, features = ["std", "block2", "objc2"] }
 objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSObject", "NSString"] }
-objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "dispatch2", "MTLAllocation", "MTLCommandQueue", "MTLDevice", "MTLLibrary", "MTLPixelFormat", "MTLRenderPipeline"] }
+objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "dispatch2", "MTLAllocation", "MTLBlitCommandEncoder", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLTexture", "MTLTypes"] }
 
 [lints.rust]
 missing_docs = "deny"
