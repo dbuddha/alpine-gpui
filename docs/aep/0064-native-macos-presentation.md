@@ -141,8 +141,9 @@ submission, presentation or supersession, failure, cancellation, and
 shutdown.
 
 Safety properties cover link ownership, phase-to-resource ownership, one
-submission per attempt, historical eligibility at submission, current-state
-qualification, clean idle pacing, and drained shutdown. Progress properties
+submission and one direct presentation call per attempt, historical
+eligibility at submission, current-state qualification, clean idle pacing,
+and drained shutdown. Progress properties
 require submitted work to terminate, stopping owners to stop, and visible
 dirty work to settle or leave the running state. The model includes a terminal
 reachability property.
@@ -256,7 +257,8 @@ hardware. Hosted timing remains informational.
 | `Resume` and `Prepare` | demand-driven scheduler and pure surface state | TLA+, Rust trace replay, idle-wakeup E2E |
 | `BeginUpdate` | display-link delegate receives callback drawable | native ownership tests and Miri where supported |
 | `Submit` | epoch check, encode, and one command commit | Kani transition proof, native validation, submission counter |
-| `FinishSubmitted` | direct present and terminal evidence correlation | native E2E, presented handler, supersession injection |
+| `CallPresent` | one direct presentation call after commit | native E2E, call counter, invalid alternative-method control |
+| `CompletePresentation` | terminal evidence correlation and resource release | native E2E, presented handler, supersession injection |
 | `AdvanceSurfaceEpoch` | resize, scale, or display change | property tests, native resize and migration E2E |
 | `BeginShutdown*` | invalidate link, reject work, release or drain | TLA+, Rust replay, native failure injection, leak and soak |
 | `PresentedIsCurrent` | qualification rejects stale revision or epoch | known-fault TLC, Kani, integration, native E2E |

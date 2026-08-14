@@ -13,18 +13,20 @@ presented revision.
 - `requestedRevision` and `presentedRevision` map to coalesced application and
   accepted presentation revisions.
 - `surfaceEpoch` maps to resize, backing-scale, and display identity changes.
-- `phase` maps to preparation, callback encoding, command submission, and the
-  terminal return to idle.
+- `phase` maps to preparation, callback encoding, command submission, the
+  direct presentation call, and the terminal return to idle.
 - `resource` maps to no drawable, an exclusively owned callback drawable, and
   the in-flight drawable boundary.
-- `attemptSubmits` and `eligibleAtSubmit` map to per-attempt instrumentation.
+- `attemptSubmits`, `presentCalls`, and `eligibleAtSubmit` map to per-attempt
+  instrumentation.
 - `outcome` maps to presented, superseded or cancelled, and failed evidence.
 
 The model actions map to planned pure Rust transitions. `BeginUpdate` maps to
 the `CAMetalDisplayLinkDelegate` callback and exclusive receipt of its drawable.
 `Submit` maps to one command-buffer commit after the epoch and revision check.
-`FinishSubmitted` maps to direct drawable presentation and later terminal
-correlation. `AdvanceSurfaceEpoch`, `ToggleVisibility`, and `ToggleSize` model
+`CallPresent` maps to the required direct drawable presentation call.
+`CompletePresentation` maps to later terminal correlation.
+`AdvanceSurfaceEpoch`, `ToggleVisibility`, and `ToggleSize` model
 native events that can supersede prepared or submitted work. The shutdown
 actions map to display-link invalidation, rejection of new work, drawable
 release, in-flight drain, and final native teardown.
