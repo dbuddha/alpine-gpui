@@ -1123,11 +1123,26 @@ mod tests {
         Ok(())
     }
 
+    fn assert_error(
+        error: Result<super::PresentationTransition, super::TransitionError>,
+        kind: TransitionErrorKind,
+        action: super::PresentationActionKind,
+        application: ApplicationState,
+        phase: PresentationPhase,
+    ) {
+        assert_eq!(error.map_err(super::TransitionError::kind), Err(kind));
+        assert_eq!(error.map_err(super::TransitionError::action), Err(action));
+        assert_eq!(
+            error.map_err(super::TransitionError::application),
+            Err(application)
+        );
+        assert_eq!(error.map_err(super::TransitionError::phase), Err(phase));
+    }
+
     fn prepare(state: &mut PresentationState) -> Result<FrameToken, &'static str> {
         let event = apply(state, PresentationAction::Prepare)?;
-        let PresentationEvent::Prepared(token) = event else {
-            return Err("expected prepared event");
-        };
+        let token = state.active_token().ok_or("expected active token")?;
+        assert_eq!(event, PresentationEvent::Prepared(token));
         Ok(token)
     }
 
@@ -1141,9 +1156,8 @@ mod tests {
         apply(&mut state, PresentationAction::CallPresent(token))?;
         let event = apply(&mut state, PresentationAction::CompletePresentation(token))?;
 
-        let PresentationEvent::Terminal(evidence) = event else {
-            return Err("expected terminal evidence");
-        };
+        let evidence = state.attempt_evidence();
+        assert_eq!(event, PresentationEvent::Terminal(evidence));
         assert_eq!(evidence.outcome(), PresentationOutcome::Presented);
         assert_eq!(evidence.submission_count(), 1);
         assert_eq!(evidence.present_call_count(), 1);
@@ -1178,9 +1192,8 @@ mod tests {
         assert_eq!(state, before);
 
         let event = apply(&mut state, PresentationAction::DiscardStale(token))?;
-        let PresentationEvent::StaleDiscarded(evidence) = event else {
-            return Err("expected stale evidence");
-        };
+        let evidence = state.attempt_evidence();
+        assert_eq!(event, PresentationEvent::StaleDiscarded(evidence));
         assert_eq!(evidence.outcome(), PresentationOutcome::Superseded);
         assert_eq!(state.resource(), PresentationResource::Free);
         assert!(state.is_dirty());
@@ -1198,9 +1211,8 @@ mod tests {
         apply(&mut state, PresentationAction::Invalidate)?;
         let event = apply(&mut state, PresentationAction::CompletePresentation(token))?;
 
-        let PresentationEvent::Terminal(evidence) = event else {
-            return Err("expected terminal evidence");
-        };
+        let evidence = state.attempt_evidence();
+        assert_eq!(event, PresentationEvent::Terminal(evidence));
         assert_eq!(evidence.outcome(), PresentationOutcome::Superseded);
         assert_ne!(state.presented_revision(), state.requested_revision());
         assert!(state.is_dirty());
@@ -1271,13 +1283,11 @@ mod tests {
         assert_eq!(first.attempt(), 1);
         apply(&mut active, PresentationAction::BeginUpdate(first))?;
         let event = apply(&mut active, PresentationAction::FailActive(first))?;
-        if let PresentationEvent::Terminal(evidence) = event {
-            assert_eq!(evidence.submission_count(), 0);
-            assert_eq!(evidence.present_call_count(), 0);
-            assert!(!evidence.eligible_at_commit());
-        } else {
-            assert!(matches!(event, PresentationEvent::Terminal(_)));
-        }
+        let evidence = active.attempt_evidence();
+        assert_eq!(event, PresentationEvent::Terminal(evidence));
+        assert_eq!(evidence.submission_count(), 0);
+        assert_eq!(evidence.present_call_count(), 0);
+        assert!(!evidence.eligible_at_commit());
         assert_eq!(active.submission_count(), 0);
         assert_eq!(active.present_call_count(), 0);
         apply(&mut active, PresentationAction::Resume)?;
@@ -1286,14 +1296,13 @@ mod tests {
 
         let mut exhausted_revision = state;
         exhausted_revision.requested_revision = super::PresentationRevision(u64::MAX);
-        let error = exhausted_revision.apply(PresentationAction::Invalidate);
-        let Err(error) = error else {
-            return Err("revision exhaustion unexpectedly succeeded");
-        };
-        assert_eq!(error.kind(), TransitionErrorKind::SequenceExhausted);
-        assert_eq!(error.action(), super::PresentationActionKind::Invalidate);
-        assert_eq!(error.application(), ApplicationState::Running);
-        assert_eq!(error.phase(), PresentationPhase::Idle);
+        assert_error(
+            exhausted_revision.apply(PresentationAction::Invalidate),
+            TransitionErrorKind::SequenceExhausted,
+            super::PresentationActionKind::Invalidate,
+            ApplicationState::Running,
+            PresentationPhase::Idle,
+        );
 
         let mut exhausted_epoch = state;
         exhausted_epoch.surface_epoch = super::SurfaceEpoch(u64::MAX);
@@ -1528,10 +1537,8 @@ mod tests {
         apply(&mut submitted, PresentationAction::BeginUpdate(token))?;
         apply(&mut submitted, PresentationAction::Submit(token))?;
         apply(&mut submitted, PresentationAction::CallPresent(token))?;
-        apply(
-            &mut submitted,
-            PresentationAction::CompletePresentation(token),
-        )?;
+        let complete = PresentationAction::CompletePresentation(token);
+        apply(&mut submitted, complete)?;
         let presented = submitted;
         for corrupt in [
             PresentationState {
@@ -1674,9 +1681,6 @@ mod tests {
                         assert_eq!(candidate, state);
                     }
                 }
-            }
-            if next.is_empty() {
-                break;
             }
             frontier = next;
         }
