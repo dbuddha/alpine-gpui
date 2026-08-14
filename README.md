@@ -37,14 +37,17 @@ development. The workspace currently provides:
 - `alpine-scene`, with immutable scene snapshots and painter-ordered quads;
 - `alpine-renderer`, with a backend-generic renderer contract, capabilities,
   and observable frame reports;
+- `alpine-metal`, with deterministic frame planning and a private Apple Silicon
+  Metal device, command queue, offline shader library, and BGRA8 pipeline;
 - a pinned Rust toolchain and locked dependency graph;
 - policy, formatting, lint, unit test, doctest, rustdoc, coverage, changed-code
   mutation, selected Kani proofs, and three-platform CI;
 - risk-selected Miri and Metal validation plus scheduled exhaustive assurance.
 
-There is no native backend, window, runtime, layout engine, input system, text
-stack, or component system yet. The exact implemented boundaries and binding
-invariants are documented in [Architecture](ARCHITECTURE.md).
+There is no native command submission, readback, window, runtime, layout engine,
+input system, text stack, or component system yet. The exact implemented
+boundaries and binding invariants are documented in
+[Architecture](ARCHITECTURE.md).
 
 The [engineering guide](docs/SUMMARY.md) owns durable mission principles, user
 journeys, case-study conclusions, enhancement proposals, and the assurance

@@ -43,5 +43,5 @@ vertex AlpineVertexOutput alpine_quad_vertex(
 
 fragment float4 alpine_quad_fragment(AlpineVertexOutput input [[stage_in]])
 {
-    return input.color;
+    return float4(input.color.rgb * input.color.a, input.color.a);
 }

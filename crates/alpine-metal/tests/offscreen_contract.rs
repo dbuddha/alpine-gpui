@@ -3,9 +3,13 @@
 use std::error::Error;
 
 use alpine_core::{LinearRgba, Point, Rect, Size};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use alpine_metal::MetalBackend;
 use alpine_metal::{
     FrameLifecycle, FrameOutcome, LifecycleAction, OffscreenDescriptor, ValidatedFrame,
 };
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+use alpine_metal::{InitializationStage, MetalBackend};
 use alpine_scene::{Primitive, SceneBuilder, SceneRevision};
 
 fn color(red: f32, green: f32, blue: f32, alpha: f32) -> Result<LinearRgba, &'static str> {
@@ -51,4 +55,27 @@ fn public_lifecycle_rejects_submission_before_encoding() {
     assert_eq!(lifecycle.outcome(), FrameOutcome::Pending);
     assert_eq!(lifecycle.submit_count(), 0);
     assert!(lifecycle.invariants_hold());
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[test]
+fn public_backend_rejects_unsupported_targets() {
+    let error = MetalBackend::new().err();
+    assert_eq!(
+        error.map(|failure| failure.stage()),
+        Some(InitializationStage::Platform)
+    );
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn public_backend_initializes_supported_apple_silicon() -> Result<(), Box<dyn Error>> {
+    let backend = MetalBackend::new()?;
+    let capabilities = backend.capabilities();
+
+    assert!(!capabilities.name().is_empty());
+    assert_ne!(capabilities.registry_id(), 0);
+    assert!(capabilities.supports_metal3());
+    assert!(capabilities.has_unified_memory());
+    Ok(())
 }

@@ -5,10 +5,14 @@ designs remain in linked GitHub issues until code makes them current.
 
 ## Implemented system
 
-The workspace currently has four safe Rust shipping library crates with no
-external dependencies. `alpine-core` has no workspace dependencies.
+The workspace currently has four Rust shipping library crates. `alpine-core`,
+`alpine-scene`, and `alpine-renderer` are fully safe and have no external
+dependencies. `alpine-core` has no workspace dependencies.
 `alpine-scene` depends on `alpine-core`, `alpine-renderer` depends on
 `alpine-scene`, and `alpine-metal` depends on `alpine-core` and `alpine-scene`.
+On Apple Silicon macOS only, `alpine-metal` uses narrowly featured, exact-version
+`objc2`, `objc2-foundation`, `objc2-metal`, and `dispatch2` bindings. Other
+targets neither compile nor link those dependencies.
 The non-shipping `alpine-assurance` tool depends on audited `serde` and `toml`
 crates to validate the evidence registry and versioned golden-workload
 qualification manifests.
@@ -19,15 +23,15 @@ flowchart LR
     core["alpine-core<br/>Point, Size, Rect, LinearRgba"]
     scene["alpine-scene<br/>SceneRevision, Primitive, SceneBuilder, Scene"]
     renderer["alpine-renderer<br/>Renderer, capabilities, FrameReport"]
-    metal["alpine-metal<br/>validated frame, lifecycle, CPU oracle"]
-    native["Native Metal device and commands<br/>not implemented"]
+    metal["alpine-metal safe boundary<br/>validated frame, lifecycle, CPU oracle"]
+    native["Private Direct Metal specialization<br/>device, queue, library, BGRA pipeline"]
     assurance["alpine-assurance<br/>non-shipping evidence and qualification validator"]
 
     core --> scene --> renderer
     core --> metal
     scene --> metal
-    metal -. "future safe implementation" .-> renderer
-    metal -. "future native boundary" .-> native
+    metal -. "future Renderer implementation" .-> renderer
+    metal -->|"owns safe wrapper"| native
     caller -. "constructs values" .-> core
     caller -. "builds immutable snapshot" .-> scene
     caller -. "invokes" .-> renderer
@@ -47,15 +51,21 @@ mutable target, then returns a `FrameReport` containing submission, primitive,
 draw-call, and upload counts. No implementation of that trait or shared
 renderer error taxonomy exists yet.
 
-`alpine-metal` currently performs pure, host-portable work only. It validates a
+`alpine-metal` validates a
 non-empty BGRA8 offscreen descriptor, proves its logical viewport and rounded
 physical extent agree, computes compact and 256-byte-aligned readback layouts,
 clips and lowers all current solid quads in painter order, and accounts for
 omitted primitives and upload bytes. Its deterministic CPU oracle samples pixel
 centers and evaluates linear source-over composition into premultiplied BGRA8.
 Its single-frame lifecycle is an executable transition system corresponding to
-AEP 0025's finite TLA+ model. The crate does not create a Metal device, compile
-shaders, submit GPU work, or return native pixels yet.
+AEP 0025's finite TLA+ model. On Apple Silicon macOS, `MetalBackend::new`
+creates the default device and one command queue, requires Metal 3 and unified
+memory, loads an embedded offline library, resolves fixed vertex and fragment
+entry points, and creates a premultiplied-source-over BGRA8Unorm pipeline. The
+native objects remain private and live exactly as long as the safe backend.
+Linux and Windows expose the same safe constructor but return a structured
+unsupported-platform error without linking Apple frameworks. Command encoding,
+submission, readback, and native pixels are not implemented yet.
 
 ## Ownership from state to submission
 
@@ -72,7 +82,7 @@ flowchart LR
     snapshot["Scene<br/>immutable owner of primitives"]
     plan["ValidatedFrame<br/>owns checked lowered quads"]
     lifecycle["FrameLifecycle<br/>pure ownership state"]
-    renderer["Future native renderer<br/>owns backend resources"]
+    renderer["MetalBackend<br/>owns initialized native resources"]
     target["Target<br/>owned by caller"]
     report["FrameReport<br/>returned value"]
 
@@ -107,7 +117,7 @@ sequenceDiagram
     participant Scene
     participant Plan as ValidatedFrame
     participant Renderer
-    participant Backend as Native backend (not implemented)
+    participant Backend as Initialized Metal backend
 
     App-->>Scheduler: State mutation invalidates visible output
     Scheduler-->>Scheduler: Coalesce one pending frame
@@ -116,7 +126,7 @@ sequenceDiagram
     Scene->>Plan: validate and lower
     Plan-->>Scene: structured error before native work
     Scene->>Renderer: render(&Scene, &mut Target)
-    Renderer-->>Backend: Backend-specific encoding and submission
+    Renderer-->>Backend: Future encoding and submission
     Renderer-->>App: Result<FrameReport, Error>
     Backend-->>Scheduler: Present completion or failure
 ```
@@ -128,9 +138,12 @@ continuous redraw loop merely because a window exists.
 ## Resource lifetime contract
 
 The renderer trait deliberately leaves resource representation to each backend.
-There is no native resource, cache, or eviction implementation. `FrameLifecycle`
-implements the accepted synchronous single-frame state machine so future native
-work has an executable ownership contract before handles exist.
+The Metal backend now retains one device, command queue, offline library, and
+render-pipeline state. Initialization releases every partially created object on
+failure through ordinary Rust drops. There is no per-frame native resource,
+cache, or eviction implementation. `FrameLifecycle` implements the accepted
+synchronous single-frame state machine before command buffers and frame
+resources exist.
 
 ```mermaid
 stateDiagram-v2
@@ -172,14 +185,14 @@ flowchart TB
     scene["Portable immutable scene<br/>alpine-scene"]
     contract["Portable renderer call and evidence<br/>alpine-renderer"]
     metal_plan["Direct Metal safe plan<br/>implemented"]
-    metal_native["Direct Metal native specialization<br/>not implemented"]
+    metal_native["Direct Metal initialization<br/>device, queue, offline pipeline implemented"]
     vulkan["Direct Vulkan specialization<br/>not implemented"]
     d3d12["Direct D3D12 specialization<br/>not implemented"]
 
     core --> scene --> contract
     scene --> metal_plan
-    contract -.-> metal_native
-    metal_plan -.-> metal_native
+    contract -. "render call not implemented" .-> metal_native
+    metal_plan --> metal_native
     contract -.-> vulkan
     contract -.-> d3d12
 ```
@@ -194,14 +207,17 @@ The renderer contract returns `Result<FrameReport, Renderer::Error>` directly
 to the caller. `alpine-metal` now returns exhaustive `OffscreenError` values for
 its pure descriptor, viewport, coordinate, byte-layout, capacity, and CPU-oracle
 boundaries. Disabled lifecycle actions return `TransitionError` without partial
-state mutation. Native error classification is not implemented, so device loss
-cannot yet be handled.
+state mutation. `InitializationError` classifies unsupported platforms,
+unavailable or unsupported devices, capability inspection, queue creation,
+offline library loading, missing entry points, and pipeline creation. Native
+error domain, code, and description values are copied into Alpine-owned memory.
+Submission and device-loss classification are not implemented yet.
 
 ```mermaid
 flowchart TD
     call["Frame validation or Renderer::render"] --> outcome{"Result"}
     outcome -->|"Ok"| report["FrameReport"]
-    outcome -->|"Err"| backend_error["Pure structured or future backend error"]
+    outcome -->|"Err"| backend_error["Structured validation or initialization error"]
     backend_error --> caller["Caller recovery policy"]
     caller -. "future classification" .-> retry["Retry or rebuild"]
     caller -. "future classification" .-> recreate["Recreate device or surface"]
@@ -218,8 +234,12 @@ Current unit tests cover valid and invalid values, rectangle intersection and
 contact, color bounds, scene revision and painter order, empty scenes, checked
 offscreen target and readback layouts, clipping and omission, CPU pixel-center
 source-over semantics, deliberately reversed painter order, atomic lifecycle
-rejection, and all terminal lifecycle paths. Public integration tests exercise
-the safe offscreen contract without crate-private access. Kani proof harnesses
+rejection, and all terminal lifecycle paths. Initialization tests inject every
+safe stage failure and assert exact release of partial state. Apple Silicon
+tests create a real device, queue, library, and pipeline, then reject a corrupt
+library and an absent shader entry point. Public integration tests exercise the
+safe offscreen contract without crate-private access and reject Metal
+construction on portable targets. Kani proof harnesses
 exhaust bounded geometry and color domains, complete `u16` readback extents, and
 six arbitrary lifecycle actions against the Rust implementation. TLA+ models
 check finite value-admission, assurance, qualification, and renderer-lifecycle
@@ -235,11 +255,15 @@ evidence fail-closed under one `ci-pass` result. Locked native tests always run
 on Linux, Apple Silicon macOS, and Windows. Rust implementation changes add
 shipping-crate coverage, changed-code mutation, and Kani as selected. The
 non-shipping assurance tool has a separate coverage floor and fixture suite.
-Unsafe and native Metal paths additionally select Miri or Metal API and shader
-validation. `alpine-metal` currently contains no unsafe or native code, so its
-selected Metal job exercises only the portable contract. Scheduled
-suites expand proofs, Miri, dependency advisories, mutation, coverage, fuzzing
-when a target exists, and Metal validation when its backend exists.
+Unsafe and native Metal paths additionally select Miri or Metal API and Shader
+Validation. The selected Metal job installs Xcode's optional Metal toolchain
+when necessary, compiles the shader source offline, records toolchain and
+artifact hashes, and tests initialization against that exact library. Unsafe
+Rust is denied workspace-wide and permitted only in `alpine-metal`; its two
+current uses are the CoreGraphics framework link declaration and checked access
+to fixed color-attachment slot zero. Scheduled suites expand proofs, Miri,
+dependency advisories, mutation, coverage, fuzzing when a target exists, and
+Metal validation.
 
 ```mermaid
 flowchart TB
@@ -302,8 +326,9 @@ themselves, and no shipping crate depends on them.
 ## Binding invariants
 
 1. Public behavior is specified independently of upstream implementations.
-2. Safe crates deny unsafe code; native FFI must be isolated behind reviewed
-   safe APIs and focused tests.
+2. Safe crates deny unsafe code. The sole override is `alpine-metal`, where
+   native FFI is isolated in one private module behind reviewed safe APIs,
+   local safety arguments, and focused tests.
 3. Capabilities are queried at runtime and verified by behavior.
 4. Unsupported capability, allocation failure, surface loss, and device loss
    become structured errors rather than panics.
