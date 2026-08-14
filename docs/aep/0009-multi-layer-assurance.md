@@ -66,6 +66,13 @@ live approval and parent state. The repository owns immutable AEP, formal, and
 registry artifacts. CI owns revision-scoped results. No production crate
 depends on the assurance tool or its dependencies.
 
+Kani is not applicable to these five governance claims. Their implementation
+boundary includes TOML parsing, repository files, process execution, and GitHub
+state rather than a small bounded pure Rust transition function. TLA+ checks the
+abstract closure protocol, while unit and integration fixtures check the Rust
+validator and workflow behavior. A future pure scheduler extracted from this
+tool would receive its own Kani applicability review.
+
 ## Correctness, performance, memory, and accessibility
 
 Malformed, duplicate, missing, unqualified, or unsupported entries fail with a

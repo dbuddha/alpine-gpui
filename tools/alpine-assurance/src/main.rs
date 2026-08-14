@@ -44,6 +44,12 @@ struct Claim {
     #[serde(rename = "claim_type")]
     category: String,
     risk: String,
+    #[serde(default)]
+    case_study_findings: Vec<String>,
+    kani_applicability: String,
+    #[serde(default)]
+    tla_properties: Vec<String>,
+    platform_scope: Vec<String>,
     required_evidence: Vec<String>,
 }
 
@@ -301,6 +307,7 @@ fn validate_claims<'a>(
             valid_identifier(&claim.id, "AEP-", "-C"),
             format!("invalid claim identifier {}", claim.id),
         );
+        validate_claim_classification(claim, root, diagnostics);
         diagnostics.require(
             claim_ids.insert(claim.id.as_str()),
             format!("duplicate claim identifier {}", claim.id),
@@ -354,6 +361,54 @@ fn validate_claims<'a>(
     }
 
     claims
+}
+
+fn validate_claim_classification(claim: &Claim, root: &Path, diagnostics: &mut Diagnostics) {
+    diagnostics.require(
+        matches!(
+            claim.kani_applicability.as_str(),
+            "required" | "supporting" | "not_applicable"
+        ),
+        format!(
+            "claim {} has invalid Kani applicability {}",
+            claim.id, claim.kani_applicability
+        ),
+    );
+    diagnostics.require(
+        !claim.platform_scope.is_empty()
+            && claim.platform_scope.iter().all(|platform| {
+                matches!(
+                    platform.as_str(),
+                    "portable"
+                        | "tooling"
+                        | "macos-metal"
+                        | "linux-vulkan-wayland"
+                        | "windows-d3d12-win32"
+                )
+            }),
+        format!("claim {} has invalid or empty platform scope", claim.id),
+    );
+    if matches!(
+        claim.category.as_str(),
+        "safety" | "lifecycle" | "concurrency"
+    ) {
+        diagnostics.require(
+            !claim.tla_properties.is_empty(),
+            format!("claim {} requires at least one TLA+ property", claim.id),
+        );
+    }
+    if claim.kani_applicability == "required" {
+        diagnostics.require(
+            claim.required_evidence.iter().any(|kind| kind == "kani"),
+            format!("claim {} requires Kani evidence", claim.id),
+        );
+    }
+    for finding in &claim.case_study_findings {
+        diagnostics.require(
+            finding.starts_with("CS-") && finding_exists(root, finding),
+            format!("claim {} references unknown finding {finding}", claim.id),
+        );
+    }
 }
 
 fn validate_evidence<'a>(
@@ -461,6 +516,19 @@ fn validate_claim_coverage(
             diagnostics.require(
                 kinds.is_some_and(|items| items.contains("benchmark")),
                 format!("performance claim {} lacks a benchmark", claim.id),
+            );
+        }
+        for property in &claim.tla_properties {
+            diagnostics.require(
+                registry.evidence.iter().any(|evidence| {
+                    evidence.claim == claim.id
+                        && evidence.kind == "tla"
+                        && artifact_anchor(&evidence.artifact) == Some(property.as_str())
+                }),
+                format!(
+                    "claim {} lacks TLA+ property evidence for {property}",
+                    claim.id
+                ),
             );
         }
     }
@@ -602,6 +670,19 @@ fn artifact_exists(path: &Path) -> bool {
     path.is_file()
 }
 
+fn finding_exists(root: &Path, identifier: &str) -> bool {
+    let Ok(entries) = fs::read_dir(root.join("docs/case-studies")) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry
+            .path()
+            .extension()
+            .is_some_and(|extension| extension == "md")
+            && fs::read_to_string(entry.path()).is_ok_and(|source| source.contains(identifier))
+    })
+}
+
 fn artifact_reference_exists(root: &Path, reference: &str) -> bool {
     let path = root.join(artifact_path(reference));
     if !artifact_exists(&path) {
@@ -682,14 +763,18 @@ fn render_report(registry: &Registry) -> String {
     for claim in &registry.claims {
         let _ = write!(
             output,
-            "## {}\n\n- Mission: {}\n- Capability: #{}\n- AEP: {}\n- Requirement: #{}\n- Type and risk: {} / {}\n- Required evidence: {}\n\n",
+            "## {}\n\n- Mission: {}\n- Case-study findings: {}\n- Capability: #{}\n- AEP: {}\n- Requirement: #{}\n- Type and risk: {} / {}\n- Platform scope: {}\n- Kani applicability: {}\n- TLA+ properties: {}\n- Required evidence: {}\n\n",
             claim.id,
             claim.mission,
+            display_list(&claim.case_study_findings),
             claim.capability_issue,
             claim.aep,
             claim.requirement_issue,
             claim.category,
             claim.risk,
+            display_list(&claim.platform_scope),
+            claim.kani_applicability,
+            display_list(&claim.tla_properties),
             claim.required_evidence.join(", ")
         );
         for evidence in registry

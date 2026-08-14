@@ -8,6 +8,8 @@ aep = "docs/aep/0009-multi-layer-assurance.md"
 requirement_issue = 14
 claim_type = "performance"
 risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["tooling"]
 required_evidence = ["unit"]
 
 [[evidence]]

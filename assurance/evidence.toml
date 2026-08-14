@@ -6,8 +6,11 @@ mission = "MP-03"
 capability_issue = 9
 aep = "docs/aep/0009-multi-layer-assurance.md"
 requirement_issue = 14
-claim_type = "lifecycle"
+claim_type = "functional"
 risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = ["QualifiedClosure"]
+platform_scope = ["tooling"]
 required_evidence = ["tla", "unit", "integration"]
 
 [[claims]]
@@ -18,6 +21,9 @@ aep = "docs/aep/0009-multi-layer-assurance.md"
 requirement_issue = 14
 claim_type = "lifecycle"
 risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = ["CapabilityClosure"]
+platform_scope = ["tooling"]
 required_evidence = ["tla", "integration"]
 
 [[claims]]
@@ -26,8 +32,10 @@ mission = "MP-03"
 capability_issue = 9
 aep = "docs/aep/0009-multi-layer-assurance.md"
 requirement_issue = 14
-claim_type = "safety"
+claim_type = "functional"
 risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["tooling"]
 required_evidence = ["unit", "integration"]
 
 [[claims]]
@@ -38,6 +46,8 @@ aep = "docs/aep/0009-multi-layer-assurance.md"
 requirement_issue = 14
 claim_type = "compatibility"
 risk = "medium"
+kani_applicability = "not_applicable"
+platform_scope = ["tooling"]
 required_evidence = ["unit"]
 
 [[claims]]
@@ -46,8 +56,10 @@ mission = "MP-04"
 capability_issue = 9
 aep = "docs/aep/0009-multi-layer-assurance.md"
 requirement_issue = 14
-claim_type = "lifecycle"
+claim_type = "functional"
 risk = "critical"
+kani_applicability = "not_applicable"
+platform_scope = ["tooling"]
 required_evidence = ["integration", "e2e"]
 
 [[claims]]
@@ -58,6 +70,10 @@ aep = "docs/aep/0016-portable-value-contracts.md"
 requirement_issue = 17
 claim_type = "safety"
 risk = "medium"
+case_study_findings = ["CS-ZED-002"]
+kani_applicability = "required"
+tla_properties = ["AcceptedIsValid"]
+platform_scope = ["portable"]
 required_evidence = ["tla", "kani", "unit"]
 
 [[claims]]
@@ -68,6 +84,9 @@ aep = "docs/aep/0016-portable-value-contracts.md"
 requirement_issue = 17
 claim_type = "safety"
 risk = "medium"
+kani_applicability = "required"
+tla_properties = ["AcceptedIsValid"]
+platform_scope = ["portable"]
 required_evidence = ["tla", "kani", "unit"]
 
 [[claims]]
@@ -78,6 +97,10 @@ aep = "docs/aep/0016-portable-value-contracts.md"
 requirement_issue = 17
 claim_type = "safety"
 risk = "high"
+case_study_findings = ["CS-WGPU-002"]
+kani_applicability = "required"
+tla_properties = ["AllIntersectionsSafe"]
+platform_scope = ["portable"]
 required_evidence = ["tla", "kani", "unit", "e2e"]
 
 [[evidence]]

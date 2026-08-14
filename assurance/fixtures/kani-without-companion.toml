@@ -8,6 +8,9 @@ aep = "docs/aep/0016-portable-value-contracts.md"
 requirement_issue = 17
 claim_type = "safety"
 risk = "high"
+kani_applicability = "required"
+tla_properties = ["AcceptedIsValid"]
+platform_scope = ["portable"]
 required_evidence = ["kani"]
 
 [[evidence]]
