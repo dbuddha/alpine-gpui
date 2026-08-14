@@ -600,8 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn classifies_every_failure_and_releases_partial_state()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn classifies_every_failure_and_releases_partial_state() {
         let cases = [
             (FailurePoint::Device, InitializationStage::Device),
             (
@@ -628,14 +627,12 @@ mod tests {
 
         for (failure_point, expected_stage) in cases {
             let driver = MockDriver::new(failure_point);
-            let error = initialize(&driver)
-                .err()
-                .ok_or("failure injection unexpectedly initialized")?;
-            assert_eq!(error.stage(), expected_stage);
-            drop(error);
+            let errors: Vec<_> = initialize(&driver).err().into_iter().collect();
+            assert_eq!(errors.len(), 1);
+            assert_eq!(errors[0].stage(), expected_stage);
+            drop(errors);
             driver.assert_balanced();
         }
-        Ok(())
     }
 
     #[test]
