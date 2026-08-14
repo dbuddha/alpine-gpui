@@ -725,13 +725,22 @@ scope = "GitHub-hosted Apple Silicon macOS validates native operations after an 
 exclusions = ["production support for the hosted paravirtual device", "draw encoding", "GPU output", "fixed-hardware performance", "Intel macOS"]
 
 [[evidence]]
-id = "EV-0025-MUTATION01"
+id = "EV-0025-MUTATION01A"
 claim = "AEP-0025-C01"
 kind = "mutation"
 artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Changed host-executable initialization transitions and assertions must kill every viable mutant before ci-pass succeeds."
-scope = "Changed alpine-metal Rust compiled on the mutation host."
-exclusions = ["macOS-only code excluded by the Linux mutation target", "generated Objective-C bindings"]
+assertion = "Changed portable initialization transitions and assertions must kill every viable Linux mutant before ci-pass succeeds."
+scope = "Changed host-executable alpine-metal Rust on Linux."
+exclusions = ["macOS-only native code", "generated Objective-C bindings"]
+
+[[evidence]]
+id = "EV-0025-MUTATION01B"
+claim = "AEP-0025-C01"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#metal-validation"
+assertion = "Changed native Metal operations must kill every viable Apple Silicon mutant before ci-pass succeeds."
+scope = "Changed crates/alpine-metal/src/native.rs operations on hosted Apple Silicon macOS with native tests and Metal available."
+exclusions = ["generated Objective-C bindings", "mutants cargo-mutants classifies as unviable"]
 
 [[evidence]]
 id = "EV-0025-COVERAGE01"
@@ -800,13 +809,22 @@ scope = "Linux-hosted Rust ownership code supported by Miri."
 exclusions = ["Objective-C runtime", "Metal framework calls", "GPU behavior"]
 
 [[evidence]]
-id = "EV-0025-MUTATION08"
+id = "EV-0025-MUTATION08A"
 claim = "AEP-0025-C08"
 kind = "mutation"
 artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Changed safe boundary and ownership assertions must kill every viable host mutation."
-scope = "Changed host-executable alpine-metal Rust."
-exclusions = ["macOS-only native code excluded by the Linux mutation target", "shell policy mutation"]
+assertion = "Changed portable safe-boundary and ownership assertions must kill every viable Linux mutation."
+scope = "Changed host-executable alpine-metal Rust on Linux."
+exclusions = ["macOS-only native code", "shell policy mutation"]
+
+[[evidence]]
+id = "EV-0025-MUTATION08B"
+claim = "AEP-0025-C08"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#metal-validation"
+assertion = "Changed native Metal ownership and error assertions must kill every viable Apple Silicon mutation."
+scope = "Changed crates/alpine-metal/src/native.rs operations on hosted Apple Silicon macOS with native tests and Metal available."
+exclusions = ["generated Objective-C bindings", "mutants cargo-mutants classifies as unviable"]
 
 [[evidence]]
 id = "EV-0025-COVERAGE08"

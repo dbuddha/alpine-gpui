@@ -117,13 +117,15 @@ jobs:
   metal-validation:
     name: metal-validation
     runs-on: macos-26
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       MACOSX_DEPLOYMENT_TARGET: "15.0"
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install native mutation tooling
+        run: cargo install --locked cargo-mutants --version 27.1.0
       - name: Install the optional Metal toolchain when absent
         run: |
           if ! xcrun --sdk macosx --find metal >/dev/null 2>&1; then
@@ -138,6 +140,21 @@ jobs:
           else
             echo "Metal validation activates when alpine-metal is implemented."
           fi
+      - name: Require all native Metal mutants to be killed
+        run: |
+          if cargo metadata --format-version 1 --no-deps | grep -q '"name":"alpine-metal"'; then
+            cargo mutants --no-config --file crates/alpine-metal/src/native.rs --no-shuffle --output target/native-mutants.out -- --locked
+          else
+            echo "Native mutation activates when alpine-metal is implemented."
+          fi
+      - name: Upload native mutation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-mutation-nightly-${{ github.sha }}
+          path: target/native-mutants.out
+          retention-days: 14
+          if-no-files-found: warn
       - name: Upload compiled shader evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

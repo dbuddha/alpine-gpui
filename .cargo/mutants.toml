@@ -1,3 +1,9 @@
-# Kani proof modules compile only under cfg(kani) and are verified by Kani.
-# Dynamic mutation testing cannot observe removal of those harness functions.
-exclude_globs = ["crates/*/src/proofs.rs"]
+# Kani proof modules compile only under cfg(kani), and Direct Metal native code
+# does not compile on the Linux mutation host. Their dedicated Kani and native
+# gates provide the executable evidence instead.
+exclude_globs = ["crates/*/src/proofs.rs", "crates/alpine-metal/src/native.rs"]
+
+# This test-only capability bypass exists only in Apple Silicon macOS builds.
+# Linux mutation cannot observe a replacement even though cargo-mutants parses
+# the cfg-disabled function.
+exclude_re = ["initialize_for_native_validation"]

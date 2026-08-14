@@ -57,10 +57,10 @@ pub struct MetalCapabilities {
 }
 
 impl MetalCapabilities {
-    const METAL3: u8 = 1 << 0;
-    const UNIFIED_MEMORY: u8 = 1 << 1;
-    const LOW_POWER: u8 = 1 << 2;
-    const REMOVABLE: u8 = 1 << 3;
+    const METAL3: u8 = 0b0001;
+    const UNIFIED_MEMORY: u8 = 0b0010;
+    const LOW_POWER: u8 = 0b0100;
+    const REMOVABLE: u8 = 0b1000;
 
     #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) fn new(name: String, registry_id: u64) -> Self {
@@ -623,6 +623,48 @@ mod tests {
 
         drop(initialized);
         driver.assert_balanced();
+    }
+
+    #[test]
+    fn capability_flags_are_independent_and_clearable() {
+        let baseline = MetalCapabilities::new("Mock GPU".to_owned(), 42);
+        let one_hot = [
+            baseline.clone().with_metal3(true),
+            baseline.clone().with_unified_memory(true),
+            baseline.clone().with_low_power(true),
+            baseline.clone().with_removable(true),
+        ];
+
+        for (index, capabilities) in one_hot.iter().enumerate() {
+            assert_eq!(
+                [
+                    capabilities.supports_metal3(),
+                    capabilities.has_unified_memory(),
+                    capabilities.is_low_power(),
+                    capabilities.is_removable(),
+                ],
+                [index == 0, index == 1, index == 2, index == 3]
+            );
+        }
+
+        let cleared = baseline
+            .with_metal3(true)
+            .with_unified_memory(true)
+            .with_low_power(true)
+            .with_removable(true)
+            .with_metal3(false)
+            .with_unified_memory(false)
+            .with_low_power(false)
+            .with_removable(false);
+        assert_eq!(
+            [
+                cleared.supports_metal3(),
+                cleared.has_unified_memory(),
+                cleared.is_low_power(),
+                cleared.is_removable(),
+            ],
+            [false; 4]
+        );
     }
 
     #[test]

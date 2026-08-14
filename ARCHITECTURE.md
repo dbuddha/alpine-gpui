@@ -263,7 +263,10 @@ rustdoc. mdBook builds the durable engineering guide as a private CI artifact.
 Hosted CI classifies the changed paths and review labels, then runs the required
 evidence fail-closed under one `ci-pass` result. Locked native tests always run
 on Linux, Apple Silicon macOS, and Windows. Rust implementation changes add
-shipping-crate coverage, changed-code mutation, and Kani as selected. The
+shipping-crate coverage, changed-code mutation, and Kani as selected. Portable
+mutation runs on Linux, while changed Direct Metal native code receives a
+second mutation pass on Apple Silicon macOS with the native tests and Metal
+driver available. The
 non-shipping assurance tool has a separate coverage floor and fixture suite.
 Unsafe and native Metal paths additionally select Miri or Metal API and Shader
 Validation. The selected Metal job installs Xcode's optional Metal toolchain
@@ -282,7 +285,7 @@ flowchart TB
     unit["Unit, integration, doctest, rustdoc"]
     native["Locked native matrix<br/>Linux, macOS arm64, Windows"]
     coverage["Coverage ratchet<br/>workspace, critical files, changed lines"]
-    mutation["Changed pure-Rust mutation"]
+    mutation["Changed Rust mutation<br/>portable Linux plus native Metal"]
     kani["Selected bounded Rust proofs"]
     tla["Selected finite TLA+ models<br/>plus faulty controls"]
     registry["Evidence registry<br/>claims, bounds, exclusions"]

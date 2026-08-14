@@ -316,6 +316,10 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Install native mutation tooling
+        run: cargo install --locked cargo-mutants --version 27.1.0
       - name: Install the optional Metal toolchain when absent
         run: |
           if ! xcrun --sdk macosx --find metal >/dev/null 2>&1; then
@@ -325,6 +329,19 @@ jobs:
           xcrun --sdk macosx --find metallib
       - name: Run Metal API and shader validation
         run: scripts/check-metal.sh
+      - name: Require changed native Metal mutants to be killed
+        run: |
+          mkdir -p target
+          git diff ${{ needs.classify.outputs.base_sha }}...${{ needs.classify.outputs.head_sha }} > target/alpine.diff
+          cargo mutants --no-config --file crates/alpine-metal/src/native.rs --no-shuffle --in-diff target/alpine.diff --output target/native-mutants.out -- --locked
+      - name: Upload native mutation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-mutation-${{ github.sha }}
+          path: target/native-mutants.out
+          retention-days: 7
+          if-no-files-found: warn
       - name: Upload compiled shader evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
