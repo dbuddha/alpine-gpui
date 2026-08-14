@@ -29,8 +29,10 @@ flowchart LR
     assurance -. "validates repository artifacts" .-> core
 ```
 
-`alpine-core` validates finite geometry, non-negative extents, rectangle
-intersection, and normalized linear RGBA values. `alpine-scene` freezes a
+`alpine-core` uses private representations and validated constructors for
+finite geometry, non-negative extents, rectangle intersection, and normalized
+linear RGBA values. Read-only accessors preserve those invariants across crate
+boundaries. `alpine-scene` freezes a
 viewport, monotonically identified revision, and boxed painter-ordered primitive
 slice. Its only primitive today is a solid axis-aligned quad.
 
