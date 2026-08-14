@@ -218,13 +218,22 @@ pub(crate) fn run_scene(manifest: &Path, _root: &Path) -> Result<String, Vec<Str
     if !errors.is_empty() {
         return Err(errors);
     }
-    let decoded = decode_scene(&scene).map_err(|error| vec![error])?;
-    let frame = decoded
-        .validated_frame()
-        .map_err(|error| vec![format!("scene trace frame validation failed: {error}")])?;
-    let image = frame
-        .reference_image()
-        .map_err(|error| vec![format!("scene trace CPU oracle failed: {error}")])?;
+    let decoded = match decode_scene(&scene) {
+        Ok(decoded) => decoded,
+        Err(error) => return Err(vec![error]),
+    };
+    let frame = match decoded.validated_frame() {
+        Ok(frame) => frame,
+        Err(error) => {
+            return Err(vec![format!(
+                "scene trace frame validation failed: {error}"
+            )]);
+        }
+    };
+    let image = match frame.reference_image() {
+        Ok(image) => image,
+        Err(error) => return Err(vec![format!("scene trace CPU oracle failed: {error}")]),
+    };
     Ok(format!(
         "validated scene trace {} at revision {} with {} operations and {}x{} reference pixels",
         scene.id,
@@ -255,25 +264,42 @@ pub(crate) fn render_scene(
     if !errors.is_empty() {
         return Err(errors);
     }
-    let decoded = decode_scene(&scene).map_err(|error| vec![error])?;
+    let decoded = match decode_scene(&scene) {
+        Ok(decoded) => decoded,
+        Err(error) => return Err(vec![error]),
+    };
     let (image, source) = if native {
-        let mut backend = alpine_metal::MetalBackend::new()
-            .map_err(|error| vec![format!("cannot initialize Direct Metal: {error}")])?;
-        let frame = backend
-            .render_offscreen(decoded.scene(), decoded.descriptor())
-            .map_err(|error| vec![format!("Direct Metal trace render failed: {error}")])?;
+        let mut backend = match alpine_metal::MetalBackend::new() {
+            Ok(backend) => backend,
+            Err(error) => {
+                return Err(vec![format!("cannot initialize Direct Metal: {error}")]);
+            }
+        };
+        let frame = match backend.render_offscreen(decoded.scene(), decoded.descriptor()) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return Err(vec![format!("Direct Metal trace render failed: {error}")]);
+            }
+        };
         (frame.image().clone(), "direct-metal")
     } else {
-        let frame = decoded
-            .validated_frame()
-            .map_err(|error| vec![format!("scene trace frame validation failed: {error}")])?;
-        let image = frame
-            .reference_image()
-            .map_err(|error| vec![format!("scene trace CPU oracle failed: {error}")])?;
+        let frame = match decoded.validated_frame() {
+            Ok(frame) => frame,
+            Err(error) => {
+                return Err(vec![format!(
+                    "scene trace frame validation failed: {error}"
+                )]);
+            }
+        };
+        let image = match frame.reference_image() {
+            Ok(image) => image,
+            Err(error) => return Err(vec![format!("scene trace CPU oracle failed: {error}")]),
+        };
         (image, "cpu-oracle")
     };
-    fs::write(output, image.bytes())
-        .map_err(|error| vec![format!("cannot write {}: {error}", output.display())])?;
+    if let Err(error) = fs::write(output, image.bytes()) {
+        return Err(vec![format!("cannot write {}: {error}", output.display())]);
+    }
     Ok(format!(
         "rendered scene trace {} through {source} to {} as {}x{} compact BGRA8",
         scene.id,
@@ -408,15 +434,17 @@ fn validate_scene(scene: &SceneTrace, diagnostics: &mut Diagnostics) {
     validate_scene_resources(scene, diagnostics);
     let clips = validate_scene_clips(scene, diagnostics);
     validate_scene_operations(scene, &clips, diagnostics);
-    if diagnostics.errors.is_empty()
-        && let Err(error) = decode_scene(scene).and_then(|decoded| {
-            decoded
-                .validated_frame()
-                .map(|_| decoded)
-                .map_err(|error| format!("scene trace frame validation failed: {error}"))
-        })
-    {
-        diagnostics.errors.push(error);
+    if diagnostics.errors.is_empty() {
+        match decode_scene(scene) {
+            Ok(decoded) => {
+                if let Err(error) = decoded.validated_frame() {
+                    diagnostics
+                        .errors
+                        .push(format!("scene trace frame validation failed: {error}"));
+                }
+            }
+            Err(error) => diagnostics.errors.push(error),
+        }
     }
 }
 
@@ -536,31 +564,31 @@ fn decode_scene(scene: &SceneTrace) -> Result<DecodedTrace, String> {
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     let mut quads = Vec::new();
-    quads
-        .try_reserve_exact(scene.operations.len())
-        .map_err(|_| "scene trace operation allocation failed".to_owned())?;
+    if quads.try_reserve_exact(scene.operations.len()).is_err() {
+        return Err("scene trace operation allocation failed".to_owned());
+    }
     for operation in &scene.operations {
         if operation.kind != "solid-quad" {
             return Err(format!("unsupported scene operation {}", operation.kind));
         }
-        let clip_id = operation.clip.as_deref().ok_or_else(|| {
-            format!(
+        let Some(clip_id) = operation.clip.as_deref() else {
+            return Err(format!(
                 "solid-quad operation {} requires a clip",
                 operation.sequence
-            )
-        })?;
-        let clip = clips.get(clip_id).copied().ok_or_else(|| {
-            format!(
+            ));
+        };
+        let Some(clip) = clips.get(clip_id).copied() else {
+            return Err(format!(
                 "operation {} references unknown clip {clip_id}",
                 operation.sequence
-            )
-        })?;
-        let (bounds, color) = operation_payload(operation).ok_or_else(|| {
-            format!(
+            ));
+        };
+        let Some((bounds, color)) = operation_payload(operation) else {
+            return Err(format!(
                 "solid-quad operation {} requires complete bounds and color",
                 operation.sequence
-            )
-        })?;
+            ));
+        };
         quads.push(TraceQuad {
             sequence: operation.sequence,
             bounds,
@@ -568,7 +596,7 @@ fn decode_scene(scene: &SceneTrace) -> Result<DecodedTrace, String> {
             clip,
         });
     }
-    TraceInput {
+    let decoded = TraceInput {
         revision: scene.revision,
         viewport: TraceViewport {
             logical_width: scene.viewport.width,
@@ -580,8 +608,11 @@ fn decode_scene(scene: &SceneTrace) -> Result<DecodedTrace, String> {
         },
         quads,
     }
-    .decode()
-    .map_err(|error| format!("scene trace semantic decoding failed: {error}"))
+    .decode();
+    match decoded {
+        Ok(decoded) => Ok(decoded),
+        Err(error) => Err(format!("scene trace semantic decoding failed: {error}")),
+    }
 }
 
 fn operation_payload(operation: &Operation) -> Option<([f32; 4], [f32; 4])> {
@@ -988,9 +1019,13 @@ fn render_report(qualification: &Qualification, scene: &SceneTrace, journey: &Jo
 mod tests {
     use super::{
         Journey, Qualification, SceneTrace, finite_positive, load_toml, render_report,
-        resolve_repository_path, run, valid_git_sha, valid_sha256, valid_slug, validate,
+        render_scene, resolve_repository_path, run, run_scene, valid_git_sha, valid_sha256,
+        valid_slug, validate,
     };
-    use std::path::{Path, PathBuf};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
     fn repository_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -1009,6 +1044,27 @@ mod tests {
             assert!(report.contains("Environment qualified: true"));
             assert!(report.contains("Exclusions:"));
         }
+    }
+
+    #[test]
+    fn scene_commands_validate_and_render_reference_evidence() {
+        let root = repository_root();
+        let scene = root.join("assurance/qualification/v1/scene.toml");
+        assert_eq!(
+            run_scene(&scene, &root),
+            Ok("validated scene trace solid-quad-editor-surface at revision 1 with 3 operations and 8x4 reference pixels".to_owned())
+        );
+
+        let output = root.join("target/qualification-unit-reference.bgra");
+        assert!(fs::create_dir_all(root.join("target")).is_ok());
+        assert_eq!(
+            render_scene(false, &scene, &output),
+            Ok(format!(
+                "rendered scene trace solid-quad-editor-surface through cpu-oracle to {} as 8x4 compact BGRA8",
+                output.display()
+            ))
+        );
+        assert_eq!(fs::read(output).ok().map(|bytes| bytes.len()), Some(128));
     }
 
     #[test]
