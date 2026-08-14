@@ -202,29 +202,25 @@ impl LinearRgba {
 mod tests {
     use super::{LinearRgba, Point, Rect, Size};
 
-    fn valid_point(x: f32, y: f32) -> Point {
-        match Point::new(x, y) {
-            Some(point) => point,
-            None => unreachable!("test point must be valid"),
-        }
+    fn valid_point(x: f32, y: f32) -> Result<Point, &'static str> {
+        Point::new(x, y).ok_or("test point must be valid")
     }
 
-    fn valid_size(width: f32, height: f32) -> Size {
-        match Size::new(width, height) {
-            Some(size) => size,
-            None => unreachable!("test size must be valid"),
-        }
+    fn valid_size(width: f32, height: f32) -> Result<Size, &'static str> {
+        Size::new(width, height).ok_or("test size must be valid")
     }
 
-    fn valid_rect(x: f32, y: f32, width: f32, height: f32) -> Rect {
-        Rect::new(valid_point(x, y), valid_size(width, height))
+    fn valid_rect(x: f32, y: f32, width: f32, height: f32) -> Result<Rect, &'static str> {
+        Ok(Rect::new(valid_point(x, y)?, valid_size(width, height)?))
     }
 
-    fn valid_color(red: f32, green: f32, blue: f32, alpha: f32) -> LinearRgba {
-        match LinearRgba::new(red, green, blue, alpha) {
-            Some(color) => color,
-            None => unreachable!("test color must be valid"),
-        }
+    fn valid_color(
+        red: f32,
+        green: f32,
+        blue: f32,
+        alpha: f32,
+    ) -> Result<LinearRgba, &'static str> {
+        LinearRgba::new(red, green, blue, alpha).ok_or("test color must be valid")
     }
 
     #[test]
@@ -273,22 +269,23 @@ mod tests {
     }
 
     #[test]
-    fn intersects_overlapping_rectangles() {
-        let first = valid_rect(0.0, 0.0, 10.0, 10.0);
-        let second = valid_rect(5.0, 4.0, 10.0, 2.0);
+    fn intersects_overlapping_rectangles() -> Result<(), &'static str> {
+        let first = valid_rect(0.0, 0.0, 10.0, 10.0)?;
+        let second = valid_rect(5.0, 4.0, 10.0, 2.0)?;
 
         assert_eq!(
             first.intersection(second),
-            Some(valid_rect(5.0, 4.0, 5.0, 2.0))
+            Some(valid_rect(5.0, 4.0, 5.0, 2.0)?)
         );
+        Ok(())
     }
 
     #[test]
-    fn intersection_is_symmetric_and_excludes_empty_contact() {
-        let first = valid_rect(-2.0, -1.0, 4.0, 3.0);
-        let contained = valid_rect(-1.0, 0.0, 1.0, 1.0);
-        let touching = valid_rect(2.0, -1.0, 2.0, 3.0);
-        let touching_below = valid_rect(-2.0, 2.0, 4.0, 1.0);
+    fn intersection_is_symmetric_and_excludes_empty_contact() -> Result<(), &'static str> {
+        let first = valid_rect(-2.0, -1.0, 4.0, 3.0)?;
+        let contained = valid_rect(-1.0, 0.0, 1.0, 1.0)?;
+        let touching = valid_rect(2.0, -1.0, 2.0, 3.0)?;
+        let touching_below = valid_rect(-2.0, 2.0, 4.0, 1.0)?;
 
         assert_eq!(first.intersection(contained), Some(contained));
         assert_eq!(contained.intersection(first), Some(contained));
@@ -296,6 +293,7 @@ mod tests {
         assert_eq!(touching.intersection(first), None);
         assert_eq!(first.intersection(touching_below), None);
         assert_eq!(touching_below.intersection(first), None);
+        Ok(())
     }
 
     #[test]
@@ -306,21 +304,22 @@ mod tests {
     }
 
     #[test]
-    fn accepts_color_range_endpoints() {
+    fn accepts_color_range_endpoints() -> Result<(), &'static str> {
         let color = LinearRgba::new(0.0, 0.25, 1.0, 1.0);
-        assert_eq!(color, Some(valid_color(0.0, 0.25, 1.0, 1.0)));
+        assert_eq!(color, Some(valid_color(0.0, 0.25, 1.0, 1.0)?));
         assert_eq!(
             color.map(|value| (value.red(), value.green(), value.blue(), value.alpha())),
             Some((0.0, 0.25, 1.0, 1.0))
         );
+        Ok(())
     }
 
     #[test]
-    fn accessors_preserve_validated_components() {
-        let point = valid_point(-3.5, 7.25);
-        let size = valid_size(11.5, 19.25);
+    fn accessors_preserve_validated_components() -> Result<(), &'static str> {
+        let point = valid_point(-3.5, 7.25)?;
+        let size = valid_size(11.5, 19.25)?;
         let rect = Rect::new(point, size);
-        let color = valid_color(0.125, 0.25, 0.75, 0.875);
+        let color = valid_color(0.125, 0.25, 0.75, 0.875)?;
 
         assert_eq!((point.x(), point.y()), (-3.5, 7.25));
         assert_eq!((size.width(), size.height()), (11.5, 19.25));
@@ -329,6 +328,7 @@ mod tests {
             (color.red(), color.green(), color.blue(), color.alpha()),
             (0.125, 0.25, 0.75, 0.875)
         );
+        Ok(())
     }
 
     #[test]
@@ -340,11 +340,11 @@ mod tests {
     }
 
     #[test]
-    fn bounded_intersection_companion() {
+    fn bounded_intersection_companion() -> Result<(), &'static str> {
         let samples = [
-            valid_rect(0.0, 0.0, 0.0, 0.0),
-            valid_rect(0.0, 0.0, 1.0, 1.0),
-            valid_rect(f32::from(u8::MAX - 1), f32::from(u8::MAX - 1), 1.0, 1.0),
+            valid_rect(0.0, 0.0, 0.0, 0.0)?,
+            valid_rect(0.0, 0.0, 1.0, 1.0)?,
+            valid_rect(f32::from(u8::MAX - 1), f32::from(u8::MAX - 1), 1.0, 1.0)?,
         ];
 
         for first in samples {
@@ -375,5 +375,6 @@ mod tests {
                 }
             }
         }
+        Ok(())
     }
 }
