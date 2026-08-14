@@ -9,7 +9,7 @@ The workspace currently has four Rust shipping library crates. `alpine-core`,
 `alpine-scene`, and `alpine-renderer` are fully safe and have no external
 dependencies. `alpine-core` has no workspace dependencies.
 `alpine-scene` depends on `alpine-core`, `alpine-renderer` depends on
-`alpine-scene`, and `alpine-metal` depends on `alpine-core` and `alpine-scene`.
+`alpine-scene`, and `alpine-metal` depends on all three portable crates.
 On Apple Silicon macOS only, `alpine-metal` uses narrowly featured, exact-version
 `objc2`, `objc2-foundation`, `objc2-metal`, and `dispatch2` bindings. Other
 targets neither compile nor link those dependencies.
@@ -23,14 +23,15 @@ flowchart LR
     core["alpine-core<br/>Point, Size, Rect, LinearRgba"]
     scene["alpine-scene<br/>SceneRevision, Primitive, SceneBuilder, Scene"]
     renderer["alpine-renderer<br/>Renderer, capabilities, FrameReport"]
-    metal["alpine-metal safe boundary<br/>validated frame, lifecycle, CPU oracle"]
-    native["Private Direct Metal specialization<br/>device, queue, library, BGRA pipeline"]
+    metal["alpine-metal safe boundary<br/>validation, pixels, FrameReport"]
+    native["Private Direct Metal specialization<br/>pipeline, one submission, readback"]
     assurance["alpine-assurance<br/>non-shipping evidence and qualification validator"]
 
     core --> scene --> renderer
     core --> metal
     scene --> metal
-    metal -. "future Renderer implementation" .-> renderer
+    renderer --> metal
+    metal -->|"implements contract"| renderer
     metal -->|"owns safe wrapper"| native
     caller -. "constructs values" .-> core
     caller -. "builds immutable snapshot" .-> scene
@@ -48,8 +49,10 @@ slice. Its only primitive today is a solid axis-aligned quad.
 `alpine-renderer` defines a monomorphized `Renderer` trait with backend-specific
 `Target` and `Error` associated types. `render` borrows an immutable `Scene` and
 mutable target, then returns a `FrameReport` containing submission, primitive,
-draw-call, and upload counts. No implementation of that trait or shared
-renderer error taxonomy exists yet.
+draw-call, and upload counts. `MetalBackend` is the first implementation. Its
+portable `OffscreenTarget` owns only the descriptor and latest completed image;
+all native resources remain private. A failed render clears any stale target
+image before returning its structured `RenderError`.
 
 `alpine-metal` validates a
 non-empty BGRA8 offscreen descriptor, proves its logical viewport and rounded
@@ -64,8 +67,14 @@ memory, loads an embedded offline library, resolves fixed vertex and fragment
 entry points, and creates a premultiplied-source-over BGRA8Unorm pipeline. The
 native objects remain private and live exactly as long as the safe backend.
 Linux and Windows expose the same safe constructor but return a structured
-unsupported-platform error without linking Apple frameworks. Command encoding,
-submission, readback, and native pixels are not implemented yet.
+unsupported-platform error without linking Apple frameworks.
+`MetalBackend::render_offscreen` validates a complete scene before native work,
+allocates frame-local private texture, shared readback, and optional upload
+resources, encodes one instanced quad draw and one texture-to-buffer blit in one
+retained command buffer, commits once, and waits for terminal completion. Only
+then does it remove row padding and return owned compact pixels plus a monotonic
+`FrameReport`. Each accepted target is bounded by the Metal 3 guaranteed 16,384
+pixel dimension. Resource reuse and asynchronous submission are not implemented.
 
 ## Ownership from state to submission
 
@@ -83,16 +92,16 @@ flowchart LR
     plan["ValidatedFrame<br/>owns checked lowered quads"]
     lifecycle["FrameLifecycle<br/>pure ownership state"]
     renderer["MetalBackend<br/>owns initialized native resources"]
-    target["Target<br/>owned by caller"]
-    report["FrameReport<br/>returned value"]
+    resources["Frame-local resources<br/>texture, upload, readback"]
+    result["OffscreenFrame<br/>owned pixels and FrameReport"]
 
     state -. "derive values" .-> builder
     builder -->|"finish consumes builder"| snapshot
     snapshot -->|"borrowed during validation"| plan
-    plan -->|"future immutable encoding input"| renderer
-    lifecycle -. "constrains future transitions" .-> renderer
-    target -->|"mutably borrowed for render call"| renderer
-    renderer --> report
+    plan -->|"immutable encoding input"| renderer
+    lifecycle -. "constrains transitions" .-> renderer
+    renderer -->|"owns until terminal completion"| resources
+    resources -->|"padding removed after wait"| result
 ```
 
 Binding ownership rules:
@@ -105,9 +114,9 @@ Binding ownership rules:
 
 ## Invalidation to present contract
 
-There is no Alpine runtime, scheduler, native event loop, submission, or
-presentation path yet. The solid nodes below are implemented. Dashed nodes mark
-required future owners, not current capabilities.
+There is no Alpine runtime, scheduler, native event loop, or presentation path
+yet. Offscreen submission is implemented. The solid nodes below are
+implemented; dashed messages mark future owners or behavior.
 
 ```mermaid
 sequenceDiagram
@@ -125,10 +134,12 @@ sequenceDiagram
     Builder->>Scene: finish()
     Scene->>Plan: validate and lower
     Plan-->>Scene: structured error before native work
-    Scene->>Renderer: render(&Scene, &mut Target)
-    Renderer-->>Backend: Future encoding and submission
-    Renderer-->>App: Result<FrameReport, Error>
-    Backend-->>Scheduler: Present completion or failure
+    Scene->>Renderer: render_offscreen(Scene, descriptor)
+    Renderer->>Backend: encode render and blit
+    Backend->>Backend: commit once and wait
+    Backend-->>Renderer: compact pixels or structured failure
+    Renderer-->>App: OffscreenFrame with pixels and FrameReport
+    Backend-->>Scheduler: Future present completion or failure
 ```
 
 Future scheduling must be demand-driven: no invalidation means no scene build,
@@ -146,10 +157,13 @@ expose a paravirtual device that fails that baseline, so native CI first asserts
 the production rejection and then uses a test-only route that bypasses only the
 capability decision to validate real queue, library, function, and pipeline
 operations. That route is not compiled into shipping artifacts and does not
-qualify the virtual device as supported. There is no per-frame native resource,
-cache, or eviction implementation. `FrameLifecycle` implements the accepted
-synchronous single-frame state machine before command buffers and frame
-resources exist.
+qualify the virtual device as supported. Each synchronous render owns one
+private texture, one shared readback buffer, an optional immutable upload
+buffer, one retained command buffer, and its encoders until terminal completion.
+No resource is reused or exposed while in flight. Frame-local resources then
+drop exactly once. There is no cache or eviction implementation.
+`FrameLifecycle` is the executable pure-Rust counterpart of this accepted
+single-frame protocol.
 
 ```mermaid
 stateDiagram-v2
@@ -191,13 +205,13 @@ flowchart TB
     scene["Portable immutable scene<br/>alpine-scene"]
     contract["Portable renderer call and evidence<br/>alpine-renderer"]
     metal_plan["Direct Metal safe plan<br/>implemented"]
-    metal_native["Direct Metal initialization<br/>device, queue, offline pipeline implemented"]
+    metal_native["Direct Metal offscreen path<br/>pipeline, submission, readback implemented"]
     vulkan["Direct Vulkan specialization<br/>not implemented"]
     d3d12["Direct D3D12 specialization<br/>not implemented"]
 
     core --> scene --> contract
     scene --> metal_plan
-    contract -. "render call not implemented" .-> metal_native
+    contract -->|"FrameReport type"| metal_native
     metal_plan --> metal_native
     contract -.-> vulkan
     contract -.-> d3d12
@@ -217,13 +231,18 @@ state mutation. `InitializationError` classifies unsupported platforms,
 unavailable or unsupported devices, capability inspection, queue creation,
 offline library loading, missing entry points, and pipeline creation. Native
 error domain, code, and description values are copied into Alpine-owned memory.
-Submission and device-loss classification are not implemented yet.
+`RenderError` separately classifies pure validation, unsupported targets,
+submission-sequence exhaustion, texture limits, allocation stages, missing
+encoders, terminal command failures, unexpected statuses, and readback length
+or allocation failures. A committed failure increments observable submission
+count but never returns pixels or a success report. Detailed device-loss
+recovery classification is not implemented yet.
 
 ```mermaid
 flowchart TD
-    call["Frame validation or Renderer::render"] --> outcome{"Result"}
-    outcome -->|"Ok"| report["FrameReport"]
-    outcome -->|"Err"| backend_error["Structured validation or initialization error"]
+    call["Initialization or render_offscreen"] --> outcome{"Result"}
+    outcome -->|"Ok"| report["Owned pixels and FrameReport"]
+    outcome -->|"Err"| backend_error["Structured validation, initialization, or render error"]
     backend_error --> caller["Caller recovery policy"]
     caller -. "future classification" .-> retry["Retry or rebuild"]
     caller -. "future classification" .-> recreate["Recreate device or surface"]
@@ -245,9 +264,15 @@ safe stage failure and assert exact release of partial state. Apple Silicon
 tests create a real device, queue, library, and pipeline, then reject a corrupt
 library and an absent shader entry point. They separately enforce the production
 capability baseline so a hosted virtual GPU cannot be mistaken for qualified
-physical hardware. Public integration tests exercise the safe offscreen
-contract without crate-private access and reject Metal construction on portable
-targets. The checked-in offline library is bound to its source, deployment
+physical hardware. Native rendering fixtures cover clear-only output, clipping,
+coverage edges, painter order, translucent overlap, aligned padding removal,
+two sequential submission identifiers, validation before submission, and the
+Metal 3 texture limit. GPU bytes agree with the independent CPU oracle within
+one channel value, while a deliberately disabled-blend control is detected.
+Public integration tests exercise the safe offscreen contract without
+crate-private access, render through the production constructor on supported
+Apple Silicon, and reject Metal construction on portable targets. The checked-in
+offline library is bound to its source, deployment
 target, SDK, Xcode, and compiler identity by a strict manifest, SHA-256 checks,
 a Metal-library magic check, and negative verifier fixtures. Kani proof harnesses
 exhaust bounded geometry and color domains, complete `u16` readback extents, and
@@ -271,12 +296,13 @@ non-shipping assurance tool has a separate coverage floor and fixture suite.
 Unsafe and native Metal paths additionally select Miri or Metal API and Shader
 Validation. The selected Metal job installs Xcode's optional Metal toolchain
 when necessary, compiles the shader source offline, records toolchain and
-artifact hashes, and tests initialization against that exact library. Unsafe
-Rust is denied workspace-wide and permitted only in `alpine-metal`; its two
-current uses are the CoreGraphics framework link declaration and checked access
-to fixed color-attachment slot zero. Scheduled suites expand proofs, Miri,
-dependency advisories, mutation, coverage, fuzzing when a target exists, and
-Metal validation.
+artifact hashes, and tests initialization and readback against that exact
+library. Unsafe Rust is denied workspace-wide and permitted only in
+`alpine-metal`; its initial boundary now extends through checked native resource
+binding, draw, blit, and post-completion shared-buffer access. Every use has a
+local safety argument and native validation coverage. Scheduled suites expand
+proofs, Miri, dependency advisories, mutation, coverage, fuzzing when a target
+exists, and Metal validation.
 
 ```mermaid
 flowchart TB

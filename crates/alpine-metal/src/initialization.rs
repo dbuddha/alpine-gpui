@@ -16,8 +16,9 @@ pub(crate) const FRAGMENT_ENTRY_POINT: &str = "alpine_quad_fragment";
 /// ownership when this value is dropped.
 #[must_use]
 pub struct MetalBackend {
-    _native: platform::NativeBackend,
+    pub(crate) native: platform::NativeBackend,
     capabilities: MetalCapabilities,
+    pub(crate) submissions: u64,
 }
 
 impl MetalBackend {
@@ -32,12 +33,13 @@ impl MetalBackend {
         platform::new_backend().map(Self::from_platform_parts)
     }
 
-    fn from_platform_parts(
+    pub(crate) fn from_platform_parts(
         (native, capabilities): (platform::NativeBackend, MetalCapabilities),
     ) -> Self {
         Self {
-            _native: native,
+            native,
             capabilities,
+            submissions: 0,
         }
     }
 

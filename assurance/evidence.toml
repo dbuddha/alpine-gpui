@@ -172,6 +172,33 @@ platform_scope = ["portable", "macos-metal"]
 required_evidence = ["tla", "kani", "unit", "property", "integration", "e2e", "mutation", "coverage"]
 
 [[claims]]
+id = "AEP-0025-C03"
+mission = "MP-02"
+capability_issue = 25
+aep = "docs/aep/0025-direct-metal-offscreen.md"
+requirement_issue = 51
+claim_type = "lifecycle"
+risk = "critical"
+case_study_findings = ["CS-ZED-005", "CS-ZED-006"]
+kani_applicability = "not_applicable"
+tla_properties = ["SingleSubmission", "CompletedIsSuccess", "FailureIsNotSuccess", "SubmissionEventuallyTerminates"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+
+[[claims]]
+id = "AEP-0025-C05"
+mission = "MP-03"
+capability_issue = 25
+aep = "docs/aep/0025-direct-metal-offscreen.md"
+requirement_issue = 51
+claim_type = "compatibility"
+risk = "critical"
+case_study_findings = ["CS-ZED-005", "CS-ZED-006"]
+kani_applicability = "required"
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["kani", "unit", "property", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+
+[[claims]]
 id = "AEP-0025-C08"
 mission = "MP-03"
 capability_issue = 25
@@ -834,3 +861,238 @@ artifact = "scripts/check-coverage.sh"
 assertion = "Coverage ratchets prevent untested host-safe boundary changes from silently reducing exercised behavior."
 scope = "Linux-hosted safe API, unsupported-platform path, initialization driver, and ownership tests."
 exclusions = ["macOS-only native lines", "Objective-C binding internals", "semantic proof"]
+
+[[evidence]]
+id = "EV-0025-TLA03A"
+claim = "AEP-0025-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#SingleSubmission"
+assertion = "One accepted abstract frame can increment its submission count at most once."
+scope = "Finite synchronous renderer lifecycle with one frame and one resource owner."
+bounds = ["submitCount is 0 through 1", "one frame traverses the finite lifecycle"]
+assumptions = ["each Submit action represents exactly one native command-buffer commit"]
+exclusions = ["Metal API behavior", "Rust refinement", "multiple in-flight frames"]
+companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
+
+[[evidence]]
+id = "EV-0025-TLA03D"
+claim = "AEP-0025-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#SubmissionEventuallyTerminates"
+assertion = "Every submitted abstract frame eventually reaches completed or failed."
+scope = "Finite synchronous renderer lifecycle under weak fairness."
+bounds = ["one renderer", "one frame", "one retained resource owner"]
+assumptions = ["Metal wait eventually returns a terminal status", "weak fairness for enabled lifecycle actions"]
+exclusions = ["driver hangs", "wall-clock bounds", "formal refinement to native code"]
+companion = "crates/alpine-metal/src/native.rs#renders_discriminating_scene_once_and_matches_cpu_oracle"
+
+[[evidence]]
+id = "EV-0025-TLA03B"
+claim = "AEP-0025-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#CompletedIsSuccess"
+assertion = "An abstract completed frame always carries success and exactly one submission."
+scope = "Finite synchronous renderer lifecycle."
+bounds = ["one renderer", "one frame", "submitCount is 0 through 1"]
+assumptions = ["Completed represents a successful native terminal status"]
+exclusions = ["Metal status semantics", "formal refinement to Rust"]
+companion = "crates/alpine-metal/src/native.rs#renders_discriminating_scene_once_and_matches_cpu_oracle"
+
+[[evidence]]
+id = "EV-0025-TLA03C"
+claim = "AEP-0025-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0025/RendererLifecycle.tla#FailureIsNotSuccess"
+assertion = "An abstract failed frame can never carry a successful outcome."
+scope = "Finite synchronous renderer lifecycle."
+bounds = ["one renderer", "one frame", "one terminal outcome"]
+assumptions = ["Fail represents any unsuccessful native terminal status"]
+exclusions = ["native error taxonomy", "formal refinement to Rust"]
+companion = "crates/alpine-metal/src/submission.rs#error_contract_preserves_stage_source_and_native_details"
+
+[[evidence]]
+id = "EV-0025-UNIT03"
+claim = "AEP-0025-C03"
+kind = "unit"
+artifact = "crates/alpine-metal/src/submission.rs#portable_render_preserves_validation_order_and_submission_count"
+assertion = "Pure validation rejects before platform dispatch and a noncommitted native result cannot increment submission count."
+scope = "Host-portable safe orchestration and unsupported-platform boundary."
+exclusions = ["successful Metal commit", "native command status"]
+
+[[evidence]]
+id = "EV-0025-INTEGRATION03"
+claim = "AEP-0025-C03"
+kind = "integration"
+artifact = "crates/alpine-metal/tests/offscreen_contract.rs#public_backend_enforces_apple_silicon_baseline"
+assertion = "The public production constructor reports submission one after one completed render on supported Apple Silicon."
+scope = "External crate API on a physical supported Apple Silicon Metal 3 device."
+exclusions = ["hosted paravirtual device support", "multiple in-flight frames", "failure injection"]
+
+[[evidence]]
+id = "EV-0025-E2E03"
+claim = "AEP-0025-C03"
+kind = "e2e"
+artifact = "scripts/check-metal.sh"
+assertion = "The selected Metal gate compiles the reviewed shader, enables API and Shader Validation, and runs command submission tests against that artifact."
+scope = "GitHub-hosted Apple Silicon macOS with Xcode 26.6 and the test-only capability bypass."
+exclusions = ["qualification of the virtual GPU", "fixed-hardware timing"]
+
+[[evidence]]
+id = "EV-0025-NATIVE03"
+claim = "AEP-0025-C03"
+kind = "native"
+artifact = "crates/alpine-metal/src/native.rs#renders_discriminating_scene_once_and_matches_cpu_oracle"
+assertion = "Two accepted frames each commit exactly one retained command buffer and return monotonic submission identifiers one and two."
+scope = "Actual Metal render and blit encoding followed by synchronous terminal waits."
+exclusions = ["command-error injection", "asynchronous submission", "concurrency"]
+
+[[evidence]]
+id = "EV-0025-MIRI03"
+claim = "AEP-0025-C03"
+kind = "miri"
+artifact = ".github/workflows/ci.yml#miri"
+assertion = "Miri exercises host-portable validation, submission sequencing, error ownership, and compact readback code."
+scope = "Rust behavior supported by Miri on Linux."
+exclusions = ["Objective-C runtime", "Metal commands", "GPU memory"]
+
+[[evidence]]
+id = "EV-0025-MUTATION03A"
+claim = "AEP-0025-C03"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#mutation-diff"
+assertion = "Every viable mutation in changed portable submission ordering and accounting must be killed."
+scope = "Changed host-executable alpine-metal Rust on Linux."
+exclusions = ["macOS-only native code", "generated bindings"]
+
+[[evidence]]
+id = "EV-0025-MUTATION03B"
+claim = "AEP-0025-C03"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#metal-validation"
+assertion = "Every viable mutation in changed native command encoding, commit, wait, and status logic must be killed."
+scope = "Changed native.rs behavior on Apple Silicon macOS with Metal available."
+exclusions = ["generated bindings", "mutants classified as unviable"]
+
+[[evidence]]
+id = "EV-0025-COVERAGE03"
+claim = "AEP-0025-C03"
+kind = "coverage"
+artifact = "scripts/check-coverage.sh"
+assertion = "Coverage ratchets include host-testable validation ordering, sequence exhaustion, and unsupported submission results."
+scope = "Linux-hosted safe orchestration code."
+exclusions = ["macOS-only native lines", "proof of correctness"]
+
+[[evidence]]
+id = "EV-0025-KANI05A"
+claim = "AEP-0025-C05"
+kind = "kani"
+artifact = "crates/alpine-metal/src/proofs.rs#readback_rows_stay_aligned_and_bounded"
+assertion = "Every nonzero u16 width produces a compact row no larger than its aligned 256-byte Metal row."
+scope = "Compiled ReadbackLayout arithmetic across the complete nonzero u16 width domain."
+bounds = ["width covers 1 through u16::MAX", "height is one"]
+assumptions = ["BGRA8 remains four bytes per pixel", "alignment remains 256 bytes"]
+exclusions = ["u32 widths above u16::MAX", "native allocation", "pixel semantics"]
+companion = "crates/alpine-metal/src/frame.rs#readback_layout_companion"
+
+[[evidence]]
+id = "EV-0025-KANI05B"
+claim = "AEP-0025-C05"
+kind = "kani"
+artifact = "crates/alpine-metal/src/proofs.rs#readback_capacity_stays_bounded_at_maximum_row"
+assertion = "Every nonzero u16 height at the maximum u16 row has exact compact and padded capacities without overflow."
+scope = "Compiled ReadbackLayout capacity arithmetic across the complete nonzero u16 height domain."
+bounds = ["width is u16::MAX", "height covers 1 through u16::MAX"]
+assumptions = ["row byte counts are nondecreasing with nonnegative width", "EV-0025-KANI05A establishes the width bound"]
+exclusions = ["u32 extents above u16::MAX", "allocation success", "native buffer creation"]
+companion = "crates/alpine-metal/src/frame.rs#readback_layout_companion"
+
+[[evidence]]
+id = "EV-0025-UNIT05"
+claim = "AEP-0025-C05"
+kind = "unit"
+artifact = "crates/alpine-metal/src/submission.rs#compact_readback_strips_every_row_padding_byte"
+assertion = "Compact readback copies only active BGRA bytes from each aligned row and preserves row order."
+scope = "Pure Rust padding removal from an exact validated buffer."
+exclusions = ["native buffer coherence", "GPU pixel production"]
+
+[[evidence]]
+id = "EV-0025-PROPERTY05"
+claim = "AEP-0025-C05"
+kind = "property"
+artifact = "crates/alpine-metal/src/submission.rs#small_readback_grid_strips_padding_without_row_aliasing"
+assertion = "A finite width-height grid preserves every row marker and excludes all padding bytes."
+scope = "Widths 1 through 16 and heights 1 through 8 with distinct row values."
+bounds = ["width 1 through 16", "height 1 through 8"]
+exclusions = ["larger dynamic images", "native memory", "allocation failure"]
+
+[[evidence]]
+id = "EV-0025-INTEGRATION05"
+claim = "AEP-0025-C05"
+kind = "integration"
+artifact = "crates/alpine-metal/tests/offscreen_contract.rs#public_backend_enforces_apple_silicon_baseline"
+assertion = "Public GPU readback agrees with the independently constructed CPU oracle within one BGRA channel value on supported hardware."
+scope = "External crate API and one deterministic one-pixel solid-quad fixture."
+exclusions = ["hosted paravirtual production support", "cross-GPU exact hashes"]
+
+[[evidence]]
+id = "EV-0025-E2E05"
+claim = "AEP-0025-C05"
+kind = "e2e"
+artifact = "scripts/check-metal.sh"
+assertion = "The native Metal gate runs deterministic clear, clipping, coverage, overlap, alpha, empty, ordering, and readback fixtures under validation layers."
+scope = "Pinned shader artifact and GitHub-hosted Apple Silicon Metal execution."
+exclusions = ["window presentation", "visual accessibility", "performance"]
+
+[[evidence]]
+id = "EV-0025-NATIVE05A"
+claim = "AEP-0025-C05"
+kind = "native"
+artifact = "crates/alpine-metal/src/native.rs#renders_discriminating_scene_once_and_matches_cpu_oracle"
+assertion = "A discriminating native fixture covering clipping, painter order, overlap, alpha, and row padding agrees with the CPU oracle within one channel value."
+scope = "BGRA8Unorm offscreen Metal rendering on Apple Silicon."
+exclusions = ["future primitives", "display color management", "cross-device exact hashes"]
+
+[[evidence]]
+id = "EV-0025-NATIVE05B"
+claim = "AEP-0025-C05"
+kind = "native"
+artifact = "crates/alpine-metal/src/native.rs#faulty_blend_control_is_detected_by_cpu_oracle"
+assertion = "The same oracle rejects a deliberately disabled native blend configuration on the discriminating fixture."
+scope = "Test-only pipeline fault control against actual Metal output."
+exclusions = ["all possible shader defects", "compiler correctness"]
+
+[[evidence]]
+id = "EV-0025-MIRI05"
+claim = "AEP-0025-C05"
+kind = "miri"
+artifact = ".github/workflows/ci.yml#miri"
+assertion = "Miri exercises compact image ownership, exact buffer-length rejection, and row padding removal."
+scope = "Host-portable safe Rust readback transformation."
+exclusions = ["native shared-buffer pointer", "Metal coherence", "GPU execution"]
+
+[[evidence]]
+id = "EV-0025-MUTATION05A"
+claim = "AEP-0025-C05"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#mutation-diff"
+assertion = "Every viable mutation in changed compact readback and comparison-support code must be killed."
+scope = "Changed host-executable alpine-metal Rust on Linux."
+exclusions = ["macOS-only native code", "generated bindings"]
+
+[[evidence]]
+id = "EV-0025-MUTATION05B"
+claim = "AEP-0025-C05"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#metal-validation"
+assertion = "Every viable mutation in native texture, draw, blit, completion, and buffer-copy logic must be killed."
+scope = "Changed native.rs behavior on Apple Silicon macOS with native fixtures."
+exclusions = ["generated bindings", "mutants classified as unviable"]
+
+[[evidence]]
+id = "EV-0025-COVERAGE05"
+claim = "AEP-0025-C05"
+kind = "coverage"
+artifact = "scripts/check-coverage.sh"
+assertion = "Coverage ratchets include compact readback success, both length mismatches, and the finite row grid."
+scope = "Linux-hosted safe readback transformation and error contract."
+exclusions = ["macOS-only native lines", "semantic proof"]

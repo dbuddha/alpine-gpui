@@ -11,6 +11,7 @@ mod lifecycle;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native;
 mod oracle;
+mod submission;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 mod unsupported;
 
@@ -18,8 +19,8 @@ mod unsupported;
 mod proofs;
 
 pub use frame::{
-    BGRA_BYTES_PER_PIXEL, LoweredQuad, OffscreenDescriptor, OffscreenError, READBACK_ROW_ALIGNMENT,
-    ReadbackLayout, ValidatedFrame,
+    BGRA_BYTES_PER_PIXEL, LoweredQuad, MAX_METAL3_TEXTURE_DIMENSION_2D, OffscreenDescriptor,
+    OffscreenError, READBACK_ROW_ALIGNMENT, ReadbackLayout, ValidatedFrame,
 };
 pub use initialization::{
     InitializationError, InitializationStage, MetalBackend, MetalCapabilities, NativeFailure,
@@ -29,3 +30,4 @@ pub use lifecycle::{
     TransitionError,
 };
 pub use oracle::Bgra8Image;
+pub use submission::{CommandStatus, OffscreenFrame, OffscreenTarget, RenderError, RenderStage};

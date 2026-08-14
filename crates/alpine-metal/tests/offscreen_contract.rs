@@ -7,9 +7,11 @@ use alpine_metal::{
     FrameLifecycle, FrameOutcome, LifecycleAction, OffscreenDescriptor, ValidatedFrame,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-use alpine_metal::{InitializationError, MetalBackend};
+use alpine_metal::{InitializationError, MetalBackend, OffscreenTarget};
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 use alpine_metal::{InitializationStage, MetalBackend};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use alpine_renderer::Renderer;
 use alpine_scene::{Primitive, SceneBuilder, SceneRevision};
 
 fn color(red: f32, green: f32, blue: f32, alpha: f32) -> Result<LinearRgba, &'static str> {
@@ -71,12 +73,33 @@ fn public_backend_rejects_unsupported_targets() {
 #[test]
 fn public_backend_enforces_apple_silicon_baseline() -> Result<(), Box<dyn Error>> {
     match MetalBackend::new() {
-        Ok(backend) => {
+        Ok(mut backend) => {
             let capabilities = backend.capabilities();
             assert!(!capabilities.name().is_empty());
             assert_ne!(capabilities.registry_id(), 0);
             assert!(capabilities.supports_metal3());
             assert!(capabilities.has_unified_memory());
+
+            let mut builder = SceneBuilder::new(SceneRevision::new(20), size(1.0, 1.0)?);
+            builder.push(Primitive::Quad {
+                bounds: Rect::new(point(0.0, 0.0)?, size(1.0, 1.0)?),
+                color: color(0.25, 0.5, 1.0, 0.5)?,
+            });
+            let scene = builder.finish();
+            let descriptor = OffscreenDescriptor::new(1, 1, 1.0, color(0.0, 0.0, 0.0, 0.0)?)?;
+            let expected = ValidatedFrame::new(&scene, descriptor)?.reference_image()?;
+            let completed = backend.render_offscreen(&scene, descriptor)?;
+            assert_eq!(completed.report().submission, 1);
+            assert_eq!(completed.report().draw_calls, 1);
+            for (actual, expected) in completed.image().bytes().iter().zip(expected.bytes()) {
+                assert!(actual.abs_diff(*expected) <= 1);
+            }
+
+            let mut target = OffscreenTarget::new(descriptor);
+            let report = backend.render(&scene, &mut target)?;
+            assert_eq!(report.submission, 2);
+            assert!(target.image().is_some());
+            assert_eq!(target.descriptor(), descriptor);
         }
         Err(InitializationError::UnsupportedDevice { .. }) => {}
         Err(error) => return Err(error.into()),
