@@ -1,0 +1,13 @@
+schema = "alpine-scene-trace/v1"
+id = "unsupported-operation-fixture"
+workload_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+revision = 1
+
+[viewport]
+width = 1280.0
+height = 720.0
+scale_factor = 2.0
+
+[[operations]]
+sequence = 0
+kind = "silently-dropped-glyph"

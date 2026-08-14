@@ -39,7 +39,11 @@ if matches '^crates/(alpine-core|alpine-scene|alpine-renderer)/.+\.rs$'; then
     kani=true
 fi
 
-if matches '^(formal/tla/|docs/aep/|assurance/evidence\.toml$|tools/alpine-assurance/)'; then
+if matches '^(tools/alpine-assurance/.+\.rs$|assurance/qualification/)'; then
+    mutation=true
+fi
+
+if matches '^(formal/tla/|docs/aep/|assurance/evidence\.toml$|assurance/qualification/|tools/alpine-assurance/)'; then
     tla=true
 fi
 

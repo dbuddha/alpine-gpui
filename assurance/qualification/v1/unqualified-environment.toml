@@ -1,0 +1,48 @@
+schema = "alpine-qualification/v1"
+id = "unqualified-environment-fixture"
+state = "measured"
+comparison_level = "renderer-only"
+scene_trace = "assurance/qualification/v1/scene.toml"
+journey = "assurance/qualification/v1/journey.toml"
+workload_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+base_workload_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+candidate_workload_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+base_revision = "1111111111111111111111111111111111111111"
+candidate_revision = "2222222222222222222222222222222222222222"
+zed_revision = "e17dc4f9d50db73a458b64dcce50ecd4878b98a3"
+alpine_revision = "6e50eb589c9fd82e864a7ff3ce7dd350cc02cde6"
+independent_windows = 1
+assumptions = ["Deliberately invalid fixture."]
+exclusions = ["No performance claim."]
+
+[environment]
+hardware_id = "fixture-apple-silicon"
+os = "macos-fixture"
+toolchain = "rust-fixture"
+power_state = "unknown"
+thermal_state = "unknown"
+qualified = false
+
+[[equivalence]]
+kind = "semantic"
+status = "passed"
+evidence = "assurance/qualification/v1/journey.toml#expected-document"
+[[equivalence]]
+kind = "visual"
+status = "passed"
+evidence = "assurance/qualification/v1/journey.toml#expected-layout"
+[[equivalence]]
+kind = "lifecycle"
+status = "passed"
+evidence = "formal/tla/aep-0028/GoldenQualification.tla#MeasurementRequiresEquivalence"
+[[equivalence]]
+kind = "resources"
+status = "passed"
+evidence = "assurance/qualification/v1/scene.toml#operations"
+
+[[measurements]]
+name = "scene-cpu-time"
+unit = "nanoseconds"
+sample_count = 4
+artifact = "assurance/qualification/v1/raw/scene-cpu-ns.txt"
+artifact_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"

@@ -3,8 +3,14 @@ schema = "alpine-upstreams/v1"
 [[upstreams]]
 name = "Zed GPUI"
 repository = "zed-industries/zed"
-baseline_commit = "1271f8b0e8f3278eed5dd3fc12ad4bd30dce2c5d"
-research_issue = 18
+baseline_commit = "e17dc4f9d50db73a458b64dcce50ecd4878b98a3"
+research_issue = 27
+
+[[upstreams]]
+name = "Zed Editor"
+repository = "zed-industries/zed"
+baseline_commit = "e17dc4f9d50db73a458b64dcce50ecd4878b98a3"
+research_issue = 27
 
 [[upstreams]]
 name = "GPUI-CE"

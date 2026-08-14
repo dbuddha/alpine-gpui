@@ -36,6 +36,11 @@ formal=$(run_fixture formal/tla/aep-0009/AssuranceLifecycle.tla)
 assert_output "$formal" tla=true
 assert_output "$formal" kani=false
 
+qualification=$(run_fixture assurance/qualification/v1/valid.toml)
+assert_output "$qualification" tla=true
+assert_output "$qualification" mutation=true
+assert_output "$qualification" kani=false
+
 unsafe=$(run_fixture README.md review:unsafe)
 assert_output "$unsafe" miri=true
 

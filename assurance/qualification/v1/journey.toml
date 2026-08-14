@@ -1,0 +1,15 @@
+schema = "alpine-journey/v1"
+id = "render-solid-quad-editor-surface"
+workload_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+scene_trace = "assurance/qualification/v1/scene.toml"
+expected_document_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+expected_layout_hash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+[[actions]]
+sequence = 0
+kind = "open-project"
+payload_hash = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+
+[[actions]]
+sequence = 1
+kind = "render-frame"

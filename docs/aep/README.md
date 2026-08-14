@@ -19,6 +19,12 @@ The next full application is the unapproved
 Its AEP must define resource and device-loss lifecycle states, native ownership,
 readback oracles, and fixed-hardware budgets before Requirements are approved.
 
+Accepted AEPs:
+
+- [AEP 0009: Multi-layer assurance](0009-multi-layer-assurance.md)
+- [AEP 0016: Portable value contracts](0016-portable-value-contracts.md)
+- [AEP 0028: Zed golden qualification](0028-zed-golden-qualification.md)
+
 Required sections are motivation, journeys, goals, non-goals, atomic claims,
 model, Rust ownership, correctness, accessibility, performance, memory, failure,
 platform scope, evidence, mapping, risks, and reversal conditions. If no
