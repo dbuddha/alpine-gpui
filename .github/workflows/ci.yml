@@ -170,7 +170,11 @@ jobs:
           mkdir -p target
           git worktree add --detach "$RUNNER_TEMP/alpine-coverage-base" "$BASE_SHA"
           cd "$RUNNER_TEMP/alpine-coverage-base"
-          CARGO_TARGET_DIR="$RUNNER_TEMP/alpine-coverage-base-target" cargo llvm-cov --workspace --exclude alpine-assurance --all-features --locked --json --summary-only --output-path "$GITHUB_WORKSPACE/target/coverage-base.json"
+          coverage_scope=--workspace
+          if cargo metadata --format-version 1 --no-deps | grep -q '"name":"alpine-assurance"'; then
+            coverage_scope="$coverage_scope --exclude alpine-assurance"
+          fi
+          CARGO_TARGET_DIR="$RUNNER_TEMP/alpine-coverage-base-target" cargo llvm-cov $coverage_scope --all-features --locked --json --summary-only --output-path "$GITHUB_WORKSPACE/target/coverage-base.json"
       - name: Measure head coverage
         run: |
           cargo llvm-cov clean --workspace
