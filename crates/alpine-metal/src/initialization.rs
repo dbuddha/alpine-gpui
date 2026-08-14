@@ -693,16 +693,19 @@ mod tests {
                 },
                 "Direct Metal requires Apple Silicon macOS, found fixture-arch-fixture-os",
                 false,
+                InitializationStage::Platform,
             ),
             (
                 InitializationError::DeviceUnavailable,
                 "Metal returned no default device",
                 false,
+                InitializationStage::Device,
             ),
             (
                 InitializationError::CapabilityQueryFailed(failure()),
                 "Metal capability query failed: MockDomain error 17: injected",
                 true,
+                InitializationStage::Capabilities,
             ),
             (
                 InitializationError::UnsupportedDevice {
@@ -711,11 +714,13 @@ mod tests {
                 },
                 "Metal device Fixture GPU is unsupported: fixture reason",
                 false,
+                InitializationStage::Capabilities,
             ),
             (
                 InitializationError::CommandQueueUnavailable,
                 "Metal command-queue creation failed",
                 false,
+                InitializationStage::CommandQueue,
             ),
             (
                 InitializationError::MissingFunction {
@@ -724,17 +729,20 @@ mod tests {
                 },
                 "offline Metal library is missing alpine_quad_fragment",
                 false,
+                InitializationStage::FragmentFunction,
             ),
             (
                 InitializationError::PipelineCreationFailed(failure()),
                 "Metal render-pipeline creation failed: MockDomain error 17: injected",
                 true,
+                InitializationStage::RenderPipeline,
             ),
         ];
 
-        for (error, expected, has_source) in errors {
+        for (error, expected, has_source, expected_stage) in errors {
             assert_eq!(error.to_string(), expected);
             assert_eq!(error.source().is_some(), has_source);
+            assert_eq!(error.stage(), expected_stage);
         }
     }
 
