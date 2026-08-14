@@ -710,9 +710,9 @@ exclusions = ["Objective-C retain-count internals", "Metal driver behavior", "pr
 id = "EV-0025-INTEGRATION01"
 claim = "AEP-0025-C01"
 kind = "integration"
-artifact = "crates/alpine-metal/tests/offscreen_contract.rs#public_backend_initializes_supported_apple_silicon"
-assertion = "The public safe boundary initializes a Metal 3 unified-memory backend and exposes copied capabilities without native objects."
-scope = "Apple Silicon macOS public crate API and structured unsupported-platform behavior on portable hosts."
+artifact = "crates/alpine-metal/tests/offscreen_contract.rs#public_backend_enforces_apple_silicon_baseline"
+assertion = "The public safe boundary initializes a Metal 3 unified-memory backend on supported hardware or returns a capability-stage error on an unsupported Apple Silicon virtual device."
+scope = "Apple Silicon macOS public crate API, including physical and hosted virtual devices, plus structured unsupported-platform behavior on portable hosts."
 exclusions = ["command encoding", "submission", "readback", "device loss"]
 
 [[evidence]]
@@ -720,9 +720,9 @@ id = "EV-0025-NATIVE01"
 claim = "AEP-0025-C01"
 kind = "native"
 artifact = "scripts/check-metal.sh"
-assertion = "Metal API and Shader Validation exercise a real device, command queue, freshly compiled offline library, fixed entry points, and BGRA8 render pipeline."
-scope = "GitHub-hosted Apple Silicon macOS with the selected Xcode Metal toolchain and local Apple Silicon developer runs."
-exclusions = ["draw encoding", "GPU output", "fixed-hardware performance", "Intel macOS"]
+assertion = "Metal API and Shader Validation exercise a real device, command queue, fixed entry points, and BGRA8 render pipeline after a pinned fresh compilation matches the reviewed offline library byte for byte."
+scope = "GitHub-hosted Apple Silicon macOS validates native operations after an explicit test-only capability bypass; supported local Apple Silicon runs validate the production constructor."
+exclusions = ["production support for the hosted paravirtual device", "draw encoding", "GPU output", "fixed-hardware performance", "Intel macOS"]
 
 [[evidence]]
 id = "EV-0025-MUTATION01"
@@ -773,12 +773,21 @@ scope = "Apple Silicon macOS dependency graph for alpine-metal."
 exclusions = ["future command-submission features", "upstream maintenance changes after the locked versions"]
 
 [[evidence]]
+id = "EV-0025-INTEGRATION08C"
+claim = "AEP-0025-C08"
+kind = "integration"
+artifact = "scripts/test-metal-library.sh"
+assertion = "The offline library verifier rejects stale source hashes, duplicate manifest fields, and invalid Metal-library magic while accepting the committed source and binary pair."
+scope = "Checked-in shader source, compiled metallib, deployment target, compiler manifest, and portable CI verification."
+exclusions = ["compiler correctness", "shader semantics", "runtime Metal behavior"]
+
+[[evidence]]
 id = "EV-0025-NATIVE08"
 claim = "AEP-0025-C08"
 kind = "native"
-artifact = "crates/alpine-metal/src/native.rs#initializes_real_device_queue_library_and_pipeline"
+artifact = "crates/alpine-metal/src/native.rs#creates_real_queue_library_functions_and_pipeline"
 assertion = "The private native module retains all Objective-C objects behind one safe backend and rejects corrupt libraries and absent entry points."
-scope = "Apple Silicon macOS initialization and deterministic teardown of retained bindings."
+scope = "Apple Silicon macOS native initialization and deterministic teardown, with capability qualification evaluated separately from hosted virtual pipeline validation."
 exclusions = ["command-buffer ownership", "GPU resource synchronization", "device-loss recovery"]
 
 [[evidence]]

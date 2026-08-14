@@ -5,7 +5,9 @@ use crate::native as platform;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 use crate::unsupported as platform;
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) const VERTEX_ENTRY_POINT: &str = "alpine_quad_vertex";
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) const FRAGMENT_ENTRY_POINT: &str = "alpine_quad_fragment";
 
 /// An initialized Alpine-owned Direct Metal backend.
@@ -54,6 +56,7 @@ impl MetalCapabilities {
     const LOW_POWER: u8 = 1 << 2;
     const REMOVABLE: u8 = 1 << 3;
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) fn new(name: String, registry_id: u64) -> Self {
         Self {
             name,
@@ -62,26 +65,31 @@ impl MetalCapabilities {
         }
     }
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) const fn with_metal3(mut self, supported: bool) -> Self {
         self.set_property(Self::METAL3, supported);
         self
     }
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) const fn with_unified_memory(mut self, unified: bool) -> Self {
         self.set_property(Self::UNIFIED_MEMORY, unified);
         self
     }
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) const fn with_low_power(mut self, low_power: bool) -> Self {
         self.set_property(Self::LOW_POWER, low_power);
         self
     }
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) const fn with_removable(mut self, removable: bool) -> Self {
         self.set_property(Self::REMOVABLE, removable);
         self
     }
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     const fn set_property(&mut self, property: u8, enabled: bool) {
         if enabled {
             self.properties |= property;
@@ -140,6 +148,7 @@ pub struct NativeFailure {
 }
 
 impl NativeFailure {
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) fn new(domain: String, code: i64, description: String) -> Self {
         Self {
             domain,
@@ -309,6 +318,7 @@ impl Error for InitializationError {
     }
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) trait InitializationDriver {
     type Device;
     type Queue;
@@ -333,6 +343,7 @@ pub(crate) trait InitializationDriver {
     dead_code,
     reason = "native handles are intentionally retained until backend teardown"
 )]
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) struct Initialized<D: InitializationDriver> {
     pub(crate) capabilities: MetalCapabilities,
     pub(crate) device: D::Device,
@@ -341,16 +352,36 @@ pub(crate) struct Initialized<D: InitializationDriver> {
     pub(crate) pipeline: D::Pipeline,
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) fn initialize<D: InitializationDriver>(
     driver: &D,
 ) -> Result<Initialized<D>, InitializationError> {
+    initialize_with_capability_validation(driver, require_supported_device)
+}
+
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(crate) fn initialize_for_native_validation<D: InitializationDriver>(
+    driver: &D,
+) -> Result<Initialized<D>, InitializationError> {
+    initialize_with_capability_validation(driver, |_| Ok(()))
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn initialize_with_capability_validation<D, V>(
+    driver: &D,
+    validate_capabilities: V,
+) -> Result<Initialized<D>, InitializationError>
+where
+    D: InitializationDriver,
+    V: FnOnce(&MetalCapabilities) -> Result<(), InitializationError>,
+{
     let device = driver
         .create_device()
         .ok_or(InitializationError::DeviceUnavailable)?;
     let capabilities = driver
         .capabilities(&device)
         .map_err(InitializationError::CapabilityQueryFailed)?;
-    require_supported_device(&capabilities)?;
+    validate_capabilities(&capabilities)?;
     let queue = driver
         .create_queue(&device)
         .ok_or(InitializationError::CommandQueueUnavailable)?;
@@ -382,6 +413,7 @@ pub(crate) fn initialize<D: InitializationDriver>(
     })
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn require_supported_device(capabilities: &MetalCapabilities) -> Result<(), InitializationError> {
     if !capabilities.supports_metal3() {
         return Err(InitializationError::UnsupportedDevice {

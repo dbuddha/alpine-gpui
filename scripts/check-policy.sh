@@ -97,6 +97,8 @@ for required_path in \
     docs/quality/assurance.md \
     assurance/evidence.toml \
     scripts/test-assurance.sh \
+    scripts/test-metal-library.sh \
+    scripts/verify-metal-library.sh \
     scripts/check-tla.sh \
     .cargo/mutants.toml
 do

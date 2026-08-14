@@ -52,4 +52,6 @@ fi
     "$metal_compiler" --version 2>&1 | head -n 1
 } > "$manifest_file"
 
+"$repository_root/scripts/verify-metal-library.sh" \
+    "$output_file" "$manifest_file" "$source_file"
 printf 'Built %s\n' "$output_file"

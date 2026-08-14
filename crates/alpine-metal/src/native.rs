@@ -135,7 +135,9 @@ fn copy_error(error: &NSError) -> NativeFailure {
 mod tests {
     use std::error::Error;
 
-    use crate::initialization::{InitializationStage, initialize};
+    use crate::initialization::{
+        InitializationError, InitializationStage, initialize_for_native_validation,
+    };
 
     use super::{
         FRAGMENT_ENTRY_POINT, NativeDriver, OFFLINE_LIBRARY, VERTEX_ENTRY_POINT, new_backend,
@@ -144,14 +146,35 @@ mod tests {
     static CORRUPT_LIBRARY: &[u8] = b"not a Metal library";
 
     #[test]
-    fn initializes_real_device_queue_library_and_pipeline() -> Result<(), Box<dyn Error>> {
-        let (_backend, capabilities) = new_backend()?;
+    fn production_initialization_enforces_the_device_baseline() -> Result<(), Box<dyn Error>> {
+        match new_backend() {
+            Ok((_backend, capabilities)) => {
+                assert!(!capabilities.name().is_empty());
+                assert_ne!(capabilities.registry_id(), 0);
+                assert!(capabilities.supports_metal3());
+                assert!(capabilities.has_unified_memory());
+            }
+            Err(InitializationError::UnsupportedDevice {
+                device_name,
+                reason,
+            }) => {
+                assert!(!device_name.is_empty());
+                assert!(matches!(
+                    reason,
+                    "Metal 3 family support is required" | "unified memory is required"
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        }
 
-        assert!(!capabilities.name().is_empty());
-        assert_ne!(capabilities.registry_id(), 0);
-        assert!(capabilities.supports_metal3());
-        assert!(capabilities.has_unified_memory());
+        Ok(())
+    }
 
+    #[test]
+    fn creates_real_queue_library_functions_and_pipeline() -> Result<(), Box<dyn Error>> {
+        let initialized = initialize_for_native_validation(&NativeDriver::production())?;
+
+        assert!(!initialized.capabilities.name().is_empty());
         Ok(())
     }
 
@@ -162,7 +185,7 @@ mod tests {
             vertex_name: VERTEX_ENTRY_POINT,
             fragment_name: FRAGMENT_ENTRY_POINT,
         };
-        let Err(error) = initialize(&driver) else {
+        let Err(error) = initialize_for_native_validation(&driver) else {
             return Err("corrupt library unexpectedly initialized".into());
         };
 
@@ -178,7 +201,7 @@ mod tests {
             vertex_name: "alpine_missing_vertex",
             fragment_name: FRAGMENT_ENTRY_POINT,
         };
-        let Err(error) = initialize(&driver) else {
+        let Err(error) = initialize_for_native_validation(&driver) else {
             return Err("missing entry point unexpectedly initialized".into());
         };
 

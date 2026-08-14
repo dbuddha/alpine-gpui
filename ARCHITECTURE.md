@@ -140,7 +140,13 @@ continuous redraw loop merely because a window exists.
 The renderer trait deliberately leaves resource representation to each backend.
 The Metal backend now retains one device, command queue, offline library, and
 render-pipeline state. Initialization releases every partially created object on
-failure through ordinary Rust drops. There is no per-frame native resource,
+failure through ordinary Rust drops. The production constructor rejects devices
+without the Metal 3 family or unified memory. Hosted macOS runners currently
+expose a paravirtual device that fails that baseline, so native CI first asserts
+the production rejection and then uses a test-only route that bypasses only the
+capability decision to validate real queue, library, function, and pipeline
+operations. That route is not compiled into shipping artifacts and does not
+qualify the virtual device as supported. There is no per-frame native resource,
 cache, or eviction implementation. `FrameLifecycle` implements the accepted
 synchronous single-frame state machine before command buffers and frame
 resources exist.
@@ -237,9 +243,13 @@ source-over semantics, deliberately reversed painter order, atomic lifecycle
 rejection, and all terminal lifecycle paths. Initialization tests inject every
 safe stage failure and assert exact release of partial state. Apple Silicon
 tests create a real device, queue, library, and pipeline, then reject a corrupt
-library and an absent shader entry point. Public integration tests exercise the
-safe offscreen contract without crate-private access and reject Metal
-construction on portable targets. Kani proof harnesses
+library and an absent shader entry point. They separately enforce the production
+capability baseline so a hosted virtual GPU cannot be mistaken for qualified
+physical hardware. Public integration tests exercise the safe offscreen
+contract without crate-private access and reject Metal construction on portable
+targets. The checked-in offline library is bound to its source, deployment
+target, SDK, Xcode, and compiler identity by a strict manifest, SHA-256 checks,
+a Metal-library magic check, and negative verifier fixtures. Kani proof harnesses
 exhaust bounded geometry and color domains, complete `u16` readback extents, and
 six arbitrary lifecycle actions against the Rust implementation. TLA+ models
 check finite value-admission, assurance, qualification, and renderer-lifecycle

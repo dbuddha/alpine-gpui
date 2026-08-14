@@ -7,7 +7,16 @@ if ! cargo metadata --format-version 1 --no-deps | grep -q '"name":"alpine-metal
 fi
 
 metallib_path=$(pwd)/target/metal/offscreen.metallib
+scripts/verify-metal-library.sh
 scripts/build-metal-shaders.sh "$metallib_path"
+if ! cmp -s shaders/offscreen.metallib "$metallib_path"; then
+    printf 'metal validation error: pinned compiler output differs from the checked-in library\n' >&2
+    printf 'checked-in: ' >&2
+    shasum -a 256 shaders/offscreen.metallib >&2
+    printf 'fresh: ' >&2
+    shasum -a 256 "$metallib_path" >&2
+    exit 1
+fi
 export ALPINE_METALLIB_PATH="$metallib_path"
 
 export MTL_DEBUG_LAYER=1
