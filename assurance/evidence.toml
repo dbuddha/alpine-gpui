@@ -145,6 +145,19 @@ platform_scope = ["tooling"]
 required_evidence = ["tla", "unit", "e2e", "mutation", "coverage"]
 
 [[claims]]
+id = "AEP-0025-C01"
+mission = "MP-02"
+capability_issue = 25
+aep = "docs/aep/0025-direct-metal-offscreen.md"
+requirement_issue = 50
+claim_type = "functional"
+risk = "critical"
+case_study_findings = ["CS-ZED-002", "CS-ZED-003"]
+kani_applicability = "not_applicable"
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["unit", "integration", "native", "mutation", "coverage"]
+
+[[claims]]
 id = "AEP-0025-C02"
 mission = "MP-02"
 capability_issue = 25
@@ -157,6 +170,20 @@ kani_applicability = "required"
 tla_properties = ["InFlightOwnsResource", "FreeResourceIsInactive", "SingleSubmission", "TerminalRelease", "CompletedIsSuccess", "FailureIsNotSuccess", "StoppedIsDrained"]
 platform_scope = ["portable", "macos-metal"]
 required_evidence = ["tla", "kani", "unit", "property", "integration", "e2e", "mutation", "coverage"]
+
+[[claims]]
+id = "AEP-0025-C08"
+mission = "MP-03"
+capability_issue = 25
+aep = "docs/aep/0025-direct-metal-offscreen.md"
+requirement_issue = 50
+claim_type = "safety"
+risk = "critical"
+case_study_findings = ["CS-ZED-003", "CS-ZED-006"]
+kani_applicability = "not_applicable"
+tla_properties = ["MeasurementRequiresEquivalence"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "integration", "native", "miri", "mutation", "coverage"]
 
 [[evidence]]
 id = "EV-0009-TLA01"
@@ -659,7 +686,7 @@ kind = "mutation"
 artifact = ".github/workflows/ci.yml#mutation-diff"
 assertion = "Every viable mutant in changed alpine-metal safe Rust must be killed before ci-pass can succeed."
 scope = "Changed executable Rust selected by the pull-request classifier."
-exclusions = ["proof modules", "unchanged code", "native code not yet implemented"]
+exclusions = ["proof modules", "unchanged code", "macOS-only native code governed by C01 and C08"]
 
 [[evidence]]
 id = "EV-0025-COVERAGE02"
@@ -668,4 +695,142 @@ kind = "coverage"
 artifact = "scripts/check-coverage.sh"
 assertion = "Shipping workspace, changed-line, and critical-file coverage ratchets include alpine-metal."
 scope = "Executable Rust reached by the workspace test suite."
-exclusions = ["proof of correctness", "Kani-only proof modules", "native code not yet implemented"]
+exclusions = ["proof of correctness", "Kani-only proof modules", "macOS-only native lines governed by C01 and C08"]
+
+[[evidence]]
+id = "EV-0025-UNIT01"
+claim = "AEP-0025-C01"
+kind = "unit"
+artifact = "crates/alpine-metal/src/initialization.rs#classifies_every_failure_and_releases_partial_state"
+assertion = "Every initialization stage returns its stable classification and every partially created mock handle is released exactly once."
+scope = "Host-testable compiled Rust initialization ordering and ownership across device, capabilities, queue, library, function, and pipeline stages."
+exclusions = ["Objective-C retain-count internals", "Metal driver behavior", "process-wide allocation failure"]
+
+[[evidence]]
+id = "EV-0025-INTEGRATION01"
+claim = "AEP-0025-C01"
+kind = "integration"
+artifact = "crates/alpine-metal/tests/offscreen_contract.rs#public_backend_enforces_apple_silicon_baseline"
+assertion = "The public safe boundary initializes a Metal 3 unified-memory backend on supported hardware or returns a capability-stage error on an unsupported Apple Silicon virtual device."
+scope = "Apple Silicon macOS public crate API, including physical and hosted virtual devices, plus structured unsupported-platform behavior on portable hosts."
+exclusions = ["command encoding", "submission", "readback", "device loss"]
+
+[[evidence]]
+id = "EV-0025-NATIVE01"
+claim = "AEP-0025-C01"
+kind = "native"
+artifact = "scripts/check-metal.sh"
+assertion = "Metal API and Shader Validation exercise a real device, command queue, fixed entry points, and BGRA8 render pipeline after a pinned fresh compilation matches the reviewed offline library byte for byte."
+scope = "GitHub-hosted Apple Silicon macOS validates native operations after an explicit test-only capability bypass; supported local Apple Silicon runs validate the production constructor."
+exclusions = ["production support for the hosted paravirtual device", "draw encoding", "GPU output", "fixed-hardware performance", "Intel macOS"]
+
+[[evidence]]
+id = "EV-0025-MUTATION01A"
+claim = "AEP-0025-C01"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#mutation-diff"
+assertion = "Changed portable initialization transitions and assertions must kill every viable Linux mutant before ci-pass succeeds."
+scope = "Changed host-executable alpine-metal Rust on Linux."
+exclusions = ["macOS-only native code", "generated Objective-C bindings"]
+
+[[evidence]]
+id = "EV-0025-MUTATION01B"
+claim = "AEP-0025-C01"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#metal-validation"
+assertion = "Changed native Metal operations must kill every viable Apple Silicon mutant before ci-pass succeeds."
+scope = "Changed crates/alpine-metal/src/native.rs operations on hosted Apple Silicon macOS with native tests and Metal available."
+exclusions = ["generated Objective-C bindings", "mutants cargo-mutants classifies as unviable"]
+
+[[evidence]]
+id = "EV-0025-COVERAGE01"
+claim = "AEP-0025-C01"
+kind = "coverage"
+artifact = "scripts/check-coverage.sh"
+assertion = "Workspace, changed-line, and critical-file coverage ratchets include host-testable initialization behavior."
+scope = "Executable Rust reached on the Linux coverage host."
+exclusions = ["macOS-only native lines", "proof of correctness", "Objective-C framework internals"]
+
+[[evidence]]
+id = "EV-0025-TLA08"
+claim = "AEP-0025-C08"
+kind = "tla"
+artifact = "formal/tla/aep-0028/GoldenQualification.tla#MeasurementRequiresEquivalence"
+assertion = "A qualification cannot enter measurement until semantic, visual, accessibility, and lifecycle equivalence all hold."
+scope = "Finite golden-qualification lifecycle shared by renderer-only and later product comparisons."
+bounds = ["one qualification progressing through the finite equivalence and measurement stages"]
+assumptions = ["equivalence flags represent independently passing qualified checks"]
+exclusions = ["native validation semantics", "statistical estimator correctness", "formal refinement to Rust"]
+companion = "tools/alpine-assurance/src/qualification.rs#rejects_performance_before_correctness"
+
+[[evidence]]
+id = "EV-0025-INTEGRATION08A"
+claim = "AEP-0025-C08"
+kind = "integration"
+artifact = "scripts/check-policy.sh"
+assertion = "Repository policy permits unsafe Rust only in alpine-metal and rejects unsafe constructs outside its private native module."
+scope = "Tracked Rust sources and Cargo lint overrides."
+exclusions = ["unsafe internals of audited dependencies", "compiler defects", "untracked local files"]
+
+[[evidence]]
+id = "EV-0025-INTEGRATION08B"
+claim = "AEP-0025-C08"
+kind = "integration"
+artifact = "crates/alpine-metal/Cargo.toml"
+assertion = "Native dependencies are exact-version, target-specific, minimally featured, registry-sourced, and license-checked by cargo-deny."
+scope = "Apple Silicon macOS dependency graph for alpine-metal."
+exclusions = ["future command-submission features", "upstream maintenance changes after the locked versions"]
+
+[[evidence]]
+id = "EV-0025-INTEGRATION08C"
+claim = "AEP-0025-C08"
+kind = "integration"
+artifact = "scripts/test-metal-library.sh"
+assertion = "The offline library verifier rejects stale source hashes, duplicate manifest fields, and invalid Metal-library magic while accepting the committed source and binary pair."
+scope = "Checked-in shader source, compiled metallib, deployment target, compiler manifest, and portable CI verification."
+exclusions = ["compiler correctness", "shader semantics", "runtime Metal behavior"]
+
+[[evidence]]
+id = "EV-0025-NATIVE08"
+claim = "AEP-0025-C08"
+kind = "native"
+artifact = "crates/alpine-metal/src/native.rs#creates_real_queue_library_functions_and_pipeline"
+assertion = "The private native module retains all Objective-C objects behind one safe backend and rejects corrupt libraries and absent entry points."
+scope = "Apple Silicon macOS native initialization and deterministic teardown, with capability qualification evaluated separately from hosted virtual pipeline validation."
+exclusions = ["command-buffer ownership", "GPU resource synchronization", "device-loss recovery"]
+
+[[evidence]]
+id = "EV-0025-MIRI08"
+claim = "AEP-0025-C08"
+kind = "miri"
+artifact = ".github/workflows/ci.yml#miri"
+assertion = "Miri exercises the host-portable safe initialization owner and exact partial-drop tests selected by the unsafe review label."
+scope = "Linux-hosted Rust ownership code supported by Miri."
+exclusions = ["Objective-C runtime", "Metal framework calls", "GPU behavior"]
+
+[[evidence]]
+id = "EV-0025-MUTATION08A"
+claim = "AEP-0025-C08"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#mutation-diff"
+assertion = "Changed portable safe-boundary and ownership assertions must kill every viable Linux mutation."
+scope = "Changed host-executable alpine-metal Rust on Linux."
+exclusions = ["macOS-only native code", "shell policy mutation"]
+
+[[evidence]]
+id = "EV-0025-MUTATION08B"
+claim = "AEP-0025-C08"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#metal-validation"
+assertion = "Changed native Metal ownership and error assertions must kill every viable Apple Silicon mutation."
+scope = "Changed crates/alpine-metal/src/native.rs operations on hosted Apple Silicon macOS with native tests and Metal available."
+exclusions = ["generated Objective-C bindings", "mutants cargo-mutants classifies as unviable"]
+
+[[evidence]]
+id = "EV-0025-COVERAGE08"
+claim = "AEP-0025-C08"
+kind = "coverage"
+artifact = "scripts/check-coverage.sh"
+assertion = "Coverage ratchets prevent untested host-safe boundary changes from silently reducing exercised behavior."
+scope = "Linux-hosted safe API, unsupported-platform path, initialization driver, and ownership tests."
+exclusions = ["macOS-only native lines", "Objective-C binding internals", "semantic proof"]

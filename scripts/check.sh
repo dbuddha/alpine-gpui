@@ -9,6 +9,7 @@ scripts/test-assurance.sh
 scripts/test-qualification.sh
 scripts/test-core-contracts.sh
 scripts/test-metal-contracts.sh
+scripts/verify-metal-library.sh
 scripts/check-release.sh
 mdbook build
 mdbook test

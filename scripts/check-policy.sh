@@ -34,6 +34,20 @@ if [ -n "$manifest_files" ] && grep -nE 'git[[:space:]]*=[[:space:]]*"https?://'
     grep -nE 'git[[:space:]]*=[[:space:]]*"https?://' $manifest_files >&2 || true
 fi
 
+unsafe_override_files=$(grep -lE '^unsafe_code[[:space:]]*=[[:space:]]*"allow"' $manifest_files 2>/dev/null | sort || true)
+if [ "$unsafe_override_files" != './crates/alpine-metal/Cargo.toml' ]; then
+    fail 'only alpine-metal may override the workspace unsafe-code denial'
+    printf '%s\n' "$unsafe_override_files" >&2
+fi
+
+unsafe_source_files=$(find crates -type f -name '*.rs' -print0 \
+    | xargs -0 grep -lE 'unsafe[[:space:]]+(extern|fn|impl|trait)|unsafe[[:space:]]*\{' 2>/dev/null \
+    | sort || true)
+if [ "$unsafe_source_files" != 'crates/alpine-metal/src/native.rs' ]; then
+    fail 'unsafe Rust constructs must remain isolated in alpine-metal native code'
+    printf '%s\n' "$unsafe_source_files" >&2
+fi
+
 old_project='Ro''ck GPUI'
 old_probe='ro''ck-metal-probe'
 if git grep -n -I -e "$old_project" -e "$old_probe" -- . ':!scripts/check-policy.sh' >/dev/null 2>&1; then
@@ -83,6 +97,8 @@ for required_path in \
     docs/quality/assurance.md \
     assurance/evidence.toml \
     scripts/test-assurance.sh \
+    scripts/test-metal-library.sh \
+    scripts/verify-metal-library.sh \
     scripts/check-tla.sh \
     .cargo/mutants.toml
 do

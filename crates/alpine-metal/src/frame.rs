@@ -457,6 +457,8 @@ impl Error for OffscreenError {}
 
 #[cfg(test)]
 mod tests {
+    use std::mem::{offset_of, size_of};
+
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_scene::{Primitive, SceneBuilder, SceneRevision};
 
@@ -464,6 +466,13 @@ mod tests {
         LoweredQuad, OffscreenDescriptor, OffscreenError, READBACK_ROW_ALIGNMENT, ReadbackLayout,
         ValidatedFrame,
     };
+
+    #[test]
+    fn lowered_quad_shader_abi_is_stable() {
+        assert_eq!(size_of::<LoweredQuad>(), 32);
+        assert_eq!(offset_of!(LoweredQuad, bounds), 0);
+        assert_eq!(offset_of!(LoweredQuad, color), 16);
+    }
 
     fn color(red: f32, green: f32, blue: f32, alpha: f32) -> Result<LinearRgba, &'static str> {
         LinearRgba::new(red, green, blue, alpha).ok_or("valid test color")
