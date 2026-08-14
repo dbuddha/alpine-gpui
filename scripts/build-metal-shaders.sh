@@ -6,6 +6,8 @@ source_file="$repository_root/shaders/offscreen.metal"
 output_file=${1:-"$repository_root/target/metal/offscreen.metallib"}
 manifest_file="$output_file.manifest.txt"
 temporary_directory=$(mktemp -d)
+deployment_target=${MACOSX_DEPLOYMENT_TARGET:-15.0}
+export MACOSX_DEPLOYMENT_TARGET="$deployment_target"
 
 cleanup() {
     rm -rf -- "$temporary_directory"
@@ -37,6 +39,7 @@ fi
 
 {
     printf 'source=shaders/offscreen.metal\n'
+    printf 'deployment_target=%s\n' "$deployment_target"
     printf 'source_sha256='
     shasum -a 256 "$source_file" | awk '{print $1}'
     printf 'metallib_sha256='

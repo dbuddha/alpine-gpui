@@ -28,7 +28,8 @@ vertex AlpineVertexOutput alpine_quad_vertex(
     };
 
     const AlpineQuad quad = quads[instance_id];
-    const float2 pixel = quad.bounds.xy + corners[vertex_id] * quad.bounds.zw;
+    const float2 extent = quad.bounds.zw - quad.bounds.xy;
+    const float2 pixel = quad.bounds.xy + corners[vertex_id] * extent;
     const float2 normalized = pixel / viewport;
 
     AlpineVertexOutput output;

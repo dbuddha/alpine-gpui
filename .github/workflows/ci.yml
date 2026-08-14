@@ -310,6 +310,8 @@ jobs:
     if: needs.classify.outputs.metal == 'true'
     runs-on: macos-26
     timeout-minutes: 20
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
