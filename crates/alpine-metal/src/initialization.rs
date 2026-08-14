@@ -723,7 +723,7 @@ mod tests {
             .with_unified_memory(true)
             .with_low_power(true)
             .with_removable(false);
-        let backend = MetalBackend::from_platform_parts((
+        let backend = super::MetalBackend::from_platform_parts((
             crate::unsupported::NativeBackend,
             capabilities.clone(),
         ));
