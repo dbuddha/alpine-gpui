@@ -108,10 +108,8 @@ mod tests {
 
     #[test]
     fn renderer_contract_exposes_capabilities_and_frame_evidence() -> Result<(), MockError> {
-        let viewport = alpine_core::Size {
-            width: 64.0,
-            height: 64.0,
-        };
+        assert_eq!(MockError.to_string(), "mock render failure");
+        let viewport = alpine_core::Size::new(64.0, 64.0).ok_or(MockError)?;
         let scene = SceneBuilder::new(SceneRevision::new(9), viewport).finish();
         let mut renderer = MockRenderer::default();
         let mut target = Vec::new();

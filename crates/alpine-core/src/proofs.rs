@@ -16,8 +16,8 @@ fn bounded_sizes_preserve_constructor_contract() {
         width > 0.0 && height > 0.0,
         "non-empty values are reachable"
     );
-    assert_eq!(size.width, width);
-    assert_eq!(size.height, height);
+    assert_eq!(size.width(), width);
+    assert_eq!(size.height(), height);
     assert_eq!(size.is_empty(), width == 0.0 || height == 0.0);
 }
 
@@ -46,49 +46,46 @@ fn bounded_intersections_remain_inside_both_inputs() {
     let second_width = f32::from(kani::any::<u8>());
     let second_height = f32::from(kani::any::<u8>());
 
-    let first = Rect::new(
-        Point {
-            x: first_x,
-            y: first_y,
-        },
-        Size {
-            width: first_width,
-            height: first_height,
-        },
-    );
-    let second = Rect::new(
-        Point {
-            x: second_x,
-            y: second_y,
-        },
-        Size {
-            width: second_width,
-            height: second_height,
-        },
-    );
+    let Some(first_origin) = Point::new(first_x, first_y) else {
+        unreachable!("u8 coordinates are finite");
+    };
+    let Some(first_size) = Size::new(first_width, first_height) else {
+        unreachable!("u8 extents are finite and non-negative");
+    };
+    let Some(second_origin) = Point::new(second_x, second_y) else {
+        unreachable!("u8 coordinates are finite");
+    };
+    let Some(second_size) = Size::new(second_width, second_height) else {
+        unreachable!("u8 extents are finite and non-negative");
+    };
+    let first = Rect::new(first_origin, first_size);
+    let second = Rect::new(second_origin, second_size);
     let intersection = first.intersection(second);
 
     kani::cover!(intersection.is_some(), "overlap is reachable");
     kani::cover!(intersection.is_none(), "empty intersection is reachable");
     if let Some(intersection) = intersection {
-        assert!(intersection.size.width > 0.0);
-        assert!(intersection.size.height > 0.0);
-        assert!(intersection.origin.x >= first.origin.x);
-        assert!(intersection.origin.x >= second.origin.x);
-        assert!(intersection.origin.y >= first.origin.y);
-        assert!(intersection.origin.y >= second.origin.y);
+        assert!(intersection.size().width() > 0.0);
+        assert!(intersection.size().height() > 0.0);
+        assert!(intersection.origin().x() >= first.origin().x());
+        assert!(intersection.origin().x() >= second.origin().x());
+        assert!(intersection.origin().y() >= first.origin().y());
+        assert!(intersection.origin().y() >= second.origin().y());
         assert!(
-            intersection.origin.x + intersection.size.width <= first.origin.x + first.size.width
+            intersection.origin().x() + intersection.size().width()
+                <= first.origin().x() + first.size().width()
         );
         assert!(
-            intersection.origin.x + intersection.size.width <= second.origin.x + second.size.width
+            intersection.origin().x() + intersection.size().width()
+                <= second.origin().x() + second.size().width()
         );
         assert!(
-            intersection.origin.y + intersection.size.height <= first.origin.y + first.size.height
+            intersection.origin().y() + intersection.size().height()
+                <= first.origin().y() + first.size().height()
         );
         assert!(
-            intersection.origin.y + intersection.size.height
-                <= second.origin.y + second.size.height
+            intersection.origin().y() + intersection.size().height()
+                <= second.origin().y() + second.size().height()
         );
     }
 }

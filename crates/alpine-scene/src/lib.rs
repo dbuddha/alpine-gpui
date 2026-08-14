@@ -101,42 +101,34 @@ mod tests {
 
     use super::{Primitive, SceneBuilder, SceneRevision};
 
+    fn valid_point(x: f32, y: f32) -> Result<Point, &'static str> {
+        Point::new(x, y).ok_or("test point must be valid")
+    }
+
+    fn valid_size(width: f32, height: f32) -> Result<Size, &'static str> {
+        Size::new(width, height).ok_or("test size must be valid")
+    }
+
+    fn valid_color(
+        red: f32,
+        green: f32,
+        blue: f32,
+        alpha: f32,
+    ) -> Result<LinearRgba, &'static str> {
+        LinearRgba::new(red, green, blue, alpha).ok_or("test color must be valid")
+    }
+
     #[test]
-    fn freezes_primitives_in_painter_order() {
-        let viewport = Size {
-            width: 100.0,
-            height: 100.0,
-        };
+    fn freezes_primitives_in_painter_order() -> Result<(), &'static str> {
+        let viewport = valid_size(100.0, 100.0)?;
         let mut builder = SceneBuilder::new(SceneRevision::new(7), viewport);
         let first = Primitive::Quad {
-            bounds: Rect::new(
-                Point { x: 0.0, y: 0.0 },
-                Size {
-                    width: 10.0,
-                    height: 10.0,
-                },
-            ),
-            color: LinearRgba {
-                red: 1.0,
-                green: 0.0,
-                blue: 0.0,
-                alpha: 1.0,
-            },
+            bounds: Rect::new(valid_point(0.0, 0.0)?, valid_size(10.0, 10.0)?),
+            color: valid_color(1.0, 0.0, 0.0, 1.0)?,
         };
         let second = Primitive::Quad {
-            bounds: Rect::new(
-                Point { x: 5.0, y: 5.0 },
-                Size {
-                    width: 10.0,
-                    height: 10.0,
-                },
-            ),
-            color: LinearRgba {
-                red: 0.0,
-                green: 0.0,
-                blue: 1.0,
-                alpha: 0.5,
-            },
+            bounds: Rect::new(valid_point(5.0, 5.0)?, valid_size(10.0, 10.0)?),
+            color: valid_color(0.0, 0.0, 1.0, 0.5)?,
         };
         builder.push(first);
         builder.push(second);
@@ -146,18 +138,17 @@ mod tests {
         assert_eq!(scene.revision().get(), 7);
         assert_eq!(scene.viewport(), viewport);
         assert_eq!(scene.primitives(), &[first, second]);
+        Ok(())
     }
 
     #[test]
-    fn freezes_an_empty_scene_without_allocated_primitives() {
-        let viewport = Size {
-            width: 0.0,
-            height: 0.0,
-        };
+    fn freezes_an_empty_scene_without_allocated_primitives() -> Result<(), &'static str> {
+        let viewport = valid_size(0.0, 0.0)?;
         let scene = SceneBuilder::new(SceneRevision::new(0), viewport).finish();
 
         assert_eq!(scene.revision().get(), 0);
         assert_eq!(scene.viewport(), viewport);
         assert!(scene.primitives().is_empty());
+        Ok(())
     }
 }
