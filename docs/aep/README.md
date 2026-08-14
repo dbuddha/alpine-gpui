@@ -21,6 +21,10 @@ Accepted AEPs:
 - [AEP 0025: Direct Metal offscreen renderer](0025-direct-metal-offscreen.md)
 - [AEP 0028: Zed golden qualification](0028-zed-golden-qualification.md)
 
+Proposed AEPs:
+
+- [AEP 0064: Native macOS presentation](0064-native-macos-presentation.md)
+
 Required sections are motivation, journeys, goals, non-goals, atomic claims,
 model, Rust ownership, correctness, accessibility, performance, memory, failure,
 platform scope, evidence, mapping, risks, and reversal conditions. If no
