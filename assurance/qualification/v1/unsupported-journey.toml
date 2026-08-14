@@ -1,0 +1,10 @@
+schema = "alpine-journey/v1"
+id = "unsupported-operation-journey"
+workload_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+scene_trace = "assurance/qualification/v1/unsupported-scene.toml"
+expected_document_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+expected_layout_hash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+[[actions]]
+sequence = 0
+kind = "render-frame"

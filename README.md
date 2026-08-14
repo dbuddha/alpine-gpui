@@ -6,7 +6,7 @@ native desktop behavior. It is intended first for editors, terminals, database
 tools, and other data-heavy productivity applications.
 
 The programming model is conceptually adapted from
-[Zed GPUI](https://github.com/zed-industries/zed/tree/1271f8b0e8f3278eed5dd3fc12ad4bd30dce2c5d/crates/gpui),
+[Zed GPUI](https://github.com/zed-industries/zed/tree/e17dc4f9d50db73a458b64dcce50ecd4878b98a3/crates/gpui),
 with additional lessons drawn from GPUI-CE, `gpui-component`, WGPUI, the
 `gpui-wgpu` lineage, Kael, and the wider GPUI ecosystem. Alpine is an
 independent implementation, not a fork or source-compatible distribution. It

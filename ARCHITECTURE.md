@@ -9,7 +9,8 @@ The workspace currently has three safe Rust shipping library crates with no
 external dependencies. `alpine-core` has no workspace dependencies.
 `alpine-scene` depends on `alpine-core`, and `alpine-renderer` depends on
 `alpine-scene`. The non-shipping `alpine-assurance` tool depends on audited
-`serde` and `toml` crates to validate the evidence registry.
+`serde` and `toml` crates to validate the evidence registry and versioned
+golden-workload qualification manifests.
 
 ```mermaid
 flowchart LR
@@ -18,7 +19,7 @@ flowchart LR
     scene["alpine-scene<br/>SceneRevision, Primitive, SceneBuilder, Scene"]
     renderer["alpine-renderer<br/>Renderer, capabilities, FrameReport"]
     backend["Concrete backend and Target<br/>not implemented"]
-    assurance["alpine-assurance<br/>non-shipping evidence validator"]
+    assurance["alpine-assurance<br/>non-shipping evidence and qualification validator"]
 
     core --> scene --> renderer
     caller -. "constructs values" .-> core
@@ -240,6 +241,15 @@ Coverage identifies unexercised code but does not prove correctness; mutation
 tests whether assertions reject injected faults. Kani proves selected bounded
 properties of Rust code. None of these substitutes for native driver behavior,
 visual semantics, or qualified performance measurements.
+
+The non-shipping golden-workload boundary implements
+`alpine-scene-trace/v1`, `alpine-journey/v1`, and
+`alpine-qualification/v1`. It validates immutable workload identity, ordered
+operations and actions, comparison level, equivalence evidence, environment
+identity, raw measurement references, assumptions, exclusions, and independent
+hardware-window counts. Unsupported operations and measurement before
+correctness fail closed. These manifests make no native or performance claim by
+themselves, and no shipping crate depends on them.
 
 ## Binding invariants
 

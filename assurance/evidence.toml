@@ -103,6 +103,47 @@ tla_properties = ["AllIntersectionsSafe"]
 platform_scope = ["portable"]
 required_evidence = ["tla", "kani", "unit", "e2e"]
 
+[[claims]]
+id = "AEP-0028-C01"
+mission = "MP-03"
+capability_issue = 28
+aep = "docs/aep/0028-zed-golden-qualification.md"
+requirement_issue = 29
+claim_type = "compatibility"
+risk = "high"
+case_study_findings = ["CS-ZED-005", "CS-ZED-009"]
+kani_applicability = "not_applicable"
+platform_scope = ["tooling"]
+required_evidence = ["unit", "property", "integration"]
+
+[[claims]]
+id = "AEP-0028-C02"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0028-zed-golden-qualification.md"
+requirement_issue = 29
+claim_type = "lifecycle"
+risk = "critical"
+case_study_findings = ["CS-ZED-006", "CS-ZED-007"]
+kani_applicability = "not_applicable"
+tla_properties = ["MeasurementRequiresEquivalence"]
+platform_scope = ["tooling"]
+required_evidence = ["tla", "unit", "integration"]
+
+[[claims]]
+id = "AEP-0028-C03"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0028-zed-golden-qualification.md"
+requirement_issue = 29
+claim_type = "safety"
+risk = "high"
+case_study_findings = ["CS-ZED-006", "CS-ZED-008"]
+kani_applicability = "not_applicable"
+tla_properties = ["QualificationRequiresReproduction"]
+platform_scope = ["tooling"]
+required_evidence = ["tla", "unit", "e2e", "mutation", "coverage"]
+
 [[evidence]]
 id = "EV-0009-TLA01"
 claim = "AEP-0009-C01"
@@ -306,3 +347,109 @@ artifact = "scripts/test-core-contracts.sh"
 assertion = "The portable-core contract suite executes the public constructors and intersection behavior through the crate test boundary."
 scope = "alpine-core on every supported host in the native CI matrix."
 exclusions = ["Native backend behavior", "GPU conversion", "arbitrary floating-point completeness"]
+
+[[evidence]]
+id = "EV-0028-UNIT01"
+claim = "AEP-0028-C01"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/qualification.rs#accepts_valid_qualification_and_renders_scope"
+assertion = "A valid manifest binds one comparison level, workload identity, scene, journey, and full source revisions into a scoped report."
+scope = "Version 1 TOML qualification fixtures and Rust validation."
+exclusions = ["Cryptographic recomputation of hashes", "truth of referenced evidence", "native execution"]
+
+[[evidence]]
+id = "EV-0028-INTEGRATION01"
+claim = "AEP-0028-C01"
+kind = "integration"
+artifact = "scripts/test-qualification.sh"
+assertion = "The repository command validates and reports the committed versioned golden-workload fixture."
+scope = "Non-shipping CLI behavior from repository root."
+exclusions = ["Zed lab checkout", "Metal rendering", "performance statistics"]
+
+[[evidence]]
+id = "EV-0028-PROPERTY01"
+claim = "AEP-0028-C01"
+kind = "property"
+artifact = "tools/alpine-assurance/src/qualification.rs#hash_contract_is_length_and_alphabet_exact"
+assertion = "Finite exhaustive length checks and invalid alphabets preserve exact full-SHA and SHA-256 identifier admission."
+scope = "Hash length and lowercase hexadecimal alphabet predicates."
+bounds = ["SHA-256 candidate lengths 0 through 65", "representative invalid alphabets"]
+exclusions = ["Cryptographic hash calculation", "collision resistance", "artifact content verification"]
+
+[[evidence]]
+id = "EV-0028-TLA02"
+claim = "AEP-0028-C02"
+kind = "tla"
+artifact = "formal/tla/aep-0028/GoldenQualification.tla#MeasurementRequiresEquivalence"
+assertion = "Every measured, reproduced, or qualified state has complete equivalence, matching workload identity, and a qualified environment."
+scope = "Finite abstract qualification lifecycle."
+bounds = ["pull request: 4 required gates and 3 windows", "nightly: 5 required gates and 4 windows"]
+assumptions = ["required gate membership represents valid independent correctness evidence", "weak fairness for enabled lifecycle progress"]
+exclusions = ["TOML parser correctness", "semantic truth of evidence", "native hardware behavior", "statistical validity"]
+companion = "tools/alpine-assurance/src/qualification.rs#rejects_performance_before_correctness"
+
+[[evidence]]
+id = "EV-0028-UNIT02"
+claim = "AEP-0028-C02"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/qualification.rs#rejects_performance_before_correctness"
+assertion = "Concrete Rust validation rejects a measured manifest whose visual equivalence gate failed."
+scope = "Version 1 qualification state and equivalence validation."
+exclusions = ["Visual oracle accuracy", "native benchmark execution"]
+
+[[evidence]]
+id = "EV-0028-INTEGRATION02"
+claim = "AEP-0028-C02"
+kind = "integration"
+artifact = "scripts/test-qualification.sh"
+assertion = "CLI fixtures fail measurement before correctness and measurement on an unqualified environment."
+scope = "Repository-root qualification command behavior."
+exclusions = ["Hardware attestation accuracy", "actual Zed equivalence"]
+
+[[evidence]]
+id = "EV-0028-TLA03"
+claim = "AEP-0028-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0028/GoldenQualification.tla#QualificationRequiresReproduction"
+assertion = "A qualified state contains measurements reproduced across the configured maximum independent windows."
+scope = "Finite abstract reproduction lifecycle."
+bounds = ["pull request: 3 windows", "nightly: 4 windows"]
+assumptions = ["each increment represents a genuinely independent qualified hardware window"]
+exclusions = ["runner identity fraud", "sample independence", "effect-size computation", "Rust refinement"]
+companion = "tools/alpine-assurance/src/qualification.rs#rejects_mismatched_and_unsupported_workloads"
+
+[[evidence]]
+id = "EV-0028-UNIT03"
+claim = "AEP-0028-C03"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/qualification.rs#rejects_mismatched_and_unsupported_workloads"
+assertion = "Concrete Rust validation rejects mismatched workloads, unsupported scene operations, and unqualified measurement environments."
+scope = "Version 1 scene, journey, and qualification fixtures."
+exclusions = ["All future operations", "native semantic correctness", "actual hardware qualification"]
+
+[[evidence]]
+id = "EV-0028-E2E03"
+claim = "AEP-0028-C03"
+kind = "e2e"
+artifact = "scripts/test-qualification.sh"
+assertion = "The fail-closed fixture suite verifies stable diagnostics for every initial anti-cheating boundary."
+scope = "Non-shipping CLI and committed fixtures."
+exclusions = ["Fuzz completeness", "native error injection", "lab repository behavior"]
+
+[[evidence]]
+id = "EV-0028-MUTATION03"
+claim = "AEP-0028-C03"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#mutation-diff"
+assertion = "Every changed assurance-tool mutant must be killed before ci-pass can succeed."
+scope = "Changed Rust code in the non-shipping alpine-assurance package."
+exclusions = ["Unchanged code", "TLA+ and shell mutation", "semantic completeness of generated mutants"]
+
+[[evidence]]
+id = "EV-0028-COVERAGE03"
+claim = "AEP-0028-C03"
+kind = "coverage"
+artifact = ".github/workflows/ci.yml#coverage"
+assertion = "The assurance tool maintains at least 80 percent line and function coverage."
+scope = "Rust tests for the non-shipping alpine-assurance package."
+exclusions = ["Proof of correctness", "shell and formal model coverage", "native workload execution"]

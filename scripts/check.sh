@@ -6,6 +6,7 @@ scripts/test-policy.sh
 scripts/test-classifier.sh
 scripts/test-hierarchy.sh
 scripts/test-assurance.sh
+scripts/test-qualification.sh
 scripts/test-core-contracts.sh
 scripts/check-release.sh
 mdbook build
