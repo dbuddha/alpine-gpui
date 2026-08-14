@@ -3,7 +3,8 @@
 # gates provide the executable evidence instead.
 exclude_globs = ["crates/*/src/proofs.rs", "crates/alpine-metal/src/native.rs"]
 
-# This test-only capability bypass exists only in Apple Silicon macOS builds.
-# Linux mutation cannot observe a replacement even though cargo-mutants parses
-# the cfg-disabled function.
-exclude_re = ["initialize_for_native_validation"]
+# These functions are absent from the Linux dynamic-test build even though
+# cargo-mutants parses them. The native bypass is exercised by the dedicated
+# Apple Silicon mutation gate. The symbolic adapter is exercised by the full
+# Kani inventory and delegates directly to the dynamically tested transition.
+exclude_re = ["initialize_for_native_validation", "record_symbolic"]

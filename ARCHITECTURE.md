@@ -82,6 +82,9 @@ and asynchronous submission are not implemented.
 Every render call updates a generation-scoped `BackendAccounting` snapshot.
 Validated cancellation performs no native allocation or submission. Shutdown is
 synchronous and closes admission only after the current exclusive call returns.
+Upload and draw counters advance only after their corresponding native stage
+succeeds, so cancellation and earlier failures cannot report planned work as
+completed work.
 
 ## Ownership from state to submission
 

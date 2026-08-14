@@ -23,7 +23,8 @@ use crate::submission::{
     compact_readback,
 };
 use crate::{
-    Bgra8Image, MAX_METAL3_TEXTURE_DIMENSION_2D, ValidatedFrame, accounting::FrameResourceUsage,
+    Bgra8Image, MAX_METAL3_TEXTURE_DIMENSION_2D, ValidatedFrame,
+    accounting::{FrameOperationUsage, FrameResourceUsage},
 };
 
 static OFFLINE_LIBRARY: &[u8] = include_bytes!(env!("ALPINE_METALLIB_PATH"));
@@ -136,18 +137,27 @@ impl NativeBackend {
                 return NativeRenderAttempt {
                     committed: false,
                     device_lost: false,
-                    usage: failure.usage,
+                    operations: FrameOperationUsage::default(),
+                    resources: failure.usage,
                     result: Err(failure.error),
                 };
             }
         };
-        let usage = resources.usage;
+        let resource_usage = resources.usage;
+        let mut operations = FrameOperationUsage {
+            draw_calls: 0,
+            uploaded_bytes: resources
+                .upload
+                .as_ref()
+                .map_or(0, |_| frame.upload_bytes()),
+        };
         #[cfg(test)]
         if self.fault == NativeFault::CommandBuffer {
             return NativeRenderAttempt {
                 committed: false,
                 device_lost: false,
-                usage,
+                operations,
+                resources: resource_usage,
                 result: Err(RenderError::ResourceUnavailable {
                     stage: RenderStage::CommandBuffer,
                     requested_bytes: None,
@@ -158,7 +168,8 @@ impl NativeBackend {
             return NativeRenderAttempt {
                 committed: false,
                 device_lost: false,
-                usage,
+                operations,
+                resources: resource_usage,
                 result: Err(RenderError::ResourceUnavailable {
                     stage: RenderStage::CommandBuffer,
                     requested_bytes: None,
@@ -171,7 +182,8 @@ impl NativeBackend {
             return NativeRenderAttempt {
                 committed: false,
                 device_lost: false,
-                usage,
+                operations,
+                resources: resource_usage,
                 result: Err(RenderError::EncoderUnavailable {
                     stage: RenderStage::RenderEncoder,
                 }),
@@ -184,16 +196,19 @@ impl NativeBackend {
             return NativeRenderAttempt {
                 committed: false,
                 device_lost: false,
-                usage,
+                operations,
+                resources: resource_usage,
                 result: Err(error),
             };
         }
+        operations.draw_calls = usize::from(!frame.quads().is_empty());
         #[cfg(test)]
         if self.fault == NativeFault::BlitEncoder {
             return NativeRenderAttempt {
                 committed: false,
                 device_lost: false,
-                usage,
+                operations,
+                resources: resource_usage,
                 result: Err(RenderError::EncoderUnavailable {
                     stage: RenderStage::BlitEncoder,
                 }),
@@ -203,7 +218,8 @@ impl NativeBackend {
             return NativeRenderAttempt {
                 committed: false,
                 device_lost: false,
-                usage,
+                operations,
+                resources: resource_usage,
                 result: Err(error),
             };
         }
@@ -234,7 +250,8 @@ impl NativeBackend {
         NativeRenderAttempt {
             committed: true,
             device_lost,
-            usage,
+            operations,
+            resources: resource_usage,
             result,
         }
     }
@@ -1060,15 +1077,40 @@ mod tests {
     -> Result<(), Box<dyn Error>> {
         let (scene, descriptor) = discriminating_scene()?;
         let cases = [
-            (NativeFault::TextureAllocation, RenderStage::RenderTexture),
-            (NativeFault::ReadbackAllocation, RenderStage::ReadbackBuffer),
-            (NativeFault::UploadAllocation, RenderStage::UploadBuffer),
-            (NativeFault::CommandBuffer, RenderStage::CommandBuffer),
-            (NativeFault::RenderEncoder, RenderStage::RenderEncoder),
-            (NativeFault::BlitEncoder, RenderStage::BlitEncoder),
+            (
+                NativeFault::TextureAllocation,
+                RenderStage::RenderTexture,
+                0,
+                0,
+            ),
+            (
+                NativeFault::ReadbackAllocation,
+                RenderStage::ReadbackBuffer,
+                0,
+                0,
+            ),
+            (
+                NativeFault::UploadAllocation,
+                RenderStage::UploadBuffer,
+                0,
+                0,
+            ),
+            (
+                NativeFault::CommandBuffer,
+                RenderStage::CommandBuffer,
+                96,
+                0,
+            ),
+            (
+                NativeFault::RenderEncoder,
+                RenderStage::RenderEncoder,
+                96,
+                0,
+            ),
+            (NativeFault::BlitEncoder, RenderStage::BlitEncoder, 96, 1),
         ];
 
-        for (fault, expected_stage) in cases {
+        for (fault, expected_stage, uploaded_bytes, draw_calls) in cases {
             let (mut backend, probe) =
                 validation_backend_and_probe(BlendConfiguration::PremultipliedSourceOver, fault)?;
             let error = backend
@@ -1083,6 +1125,8 @@ mod tests {
             assert_eq!(accounting.accepted_frames(), 1);
             assert_eq!(accounting.failed_frames(), 1);
             assert_eq!(accounting.completed_frames(), 0);
+            assert_eq!(accounting.uploaded_bytes(), uploaded_bytes, "{fault:?}");
+            assert_eq!(accounting.draw_calls(), draw_calls, "{fault:?}");
             assert_eq!(accounting.current_retained_bytes(), 0);
             assert!(accounting.invariants_hold());
             assert_eq!(probe.counts(), (1, 1, 0));
@@ -1135,6 +1179,8 @@ mod tests {
             assert_eq!(backend.submission_count(), 1);
             assert_eq!(accounting.state(), state);
             assert_eq!(accounting.failed_frames(), 1);
+            assert_eq!(accounting.uploaded_bytes(), 3 * 32);
+            assert_eq!(accounting.draw_calls(), 1);
             assert_eq!(accounting.current_retained_bytes(), 0);
             assert!(accounting.allocated_bytes() > 0);
             assert!(accounting.invariants_hold());
@@ -1182,6 +1228,8 @@ mod tests {
         assert_eq!(cancellation.omitted_primitives(), 1);
         assert_eq!(cancellation.uploaded_bytes_avoided(), 3 * 32);
         assert_eq!(probe.counts(), (0, 0, 0));
+        assert_eq!(backend.accounting().uploaded_bytes(), 0);
+        assert_eq!(backend.accounting().draw_calls(), 0);
 
         let mut expected_allocated = 0_u128;
         let mut expected_readback = 0_u128;
@@ -1216,6 +1264,11 @@ mod tests {
         assert_eq!(accounting.cancelled_frames(), 1);
         assert_eq!(accounting.completed_frames(), u128::from(total_frames));
         assert_eq!(accounting.submitted_frames(), u64::from(total_frames));
+        assert_eq!(accounting.draw_calls(), u128::from(total_frames));
+        assert_eq!(
+            accounting.uploaded_bytes(),
+            u128::from(total_frames) * 3 * 32
+        );
         assert_eq!(accounting.allocated_bytes(), expected_allocated);
         assert_eq!(accounting.readback_bytes(), expected_readback);
         assert_eq!(

@@ -44,6 +44,13 @@ impl BackendGeneration {
     }
 }
 
+/// Exact encoded and uploaded work observed during one frame attempt.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct FrameOperationUsage {
+    pub(crate) draw_calls: usize,
+    pub(crate) uploaded_bytes: usize,
+}
+
 /// Exact native resource use observed during one frame attempt.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[allow(
@@ -137,30 +144,34 @@ impl BackendAccounting {
         frame: &ValidatedFrame,
         outcome: AccountingOutcome,
         committed: bool,
-        usage: FrameResourceUsage,
+        operations: FrameOperationUsage,
+        resources: FrameResourceUsage,
     ) -> Result<(), ()> {
         self.record_values(
             frame.consumed_primitives(),
             frame.omitted_primitives(),
-            usize::from(!frame.quads().is_empty()),
-            frame.upload_bytes(),
             outcome,
             committed,
-            usage,
+            operations,
+            resources,
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn record_values(
         &mut self,
         primitives: usize,
         omitted_primitives: usize,
-        draw_calls: usize,
-        uploaded_bytes: usize,
         outcome: AccountingOutcome,
         committed: bool,
-        usage: FrameResourceUsage,
+        operations: FrameOperationUsage,
+        resources: FrameResourceUsage,
     ) -> Result<(), ()> {
+        if outcome == AccountingOutcome::Cancelled
+            && (operations != FrameOperationUsage::default()
+                || resources != FrameResourceUsage::default())
+        {
+            return Err(());
+        }
         let mut next = *self;
         next.render_calls = next.render_calls.checked_add(1).ok_or(())?;
         next.accepted_frames = next.accepted_frames.checked_add(1).ok_or(())?;
@@ -183,21 +194,24 @@ impl BackendAccounting {
             .omitted_primitives
             .checked_add(omitted_primitives as u128)
             .ok_or(())?;
-        next.draw_calls = next.draw_calls.checked_add(draw_calls as u128).ok_or(())?;
+        next.draw_calls = next
+            .draw_calls
+            .checked_add(operations.draw_calls as u128)
+            .ok_or(())?;
         next.uploaded_bytes = next
             .uploaded_bytes
-            .checked_add(uploaded_bytes as u128)
+            .checked_add(operations.uploaded_bytes as u128)
             .ok_or(())?;
         next.allocated_bytes = next
             .allocated_bytes
-            .checked_add(usage.allocated_bytes as u128)
+            .checked_add(resources.allocated_bytes as u128)
             .ok_or(())?;
         next.readback_bytes = next
             .readback_bytes
-            .checked_add(usage.readback_bytes as u128)
+            .checked_add(resources.readback_bytes as u128)
             .ok_or(())?;
-        next.peak_retained_bytes = next.peak_retained_bytes.max(usage.peak_retained_bytes);
-        next.current_retained_bytes = usage.current_retained_bytes;
+        next.peak_retained_bytes = next.peak_retained_bytes.max(resources.peak_retained_bytes);
+        next.current_retained_bytes = resources.current_retained_bytes;
         if !next.invariants_hold() {
             return Err(());
         }
@@ -212,18 +226,16 @@ impl BackendAccounting {
         committed: bool,
         primitives: usize,
         omitted_primitives: usize,
-        draw_calls: usize,
-        uploaded_bytes: usize,
-        usage: FrameResourceUsage,
+        operations: FrameOperationUsage,
+        resources: FrameResourceUsage,
     ) -> Result<(), ()> {
         self.record_values(
             primitives,
             omitted_primitives,
-            draw_calls,
-            uploaded_bytes,
             outcome,
             committed,
-            usage,
+            operations,
+            resources,
         )
     }
 
@@ -313,7 +325,7 @@ impl BackendAccounting {
         self.draw_calls
     }
 
-    /// Returns uploaded bytes across accepted frames.
+    /// Returns bytes successfully copied into native upload buffers.
     #[must_use]
     pub const fn uploaded_bytes(self) -> u128 {
         self.uploaded_bytes
@@ -389,7 +401,10 @@ mod tests {
     use alpine_core::{LinearRgba, Size};
     use alpine_scene::{SceneBuilder, SceneRevision};
 
-    use super::{AccountingOutcome, BackendAccounting, BackendGeneration, FrameResourceUsage};
+    use super::{
+        AccountingOutcome, BackendAccounting, BackendGeneration, FrameOperationUsage,
+        FrameResourceUsage,
+    };
     use crate::{OffscreenDescriptor, ValidatedFrame};
 
     #[allow(clippy::expect_used, reason = "fixed test values must remain valid")]
@@ -420,16 +435,21 @@ mod tests {
             (AccountingOutcome::Failed, false),
             (AccountingOutcome::Cancelled, false),
         ] {
+            let has_native_work = outcome != AccountingOutcome::Cancelled;
             accounting
                 .record_accepted(
                     &frame,
                     outcome,
                     committed,
+                    FrameOperationUsage {
+                        draw_calls: usize::from(has_native_work),
+                        uploaded_bytes: usize::from(has_native_work) * 32,
+                    },
                     FrameResourceUsage {
-                        allocated_bytes: 512,
-                        peak_retained_bytes: 512,
+                        allocated_bytes: usize::from(has_native_work) * 512,
+                        peak_retained_bytes: usize::from(has_native_work) * 512,
                         current_retained_bytes: 0,
-                        readback_bytes: 256,
+                        readback_bytes: usize::from(has_native_work) * 256,
                     },
                 )
                 .map_err(|()| "frame overflow")?;
@@ -444,8 +464,10 @@ mod tests {
         assert_eq!(accounting.failed_frames(), 2);
         assert_eq!(accounting.cancelled_frames(), 1);
         assert_eq!(accounting.submitted_frames(), 2);
-        assert_eq!(accounting.allocated_bytes(), 2_048);
-        assert_eq!(accounting.readback_bytes(), 1_024);
+        assert_eq!(accounting.draw_calls(), 3);
+        assert_eq!(accounting.uploaded_bytes(), 96);
+        assert_eq!(accounting.allocated_bytes(), 1_536);
+        assert_eq!(accounting.readback_bytes(), 768);
         assert_eq!(accounting.peak_retained_bytes(), 512);
         assert_eq!(accounting.current_retained_bytes(), 0);
         Ok(())
@@ -466,13 +488,25 @@ mod tests {
     #[test]
     fn exposes_every_counter_and_terminal_state_without_losing_invariants()
     -> Result<(), Box<dyn std::error::Error>> {
-        let frame = frame();
         let mut accounting = BackendAccounting::new(BackendGeneration::INITIAL);
+        assert_eq!(accounting.admission_rejections(), 0);
+        assert_eq!(accounting.validation_rejections(), 0);
+        assert_eq!(accounting.completed_frames(), 0);
+        assert_eq!(accounting.cancelled_frames(), 0);
+        assert_eq!(accounting.primitives(), 0);
+        assert_eq!(accounting.omitted_primitives(), 0);
+        assert_eq!(accounting.draw_calls(), 0);
+        assert_eq!(accounting.uploaded_bytes(), 0);
         accounting
-            .record_accepted(
-                &frame,
+            .record_values(
+                2,
+                1,
                 AccountingOutcome::Completed,
                 true,
+                FrameOperationUsage {
+                    draw_calls: 1,
+                    uploaded_bytes: 32,
+                },
                 FrameResourceUsage {
                     allocated_bytes: 768,
                     peak_retained_bytes: 768,
@@ -484,15 +518,20 @@ mod tests {
 
         assert_eq!(accounting.generation().get(), 1);
         assert_eq!(accounting.state(), super::BackendState::Ready);
-        assert_eq!(accounting.primitives(), 0);
-        assert_eq!(accounting.omitted_primitives(), 0);
-        assert_eq!(accounting.draw_calls(), 0);
-        assert_eq!(accounting.uploaded_bytes(), 0);
+        assert_eq!(accounting.primitives(), 2);
+        assert_eq!(accounting.omitted_primitives(), 1);
+        assert_eq!(accounting.draw_calls(), 1);
+        assert_eq!(accounting.uploaded_bytes(), 32);
         assert_eq!(accounting.allocated_bytes(), 768);
         assert_eq!(accounting.readback_bytes(), 256);
         assert_eq!(accounting.peak_retained_bytes(), 768);
         assert_eq!(accounting.current_retained_bytes(), 0);
         assert_eq!(accounting.state().to_string(), "ready");
+
+        let mut invalid_retention = accounting;
+        invalid_retention.current_retained_bytes = 1;
+        assert_eq!(invalid_retention.current_retained_bytes(), 1);
+        assert!(!invalid_retention.invariants_hold());
 
         accounting.stop();
         assert_eq!(accounting.state().to_string(), "stopped");
@@ -542,10 +581,9 @@ mod tests {
             atomic.record_values(
                 0,
                 0,
-                0,
-                0,
                 AccountingOutcome::Completed,
                 true,
+                FrameOperationUsage::default(),
                 FrameResourceUsage {
                     current_retained_bytes: 1,
                     ..FrameResourceUsage::default()
@@ -554,5 +592,23 @@ mod tests {
             Err(())
         );
         assert_eq!(atomic, before);
+
+        let mut cancellation = BackendAccounting::new(BackendGeneration::INITIAL);
+        let before = cancellation;
+        assert_eq!(
+            cancellation.record_values(
+                1,
+                0,
+                AccountingOutcome::Cancelled,
+                false,
+                FrameOperationUsage {
+                    draw_calls: 1,
+                    uploaded_bytes: 32,
+                },
+                FrameResourceUsage::default(),
+            ),
+            Err(())
+        );
+        assert_eq!(cancellation, before);
     }
 }

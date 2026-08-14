@@ -1,4 +1,4 @@
-use crate::accounting::{AccountingOutcome, FrameResourceUsage};
+use crate::accounting::{AccountingOutcome, FrameOperationUsage, FrameResourceUsage};
 use crate::{BackendAccounting, BackendGeneration};
 use crate::{FrameLifecycle, LifecycleAction, READBACK_ROW_ALIGNMENT, ReadbackLayout};
 
@@ -95,8 +95,10 @@ fn accepted_frame_accounting_is_atomic_and_balanced() {
         committed,
         usize::from(primitives),
         usize::from(omitted),
-        usize::from(draw_calls),
-        usize::from(uploaded_bytes),
+        FrameOperationUsage {
+            draw_calls: usize::from(draw_calls),
+            uploaded_bytes: usize::from(uploaded_bytes),
+        },
         FrameResourceUsage {
             allocated_bytes: usize::from(allocated_bytes),
             peak_retained_bytes: usize::from(allocated_bytes),
