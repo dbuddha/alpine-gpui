@@ -1166,9 +1166,9 @@ mod tests {
     #[test]
     fn cancellation_shutdown_and_steady_state_have_no_hidden_native_work()
     -> Result<(), Box<dyn Error>> {
-        const WARMUP_FRAMES: u16 = 256;
+        const VALIDATION_WARMUP_FRAMES: u16 = 256;
+        const RSS_WARMUP_FRAMES: u16 = 4_096;
         const MEASURED_FRAMES: u16 = 256;
-        const TOTAL_FRAMES: u16 = WARMUP_FRAMES + MEASURED_FRAMES;
 
         let (scene, descriptor) = discriminating_scene()?;
         let (mut backend, probe) = validation_backend_and_probe(
@@ -1187,8 +1187,14 @@ mod tests {
         let mut expected_readback = 0_u128;
         let mut retained = None;
         let capture_resident_distribution = std::env::var_os("ALPINE_CAPTURE_RSS").is_some();
+        let warmup_frames = if capture_resident_distribution {
+            RSS_WARMUP_FRAMES
+        } else {
+            VALIDATION_WARMUP_FRAMES
+        };
+        let total_frames = warmup_frames + MEASURED_FRAMES;
         let mut resident_samples = Vec::with_capacity(17);
-        for frame_index in 1_u16..=TOTAL_FRAMES {
+        for frame_index in 1_u16..=total_frames {
             let completed = backend.render_offscreen(&scene, descriptor)?;
             let report = completed.report();
             expected_allocated += report.allocated_bytes as u128;
@@ -1199,17 +1205,17 @@ mod tests {
             );
             assert_eq!(backend.accounting().current_retained_bytes(), 0);
             if capture_resident_distribution
-                && frame_index >= WARMUP_FRAMES
-                && (frame_index - WARMUP_FRAMES).is_multiple_of(16)
+                && frame_index >= warmup_frames
+                && (frame_index - warmup_frames).is_multiple_of(16)
             {
-                resident_samples.push((frame_index - WARMUP_FRAMES, resident_bytes()?));
+                resident_samples.push((frame_index - warmup_frames, resident_bytes()?));
             }
         }
         let accounting = backend.accounting();
-        assert_eq!(accounting.accepted_frames(), 1 + u128::from(TOTAL_FRAMES));
+        assert_eq!(accounting.accepted_frames(), 1 + u128::from(total_frames));
         assert_eq!(accounting.cancelled_frames(), 1);
-        assert_eq!(accounting.completed_frames(), u128::from(TOTAL_FRAMES));
-        assert_eq!(accounting.submitted_frames(), u64::from(TOTAL_FRAMES));
+        assert_eq!(accounting.completed_frames(), u128::from(total_frames));
+        assert_eq!(accounting.submitted_frames(), u64::from(total_frames));
         assert_eq!(accounting.allocated_bytes(), expected_allocated);
         assert_eq!(accounting.readback_bytes(), expected_readback);
         assert_eq!(
@@ -1218,7 +1224,7 @@ mod tests {
         );
         assert_eq!(
             probe.counts(),
-            (u64::from(TOTAL_FRAMES), u64::from(TOTAL_FRAMES), 0)
+            (u64::from(total_frames), u64::from(total_frames), 0)
         );
         assert!(accounting.invariants_hold());
         if capture_resident_distribution {
@@ -1245,10 +1251,10 @@ mod tests {
             .err()
             .ok_or("stopped backend must reject work")?;
         assert_eq!(error.recovery(), RecoveryClassification::Stopped);
-        assert_eq!(backend.submission_count(), u64::from(TOTAL_FRAMES));
+        assert_eq!(backend.submission_count(), u64::from(total_frames));
         assert_eq!(
             probe.counts(),
-            (u64::from(TOTAL_FRAMES), u64::from(TOTAL_FRAMES), 0)
+            (u64::from(total_frames), u64::from(total_frames), 0)
         );
         assert!(backend.accounting().invariants_hold());
         Ok(())

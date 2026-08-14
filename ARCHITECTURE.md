@@ -293,11 +293,11 @@ Metal 3 texture limit. GPU bytes agree with the independent CPU oracle within
 one channel value, while a deliberately disabled-blend control is detected.
 Native fault controls cover each allocation, encoder, command, unexpected
 status, readback mismatch, memory-pressure, permission, and device-loss class.
-A 512-frame correctness soak requires constant per-frame retained accounting,
+A 512-frame validation soak requires constant per-frame retained accounting,
 balanced cumulative totals, and zero active owner probes after every return.
-After 256 warmup frames, the isolated native soak also records process resident
-bytes every 16 frames across a 256-frame measurement window. Those samples
-must not grow beyond the baseline by more than one host virtual-memory page,
+After 4,096 warmup frames, the isolated native memory soak records process
+resident bytes every 16 frames across a 256-frame measurement window. Those
+samples must not grow beyond the baseline by more than one host virtual-memory page,
 which accounts for RSS measurement granularity without claiming a qualified
 performance budget. Metal API and shader validation cover the full suite first;
 the process-memory sample then runs without validation-layer instrumentation so
