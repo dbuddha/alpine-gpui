@@ -82,6 +82,7 @@ jobs:
           scripts/test-qualification.sh
           scripts/check-release.sh
           scripts/test-core-contracts.sh
+          scripts/test-metal-contracts.sh
       - name: Validate qualified evidence and GitHub hierarchy
         env:
           GH_REPOSITORY: ${{ github.repository }}

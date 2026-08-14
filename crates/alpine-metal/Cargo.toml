@@ -1,0 +1,15 @@
+[package]
+name = "alpine-metal"
+version.workspace = true
+description = "Alpine-owned Direct Metal renderer and portable frame planning"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[dependencies]
+alpine-core = { path = "../alpine-core", version = "=0.0.0" }
+alpine-scene = { path = "../alpine-scene", version = "=0.0.0" }
+
+[lints]
+workspace = true
