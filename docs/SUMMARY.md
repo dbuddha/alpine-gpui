@@ -20,4 +20,5 @@
 - [Alpine Enhancement Proposals](aep/README.md)
   - [AEP 0009: Multi-layer assurance](aep/0009-multi-layer-assurance.md)
   - [AEP 0016: Portable value contracts](aep/0016-portable-value-contracts.md)
+  - [AEP 0025: Direct Metal offscreen renderer](aep/0025-direct-metal-offscreen.md)
   - [AEP 0028: Zed golden qualification](aep/0028-zed-golden-qualification.md)

@@ -14,10 +14,9 @@ An accepted AEP is historical. Later design creates a superseding AEP and links
 the old one instead of rewriting the original rationale. Current implemented
 truth always moves into `ARCHITECTURE.md` and rustdoc.
 
-The next full application is the unapproved
-[Direct Metal offscreen Capability #25](https://github.com/dbuddha/alpine-gpui/issues/25).
-Its AEP must define resource and device-loss lifecycle states, native ownership,
-readback oracles, and fixed-hardware budgets before Requirements are approved.
+Proposed AEPs:
+
+- [AEP 0025: Direct Metal offscreen renderer](0025-direct-metal-offscreen.md)
 
 Accepted AEPs:
 
