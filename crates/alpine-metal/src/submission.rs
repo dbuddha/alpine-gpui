@@ -584,11 +584,7 @@ fn verify_cancellation_lifecycle() -> Result<(), RenderError> {
         .apply(LifecycleAction::BeginFrame)
         .and_then(|()| lifecycle.apply(LifecycleAction::CancelBeforeSubmit))
         .map_err(|_| RenderError::SubmissionInvariantViolated)?;
-    if lifecycle.invariants_hold() && lifecycle.release_count() == 1 {
-        Ok(())
-    } else {
-        Err(RenderError::SubmissionInvariantViolated)
-    }
+    verify_terminal_release(lifecycle)
 }
 
 fn verify_attempt_lifecycle(
@@ -625,8 +621,13 @@ fn verify_attempt_lifecycle(
         }
         (Ok(_), false) => return Err(RenderError::SubmissionInvariantViolated),
     };
+    verify_terminal_release(lifecycle)?;
+    Ok(outcome)
+}
+
+fn verify_terminal_release(lifecycle: FrameLifecycle) -> Result<(), RenderError> {
     if lifecycle.invariants_hold() && lifecycle.release_count() == 1 {
-        Ok(outcome)
+        Ok(())
     } else {
         Err(RenderError::SubmissionInvariantViolated)
     }
@@ -756,7 +757,7 @@ mod tests {
         CommandStatus, NativeRenderAttempt, OffscreenFrame, OffscreenTarget,
         RecoveryClassification, RenderError, RenderStage, compact_readback,
         compact_readback_with_control, complete_attempt, map_readback_reservation_failure,
-        record_attempt, store_render_result,
+        record_attempt, store_render_result, verify_terminal_release,
     };
     use crate::{Bgra8Image, OffscreenDescriptor, ValidatedFrame, accounting::FrameResourceUsage};
 
@@ -1333,6 +1334,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "fixed invalid descriptor must be rejected"
+    )]
     fn recovery_and_backend_errors_expose_stable_sources_and_messages() {
         let generation = crate::BackendGeneration::INITIAL;
         let errors = [
@@ -1367,5 +1372,53 @@ mod tests {
         for error in cases {
             assert!(!error.to_string().is_empty());
         }
+
+        let validation_error = crate::OffscreenDescriptor::new(
+            0,
+            1,
+            1.0,
+            LinearRgba::new(0.0, 0.0, 0.0, 0.0).expect("fixture color must be valid"),
+        )
+        .expect_err("zero width must fail");
+        let converted = RenderError::from(validation_error);
+        assert_eq!(converted.recovery(), RecoveryClassification::FixRequest);
+        assert_eq!(
+            RenderError::TextureExtentUnsupported {
+                width: 1,
+                height: 1,
+                limit: 0,
+            }
+            .recovery(),
+            RecoveryClassification::FixRequest
+        );
+        assert_eq!(
+            RenderError::UnsupportedPlatform {
+                architecture: "fixture",
+                operating_system: "fixture",
+            }
+            .recovery(),
+            RecoveryClassification::Unsupported
+        );
+        assert_eq!(
+            RenderError::ResourceUnavailable {
+                stage: RenderStage::UploadBuffer,
+                requested_bytes: Some(1),
+            }
+            .recovery(),
+            RecoveryClassification::RetryFrame
+        );
+        assert_eq!(
+            RenderError::CommandFailed {
+                status: CommandStatus::Error,
+                failure: None,
+                recovery: RecoveryClassification::RetryFrame,
+            }
+            .recovery(),
+            RecoveryClassification::RetryFrame
+        );
+        assert_eq!(
+            verify_terminal_release(crate::FrameLifecycle::new()),
+            Err(RenderError::SubmissionInvariantViolated)
+        );
     }
 }

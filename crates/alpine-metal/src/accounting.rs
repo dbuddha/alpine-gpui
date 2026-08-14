@@ -128,9 +128,6 @@ impl BackendAccounting {
         } else {
             next.validation_rejections = next.validation_rejections.checked_add(1).ok_or(())?;
         }
-        if !next.invariants_hold() {
-            return Err(());
-        }
         *self = next;
         Ok(())
     }
@@ -356,14 +353,11 @@ impl BackendAccounting {
         else {
             return false;
         };
-        let Some(terminal_frames) = self
-            .completed_frames
-            .checked_add(self.failed_frames)
-            .and_then(|value| value.checked_add(self.cancelled_frames))
+        let Some(submitted_terminal_frames) = self.completed_frames.checked_add(self.failed_frames)
         else {
             return false;
         };
-        let Some(submitted_terminal_frames) = self.completed_frames.checked_add(self.failed_frames)
+        let Some(terminal_frames) = submitted_terminal_frames.checked_add(self.cancelled_frames)
         else {
             return false;
         };
@@ -398,19 +392,21 @@ mod tests {
     use super::{AccountingOutcome, BackendAccounting, BackendGeneration, FrameResourceUsage};
     use crate::{OffscreenDescriptor, ValidatedFrame};
 
-    fn frame() -> Result<ValidatedFrame, Box<dyn std::error::Error>> {
-        let viewport = Size::new(1.0, 1.0).ok_or("fixture viewport")?;
+    #[allow(clippy::expect_used, reason = "fixed test values must remain valid")]
+    fn frame() -> ValidatedFrame {
+        let viewport = Size::new(1.0, 1.0).expect("fixture viewport must be valid");
         let scene = SceneBuilder::new(SceneRevision::new(1), viewport).finish();
-        let clear = LinearRgba::new(0.0, 0.0, 0.0, 0.0).ok_or("fixture clear")?;
-        Ok(ValidatedFrame::new(
+        let clear = LinearRgba::new(0.0, 0.0, 0.0, 0.0).expect("fixture clear must be valid");
+        ValidatedFrame::new(
             &scene,
-            OffscreenDescriptor::new(1, 1, 1.0, clear)?,
-        )?)
+            OffscreenDescriptor::new(1, 1, 1.0, clear).expect("fixture descriptor must be valid"),
+        )
+        .expect("fixture frame must be valid")
     }
 
     #[test]
     fn balances_rejections_and_every_terminal_outcome() -> Result<(), Box<dyn std::error::Error>> {
-        let frame = frame()?;
+        let frame = frame();
         let mut accounting = BackendAccounting::new(BackendGeneration::INITIAL);
         accounting
             .record_admission_rejection()
@@ -470,7 +466,7 @@ mod tests {
     #[test]
     fn exposes_every_counter_and_terminal_state_without_losing_invariants()
     -> Result<(), Box<dyn std::error::Error>> {
-        let frame = frame()?;
+        let frame = frame();
         let mut accounting = BackendAccounting::new(BackendGeneration::INITIAL);
         accounting
             .record_accepted(
@@ -536,5 +532,27 @@ mod tests {
         invalid.completed_frames = u128::MAX;
         invalid.failed_frames = 1;
         assert!(!invalid.invariants_hold());
+        invalid.failed_frames = 0;
+        invalid.cancelled_frames = 1;
+        assert!(!invalid.invariants_hold());
+
+        let mut atomic = BackendAccounting::new(BackendGeneration::INITIAL);
+        let before = atomic;
+        assert_eq!(
+            atomic.record_values(
+                0,
+                0,
+                0,
+                0,
+                AccountingOutcome::Completed,
+                true,
+                FrameResourceUsage {
+                    current_retained_bytes: 1,
+                    ..FrameResourceUsage::default()
+                },
+            ),
+            Err(())
+        );
+        assert_eq!(atomic, before);
     }
 }

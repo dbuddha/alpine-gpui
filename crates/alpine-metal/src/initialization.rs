@@ -68,7 +68,17 @@ impl MetalBackend {
 pub(crate) fn new_backend_generation(
     generation: BackendGeneration,
 ) -> Result<MetalBackend, InitializationError> {
-    platform::new_backend().map(|parts| MetalBackend::from_platform_generation(parts, generation))
+    assemble_backend_generation(platform::new_backend(), generation)
+}
+
+fn assemble_backend_generation(
+    result: Result<(platform::NativeBackend, MetalCapabilities), InitializationError>,
+    generation: BackendGeneration,
+) -> Result<MetalBackend, InitializationError> {
+    match result {
+        Ok(parts) => Ok(MetalBackend::from_platform_generation(parts, generation)),
+        Err(error) => Err(error),
+    }
 }
 
 /// Capabilities observed from the selected physical Metal device.
@@ -813,6 +823,7 @@ mod tests {
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     #[test]
+    #[allow(clippy::expect_used, reason = "fixed test generation must advance")]
     fn assembles_the_safe_owner_from_validated_platform_parts() {
         let capabilities = MetalCapabilities::new("Fixture GPU".to_owned(), 73)
             .with_metal3(true)
@@ -825,5 +836,14 @@ mod tests {
         ));
 
         assert_eq!(backend.capabilities(), &capabilities);
+
+        let generated = super::assemble_backend_generation(
+            Ok((crate::unsupported::NativeBackend, capabilities)),
+            crate::BackendGeneration::INITIAL
+                .next()
+                .expect("fixture generation must advance"),
+        )
+        .expect("validated fixture parts must assemble");
+        assert_eq!(generated.accounting().generation().get(), 2);
     }
 }
