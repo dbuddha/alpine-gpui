@@ -135,12 +135,20 @@ mod tests {
                 let width = f32::from(width);
                 let height = f32::from(height);
                 let size = Size::new(width, height);
-                assert!(size.is_some());
-                if let Some(size) = size {
-                    assert_eq!(size.width.to_bits(), width.to_bits());
-                    assert_eq!(size.height.to_bits(), height.to_bits());
-                    assert_eq!(size.is_empty(), width == 0.0 || height == 0.0);
-                }
+                assert_eq!(
+                    size.map(|value| {
+                        (
+                            value.width.to_bits(),
+                            value.height.to_bits(),
+                            value.is_empty(),
+                        )
+                    }),
+                    Some((
+                        width.to_bits(),
+                        height.to_bits(),
+                        width == 0.0 || height == 0.0,
+                    ))
+                );
             }
         }
     }
