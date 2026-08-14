@@ -40,6 +40,7 @@ if matches '^crates/(alpine-core|alpine-scene|alpine-renderer)/.+\.rs$'; then
 fi
 
 if matches '^(tools/alpine-assurance/.+\.rs$|assurance/qualification/)'; then
+    coverage=true
     mutation=true
 fi
 
