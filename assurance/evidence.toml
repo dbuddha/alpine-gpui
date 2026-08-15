@@ -139,7 +139,7 @@ requirement_issue = 29
 claim_type = "safety"
 risk = "high"
 case_study_findings = ["CS-ZED-006", "CS-ZED-008"]
-kani_applicability = "not_applicable"
+kani_applicability = "supporting"
 tla_properties = ["QualificationRequiresReproduction"]
 platform_scope = ["tooling"]
 required_evidence = ["tla", "unit", "e2e", "mutation", "coverage"]
@@ -592,7 +592,7 @@ scope = "Bounded synthetic A/A run and sample records."
 exclusions = ["Proof that an external scheduler randomized execution", "hardware timing truth"]
 
 [[evidence]]
-id = "EV-0028-E2E03B"
+id = "EV-0028-E2E03C"
 claim = "AEP-0028-C03"
 kind = "e2e"
 artifact = "scripts/test-calibration.sh"
@@ -1549,3 +1549,81 @@ artifact = "scripts/check-coverage.sh"
 assertion = "Coverage ratchets include every portable accounting outcome and invariant."
 scope = "Linux-hosted safe Rust."
 exclusions = ["macOS-only allocation queries", "proof of bounded memory"]
+
+[[evidence]]
+id = "EV-0025-KANI05C"
+claim = "AEP-0025-C05"
+kind = "kani"
+artifact = "tools/alpine-trace/src/proofs.rs#bounded_trace_preserves_operation_order_and_values"
+assertion = "Two bounded symbolic solid quads preserve declared painter order, target identity, and accepted values through the compiled trace decoder."
+scope = "Dependency-free typed alpine-scene-trace/v1 semantic conversion."
+bounds = ["two operations", "transparent or full red and alpha channels", "two-by-two logical viewport", "scale one"]
+assumptions = ["serialization has already resolved the supported operation and full-viewport clip"]
+exclusions = ["TOML parsing", "unbounded traces", "native Metal", "elapsed time"]
+companion = "tools/alpine-trace/src/lib.rs#decodes_exact_target_and_preserves_painter_order"
+
+[[evidence]]
+id = "EV-0028-KANI03"
+claim = "AEP-0028-C03"
+kind = "kani"
+artifact = "tools/alpine-trace/src/proofs.rs#bounded_trace_rejects_noncontiguous_index"
+assertion = "Every bounded nonzero first operation sequence is rejected by the compiled decoder."
+scope = "One-operation trace index admission."
+bounds = ["one operation", "nonzero u8-derived sequence through 256"]
+assumptions = ["serialization maps the operation to the supported solid-quad representation"]
+exclusions = ["TOML parsing", "later operation indices", "native rendering", "elapsed time"]
+companion = "tools/alpine-trace/src/lib.rs#rejects_sequence_geometry_color_and_clip_breaks"
+
+[[evidence]]
+id = "EV-0025-INTEGRATION05B"
+claim = "AEP-0025-C05"
+kind = "integration"
+artifact = "tools/alpine-assurance/tests/qualification_cli.rs#decodes_and_renders_the_committed_scene_trace"
+assertion = "The public assurance CLI decodes one committed trace and emits the independent compact BGRA8 CPU oracle with exact dimensions and sampled pixels."
+scope = "Concrete solid-quad renderer-only fixture for Requirement #53."
+exclusions = ["pinned Zed adapter", "native Metal result", "performance claim"]
+
+[[evidence]]
+id = "EV-0025-UNIT07B"
+claim = "AEP-0025-C07"
+kind = "unit"
+artifact = "tools/alpine-trace/src/lib.rs#decodes_exact_target_and_preserves_painter_order"
+assertion = "Trace decoding preserves the exact operation count, revision, logical viewport, physical target, and scale before rendering."
+scope = "One concrete two-operation decoder companion."
+exclusions = ["GPU allocation truth", "timing"]
+
+[[evidence]]
+id = "EV-0025-INTEGRATION08D"
+claim = "AEP-0025-C08"
+kind = "integration"
+artifact = "scripts/test-qualification.sh"
+assertion = "Repository qualification rejects unsupported operations and renders accepted traces only through explicit CPU-oracle or production Direct Metal commands."
+scope = "Non-shipping renderer-workload boundary for Requirement #53."
+exclusions = ["Zed source", "qualified hardware timing"]
+
+[[evidence]]
+id = "EV-0028-PROPERTY01B"
+claim = "AEP-0028-C01"
+kind = "property"
+artifact = "tools/alpine-trace/src/lib.rs#rejects_sequence_geometry_color_and_clip_breaks"
+assertion = "Exact target, painter-order sequence, geometry, color, and clip identity fail closed when altered."
+scope = "Concrete alpine-scene-trace/v1 solid-quad decoder."
+exclusions = ["journey actions", "Zed adapter revision"]
+
+[[evidence]]
+id = "EV-0028-INTEGRATION02B"
+claim = "AEP-0028-C02"
+kind = "integration"
+artifact = "tools/alpine-assurance/tests/qualification_cli.rs#decodes_and_renders_the_committed_scene_trace"
+assertion = "A deterministic CPU reference artifact is produced before native comparison or timing is admissible."
+scope = "Renderer-only trace correctness staging."
+exclusions = ["native equivalence", "qualified environment", "performance"]
+
+[[evidence]]
+id = "EV-0028-E2E03B"
+claim = "AEP-0028-C03"
+kind = "e2e"
+artifact = "scripts/test-qualification.sh"
+assertion = "The repository command accepts the executable trace, rejects an unsupported primitive instead of silently dropping it, and removes stale output before a failed render."
+scope = "CLI protocol boundary used by the isolated Zed lab."
+exclusions = ["lab build", "hardware reproduction"]

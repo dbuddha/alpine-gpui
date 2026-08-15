@@ -136,6 +136,7 @@ fn run() -> Result<String, Vec<String>> {
             | "qualification-report"
             | "validate-aa-calibration"
             | "aa-calibration-report"
+            | "validate-scene-trace"
     ) {
         let Some(path) = arguments.next() else {
             return Err(vec![format!("{command} requires a manifest path")]);
@@ -149,7 +150,33 @@ fn run() -> Result<String, Vec<String>> {
         ) {
             return calibration::run(&command, Path::new(&path), Path::new("."));
         }
+        if command == "validate-scene-trace" {
+            return qualification::run_scene(Path::new(&path), Path::new("."));
+        }
         return qualification::run(&command, Path::new(&path), Path::new("."));
+    }
+    if matches!(
+        command.as_str(),
+        "render-scene-reference" | "render-scene-native"
+    ) {
+        let Some(manifest) = arguments.next() else {
+            return Err(vec![format!(
+                "{command} requires a scene trace and output path"
+            )]);
+        };
+        let Some(output) = arguments.next() else {
+            return Err(vec![format!(
+                "{command} requires a scene trace and output path"
+            )]);
+        };
+        if arguments.next().is_some() {
+            return Err(vec![format!("{command} accepts exactly two paths")]);
+        }
+        return qualification::render_scene(
+            command == "render-scene-native",
+            Path::new(&manifest),
+            Path::new(&output),
+        );
     }
     let mut registry_path = PathBuf::from(DEFAULT_REGISTRY);
     let mut github = false;
@@ -177,7 +204,7 @@ fn run() -> Result<String, Vec<String>> {
         )),
         "report" => Ok(render_report(&registry)),
         other => Err(vec![format!(
-            "unknown command {other:?}; expected validate, report, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, or upstream-radar"
+            "unknown command {other:?}; expected validate, report, validate-scene-trace, render-scene-reference, render-scene-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, or upstream-radar"
         )]),
     }
 }
@@ -725,6 +752,12 @@ fn validate_kani_inventory(registry: &Registry, root: &Path, diagnostics: &mut D
         .collect();
     let mut discovered = BTreeSet::new();
     discover_kani_harnesses(&root.join("crates"), root, &mut discovered, diagnostics);
+    discover_kani_harnesses(
+        &root.join("tools/alpine-trace"),
+        root,
+        &mut discovered,
+        diagnostics,
+    );
 
     for harness in discovered.difference(&registered) {
         diagnostics
@@ -890,6 +923,26 @@ mod tests {
             assert!(report.contains("AEP-0009-C01"));
             assert!(report.contains("Model checked does not mean implementation verified"));
             assert!(report.contains("EV-0016-KANI03 (kani)"));
+        }
+    }
+
+    #[test]
+    fn rejects_an_unregistered_kani_harness() {
+        let root = repository_root();
+        let registry = load_registry(&root.join("assurance/evidence.toml"));
+        assert!(registry.is_ok());
+        if let Ok(mut registry) = registry {
+            registry.evidence.retain(|evidence| {
+                evidence.artifact
+                    != "tools/alpine-trace/src/proofs.rs#bounded_trace_preserves_operation_order_and_values"
+            });
+            let errors = validate_registry(&registry, &root, false);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("Kani harness is not registered")),
+                "{errors:#?}"
+            );
         }
     }
 
