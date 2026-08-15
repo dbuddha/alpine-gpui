@@ -19,6 +19,8 @@ mod validation {
 
     type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
+    const MAX_RETRY_ATTEMPTS: u8 = 4;
+
     pub(super) fn run() -> TestResult {
         let hosted_direct = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
             None => false,
@@ -87,46 +89,67 @@ mod validation {
 
     fn validate_retry(
         surface: &NativeSurface,
-        superseded_attempt: u64,
-        minimum_retry_epoch: u64,
-        superseded_submissions: u64,
+        mut prior_attempt: u64,
+        mut minimum_retry_epoch: u64,
+        mut prior_submissions: u64,
     ) -> TestResult {
-        native_validation::inject_post_commit_observation(surface, None, 1.5)?;
-        native_validation::run_until_frame_terminal(surface, Duration::from_secs(5));
-        assert_eq!(surface.take_error()?, None);
-        let recovered = surface.snapshot();
-        let terminal = recovered
-            .last_terminal()
-            .ok_or("recovered terminal evidence")?;
-        assert!(terminal.attempt() > superseded_attempt);
-        assert_eq!(terminal.requested_revision().get(), 1);
-        assert_eq!(terminal.frame_revision().get(), 1);
-        assert!(terminal.frame_epoch().get() >= minimum_retry_epoch);
-        // The terminal record is an immutable observation at completion. A
-        // legitimate AppKit configuration notification can advance the live
-        // epoch before this later snapshot, but it cannot move the epoch back
-        // or retroactively change the terminal qualification.
-        assert!(recovered.surface_epoch() >= terminal.frame_epoch().get());
-        assert_eq!(terminal.outcome(), PresentationOutcome::Presented);
-        assert_eq!(terminal.submission_count(), 1);
-        assert_eq!(terminal.present_call_count(), 1);
-        assert!(terminal.eligible_at_commit());
-        assert_eq!(
-            terminal.observed_presentation_time_bits(),
-            1.5_f64.to_bits()
-        );
-        assert_eq!(terminal.retained_bytes(), 0);
-        assert_eq!(terminal.recovery(), None);
-        assert!(recovered.submission_count() > superseded_submissions);
-        assert_eq!(
-            recovered.direct_present_count(),
-            recovered.submission_count()
-        );
-        assert!(recovered.presented_count() >= 2);
-        assert_eq!(recovered.qualified_presented_count(), 1);
-        assert_eq!(recovered.superseded_count(), 1);
-        assert!(recovered.display_link_paused());
-        Ok(())
+        let mut expected_superseded = 1;
+        // Configuration changes may supersede committed work, but a bounded
+        // validation run must still make progress once those changes stop.
+        for retry in 0_u8..MAX_RETRY_ATTEMPTS {
+            let presented_time = 1.5 + f64::from(retry) / 10.0;
+            native_validation::inject_post_commit_observation(surface, None, presented_time)?;
+            native_validation::run_until_frame_terminal(surface, Duration::from_secs(5));
+            assert_eq!(surface.take_error()?, None);
+            let recovered = surface.snapshot();
+            let terminal = recovered
+                .last_terminal()
+                .ok_or("recovered terminal evidence")?;
+            assert!(terminal.attempt() > prior_attempt);
+            assert_eq!(terminal.requested_revision().get(), 1);
+            assert_eq!(terminal.frame_revision().get(), 1);
+            assert!(terminal.frame_epoch().get() >= minimum_retry_epoch);
+            // The terminal record is an immutable observation at completion.
+            // A legitimate AppKit notification can advance the live epoch
+            // before this later snapshot, but cannot move it backward.
+            assert!(recovered.surface_epoch() >= terminal.frame_epoch().get());
+            assert_eq!(terminal.submission_count(), 1);
+            assert_eq!(terminal.present_call_count(), 1);
+            assert!(terminal.eligible_at_commit());
+            assert_eq!(
+                terminal.observed_presentation_time_bits(),
+                presented_time.to_bits()
+            );
+            assert_eq!(terminal.retained_bytes(), 0);
+            assert_eq!(terminal.recovery(), None);
+            assert!(recovered.submission_count() > prior_submissions);
+            assert_eq!(
+                recovered.direct_present_count(),
+                recovered.submission_count()
+            );
+            assert!(recovered.presented_count() >= 2);
+
+            match terminal.outcome() {
+                PresentationOutcome::Presented => {
+                    assert_eq!(recovered.qualified_presented_count(), 1);
+                    assert_eq!(recovered.superseded_count(), expected_superseded);
+                    assert!(recovered.display_link_paused());
+                    return Ok(());
+                }
+                PresentationOutcome::Superseded => {
+                    expected_superseded += 1;
+                    assert_eq!(recovered.qualified_presented_count(), 0);
+                    assert_eq!(recovered.superseded_count(), expected_superseded);
+                    assert!(!recovered.display_link_paused());
+                    assert!(recovered.surface_epoch() > terminal.frame_epoch().get());
+                    prior_attempt = terminal.attempt();
+                    minimum_retry_epoch = terminal.frame_epoch().get().saturating_add(1);
+                    prior_submissions = recovered.submission_count();
+                }
+                outcome => return Err(format!("unexpected retry outcome: {outcome:?}").into()),
+            }
+        }
+        Err("retry did not qualify after bounded AppKit configuration churn".into())
     }
 
     fn validate_device_loss(scene: Scene, clear: LinearRgba, hosted_direct: bool) -> TestResult {

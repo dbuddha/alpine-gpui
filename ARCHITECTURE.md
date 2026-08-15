@@ -495,9 +495,10 @@ EDR state, linear offscreen bytes, sRGB presentation bytes after overlapping
 linear blending, and a deliberately wrong direct-linear transfer control. The
 native recovery executable injects a display change immediately after real
 Metal commit and direct present, proves that the old epoch cannot qualify,
-retries the retained scene at the current epoch, and correlates both attempts
-with target timestamps, native observation, counts, terminal retention, and
-recovery. It separately injects Metal device removal after real command
+retries the retained scene across bounded later AppKit configuration churn
+until a current epoch qualifies, and correlates every attempt with target
+timestamps, native observation, counts, terminal retention, and recovery. It
+separately injects Metal device removal after real command
 completion and proves that the lost backend generation rejects later work
 before a second native submission. The presented-handler observation and
 post-commit configuration timing in this executable are deterministic
