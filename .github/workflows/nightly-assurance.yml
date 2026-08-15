@@ -121,6 +121,10 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       MACOSX_DEPLOYMENT_TARGET: "15.0"
+      # Hosted validation cannot qualify physical presentation. Keep every
+      # native test and mutation baseline on the same explicit direct-present
+      # evidence contract; fixed hardware leaves this variable unset.
+      ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -145,9 +149,11 @@ jobs:
           RUSTFLAGS: --cfg alpine_native_validation
         run: |
           if cargo metadata --format-version 1 --no-deps | grep -q '"name":"alpine-metal"'; then
-            cargo mutants --no-config --file crates/alpine-metal/src/native.rs --no-shuffle --output target/native-mutants.out -- --locked
+            cargo mutants --no-config --file crates/alpine-metal/src/native.rs --features platform-spi --no-shuffle --output target/native-mutants.out -- --locked
+            cargo mutants --no-config --file crates/alpine-metal/src/platform_spi.rs --features platform-spi --no-shuffle --output target/native-platform-spi-mutants.out -- --locked
+            cargo mutants --no-config --file crates/alpine-metal/src/submission.rs --features platform-spi --re 'MetalBackend::render_callback_drawable|record_drawable_attempt|verify_drawable_attempt_lifecycle|complete_drawable_attempt' --no-shuffle --output target/native-submission-mutants.out -- --locked
             cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re validate_initialization_rollback --no-shuffle --output target/native-platform-contract-mutants.out -- --locked
-            cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re validate_initialization_rollback --no-shuffle --output target/native-platform-mutants.out -- --locked
+            cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop' --no-shuffle --output target/native-platform-mutants.out -- --locked
           else
             echo "Native mutation activates when alpine-metal is implemented."
           fi
@@ -158,6 +164,8 @@ jobs:
           name: native-mutation-nightly-${{ github.sha }}
           path: |
             target/native-mutants.out
+            target/native-platform-spi-mutants.out
+            target/native-submission-mutants.out
             target/native-platform-contract-mutants.out
             target/native-platform-mutants.out
           retention-days: 14

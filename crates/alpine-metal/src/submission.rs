@@ -2,6 +2,10 @@ use std::{error::Error, fmt};
 
 use alpine_renderer::{FrameReport, Renderer, RendererCapabilities};
 use alpine_scene::Scene;
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+use objc2::runtime::ProtocolObject;
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+use objc2_metal::{MTLDrawable, MTLTexture};
 
 use crate::{
     BackendGeneration, BackendState, Bgra8Image, FrameLifecycle, InitializationError,
@@ -110,6 +114,22 @@ pub enum RenderError {
         /// Guaranteed maximum for either dimension.
         limit: u32,
     },
+    /// The callback drawable texture does not match the validated target.
+    DrawableExtentMismatch {
+        /// Validated target width.
+        expected_width: u32,
+        /// Validated target height.
+        expected_height: u32,
+        /// Native drawable width.
+        actual_width: usize,
+        /// Native drawable height.
+        actual_height: usize,
+    },
+    /// The callback drawable does not match Alpine's current pipeline format.
+    DrawablePixelFormatMismatch {
+        /// Raw native pixel-format value.
+        actual: usize,
+    },
     /// Metal returned no encoder for a valid command buffer.
     EncoderUnavailable {
         /// Encoder-creation stage.
@@ -156,7 +176,9 @@ impl RenderError {
             Self::SubmissionSequenceExhausted | Self::AccountingOverflow => {
                 RenderStage::SubmissionSequence
             }
-            Self::TextureExtentUnsupported { .. } => RenderStage::RenderTexture,
+            Self::TextureExtentUnsupported { .. }
+            | Self::DrawableExtentMismatch { .. }
+            | Self::DrawablePixelFormatMismatch { .. } => RenderStage::RenderTexture,
             Self::ResourceUnavailable { stage, .. } | Self::EncoderUnavailable { stage } => *stage,
             Self::CommandFailed { .. } | Self::UnexpectedCommandStatus { .. } => {
                 RenderStage::Completion
@@ -172,9 +194,10 @@ impl RenderError {
     #[must_use]
     pub const fn recovery(&self) -> RecoveryClassification {
         match self {
-            Self::Validation(_) | Self::TextureExtentUnsupported { .. } => {
-                RecoveryClassification::FixRequest
-            }
+            Self::Validation(_)
+            | Self::TextureExtentUnsupported { .. }
+            | Self::DrawableExtentMismatch { .. }
+            | Self::DrawablePixelFormatMismatch { .. } => RecoveryClassification::FixRequest,
             Self::UnsupportedPlatform { .. } => RecoveryClassification::Unsupported,
             Self::BackendUnavailable {
                 state: BackendState::Stopped,
@@ -239,6 +262,19 @@ impl fmt::Display for RenderError {
                 formatter,
                 "offscreen target {width}x{height} exceeds Metal 3 limit {limit}"
             ),
+            Self::DrawableExtentMismatch {
+                expected_width,
+                expected_height,
+                actual_width,
+                actual_height,
+            } => write!(
+                formatter,
+                "callback drawable extent {actual_width}x{actual_height} does not match validated target {expected_width}x{expected_height}"
+            ),
+            Self::DrawablePixelFormatMismatch { actual } => write!(
+                formatter,
+                "callback drawable pixel format {actual} is not the current BGRA8Unorm pipeline format"
+            ),
             Self::EncoderUnavailable { stage } => {
                 write!(formatter, "Metal returned no encoder at {stage:?}")
             }
@@ -285,6 +321,8 @@ impl Error for RenderError {
             | Self::AccountingOverflow
             | Self::ResourceUnavailable { .. }
             | Self::TextureExtentUnsupported { .. }
+            | Self::DrawableExtentMismatch { .. }
+            | Self::DrawablePixelFormatMismatch { .. }
             | Self::EncoderUnavailable { .. }
             | Self::CommandFailed { failure: None, .. }
             | Self::UnexpectedCommandStatus { .. }
@@ -439,6 +477,23 @@ pub(crate) struct NativeRenderAttempt {
     pub(crate) result: Result<Bgra8Image, RenderError>,
 }
 
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+pub(crate) struct NativeDrawableAttempt {
+    pub(crate) committed: bool,
+    pub(crate) present_called: bool,
+    pub(crate) device_lost: bool,
+    pub(crate) operations: FrameOperationUsage,
+    pub(crate) resources: FrameResourceUsage,
+    pub(crate) result: Result<(), RenderError>,
+}
+
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+pub(crate) struct DrawableRenderAttempt {
+    pub(crate) committed: bool,
+    pub(crate) present_called: bool,
+    pub(crate) result: Result<FrameReport, RenderError>,
+}
+
 impl MetalBackend {
     /// Validates and renders one immutable scene into a compact BGRA8 image.
     ///
@@ -456,6 +511,55 @@ impl MetalBackend {
     ) -> Result<OffscreenFrame, RenderError> {
         let frame = self.admit_frame(scene, descriptor)?;
         self.submit_validated(&frame)
+    }
+
+    #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn render_callback_drawable(
+        &mut self,
+        scene: &Scene,
+        descriptor: OffscreenDescriptor,
+        texture: &ProtocolObject<dyn MTLTexture>,
+        drawable: &ProtocolObject<dyn MTLDrawable>,
+    ) -> DrawableRenderAttempt {
+        let frame = match self.admit_frame(scene, descriptor) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return DrawableRenderAttempt {
+                    committed: false,
+                    present_called: false,
+                    result: Err(error),
+                };
+            }
+        };
+        let Some(next_submission) = self.accounting.submitted_frames().checked_add(1) else {
+            let result = match self.accounting.record_accepted(
+                &frame,
+                AccountingOutcome::Failed,
+                false,
+                FrameOperationUsage::default(),
+                FrameResourceUsage::default(),
+            ) {
+                Ok(()) => Err(RenderError::SubmissionSequenceExhausted),
+                Err(()) => Err(RenderError::AccountingOverflow),
+            };
+            return DrawableRenderAttempt {
+                committed: false,
+                present_called: false,
+                result,
+            };
+        };
+
+        let attempt =
+            objc2::rc::autoreleasepool(|_| self.native.render_drawable(&frame, texture, drawable));
+        let committed = attempt.committed;
+        let present_called = attempt.present_called;
+        let result = record_drawable_attempt(&mut self.accounting, &frame, &attempt)
+            .and_then(|()| complete_drawable_attempt(next_submission, &frame, attempt));
+        DrawableRenderAttempt {
+            committed,
+            present_called,
+            result,
+        }
     }
 
     /// Validates and cancels one frame before native allocation or submission.
@@ -587,6 +691,72 @@ fn record_attempt(
     result
 }
 
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+fn record_drawable_attempt(
+    accounting: &mut crate::BackendAccounting,
+    frame: &ValidatedFrame,
+    attempt: &NativeDrawableAttempt,
+) -> Result<(), RenderError> {
+    let outcome = verify_drawable_attempt_lifecycle(attempt)?;
+    let result = accounting
+        .record_accepted(
+            frame,
+            outcome,
+            attempt.committed,
+            attempt.operations,
+            attempt.resources,
+        )
+        .map_err(|()| RenderError::AccountingOverflow);
+    if attempt.device_lost {
+        accounting.invalidate_device();
+    } else if result.is_err() && attempt.committed {
+        accounting.stop();
+    }
+    result
+}
+
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+fn verify_drawable_attempt_lifecycle(
+    attempt: &NativeDrawableAttempt,
+) -> Result<AccountingOutcome, RenderError> {
+    let mut lifecycle = FrameLifecycle::new();
+    lifecycle
+        .apply(LifecycleAction::BeginFrame)
+        .and_then(|()| lifecycle.apply(LifecycleAction::Encode))
+        .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+    if attempt.committed {
+        lifecycle
+            .apply(LifecycleAction::Submit)
+            .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+    }
+    if attempt.present_called != attempt.committed {
+        return Err(RenderError::SubmissionInvariantViolated);
+    }
+    let outcome = match (&attempt.result, attempt.committed) {
+        (Ok(()), true) => {
+            lifecycle
+                .apply(LifecycleAction::Complete)
+                .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+            AccountingOutcome::Completed
+        }
+        (Err(_), true) => {
+            lifecycle
+                .apply(LifecycleAction::Fail)
+                .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+            AccountingOutcome::Failed
+        }
+        (Err(_), false) => {
+            lifecycle
+                .apply(LifecycleAction::FailBeforeSubmit)
+                .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+            AccountingOutcome::Failed
+        }
+        (Ok(()), false) => return Err(RenderError::SubmissionInvariantViolated),
+    };
+    verify_terminal_release(lifecycle)?;
+    Ok(outcome)
+}
+
 fn verify_cancellation_lifecycle(mut lifecycle: FrameLifecycle) -> Result<(), RenderError> {
     lifecycle
         .apply(LifecycleAction::BeginFrame)
@@ -688,6 +858,28 @@ fn complete_attempt(
     })
 }
 
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+fn complete_drawable_attempt(
+    next_submission: u64,
+    frame: &ValidatedFrame,
+    attempt: NativeDrawableAttempt,
+) -> Result<FrameReport, RenderError> {
+    attempt.result?;
+    if !attempt.committed || !attempt.present_called {
+        return Err(RenderError::SubmissionInvariantViolated);
+    }
+    Ok(FrameReport {
+        submission: next_submission,
+        primitives: frame.consumed_primitives(),
+        omitted_primitives: frame.omitted_primitives(),
+        draw_calls: attempt.operations.draw_calls,
+        uploaded_bytes: attempt.operations.uploaded_bytes,
+        allocated_bytes: attempt.resources.allocated_bytes,
+        retained_bytes: attempt.resources.peak_retained_bytes,
+        readback_bytes: 0,
+    })
+}
+
 fn store_render_result(
     target: &mut OffscreenTarget,
     result: Result<OffscreenFrame, RenderError>,
@@ -771,6 +963,15 @@ mod tests {
         compact_readback_with_control, complete_attempt, map_readback_reservation_failure,
         record_attempt, store_render_result, verify_terminal_release,
     };
+    #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+    use super::{
+        NativeDrawableAttempt, complete_drawable_attempt, record_drawable_attempt,
+        verify_drawable_attempt_lifecycle,
+    };
+    #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+    use crate::accounting::{
+        AccountingOutcome, BackendAccounting, BackendGeneration, BackendState,
+    };
     use crate::{
         Bgra8Image, OffscreenDescriptor, ValidatedFrame,
         accounting::{FrameOperationUsage, FrameResourceUsage},
@@ -797,6 +998,113 @@ mod tests {
             LinearRgba::new(0.0, 0.0, 0.0, 0.0).ok_or(RenderError::SubmissionInvariantViolated)?;
         let descriptor = OffscreenDescriptor::new(u32::from(width), u32::from(height), 1.0, clear)?;
         Ok(ValidatedFrame::new(&scene, descriptor)?)
+    }
+
+    #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn callback_attempt_lifecycle_rejects_false_commit_or_present_evidence() {
+        let attempt = |committed, present_called, result| NativeDrawableAttempt {
+            committed,
+            present_called,
+            device_lost: false,
+            operations: FrameOperationUsage::default(),
+            resources: FrameResourceUsage::default(),
+            result,
+        };
+
+        assert_eq!(
+            verify_drawable_attempt_lifecycle(&attempt(true, true, Ok(()))),
+            Ok(AccountingOutcome::Completed)
+        );
+        assert_eq!(
+            verify_drawable_attempt_lifecycle(&attempt(
+                false,
+                false,
+                Err(RenderError::SubmissionInvariantViolated),
+            )),
+            Ok(AccountingOutcome::Failed)
+        );
+        for invalid in [
+            attempt(true, false, Ok(())),
+            attempt(false, true, Err(RenderError::SubmissionInvariantViolated)),
+            attempt(false, false, Ok(())),
+        ] {
+            assert_eq!(
+                verify_drawable_attempt_lifecycle(&invalid),
+                Err(RenderError::SubmissionInvariantViolated)
+            );
+        }
+    }
+
+    #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn callback_attempt_recording_and_completion_preserve_all_evidence() -> Result<(), RenderError>
+    {
+        let frame = empty_frame(2, 3)?;
+        let operations = FrameOperationUsage {
+            draw_calls: 4,
+            uploaded_bytes: 5,
+        };
+        let resources = FrameResourceUsage {
+            allocated_bytes: 6,
+            peak_retained_bytes: 7,
+            current_retained_bytes: 0,
+            readback_bytes: 0,
+        };
+        let attempt = || NativeDrawableAttempt {
+            committed: true,
+            present_called: true,
+            device_lost: false,
+            operations,
+            resources,
+            result: Ok(()),
+        };
+        let mut accounting = BackendAccounting::new(BackendGeneration::INITIAL);
+
+        record_drawable_attempt(&mut accounting, &frame, &attempt())?;
+        assert_eq!(accounting.state(), BackendState::Ready);
+        assert_eq!(accounting.submitted_frames(), 1);
+        assert_eq!(accounting.completed_frames(), 1);
+        assert_eq!(accounting.draw_calls(), 4);
+        assert_eq!(accounting.uploaded_bytes(), 5);
+        assert_eq!(accounting.allocated_bytes(), 6);
+        assert_eq!(accounting.peak_retained_bytes(), 7);
+
+        assert_eq!(
+            complete_drawable_attempt(9, &frame, attempt())?,
+            FrameReport {
+                submission: 9,
+                primitives: 0,
+                omitted_primitives: 0,
+                draw_calls: 4,
+                uploaded_bytes: 5,
+                allocated_bytes: 6,
+                retained_bytes: 7,
+                readback_bytes: 0,
+            }
+        );
+
+        for (committed, present_called) in [(false, false), (false, true), (true, false)] {
+            let invalid = NativeDrawableAttempt {
+                committed,
+                present_called,
+                ..attempt()
+            };
+            assert_eq!(
+                complete_drawable_attempt(10, &frame, invalid),
+                Err(RenderError::SubmissionInvariantViolated)
+            );
+        }
+
+        let terminal_failure = NativeDrawableAttempt {
+            result: Err(RenderError::SubmissionInvariantViolated),
+            ..attempt()
+        };
+        assert_eq!(
+            complete_drawable_attempt(10, &frame, terminal_failure),
+            Err(RenderError::SubmissionInvariantViolated)
+        );
+        Ok(())
     }
 
     #[test]
@@ -1064,6 +1372,21 @@ mod tests {
                     height: 1,
                     limit: 16_384,
                 },
+                RenderStage::RenderTexture,
+                false,
+            ),
+            (
+                RenderError::DrawableExtentMismatch {
+                    expected_width: 64,
+                    expected_height: 32,
+                    actual_width: 32,
+                    actual_height: 64,
+                },
+                RenderStage::RenderTexture,
+                false,
+            ),
+            (
+                RenderError::DrawablePixelFormatMismatch { actual: 81 },
                 RenderStage::RenderTexture,
                 false,
             ),

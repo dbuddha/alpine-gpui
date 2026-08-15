@@ -1,5 +1,7 @@
 //! Process-main-thread native surface smoke test.
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use alpine_metal::InitializationError;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 use alpine_platform_macos::SurfaceError;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -9,7 +11,13 @@ use alpine_platform_macos::{NativeSurface, SurfaceDescriptor};
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn main() -> Result<(), alpine_platform_macos::SurfaceError> {
     let descriptor = SurfaceDescriptor::new("Alpine native surface test", 320.0, 180.0, 2.0)?;
-    let surface = NativeSurface::new(&descriptor)?;
+    let surface = match NativeSurface::new(&descriptor) {
+        Ok(surface) => surface,
+        Err(alpine_platform_macos::SurfaceError::RendererInitialization(
+            InitializationError::UnsupportedDevice { .. },
+        )) => return Ok(()),
+        Err(error) => return Err(error),
+    };
 
     let snapshot = surface.snapshot();
     assert_eq!(snapshot.physical_width(), 640);
@@ -21,11 +29,16 @@ fn main() -> Result<(), alpine_platform_macos::SurfaceError> {
     assert!(snapshot.display_link_paused());
     assert!(!snapshot.visible());
     assert_eq!(snapshot.callback_count(), 0);
+    assert_eq!(snapshot.submission_count(), 0);
+    assert_eq!(snapshot.direct_present_count(), 0);
+    assert_eq!(snapshot.presented_count(), 0);
+    assert_eq!(snapshot.skipped_count(), 0);
+    assert_eq!(snapshot.failed_count(), 0);
 
     let observer = surface.observer();
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
     assert_eq!(observer.callback_count(), 0);
-    surface.show();
+    surface.show()?;
     assert!(surface.snapshot().visible());
     surface.close();
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closed);

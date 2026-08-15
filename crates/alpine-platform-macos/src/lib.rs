@@ -11,6 +11,11 @@ use std::sync::{
     atomic::{AtomicU8, AtomicU64, Ordering},
 };
 
+use alpine_core::LinearRgba;
+use alpine_metal::{InitializationError, RenderError};
+use alpine_platform::{PresentationRevision, TransitionError};
+use alpine_scene::Scene;
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -20,7 +25,29 @@ mod unsupported;
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 #[doc(hidden)]
 pub mod native_validation {
-    use crate::{SurfaceError, native};
+    use std::time::Duration;
+
+    use crate::{NativeSurface, SurfaceDescriptor, SurfaceError, native};
+
+    /// Creates one real surface while bypassing only the hosted device baseline.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same structured construction errors as the production path.
+    pub fn new_surface(descriptor: &SurfaceDescriptor) -> Result<NativeSurface, SurfaceError> {
+        native::NativeSurface::new_for_validation(descriptor)
+            .map(NativeSurface::from_implementation)
+    }
+
+    /// Runs the real AppKit event loop until one frame terminates or timeout.
+    pub fn run_until_frame_terminal(surface: &NativeSurface, timeout: Duration) {
+        surface.implementation.run_until_frame_terminal(timeout);
+    }
+
+    /// Installs one deterministic asynchronous driver failure for contract tests.
+    pub fn inject_driver_error(surface: &NativeSurface, error: SurfaceError) {
+        surface.implementation.inject_driver_error(error);
+    }
 
     /// Injects every initialization-stage failure and verifies complete rollback.
     ///
@@ -161,6 +188,8 @@ pub enum SurfaceStage {
     MainThread,
     /// Metal device acquisition.
     Device,
+    /// Direct Metal backend initialization on the layer's device.
+    Renderer,
     /// `AppKit` window creation.
     Window,
     /// `AppKit` content-view creation.
@@ -197,6 +226,24 @@ pub enum SurfaceError {
         /// Stage that rejected initialization.
         stage: SurfaceStage,
     },
+    /// The shared Direct Metal backend could not initialize.
+    RendererInitialization(InitializationError),
+    /// An immutable callback-drawable frame failed.
+    Render(RenderError),
+    /// The native owner rejected a portable lifecycle transition.
+    Presentation(TransitionError),
+    /// The synchronized callback owner is no longer usable.
+    DriverUnavailable,
+    /// Direct presentation was called but no presented timestamp appeared.
+    PresentationNotObserved {
+        /// Display-link callbacks spent awaiting correlation.
+        callbacks: u16,
+    },
+    /// Core Animation repeatedly completed drawables without presenting them.
+    PresentationsSkipped {
+        /// Consecutive dropped presentation attempts.
+        attempts: u16,
+    },
 }
 
 impl fmt::Display for SurfaceError {
@@ -214,11 +261,62 @@ impl fmt::Display for SurfaceError {
             Self::NativeUnavailable { stage } => {
                 write!(formatter, "native surface unavailable at {stage:?} stage")
             }
+            Self::RendererInitialization(error) => {
+                write!(formatter, "native renderer initialization failed: {error}")
+            }
+            Self::Render(error) => write!(formatter, "native presentation failed: {error}"),
+            Self::Presentation(error) => {
+                write!(formatter, "native presentation state failed: {error}")
+            }
+            Self::DriverUnavailable => {
+                formatter.write_str("native presentation driver unavailable")
+            }
+            Self::PresentationNotObserved { callbacks } => write!(
+                formatter,
+                "native presentation was not observed after {callbacks} display-link callbacks"
+            ),
+            Self::PresentationsSkipped { attempts } => write!(
+                formatter,
+                "Core Animation skipped {attempts} consecutive presentation attempts"
+            ),
         }
     }
 }
 
-impl Error for SurfaceError {}
+impl Error for SurfaceError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::RendererInitialization(error) => Some(error),
+            Self::Render(error) => Some(error),
+            Self::Presentation(error) => Some(error),
+            Self::InvalidDimension { .. }
+            | Self::PhysicalDimensionOutOfRange { .. }
+            | Self::UnsupportedPlatform
+            | Self::NativeUnavailable { .. }
+            | Self::DriverUnavailable
+            | Self::PresentationNotObserved { .. }
+            | Self::PresentationsSkipped { .. } => None,
+        }
+    }
+}
+
+impl From<InitializationError> for SurfaceError {
+    fn from(error: InitializationError) -> Self {
+        Self::RendererInitialization(error)
+    }
+}
+
+impl From<RenderError> for SurfaceError {
+    fn from(error: RenderError) -> Self {
+        Self::Render(error)
+    }
+}
+
+impl From<TransitionError> for SurfaceError {
+    fn from(error: TransitionError) -> Self {
+        Self::Presentation(error)
+    }
+}
 
 /// Read-only native configuration and pacing evidence.
 #[allow(
@@ -233,9 +331,17 @@ pub struct SurfaceSnapshot {
     display_sync_enabled: bool,
     allows_next_drawable_timeout: bool,
     maximum_drawable_count: u8,
+    regular_activation_policy: bool,
     display_link_paused: bool,
     visible: bool,
     callback_count: u64,
+    submission_count: u64,
+    direct_present_count: u64,
+    installed_presented_handler_count: u64,
+    presented_count: u64,
+    last_presented_time_bits: u64,
+    skipped_count: u64,
+    failed_count: u64,
 }
 
 impl SurfaceSnapshot {
@@ -275,6 +381,12 @@ impl SurfaceSnapshot {
         self.maximum_drawable_count
     }
 
+    /// Returns whether the standalone application uses the regular `AppKit` policy.
+    #[must_use]
+    pub const fn regular_activation_policy(self) -> bool {
+        self.regular_activation_policy
+    }
+
     /// Returns whether the layer-bound display link is paused.
     #[must_use]
     pub const fn display_link_paused(self) -> bool {
@@ -291,6 +403,48 @@ impl SurfaceSnapshot {
     #[must_use]
     pub const fn callback_count(self) -> u64 {
         self.callback_count
+    }
+
+    /// Returns callback frames that committed one command buffer.
+    #[must_use]
+    pub const fn submission_count(self) -> u64 {
+        self.submission_count
+    }
+
+    /// Returns direct callback-drawable presentation calls.
+    #[must_use]
+    pub const fn direct_present_count(self) -> u64 {
+        self.direct_present_count
+    }
+
+    /// Returns callback drawables with a registered presented handler.
+    #[must_use]
+    pub const fn installed_presented_handler_count(self) -> u64 {
+        self.installed_presented_handler_count
+    }
+
+    /// Returns drawables correlated with a nonzero presented timestamp.
+    #[must_use]
+    pub const fn presented_count(self) -> u64 {
+        self.presented_count
+    }
+
+    /// Returns the raw nonzero `f64` bits from the latest observed presentation time.
+    #[must_use]
+    pub const fn last_presented_time_bits(self) -> u64 {
+        self.last_presented_time_bits
+    }
+
+    /// Returns drawables whose presented handler reported a dropped frame.
+    #[must_use]
+    pub const fn skipped_count(self) -> u64 {
+        self.skipped_count
+    }
+
+    /// Returns callback frame attempts with classified terminal failure.
+    #[must_use]
+    pub const fn failed_count(self) -> u64 {
+        self.failed_count
     }
 }
 
@@ -359,8 +513,37 @@ impl NativeSurface {
     }
 
     /// Orders the initialized native window to the front.
-    pub fn show(&self) {
-        self.implementation.show();
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured lifecycle or driver error if the surface cannot
+    /// enter visible demand-driven presentation.
+    pub fn show(&self) -> Result<(), SurfaceError> {
+        self.implementation.show()
+    }
+
+    /// Replaces pending immutable work and wakes pacing only when eligible.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured lifecycle error if the surface no longer admits
+    /// work or its synchronized native driver is unavailable.
+    pub fn request_frame(
+        &self,
+        scene: Scene,
+        clear: LinearRgba,
+    ) -> Result<PresentationRevision, SurfaceError> {
+        self.implementation.request_frame(scene, clear)
+    }
+
+    /// Removes the latest asynchronous callback failure, if one exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SurfaceError::DriverUnavailable`] if synchronized callback
+    /// state cannot be inspected.
+    pub fn take_error(&self) -> Result<Option<SurfaceError>, SurfaceError> {
+        self.implementation.take_error()
     }
 
     /// Returns current layer configuration and pacing evidence.
@@ -526,6 +709,56 @@ mod tests {
             .to_string(),
             "native surface unavailable at DisplayLink stage"
         );
+
+        let initialization: SurfaceError = InitializationError::DeviceUnavailable.into();
+        let render: SurfaceError =
+            RenderError::Validation(alpine_metal::OffscreenError::ZeroPixelExtent).into();
+        let mut state = alpine_platform::PresentationState::new();
+        let presentation = state
+            .apply(alpine_platform::PresentationAction::Prepare)
+            .map_err(SurfaceError::from);
+        assert_eq!(
+            presentation.as_ref().map_err(ToString::to_string),
+            Err("native presentation state failed: presentation action Prepare rejected in Running/Idle: ActionDisabled".to_owned())
+        );
+        assert!(
+            presentation
+                .as_ref()
+                .err()
+                .and_then(|error| std::error::Error::source(error))
+                .is_some()
+        );
+        let cases = [
+            (
+                initialization,
+                "native renderer initialization failed: Metal returned no default device",
+                true,
+            ),
+            (
+                render,
+                "native presentation failed: offscreen validation failed: offscreen target must be non-empty",
+                true,
+            ),
+            (
+                SurfaceError::DriverUnavailable,
+                "native presentation driver unavailable",
+                false,
+            ),
+            (
+                SurfaceError::PresentationNotObserved { callbacks: 17 },
+                "native presentation was not observed after 17 display-link callbacks",
+                false,
+            ),
+            (
+                SurfaceError::PresentationsSkipped { attempts: 19 },
+                "Core Animation skipped 19 consecutive presentation attempts",
+                false,
+            ),
+        ];
+        for (error, message, has_source) in cases {
+            assert_eq!(error.to_string(), message);
+            assert_eq!(std::error::Error::source(&error).is_some(), has_source);
+        }
     }
 
     #[test]
@@ -537,9 +770,17 @@ mod tests {
             display_sync_enabled: false,
             allows_next_drawable_timeout: true,
             maximum_drawable_count: 2,
+            regular_activation_policy: false,
             display_link_paused: false,
             visible: true,
             callback_count: 23,
+            submission_count: 29,
+            direct_present_count: 31,
+            installed_presented_handler_count: 33,
+            presented_count: 37,
+            last_presented_time_bits: 39,
+            skipped_count: 41,
+            failed_count: 43,
         };
         let inverse = SurfaceSnapshot {
             physical_width: 29,
@@ -548,9 +789,17 @@ mod tests {
             display_sync_enabled: true,
             allows_next_drawable_timeout: false,
             maximum_drawable_count: 3,
+            regular_activation_policy: true,
             display_link_paused: true,
             visible: false,
             callback_count: 37,
+            submission_count: 43,
+            direct_present_count: 47,
+            installed_presented_handler_count: 49,
+            presented_count: 53,
+            last_presented_time_bits: 57,
+            skipped_count: 59,
+            failed_count: 61,
         };
 
         assert_eq!(snapshot.physical_width(), 17);
@@ -559,9 +808,17 @@ mod tests {
         assert!(!snapshot.display_sync_enabled());
         assert!(snapshot.allows_next_drawable_timeout());
         assert_eq!(snapshot.maximum_drawable_count(), 2);
+        assert!(!snapshot.regular_activation_policy());
         assert!(!snapshot.display_link_paused());
         assert!(snapshot.visible());
         assert_eq!(snapshot.callback_count(), 23);
+        assert_eq!(snapshot.submission_count(), 29);
+        assert_eq!(snapshot.direct_present_count(), 31);
+        assert_eq!(snapshot.installed_presented_handler_count(), 33);
+        assert_eq!(snapshot.presented_count(), 37);
+        assert_eq!(snapshot.last_presented_time_bits(), 39);
+        assert_eq!(snapshot.skipped_count(), 41);
+        assert_eq!(snapshot.failed_count(), 43);
 
         assert_eq!(inverse.physical_width(), 29);
         assert_eq!(inverse.physical_height(), 31);
@@ -569,9 +826,17 @@ mod tests {
         assert!(inverse.display_sync_enabled());
         assert!(!inverse.allows_next_drawable_timeout());
         assert_eq!(inverse.maximum_drawable_count(), 3);
+        assert!(inverse.regular_activation_policy());
         assert!(inverse.display_link_paused());
         assert!(!inverse.visible());
         assert_eq!(inverse.callback_count(), 37);
+        assert_eq!(inverse.submission_count(), 43);
+        assert_eq!(inverse.direct_present_count(), 47);
+        assert_eq!(inverse.installed_presented_handler_count(), 49);
+        assert_eq!(inverse.presented_count(), 53);
+        assert_eq!(inverse.last_presented_time_bits(), 57);
+        assert_eq!(inverse.skipped_count(), 59);
+        assert_eq!(inverse.failed_count(), 61);
     }
 
     #[test]
@@ -591,12 +856,23 @@ mod tests {
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     #[test]
-    fn unsupported_wrapper_methods_preserve_the_safe_contract() {
-        let surface = NativeSurface::from_implementation(unsupported::NativeSurface);
+    fn unsupported_wrapper_methods_preserve_the_safe_contract() -> Result<(), SurfaceError> {
+        use alpine_scene::{SceneBuilder, SceneRevision};
 
-        surface.show();
+        let surface = NativeSurface::from_implementation(unsupported::NativeSurface);
+        let viewport = alpine_core::Size::new(1.0, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+        let scene = SceneBuilder::new(SceneRevision::new(1), viewport).finish();
+        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+
+        assert_eq!(surface.show(), Err(SurfaceError::UnsupportedPlatform));
+        assert_eq!(
+            surface.request_frame(scene, clear),
+            Err(SurfaceError::UnsupportedPlatform)
+        );
+        assert_eq!(surface.take_error(), Err(SurfaceError::UnsupportedPlatform));
         assert_eq!(surface.snapshot().physical_width(), 0);
         assert_eq!(surface.observer().lifecycle(), SurfaceLifecycle::Closed);
         surface.close();
+        Ok(())
     }
 }

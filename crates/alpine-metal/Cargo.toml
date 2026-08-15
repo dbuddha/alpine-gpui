@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 license-file.workspace = true
 
+[features]
+default = []
+platform-spi = ["objc2-metal/MTLDrawable", "objc2-metal/block2", "objc2-metal/objc2-core-foundation"]
+
 [dependencies]
 alpine-core = { path = "../alpine-core", version = "=0.0.0" }
 alpine-renderer = { path = "../alpine-renderer", version = "=0.0.0" }
@@ -21,7 +25,7 @@ objc2-metal = { version = "=0.3.2", default-features = false, features = ["std",
 [lints.rust]
 missing_docs = "deny"
 unsafe_code = "allow"
-unexpected_cfgs = { level = "deny", check-cfg = ['cfg(kani)'] }
+unexpected_cfgs = { level = "deny", check-cfg = ['cfg(kani)', 'cfg(alpine_native_validation)'] }
 
 [lints.clippy]
 all = "deny"

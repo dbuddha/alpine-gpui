@@ -5,6 +5,8 @@ use std::{ffi::c_void, mem::size_of, ptr::NonNull, slice};
 use dispatch2::DispatchData;
 use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_foundation::{NSError, NSString};
+#[cfg(feature = "platform-spi")]
+use objc2_metal::MTLDrawable;
 use objc2_metal::{
     MTLBlendFactor, MTLBlitCommandEncoder, MTLBuffer, MTLClearColor, MTLCommandBuffer,
     MTLCommandBufferError, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
@@ -14,10 +16,14 @@ use objc2_metal::{
     MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
 };
 
+#[cfg(all(feature = "platform-spi", any(test, alpine_native_validation)))]
+use crate::initialization::initialize_for_native_validation;
 use crate::initialization::{
     FRAGMENT_ENTRY_POINT, InitializationDriver, InitializationError, Initialized,
     MetalCapabilities, NativeFailure, VERTEX_ENTRY_POINT, initialize,
 };
+#[cfg(feature = "platform-spi")]
+use crate::submission::NativeDrawableAttempt;
 use crate::submission::{
     CommandStatus, NativeRenderAttempt, RecoveryClassification, RenderError, RenderStage,
     compact_readback,
@@ -190,9 +196,13 @@ impl NativeBackend {
             };
         }
 
-        if let Err(error) =
-            encode_render_pass(&command, &self.initialized.pipeline, &resources, frame)
-        {
+        if let Err(error) = encode_render_pass(
+            &command,
+            &self.initialized.pipeline,
+            &resources.texture,
+            resources.upload.as_deref(),
+            frame,
+        ) {
             return NativeRenderAttempt {
                 committed: false,
                 device_lost: false,
@@ -255,10 +265,122 @@ impl NativeBackend {
             result,
         }
     }
+
+    #[cfg(feature = "platform-spi")]
+    pub(crate) fn render_drawable(
+        &mut self,
+        frame: &ValidatedFrame,
+        texture: &ProtocolObject<dyn MTLTexture>,
+        drawable: &ProtocolObject<dyn MTLDrawable>,
+    ) -> NativeDrawableAttempt {
+        let resources = match DrawableResources::new(&self.initialized.device, texture, frame) {
+            Ok(resources) => resources,
+            Err(failure) => {
+                return NativeDrawableAttempt {
+                    committed: false,
+                    present_called: false,
+                    device_lost: false,
+                    operations: FrameOperationUsage::default(),
+                    resources: failure.usage,
+                    result: Err(failure.error),
+                };
+            }
+        };
+        let resource_usage = resources.usage;
+        let mut operations = FrameOperationUsage {
+            draw_calls: 0,
+            uploaded_bytes: resources
+                .upload
+                .as_ref()
+                .map_or(0, |_| frame.upload_bytes()),
+        };
+        let Some(command) = self.initialized.queue.commandBuffer() else {
+            return NativeDrawableAttempt {
+                committed: false,
+                present_called: false,
+                device_lost: false,
+                operations,
+                resources: resource_usage,
+                result: Err(RenderError::ResourceUnavailable {
+                    stage: RenderStage::CommandBuffer,
+                    requested_bytes: None,
+                }),
+            };
+        };
+        if let Err(error) = encode_render_pass(
+            &command,
+            &self.initialized.pipeline,
+            texture,
+            resources.upload.as_deref(),
+            frame,
+        ) {
+            return NativeDrawableAttempt {
+                committed: false,
+                present_called: false,
+                device_lost: false,
+                operations,
+                resources: resource_usage,
+                result: Err(error),
+            };
+        }
+        operations.draw_calls = usize::from(!frame.quads().is_empty());
+
+        command.commit();
+        drawable.present();
+        command.waitUntilCompleted();
+
+        let status = command_status(command.status());
+        let failure = command.error().as_deref().map(copy_error);
+        let (result, device_lost) = match (status, failure) {
+            (CommandStatus::Completed, None) => (Ok(()), false),
+            (CommandStatus::Completed | CommandStatus::Error, failure) => {
+                let (recovery, device_lost) = classify_command_failure(failure.as_ref());
+                (
+                    Err(RenderError::CommandFailed {
+                        status,
+                        failure,
+                        recovery,
+                    }),
+                    device_lost,
+                )
+            }
+            (status, _) => (Err(RenderError::UnexpectedCommandStatus { status }), false),
+        };
+        NativeDrawableAttempt {
+            committed: true,
+            present_called: true,
+            device_lost,
+            operations,
+            resources: resource_usage,
+            result,
+        }
+    }
 }
 
 pub(crate) fn new_backend() -> Result<(NativeBackend, MetalCapabilities), InitializationError> {
-    initialize(&NativeDriver::production()).map(|initialized| {
+    build_backend(initialize(&NativeDriver::production()))
+}
+
+#[cfg(feature = "platform-spi")]
+pub(crate) fn new_backend_with_device(
+    device: Device,
+) -> Result<(NativeBackend, MetalCapabilities), InitializationError> {
+    build_backend(initialize(&NativeDriver::with_device(device)))
+}
+
+#[cfg(all(feature = "platform-spi", any(test, alpine_native_validation)))]
+pub(crate) fn new_validation_backend_with_device(
+    device: Device,
+) -> Result<(NativeBackend, MetalCapabilities), InitializationError> {
+    build_backend(initialize_for_native_validation(
+        &NativeDriver::with_device(device),
+    ))
+}
+
+fn build_backend(
+    initialized: Result<Initialized<NativeDriver>, InitializationError>,
+) -> Result<(NativeBackend, MetalCapabilities), InitializationError> {
+    initialized.map(|initialized| {
         let capabilities = initialized.capabilities.clone();
         (
             NativeBackend {
@@ -274,6 +396,7 @@ pub(crate) fn new_backend() -> Result<(NativeBackend, MetalCapabilities), Initia
 }
 
 struct NativeDriver {
+    device: Option<Device>,
     library: &'static [u8],
     vertex_name: &'static str,
     fragment_name: &'static str,
@@ -283,10 +406,19 @@ struct NativeDriver {
 impl NativeDriver {
     const fn production() -> Self {
         Self {
+            device: None,
             library: OFFLINE_LIBRARY,
             vertex_name: VERTEX_ENTRY_POINT,
             fragment_name: FRAGMENT_ENTRY_POINT,
             blend: BlendConfiguration::PremultipliedSourceOver,
+        }
+    }
+
+    #[cfg(feature = "platform-spi")]
+    fn with_device(device: Device) -> Self {
+        Self {
+            device: Some(device),
+            ..Self::production()
         }
     }
 }
@@ -299,7 +431,9 @@ impl InitializationDriver for NativeDriver {
     type Queue = Queue;
 
     fn create_device(&self) -> Option<Self::Device> {
-        MTLCreateSystemDefaultDevice()
+        self.device
+            .clone()
+            .or_else(|| MTLCreateSystemDefaultDevice())
     }
 
     fn capabilities(&self, device: &Self::Device) -> Result<MetalCapabilities, NativeFailure> {
@@ -377,6 +511,89 @@ struct FrameResources {
 struct ResourceBuildFailure {
     error: RenderError,
     usage: FrameResourceUsage,
+}
+
+#[cfg(feature = "platform-spi")]
+struct DrawableResources {
+    upload: Option<Buffer>,
+    usage: FrameResourceUsage,
+}
+
+#[cfg(feature = "platform-spi")]
+impl DrawableResources {
+    fn new(
+        device: &Device,
+        texture: &ProtocolObject<dyn MTLTexture>,
+        frame: &ValidatedFrame,
+    ) -> Result<Self, ResourceBuildFailure> {
+        let descriptor = frame.descriptor();
+        if texture.width() != descriptor.pixel_width() as usize
+            || texture.height() != descriptor.pixel_height() as usize
+        {
+            return Err(ResourceBuildFailure {
+                error: RenderError::DrawableExtentMismatch {
+                    expected_width: descriptor.pixel_width(),
+                    expected_height: descriptor.pixel_height(),
+                    actual_width: texture.width(),
+                    actual_height: texture.height(),
+                },
+                usage: FrameResourceUsage::default(),
+            });
+        }
+        if texture.pixelFormat() != MTLPixelFormat::BGRA8Unorm {
+            return Err(ResourceBuildFailure {
+                error: RenderError::DrawablePixelFormatMismatch {
+                    actual: texture.pixelFormat().0,
+                },
+                usage: FrameResourceUsage::default(),
+            });
+        }
+
+        let retained_texture_bytes = texture.allocatedSize();
+        let upload = if frame.quads().is_empty() {
+            None
+        } else {
+            let first = NonNull::from(&frame.quads()[0]).cast::<c_void>();
+            // SAFETY: `first` points to the complete validated repr(C) quad
+            // slice, and Metal copies the bytes before returning.
+            unsafe {
+                device.newBufferWithBytes_length_options(
+                    first,
+                    frame.upload_bytes(),
+                    MTLResourceOptions::StorageModeShared,
+                )
+            }
+            .ok_or_else(|| ResourceBuildFailure {
+                error: RenderError::ResourceUnavailable {
+                    stage: RenderStage::UploadBuffer,
+                    requested_bytes: Some(frame.upload_bytes()),
+                },
+                usage: FrameResourceUsage {
+                    allocated_bytes: 0,
+                    peak_retained_bytes: retained_texture_bytes,
+                    current_retained_bytes: 0,
+                    readback_bytes: 0,
+                },
+            })?
+            .into()
+        };
+        let allocated_bytes = upload.as_deref().map_or(0, MTLResource::allocatedSize);
+        let peak_retained_bytes = retained_texture_bytes
+            .checked_add(allocated_bytes)
+            .ok_or_else(|| ResourceBuildFailure {
+                error: RenderError::AccountingOverflow,
+                usage: FrameResourceUsage::default(),
+            })?;
+        Ok(Self {
+            upload,
+            usage: FrameResourceUsage {
+                allocated_bytes,
+                peak_retained_bytes,
+                current_retained_bytes: 0,
+                readback_bytes: 0,
+            },
+        })
+    }
 }
 
 impl FrameResources {
@@ -550,7 +767,8 @@ impl FrameResources {
 fn encode_render_pass(
     command: &CommandBuffer,
     pipeline: &Pipeline,
-    resources: &FrameResources,
+    texture: &ProtocolObject<dyn MTLTexture>,
+    upload: Option<&ProtocolObject<dyn MTLBuffer>>,
     frame: &ValidatedFrame,
 ) -> Result<(), RenderError> {
     let pass = MTLRenderPassDescriptor::renderPassDescriptor();
@@ -558,7 +776,7 @@ fn encode_render_pass(
     // SAFETY: Metal render-pass descriptors always expose eight color
     // attachment slots, so fixed slot zero is within the documented range.
     let color = unsafe { attachments.objectAtIndexedSubscript(0) };
-    color.setTexture(Some(&resources.texture));
+    color.setTexture(Some(texture));
     color.setLoadAction(MTLLoadAction::Clear);
     color.setStoreAction(MTLStoreAction::Store);
     let clear = frame.descriptor().clear();
@@ -589,7 +807,7 @@ fn encode_render_pass(
             0,
         );
     }
-    if let Some(upload) = resources.upload.as_deref() {
+    if let Some(upload) = upload {
         // SAFETY: The retained upload buffer contains exactly the validated
         // LoweredQuad slice, offset zero is aligned, shader index one is fixed,
         // and both the local owner and retained command buffer keep it alive.
@@ -753,11 +971,24 @@ fn injected_terminal_result(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "platform-spi")]
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::{error::Error, process::Command};
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_renderer::Renderer;
     use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
+    #[cfg(feature = "platform-spi")]
+    use objc2::{
+        AnyThread, DefinedClass, define_class, msg_send, rc::Retained, runtime::ProtocolObject,
+    };
+    #[cfg(feature = "platform-spi")]
+    use objc2_foundation::{NSObject, NSObjectProtocol};
+    #[cfg(feature = "platform-spi")]
+    use objc2_metal::{
+        MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLDrawablePresentedHandler,
+        MTLPixelFormat, MTLStorageMode, MTLTextureDescriptor, MTLTextureUsage,
+    };
 
     use crate::initialization::{
         InitializationError, InitializationStage, MetalBackend, initialize_for_native_validation,
@@ -771,8 +1002,92 @@ mod tests {
         BlendConfiguration, FRAGMENT_ENTRY_POINT, NativeBackend, NativeDriver, NativeFault,
         OFFLINE_LIBRARY, ResourceProbe, VERTEX_ENTRY_POINT, command_status, new_backend,
     };
+    #[cfg(feature = "platform-spi")]
+    use super::{DrawableResources, new_backend_with_device, new_validation_backend_with_device};
+    #[cfg(feature = "platform-spi")]
+    use crate::accounting::FrameResourceUsage;
 
     static CORRUPT_LIBRARY: &[u8] = b"not a Metal library";
+
+    #[cfg(feature = "platform-spi")]
+    struct TestDrawableIvars {
+        present_calls: AtomicU64,
+    }
+
+    #[cfg(feature = "platform-spi")]
+    define_class!(
+        // SAFETY: NSObject has no subclassing requirements, the atomic ivar is
+        // valid for any callback thread, and this fixture has no custom Drop.
+        #[unsafe(super = NSObject)]
+        #[ivars = TestDrawableIvars]
+        struct TestDrawable;
+
+        // SAFETY: NSObjectProtocol adds no unimplemented requirements.
+        unsafe impl NSObjectProtocol for TestDrawable {}
+
+        // SAFETY: Both generated selector signatures are implemented exactly.
+        unsafe impl MTLDrawable for TestDrawable {
+            #[unsafe(method(present))]
+            fn present(&self) {
+                self.ivars().present_calls.fetch_add(1, Ordering::Relaxed);
+            }
+
+            #[allow(
+                non_snake_case,
+                reason = "the generated protocol requires this method name"
+            )]
+            #[unsafe(method(presentAtTime:))]
+            fn presentAtTime(&self, _presentation_time: f64) {}
+
+            #[allow(
+                non_snake_case,
+                reason = "the generated protocol requires this method name"
+            )]
+            #[unsafe(method(presentAfterMinimumDuration:))]
+            fn presentAfterMinimumDuration(&self, _duration: f64) {}
+
+            #[allow(
+                non_snake_case,
+                reason = "the generated protocol requires this method name"
+            )]
+            #[unsafe(method(addPresentedHandler:))]
+            unsafe fn addPresentedHandler(&self, _block: MTLDrawablePresentedHandler) {}
+
+            #[allow(
+                non_snake_case,
+                reason = "the generated protocol requires this method name"
+            )]
+            #[unsafe(method(presentedTime))]
+            fn presentedTime(&self) -> f64 {
+                1.0
+            }
+
+            #[allow(
+                non_snake_case,
+                reason = "the generated protocol requires this method name"
+            )]
+            #[unsafe(method(drawableID))]
+            fn drawableID(&self) -> usize {
+                17
+            }
+        }
+    );
+
+    #[cfg(feature = "platform-spi")]
+    impl TestDrawable {
+        fn new() -> Retained<Self> {
+            let allocated = Self::alloc().set_ivars(TestDrawableIvars {
+                present_calls: AtomicU64::new(0),
+            });
+            // SAFETY: This is NSObject's parameterless initializer and the
+            // allocated object already contains initialized Rust ivars.
+            unsafe { msg_send![super(allocated), init] }
+        }
+
+        fn present_calls(&self) -> u64 {
+            self.ivars().present_calls.load(Ordering::Relaxed)
+        }
+    }
 
     fn color(red: f32, green: f32, blue: f32, alpha: f32) -> Result<LinearRgba, &'static str> {
         LinearRgba::new(red, green, blue, alpha).ok_or("valid fixture color")
@@ -802,6 +1117,7 @@ mod tests {
         fault: NativeFault,
     ) -> Result<(MetalBackend, ResourceProbe), InitializationError> {
         let driver = NativeDriver {
+            device: None,
             library: OFFLINE_LIBRARY,
             vertex_name: VERTEX_ENTRY_POINT,
             fragment_name: FRAGMENT_ENTRY_POINT,
@@ -972,9 +1288,76 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "platform-spi")]
+    #[test]
+    fn supplied_device_is_preserved_by_both_backend_constructors() -> Result<(), Box<dyn Error>> {
+        let device = MTLCreateSystemDefaultDevice().ok_or("system Metal device")?;
+        let registry_id = device.registryID();
+        let driver = NativeDriver::with_device(device.clone());
+        assert_eq!(
+            driver.device.as_deref().map(MTLDevice::registryID),
+            Some(registry_id)
+        );
+
+        let (_backend, validation_capabilities) =
+            new_validation_backend_with_device(device.clone())?;
+        assert_eq!(validation_capabilities.registry_id(), registry_id);
+
+        match new_backend_with_device(device) {
+            Ok((_backend, capabilities)) => {
+                assert_eq!(capabilities.registry_id(), registry_id);
+            }
+            Err(InitializationError::UnsupportedDevice { .. }) => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "platform-spi")]
+    #[test]
+    fn callback_drawable_encodes_commits_and_presents_once() -> Result<(), Box<dyn Error>> {
+        let (scene, descriptor) = discriminating_scene()?;
+        let frame = ValidatedFrame::new(&scene, descriptor)?;
+        let mut backend = validation_backend(BlendConfiguration::PremultipliedSourceOver)?;
+        // SAFETY: The dimensions are finite, nonzero, and inside the validated
+        // device baseline; the fixture creates no mip levels or CPU mapping.
+        let texture_descriptor = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                MTLPixelFormat::BGRA8Unorm,
+                descriptor.pixel_width() as usize,
+                descriptor.pixel_height() as usize,
+                false,
+            )
+        };
+        texture_descriptor.setStorageMode(MTLStorageMode::Private);
+        texture_descriptor.setUsage(MTLTextureUsage::RenderTarget);
+        let texture = backend
+            .native
+            .initialized
+            .device
+            .newTextureWithDescriptor(&texture_descriptor)
+            .ok_or("callback texture")?;
+        let drawable = TestDrawable::new();
+
+        let attempt =
+            backend
+                .native
+                .render_drawable(&frame, &texture, ProtocolObject::from_ref(&*drawable));
+
+        assert!(attempt.committed);
+        assert!(attempt.present_called);
+        assert_eq!(attempt.result, Ok(()));
+        assert_eq!(attempt.operations.draw_calls, 1);
+        assert_eq!(attempt.operations.uploaded_bytes, frame.upload_bytes());
+        assert_eq!(attempt.resources.readback_bytes, 0);
+        assert_eq!(drawable.present_calls(), 1);
+        Ok(())
+    }
+
     #[test]
     fn rejects_corrupt_offline_library_with_native_error() -> Result<(), Box<dyn Error>> {
         let driver = NativeDriver {
+            device: None,
             library: CORRUPT_LIBRARY,
             vertex_name: VERTEX_ENTRY_POINT,
             fragment_name: FRAGMENT_ENTRY_POINT,
@@ -992,6 +1375,7 @@ mod tests {
     #[test]
     fn rejects_absent_shader_entry_with_stage() -> Result<(), Box<dyn Error>> {
         let driver = NativeDriver {
+            device: None,
             library: OFFLINE_LIBRARY,
             vertex_name: "alpine_missing_vertex",
             fragment_name: FRAGMENT_ENTRY_POINT,
@@ -1066,6 +1450,74 @@ mod tests {
             Some(RenderStage::Validation)
         );
         assert_eq!(backend.submission_count(), 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "platform-spi")]
+    #[test]
+    fn callback_drawable_rejects_extent_and_format_before_allocation() -> Result<(), Box<dyn Error>>
+    {
+        let initialized = initialize_for_native_validation(&NativeDriver::production())?;
+        let scene = SceneBuilder::new(SceneRevision::new(731), size(2.0, 2.0)?).finish();
+        let descriptor = OffscreenDescriptor::new(2, 2, 1.0, color(0.0, 0.0, 0.0, 1.0)?)?;
+        let frame = ValidatedFrame::new(&scene, descriptor)?;
+
+        // SAFETY: Both controls use finite nonzero dimensions supported by the
+        // validation device and create no mipmapped or CPU-visible resource.
+        let wrong_extent_descriptor = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                MTLPixelFormat::BGRA8Unorm,
+                1,
+                2,
+                false,
+            )
+        };
+        wrong_extent_descriptor.setStorageMode(MTLStorageMode::Private);
+        wrong_extent_descriptor.setUsage(MTLTextureUsage::RenderTarget);
+        let wrong_extent = initialized
+            .device
+            .newTextureWithDescriptor(&wrong_extent_descriptor)
+            .ok_or("wrong-extent texture")?;
+        let extent_failure = DrawableResources::new(&initialized.device, &wrong_extent, &frame)
+            .err()
+            .ok_or("wrong extent must fail")?;
+        assert_eq!(
+            extent_failure.error,
+            RenderError::DrawableExtentMismatch {
+                expected_width: 2,
+                expected_height: 2,
+                actual_width: 1,
+                actual_height: 2,
+            }
+        );
+        assert_eq!(extent_failure.usage, FrameResourceUsage::default());
+
+        // SAFETY: This control differs only in pixel format and otherwise uses
+        // the same finite supported target dimensions.
+        let wrong_format_descriptor = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                MTLPixelFormat::RGBA8Unorm,
+                2,
+                2,
+                false,
+            )
+        };
+        wrong_format_descriptor.setStorageMode(MTLStorageMode::Private);
+        wrong_format_descriptor.setUsage(MTLTextureUsage::RenderTarget);
+        let wrong_format = initialized
+            .device
+            .newTextureWithDescriptor(&wrong_format_descriptor)
+            .ok_or("wrong-format texture")?;
+        let format_failure = DrawableResources::new(&initialized.device, &wrong_format, &frame)
+            .err()
+            .ok_or("wrong format must fail")?;
+        assert_eq!(
+            format_failure.error,
+            RenderError::DrawablePixelFormatMismatch {
+                actual: MTLPixelFormat::RGBA8Unorm.0,
+            }
+        );
+        assert_eq!(format_failure.usage, FrameResourceUsage::default());
         Ok(())
     }
 

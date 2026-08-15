@@ -14,11 +14,12 @@ depends on the core, scene, and renderer crates.
 On Apple Silicon macOS only, `alpine-metal` uses narrowly featured, exact-version
 `objc2`, `objc2-foundation`, `objc2-metal`, and `dispatch2` bindings. Other
 targets neither compile nor link those dependencies.
-`alpine-platform-macos` depends on the portable platform crate. On Apple
-Silicon macOS only, it uses narrowly featured, exact-version `objc2`,
-`objc2-app-kit`, `objc2-foundation`, `objc2-metal`, and `objc2-quartz-core`
-bindings. Its safe API remains available on other targets and returns a
-structured unsupported-platform error without linking Apple frameworks.
+`alpine-platform-macos` depends on the portable platform, core, scene, and Metal
+crates. On Apple Silicon macOS only, it uses narrowly featured, exact-version
+`block2`, `objc2`, `objc2-app-kit`, `objc2-foundation`, `objc2-metal`, and
+`objc2-quartz-core` bindings. Its safe application API exposes no native handle,
+remains available on other targets, and returns a structured
+unsupported-platform error without linking Apple frameworks.
 The non-shipping `alpine-trace` crate depends only on Alpine workspace crates
 and owns typed, fail-closed conversion from versioned workload values into an
 immutable scene and exact offscreen target. The non-shipping
@@ -48,8 +49,8 @@ flowchart LR
     assurance["alpine-assurance<br/>non-shipping evidence and qualification validator"]
 
     core --> scene --> renderer
-    platform -. "drives future presentation work" .-> macos
-    macos -. "future shared device and drawable boundary" .-> metal
+    platform -->|"drives presentation transitions"| macos
+    macos -->|"target-only device and drawable SPI"| metal
     core --> metal
     scene --> metal
     renderer --> metal
@@ -94,12 +95,22 @@ errors.
 and one `CAMetalDisplayLink` registered in the main run loop. Construction is
 admitted only on the process main thread. The layer is framebuffer-only,
 display synchronized, timeout-enabled, bounded to three drawables, and sized
-from a validated logical extent and backing scale. The display link starts and
-remains paused because no drawable encoding boundary exists yet. Teardown first
-revokes callback admission, pauses and invalidates pacing, clears the weak
-delegate, and closes the retained window. Native handles stay private. This
-foundation does not yet connect the portable transition system, encode a
-drawable, directly present, run an application event loop, or qualify color.
+from a validated logical extent and backing scale. The display link starts
+paused, requests a two-frame render latency, resumes only for visible dirty
+work, and pauses after the newest revision reaches a terminal result. The
+native owner initializes the renderer from the exact device installed on the
+layer, queues one immutable scene, and translates each admitted main-run-loop
+callback into portable lifecycle actions. The Metal backend validates the
+callback texture, commits one command buffer, and calls the drawable's direct
+`present` method. A presented handler distinguishes a nonzero physical
+presentation timestamp from a compositor-dropped frame. Dropped frames retain
+or defer to the newest pending immutable scene and retry within a hard
+600-callback bound aligned with the five-second native qualification window on
+the primary 120 Hz target. Teardown first revokes callback admission, stops the
+renderer, pauses and invalidates pacing, clears the weak delegate, and closes
+the retained window. Native handles stay private. Resize, scale, occlusion,
+qualified color, asynchronous GPU completion, and the shipping application
+event loop remain unimplemented.
 
 `alpine-metal` validates a
 non-empty BGRA8 offscreen descriptor, proves its logical viewport and rounded
@@ -156,7 +167,7 @@ flowchart LR
 
     state -. "invalidate" .-> presentation
     state -. "derive values" .-> builder
-    presentation -. "correlates future native attempt" .-> lifecycle
+    presentation -->|"correlates callback attempt"| lifecycle
     builder -->|"finish consumes builder"| snapshot
     snapshot -->|"borrowed during validation"| plan
     plan -->|"immutable encoding input"| renderer
@@ -176,10 +187,11 @@ Binding ownership rules:
 
 ## Invalidation to present contract
 
-There is no Alpine runtime or onscreen submission path yet. A native window,
-layer, paused display link, portable coalescing and lifecycle transitions, and
-offscreen submission are implemented, but they are not yet connected. The
-solid nodes below are implemented; dashed messages mark future behavior.
+There is no Alpine application runtime yet, but one native surface now connects
+portable invalidation through a callback-provided drawable to Direct Metal and
+observed presentation. Scene construction remains caller-owned. The solid
+messages below are implemented; application-state mutation remains an external
+caller responsibility.
 
 ```mermaid
 sequenceDiagram
@@ -194,29 +206,30 @@ sequenceDiagram
 
     App-->>Scheduler: State mutation invalidates visible output
     Scheduler->>Scheduler: Coalesce newest revision and epoch
-    Scheduler-->>Surface: Future resume directive
+    Scheduler->>Surface: Resume eligible display link
     Scheduler-->>Builder: Begin requested frame
     Builder->>Scene: finish()
     Scene->>Plan: validate and lower
     Plan-->>Scene: structured error before native work
-    Scene->>Renderer: render_offscreen(Scene, descriptor)
-    Renderer->>Backend: encode render and blit
-    Backend->>Backend: commit once and wait
-    Backend-->>Renderer: compact pixels or structured failure
-    Renderer-->>App: OffscreenFrame with pixels and FrameReport
-    Backend-->>Surface: Future direct presentation and terminal result
-    Surface-->>Scheduler: Future correlated completion or failure
+    Scene->>Renderer: callback drawable plus immutable scene
+    Renderer->>Backend: validate and encode
+    Backend->>Backend: commit once, call direct present, await command completion
+    Backend-->>Surface: FrameReport or structured failure
+    Surface->>Surface: correlate presented-handler timestamp
+    Surface->>Scheduler: presented, dropped retry, or classified failure
+    Scheduler->>Surface: pause when clean
 ```
 
-The portable contract is demand-driven: no dirty eligible surface can prepare
-a frame, and clean idle state requires paused pacing. The native surface keeps
-its new display link paused until a later slice enacts resume, pause, and
-invalidate directives without introducing a continuous redraw loop merely
-because a window exists.
+The portable contract is demand-driven: no clean or ineligible surface can
+prepare a frame, and clean idle state requires paused pacing. The native surface
+enacts resume, pause, and invalidate directives without introducing a
+continuous redraw loop merely because a window exists. A compositor drop is
+observable and triggers a bounded retry without overwriting a newer coalesced
+scene.
 
 Native surface construction uses a staged owner. Every acquired application,
-device, window, view, layer, delegate, and display-link retain remains inside
-that owner until construction commits. Dropping an incomplete owner first
+device, renderer, window, view, layer, delegate, and display-link owner remains
+inside that owner until construction commits. Dropping an incomplete owner first
 revokes callback admission, pauses and invalidates any display link, clears its
 delegate, orders out and closes any window, and only then releases retained
 objects. A validation-only configuration injects failure after every stage and
@@ -237,6 +250,13 @@ operations. That route is not compiled into shipping artifacts and does not
 qualify the virtual device as supported. Each synchronous render owns one
 private texture, one shared readback buffer, an optional immutable upload
 buffer, one retained command buffer, and its encoders until terminal completion.
+The callback path instead borrows the layer-owned drawable texture, allocates
+only an optional upload buffer, retains the callback drawable until its
+presented handler fires, and accounts the drawable's native allocation as
+retained but not Alpine-allocated bytes. The same exact layer device owns the
+renderer queue and pipeline. Every attempt commits and calls direct presentation
+at most once. A skipped drawable is released before a replacement attempt
+acquires another callback drawable.
 No resource is reused or exposed while in flight. Frame-local resources then
 drop exactly once. Native `allocatedSize` and buffer length values populate the
 frame report; cumulative accounting must return to zero current retention at
@@ -289,7 +309,8 @@ flowchart TB
     scene["Portable immutable scene<br/>alpine-scene"]
     contract["Portable renderer call and evidence<br/>alpine-renderer"]
     metal_plan["Direct Metal safe plan<br/>implemented"]
-    metal_native["Direct Metal offscreen path<br/>pipeline, submission, readback implemented"]
+    metal_native["Direct Metal specialization<br/>offscreen readback and callback drawable implemented"]
+    macos["Native macOS owner<br/>demand-driven callback presentation"]
     vulkan["Direct Vulkan specialization<br/>not implemented"]
     d3d12["Direct D3D12 specialization<br/>not implemented"]
 
@@ -297,6 +318,7 @@ flowchart TB
     scene --> metal_plan
     contract -->|"FrameReport type"| metal_native
     metal_plan --> metal_native
+    macos -->|"target-only SPI"| metal_native
     contract -.-> vulkan
     contract -.-> d3d12
 ```
@@ -331,7 +353,7 @@ submission sequence cannot continue.
 
 ```mermaid
 flowchart TD
-    call["Initialization or render_offscreen"] --> outcome{"Result"}
+    call["Initialization, offscreen render, or callback attempt"] --> outcome{"Result"}
     outcome -->|"Ok"| report["Owned pixels and FrameReport"]
     outcome -->|"Err"| backend_error["Structured validation, initialization, or render error"]
     backend_error --> classify["RecoveryClassification"]
@@ -340,9 +362,13 @@ flowchart TD
     classify --> terminate["Stopped, unsupported, or fatal"]
 ```
 
-Native surface descriptor, unsupported-platform, main-thread, and device-stage
-errors are structured independently of renderer failures. Later drawable and
-presentation errors must extend that classification without weakening the
+Native surface descriptor, unsupported-platform, main-thread, device,
+renderer-initialization, drawable validation, portable transition, presentation
+correlation, driver, and bounded-retry errors are structured independently.
+Callback failures are stored for the application to remove, increment terminal
+failure evidence, restore active portable ownership, and pause pacing. A
+dropped drawable is not reported as presented; it increments a separate counter
+and retries the newest available immutable scene. This does not weaken the
 current device-loss generation boundary.
 
 ## Testing and evidence
@@ -401,15 +427,25 @@ acceptance command validates policy and the registry, tests automation and core
 contracts, then runs formatting, Clippy, all-target tests, doctests, and
 rustdoc. mdBook builds the durable engineering guide as a downloadable CI
 artifact.
-The macOS platform crate separately tests all descriptor boundaries and runs a
-harness-free integration executable on the process main thread. That smoke
-test creates the complete native object graph, verifies layer policy and paused
-pacing, then deterministically tears it down. A second process-main-thread
-executable injects every native initialization checkpoint and requires exact
+The macOS platform crate separately tests all descriptor boundaries and runs
+three harness-free integration executables on the process main thread. The
+surface smoke test creates the complete native object graph, verifies layer
+policy and paused pacing, then deterministically tears it down. The rollback
+test injects every native initialization checkpoint and requires exact
 per-owner release, callback revocation, display-link invalidation, window close,
-and a closed lifecycle before each error returns. This is native foundation
-evidence only. Callback-to-frame behavior, drawable submission, direct
-presentation, color, leak, and soak evidence remain unqualified.
+and a closed lifecycle before each error returns. The presentation test runs an
+active AppKit event loop, submits a deterministic solid-quad scene through the
+callback drawable, observes a nonzero presented timestamp, exposes and retries
+any compositor drops, then injects a pre-submit viewport failure and proves a
+later valid revision recovers. It requires commit and direct-present counts to
+match exactly and pacing to return to paused. Qualified color, resize, scale,
+occlusion, leak, and soak evidence remain unimplemented.
+On a hosted macOS runner without a qualifying display, the same executable uses
+an explicit direct-presentation evidence mode: every admitted drawable must
+complete GPU work and receive one direct present call, every completed native
+handler must report a drop, and the single-frame owner permits at most one
+drawable still in flight at the bounded cutoff. That mode cannot qualify a
+displayed frame, recovery sequence, idle pause, or physical presentation time.
 
 Hosted CI classifies the changed paths and review labels, then runs the required
 evidence fail-closed under one `ci-pass` result. Locked native tests always run
