@@ -145,6 +145,19 @@ platform_scope = ["tooling"]
 required_evidence = ["tla", "unit", "e2e", "mutation", "coverage"]
 
 [[claims]]
+id = "AEP-0028-C04"
+mission = "MP-03"
+capability_issue = 28
+aep = "docs/aep/0028-zed-golden-qualification.md"
+requirement_issue = 31
+claim_type = "compatibility"
+risk = "critical"
+case_study_findings = ["CS-ZED-005", "CS-ZED-006", "CS-ZED-009"]
+kani_applicability = "not_applicable"
+platform_scope = ["tooling", "macos-metal"]
+required_evidence = ["integration", "e2e", "native", "mutation", "coverage"]
+
+[[claims]]
 id = "AEP-0025-C01"
 mission = "MP-02"
 capability_issue = 25
@@ -940,6 +953,56 @@ artifact = "scripts/test-calibration.sh"
 assertion = "The fail-closed calibration CLI rejects revision mismatch, unsafe artifact paths, content-hash mismatch, hosted virtual evidence, insufficient runs, and unknown fields."
 scope = "Repository-root non-shipping protocol validation."
 exclusions = ["Symlink race attacks", "physical hardware identity fraud", "statistical inference"]
+
+[[evidence]]
+id = "EV-0028-INTEGRATION04"
+claim = "AEP-0028-C04"
+kind = "integration"
+artifact = "scripts/test-zed-lab-evidence.sh"
+assertion = "The repository command accepts the exact composed lab record and rejects a divergent Direct Metal hash or an unqualified performance claim."
+scope = "Versioned cross-repository evidence validation for renderer-only task #61."
+assumptions = ["The record was transcribed from the exact hashed hosted artifact and physical manifest before acceptance."]
+exclusions = ["Network re-download during ordinary pull-request validation", "raw GPL lab artifacts in Alpine"]
+
+[[evidence]]
+id = "EV-0028-E2E04"
+claim = "AEP-0028-C04"
+kind = "e2e"
+artifact = "assurance/lab/v1/task-61-solid-quad.toml#task-61-solid-quad"
+assertion = "One immutable scene trace is identified across the isolated lab, pinned Zed GPUI Metal, Alpine Direct Metal, and the independent CPU oracle."
+scope = "Solid-quad renderer-only path at lab revision 6907c007a249153a6ce5ace66e5cd99986f0321b, Zed e17dc4f9d50db73a458b64dcce50ecd4878b98a3, and Alpine b1e51a62da7e87a28367973591f235543f1df14b."
+assumptions = ["The hosted artifact and physical manifest hashes identify the exact recorded executions."]
+exclusions = ["Full Zed application path", "Alpine Studio", "timing", "memory", "accessibility", "primitives other than solid quads"]
+
+[[evidence]]
+id = "EV-0028-NATIVE04"
+claim = "AEP-0028-C04"
+kind = "native"
+artifact = "assurance/lab/v1/task-61-solid-quad.toml#direct_metal_performed = true"
+assertion = "On physical Apple Silicon, Alpine Direct Metal, pinned GPUI Metal, and the CPU oracle produced the same 128-byte compact BGRA8 image identity."
+scope = "One Mac16,1 Apple M4 on macOS 26.5 using the exact renderer-only trace and runtime-source GPUI shader support mode."
+assumptions = ["The runtime-source GPUI result composes with independent hosted offline-metallib GPUI evidence through the same CPU-oracle hash."]
+exclusions = ["Qualified offline GPUI shaders on the physical run", "fixed-hardware timing", "native presentation", "cross-GPU pixel portability"]
+
+[[evidence]]
+id = "EV-0028-MUTATION04"
+claim = "AEP-0028-C04"
+kind = "mutation"
+artifact = "assurance/lab/v1/task-61-solid-quad.toml#mutants_missed = 0"
+assertion = "The hosted GPL adapter run classified all 119 generated mutants with 106 caught, 13 compiler-unviable, none missed, and none timed out."
+scope = "Pinned alpine_trace_adapter source in Alpine Zed Lab run 31860924364."
+assumptions = ["The retained GitHub artifact archive hash binds the recorded mutation output."]
+exclusions = ["Alpine shipping code", "future trace operations", "semantic completeness of generated mutants"]
+
+[[evidence]]
+id = "EV-0028-COVERAGE04"
+claim = "AEP-0028-C04"
+kind = "coverage"
+artifact = "assurance/lab/v1/task-61-solid-quad.toml#coverage_lines_covered = 451"
+assertion = "The hosted GPL adapter run covered 451 of 467 lines and 55 of 60 functions, exceeding its 95 and 90 percent ratchets."
+scope = "Pinned alpine_trace_adapter source in Alpine Zed Lab run 31860924364."
+assumptions = ["The retained GitHub artifact archive hash binds the recorded coverage JSON."]
+exclusions = ["Proof of correctness", "Zed code outside the adapter", "Alpine shipping code"]
 
 [[evidence]]
 id = "EV-0025-TLA02A"

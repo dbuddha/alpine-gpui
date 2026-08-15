@@ -15,6 +15,7 @@ Alpine separates durable knowledge from live work so each fact has one owner.
 | Current implemented truth | `ARCHITECTURE.md` and rustdoc |
 | Formal model and proof harness | `formal/tla/` and crate source |
 | Qualified evidence mapping | `assurance/evidence.toml` |
+| Accepted cross-repository evidence identity | `assurance/lab/` |
 | Results for one revision | GitHub checks and artifacts |
 | Shipped qualification | GitHub Release |
 

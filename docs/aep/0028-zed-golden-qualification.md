@@ -58,9 +58,11 @@ benchmark result, set a performance budget, or claim daily-driver parity.
 - **AEP-0028-C07:** Optical results name their endpoints precisely; software
   timestamps cannot be reported as photon evidence.
 
-Claims C01 through C03 are implemented by the foundation Requirement. C04
-through C07 define approved design direction but remain unregistered and
-unimplemented until Requirements #31 through #40 receive owner approval.
+Claims C01 through C03 are implemented by the foundation Requirement. C04 is
+implemented for the first solid-quad renderer-only slice by Requirement #31 and
+task #61, with its composed hosted and physical evidence registered in Alpine.
+C05 through C07 remain approved design direction and unimplemented until their
+Requirements receive owner approval and evidence.
 
 ## Formal model
 

@@ -31,6 +31,14 @@ An optimization is acceptable only if its correctness, accessibility, and
 memory constraints still pass. Benchmark evidence is revision-scoped and is
 attached to release qualification rather than copied into standing prose.
 
+The first accepted Zed-lab record qualifies no performance. It binds one
+solid-quad trace across a retained hosted offline-shader GPUI artifact and a
+physical Apple Silicon run of GPUI Metal, Alpine Direct Metal, and the CPU
+oracle. Exact readback identity, adapter coverage, and adapter mutation results
+are machine-validated under `assurance/lab/`; raw GPL lab artifacts remain in
+the lab or GitHub artifact store. Later timing must use the separate calibrated
+qualification protocol.
+
 The implemented `alpine-aa-calibration/v1` boundary validates raw A/A evidence
 before any performance threshold can be proposed. One record requires identical
 base and candidate renderer revisions, an exact workload, at least twenty runs

@@ -80,6 +80,7 @@ jobs:
           scripts/test-hierarchy.sh
           scripts/test-assurance.sh
           scripts/test-qualification.sh
+          scripts/test-zed-lab-evidence.sh
           scripts/check-release.sh
           scripts/test-core-contracts.sh
           scripts/test-metal-contracts.sh
