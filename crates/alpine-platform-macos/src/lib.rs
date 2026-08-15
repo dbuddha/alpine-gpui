@@ -518,7 +518,7 @@ mod tests {
             physical_height: 19,
             framebuffer_only: false,
             display_sync_enabled: false,
-            allows_next_drawable_timeout: false,
+            allows_next_drawable_timeout: true,
             maximum_drawable_count: 2,
             display_link_paused: false,
             visible: true,
@@ -529,7 +529,14 @@ mod tests {
         assert_eq!(snapshot.physical_height(), 19);
         assert!(!snapshot.framebuffer_only());
         assert!(!snapshot.display_sync_enabled());
-        assert!(!snapshot.allows_next_drawable_timeout());
+        assert!(snapshot.allows_next_drawable_timeout());
+        assert!(
+            !SurfaceSnapshot {
+                allows_next_drawable_timeout: false,
+                ..snapshot
+            }
+            .allows_next_drawable_timeout()
+        );
         assert_eq!(snapshot.maximum_drawable_count(), 2);
         assert!(!snapshot.display_link_paused());
         assert!(snapshot.visible());
