@@ -265,8 +265,8 @@ risk = "critical"
 case_study_findings = ["CS-ZED-PRESENT-001", "CS-ZED-PRESENT-003"]
 kani_applicability = "required"
 tla_properties = ["LinkOwnership", "ResourceMatchesPhase", "SingleSubmissionPerAttempt", "SinglePresentCallPerAttempt", "CommittedWasEligible", "PresentFollowsSubmission", "PresentedIsCurrent", "CleanIdleIsPaused", "StoppedIsDrained"]
-platform_scope = ["portable"]
-required_evidence = ["tla", "kani", "unit", "property", "integration", "e2e", "mutation", "coverage"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "kani", "unit", "property", "integration", "e2e", "mutation", "coverage", "native"]
 
 [[evidence]]
 id = "EV-0009-TLA01"
@@ -1756,6 +1756,16 @@ artifact = "scripts/check-coverage.sh"
 assertion = "The critical-file and changed-line coverage ratchets include alpine-platform."
 scope = "Executable portable presentation Rust reached by workspace tests."
 exclusions = ["semantic proof", "Kani-only proof code", "native code"]
+
+[[evidence]]
+id = "EV-0064-NATIVE09"
+claim = "AEP-0064-C09"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_presentation.rs"
+assertion = "A real main-run-loop callback maps Prepare, BeginUpdate, Submit, direct CallPresent, and nonzero-timestamp CompletePresentation into the Rust transition system; a pre-submit validation failure restores active ownership, and a later revision recovers."
+scope = "One Apple Silicon macOS window, one CAMetalDisplayLink, one layer device, deterministic solid-quad scenes, observable compositor drops, and one invalid-viewport control."
+assumptions = ["a nonzero MTLDrawable presentedTime is physical presentation evidence but not optical scanout evidence", "the validation constructor bypasses only the production Metal family and unified-memory decision"]
+exclusions = ["pixel readback from framebuffer-only drawables", "qualified color", "resize, scale, occlusion, device loss, and multi-window behavior", "elapsed-time or memory performance claims"]
 
 [[evidence]]
 id = "EV-0025-KANI05C"

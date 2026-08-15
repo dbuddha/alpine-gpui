@@ -1,6 +1,6 @@
 # AEP 0064: Native macOS presentation
 
-- Status: proposed 2026-08-14
+- Status: accepted 2026-08-15
 - Capability: [#64](https://github.com/dbuddha/alpine-gpui/issues/64)
 - Requirement: [#67](https://github.com/dbuddha/alpine-gpui/issues/67)
 - Decision: [#66](https://github.com/dbuddha/alpine-gpui/issues/66)

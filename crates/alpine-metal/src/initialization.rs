@@ -398,7 +398,11 @@ pub(crate) fn initialize<D: InitializationDriver>(
     initialize_with_capability_validation(driver, require_supported_device)
 }
 
-#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(
+    any(test, alpine_native_validation),
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
 pub(crate) fn initialize_for_native_validation<D: InitializationDriver>(
     driver: &D,
 ) -> Result<Initialized<D>, InitializationError> {

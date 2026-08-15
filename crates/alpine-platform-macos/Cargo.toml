@@ -8,13 +8,17 @@ publish.workspace = true
 license-file.workspace = true
 
 [dependencies]
+alpine-core = { path = "../alpine-core", version = "=0.0.0" }
+alpine-metal = { path = "../alpine-metal", version = "=0.0.0", features = ["platform-spi"] }
 alpine-platform = { path = "../alpine-platform", version = "=0.0.0" }
+alpine-scene = { path = "../alpine-scene", version = "=0.0.0" }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+block2 = { version = "=0.6.2", default-features = false }
 objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSGraphics", "NSResponder", "NSView", "NSWindow", "objc2-quartz-core"] }
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSGeometry", "NSObject", "NSRunLoop", "NSString"] }
-objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "MTLDevice", "MTLPixelFormat"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSResponder", "NSRunningApplication", "NSView", "NSWindow", "objc2-quartz-core"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "block2", "NSDate", "NSGeometry", "NSObject", "NSRunLoop", "NSString", "NSTimer"] }
+objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "block2", "objc2-core-foundation", "MTLDevice", "MTLDrawable", "MTLPixelFormat", "MTLTexture"] }
 objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer", "CAMetalDisplayLink", "objc2-core-foundation", "objc2-metal"] }
 
 [lints.rust]
@@ -38,4 +42,8 @@ harness = false
 
 [[test]]
 name = "native_initialization"
+harness = false
+
+[[test]]
+name = "native_presentation"
 harness = false

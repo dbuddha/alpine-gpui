@@ -29,6 +29,8 @@ export MTL_SHADER_VALIDATION_ABORT_ON_FAULT=1
 cargo test --locked -p alpine-metal
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_initialization
+RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
+    cargo test --locked -p alpine-platform-macos --test native_presentation
 /usr/bin/env \
     -u MTL_DEBUG_LAYER \
     -u MTL_DEBUG_LAYER_ERROR_MODE \

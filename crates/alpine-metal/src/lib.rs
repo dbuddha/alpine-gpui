@@ -12,6 +12,9 @@ mod lifecycle;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native;
 mod oracle;
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+#[doc(hidden)]
+pub mod platform_spi;
 mod submission;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 mod unsupported;

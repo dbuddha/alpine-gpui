@@ -41,6 +41,10 @@ development. The workspace currently provides:
   Metal device, offline pipeline, one synchronous command submission, and
   deterministic compact BGRA8 readback, cancellation, shutdown, device-loss
   generations, and complete frame-resource accounting;
+- `alpine-platform`, with a portable demand-driven presentation transition
+  system, and `alpine-platform-macos`, with one native AppKit window,
+  callback-provided Direct Metal drawable submission, bounded compositor-drop
+  retry, direct presentation, and nonzero presented-time correlation;
 - non-shipping `alpine-trace` and `alpine-assurance` tooling that fail closed on
   malformed renderer workloads and can produce CPU-oracle or Direct Metal BGRA8
   artifacts from the same versioned solid-quad trace;
@@ -49,9 +53,10 @@ development. The workspace currently provides:
   mutation, selected Kani proofs, and three-platform CI;
 - risk-selected Miri and Metal validation plus scheduled exhaustive assurance.
 
-There is no window, presentation, runtime, resource cache, layout engine, input
-system, text stack, or component system yet. The exact implemented boundaries
-and binding invariants are documented in [Architecture](ARCHITECTURE.md).
+There is no shipping event-loop runtime, resize or occlusion integration,
+qualified color contract, resource cache, layout engine, input system, text
+stack, or component system yet. The exact implemented boundaries and binding
+invariants are documented in [Architecture](ARCHITECTURE.md).
 
 The [engineering guide](docs/SUMMARY.md) owns durable mission principles, user
 journeys, case-study conclusions, enhancement proposals, and the assurance

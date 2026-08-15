@@ -11,6 +11,11 @@ use std::sync::{
     atomic::{AtomicU8, AtomicU64, Ordering},
 };
 
+use alpine_core::LinearRgba;
+use alpine_metal::{InitializationError, RenderError};
+use alpine_platform::{PresentationRevision, TransitionError};
+use alpine_scene::Scene;
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -20,7 +25,24 @@ mod unsupported;
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 #[doc(hidden)]
 pub mod native_validation {
-    use crate::{SurfaceError, native};
+    use std::time::Duration;
+
+    use crate::{NativeSurface, SurfaceDescriptor, SurfaceError, native};
+
+    /// Creates one real surface while bypassing only the hosted device baseline.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same structured construction errors as the production path.
+    pub fn new_surface(descriptor: &SurfaceDescriptor) -> Result<NativeSurface, SurfaceError> {
+        native::NativeSurface::new_for_validation(descriptor)
+            .map(NativeSurface::from_implementation)
+    }
+
+    /// Runs the real AppKit event loop until one frame terminates or timeout.
+    pub fn run_until_frame_terminal(surface: &NativeSurface, timeout: Duration) {
+        surface.implementation.run_until_frame_terminal(timeout);
+    }
 
     /// Injects every initialization-stage failure and verifies complete rollback.
     ///
@@ -161,6 +183,8 @@ pub enum SurfaceStage {
     MainThread,
     /// Metal device acquisition.
     Device,
+    /// Direct Metal backend initialization on the layer's device.
+    Renderer,
     /// `AppKit` window creation.
     Window,
     /// `AppKit` content-view creation.
@@ -197,6 +221,24 @@ pub enum SurfaceError {
         /// Stage that rejected initialization.
         stage: SurfaceStage,
     },
+    /// The shared Direct Metal backend could not initialize.
+    RendererInitialization(InitializationError),
+    /// An immutable callback-drawable frame failed.
+    Render(RenderError),
+    /// The native owner rejected a portable lifecycle transition.
+    Presentation(TransitionError),
+    /// The synchronized callback owner is no longer usable.
+    DriverUnavailable,
+    /// Direct presentation was called but no presented timestamp appeared.
+    PresentationNotObserved {
+        /// Display-link callbacks spent awaiting correlation.
+        callbacks: u16,
+    },
+    /// Core Animation repeatedly completed drawables without presenting them.
+    PresentationsSkipped {
+        /// Consecutive dropped presentation attempts.
+        attempts: u16,
+    },
 }
 
 impl fmt::Display for SurfaceError {
@@ -214,11 +256,62 @@ impl fmt::Display for SurfaceError {
             Self::NativeUnavailable { stage } => {
                 write!(formatter, "native surface unavailable at {stage:?} stage")
             }
+            Self::RendererInitialization(error) => {
+                write!(formatter, "native renderer initialization failed: {error}")
+            }
+            Self::Render(error) => write!(formatter, "native presentation failed: {error}"),
+            Self::Presentation(error) => {
+                write!(formatter, "native presentation state failed: {error}")
+            }
+            Self::DriverUnavailable => {
+                formatter.write_str("native presentation driver unavailable")
+            }
+            Self::PresentationNotObserved { callbacks } => write!(
+                formatter,
+                "native presentation was not observed after {callbacks} display-link callbacks"
+            ),
+            Self::PresentationsSkipped { attempts } => write!(
+                formatter,
+                "Core Animation skipped {attempts} consecutive presentation attempts"
+            ),
         }
     }
 }
 
-impl Error for SurfaceError {}
+impl Error for SurfaceError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::RendererInitialization(error) => Some(error),
+            Self::Render(error) => Some(error),
+            Self::Presentation(error) => Some(error),
+            Self::InvalidDimension { .. }
+            | Self::PhysicalDimensionOutOfRange { .. }
+            | Self::UnsupportedPlatform
+            | Self::NativeUnavailable { .. }
+            | Self::DriverUnavailable
+            | Self::PresentationNotObserved { .. }
+            | Self::PresentationsSkipped { .. } => None,
+        }
+    }
+}
+
+impl From<InitializationError> for SurfaceError {
+    fn from(error: InitializationError) -> Self {
+        Self::RendererInitialization(error)
+    }
+}
+
+impl From<RenderError> for SurfaceError {
+    fn from(error: RenderError) -> Self {
+        Self::Render(error)
+    }
+}
+
+impl From<TransitionError> for SurfaceError {
+    fn from(error: TransitionError) -> Self {
+        Self::Presentation(error)
+    }
+}
 
 /// Read-only native configuration and pacing evidence.
 #[allow(
@@ -236,6 +329,11 @@ pub struct SurfaceSnapshot {
     display_link_paused: bool,
     visible: bool,
     callback_count: u64,
+    submission_count: u64,
+    direct_present_count: u64,
+    presented_count: u64,
+    skipped_count: u64,
+    failed_count: u64,
 }
 
 impl SurfaceSnapshot {
@@ -291,6 +389,36 @@ impl SurfaceSnapshot {
     #[must_use]
     pub const fn callback_count(self) -> u64 {
         self.callback_count
+    }
+
+    /// Returns callback frames that committed one command buffer.
+    #[must_use]
+    pub const fn submission_count(self) -> u64 {
+        self.submission_count
+    }
+
+    /// Returns direct callback-drawable presentation calls.
+    #[must_use]
+    pub const fn direct_present_count(self) -> u64 {
+        self.direct_present_count
+    }
+
+    /// Returns drawables correlated with a nonzero presented timestamp.
+    #[must_use]
+    pub const fn presented_count(self) -> u64 {
+        self.presented_count
+    }
+
+    /// Returns drawables whose presented handler reported a dropped frame.
+    #[must_use]
+    pub const fn skipped_count(self) -> u64 {
+        self.skipped_count
+    }
+
+    /// Returns callback frame attempts with classified terminal failure.
+    #[must_use]
+    pub const fn failed_count(self) -> u64 {
+        self.failed_count
     }
 }
 
@@ -359,8 +487,37 @@ impl NativeSurface {
     }
 
     /// Orders the initialized native window to the front.
-    pub fn show(&self) {
-        self.implementation.show();
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured lifecycle or driver error if the surface cannot
+    /// enter visible demand-driven presentation.
+    pub fn show(&self) -> Result<(), SurfaceError> {
+        self.implementation.show()
+    }
+
+    /// Replaces pending immutable work and wakes pacing only when eligible.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured lifecycle error if the surface no longer admits
+    /// work or its synchronized native driver is unavailable.
+    pub fn request_frame(
+        &self,
+        scene: Scene,
+        clear: LinearRgba,
+    ) -> Result<PresentationRevision, SurfaceError> {
+        self.implementation.request_frame(scene, clear)
+    }
+
+    /// Removes the latest asynchronous callback failure, if one exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SurfaceError::DriverUnavailable`] if synchronized callback
+    /// state cannot be inspected.
+    pub fn take_error(&self) -> Result<Option<SurfaceError>, SurfaceError> {
+        self.implementation.take_error()
     }
 
     /// Returns current layer configuration and pacing evidence.
@@ -540,6 +697,11 @@ mod tests {
             display_link_paused: false,
             visible: true,
             callback_count: 23,
+            submission_count: 29,
+            direct_present_count: 31,
+            presented_count: 37,
+            skipped_count: 41,
+            failed_count: 43,
         };
         let inverse = SurfaceSnapshot {
             physical_width: 29,
@@ -551,6 +713,11 @@ mod tests {
             display_link_paused: true,
             visible: false,
             callback_count: 37,
+            submission_count: 43,
+            direct_present_count: 47,
+            presented_count: 53,
+            skipped_count: 59,
+            failed_count: 61,
         };
 
         assert_eq!(snapshot.physical_width(), 17);
@@ -562,6 +729,11 @@ mod tests {
         assert!(!snapshot.display_link_paused());
         assert!(snapshot.visible());
         assert_eq!(snapshot.callback_count(), 23);
+        assert_eq!(snapshot.submission_count(), 29);
+        assert_eq!(snapshot.direct_present_count(), 31);
+        assert_eq!(snapshot.presented_count(), 37);
+        assert_eq!(snapshot.skipped_count(), 41);
+        assert_eq!(snapshot.failed_count(), 43);
 
         assert_eq!(inverse.physical_width(), 29);
         assert_eq!(inverse.physical_height(), 31);
@@ -572,6 +744,11 @@ mod tests {
         assert!(inverse.display_link_paused());
         assert!(!inverse.visible());
         assert_eq!(inverse.callback_count(), 37);
+        assert_eq!(inverse.submission_count(), 43);
+        assert_eq!(inverse.direct_present_count(), 47);
+        assert_eq!(inverse.presented_count(), 53);
+        assert_eq!(inverse.skipped_count(), 59);
+        assert_eq!(inverse.failed_count(), 61);
     }
 
     #[test]
@@ -594,7 +771,7 @@ mod tests {
     fn unsupported_wrapper_methods_preserve_the_safe_contract() {
         let surface = NativeSurface::from_implementation(unsupported::NativeSurface);
 
-        surface.show();
+        assert_eq!(surface.show(), Err(SurfaceError::UnsupportedPlatform));
         assert_eq!(surface.snapshot().physical_width(), 0);
         assert_eq!(surface.observer().lifecycle(), SurfaceLifecycle::Closed);
         surface.close();
