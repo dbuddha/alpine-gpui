@@ -75,7 +75,12 @@ mod validation {
         assert_eq!(superseded.superseded_count(), 1);
         assert!(!superseded.display_link_paused());
 
-        validate_retry(&surface, terminal.attempt(), superseded.submission_count())?;
+        validate_retry(
+            &surface,
+            terminal.attempt(),
+            terminal.frame_epoch().get().saturating_add(1),
+            superseded.submission_count(),
+        )?;
         surface.close();
         Ok(())
     }
@@ -83,6 +88,7 @@ mod validation {
     fn validate_retry(
         surface: &NativeSurface,
         superseded_attempt: u64,
+        minimum_retry_epoch: u64,
         superseded_submissions: u64,
     ) -> TestResult {
         native_validation::inject_post_commit_observation(surface, None, 1.5)?;
@@ -95,7 +101,12 @@ mod validation {
         assert!(terminal.attempt() > superseded_attempt);
         assert_eq!(terminal.requested_revision().get(), 1);
         assert_eq!(terminal.frame_revision().get(), 1);
-        assert_eq!(terminal.frame_epoch().get(), recovered.surface_epoch());
+        assert!(terminal.frame_epoch().get() >= minimum_retry_epoch);
+        // The terminal record is an immutable observation at completion. A
+        // legitimate AppKit configuration notification can advance the live
+        // epoch before this later snapshot, but it cannot move the epoch back
+        // or retroactively change the terminal qualification.
+        assert!(recovered.surface_epoch() >= terminal.frame_epoch().get());
         assert_eq!(terminal.outcome(), PresentationOutcome::Presented);
         assert_eq!(terminal.submission_count(), 1);
         assert_eq!(terminal.present_call_count(), 1);
