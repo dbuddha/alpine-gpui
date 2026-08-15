@@ -334,6 +334,7 @@ jobs:
           mkdir -p target
           git diff ${{ needs.classify.outputs.base_sha }}...${{ needs.classify.outputs.head_sha }} > target/alpine.diff
           cargo mutants --no-config --file crates/alpine-metal/src/native.rs --no-shuffle --in-diff target/alpine.diff --output target/native-mutants.out -- --locked
+          cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --no-shuffle --in-diff target/alpine.diff --output target/native-platform-contract-mutants.out -- --locked
           cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --no-shuffle --in-diff target/alpine.diff --output target/native-platform-mutants.out -- --locked
       - name: Upload native mutation evidence
         if: always()
@@ -342,6 +343,7 @@ jobs:
           name: native-mutation-${{ github.sha }}
           path: |
             target/native-mutants.out
+            target/native-platform-contract-mutants.out
             target/native-platform-mutants.out
           retention-days: 7
           if-no-files-found: warn

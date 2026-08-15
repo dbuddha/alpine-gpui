@@ -524,23 +524,37 @@ mod tests {
             visible: true,
             callback_count: 23,
         };
+        let inverse = SurfaceSnapshot {
+            physical_width: 29,
+            physical_height: 31,
+            framebuffer_only: true,
+            display_sync_enabled: true,
+            allows_next_drawable_timeout: false,
+            maximum_drawable_count: 3,
+            display_link_paused: true,
+            visible: false,
+            callback_count: 37,
+        };
 
         assert_eq!(snapshot.physical_width(), 17);
         assert_eq!(snapshot.physical_height(), 19);
         assert!(!snapshot.framebuffer_only());
         assert!(!snapshot.display_sync_enabled());
         assert!(snapshot.allows_next_drawable_timeout());
-        assert!(
-            !SurfaceSnapshot {
-                allows_next_drawable_timeout: false,
-                ..snapshot
-            }
-            .allows_next_drawable_timeout()
-        );
         assert_eq!(snapshot.maximum_drawable_count(), 2);
         assert!(!snapshot.display_link_paused());
         assert!(snapshot.visible());
         assert_eq!(snapshot.callback_count(), 23);
+
+        assert_eq!(inverse.physical_width(), 29);
+        assert_eq!(inverse.physical_height(), 31);
+        assert!(inverse.framebuffer_only());
+        assert!(inverse.display_sync_enabled());
+        assert!(!inverse.allows_next_drawable_timeout());
+        assert_eq!(inverse.maximum_drawable_count(), 3);
+        assert!(inverse.display_link_paused());
+        assert!(!inverse.visible());
+        assert_eq!(inverse.callback_count(), 37);
     }
 
     #[test]
