@@ -312,7 +312,6 @@ struct FrameCounters {
     failed: AtomicU64,
 }
 
-#[derive(Clone)]
 struct PendingFrame {
     scene: Scene,
     clear: LinearRgba,
@@ -346,7 +345,7 @@ struct ActiveFrame {
         reason = "the callback drawable must remain retained until terminal presentation evidence"
     )]
     drawable: Retained<ProtocolObject<dyn CAMetalDrawable>>,
-    frame: PendingFrame,
+    frame: Option<PendingFrame>,
     presentation: Arc<PresentationSignal>,
     presentation_polls: u16,
     timing: AttemptTiming,
@@ -424,9 +423,9 @@ impl PresentationDriver {
             .geometry_or_display_differs(configuration)
         {
             if self.pending.is_none()
-                && let Some(active) = &self.active
+                && let Some(frame) = self.active.as_mut().and_then(|active| active.frame.take())
             {
-                self.pending = Some(active.frame.clone());
+                self.pending = Some(frame);
             }
             self.state.apply(PresentationAction::AdvanceSurfaceEpoch)?;
         }
@@ -566,7 +565,7 @@ impl PresentationDriver {
             counters.skipped.fetch_add(1, Ordering::Relaxed);
             self.consecutive_skips = self.consecutive_skips.saturating_add(1);
             if self.pending.is_none() {
-                self.pending = Some(active.frame);
+                self.pending = active.frame;
             }
             let transition = self.state.apply(PresentationAction::FailActive(token))?;
             let _ = self.record_terminal(
@@ -650,7 +649,7 @@ impl PresentationDriver {
                 self.active = Some(ActiveFrame {
                     token,
                     drawable,
-                    frame,
+                    frame: Some(frame),
                     presentation,
                     presentation_polls: 0,
                     timing,
