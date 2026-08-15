@@ -62,6 +62,12 @@ assert_output "$metal" mutation=true
 assert_output "$metal" kani=true
 assert_output "$metal" metal=true
 
+platform=$(run_fixture crates/alpine-platform/src/lib.rs)
+assert_output "$platform" coverage=true
+assert_output "$platform" mutation=true
+assert_output "$platform" kani=true
+assert_output "$platform" metal=false
+
 shader=$(run_fixture shaders/offscreen.metal)
 assert_output "$shader" coverage=false
 assert_output "$shader" mutation=false

@@ -254,6 +254,20 @@ tla_properties = ["MeasurementRequiresEquivalence"]
 platform_scope = ["portable", "macos-metal"]
 required_evidence = ["tla", "integration", "native", "miri", "mutation", "coverage"]
 
+[[claims]]
+id = "AEP-0064-C09"
+mission = "MP-02"
+capability_issue = 64
+aep = "docs/aep/0064-native-macos-presentation.md"
+requirement_issue = 67
+claim_type = "safety"
+risk = "critical"
+case_study_findings = ["CS-ZED-PRESENT-001", "CS-ZED-PRESENT-003"]
+kani_applicability = "required"
+tla_properties = ["LinkOwnership", "ResourceMatchesPhase", "SingleSubmissionPerAttempt", "SinglePresentCallPerAttempt", "CommittedWasEligible", "PresentFollowsSubmission", "PresentedIsCurrent", "CleanIdleIsPaused", "StoppedIsDrained"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "kani", "unit", "property", "integration", "e2e", "mutation", "coverage"]
+
 [[evidence]]
 id = "EV-0009-TLA01"
 claim = "AEP-0009-C01"
@@ -1549,6 +1563,199 @@ artifact = "scripts/check-coverage.sh"
 assertion = "Coverage ratchets include every portable accounting outcome and invariant."
 scope = "Linux-hosted safe Rust."
 exclusions = ["macOS-only allocation queries", "proof of bounded memory"]
+
+[[evidence]]
+id = "EV-0064-TLA09A"
+claim = "AEP-0064-C09"
+kind = "tla"
+artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#LinkOwnership"
+assertion = "Only a running eligible surface can own a running display link, and stopping or stopped owners have an invalid link."
+scope = "One abstract application owner, surface, and display link."
+bounds = ["pull request: revision and epoch 0 through 1 with one environment change", "nightly: revision and epoch 0 through 2 with two environment changes"]
+assumptions = ["display-link state represents the native owner's desired lifecycle state"]
+exclusions = ["native API calls", "callback timing", "Rust formal refinement"]
+companion = "crates/alpine-platform/src/lib.rs#exhaustive_reachable_state_and_action_oracle"
+
+[[evidence]]
+id = "EV-0064-TLA09B"
+claim = "AEP-0064-C09"
+kind = "tla"
+artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#ResourceMatchesPhase"
+assertion = "Prepared work owns no native resource, encoding owns one drawable, and committed phases retain one in-flight resource."
+scope = "One abstract frame attempt and exclusive resource."
+bounds = ["one active attempt", "resource is Free, Drawable, or InFlight"]
+assumptions = ["the resource variable abstracts complete native attempt ownership"]
+exclusions = ["Objective-C retain counts", "allocator behavior", "Rust formal refinement"]
+companion = "crates/alpine-platform/src/lib.rs#every_shutdown_phase_releases_or_drains"
+
+[[evidence]]
+id = "EV-0064-TLA09C"
+claim = "AEP-0064-C09"
+kind = "tla"
+artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#SingleSubmissionPerAttempt"
+assertion = "A frame attempt commits at most one command buffer."
+scope = "One abstract frame attempt."
+bounds = ["submission count 0 through 1"]
+assumptions = ["Submit maps to one native command-buffer commit"]
+exclusions = ["driver submission internals", "Rust formal refinement"]
+companion = "crates/alpine-platform/src/lib.rs#model_trace_replay_qualifies_only_a_current_presented_frame"
+
+[[evidence]]
+id = "EV-0064-TLA09D"
+claim = "AEP-0064-C09"
+kind = "tla"
+artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#SinglePresentCallPerAttempt"
+assertion = "A committed frame attempt calls direct presentation at most once."
+scope = "One abstract frame attempt."
+bounds = ["direct presentation count 0 through 1"]
+assumptions = ["CallPresent maps to the callback drawable's direct presentation method"]
+exclusions = ["Core Animation behavior", "Rust formal refinement"]
+companion = "crates/alpine-platform/src/lib.rs#model_trace_replay_qualifies_only_a_current_presented_frame"
+
+[[evidence]]
+id = "EV-0064-TLA09E"
+claim = "AEP-0064-C09"
+kind = "tla"
+artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#CommittedWasEligible"
+assertion = "Every committed phase records historical revision, epoch, and surface eligibility at commit."
+scope = "One abstract frame attempt with bounded invalidation and surface change."
+bounds = ["pull request: at most one invalidation and one surface change", "nightly: at most two invalidations and two surface changes"]
+assumptions = ["eligibility is checked immediately before commit"]
+exclusions = ["native races inside a platform call", "Rust formal refinement"]
+companion = "crates/alpine-platform/src/lib.rs#coalesces_invalidations_and_discards_precommit_stale_work"
+
+[[evidence]]
+id = "EV-0064-TLA09F"
+claim = "AEP-0064-C09"
+kind = "tla"
+artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#PresentFollowsSubmission"
+assertion = "A direct presentation call is reachable only after one command commit."
+scope = "One abstract frame attempt."
+bounds = ["one submission and one direct presentation call"]
+assumptions = ["the actions preserve native call order"]
+exclusions = ["foreign callbacks", "Rust formal refinement"]
+companion = "crates/alpine-platform/src/lib.rs#model_trace_replay_qualifies_only_a_current_presented_frame"
+
+[[evidence]]
+id = "EV-0064-TLA09G"
+claim = "AEP-0064-C09"
+kind = "tla"
+artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#PresentedIsCurrent"
+assertion = "A successful presentation is qualified only when its revision and epoch remain current and both commit and presentation occurred once."
+scope = "One abstract frame attempt with bounded supersession."
+bounds = ["pull request: revision and epoch 0 through 1", "nightly: revision and epoch 0 through 2"]
+assumptions = ["terminal correlation observes the latest portable state"]
+exclusions = ["pixel correctness", "physical scanout", "Rust formal refinement"]
+companion = "crates/alpine-platform/src/lib.rs#deliberately_faulty_stale_qualification_is_detected"
+
+[[evidence]]
+id = "EV-0064-TLA09H"
+claim = "AEP-0064-C09"
+kind = "tla"
+artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#CleanIdleIsPaused"
+assertion = "A clean idle running surface cannot keep pacing active."
+scope = "One abstract surface and display link."
+bounds = ["finite dirty and phase states"]
+assumptions = ["paused state corresponds to no persistent display-link callbacks"]
+exclusions = ["operating-system wakeups", "energy measurement", "Rust formal refinement"]
+companion = "crates/alpine-platform/src/lib.rs#exhaustive_reachable_state_and_action_oracle"
+
+[[evidence]]
+id = "EV-0064-TLA09I"
+claim = "AEP-0064-C09"
+kind = "tla"
+artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#StoppedIsDrained"
+assertion = "A stopped owner has invalid pacing, idle phase, and no retained frame resource."
+scope = "One abstract shutdown lifecycle."
+bounds = ["one active attempt and resource"]
+assumptions = ["committed completion or failure remains enabled while stopping"]
+exclusions = ["driver hangs", "native object destruction", "Rust formal refinement"]
+companion = "crates/alpine-platform/src/lib.rs#every_shutdown_phase_releases_or_drains"
+
+[[evidence]]
+id = "EV-0064-KANI09"
+claim = "AEP-0064-C09"
+kind = "kani"
+artifact = "crates/alpine-platform/src/proofs.rs#presentation_actions_preserve_invariants_and_atomicity"
+assertion = "Nine arbitrary portable actions preserve every executable invariant, and rejected actions preserve the exact prior state."
+scope = "Compiled allocation-free Rust transition logic across all fourteen action kinds."
+bounds = ["nine steps", "each symbolic byte selects one of fourteen action kinds", "symbolic visibility and size values"]
+assumptions = ["token-bearing actions use the current token when one exists and a fixed invalid token otherwise"]
+exclusions = ["longer traces", "native handles", "concurrency", "formal refinement proof"]
+companion = "crates/alpine-platform/src/lib.rs#exhaustive_reachable_state_and_action_oracle"
+
+[[evidence]]
+id = "EV-0064-UNIT09A"
+claim = "AEP-0064-C09"
+kind = "unit"
+artifact = "crates/alpine-platform/src/lib.rs#model_trace_replay_qualifies_only_a_current_presented_frame"
+assertion = "The model-derived success trace requires preparation, drawable transfer, one commit, one presentation call, and current terminal correlation."
+scope = "One current portable frame attempt."
+exclusions = ["native rendering", "pixels", "timing"]
+
+[[evidence]]
+id = "EV-0064-UNIT09B"
+claim = "AEP-0064-C09"
+kind = "unit"
+artifact = "crates/alpine-platform/src/lib.rs#invalid_actions_are_atomic_and_descriptive"
+assertion = "Disabled and token-mismatched actions return stable categories and preserve the exact prior state."
+scope = "Representative disabled phase and wrong-token paths."
+exclusions = ["native error translation"]
+
+[[evidence]]
+id = "EV-0064-UNIT09C"
+claim = "AEP-0064-C09"
+kind = "unit"
+artifact = "crates/alpine-platform/src/lib.rs#deliberately_faulty_stale_qualification_is_detected"
+assertion = "A post-commit invalidation produces superseded evidence, and deliberately reclassifying it as presented violates the executable invariant."
+scope = "One stale committed frame sequence."
+exclusions = ["physical retraction of committed work", "native callback timing"]
+
+[[evidence]]
+id = "EV-0064-PROPERTY09"
+claim = "AEP-0064-C09"
+kind = "property"
+artifact = "crates/alpine-platform/src/lib.rs#exhaustive_reachable_state_and_action_oracle"
+assertion = "Every action from every state reachable within ten breadth-first layers either preserves all invariants or rejects atomically."
+scope = "Finite reachable portable state graph generated from all action kinds and active tokens."
+bounds = ["ten breadth-first transition layers", "monotonic counters bounded by explored depth"]
+exclusions = ["unbounded traces", "arbitrary fabricated internal states"]
+
+[[evidence]]
+id = "EV-0064-INTEGRATION09"
+claim = "AEP-0064-C09"
+kind = "integration"
+artifact = "crates/alpine-platform/tests/presentation_contract.rs#public_contract_coalesces_and_presents_one_current_frame"
+assertion = "An external crate consumer can coalesce revisions, obtain an opaque token, and qualify one current frame through the public API."
+scope = "Public dependency-free alpine-platform boundary."
+exclusions = ["crate-private state construction", "native APIs"]
+
+[[evidence]]
+id = "EV-0064-E2E09"
+claim = "AEP-0064-C09"
+kind = "e2e"
+artifact = "scripts/check.sh"
+assertion = "The repository acceptance command runs the portable presentation contracts, documentation, policy, and complete workspace tests."
+scope = "Host-portable repository acceptance on every supported development host."
+exclusions = ["native window presentation", "fixed-hardware qualification"]
+
+[[evidence]]
+id = "EV-0064-MUTATION09"
+claim = "AEP-0064-C09"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#mutation-diff"
+assertion = "Every viable changed-code mutant in alpine-platform must be killed before ci-pass succeeds."
+scope = "Changed executable portable presentation Rust."
+exclusions = ["Kani-only proof code", "unviable mutants", "unchanged code"]
+
+[[evidence]]
+id = "EV-0064-COVERAGE09"
+claim = "AEP-0064-C09"
+kind = "coverage"
+artifact = "scripts/check-coverage.sh"
+assertion = "The critical-file and changed-line coverage ratchets include alpine-platform."
+scope = "Executable portable presentation Rust reached by workspace tests."
+exclusions = ["semantic proof", "Kani-only proof code", "native code"]
 
 [[evidence]]
 id = "EV-0025-KANI05C"
