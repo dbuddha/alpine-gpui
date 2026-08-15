@@ -1324,6 +1324,13 @@ pub(crate) struct NativeSurface {
     validation_leases: Vec<InitializationLease>,
 }
 
+fn standard_window_style_mask() -> NSWindowStyleMask {
+    NSWindowStyleMask::Titled
+        .union(NSWindowStyleMask::Closable)
+        .union(NSWindowStyleMask::Miniaturizable)
+        .union(NSWindowStyleMask::Resizable)
+}
+
 impl NativeSurface {
     #[allow(
         clippy::too_many_lines,
@@ -1392,10 +1399,7 @@ impl NativeSurface {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 NSWindow::alloc(main_thread),
                 frame,
-                NSWindowStyleMask::Titled
-                    | NSWindowStyleMask::Closable
-                    | NSWindowStyleMask::Miniaturizable
-                    | NSWindowStyleMask::Resizable,
+                standard_window_style_mask(),
                 NSBackingStoreType::Buffered,
                 false,
             )
@@ -2149,6 +2153,11 @@ mod tests {
                 stage: SurfaceStage::Device,
             })
         ));
+    }
+
+    #[test]
+    fn standard_window_style_has_exactly_the_supported_controls() {
+        assert_eq!(standard_window_style_mask(), NSWindowStyleMask(0b1111));
     }
 
     #[test]
