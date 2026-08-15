@@ -11,6 +11,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let descriptor = SurfaceDescriptor::new("Alpine presented frame", 96.0, 64.0, 1.0)?;
     let surface = native_validation::new_surface(&descriptor)?;
+    let hosted_direct = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
+        None => false,
+        Some(mode) if mode == OsStr::new("hosted-direct") => true,
+        Some(_) => return Err("unsupported presentation evidence mode".into()),
+    };
     native_validation::inject_driver_error(&surface, SurfaceError::DriverUnavailable);
     assert_eq!(surface.take_error()?, Some(SurfaceError::DriverUnavailable));
     assert_eq!(surface.take_error()?, None);
@@ -27,12 +32,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.push(Primitive::Quad { bounds, color });
     let requested = surface.request_frame(builder.finish(), clear)?;
     assert_eq!(requested.get(), 1);
-
-    let hosted_direct = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
-        None => false,
-        Some(mode) if mode == OsStr::new("hosted-direct") => true,
-        Some(_) => return Err("unsupported presentation evidence mode".into()),
-    };
+    if hosted_direct {
+        // Hosted runners may expose no compositor-visible occlusion bit. Keep
+        // that limitation explicit while exercising the same configuration,
+        // epoch, callback-drawable, commit, and direct-present path.
+        native_validation::inject_surface_configuration(&surface, 96.0, 64.0, 1.0, 0, true)?;
+    }
     let observation_timeout = if hosted_direct {
         Duration::from_secs(2)
     } else {

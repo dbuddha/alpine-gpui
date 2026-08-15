@@ -91,25 +91,38 @@ errors.
 
 `alpine-platform-macos` now owns the first native object graph: the shared
 `NSApplication`, one retained `NSWindow`, one custom `NSView`, one opaque
-`CAMetalLayer`, one system Metal device, one retained display-link delegate,
-and one `CAMetalDisplayLink` registered in the main run loop. Construction is
-admitted only on the process main thread. The layer is framebuffer-only,
-display synchronized, timeout-enabled, bounded to three drawables, and sized
-from a validated logical extent and backing scale. The display link starts
-paused, requests a two-frame render latency, resumes only for visible dirty
-work, and pauses after the newest revision reaches a terminal result. The
-native owner initializes the renderer from the exact device installed on the
-layer, queues one immutable scene, and translates each admitted main-run-loop
-callback into portable lifecycle actions. The Metal backend validates the
-callback texture, commits one command buffer, and calls the drawable's direct
-`present` method. A presented handler distinguishes a nonzero physical
-presentation timestamp from a compositor-dropped frame. Dropped frames retain
-or defer to the newest pending immutable scene and retry within a hard
-600-callback bound aligned with the five-second native qualification window on
-the primary 120 Hz target. Teardown first revokes callback admission, stops the
-renderer, pauses and invalidates pacing, clears the weak delegate, and closes
-the retained window. Native handles stay private. Resize, scale, occlusion,
-qualified color, asynchronous GPU completion, and the shipping application
+`CAMetalLayer`, one system Metal device, one retained main-thread-only delegate
+implementing both window and display-link protocols, and one
+`CAMetalDisplayLink` registered in the main run loop. Construction is admitted
+only on the process main thread. The layer is framebuffer-only, display
+synchronized, timeout-enabled, bounded to three drawables, and sized from a
+validated logical extent and backing scale. AppKit resize, backing-property,
+screen, occlusion, miniaturize, and restore callbacks produce one validated
+effective configuration. Distinct geometry, scale, or screen identity updates
+the layer and advances exactly one portable surface epoch; equivalent
+notifications and visibility-only changes do not churn epochs. A zero physical
+extent or non-visible window pauses pacing, while an eligible restore resumes
+only if dirty work remains. Invalid native geometry leaves the last valid layer
+extent intact, records a structured error, and fails closed as ineligible.
+
+The display link starts paused, requests a two-frame render latency, resumes
+only for visible dirty work, and pauses after the newest revision reaches a
+terminal result. The native owner initializes the renderer from the exact
+device installed on the layer and queues one immutable scene plus clear value.
+The current physical extent and scale become the render descriptor only inside
+the admitted callback, preventing a queued scene from retaining an obsolete
+target descriptor. The Metal backend validates the callback texture, commits
+one command buffer, and calls the drawable's direct `present` method. A
+presented handler distinguishes a nonzero physical presentation timestamp from
+a compositor-dropped frame. Dropped frames retain or defer to the newest
+pending immutable scene and retry within a hard 600-callback bound aligned with
+the five-second native qualification window on the primary 120 Hz target.
+Snapshots expose the current epoch, size and visibility eligibility, cumulative
+native allocation, and terminal retained bytes without exposing a native
+handle. Teardown first revokes callback admission, stops the renderer, pauses
+and invalidates pacing, clears both weak delegate registrations, and closes the
+retained window. Native handles stay private. Qualified color, asynchronous GPU
+completion, physical multi-display qualification, and the shipping application
 event loop remain unimplemented.
 
 `alpine-metal` validates a
@@ -428,7 +441,7 @@ contracts, then runs formatting, Clippy, all-target tests, doctests, and
 rustdoc. mdBook builds the durable engineering guide as a downloadable CI
 artifact.
 The macOS platform crate separately tests all descriptor boundaries and runs
-three harness-free integration executables on the process main thread. The
+four harness-free integration executables on the process main thread. The
 surface smoke test creates the complete native object graph, verifies layer
 policy and paused pacing, then deterministically tears it down. The rollback
 test injects every native initialization checkpoint and requires exact
@@ -438,8 +451,13 @@ active AppKit event loop, submits a deterministic solid-quad scene through the
 callback drawable, observes a nonzero presented timestamp, exposes and retries
 any compositor drops, then injects a pre-submit viewport failure and proves a
 later valid revision recovers. It requires commit and direct-present counts to
-match exactly and pacing to return to paused. Qualified color, resize, scale,
-occlusion, leak, and soak evidence remain unimplemented.
+match exactly and pacing to return to paused. The surface-epoch test drives a
+real AppKit content resize and deterministic scale, display, visibility,
+zero-size, invalid-geometry, restore, and close events through the same native
+configuration boundary. It requires idempotent epochs, exact layer extents,
+no hidden submission or allocation while ineligible, recovery without epoch
+churn, and closed callback admission. Physical multi-display, qualified color,
+post-commit resize timing, leak, and soak evidence remain unimplemented.
 On a hosted macOS runner without a qualifying display, the same executable uses
 an explicit direct-presentation evidence mode: every admitted drawable must
 complete GPU work and receive one direct present call, every completed native
