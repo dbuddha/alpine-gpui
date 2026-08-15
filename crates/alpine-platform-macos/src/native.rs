@@ -270,7 +270,9 @@ impl Drop for InitializationLease {
     }
 }
 
-const MAX_PRESENTATION_POLLS: u16 = 120;
+// A 120 Hz display can produce roughly 600 callbacks during the five-second
+// terminal-observation budget used by native qualification.
+const MAX_PRESENTATION_POLLS: u16 = 600;
 
 #[derive(Default)]
 struct FrameCounters {

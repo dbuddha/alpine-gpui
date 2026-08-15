@@ -964,9 +964,14 @@ mod tests {
         record_attempt, store_render_result, verify_terminal_release,
     };
     #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
-    use super::{NativeDrawableAttempt, verify_drawable_attempt_lifecycle};
+    use super::{
+        NativeDrawableAttempt, complete_drawable_attempt, record_drawable_attempt,
+        verify_drawable_attempt_lifecycle,
+    };
     #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
-    use crate::accounting::AccountingOutcome;
+    use crate::accounting::{
+        AccountingOutcome, BackendAccounting, BackendGeneration, BackendState,
+    };
     use crate::{
         Bgra8Image, OffscreenDescriptor, ValidatedFrame,
         accounting::{FrameOperationUsage, FrameResourceUsage},
@@ -1029,6 +1034,77 @@ mod tests {
                 Err(RenderError::SubmissionInvariantViolated)
             );
         }
+    }
+
+    #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn callback_attempt_recording_and_completion_preserve_all_evidence() -> Result<(), RenderError>
+    {
+        let frame = empty_frame(2, 3)?;
+        let operations = FrameOperationUsage {
+            draw_calls: 4,
+            uploaded_bytes: 5,
+        };
+        let resources = FrameResourceUsage {
+            allocated_bytes: 6,
+            peak_retained_bytes: 7,
+            current_retained_bytes: 0,
+            readback_bytes: 0,
+        };
+        let attempt = || NativeDrawableAttempt {
+            committed: true,
+            present_called: true,
+            device_lost: false,
+            operations,
+            resources,
+            result: Ok(()),
+        };
+        let mut accounting = BackendAccounting::new(BackendGeneration::INITIAL);
+
+        record_drawable_attempt(&mut accounting, &frame, &attempt())?;
+        assert_eq!(accounting.state(), BackendState::Ready);
+        assert_eq!(accounting.submitted_frames(), 1);
+        assert_eq!(accounting.completed_frames(), 1);
+        assert_eq!(accounting.draw_calls(), 4);
+        assert_eq!(accounting.uploaded_bytes(), 5);
+        assert_eq!(accounting.allocated_bytes(), 6);
+        assert_eq!(accounting.peak_retained_bytes(), 7);
+
+        assert_eq!(
+            complete_drawable_attempt(9, &frame, attempt())?,
+            FrameReport {
+                submission: 9,
+                primitives: 0,
+                omitted_primitives: 0,
+                draw_calls: 4,
+                uploaded_bytes: 5,
+                allocated_bytes: 6,
+                retained_bytes: 7,
+                readback_bytes: 0,
+            }
+        );
+
+        for (committed, present_called) in [(false, false), (false, true), (true, false)] {
+            let invalid = NativeDrawableAttempt {
+                committed,
+                present_called,
+                ..attempt()
+            };
+            assert_eq!(
+                complete_drawable_attempt(10, &frame, invalid),
+                Err(RenderError::SubmissionInvariantViolated)
+            );
+        }
+
+        let terminal_failure = NativeDrawableAttempt {
+            result: Err(RenderError::SubmissionInvariantViolated),
+            ..attempt()
+        };
+        assert_eq!(
+            complete_drawable_attempt(10, &frame, terminal_failure),
+            Err(RenderError::SubmissionInvariantViolated)
+        );
+        Ok(())
     }
 
     #[test]

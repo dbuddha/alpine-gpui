@@ -86,3 +86,41 @@ pub fn render_callback_drawable(
         backend.render_callback_drawable(scene, descriptor, texture, drawable),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use alpine_renderer::FrameReport;
+
+    use crate::{RenderError, submission::DrawableRenderAttempt};
+
+    use super::DrawableAttempt;
+
+    #[test]
+    fn drawable_attempt_preserves_each_native_fact_and_terminal_result() {
+        let report = FrameReport {
+            submission: 7,
+            primitives: 11,
+            ..FrameReport::default()
+        };
+        let completed = DrawableAttempt::from_native(DrawableRenderAttempt {
+            committed: true,
+            present_called: true,
+            result: Ok(report),
+        });
+        assert!(completed.committed());
+        assert!(completed.present_called());
+        assert_eq!(completed.into_result(), Ok(report));
+
+        let failed = DrawableAttempt::from_native(DrawableRenderAttempt {
+            committed: false,
+            present_called: false,
+            result: Err(RenderError::SubmissionInvariantViolated),
+        });
+        assert!(!failed.committed());
+        assert!(!failed.present_called());
+        assert_eq!(
+            failed.into_result(),
+            Err(RenderError::SubmissionInvariantViolated)
+        );
+    }
+}

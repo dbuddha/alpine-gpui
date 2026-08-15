@@ -105,7 +105,8 @@ callback texture, commits one command buffer, and calls the drawable's direct
 `present` method. A presented handler distinguishes a nonzero physical
 presentation timestamp from a compositor-dropped frame. Dropped frames retain
 or defer to the newest pending immutable scene and retry within a hard
-120-attempt bound. Teardown first revokes callback admission, stops the
+600-callback bound aligned with the five-second native qualification window on
+the primary 120 Hz target. Teardown first revokes callback admission, stops the
 renderer, pauses and invalidates pacing, clears the weak delegate, and closes
 the retained window. Native handles stay private. Resize, scale, occlusion,
 qualified color, asynchronous GPU completion, and the shipping application

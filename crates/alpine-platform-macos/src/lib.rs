@@ -683,6 +683,11 @@ mod tests {
             .to_string(),
             "native surface unavailable at DisplayLink stage"
         );
+
+        let source = SurfaceError::Render(RenderError::Validation(
+            alpine_metal::OffscreenError::ZeroPixelExtent,
+        ));
+        assert!(std::error::Error::source(&source).is_some());
     }
 
     #[test]
@@ -768,12 +773,23 @@ mod tests {
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     #[test]
-    fn unsupported_wrapper_methods_preserve_the_safe_contract() {
+    fn unsupported_wrapper_methods_preserve_the_safe_contract() -> Result<(), SurfaceError> {
+        use alpine_scene::{SceneBuilder, SceneRevision};
+
         let surface = NativeSurface::from_implementation(unsupported::NativeSurface);
+        let viewport = alpine_core::Size::new(1.0, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+        let scene = SceneBuilder::new(SceneRevision::new(1), viewport).finish();
+        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
 
         assert_eq!(surface.show(), Err(SurfaceError::UnsupportedPlatform));
+        assert_eq!(
+            surface.request_frame(scene, clear),
+            Err(SurfaceError::UnsupportedPlatform)
+        );
+        assert_eq!(surface.take_error(), Err(SurfaceError::UnsupportedPlatform));
         assert_eq!(surface.snapshot().physical_width(), 0);
         assert_eq!(surface.observer().lifecycle(), SurfaceLifecycle::Closed);
         surface.close();
+        Ok(())
     }
 }

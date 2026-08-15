@@ -336,6 +336,8 @@ jobs:
           mkdir -p target
           git diff ${{ needs.classify.outputs.base_sha }}...${{ needs.classify.outputs.head_sha }} > target/alpine.diff
           cargo mutants --no-config --file crates/alpine-metal/src/native.rs --no-shuffle --in-diff target/alpine.diff --output target/native-mutants.out -- --locked
+          cargo mutants --no-config --file crates/alpine-metal/src/platform_spi.rs --features platform-spi --no-shuffle --in-diff target/alpine.diff --output target/native-platform-spi-mutants.out -- --locked
+          cargo mutants --no-config --file crates/alpine-metal/src/submission.rs --features platform-spi --re 'MetalBackend::render_callback_drawable|record_drawable_attempt|verify_drawable_attempt_lifecycle|complete_drawable_attempt' --no-shuffle --in-diff target/alpine.diff --output target/native-submission-mutants.out -- --locked
           cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re validate_initialization_rollback --no-shuffle --in-diff target/alpine.diff --output target/native-platform-contract-mutants.out -- --locked
           cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re validate_initialization_rollback --no-shuffle --in-diff target/alpine.diff --output target/native-platform-mutants.out -- --locked
       - name: Upload native mutation evidence
@@ -345,6 +347,8 @@ jobs:
           name: native-mutation-${{ github.sha }}
           path: |
             target/native-mutants.out
+            target/native-platform-spi-mutants.out
+            target/native-submission-mutants.out
             target/native-platform-contract-mutants.out
             target/native-platform-mutants.out
           retention-days: 7
