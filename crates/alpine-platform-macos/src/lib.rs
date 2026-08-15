@@ -673,6 +673,16 @@ pub enum SurfaceError {
         /// Consecutive dropped presentation attempts.
         attempts: u16,
     },
+    /// The surface run method cannot execute in the requested lifecycle state.
+    RunLoopNotRunnable {
+        /// Lifecycle state of the surface when run started.
+        lifecycle: SurfaceLifecycle,
+    },
+    /// The application run loop exited before the surface stopped.
+    UnexpectedRunLoopExit {
+        /// Lifecycle state of the surface after application exit.
+        lifecycle: SurfaceLifecycle,
+    },
 }
 
 impl fmt::Display for SurfaceError {
@@ -708,6 +718,15 @@ impl fmt::Display for SurfaceError {
                 formatter,
                 "Core Animation skipped {attempts} consecutive presentation attempts"
             ),
+            Self::RunLoopNotRunnable { lifecycle } => {
+                write!(formatter, "run is not valid while surface is {lifecycle:?}")
+            }
+            Self::UnexpectedRunLoopExit { lifecycle } => {
+                write!(
+                    formatter,
+                    "application run loop exited before surface closed: lifecycle {lifecycle:?}"
+                )
+            }
         }
     }
 }
@@ -724,7 +743,9 @@ impl Error for SurfaceError {
             | Self::NativeUnavailable { .. }
             | Self::DriverUnavailable
             | Self::PresentationNotObserved { .. }
-            | Self::PresentationsSkipped { .. } => None,
+            | Self::PresentationsSkipped { .. }
+            | Self::RunLoopNotRunnable { .. }
+            | Self::UnexpectedRunLoopExit { .. } => None,
         }
     }
 }
@@ -1073,6 +1094,18 @@ impl NativeSurface {
     /// enter visible demand-driven presentation.
     pub fn show(&self) -> Result<(), SurfaceError> {
         self.implementation.show()
+    }
+
+    /// Runs the `AppKit` event loop until the surface closes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SurfaceError::UnsupportedPlatform`] outside Apple Silicon
+    /// macOS, [`SurfaceError::RunLoopNotRunnable`] if already closing or
+    /// closed, and [`SurfaceError::UnexpectedRunLoopExit`] for unexpected
+    /// loop termination while still live.
+    pub fn run(&self) -> Result<(), SurfaceError> {
+        self.implementation.run()
     }
 
     /// Replaces pending immutable work and wakes pacing only when eligible.
@@ -1426,6 +1459,20 @@ mod tests {
             .to_string(),
             "native surface unavailable at ColorSpace stage"
         );
+        assert_eq!(
+            SurfaceError::RunLoopNotRunnable {
+                lifecycle: SurfaceLifecycle::Closing,
+            }
+            .to_string(),
+            "run is not valid while surface is Closing"
+        );
+        assert_eq!(
+            SurfaceError::UnexpectedRunLoopExit {
+                lifecycle: SurfaceLifecycle::Live,
+            }
+            .to_string(),
+            "application run loop exited before surface closed: lifecycle Live"
+        );
 
         let initialization: SurfaceError = InitializationError::DeviceUnavailable.into();
         let render: SurfaceError =
@@ -1739,6 +1786,7 @@ mod tests {
         let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
 
         assert_eq!(surface.show(), Err(SurfaceError::UnsupportedPlatform));
+        assert_eq!(surface.run(), Err(SurfaceError::UnsupportedPlatform));
         assert_eq!(
             surface.request_frame(scene, clear),
             Err(SurfaceError::UnsupportedPlatform)
