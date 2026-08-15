@@ -313,6 +313,10 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       MACOSX_DEPLOYMENT_TARGET: "15.0"
+      # Hosted macOS runners may have no display that Core Animation can
+      # qualify. Validation and mutation controls inherit the same explicit
+      # non-qualifying evidence mode. Fixed hardware leaves this unset.
+      ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -328,13 +332,6 @@ jobs:
           xcrun --sdk macosx --find metal
           xcrun --sdk macosx --find metallib
       - name: Run Metal API and shader validation
-        env:
-          # Hosted macOS runners may have no display that Core Animation can
-          # qualify. The test still requires real callback drawables, GPU
-          # command completion, direct present calls, explicit completed drop
-          # outcomes, and at most one bounded in-flight drawable. Fixed
-          # hardware must run the default presented mode.
-          ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
         run: scripts/check-metal.sh
       - name: Require changed native Metal mutants to be killed
         env:
