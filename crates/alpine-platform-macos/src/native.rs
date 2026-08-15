@@ -493,6 +493,11 @@ impl PresentationDriver {
         self.last_error.take()
     }
 
+    #[cfg(alpine_native_validation)]
+    fn inject_error(&mut self, error: SurfaceError) {
+        self.last_error = Some(error);
+    }
+
     fn shutdown(&mut self) {
         let _ = self.state.apply(PresentationAction::BeginShutdown);
         if let Some(active) = self.active.take() {
@@ -930,6 +935,13 @@ impl NativeSurface {
             .try_borrow_mut()
             .map_err(|_| SurfaceError::DriverUnavailable)?
             .take_error())
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn inject_driver_error(&self, error: SurfaceError) {
+        if let Ok(mut driver) = self.driver.try_borrow_mut() {
+            driver.inject_error(error);
+        }
     }
 
     pub(crate) fn observer(&self) -> SurfaceObserver {

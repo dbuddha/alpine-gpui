@@ -44,6 +44,11 @@ pub mod native_validation {
         surface.implementation.run_until_frame_terminal(timeout);
     }
 
+    /// Installs one deterministic asynchronous driver failure for contract tests.
+    pub fn inject_driver_error(surface: &NativeSurface, error: SurfaceError) {
+        surface.implementation.inject_driver_error(error);
+    }
+
     /// Injects every initialization-stage failure and verifies complete rollback.
     ///
     /// # Errors

@@ -11,6 +11,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let descriptor = SurfaceDescriptor::new("Alpine presented frame", 96.0, 64.0, 1.0)?;
     let surface = native_validation::new_surface(&descriptor)?;
+    native_validation::inject_driver_error(&surface, SurfaceError::DriverUnavailable);
+    assert_eq!(surface.take_error()?, Some(SurfaceError::DriverUnavailable));
+    assert_eq!(surface.take_error()?, None);
     surface.show()?;
 
     let viewport = Size::new(96.0, 64.0).ok_or("valid viewport")?;
