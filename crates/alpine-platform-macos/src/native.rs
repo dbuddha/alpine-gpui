@@ -346,20 +346,32 @@ struct ActiveFrame {
     )]
     drawable: Retained<ProtocolObject<dyn CAMetalDrawable>>,
     frame: Option<PendingFrame>,
-    presentation: Arc<PresentationSignal>,
+    observation: PresentationObservation,
     presentation_polls: u16,
     timing: AttemptTiming,
+}
+
+struct PresentationObservation {
+    signal: Arc<PresentationSignal>,
     #[cfg(alpine_native_validation)]
     injected_presented_time_bits: Option<u64>,
 }
 
-impl ActiveFrame {
-    fn presentation_observed(&self) -> bool {
+impl PresentationObservation {
+    fn new(signal: Arc<PresentationSignal>) -> Self {
+        Self {
+            signal,
+            #[cfg(alpine_native_validation)]
+            injected_presented_time_bits: None,
+        }
+    }
+
+    fn observed(&self) -> bool {
         #[cfg(alpine_native_validation)]
         if self.injected_presented_time_bits.is_some() {
             return true;
         }
-        self.presentation.observed.load(Ordering::Acquire)
+        self.signal.observed.load(Ordering::Acquire)
     }
 
     fn presented_time_bits(&self) -> u64 {
@@ -367,7 +379,12 @@ impl ActiveFrame {
         if let Some(bits) = self.injected_presented_time_bits {
             return bits;
         }
-        self.presentation.time_bits.load(Ordering::Relaxed)
+        self.signal.time_bits.load(Ordering::Relaxed)
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn inject(&mut self, presented_time_bits: u64) {
+        self.injected_presented_time_bits = Some(presented_time_bits);
     }
 }
 
@@ -536,13 +553,13 @@ impl PresentationDriver {
         if self
             .active
             .as_ref()
-            .is_some_and(ActiveFrame::presentation_observed)
+            .is_some_and(|active| active.observation.observed())
         {
             let Some(active) = self.active.take() else {
                 return Err(SurfaceError::DriverUnavailable);
             };
             let token = active.token;
-            let presented_time_bits = active.presented_time_bits();
+            let presented_time_bits = active.observation.presented_time_bits();
             if presented_time_bits != 0 {
                 self.consecutive_skips = 0;
                 counters
@@ -651,11 +668,9 @@ impl PresentationDriver {
                     token,
                     drawable,
                     frame: Some(frame),
-                    presentation,
+                    observation: PresentationObservation::new(presentation),
                     presentation_polls: 0,
                     timing,
-                    #[cfg(alpine_native_validation)]
-                    injected_presented_time_bits: None,
                 });
                 #[cfg(alpine_native_validation)]
                 if self.post_commit_control.is_some() {
@@ -708,10 +723,8 @@ impl PresentationDriver {
         display_identity: Option<usize>,
         presented_time: f64,
     ) {
-        let configuration = display_identity.map(|display_identity| SurfaceConfiguration {
-            display_identity,
-            ..self.configuration
-        });
+        let configuration = display_identity
+            .map(|identity| configuration_with_display_identity(self.configuration, identity));
         self.post_commit_control = Some(PostCommitControl {
             configuration,
             presented_time_bits: presented_time.to_bits(),
@@ -733,7 +746,7 @@ impl PresentationDriver {
             .active
             .as_mut()
             .ok_or(SurfaceError::DriverUnavailable)?;
-        active.injected_presented_time_bits = Some(control.presented_time_bits);
+        active.observation.inject(control.presented_time_bits);
         Ok(directive)
     }
 
@@ -756,6 +769,17 @@ impl PresentationDriver {
         let _ = self.state.apply(PresentationAction::StopAfterDrain);
         self.pending = None;
         self.backend.shutdown();
+    }
+}
+
+#[cfg(alpine_native_validation)]
+fn configuration_with_display_identity(
+    configuration: SurfaceConfiguration,
+    display_identity: usize,
+) -> SurfaceConfiguration {
+    SurfaceConfiguration {
+        display_identity,
+        ..configuration
     }
 }
 
@@ -1882,6 +1906,36 @@ mod tests {
                 standard_srgb_color_space,
             ));
         }
+    }
+
+    #[test]
+    #[cfg(alpine_native_validation)]
+    fn presentation_observation_requires_a_real_or_injected_signal() {
+        let signal = Arc::new(PresentationSignal::default());
+        let observation = PresentationObservation::new(Arc::clone(&signal));
+        assert!(!observation.observed());
+
+        signal.time_bits.store(17_u64, Ordering::Relaxed);
+        signal.observed.store(true, Ordering::Release);
+        assert!(observation.observed());
+        assert_eq!(observation.presented_time_bits(), 17);
+
+        let mut injected = PresentationObservation::new(Arc::new(PresentationSignal::default()));
+        injected.inject(23);
+        assert!(injected.observed());
+        assert_eq!(injected.presented_time_bits(), 23);
+    }
+
+    #[test]
+    #[cfg(alpine_native_validation)]
+    fn post_commit_display_replacement_changes_only_identity() -> Result<(), SurfaceError> {
+        let base = SurfaceConfiguration::from_native(64.0, 48.0, 2.0, 7, true)?;
+        let migrated = configuration_with_display_identity(base, 11);
+        let expected = SurfaceConfiguration::from_native(64.0, 48.0, 2.0, 11, true)?;
+
+        assert_eq!(migrated, expected);
+        assert!(base.geometry_or_display_differs(migrated));
+        Ok(())
     }
 
     #[test]

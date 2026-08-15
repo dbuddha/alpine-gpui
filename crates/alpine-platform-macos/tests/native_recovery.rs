@@ -34,6 +34,10 @@ mod validation {
         let descriptor = SurfaceDescriptor::new("Alpine supersession", 96.0, 64.0, 1.0)?;
         let surface = native_validation::new_surface(&descriptor)?;
         prepare_visible_surface(&surface, hosted_direct)?;
+        assert!(
+            native_validation::inject_post_commit_observation(&surface, None, f64::NAN).is_err()
+        );
+        assert!(native_validation::inject_post_commit_observation(&surface, None, 0.0).is_err());
         let before = surface.snapshot();
         assert_eq!(surface.request_frame(scene, clear)?.get(), 1);
         native_validation::inject_post_commit_observation(&surface, Some(usize::MAX), 1.25)?;
