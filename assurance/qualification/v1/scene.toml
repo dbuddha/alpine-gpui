@@ -1,21 +1,58 @@
 schema = "alpine-scene-trace/v1"
 id = "solid-quad-editor-surface"
-workload_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+workload_hash = "3dbf181350ed2283ce9daa427af5d674cebcceb4dada5abf2a1c1e1f5c156bda"
 revision = 1
+clear_color = [0.0, 0.0, 0.0, 1.0]
 
 [viewport]
-width = 1280.0
-height = 720.0
+width = 4.0
+height = 2.0
 scale_factor = 2.0
+pixel_width = 8
+pixel_height = 4
 
 [[clips]]
 id = "viewport"
 x = 0.0
 y = 0.0
-width = 1280.0
-height = 720.0
+width = 4.0
+height = 2.0
 
 [[operations]]
 sequence = 0
 kind = "solid-quad"
 clip = "viewport"
+x = 0.0
+y = 0.0
+width = 4.0
+height = 2.0
+red = 0.0
+green = 0.0
+blue = 1.0
+alpha = 1.0
+
+[[operations]]
+sequence = 1
+kind = "solid-quad"
+clip = "viewport"
+x = 1.0
+y = 0.0
+width = 3.0
+height = 2.0
+red = 1.0
+green = 0.0
+blue = 0.0
+alpha = 0.5
+
+[[operations]]
+sequence = 2
+kind = "solid-quad"
+clip = "viewport"
+x = -1.0
+y = 0.0
+width = 3.0
+height = 1.0
+red = 0.0
+green = 1.0
+blue = 0.0
+alpha = 0.5

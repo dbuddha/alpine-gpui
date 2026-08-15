@@ -1,9 +1,9 @@
 # Alpine GPUI
 
-Alpine GPUI is a private, proprietary desktop application framework written in
-Rust for applications that need predictable latency, bounded memory use, and
-native desktop behavior. It is intended first for editors, terminals, database
-tools, and other data-heavy productivity applications.
+Alpine GPUI is a publicly readable, proprietary desktop application framework
+written in Rust for applications that need predictable latency, bounded memory
+use, and native desktop behavior. It is intended first for editors, terminals,
+database tools, and other data-heavy productivity applications.
 
 The programming model is conceptually adapted from
 [Zed GPUI](https://github.com/zed-industries/zed/tree/e17dc4f9d50db73a458b64dcce50ecd4878b98a3/crates/gpui),
@@ -41,6 +41,9 @@ development. The workspace currently provides:
   Metal device, offline pipeline, one synchronous command submission, and
   deterministic compact BGRA8 readback, cancellation, shutdown, device-loss
   generations, and complete frame-resource accounting;
+- non-shipping `alpine-trace` and `alpine-assurance` tooling that fail closed on
+  malformed renderer workloads and can produce CPU-oracle or Direct Metal BGRA8
+  artifacts from the same versioned solid-quad trace;
 - a pinned Rust toolchain and locked dependency graph;
 - policy, formatting, lint, unit test, doctest, rustdoc, coverage, changed-code
   mutation, selected Kani proofs, and three-platform CI;
@@ -69,7 +72,7 @@ GitHub is the operational system for this project:
 - [issues](https://github.com/dbuddha/alpine-gpui/issues) for capabilities,
   requirements, tasks, decisions, defects, and research;
 - [Actions](https://github.com/dbuddha/alpine-gpui/actions/workflows/ci.yml) for
-  CI evidence and private rustdoc artifacts;
+  CI evidence and downloadable rustdoc artifacts;
 - [releases](https://github.com/dbuddha/alpine-gpui/releases) for shipped
   history;
 - [agent and contributor policy](AGENTS.md) for how changes are made;
@@ -80,8 +83,8 @@ GitHub is the operational system for this project:
 
 ## Ownership and license
 
-Proprietary describes Alpine's distribution, not an absence of open source
-influence. At the reviewed commit, Zed's `gpui` crate declares Apache-2.0. That
-license governs Zed source. Alpine's independently written source remains under
-the private terms in [LICENSE.md](LICENSE.md), which grant no permission to use,
-copy, modify, or distribute it.
+Public visibility does not make Alpine open source. At the reviewed commit,
+Zed's `gpui` crate declares Apache-2.0, and that license governs Zed source.
+Alpine's independently written source remains proprietary under
+[LICENSE.md](LICENSE.md), which grants no permission beyond viewing the public
+repository and using GitHub's permitted repository features.

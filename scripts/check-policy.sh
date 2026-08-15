@@ -99,6 +99,7 @@ for required_path in \
     scripts/test-assurance.sh \
     scripts/test-metal-library.sh \
     scripts/verify-metal-library.sh \
+    scripts/check-workload-hashes.sh \
     scripts/check-tla.sh \
     .cargo/mutants.toml
 do
@@ -157,7 +158,7 @@ if [ -n "${ALPINE_BASE_SHA:-}" ] && [ -n "${ALPINE_HEAD_SHA:-}" ]; then
     else
         changed_files=$(git diff --name-only "$ALPINE_BASE_SHA...$ALPINE_HEAD_SHA")
     fi
-    implementation_changes=$(printf '%s\n' "$changed_files" | grep -E '^(Cargo\.toml$|Cargo\.lock$|crates/.+/Cargo\.toml$|crates/.+\.rs$|shaders/)' || true)
+    implementation_changes=$(printf '%s\n' "$changed_files" | grep -E '^(Cargo\.toml$|Cargo\.lock$|crates/.+/Cargo\.toml$|crates/.+\.rs$|tools/alpine-trace/|shaders/)' || true)
 
     if [ -n "$implementation_changes" ] && { [ -n "${ALPINE_PR_BODY:-}" ] || [ -n "${ALPINE_PR_TITLE:-}" ]; }; then
         closing_issue=$(printf '%s\n' "${ALPINE_PR_BODY:-}" | sed -nE 's/.*([Cc]loses|[Cc]ontributes to)[[:space:]]+#([0-9]+).*/\2/p' | head -n 1)
