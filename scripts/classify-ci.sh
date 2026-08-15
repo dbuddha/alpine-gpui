@@ -30,11 +30,11 @@ miri=false
 metal=false
 tla=false
 
-if matches '^(Cargo\.toml$|Cargo\.lock$|crates/.+\.rs$|crates/.+/Cargo\.toml$)'; then
+if matches '^(Cargo\.toml$|Cargo\.lock$|crates/.+\.rs$|crates/.+/Cargo\.toml$|tools/alpine-trace/)'; then
     coverage=true
 fi
 
-if matches '^crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal|alpine-platform|alpine-platform-macos)/.+\.rs$'; then
+if matches '^(crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal|alpine-platform|alpine-platform-macos)/.+\.rs$|tools/alpine-trace/.+\.rs$)'; then
     mutation=true
     kani=true
 fi
@@ -44,7 +44,7 @@ if matches '^(tools/alpine-assurance/.+\.rs$|assurance/qualification/)'; then
     mutation=true
 fi
 
-if matches '^(formal/tla/|docs/aep/|assurance/evidence\.toml$|assurance/qualification/|tools/alpine-assurance/)'; then
+if matches '^(formal/tla/|docs/aep/|assurance/evidence\.toml$|assurance/qualification/|tools/alpine-assurance/|tools/alpine-trace/)'; then
     tla=true
 fi
 

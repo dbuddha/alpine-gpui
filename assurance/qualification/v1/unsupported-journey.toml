@@ -1,6 +1,6 @@
 schema = "alpine-journey/v1"
 id = "unsupported-operation-journey"
-workload_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+workload_hash = "6707a93fdf9a809edc7b3cc7b4e112f040196fb0aac4d0ba404bc1435e9fce6d"
 scene_trace = "assurance/qualification/v1/unsupported-scene.toml"
 expected_document_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 expected_layout_hash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"

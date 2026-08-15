@@ -47,8 +47,8 @@ initial daily-driver target.
   renderer samples cannot: virtualization, text, focus, IME, accessibility,
   tasks, cancellation, recovery, and long-lived resource retention.
 - **CS-ZED-009:** Zed application code is GPL-3.0-or-later while GPUI declares
-  Apache-2.0. The internal GPL comparison lab and proprietary Alpine repository
-  require separate source, artifact, and distribution boundaries.
+  Apache-2.0. The public GPL comparison lab and public, proprietary Alpine
+  repository require separate source, artifact, and distribution boundaries.
 
 ## Alpine consequences
 
@@ -57,6 +57,7 @@ collaboration, cloud accounts, remote development, telemetry services, a public
 extension marketplace, debugger integration, Zed branding, and exact visual
 duplication from the first daily-driver target.
 
-The private lab may modify and run the pinned Zed application internally. No
-combined binary is distributed without legal review, and no Zed application
-source or asset enters Alpine.
+The public lab may modify and run the pinned Zed application under its GPL
+terms. The project does not publish combined binaries without a separate
+license-compliance review, and no Zed application source or asset enters
+Alpine.

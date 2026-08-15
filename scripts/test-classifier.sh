@@ -47,6 +47,12 @@ assert_output "$assurance" coverage=true
 assert_output "$assurance" mutation=true
 assert_output "$assurance" tla=true
 
+trace=$(run_fixture tools/alpine-trace/src/lib.rs)
+assert_output "$trace" coverage=true
+assert_output "$trace" mutation=true
+assert_output "$trace" kani=true
+assert_output "$trace" tla=true
+
 unsafe=$(run_fixture README.md review:unsafe)
 assert_output "$unsafe" miri=true
 
