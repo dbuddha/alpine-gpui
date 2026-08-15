@@ -345,7 +345,8 @@ synthetic and making no
 hardware or performance claim. The repository
 acceptance command validates policy and the registry, tests automation and core
 contracts, then runs formatting, Clippy, all-target tests, doctests, and
-rustdoc. mdBook builds the durable engineering guide as a private CI artifact.
+rustdoc. mdBook builds the durable engineering guide as a downloadable CI
+artifact.
 
 Hosted CI classifies the changed paths and review labels, then runs the required
 evidence fail-closed under one `ci-pass` result. Locked native tests always run
