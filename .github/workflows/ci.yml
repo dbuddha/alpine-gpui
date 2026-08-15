@@ -328,6 +328,12 @@ jobs:
           xcrun --sdk macosx --find metal
           xcrun --sdk macosx --find metallib
       - name: Run Metal API and shader validation
+        env:
+          # Hosted macOS runners may have no display that Core Animation can
+          # qualify. The test still requires real callback drawables, GPU
+          # command completion, direct present calls, and explicit dropped
+          # outcomes. Fixed hardware must run the default presented mode.
+          ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
         run: scripts/check-metal.sh
       - name: Require changed native Metal mutants to be killed
         env:

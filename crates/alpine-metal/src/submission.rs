@@ -1376,6 +1376,21 @@ mod tests {
                 false,
             ),
             (
+                RenderError::DrawableExtentMismatch {
+                    expected_width: 64,
+                    expected_height: 32,
+                    actual_width: 32,
+                    actual_height: 64,
+                },
+                RenderStage::RenderTexture,
+                false,
+            ),
+            (
+                RenderError::DrawablePixelFormatMismatch { actual: 81 },
+                RenderStage::RenderTexture,
+                false,
+            ),
+            (
                 RenderError::EncoderUnavailable {
                     stage: RenderStage::BlitEncoder,
                 },

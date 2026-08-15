@@ -2,7 +2,7 @@
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::Duration;
+    use std::{ffi::OsStr, time::Duration};
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_metal::RenderError;
@@ -25,15 +25,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let requested = surface.request_frame(builder.finish(), clear)?;
     assert_eq!(requested.get(), 1);
 
-    native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+    let hosted_direct = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
+        None => false,
+        Some(mode) if mode == OsStr::new("hosted-direct") => true,
+        Some(_) => return Err("unsupported presentation evidence mode".into()),
+    };
+    let observation_timeout = if hosted_direct {
+        Duration::from_secs(2)
+    } else {
+        Duration::from_secs(5)
+    };
+    native_validation::run_until_frame_terminal(&surface, observation_timeout);
 
-    if let Some(error) = surface.take_error()? {
-        return Err(error.into());
-    }
+    let first_error = surface.take_error()?;
     let snapshot = surface.snapshot();
     assert!(snapshot.regular_activation_policy());
     assert!(snapshot.submission_count() >= 1);
     assert_eq!(snapshot.direct_present_count(), snapshot.submission_count());
+    if hosted_direct && snapshot.presented_count() == 0 {
+        assert!(first_error.is_none());
+        assert_eq!(snapshot.last_presented_time_bits(), 0);
+        assert_eq!(snapshot.skipped_count(), snapshot.submission_count());
+        assert_eq!(snapshot.failed_count(), 0);
+        assert!(snapshot.callback_count() >= 2);
+        eprintln!(
+            "hosted-direct evidence: {} callback drawables committed and directly presented; Core Animation reported every attempt dropped",
+            snapshot.submission_count()
+        );
+        surface.close();
+        return Ok(());
+    }
+    if let Some(error) = first_error {
+        return Err(error.into());
+    }
     assert_eq!(snapshot.presented_count(), 1);
     assert_ne!(snapshot.last_presented_time_bits(), 0);
     assert_eq!(

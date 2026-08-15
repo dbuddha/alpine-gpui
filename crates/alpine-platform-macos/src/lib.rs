@@ -669,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn errors_are_stable_and_descriptive() {
+    fn errors_are_stable_and_descriptive() -> Result<(), SurfaceError> {
         assert_eq!(
             SurfaceError::InvalidDimension {
                 dimension: InvalidDimension::Scale,
@@ -698,10 +698,51 @@ mod tests {
             "native surface unavailable at DisplayLink stage"
         );
 
-        let source = SurfaceError::Render(RenderError::Validation(
-            alpine_metal::OffscreenError::ZeroPixelExtent,
-        ));
-        assert!(std::error::Error::source(&source).is_some());
+        let initialization: SurfaceError = InitializationError::DeviceUnavailable.into();
+        let render: SurfaceError =
+            RenderError::Validation(alpine_metal::OffscreenError::ZeroPixelExtent).into();
+        let mut state = alpine_platform::PresentationState::new();
+        let Err(transition) = state.apply(alpine_platform::PresentationAction::Prepare) else {
+            return Err(SurfaceError::DriverUnavailable);
+        };
+        let presentation: SurfaceError = transition.into();
+        let cases = [
+            (
+                initialization,
+                "native renderer initialization failed: Metal returned no default device",
+                true,
+            ),
+            (
+                render,
+                "native presentation failed: offscreen validation failed: offscreen target must be non-empty",
+                true,
+            ),
+            (
+                presentation,
+                "native presentation state failed: presentation action Prepare rejected in Running/Idle: ActionDisabled",
+                true,
+            ),
+            (
+                SurfaceError::DriverUnavailable,
+                "native presentation driver unavailable",
+                false,
+            ),
+            (
+                SurfaceError::PresentationNotObserved { callbacks: 17 },
+                "native presentation was not observed after 17 display-link callbacks",
+                false,
+            ),
+            (
+                SurfaceError::PresentationsSkipped { attempts: 19 },
+                "Core Animation skipped 19 consecutive presentation attempts",
+                false,
+            ),
+        ];
+        for (error, message, has_source) in cases {
+            assert_eq!(error.to_string(), message);
+            assert_eq!(std::error::Error::source(&error).is_some(), has_source);
+        }
+        Ok(())
     }
 
     #[test]
