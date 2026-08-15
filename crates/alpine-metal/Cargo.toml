@@ -9,7 +9,7 @@ license-file.workspace = true
 
 [features]
 default = []
-platform-spi = ["objc2-metal/MTLDrawable"]
+platform-spi = ["objc2-metal/MTLDrawable", "objc2-metal/block2", "objc2-metal/objc2-core-foundation"]
 
 [dependencies]
 alpine-core = { path = "../alpine-core", version = "=0.0.0" }

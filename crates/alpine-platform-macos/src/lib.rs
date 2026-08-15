@@ -326,12 +326,14 @@ pub struct SurfaceSnapshot {
     display_sync_enabled: bool,
     allows_next_drawable_timeout: bool,
     maximum_drawable_count: u8,
+    regular_activation_policy: bool,
     display_link_paused: bool,
     visible: bool,
     callback_count: u64,
     submission_count: u64,
     direct_present_count: u64,
     presented_count: u64,
+    last_presented_time_bits: u64,
     skipped_count: u64,
     failed_count: u64,
 }
@@ -373,6 +375,12 @@ impl SurfaceSnapshot {
         self.maximum_drawable_count
     }
 
+    /// Returns whether the standalone application uses the regular `AppKit` policy.
+    #[must_use]
+    pub const fn regular_activation_policy(self) -> bool {
+        self.regular_activation_policy
+    }
+
     /// Returns whether the layer-bound display link is paused.
     #[must_use]
     pub const fn display_link_paused(self) -> bool {
@@ -407,6 +415,12 @@ impl SurfaceSnapshot {
     #[must_use]
     pub const fn presented_count(self) -> u64 {
         self.presented_count
+    }
+
+    /// Returns the raw nonzero `f64` bits from the latest observed presentation time.
+    #[must_use]
+    pub const fn last_presented_time_bits(self) -> u64 {
+        self.last_presented_time_bits
     }
 
     /// Returns drawables whose presented handler reported a dropped frame.
@@ -699,12 +713,14 @@ mod tests {
             display_sync_enabled: false,
             allows_next_drawable_timeout: true,
             maximum_drawable_count: 2,
+            regular_activation_policy: false,
             display_link_paused: false,
             visible: true,
             callback_count: 23,
             submission_count: 29,
             direct_present_count: 31,
             presented_count: 37,
+            last_presented_time_bits: 39,
             skipped_count: 41,
             failed_count: 43,
         };
@@ -715,12 +731,14 @@ mod tests {
             display_sync_enabled: true,
             allows_next_drawable_timeout: false,
             maximum_drawable_count: 3,
+            regular_activation_policy: true,
             display_link_paused: true,
             visible: false,
             callback_count: 37,
             submission_count: 43,
             direct_present_count: 47,
             presented_count: 53,
+            last_presented_time_bits: 57,
             skipped_count: 59,
             failed_count: 61,
         };
@@ -731,12 +749,14 @@ mod tests {
         assert!(!snapshot.display_sync_enabled());
         assert!(snapshot.allows_next_drawable_timeout());
         assert_eq!(snapshot.maximum_drawable_count(), 2);
+        assert!(!snapshot.regular_activation_policy());
         assert!(!snapshot.display_link_paused());
         assert!(snapshot.visible());
         assert_eq!(snapshot.callback_count(), 23);
         assert_eq!(snapshot.submission_count(), 29);
         assert_eq!(snapshot.direct_present_count(), 31);
         assert_eq!(snapshot.presented_count(), 37);
+        assert_eq!(snapshot.last_presented_time_bits(), 39);
         assert_eq!(snapshot.skipped_count(), 41);
         assert_eq!(snapshot.failed_count(), 43);
 
@@ -746,12 +766,14 @@ mod tests {
         assert!(inverse.display_sync_enabled());
         assert!(!inverse.allows_next_drawable_timeout());
         assert_eq!(inverse.maximum_drawable_count(), 3);
+        assert!(inverse.regular_activation_policy());
         assert!(inverse.display_link_paused());
         assert!(!inverse.visible());
         assert_eq!(inverse.callback_count(), 37);
         assert_eq!(inverse.submission_count(), 43);
         assert_eq!(inverse.direct_present_count(), 47);
         assert_eq!(inverse.presented_count(), 53);
+        assert_eq!(inverse.last_presented_time_bits(), 57);
         assert_eq!(inverse.skipped_count(), 59);
         assert_eq!(inverse.failed_count(), 61);
     }

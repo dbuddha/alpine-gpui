@@ -331,9 +331,9 @@ impl NativeBackend {
 
         let status = command_status(command.status());
         let failure = command.error().as_deref().map(copy_error);
-        let (result, device_lost) = match status {
-            CommandStatus::Completed if failure.is_none() => (Ok(()), false),
-            CommandStatus::Completed | CommandStatus::Error => {
+        let (result, device_lost) = match (status, failure) {
+            (CommandStatus::Completed, None) => (Ok(()), false),
+            (CommandStatus::Completed | CommandStatus::Error, failure) => {
                 let (recovery, device_lost) = classify_command_failure(failure.as_ref());
                 (
                     Err(RenderError::CommandFailed {
@@ -344,7 +344,7 @@ impl NativeBackend {
                     device_lost,
                 )
             }
-            status => (Err(RenderError::UnexpectedCommandStatus { status }), false),
+            (status, _) => (Err(RenderError::UnexpectedCommandStatus { status }), false),
         };
         NativeDrawableAttempt {
             committed: true,
@@ -971,14 +971,23 @@ fn injected_terminal_result(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "platform-spi")]
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::{error::Error, process::Command};
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_renderer::Renderer;
     use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
     #[cfg(feature = "platform-spi")]
+    use objc2::{
+        AnyThread, DefinedClass, define_class, msg_send, rc::Retained, runtime::ProtocolObject,
+    };
+    #[cfg(feature = "platform-spi")]
+    use objc2_foundation::{NSObject, NSObjectProtocol};
+    #[cfg(feature = "platform-spi")]
     use objc2_metal::{
-        MTLDevice as _, MTLPixelFormat, MTLStorageMode, MTLTextureDescriptor, MTLTextureUsage,
+        MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLDrawablePresentedHandler,
+        MTLPixelFormat, MTLStorageMode, MTLTextureDescriptor, MTLTextureUsage,
     };
 
     use crate::initialization::{
@@ -989,16 +998,96 @@ mod tests {
         RenderError, RenderStage, ValidatedFrame,
     };
 
-    #[cfg(feature = "platform-spi")]
-    use super::DrawableResources;
     use super::{
         BlendConfiguration, FRAGMENT_ENTRY_POINT, NativeBackend, NativeDriver, NativeFault,
         OFFLINE_LIBRARY, ResourceProbe, VERTEX_ENTRY_POINT, command_status, new_backend,
     };
     #[cfg(feature = "platform-spi")]
+    use super::{DrawableResources, new_backend_with_device, new_validation_backend_with_device};
+    #[cfg(feature = "platform-spi")]
     use crate::accounting::FrameResourceUsage;
 
     static CORRUPT_LIBRARY: &[u8] = b"not a Metal library";
+
+    #[cfg(feature = "platform-spi")]
+    struct TestDrawableIvars {
+        present_calls: AtomicU64,
+    }
+
+    #[cfg(feature = "platform-spi")]
+    define_class!(
+        // SAFETY: NSObject has no subclassing requirements, the atomic ivar is
+        // valid for any callback thread, and this fixture has no custom Drop.
+        #[unsafe(super = NSObject)]
+        #[ivars = TestDrawableIvars]
+        struct TestDrawable;
+
+        // SAFETY: NSObjectProtocol adds no unimplemented requirements.
+        unsafe impl NSObjectProtocol for TestDrawable {}
+
+        // SAFETY: Both generated selector signatures are implemented exactly.
+        unsafe impl MTLDrawable for TestDrawable {
+            #[unsafe(method(present))]
+            fn present(&self) {
+                self.ivars().present_calls.fetch_add(1, Ordering::Relaxed);
+            }
+
+            #[allow(
+                non_snake_case,
+                reason = "the generated protocol requires this method name"
+            )]
+            #[unsafe(method(presentAtTime:))]
+            fn presentAtTime(&self, _presentation_time: f64) {}
+
+            #[allow(
+                non_snake_case,
+                reason = "the generated protocol requires this method name"
+            )]
+            #[unsafe(method(presentAfterMinimumDuration:))]
+            fn presentAfterMinimumDuration(&self, _duration: f64) {}
+
+            #[allow(
+                non_snake_case,
+                reason = "the generated protocol requires this method name"
+            )]
+            #[unsafe(method(addPresentedHandler:))]
+            unsafe fn addPresentedHandler(&self, _block: MTLDrawablePresentedHandler) {}
+
+            #[allow(
+                non_snake_case,
+                reason = "the generated protocol requires this method name"
+            )]
+            #[unsafe(method(presentedTime))]
+            fn presentedTime(&self) -> f64 {
+                1.0
+            }
+
+            #[allow(
+                non_snake_case,
+                reason = "the generated protocol requires this method name"
+            )]
+            #[unsafe(method(drawableID))]
+            fn drawableID(&self) -> usize {
+                17
+            }
+        }
+    );
+
+    #[cfg(feature = "platform-spi")]
+    impl TestDrawable {
+        fn new() -> Retained<Self> {
+            let allocated = Self::alloc().set_ivars(TestDrawableIvars {
+                present_calls: AtomicU64::new(0),
+            });
+            // SAFETY: This is NSObject's parameterless initializer and the
+            // allocated object already contains initialized Rust ivars.
+            unsafe { msg_send![super(allocated), init] }
+        }
+
+        fn present_calls(&self) -> u64 {
+            self.ivars().present_calls.load(Ordering::Relaxed)
+        }
+    }
 
     fn color(red: f32, green: f32, blue: f32, alpha: f32) -> Result<LinearRgba, &'static str> {
         LinearRgba::new(red, green, blue, alpha).ok_or("valid fixture color")
@@ -1196,6 +1285,72 @@ mod tests {
         let initialized = initialize_for_native_validation(&NativeDriver::production())?;
 
         assert!(!initialized.capabilities.name().is_empty());
+        Ok(())
+    }
+
+    #[cfg(feature = "platform-spi")]
+    #[test]
+    fn supplied_device_is_preserved_by_both_backend_constructors() -> Result<(), Box<dyn Error>> {
+        let device = MTLCreateSystemDefaultDevice().ok_or("system Metal device")?;
+        let registry_id = device.registryID();
+        let driver = NativeDriver::with_device(device.clone());
+        assert_eq!(
+            driver.device.as_deref().map(MTLDevice::registryID),
+            Some(registry_id)
+        );
+
+        let (_backend, validation_capabilities) =
+            new_validation_backend_with_device(device.clone())?;
+        assert_eq!(validation_capabilities.registry_id(), registry_id);
+
+        match new_backend_with_device(device) {
+            Ok((_backend, capabilities)) => {
+                assert_eq!(capabilities.registry_id(), registry_id);
+            }
+            Err(InitializationError::UnsupportedDevice { .. }) => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "platform-spi")]
+    #[test]
+    fn callback_drawable_encodes_commits_and_presents_once() -> Result<(), Box<dyn Error>> {
+        let (scene, descriptor) = discriminating_scene()?;
+        let frame = ValidatedFrame::new(&scene, descriptor)?;
+        let mut backend = validation_backend(BlendConfiguration::PremultipliedSourceOver)?;
+        // SAFETY: The dimensions are finite, nonzero, and inside the validated
+        // device baseline; the fixture creates no mip levels or CPU mapping.
+        let texture_descriptor = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                MTLPixelFormat::BGRA8Unorm,
+                descriptor.pixel_width() as usize,
+                descriptor.pixel_height() as usize,
+                false,
+            )
+        };
+        texture_descriptor.setStorageMode(MTLStorageMode::Private);
+        texture_descriptor.setUsage(MTLTextureUsage::RenderTarget);
+        let texture = backend
+            .native
+            .initialized
+            .device
+            .newTextureWithDescriptor(&texture_descriptor)
+            .ok_or("callback texture")?;
+        let drawable = TestDrawable::new();
+
+        let attempt =
+            backend
+                .native
+                .render_drawable(&frame, &texture, ProtocolObject::from_ref(&*drawable));
+
+        assert!(attempt.committed);
+        assert!(attempt.present_called);
+        assert_eq!(attempt.result, Ok(()));
+        assert_eq!(attempt.operations.draw_calls, 1);
+        assert_eq!(attempt.operations.uploaded_bytes, frame.upload_bytes());
+        assert_eq!(attempt.resources.readback_bytes, 0);
+        assert_eq!(drawable.present_calls(), 1);
         Ok(())
     }
 

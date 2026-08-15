@@ -279,6 +279,7 @@ struct FrameCounters {
     submissions: AtomicU64,
     direct_presents: AtomicU64,
     presented: AtomicU64,
+    last_presented_time_bits: AtomicU64,
     skipped: AtomicU64,
     failed: AtomicU64,
 }
@@ -401,8 +402,12 @@ impl PresentationDriver {
                 return Err(SurfaceError::DriverUnavailable);
             };
             let token = active.token;
-            if active.presentation.time_bits.load(Ordering::Relaxed) != 0 {
+            let presented_time_bits = active.presentation.time_bits.load(Ordering::Relaxed);
+            if presented_time_bits != 0 {
                 self.consecutive_skips = 0;
+                counters
+                    .last_presented_time_bits
+                    .store(presented_time_bits, Ordering::Relaxed);
                 counters.presented.fetch_add(1, Ordering::Relaxed);
                 return Ok(self
                     .state
@@ -489,16 +494,13 @@ impl PresentationDriver {
     }
 
     fn shutdown(&mut self) {
-        if let Ok(transition) = self.state.apply(PresentationAction::BeginShutdown)
-            && transition.event() == PresentationEvent::ShutdownDraining
-        {
-            if let Some(active) = self.active.take() {
-                let _ = self
-                    .state
-                    .apply(PresentationAction::FailActive(active.token));
-            }
-            let _ = self.state.apply(PresentationAction::StopAfterDrain);
+        let _ = self.state.apply(PresentationAction::BeginShutdown);
+        if let Some(active) = self.active.take() {
+            let _ = self
+                .state
+                .apply(PresentationAction::FailActive(active.token));
         }
+        let _ = self.state.apply(PresentationAction::StopAfterDrain);
         self.pending = None;
         self.backend.shutdown();
     }
@@ -905,12 +907,18 @@ impl NativeSurface {
             display_sync_enabled: self.layer.displaySyncEnabled(),
             allows_next_drawable_timeout: self.layer.allowsNextDrawableTimeout(),
             maximum_drawable_count: u8::try_from(self.layer.maximumDrawableCount()).unwrap_or(0),
+            regular_activation_policy: self.application.activationPolicy()
+                == NSApplicationActivationPolicy::Regular,
             display_link_paused: self.display_link.isPaused(),
             visible: self.window.isVisible(),
             callback_count: self.callback_count.load(Ordering::Acquire),
             submission_count: self.counters.submissions.load(Ordering::Acquire),
             direct_present_count: self.counters.direct_presents.load(Ordering::Acquire),
             presented_count: self.counters.presented.load(Ordering::Acquire),
+            last_presented_time_bits: self
+                .counters
+                .last_presented_time_bits
+                .load(Ordering::Acquire),
             skipped_count: self.counters.skipped.load(Ordering::Acquire),
             failed_count: self.counters.failed.load(Ordering::Acquire),
         }
@@ -1278,5 +1286,27 @@ mod tests {
                 stage: SurfaceStage::Device,
             })
         ));
+    }
+
+    #[test]
+    #[cfg(alpine_native_validation)]
+    fn idle_driver_shutdown_stops_portable_and_backend_ownership() -> Result<(), SurfaceError> {
+        let device = require_device(MTLCreateSystemDefaultDevice())?;
+        let backend = platform_spi::new_validation_backend_with_device(device)?;
+        let mut driver = PresentationDriver::new(backend)?;
+
+        driver.shutdown();
+
+        assert_eq!(
+            driver.state.application(),
+            alpine_platform::ApplicationState::Stopped
+        );
+        assert_eq!(
+            driver.backend.accounting().state(),
+            alpine_metal::BackendState::Stopped
+        );
+        assert!(driver.pending.is_none());
+        assert!(driver.active.is_none());
+        Ok(())
     }
 }

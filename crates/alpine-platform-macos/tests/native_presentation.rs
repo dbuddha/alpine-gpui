@@ -31,9 +31,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(error.into());
     }
     let snapshot = surface.snapshot();
+    assert!(snapshot.regular_activation_policy());
     assert!(snapshot.submission_count() >= 1);
     assert_eq!(snapshot.direct_present_count(), snapshot.submission_count());
     assert_eq!(snapshot.presented_count(), 1);
+    assert_ne!(snapshot.last_presented_time_bits(), 0);
     assert_eq!(
         snapshot.skipped_count(),
         snapshot.submission_count() - snapshot.presented_count()
@@ -60,6 +62,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         snapshot.direct_present_count()
     );
     assert_eq!(failed.presented_count(), 1);
+    assert_eq!(
+        failed.last_presented_time_bits(),
+        snapshot.last_presented_time_bits()
+    );
     assert_eq!(failed.failed_count(), 1);
     assert!(failed.display_link_paused());
 
@@ -77,6 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         recovered.submission_count()
     );
     assert_eq!(recovered.presented_count(), 2);
+    assert_ne!(recovered.last_presented_time_bits(), 0);
     assert_eq!(
         recovered.skipped_count(),
         recovered.submission_count() - recovered.presented_count()
