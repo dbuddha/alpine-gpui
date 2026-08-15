@@ -222,7 +222,9 @@ jobs:
           mkdir -p target
           git diff ${{ needs.classify.outputs.base_sha }}...${{ needs.classify.outputs.head_sha }} > target/alpine.diff
       - name: Require changed shipping mutants to be killed
-        run: cargo mutants --workspace --exclude alpine-assurance --no-shuffle --in-diff target/alpine.diff --output target/mutants.out -- --locked
+        # Linux cannot execute macOS-only validation entry points. Their
+        # mutations are owned by the required Apple Silicon Metal job below.
+        run: cargo mutants --workspace --exclude alpine-assurance --exclude-re 'native_validation::' --no-shuffle --in-diff target/alpine.diff --output target/mutants.out -- --locked
       - name: Require changed assurance mutants to be killed
         run: cargo mutants -p alpine-assurance --no-shuffle --in-diff target/alpine.diff --output target/assurance-mutants.out -- --locked
       - name: Upload mutation evidence

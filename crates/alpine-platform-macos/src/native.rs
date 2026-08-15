@@ -278,6 +278,7 @@ const MAX_PRESENTATION_POLLS: u16 = 600;
 struct FrameCounters {
     submissions: AtomicU64,
     direct_presents: AtomicU64,
+    installed_presented_handlers: AtomicU64,
     presented: AtomicU64,
     last_presented_time_bits: AtomicU64,
     skipped: AtomicU64,
@@ -455,7 +456,7 @@ impl PresentationDriver {
         let texture = drawable.texture();
         let drawable_protocol = ProtocolObject::from_ref(&*drawable);
         let presentation = Arc::new(PresentationSignal::default());
-        install_presented_handler(drawable_protocol, &presentation);
+        install_presented_handler(drawable_protocol, &presentation, counters);
         let attempt = platform_spi::render_callback_drawable(
             &mut self.backend,
             &frame.scene,
@@ -514,6 +515,7 @@ impl PresentationDriver {
 fn install_presented_handler(
     drawable: &ProtocolObject<dyn MTLDrawable>,
     presentation: &Arc<PresentationSignal>,
+    counters: &FrameCounters,
 ) {
     type PresentedHandler = dyn Fn(NonNull<ProtocolObject<dyn MTLDrawable>>);
 
@@ -534,6 +536,9 @@ fn install_presented_handler(
     unsafe {
         drawable.addPresentedHandler(RcBlock::as_ptr(&handler).cast::<c_void>().cast());
     }
+    counters
+        .installed_presented_handlers
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 struct DisplayLinkDelegateIvars {
@@ -919,6 +924,10 @@ impl NativeSurface {
             callback_count: self.callback_count.load(Ordering::Acquire),
             submission_count: self.counters.submissions.load(Ordering::Acquire),
             direct_present_count: self.counters.direct_presents.load(Ordering::Acquire),
+            installed_presented_handler_count: self
+                .counters
+                .installed_presented_handlers
+                .load(Ordering::Acquire),
             presented_count: self.counters.presented.load(Ordering::Acquire),
             last_presented_time_bits: self
                 .counters

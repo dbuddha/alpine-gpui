@@ -45,6 +45,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(snapshot.regular_activation_policy());
     assert!(snapshot.submission_count() >= 1);
     assert_eq!(snapshot.direct_present_count(), snapshot.submission_count());
+    assert_eq!(
+        snapshot.installed_presented_handler_count(),
+        snapshot.submission_count()
+    );
     if hosted_direct && snapshot.presented_count() == 0 {
         assert!(first_error.is_none());
         assert_eq!(snapshot.last_presented_time_bits(), 0);
@@ -89,6 +93,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let failed = surface.snapshot();
     assert_eq!(failed.submission_count(), snapshot.submission_count());
     assert_eq!(
+        failed.installed_presented_handler_count(),
+        snapshot.installed_presented_handler_count() + 1
+    );
+    assert_eq!(
         failed.direct_present_count(),
         snapshot.direct_present_count()
     );
@@ -109,6 +117,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(surface.take_error()?, None);
     let recovered = surface.snapshot();
     assert!(recovered.submission_count() > failed.submission_count());
+    assert_eq!(
+        recovered.installed_presented_handler_count(),
+        recovered.submission_count() + 1
+    );
     assert_eq!(
         recovered.direct_present_count(),
         recovered.submission_count()

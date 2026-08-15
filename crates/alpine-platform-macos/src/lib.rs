@@ -337,6 +337,7 @@ pub struct SurfaceSnapshot {
     callback_count: u64,
     submission_count: u64,
     direct_present_count: u64,
+    installed_presented_handler_count: u64,
     presented_count: u64,
     last_presented_time_bits: u64,
     skipped_count: u64,
@@ -414,6 +415,12 @@ impl SurfaceSnapshot {
     #[must_use]
     pub const fn direct_present_count(self) -> u64 {
         self.direct_present_count
+    }
+
+    /// Returns callback drawables with a registered presented handler.
+    #[must_use]
+    pub const fn installed_presented_handler_count(self) -> u64 {
+        self.installed_presented_handler_count
     }
 
     /// Returns drawables correlated with a nonzero presented timestamp.
@@ -769,6 +776,7 @@ mod tests {
             callback_count: 23,
             submission_count: 29,
             direct_present_count: 31,
+            installed_presented_handler_count: 33,
             presented_count: 37,
             last_presented_time_bits: 39,
             skipped_count: 41,
@@ -787,6 +795,7 @@ mod tests {
             callback_count: 37,
             submission_count: 43,
             direct_present_count: 47,
+            installed_presented_handler_count: 49,
             presented_count: 53,
             last_presented_time_bits: 57,
             skipped_count: 59,
@@ -805,6 +814,7 @@ mod tests {
         assert_eq!(snapshot.callback_count(), 23);
         assert_eq!(snapshot.submission_count(), 29);
         assert_eq!(snapshot.direct_present_count(), 31);
+        assert_eq!(snapshot.installed_presented_handler_count(), 33);
         assert_eq!(snapshot.presented_count(), 37);
         assert_eq!(snapshot.last_presented_time_bits(), 39);
         assert_eq!(snapshot.skipped_count(), 41);
@@ -822,6 +832,7 @@ mod tests {
         assert_eq!(inverse.callback_count(), 37);
         assert_eq!(inverse.submission_count(), 43);
         assert_eq!(inverse.direct_present_count(), 47);
+        assert_eq!(inverse.installed_presented_handler_count(), 49);
         assert_eq!(inverse.presented_count(), 53);
         assert_eq!(inverse.last_presented_time_bits(), 57);
         assert_eq!(inverse.skipped_count(), 59);
