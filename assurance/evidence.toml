@@ -352,7 +352,7 @@ id = "EV-0064-UNIT06C"
 claim = "AEP-0064-C06"
 kind = "unit"
 artifact = "crates/alpine-platform-macos/src/lib.rs#snapshot_accessors_preserve_discriminating_values"
-assertion = "Handle-free terminal evidence preserves attempt identity, revisions, epoch, outcome, per-attempt commit and present counts, commit eligibility, target timestamps, observed presentation time, retained bytes, and recovery classification independently."
+assertion = "Handle-free evidence independently preserves callback admission, active and pending cancellation counts, attempt identity, revisions, epoch, terminal classification, per-attempt commit and present counts, commit eligibility, target timestamps, observed presentation time, retained bytes, recovery classification, and the latest active or pending cancellation record."
 scope = "Safe public evidence values compiled and tested on every host."
 exclusions = ["native timestamp production", "native command completion", "physical scanout"]
 
@@ -414,7 +414,7 @@ claim = "AEP-0064-C03"
 kind = "kani"
 artifact = "crates/alpine-platform/src/proofs.rs#presentation_actions_preserve_invariants_and_atomicity"
 assertion = "Bounded arbitrary surface-epoch actions preserve stale-attempt rejection and atomic transition invariants in compiled Rust."
-scope = "Nine portable presentation actions across all fourteen action kinds."
+scope = "Nine portable presentation actions across all fifteen action kinds."
 bounds = ["nine steps", "symbolic action and eligibility values"]
 assumptions = ["native events have already been converted into validated actions"]
 exclusions = ["Objective-C callbacks", "unbounded action traces", "formal refinement"]
@@ -453,7 +453,7 @@ id = "EV-0064-NATIVE03B"
 claim = "AEP-0064-C03"
 kind = "native"
 artifact = "crates/alpine-platform-macos/tests/native_recovery.rs"
-assertion = "A deterministic display-identity change after a real callback drawable commits records the old attempt as superseded, excludes it from qualified presentation, retains its immutable scene for a newer-epoch retry, and then qualifies that retry without accepting a new application revision."
+assertion = "A deterministic display-identity change after a real callback drawable commits records the old attempt as superseded, excludes it from qualified presentation, retains its immutable scene across bounded later AppKit configuration churn, and then qualifies a current-epoch retry without accepting a new application revision."
 scope = "One process-main-thread Apple Silicon surface, real Metal commit and direct present call, and a validation-only post-commit configuration and presentation control."
 assumptions = ["the injected configuration uses the production epoch transition and scene-retention path", "the injected presentation observation uses a separate validation field and cannot overwrite the production native signal"]
 exclusions = ["physical multi-display hardware", "Core Animation scanout", "actual resize-notification timing", "elapsed-time performance"]
@@ -506,7 +506,7 @@ claim = "AEP-0064-C05"
 kind = "kani"
 artifact = "crates/alpine-platform/src/proofs.rs#presentation_actions_preserve_invariants_and_atomicity"
 assertion = "Bounded arbitrary failure and shutdown actions preserve terminal, ownership, pacing, and atomic-transition invariants in compiled Rust."
-scope = "Nine portable presentation actions across all fourteen action kinds."
+scope = "Nine portable presentation actions across all fifteen action kinds."
 bounds = ["nine steps", "symbolic action and eligibility values"]
 assumptions = ["native failures have already been classified into portable actions"]
 exclusions = ["native error production", "Objective-C ownership", "unbounded traces", "formal refinement"]
@@ -522,6 +522,15 @@ scope = "Pure Rust presentation transition implementation."
 exclusions = ["native callback races", "Metal completion", "native object release"]
 
 [[evidence]]
+id = "EV-0064-UNIT05B"
+claim = "AEP-0064-C05"
+kind = "unit"
+artifact = "crates/alpine-platform/src/lib.rs#shutdown_returns_distinct_cancellation_evidence"
+assertion = "Pending requests, precommit attempts, and committed attempts return explicit cancellation evidence with exact revision, epoch, commit, present, eligibility, stopped-state, and resource-release facts rather than aliasing supersession or failure."
+scope = "Pure Rust presentation cancellation before and after command commit."
+exclusions = ["native callback delivery", "Objective-C object release", "GPU cancellation"]
+
+[[evidence]]
 id = "EV-0064-INTEGRATION05"
 claim = "AEP-0064-C05"
 kind = "integration"
@@ -535,9 +544,9 @@ id = "EV-0064-E2E05"
 claim = "AEP-0064-C05"
 kind = "e2e"
 artifact = "scripts/check-metal.sh"
-assertion = "The Apple Silicon Metal gate executes native surface initialization, presentation, epoch, color, supersession, and device-loss failure paths under the validation configuration."
+assertion = "The Apple Silicon Metal gate executes native surface initialization, presentation, epoch, color, supersession, device-loss, cancellation, callback rejection, idle, and repeated teardown paths under the validation configuration."
 scope = "GitHub-hosted Apple Silicon macOS native validation job."
-exclusions = ["fixed-hardware compositor qualification", "physical device removal", "long-running platform soak"]
+exclusions = ["fixed-hardware compositor qualification", "physical device removal", "multi-hour platform soak"]
 
 [[evidence]]
 id = "EV-0064-NATIVE05"
@@ -548,6 +557,16 @@ assertion = "A real callback drawable commits and receives direct present before
 scope = "One Apple Silicon Metal device and process-main-thread AppKit surface with deterministic command-completion failure injection."
 assumptions = ["the documented Metal device-removed error code exercises the production failure classifier and backend-generation invalidation path"]
 exclusions = ["physical device removal", "automatic backend recreation", "surface-loss recovery", "cancellation callback race", "platform leak and soak qualification"]
+
+[[evidence]]
+id = "EV-0064-NATIVE05B"
+claim = "AEP-0064-C05"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_lifecycle.rs"
+assertion = "A hidden pending request closes with revision-and-epoch cancellation evidence and no native work; a real Metal attempt closed immediately after commit terminates as cancelled with no qualified presentation or retained Alpine bytes; late display-link callbacks are rejected, late AppKit configuration notifications are ignored without manufacturing a driver error, visible clean idle remains callback-stable, and thirty-two complete native owner cycles release all nine owner kinds exactly once in teardown order."
+scope = "Process-main-thread Apple Silicon AppKit, CAMetalDisplayLink, real Metal submission, validation-only close-boundary injection, and exact owner leases."
+assumptions = ["post-commit generation revocation executes at the production lifecycle recheck", "owner leases are validation-only observers and do not own native objects"]
+exclusions = ["physical scanout", "multi-hour soak", "process RSS attribution outside Alpine owners", "fixed-hardware wakeup and energy budgets"]
 
 [[evidence]]
 id = "EV-0064-MIRI05"
@@ -563,7 +582,7 @@ id = "EV-0064-MUTATION05"
 claim = "AEP-0064-C05"
 kind = "mutation"
 artifact = ".github/workflows/ci.yml#metal-validation"
-assertion = "Every viable mutant in changed native terminal classification, device-generation invalidation, failure accounting, and guarded rejection must be killed on Apple Silicon."
+assertion = "Every viable mutant in changed native terminal classification, cancellation, callback admission, owner teardown, device-generation invalidation, failure accounting, and guarded rejection must be killed on Apple Silicon."
 scope = "Changed alpine-metal and alpine-platform-macos native Rust."
 exclusions = ["unviable compiler-rejected mutants", "unchanged failure paths"]
 
@@ -1986,8 +2005,8 @@ claim = "AEP-0064-C09"
 kind = "kani"
 artifact = "crates/alpine-platform/src/proofs.rs#presentation_actions_preserve_invariants_and_atomicity"
 assertion = "Nine arbitrary portable actions preserve every executable invariant, and rejected actions preserve the exact prior state."
-scope = "Compiled allocation-free Rust transition logic across all fourteen action kinds."
-bounds = ["nine steps", "each symbolic byte selects one of fourteen action kinds", "symbolic visibility and size values"]
+scope = "Compiled allocation-free Rust transition logic across all fifteen action kinds."
+bounds = ["nine steps", "each symbolic byte selects one of fifteen action kinds", "symbolic visibility and size values"]
 assumptions = ["token-bearing actions use the current token when one exists and a fixed invalid token otherwise"]
 exclusions = ["longer traces", "native handles", "concurrency", "formal refinement proof"]
 companion = "crates/alpine-platform/src/lib.rs#exhaustive_reachable_state_and_action_oracle"

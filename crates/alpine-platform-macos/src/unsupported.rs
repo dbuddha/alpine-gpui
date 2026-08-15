@@ -62,12 +62,15 @@ impl NativeSurface {
             display_link_paused: true,
             visible: false,
             callback_count: 0,
+            rejected_callback_count: 0,
             submission_count: 0,
             direct_present_count: 0,
             installed_presented_handler_count: 0,
             presented_count: 0,
             qualified_presented_count: 0,
             superseded_count: 0,
+            cancelled_count: 0,
+            pending_cancellation_count: 0,
             last_presented_time_bits: 0,
             skipped_count: 0,
             failed_count: 0,
@@ -75,6 +78,8 @@ impl NativeSurface {
             current_retained_bytes: 0,
             last_terminal: None,
             last_superseded: None,
+            last_cancelled: None,
+            last_pending_cancellation: None,
         }
     }
 
@@ -83,10 +88,10 @@ impl NativeSurface {
         reason = "the unsupported implementation mirrors the native owner contract"
     )]
     pub(crate) fn observer(&self) -> SurfaceObserver {
-        let (lifecycle, callback_count) = new_observer_state();
+        let (lifecycle, callback_count, rejected_callback_count) = new_observer_state();
         begin_close_observer_state(&lifecycle);
         finish_close_observer_state(&lifecycle);
-        SurfaceObserver::new(lifecycle, callback_count)
+        SurfaceObserver::new(lifecycle, callback_count, rejected_callback_count)
     }
 }
 
@@ -126,12 +131,15 @@ mod tests {
                 display_link_paused: true,
                 visible: false,
                 callback_count: 0,
+                rejected_callback_count: 0,
                 submission_count: 0,
                 direct_present_count: 0,
                 installed_presented_handler_count: 0,
                 presented_count: 0,
                 qualified_presented_count: 0,
                 superseded_count: 0,
+                cancelled_count: 0,
+                pending_cancellation_count: 0,
                 last_presented_time_bits: 0,
                 skipped_count: 0,
                 failed_count: 0,
@@ -139,6 +147,8 @@ mod tests {
                 current_retained_bytes: 0,
                 last_terminal: None,
                 last_superseded: None,
+                last_cancelled: None,
+                last_pending_cancellation: None,
             }
         );
         assert_eq!(

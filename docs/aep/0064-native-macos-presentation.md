@@ -267,7 +267,7 @@ hardware. Hosted timing remains informational.
 | `CallPresent` | one direct presentation call after commit | native E2E, call counter, invalid alternative-method control |
 | `CompletePresentation` | terminal evidence correlation and resource release | native E2E, presented handler, supersession injection |
 | `AdvanceSurfaceEpoch` | resize, scale, or display change | property tests, native resize and migration E2E |
-| `BeginShutdown*` | invalidate link, reject work, release or drain | TLA+, Rust replay, native failure injection, leak and soak |
+| `BeginShutdown*` and `CancelActive` | invalidate link, reject work, classify pending or active cancellation, release or drain | TLA+, Rust replay, native failure injection, leak and soak |
 | `PresentedIsCurrent` | qualification rejects stale revision or epoch | known-fault TLC, Kani, integration, native E2E |
 
 | Claim | Minimum qualifying evidence |

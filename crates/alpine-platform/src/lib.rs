@@ -63,8 +63,10 @@ pub enum PresentationOutcome {
     None,
     /// The attempt presented the current revision and surface epoch.
     Presented,
-    /// The attempt terminated but was no longer current or was cancelled.
+    /// The attempt terminated after its revision or surface epoch became stale.
     Superseded,
+    /// The attempt was explicitly cancelled before presentation qualification.
+    Cancelled,
     /// The attempt terminated with a classified failure.
     Failed,
 }
@@ -230,6 +232,33 @@ impl AttemptEvidence {
     }
 }
 
+/// Terminal evidence for dirty work cancelled before an attempt token existed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PendingCancellationEvidence {
+    requested_revision: PresentationRevision,
+    surface_epoch: SurfaceEpoch,
+}
+
+impl PendingCancellationEvidence {
+    /// Returns the requested immutable scene revision that was cancelled.
+    #[must_use]
+    pub const fn requested_revision(self) -> PresentationRevision {
+        self.requested_revision
+    }
+
+    /// Returns the native surface epoch current when cancellation occurred.
+    #[must_use]
+    pub const fn surface_epoch(self) -> SurfaceEpoch {
+        self.surface_epoch
+    }
+
+    /// Returns the distinct terminal cancellation classification.
+    #[must_use]
+    pub const fn outcome(self) -> PresentationOutcome {
+        PresentationOutcome::Cancelled
+    }
+}
+
 /// Observable event produced by one successful transition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PresentationEvent {
@@ -257,6 +286,8 @@ pub enum PresentationEvent {
     PresentCalled(FrameToken),
     /// An attempt reached one terminal result.
     Terminal(AttemptEvidence),
+    /// Dirty work was cancelled before an attempt token existed.
+    PendingCancelled(PendingCancellationEvidence),
     /// Shutdown began and committed work must drain.
     ShutdownDraining,
     /// Shutdown completed without committed work to drain.
@@ -311,6 +342,8 @@ pub enum PresentationAction {
     CompletePresentation(FrameToken),
     /// Record active encoding, command, or presentation failure.
     FailActive(FrameToken),
+    /// Cancel active precommit work, or committed work while shutdown drains.
+    CancelActive(FrameToken),
     /// Invalidate pacing and stop or begin draining.
     BeginShutdown,
     /// Finish teardown after committed work drains.
@@ -344,6 +377,8 @@ pub enum PresentationActionKind {
     CompletePresentation,
     /// [`PresentationAction::FailActive`].
     FailActive,
+    /// [`PresentationAction::CancelActive`].
+    CancelActive,
     /// [`PresentationAction::BeginShutdown`].
     BeginShutdown,
     /// [`PresentationAction::StopAfterDrain`].
@@ -365,6 +400,7 @@ impl PresentationAction {
             Self::CallPresent(_) => PresentationActionKind::CallPresent,
             Self::CompletePresentation(_) => PresentationActionKind::CompletePresentation,
             Self::FailActive(_) => PresentationActionKind::FailActive,
+            Self::CancelActive(_) => PresentationActionKind::CancelActive,
             Self::BeginShutdown => PresentationActionKind::BeginShutdown,
             Self::StopAfterDrain => PresentationActionKind::StopAfterDrain,
         }
@@ -728,6 +764,7 @@ impl PresentationState {
             PresentationAction::CallPresent(token) => self.call_present(token),
             PresentationAction::CompletePresentation(token) => self.complete_presentation(token),
             PresentationAction::FailActive(token) => self.fail_active(token),
+            PresentationAction::CancelActive(token) => self.cancel_active(token),
             PresentationAction::BeginShutdown => self.begin_shutdown(),
             PresentationAction::StopAfterDrain => self.stop_after_drain(),
         }
@@ -962,27 +999,71 @@ impl PresentationState {
         ))
     }
 
-    fn begin_shutdown(&mut self) -> Result<PresentationTransition, TransitionErrorKind> {
-        self.require_running()?;
-        self.link = DisplayLinkState::Invalid;
-        self.dirty = false;
-        let event = if matches!(
+    fn cancel_active(
+        &mut self,
+        token: FrameToken,
+    ) -> Result<PresentationTransition, TransitionErrorKind> {
+        self.require_token(token)?;
+        let committed = matches!(
             self.phase,
             PresentationPhase::Submitted | PresentationPhase::PresentCalled
-        ) {
-            self.application = ApplicationState::Stopping;
-            PresentationEvent::ShutdownDraining
-        } else {
-            if matches!(
-                self.phase,
-                PresentationPhase::Prepared | PresentationPhase::Encoding
-            ) {
-                self.outcome = PresentationOutcome::Superseded;
+        );
+        if matches!(self.application, ApplicationState::Stopped)
+            || matches!(self.phase, PresentationPhase::Idle)
+            || (committed && matches!(self.application, ApplicationState::Running))
+        {
+            return Err(TransitionErrorKind::ActionDisabled);
+        }
+        self.phase = PresentationPhase::Idle;
+        self.resource = PresentationResource::Free;
+        self.dirty = false;
+        self.outcome = PresentationOutcome::Cancelled;
+        let directive = if matches!(self.application, ApplicationState::Running) {
+            let was_running = matches!(self.link, DisplayLinkState::Running);
+            self.link = DisplayLinkState::Paused;
+            if was_running {
+                DisplayLinkDirective::Pause
+            } else {
+                DisplayLinkDirective::None
             }
-            self.application = ApplicationState::Stopped;
-            self.phase = PresentationPhase::Idle;
-            self.resource = PresentationResource::Free;
-            PresentationEvent::Stopped
+        } else {
+            DisplayLinkDirective::None
+        };
+        Ok(self.transition(
+            PresentationEvent::Terminal(self.attempt_evidence()),
+            directive,
+        ))
+    }
+
+    fn begin_shutdown(&mut self) -> Result<PresentationTransition, TransitionErrorKind> {
+        self.require_running()?;
+        let had_pending_request = self.dirty && matches!(self.phase, PresentationPhase::Idle);
+        self.link = DisplayLinkState::Invalid;
+        self.dirty = false;
+        let event = match self.phase {
+            PresentationPhase::Submitted | PresentationPhase::PresentCalled => {
+                self.application = ApplicationState::Stopping;
+                PresentationEvent::ShutdownDraining
+            }
+            PresentationPhase::Prepared | PresentationPhase::Encoding => {
+                self.application = ApplicationState::Stopped;
+                self.phase = PresentationPhase::Idle;
+                self.resource = PresentationResource::Free;
+                self.outcome = PresentationOutcome::Cancelled;
+                PresentationEvent::Terminal(self.attempt_evidence())
+            }
+            PresentationPhase::Idle => {
+                self.application = ApplicationState::Stopped;
+                if had_pending_request {
+                    self.outcome = PresentationOutcome::Cancelled;
+                    PresentationEvent::PendingCancelled(PendingCancellationEvidence {
+                        requested_revision: self.requested_revision,
+                        surface_epoch: self.surface_epoch,
+                    })
+                } else {
+                    PresentationEvent::Stopped
+                }
+            }
         };
         Ok(self.transition(event, DisplayLinkDirective::Invalidate))
     }
@@ -1104,9 +1185,9 @@ mod tests {
     use std::vec::Vec;
 
     use super::{
-        ApplicationState, DisplayLinkDirective, FrameToken, PresentationAction, PresentationEvent,
-        PresentationOutcome, PresentationPhase, PresentationResource, PresentationState,
-        TransitionErrorKind,
+        ApplicationState, AttemptEvidence, DisplayLinkDirective, FrameToken,
+        PendingCancellationEvidence, PresentationAction, PresentationEvent, PresentationOutcome,
+        PresentationPhase, PresentationResource, PresentationState, TransitionErrorKind,
     };
 
     fn apply(
@@ -1152,6 +1233,22 @@ mod tests {
         let token = state.active_token().ok_or("expected active token")?;
         assert_eq!(event, PresentationEvent::Prepared(token));
         Ok(token)
+    }
+
+    fn terminal_attempt(event: PresentationEvent) -> Option<AttemptEvidence> {
+        if let PresentationEvent::Terminal(evidence) = event {
+            Some(evidence)
+        } else {
+            None
+        }
+    }
+
+    fn pending_cancellation(event: PresentationEvent) -> Option<PendingCancellationEvidence> {
+        if let PresentationEvent::PendingCancelled(evidence) = event {
+            Some(evidence)
+        } else {
+            None
+        }
     }
 
     #[test]
@@ -1400,12 +1497,30 @@ mod tests {
         assert_eq!(state, before);
         assert!(state.apply(PresentationAction::FailActive(token)).is_err());
         assert_eq!(state, before);
+        assert!(state.apply(PresentationAction::CancelActive(token)).is_ok());
+        assert_eq!(state.outcome(), PresentationOutcome::Cancelled);
+        let cancelled = state;
+        assert!(
+            state
+                .apply(PresentationAction::CancelActive(token))
+                .is_err()
+        );
+        assert_eq!(state, cancelled);
+
+        make_eligible(&mut state)?;
+        let token = prepare(&mut state)?;
 
         apply(&mut state, PresentationAction::BeginUpdate(token))?;
         apply(&mut state, PresentationAction::Submit(token))?;
         apply(&mut state, PresentationAction::CallPresent(token))?;
         let before = state;
         assert!(state.apply(PresentationAction::CallPresent(token)).is_err());
+        assert_eq!(state, before);
+        assert!(
+            state
+                .apply(PresentationAction::CancelActive(token))
+                .is_err()
+        );
         assert_eq!(state, before);
 
         let mut not_draining = PresentationState::new();
@@ -1672,16 +1787,74 @@ mod tests {
             apply(&mut state, PresentationAction::BeginShutdown)?;
             if matches!(state.application(), ApplicationState::Stopping) {
                 let token = token.ok_or("committed phase must have a token")?;
-                if matches!(state.phase(), PresentationPhase::Submitted) {
-                    apply(&mut state, PresentationAction::CallPresent(token))?;
-                }
-                apply(&mut state, PresentationAction::CompletePresentation(token))?;
+                apply(&mut state, PresentationAction::CancelActive(token))?;
                 apply(&mut state, PresentationAction::StopAfterDrain)?;
             }
             assert_eq!(state.application(), ApplicationState::Stopped);
             assert_eq!(state.resource(), PresentationResource::Free);
+            assert_eq!(state.outcome(), PresentationOutcome::Cancelled);
             assert!(state.invariants_hold());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn shutdown_returns_distinct_cancellation_evidence() -> Result<(), &'static str> {
+        assert_eq!(terminal_attempt(PresentationEvent::Stopped), None);
+        assert_eq!(pending_cancellation(PresentationEvent::Stopped), None);
+        let mut clean = PresentationState::new();
+        let transition = clean
+            .apply(PresentationAction::BeginShutdown)
+            .map_err(|_| "clean shutdown failed")?;
+        assert_eq!(transition.event(), PresentationEvent::Stopped);
+        assert_eq!(clean.outcome(), PresentationOutcome::None);
+
+        let mut pending = PresentationState::new();
+        make_eligible(&mut pending)?;
+        let transition = pending
+            .apply(PresentationAction::BeginShutdown)
+            .map_err(|_| "pending shutdown failed")?;
+        let evidence = pending_cancellation(transition.event())
+            .ok_or("pending shutdown did not return cancellation evidence")?;
+        assert_eq!(evidence.requested_revision().get(), 1);
+        assert_eq!(evidence.surface_epoch(), pending.surface_epoch());
+        assert_eq!(evidence.outcome(), PresentationOutcome::Cancelled);
+        assert_eq!(pending.application(), ApplicationState::Stopped);
+
+        let mut precommit = PresentationState::new();
+        make_eligible(&mut precommit)?;
+        let token = prepare(&mut precommit)?;
+        apply(&mut precommit, PresentationAction::BeginUpdate(token))?;
+        let transition = precommit
+            .apply(PresentationAction::BeginShutdown)
+            .map_err(|_| "precommit shutdown failed")?;
+        let evidence = terminal_attempt(transition.event())
+            .ok_or("precommit shutdown did not return terminal evidence")?;
+        assert_eq!(evidence.outcome(), PresentationOutcome::Cancelled);
+        assert_eq!(evidence.submission_count(), 0);
+        assert_eq!(evidence.present_call_count(), 0);
+        assert!(!evidence.eligible_at_commit());
+        assert_eq!(precommit.application(), ApplicationState::Stopped);
+
+        let mut committed = PresentationState::new();
+        make_eligible(&mut committed)?;
+        let token = prepare(&mut committed)?;
+        apply(&mut committed, PresentationAction::BeginUpdate(token))?;
+        apply(&mut committed, PresentationAction::Submit(token))?;
+        apply(&mut committed, PresentationAction::CallPresent(token))?;
+        apply(&mut committed, PresentationAction::BeginShutdown)?;
+        let transition = committed
+            .apply(PresentationAction::CancelActive(token))
+            .map_err(|_| "committed cancellation failed")?;
+        let evidence = terminal_attempt(transition.event())
+            .ok_or("committed cancellation did not return terminal evidence")?;
+        assert_eq!(evidence.outcome(), PresentationOutcome::Cancelled);
+        assert_eq!(evidence.submission_count(), 1);
+        assert_eq!(evidence.present_call_count(), 1);
+        assert!(evidence.eligible_at_commit());
+        apply(&mut committed, PresentationAction::StopAfterDrain)?;
+        assert_eq!(committed.application(), ApplicationState::Stopped);
+        assert!(committed.invariants_hold());
         Ok(())
     }
 
@@ -1720,6 +1893,11 @@ mod tests {
         assert!(
             observed
                 .iter()
+                .any(|state| { matches!(state.outcome(), PresentationOutcome::Cancelled) })
+        );
+        assert!(
+            observed
+                .iter()
                 .any(|state| { matches!(state.application(), ApplicationState::Stopped) })
         );
     }
@@ -1745,6 +1923,7 @@ mod tests {
                 PresentationAction::CallPresent(token),
                 PresentationAction::CompletePresentation(token),
                 PresentationAction::FailActive(token),
+                PresentationAction::CancelActive(token),
             ]);
         }
         actions

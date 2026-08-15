@@ -35,8 +35,9 @@ use objc2_quartz_core::{
 use alpine_core::LinearRgba;
 use alpine_metal::{MetalBackend, OffscreenDescriptor, RecoveryClassification, platform_spi};
 use alpine_platform::{
-    DisplayLinkDirective, DisplayLinkState, FrameToken, PresentationAction, PresentationEvent,
-    PresentationOutcome, PresentationState, PresentationTransition,
+    ApplicationState, DisplayLinkDirective, DisplayLinkState, FrameToken,
+    PendingCancellationEvidence, PresentationAction, PresentationEvent, PresentationOutcome,
+    PresentationState, PresentationTransition,
 };
 use alpine_scene::Scene;
 use block2::RcBlock;
@@ -93,6 +94,8 @@ struct InitializationControl {
     #[cfg(alpine_native_validation)]
     callback_count: Option<Arc<AtomicU64>>,
     #[cfg(alpine_native_validation)]
+    rejected_callback_count: Option<Arc<AtomicU64>>,
+    #[cfg(alpine_native_validation)]
     device_loss: bool,
 }
 
@@ -108,6 +111,8 @@ impl InitializationControl {
             #[cfg(alpine_native_validation)]
             callback_count: None,
             #[cfg(alpine_native_validation)]
+            rejected_callback_count: None,
+            #[cfg(alpine_native_validation)]
             device_loss: false,
         }
     }
@@ -116,10 +121,18 @@ impl InitializationControl {
         clippy::unused_self,
         reason = "shipping builds erase validation state while preserving one constructor path"
     )]
-    fn observer_state(&self) -> (Arc<AtomicU8>, Arc<AtomicU64>) {
+    fn observer_state(&self) -> (Arc<AtomicU8>, Arc<AtomicU64>, Arc<AtomicU64>) {
         #[cfg(alpine_native_validation)]
-        if let (Some(lifecycle), Some(callback_count)) = (&self.lifecycle, &self.callback_count) {
-            return (Arc::clone(lifecycle), Arc::clone(callback_count));
+        if let (Some(lifecycle), Some(callback_count), Some(rejected_callback_count)) = (
+            &self.lifecycle,
+            &self.callback_count,
+            &self.rejected_callback_count,
+        ) {
+            return (
+                Arc::clone(lifecycle),
+                Arc::clone(callback_count),
+                Arc::clone(rejected_callback_count),
+            );
         }
         new_observer_state()
     }
@@ -158,12 +171,13 @@ impl InitializationControl {
 
     #[cfg(alpine_native_validation)]
     fn validation(fault_after: Option<SurfaceStage>) -> Self {
-        let (lifecycle, callback_count) = new_observer_state();
+        let (lifecycle, callback_count, rejected_callback_count) = new_observer_state();
         Self {
             fault_after,
             probe: Some(InitializationProbe::default()),
             lifecycle: Some(lifecycle),
             callback_count: Some(callback_count),
+            rejected_callback_count: Some(rejected_callback_count),
             device_loss: false,
         }
     }
@@ -181,6 +195,7 @@ impl InitializationControl {
         Some(SurfaceObserver::new(
             Arc::clone(self.lifecycle.as_ref()?),
             Arc::clone(self.callback_count.as_ref()?),
+            Arc::clone(self.rejected_callback_count.as_ref()?),
         ))
     }
 
@@ -253,6 +268,20 @@ impl InitializationProbe {
     fn record_window_close(&self) {
         self.0.window_closes.set(self.0.window_closes.get() + 1);
     }
+
+    fn evidence(&self) -> crate::native_validation::NativeOwnerEvidence {
+        let (acquired, released, active) = self.counts();
+        crate::native_validation::NativeOwnerEvidence::new(
+            acquired,
+            released,
+            active,
+            self.0.run_loop_registrations.get(),
+            self.0.link_invalidations.get(),
+            self.0.delegate_revocations.get(),
+            self.0.window_closes.get(),
+            self.0.release_order_violations.get(),
+        )
+    }
 }
 
 #[cfg(alpine_native_validation)]
@@ -307,6 +336,8 @@ struct FrameCounters {
     presented: AtomicU64,
     qualified_presented: AtomicU64,
     superseded: AtomicU64,
+    cancelled: AtomicU64,
+    pending_cancellations: AtomicU64,
     last_presented_time_bits: AtomicU64,
     skipped: AtomicU64,
     failed: AtomicU64,
@@ -336,6 +367,7 @@ impl AttemptTiming {
 struct PostCommitControl {
     configuration: Option<SurfaceConfiguration>,
     presented_time_bits: u64,
+    close_generation: bool,
 }
 
 struct ActiveFrame {
@@ -396,6 +428,7 @@ struct PresentationSignal {
 
 struct PresentationDriver {
     state: PresentationState,
+    lifecycle: Arc<AtomicU8>,
     configuration: SurfaceConfiguration,
     pending: Option<PendingFrame>,
     active: Option<ActiveFrame>,
@@ -404,6 +437,8 @@ struct PresentationDriver {
     last_error: Option<SurfaceError>,
     last_terminal: Option<FrameTerminalEvidence>,
     last_superseded: Option<FrameTerminalEvidence>,
+    last_cancelled: Option<FrameTerminalEvidence>,
+    last_pending_cancellation: Option<PendingCancellationEvidence>,
     #[cfg(alpine_native_validation)]
     post_commit_control: Option<PostCommitControl>,
 }
@@ -412,11 +447,13 @@ impl PresentationDriver {
     fn new(
         backend: MetalBackend,
         configuration: SurfaceConfiguration,
+        lifecycle: Arc<AtomicU8>,
     ) -> Result<Self, SurfaceError> {
         let mut state = PresentationState::new();
         state.apply(PresentationAction::SetSized(configuration.is_sized()))?;
         Ok(Self {
             state,
+            lifecycle,
             configuration,
             pending: None,
             active: None,
@@ -425,6 +462,8 @@ impl PresentationDriver {
             last_error: None,
             last_terminal: None,
             last_superseded: None,
+            last_cancelled: None,
+            last_pending_cancellation: None,
             #[cfg(alpine_native_validation)]
             post_commit_control: None,
         })
@@ -540,6 +579,9 @@ impl PresentationDriver {
         update: &CAMetalDisplayLinkUpdate,
         counters: &FrameCounters,
     ) -> Result<DisplayLinkDirective, SurfaceError> {
+        if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+            return Ok(DisplayLinkDirective::Invalidate);
+        }
         if let Some(directive) = self.reconcile_active_presentation(counters)? {
             return Ok(directive);
         }
@@ -629,6 +671,9 @@ impl PresentationDriver {
         };
         self.state.apply(PresentationAction::BeginUpdate(token))?;
         let timing = AttemptTiming::from_update(update);
+        if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+            return self.cancel_attempt(token, timing, counters);
+        }
 
         #[allow(
             clippy::cast_possible_truncation,
@@ -674,7 +719,22 @@ impl PresentationDriver {
                 });
                 #[cfg(alpine_native_validation)]
                 if self.post_commit_control.is_some() {
-                    return self.apply_post_commit_control();
+                    let directive = self.apply_post_commit_control()?;
+                    if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+                        let active = self.active.take().ok_or(SurfaceError::DriverUnavailable)?;
+                        let cancellation =
+                            self.cancel_attempt(active.token, active.timing, counters)?;
+                        return Ok(if matches!(directive, DisplayLinkDirective::Invalidate) {
+                            directive
+                        } else {
+                            cancellation
+                        });
+                    }
+                    return Ok(directive);
+                }
+                if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+                    let active = self.active.take().ok_or(SurfaceError::DriverUnavailable)?;
+                    return self.cancel_attempt(active.token, active.timing, counters);
                 }
                 Ok(DisplayLinkDirective::None)
             }
@@ -700,6 +760,9 @@ impl PresentationDriver {
             PresentationOutcome::Superseded => {
                 counters.superseded.fetch_add(1, Ordering::Relaxed);
             }
+            PresentationOutcome::Cancelled => {
+                counters.cancelled.fetch_add(1, Ordering::Relaxed);
+            }
             PresentationOutcome::None | PresentationOutcome::Failed => {}
         }
         let evidence = FrameTerminalEvidence::new(
@@ -713,8 +776,55 @@ impl PresentationDriver {
         if matches!(attempt.outcome(), PresentationOutcome::Superseded) {
             self.last_superseded = Some(evidence);
         }
+        if matches!(attempt.outcome(), PresentationOutcome::Cancelled) {
+            self.last_cancelled = Some(evidence);
+        }
         self.last_terminal = Some(evidence);
         Ok(transition.display_link())
+    }
+
+    fn cancel_attempt(
+        &mut self,
+        token: FrameToken,
+        timing: AttemptTiming,
+        counters: &FrameCounters,
+    ) -> Result<DisplayLinkDirective, SurfaceError> {
+        if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE
+            && matches!(self.state.application(), ApplicationState::Running)
+        {
+            let shutdown = self.state.apply(PresentationAction::BeginShutdown)?;
+            match shutdown.event() {
+                PresentationEvent::Terminal(_) => {
+                    return self.record_terminal(shutdown, timing, 0, None, counters);
+                }
+                PresentationEvent::ShutdownDraining => {}
+                PresentationEvent::Unchanged
+                | PresentationEvent::Invalidated(_)
+                | PresentationEvent::SurfaceAdvanced(_)
+                | PresentationEvent::VisibilityChanged(_)
+                | PresentationEvent::SizeEligibilityChanged(_)
+                | PresentationEvent::PacingResumed
+                | PresentationEvent::Prepared(_)
+                | PresentationEvent::UpdateBegan(_)
+                | PresentationEvent::StaleDiscarded(_)
+                | PresentationEvent::Submitted(_)
+                | PresentationEvent::PresentCalled(_)
+                | PresentationEvent::PendingCancelled(_)
+                | PresentationEvent::Stopped => {
+                    return Err(SurfaceError::DriverUnavailable);
+                }
+            }
+        }
+        let transition = self.state.apply(PresentationAction::CancelActive(token))?;
+        let directive = self.record_terminal(transition, timing, 0, None, counters)?;
+        if matches!(self.state.application(), ApplicationState::Stopping) {
+            return self
+                .state
+                .apply(PresentationAction::StopAfterDrain)
+                .map(PresentationTransition::display_link)
+                .map_err(SurfaceError::from);
+        }
+        Ok(directive)
     }
 
     #[cfg(alpine_native_validation)]
@@ -728,6 +838,16 @@ impl PresentationDriver {
         self.post_commit_control = Some(PostCommitControl {
             configuration,
             presented_time_bits: presented_time.to_bits(),
+            close_generation: false,
+        });
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn inject_post_commit_close(&mut self) {
+        self.post_commit_control = Some(PostCommitControl {
+            configuration: None,
+            presented_time_bits: 0,
+            close_generation: true,
         });
     }
 
@@ -742,12 +862,21 @@ impl PresentationDriver {
             .map_or(Ok(DisplayLinkDirective::None), |configuration| {
                 self.apply_configuration(configuration)
             })?;
+        if control.close_generation {
+            begin_close_observer_state(&self.lifecycle);
+        }
         let active = self
             .active
             .as_mut()
             .ok_or(SurfaceError::DriverUnavailable)?;
-        active.observation.inject(control.presented_time_bits);
-        Ok(directive)
+        if control.presented_time_bits != 0 {
+            active.observation.inject(control.presented_time_bits);
+        }
+        Ok(if control.close_generation {
+            DisplayLinkDirective::Invalidate
+        } else {
+            directive
+        })
     }
 
     fn take_error(&mut self) -> Option<SurfaceError> {
@@ -759,14 +888,47 @@ impl PresentationDriver {
         self.last_error = Some(error);
     }
 
-    fn shutdown(&mut self) {
-        let _ = self.state.apply(PresentationAction::BeginShutdown);
-        if let Some(active) = self.active.take() {
-            let _ = self
-                .state
-                .apply(PresentationAction::FailActive(active.token));
+    fn shutdown(&mut self, counters: &FrameCounters) {
+        let shutdown = self.state.apply(PresentationAction::BeginShutdown);
+        if let Ok(transition) = shutdown {
+            match transition.event() {
+                PresentationEvent::Terminal(_) => {
+                    let timing = self.active.as_ref().map_or(
+                        AttemptTiming {
+                            target_timestamp_bits: 0,
+                            target_presentation_timestamp_bits: 0,
+                        },
+                        |active| active.timing,
+                    );
+                    let _ = self.record_terminal(transition, timing, 0, None, counters);
+                }
+                PresentationEvent::PendingCancelled(evidence) => {
+                    counters
+                        .pending_cancellations
+                        .fetch_add(1, Ordering::Relaxed);
+                    self.last_pending_cancellation = Some(evidence);
+                }
+                PresentationEvent::Unchanged
+                | PresentationEvent::Invalidated(_)
+                | PresentationEvent::SurfaceAdvanced(_)
+                | PresentationEvent::VisibilityChanged(_)
+                | PresentationEvent::SizeEligibilityChanged(_)
+                | PresentationEvent::PacingResumed
+                | PresentationEvent::Prepared(_)
+                | PresentationEvent::UpdateBegan(_)
+                | PresentationEvent::StaleDiscarded(_)
+                | PresentationEvent::Submitted(_)
+                | PresentationEvent::PresentCalled(_)
+                | PresentationEvent::ShutdownDraining
+                | PresentationEvent::Stopped => {}
+            }
         }
-        let _ = self.state.apply(PresentationAction::StopAfterDrain);
+        if let Some(active) = self.active.take() {
+            let _ = self.cancel_attempt(active.token, active.timing, counters);
+        }
+        if matches!(self.state.application(), ApplicationState::Stopping) {
+            let _ = self.state.apply(PresentationAction::StopAfterDrain);
+        }
         self.pending = None;
         self.backend.shutdown();
     }
@@ -829,7 +991,9 @@ fn install_presented_handler(
 
 struct DisplayLinkDelegateIvars {
     lifecycle: Arc<AtomicU8>,
+    window_close_started: Arc<AtomicBool>,
     callback_count: Arc<AtomicU64>,
+    rejected_callback_count: Arc<AtomicU64>,
     counters: Arc<FrameCounters>,
     driver: Option<Rc<RefCell<PresentationDriver>>>,
     window: Option<Retained<NSWindow>>,
@@ -868,22 +1032,26 @@ define_class!(
             link: &CAMetalDisplayLink,
             update: &CAMetalDisplayLinkUpdate,
         ) {
-            if self.ivars().lifecycle.load(Ordering::Acquire) == SURFACE_LIVE {
-                self.ivars().callback_count.fetch_add(1, Ordering::Relaxed);
-                if MainThreadMarker::new().is_none() {
-                    self.ivars().counters.failed.fetch_add(1, Ordering::Relaxed);
-                    return;
-                }
-                if let Some(driver) = &self.ivars().driver {
-                    let directive = driver.try_borrow_mut().map_or_else(
-                        |_| {
-                            self.ivars().counters.failed.fetch_add(1, Ordering::Relaxed);
-                            DisplayLinkDirective::Pause
-                        },
-                        |mut driver| driver.update(update, &self.ivars().counters),
-                    );
-                    apply_display_link_directive(link, directive);
-                }
+            if !admit_callback(
+                &self.ivars().lifecycle,
+                &self.ivars().callback_count,
+                &self.ivars().rejected_callback_count,
+            ) {
+                return;
+            }
+            if MainThreadMarker::new().is_none() {
+                self.ivars().counters.failed.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            if let Some(driver) = &self.ivars().driver {
+                let directive = driver.try_borrow_mut().map_or_else(
+                    |_| {
+                        self.ivars().counters.failed.fetch_add(1, Ordering::Relaxed);
+                        DisplayLinkDirective::Pause
+                    },
+                    |mut driver| driver.update(update, &self.ivars().counters),
+                );
+                apply_display_link_directive(link, directive);
             }
         }
     }
@@ -894,32 +1062,32 @@ define_class!(
     unsafe impl NSWindowDelegate for DisplayLinkDelegate {
         #[unsafe(method(windowDidResize:))]
         fn window_did_resize(&self, _notification: &NSNotification) {
-            let _ = self.synchronize_native_configuration();
+            let _ = self.synchronize_native_configuration_from_callback();
         }
 
         #[unsafe(method(windowDidChangeScreen:))]
         fn window_did_change_screen(&self, _notification: &NSNotification) {
-            let _ = self.synchronize_native_configuration();
+            let _ = self.synchronize_native_configuration_from_callback();
         }
 
         #[unsafe(method(windowDidChangeBackingProperties:))]
         fn window_did_change_backing_properties(&self, _notification: &NSNotification) {
-            let _ = self.synchronize_native_configuration();
+            let _ = self.synchronize_native_configuration_from_callback();
         }
 
         #[unsafe(method(windowDidChangeOcclusionState:))]
         fn window_did_change_occlusion_state(&self, _notification: &NSNotification) {
-            let _ = self.synchronize_native_configuration();
+            let _ = self.synchronize_native_configuration_from_callback();
         }
 
         #[unsafe(method(windowDidMiniaturize:))]
         fn window_did_miniaturize(&self, _notification: &NSNotification) {
-            let _ = self.synchronize_native_configuration();
+            let _ = self.synchronize_native_configuration_from_callback();
         }
 
         #[unsafe(method(windowDidDeminiaturize:))]
         fn window_did_deminiaturize(&self, _notification: &NSNotification) {
-            let _ = self.synchronize_native_configuration();
+            let _ = self.synchronize_native_configuration_from_callback();
         }
 
         #[unsafe(method(windowWillClose:))]
@@ -928,6 +1096,20 @@ define_class!(
         }
     }
 );
+
+fn admit_callback(
+    lifecycle: &AtomicU8,
+    callback_count: &AtomicU64,
+    rejected_callback_count: &AtomicU64,
+) -> bool {
+    if lifecycle.load(Ordering::Acquire) == SURFACE_LIVE {
+        callback_count.fetch_add(1, Ordering::Relaxed);
+        true
+    } else {
+        rejected_callback_count.fetch_add(1, Ordering::Relaxed);
+        false
+    }
+}
 
 impl DisplayLinkDelegate {
     fn new(main_thread: MainThreadMarker, ivars: DisplayLinkDelegateIvars) -> Retained<Self> {
@@ -955,6 +1137,14 @@ impl DisplayLinkDelegate {
             }
         }
         result
+    }
+
+    fn synchronize_native_configuration_from_callback(&self) -> bool {
+        if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+            return false;
+        }
+        let _ = self.synchronize_native_configuration();
+        true
     }
 
     fn try_synchronize_native_configuration(&self) -> Result<(), SurfaceError> {
@@ -994,6 +1184,9 @@ impl DisplayLinkDelegate {
         {
             return;
         }
+        self.ivars()
+            .window_close_started
+            .store(true, Ordering::Release);
         #[cfg(alpine_native_validation)]
         if let Some(probe) = &self.ivars().validation_probe {
             probe.record_window_close();
@@ -1001,7 +1194,7 @@ impl DisplayLinkDelegate {
         if let Some(driver) = &self.ivars().driver
             && let Ok(mut driver) = driver.try_borrow_mut()
         {
-            driver.shutdown();
+            driver.shutdown(&self.ivars().counters);
         }
         if let Some(display_link) = &self.ivars().display_link {
             display_link.setPaused(true);
@@ -1077,15 +1270,20 @@ fn apply_display_link_directive(link: &CAMetalDisplayLink, directive: DisplayLin
         DisplayLinkDirective::None => {}
         DisplayLinkDirective::Resume => link.setPaused(false),
         DisplayLinkDirective::Pause => link.setPaused(true),
-        DisplayLinkDirective::Invalidate => link.invalidate(),
+        DisplayLinkDirective::Invalidate => {
+            link.setPaused(true);
+            link.invalidate();
+        }
     }
 }
 
 pub(crate) struct NativeSurface {
     callback_count: Arc<AtomicU64>,
+    rejected_callback_count: Arc<AtomicU64>,
     counters: Arc<FrameCounters>,
     driver: Rc<RefCell<PresentationDriver>>,
     lifecycle: Arc<AtomicU8>,
+    window_close_started: Arc<AtomicBool>,
     display_link: Retained<CAMetalDisplayLink>,
     #[allow(
         dead_code,
@@ -1160,10 +1358,11 @@ impl NativeSurface {
         };
 
         let extent = descriptor.extent();
-        let (lifecycle, callback_count) = control.observer_state();
+        let (lifecycle, callback_count, rejected_callback_count) = control.observer_state();
         let mut builder = NativeSurfaceBuilder::new(
             lifecycle,
             callback_count,
+            rejected_callback_count,
             #[cfg(alpine_native_validation)]
             control.probe.clone(),
         );
@@ -1287,13 +1486,16 @@ impl NativeSurface {
         let driver = Rc::new(RefCell::new(PresentationDriver::new(
             backend,
             initial_configuration,
+            Arc::clone(&builder.lifecycle),
         )?));
         builder.driver = Some(Rc::clone(&driver));
         let delegate = DisplayLinkDelegate::new(
             main_thread,
             DisplayLinkDelegateIvars {
                 lifecycle: Arc::clone(&builder.lifecycle),
+                window_close_started: Arc::clone(&builder.window_close_started),
                 callback_count: Arc::clone(&builder.callback_count),
+                rejected_callback_count: Arc::clone(&builder.rejected_callback_count),
                 counters: Arc::clone(&builder.counters),
                 driver: Some(driver),
                 window: builder.window.clone(),
@@ -1368,10 +1570,12 @@ impl NativeSurface {
         let counters = Arc::clone(&self.counters);
         let initial_presented = counters.presented.load(Ordering::Acquire);
         let initial_failed = counters.failed.load(Ordering::Acquire);
+        let initial_cancelled = counters.cancelled.load(Ordering::Acquire);
         let deadline = Instant::now() + timeout;
         if self.validation_event_loop_started.replace(true) {
             while counters.presented.load(Ordering::Acquire) == initial_presented
                 && counters.failed.load(Ordering::Acquire) == initial_failed
+                && counters.cancelled.load(Ordering::Acquire) == initial_cancelled
                 && Instant::now() < deadline
             {
                 NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.005));
@@ -1382,6 +1586,7 @@ impl NativeSurface {
             RcBlock::new(move |timer: NonNull<NSTimer>| {
                 let terminal = counters.presented.load(Ordering::Acquire) > initial_presented
                     || counters.failed.load(Ordering::Acquire) > initial_failed
+                    || counters.cancelled.load(Ordering::Acquire) > initial_cancelled
                     || Instant::now() >= deadline;
                 if terminal {
                     // SAFETY: Foundation supplies a valid borrowed timer for
@@ -1420,14 +1625,24 @@ impl NativeSurface {
         )]
         let (physical_width, physical_height) =
             (drawable_size.width as u32, drawable_size.height as u32);
-        let (allocated_bytes, current_retained_bytes, last_terminal, last_superseded) =
-            driver.as_ref().map_or((0, 0, None, None), |driver| {
+        let (
+            allocated_bytes,
+            current_retained_bytes,
+            last_terminal,
+            last_superseded,
+            last_cancelled,
+            last_pending_cancellation,
+        ) = driver
+            .as_ref()
+            .map_or((0, 0, None, None, None, None), |driver| {
                 let accounting = driver.backend.accounting();
                 (
                     accounting.allocated_bytes(),
                     accounting.current_retained_bytes(),
                     driver.last_terminal,
                     driver.last_superseded,
+                    driver.last_cancelled,
+                    driver.last_pending_cancellation,
                 )
             });
         SurfaceSnapshot {
@@ -1447,6 +1662,7 @@ impl NativeSurface {
             display_link_paused: self.display_link.isPaused(),
             visible: self.window.isVisible(),
             callback_count: self.callback_count.load(Ordering::Acquire),
+            rejected_callback_count: self.rejected_callback_count.load(Ordering::Acquire),
             submission_count: self.counters.submissions.load(Ordering::Acquire),
             direct_present_count: self.counters.direct_presents.load(Ordering::Acquire),
             installed_presented_handler_count: self
@@ -1456,6 +1672,8 @@ impl NativeSurface {
             presented_count: self.counters.presented.load(Ordering::Acquire),
             qualified_presented_count: self.counters.qualified_presented.load(Ordering::Acquire),
             superseded_count: self.counters.superseded.load(Ordering::Acquire),
+            cancelled_count: self.counters.cancelled.load(Ordering::Acquire),
+            pending_cancellation_count: self.counters.pending_cancellations.load(Ordering::Acquire),
             last_presented_time_bits: self
                 .counters
                 .last_presented_time_bits
@@ -1466,6 +1684,8 @@ impl NativeSurface {
             current_retained_bytes,
             last_terminal,
             last_superseded,
+            last_cancelled,
+            last_pending_cancellation,
         }
     }
 
@@ -1498,6 +1718,28 @@ impl NativeSurface {
             .map_err(|_| SurfaceError::DriverUnavailable)?
             .inject_post_commit_observation(display_identity, presented_time);
         Ok(())
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn inject_post_commit_close(&self) {
+        if let Ok(mut driver) = self.driver.try_borrow_mut() {
+            driver.inject_post_commit_close();
+        }
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn inject_late_callback(&self) {
+        let _ = admit_callback(
+            &self.lifecycle,
+            &self.callback_count,
+            &self.rejected_callback_count,
+        );
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn inject_configuration_callback(&self) -> bool {
+        self.delegate
+            .synchronize_native_configuration_from_callback()
     }
 
     #[cfg(alpine_native_validation)]
@@ -1552,7 +1794,20 @@ impl NativeSurface {
         SurfaceObserver::new(
             Arc::clone(&self.lifecycle),
             Arc::clone(&self.callback_count),
+            Arc::clone(&self.rejected_callback_count),
         )
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn close_with_owner_evidence(
+        self,
+    ) -> Result<crate::native_validation::NativeOwnerEvidence, SurfaceError> {
+        let probe = self
+            .validation_probe
+            .clone()
+            .ok_or(SurfaceError::DriverUnavailable)?;
+        drop(self);
+        Ok(probe.evidence())
     }
 }
 
@@ -1583,6 +1838,7 @@ fn require_device(device: Option<Device>) -> Result<Device, SurfaceError> {
 impl Drop for NativeSurface {
     fn drop(&mut self) {
         let native_close_started = self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE;
+        let must_close_window = !self.window_close_started.load(Ordering::Acquire);
         if !native_close_started {
             begin_close_observer_state(&self.lifecycle);
             self.display_link.setPaused(true);
@@ -1592,7 +1848,7 @@ impl Drop for NativeSurface {
         // driver while it still revokes callback admission. Owner teardown is
         // therefore the final idempotent shutdown boundary in both paths.
         if let Ok(mut driver) = self.driver.try_borrow_mut() {
-            driver.shutdown();
+            driver.shutdown(&self.counters);
         }
         #[cfg(alpine_native_validation)]
         if let Some(probe) = &self.validation_probe {
@@ -1604,7 +1860,7 @@ impl Drop for NativeSurface {
             probe.record_delegate_revocation();
         }
         self.window.setDelegate(None);
-        if !native_close_started {
+        if must_close_window {
             self.window.orderOut(None);
             self.window.close();
             #[cfg(alpine_native_validation)]
@@ -1622,10 +1878,12 @@ fn native_unavailable(stage: SurfaceStage) -> SurfaceError {
 
 struct NativeSurfaceBuilder {
     callback_count: Arc<AtomicU64>,
+    rejected_callback_count: Arc<AtomicU64>,
     counters: Arc<FrameCounters>,
     backend: Option<MetalBackend>,
     driver: Option<Rc<RefCell<PresentationDriver>>>,
     lifecycle: Arc<AtomicU8>,
+    window_close_started: Arc<AtomicBool>,
     display_link: Option<Retained<CAMetalDisplayLink>>,
     delegate: Option<Retained<DisplayLinkDelegate>>,
     layer: Option<Retained<CAMetalLayer>>,
@@ -1645,14 +1903,17 @@ impl NativeSurfaceBuilder {
     fn new(
         lifecycle: Arc<AtomicU8>,
         callback_count: Arc<AtomicU64>,
+        rejected_callback_count: Arc<AtomicU64>,
         #[cfg(alpine_native_validation)] validation_probe: Option<InitializationProbe>,
     ) -> Self {
         Self {
             callback_count,
+            rejected_callback_count,
             counters: Arc::new(FrameCounters::default()),
             backend: None,
             driver: None,
             lifecycle,
+            window_close_started: Arc::new(AtomicBool::new(false)),
             display_link: None,
             delegate: None,
             layer: None,
@@ -1696,9 +1957,11 @@ impl NativeSurfaceBuilder {
     fn finish(mut self) -> Result<NativeSurface, SurfaceError> {
         let surface = NativeSurface {
             callback_count: Arc::clone(&self.callback_count),
+            rejected_callback_count: Arc::clone(&self.rejected_callback_count),
             counters: Arc::clone(&self.counters),
             driver: take_owner(&mut self.driver, SurfaceStage::Renderer)?,
             lifecycle: Arc::clone(&self.lifecycle),
+            window_close_started: Arc::clone(&self.window_close_started),
             display_link: take_owner(&mut self.display_link, SurfaceStage::DisplayLink)?,
             delegate: take_owner(&mut self.delegate, SurfaceStage::DisplayLink)?,
             layer: take_owner(&mut self.layer, SurfaceStage::Layer)?,
@@ -1940,13 +2203,33 @@ mod tests {
 
     #[test]
     #[cfg(alpine_native_validation)]
+    fn callback_admission_classifies_live_and_revoked_generations() {
+        let lifecycle = AtomicU8::new(SURFACE_LIVE);
+        let admitted = AtomicU64::new(0);
+        let rejected = AtomicU64::new(0);
+
+        assert!(admit_callback(&lifecycle, &admitted, &rejected));
+        assert_eq!(admitted.load(Ordering::Relaxed), 1);
+        assert_eq!(rejected.load(Ordering::Relaxed), 0);
+        lifecycle.store(SURFACE_CLOSING, Ordering::Release);
+        assert!(!admit_callback(&lifecycle, &admitted, &rejected));
+        assert_eq!(admitted.load(Ordering::Relaxed), 1);
+        assert_eq!(rejected.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    #[cfg(alpine_native_validation)]
     fn idle_driver_shutdown_stops_portable_and_backend_ownership() -> Result<(), SurfaceError> {
         let device = require_device(MTLCreateSystemDefaultDevice())?;
         let backend = platform_spi::new_validation_backend_with_device(device)?;
         let configuration = SurfaceConfiguration::from_native(64.0, 64.0, 1.0, 0, false)?;
-        let mut driver = PresentationDriver::new(backend, configuration)?;
+        let mut driver = PresentationDriver::new(
+            backend,
+            configuration,
+            Arc::new(AtomicU8::new(SURFACE_LIVE)),
+        )?;
 
-        driver.shutdown();
+        driver.shutdown(&FrameCounters::default());
 
         assert_eq!(
             driver.state.application(),
@@ -1958,6 +2241,52 @@ mod tests {
         );
         assert!(driver.pending.is_none());
         assert!(driver.active.is_none());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(alpine_native_validation)]
+    fn committed_cancellation_continues_an_existing_drain() -> Result<(), SurfaceError> {
+        let device = require_device(MTLCreateSystemDefaultDevice())?;
+        let backend = platform_spi::new_validation_backend_with_device(device)?;
+        let configuration = SurfaceConfiguration::from_native(64.0, 64.0, 1.0, 0, false)?;
+        let lifecycle = Arc::new(AtomicU8::new(SURFACE_LIVE));
+        let mut driver = PresentationDriver::new(backend, configuration, Arc::clone(&lifecycle))?;
+        let counters = FrameCounters::default();
+
+        driver.state.apply(PresentationAction::SetVisible(true))?;
+        driver.state.apply(PresentationAction::Invalidate)?;
+        driver.state.apply(PresentationAction::Resume)?;
+        let prepared = driver.state.apply(PresentationAction::Prepare)?;
+        let PresentationEvent::Prepared(token) = prepared.event() else {
+            return Err(SurfaceError::DriverUnavailable);
+        };
+        driver.state.apply(PresentationAction::BeginUpdate(token))?;
+        driver.state.apply(PresentationAction::Submit(token))?;
+        driver.state.apply(PresentationAction::CallPresent(token))?;
+        driver.state.apply(PresentationAction::BeginShutdown)?;
+        lifecycle.store(SURFACE_CLOSING, Ordering::Release);
+
+        let directive = driver.cancel_attempt(
+            token,
+            AttemptTiming {
+                target_timestamp_bits: 137,
+                target_presentation_timestamp_bits: 139,
+            },
+            &counters,
+        )?;
+
+        assert_eq!(directive, DisplayLinkDirective::None);
+        assert_eq!(driver.state.application(), ApplicationState::Stopped);
+        assert_eq!(driver.state.outcome(), PresentationOutcome::Cancelled);
+        assert_eq!(counters.cancelled.load(Ordering::Relaxed), 1);
+        let evidence = driver
+            .last_cancelled
+            .ok_or(SurfaceError::DriverUnavailable)?;
+        assert_eq!(evidence.target_timestamp_bits(), 137);
+        assert_eq!(evidence.target_presentation_timestamp_bits(), 139);
+        assert_eq!(evidence.submission_count(), 1);
+        assert_eq!(evidence.present_call_count(), 1);
         Ok(())
     }
 }
