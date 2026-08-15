@@ -269,6 +269,20 @@ platform_scope = ["portable", "macos-metal"]
 required_evidence = ["tla", "kani", "unit", "integration", "native", "mutation", "coverage"]
 
 [[claims]]
+id = "AEP-0064-C05"
+mission = "MP-02"
+capability_issue = 64
+aep = "docs/aep/0064-native-macos-presentation.md"
+requirement_issue = 67
+claim_type = "lifecycle"
+risk = "critical"
+case_study_findings = ["CS-ZED-PRESENT-002"]
+kani_applicability = "required"
+tla_properties = ["CommittedEventuallyTerminates", "ShutdownEventuallyStops"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+
+[[claims]]
 id = "AEP-0064-C06"
 mission = "MP-03"
 capability_issue = 64
@@ -332,6 +346,25 @@ assertion = "A real CAMetalLayer reports BGRA8Unorm_sRGB, the standard sRGB CGCo
 scope = "One process-main-thread Apple Silicon macOS validation surface."
 assumptions = ["CoreGraphics standard sRGB identity is represented by kCGColorSpaceSRGB"]
 exclusions = ["onscreen pixel capture", "per-display profile transformation", "HDR", "wide color", "per-attempt structured color evidence"]
+
+[[evidence]]
+id = "EV-0064-UNIT06C"
+claim = "AEP-0064-C06"
+kind = "unit"
+artifact = "crates/alpine-platform-macos/src/lib.rs#snapshot_accessors_preserve_discriminating_values"
+assertion = "Handle-free terminal evidence preserves attempt identity, revisions, epoch, outcome, per-attempt commit and present counts, commit eligibility, target timestamps, observed presentation time, retained bytes, and recovery classification independently."
+scope = "Safe public evidence values compiled and tested on every host."
+exclusions = ["native timestamp production", "native command completion", "physical scanout"]
+
+[[evidence]]
+id = "EV-0064-NATIVE06C"
+claim = "AEP-0064-C06"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_recovery.rs"
+assertion = "One real callback-drawable path correlates display-link target times, one Metal commit, one direct present call, deterministic presented-handler observations, current or superseded qualification, zero terminal retained bytes, and renderer recovery guidance into per-attempt evidence."
+scope = "Process-main-thread Apple Silicon AppKit, CAMetalDisplayLink, and real Metal submission with a validation-only deterministic presented-handler observation."
+assumptions = ["the injected observation enters at the same Rust correlation seam as the native presented handler", "the validation control remains non-shipping and cannot affect production presentation observation"]
+exclusions = ["Core Animation scanout", "physical presentation time", "pixel capture", "per-attempt color identity", "missed-deadline classification", "qualified memory performance"]
 
 [[evidence]]
 id = "EV-0064-MUTATION06"
@@ -416,6 +449,16 @@ assumptions = ["injected display identities distinguish deterministic migrations
 exclusions = ["physical multi-display migration", "post-commit presentation timing", "qualified color"]
 
 [[evidence]]
+id = "EV-0064-NATIVE03B"
+claim = "AEP-0064-C03"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_recovery.rs"
+assertion = "A deterministic display-identity change after a real callback drawable commits records the old attempt as superseded, excludes it from qualified presentation, retains its immutable scene for a newer-epoch retry, and then qualifies that retry without accepting a new application revision."
+scope = "One process-main-thread Apple Silicon surface, real Metal commit and direct present call, and a validation-only post-commit configuration and presentation control."
+assumptions = ["the injected configuration uses the production epoch transition and scene-retention path", "the injected presentation observation uses a separate validation field and cannot overwrite the production native signal"]
+exclusions = ["physical multi-display hardware", "Core Animation scanout", "actual resize-notification timing", "elapsed-time performance"]
+
+[[evidence]]
 id = "EV-0064-MUTATION03"
 claim = "AEP-0064-C03"
 kind = "mutation"
@@ -432,6 +475,106 @@ artifact = "scripts/check-coverage.sh"
 assertion = "Portable configuration conversion and public snapshot accessors are subject to the changed-line and critical-file coverage ratchets."
 scope = "Host-executable safe Rust in alpine-platform-macos."
 exclusions = ["macOS-only Objective-C callback lines on Linux coverage"]
+
+[[evidence]]
+id = "EV-0064-TLA05A"
+claim = "AEP-0064-C05"
+kind = "tla"
+artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#CommittedEventuallyTerminates"
+assertion = "Every modeled committed attempt eventually reaches a terminal phase under the model's declared weak-fairness and bounded-environment assumptions."
+scope = "One abstract native presentation owner with bounded invalidation and surface changes."
+bounds = ["pull request: revision through 2, epoch through 1, and one environment change", "nightly: revision through 3, epoch through 2, and two environment changes"]
+assumptions = ["continuously enabled framework actions are weakly fair", "the environment-change counter prevents unbounded display toggling"]
+exclusions = ["GPU execution", "AppKit callback delivery", "device recovery", "Rust formal refinement"]
+companion = "crates/alpine-platform/src/lib.rs#every_shutdown_phase_releases_or_drains"
+
+[[evidence]]
+id = "EV-0064-TLA05B"
+claim = "AEP-0064-C05"
+kind = "tla"
+artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#ShutdownEventuallyStops"
+assertion = "Once modeled shutdown begins, pacing eventually invalidates and the owner reaches a drained stopped state."
+scope = "One abstract native owner across precommit and committed shutdown phases."
+bounds = ["pull request: revision through 2, epoch through 1, and one environment change", "nightly: revision through 3, epoch through 2, and two environment changes"]
+assumptions = ["continuously enabled drain and teardown actions are weakly fair"]
+exclusions = ["Objective-C release counts", "driver hangs", "wall-clock timeout", "Rust formal refinement"]
+companion = "crates/alpine-platform/tests/presentation_contract.rs#public_contract_drains_committed_shutdown"
+
+[[evidence]]
+id = "EV-0064-KANI05"
+claim = "AEP-0064-C05"
+kind = "kani"
+artifact = "crates/alpine-platform/src/proofs.rs#presentation_actions_preserve_invariants_and_atomicity"
+assertion = "Bounded arbitrary failure and shutdown actions preserve terminal, ownership, pacing, and atomic-transition invariants in compiled Rust."
+scope = "Nine portable presentation actions across all fourteen action kinds."
+bounds = ["nine steps", "symbolic action and eligibility values"]
+assumptions = ["native failures have already been classified into portable actions"]
+exclusions = ["native error production", "Objective-C ownership", "unbounded traces", "formal refinement"]
+companion = "crates/alpine-platform/src/lib.rs#every_shutdown_phase_releases_or_drains"
+
+[[evidence]]
+id = "EV-0064-UNIT05"
+claim = "AEP-0064-C05"
+kind = "unit"
+artifact = "crates/alpine-platform/src/lib.rs#every_shutdown_phase_releases_or_drains"
+assertion = "Portable shutdown from idle, precommit, and committed phases rejects new work, releases or drains the active resource, invalidates pacing, and reaches stopped."
+scope = "Pure Rust presentation transition implementation."
+exclusions = ["native callback races", "Metal completion", "native object release"]
+
+[[evidence]]
+id = "EV-0064-INTEGRATION05"
+claim = "AEP-0064-C05"
+kind = "integration"
+artifact = "crates/alpine-platform/tests/presentation_contract.rs#public_contract_drains_committed_shutdown"
+assertion = "The public portable contract drains committed work before stopped state and rejects invalid ordering."
+scope = "External-crate presentation state API."
+exclusions = ["AppKit lifecycle", "actual command completion", "device loss"]
+
+[[evidence]]
+id = "EV-0064-E2E05"
+claim = "AEP-0064-C05"
+kind = "e2e"
+artifact = "scripts/check-metal.sh"
+assertion = "The Apple Silicon Metal gate executes native surface initialization, presentation, epoch, color, supersession, and device-loss failure paths under the validation configuration."
+scope = "GitHub-hosted Apple Silicon macOS native validation job."
+exclusions = ["fixed-hardware compositor qualification", "physical device removal", "long-running platform soak"]
+
+[[evidence]]
+id = "EV-0064-NATIVE05"
+claim = "AEP-0064-C05"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_recovery.rs"
+assertion = "A real callback drawable commits and receives direct present before deterministic Metal device removal yields a failed terminal record with backend-recreation guidance; the invalidated backend generation then rejects new work before another native submission."
+scope = "One Apple Silicon Metal device and process-main-thread AppKit surface with deterministic command-completion failure injection."
+assumptions = ["the documented Metal device-removed error code exercises the production failure classifier and backend-generation invalidation path"]
+exclusions = ["physical device removal", "automatic backend recreation", "surface-loss recovery", "cancellation callback race", "platform leak and soak qualification"]
+
+[[evidence]]
+id = "EV-0064-MIRI05"
+claim = "AEP-0064-C05"
+kind = "miri"
+artifact = ".github/workflows/ci.yml#miri"
+assertion = "Miri exercises host-portable terminal evidence, failure transitions, shutdown ordering, and owned error values."
+scope = "Safe Rust behavior supported by Miri on Linux."
+exclusions = ["Objective-C runtime", "native pointers", "Metal completion and errors"]
+
+[[evidence]]
+id = "EV-0064-MUTATION05"
+claim = "AEP-0064-C05"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#metal-validation"
+assertion = "Every viable mutant in changed native terminal classification, device-generation invalidation, failure accounting, and guarded rejection must be killed on Apple Silicon."
+scope = "Changed alpine-metal and alpine-platform-macos native Rust."
+exclusions = ["unviable compiler-rejected mutants", "unchanged failure paths"]
+
+[[evidence]]
+id = "EV-0064-COVERAGE05"
+claim = "AEP-0064-C05"
+kind = "coverage"
+artifact = "scripts/check-coverage.sh"
+assertion = "Portable terminal evidence and failure or shutdown transitions remain subject to changed-line and critical-file coverage ratchets."
+scope = "Host-executable safe Rust in alpine-platform and alpine-platform-macos."
+exclusions = ["macOS-only native callback lines on Linux coverage", "semantic proof", "native object release"]
 
 [[evidence]]
 id = "EV-0009-TLA01"
@@ -1689,7 +1832,7 @@ id = "EV-0025-NATIVE07"
 claim = "AEP-0025-C07"
 kind = "native"
 artifact = "crates/alpine-metal/src/native.rs#cancellation_shutdown_and_steady_state_have_no_hidden_native_work"
-assertion = "One cancellation plus 512 validation-soak frames balance submissions, bytes, and releases with zero current retention; after 4,096 memory-soak warmup frames, process RSS cannot grow by more than one host page."
+assertion = "One cancellation plus 512 validation-soak frames balance submissions, bytes, and releases with zero current retention; after 4,096 memory-soak warmup frames, 1,024 measured frames remain within a 16-page observation bound and the final nine samples plateau within one host page."
 scope = "Repeated identical Metal workload and ownership probe."
 exclusions = ["driver-private caches", "fixed performance budget"]
 
@@ -1698,7 +1841,7 @@ id = "EV-0025-BENCHMARK07"
 claim = "AEP-0025-C07"
 kind = "benchmark"
 artifact = "crates/alpine-metal/src/native.rs#cancellation_shutdown_and_steady_state_have_no_hidden_native_work"
-assertion = "The repeated-frame workload records constant retained bytes, cumulative allocation and readback totals, and a 256-frame resident-memory distribution after 4,096 warmup frames."
+assertion = "The repeated-frame workload records constant retained bytes, cumulative allocation and readback totals, and a 1,024-frame resident-memory distribution after 4,096 warmup frames."
 scope = "Correctness-mode resource soak on Apple Silicon."
 exclusions = ["latency claim", "fixed hardware", "cross-machine performance budget"]
 

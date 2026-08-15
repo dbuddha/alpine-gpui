@@ -170,6 +170,7 @@ pub enum DisplayLinkDirective {
 /// Terminal portable evidence for one attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AttemptEvidence {
+    attempt: u64,
     requested_revision: PresentationRevision,
     frame_revision: PresentationRevision,
     frame_epoch: SurfaceEpoch,
@@ -180,6 +181,12 @@ pub struct AttemptEvidence {
 }
 
 impl AttemptEvidence {
+    /// Returns the monotonic identity of the terminated attempt.
+    #[must_use]
+    pub const fn attempt(self) -> u64 {
+        self.attempt
+    }
+
     /// Returns the newest requested revision when the attempt terminated.
     #[must_use]
     pub const fn requested_revision(self) -> PresentationRevision {
@@ -1047,6 +1054,7 @@ impl PresentationState {
             epoch: SurfaceEpoch::INITIAL,
         });
         AttemptEvidence {
+            attempt: token.attempt,
             requested_revision: self.requested_revision,
             frame_revision: token.revision,
             frame_epoch: token.epoch,
@@ -1158,6 +1166,7 @@ mod tests {
 
         let evidence = state.attempt_evidence();
         assert_eq!(event, PresentationEvent::Terminal(evidence));
+        assert_eq!(evidence.attempt(), 1);
         assert_eq!(evidence.outcome(), PresentationOutcome::Presented);
         assert_eq!(evidence.submission_count(), 1);
         assert_eq!(evidence.present_call_count(), 1);
@@ -1166,6 +1175,20 @@ mod tests {
         assert_eq!(state.submission_count(), 1);
         assert_eq!(state.present_call_count(), 1);
         assert!(!state.is_dirty());
+        assert!(state.invariants_hold());
+
+        apply(&mut state, PresentationAction::Invalidate)?;
+        apply(&mut state, PresentationAction::Resume)?;
+        let failed_token = prepare(&mut state)?;
+        apply(&mut state, PresentationAction::BeginUpdate(failed_token))?;
+        let failed = apply(&mut state, PresentationAction::FailActive(failed_token))?;
+        let failed_evidence = state.attempt_evidence();
+        assert_eq!(failed, PresentationEvent::Terminal(failed_evidence));
+        assert_eq!(failed_evidence.attempt(), 2);
+        assert_eq!(failed_evidence.outcome(), PresentationOutcome::Failed);
+        assert_eq!(failed_evidence.submission_count(), 0);
+        assert_eq!(failed_evidence.present_call_count(), 0);
+        assert!(!failed_evidence.eligible_at_commit());
         assert!(state.invariants_hold());
         Ok(())
     }

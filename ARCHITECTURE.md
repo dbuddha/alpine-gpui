@@ -109,9 +109,12 @@ only if dirty work remains. Invalid native geometry leaves the last valid layer
 extent intact, records a structured error, and fails closed as ineligible.
 
 The display link starts paused, requests a two-frame render latency, resumes
-only for visible dirty work, and pauses after the newest revision reaches a
-terminal result. The native owner initializes the renderer from the exact
-device installed on the layer and queues one immutable scene plus clear value.
+only for visible dirty work backed by an owned pending or active frame, and
+pauses after the newest revision reaches a terminal result. A delayed native
+configuration notification cannot restart pacing after terminal failure unless
+the driver owns replacement work. The native owner initializes the renderer
+from the exact device installed on the layer and queues one immutable scene
+plus clear value.
 The current physical extent and scale become the render descriptor only inside
 the admitted callback, preventing a queued scene from retaining an obsolete
 target descriptor. The Metal backend validates the callback texture, commits
@@ -388,10 +391,15 @@ Native surface descriptor, unsupported-platform, main-thread, device,
 renderer-initialization, drawable validation, portable transition, presentation
 correlation, driver, and bounded-retry errors are structured independently.
 Callback failures are stored for the application to remove, increment terminal
-failure evidence, restore active portable ownership, and pause pacing. A
-dropped drawable is not reported as presented; it increments a separate counter
-and retries the newest available immutable scene. This does not weaken the
-current device-loss generation boundary.
+failure evidence, include renderer recovery guidance when applicable, and pause
+pacing. A dropped drawable is not reported as presented; it increments a
+separate counter and retries the newest available immutable scene. A committed
+attempt that becomes stale records a superseded terminal result and retains the
+same immutable scene for a current-epoch retry, while the physical observation
+counter remains distinct from current-state qualification. Device loss records
+the failed committed attempt, invalidates the Metal backend generation, and
+rejects later surface attempts before another native submission. Automatic
+backend recreation remains outside this slice.
 
 ## Testing and evidence
 
@@ -414,13 +422,15 @@ status, readback mismatch, memory-pressure, permission, and device-loss class.
 A 512-frame validation soak requires constant per-frame retained accounting,
 balanced cumulative totals, and zero active owner probes after every return.
 After 4,096 warmup frames, the isolated native memory soak records process
-resident bytes every 16 frames across a 256-frame measurement window. Those
-samples permit a bounded eight-sample allocator-settlement window, then require
-a nine-sample plateau within one host virtual-memory page. Negative controls
-reject excessive settlement and continued late growth. This distinguishes a
-one-time allocator step from retention without claiming a qualified performance
-budget. The RSS probe itself is primed before warmup so its lazy measurement
-allocation cannot contaminate the renderer baseline. Metal API and shader
+resident bytes every 16 frames across a 1,024-frame measurement window. The
+complete 65-sample observation must remain within 16 host virtual-memory pages
+of its first sample, and its final nine samples must plateau within one page.
+Negative controls admit delayed but bounded allocator settlement while rejecting
+excessive total growth and continued terminal growth. This distinguishes a
+bounded allocator step from retention without claiming a qualified performance
+budget. Samples are printed before qualification so a failure retains its full
+distribution. The RSS probe itself is primed before warmup so its lazy
+measurement allocation cannot contaminate the renderer baseline. Metal API and shader
 validation cover the full suite first;
 the process-memory sample then runs without validation-layer instrumentation so
 debug allocations cannot be mistaken for shipping renderer retention. Exact
@@ -450,7 +460,7 @@ contracts, then runs formatting, Clippy, all-target tests, doctests, and
 rustdoc. mdBook builds the durable engineering guide as a downloadable CI
 artifact.
 The macOS platform crate separately tests all descriptor boundaries and runs
-four harness-free integration executables on the process main thread. The
+six harness-free integration executables on the process main thread. The
 surface smoke test creates the complete native object graph, verifies layer
 policy and paused pacing, then deterministically tears it down. The rollback
 test injects every native initialization checkpoint and requires exact
@@ -468,15 +478,27 @@ no hidden submission or allocation while ineligible, recovery without epoch
 churn, and closed callback admission. Native color qualification additionally
 checks the actual layer format, standard sRGB color-space identity, disabled
 EDR state, linear offscreen bytes, sRGB presentation bytes after overlapping
-linear blending, and a deliberately wrong direct-linear transfer control.
-Physical multi-display, onscreen pixel capture, post-commit resize timing,
-leak, and soak evidence remain unimplemented.
+linear blending, and a deliberately wrong direct-linear transfer control. The
+native recovery executable injects a display change immediately after real
+Metal commit and direct present, proves that the old epoch cannot qualify,
+retries the retained scene at the current epoch, and correlates both attempts
+with target timestamps, native observation, counts, terminal retention, and
+recovery. It separately injects Metal device removal after real command
+completion and proves that the lost backend generation rejects later work
+before a second native submission. The presented-handler observation and
+post-commit configuration timing in this executable are deterministic
+validation controls at the production Rust correlation seams, not evidence of
+Core Animation scanout or physical notification timing. Physical multi-display,
+onscreen pixel capture, actual post-commit AppKit notification timing, platform
+leak, and platform soak evidence remain unimplemented.
 On a hosted macOS runner without a qualifying display, the same executable uses
 an explicit direct-presentation evidence mode: every admitted drawable must
 complete GPU work and receive one direct present call, every completed native
 handler must report a drop, and the single-frame owner permits at most one
 drawable still in flight at the bounded cutoff. That mode cannot qualify a
-displayed frame, recovery sequence, idle pause, or physical presentation time.
+displayed frame, idle pause, or physical presentation time. Deterministic
+validation controls can qualify state correlation and guarded recovery there,
+but they remain labeled separately from physical display evidence.
 
 Hosted CI classifies the changed paths and review labels, then runs the required
 evidence fail-closed under one `ci-pass` result. Locked native tests always run

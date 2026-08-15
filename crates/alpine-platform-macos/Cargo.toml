@@ -56,3 +56,7 @@ harness = false
 [[test]]
 name = "native_color"
 harness = false
+
+[[test]]
+name = "native_recovery"
+harness = false
