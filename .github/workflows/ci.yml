@@ -330,12 +330,14 @@ jobs:
       - name: Run Metal API and shader validation
         run: scripts/check-metal.sh
       - name: Require changed native Metal mutants to be killed
+        env:
+          RUSTFLAGS: --cfg alpine_native_validation
         run: |
           mkdir -p target
           git diff ${{ needs.classify.outputs.base_sha }}...${{ needs.classify.outputs.head_sha }} > target/alpine.diff
           cargo mutants --no-config --file crates/alpine-metal/src/native.rs --no-shuffle --in-diff target/alpine.diff --output target/native-mutants.out -- --locked
-          cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --no-shuffle --in-diff target/alpine.diff --output target/native-platform-contract-mutants.out -- --locked
-          cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --no-shuffle --in-diff target/alpine.diff --output target/native-platform-mutants.out -- --locked
+          cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re validate_initialization_rollback --no-shuffle --in-diff target/alpine.diff --output target/native-platform-contract-mutants.out -- --locked
+          cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re validate_initialization_rollback --no-shuffle --in-diff target/alpine.diff --output target/native-platform-mutants.out -- --locked
       - name: Upload native mutation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

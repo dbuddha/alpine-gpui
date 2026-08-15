@@ -16,6 +16,23 @@ mod native;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 mod unsupported;
 
+/// Non-shipping native lifecycle validation entry points.
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+#[doc(hidden)]
+pub mod native_validation {
+    use crate::{SurfaceError, native};
+
+    /// Injects every initialization-stage failure and verifies complete rollback.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured native surface error if the validation fixture
+    /// cannot construct its successful control surface.
+    pub fn validate_initialization_rollback() -> Result<(), SurfaceError> {
+        native::validate_initialization_rollback()
+    }
+}
+
 /// Maximum drawable dimension guaranteed by Alpine's Metal 3 baseline.
 pub const MAX_DRAWABLE_DIMENSION: u32 = 16_384;
 

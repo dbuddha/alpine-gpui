@@ -199,6 +199,15 @@ its new display link paused until a later slice enacts resume, pause, and
 invalidate directives without introducing a continuous redraw loop merely
 because a window exists.
 
+Native surface construction uses a staged owner. Every acquired application,
+device, window, view, layer, delegate, and display-link retain remains inside
+that owner until construction commits. Dropping an incomplete owner first
+revokes callback admission, pauses and invalidates any display link, clears its
+delegate, orders out and closes any window, and only then releases retained
+objects. A validation-only configuration injects failure after every stage and
+tracks each Alpine acquisition and release. The instrumentation and injection
+entry point are absent from shipping builds.
+
 ## Resource lifetime contract
 
 The renderer trait deliberately leaves resource representation to each backend.
@@ -343,11 +352,13 @@ A 512-frame validation soak requires constant per-frame retained accounting,
 balanced cumulative totals, and zero active owner probes after every return.
 After 4,096 warmup frames, the isolated native memory soak records process
 resident bytes every 16 frames across a 256-frame measurement window. Those
-samples must not grow beyond the baseline by more than one host virtual-memory page,
-which accounts for RSS measurement granularity without claiming a qualified
-performance budget. The RSS probe itself is primed before warmup so its lazy
-measurement allocation cannot contaminate the renderer baseline. Metal API and
-shader validation cover the full suite first;
+samples permit a bounded eight-sample allocator-settlement window, then require
+a nine-sample plateau within one host virtual-memory page. Negative controls
+reject excessive settlement and continued late growth. This distinguishes a
+one-time allocator step from retention without claiming a qualified performance
+budget. The RSS probe itself is primed before warmup so its lazy measurement
+allocation cannot contaminate the renderer baseline. Metal API and shader
+validation cover the full suite first;
 the process-memory sample then runs without validation-layer instrumentation so
 debug allocations cannot be mistaken for shipping renderer retention. Exact
 Alpine-owned retention remains the primary leak invariant.
@@ -370,10 +381,12 @@ rustdoc. mdBook builds the durable engineering guide as a private CI artifact.
 The macOS platform crate separately tests all descriptor boundaries and runs a
 harness-free integration executable on the process main thread. That smoke
 test creates the complete native object graph, verifies layer policy and paused
-pacing, then deterministically tears it down. This is native foundation
-evidence only. Partial-initialization injection, callback-to-frame behavior,
-drawable submission, direct presentation, color, leak, and soak evidence remain
-unqualified.
+pacing, then deterministically tears it down. A second process-main-thread
+executable injects every native initialization checkpoint and requires exact
+per-owner release, callback revocation, display-link invalidation, window close,
+and a closed lifecycle before each error returns. This is native foundation
+evidence only. Callback-to-frame behavior, drawable submission, direct
+presentation, color, leak, and soak evidence remain unqualified.
 
 Hosted CI classifies the changed paths and review labels, then runs the required
 evidence fail-closed under one `ci-pass` result. Locked native tests always run
