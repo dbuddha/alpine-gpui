@@ -17,9 +17,10 @@ alpine-scene = { path = "../alpine-scene", version = "=0.0.0" }
 block2 = { version = "=0.6.2", default-features = false }
 objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow", "objc2-core-foundation", "objc2-quartz-core"] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["CGColorSpace"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "block2", "NSDate", "NSGeometry", "NSNotification", "NSObject", "NSRunLoop", "NSString", "NSTimer"] }
 objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "block2", "objc2-core-foundation", "MTLDevice", "MTLDrawable", "MTLPixelFormat", "MTLTexture"] }
-objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer", "CAMetalDisplayLink", "objc2-core-foundation", "objc2-metal"] }
+objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer", "CAMetalDisplayLink", "objc2-core-foundation", "objc2-core-graphics", "objc2-metal"] }
 
 [lints.rust]
 missing_docs = "deny"
@@ -50,4 +51,8 @@ harness = false
 
 [[test]]
 name = "native_surface_epochs"
+harness = false
+
+[[test]]
+name = "native_color"
 harness = false

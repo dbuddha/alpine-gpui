@@ -273,7 +273,7 @@ impl fmt::Display for RenderError {
             ),
             Self::DrawablePixelFormatMismatch { actual } => write!(
                 formatter,
-                "callback drawable pixel format {actual} is not the current BGRA8Unorm pipeline format"
+                "callback drawable pixel format {actual} is not the required BGRA8Unorm_sRGB presentation format"
             ),
             Self::EncoderUnavailable { stage } => {
                 write!(formatter, "Metal returned no encoder at {stage:?}")
