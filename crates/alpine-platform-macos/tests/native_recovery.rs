@@ -143,6 +143,8 @@ mod validation {
             terminal.recovery(),
             Some(RecoveryClassification::RecreateBackend)
         );
+        native_validation::inject_surface_configuration(&surface, 96.0, 64.0, 1.0, 0, true)?;
+        assert!(surface.snapshot().display_link_paused());
         assert_eq!(failed.submission_count(), 1);
         assert_eq!(failed.direct_present_count(), 1);
         assert_eq!(failed.failed_count(), 1);

@@ -467,7 +467,8 @@ impl PresentationDriver {
         &mut self,
         prior_link: DisplayLinkState,
     ) -> Result<DisplayLinkDirective, SurfaceError> {
-        if self.state.needs_resume() {
+        let owns_callback_work = self.pending.is_some() || self.active.is_some();
+        if self.state.needs_resume() && owns_callback_work {
             self.state.apply(PresentationAction::Resume)?;
         }
         match (prior_link, self.state.display_link()) {

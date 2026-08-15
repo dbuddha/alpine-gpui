@@ -385,6 +385,7 @@ pub struct FrameTerminalEvidence {
 }
 
 impl FrameTerminalEvidence {
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) const fn new(
         attempt: AttemptEvidence,
         target_timestamp_bits: u64,

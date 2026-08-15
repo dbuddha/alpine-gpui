@@ -109,9 +109,12 @@ only if dirty work remains. Invalid native geometry leaves the last valid layer
 extent intact, records a structured error, and fails closed as ineligible.
 
 The display link starts paused, requests a two-frame render latency, resumes
-only for visible dirty work, and pauses after the newest revision reaches a
-terminal result. The native owner initializes the renderer from the exact
-device installed on the layer and queues one immutable scene plus clear value.
+only for visible dirty work backed by an owned pending or active frame, and
+pauses after the newest revision reaches a terminal result. A delayed native
+configuration notification cannot restart pacing after terminal failure unless
+the driver owns replacement work. The native owner initializes the renderer
+from the exact device installed on the layer and queues one immutable scene
+plus clear value.
 The current physical extent and scale become the render descriptor only inside
 the admitted callback, preventing a queued scene from retaining an obsolete
 target descriptor. The Metal backend validates the callback texture, commits
