@@ -8,6 +8,29 @@ fail() {
     failures=$((failures + 1))
 }
 
+if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -n "${GITHUB_REPOSITORY:-}" ] && [ -f "${GITHUB_EVENT_PATH:-}" ] && command -v gh >/dev/null 2>&1; then
+    pull_request_number=$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH" 2>/dev/null || true)
+    if [ -z "$pull_request_number" ]; then
+        pull_request_number=$(printf '%s\n' "${GITHUB_REF:-}" | sed -n 's#refs/pull/\([0-9]\+\)/.*#\1#p' || true)
+    fi
+
+    if [ -n "$pull_request_number" ]; then
+        refreshed_pr_title=$(gh pr view "$pull_request_number" --repo "$GITHUB_REPOSITORY" --json title --jq .title 2>/dev/null || true)
+        refreshed_pr_body=$(gh pr view "$pull_request_number" --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null || true)
+        refreshed_pr_labels=$(gh pr view "$pull_request_number" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || true)
+
+        if [ -n "$refreshed_pr_title" ]; then
+            ALPINE_PR_TITLE=$refreshed_pr_title
+        fi
+        if [ -n "$refreshed_pr_body" ]; then
+            ALPINE_PR_BODY=$refreshed_pr_body
+        fi
+        if [ -n "$refreshed_pr_labels" ]; then
+            ALPINE_PR_LABELS=$refreshed_pr_labels
+        fi
+    fi
+fi
+
 workflow_files=$(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print)
 
 if [ -n "$workflow_files" ]; then
