@@ -11,6 +11,7 @@
 - [Case studies](case-studies/README.md)
   - [Zed Editor stable application](case-studies/zed-editor.md)
   - [Zed GPUI and macOS renderer](case-studies/zed-gpui.md)
+  - [Zed native macOS presentation](case-studies/zed-native-presentation.md)
   - [GPUI-CE](case-studies/gpui-ce.md)
   - [gpui-component](case-studies/gpui-component.md)
   - [Nestri gpui-wgpu](case-studies/nestri-gpui-wgpu.md)
@@ -22,3 +23,4 @@
   - [AEP 0016: Portable value contracts](aep/0016-portable-value-contracts.md)
   - [AEP 0025: Direct Metal offscreen renderer](aep/0025-direct-metal-offscreen.md)
   - [AEP 0028: Zed golden qualification](aep/0028-zed-golden-qualification.md)
+  - [AEP 0064: Native macOS presentation](aep/0064-native-macos-presentation.md)
