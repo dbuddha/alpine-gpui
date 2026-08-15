@@ -37,3 +37,32 @@ fn run_studio() -> Result<(), SurfaceError> {
 fn main() -> Result<(), Box<dyn Error>> {
     run_studio().map_err(Into::into)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_scene_constructs_valid_scene() {
+        assert!(create_scene().is_ok());
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[test]
+    fn run_studio_returns_unsupported_on_non_native_host() {
+        assert!(matches!(
+            run_studio(),
+            Err(SurfaceError::UnsupportedPlatform)
+        ));
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[test]
+    fn main_propagates_surface_error() {
+        let outcome = main();
+        assert!(outcome.is_err());
+        let err = outcome.expect_err("run should fail on non-native host");
+        let source = err.downcast_ref::<SurfaceError>();
+        assert_eq!(source, Some(&SurfaceError::UnsupportedPlatform));
+    }
+}
