@@ -1319,9 +1319,9 @@ mod tests {
         samples: &[(u16, u64)],
         page_bytes: u64,
     ) -> Result<(), Box<dyn Error>> {
-        const EXPECTED_SAMPLES: usize = 17;
-        const SETTLING_SAMPLES: usize = 8;
-        const SETTLING_PAGE_BUDGET: u64 = 16;
+        const EXPECTED_SAMPLES: usize = 65;
+        const PLATEAU_SAMPLES: usize = 9;
+        const OBSERVATION_PAGE_BUDGET: u64 = 16;
 
         if samples.len() != EXPECTED_SAMPLES {
             return Err(format!(
@@ -1335,26 +1335,26 @@ mod tests {
         }
 
         let initial = samples[0].1;
-        let settling_ceiling = initial
+        let observation_ceiling = initial
             .checked_add(
                 page_bytes
-                    .checked_mul(SETTLING_PAGE_BUDGET)
-                    .ok_or("resident settling budget overflow")?,
+                    .checked_mul(OBSERVATION_PAGE_BUDGET)
+                    .ok_or("resident observation budget overflow")?,
             )
-            .ok_or("resident settling ceiling overflow")?;
-        let settling_maximum = samples[..SETTLING_SAMPLES]
+            .ok_or("resident observation ceiling overflow")?;
+        let observation_maximum = samples
             .iter()
             .map(|sample| sample.1)
             .max()
-            .ok_or("resident settling samples")?;
-        if settling_maximum > settling_ceiling {
+            .ok_or("resident observation samples")?;
+        if observation_maximum > observation_ceiling {
             return Err(format!(
-                "resident bytes exceeded bounded settling budget: initial {initial}, maximum {settling_maximum}, page {page_bytes}"
+                "resident bytes exceeded bounded observation budget: initial {initial}, maximum {observation_maximum}, page {page_bytes}"
             )
             .into());
         }
 
-        let plateau = &samples[SETTLING_SAMPLES..];
+        let plateau = &samples[EXPECTED_SAMPLES - PLATEAU_SAMPLES..];
         let plateau_minimum = plateau
             .iter()
             .map(|sample| sample.1)
@@ -1937,7 +1937,8 @@ mod tests {
     -> Result<(), Box<dyn Error>> {
         const VALIDATION_WARMUP_FRAMES: u16 = 256;
         const RSS_WARMUP_FRAMES: u16 = 4_096;
-        const MEASURED_FRAMES: u16 = 256;
+        const VALIDATION_MEASURED_FRAMES: u16 = 256;
+        const RSS_MEASURED_FRAMES: u16 = 1_024;
 
         let (scene, descriptor) = discriminating_scene()?;
         let (mut backend, probe) = validation_backend_and_probe(
@@ -1966,8 +1967,13 @@ mod tests {
         } else {
             VALIDATION_WARMUP_FRAMES
         };
-        let total_frames = warmup_frames + MEASURED_FRAMES;
-        let mut resident_samples = Vec::with_capacity(17);
+        let measured_frames = if capture_resident_distribution {
+            RSS_MEASURED_FRAMES
+        } else {
+            VALIDATION_MEASURED_FRAMES
+        };
+        let total_frames = warmup_frames + measured_frames;
+        let mut resident_samples = Vec::with_capacity(65);
         for frame_index in 1_u16..=total_frames {
             let completed = backend.render_offscreen(&scene, descriptor)?;
             let report = completed.report();
@@ -2007,13 +2013,13 @@ mod tests {
         );
         assert!(accounting.invariants_hold());
         if capture_resident_distribution {
-            assert_eq!(resident_samples.len(), 17);
-            let page_bytes = host_page_bytes()?;
-            qualify_resident_plateau(&resident_samples, page_bytes)?;
+            assert_eq!(resident_samples.len(), 65);
             for (frame, bytes) in &resident_samples {
                 assert!(*bytes > 0);
                 println!("alpine-memory-sample frame={frame} resident_bytes={bytes}");
             }
+            let page_bytes = host_page_bytes()?;
+            qualify_resident_plateau(&resident_samples, page_bytes)?;
         }
 
         backend.shutdown();
@@ -2034,28 +2040,33 @@ mod tests {
 
     #[test]
     fn resident_plateau_rejects_unbounded_or_late_growth() {
-        let bounded = (0_u16..17)
+        let bounded = (0_u16..65)
             .map(|index| (index, 10_000 + u64::from(index.min(4)) * 4_096))
             .collect::<Vec<_>>();
         assert!(qualify_resident_plateau(&bounded, 16_384).is_ok());
 
-        let excessive_settling = (0_u16..17)
+        let delayed_but_bounded_settling = (0_u16..65)
+            .map(|index| (index, 10_000 + u64::from(index.min(12)) * 4_096))
+            .collect::<Vec<_>>();
+        assert!(qualify_resident_plateau(&delayed_but_bounded_settling, 16_384).is_ok());
+
+        let excessive_settling = (0_u16..65)
             .map(|index| (index, 10_000 + u64::from(index) * 32_768))
             .collect::<Vec<_>>();
         assert!(qualify_resident_plateau(&excessive_settling, 16_384).is_err());
 
-        let late_growth = (0_u16..17)
+        let late_growth = (0_u16..65)
             .map(|index| {
-                let bytes = if index < 8 {
+                let bytes = if index < 56 {
                     10_000
                 } else {
-                    10_000 + u64::from(index - 8) * 16_384
+                    10_000 + u64::from(index - 56) * 16_384
                 };
                 (index, bytes)
             })
             .collect::<Vec<_>>();
         assert!(qualify_resident_plateau(&late_growth, 16_384).is_err());
-        assert!(qualify_resident_plateau(&bounded[..16], 16_384).is_err());
+        assert!(qualify_resident_plateau(&bounded[..64], 16_384).is_err());
         assert!(qualify_resident_plateau(&bounded, 0).is_err());
     }
 

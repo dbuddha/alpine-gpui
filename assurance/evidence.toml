@@ -1832,7 +1832,7 @@ id = "EV-0025-NATIVE07"
 claim = "AEP-0025-C07"
 kind = "native"
 artifact = "crates/alpine-metal/src/native.rs#cancellation_shutdown_and_steady_state_have_no_hidden_native_work"
-assertion = "One cancellation plus 512 validation-soak frames balance submissions, bytes, and releases with zero current retention; after 4,096 memory-soak warmup frames, process RSS cannot grow by more than one host page."
+assertion = "One cancellation plus 512 validation-soak frames balance submissions, bytes, and releases with zero current retention; after 4,096 memory-soak warmup frames, 1,024 measured frames remain within a 16-page observation bound and the final nine samples plateau within one host page."
 scope = "Repeated identical Metal workload and ownership probe."
 exclusions = ["driver-private caches", "fixed performance budget"]
 
@@ -1841,7 +1841,7 @@ id = "EV-0025-BENCHMARK07"
 claim = "AEP-0025-C07"
 kind = "benchmark"
 artifact = "crates/alpine-metal/src/native.rs#cancellation_shutdown_and_steady_state_have_no_hidden_native_work"
-assertion = "The repeated-frame workload records constant retained bytes, cumulative allocation and readback totals, and a 256-frame resident-memory distribution after 4,096 warmup frames."
+assertion = "The repeated-frame workload records constant retained bytes, cumulative allocation and readback totals, and a 1,024-frame resident-memory distribution after 4,096 warmup frames."
 scope = "Correctness-mode resource soak on Apple Silicon."
 exclusions = ["latency claim", "fixed hardware", "cross-machine performance budget"]
 

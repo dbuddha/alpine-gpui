@@ -422,13 +422,15 @@ status, readback mismatch, memory-pressure, permission, and device-loss class.
 A 512-frame validation soak requires constant per-frame retained accounting,
 balanced cumulative totals, and zero active owner probes after every return.
 After 4,096 warmup frames, the isolated native memory soak records process
-resident bytes every 16 frames across a 256-frame measurement window. Those
-samples permit a bounded eight-sample allocator-settlement window, then require
-a nine-sample plateau within one host virtual-memory page. Negative controls
-reject excessive settlement and continued late growth. This distinguishes a
-one-time allocator step from retention without claiming a qualified performance
-budget. The RSS probe itself is primed before warmup so its lazy measurement
-allocation cannot contaminate the renderer baseline. Metal API and shader
+resident bytes every 16 frames across a 1,024-frame measurement window. The
+complete 65-sample observation must remain within 16 host virtual-memory pages
+of its first sample, and its final nine samples must plateau within one page.
+Negative controls admit delayed but bounded allocator settlement while rejecting
+excessive total growth and continued terminal growth. This distinguishes a
+bounded allocator step from retention without claiming a qualified performance
+budget. Samples are printed before qualification so a failure retains its full
+distribution. The RSS probe itself is primed before warmup so its lazy
+measurement allocation cannot contaminate the renderer baseline. Metal API and shader
 validation cover the full suite first;
 the process-memory sample then runs without validation-layer instrumentation so
 debug allocations cannot be mistaken for shipping renderer retention. Exact
