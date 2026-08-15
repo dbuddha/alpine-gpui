@@ -479,6 +479,22 @@ mod tests {
     #[test]
     fn errors_are_stable_and_descriptive() {
         assert_eq!(
+            SurfaceError::InvalidDimension {
+                dimension: InvalidDimension::Scale,
+                value: -1.0,
+            }
+            .to_string(),
+            "invalid Scale dimension -1"
+        );
+        assert_eq!(
+            SurfaceError::PhysicalDimensionOutOfRange {
+                dimension: InvalidDimension::Height,
+                value: 16_385.0,
+            }
+            .to_string(),
+            "physical Height dimension 16385 is outside 1..=16384"
+        );
+        assert_eq!(
             SurfaceError::UnsupportedPlatform.to_string(),
             "native Alpine presentation requires Apple Silicon macOS 15 or newer"
         );
@@ -529,5 +545,18 @@ mod tests {
         finish_close_observer_state(&lifecycle);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closed);
         assert_eq!(observer.callback_count(), 29);
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[test]
+    fn unsupported_wrapper_methods_preserve_the_safe_contract() {
+        let surface = NativeSurface {
+            implementation: unsupported::NativeSurface,
+        };
+
+        surface.show();
+        assert_eq!(surface.snapshot().physical_width(), 0);
+        assert_eq!(surface.observer().lifecycle(), SurfaceLifecycle::Closed);
+        surface.close();
     }
 }
