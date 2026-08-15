@@ -28,9 +28,35 @@ mod unsupported;
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 #[doc(hidden)]
 pub mod native_validation {
-    use std::time::Duration;
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
 
     use crate::{NativeSurface, SurfaceDescriptor, SurfaceError, native};
+
+    /// Evidence that bounds a production event-loop validation run.
+    #[derive(Debug)]
+    pub struct RunTimeoutEvidence {
+        expired: Arc<AtomicBool>,
+        cancelled: Arc<AtomicBool>,
+    }
+
+    impl RunTimeoutEvidence {
+        /// Returns whether the guard had to stop the application run loop.
+        #[must_use]
+        pub fn expired(&self) -> bool {
+            self.expired.load(Ordering::Acquire)
+        }
+
+        /// Disarms the guard after the production run loop exits normally.
+        pub fn cancel(&self) {
+            self.cancelled.store(true, Ordering::Release);
+        }
+    }
 
     /// Validation-only exact ownership and teardown counts for one surface.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,6 +173,22 @@ pub mod native_validation {
     /// Runs the real `AppKit` event loop until one frame terminates or timeout.
     pub fn run_until_frame_terminal(surface: &NativeSurface, timeout: Duration) {
         surface.implementation.run_until_frame_terminal(timeout);
+    }
+
+    /// Arms a bounded guard around a subsequent production `run` call.
+    ///
+    /// The guard is validation-only. Expiration wakes and stops AppKit without
+    /// changing surface lifecycle, causing production `run` to fail closed.
+    #[must_use]
+    pub fn arm_run_timeout(surface: &NativeSurface, timeout: Duration) -> RunTimeoutEvidence {
+        let expired = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        surface.implementation.arm_run_timeout(
+            timeout,
+            Arc::clone(&expired),
+            Arc::clone(&cancelled),
+        );
+        RunTimeoutEvidence { expired, cancelled }
     }
 
     /// Installs one deterministic asynchronous driver failure for contract tests.

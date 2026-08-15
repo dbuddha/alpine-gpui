@@ -27,9 +27,27 @@ mod validation {
         };
         let (scene, clear) = validation_scene()?;
         validate_visible_clean_idle(hosted_direct)?;
+        validate_missing_close_control()?;
         validate_pending_close(scene.clone(), clear)?;
         validate_post_commit_close(scene, clear, hosted_direct)?;
         validate_owner_soak()
+    }
+
+    fn validate_missing_close_control() -> TestResult {
+        let descriptor = SurfaceDescriptor::new("Alpine missing close control", 32.0, 24.0, 1.0)?;
+        let surface = native_validation::new_surface(&descriptor)?;
+        surface.show()?;
+        let timeout = native_validation::arm_run_timeout(&surface, Duration::from_millis(25));
+        assert_eq!(
+            surface.run(),
+            Err(alpine_platform_macos::SurfaceError::UnexpectedRunLoopExit {
+                lifecycle: SurfaceLifecycle::Live,
+            })
+        );
+        assert!(timeout.expired());
+        native_validation::close_window(&surface);
+        assert_exact_teardown(native_validation::close_with_owner_evidence(surface)?);
+        Ok(())
     }
 
     fn validate_visible_clean_idle(hosted_direct: bool) -> TestResult {
@@ -107,7 +125,10 @@ mod validation {
         }
         assert_eq!(surface.request_frame(scene, clear)?.get(), 1);
         native_validation::inject_post_commit_close(&surface);
-        native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+        let timeout = native_validation::arm_run_timeout(&surface, Duration::from_secs(5));
+        surface.run()?;
+        timeout.cancel();
+        assert!(!timeout.expired());
 
         assert!(!native_validation::inject_configuration_callback(&surface));
         assert_eq!(surface.take_error()?, None);
