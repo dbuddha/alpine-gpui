@@ -10,10 +10,13 @@ exclude_globs = [
 # These functions are absent or intentionally effect-free in the Linux dynamic
 # test build even though cargo-mutants parses them. The native bypass and safe
 # surface wrapper are exercised by the dedicated Apple Silicon mutation gate.
+# The process-main-thread validation entry point is test orchestration; its
+# shipping cleanup path and oracle support remain mutated on Apple Silicon.
 # The symbolic adapter is exercised by the full Kani inventory and delegates
 # directly to the dynamically tested transition.
 exclude_re = [
     "initialize_for_native_validation",
+    "native_validation::validate_initialization_rollback",
     "record_symbolic",
     "NativeSurface::show",
 ]
