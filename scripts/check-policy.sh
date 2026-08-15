@@ -26,6 +26,18 @@ if [ -n "$workflow_files" ]; then
         fail 'CI gates may not use continue-on-error: true'
         grep -nE 'continue-on-error:[[:space:]]*true' $workflow_files >&2 || true
     fi
+
+    weekly_mutation_workflow=.github/workflows/weekly-assurance.yml
+    if [ -f "$weekly_mutation_workflow" ]; then
+        output_parent_line=$(grep -nF 'mkdir -p target' "$weekly_mutation_workflow" \
+            | head -n 1 | cut -d: -f1 || true)
+        mutation_line=$(grep -nF 'cargo mutants --workspace' "$weekly_mutation_workflow" \
+            | head -n 1 | cut -d: -f1 || true)
+        if [ -z "$output_parent_line" ] || [ -z "$mutation_line" ] \
+            || [ "$output_parent_line" -ge "$mutation_line" ]; then
+            fail 'weekly mutation must prepare its target output parent before cargo-mutants starts'
+        fi
+    fi
 fi
 
 manifest_files=$(find . -name Cargo.toml -not -path './target/*' -print)
