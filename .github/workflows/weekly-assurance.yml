@@ -44,7 +44,9 @@ jobs:
       - name: Require all workspace mutants to be killed
         # macOS-only validation entry points are mutated by nightly Apple
         # Silicon assurance, not by this Linux workspace pass.
-        run: cargo mutants --workspace --exclude alpine-assurance --exclude-re 'native_validation::' --no-shuffle --output target/mutants.out -- --locked
+        run: |
+          mkdir -p target
+          cargo mutants --workspace --exclude alpine-assurance --exclude-re 'native_validation::' --no-shuffle --output target/mutants.out -- --locked
       - name: Upload mutation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
