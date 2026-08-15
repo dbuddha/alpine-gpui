@@ -1,0 +1,219 @@
+schema = "alpine-aa-calibration/v1"
+id = "renderer-aa-fixture"
+comparison_level = "renderer-only"
+workload_hash = "3dbf181350ed2283ce9daa427af5d674cebcceb4dada5abf2a1c1e1f5c156bda"
+base_renderer = "alpine-metal"
+candidate_renderer = "alpine-metal"
+base_revision = "b567e8f29c3c6c6bcdf98c02bc1958e59f044157"
+candidate_revision = "b567e8f29c3c6c6bcdf98c02bc1958e59f044157"
+metric = "frame-wall-time"
+unit = "nanoseconds"
+direction = "lower-is-better"
+measurement_stage = "renderer-submit-readback"
+clock = "fixture-monotonic-clock"
+sample_class = "warm"
+warmup_iterations = 10
+raw_samples_artifact = "assurance/calibration/v1/raw/aa-samples.csv"
+raw_samples_sha256 = "694f83c3ff56e26b2198a9534c34a01b8840065af0b7b32426b74f5702fe183e"
+assumptions = ["Synthetic integer samples exercise the protocol and descriptive calculations only."]
+exclusions = ["No physical hardware, elapsed-time measurement, confidence interval, equivalence margin, or performance claim."]
+
+[[windows]]
+id = "window-01"
+lease_id = "fixture-lease-01"
+environment_kind = "test-fixture"
+hardware_id = "fixture-m2-pro-01"
+hardware_model = "fixture-apple-silicon"
+gpu = "fixture-gpu"
+memory_bytes = 34359738368
+os_build = "fixture-macos-build"
+xcode_build = "fixture-xcode-build"
+rustc = "fixture-rustc"
+runner_image = "fixture-runner-image"
+power_state = "fixed-ac"
+thermal_policy = "fixture-nominal"
+display_state = "headless-fixed"
+shader_mode = "offline-metallib"
+validation_enabled = false
+started_at_utc = "2026-08-01T10:00:00Z"
+ended_at_utc = "2026-08-01T11:00:00Z"
+
+[[windows]]
+id = "window-02"
+lease_id = "fixture-lease-02"
+environment_kind = "test-fixture"
+hardware_id = "fixture-m2-pro-02"
+hardware_model = "fixture-apple-silicon"
+gpu = "fixture-gpu"
+memory_bytes = 34359738368
+os_build = "fixture-macos-build"
+xcode_build = "fixture-xcode-build"
+rustc = "fixture-rustc"
+runner_image = "fixture-runner-image"
+power_state = "fixed-ac"
+thermal_policy = "fixture-nominal"
+display_state = "headless-fixed"
+shader_mode = "offline-metallib"
+validation_enabled = false
+started_at_utc = "2026-08-02T10:00:00Z"
+ended_at_utc = "2026-08-02T11:00:00Z"
+
+[[windows]]
+id = "window-03"
+lease_id = "fixture-lease-03"
+environment_kind = "test-fixture"
+hardware_id = "fixture-m2-pro-03"
+hardware_model = "fixture-apple-silicon"
+gpu = "fixture-gpu"
+memory_bytes = 34359738368
+os_build = "fixture-macos-build"
+xcode_build = "fixture-xcode-build"
+rustc = "fixture-rustc"
+runner_image = "fixture-runner-image"
+power_state = "fixed-ac"
+thermal_policy = "fixture-nominal"
+display_state = "headless-fixed"
+shader_mode = "offline-metallib"
+validation_enabled = false
+started_at_utc = "2026-08-03T10:00:00Z"
+ended_at_utc = "2026-08-03T11:00:00Z"
+
+[[windows]]
+id = "window-04"
+lease_id = "fixture-lease-04"
+environment_kind = "test-fixture"
+hardware_id = "fixture-m2-pro-04"
+hardware_model = "fixture-apple-silicon"
+gpu = "fixture-gpu"
+memory_bytes = 34359738368
+os_build = "fixture-macos-build"
+xcode_build = "fixture-xcode-build"
+rustc = "fixture-rustc"
+runner_image = "fixture-runner-image"
+power_state = "fixed-ac"
+thermal_policy = "fixture-nominal"
+display_state = "headless-fixed"
+shader_mode = "offline-metallib"
+validation_enabled = false
+started_at_utc = "2026-08-04T10:00:00Z"
+ended_at_utc = "2026-08-04T11:00:00Z"
+
+[[runs]]
+id = "run-01"
+window_id = "window-01"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000001"
+expected_pairs = 2
+
+[[runs]]
+id = "run-02"
+window_id = "window-01"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000002"
+expected_pairs = 2
+
+[[runs]]
+id = "run-03"
+window_id = "window-01"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000003"
+expected_pairs = 2
+
+[[runs]]
+id = "run-04"
+window_id = "window-01"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000004"
+expected_pairs = 2
+
+[[runs]]
+id = "run-05"
+window_id = "window-01"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000005"
+expected_pairs = 2
+
+[[runs]]
+id = "run-06"
+window_id = "window-02"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000006"
+expected_pairs = 2
+
+[[runs]]
+id = "run-07"
+window_id = "window-02"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000007"
+expected_pairs = 2
+
+[[runs]]
+id = "run-08"
+window_id = "window-02"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000008"
+expected_pairs = 2
+
+[[runs]]
+id = "run-09"
+window_id = "window-02"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000009"
+expected_pairs = 2
+
+[[runs]]
+id = "run-10"
+window_id = "window-02"
+randomization_seed = "000000000000000000000000000000000000000000000000000000000000000a"
+expected_pairs = 2
+
+[[runs]]
+id = "run-11"
+window_id = "window-03"
+randomization_seed = "000000000000000000000000000000000000000000000000000000000000000b"
+expected_pairs = 2
+
+[[runs]]
+id = "run-12"
+window_id = "window-03"
+randomization_seed = "000000000000000000000000000000000000000000000000000000000000000c"
+expected_pairs = 2
+
+[[runs]]
+id = "run-13"
+window_id = "window-03"
+randomization_seed = "000000000000000000000000000000000000000000000000000000000000000d"
+expected_pairs = 2
+
+[[runs]]
+id = "run-14"
+window_id = "window-03"
+randomization_seed = "000000000000000000000000000000000000000000000000000000000000000e"
+expected_pairs = 2
+
+[[runs]]
+id = "run-15"
+window_id = "window-03"
+randomization_seed = "000000000000000000000000000000000000000000000000000000000000000f"
+expected_pairs = 2
+
+[[runs]]
+id = "run-16"
+window_id = "window-04"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000010"
+expected_pairs = 2
+
+[[runs]]
+id = "run-17"
+window_id = "window-04"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000011"
+expected_pairs = 2
+
+[[runs]]
+id = "run-18"
+window_id = "window-04"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000012"
+expected_pairs = 2
+
+[[runs]]
+id = "run-19"
+window_id = "window-04"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000013"
+expected_pairs = 2
+
+[[runs]]
+id = "run-20"
+window_id = "window-04"
+randomization_seed = "0000000000000000000000000000000000000000000000000000000000000014"
+expected_pairs = 2

@@ -1,10 +1,12 @@
 //! Validates versioned golden-workload and qualification manifests.
 
+use alpine_trace::{DecodedTrace, TraceClip, TraceInput, TraceQuad, TraceViewport};
 use serde::{Deserialize, de::DeserializeOwned};
 use std::{
     collections::BTreeSet,
     fmt::Write as _,
     fs,
+    io::ErrorKind,
     path::{Component, Path},
 };
 
@@ -31,12 +33,14 @@ const EQUIVALENCE_KINDS: &[&str] = &[
 ];
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SceneTrace {
     schema: String,
     id: String,
     workload_hash: String,
     revision: u64,
     viewport: Viewport,
+    clear_color: [f32; 4],
     #[serde(default)]
     resources: Vec<Resource>,
     #[serde(default)]
@@ -45,13 +49,17 @@ struct SceneTrace {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Viewport {
-    width: f64,
-    height: f64,
-    scale_factor: f64,
+    width: f32,
+    height: f32,
+    scale_factor: f32,
+    pixel_width: u32,
+    pixel_height: u32,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Resource {
     id: String,
     kind: String,
@@ -59,23 +67,34 @@ struct Resource {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Clip {
     id: String,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Operation {
     sequence: u64,
     kind: String,
     resource: Option<String>,
     clip: Option<String>,
+    x: Option<f32>,
+    y: Option<f32>,
+    width: Option<f32>,
+    height: Option<f32>,
+    red: Option<f32>,
+    green: Option<f32>,
+    blue: Option<f32>,
+    alpha: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Journey {
     schema: String,
     id: String,
@@ -88,6 +107,7 @@ struct Journey {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Action {
     sequence: u64,
     kind: String,
@@ -95,6 +115,7 @@ struct Action {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Qualification {
     schema: String,
     id: String,
@@ -122,6 +143,7 @@ struct Qualification {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Environment {
     hardware_id: String,
     os: String,
@@ -132,6 +154,7 @@ struct Environment {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Equivalence {
     kind: String,
     status: String,
@@ -139,6 +162,7 @@ struct Equivalence {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Measurement {
     name: String,
     unit: String,
@@ -186,6 +210,103 @@ pub(crate) fn run(command: &str, manifest: &Path, root: &Path) -> Result<String,
         "qualification-report" => Ok(render_report(&qualification, &scene, &journey)),
         other => Err(vec![format!("unsupported qualification command {other:?}")]),
     }
+}
+
+pub(crate) fn run_scene(manifest: &Path, _root: &Path) -> Result<String, Vec<String>> {
+    let scene: SceneTrace = load_toml(manifest)?;
+    let errors = validate_scene_errors_all(&scene);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let decoded = match decode_scene(&scene) {
+        Ok(decoded) => decoded,
+        Err(error) => return Err(vec![error]),
+    };
+    let frame = match decoded.validated_frame() {
+        Ok(frame) => frame,
+        Err(error) => {
+            return Err(vec![format!(
+                "scene trace frame validation failed: {error}"
+            )]);
+        }
+    };
+    let image = match frame.reference_image() {
+        Ok(image) => image,
+        Err(error) => return Err(vec![format!("scene trace CPU oracle failed: {error}")]),
+    };
+    Ok(format!(
+        "validated scene trace {} at revision {} with {} operations and {}x{} reference pixels",
+        scene.id,
+        scene.revision,
+        scene.operations.len(),
+        image.width(),
+        image.height()
+    ))
+}
+
+pub(crate) fn render_scene(
+    native: bool,
+    manifest: &Path,
+    output: &Path,
+) -> Result<String, Vec<String>> {
+    match fs::remove_file(output) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(vec![format!(
+                "cannot invalidate prior output {}: {error}",
+                output.display()
+            )]);
+        }
+    }
+    let scene: SceneTrace = load_toml(manifest)?;
+    let errors = validate_scene_errors_all(&scene);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let decoded = match decode_scene(&scene) {
+        Ok(decoded) => decoded,
+        Err(error) => return Err(vec![error]),
+    };
+    let (image, source) = if native {
+        let mut backend = match alpine_metal::MetalBackend::new() {
+            Ok(backend) => backend,
+            Err(error) => {
+                return Err(vec![format!("cannot initialize Direct Metal: {error}")]);
+            }
+        };
+        let frame = match backend.render_offscreen(decoded.scene(), decoded.descriptor()) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return Err(vec![format!("Direct Metal trace render failed: {error}")]);
+            }
+        };
+        (frame.image().clone(), "direct-metal")
+    } else {
+        let frame = match decoded.validated_frame() {
+            Ok(frame) => frame,
+            Err(error) => {
+                return Err(vec![format!(
+                    "scene trace frame validation failed: {error}"
+                )]);
+            }
+        };
+        let image = match frame.reference_image() {
+            Ok(image) => image,
+            Err(error) => return Err(vec![format!("scene trace CPU oracle failed: {error}")]),
+        };
+        (image, "cpu-oracle")
+    };
+    if let Err(error) = fs::write(output, image.bytes()) {
+        return Err(vec![format!("cannot write {}: {error}", output.display())]);
+    }
+    Ok(format!(
+        "rendered scene trace {} through {source} to {} as {}x{} compact BGRA8",
+        scene.id,
+        output.display(),
+        image.width(),
+        image.height()
+    ))
 }
 
 fn load_toml<T: DeserializeOwned>(path: &Path) -> Result<T, Vec<String>> {
@@ -310,6 +431,28 @@ fn validate_scene(scene: &SceneTrace, diagnostics: &mut Diagnostics) {
         "scene viewport dimensions and scale factor must be finite and positive",
     );
 
+    validate_scene_resources(scene, diagnostics);
+    let clips = validate_scene_clips(scene, diagnostics);
+    validate_scene_operations(scene, &clips, diagnostics);
+    if diagnostics.errors.is_empty() {
+        match decode_scene(scene) {
+            Ok(decoded) => {
+                if let Err(error) = decoded.validated_frame() {
+                    diagnostics
+                        .errors
+                        .push(format!("scene trace frame validation failed: {error}"));
+                }
+            }
+            Err(error) => diagnostics.errors.push(error),
+        }
+    }
+}
+
+fn validate_scene_resources(scene: &SceneTrace, diagnostics: &mut Diagnostics) {
+    diagnostics.require(
+        scene.resources.is_empty(),
+        "solid-quad trace slice does not support resources",
+    );
     let mut resources = BTreeSet::new();
     for resource in &scene.resources {
         diagnostics.require(
@@ -329,7 +472,12 @@ fn validate_scene(scene: &SceneTrace, diagnostics: &mut Diagnostics) {
             format!("resource {} has invalid content hash", resource.id),
         );
     }
+}
 
+fn validate_scene_clips<'a>(
+    scene: &'a SceneTrace,
+    diagnostics: &mut Diagnostics,
+) -> BTreeSet<&'a str> {
     let mut clips = BTreeSet::new();
     for clip in &scene.clips {
         diagnostics.require(
@@ -348,7 +496,18 @@ fn validate_scene(scene: &SceneTrace, diagnostics: &mut Diagnostics) {
             format!("clip {} must contain finite positive geometry", clip.id),
         );
     }
+    diagnostics.require(
+        scene.clips.len() == 1,
+        "solid-quad trace slice requires exactly one viewport clip",
+    );
+    clips
+}
 
+fn validate_scene_operations(
+    scene: &SceneTrace,
+    clips: &BTreeSet<&str>,
+    diagnostics: &mut Diagnostics,
+) {
     diagnostics.require(
         !scene.operations.is_empty(),
         "scene must contain operations",
@@ -362,19 +521,115 @@ fn validate_scene(scene: &SceneTrace, diagnostics: &mut Diagnostics) {
             SUPPORTED_OPERATIONS.contains(&operation.kind.as_str()),
             format!("unsupported scene operation {}", operation.kind),
         );
-        if let Some(resource) = &operation.resource {
-            diagnostics.require(
-                resources.contains(resource.as_str()),
-                format!("operation {expected} references unknown resource {resource}"),
-            );
-        }
         if let Some(clip) = &operation.clip {
             diagnostics.require(
                 clips.contains(clip.as_str()),
                 format!("operation {expected} references unknown clip {clip}"),
             );
         }
+        if operation.kind == "solid-quad" {
+            diagnostics.require(
+                operation.clip.is_some(),
+                format!("solid-quad operation {expected} requires a clip"),
+            );
+            diagnostics.require(
+                operation_payload(operation).is_some(),
+                format!("solid-quad operation {expected} requires complete bounds and color"),
+            );
+            diagnostics.require(
+                operation.resource.is_none(),
+                format!("solid-quad operation {expected} cannot reference a resource"),
+            );
+        }
     }
+}
+
+fn validate_scene_errors_all(scene: &SceneTrace) -> Vec<String> {
+    let mut diagnostics = Diagnostics::default();
+    validate_scene(scene, &mut diagnostics);
+    diagnostics.finish()
+}
+
+fn decode_scene(scene: &SceneTrace) -> Result<DecodedTrace, String> {
+    let clips = scene
+        .clips
+        .iter()
+        .map(|clip| {
+            (
+                clip.id.as_str(),
+                TraceClip {
+                    bounds: [clip.x, clip.y, clip.width, clip.height],
+                },
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut quads = Vec::new();
+    if quads.try_reserve_exact(scene.operations.len()).is_err() {
+        return Err("scene trace operation allocation failed".to_owned());
+    }
+    for operation in &scene.operations {
+        if operation.kind != "solid-quad" {
+            return Err(format!("unsupported scene operation {}", operation.kind));
+        }
+        let Some(clip_id) = operation.clip.as_deref() else {
+            return Err(format!(
+                "solid-quad operation {} requires a clip",
+                operation.sequence
+            ));
+        };
+        let Some(clip) = clips.get(clip_id).copied() else {
+            return Err(format!(
+                "operation {} references unknown clip {clip_id}",
+                operation.sequence
+            ));
+        };
+        let Some((bounds, color)) = operation_payload(operation) else {
+            return Err(format!(
+                "solid-quad operation {} requires complete bounds and color",
+                operation.sequence
+            ));
+        };
+        quads.push(TraceQuad {
+            sequence: operation.sequence,
+            bounds,
+            color,
+            clip,
+        });
+    }
+    let decoded = TraceInput {
+        revision: scene.revision,
+        viewport: TraceViewport {
+            logical_width: scene.viewport.width,
+            logical_height: scene.viewport.height,
+            scale_factor: scene.viewport.scale_factor,
+            pixel_width: scene.viewport.pixel_width,
+            pixel_height: scene.viewport.pixel_height,
+            clear_color: scene.clear_color,
+        },
+        quads,
+    }
+    .decode();
+    match decoded {
+        Ok(decoded) => Ok(decoded),
+        Err(error) => Err(format!("scene trace semantic decoding failed: {error}")),
+    }
+}
+
+fn operation_payload(operation: &Operation) -> Option<([f32; 4], [f32; 4])> {
+    Some((
+        [
+            operation.x?,
+            operation.y?,
+            operation.width?,
+            operation.height?,
+        ],
+        [
+            operation.red?,
+            operation.green?,
+            operation.blue?,
+            operation.alpha?,
+        ],
+    ))
 }
 
 fn validate_journey(
@@ -634,9 +889,7 @@ fn validate_metric_records(
 
 #[cfg(test)]
 fn validate_scene_errors(scene: &SceneTrace) -> Vec<String> {
-    let mut diagnostics = Diagnostics::default();
-    validate_scene(scene, &mut diagnostics);
-    diagnostics.finish()
+    validate_scene_errors_all(scene)
 }
 
 #[cfg(test)]
@@ -692,7 +945,7 @@ fn valid_git_sha(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn finite_positive(value: f64) -> bool {
+fn finite_positive(value: f32) -> bool {
     value.is_finite() && value > 0.0
 }
 
@@ -766,9 +1019,13 @@ fn render_report(qualification: &Qualification, scene: &SceneTrace, journey: &Jo
 mod tests {
     use super::{
         Journey, Qualification, SceneTrace, finite_positive, load_toml, render_report,
-        resolve_repository_path, run, valid_git_sha, valid_sha256, valid_slug, validate,
+        render_scene, resolve_repository_path, run, run_scene, valid_git_sha, valid_sha256,
+        valid_slug, validate,
     };
-    use std::path::{Path, PathBuf};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
     fn repository_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -787,6 +1044,27 @@ mod tests {
             assert!(report.contains("Environment qualified: true"));
             assert!(report.contains("Exclusions:"));
         }
+    }
+
+    #[test]
+    fn scene_commands_validate_and_render_reference_evidence() {
+        let root = repository_root();
+        let scene = root.join("assurance/qualification/v1/scene.toml");
+        assert_eq!(
+            run_scene(&scene, &root),
+            Ok("validated scene trace solid-quad-editor-surface at revision 1 with 3 operations and 8x4 reference pixels".to_owned())
+        );
+
+        let output = root.join("target/qualification-unit-reference.bgra");
+        assert!(fs::create_dir_all(root.join("target")).is_ok());
+        assert_eq!(
+            render_scene(false, &scene, &output),
+            Ok(format!(
+                "rendered scene trace solid-quad-editor-surface through cpu-oracle to {} as 8x4 compact BGRA8",
+                output.display()
+            ))
+        );
+        assert_eq!(fs::read(output).ok().map(|bytes| bytes.len()), Some(128));
     }
 
     #[test]
@@ -923,24 +1201,24 @@ mod tests {
             scene.revision = 0;
             assert!(!super::validate_scene_errors(&scene).is_empty());
             scene.revision = 1;
-            for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY] {
                 scene.viewport.width = invalid;
                 assert!(!super::validate_scene_errors(&scene).is_empty());
-                scene.viewport.width = 1280.0;
+                scene.viewport.width = 4.0;
                 scene.viewport.height = invalid;
                 assert!(!super::validate_scene_errors(&scene).is_empty());
-                scene.viewport.height = 720.0;
+                scene.viewport.height = 2.0;
                 scene.viewport.scale_factor = invalid;
                 assert!(!super::validate_scene_errors(&scene).is_empty());
                 scene.viewport.scale_factor = 2.0;
             }
             if let Some(clip) = scene.clips.first_mut() {
-                clip.x = f64::NAN;
+                clip.x = f32::NAN;
             }
             assert!(!super::validate_scene_errors(&scene).is_empty());
             if let Some(clip) = scene.clips.first_mut() {
                 clip.x = 0.0;
-                clip.y = f64::INFINITY;
+                clip.y = f32::INFINITY;
             }
             assert!(!super::validate_scene_errors(&scene).is_empty());
             if let Some(clip) = scene.clips.first_mut() {
@@ -949,10 +1227,78 @@ mod tests {
             }
             assert!(!super::validate_scene_errors(&scene).is_empty());
             if let Some(clip) = scene.clips.first_mut() {
-                clip.width = 1280.0;
+                clip.width = 4.0;
                 clip.height = -1.0;
             }
             assert!(!super::validate_scene_errors(&scene).is_empty());
+        }
+    }
+
+    #[test]
+    fn full_qualification_rejects_semantically_invalid_trace_values() {
+        let root = repository_root();
+        let qualification: Result<Qualification, _> =
+            load_toml(&root.join("assurance/qualification/v1/valid.toml"));
+        let scene: Result<SceneTrace, _> =
+            load_toml(&root.join("assurance/qualification/v1/scene.toml"));
+        let journey: Result<Journey, _> =
+            load_toml(&root.join("assurance/qualification/v1/journey.toml"));
+        assert!(qualification.is_ok() && scene.is_ok() && journey.is_ok());
+        if let (Ok(qualification), Ok(mut scene), Ok(journey)) = (qualification, scene, journey) {
+            if let Some(operation) = scene.operations.first_mut() {
+                operation.red = Some(2.0);
+            }
+            let errors = validate(&qualification, &scene, &journey, &root);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("semantic decoding failed")),
+                "{errors:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn solid_quads_reject_resource_adaptation() {
+        let root = repository_root();
+        let scene: Result<SceneTrace, _> =
+            load_toml(&root.join("assurance/qualification/v1/scene.toml"));
+        assert!(scene.is_ok());
+        if let Ok(mut scene) = scene {
+            scene.resources.push(super::Resource {
+                id: "unexpected-resource".to_owned(),
+                kind: "image".to_owned(),
+                content_hash: "a".repeat(64),
+            });
+            if let Some(operation) = scene.operations.first_mut() {
+                operation.resource = Some("unexpected-resource".to_owned());
+            }
+            let errors = super::validate_scene_errors(&scene);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("cannot reference a resource")),
+                "{errors:#?}"
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("does not support resources")),
+                "{errors:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn versioned_trace_schema_rejects_unknown_fields() {
+        let root = repository_root();
+        let source = std::fs::read_to_string(root.join("assurance/qualification/v1/scene.toml"));
+        assert!(source.is_ok());
+        if let Ok(source) = source {
+            let result = toml::from_str::<SceneTrace>(&format!(
+                "{source}\nunexpected_protocol_field = true\n"
+            ));
+            assert!(result.is_err());
         }
     }
 
@@ -1061,7 +1407,7 @@ mod tests {
         assert!(finite_positive(1.0));
         assert!(!finite_positive(0.0));
         assert!(!finite_positive(-1.0));
-        assert!(!finite_positive(f64::NAN));
-        assert!(!finite_positive(f64::INFINITY));
+        assert!(!finite_positive(f32::NAN));
+        assert!(!finite_positive(f32::INFINITY));
     }
 }

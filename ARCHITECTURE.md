@@ -13,9 +13,20 @@ dependencies. `alpine-core` has no workspace dependencies.
 On Apple Silicon macOS only, `alpine-metal` uses narrowly featured, exact-version
 `objc2`, `objc2-foundation`, `objc2-metal`, and `dispatch2` bindings. Other
 targets neither compile nor link those dependencies.
-The non-shipping `alpine-assurance` tool depends on audited `serde` and `toml`
-crates to validate the evidence registry and versioned golden-workload
-qualification manifests.
+The non-shipping `alpine-trace` crate depends only on Alpine workspace crates
+and owns typed, fail-closed conversion from versioned workload values into an
+immutable scene and exact offscreen target. The non-shipping
+`alpine-assurance` tool depends on audited `serde` and `toml` crates to parse
+repository manifests, validate the evidence registry and qualification state,
+pass serialized trace values into `alpine-trace`, and validate versioned
+renderer A/A calibration records. Calibration validation requires exact
+workload and identical-revision identity, four or more distinct hardware
+windows, twenty or more runs, balanced paired execution order, strict
+separation of cold and warm samples, measurement stage and clock identity,
+ordered window times, repository-normalized LF raw CSV structure, and
+recomputed artifact SHA-256. Its deterministic integer report is descriptive
+only and cannot establish an equivalence margin, sample size, confidence
+interval, or performance claim.
 
 ```mermaid
 flowchart LR
@@ -25,6 +36,7 @@ flowchart LR
     renderer["alpine-renderer<br/>Renderer, capabilities, FrameReport"]
     metal["alpine-metal safe boundary<br/>validation, pixels, FrameReport"]
     native["Private Direct Metal specialization<br/>pipeline, one submission, readback"]
+    trace["alpine-trace<br/>non-shipping typed workload decoder"]
     assurance["alpine-assurance<br/>non-shipping evidence and qualification validator"]
 
     core --> scene --> renderer
@@ -36,7 +48,10 @@ flowchart LR
     caller -. "constructs values" .-> core
     caller -. "builds immutable snapshot" .-> scene
     caller -. "invokes" .-> renderer
-    assurance -. "validates repository artifacts" .-> core
+    assurance --> trace
+    trace -. "constructs exact inputs" .-> core
+    trace -. "constructs exact inputs" .-> scene
+    trace -. "validates exact target" .-> metal
 ```
 
 `alpine-core` uses private representations and validated constructors for
@@ -316,11 +331,18 @@ target, SDK, Xcode, and compiler identity by a strict manifest, SHA-256 checks,
 a Metal-library magic check, and negative verifier fixtures. Kani proof harnesses
 exhaust bounded geometry and color domains, complete `u16` readback extents, and
 six arbitrary lifecycle actions plus symbolic frame-accounting updates against
-the Rust implementation. TLA+ models
+the Rust implementation. The trace decoder additionally proves two-operation
+painter-order and value preservation over bounded symbolic colors and extents,
+plus fail-closed rejection of noncontiguous indices. TLA+ models
 check finite value-admission, assurance, qualification, and renderer-lifecycle
 designs, including known-fault controls. The evidence registry maps atomic AEP
 claims to qualified artifacts, bounds, assumptions, exclusions, and dynamic
-companions. The repository
+companions. Calibration fixtures exercise exact artifact identity, environment
+qualification, minimum window and run counts, paired-order balance, and stable
+fail-closed diagnostics. The boundary also binds sample class, warmup count,
+measurement stage, clock, and window times while identifying fixtures as
+synthetic and making no
+hardware or performance claim. The repository
 acceptance command validates policy and the registry, tests automation and core
 contracts, then runs formatting, Clippy, all-target tests, doctests, and
 rustdoc. mdBook builds the durable engineering guide as a private CI artifact.
@@ -398,9 +420,20 @@ The non-shipping golden-workload boundary implements
 `alpine-qualification/v1`. It validates immutable workload identity, ordered
 operations and actions, comparison level, equivalence evidence, environment
 identity, raw measurement references, assumptions, exclusions, and independent
-hardware-window counts. Unsupported operations and measurement before
-correctness fail closed. These manifests make no native or performance claim by
-themselves, and no shipping crate depends on them.
+hardware-window counts. A concrete `alpine-scene-trace/v1` solid quad carries
+logical and physical viewport identity, scale, clear color, full-viewport clip,
+geometry, linear color, and contiguous painter-order sequence. `alpine-trace`
+decodes that data into `Scene` and `OffscreenDescriptor`; any unsupported clip,
+operation, invalid value, target mismatch, or capacity excess fails. The
+assurance CLI can render deterministic compact BGRA8 through the CPU oracle or
+the production Direct Metal constructor. Unsupported operations and measurement
+before correctness fail closed. A render command invalidates its requested
+output before validation so rejected work cannot leave stale evidence behind.
+These manifests make no performance claim by themselves. The separate
+`alpine-aa-calibration/v1` boundary admits only identical-revision A/A evidence
+with verified raw samples and qualified environments; its report remains
+non-inferential until physical data supports a later statistical decision. No
+shipping crate depends on either boundary.
 
 ## Binding invariants
 
