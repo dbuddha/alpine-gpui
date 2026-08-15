@@ -60,3 +60,7 @@ harness = false
 [[test]]
 name = "native_recovery"
 harness = false
+
+[[test]]
+name = "native_lifecycle"
+harness = false

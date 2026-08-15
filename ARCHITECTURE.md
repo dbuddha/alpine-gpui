@@ -129,9 +129,12 @@ terminal retained bytes without exposing a native handle. The implemented
 presentation contract consumes linear sRGB shader values, blends in linear
 space, stores to `BGRA8Unorm_sRGB`, declares the layer's standard sRGB color
 space, and disables extended-dynamic-range compositing. Teardown first revokes
-callback admission, stops the renderer, pauses
-and invalidates pacing, clears both weak delegate registrations, and closes the
-retained window. Native handles stay private. Asynchronous GPU completion,
+callback admission, classifies active work as cancelled, stops the renderer,
+pauses and invalidates pacing, clears both weak delegate registrations, and
+closes the retained window. Callback admission and rejection are counted
+independently. A second lifecycle check after synchronous command completion
+prevents a reentrant close from publishing success through a closing owner
+generation. Native handles stay private. Asynchronous GPU completion,
 physical multi-display qualification, onscreen pixel capture, and the shipping
 application event loop remain unimplemented.
 
@@ -259,7 +262,10 @@ revokes callback admission, pauses and invalidates any display link, clears its
 delegate, orders out and closes any window, and only then releases retained
 objects. A validation-only configuration injects failure after every stage and
 tracks each Alpine acquisition and release. The instrumentation and injection
-entry point are absent from shipping builds.
+entry point are absent from shipping builds. Successful teardown and a
+thirty-two-cycle owner soak require one acquisition and one release for every
+tracked owner kind, one run-loop registration, link invalidation, delegate
+revocation, and window close, no active lease, and no release-order violation.
 
 ## Resource lifetime contract
 
@@ -399,7 +405,15 @@ same immutable scene for a current-epoch retry, while the physical observation
 counter remains distinct from current-state qualification. Device loss records
 the failed committed attempt, invalidates the Metal backend generation, and
 rejects later surface attempts before another native submission. Automatic
-backend recreation remains outside this slice.
+backend recreation remains outside this slice. Cancellation is a distinct
+portable and native terminal result, never an alias for stale work or execution
+failure. Precommit shutdown releases immediately. A committed native attempt is
+cancelled only after shutdown enters its draining state and the synchronous
+Metal boundary has reached command completion, and it cannot increment
+qualified-presentation evidence.
+Dirty work closed before `Prepare` receives separate pending-cancellation
+evidence with its requested revision and surface epoch, rather than a fabricated
+attempt identity or commit count.
 
 ## Testing and evidence
 
@@ -460,7 +474,7 @@ contracts, then runs formatting, Clippy, all-target tests, doctests, and
 rustdoc. mdBook builds the durable engineering guide as a downloadable CI
 artifact.
 The macOS platform crate separately tests all descriptor boundaries and runs
-six harness-free integration executables on the process main thread. The
+seven harness-free integration executables on the process main thread. The
 surface smoke test creates the complete native object graph, verifies layer
 policy and paused pacing, then deterministically tears it down. The rollback
 test injects every native initialization checkpoint and requires exact
@@ -488,15 +502,24 @@ completion and proves that the lost backend generation rejects later work
 before a second native submission. The presented-handler observation and
 post-commit configuration timing in this executable are deterministic
 validation controls at the production Rust correlation seams, not evidence of
-Core Animation scanout or physical notification timing. Physical multi-display,
-onscreen pixel capture, actual post-commit AppKit notification timing, platform
-leak, and platform soak evidence remain unimplemented.
+Core Animation scanout or physical notification timing. The lifecycle
+executable holds a visible clean surface idle and requires stable callback,
+submission, allocation, and retention counts; closes a hidden pending request
+without native work; injects close at the exact post-commit lifecycle recheck;
+requires distinct cancelled evidence and no qualification or retained bytes;
+rejects a synthetic late callback through the production admission guard; and
+repeats complete native construction and exact ordered teardown thirty-two
+times. Physical multi-display, onscreen pixel capture, actual post-commit AppKit
+notification timing, process-level multi-hour platform soak, and fixed-hardware
+wakeup or energy evidence remain unimplemented.
 On a hosted macOS runner without a qualifying display, the same executable uses
 an explicit direct-presentation evidence mode: every admitted drawable must
 complete GPU work and receive one direct present call, every completed native
 handler must report a drop, and the single-frame owner permits at most one
 drawable still in flight at the bounded cutoff. That mode cannot qualify a
-displayed frame, idle pause, or physical presentation time. Deterministic
+displayed frame, physical wakeup or energy behavior, or physical presentation
+time. It can still require an explicitly paused display link and stable admitted
+callback counts during a bounded clean-idle interval. Deterministic
 validation controls can qualify state correlation and guarded recovery there,
 but they remain labeled separately from physical display evidence.
 

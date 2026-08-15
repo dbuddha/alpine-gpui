@@ -14,7 +14,8 @@ use std::sync::{
 use alpine_core::LinearRgba;
 use alpine_metal::{InitializationError, RecoveryClassification, RenderError};
 use alpine_platform::{
-    AttemptEvidence, PresentationOutcome, PresentationRevision, TransitionError,
+    AttemptEvidence, PendingCancellationEvidence, PresentationOutcome, PresentationRevision,
+    TransitionError,
 };
 use alpine_scene::Scene;
 
@@ -30,6 +31,95 @@ pub mod native_validation {
     use std::time::Duration;
 
     use crate::{NativeSurface, SurfaceDescriptor, SurfaceError, native};
+
+    /// Validation-only exact ownership and teardown counts for one surface.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct NativeOwnerEvidence {
+        acquired: [u64; 9],
+        released: [u64; 9],
+        active: [u64; 9],
+        run_loop_registrations: u64,
+        link_invalidations: u64,
+        delegate_revocations: u64,
+        window_closes: u64,
+        release_order_violations: u64,
+    }
+
+    impl NativeOwnerEvidence {
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "validation evidence preserves each independent cleanup counter"
+        )]
+        pub(crate) const fn new(
+            acquired: [u64; 9],
+            released: [u64; 9],
+            active: [u64; 9],
+            run_loop_registrations: u64,
+            link_invalidations: u64,
+            delegate_revocations: u64,
+            window_closes: u64,
+            release_order_violations: u64,
+        ) -> Self {
+            Self {
+                acquired,
+                released,
+                active,
+                run_loop_registrations,
+                link_invalidations,
+                delegate_revocations,
+                window_closes,
+                release_order_violations,
+            }
+        }
+
+        /// Returns per-kind acquisitions in application-to-display-link order.
+        #[must_use]
+        pub const fn acquired(self) -> [u64; 9] {
+            self.acquired
+        }
+
+        /// Returns per-kind releases in application-to-display-link order.
+        #[must_use]
+        pub const fn released(self) -> [u64; 9] {
+            self.released
+        }
+
+        /// Returns per-kind owners remaining after close.
+        #[must_use]
+        pub const fn active(self) -> [u64; 9] {
+            self.active
+        }
+
+        /// Returns main-run-loop registrations performed by the owner.
+        #[must_use]
+        pub const fn run_loop_registrations(self) -> u64 {
+            self.run_loop_registrations
+        }
+
+        /// Returns display-link invalidations performed before release.
+        #[must_use]
+        pub const fn link_invalidations(self) -> u64 {
+            self.link_invalidations
+        }
+
+        /// Returns native delegate revocations performed before release.
+        #[must_use]
+        pub const fn delegate_revocations(self) -> u64 {
+            self.delegate_revocations
+        }
+
+        /// Returns window-close operations performed before release.
+        #[must_use]
+        pub const fn window_closes(self) -> u64 {
+            self.window_closes
+        }
+
+        /// Returns owner releases observed before required cleanup.
+        #[must_use]
+        pub const fn release_order_violations(self) -> u64 {
+            self.release_order_violations
+        }
+    }
 
     /// Creates one real surface while bypassing only the hosted device baseline.
     ///
@@ -83,6 +173,16 @@ pub mod native_validation {
             .inject_post_commit_observation(display_identity, presented_time)
     }
 
+    /// Revokes the native owner generation at the next post-commit boundary.
+    pub fn inject_post_commit_close(surface: &NativeSurface) {
+        surface.implementation.inject_post_commit_close();
+    }
+
+    /// Exercises the production callback-admission guard after close begins.
+    pub fn inject_late_callback(surface: &NativeSurface) {
+        surface.implementation.inject_late_callback();
+    }
+
     /// Applies one deterministic native size, scale, display, and visibility event.
     ///
     /// # Errors
@@ -126,6 +226,46 @@ pub mod native_validation {
     /// cannot construct its successful control surface.
     pub fn validate_initialization_rollback() -> Result<(), SurfaceError> {
         native::validate_initialization_rollback()
+    }
+
+    /// Closes one validation surface and returns exact post-drop owner evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SurfaceError::DriverUnavailable`] if validation ownership
+    /// instrumentation is unexpectedly absent.
+    pub fn close_with_owner_evidence(
+        surface: NativeSurface,
+    ) -> Result<NativeOwnerEvidence, SurfaceError> {
+        surface.implementation.close_with_owner_evidence()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::NativeOwnerEvidence;
+
+        #[test]
+        fn owner_evidence_accessors_preserve_each_independent_counter() {
+            let evidence = NativeOwnerEvidence::new(
+                [2, 3, 5, 7, 11, 13, 17, 19, 23],
+                [29, 31, 37, 41, 43, 47, 53, 59, 61],
+                [67, 71, 73, 79, 83, 89, 97, 101, 103],
+                107,
+                109,
+                113,
+                127,
+                131,
+            );
+
+            assert_eq!(evidence.acquired(), [2, 3, 5, 7, 11, 13, 17, 19, 23]);
+            assert_eq!(evidence.released(), [29, 31, 37, 41, 43, 47, 53, 59, 61]);
+            assert_eq!(evidence.active(), [67, 71, 73, 79, 83, 89, 97, 101, 103]);
+            assert_eq!(evidence.run_loop_registrations(), 107);
+            assert_eq!(evidence.link_invalidations(), 109);
+            assert_eq!(evidence.delegate_revocations(), 113);
+            assert_eq!(evidence.window_closes(), 127);
+            assert_eq!(evidence.release_order_violations(), 131);
+        }
     }
 }
 
@@ -623,12 +763,15 @@ pub struct SurfaceSnapshot {
     display_link_paused: bool,
     visible: bool,
     callback_count: u64,
+    rejected_callback_count: u64,
     submission_count: u64,
     direct_present_count: u64,
     installed_presented_handler_count: u64,
     presented_count: u64,
     qualified_presented_count: u64,
     superseded_count: u64,
+    cancelled_count: u64,
+    pending_cancellation_count: u64,
     last_presented_time_bits: u64,
     skipped_count: u64,
     failed_count: u64,
@@ -636,6 +779,8 @@ pub struct SurfaceSnapshot {
     current_retained_bytes: usize,
     last_terminal: Option<FrameTerminalEvidence>,
     last_superseded: Option<FrameTerminalEvidence>,
+    last_cancelled: Option<FrameTerminalEvidence>,
+    last_pending_cancellation: Option<PendingCancellationEvidence>,
 }
 
 impl SurfaceSnapshot {
@@ -729,6 +874,12 @@ impl SurfaceSnapshot {
         self.callback_count
     }
 
+    /// Returns callbacks rejected after the native owner generation closed.
+    #[must_use]
+    pub const fn rejected_callback_count(self) -> u64 {
+        self.rejected_callback_count
+    }
+
     /// Returns callback frames that committed one command buffer.
     #[must_use]
     pub const fn submission_count(self) -> u64 {
@@ -763,6 +914,18 @@ impl SurfaceSnapshot {
     #[must_use]
     pub const fn superseded_count(self) -> u64 {
         self.superseded_count
+    }
+
+    /// Returns frame attempts explicitly cancelled before qualification.
+    #[must_use]
+    pub const fn cancelled_count(self) -> u64 {
+        self.cancelled_count
+    }
+
+    /// Returns dirty requests cancelled before an attempt token existed.
+    #[must_use]
+    pub const fn pending_cancellation_count(self) -> u64 {
+        self.pending_cancellation_count
     }
 
     /// Returns the raw nonzero `f64` bits from the latest observed presentation time.
@@ -806,6 +969,18 @@ impl SurfaceSnapshot {
     pub const fn last_superseded(self) -> Option<FrameTerminalEvidence> {
         self.last_superseded
     }
+
+    /// Returns the most recent explicitly cancelled attempt.
+    #[must_use]
+    pub const fn last_cancelled(self) -> Option<FrameTerminalEvidence> {
+        self.last_cancelled
+    }
+
+    /// Returns the most recent request cancelled before frame preparation.
+    #[must_use]
+    pub const fn last_pending_cancellation(self) -> Option<PendingCancellationEvidence> {
+        self.last_pending_cancellation
+    }
 }
 
 /// Observable lifecycle state that contains no native handle.
@@ -824,13 +999,19 @@ pub enum SurfaceLifecycle {
 pub struct SurfaceObserver {
     lifecycle: Arc<AtomicU8>,
     callback_count: Arc<AtomicU64>,
+    rejected_callback_count: Arc<AtomicU64>,
 }
 
 impl SurfaceObserver {
-    pub(crate) fn new(lifecycle: Arc<AtomicU8>, callback_count: Arc<AtomicU64>) -> Self {
+    pub(crate) fn new(
+        lifecycle: Arc<AtomicU8>,
+        callback_count: Arc<AtomicU64>,
+        rejected_callback_count: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             lifecycle,
             callback_count,
+            rejected_callback_count,
         }
     }
 
@@ -848,6 +1029,12 @@ impl SurfaceObserver {
     #[must_use]
     pub fn callback_count(&self) -> u64 {
         self.callback_count.load(Ordering::Acquire)
+    }
+
+    /// Returns callbacks rejected after callback admission was revoked.
+    #[must_use]
+    pub fn rejected_callback_count(&self) -> u64 {
+        self.rejected_callback_count.load(Ordering::Acquire)
     }
 }
 
@@ -984,9 +1171,10 @@ fn runtime_physical_dimension(
     }
 }
 
-fn new_observer_state() -> (Arc<AtomicU8>, Arc<AtomicU64>) {
+fn new_observer_state() -> (Arc<AtomicU8>, Arc<AtomicU64>, Arc<AtomicU64>) {
     (
         Arc::new(AtomicU8::new(SURFACE_LIVE)),
+        Arc::new(AtomicU64::new(0)),
         Arc::new(AtomicU64::new(0)),
     )
 }
@@ -1328,6 +1516,17 @@ mod tests {
         let failed_attempt =
             terminal_attempt(failed_transition.event()).ok_or("failed terminal evidence")?;
         let failed_terminal = FrameTerminalEvidence::new(failed_attempt, 97, 101, 0, 103, None);
+        let mut pending_state = alpine_platform::PresentationState::new();
+        pending_state.apply(alpine_platform::PresentationAction::SetVisible(true))?;
+        pending_state.apply(alpine_platform::PresentationAction::SetSized(true))?;
+        pending_state.apply(alpine_platform::PresentationAction::Invalidate)?;
+        let pending_transition =
+            pending_state.apply(alpine_platform::PresentationAction::BeginShutdown)?;
+        let alpine_platform::PresentationEvent::PendingCancelled(pending_cancellation) =
+            pending_transition.event()
+        else {
+            return Err("pending cancellation evidence".into());
+        };
         let snapshot = SurfaceSnapshot {
             physical_width: 17,
             physical_height: 19,
@@ -1344,12 +1543,15 @@ mod tests {
             display_link_paused: false,
             visible: true,
             callback_count: 23,
+            rejected_callback_count: 24,
             submission_count: 29,
             direct_present_count: 31,
             installed_presented_handler_count: 33,
             presented_count: 37,
             qualified_presented_count: 38,
             superseded_count: 39,
+            cancelled_count: 40,
+            pending_cancellation_count: 41,
             last_presented_time_bits: 39,
             skipped_count: 41,
             failed_count: 43,
@@ -1357,6 +1559,8 @@ mod tests {
             current_retained_bytes: 53,
             last_terminal: Some(terminal),
             last_superseded: None,
+            last_cancelled: None,
+            last_pending_cancellation: None,
         };
         let inverse = SurfaceSnapshot {
             physical_width: 29,
@@ -1374,12 +1578,15 @@ mod tests {
             display_link_paused: true,
             visible: false,
             callback_count: 37,
+            rejected_callback_count: 39,
             submission_count: 43,
             direct_present_count: 47,
             installed_presented_handler_count: 49,
             presented_count: 53,
             qualified_presented_count: 54,
             superseded_count: 55,
+            cancelled_count: 56,
+            pending_cancellation_count: 58,
             last_presented_time_bits: 57,
             skipped_count: 59,
             failed_count: 61,
@@ -1387,6 +1594,8 @@ mod tests {
             current_retained_bytes: 71,
             last_terminal: Some(failed_terminal),
             last_superseded: Some(terminal),
+            last_cancelled: Some(failed_terminal),
+            last_pending_cancellation: Some(pending_cancellation),
         };
 
         assert_eq!(snapshot.physical_width(), 17);
@@ -1452,12 +1661,15 @@ mod tests {
         assert!(inverse.display_link_paused());
         assert!(!inverse.visible());
         assert_eq!(inverse.callback_count(), 37);
+        assert_eq!(inverse.rejected_callback_count(), 39);
         assert_eq!(inverse.submission_count(), 43);
         assert_eq!(inverse.direct_present_count(), 47);
         assert_eq!(inverse.installed_presented_handler_count(), 49);
         assert_eq!(inverse.presented_count(), 53);
         assert_eq!(inverse.qualified_presented_count(), 54);
         assert_eq!(inverse.superseded_count(), 55);
+        assert_eq!(inverse.cancelled_count(), 56);
+        assert_eq!(inverse.pending_cancellation_count(), 58);
         assert_eq!(inverse.last_presented_time_bits(), 57);
         assert_eq!(inverse.skipped_count(), 59);
         assert_eq!(inverse.failed_count(), 61);
@@ -1465,6 +1677,11 @@ mod tests {
         assert_eq!(inverse.current_retained_bytes(), 71);
         assert_eq!(inverse.last_terminal(), Some(failed_terminal));
         assert_eq!(inverse.last_superseded(), Some(terminal));
+        assert_eq!(inverse.last_cancelled(), Some(failed_terminal));
+        assert_eq!(
+            inverse.last_pending_cancellation(),
+            Some(pending_cancellation)
+        );
         assert_eq!(failed_terminal.attempt(), 2);
         assert_eq!(failed_terminal.submission_count(), 0);
         assert_eq!(failed_terminal.present_call_count(), 0);
@@ -1474,17 +1691,24 @@ mod tests {
 
     #[test]
     fn observer_distinguishes_live_closed_and_callback_count() {
-        let (lifecycle, callback_count) = new_observer_state();
+        let (lifecycle, callback_count, rejected_callback_count) = new_observer_state();
         callback_count.store(29, Ordering::Release);
-        let observer = SurfaceObserver::new(Arc::clone(&lifecycle), callback_count);
+        rejected_callback_count.store(31, Ordering::Release);
+        let observer = SurfaceObserver::new(
+            Arc::clone(&lifecycle),
+            callback_count,
+            rejected_callback_count,
+        );
 
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
         assert_eq!(observer.callback_count(), 29);
+        assert_eq!(observer.rejected_callback_count(), 31);
         begin_close_observer_state(&lifecycle);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
         finish_close_observer_state(&lifecycle);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closed);
         assert_eq!(observer.callback_count(), 29);
+        assert_eq!(observer.rejected_callback_count(), 31);
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]

@@ -13,7 +13,7 @@ fn presentation_actions_preserve_invariants_and_atomicity() {
             revision: PresentationRevision::INITIAL,
             epoch: SurfaceEpoch::INITIAL,
         });
-        let action = match choice % 14 {
+        let action = match choice % 15 {
             0 => PresentationAction::Invalidate,
             1 => PresentationAction::AdvanceSurfaceEpoch,
             2 => PresentationAction::SetVisible(kani::any()),
@@ -26,7 +26,8 @@ fn presentation_actions_preserve_invariants_and_atomicity() {
             9 => PresentationAction::CallPresent(token),
             10 => PresentationAction::CompletePresentation(token),
             11 => PresentationAction::FailActive(token),
-            12 => PresentationAction::BeginShutdown,
+            12 => PresentationAction::CancelActive(token),
+            13 => PresentationAction::BeginShutdown,
             _ => PresentationAction::StopAfterDrain,
         };
         let before = state;
@@ -38,6 +39,7 @@ fn presentation_actions_preserve_invariants_and_atomicity() {
     }
     kani::cover!(state.outcome() == PresentationOutcome::Presented);
     kani::cover!(state.outcome() == PresentationOutcome::Superseded);
+    kani::cover!(state.outcome() == PresentationOutcome::Cancelled);
     kani::cover!(state.outcome() == PresentationOutcome::Failed);
     kani::cover!(state.application() == crate::ApplicationState::Stopped);
 }

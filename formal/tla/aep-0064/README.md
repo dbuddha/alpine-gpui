@@ -19,7 +19,7 @@ presented revision.
   the in-flight drawable boundary.
 - `attemptSubmits`, `presentCalls`, and `eligibleAtSubmit` map to per-attempt
   instrumentation.
-- `outcome` maps to presented, superseded or cancelled, and failed evidence.
+- `outcome` maps to distinct presented, superseded, cancelled, and failed evidence.
 
 The model actions map to planned pure Rust transitions. `BeginUpdate` maps to
 the `CAMetalDisplayLinkDelegate` callback and exclusive receipt of its drawable.
@@ -30,6 +30,12 @@ the `CAMetalDisplayLinkDelegate` callback and exclusive receipt of its drawable.
 native events that can supersede prepared or submitted work. The shutdown
 actions map to display-link invalidation, rejection of new work, drawable
 release, in-flight drain, and final native teardown.
+`CancelActive` maps to explicit Rust cancellation and never aliases a stale
+attempt or execution failure. A committed attempt can cancel only after
+`BeginShutdownCommitted` places the owner in its draining state.
+An idle dirty request cancelled before `Prepare` has no attempt identity; Rust
+records its requested revision and surface epoch separately rather than
+fabricating commit or presentation evidence.
 
 The pull-request model bounds revisions at two, surface epochs at one, and
 combined visibility, size, or epoch changes at one. The nightly model expands

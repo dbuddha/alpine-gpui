@@ -17,8 +17,8 @@ AppStates == {"Running", "Stopping", "Stopped"}
 LinkStates == {"Paused", "Running", "Invalid"}
 Phases == {"Idle", "Prepared", "Encoding", "Submitted", "PresentCalled"}
 Resources == {"Free", "Drawable", "InFlight"}
-Outcomes == {"None", "Presented", "Dropped", "Failed"}
-TerminalOutcomes == {"Presented", "Dropped", "Failed"}
+Outcomes == {"None", "Presented", "Superseded", "Cancelled", "Failed"}
+TerminalOutcomes == {"Presented", "Superseded", "Cancelled", "Failed"}
 
 Eligible ==
     /\ app = "Running"
@@ -148,7 +148,7 @@ DropPreparedStale ==
     /\ ~Eligible
     /\ phase' = "Idle"
     /\ resource' = "Free"
-    /\ outcome' = "Dropped"
+    /\ outcome' = "Superseded"
     /\ link' = IF visible /\ sized /\ dirty THEN "Running" ELSE "Paused"
     /\ UNCHANGED <<app, visible, sized, dirty, requestedRevision,
                     presentedRevision, surfaceEpoch, environmentChanges,
@@ -173,7 +173,7 @@ DropEncodingStale ==
     /\ ~Eligible
     /\ phase' = "Idle"
     /\ resource' = "Free"
-    /\ outcome' = "Dropped"
+    /\ outcome' = "Superseded"
     /\ link' = IF app = "Running" /\ visible /\ sized /\ dirty
                  THEN "Running" ELSE link
     /\ UNCHANGED <<app, visible, sized, dirty, requestedRevision,
@@ -213,7 +213,7 @@ CompletePresentation ==
     /\ presentCalls = 1
     /\ phase' = "Idle"
     /\ resource' = "Free"
-    /\ outcome' = IF Eligible THEN "Presented" ELSE "Dropped"
+    /\ outcome' = IF Eligible THEN "Presented" ELSE "Superseded"
     /\ presentedRevision' = IF Eligible THEN frameRevision
                              ELSE presentedRevision
     /\ dirty' = IF Eligible THEN FALSE ELSE dirty
@@ -237,15 +237,43 @@ FailActive ==
                     frameRevision, frameEpoch, attemptSubmits, presentCalls,
                     eligibleAtSubmit>>
 
+CancelActive ==
+    /\ \/ /\ app = "Running"
+          /\ phase \in {"Prepared", "Encoding"}
+       \/ /\ app = "Stopping"
+          /\ phase \in {"Submitted", "PresentCalled"}
+    /\ phase' = "Idle"
+    /\ resource' = "Free"
+    /\ dirty' = FALSE
+    /\ outcome' = "Cancelled"
+    /\ link' = IF app = "Running" THEN "Paused" ELSE "Invalid"
+    /\ UNCHANGED <<app, visible, sized, requestedRevision,
+                    presentedRevision, surfaceEpoch, environmentChanges,
+                    frameRevision, frameEpoch, attemptSubmits, presentCalls,
+                    eligibleAtSubmit>>
+
 BeginShutdownIdle ==
     /\ app = "Running"
-    /\ phase \in {"Idle", "Prepared"}
+    /\ phase = "Idle"
     /\ resource = "Free"
-    /\ app' = "Stopping"
+    /\ app' = "Stopped"
+    /\ link' = "Invalid"
+    /\ dirty' = FALSE
+    /\ outcome' = IF dirty THEN "Cancelled" ELSE outcome
+    /\ UNCHANGED <<visible, sized, requestedRevision, presentedRevision,
+                    surfaceEpoch, environmentChanges, frameRevision,
+                    frameEpoch, phase, resource, attemptSubmits, presentCalls,
+                    eligibleAtSubmit>>
+
+BeginShutdownPrepared ==
+    /\ app = "Running"
+    /\ phase = "Prepared"
+    /\ resource = "Free"
+    /\ app' = "Stopped"
     /\ link' = "Invalid"
     /\ phase' = "Idle"
     /\ dirty' = FALSE
-    /\ outcome' = IF phase = "Prepared" THEN "Dropped" ELSE outcome
+    /\ outcome' = "Cancelled"
     /\ UNCHANGED <<visible, sized, requestedRevision, presentedRevision,
                     surfaceEpoch, environmentChanges, frameRevision,
                     frameEpoch, resource, attemptSubmits, presentCalls,
@@ -255,12 +283,12 @@ BeginShutdownEncoding ==
     /\ app = "Running"
     /\ phase = "Encoding"
     /\ resource = "Drawable"
-    /\ app' = "Stopping"
+    /\ app' = "Stopped"
     /\ link' = "Invalid"
     /\ phase' = "Idle"
     /\ resource' = "Free"
     /\ dirty' = FALSE
-    /\ outcome' = "Dropped"
+    /\ outcome' = "Cancelled"
     /\ UNCHANGED <<visible, sized, requestedRevision, presentedRevision,
                     surfaceEpoch, environmentChanges, frameRevision,
                     frameEpoch, attemptSubmits, presentCalls, eligibleAtSubmit>>
@@ -319,7 +347,9 @@ Next ==
     \/ CallPresent
     \/ CompletePresentation
     \/ FailActive
+    \/ CancelActive
     \/ BeginShutdownIdle
+    \/ BeginShutdownPrepared
     \/ BeginShutdownEncoding
     \/ BeginShutdownCommitted
     \/ StopAfterDrain
@@ -336,7 +366,8 @@ Spec ==
     /\ WF_vars(Submit)
     /\ WF_vars(CallPresent)
     /\ WF_vars(CompletePresentation)
-    /\ WF_vars(BeginShutdownIdle \/ BeginShutdownEncoding
+    /\ WF_vars(CancelActive)
+    /\ WF_vars(BeginShutdownIdle \/ BeginShutdownPrepared \/ BeginShutdownEncoding
                \/ BeginShutdownCommitted)
     /\ WF_vars(StopAfterDrain)
 
