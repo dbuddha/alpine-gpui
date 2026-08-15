@@ -19,6 +19,7 @@ use objc2_app_kit::{
 };
 #[cfg(alpine_native_validation)]
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
+use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 #[cfg(alpine_native_validation)]
 use objc2_foundation::{NSDate, NSTimer};
 use objc2_foundation::{
@@ -41,15 +42,15 @@ use alpine_scene::Scene;
 use block2::RcBlock;
 
 use crate::{
-    SURFACE_CLOSING, SURFACE_LIVE, SurfaceConfiguration, SurfaceDescriptor, SurfaceError,
-    SurfaceObserver, SurfaceSnapshot, SurfaceStage, begin_close_observer_state,
+    SURFACE_CLOSING, SURFACE_LIVE, SdrColorContract, SurfaceConfiguration, SurfaceDescriptor,
+    SurfaceError, SurfaceObserver, SurfaceSnapshot, SurfaceStage, begin_close_observer_state,
     finish_close_observer_state, new_observer_state, presentation_visible,
 };
 
 type Device = Retained<ProtocolObject<dyn MTLDevice>>;
 
 #[cfg(alpine_native_validation)]
-const NATIVE_OWNER_KINDS: usize = 8;
+const NATIVE_OWNER_KINDS: usize = 9;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeOwnerKind {
@@ -58,6 +59,7 @@ enum NativeOwnerKind {
     Renderer,
     Window,
     View,
+    ColorSpace,
     Layer,
     Delegate,
     DisplayLink,
@@ -72,9 +74,10 @@ impl NativeOwnerKind {
             Self::Renderer => 2,
             Self::Window => 3,
             Self::View => 4,
-            Self::Layer => 5,
-            Self::Delegate => 6,
-            Self::DisplayLink => 7,
+            Self::ColorSpace => 5,
+            Self::Layer => 6,
+            Self::Delegate => 7,
+            Self::DisplayLink => 8,
         }
     }
 }
@@ -258,6 +261,7 @@ impl Drop for InitializationLease {
             | NativeOwnerKind::Device
             | NativeOwnerKind::Renderer
             | NativeOwnerKind::View
+            | NativeOwnerKind::ColorSpace
             | NativeOwnerKind::Layer => true,
         };
         if !released_after_cleanup {
@@ -815,6 +819,30 @@ fn apply_layer_configuration(
     ));
 }
 
+fn layer_sdr_color_contract(layer: &CAMetalLayer) -> Option<SdrColorContract> {
+    let color_space = layer.colorspace()?;
+    let name = CGColorSpace::name(Some(&color_space))?;
+    // SAFETY: CoreGraphics exports this process-lifetime immutable CFString
+    // constant on every supported macOS version.
+    let standard_srgb_name = unsafe { kCGColorSpaceSRGB };
+    recognizes_sdr_color_contract(
+        layer.pixelFormat(),
+        layer.wantsExtendedDynamicRangeContent(),
+        &*name == standard_srgb_name,
+    )
+    .then_some(SdrColorContract::LinearSrgbToBgra8UnormSrgb)
+}
+
+fn recognizes_sdr_color_contract(
+    pixel_format: MTLPixelFormat,
+    extended_dynamic_range: bool,
+    standard_srgb_color_space: bool,
+) -> bool {
+    pixel_format == MTLPixelFormat::BGRA8Unorm_sRGB
+        && !extended_dynamic_range
+        && standard_srgb_color_space
+}
+
 fn apply_display_link_directive(link: &CAMetalDisplayLink, directive: DisplayLinkDirective) {
     match directive {
         DisplayLinkDirective::None => {}
@@ -836,6 +864,11 @@ pub(crate) struct NativeSurface {
     )]
     delegate: Retained<DisplayLinkDelegate>,
     layer: Retained<CAMetalLayer>,
+    #[allow(
+        dead_code,
+        reason = "the surface explicitly retains the color space installed on its layer"
+    )]
+    color_space: Retained<CGColorSpace>,
     #[allow(
         dead_code,
         reason = "the custom content view owns the layer attachment for the surface lifetime"
@@ -945,13 +978,28 @@ impl NativeSurface {
         builder.track(NativeOwnerKind::View);
         control.checkpoint(SurfaceStage::View)?;
 
+        // SAFETY: CoreGraphics exports this process-lifetime immutable CFString
+        // constant on every supported macOS version.
+        let standard_srgb_name = unsafe { kCGColorSpaceSRGB };
+        let color_space = CGColorSpace::with_name(Some(standard_srgb_name))
+            .ok_or_else(|| native_unavailable(SurfaceStage::ColorSpace))?;
+        builder.color_space = Some(color_space.into());
+        builder.track(NativeOwnerKind::ColorSpace);
+        control.checkpoint(SurfaceStage::ColorSpace)?;
+
         let layer = CAMetalLayer::layer();
         let device = builder
             .device
             .as_ref()
             .ok_or_else(|| native_unavailable(SurfaceStage::Device))?;
         layer.setDevice(Some(device));
-        layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+        layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm_sRGB);
+        let color_space = builder
+            .color_space
+            .as_ref()
+            .ok_or_else(|| native_unavailable(SurfaceStage::ColorSpace))?;
+        layer.setColorspace(Some(color_space));
+        layer.setWantsExtendedDynamicRangeContent(false);
         layer.setFramebufferOnly(true);
         layer.setMaximumDrawableCount(3);
         layer.setDisplaySyncEnabled(true);
@@ -1149,6 +1197,8 @@ impl NativeSurface {
             surface_epoch,
             sized,
             presentation_visible,
+            sdr_color_contract: layer_sdr_color_contract(&self.layer),
+            extended_dynamic_range: self.layer.wantsExtendedDynamicRangeContent(),
             framebuffer_only: self.layer.framebufferOnly(),
             display_sync_enabled: self.layer.displaySyncEnabled(),
             allows_next_drawable_timeout: self.layer.allowsNextDrawableTimeout(),
@@ -1320,6 +1370,7 @@ struct NativeSurfaceBuilder {
     display_link: Option<Retained<CAMetalDisplayLink>>,
     delegate: Option<Retained<DisplayLinkDelegate>>,
     layer: Option<Retained<CAMetalLayer>>,
+    color_space: Option<Retained<CGColorSpace>>,
     view: Option<Retained<NSView>>,
     window: Option<Retained<NSWindow>>,
     device: Option<Device>,
@@ -1346,6 +1397,7 @@ impl NativeSurfaceBuilder {
             display_link: None,
             delegate: None,
             layer: None,
+            color_space: None,
             view: None,
             window: None,
             device: None,
@@ -1391,6 +1443,7 @@ impl NativeSurfaceBuilder {
             display_link: take_owner(&mut self.display_link, SurfaceStage::DisplayLink)?,
             delegate: take_owner(&mut self.delegate, SurfaceStage::DisplayLink)?,
             layer: take_owner(&mut self.layer, SurfaceStage::Layer)?,
+            color_space: take_owner(&mut self.color_space, SurfaceStage::ColorSpace)?,
             view: take_owner(&mut self.view, SurfaceStage::View)?,
             window: take_owner(&mut self.window, SurfaceStage::Window)?,
             device: take_owner(&mut self.device, SurfaceStage::Device)?,
@@ -1454,9 +1507,10 @@ pub(crate) fn validate_initialization_rollback() -> Result<(), SurfaceError> {
         (SurfaceStage::Renderer, 3),
         (SurfaceStage::Window, 4),
         (SurfaceStage::View, 5),
-        (SurfaceStage::Layer, 6),
-        (SurfaceStage::DisplayLink, 8),
-        (SurfaceStage::RunLoop, 8),
+        (SurfaceStage::ColorSpace, 6),
+        (SurfaceStage::Layer, 7),
+        (SurfaceStage::DisplayLink, 9),
+        (SurfaceStage::RunLoop, 9),
     ];
 
     for (stage, owner_count) in stages {
@@ -1533,7 +1587,7 @@ pub(crate) fn validate_initialization_rollback() -> Result<(), SurfaceError> {
         drop(faulty_cleanup.acquire(kind));
     }
     let (_, faulty_releases, faulty_active) = faulty_cleanup.counts();
-    assert_eq!(faulty_releases, [0, 0, 0, 1, 0, 0, 1, 1]);
+    assert_eq!(faulty_releases, [0, 0, 0, 1, 0, 0, 0, 1, 1]);
     assert_eq!(faulty_active, [0; NATIVE_OWNER_KINDS]);
     assert_eq!(faulty_cleanup.0.release_order_violations.get(), 3);
     Ok(())
@@ -1573,6 +1627,26 @@ mod tests {
                 stage: SurfaceStage::Device,
             })
         ));
+    }
+
+    #[test]
+    fn sdr_color_contract_rejects_each_independent_policy_break() {
+        assert!(recognizes_sdr_color_contract(
+            MTLPixelFormat::BGRA8Unorm_sRGB,
+            false,
+            true
+        ));
+        for (pixel_format, extended_dynamic_range, standard_srgb_color_space) in [
+            (MTLPixelFormat::BGRA8Unorm, false, true),
+            (MTLPixelFormat::BGRA8Unorm_sRGB, true, true),
+            (MTLPixelFormat::BGRA8Unorm_sRGB, false, false),
+        ] {
+            assert!(!recognizes_sdr_color_contract(
+                pixel_format,
+                extended_dynamic_range,
+                standard_srgb_color_space,
+            ));
+        }
     }
 
     #[test]

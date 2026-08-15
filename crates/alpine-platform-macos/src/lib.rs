@@ -321,12 +321,22 @@ pub enum SurfaceStage {
     Window,
     /// `AppKit` content-view creation.
     View,
+    /// Standard sRGB color-space creation.
+    ColorSpace,
     /// Metal layer creation and configuration.
     Layer,
     /// Layer-bound display-link creation.
     DisplayLink,
     /// Display-link registration with the main run loop.
     RunLoop,
+}
+
+/// Handle-free identity of Alpine's configured standard-dynamic-range path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SdrColorContract {
+    /// Linear sRGB shader values and blending stored in `BGRA8Unorm_sRGB`,
+    /// then composited by Core Animation in the standard sRGB color space.
+    LinearSrgbToBgra8UnormSrgb,
 }
 
 /// Structured failure from descriptor validation or native construction.
@@ -457,6 +467,8 @@ pub struct SurfaceSnapshot {
     surface_epoch: u64,
     sized: bool,
     presentation_visible: bool,
+    sdr_color_contract: Option<SdrColorContract>,
+    extended_dynamic_range: bool,
     framebuffer_only: bool,
     display_sync_enabled: bool,
     allows_next_drawable_timeout: bool,
@@ -505,6 +517,18 @@ impl SurfaceSnapshot {
     #[must_use]
     pub const fn is_presentation_visible(self) -> bool {
         self.presentation_visible
+    }
+
+    /// Returns the recognized SDR transfer, target-format, and color-space identity.
+    #[must_use]
+    pub const fn sdr_color_contract(self) -> Option<SdrColorContract> {
+        self.sdr_color_contract
+    }
+
+    /// Returns whether the native layer requests extended-dynamic-range compositing.
+    #[must_use]
+    pub const fn extended_dynamic_range(self) -> bool {
+        self.extended_dynamic_range
     }
 
     /// Returns whether textures are restricted to framebuffer use.
@@ -1009,6 +1033,13 @@ mod tests {
             .to_string(),
             "native surface unavailable at DisplayLink stage"
         );
+        assert_eq!(
+            SurfaceError::NativeUnavailable {
+                stage: SurfaceStage::ColorSpace,
+            }
+            .to_string(),
+            "native surface unavailable at ColorSpace stage"
+        );
 
         let initialization: SurfaceError = InitializationError::DeviceUnavailable.into();
         let render: SurfaceError =
@@ -1062,6 +1093,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive fixture keeps every public snapshot accessor discriminating"
+    )]
     fn snapshot_accessors_preserve_discriminating_values() {
         let snapshot = SurfaceSnapshot {
             physical_width: 17,
@@ -1069,6 +1104,8 @@ mod tests {
             surface_epoch: 21,
             sized: true,
             presentation_visible: true,
+            sdr_color_contract: Some(SdrColorContract::LinearSrgbToBgra8UnormSrgb),
+            extended_dynamic_range: false,
             framebuffer_only: false,
             display_sync_enabled: false,
             allows_next_drawable_timeout: true,
@@ -1093,6 +1130,8 @@ mod tests {
             surface_epoch: 33,
             sized: false,
             presentation_visible: false,
+            sdr_color_contract: None,
+            extended_dynamic_range: true,
             framebuffer_only: true,
             display_sync_enabled: true,
             allows_next_drawable_timeout: false,
@@ -1117,6 +1156,11 @@ mod tests {
         assert_eq!(snapshot.surface_epoch(), 21);
         assert!(snapshot.is_sized());
         assert!(snapshot.is_presentation_visible());
+        assert_eq!(
+            snapshot.sdr_color_contract(),
+            Some(SdrColorContract::LinearSrgbToBgra8UnormSrgb)
+        );
+        assert!(!snapshot.extended_dynamic_range());
         assert!(!snapshot.framebuffer_only());
         assert!(!snapshot.display_sync_enabled());
         assert!(snapshot.allows_next_drawable_timeout());
@@ -1140,6 +1184,8 @@ mod tests {
         assert_eq!(inverse.surface_epoch(), 33);
         assert!(!inverse.is_sized());
         assert!(!inverse.is_presentation_visible());
+        assert_eq!(inverse.sdr_color_contract(), None);
+        assert!(inverse.extended_dynamic_range());
         assert!(inverse.framebuffer_only());
         assert!(inverse.display_sync_enabled());
         assert!(!inverse.allows_next_drawable_timeout());

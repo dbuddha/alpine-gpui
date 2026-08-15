@@ -17,7 +17,9 @@ targets neither compile nor link those dependencies.
 `alpine-platform-macos` depends on the portable platform, core, scene, and Metal
 crates. On Apple Silicon macOS only, it uses narrowly featured, exact-version
 `block2`, `objc2`, `objc2-app-kit`, `objc2-foundation`, `objc2-metal`, and
-`objc2-quartz-core` bindings. Its safe application API exposes no native handle,
+`objc2-quartz-core` bindings. The same target uses the exact-version,
+narrowly featured `objc2-core-graphics` binding to own a standard sRGB color
+space. Its safe application API exposes no native handle,
 remains available on other targets, and returns a structured
 unsupported-platform error without linking Apple frameworks.
 The non-shipping `alpine-trace` crate depends only on Alpine workspace crates
@@ -44,7 +46,7 @@ flowchart LR
     platform["alpine-platform<br/>portable presentation lifecycle"]
     macos["alpine-platform-macos<br/>safe native surface owner"]
     metal["alpine-metal safe boundary<br/>validation, pixels, FrameReport"]
-    native["Private Direct Metal specialization<br/>pipeline, one submission, readback"]
+    native["Private Direct Metal specialization<br/>linear and sRGB pipelines, submission, readback"]
     trace["alpine-trace<br/>non-shipping typed workload decoder"]
     assurance["alpine-assurance<br/>non-shipping evidence and qualification validator"]
 
@@ -91,8 +93,9 @@ errors.
 
 `alpine-platform-macos` now owns the first native object graph: the shared
 `NSApplication`, one retained `NSWindow`, one custom `NSView`, one opaque
-`CAMetalLayer`, one system Metal device, one retained main-thread-only delegate
-implementing both window and display-link protocols, and one
+`CAMetalLayer`, one retained standard sRGB `CGColorSpace`, one system Metal
+device, one retained main-thread-only delegate implementing both window and
+display-link protocols, and one
 `CAMetalDisplayLink` registered in the main run loop. Construction is admitted
 only on the process main thread. The layer is framebuffer-only, display
 synchronized, timeout-enabled, bounded to three drawables, and sized from a
@@ -117,13 +120,17 @@ presented handler distinguishes a nonzero physical presentation timestamp from
 a compositor-dropped frame. Dropped frames retain or defer to the newest
 pending immutable scene and retry within a hard 600-callback bound aligned with
 the five-second native qualification window on the primary 120 Hz target.
-Snapshots expose the current epoch, size and visibility eligibility, cumulative
-native allocation, and terminal retained bytes without exposing a native
-handle. Teardown first revokes callback admission, stops the renderer, pauses
+Snapshots expose the current epoch, size and visibility eligibility, configured
+SDR contract, extended-dynamic-range state, cumulative native allocation, and
+terminal retained bytes without exposing a native handle. The implemented
+presentation contract consumes linear sRGB shader values, blends in linear
+space, stores to `BGRA8Unorm_sRGB`, declares the layer's standard sRGB color
+space, and disables extended-dynamic-range compositing. Teardown first revokes
+callback admission, stops the renderer, pauses
 and invalidates pacing, clears both weak delegate registrations, and closes the
-retained window. Native handles stay private. Qualified color, asynchronous GPU
-completion, physical multi-display qualification, and the shipping application
-event loop remain unimplemented.
+retained window. Native handles stay private. Asynchronous GPU completion,
+physical multi-display qualification, onscreen pixel capture, and the shipping
+application event loop remain unimplemented.
 
 `alpine-metal` validates a
 non-empty BGRA8 offscreen descriptor, proves its logical viewport and rounded
@@ -135,7 +142,9 @@ Its single-frame lifecycle is an executable transition system corresponding to
 AEP 0025's finite TLA+ model. On Apple Silicon macOS, `MetalBackend::new`
 creates the default device and one command queue, requires Metal 3 and unified
 memory, loads an embedded offline library, resolves fixed vertex and fragment
-entry points, and creates a premultiplied-source-over BGRA8Unorm pipeline. The
+entry points, and creates two premultiplied-source-over pipelines. The existing
+offscreen oracle retains linear `BGRA8Unorm`; native presentation uses
+`BGRA8Unorm_sRGB` so Metal encodes linear RGB only after linear blending. The
 native objects remain private and live exactly as long as the safe backend.
 Linux and Windows expose the same safe constructor but return a structured
 unsupported-platform error without linking Apple frameworks.
@@ -253,9 +262,9 @@ entry point are absent from shipping builds.
 
 The renderer trait deliberately leaves resource representation to each backend.
 The Metal backend now retains one device, command queue, offline library, and
-render-pipeline state. Initialization releases every partially created object on
-failure through ordinary Rust drops. The production constructor rejects devices
-without the Metal 3 family or unified memory. Hosted macOS runners currently
+two render-pipeline states. Initialization releases every partially created
+object on failure through ordinary Rust drops. The production constructor
+rejects devices without the Metal 3 family or unified memory. Hosted macOS runners currently
 expose a paravirtual device that fails that baseline, so native CI first asserts
 the production rejection and then uses a test-only route that bypasses only the
 capability decision to validate real queue, library, function, and pipeline
@@ -456,8 +465,12 @@ real AppKit content resize and deterministic scale, display, visibility,
 zero-size, invalid-geometry, restore, and close events through the same native
 configuration boundary. It requires idempotent epochs, exact layer extents,
 no hidden submission or allocation while ineligible, recovery without epoch
-churn, and closed callback admission. Physical multi-display, qualified color,
-post-commit resize timing, leak, and soak evidence remain unimplemented.
+churn, and closed callback admission. Native color qualification additionally
+checks the actual layer format, standard sRGB color-space identity, disabled
+EDR state, linear offscreen bytes, sRGB presentation bytes after overlapping
+linear blending, and a deliberately wrong direct-linear transfer control.
+Physical multi-display, onscreen pixel capture, post-commit resize timing,
+leak, and soak evidence remain unimplemented.
 On a hosted macOS runner without a qualifying display, the same executable uses
 an explicit direct-presentation evidence mode: every admitted drawable must
 complete GPU work and receive one direct present call, every completed native

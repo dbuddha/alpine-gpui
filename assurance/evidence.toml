@@ -269,6 +269,19 @@ platform_scope = ["portable", "macos-metal"]
 required_evidence = ["tla", "kani", "unit", "integration", "native", "mutation", "coverage"]
 
 [[claims]]
+id = "AEP-0064-C06"
+mission = "MP-03"
+capability_issue = 64
+aep = "docs/aep/0064-native-macos-presentation.md"
+requirement_issue = 67
+claim_type = "functional"
+risk = "critical"
+case_study_findings = ["CS-ZED-PRESENT-006"]
+kani_applicability = "not_applicable"
+platform_scope = ["macos-metal"]
+required_evidence = ["unit", "native", "mutation", "coverage"]
+
+[[claims]]
 id = "AEP-0064-C09"
 mission = "MP-02"
 capability_issue = 64
@@ -281,6 +294,62 @@ kani_applicability = "required"
 tla_properties = ["LinkOwnership", "ResourceMatchesPhase", "SingleSubmissionPerAttempt", "SinglePresentCallPerAttempt", "CommittedWasEligible", "PresentFollowsSubmission", "PresentedIsCurrent", "CleanIdleIsPaused", "StoppedIsDrained"]
 platform_scope = ["portable", "macos-metal"]
 required_evidence = ["tla", "kani", "unit", "property", "integration", "e2e", "mutation", "coverage", "native"]
+
+[[evidence]]
+id = "EV-0064-UNIT06A"
+claim = "AEP-0064-C06"
+kind = "unit"
+artifact = "crates/alpine-platform-macos/src/lib.rs#snapshot_accessors_preserve_discriminating_values"
+assertion = "The handle-free snapshot preserves qualified and unqualified SDR contract identities independently from extended-dynamic-range state."
+scope = "Safe public surface evidence compiled on every host."
+exclusions = ["native layer state", "pixel conversion"]
+
+[[evidence]]
+id = "EV-0064-UNIT06B"
+claim = "AEP-0064-C06"
+kind = "unit"
+artifact = "crates/alpine-platform-macos/src/native.rs#sdr_color_contract_rejects_each_independent_policy_break"
+assertion = "The color-contract recognizer rejects a linear drawable format, enabled EDR, and a nonstandard color-space identity independently."
+scope = "Pure policy predicate over native format and color configuration facts."
+exclusions = ["CoreGraphics lookup", "Metal conversion", "display compositing"]
+
+[[evidence]]
+id = "EV-0064-NATIVE06A"
+claim = "AEP-0064-C06"
+kind = "native"
+artifact = "crates/alpine-metal/src/native.rs#srgb_presentation_encodes_after_linear_blending_and_rejects_linear_control"
+assertion = "Real Metal readback preserves the linear BGRA8 offscreen oracle while the presentation pipeline stores sRGB-encoded RGB after overlapping linear blending; a direct-linear transfer differs beyond tolerance."
+scope = "One Apple Silicon Metal device, two one-pixel render targets, one shared shader, and two overlapping quads."
+assumptions = ["the standard IEC sRGB piecewise encoding is the independent RGB oracle", "one least-significant-byte channel tolerance covers normalized eight-bit rounding"]
+exclusions = ["CAMetalLayer compositing", "display profile conversion", "onscreen capture", "elapsed-time performance"]
+
+[[evidence]]
+id = "EV-0064-NATIVE06B"
+claim = "AEP-0064-C06"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_color.rs"
+assertion = "A real CAMetalLayer reports BGRA8Unorm_sRGB, the standard sRGB CGColorSpace name, disabled extended-dynamic-range content, framebuffer-only storage, and no hidden frame work at construction."
+scope = "One process-main-thread Apple Silicon macOS validation surface."
+assumptions = ["CoreGraphics standard sRGB identity is represented by kCGColorSpaceSRGB"]
+exclusions = ["onscreen pixel capture", "per-display profile transformation", "HDR", "wide color", "per-attempt structured color evidence"]
+
+[[evidence]]
+id = "EV-0064-MUTATION06"
+claim = "AEP-0064-C06"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#metal-validation"
+assertion = "Changed native pipeline selection, drawable-format validation, color-contract recognition, and snapshot branches must have every viable mutant killed on Apple Silicon."
+scope = "Changed alpine-metal and alpine-platform-macos native Rust."
+exclusions = ["unviable compiler-rejected mutants", "unchanged native code"]
+
+[[evidence]]
+id = "EV-0064-COVERAGE06"
+claim = "AEP-0064-C06"
+kind = "coverage"
+artifact = "scripts/check-coverage.sh"
+assertion = "Public SDR contract and extended-dynamic-range snapshot accessors are subject to changed-line and critical-file coverage ratchets."
+scope = "Host-executable safe Rust in alpine-platform-macos."
+exclusions = ["macOS-only CoreGraphics and Metal lines on Linux coverage", "semantic proof"]
 
 [[evidence]]
 id = "EV-0064-TLA03A"

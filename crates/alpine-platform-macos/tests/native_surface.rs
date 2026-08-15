@@ -4,9 +4,9 @@
 use alpine_metal::InitializationError;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 use alpine_platform_macos::SurfaceError;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-use alpine_platform_macos::SurfaceLifecycle;
 use alpine_platform_macos::{NativeSurface, SurfaceDescriptor};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use alpine_platform_macos::{SdrColorContract, SurfaceLifecycle};
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn main() -> Result<(), alpine_platform_macos::SurfaceError> {
@@ -22,6 +22,11 @@ fn main() -> Result<(), alpine_platform_macos::SurfaceError> {
     let snapshot = surface.snapshot();
     assert_eq!(snapshot.physical_width(), 640);
     assert_eq!(snapshot.physical_height(), 360);
+    assert_eq!(
+        snapshot.sdr_color_contract(),
+        Some(SdrColorContract::LinearSrgbToBgra8UnormSrgb)
+    );
+    assert!(!snapshot.extended_dynamic_range());
     assert!(snapshot.framebuffer_only());
     assert!(snapshot.display_sync_enabled());
     assert!(snapshot.allows_next_drawable_timeout());

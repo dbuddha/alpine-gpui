@@ -44,10 +44,44 @@ type Device = Retained<ProtocolObject<dyn MTLDevice>>;
 type Queue = Retained<ProtocolObject<dyn MTLCommandQueue>>;
 type Library = Retained<ProtocolObject<dyn MTLLibrary>>;
 type Function = Retained<ProtocolObject<dyn MTLFunction>>;
-type Pipeline = Retained<ProtocolObject<dyn MTLRenderPipelineState>>;
+type PipelineState = Retained<ProtocolObject<dyn MTLRenderPipelineState>>;
 type Buffer = Retained<ProtocolObject<dyn MTLBuffer>>;
 type CommandBuffer = Retained<ProtocolObject<dyn MTLCommandBuffer>>;
 type Texture = Retained<ProtocolObject<dyn MTLTexture>>;
+
+struct Pipelines {
+    linear_offscreen: PipelineState,
+    srgb_presentation: PipelineState,
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(
+    not(any(test, feature = "platform-spi")),
+    allow(
+        dead_code,
+        reason = "the presentation contract is retained for platform SPI builds"
+    )
+)]
+enum TargetContract {
+    LinearOffscreen,
+    SrgbPresentation,
+}
+
+impl TargetContract {
+    const fn pixel_format(self) -> MTLPixelFormat {
+        match self {
+            Self::LinearOffscreen => MTLPixelFormat::BGRA8Unorm,
+            Self::SrgbPresentation => MTLPixelFormat::BGRA8Unorm_sRGB,
+        }
+    }
+
+    const fn pipeline(self, pipelines: &Pipelines) -> &PipelineState {
+        match self {
+            Self::LinearOffscreen => &pipelines.linear_offscreen,
+            Self::SrgbPresentation => &pipelines.srgb_presentation,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum BlendConfiguration {
@@ -124,15 +158,24 @@ impl Drop for ResourceLease {
 }
 
 impl NativeBackend {
+    pub(crate) fn render(&mut self, frame: &ValidatedFrame) -> NativeRenderAttempt {
+        self.render_to_readback(frame, TargetContract::LinearOffscreen)
+    }
+
     #[allow(
         clippy::cast_precision_loss,
         clippy::too_many_lines,
         reason = "the linear command ownership protocol remains visible in one audited boundary"
     )]
-    pub(crate) fn render(&mut self, frame: &ValidatedFrame) -> NativeRenderAttempt {
+    fn render_to_readback(
+        &mut self,
+        frame: &ValidatedFrame,
+        target: TargetContract,
+    ) -> NativeRenderAttempt {
         let resources = match FrameResources::new(
             &self.initialized.device,
             frame,
+            target.pixel_format(),
             #[cfg(test)]
             self.fault,
             #[cfg(test)]
@@ -198,7 +241,7 @@ impl NativeBackend {
 
         if let Err(error) = encode_render_pass(
             &command,
-            &self.initialized.pipeline,
+            target.pipeline(&self.initialized.pipeline),
             &resources.texture,
             resources.upload.as_deref(),
             frame,
@@ -273,7 +316,13 @@ impl NativeBackend {
         texture: &ProtocolObject<dyn MTLTexture>,
         drawable: &ProtocolObject<dyn MTLDrawable>,
     ) -> NativeDrawableAttempt {
-        let resources = match DrawableResources::new(&self.initialized.device, texture, frame) {
+        let target = TargetContract::SrgbPresentation;
+        let resources = match DrawableResources::new(
+            &self.initialized.device,
+            texture,
+            frame,
+            target.pixel_format(),
+        ) {
             Ok(resources) => resources,
             Err(failure) => {
                 return NativeDrawableAttempt {
@@ -309,7 +358,7 @@ impl NativeBackend {
         };
         if let Err(error) = encode_render_pass(
             &command,
-            &self.initialized.pipeline,
+            target.pipeline(&self.initialized.pipeline),
             texture,
             resources.upload.as_deref(),
             frame,
@@ -427,7 +476,7 @@ impl InitializationDriver for NativeDriver {
     type Device = Device;
     type Function = Function;
     type Library = Library;
-    type Pipeline = Pipeline;
+    type Pipeline = Pipelines;
     type Queue = Queue;
 
     fn create_device(&self) -> Option<Self::Device> {
@@ -472,31 +521,56 @@ impl InitializationDriver for NativeDriver {
         vertex: &Self::Function,
         fragment: &Self::Function,
     ) -> Result<Self::Pipeline, NativeFailure> {
-        let descriptor = MTLRenderPipelineDescriptor::new();
-        descriptor.setVertexFunction(Some(vertex));
-        descriptor.setFragmentFunction(Some(fragment));
-
-        let attachments = descriptor.colorAttachments();
-        // SAFETY: Metal render-pipeline descriptors always expose eight color
-        // attachment slots, so fixed slot zero is within the documented range.
-        let color = unsafe { attachments.objectAtIndexedSubscript(0) };
-        color.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
-        match self.blend {
-            BlendConfiguration::PremultipliedSourceOver => {
-                color.setBlendingEnabled(true);
-                color.setSourceRGBBlendFactor(MTLBlendFactor::One);
-                color.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
-                color.setSourceAlphaBlendFactor(MTLBlendFactor::One);
-                color.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
-            }
-            #[cfg(test)]
-            BlendConfiguration::DisabledFaultControl => color.setBlendingEnabled(false),
-        }
-
-        device
-            .newRenderPipelineStateWithDescriptor_error(&descriptor)
-            .map_err(|error| copy_error(&error))
+        Ok(Pipelines {
+            linear_offscreen: create_pipeline_state(
+                device,
+                vertex,
+                fragment,
+                MTLPixelFormat::BGRA8Unorm,
+                self.blend,
+            )?,
+            srgb_presentation: create_pipeline_state(
+                device,
+                vertex,
+                fragment,
+                MTLPixelFormat::BGRA8Unorm_sRGB,
+                self.blend,
+            )?,
+        })
     }
+}
+
+fn create_pipeline_state(
+    device: &Device,
+    vertex: &Function,
+    fragment: &Function,
+    pixel_format: MTLPixelFormat,
+    blend: BlendConfiguration,
+) -> Result<PipelineState, NativeFailure> {
+    let descriptor = MTLRenderPipelineDescriptor::new();
+    descriptor.setVertexFunction(Some(vertex));
+    descriptor.setFragmentFunction(Some(fragment));
+
+    let attachments = descriptor.colorAttachments();
+    // SAFETY: Metal render-pipeline descriptors always expose eight color
+    // attachment slots, so fixed slot zero is within the documented range.
+    let color = unsafe { attachments.objectAtIndexedSubscript(0) };
+    color.setPixelFormat(pixel_format);
+    match blend {
+        BlendConfiguration::PremultipliedSourceOver => {
+            color.setBlendingEnabled(true);
+            color.setSourceRGBBlendFactor(MTLBlendFactor::One);
+            color.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+            color.setSourceAlphaBlendFactor(MTLBlendFactor::One);
+            color.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+        }
+        #[cfg(test)]
+        BlendConfiguration::DisabledFaultControl => color.setBlendingEnabled(false),
+    }
+
+    device
+        .newRenderPipelineStateWithDescriptor_error(&descriptor)
+        .map_err(|error| copy_error(&error))
 }
 
 struct FrameResources {
@@ -525,6 +599,7 @@ impl DrawableResources {
         device: &Device,
         texture: &ProtocolObject<dyn MTLTexture>,
         frame: &ValidatedFrame,
+        expected_pixel_format: MTLPixelFormat,
     ) -> Result<Self, ResourceBuildFailure> {
         let descriptor = frame.descriptor();
         if texture.width() != descriptor.pixel_width() as usize
@@ -540,7 +615,7 @@ impl DrawableResources {
                 usage: FrameResourceUsage::default(),
             });
         }
-        if texture.pixelFormat() != MTLPixelFormat::BGRA8Unorm {
+        if texture.pixelFormat() != expected_pixel_format {
             return Err(ResourceBuildFailure {
                 error: RenderError::DrawablePixelFormatMismatch {
                     actual: texture.pixelFormat().0,
@@ -604,6 +679,7 @@ impl FrameResources {
     fn new(
         device: &Device,
         frame: &ValidatedFrame,
+        pixel_format: MTLPixelFormat,
         #[cfg(test)] fault: NativeFault,
         #[cfg(test)] probe: &ResourceProbe,
     ) -> Result<Self, ResourceBuildFailure> {
@@ -636,7 +712,7 @@ impl FrameResources {
         // above the Metal 3 family guarantee before this native call.
         let texture_descriptor = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                MTLPixelFormat::BGRA8Unorm,
+                pixel_format,
                 descriptor.pixel_width() as usize,
                 descriptor.pixel_height() as usize,
                 false,
@@ -766,7 +842,7 @@ impl FrameResources {
 #[allow(clippy::cast_precision_loss)]
 fn encode_render_pass(
     command: &CommandBuffer,
-    pipeline: &Pipeline,
+    pipeline: &PipelineState,
     texture: &ProtocolObject<dyn MTLTexture>,
     upload: Option<&ProtocolObject<dyn MTLBuffer>>,
     frame: &ValidatedFrame,
@@ -1000,7 +1076,8 @@ mod tests {
 
     use super::{
         BlendConfiguration, FRAGMENT_ENTRY_POINT, NativeBackend, NativeDriver, NativeFault,
-        OFFLINE_LIBRARY, ResourceProbe, VERTEX_ENTRY_POINT, command_status, new_backend,
+        OFFLINE_LIBRARY, ResourceProbe, TargetContract, VERTEX_ENTRY_POINT, command_status,
+        new_backend,
     };
     #[cfg(feature = "platform-spi")]
     use super::{DrawableResources, new_backend_with_device, new_validation_backend_with_device};
@@ -1147,6 +1224,35 @@ mod tests {
                 "channel {index} differs: actual {actual}, expected {expected}, tolerance {tolerance}"
             );
         }
+    }
+
+    fn srgb_encode(linear: f32) -> f32 {
+        if linear <= 0.003_130_8 {
+            12.92 * linear
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn quantize_unorm(channel: f32) -> u8 {
+        (channel.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+
+    fn bgra8(linear: [f32; 4], encode_rgb: bool) -> [u8; 4] {
+        let encode = |channel| {
+            quantize_unorm(if encode_rgb {
+                srgb_encode(channel)
+            } else {
+                channel
+            })
+        };
+        [
+            encode(linear[2]),
+            encode(linear[1]),
+            encode(linear[0]),
+            quantize_unorm(linear[3]),
+        ]
     }
 
     fn resident_bytes() -> Result<u64, Box<dyn Error>> {
@@ -1323,7 +1429,7 @@ mod tests {
         // device baseline; the fixture creates no mip levels or CPU mapping.
         let texture_descriptor = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                MTLPixelFormat::BGRA8Unorm,
+                MTLPixelFormat::BGRA8Unorm_sRGB,
                 descriptor.pixel_width() as usize,
                 descriptor.pixel_height() as usize,
                 false,
@@ -1421,6 +1527,61 @@ mod tests {
     }
 
     #[test]
+    fn srgb_presentation_encodes_after_linear_blending_and_rejects_linear_control()
+    -> Result<(), Box<dyn Error>> {
+        let mut builder = SceneBuilder::new(SceneRevision::new(711), size(1.0, 1.0)?);
+        let bounds = Rect::new(point(0.0, 0.0)?, size(1.0, 1.0)?);
+        builder.push(Primitive::Quad {
+            bounds,
+            color: color(0.18, 0.50, 0.75, 1.0)?,
+        });
+        builder.push(Primitive::Quad {
+            bounds,
+            color: color(0.80, 0.20, 0.04, 0.25)?,
+        });
+        let scene = builder.finish();
+        let descriptor = OffscreenDescriptor::new(1, 1, 1.0, color(0.0, 0.0, 0.0, 1.0)?)?;
+        let frame = ValidatedFrame::new(&scene, descriptor)?;
+        let mut backend = validation_backend(BlendConfiguration::PremultipliedSourceOver)?;
+
+        let linear_attempt = backend
+            .native
+            .render_to_readback(&frame, TargetContract::LinearOffscreen);
+        let srgb_attempt = backend
+            .native
+            .render_to_readback(&frame, TargetContract::SrgbPresentation);
+        assert!(linear_attempt.committed);
+        assert!(srgb_attempt.committed);
+        let linear_image = linear_attempt.result?;
+        let srgb_image = srgb_attempt.result?;
+
+        let blended_linear = [
+            0.80 * 0.25 + 0.18 * 0.75,
+            0.20 * 0.25 + 0.50 * 0.75,
+            0.04 * 0.25 + 0.75 * 0.75,
+            1.0,
+        ];
+        let expected_linear = bgra8(blended_linear, false);
+        let expected_srgb = bgra8(blended_linear, true);
+        for (actual, expected) in linear_image.bytes().iter().zip(expected_linear) {
+            assert!(actual.abs_diff(expected) <= 1);
+        }
+        for (actual, expected) in srgb_image.bytes().iter().zip(expected_srgb) {
+            assert!(actual.abs_diff(expected) <= 1);
+        }
+        assert!(
+            srgb_image
+                .bytes()
+                .iter()
+                .zip(expected_linear)
+                .any(|(actual, wrong)| actual.abs_diff(wrong) > 12),
+            "a direct linear-unorm transfer must not qualify as sRGB presentation"
+        );
+        assert_ne!(expected_linear, expected_srgb);
+        Ok(())
+    }
+
+    #[test]
     fn renders_empty_scene_as_premultiplied_clear() -> Result<(), Box<dyn Error>> {
         let scene = SceneBuilder::new(SceneRevision::new(72), size(2.0, 2.0)?).finish();
         let descriptor = OffscreenDescriptor::new(2, 2, 1.0, color(1.0, 0.5, 0.25, 0.5)?)?;
@@ -1466,7 +1627,7 @@ mod tests {
         // validation device and create no mipmapped or CPU-visible resource.
         let wrong_extent_descriptor = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                MTLPixelFormat::BGRA8Unorm,
+                MTLPixelFormat::BGRA8Unorm_sRGB,
                 1,
                 2,
                 false,
@@ -1478,9 +1639,14 @@ mod tests {
             .device
             .newTextureWithDescriptor(&wrong_extent_descriptor)
             .ok_or("wrong-extent texture")?;
-        let extent_failure = DrawableResources::new(&initialized.device, &wrong_extent, &frame)
-            .err()
-            .ok_or("wrong extent must fail")?;
+        let extent_failure = DrawableResources::new(
+            &initialized.device,
+            &wrong_extent,
+            &frame,
+            MTLPixelFormat::BGRA8Unorm_sRGB,
+        )
+        .err()
+        .ok_or("wrong extent must fail")?;
         assert_eq!(
             extent_failure.error,
             RenderError::DrawableExtentMismatch {
@@ -1496,7 +1662,7 @@ mod tests {
         // the same finite supported target dimensions.
         let wrong_format_descriptor = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                MTLPixelFormat::RGBA8Unorm,
+                MTLPixelFormat::BGRA8Unorm,
                 2,
                 2,
                 false,
@@ -1508,13 +1674,18 @@ mod tests {
             .device
             .newTextureWithDescriptor(&wrong_format_descriptor)
             .ok_or("wrong-format texture")?;
-        let format_failure = DrawableResources::new(&initialized.device, &wrong_format, &frame)
-            .err()
-            .ok_or("wrong format must fail")?;
+        let format_failure = DrawableResources::new(
+            &initialized.device,
+            &wrong_format,
+            &frame,
+            MTLPixelFormat::BGRA8Unorm_sRGB,
+        )
+        .err()
+        .ok_or("wrong format must fail")?;
         assert_eq!(
             format_failure.error,
             RenderError::DrawablePixelFormatMismatch {
-                actual: MTLPixelFormat::RGBA8Unorm.0,
+                actual: MTLPixelFormat::BGRA8Unorm.0,
             }
         );
         assert_eq!(format_failure.usage, FrameResourceUsage::default());
