@@ -814,11 +814,17 @@ mod tests {
 
     #[test]
     fn live_configuration_preserves_zero_size_and_effective_identity() -> Result<(), SurfaceError> {
-        let zero = SurfaceConfiguration::from_native(0.0, 50.0, 2.0, 7, false)?;
+        let extent = SurfaceExtent::new(100.25, 50.75, 2.0)?;
+        let created = SurfaceConfiguration::from_extent(extent, 7, true);
+        let zero_width = SurfaceConfiguration::from_native(0.0, 50.0, 2.0, 7, false)?;
+        let zero_height = SurfaceConfiguration::from_native(50.0, -0.0, 2.0, 7, false)?;
         let rounded_zero = SurfaceConfiguration::from_native(0.1, 50.0, 1.0, 7, false)?;
         let sized = SurfaceConfiguration::from_native(100.25, 50.75, 2.0, 7, true)?;
 
-        assert!(!zero.is_sized());
+        assert_eq!(created, sized);
+        assert!(!zero_width.is_sized());
+        assert!(!zero_height.is_sized());
+        assert_eq!(zero_height.logical_height.to_bits(), 0.0_f64.to_bits());
         assert!(!rounded_zero.is_sized());
         assert_eq!(sized.physical_width, 201);
         assert_eq!(sized.physical_height, 102);
@@ -881,6 +887,19 @@ mod tests {
             ),
             Err(SurfaceError::PhysicalDimensionOutOfRange {
                 dimension: InvalidDimension::Width,
+                ..
+            })
+        ));
+        assert!(matches!(
+            SurfaceConfiguration::from_native(
+                1.0,
+                f64::from(MAX_DRAWABLE_DIMENSION) + 1.0,
+                1.0,
+                0,
+                true,
+            ),
+            Err(SurfaceError::PhysicalDimensionOutOfRange {
+                dimension: InvalidDimension::Height,
                 ..
             })
         ));
