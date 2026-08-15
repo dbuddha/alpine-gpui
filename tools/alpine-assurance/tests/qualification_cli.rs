@@ -1,6 +1,6 @@
 //! Exercises qualification validation through the compiled CLI boundary.
 
-use std::{path::Path, process::Command};
+use std::{fs, path::Path, process::Command};
 
 fn repository_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -39,6 +39,79 @@ fn validates_and_reports_through_the_binary_boundary() {
         let stdout = String::from_utf8_lossy(&report.stdout);
         assert!(stdout.contains("# Alpine qualification report"));
         assert!(stdout.contains("Comparison level: renderer-only"));
+    }
+}
+
+#[test]
+fn decodes_and_renders_the_committed_scene_trace() {
+    let output_path = repository_root().join("target/qualification-cli-reference.bgra");
+    let invalid_output = repository_root().join("target/qualification-cli-output-directory");
+    assert!(fs::create_dir_all(repository_root().join("target")).is_ok());
+    assert!(fs::create_dir_all(&invalid_output).is_ok());
+    let invalid_output_result = Command::new(env!("CARGO_BIN_EXE_alpine-assurance"))
+        .current_dir(repository_root())
+        .args([
+            "render-scene-reference",
+            "assurance/qualification/v1/scene.toml",
+        ])
+        .arg(&invalid_output)
+        .output();
+    assert!(invalid_output_result.is_ok());
+    if let Ok(invalid_output_result) = invalid_output_result {
+        assert!(!invalid_output_result.status.success());
+        let stderr = String::from_utf8_lossy(&invalid_output_result.stderr);
+        assert!(stderr.contains("cannot invalidate prior output"));
+    }
+    assert!(fs::write(&output_path, b"stale evidence").is_ok());
+    let rejected_render = Command::new(env!("CARGO_BIN_EXE_alpine-assurance"))
+        .current_dir(repository_root())
+        .args([
+            "render-scene-reference",
+            "assurance/qualification/v1/unsupported-scene.toml",
+        ])
+        .arg(&output_path)
+        .output();
+    assert!(rejected_render.is_ok());
+    if let Ok(rejected_render) = rejected_render {
+        assert!(!rejected_render.status.success());
+        assert!(!output_path.exists());
+    }
+    let validation = Command::new(env!("CARGO_BIN_EXE_alpine-assurance"))
+        .current_dir(repository_root())
+        .args([
+            "validate-scene-trace",
+            "assurance/qualification/v1/scene.toml",
+        ])
+        .output();
+    assert!(validation.is_ok());
+    if let Ok(validation) = validation {
+        assert!(validation.status.success());
+        let stdout = String::from_utf8_lossy(&validation.stdout);
+        assert!(stdout.contains("with 3 operations and 8x4 reference pixels"));
+    }
+
+    let render = Command::new(env!("CARGO_BIN_EXE_alpine-assurance"))
+        .current_dir(repository_root())
+        .args([
+            "render-scene-reference",
+            "assurance/qualification/v1/scene.toml",
+        ])
+        .arg(&output_path)
+        .output();
+    assert!(render.is_ok());
+    if let Ok(render) = render {
+        assert!(render.status.success());
+        let stdout = String::from_utf8_lossy(&render.stdout);
+        assert!(stdout.contains("through cpu-oracle"));
+        let bytes = fs::read(&output_path);
+        assert!(bytes.is_ok());
+        if let Ok(bytes) = bytes {
+            assert_eq!(bytes.len(), 8 * 4 * 4);
+            assert_eq!(&bytes[0..4], &[128, 128, 0, 255]);
+            assert_eq!(&bytes[8..12], &[64, 128, 64, 255]);
+            assert_eq!(&bytes[16..20], &[128, 0, 128, 255]);
+            assert_eq!(&bytes[64..68], &[255, 0, 0, 255]);
+        }
     }
 }
 

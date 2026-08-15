@@ -3,6 +3,7 @@
 # Silicon mutation gates provide the executable evidence instead.
 exclude_globs = [
     "crates/*/src/proofs.rs",
+    "tools/*/src/proofs.rs",
     "crates/alpine-metal/src/native.rs",
     "crates/alpine-platform-macos/src/native.rs",
 ]
