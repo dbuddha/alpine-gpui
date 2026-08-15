@@ -45,12 +45,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if hosted_direct && snapshot.presented_count() == 0 {
         assert!(first_error.is_none());
         assert_eq!(snapshot.last_presented_time_bits(), 0);
-        assert_eq!(snapshot.skipped_count(), snapshot.submission_count());
+        // The driver owns at most one callback drawable at a time. At the
+        // hosted cutoff every completed outcome must be an explicit drop, and
+        // exactly one directly presented drawable may still await its handler.
+        assert_eq!(snapshot.skipped_count() + 1, snapshot.submission_count());
         assert_eq!(snapshot.failed_count(), 0);
         assert!(snapshot.callback_count() >= 2);
         eprintln!(
-            "hosted-direct evidence: {} callback drawables committed and directly presented; Core Animation reported every attempt dropped",
-            snapshot.submission_count()
+            "hosted-direct evidence: {} callback drawables committed and directly presented; Core Animation reported {} dropped outcomes and one drawable remains in flight at the bounded cutoff",
+            snapshot.submission_count(),
+            snapshot.skipped_count()
         );
         surface.close();
         return Ok(());

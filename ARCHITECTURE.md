@@ -440,6 +440,12 @@ any compositor drops, then injects a pre-submit viewport failure and proves a
 later valid revision recovers. It requires commit and direct-present counts to
 match exactly and pacing to return to paused. Qualified color, resize, scale,
 occlusion, leak, and soak evidence remain unimplemented.
+On a hosted macOS runner without a qualifying display, the same executable uses
+an explicit direct-presentation evidence mode: every admitted drawable must
+complete GPU work and receive one direct present call, every completed native
+handler must report a drop, and the single-frame owner permits at most one
+drawable still in flight at the bounded cutoff. That mode cannot qualify a
+displayed frame, recovery sequence, idle pause, or physical presentation time.
 
 Hosted CI classifies the changed paths and review labels, then runs the required
 evidence fail-closed under one `ci-pass` result. Locked native tests always run

@@ -669,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn errors_are_stable_and_descriptive() -> Result<(), SurfaceError> {
+    fn errors_are_stable_and_descriptive() {
         assert_eq!(
             SurfaceError::InvalidDimension {
                 dimension: InvalidDimension::Scale,
@@ -702,10 +702,20 @@ mod tests {
         let render: SurfaceError =
             RenderError::Validation(alpine_metal::OffscreenError::ZeroPixelExtent).into();
         let mut state = alpine_platform::PresentationState::new();
-        let Err(transition) = state.apply(alpine_platform::PresentationAction::Prepare) else {
-            return Err(SurfaceError::DriverUnavailable);
-        };
-        let presentation: SurfaceError = transition.into();
+        let presentation = state
+            .apply(alpine_platform::PresentationAction::Prepare)
+            .map_err(SurfaceError::from);
+        assert_eq!(
+            presentation.as_ref().map_err(ToString::to_string),
+            Err("native presentation state failed: presentation action Prepare rejected in Running/Idle: ActionDisabled".to_owned())
+        );
+        assert!(
+            presentation
+                .as_ref()
+                .err()
+                .and_then(|error| std::error::Error::source(error))
+                .is_some()
+        );
         let cases = [
             (
                 initialization,
@@ -715,11 +725,6 @@ mod tests {
             (
                 render,
                 "native presentation failed: offscreen validation failed: offscreen target must be non-empty",
-                true,
-            ),
-            (
-                presentation,
-                "native presentation state failed: presentation action Prepare rejected in Running/Idle: ActionDisabled",
                 true,
             ),
             (
@@ -742,7 +747,6 @@ mod tests {
             assert_eq!(error.to_string(), message);
             assert_eq!(std::error::Error::source(&error).is_some(), has_source);
         }
-        Ok(())
     }
 
     #[test]
