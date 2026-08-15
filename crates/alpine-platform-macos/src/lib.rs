@@ -172,6 +172,7 @@ impl SurfaceExtent {
 /// Unlike [`SurfaceExtent`], a live window may transiently have a zero-sized
 /// drawable while minimized or during native layout. The zero extent is kept
 /// as an explicit ineligible state instead of fabricating a render target.
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SurfaceConfiguration {
     logical_width: f64,
@@ -183,6 +184,7 @@ struct SurfaceConfiguration {
     visible: bool,
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 impl SurfaceConfiguration {
     fn from_extent(extent: SurfaceExtent, display_identity: usize, visible: bool) -> Self {
         Self {
@@ -248,6 +250,7 @@ impl SurfaceConfiguration {
     }
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 const fn presentation_visible(
     window_visible: bool,
     miniaturized: bool,
@@ -734,6 +737,7 @@ fn validate_positive_finite(value: f64, dimension: InvalidDimension) -> Result<(
     }
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn validate_nonnegative_finite(
     value: f64,
     dimension: InvalidDimension,
@@ -763,6 +767,7 @@ fn physical_dimension(
     }
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn runtime_physical_dimension(
     logical: f64,
     scale: f64,
