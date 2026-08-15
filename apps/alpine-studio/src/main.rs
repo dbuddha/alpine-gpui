@@ -2,18 +2,19 @@
 
 use std::error::Error;
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use alpine_core::{LinearRgba, Point, Rect, Size};
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use alpine_platform_macos::{NativeSurface, SurfaceDescriptor, SurfaceError};
 use alpine_scene::{Primitive, SceneBuilder, SceneRevision};
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-use alpine_platform_macos::SurfaceError;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-use alpine_platform_macos::{NativeSurface, SurfaceDescriptor, SurfaceError};
+fn is_alpine_studio_host() -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+}
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn create_scene() -> Result<alpine_scene::Scene, &'static str> {
+    if !is_alpine_studio_host() {
+        return Err("alpine studio requires Apple Silicon macOS");
+    }
+
     let viewport = Size::new(960.0, 540.0).ok_or("alpine studio viewport must be valid")?;
     let mut builder = SceneBuilder::new(SceneRevision::new(1), viewport);
     let origin = Point::new(40.0, 40.0).ok_or("quad origin must be valid")?;
@@ -29,8 +30,11 @@ fn create_scene() -> Result<alpine_scene::Scene, &'static str> {
     Ok(builder.finish())
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn run_studio() -> Result<(), SurfaceError> {
+    if !is_alpine_studio_host() {
+        return Err(SurfaceError::UnsupportedPlatform);
+    }
+
     let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
     let descriptor = SurfaceDescriptor::new("Alpine Studio", 960.0, 540.0, 2.0)?;
     let surface = NativeSurface::new(&descriptor)?;
@@ -38,11 +42,6 @@ fn run_studio() -> Result<(), SurfaceError> {
     surface.show()?;
     let _ = surface.request_frame(scene, clear)?;
     surface.run()
-}
-
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-fn run_studio() -> Result<(), SurfaceError> {
-    Err(SurfaceError::UnsupportedPlatform)
 }
 
 /// Initializes one native surface, submits one immutable scene, and enters the
@@ -55,10 +54,24 @@ fn main() -> Result<(), Box<dyn Error>> {
 mod tests {
     use super::*;
 
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
-    fn create_scene_constructs_valid_scene() {
-        assert!(create_scene().is_ok());
+    fn is_alpine_studio_host_is_target_os_and_arch() {
+        assert_eq!(
+            is_alpine_studio_host(),
+            cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        );
+    }
+
+    #[test]
+    fn create_scene_platform_gate() {
+        if is_alpine_studio_host() {
+            assert!(create_scene().is_ok());
+        } else {
+            assert_eq!(
+                create_scene(),
+                Err("alpine studio requires Apple Silicon macOS")
+            );
+        }
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
