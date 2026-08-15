@@ -352,7 +352,7 @@ id = "EV-0064-UNIT06C"
 claim = "AEP-0064-C06"
 kind = "unit"
 artifact = "crates/alpine-platform-macos/src/lib.rs#snapshot_accessors_preserve_discriminating_values"
-assertion = "Handle-free terminal evidence preserves attempt identity, revisions, epoch, outcome, per-attempt commit and present counts, commit eligibility, target timestamps, observed presentation time, retained bytes, and recovery classification independently."
+assertion = "Handle-free evidence independently preserves callback admission, active and pending cancellation counts, attempt identity, revisions, epoch, terminal classification, per-attempt commit and present counts, commit eligibility, target timestamps, observed presentation time, retained bytes, recovery classification, and the latest active or pending cancellation record."
 scope = "Safe public evidence values compiled and tested on every host."
 exclusions = ["native timestamp production", "native command completion", "physical scanout"]
 
