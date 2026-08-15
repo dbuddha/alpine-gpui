@@ -74,6 +74,21 @@ pub fn new_validation_backend_with_device(
     crate::native::new_validation_backend_with_device(device).map(MetalBackend::from_platform_parts)
 }
 
+/// Uses a real validation backend whose first committed command reports
+/// deterministic device loss after native completion.
+///
+/// # Errors
+///
+/// Returns a stage-classified initialization error when real Metal objects
+/// cannot be created.
+#[cfg(alpine_native_validation)]
+pub fn new_validation_backend_with_device_loss(
+    device: NativeDevice,
+) -> Result<MetalBackend, InitializationError> {
+    crate::native::new_validation_backend_with_device_loss(device)
+        .map(MetalBackend::from_platform_parts)
+}
+
 /// Validates and submits one immutable scene to one callback-provided drawable.
 pub fn render_callback_drawable(
     backend: &mut MetalBackend,

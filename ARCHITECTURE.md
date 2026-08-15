@@ -388,10 +388,15 @@ Native surface descriptor, unsupported-platform, main-thread, device,
 renderer-initialization, drawable validation, portable transition, presentation
 correlation, driver, and bounded-retry errors are structured independently.
 Callback failures are stored for the application to remove, increment terminal
-failure evidence, restore active portable ownership, and pause pacing. A
-dropped drawable is not reported as presented; it increments a separate counter
-and retries the newest available immutable scene. This does not weaken the
-current device-loss generation boundary.
+failure evidence, include renderer recovery guidance when applicable, and pause
+pacing. A dropped drawable is not reported as presented; it increments a
+separate counter and retries the newest available immutable scene. A committed
+attempt that becomes stale records a superseded terminal result and retains the
+same immutable scene for a current-epoch retry, while the physical observation
+counter remains distinct from current-state qualification. Device loss records
+the failed committed attempt, invalidates the Metal backend generation, and
+rejects later surface attempts before another native submission. Automatic
+backend recreation remains outside this slice.
 
 ## Testing and evidence
 
@@ -450,7 +455,7 @@ contracts, then runs formatting, Clippy, all-target tests, doctests, and
 rustdoc. mdBook builds the durable engineering guide as a downloadable CI
 artifact.
 The macOS platform crate separately tests all descriptor boundaries and runs
-four harness-free integration executables on the process main thread. The
+six harness-free integration executables on the process main thread. The
 surface smoke test creates the complete native object graph, verifies layer
 policy and paused pacing, then deterministically tears it down. The rollback
 test injects every native initialization checkpoint and requires exact
@@ -468,15 +473,27 @@ no hidden submission or allocation while ineligible, recovery without epoch
 churn, and closed callback admission. Native color qualification additionally
 checks the actual layer format, standard sRGB color-space identity, disabled
 EDR state, linear offscreen bytes, sRGB presentation bytes after overlapping
-linear blending, and a deliberately wrong direct-linear transfer control.
-Physical multi-display, onscreen pixel capture, post-commit resize timing,
-leak, and soak evidence remain unimplemented.
+linear blending, and a deliberately wrong direct-linear transfer control. The
+native recovery executable injects a display change immediately after real
+Metal commit and direct present, proves that the old epoch cannot qualify,
+retries the retained scene at the current epoch, and correlates both attempts
+with target timestamps, native observation, counts, terminal retention, and
+recovery. It separately injects Metal device removal after real command
+completion and proves that the lost backend generation rejects later work
+before a second native submission. The presented-handler observation and
+post-commit configuration timing in this executable are deterministic
+validation controls at the production Rust correlation seams, not evidence of
+Core Animation scanout or physical notification timing. Physical multi-display,
+onscreen pixel capture, actual post-commit AppKit notification timing, platform
+leak, and platform soak evidence remain unimplemented.
 On a hosted macOS runner without a qualifying display, the same executable uses
 an explicit direct-presentation evidence mode: every admitted drawable must
 complete GPU work and receive one direct present call, every completed native
 handler must report a drop, and the single-frame owner permits at most one
 drawable still in flight at the bounded cutoff. That mode cannot qualify a
-displayed frame, recovery sequence, idle pause, or physical presentation time.
+displayed frame, idle pause, or physical presentation time. Deterministic
+validation controls can qualify state correlation and guarded recovery there,
+but they remain labeled separately from physical display evidence.
 
 Hosted CI classifies the changed paths and review labels, then runs the required
 evidence fail-closed under one `ci-pass` result. Locked native tests always run

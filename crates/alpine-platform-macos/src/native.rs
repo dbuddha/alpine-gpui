@@ -33,18 +33,19 @@ use objc2_quartz_core::{
 };
 
 use alpine_core::LinearRgba;
-use alpine_metal::{MetalBackend, OffscreenDescriptor, platform_spi};
+use alpine_metal::{MetalBackend, OffscreenDescriptor, RecoveryClassification, platform_spi};
 use alpine_platform::{
     DisplayLinkDirective, DisplayLinkState, FrameToken, PresentationAction, PresentationEvent,
-    PresentationState,
+    PresentationOutcome, PresentationState, PresentationTransition,
 };
 use alpine_scene::Scene;
 use block2::RcBlock;
 
 use crate::{
-    SURFACE_CLOSING, SURFACE_LIVE, SdrColorContract, SurfaceConfiguration, SurfaceDescriptor,
-    SurfaceError, SurfaceObserver, SurfaceSnapshot, SurfaceStage, begin_close_observer_state,
-    finish_close_observer_state, new_observer_state, presentation_visible,
+    FrameTerminalEvidence, SURFACE_CLOSING, SURFACE_LIVE, SdrColorContract, SurfaceConfiguration,
+    SurfaceDescriptor, SurfaceError, SurfaceObserver, SurfaceSnapshot, SurfaceStage,
+    begin_close_observer_state, finish_close_observer_state, new_observer_state,
+    presentation_visible,
 };
 
 type Device = Retained<ProtocolObject<dyn MTLDevice>>;
@@ -91,6 +92,8 @@ struct InitializationControl {
     lifecycle: Option<Arc<AtomicU8>>,
     #[cfg(alpine_native_validation)]
     callback_count: Option<Arc<AtomicU64>>,
+    #[cfg(alpine_native_validation)]
+    device_loss: bool,
 }
 
 impl InitializationControl {
@@ -104,6 +107,8 @@ impl InitializationControl {
             lifecycle: None,
             #[cfg(alpine_native_validation)]
             callback_count: None,
+            #[cfg(alpine_native_validation)]
+            device_loss: false,
         }
     }
 
@@ -141,6 +146,10 @@ impl InitializationControl {
     fn backend(&self, device: Device) -> Result<MetalBackend, SurfaceError> {
         #[cfg(alpine_native_validation)]
         if self.probe.is_some() {
+            if self.device_loss {
+                return platform_spi::new_validation_backend_with_device_loss(device)
+                    .map_err(SurfaceError::from);
+            }
             return platform_spi::new_validation_backend_with_device(device)
                 .map_err(SurfaceError::from);
         }
@@ -155,6 +164,15 @@ impl InitializationControl {
             probe: Some(InitializationProbe::default()),
             lifecycle: Some(lifecycle),
             callback_count: Some(callback_count),
+            device_loss: false,
+        }
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn validation_device_loss() -> Self {
+        Self {
+            device_loss: true,
+            ..Self::validation(None)
         }
     }
 
@@ -287,14 +305,38 @@ struct FrameCounters {
     direct_presents: AtomicU64,
     installed_presented_handlers: AtomicU64,
     presented: AtomicU64,
+    qualified_presented: AtomicU64,
+    superseded: AtomicU64,
     last_presented_time_bits: AtomicU64,
     skipped: AtomicU64,
     failed: AtomicU64,
 }
 
+#[derive(Clone)]
 struct PendingFrame {
     scene: Scene,
     clear: LinearRgba,
+}
+
+#[derive(Clone, Copy)]
+struct AttemptTiming {
+    target_timestamp_bits: u64,
+    target_presentation_timestamp_bits: u64,
+}
+
+impl AttemptTiming {
+    fn from_update(update: &CAMetalDisplayLinkUpdate) -> Self {
+        Self {
+            target_timestamp_bits: update.targetTimestamp().to_bits(),
+            target_presentation_timestamp_bits: update.targetPresentationTimestamp().to_bits(),
+        }
+    }
+}
+
+#[cfg(alpine_native_validation)]
+struct PostCommitControl {
+    configuration: Option<SurfaceConfiguration>,
+    presented_time_bits: u64,
 }
 
 struct ActiveFrame {
@@ -307,6 +349,27 @@ struct ActiveFrame {
     frame: PendingFrame,
     presentation: Arc<PresentationSignal>,
     presentation_polls: u16,
+    timing: AttemptTiming,
+    #[cfg(alpine_native_validation)]
+    injected_presented_time_bits: Option<u64>,
+}
+
+impl ActiveFrame {
+    fn presentation_observed(&self) -> bool {
+        #[cfg(alpine_native_validation)]
+        if self.injected_presented_time_bits.is_some() {
+            return true;
+        }
+        self.presentation.observed.load(Ordering::Acquire)
+    }
+
+    fn presented_time_bits(&self) -> u64 {
+        #[cfg(alpine_native_validation)]
+        if let Some(bits) = self.injected_presented_time_bits {
+            return bits;
+        }
+        self.presentation.time_bits.load(Ordering::Relaxed)
+    }
 }
 
 #[derive(Default)]
@@ -323,6 +386,10 @@ struct PresentationDriver {
     backend: MetalBackend,
     consecutive_skips: u16,
     last_error: Option<SurfaceError>,
+    last_terminal: Option<FrameTerminalEvidence>,
+    last_superseded: Option<FrameTerminalEvidence>,
+    #[cfg(alpine_native_validation)]
+    post_commit_control: Option<PostCommitControl>,
 }
 
 impl PresentationDriver {
@@ -340,6 +407,10 @@ impl PresentationDriver {
             backend,
             consecutive_skips: 0,
             last_error: None,
+            last_terminal: None,
+            last_superseded: None,
+            #[cfg(alpine_native_validation)]
+            post_commit_control: None,
         })
     }
 
@@ -352,6 +423,11 @@ impl PresentationDriver {
             .configuration
             .geometry_or_display_differs(configuration)
         {
+            if self.pending.is_none()
+                && let Some(active) = &self.active
+            {
+                self.pending = Some(active.frame.clone());
+            }
             self.state.apply(PresentationAction::AdvanceSurfaceEpoch)?;
         }
         self.state
@@ -414,19 +490,27 @@ impl PresentationDriver {
         match self.try_update(update, counters) {
             Ok(directive) => directive,
             Err(error) => {
+                let recovery = render_recovery(&error);
                 self.last_error = Some(error);
                 counters.failed.fetch_add(1, Ordering::Relaxed);
-                let token = self
-                    .active
-                    .take()
+                let active = self.active.take();
+                let timing = active.as_ref().map_or_else(
+                    || AttemptTiming::from_update(update),
+                    |active| active.timing,
+                );
+                let token = active
+                    .as_ref()
                     .map(|active| active.token)
                     .or_else(|| self.state.active_token());
                 if let Some(token) = token {
                     self.state
                         .apply(PresentationAction::FailActive(token))
-                        .map_or(DisplayLinkDirective::Pause, |transition| {
-                            transition.display_link()
+                        .ok()
+                        .and_then(|transition| {
+                            self.record_terminal(transition, timing, 0, recovery, counters)
+                                .ok()
                         })
+                        .unwrap_or(DisplayLinkDirective::Pause)
                 } else {
                     DisplayLinkDirective::Pause
                 }
@@ -439,26 +523,44 @@ impl PresentationDriver {
         update: &CAMetalDisplayLinkUpdate,
         counters: &FrameCounters,
     ) -> Result<DisplayLinkDirective, SurfaceError> {
+        if let Some(directive) = self.reconcile_active_presentation(counters)? {
+            return Ok(directive);
+        }
+        self.submit_pending(update, counters)
+    }
+
+    fn reconcile_active_presentation(
+        &mut self,
+        counters: &FrameCounters,
+    ) -> Result<Option<DisplayLinkDirective>, SurfaceError> {
         if self
             .active
             .as_ref()
-            .is_some_and(|active| active.presentation.observed.load(Ordering::Acquire))
+            .is_some_and(ActiveFrame::presentation_observed)
         {
             let Some(active) = self.active.take() else {
                 return Err(SurfaceError::DriverUnavailable);
             };
             let token = active.token;
-            let presented_time_bits = active.presentation.time_bits.load(Ordering::Relaxed);
+            let presented_time_bits = active.presented_time_bits();
             if presented_time_bits != 0 {
                 self.consecutive_skips = 0;
                 counters
                     .last_presented_time_bits
                     .store(presented_time_bits, Ordering::Relaxed);
                 counters.presented.fetch_add(1, Ordering::Relaxed);
-                return Ok(self
+                let transition = self
                     .state
-                    .apply(PresentationAction::CompletePresentation(token))?
-                    .display_link());
+                    .apply(PresentationAction::CompletePresentation(token))?;
+                return self
+                    .record_terminal(
+                        transition,
+                        active.timing,
+                        presented_time_bits,
+                        None,
+                        counters,
+                    )
+                    .map(Some);
             }
 
             counters.skipped.fetch_add(1, Ordering::Relaxed);
@@ -466,7 +568,14 @@ impl PresentationDriver {
             if self.pending.is_none() {
                 self.pending = Some(active.frame);
             }
-            self.state.apply(PresentationAction::FailActive(token))?;
+            let transition = self.state.apply(PresentationAction::FailActive(token))?;
+            let _ = self.record_terminal(
+                transition,
+                active.timing,
+                0,
+                Some(RecoveryClassification::RetryFrame),
+                counters,
+            )?;
             if self.consecutive_skips >= MAX_PRESENTATION_POLLS {
                 return Err(SurfaceError::PresentationsSkipped {
                     attempts: self.consecutive_skips,
@@ -484,18 +593,25 @@ impl PresentationDriver {
                     callbacks: active.presentation_polls,
                 });
             }
-            return Ok(DisplayLinkDirective::None);
+            return Ok(Some(DisplayLinkDirective::None));
         }
+        Ok(None)
+    }
 
+    fn submit_pending(
+        &mut self,
+        update: &CAMetalDisplayLinkUpdate,
+        counters: &FrameCounters,
+    ) -> Result<DisplayLinkDirective, SurfaceError> {
         let prepared = self.state.apply(PresentationAction::Prepare)?;
         let PresentationEvent::Prepared(token) = prepared.event() else {
             return Err(SurfaceError::DriverUnavailable);
         };
         let Some(frame) = self.pending.take() else {
-            self.state.apply(PresentationAction::FailActive(token))?;
             return Err(SurfaceError::DriverUnavailable);
         };
         self.state.apply(PresentationAction::BeginUpdate(token))?;
+        let timing = AttemptTiming::from_update(update);
 
         #[allow(
             clippy::cast_possible_truncation,
@@ -537,14 +653,88 @@ impl PresentationDriver {
                     frame,
                     presentation,
                     presentation_polls: 0,
+                    timing,
+                    #[cfg(alpine_native_validation)]
+                    injected_presented_time_bits: None,
                 });
+                #[cfg(alpine_native_validation)]
+                if self.post_commit_control.is_some() {
+                    return self.apply_post_commit_control();
+                }
                 Ok(DisplayLinkDirective::None)
             }
-            Err(error) => {
-                self.state.apply(PresentationAction::FailActive(token))?;
-                Err(error.into())
-            }
+            Err(error) => Err(error.into()),
         }
+    }
+
+    fn record_terminal(
+        &mut self,
+        transition: PresentationTransition,
+        timing: AttemptTiming,
+        observed_presentation_time_bits: u64,
+        recovery: Option<RecoveryClassification>,
+        counters: &FrameCounters,
+    ) -> Result<DisplayLinkDirective, SurfaceError> {
+        let PresentationEvent::Terminal(attempt) = transition.event() else {
+            return Err(SurfaceError::DriverUnavailable);
+        };
+        match attempt.outcome() {
+            PresentationOutcome::Presented => {
+                counters.qualified_presented.fetch_add(1, Ordering::Relaxed);
+            }
+            PresentationOutcome::Superseded => {
+                counters.superseded.fetch_add(1, Ordering::Relaxed);
+            }
+            PresentationOutcome::None | PresentationOutcome::Failed => {}
+        }
+        let evidence = FrameTerminalEvidence::new(
+            attempt,
+            timing.target_timestamp_bits,
+            timing.target_presentation_timestamp_bits,
+            observed_presentation_time_bits,
+            self.backend.accounting().current_retained_bytes(),
+            recovery,
+        );
+        if matches!(attempt.outcome(), PresentationOutcome::Superseded) {
+            self.last_superseded = Some(evidence);
+        }
+        self.last_terminal = Some(evidence);
+        Ok(transition.display_link())
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn inject_post_commit_observation(
+        &mut self,
+        display_identity: Option<usize>,
+        presented_time: f64,
+    ) {
+        let configuration = display_identity.map(|display_identity| SurfaceConfiguration {
+            display_identity,
+            ..self.configuration
+        });
+        self.post_commit_control = Some(PostCommitControl {
+            configuration,
+            presented_time_bits: presented_time.to_bits(),
+        });
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn apply_post_commit_control(&mut self) -> Result<DisplayLinkDirective, SurfaceError> {
+        let control = self
+            .post_commit_control
+            .take()
+            .ok_or(SurfaceError::DriverUnavailable)?;
+        let directive = control
+            .configuration
+            .map_or(Ok(DisplayLinkDirective::None), |configuration| {
+                self.apply_configuration(configuration)
+            })?;
+        let active = self
+            .active
+            .as_mut()
+            .ok_or(SurfaceError::DriverUnavailable)?;
+        active.injected_presented_time_bits = Some(control.presented_time_bits);
+        Ok(directive)
     }
 
     fn take_error(&mut self) -> Option<SurfaceError> {
@@ -566,6 +756,21 @@ impl PresentationDriver {
         let _ = self.state.apply(PresentationAction::StopAfterDrain);
         self.pending = None;
         self.backend.shutdown();
+    }
+}
+
+fn render_recovery(error: &SurfaceError) -> Option<RecoveryClassification> {
+    match error {
+        SurfaceError::Render(error) => Some(error.recovery()),
+        SurfaceError::InvalidDimension { .. }
+        | SurfaceError::PhysicalDimensionOutOfRange { .. }
+        | SurfaceError::UnsupportedPlatform
+        | SurfaceError::NativeUnavailable { .. }
+        | SurfaceError::RendererInitialization(_)
+        | SurfaceError::Presentation(_)
+        | SurfaceError::DriverUnavailable
+        | SurfaceError::PresentationNotObserved { .. }
+        | SurfaceError::PresentationsSkipped { .. } => None,
     }
 }
 
@@ -911,6 +1116,13 @@ impl NativeSurface {
         Self::new_with_control(descriptor, &InitializationControl::validation(None))
     }
 
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn new_for_validation_device_loss(
+        descriptor: &SurfaceDescriptor,
+    ) -> Result<Self, SurfaceError> {
+        Self::new_with_control(descriptor, &InitializationControl::validation_device_loss())
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the creation sequence keeps partial native ownership and rollback auditable"
@@ -1184,13 +1396,16 @@ impl NativeSurface {
         )]
         let (physical_width, physical_height) =
             (drawable_size.width as u32, drawable_size.height as u32);
-        let (allocated_bytes, current_retained_bytes) = driver.as_ref().map_or((0, 0), |driver| {
-            let accounting = driver.backend.accounting();
-            (
-                accounting.allocated_bytes(),
-                accounting.current_retained_bytes(),
-            )
-        });
+        let (allocated_bytes, current_retained_bytes, last_terminal, last_superseded) =
+            driver.as_ref().map_or((0, 0, None, None), |driver| {
+                let accounting = driver.backend.accounting();
+                (
+                    accounting.allocated_bytes(),
+                    accounting.current_retained_bytes(),
+                    driver.last_terminal,
+                    driver.last_superseded,
+                )
+            });
         SurfaceSnapshot {
             physical_width,
             physical_height,
@@ -1215,6 +1430,8 @@ impl NativeSurface {
                 .installed_presented_handlers
                 .load(Ordering::Acquire),
             presented_count: self.counters.presented.load(Ordering::Acquire),
+            qualified_presented_count: self.counters.qualified_presented.load(Ordering::Acquire),
+            superseded_count: self.counters.superseded.load(Ordering::Acquire),
             last_presented_time_bits: self
                 .counters
                 .last_presented_time_bits
@@ -1223,6 +1440,8 @@ impl NativeSurface {
             failed_count: self.counters.failed.load(Ordering::Acquire),
             allocated_bytes,
             current_retained_bytes,
+            last_terminal,
+            last_superseded,
         }
     }
 
@@ -1239,6 +1458,22 @@ impl NativeSurface {
         if let Ok(mut driver) = self.driver.try_borrow_mut() {
             driver.inject_error(error);
         }
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn inject_post_commit_observation(
+        &self,
+        display_identity: Option<usize>,
+        presented_time: f64,
+    ) -> Result<(), SurfaceError> {
+        if !presented_time.is_finite() || presented_time <= 0.0 {
+            return Err(SurfaceError::DriverUnavailable);
+        }
+        self.driver
+            .try_borrow_mut()
+            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .inject_post_commit_observation(display_identity, presented_time);
+        Ok(())
     }
 
     #[cfg(alpine_native_validation)]

@@ -96,24 +96,32 @@ pub(crate) struct NativeBackend {
         reason = "the initialized objects must remain retained for the backend lifetime"
     )]
     initialized: Initialized<NativeDriver>,
-    #[cfg(test)]
+    #[cfg(any(test, alpine_native_validation))]
     fault: NativeFault,
     #[cfg(test)]
     probe: ResourceProbe,
 }
 
-#[cfg(test)]
+#[cfg(any(test, alpine_native_validation))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeFault {
     None,
+    #[cfg(test)]
     TextureAllocation,
+    #[cfg(test)]
     ReadbackAllocation,
+    #[cfg(test)]
     UploadAllocation,
+    #[cfg(test)]
     CommandBuffer,
+    #[cfg(test)]
     RenderEncoder,
+    #[cfg(test)]
     BlitEncoder,
     TerminalError(i64),
+    #[cfg(test)]
     UnexpectedStatus,
+    #[cfg(test)]
     ReadbackLength,
 }
 
@@ -395,6 +403,9 @@ impl NativeBackend {
             }
             (status, _) => (Err(RenderError::UnexpectedCommandStatus { status }), false),
         };
+        #[cfg(any(test, alpine_native_validation))]
+        let (result, device_lost) =
+            injected_command_failure(self.fault).unwrap_or((result, device_lost));
         NativeDrawableAttempt {
             committed: true,
             present_called: true,
@@ -426,6 +437,24 @@ pub(crate) fn new_validation_backend_with_device(
     ))
 }
 
+#[cfg(all(feature = "platform-spi", alpine_native_validation))]
+pub(crate) fn new_validation_backend_with_device_loss(
+    device: Device,
+) -> Result<(NativeBackend, MetalCapabilities), InitializationError> {
+    let (mut backend, capabilities) = build_backend(initialize_for_native_validation(
+        &NativeDriver::with_device(device),
+    ))?;
+    let device_removed = i64::try_from(MTLCommandBufferError::DeviceRemoved.0).map_err(|_| {
+        InitializationError::PipelineCreationFailed(NativeFailure::new(
+            "MTLCommandBufferErrorDomain".to_owned(),
+            0,
+            "device-loss validation code is not representable".to_owned(),
+        ))
+    })?;
+    backend.fault = NativeFault::TerminalError(device_removed);
+    Ok((backend, capabilities))
+}
+
 fn build_backend(
     initialized: Result<Initialized<NativeDriver>, InitializationError>,
 ) -> Result<(NativeBackend, MetalCapabilities), InitializationError> {
@@ -434,7 +463,7 @@ fn build_backend(
         (
             NativeBackend {
                 initialized,
-                #[cfg(test)]
+                #[cfg(any(test, alpine_native_validation))]
                 fault: NativeFault::None,
                 #[cfg(test)]
                 probe: ResourceProbe::default(),
@@ -999,29 +1028,37 @@ fn classify_command_failure(failure: Option<&NativeFailure>) -> (RecoveryClassif
     (RecoveryClassification::Fatal, false)
 }
 
+#[cfg(any(test, alpine_native_validation))]
+fn injected_command_failure(fault: NativeFault) -> Option<(Result<(), RenderError>, bool)> {
+    let NativeFault::TerminalError(code) = fault else {
+        return None;
+    };
+    let failure = NativeFailure::new(
+        "MTLCommandBufferErrorDomain".to_owned(),
+        code,
+        "injected terminal command failure".to_owned(),
+    );
+    let (recovery, device_lost) = classify_command_failure(Some(&failure));
+    Some((
+        Err(RenderError::CommandFailed {
+            status: CommandStatus::Error,
+            failure: Some(failure),
+            recovery,
+        }),
+        device_lost,
+    ))
+}
+
 #[cfg(test)]
 fn injected_terminal_result(
     fault: NativeFault,
     result: Result<Bgra8Image, RenderError>,
     frame: &ValidatedFrame,
 ) -> (Result<Bgra8Image, RenderError>, bool) {
+    if let Some((Err(error), device_lost)) = injected_command_failure(fault) {
+        return (Err(error), device_lost);
+    }
     match fault {
-        NativeFault::TerminalError(code) => {
-            let failure = NativeFailure::new(
-                "MTLCommandBufferErrorDomain".to_owned(),
-                code,
-                "injected terminal command failure".to_owned(),
-            );
-            let (recovery, device_lost) = classify_command_failure(Some(&failure));
-            (
-                Err(RenderError::CommandFailed {
-                    status: CommandStatus::Error,
-                    failure: Some(failure),
-                    recovery,
-                }),
-                device_lost,
-            )
-        }
         NativeFault::UnexpectedStatus => (
             Err(RenderError::UnexpectedCommandStatus {
                 status: CommandStatus::Scheduled,
@@ -1041,7 +1078,8 @@ fn injected_terminal_result(
         | NativeFault::UploadAllocation
         | NativeFault::CommandBuffer
         | NativeFault::RenderEncoder
-        | NativeFault::BlitEncoder => (result, false),
+        | NativeFault::BlitEncoder
+        | NativeFault::TerminalError(_) => (result, false),
     }
 }
 

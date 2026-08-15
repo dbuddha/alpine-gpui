@@ -12,8 +12,10 @@ use std::sync::{
 };
 
 use alpine_core::LinearRgba;
-use alpine_metal::{InitializationError, RenderError};
-use alpine_platform::{PresentationRevision, TransitionError};
+use alpine_metal::{InitializationError, RecoveryClassification, RenderError};
+use alpine_platform::{
+    AttemptEvidence, PresentationOutcome, PresentationRevision, TransitionError,
+};
 use alpine_scene::Scene;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -39,7 +41,20 @@ pub mod native_validation {
             .map(NativeSurface::from_implementation)
     }
 
-    /// Runs the real AppKit event loop until one frame terminates or timeout.
+    /// Creates one real surface whose first committed command deterministically
+    /// reports native device loss.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same structured construction errors as the validation path.
+    pub fn new_surface_with_device_loss(
+        descriptor: &SurfaceDescriptor,
+    ) -> Result<NativeSurface, SurfaceError> {
+        native::NativeSurface::new_for_validation_device_loss(descriptor)
+            .map(NativeSurface::from_implementation)
+    }
+
+    /// Runs the real `AppKit` event loop until one frame terminates or timeout.
     pub fn run_until_frame_terminal(surface: &NativeSurface, timeout: Duration) {
         surface.implementation.run_until_frame_terminal(timeout);
     }
@@ -49,12 +64,31 @@ pub mod native_validation {
         surface.implementation.inject_driver_error(error);
     }
 
+    /// Schedules one deterministic presented-handler observation immediately
+    /// after the next callback drawable commits and receives direct present.
+    ///
+    /// An optional display identity change advances the native surface epoch
+    /// at that exact post-commit boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a driver error for an invalid time or unavailable callback owner.
+    pub fn inject_post_commit_observation(
+        surface: &NativeSurface,
+        display_identity: Option<usize>,
+        presented_time: f64,
+    ) -> Result<(), SurfaceError> {
+        surface
+            .implementation
+            .inject_post_commit_observation(display_identity, presented_time)
+    }
+
     /// Applies one deterministic native size, scale, display, and visibility event.
     ///
     /// # Errors
     ///
     /// Returns the same geometry or synchronized-driver errors as a real
-    /// AppKit notification translated through the native owner.
+    /// `AppKit` notification translated through the native owner.
     pub fn inject_surface_configuration(
         surface: &NativeSurface,
         logical_width: f64,
@@ -72,14 +106,14 @@ pub mod native_validation {
         )
     }
 
-    /// Resizes the real AppKit content area so its delegate must synchronize it.
+    /// Resizes the real `AppKit` content area so its delegate must synchronize it.
     pub fn resize_content(surface: &NativeSurface, logical_width: f64, logical_height: f64) {
         surface
             .implementation
             .resize_content(logical_width, logical_height);
     }
 
-    /// Closes the real AppKit window through its delegate lifecycle.
+    /// Closes the real `AppKit` window through its delegate lifecycle.
     pub fn close_window(surface: &NativeSurface) {
         surface.implementation.close_window();
     }
@@ -339,6 +373,117 @@ pub enum SdrColorContract {
     LinearSrgbToBgra8UnormSrgb,
 }
 
+/// Handle-free terminal evidence correlated across one native frame attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameTerminalEvidence {
+    attempt: AttemptEvidence,
+    target_timestamp_bits: u64,
+    target_presentation_timestamp_bits: u64,
+    observed_presentation_time_bits: u64,
+    retained_bytes: usize,
+    recovery: Option<RecoveryClassification>,
+}
+
+impl FrameTerminalEvidence {
+    pub(crate) const fn new(
+        attempt: AttemptEvidence,
+        target_timestamp_bits: u64,
+        target_presentation_timestamp_bits: u64,
+        observed_presentation_time_bits: u64,
+        retained_bytes: usize,
+        recovery: Option<RecoveryClassification>,
+    ) -> Self {
+        Self {
+            attempt,
+            target_timestamp_bits,
+            target_presentation_timestamp_bits,
+            observed_presentation_time_bits,
+            retained_bytes,
+            recovery,
+        }
+    }
+
+    /// Returns the monotonic frame-attempt identity.
+    #[must_use]
+    pub const fn attempt(self) -> u64 {
+        self.attempt.attempt()
+    }
+
+    /// Returns the newest requested revision when this attempt terminated.
+    #[must_use]
+    pub const fn requested_revision(self) -> PresentationRevision {
+        self.attempt.requested_revision()
+    }
+
+    /// Returns the immutable scene revision captured before encoding.
+    #[must_use]
+    pub const fn frame_revision(self) -> PresentationRevision {
+        self.attempt.frame_revision()
+    }
+
+    /// Returns the native surface epoch captured before encoding.
+    #[must_use]
+    pub const fn frame_epoch(self) -> alpine_platform::SurfaceEpoch {
+        self.attempt.frame_epoch()
+    }
+
+    /// Returns the portable terminal classification.
+    #[must_use]
+    pub const fn outcome(self) -> PresentationOutcome {
+        self.attempt.outcome()
+    }
+
+    /// Returns the command commits recorded for this attempt.
+    #[must_use]
+    pub const fn submission_count(self) -> u8 {
+        self.attempt.submission_count()
+    }
+
+    /// Returns direct drawable presentation calls recorded for this attempt.
+    #[must_use]
+    pub const fn present_call_count(self) -> u8 {
+        self.attempt.present_call_count()
+    }
+
+    /// Returns whether the attempt was current immediately before commit.
+    #[must_use]
+    pub const fn eligible_at_commit(self) -> bool {
+        self.attempt.eligible_at_commit()
+    }
+
+    /// Returns the raw `f64` bits of the display-link render target time.
+    #[must_use]
+    pub const fn target_timestamp_bits(self) -> u64 {
+        self.target_timestamp_bits
+    }
+
+    /// Returns the raw `f64` bits of the display-link presentation target time.
+    #[must_use]
+    pub const fn target_presentation_timestamp_bits(self) -> u64 {
+        self.target_presentation_timestamp_bits
+    }
+
+    /// Returns the raw `f64` bits observed by the drawable presented handler.
+    ///
+    /// Zero means no physical presentation timestamp was observed.
+    #[must_use]
+    pub const fn observed_presentation_time_bits(self) -> u64 {
+        self.observed_presentation_time_bits
+    }
+
+    /// Returns Alpine-owned native frame bytes retained after terminal handling.
+    #[must_use]
+    pub const fn retained_bytes(self) -> usize {
+        self.retained_bytes
+    }
+
+    /// Returns renderer recovery guidance when rendering caused termination.
+    #[must_use]
+    pub const fn recovery(self) -> Option<RecoveryClassification> {
+        self.recovery
+    }
+}
+
 /// Structured failure from descriptor validation or native construction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SurfaceError {
@@ -481,11 +626,15 @@ pub struct SurfaceSnapshot {
     direct_present_count: u64,
     installed_presented_handler_count: u64,
     presented_count: u64,
+    qualified_presented_count: u64,
+    superseded_count: u64,
     last_presented_time_bits: u64,
     skipped_count: u64,
     failed_count: u64,
     allocated_bytes: u128,
     current_retained_bytes: usize,
+    last_terminal: Option<FrameTerminalEvidence>,
+    last_superseded: Option<FrameTerminalEvidence>,
 }
 
 impl SurfaceSnapshot {
@@ -603,6 +752,18 @@ impl SurfaceSnapshot {
         self.presented_count
     }
 
+    /// Returns attempts that presented and still matched current revision and epoch.
+    #[must_use]
+    pub const fn qualified_presented_count(self) -> u64 {
+        self.qualified_presented_count
+    }
+
+    /// Returns committed attempts that terminated after becoming outdated.
+    #[must_use]
+    pub const fn superseded_count(self) -> u64 {
+        self.superseded_count
+    }
+
     /// Returns the raw nonzero `f64` bits from the latest observed presentation time.
     #[must_use]
     pub const fn last_presented_time_bits(self) -> u64 {
@@ -631,6 +792,18 @@ impl SurfaceSnapshot {
     #[must_use]
     pub const fn current_retained_bytes(self) -> usize {
         self.current_retained_bytes
+    }
+
+    /// Returns the most recent attempt's complete handle-free terminal record.
+    #[must_use]
+    pub const fn last_terminal(self) -> Option<FrameTerminalEvidence> {
+        self.last_terminal
+    }
+
+    /// Returns the most recent committed attempt rejected as outdated.
+    #[must_use]
+    pub const fn last_superseded(self) -> Option<FrameTerminalEvidence> {
+        self.last_superseded
     }
 }
 
@@ -1097,7 +1270,33 @@ mod tests {
         clippy::too_many_lines,
         reason = "one exhaustive fixture keeps every public snapshot accessor discriminating"
     )]
-    fn snapshot_accessors_preserve_discriminating_values() {
+    fn snapshot_accessors_preserve_discriminating_values() -> Result<(), Box<dyn Error>> {
+        let mut state = alpine_platform::PresentationState::new();
+        state.apply(alpine_platform::PresentationAction::SetSized(true))?;
+        state.apply(alpine_platform::PresentationAction::SetVisible(true))?;
+        state.apply(alpine_platform::PresentationAction::Invalidate)?;
+        state.apply(alpine_platform::PresentationAction::Resume)?;
+        let prepared = state.apply(alpine_platform::PresentationAction::Prepare)?;
+        let alpine_platform::PresentationEvent::Prepared(token) = prepared.event() else {
+            return Err("prepared frame token".into());
+        };
+        state.apply(alpine_platform::PresentationAction::BeginUpdate(token))?;
+        state.apply(alpine_platform::PresentationAction::Submit(token))?;
+        state.apply(alpine_platform::PresentationAction::CallPresent(token))?;
+        let terminal = state.apply(alpine_platform::PresentationAction::CompletePresentation(
+            token,
+        ))?;
+        let alpine_platform::PresentationEvent::Terminal(attempt) = terminal.event() else {
+            return Err("terminal attempt evidence".into());
+        };
+        let terminal = FrameTerminalEvidence::new(
+            attempt,
+            73,
+            79,
+            83,
+            89,
+            Some(RecoveryClassification::RetryFrame),
+        );
         let snapshot = SurfaceSnapshot {
             physical_width: 17,
             physical_height: 19,
@@ -1118,11 +1317,15 @@ mod tests {
             direct_present_count: 31,
             installed_presented_handler_count: 33,
             presented_count: 37,
+            qualified_presented_count: 38,
+            superseded_count: 39,
             last_presented_time_bits: 39,
             skipped_count: 41,
             failed_count: 43,
             allocated_bytes: 47,
             current_retained_bytes: 53,
+            last_terminal: Some(terminal),
+            last_superseded: None,
         };
         let inverse = SurfaceSnapshot {
             physical_width: 29,
@@ -1144,11 +1347,15 @@ mod tests {
             direct_present_count: 47,
             installed_presented_handler_count: 49,
             presented_count: 53,
+            qualified_presented_count: 54,
+            superseded_count: 55,
             last_presented_time_bits: 57,
             skipped_count: 59,
             failed_count: 61,
             allocated_bytes: 67,
             current_retained_bytes: 71,
+            last_terminal: None,
+            last_superseded: None,
         };
 
         assert_eq!(snapshot.physical_width(), 17);
@@ -1173,11 +1380,31 @@ mod tests {
         assert_eq!(snapshot.direct_present_count(), 31);
         assert_eq!(snapshot.installed_presented_handler_count(), 33);
         assert_eq!(snapshot.presented_count(), 37);
+        assert_eq!(snapshot.qualified_presented_count(), 38);
+        assert_eq!(snapshot.superseded_count(), 39);
         assert_eq!(snapshot.last_presented_time_bits(), 39);
         assert_eq!(snapshot.skipped_count(), 41);
         assert_eq!(snapshot.failed_count(), 43);
         assert_eq!(snapshot.allocated_bytes(), 47);
         assert_eq!(snapshot.current_retained_bytes(), 53);
+        assert_eq!(snapshot.last_terminal(), Some(terminal));
+        assert_eq!(snapshot.last_superseded(), None);
+        assert_eq!(terminal.attempt(), 1);
+        assert_eq!(terminal.requested_revision().get(), 1);
+        assert_eq!(terminal.frame_revision().get(), 1);
+        assert_eq!(terminal.frame_epoch().get(), 0);
+        assert_eq!(terminal.outcome(), PresentationOutcome::Presented);
+        assert_eq!(terminal.submission_count(), 1);
+        assert_eq!(terminal.present_call_count(), 1);
+        assert!(terminal.eligible_at_commit());
+        assert_eq!(terminal.target_timestamp_bits(), 73);
+        assert_eq!(terminal.target_presentation_timestamp_bits(), 79);
+        assert_eq!(terminal.observed_presentation_time_bits(), 83);
+        assert_eq!(terminal.retained_bytes(), 89);
+        assert_eq!(
+            terminal.recovery(),
+            Some(RecoveryClassification::RetryFrame)
+        );
 
         assert_eq!(inverse.physical_width(), 29);
         assert_eq!(inverse.physical_height(), 31);
@@ -1198,11 +1425,16 @@ mod tests {
         assert_eq!(inverse.direct_present_count(), 47);
         assert_eq!(inverse.installed_presented_handler_count(), 49);
         assert_eq!(inverse.presented_count(), 53);
+        assert_eq!(inverse.qualified_presented_count(), 54);
+        assert_eq!(inverse.superseded_count(), 55);
         assert_eq!(inverse.last_presented_time_bits(), 57);
         assert_eq!(inverse.skipped_count(), 59);
         assert_eq!(inverse.failed_count(), 61);
         assert_eq!(inverse.allocated_bytes(), 67);
         assert_eq!(inverse.current_retained_bytes(), 71);
+        assert_eq!(inverse.last_terminal(), None);
+        assert_eq!(inverse.last_superseded(), None);
+        Ok(())
     }
 
     #[test]

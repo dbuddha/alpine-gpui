@@ -66,11 +66,15 @@ impl NativeSurface {
             direct_present_count: 0,
             installed_presented_handler_count: 0,
             presented_count: 0,
+            qualified_presented_count: 0,
+            superseded_count: 0,
             last_presented_time_bits: 0,
             skipped_count: 0,
             failed_count: 0,
             allocated_bytes: 0,
             current_retained_bytes: 0,
+            last_terminal: None,
+            last_superseded: None,
         }
     }
 
@@ -126,11 +130,15 @@ mod tests {
                 direct_present_count: 0,
                 installed_presented_handler_count: 0,
                 presented_count: 0,
+                qualified_presented_count: 0,
+                superseded_count: 0,
                 last_presented_time_bits: 0,
                 skipped_count: 0,
                 failed_count: 0,
                 allocated_bytes: 0,
                 current_retained_bytes: 0,
+                last_terminal: None,
+                last_superseded: None,
             }
         );
         assert_eq!(

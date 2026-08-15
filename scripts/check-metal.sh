@@ -35,6 +35,8 @@ RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_surface_epochs
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_color
+RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
+    cargo test --locked -p alpine-platform-macos --test native_recovery
 /usr/bin/env \
     -u MTL_DEBUG_LAYER \
     -u MTL_DEBUG_LAYER_ERROR_MODE \
