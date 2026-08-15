@@ -1,6 +1,6 @@
 [package]
-name = "alpine-assurance"
-description = "Non-shipping validator and reporter for Alpine assurance evidence"
+name = "alpine-trace"
+description = "Non-shipping decoder for versioned Alpine renderer workloads"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,10 +8,9 @@ publish.workspace = true
 license-file.workspace = true
 
 [dependencies]
+alpine-core = { path = "../../crates/alpine-core", version = "=0.0.0" }
 alpine-metal = { path = "../../crates/alpine-metal", version = "=0.0.0" }
-alpine-trace = { path = "../alpine-trace", version = "=0.0.0" }
-serde = { version = "=1.0.229", features = ["derive"] }
-toml = "=1.1.4"
+alpine-scene = { path = "../../crates/alpine-scene", version = "=0.0.0" }
 
 [lints]
 workspace = true

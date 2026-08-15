@@ -1,6 +1,6 @@
 schema = "alpine-journey/v1"
 id = "render-solid-quad-editor-surface"
-workload_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+workload_hash = "3dbf181350ed2283ce9daa427af5d674cebcceb4dada5abf2a1c1e1f5c156bda"
 scene_trace = "assurance/qualification/v1/scene.toml"
 expected_document_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 expected_layout_hash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"

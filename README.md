@@ -41,6 +41,9 @@ development. The workspace currently provides:
   Metal device, offline pipeline, one synchronous command submission, and
   deterministic compact BGRA8 readback, cancellation, shutdown, device-loss
   generations, and complete frame-resource accounting;
+- non-shipping `alpine-trace` and `alpine-assurance` tooling that fail closed on
+  malformed renderer workloads and can produce CPU-oracle or Direct Metal BGRA8
+  artifacts from the same versioned solid-quad trace;
 - a pinned Rust toolchain and locked dependency graph;
 - policy, formatting, lint, unit test, doctest, rustdoc, coverage, changed-code
   mutation, selected Kani proofs, and three-platform CI;
