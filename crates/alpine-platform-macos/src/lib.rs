@@ -334,7 +334,11 @@ impl NativeSurface {
     /// macOS. On macOS, creation requires the process main thread and a system
     /// Metal device.
     pub fn new(descriptor: &SurfaceDescriptor) -> Result<Self, SurfaceError> {
-        implementation::NativeSurface::new(descriptor).map(|implementation| Self { implementation })
+        implementation::NativeSurface::new(descriptor).map(Self::from_implementation)
+    }
+
+    fn from_implementation(implementation: implementation::NativeSurface) -> Self {
+        Self { implementation }
     }
 
     /// Orders the initialized native window to the front.
@@ -550,9 +554,7 @@ mod tests {
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     #[test]
     fn unsupported_wrapper_methods_preserve_the_safe_contract() {
-        let surface = NativeSurface {
-            implementation: unsupported::NativeSurface,
-        };
+        let surface = NativeSurface::from_implementation(unsupported::NativeSurface);
 
         surface.show();
         assert_eq!(surface.snapshot().physical_width(), 0);
