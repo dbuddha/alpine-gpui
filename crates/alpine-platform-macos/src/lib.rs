@@ -1002,6 +1002,14 @@ fn finish_close_observer_state(lifecycle: &AtomicU8) {
 mod tests {
     use super::*;
 
+    fn terminal_attempt(event: alpine_platform::PresentationEvent) -> Option<AttemptEvidence> {
+        if let alpine_platform::PresentationEvent::Terminal(attempt) = event {
+            Some(attempt)
+        } else {
+            None
+        }
+    }
+
     #[test]
     fn extent_rounds_each_physical_dimension() -> Result<(), SurfaceError> {
         let extent = SurfaceExtent::new(100.25, 50.75, 2.0)?;
@@ -1277,18 +1285,22 @@ mod tests {
         state.apply(alpine_platform::PresentationAction::Invalidate)?;
         state.apply(alpine_platform::PresentationAction::Resume)?;
         let prepared = state.apply(alpine_platform::PresentationAction::Prepare)?;
-        let alpine_platform::PresentationEvent::Prepared(token) = prepared.event() else {
-            return Err("prepared frame token".into());
-        };
+        let token = state.active_token().ok_or("prepared frame token")?;
+        assert_eq!(
+            prepared.event(),
+            alpine_platform::PresentationEvent::Prepared(token)
+        );
         state.apply(alpine_platform::PresentationAction::BeginUpdate(token))?;
         state.apply(alpine_platform::PresentationAction::Submit(token))?;
         state.apply(alpine_platform::PresentationAction::CallPresent(token))?;
         let terminal = state.apply(alpine_platform::PresentationAction::CompletePresentation(
             token,
         ))?;
-        let alpine_platform::PresentationEvent::Terminal(attempt) = terminal.event() else {
-            return Err("terminal attempt evidence".into());
-        };
+        assert_eq!(
+            terminal_attempt(alpine_platform::PresentationEvent::PacingResumed),
+            None
+        );
+        let attempt = terminal_attempt(terminal.event()).ok_or("terminal attempt evidence")?;
         let terminal = FrameTerminalEvidence::new(
             attempt,
             73,
@@ -1297,6 +1309,24 @@ mod tests {
             89,
             Some(RecoveryClassification::RetryFrame),
         );
+
+        state.apply(alpine_platform::PresentationAction::Invalidate)?;
+        state.apply(alpine_platform::PresentationAction::Resume)?;
+        let failed_prepared = state.apply(alpine_platform::PresentationAction::Prepare)?;
+        let failed_token = state.active_token().ok_or("failed frame token")?;
+        assert_eq!(
+            failed_prepared.event(),
+            alpine_platform::PresentationEvent::Prepared(failed_token)
+        );
+        state.apply(alpine_platform::PresentationAction::BeginUpdate(
+            failed_token,
+        ))?;
+        let failed_transition = state.apply(alpine_platform::PresentationAction::FailActive(
+            failed_token,
+        ))?;
+        let failed_attempt =
+            terminal_attempt(failed_transition.event()).ok_or("failed terminal evidence")?;
+        let failed_terminal = FrameTerminalEvidence::new(failed_attempt, 97, 101, 0, 103, None);
         let snapshot = SurfaceSnapshot {
             physical_width: 17,
             physical_height: 19,
@@ -1354,8 +1384,8 @@ mod tests {
             failed_count: 61,
             allocated_bytes: 67,
             current_retained_bytes: 71,
-            last_terminal: None,
-            last_superseded: None,
+            last_terminal: Some(failed_terminal),
+            last_superseded: Some(terminal),
         };
 
         assert_eq!(snapshot.physical_width(), 17);
@@ -1432,8 +1462,12 @@ mod tests {
         assert_eq!(inverse.failed_count(), 61);
         assert_eq!(inverse.allocated_bytes(), 67);
         assert_eq!(inverse.current_retained_bytes(), 71);
-        assert_eq!(inverse.last_terminal(), None);
-        assert_eq!(inverse.last_superseded(), None);
+        assert_eq!(inverse.last_terminal(), Some(failed_terminal));
+        assert_eq!(inverse.last_superseded(), Some(terminal));
+        assert_eq!(failed_terminal.attempt(), 2);
+        assert_eq!(failed_terminal.submission_count(), 0);
+        assert_eq!(failed_terminal.present_call_count(), 0);
+        assert!(!failed_terminal.eligible_at_commit());
         Ok(())
     }
 

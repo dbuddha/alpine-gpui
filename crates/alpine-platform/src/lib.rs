@@ -1176,6 +1176,20 @@ mod tests {
         assert_eq!(state.present_call_count(), 1);
         assert!(!state.is_dirty());
         assert!(state.invariants_hold());
+
+        apply(&mut state, PresentationAction::Invalidate)?;
+        apply(&mut state, PresentationAction::Resume)?;
+        let failed_token = prepare(&mut state)?;
+        apply(&mut state, PresentationAction::BeginUpdate(failed_token))?;
+        let failed = apply(&mut state, PresentationAction::FailActive(failed_token))?;
+        let failed_evidence = state.attempt_evidence();
+        assert_eq!(failed, PresentationEvent::Terminal(failed_evidence));
+        assert_eq!(failed_evidence.attempt(), 2);
+        assert_eq!(failed_evidence.outcome(), PresentationOutcome::Failed);
+        assert_eq!(failed_evidence.submission_count(), 0);
+        assert_eq!(failed_evidence.present_call_count(), 0);
+        assert!(!failed_evidence.eligible_at_commit());
+        assert!(state.invariants_hold());
         Ok(())
     }
 
