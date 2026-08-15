@@ -3,6 +3,7 @@ members = [
   "crates/alpine-core",
   "crates/alpine-metal",
   "crates/alpine-platform",
+  "crates/alpine-platform-macos",
   "crates/alpine-renderer",
   "crates/alpine-scene",
   "tools/alpine-assurance",

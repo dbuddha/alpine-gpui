@@ -35,16 +35,20 @@ if [ -n "$manifest_files" ] && grep -nE 'git[[:space:]]*=[[:space:]]*"https?://'
 fi
 
 unsafe_override_files=$(grep -lE '^unsafe_code[[:space:]]*=[[:space:]]*"allow"' $manifest_files 2>/dev/null | sort || true)
-if [ "$unsafe_override_files" != './crates/alpine-metal/Cargo.toml' ]; then
-    fail 'only alpine-metal may override the workspace unsafe-code denial'
+expected_unsafe_override_files='./crates/alpine-metal/Cargo.toml
+./crates/alpine-platform-macos/Cargo.toml'
+if [ "$unsafe_override_files" != "$expected_unsafe_override_files" ]; then
+    fail 'only audited native Metal and macOS platform crates may override unsafe-code denial'
     printf '%s\n' "$unsafe_override_files" >&2
 fi
 
 unsafe_source_files=$(find crates -type f -name '*.rs' -print0 \
     | xargs -0 grep -lE 'unsafe[[:space:]]+(extern|fn|impl|trait)|unsafe[[:space:]]*\{' 2>/dev/null \
     | sort || true)
-if [ "$unsafe_source_files" != 'crates/alpine-metal/src/native.rs' ]; then
-    fail 'unsafe Rust constructs must remain isolated in alpine-metal native code'
+expected_unsafe_source_files='crates/alpine-metal/src/native.rs
+crates/alpine-platform-macos/src/native.rs'
+if [ "$unsafe_source_files" != "$expected_unsafe_source_files" ]; then
+    fail 'unsafe Rust constructs must remain isolated in audited native boundary files'
     printf '%s\n' "$unsafe_source_files" >&2
 fi
 

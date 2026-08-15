@@ -34,7 +34,7 @@ if matches '^(Cargo\.toml$|Cargo\.lock$|crates/.+\.rs$|crates/.+/Cargo\.toml$|to
     coverage=true
 fi
 
-if matches '^(crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal|alpine-platform)/.+\.rs$|tools/alpine-trace/.+\.rs$)'; then
+if matches '^(crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal|alpine-platform|alpine-platform-macos)/.+\.rs$|tools/alpine-trace/.+\.rs$)'; then
     mutation=true
     kani=true
 fi
@@ -52,7 +52,7 @@ if has_label review:unsafe || matches '^crates/.+/(unsafe|ffi|resource|lifetime)
     miri=true
 fi
 
-if matches '^(crates/alpine-metal/|shaders/|.+\.metal$)'; then
+if matches '^(crates/(alpine-metal|alpine-platform-macos)/|shaders/|.+\.metal$)'; then
     metal=true
 fi
 

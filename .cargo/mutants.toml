@@ -1,10 +1,20 @@
-# Kani proof modules compile only under cfg(kani), and Direct Metal native code
-# does not compile on the Linux mutation host. Their dedicated Kani and native
-# gates provide the executable evidence instead.
-exclude_globs = ["crates/*/src/proofs.rs", "tools/*/src/proofs.rs", "crates/alpine-metal/src/native.rs"]
+# Kani proof modules compile only under cfg(kani), and Apple-native code does
+# not compile on the Linux mutation host. Their dedicated Kani and Apple
+# Silicon mutation gates provide the executable evidence instead.
+exclude_globs = [
+    "crates/*/src/proofs.rs",
+    "tools/*/src/proofs.rs",
+    "crates/alpine-metal/src/native.rs",
+    "crates/alpine-platform-macos/src/native.rs",
+]
 
-# These functions are absent from the Linux dynamic-test build even though
-# cargo-mutants parses them. The native bypass is exercised by the dedicated
-# Apple Silicon mutation gate. The symbolic adapter is exercised by the full
-# Kani inventory and delegates directly to the dynamically tested transition.
-exclude_re = ["initialize_for_native_validation", "record_symbolic"]
+# These functions are absent or intentionally effect-free in the Linux dynamic
+# test build even though cargo-mutants parses them. The native bypass and safe
+# surface wrapper are exercised by the dedicated Apple Silicon mutation gate.
+# The symbolic adapter is exercised by the full Kani inventory and delegates
+# directly to the dynamically tested transition.
+exclude_re = [
+    "initialize_for_native_validation",
+    "record_symbolic",
+    "NativeSurface::show",
+]

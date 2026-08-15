@@ -68,6 +68,12 @@ assert_output "$platform" mutation=true
 assert_output "$platform" kani=true
 assert_output "$platform" metal=false
 
+macos_platform=$(run_fixture crates/alpine-platform-macos/src/native.rs)
+assert_output "$macos_platform" coverage=true
+assert_output "$macos_platform" mutation=true
+assert_output "$macos_platform" kani=true
+assert_output "$macos_platform" metal=true
+
 shader=$(run_fixture shaders/offscreen.metal)
 assert_output "$shader" coverage=false
 assert_output "$shader" mutation=false

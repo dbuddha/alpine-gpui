@@ -5,7 +5,7 @@ designs remain in linked GitHub issues until code makes them current.
 
 ## Implemented system
 
-The workspace currently has five Rust shipping library crates. `alpine-core`,
+The workspace currently has six Rust shipping library crates. `alpine-core`,
 `alpine-scene`, `alpine-renderer`, and `alpine-platform` are fully safe and have
 no external dependencies. `alpine-core` has no workspace dependencies.
 `alpine-scene` depends on `alpine-core`, `alpine-renderer` depends on
@@ -14,6 +14,11 @@ depends on the core, scene, and renderer crates.
 On Apple Silicon macOS only, `alpine-metal` uses narrowly featured, exact-version
 `objc2`, `objc2-foundation`, `objc2-metal`, and `dispatch2` bindings. Other
 targets neither compile nor link those dependencies.
+`alpine-platform-macos` depends on the portable platform crate. On Apple
+Silicon macOS only, it uses narrowly featured, exact-version `objc2`,
+`objc2-app-kit`, `objc2-foundation`, `objc2-metal`, and `objc2-quartz-core`
+bindings. Its safe API remains available on other targets and returns a
+structured unsupported-platform error without linking Apple frameworks.
 The non-shipping `alpine-trace` crate depends only on Alpine workspace crates
 and owns typed, fail-closed conversion from versioned workload values into an
 immutable scene and exact offscreen target. The non-shipping
@@ -36,13 +41,15 @@ flowchart LR
     scene["alpine-scene<br/>SceneRevision, Primitive, SceneBuilder, Scene"]
     renderer["alpine-renderer<br/>Renderer, capabilities, FrameReport"]
     platform["alpine-platform<br/>portable presentation lifecycle"]
+    macos["alpine-platform-macos<br/>safe native surface owner"]
     metal["alpine-metal safe boundary<br/>validation, pixels, FrameReport"]
     native["Private Direct Metal specialization<br/>pipeline, one submission, readback"]
     trace["alpine-trace<br/>non-shipping typed workload decoder"]
     assurance["alpine-assurance<br/>non-shipping evidence and qualification validator"]
 
     core --> scene --> renderer
-    platform -. "drives future native owner" .-> metal
+    platform -. "drives future presentation work" .-> macos
+    macos -. "future shared device and drawable boundary" .-> metal
     core --> metal
     scene --> metal
     renderer --> metal
@@ -79,8 +86,20 @@ visibility and size eligibility, display-link intent, opaque frame tokens,
 phase-to-resource ownership, command and direct-presentation counts, terminal
 classification, and shutdown drain state. Disabled, stale, exhausted, or
 token-mismatched actions restore the exact prior state and return structured
-errors. This portable state is implemented and tested on every host, but no
-native window, layer, display link, or onscreen presentation owner exists yet.
+errors.
+
+`alpine-platform-macos` now owns the first native object graph: the shared
+`NSApplication`, one retained `NSWindow`, one custom `NSView`, one opaque
+`CAMetalLayer`, one system Metal device, one retained display-link delegate,
+and one `CAMetalDisplayLink` registered in the main run loop. Construction is
+admitted only on the process main thread. The layer is framebuffer-only,
+display synchronized, timeout-enabled, bounded to three drawables, and sized
+from a validated logical extent and backing scale. The display link starts and
+remains paused because no drawable encoding boundary exists yet. Teardown first
+revokes callback admission, pauses and invalidates pacing, clears the weak
+delegate, and closes the retained window. Native handles stay private. This
+foundation does not yet connect the portable transition system, encode a
+drawable, directly present, run an application event loop, or qualify color.
 
 `alpine-metal` validates a
 non-empty BGRA8 offscreen descriptor, proves its logical viewport and rounded
@@ -157,15 +176,16 @@ Binding ownership rules:
 
 ## Invalidation to present contract
 
-There is no Alpine runtime, native event loop, or onscreen presentation path
-yet. Portable coalescing and lifecycle transitions plus offscreen submission
-are implemented. The solid nodes below are implemented; dashed messages mark
-future owners or behavior.
+There is no Alpine runtime or onscreen submission path yet. A native window,
+layer, paused display link, portable coalescing and lifecycle transitions, and
+offscreen submission are implemented, but they are not yet connected. The
+solid nodes below are implemented; dashed messages mark future behavior.
 
 ```mermaid
 sequenceDiagram
     participant App as Application state (external)
     participant Scheduler as PresentationState
+    participant Surface as Native macOS surface
     participant Builder as SceneBuilder
     participant Scene
     participant Plan as ValidatedFrame
@@ -174,6 +194,7 @@ sequenceDiagram
 
     App-->>Scheduler: State mutation invalidates visible output
     Scheduler->>Scheduler: Coalesce newest revision and epoch
+    Scheduler-->>Surface: Future resume directive
     Scheduler-->>Builder: Begin requested frame
     Builder->>Scene: finish()
     Scene->>Plan: validate and lower
@@ -183,13 +204,15 @@ sequenceDiagram
     Backend->>Backend: commit once and wait
     Backend-->>Renderer: compact pixels or structured failure
     Renderer-->>App: OffscreenFrame with pixels and FrameReport
-    Backend-->>Scheduler: Future present completion or failure
+    Backend-->>Surface: Future direct presentation and terminal result
+    Surface-->>Scheduler: Future correlated completion or failure
 ```
 
 The portable contract is demand-driven: no dirty eligible surface can prepare
-a frame, and clean idle state requires paused pacing. The future native owner
-must enact its resume, pause, and invalidate directives without introducing a
-continuous redraw loop merely because a window exists.
+a frame, and clean idle state requires paused pacing. The native surface keeps
+its new display link paused until a later slice enacts resume, pause, and
+invalidate directives without introducing a continuous redraw loop merely
+because a window exists.
 
 ## Resource lifetime contract
 
@@ -308,7 +331,9 @@ flowchart TD
     classify --> terminate["Stopped, unsupported, or fatal"]
 ```
 
-Future surface errors must add their own classification without weakening the
+Native surface descriptor, unsupported-platform, main-thread, and device-stage
+errors are structured independently of renderer failures. Later drawable and
+presentation errors must extend that classification without weakening the
 current device-loss generation boundary.
 
 ## Testing and evidence
@@ -365,6 +390,13 @@ acceptance command validates policy and the registry, tests automation and core
 contracts, then runs formatting, Clippy, all-target tests, doctests, and
 rustdoc. mdBook builds the durable engineering guide as a downloadable CI
 artifact.
+The macOS platform crate separately tests all descriptor boundaries and runs a
+harness-free integration executable on the process main thread. That smoke
+test creates the complete native object graph, verifies layer policy and paused
+pacing, then deterministically tears it down. This is native foundation
+evidence only. Partial-initialization injection, callback-to-frame behavior,
+drawable submission, direct presentation, color, leak, and soak evidence remain
+unqualified.
 
 Hosted CI classifies the changed paths and review labels, then runs the required
 evidence fail-closed under one `ci-pass` result. Locked native tests always run
@@ -374,14 +406,16 @@ mutation runs on Linux, while changed Direct Metal native code receives a
 second mutation pass on Apple Silicon macOS with the native tests and Metal
 driver available. The
 non-shipping assurance tool has a separate coverage floor and fixture suite.
-Unsafe and native Metal paths additionally select Miri or Metal API and Shader
-Validation. The selected Metal job installs Xcode's optional Metal toolchain
+Unsafe and native Metal paths additionally select Miri or native macOS and
+Metal validation. The selected native job installs Xcode's optional Metal toolchain
 when necessary, compiles the shader source offline, records toolchain and
-artifact hashes, and tests initialization and readback against that exact
-library. Unsafe Rust is denied workspace-wide and permitted only in
-`alpine-metal`; its initial boundary now extends through checked native resource
-binding, draw, blit, and post-completion shared-buffer access. Every use has a
-local safety argument and native validation coverage. Scheduled suites expand
+artifact hashes, tests initialization and readback against that exact library,
+and mutation-tests changed native platform code. Unsafe Rust is denied
+workspace-wide and permitted only in the private native modules of
+`alpine-metal` and `alpine-platform-macos`. Their boundaries cover checked Metal
+resource binding, draw, blit, post-completion shared-buffer access, Objective-C
+delegate conformance, AppKit construction, and run-loop registration. Every use
+has a local safety argument and native validation coverage. Scheduled suites expand
 proofs, Miri, dependency advisories, mutation, coverage, fuzzing when a target
 exists, and Metal validation.
 
@@ -457,9 +491,10 @@ shipping crate depends on either boundary.
 ## Binding invariants
 
 1. Public behavior is specified independently of upstream implementations.
-2. Safe crates deny unsafe code. The sole override is `alpine-metal`, where
-   native FFI is isolated in one private module behind reviewed safe APIs,
-   local safety arguments, and focused tests.
+2. Safe crates deny unsafe code. The only overrides are `alpine-metal` and
+   `alpine-platform-macos`, where native FFI is isolated in one private module
+   per crate behind reviewed safe APIs, local safety arguments, and focused
+   tests.
 3. Capabilities are queried at runtime and verified by behavior.
 4. Unsupported capability, allocation failure, surface loss, and device loss
    become structured errors rather than panics.
