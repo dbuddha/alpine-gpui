@@ -49,6 +49,41 @@ pub mod native_validation {
         surface.implementation.inject_driver_error(error);
     }
 
+    /// Applies one deterministic native size, scale, display, and visibility event.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same geometry or synchronized-driver errors as a real
+    /// AppKit notification translated through the native owner.
+    pub fn inject_surface_configuration(
+        surface: &NativeSurface,
+        logical_width: f64,
+        logical_height: f64,
+        scale: f64,
+        display_identity: usize,
+        visible: bool,
+    ) -> Result<(), SurfaceError> {
+        surface.implementation.inject_surface_configuration(
+            logical_width,
+            logical_height,
+            scale,
+            display_identity,
+            visible,
+        )
+    }
+
+    /// Resizes the real AppKit content area so its delegate must synchronize it.
+    pub fn resize_content(surface: &NativeSurface, logical_width: f64, logical_height: f64) {
+        surface
+            .implementation
+            .resize_content(logical_width, logical_height);
+    }
+
+    /// Closes the real AppKit window through its delegate lifecycle.
+    pub fn close_window(surface: &NativeSurface) {
+        surface.implementation.close_window();
+    }
+
     /// Injects every initialization-stage failure and verifies complete rollback.
     ///
     /// # Errors
@@ -130,6 +165,98 @@ impl SurfaceExtent {
     pub const fn physical_height(self) -> u32 {
         self.physical_height
     }
+}
+
+/// Validated effective configuration reported by a live native surface.
+///
+/// Unlike [`SurfaceExtent`], a live window may transiently have a zero-sized
+/// drawable while minimized or during native layout. The zero extent is kept
+/// as an explicit ineligible state instead of fabricating a render target.
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SurfaceConfiguration {
+    logical_width: f64,
+    logical_height: f64,
+    scale: f64,
+    physical_width: u32,
+    physical_height: u32,
+    display_identity: usize,
+    visible: bool,
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+impl SurfaceConfiguration {
+    fn from_extent(extent: SurfaceExtent, display_identity: usize, visible: bool) -> Self {
+        Self {
+            logical_width: extent.logical_width(),
+            logical_height: extent.logical_height(),
+            scale: extent.scale(),
+            physical_width: extent.physical_width(),
+            physical_height: extent.physical_height(),
+            display_identity,
+            visible,
+        }
+    }
+
+    fn from_native(
+        logical_width: f64,
+        logical_height: f64,
+        scale: f64,
+        display_identity: usize,
+        visible: bool,
+    ) -> Result<Self, SurfaceError> {
+        validate_nonnegative_finite(logical_width, InvalidDimension::Width)?;
+        validate_nonnegative_finite(logical_height, InvalidDimension::Height)?;
+        validate_positive_finite(scale, InvalidDimension::Scale)?;
+        let logical_width = if logical_width == 0.0 {
+            0.0
+        } else {
+            logical_width
+        };
+        let logical_height = if logical_height == 0.0 {
+            0.0
+        } else {
+            logical_height
+        };
+
+        Ok(Self {
+            logical_width,
+            logical_height,
+            scale,
+            physical_width: runtime_physical_dimension(
+                logical_width,
+                scale,
+                InvalidDimension::Width,
+            )?,
+            physical_height: runtime_physical_dimension(
+                logical_height,
+                scale,
+                InvalidDimension::Height,
+            )?,
+            display_identity,
+            visible,
+        })
+    }
+
+    const fn is_sized(self) -> bool {
+        self.physical_width != 0 && self.physical_height != 0
+    }
+
+    fn geometry_or_display_differs(self, other: Self) -> bool {
+        self.logical_width.to_bits() != other.logical_width.to_bits()
+            || self.logical_height.to_bits() != other.logical_height.to_bits()
+            || self.scale.to_bits() != other.scale.to_bits()
+            || self.display_identity != other.display_identity
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+const fn presentation_visible(
+    window_visible: bool,
+    miniaturized: bool,
+    occlusion_visible: bool,
+) -> bool {
+    window_visible && !miniaturized && occlusion_visible
 }
 
 /// Validated creation parameters for one native surface.
@@ -327,6 +454,9 @@ impl From<TransitionError> for SurfaceError {
 pub struct SurfaceSnapshot {
     physical_width: u32,
     physical_height: u32,
+    surface_epoch: u64,
+    sized: bool,
+    presentation_visible: bool,
     framebuffer_only: bool,
     display_sync_enabled: bool,
     allows_next_drawable_timeout: bool,
@@ -342,6 +472,8 @@ pub struct SurfaceSnapshot {
     last_presented_time_bits: u64,
     skipped_count: u64,
     failed_count: u64,
+    allocated_bytes: u128,
+    current_retained_bytes: usize,
 }
 
 impl SurfaceSnapshot {
@@ -355,6 +487,24 @@ impl SurfaceSnapshot {
     #[must_use]
     pub const fn physical_height(self) -> u32 {
         self.physical_height
+    }
+
+    /// Returns the current native size, scale, and display epoch.
+    #[must_use]
+    pub const fn surface_epoch(self) -> u64 {
+        self.surface_epoch
+    }
+
+    /// Returns whether the current physical drawable extent is nonzero.
+    #[must_use]
+    pub const fn is_sized(self) -> bool {
+        self.sized
+    }
+
+    /// Returns whether presentation is allowed by visibility and occlusion.
+    #[must_use]
+    pub const fn is_presentation_visible(self) -> bool {
+        self.presentation_visible
     }
 
     /// Returns whether textures are restricted to framebuffer use.
@@ -445,6 +595,18 @@ impl SurfaceSnapshot {
     #[must_use]
     pub const fn failed_count(self) -> u64 {
         self.failed_count
+    }
+
+    /// Returns cumulative native frame-resource bytes allocated by the backend.
+    #[must_use]
+    pub const fn allocated_bytes(self) -> u128 {
+        self.allocated_bytes
+    }
+
+    /// Returns native frame-resource bytes still retained after terminal work.
+    #[must_use]
+    pub const fn current_retained_bytes(self) -> usize {
+        self.current_retained_bytes
     }
 }
 
@@ -575,6 +737,18 @@ fn validate_positive_finite(value: f64, dimension: InvalidDimension) -> Result<(
     }
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn validate_nonnegative_finite(
+    value: f64,
+    dimension: InvalidDimension,
+) -> Result<(), SurfaceError> {
+    if value.is_finite() && value >= 0.0 {
+        Ok(())
+    } else {
+        Err(SurfaceError::InvalidDimension { dimension, value })
+    }
+}
+
 fn physical_dimension(
     logical: f64,
     scale: f64,
@@ -582,6 +756,25 @@ fn physical_dimension(
 ) -> Result<u32, SurfaceError> {
     let value = (logical * scale).round();
     if value.is_finite() && value >= 1.0 && value <= f64::from(MAX_DRAWABLE_DIMENSION) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the finite rounded value is checked inside the complete u32 output range"
+        )]
+        Ok(value as u32)
+    } else {
+        Err(SurfaceError::PhysicalDimensionOutOfRange { dimension, value })
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn runtime_physical_dimension(
+    logical: f64,
+    scale: f64,
+    dimension: InvalidDimension,
+) -> Result<u32, SurfaceError> {
+    let value = (logical * scale).round();
+    if value.is_finite() && value >= 0.0 && value <= f64::from(MAX_DRAWABLE_DIMENSION) {
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -622,6 +815,113 @@ mod tests {
         assert_eq!(extent.physical_width(), 201);
         assert_eq!(extent.physical_height(), 102);
         Ok(())
+    }
+
+    #[test]
+    fn live_configuration_preserves_zero_size_and_effective_identity() -> Result<(), SurfaceError> {
+        let extent = SurfaceExtent::new(100.25, 50.75, 2.0)?;
+        let created = SurfaceConfiguration::from_extent(extent, 7, true);
+        let zero_width = SurfaceConfiguration::from_native(0.0, 50.0, 2.0, 7, false)?;
+        let zero_height = SurfaceConfiguration::from_native(50.0, -0.0, 2.0, 7, false)?;
+        let rounded_zero = SurfaceConfiguration::from_native(0.1, 50.0, 1.0, 7, false)?;
+        let sized = SurfaceConfiguration::from_native(100.25, 50.75, 2.0, 7, true)?;
+
+        assert_eq!(created, sized);
+        assert!(!zero_width.is_sized());
+        assert!(!zero_height.is_sized());
+        assert_eq!(zero_height.logical_height.to_bits(), 0.0_f64.to_bits());
+        assert!(!rounded_zero.is_sized());
+        assert_eq!(sized.physical_width, 201);
+        assert_eq!(sized.physical_height, 102);
+        assert!(sized.is_sized());
+        assert!(sized.visible);
+        Ok(())
+    }
+
+    #[test]
+    fn live_configuration_changes_only_for_geometry_scale_or_display() -> Result<(), SurfaceError> {
+        let base = SurfaceConfiguration::from_native(100.0, 50.0, 2.0, 7, true)?;
+        let hidden = SurfaceConfiguration::from_native(100.0, 50.0, 2.0, 7, false)?;
+        let resized = SurfaceConfiguration::from_native(101.0, 50.0, 2.0, 7, true)?;
+        let logical_width_only = SurfaceConfiguration::from_native(100.1, 50.0, 1.0, 7, true)?;
+        let logical_width_only_changed =
+            SurfaceConfiguration::from_native(100.2, 50.0, 1.0, 7, true)?;
+        let logical_height_only = SurfaceConfiguration::from_native(100.0, 50.1, 1.0, 7, true)?;
+        let logical_height_only_changed =
+            SurfaceConfiguration::from_native(100.0, 50.2, 1.0, 7, true)?;
+        let scale_only = SurfaceConfiguration::from_native(0.6, 0.6, 1.0, 7, true)?;
+        let scale_only_changed = SurfaceConfiguration::from_native(0.6, 0.6, 1.1, 7, true)?;
+        let rescaled = SurfaceConfiguration::from_native(100.0, 50.0, 1.0, 7, true)?;
+        let migrated = SurfaceConfiguration::from_native(100.0, 50.0, 2.0, 11, true)?;
+
+        assert!(!base.geometry_or_display_differs(base));
+        assert!(!base.geometry_or_display_differs(hidden));
+        assert!(base.geometry_or_display_differs(resized));
+        assert!(logical_width_only.geometry_or_display_differs(logical_width_only_changed));
+        assert!(logical_height_only.geometry_or_display_differs(logical_height_only_changed));
+        assert!(scale_only.geometry_or_display_differs(scale_only_changed));
+        assert!(base.geometry_or_display_differs(rescaled));
+        assert!(base.geometry_or_display_differs(migrated));
+        Ok(())
+    }
+
+    #[test]
+    fn live_configuration_rejects_invalid_native_geometry() {
+        for (width, height, scale, dimension) in [
+            (-1.0, 1.0, 1.0, InvalidDimension::Width),
+            (f64::NAN, 1.0, 1.0, InvalidDimension::Width),
+            (1.0, -1.0, 1.0, InvalidDimension::Height),
+            (1.0, f64::INFINITY, 1.0, InvalidDimension::Height),
+            (1.0, 1.0, 0.0, InvalidDimension::Scale),
+        ] {
+            assert!(matches!(
+                SurfaceConfiguration::from_native(width, height, scale, 0, true),
+                Err(SurfaceError::InvalidDimension {
+                    dimension: observed,
+                    ..
+                }) if observed == dimension
+            ));
+        }
+        assert!(matches!(
+            SurfaceConfiguration::from_native(
+                f64::from(MAX_DRAWABLE_DIMENSION) + 1.0,
+                1.0,
+                1.0,
+                0,
+                true,
+            ),
+            Err(SurfaceError::PhysicalDimensionOutOfRange {
+                dimension: InvalidDimension::Width,
+                ..
+            })
+        ));
+        assert!(matches!(
+            SurfaceConfiguration::from_native(
+                1.0,
+                f64::from(MAX_DRAWABLE_DIMENSION) + 1.0,
+                1.0,
+                0,
+                true,
+            ),
+            Err(SurfaceError::PhysicalDimensionOutOfRange {
+                dimension: InvalidDimension::Height,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn presentation_visibility_requires_every_native_condition() {
+        for window_visible in [false, true] {
+            for miniaturized in [false, true] {
+                for occlusion_visible in [false, true] {
+                    assert_eq!(
+                        presentation_visible(window_visible, miniaturized, occlusion_visible),
+                        window_visible && !miniaturized && occlusion_visible
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -766,6 +1066,9 @@ mod tests {
         let snapshot = SurfaceSnapshot {
             physical_width: 17,
             physical_height: 19,
+            surface_epoch: 21,
+            sized: true,
+            presentation_visible: true,
             framebuffer_only: false,
             display_sync_enabled: false,
             allows_next_drawable_timeout: true,
@@ -781,10 +1084,15 @@ mod tests {
             last_presented_time_bits: 39,
             skipped_count: 41,
             failed_count: 43,
+            allocated_bytes: 47,
+            current_retained_bytes: 53,
         };
         let inverse = SurfaceSnapshot {
             physical_width: 29,
             physical_height: 31,
+            surface_epoch: 33,
+            sized: false,
+            presentation_visible: false,
             framebuffer_only: true,
             display_sync_enabled: true,
             allows_next_drawable_timeout: false,
@@ -800,10 +1108,15 @@ mod tests {
             last_presented_time_bits: 57,
             skipped_count: 59,
             failed_count: 61,
+            allocated_bytes: 67,
+            current_retained_bytes: 71,
         };
 
         assert_eq!(snapshot.physical_width(), 17);
         assert_eq!(snapshot.physical_height(), 19);
+        assert_eq!(snapshot.surface_epoch(), 21);
+        assert!(snapshot.is_sized());
+        assert!(snapshot.is_presentation_visible());
         assert!(!snapshot.framebuffer_only());
         assert!(!snapshot.display_sync_enabled());
         assert!(snapshot.allows_next_drawable_timeout());
@@ -819,9 +1132,14 @@ mod tests {
         assert_eq!(snapshot.last_presented_time_bits(), 39);
         assert_eq!(snapshot.skipped_count(), 41);
         assert_eq!(snapshot.failed_count(), 43);
+        assert_eq!(snapshot.allocated_bytes(), 47);
+        assert_eq!(snapshot.current_retained_bytes(), 53);
 
         assert_eq!(inverse.physical_width(), 29);
         assert_eq!(inverse.physical_height(), 31);
+        assert_eq!(inverse.surface_epoch(), 33);
+        assert!(!inverse.is_sized());
+        assert!(!inverse.is_presentation_visible());
         assert!(inverse.framebuffer_only());
         assert!(inverse.display_sync_enabled());
         assert!(!inverse.allows_next_drawable_timeout());
@@ -837,6 +1155,8 @@ mod tests {
         assert_eq!(inverse.last_presented_time_bits(), 57);
         assert_eq!(inverse.skipped_count(), 59);
         assert_eq!(inverse.failed_count(), 61);
+        assert_eq!(inverse.allocated_bytes(), 67);
+        assert_eq!(inverse.current_retained_bytes(), 71);
     }
 
     #[test]

@@ -49,6 +49,9 @@ impl NativeSurface {
         SurfaceSnapshot {
             physical_width: 0,
             physical_height: 0,
+            surface_epoch: 0,
+            sized: false,
+            presentation_visible: false,
             framebuffer_only: false,
             display_sync_enabled: false,
             allows_next_drawable_timeout: false,
@@ -64,6 +67,8 @@ impl NativeSurface {
             last_presented_time_bits: 0,
             skipped_count: 0,
             failed_count: 0,
+            allocated_bytes: 0,
+            current_retained_bytes: 0,
         }
     }
 
@@ -102,6 +107,9 @@ mod tests {
             SurfaceSnapshot {
                 physical_width: 0,
                 physical_height: 0,
+                surface_epoch: 0,
+                sized: false,
+                presentation_visible: false,
                 framebuffer_only: false,
                 display_sync_enabled: false,
                 allows_next_drawable_timeout: false,
@@ -117,6 +125,8 @@ mod tests {
                 last_presented_time_bits: 0,
                 skipped_count: 0,
                 failed_count: 0,
+                allocated_bytes: 0,
+                current_retained_bytes: 0,
             }
         );
         assert_eq!(

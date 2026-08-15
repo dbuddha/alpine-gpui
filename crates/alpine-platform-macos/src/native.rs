@@ -15,14 +15,15 @@ use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, rc:
 use objc2::{MainThreadMarker, runtime::ProtocolObject};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSView, NSWindow,
-    NSWindowStyleMask,
+    NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
 };
 #[cfg(alpine_native_validation)]
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
 #[cfg(alpine_native_validation)]
 use objc2_foundation::{NSDate, NSTimer};
 use objc2_foundation::{
-    NSObject, NSObjectProtocol, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
+    NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes,
+    NSSize, NSString,
 };
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLPixelFormat};
 use objc2_quartz_core::{
@@ -33,14 +34,16 @@ use objc2_quartz_core::{
 use alpine_core::LinearRgba;
 use alpine_metal::{MetalBackend, OffscreenDescriptor, platform_spi};
 use alpine_platform::{
-    DisplayLinkDirective, FrameToken, PresentationAction, PresentationEvent, PresentationState,
+    DisplayLinkDirective, DisplayLinkState, FrameToken, PresentationAction, PresentationEvent,
+    PresentationState,
 };
 use alpine_scene::Scene;
 use block2::RcBlock;
 
 use crate::{
-    SURFACE_LIVE, SurfaceDescriptor, SurfaceError, SurfaceObserver, SurfaceSnapshot, SurfaceStage,
-    begin_close_observer_state, finish_close_observer_state, new_observer_state,
+    SURFACE_CLOSING, SURFACE_LIVE, SurfaceConfiguration, SurfaceDescriptor, SurfaceError,
+    SurfaceObserver, SurfaceSnapshot, SurfaceStage, begin_close_observer_state,
+    finish_close_observer_state, new_observer_state, presentation_visible,
 };
 
 type Device = Retained<ProtocolObject<dyn MTLDevice>>;
@@ -287,7 +290,7 @@ struct FrameCounters {
 
 struct PendingFrame {
     scene: Scene,
-    descriptor: OffscreenDescriptor,
+    clear: LinearRgba,
 }
 
 struct ActiveFrame {
@@ -310,6 +313,7 @@ struct PresentationSignal {
 
 struct PresentationDriver {
     state: PresentationState,
+    configuration: SurfaceConfiguration,
     pending: Option<PendingFrame>,
     active: Option<ActiveFrame>,
     backend: MetalBackend,
@@ -318,11 +322,15 @@ struct PresentationDriver {
 }
 
 impl PresentationDriver {
-    fn new(backend: MetalBackend) -> Result<Self, SurfaceError> {
+    fn new(
+        backend: MetalBackend,
+        configuration: SurfaceConfiguration,
+    ) -> Result<Self, SurfaceError> {
         let mut state = PresentationState::new();
-        state.apply(PresentationAction::SetSized(true))?;
+        state.apply(PresentationAction::SetSized(configuration.is_sized()))?;
         Ok(Self {
             state,
+            configuration,
             pending: None,
             active: None,
             backend,
@@ -331,33 +339,66 @@ impl PresentationDriver {
         })
     }
 
-    fn set_visible(&mut self, visible: bool) -> Result<DisplayLinkDirective, SurfaceError> {
-        let transition = self.state.apply(PresentationAction::SetVisible(visible))?;
-        self.enact_resume(transition.display_link())
+    fn apply_configuration(
+        &mut self,
+        configuration: SurfaceConfiguration,
+    ) -> Result<DisplayLinkDirective, SurfaceError> {
+        let prior_link = self.state.display_link();
+        if self
+            .configuration
+            .geometry_or_display_differs(configuration)
+        {
+            self.state.apply(PresentationAction::AdvanceSurfaceEpoch)?;
+        }
+        self.state
+            .apply(PresentationAction::SetSized(configuration.is_sized()))?;
+        self.state
+            .apply(PresentationAction::SetVisible(configuration.visible))?;
+        self.configuration = configuration;
+        self.reconcile_link(prior_link)
+    }
+
+    fn reject_configuration(
+        &mut self,
+        error: SurfaceError,
+    ) -> Result<DisplayLinkDirective, SurfaceError> {
+        let prior_link = self.state.display_link();
+        self.last_error = Some(error);
+        self.state.apply(PresentationAction::SetSized(false))?;
+        self.state.apply(PresentationAction::SetVisible(false))?;
+        self.reconcile_link(prior_link)
     }
 
     fn request_frame(
         &mut self,
         scene: Scene,
-        descriptor: OffscreenDescriptor,
+        clear: LinearRgba,
     ) -> Result<(alpine_platform::PresentationRevision, DisplayLinkDirective), SurfaceError> {
+        let prior_link = self.state.display_link();
         let transition = self.state.apply(PresentationAction::Invalidate)?;
         let PresentationEvent::Invalidated(revision) = transition.event() else {
             return Err(SurfaceError::DriverUnavailable);
         };
-        self.pending = Some(PendingFrame { scene, descriptor });
-        let directive = self.enact_resume(transition.display_link())?;
+        self.pending = Some(PendingFrame { scene, clear });
+        let directive = self.reconcile_link(prior_link)?;
         Ok((revision, directive))
     }
 
-    fn enact_resume(
+    fn reconcile_link(
         &mut self,
-        directive: DisplayLinkDirective,
+        prior_link: DisplayLinkState,
     ) -> Result<DisplayLinkDirective, SurfaceError> {
-        if directive == DisplayLinkDirective::Resume {
-            Ok(self.state.apply(PresentationAction::Resume)?.display_link())
-        } else {
-            Ok(directive)
+        if self.state.needs_resume() {
+            self.state.apply(PresentationAction::Resume)?;
+        }
+        match (prior_link, self.state.display_link()) {
+            (DisplayLinkState::Paused, DisplayLinkState::Running) => {
+                Ok(DisplayLinkDirective::Resume)
+            }
+            (DisplayLinkState::Running, DisplayLinkState::Paused) => {
+                Ok(DisplayLinkDirective::Pause)
+            }
+            _ => Ok(DisplayLinkDirective::None),
         }
     }
 
@@ -452,6 +493,18 @@ impl PresentationDriver {
         };
         self.state.apply(PresentationAction::BeginUpdate(token))?;
 
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "validated finite scale is narrowed to the renderer's f32 coordinate contract"
+        )]
+        let descriptor = OffscreenDescriptor::new(
+            self.configuration.physical_width,
+            self.configuration.physical_height,
+            self.configuration.scale as f32,
+            frame.clear,
+        )
+        .map_err(alpine_metal::RenderError::from)?;
+
         let drawable = update.drawable();
         let texture = drawable.texture();
         let drawable_protocol = ProtocolObject::from_ref(&*drawable);
@@ -460,7 +513,7 @@ impl PresentationDriver {
         let attempt = platform_spi::render_callback_drawable(
             &mut self.backend,
             &frame.scene,
-            frame.descriptor,
+            descriptor,
             &texture,
             drawable_protocol,
         );
@@ -546,16 +599,22 @@ struct DisplayLinkDelegateIvars {
     callback_count: Arc<AtomicU64>,
     counters: Arc<FrameCounters>,
     driver: Option<Rc<RefCell<PresentationDriver>>>,
+    window: Option<Retained<NSWindow>>,
+    view: Option<Retained<NSView>>,
+    layer: Option<Retained<CAMetalLayer>>,
+    display_link: Option<Retained<CAMetalDisplayLink>>,
+    #[cfg(alpine_native_validation)]
+    validation_probe: Option<InitializationProbe>,
 }
 
 define_class!(
     // SAFETY:
     // - NSObject has no subclassing requirements.
     // - DisplayLinkDelegate has no custom Drop implementation.
-    // - Its cross-thread signal ivars use atomics, mutable driver ownership is
-    //   main-thread-only, and the callback refuses frame work
-    //   unless it arrives on the main run loop where the link was registered.
+    // - The object is main-thread-only, matching both the AppKit delegate and
+    //   the main-run-loop registration of its display-link callback.
     #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
     #[ivars = DisplayLinkDelegateIvars]
     struct DisplayLinkDelegate;
 
@@ -595,25 +654,165 @@ define_class!(
             }
         }
     }
+
+    // SAFETY: Each implemented selector exactly matches NSWindowDelegate.
+    // AppKit invokes these callbacks on the main thread and no notification
+    // object or native reference escapes the callback.
+    unsafe impl NSWindowDelegate for DisplayLinkDelegate {
+        #[unsafe(method(windowDidResize:))]
+        fn window_did_resize(&self, _notification: &NSNotification) {
+            let _ = self.synchronize_native_configuration();
+        }
+
+        #[unsafe(method(windowDidChangeScreen:))]
+        fn window_did_change_screen(&self, _notification: &NSNotification) {
+            let _ = self.synchronize_native_configuration();
+        }
+
+        #[unsafe(method(windowDidChangeBackingProperties:))]
+        fn window_did_change_backing_properties(&self, _notification: &NSNotification) {
+            let _ = self.synchronize_native_configuration();
+        }
+
+        #[unsafe(method(windowDidChangeOcclusionState:))]
+        fn window_did_change_occlusion_state(&self, _notification: &NSNotification) {
+            let _ = self.synchronize_native_configuration();
+        }
+
+        #[unsafe(method(windowDidMiniaturize:))]
+        fn window_did_miniaturize(&self, _notification: &NSNotification) {
+            let _ = self.synchronize_native_configuration();
+        }
+
+        #[unsafe(method(windowDidDeminiaturize:))]
+        fn window_did_deminiaturize(&self, _notification: &NSNotification) {
+            let _ = self.synchronize_native_configuration();
+        }
+
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _notification: &NSNotification) {
+            self.begin_native_close();
+        }
+    }
 );
 
 impl DisplayLinkDelegate {
-    fn new(
-        lifecycle: Arc<AtomicU8>,
-        callback_count: Arc<AtomicU64>,
-        counters: Arc<FrameCounters>,
-        driver: Option<Rc<RefCell<PresentationDriver>>>,
-    ) -> Retained<Self> {
-        let allocated = Self::alloc().set_ivars(DisplayLinkDelegateIvars {
-            lifecycle,
-            callback_count,
-            counters,
-            driver,
-        });
+    fn new(main_thread: MainThreadMarker, ivars: DisplayLinkDelegateIvars) -> Retained<Self> {
+        let allocated = Self::alloc(main_thread).set_ivars(ivars);
         // SAFETY: The message is NSObject's parameterless init initializer and
         // the allocated object already contains fully initialized Rust ivars.
         unsafe { msg_send![super(allocated), init] }
     }
+
+    fn synchronize_native_configuration(&self) -> Result<(), SurfaceError> {
+        let result = self.try_synchronize_native_configuration();
+        if let Err(error) = &result {
+            let directive = self
+                .ivars()
+                .driver
+                .as_ref()
+                .and_then(|driver| driver.try_borrow_mut().ok())
+                .map_or(DisplayLinkDirective::Pause, |mut driver| {
+                    driver
+                        .reject_configuration(error.clone())
+                        .unwrap_or(DisplayLinkDirective::Pause)
+                });
+            if let Some(display_link) = &self.ivars().display_link {
+                apply_display_link_directive(display_link, directive);
+            }
+        }
+        result
+    }
+
+    fn try_synchronize_native_configuration(&self) -> Result<(), SurfaceError> {
+        if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+            return Err(SurfaceError::DriverUnavailable);
+        }
+        let (Some(window), Some(view), Some(layer), Some(display_link), Some(driver)) = (
+            &self.ivars().window,
+            &self.ivars().view,
+            &self.ivars().layer,
+            &self.ivars().display_link,
+            &self.ivars().driver,
+        ) else {
+            return Err(SurfaceError::DriverUnavailable);
+        };
+        let configuration = native_configuration(window, view)?;
+        apply_layer_configuration(layer, view, configuration);
+        let directive = driver
+            .try_borrow_mut()
+            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .apply_configuration(configuration)?;
+        apply_display_link_directive(display_link, directive);
+        Ok(())
+    }
+
+    fn begin_native_close(&self) {
+        if self
+            .ivars()
+            .lifecycle
+            .compare_exchange(
+                SURFACE_LIVE,
+                SURFACE_CLOSING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return;
+        }
+        #[cfg(alpine_native_validation)]
+        if let Some(probe) = &self.ivars().validation_probe {
+            probe.record_window_close();
+        }
+        if let Some(driver) = &self.ivars().driver
+            && let Ok(mut driver) = driver.try_borrow_mut()
+        {
+            driver.shutdown();
+        }
+        if let Some(display_link) = &self.ivars().display_link {
+            display_link.setPaused(true);
+            display_link.invalidate();
+            display_link.setDelegate(None);
+        }
+    }
+}
+
+fn native_configuration(
+    window: &NSWindow,
+    view: &NSView,
+) -> Result<SurfaceConfiguration, SurfaceError> {
+    let bounds = view.bounds();
+    let display_identity = window
+        .screen()
+        .map_or(0, |screen| Retained::as_ptr(&screen) as usize);
+    let visible = presentation_visible(
+        window.isVisible(),
+        window.isMiniaturized(),
+        window
+            .occlusionState()
+            .contains(NSWindowOcclusionState::Visible),
+    );
+    SurfaceConfiguration::from_native(
+        bounds.size.width,
+        bounds.size.height,
+        window.backingScaleFactor(),
+        display_identity,
+        visible,
+    )
+}
+
+fn apply_layer_configuration(
+    layer: &CAMetalLayer,
+    view: &NSView,
+    configuration: SurfaceConfiguration,
+) {
+    layer.setFrame(view.bounds());
+    layer.setContentsScale(configuration.scale);
+    layer.setDrawableSize(NSSize::new(
+        f64::from(configuration.physical_width),
+        f64::from(configuration.physical_height),
+    ));
 }
 
 fn apply_display_link_directive(link: &CAMetalDisplayLink, directive: DisplayLinkDirective) {
@@ -626,7 +825,6 @@ fn apply_display_link_directive(link: &CAMetalDisplayLink, directive: DisplayLin
 }
 
 pub(crate) struct NativeSurface {
-    extent: crate::SurfaceExtent,
     callback_count: Arc<AtomicU64>,
     counters: Arc<FrameCounters>,
     driver: Rc<RefCell<PresentationDriver>>,
@@ -634,7 +832,7 @@ pub(crate) struct NativeSurface {
     display_link: Retained<CAMetalDisplayLink>,
     #[allow(
         dead_code,
-        reason = "CAMetalDisplayLink retains its delegate weakly, so Alpine must retain it"
+        reason = "AppKit and CAMetalDisplayLink retain delegates weakly, so Alpine must retain it"
     )]
     delegate: Retained<DisplayLinkDelegate>,
     layer: Retained<CAMetalLayer>,
@@ -695,7 +893,6 @@ impl NativeSurface {
         let extent = descriptor.extent();
         let (lifecycle, callback_count) = control.observer_state();
         let mut builder = NativeSurfaceBuilder::new(
-            extent,
             lifecycle,
             callback_count,
             #[cfg(alpine_native_validation)]
@@ -773,39 +970,68 @@ impl NativeSurface {
         view.setLayer(Some(&layer));
         let window = builder
             .window
-            .as_ref()
+            .clone()
             .ok_or_else(|| native_unavailable(SurfaceStage::Window))?;
         window.setContentView(Some(view));
         builder.layer = Some(layer);
         builder.track(NativeOwnerKind::Layer);
         control.checkpoint(SurfaceStage::Layer)?;
 
-        let backend = take_owner(&mut builder.backend, SurfaceStage::Renderer)?;
-        let driver = Rc::new(RefCell::new(PresentationDriver::new(backend)?));
-        builder.driver = Some(Rc::clone(&driver));
-        let delegate = DisplayLinkDelegate::new(
-            Arc::clone(&builder.lifecycle),
-            Arc::clone(&builder.callback_count),
-            Arc::clone(&builder.counters),
-            Some(driver),
-        );
-        builder.delegate = Some(delegate);
-        builder.track(NativeOwnerKind::Delegate);
         let layer = builder
             .layer
             .as_ref()
             .ok_or_else(|| native_unavailable(SurfaceStage::Layer))?;
         let display_link =
             CAMetalDisplayLink::initWithMetalLayer(CAMetalDisplayLink::alloc(), layer);
-        let delegate = builder
-            .delegate
-            .as_ref()
-            .ok_or_else(|| native_unavailable(SurfaceStage::DisplayLink))?;
-        display_link.setDelegate(Some(ProtocolObject::from_ref(&**delegate)));
         display_link.setPreferredFrameLatency(2.0);
         display_link.setPaused(true);
         builder.display_link = Some(display_link);
         builder.track(NativeOwnerKind::DisplayLink);
+
+        let window = builder
+            .window
+            .clone()
+            .ok_or_else(|| native_unavailable(SurfaceStage::Window))?;
+        let initial_configuration = SurfaceConfiguration::from_extent(
+            extent,
+            window
+                .screen()
+                .map_or(0, |screen| Retained::as_ptr(&screen) as usize),
+            false,
+        );
+        let backend = take_owner(&mut builder.backend, SurfaceStage::Renderer)?;
+        let driver = Rc::new(RefCell::new(PresentationDriver::new(
+            backend,
+            initial_configuration,
+        )?));
+        builder.driver = Some(Rc::clone(&driver));
+        let delegate = DisplayLinkDelegate::new(
+            main_thread,
+            DisplayLinkDelegateIvars {
+                lifecycle: Arc::clone(&builder.lifecycle),
+                callback_count: Arc::clone(&builder.callback_count),
+                counters: Arc::clone(&builder.counters),
+                driver: Some(driver),
+                window: builder.window.clone(),
+                view: builder.view.clone(),
+                layer: builder.layer.clone(),
+                display_link: builder.display_link.clone(),
+                #[cfg(alpine_native_validation)]
+                validation_probe: builder.validation_probe.clone(),
+            },
+        );
+        builder.delegate = Some(delegate);
+        builder.track(NativeOwnerKind::Delegate);
+        let delegate = builder
+            .delegate
+            .as_ref()
+            .ok_or_else(|| native_unavailable(SurfaceStage::DisplayLink))?;
+        let display_link = builder
+            .display_link
+            .as_ref()
+            .ok_or_else(|| native_unavailable(SurfaceStage::DisplayLink))?;
+        display_link.setDelegate(Some(ProtocolObject::from_ref(&**delegate)));
+        window.setDelegate(Some(ProtocolObject::from_ref(&**delegate)));
         control.checkpoint(SurfaceStage::DisplayLink)?;
 
         let run_loop = NSRunLoop::mainRunLoop();
@@ -836,36 +1062,19 @@ impl NativeSurface {
             reason = "the initial standalone surface must activate an unbundled Rust executable"
         )]
         self.application.activateIgnoringOtherApps(true);
-        let directive = self
-            .driver
-            .try_borrow_mut()
-            .map_err(|_| SurfaceError::DriverUnavailable)?
-            .set_visible(true)?;
-        apply_display_link_directive(&self.display_link, directive);
-        Ok(())
+        self.delegate.synchronize_native_configuration()
     }
 
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "validated finite scale is narrowed to the renderer's f32 coordinate contract"
-    )]
     pub(crate) fn request_frame(
         &self,
         scene: Scene,
         clear: LinearRgba,
     ) -> Result<alpine_platform::PresentationRevision, SurfaceError> {
-        let descriptor = OffscreenDescriptor::new(
-            self.extent.physical_width(),
-            self.extent.physical_height(),
-            self.extent.scale() as f32,
-            clear,
-        )
-        .map_err(alpine_metal::RenderError::from)?;
         let (revision, directive) = self
             .driver
             .try_borrow_mut()
             .map_err(|_| SurfaceError::DriverUnavailable)?
-            .request_frame(scene, descriptor)?;
+            .request_frame(scene, clear)?;
         apply_display_link_directive(&self.display_link, directive);
         Ok(revision)
     }
@@ -910,9 +1119,36 @@ impl NativeSurface {
     }
 
     pub(crate) fn snapshot(&self) -> SurfaceSnapshot {
+        let driver = self.driver.try_borrow();
+        let (surface_epoch, sized, presentation_visible) =
+            driver.as_ref().map_or((0, false, false), |driver| {
+                (
+                    driver.state.surface_epoch().get(),
+                    driver.state.is_sized(),
+                    driver.state.is_visible(),
+                )
+            });
+        let drawable_size = self.layer.drawableSize();
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "Alpine installs validated integral u32 drawable dimensions on its private layer"
+        )]
+        let (physical_width, physical_height) =
+            (drawable_size.width as u32, drawable_size.height as u32);
+        let (allocated_bytes, current_retained_bytes) = driver.as_ref().map_or((0, 0), |driver| {
+            let accounting = driver.backend.accounting();
+            (
+                accounting.allocated_bytes(),
+                accounting.current_retained_bytes(),
+            )
+        });
         SurfaceSnapshot {
-            physical_width: self.extent.physical_width(),
-            physical_height: self.extent.physical_height(),
+            physical_width,
+            physical_height,
+            surface_epoch,
+            sized,
+            presentation_visible,
             framebuffer_only: self.layer.framebufferOnly(),
             display_sync_enabled: self.layer.displaySyncEnabled(),
             allows_next_drawable_timeout: self.layer.allowsNextDrawableTimeout(),
@@ -935,6 +1171,8 @@ impl NativeSurface {
                 .load(Ordering::Acquire),
             skipped_count: self.counters.skipped.load(Ordering::Acquire),
             failed_count: self.counters.failed.load(Ordering::Acquire),
+            allocated_bytes,
+            current_retained_bytes,
         }
     }
 
@@ -951,6 +1189,54 @@ impl NativeSurface {
         if let Ok(mut driver) = self.driver.try_borrow_mut() {
             driver.inject_error(error);
         }
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn inject_surface_configuration(
+        &self,
+        logical_width: f64,
+        logical_height: f64,
+        scale: f64,
+        display_identity: usize,
+        visible: bool,
+    ) -> Result<(), SurfaceError> {
+        let configuration = match SurfaceConfiguration::from_native(
+            logical_width,
+            logical_height,
+            scale,
+            display_identity,
+            visible,
+        ) {
+            Ok(configuration) => configuration,
+            Err(error) => {
+                let directive = self
+                    .driver
+                    .try_borrow_mut()
+                    .map_err(|_| SurfaceError::DriverUnavailable)?
+                    .reject_configuration(error.clone())?;
+                apply_display_link_directive(&self.display_link, directive);
+                return Err(error);
+            }
+        };
+        apply_layer_configuration(&self.layer, &self.view, configuration);
+        let directive = self
+            .driver
+            .try_borrow_mut()
+            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .apply_configuration(configuration)?;
+        apply_display_link_directive(&self.display_link, directive);
+        Ok(())
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn resize_content(&self, logical_width: f64, logical_height: f64) {
+        self.window
+            .setContentSize(NSSize::new(logical_width, logical_height));
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn close_window(&self) {
+        self.window.close();
     }
 
     pub(crate) fn observer(&self) -> SurfaceObserver {
@@ -987,12 +1273,18 @@ fn require_device(device: Option<Device>) -> Result<Device, SurfaceError> {
 
 impl Drop for NativeSurface {
     fn drop(&mut self) {
-        begin_close_observer_state(&self.lifecycle);
+        let native_close_started = self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE;
+        if !native_close_started {
+            begin_close_observer_state(&self.lifecycle);
+            self.display_link.setPaused(true);
+            self.display_link.invalidate();
+        }
+        // A reentrant windowWillClose callback may be unable to borrow the
+        // driver while it still revokes callback admission. Owner teardown is
+        // therefore the final idempotent shutdown boundary in both paths.
         if let Ok(mut driver) = self.driver.try_borrow_mut() {
             driver.shutdown();
         }
-        self.display_link.setPaused(true);
-        self.display_link.invalidate();
         #[cfg(alpine_native_validation)]
         if let Some(probe) = &self.validation_probe {
             probe.record_link_invalidation();
@@ -1002,11 +1294,14 @@ impl Drop for NativeSurface {
         if let Some(probe) = &self.validation_probe {
             probe.record_delegate_revocation();
         }
-        self.window.orderOut(None);
-        self.window.close();
-        #[cfg(alpine_native_validation)]
-        if let Some(probe) = &self.validation_probe {
-            probe.record_window_close();
+        self.window.setDelegate(None);
+        if !native_close_started {
+            self.window.orderOut(None);
+            self.window.close();
+            #[cfg(alpine_native_validation)]
+            if let Some(probe) = &self.validation_probe {
+                probe.record_window_close();
+            }
         }
         finish_close_observer_state(&self.lifecycle);
     }
@@ -1017,7 +1312,6 @@ fn native_unavailable(stage: SurfaceStage) -> SurfaceError {
 }
 
 struct NativeSurfaceBuilder {
-    extent: crate::SurfaceExtent,
     callback_count: Arc<AtomicU64>,
     counters: Arc<FrameCounters>,
     backend: Option<MetalBackend>,
@@ -1039,13 +1333,11 @@ struct NativeSurfaceBuilder {
 
 impl NativeSurfaceBuilder {
     fn new(
-        extent: crate::SurfaceExtent,
         lifecycle: Arc<AtomicU8>,
         callback_count: Arc<AtomicU64>,
         #[cfg(alpine_native_validation)] validation_probe: Option<InitializationProbe>,
     ) -> Self {
         Self {
-            extent,
             callback_count,
             counters: Arc::new(FrameCounters::default()),
             backend: None,
@@ -1092,7 +1384,6 @@ impl NativeSurfaceBuilder {
 
     fn finish(mut self) -> Result<NativeSurface, SurfaceError> {
         let surface = NativeSurface {
-            extent: self.extent,
             callback_count: Arc::clone(&self.callback_count),
             counters: Arc::clone(&self.counters),
             driver: take_owner(&mut self.driver, SurfaceStage::Renderer)?,
@@ -1136,6 +1427,7 @@ impl Drop for NativeSurfaceBuilder {
             }
         }
         if let Some(window) = &self.window {
+            window.setDelegate(None);
             window.orderOut(None);
             window.close();
             #[cfg(alpine_native_validation)]
@@ -1274,32 +1566,6 @@ mod tests {
     }
 
     #[test]
-    fn delegate_counts_callbacks_only_for_a_live_generation() {
-        let (lifecycle, callback_count) = new_observer_state();
-        let delegate = DisplayLinkDelegate::new(
-            Arc::clone(&lifecycle),
-            Arc::clone(&callback_count),
-            Arc::new(FrameCounters::default()),
-            None,
-        );
-        let link = CAMetalDisplayLink::new();
-        let update = CAMetalDisplayLinkUpdate::new();
-
-        // SAFETY: The receiver implements the registered protocol selector,
-        // and both concrete arguments remain retained for the complete call.
-        let _: () =
-            unsafe { msg_send![&*delegate, metalDisplayLink: &*link, needsUpdate: &*update] };
-        assert_eq!(callback_count.load(Ordering::Acquire), 1);
-
-        begin_close_observer_state(&lifecycle);
-        // SAFETY: This repeats the same correctly typed protocol message after
-        // callback admission has been revoked.
-        let _: () =
-            unsafe { msg_send![&*delegate, metalDisplayLink: &*link, needsUpdate: &*update] };
-        assert_eq!(callback_count.load(Ordering::Acquire), 1);
-    }
-
-    #[test]
     fn absent_device_is_classified_before_surface_creation() {
         assert!(matches!(
             require_device(None),
@@ -1314,7 +1580,8 @@ mod tests {
     fn idle_driver_shutdown_stops_portable_and_backend_ownership() -> Result<(), SurfaceError> {
         let device = require_device(MTLCreateSystemDefaultDevice())?;
         let backend = platform_spi::new_validation_backend_with_device(device)?;
-        let mut driver = PresentationDriver::new(backend)?;
+        let configuration = SurfaceConfiguration::from_native(64.0, 64.0, 1.0, 0, false)?;
+        let mut driver = PresentationDriver::new(backend, configuration)?;
 
         driver.shutdown();
 
