@@ -1,0 +1,73 @@
+schema = "alpine-zed-lab-evidence/v1"
+id = "task-61-solid-quad"
+capability_issue = 28
+requirement_issues = [31, 53]
+task_issue = 61
+comparison_level = "renderer-only"
+lab_repository = "dbuddha/alpine-zed-lab"
+lab_license = "GPL-3.0-or-later"
+source_influence = "source-level-lab-only"
+lab_revision = "d6131728adb2b4b54f8162bf160ac310011052bb"
+zed_revision = "e17dc4f9d50db73a458b64dcce50ecd4878b98a3"
+alpine_revision = "b1e51a62da7e87a28367973591f235543f1df14b"
+scene_trace_sha256 = "c59c1d7d27abfb2bd6327db236c41934f2da34c9b82d25a6522421c1d38dbe8e"
+workload_hash = "3dbf181350ed2283ce9daa427af5d674cebcceb4dada5abf2a1c1e1f5c156bda"
+patch_series_sha256 = "242a8203ff8b5320e6a0599435b0073ad474df6f97a8d9ddc4841e53f7a4a37b"
+pixel_width = 8
+pixel_height = 4
+pixel_format = "compact-bgra8-premultiplied"
+pixel_sha256 = "074cadbffac89c52b3d03f54208ee2cd419828855233d0263941404c1026e8c2"
+timing_performed = false
+performance_qualified = false
+assumptions = [
+  "The hosted artifact identified below is retained by GitHub and was downloaded and hashed independently before this record was accepted.",
+  "The physical run used the exact clean lab, Zed, Alpine, trace, workload, and patch identities recorded here.",
+]
+exclusions = [
+  "The current trace contains only painter-ordered clipped solid quads.",
+  "The physical GPUI path used runtime source shaders and is supporting evidence, while the hosted GPUI path independently used the offline Metal library.",
+  "No timing, memory, lifecycle, accessibility, full-Zed-path, or product-journey result is claimed.",
+]
+
+[hosted]
+run_id = 31879047722
+run_url = "https://github.com/dbuddha/alpine-zed-lab/actions/runs/31879047722"
+artifact_id = 9245776326
+artifact_name = "gpui-oracle-d6131728adb2b4b54f8162bf160ac310011052bb"
+artifact_url = "https://api.github.com/repos/dbuddha/alpine-zed-lab/actions/artifacts/9245776326/zip"
+archive_sha256 = "7118d2a8150dfbd6b4b98acd070ed507d506091b3be71fd188a2963e3dd0fa3d"
+qualification_sha256 = "fceab034df8cae4f2fd9a9725ea5fa2edb57d1e5c17607f69aad59d2321f580a"
+artifact_expires_at_utc = "2026-11-13T10:15:08Z"
+retention_days = 90
+shader_mode = "offline-metallib"
+os_version = "26.5.2"
+architecture = "arm64"
+cpu_oracle_sha256 = "074cadbffac89c52b3d03f54208ee2cd419828855233d0263941404c1026e8c2"
+alpine_metal_sha256 = "not-run"
+gpui_metal_sha256 = "074cadbffac89c52b3d03f54208ee2cd419828855233d0263941404c1026e8c2"
+direct_metal_performed = false
+coverage_performed = true
+coverage_tool_version = "cargo-llvm-cov-0.8.7"
+coverage_lines_covered = 451
+coverage_lines_total = 467
+coverage_functions_covered = 55
+coverage_functions_total = 60
+mutation_performed = true
+mutation_tool_version = "cargo-mutants-27.1.0"
+mutants_total = 119
+mutants_caught = 106
+mutants_unviable = 13
+mutants_missed = 0
+mutants_timeout = 0
+
+[physical]
+observed_at_utc = "2026-08-15T10:19:57Z"
+hardware_id = "Mac16,1-Apple-M4-10-core-24GB"
+os_version = "26.5"
+architecture = "arm64"
+qualification_sha256 = "84d6388b7de543f5ceeded7440063b1a0ae2f793d8128de8dc3ac38269eb3864"
+shader_mode = "runtime-source-unqualified"
+cpu_oracle_sha256 = "074cadbffac89c52b3d03f54208ee2cd419828855233d0263941404c1026e8c2"
+alpine_metal_sha256 = "074cadbffac89c52b3d03f54208ee2cd419828855233d0263941404c1026e8c2"
+gpui_metal_sha256 = "074cadbffac89c52b3d03f54208ee2cd419828855233d0263941404c1026e8c2"
+direct_metal_performed = true

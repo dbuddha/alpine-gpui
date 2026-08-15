@@ -28,7 +28,12 @@ immutable scene and exact offscreen target. The non-shipping
 `alpine-assurance` tool depends on audited `serde` and `toml` crates to parse
 repository manifests, validate the evidence registry and qualification state,
 pass serialized trace values into `alpine-trace`, and validate versioned
-renderer A/A calibration records. Calibration validation requires exact
+renderer A/A calibration records. It also validates accepted Zed-lab evidence
+without importing raw GPL artifacts: one immutable record binds the lab, Zed,
+Alpine, trace, patch, hosted artifact, physical machine, readback, coverage, and
+mutation identities. The first accepted record composes hosted offline-shader
+GPUI-to-CPU equivalence with physical Direct-Metal-to-CPU equivalence and
+rejects timing or performance claims. Calibration validation requires exact
 workload and identical-revision identity, four or more distinct hardware
 windows, twenty or more runs, balanced paired execution order, strict
 separation of cold and warm samples, measurement stage and clock identity,

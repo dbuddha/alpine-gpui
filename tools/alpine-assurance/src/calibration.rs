@@ -769,7 +769,7 @@ fn valid_git_sha(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn valid_utc_timestamp(value: &str) -> bool {
+pub(crate) fn valid_utc_timestamp(value: &str) -> bool {
     if value.len() != 20 {
         return false;
     }
