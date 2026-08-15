@@ -1199,6 +1199,16 @@ mod tests {
         }
     }
 
+    fn pending_cancellation(
+        event: alpine_platform::PresentationEvent,
+    ) -> Option<PendingCancellationEvidence> {
+        if let alpine_platform::PresentationEvent::PendingCancelled(evidence) = event {
+            Some(evidence)
+        } else {
+            None
+        }
+    }
+
     #[test]
     fn extent_rounds_each_physical_dimension() -> Result<(), SurfaceError> {
         let extent = SurfaceExtent::new(100.25, 50.75, 2.0)?;
@@ -1516,17 +1526,18 @@ mod tests {
         let failed_attempt =
             terminal_attempt(failed_transition.event()).ok_or("failed terminal evidence")?;
         let failed_terminal = FrameTerminalEvidence::new(failed_attempt, 97, 101, 0, 103, None);
+        assert_eq!(
+            pending_cancellation(alpine_platform::PresentationEvent::Stopped),
+            None
+        );
         let mut pending_state = alpine_platform::PresentationState::new();
         pending_state.apply(alpine_platform::PresentationAction::SetVisible(true))?;
         pending_state.apply(alpine_platform::PresentationAction::SetSized(true))?;
         pending_state.apply(alpine_platform::PresentationAction::Invalidate)?;
         let pending_transition =
             pending_state.apply(alpine_platform::PresentationAction::BeginShutdown)?;
-        let alpine_platform::PresentationEvent::PendingCancelled(pending_cancellation) =
-            pending_transition.event()
-        else {
-            return Err("pending cancellation evidence".into());
-        };
+        let pending_cancellation = pending_cancellation(pending_transition.event())
+            .ok_or("pending cancellation evidence")?;
         let snapshot = SurfaceSnapshot {
             physical_width: 17,
             physical_height: 19,

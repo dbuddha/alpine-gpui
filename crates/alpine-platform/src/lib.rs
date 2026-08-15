@@ -1185,9 +1185,9 @@ mod tests {
     use std::vec::Vec;
 
     use super::{
-        ApplicationState, DisplayLinkDirective, FrameToken, PresentationAction, PresentationEvent,
-        PresentationOutcome, PresentationPhase, PresentationResource, PresentationState,
-        TransitionErrorKind,
+        ApplicationState, AttemptEvidence, DisplayLinkDirective, FrameToken,
+        PendingCancellationEvidence, PresentationAction, PresentationEvent, PresentationOutcome,
+        PresentationPhase, PresentationResource, PresentationState, TransitionErrorKind,
     };
 
     fn apply(
@@ -1233,6 +1233,22 @@ mod tests {
         let token = state.active_token().ok_or("expected active token")?;
         assert_eq!(event, PresentationEvent::Prepared(token));
         Ok(token)
+    }
+
+    fn terminal_attempt(event: PresentationEvent) -> Option<AttemptEvidence> {
+        if let PresentationEvent::Terminal(evidence) = event {
+            Some(evidence)
+        } else {
+            None
+        }
+    }
+
+    fn pending_cancellation(event: PresentationEvent) -> Option<PendingCancellationEvidence> {
+        if let PresentationEvent::PendingCancelled(evidence) = event {
+            Some(evidence)
+        } else {
+            None
+        }
     }
 
     #[test]
@@ -1784,6 +1800,8 @@ mod tests {
 
     #[test]
     fn shutdown_returns_distinct_cancellation_evidence() -> Result<(), &'static str> {
+        assert_eq!(terminal_attempt(PresentationEvent::Stopped), None);
+        assert_eq!(pending_cancellation(PresentationEvent::Stopped), None);
         let mut clean = PresentationState::new();
         let transition = clean
             .apply(PresentationAction::BeginShutdown)
@@ -1796,9 +1814,8 @@ mod tests {
         let transition = pending
             .apply(PresentationAction::BeginShutdown)
             .map_err(|_| "pending shutdown failed")?;
-        let PresentationEvent::PendingCancelled(evidence) = transition.event() else {
-            return Err("pending shutdown did not return cancellation evidence");
-        };
+        let evidence = pending_cancellation(transition.event())
+            .ok_or("pending shutdown did not return cancellation evidence")?;
         assert_eq!(evidence.requested_revision().get(), 1);
         assert_eq!(evidence.surface_epoch(), pending.surface_epoch());
         assert_eq!(evidence.outcome(), PresentationOutcome::Cancelled);
@@ -1811,9 +1828,8 @@ mod tests {
         let transition = precommit
             .apply(PresentationAction::BeginShutdown)
             .map_err(|_| "precommit shutdown failed")?;
-        let PresentationEvent::Terminal(evidence) = transition.event() else {
-            return Err("precommit shutdown did not return terminal evidence");
-        };
+        let evidence = terminal_attempt(transition.event())
+            .ok_or("precommit shutdown did not return terminal evidence")?;
         assert_eq!(evidence.outcome(), PresentationOutcome::Cancelled);
         assert_eq!(evidence.submission_count(), 0);
         assert_eq!(evidence.present_call_count(), 0);
@@ -1830,9 +1846,8 @@ mod tests {
         let transition = committed
             .apply(PresentationAction::CancelActive(token))
             .map_err(|_| "committed cancellation failed")?;
-        let PresentationEvent::Terminal(evidence) = transition.event() else {
-            return Err("committed cancellation did not return terminal evidence");
-        };
+        let evidence = terminal_attempt(transition.event())
+            .ok_or("committed cancellation did not return terminal evidence")?;
         assert_eq!(evidence.outcome(), PresentationOutcome::Cancelled);
         assert_eq!(evidence.submission_count(), 1);
         assert_eq!(evidence.present_call_count(), 1);
