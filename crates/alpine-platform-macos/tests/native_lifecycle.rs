@@ -39,6 +39,7 @@ mod validation {
         if hosted_direct || !surface.snapshot().is_presentation_visible() {
             native_validation::inject_surface_configuration(&surface, 96.0, 64.0, 1.0, 0, true)?;
         }
+        assert!(native_validation::inject_configuration_callback(&surface));
         let before = surface.snapshot();
         assert!(before.display_link_paused());
         assert_eq!(before.submission_count(), 0);
@@ -108,7 +109,7 @@ mod validation {
         native_validation::inject_post_commit_close(&surface);
         native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
 
-        native_validation::inject_late_configuration_callback(&surface);
+        assert!(!native_validation::inject_configuration_callback(&surface));
         assert_eq!(surface.take_error()?, None);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
         let snapshot = surface.snapshot();

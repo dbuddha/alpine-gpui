@@ -183,9 +183,10 @@ pub mod native_validation {
         surface.implementation.inject_late_callback();
     }
 
-    /// Exercises the production native-configuration guard after close begins.
-    pub fn inject_late_configuration_callback(surface: &NativeSurface) {
-        surface.implementation.inject_late_configuration_callback();
+    /// Exercises the production native-configuration callback guard.
+    #[must_use]
+    pub fn inject_configuration_callback(surface: &NativeSurface) -> bool {
+        surface.implementation.inject_configuration_callback()
     }
 
     /// Applies one deterministic native size, scale, display, and visibility event.
