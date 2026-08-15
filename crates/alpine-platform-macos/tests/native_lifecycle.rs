@@ -108,6 +108,7 @@ mod validation {
         native_validation::inject_post_commit_close(&surface);
         native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
 
+        native_validation::inject_late_configuration_callback(&surface);
         assert_eq!(surface.take_error()?, None);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
         let snapshot = surface.snapshot();

@@ -1062,32 +1062,32 @@ define_class!(
     unsafe impl NSWindowDelegate for DisplayLinkDelegate {
         #[unsafe(method(windowDidResize:))]
         fn window_did_resize(&self, _notification: &NSNotification) {
-            let _ = self.synchronize_native_configuration();
+            self.synchronize_native_configuration_from_callback();
         }
 
         #[unsafe(method(windowDidChangeScreen:))]
         fn window_did_change_screen(&self, _notification: &NSNotification) {
-            let _ = self.synchronize_native_configuration();
+            self.synchronize_native_configuration_from_callback();
         }
 
         #[unsafe(method(windowDidChangeBackingProperties:))]
         fn window_did_change_backing_properties(&self, _notification: &NSNotification) {
-            let _ = self.synchronize_native_configuration();
+            self.synchronize_native_configuration_from_callback();
         }
 
         #[unsafe(method(windowDidChangeOcclusionState:))]
         fn window_did_change_occlusion_state(&self, _notification: &NSNotification) {
-            let _ = self.synchronize_native_configuration();
+            self.synchronize_native_configuration_from_callback();
         }
 
         #[unsafe(method(windowDidMiniaturize:))]
         fn window_did_miniaturize(&self, _notification: &NSNotification) {
-            let _ = self.synchronize_native_configuration();
+            self.synchronize_native_configuration_from_callback();
         }
 
         #[unsafe(method(windowDidDeminiaturize:))]
         fn window_did_deminiaturize(&self, _notification: &NSNotification) {
-            let _ = self.synchronize_native_configuration();
+            self.synchronize_native_configuration_from_callback();
         }
 
         #[unsafe(method(windowWillClose:))]
@@ -1137,6 +1137,13 @@ impl DisplayLinkDelegate {
             }
         }
         result
+    }
+
+    fn synchronize_native_configuration_from_callback(&self) {
+        if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+            return;
+        }
+        let _ = self.synchronize_native_configuration();
     }
 
     fn try_synchronize_native_configuration(&self) -> Result<(), SurfaceError> {
@@ -1726,6 +1733,12 @@ impl NativeSurface {
             &self.callback_count,
             &self.rejected_callback_count,
         );
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn inject_late_configuration_callback(&self) {
+        self.delegate
+            .synchronize_native_configuration_from_callback();
     }
 
     #[cfg(alpine_native_validation)]

@@ -507,7 +507,9 @@ executable holds a visible clean surface idle and requires stable callback,
 submission, allocation, and retention counts; closes a hidden pending request
 without native work; injects close at the exact post-commit lifecycle recheck;
 requires distinct cancelled evidence and no qualification or retained bytes;
-rejects a synthetic late callback through the production admission guard; and
+rejects a synthetic late display-link callback through the production admission
+guard; ignores late AppKit configuration notifications without manufacturing a
+driver failure after revocation; and
 repeats complete native construction and exact ordered teardown thirty-two
 times. Physical multi-display, onscreen pixel capture, actual post-commit AppKit
 notification timing, process-level multi-hour platform soak, and fixed-hardware
