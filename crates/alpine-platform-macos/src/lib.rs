@@ -52,6 +52,12 @@ pub mod native_validation {
             self.expired.load(Ordering::Acquire)
         }
 
+        /// Returns whether expiration has been disarmed or already consumed.
+        #[must_use]
+        pub fn cancelled(&self) -> bool {
+            self.cancelled.load(Ordering::Acquire)
+        }
+
         /// Disarms the guard after the production run loop exits normally.
         pub fn cancel(&self) {
             self.cancelled.store(true, Ordering::Release);

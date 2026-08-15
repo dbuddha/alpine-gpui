@@ -127,7 +127,9 @@ mod validation {
         native_validation::inject_post_commit_close(&surface);
         let timeout = native_validation::arm_run_timeout(&surface, Duration::from_secs(5));
         surface.run()?;
+        assert!(!timeout.cancelled());
         timeout.cancel();
+        assert!(timeout.cancelled());
         assert!(!timeout.expired());
 
         assert!(!native_validation::inject_configuration_callback(&surface));
