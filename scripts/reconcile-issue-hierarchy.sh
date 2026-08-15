@@ -6,6 +6,17 @@ issue_number=${ALPINE_ISSUE_NUMBER:?ALPINE_ISSUE_NUMBER is required}
 issue_action=${ALPINE_ISSUE_ACTION:?ALPINE_ISSUE_ACTION is required}
 api_version=2026-03-10
 
+issue_labels=$(gh issue view "$issue_number" --repo "$repository" \
+    --json labels --jq '.labels[].name')
+if printf '%s\n' "$issue_labels" | grep -Fxq kind:capability; then
+    top_level=true
+elif printf '%s\n' "$issue_labels" | grep -Eq '^kind:(requirement|task)$'; then
+    top_level=false
+else
+    printf 'Issue #%s is outside the governed delivery hierarchy.\n' "$issue_number"
+    exit 0
+fi
+
 if [ "$issue_action" = closed ]; then
     issue_subissues=$(gh api -H "X-GitHub-Api-Version: $api_version" \
         "repos/$repository/issues/$issue_number/sub_issues?per_page=100")
@@ -19,12 +30,19 @@ if [ "$issue_action" = closed ]; then
     fi
 fi
 
-parent=$(gh api -H "X-GitHub-Api-Version: $api_version" \
-    "repos/$repository/issues/$issue_number/parent" --jq .number 2>/dev/null || true)
-if [ -z "$parent" ]; then
-    printf 'Issue #%s has no native parent.\n' "$issue_number"
+if [ "$top_level" = true ]; then
     exit 0
 fi
+
+parent=$(gh api -H "X-GitHub-Api-Version: $api_version" \
+    "repos/$repository/issues/$issue_number/parent" --jq .number)
+case "$parent" in
+    '' | *[!0-9]*)
+        printf 'Issue hierarchy error: invalid parent identity for #%s.\n' \
+            "$issue_number" >&2
+        exit 1
+        ;;
+esac
 
 if [ "$issue_action" = reopened ]; then
     parent_state=$(gh issue view "$parent" --repo "$repository" --json state --jq .state)
