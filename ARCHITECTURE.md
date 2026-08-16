@@ -5,7 +5,7 @@ designs remain in linked GitHub issues until code makes them current.
 
 ## Implemented system
 
-The workspace currently has seven Rust shipping library crates and one shipping
+The workspace currently has eight Rust shipping library crates and one shipping
 application crate. `alpine-core`,
 `alpine-scene`, `alpine-renderer`, and `alpine-platform` are fully safe and have
 no external dependencies. `alpine-core` has no workspace dependencies.
@@ -38,6 +38,17 @@ detects external replacement or deletion, and uses same-directory synchronized
 temporary files plus atomic replacement on the v1 Unix platform family. It owns
 no collaboration, replica, remote-operation, language-service, plugin, AI, or
 native state.
+`alpine-text-layout` is a safe portable boundary over immutable text snapshots.
+It maps one fixed-height viewport to visible lines plus bounded overscan, owns
+current-frame and previous-frame copied line layouts, confirms every streaming
+fingerprint candidate with exact rope-range equality, and materializes text only
+on a shaping miss. The combined layout payload and owned vector-capacity
+metadata have a configurable hard ceiling, with 32 MiB as the default. Its A8
+glyph atlas starts empty, grows geometrically, reserves metadata before
+ownership mutation, removes least-recently-used entries, coalesces returned
+rectangles, exposes exact pixel and metadata capacity, defaults to a 16 MiB hard
+ceiling, and releases all storage under explicit pressure. CoreText shaping,
+scene glyph operations, and Metal atlas sampling remain unimplemented.
 `alpine-runtime` depends on core, scene, and the safe cross-target
 `alpine-platform-macos` facade. It owns one foreground application delegate,
 monotonic workspace and document revisions, dirty-only scene construction, and

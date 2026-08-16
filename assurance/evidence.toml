@@ -1,6 +1,93 @@
 schema = "alpine-evidence/v1"
 
 [[claims]]
+id = "AEP-0141-C01"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0141-bounded-text-layout-atlas.md"
+requirement_issue = 33
+claim_type = "functional"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0141-C02"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0141-bounded-text-layout-atlas.md"
+requirement_issue = 33
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0141-C03"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0141-bounded-text-layout-atlas.md"
+requirement_issue = 33
+claim_type = "memory"
+risk = "critical"
+kani_applicability = "required"
+tla_properties = []
+platform_scope = ["portable"]
+required_evidence = ["kani", "unit"]
+
+[[evidence]]
+id = "EV-0141-UNIT01A"
+claim = "AEP-0141-C01"
+kind = "unit"
+artifact = "crates/alpine-text-layout/src/lib.rs#previous_frame_hit_avoids_materialization_and_shaping"
+assertion = "A collision-confirmed previous-frame hit returns the same immutable layout and performs no second shaping call."
+scope = "One unchanged line across two cache generations."
+exclusions = ["CoreText", "concurrent shaping", "renderer publication"]
+
+[[evidence]]
+id = "EV-0141-UNIT01B"
+claim = "AEP-0141-C01"
+kind = "unit"
+artifact = "crates/alpine-text-layout/src/lib.rs#fingerprint_candidate_requires_exact_content_confirmation"
+assertion = "Different same-length text is rejected even when the cache candidate is forced to carry the requested fingerprint."
+scope = "Exact streaming range comparison after fingerprint admission."
+exclusions = ["cryptographic collision resistance", "Ropey internals"]
+
+[[evidence]]
+id = "EV-0141-UNIT02"
+claim = "AEP-0141-C02"
+kind = "unit"
+artifact = "crates/alpine-text-layout/src/lib.rs#visible_mapping_bounds_layout_to_overscan"
+assertion = "Viewport mapping admits exactly the visible fixed-height lines plus bounded overscan and rejects an empty document."
+scope = "One finite viewport and one hundred-line document."
+exclusions = ["variable-height wrapping", "horizontal viewport", "scene emission"]
+
+[[evidence]]
+id = "EV-0141-KANI03"
+claim = "AEP-0141-C03"
+kind = "kani"
+artifact = "crates/alpine-text-layout/src/proofs.rs#adjacent_horizontal_rectangles_merge_without_loss"
+assertion = "Two horizontally adjacent equal-height free rectangles merge to their exact combined width without moving origin or height."
+scope = "Compiled pure free-rectangle coalescing rule."
+bounds = ["complete u8 + 1 width and height domains"]
+assumptions = ["rectangles are horizontally adjacent and have equal height"]
+exclusions = ["vertical merge", "allocator sequences", "Vec allocation", "unbounded u32 geometry"]
+companion = "crates/alpine-text-layout/src/lib.rs#atlas_allocates_on_demand_reuses_evicts_and_drains"
+
+[[evidence]]
+id = "EV-0141-UNIT03"
+claim = "AEP-0141-C03"
+kind = "unit"
+artifact = "crates/alpine-text-layout/src/lib.rs#atlas_allocates_on_demand_reuses_evicts_and_drains"
+assertion = "The atlas starts empty, reuses one key, stays below budget, evicts under saturation, and releases all storage under pressure."
+scope = "A8 glyphs in one bounded 256-pixel atlas generation."
+exclusions = ["native glyph rasterization", "GPU texture residency", "concurrent frames"]
+
+[[claims]]
 id = "AEP-0139-C01"
 mission = "MP-02"
 capability_issue = 28

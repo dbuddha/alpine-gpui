@@ -94,6 +94,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpine-text-layout"
+version = "0.0.0"
+dependencies = [
+ "alpine-text",
+]
+
+[[package]]
 name = "alpine-trace"
 version = "0.0.0"
 dependencies = [

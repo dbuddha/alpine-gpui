@@ -9,6 +9,7 @@ members = [
   "crates/alpine-runtime",
   "crates/alpine-scene",
   "crates/alpine-text",
+  "crates/alpine-text-layout",
   "tools/alpine-assurance",
   "tools/alpine-trace",
 ]
