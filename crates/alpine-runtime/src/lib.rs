@@ -21,6 +21,13 @@ use std::{cell::RefCell, rc::Rc};
 
 type WorkerJob<T> = Box<dyn FnOnce() -> T + Send + 'static>;
 type WorkerWake = Arc<dyn Fn() + Send + Sync + 'static>;
+type WorkerSpawner<T> = dyn FnMut(
+    usize,
+    Arc<Mutex<Receiver<WorkerRequest<T>>>>,
+    SyncSender<WorkerCompletion<T>>,
+    Arc<WorkerCounters>,
+    Arc<Mutex<Option<WorkerWake>>>,
+) -> std::io::Result<JoinHandle<()>>;
 
 /// Monotonic identity of the active local workspace state.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -282,33 +289,32 @@ struct WorkerPool<T> {
     workers: Vec<JoinHandle<()>>,
     counters: Arc<WorkerCounters>,
     next_sequence: u64,
-    wake: Arc<Mutex<WorkerWake>>,
+    wake: Arc<Mutex<Option<WorkerWake>>>,
 }
 
 impl<T: Send + 'static> WorkerPool<T> {
     fn new(config: WorkerConfig) -> Result<Self, RuntimeError> {
-        Self::new_with_spawner(config, |index, requests, results, counters, wake| {
+        let mut spawn = |index: usize,
+                         requests: Arc<Mutex<Receiver<WorkerRequest<T>>>>,
+                         results: SyncSender<WorkerCompletion<T>>,
+                         counters: Arc<WorkerCounters>,
+                         wake: Arc<Mutex<Option<WorkerWake>>>| {
             thread::Builder::new()
                 .name(format!("alpine-worker-{index}"))
                 .spawn(move || worker_loop(&requests, &results, &counters, &wake))
-        })
+        };
+        Self::new_with_spawner(config, &mut spawn)
     }
 
-    fn new_with_spawner<S>(config: WorkerConfig, mut spawn: S) -> Result<Self, RuntimeError>
-    where
-        S: FnMut(
-            usize,
-            Arc<Mutex<Receiver<WorkerRequest<T>>>>,
-            SyncSender<WorkerCompletion<T>>,
-            Arc<WorkerCounters>,
-            Arc<Mutex<WorkerWake>>,
-        ) -> std::io::Result<JoinHandle<()>>,
-    {
+    fn new_with_spawner(
+        config: WorkerConfig,
+        spawn: &mut WorkerSpawner<T>,
+    ) -> Result<Self, RuntimeError> {
         let (request_sender, request_receiver) = sync_channel(config.request_capacity());
         let (result_sender, result_receiver) = sync_channel(config.result_capacity());
         let request_receiver = Arc::new(Mutex::new(request_receiver));
         let counters = Arc::new(WorkerCounters::default());
-        let wake: Arc<Mutex<WorkerWake>> = Arc::new(Mutex::new(Arc::new(|| {})));
+        let wake: Arc<Mutex<Option<WorkerWake>>> = Arc::new(Mutex::new(None));
         let mut workers = Vec::with_capacity(config.worker_count());
 
         for index in 0..config.worker_count() {
@@ -341,7 +347,7 @@ impl<T: Send + 'static> WorkerPool<T> {
 
     fn set_waker(&mut self, wake: WorkerWake) {
         if let Ok(mut installed) = self.wake.lock() {
-            *installed = wake;
+            *installed = Some(wake);
         }
     }
 
@@ -436,7 +442,7 @@ fn worker_loop<T: Send + 'static>(
     requests: &Mutex<Receiver<WorkerRequest<T>>>,
     results: &SyncSender<WorkerCompletion<T>>,
     counters: &WorkerCounters,
-    wake: &Mutex<WorkerWake>,
+    wake: &Mutex<Option<WorkerWake>>,
 ) {
     loop {
         let request = match requests.lock() {
@@ -462,7 +468,9 @@ fn worker_loop<T: Send + 'static>(
             outcome,
         }) {
             Ok(()) => {
-                if let Ok(wake) = wake.lock() {
+                if let Ok(installed) = wake.lock()
+                    && let Some(wake) = installed.as_ref()
+                {
                     wake();
                 }
             }
@@ -829,7 +837,11 @@ impl<D: AppDelegate + 'static> Application<D> {
 mod tests {
     use std::{
         num::NonZeroUsize,
-        sync::mpsc::{RecvTimeoutError, sync_channel},
+        sync::{
+            Barrier,
+            atomic::AtomicBool,
+            mpsc::{RecvTimeoutError, sync_channel},
+        },
         time::Duration,
     };
 
@@ -838,6 +850,31 @@ mod tests {
     use alpine_scene::{SceneBuilder, SceneRevision};
 
     use super::*;
+
+    static ROLLBACK_WORKER_STARTED: Barrier = Barrier::new(2);
+    static ROLLBACK_WORKER_FINISHED: AtomicBool = AtomicBool::new(false);
+
+    fn rollback_worker_probe() {
+        ROLLBACK_WORKER_STARTED.wait();
+        thread::sleep(Duration::from_millis(100));
+        ROLLBACK_WORKER_FINISHED.store(true, Ordering::Release);
+    }
+
+    fn spawn_rollback_worker(
+        index: usize,
+        _requests: Arc<Mutex<Receiver<WorkerRequest<u64>>>>,
+        _results: SyncSender<WorkerCompletion<u64>>,
+        _counters: Arc<WorkerCounters>,
+        _wake: Arc<Mutex<Option<WorkerWake>>>,
+    ) -> std::io::Result<JoinHandle<()>> {
+        if index == 1 {
+            ROLLBACK_WORKER_STARTED.wait();
+            return Err(std::io::Error::other("injected spawn failure"));
+        }
+        thread::Builder::new()
+            .name("alpine-test-worker".to_owned())
+            .spawn(rollback_worker_probe)
+    }
 
     #[derive(Default)]
     struct TestDelegate {
@@ -1057,7 +1094,7 @@ mod tests {
             application.workers.submit(
                 WorkspaceRevision::default(),
                 DocumentRevision::default(),
-                || 1,
+                u64::default,
             ),
             Err(SubmitError::SequenceExhausted)
         );
@@ -1066,25 +1103,17 @@ mod tests {
 
     #[test]
     fn spawn_failure_rolls_back_started_workers() {
+        ROLLBACK_WORKER_FINISHED.store(false, Ordering::Release);
         let config = WorkerConfig::new(
             NonZeroUsize::new(2).unwrap_or(NonZeroUsize::MIN),
             NonZeroUsize::MIN,
             NonZeroUsize::MIN,
         );
-        let result = WorkerPool::<u64>::new_with_spawner(
-            config,
-            |index, requests, results, counters, wake| {
-                if index == 1 {
-                    return Err(std::io::Error::other("injected spawn failure"));
-                }
-                thread::Builder::new()
-                    .name("alpine-test-worker".to_owned())
-                    .spawn(move || worker_loop(&requests, &results, &counters, &wake))
-            },
-        );
+        let result = WorkerPool::<u64>::new_with_spawner(config, &mut spawn_rollback_worker);
         assert!(
             matches!(result, Err(RuntimeError::WorkerSpawn(error)) if error.kind() == std::io::ErrorKind::Other)
         );
+        assert!(ROLLBACK_WORKER_FINISHED.load(Ordering::Acquire));
     }
 
     #[test]
@@ -1099,13 +1128,13 @@ mod tests {
             workers: Vec::new(),
             counters: Arc::new(WorkerCounters::default()),
             next_sequence: 0,
-            wake: Arc::new(Mutex::new(Arc::new(|| {}))),
+            wake: Arc::new(Mutex::new(None)),
         };
         assert_eq!(
             disconnected.submit(
                 WorkspaceRevision::default(),
                 DocumentRevision::default(),
-                || 1
+                u64::default
             ),
             Err(SubmitError::Closed)
         );
@@ -1120,7 +1149,7 @@ mod tests {
             shutdown.submit(
                 WorkspaceRevision::default(),
                 DocumentRevision::default(),
-                || 2
+                u64::default
             ),
             Err(SubmitError::Closed)
         );
@@ -1132,7 +1161,7 @@ mod tests {
         let (started_sender, started_receiver) = sync_channel(1);
         let (release_sender, release_receiver) = sync_channel(1);
         let mut pool = WorkerPool::<u64>::new(WorkerConfig::default())?;
-        pool.submit(
+        let submitted = pool.submit(
             WorkspaceRevision::default(),
             DocumentRevision::default(),
             move || {
@@ -1140,8 +1169,8 @@ mod tests {
                 let _ = release_receiver.recv();
                 1
             },
-        )
-        .map_err(|_| RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        );
+        assert!(submitted.is_ok());
         assert_eq!(
             started_receiver.recv_timeout(Duration::from_secs(1)),
             Ok(())
@@ -1167,7 +1196,7 @@ mod tests {
         let (result_sender, result_receiver) = sync_channel(1);
         let counters = WorkerCounters::default();
         counters.queued_requests.store(1, Ordering::Release);
-        let wake: Mutex<WorkerWake> = Mutex::new(Arc::new(|| {}));
+        let wake: Mutex<Option<WorkerWake>> = Mutex::new(None);
         let occupied = WorkerCompletion {
             token: token(1),
             outcome: WorkerOutcome::Completed(1_u64),
@@ -1304,13 +1333,12 @@ mod tests {
                 dirty: &mut application.dirty,
                 workers: &mut application.workers,
             };
-            context
-                .spawn(move || {
-                    let _ = started_sender.send(());
-                    let _ = release_receiver.recv();
-                    89
-                })
-                .map_err(|_| RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+            let submitted = context.spawn(move || {
+                let _ = started_sender.send(());
+                let _ = release_receiver.recv();
+                89
+            });
+            assert!(submitted.is_ok());
             assert!(context.advance_document(DocumentRevision::new(1)));
         }
         assert_eq!(
@@ -1352,7 +1380,7 @@ mod tests {
                 .submit(
                     WorkspaceRevision::default(),
                     DocumentRevision::default(),
-                    || 2,
+                    u64::default,
                 )
                 .is_ok()
         );
@@ -1360,7 +1388,7 @@ mod tests {
             application.workers.submit(
                 WorkspaceRevision::default(),
                 DocumentRevision::default(),
-                || 3,
+                u64::default,
             ),
             Err(SubmitError::Saturated)
         );
@@ -1376,14 +1404,12 @@ mod tests {
         application.set_worker_waker(move || {
             let _ = wake_sender.try_send(());
         });
-        application
-            .workers
-            .submit(
-                WorkspaceRevision::default(),
-                DocumentRevision::default(),
-                || std::panic::resume_unwind(Box::new("fault")),
-            )
-            .map_err(|_| RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        let submitted = application.workers.submit(
+            WorkspaceRevision::default(),
+            DocumentRevision::default(),
+            || std::panic::resume_unwind(Box::new("fault")),
+        );
+        assert!(submitted.is_ok());
         assert_eq!(wake_receiver.recv_timeout(Duration::from_secs(1)), Ok(()));
         assert_eq!(application.snapshot().worker().panicked_jobs(), 1);
         let _ = application.dispatch(&SurfaceEvent::Wake {
