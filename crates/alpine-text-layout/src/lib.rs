@@ -181,13 +181,31 @@ fn ceil_to_usize(value: f32) -> Result<usize, LayoutError> {
     Ok(value.ceil() as usize)
 }
 
-fn reserve<T>(values: &mut Vec<T>, additional: usize) -> Result<(), LayoutError> {
+fn reserve_cache_entries(
+    values: &mut Vec<CacheEntry>,
+    additional: usize,
+) -> Result<(), LayoutError> {
     values
         .try_reserve(additional)
         .map_err(|_| LayoutError::AllocationFailed)
 }
 
-fn reserve_exact<T>(values: &mut Vec<T>, additional: usize) -> Result<(), LayoutError> {
+fn reserve_atlas_entries(
+    values: &mut Vec<AtlasEntry>,
+    additional: usize,
+) -> Result<(), LayoutError> {
+    values
+        .try_reserve(additional)
+        .map_err(|_| LayoutError::AllocationFailed)
+}
+
+fn reserve_atlas_rects(values: &mut Vec<AtlasRect>, additional: usize) -> Result<(), LayoutError> {
+    values
+        .try_reserve(additional)
+        .map_err(|_| LayoutError::AllocationFailed)
+}
+
+fn reserve_bytes_exact(values: &mut Vec<u8>, additional: usize) -> Result<(), LayoutError> {
     values
         .try_reserve_exact(additional)
         .map_err(|_| LayoutError::AllocationFailed)
@@ -595,13 +613,13 @@ impl LineLayoutCache {
     ///
     /// Returns structured text, limit, shaping, accounting, or allocation
     /// failure. Rejected work does not enter either generation.
-    pub fn layout_line<S: TextShaper>(
+    pub fn layout_line(
         &mut self,
         snapshot: &BufferSnapshot,
         line: usize,
         font: FontKey,
         wrap_width: PositiveFinite,
-        shaper: &mut S,
+        shaper: &mut dyn TextShaper,
     ) -> Result<Arc<LineLayout>, LayoutError> {
         let range = snapshot.line_byte_range(line)?;
         let bytes = range.end - range.start;
@@ -672,7 +690,7 @@ impl LineLayoutCache {
             .shaped_lines
             .checked_add(1)
             .ok_or(LayoutError::SequenceExhausted)?;
-        reserve(&mut self.current, 1)?;
+        reserve_cache_entries(&mut self.current, 1)?;
         self.current.push(CacheEntry {
             fingerprint,
             snapshot: snapshot.clone(),
@@ -1043,8 +1061,8 @@ impl GlyphAtlas {
         attempts: usize,
     ) -> Result<AtlasRect, LayoutError> {
         for _ in 0..attempts {
-            reserve(&mut self.entries, 1)?;
-            reserve(&mut self.free, 2)?;
+            reserve_atlas_entries(&mut self.entries, 1)?;
+            reserve_atlas_rects(&mut self.free, 2)?;
             if exceeds_budget(self.current_bytes(), self.budget_bytes.get()) {
                 return Err(LayoutError::AtlasSaturated);
             }
@@ -1160,9 +1178,9 @@ impl GlyphAtlas {
         let pixel_bytes = usize_from_u32(next)
             .checked_mul(usize_from_u32(next))
             .ok_or(LayoutError::ArithmeticOverflow)?;
-        reserve(&mut self.free, 2)?;
+        reserve_atlas_rects(&mut self.free, 2)?;
         let mut pixels = Vec::new();
-        reserve_exact(&mut pixels, pixel_bytes)?;
+        reserve_bytes_exact(&mut pixels, pixel_bytes)?;
         pixels.resize(pixel_bytes, 0);
         let retained = pixels
             .capacity()
@@ -1232,7 +1250,7 @@ impl GlyphAtlas {
         else {
             return Ok(false);
         };
-        reserve(&mut self.free, 1)?;
+        reserve_atlas_rects(&mut self.free, 1)?;
         let removed = self.entries.remove(index);
         self.clear_rect(removed.rect)?;
         self.free.push(removed.rect);

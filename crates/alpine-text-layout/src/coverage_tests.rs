@@ -606,11 +606,22 @@ fn sequence_and_shaper_failures_are_atomic() -> Result<(), Box<dyn Error>> {
 
     let mut values = Vec::<u8>::new();
     assert_eq!(
-        reserve(&mut values, usize::MAX),
+        reserve_bytes_exact(&mut values, usize::MAX),
         Err(LayoutError::AllocationFailed)
     );
+    let mut cache_entries = Vec::<CacheEntry>::new();
     assert_eq!(
-        reserve_exact(&mut values, usize::MAX),
+        reserve_cache_entries(&mut cache_entries, usize::MAX),
+        Err(LayoutError::AllocationFailed)
+    );
+    let mut atlas_entries = Vec::<AtlasEntry>::new();
+    assert_eq!(
+        reserve_atlas_entries(&mut atlas_entries, usize::MAX),
+        Err(LayoutError::AllocationFailed)
+    );
+    let mut atlas_rects = Vec::<AtlasRect>::new();
+    assert_eq!(
+        reserve_atlas_rects(&mut atlas_rects, usize::MAX),
         Err(LayoutError::AllocationFailed)
     );
     Ok(())

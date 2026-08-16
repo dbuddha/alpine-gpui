@@ -2,10 +2,19 @@
 
 use std::{error::Error, num::NonZeroU32};
 
+use alpine_text::Buffer;
 use alpine_text_layout::{
-    FontKey, GlyphAtlas, GlyphBitmap, GlyphKey, LineLayout, PositiveFinite, RasterizedGlyph,
-    ShapedGlyph,
+    FontKey, GlyphAtlas, GlyphBitmap, GlyphKey, LayoutError, LineLayout, LineLayoutCache,
+    PositiveFinite, RasterizedGlyph, ShapedGlyph, TextShaper,
 };
+
+struct ConsumerShaper;
+
+impl TextShaper for ConsumerShaper {
+    fn shape(&mut self, _text: &str, _font: FontKey) -> Result<LineLayout, LayoutError> {
+        LineLayout::new(Vec::new(), 5.0, 3.0, 1.0, 1)
+    }
+}
 
 #[test]
 #[allow(clippy::float_cmp)]
@@ -33,6 +42,16 @@ fn public_text_layout_contracts_are_reachable_from_consumers() -> Result<(), Box
         (layout.width(), layout.ascent(), layout.descent()),
         (4.0, 3.0, 1.0)
     );
+    let mut cache = LineLayoutCache::new(std::num::NonZeroUsize::new(4096).ok_or("cache budget")?);
+    let text = Buffer::new("hello").snapshot();
+    let cached = cache.layout_line(
+        &text,
+        0,
+        font,
+        PositiveFinite::new(80.0).ok_or("wrap")?,
+        &mut ConsumerShaper,
+    )?;
+    assert_eq!(cached.width(), 5.0);
     let one = NonZeroU32::new(1).ok_or("one")?;
     let bitmap = GlyphBitmap::new(one, one, vec![255])?;
     let raster = RasterizedGlyph::new(Some(bitmap.clone()), 1.0, 2.0)?;
