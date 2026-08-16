@@ -1058,6 +1058,12 @@ mod tests {
     #[test]
     fn bounded_reachable_sequences_preserve_invariants() {
         const CHOICES: u64 = 5;
+        // Native tests and Kani own the exhaustive transition depth. Miri
+        // interprets a complete smaller state space to qualify memory behavior
+        // without duplicating the model proof beyond the CI time budget.
+        #[cfg(miri)]
+        const STEPS: u32 = 4;
+        #[cfg(not(miri))]
         const STEPS: u32 = 7;
         for encoded in 0..CHOICES.pow(STEPS) {
             let mut choices = encoded;
