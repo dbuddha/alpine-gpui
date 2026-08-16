@@ -796,13 +796,14 @@ impl StudioApp {
         }
         let selected = self.selection.range();
         for line in visible.laid_out() {
-            let layout = self.layout_cache.layout_line(
+            let layout_result = self.layout_cache.layout_line(
                 &snapshot,
                 line,
                 font,
                 wrap_width,
                 &mut *self.text_system,
-            )?;
+            );
+            let layout = layout_result?;
             let top = CONTENT_INSET + usize_as_f32(line) * LINE_HEIGHT - self.scroll_y;
             let baseline = top + layout.ascent();
             if !selected.is_empty() {
@@ -858,13 +859,9 @@ impl StudioApp {
             let layout = self.text_system.shape(status.message(), font)?;
             let top = (viewport.height() - CONTENT_INSET - LINE_HEIGHT).max(CONTENT_INSET);
             let baseline = top + layout.ascent();
-            pending_glyphs.extend(self.collect_glyphs(
-                &layout,
-                font,
-                editor_origin_x + 6.0,
-                baseline,
-                clip,
-            )?);
+            let status_glyphs =
+                self.collect_glyphs(&layout, font, editor_origin_x + 6.0, baseline, clip);
+            pending_glyphs.extend(status_glyphs?);
             let origin = Point::new(editor_origin_x, top).ok_or(StudioRenderError::Domain)?;
             let size =
                 Size::new(content_size.width(), LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
@@ -885,10 +882,9 @@ impl StudioApp {
             let active_origin = Point::new(active_left, 0.0).ok_or(StudioRenderError::Domain)?;
             let active_size =
                 Size::new(TAB_WIDTH, TAB_BAR_HEIGHT).ok_or(StudioRenderError::Domain)?;
-            builder.push_quad(
-                Quad::new(Rect::new(active_origin, active_size), active_tab_color)
-                    .clipped(tab_clip),
-            )?;
+            let active_quad = Quad::new(Rect::new(active_origin, active_size), active_tab_color)
+                .clipped(tab_clip);
+            builder.push_quad(active_quad)?;
         }
 
         self.publish_atlas_if_needed(&pending_glyphs)?;

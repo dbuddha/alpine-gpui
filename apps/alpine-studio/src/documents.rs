@@ -378,6 +378,11 @@ impl<T> DocumentTabs<T> {
         self.history.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn inject_active_payload_for_test(&mut self, payload: T) {
+        self.tabs[self.active].document = Some(payload);
+    }
+
     fn switch_to(
         &mut self,
         index: usize,
@@ -459,20 +464,22 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut tabs = DocumentTabs::new(None, None, DocumentTabLimits::new(4, 1_024, 4))?;
         let mut active = String::from("scratch");
-        tabs.insert_and_activate(
+        let first_insertion = tabs.insert_and_activate(
             Path::new("/root/a.rs"),
             Some(2),
             "alpha".into(),
             &mut active,
             view(1, 2.0),
-        )?;
-        tabs.insert_and_activate(
+        );
+        first_insertion?;
+        let second_insertion = tabs.insert_and_activate(
             Path::new("/root/b.rs"),
             Some(3),
             "beta".into(),
             &mut active,
             view(3, 4.0),
-        )?;
+        );
+        second_insertion?;
         assert_eq!(active, "beta");
         assert_eq!(tabs.len(), 3);
         assert_eq!(tabs.active_workspace_entry(), Some(3));
@@ -500,13 +507,14 @@ mod tests {
         ));
         let mut tabs = DocumentTabs::new(None, None, DocumentTabLimits::new(2, 20, 2))?;
         let mut active = String::from("scratch");
-        tabs.insert_and_activate(
+        let insertion = tabs.insert_and_activate(
             Path::new("a"),
             Some(0),
             "a".into(),
             &mut active,
             view(0, 0.0),
-        )?;
+        );
+        insertion?;
         let before = active.clone();
         assert!(matches!(
             tabs.insert_and_activate(
@@ -538,13 +546,14 @@ mod tests {
 
         let mut exact = DocumentTabs::new(None, None, DocumentTabLimits::new(2, 2, 2))?;
         let mut exact_active = String::from("scratch");
-        exact.insert_and_activate(
+        let insertion = exact.insert_and_activate(
             Path::new("a"),
             Some(0),
             "a".into(),
             &mut exact_active,
             view(0, 0.0),
-        )?;
+        );
+        insertion?;
         assert_eq!(exact.retained_path_bytes(), 2);
         Ok(())
     }
@@ -578,27 +587,30 @@ mod tests {
             tabs.close_active(&mut active),
             Err(DocumentTabError::LastTab)
         ));
-        tabs.insert_and_activate(
+        let a_insertion = tabs.insert_and_activate(
             Path::new("/a"),
             Some(0),
             "a".into(),
             &mut active,
             view(0, 0.0),
-        )?;
-        tabs.insert_and_activate(
+        );
+        a_insertion?;
+        let b_insertion = tabs.insert_and_activate(
             Path::new("/b"),
             Some(1),
             "b".into(),
             &mut active,
             view(0, 0.0),
-        )?;
-        tabs.insert_and_activate(
+        );
+        b_insertion?;
+        let c_insertion = tabs.insert_and_activate(
             Path::new("/c"),
             Some(2),
             "c".into(),
             &mut active,
             view(0, 0.0),
-        )?;
+        );
+        c_insertion?;
         assert_eq!(tabs.history_len(), 3);
         assert!(tabs.navigate_back(&mut active, view(1, 1.0))?.is_some());
         assert_eq!(active, "b");
@@ -620,6 +632,76 @@ mod tests {
         assert_eq!(active, "b");
         assert_eq!(restored_last, view(6, 6.0));
         assert_eq!(tabs.active_workspace_entry(), Some(1));
+
+        let active_id = tabs.tabs[tabs.active].id;
+        let scratch_id = tabs.tabs[0].id;
+        tabs.history.clear();
+        tabs.history.extend([scratch_id, u64::MAX, active_id]);
+        tabs.history_cursor = 2;
+        assert!(tabs.navigate_back(&mut active, view(7, 7.0))?.is_some());
+        assert_eq!(active, "scratch");
+        assert!(tabs.navigate_forward(&mut active, view(8, 8.0))?.is_some());
+        assert_eq!(active, "b");
+        Ok(())
+    }
+
+    #[test]
+    fn defensive_transitions_fail_without_losing_the_active_payload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tiny = DocumentTabLimits::new(2, 1, 2);
+        assert!(matches!(
+            DocumentTabs::<String>::new(Some(Path::new("long")), None, tiny),
+            Err(DocumentTabError::PathBudgetExceeded(1))
+        ));
+        let (root_label, root_bytes) =
+            tab_metadata(Some(Path::new(std::path::MAIN_SEPARATOR_STR)))?;
+        assert_eq!(&*root_label, "Untitled");
+        assert!(root_bytes > 0);
+
+        let mut tabs = DocumentTabs::new(None, None, DocumentTabLimits::new(4, 1_024, 4))?;
+        let mut active = String::from("scratch");
+        let insertion = tabs.insert_and_activate(
+            Path::new("a"),
+            Some(0),
+            "alpha".into(),
+            &mut active,
+            view(1, 1.0),
+        );
+        insertion?;
+        let before = active.clone();
+        assert!(matches!(
+            tabs.insert_and_activate(
+                Path::new("a"),
+                Some(0),
+                "duplicate".into(),
+                &mut active,
+                view(2, 2.0)
+            ),
+            Err(DocumentTabError::DuplicatePath(path)) if path == Path::new("a")
+        ));
+        assert_eq!(active, before);
+        let same_tab = tabs.activate(tabs.active_index(), &mut active, view(3, 3.0))?;
+        assert!(same_tab.is_none());
+        let history_len = tabs.history_len();
+        tabs.record_navigation(tabs.tabs[tabs.active].id);
+        assert_eq!(tabs.history_len(), history_len);
+
+        tabs.inject_active_payload_for_test("invalid duplicate payload".into());
+        assert!(matches!(
+            tabs.insert_and_activate(
+                Path::new("b"),
+                Some(1),
+                "beta".into(),
+                &mut active,
+                view(4, 4.0)
+            ),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        assert!(matches!(
+            tabs.activate(0, &mut active, view(5, 5.0)),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        assert_eq!(active, before);
         Ok(())
     }
 
@@ -630,13 +712,14 @@ mod tests {
         let mut active = String::from("scratch");
         for index in 0..5 {
             let path = PathBuf::from(format!("/{index}"));
-            tabs.insert_and_activate(
+            let insertion = tabs.insert_and_activate(
                 &path,
                 Some(index),
                 index.to_string(),
                 &mut active,
                 view(0, 0.0),
-            )?;
+            );
+            insertion?;
         }
         assert_eq!(tabs.visible_range(3, 1, 1), 2..5);
         assert_eq!(tabs.visible_range(99, usize::MAX, 2), 6..6);

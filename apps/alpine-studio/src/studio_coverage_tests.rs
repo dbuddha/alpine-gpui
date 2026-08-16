@@ -1027,6 +1027,16 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
             .x(),
         266.0
     );
+    assert_eq!(
+        status_scene
+            .glyphs()
+            .last()
+            .ok_or("missing status glyph")?
+            .bounds()
+            .origin()
+            .y(),
+        506.0
+    );
     app.local_status = None;
 
     app.last_pointer_position = Point::new(SIDEBAR_WIDTH - 1.0, CONTENT_INSET);
@@ -1304,13 +1314,106 @@ fn bounded_tabs_preserve_dirty_documents_and_refuse_dirty_close()
     assert_eq!(app.buffer().snapshot().text(), dirty_alpha);
 
     let _save_effect = app.save_document();
-    assert!(!app.document.is_dirty());
-    assert!(app.close_active_tab()?.document_changed);
-    assert_eq!(app.tabs.len(), tab_count - 1);
+    #[cfg(not(target_family = "windows"))]
+    {
+        assert!(!app.document.is_dirty());
+        assert!(app.close_active_tab()?.document_changed);
+        assert_eq!(app.tabs.len(), tab_count - 1);
+        assert_eq!(
+            fs::read_to_string(root.path().join("alpha.rs"))?,
+            dirty_alpha
+        );
+    }
+    #[cfg(target_family = "windows")]
+    {
+        assert!(app.document.is_dirty());
+        assert_eq!(
+            app.last_file_error,
+            Some(FileError::UnsupportedAtomicReplace)
+        );
+        assert!(matches!(
+            app.close_active_tab(),
+            Err(WorkspaceSelectionError::DirtyDocument)
+        ));
+        assert_eq!(app.tabs.len(), tab_count);
+        assert_eq!(fs::read_to_string(root.path().join("alpha.rs"))?, "alpha");
+    }
+    Ok(())
+}
+
+#[test]
+fn tab_fault_paths_are_structured_and_non_destructive() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    root.write("beta.rs", "beta")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = app.workspace.as_ref().ok_or("workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("alpha")?;
+    let beta = workspace.index_named("beta.rs").ok_or("beta")?;
+    app.open_workspace_entry(alpha)?;
+    app.open_workspace_entry(beta)?;
+
     assert_eq!(
-        fs::read_to_string(root.path().join("alpha.rs"))?,
-        dirty_alpha
+        app.activate_document_tab(app.tabs.active_index())?,
+        EventEffect::default()
     );
+    let tabs_error = WorkspaceSelectionError::Tabs(DocumentTabError::LastTab);
+    assert_eq!(
+        tabs_error.to_string(),
+        "document tabs failed: the final document tab cannot be closed"
+    );
+    assert!(tabs_error.source().is_some());
+
+    app.last_viewport = viewport()?;
+    app.tab_scroll_x = f32::NAN;
+    let tab_point =
+        Point::new(app.sidebar_width(app.last_viewport) + 1.0, 1.0).ok_or("tab point")?;
+    assert_eq!(
+        app.handle_pointer(
+            PointerAction::Down,
+            tab_point,
+            PointerButton::Primary,
+            Modifiers::default()
+        ),
+        EventEffect::default()
+    );
+    app.tab_scroll_x = TAB_WIDTH * 100.0;
+    let failures = app.workspace_failures;
+    assert!(
+        app.handle_pointer(
+            PointerAction::Down,
+            tab_point,
+            PointerButton::Primary,
+            Modifiers::default()
+        )
+        .visual_changed
+    );
+    assert_eq!(app.workspace_failures, failures + 1);
+
+    app.runtime_document_revision = u64::MAX;
+    let failures = app.workspace_failures;
+    assert!(app.navigate_document_history(false).visual_changed);
+    assert_eq!(app.workspace_failures, failures + 1);
+    app.runtime_document_revision = 10;
+
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    let failures = app.workspace_failures;
+    assert!(app.close_active_tab_or_record().visual_changed);
+    assert_eq!(app.workspace_failures, failures + 1);
+
+    app.tabs
+        .inject_active_payload_for_test(StudioDocument::Scratch {
+            buffer: Buffer::new("fault"),
+            clean_revision: 0,
+        });
+    let active_before = app.buffer().snapshot().text();
+    let failures = app.workspace_failures;
+    assert!(app.navigate_document_history(false).visual_changed);
+    assert_eq!(app.workspace_failures, failures + 1);
+    assert_eq!(app.buffer().snapshot().text(), active_before);
     Ok(())
 }
 
@@ -2051,4 +2154,16 @@ fn run_rejects_an_unsupported_host() {
             SurfaceError::UnsupportedPlatform
         )))
     ));
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn native_file_constructor_rejects_a_missing_file_before_native_setup()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    assert!(matches!(
+        native_file_app(&root.path().join("missing.rs")),
+        Err(StudioError::File(_))
+    ));
+    Ok(())
 }
