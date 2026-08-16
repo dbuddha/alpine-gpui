@@ -157,7 +157,7 @@ impl<T> DocumentTabs<T> {
         });
         let mut history = Vec::new();
         history
-            .try_reserve(1)
+            .try_reserve_exact(limits.history_capacity)
             .map_err(|_| DocumentTabError::AllocationFailed)?;
         history.push(1);
         Ok(Self {
@@ -253,8 +253,6 @@ impl<T> DocumentTabs<T> {
         self.tabs
             .try_reserve(1)
             .map_err(|_| DocumentTabError::AllocationFailed)?;
-        self.prepare_history_push()?;
-
         let previous = mem::replace(active_document, new_document);
         let active_tab = &mut self.tabs[self.active];
         active_tab.document = Some(previous);
@@ -290,7 +288,6 @@ impl<T> DocumentTabs<T> {
             .get(index)
             .ok_or(DocumentTabError::MissingTab(index))?
             .id;
-        self.prepare_history_push()?;
         let view = self.switch_to(index, active_document, active_view)?;
         self.record_navigation(id);
         Ok(Some(view))
@@ -302,8 +299,8 @@ impl<T> DocumentTabs<T> {
         active_view: DocumentViewState,
     ) -> Result<Option<DocumentViewState>, DocumentTabError> {
         let mut cursor = self.history_cursor;
-        while cursor > 0 {
-            cursor -= 1;
+        while let Some(previous) = cursor.checked_sub(1) {
+            cursor = previous;
             let id = self.history[cursor];
             if let Some(index) = self.index_for_id(id)
                 && index != self.active
@@ -322,8 +319,11 @@ impl<T> DocumentTabs<T> {
         active_view: DocumentViewState,
     ) -> Result<Option<DocumentViewState>, DocumentTabError> {
         let mut cursor = self.history_cursor;
-        while cursor.saturating_add(1) < self.history.len() {
-            cursor += 1;
+        while let Some(next) = cursor.checked_add(1) {
+            if next >= self.history.len() {
+                break;
+            }
+            cursor = next;
             let id = self.history[cursor];
             if let Some(index) = self.index_for_id(id)
                 && index != self.active
@@ -343,7 +343,6 @@ impl<T> DocumentTabs<T> {
         if self.tabs.len() == 1 {
             return Err(DocumentTabError::LastTab);
         }
-        self.prepare_history_push()?;
         let closing = self.active;
         let target = if closing + 1 < self.tabs.len() {
             closing + 1
@@ -411,15 +410,6 @@ impl<T> DocumentTabs<T> {
 
     fn index_for_id(&self, id: u64) -> Option<usize> {
         self.tabs.iter().position(|tab| tab.id == id)
-    }
-
-    fn prepare_history_push(&mut self) -> Result<(), DocumentTabError> {
-        if self.history.len() < self.limits.history_capacity {
-            self.history
-                .try_reserve(1)
-                .map_err(|_| DocumentTabError::AllocationFailed)?;
-        }
-        Ok(())
     }
 
     fn record_navigation(&mut self, id: u64) {
@@ -500,6 +490,10 @@ mod tests {
 
     #[test]
     fn limits_refuse_without_mutating_active_payload() -> Result<(), Box<dyn std::error::Error>> {
+        let defaults = DocumentTabLimits::default();
+        assert_eq!(defaults.tab_capacity, 32);
+        assert_eq!(defaults.path_byte_budget, 65_536);
+        assert_eq!(defaults.history_capacity, 256);
         assert!(matches!(
             DocumentTabs::<String>::new(None, None, DocumentTabLimits::new(0, 1, 1)),
             Err(DocumentTabError::InvalidLimits)
@@ -541,7 +535,37 @@ mod tests {
         ));
         assert_eq!(limited_active, "scratch");
         assert_eq!(limited.len(), 1);
+
+        let mut exact = DocumentTabs::new(None, None, DocumentTabLimits::new(2, 2, 2))?;
+        let mut exact_active = String::from("scratch");
+        exact.insert_and_activate(
+            Path::new("a"),
+            Some(0),
+            "a".into(),
+            &mut exact_active,
+            view(0, 0.0),
+        )?;
+        assert_eq!(exact.retained_path_bytes(), 2);
         Ok(())
+    }
+
+    #[test]
+    fn every_tab_error_has_a_nonempty_structured_message() {
+        let errors = [
+            DocumentTabError::InvalidLimits,
+            DocumentTabError::AllocationFailed,
+            DocumentTabError::CapacityReached(2),
+            DocumentTabError::PathBudgetExceeded(3),
+            DocumentTabError::IdentityExhausted,
+            DocumentTabError::MissingTab(4),
+            DocumentTabError::DuplicatePath(PathBuf::from("duplicate")),
+            DocumentTabError::LastTab,
+            DocumentTabError::InvalidPayloadState,
+        ];
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            assert!(std::error::Error::source(&error).is_none());
+        }
     }
 
     #[test]
@@ -549,6 +573,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut tabs = DocumentTabs::new(None, None, DocumentTabLimits::new(5, 1_024, 3))?;
         let mut active = String::from("scratch");
+        assert!(tabs.navigate_back(&mut active, view(0, 0.0))?.is_none());
         assert!(matches!(
             tabs.close_active(&mut active),
             Err(DocumentTabError::LastTab)
@@ -587,6 +612,14 @@ mod tests {
         let restored = tabs.close_active(&mut active)?;
         assert_eq!(active, "b");
         assert_eq!(restored, view(4, 4.0));
+
+        let c = tabs.index_for_path(Path::new("/c")).ok_or("c")?;
+        assert!(tabs.activate(c, &mut active, view(6, 6.0))?.is_some());
+        assert_eq!(active, "c");
+        let restored_last = tabs.close_active(&mut active)?;
+        assert_eq!(active, "b");
+        assert_eq!(restored_last, view(6, 6.0));
+        assert_eq!(tabs.active_workspace_entry(), Some(1));
         Ok(())
     }
 

@@ -1291,6 +1291,7 @@ fn bounded_tabs_preserve_dirty_documents_and_refuse_dirty_close()
     assert!(app.open_workspace_entry(beta)?.document_changed);
     assert_eq!(app.buffer().snapshot().text(), "beta");
     let tab_count = app.tabs.len();
+    assert!(app.handle_close_request().cancel_close);
 
     assert!(app.open_workspace_entry(alpha)?.document_changed);
     assert_eq!(app.tabs.len(), tab_count);
@@ -1369,6 +1370,173 @@ fn tab_history_branches_and_pointer_activation_restore_exact_view_state()
     );
     assert!(pointer.document_identity_advanced);
     assert_eq!(app.buffer().snapshot().text(), "beta");
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "exact tab geometry and routing controls distinguish projection mutations"
+)]
+fn tab_projection_scroll_keyboard_and_pointer_boundaries_are_exact()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut single = test_app()?;
+    single.tab_scroll_x = 100.0;
+    single.ensure_active_tab_visible();
+    assert_eq!(single.tab_scroll_x.to_bits(), 0.0_f32.to_bits());
+
+    let root = TestWorkspace::new()?;
+    let names = [
+        "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs", "i.rs", "j.rs",
+    ];
+    for name in names {
+        root.write(name, name)?;
+    }
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    for name in names {
+        let index = app
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.index_named(name))
+            .ok_or("workspace entry")?;
+        app.open_workspace_entry(index)?;
+    }
+    let small_viewport = Size::new(556.0, WINDOW_HEIGHT).ok_or("viewport")?;
+    app.last_viewport = small_viewport;
+    app.ensure_active_tab_visible();
+    assert_eq!(app.tabs.active_index(), 10);
+    assert_eq!(app.tab_scroll_x.to_bits(), 1_440.0_f32.to_bits());
+
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let scene = app.try_scene(SceneRevision::new(20), small_viewport)?;
+    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), 15));
+    let expected_tab_bounds = Rect::new(
+        Point::new(SIDEBAR_WIDTH, 0.0).ok_or("tab origin")?,
+        Size::new(320.0, TAB_BAR_HEIGHT).ok_or("tab size")?,
+    );
+    assert_eq!(scene.clips()[2].bounds(), expected_tab_bounds);
+    assert!(
+        scene
+            .quads()
+            .iter()
+            .any(|quad| quad.bounds() == expected_tab_bounds)
+    );
+    let expected_active = Rect::new(
+        Point::new(396.0, 0.0).ok_or("active tab origin")?,
+        Size::new(TAB_WIDTH, TAB_BAR_HEIGHT).ok_or("active tab size")?,
+    );
+    assert!(
+        scene
+            .quads()
+            .iter()
+            .any(|quad| quad.bounds() == expected_active)
+    );
+    let tab_glyphs: Vec<_> = scene
+        .glyphs()
+        .iter()
+        .filter(|glyph| glyph.bounds().origin().y() < TAB_BAR_HEIGHT)
+        .collect();
+    assert!(!tab_glyphs.is_empty());
+    assert!(tab_glyphs.iter().any(|glyph| {
+        glyph.bounds().origin().x().to_bits() == (-76.0_f32).to_bits()
+            && glyph.bounds().origin().y().to_bits() == 16.0_f32.to_bits()
+    }));
+    assert!(tab_glyphs.iter().any(|glyph| {
+        glyph.bounds().origin().x().to_bits() == 404.0_f32.to_bits()
+            && glyph.bounds().origin().y().to_bits() == 16.0_f32.to_bits()
+    }));
+
+    app.tab_scroll_x = 320.0;
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let mid_scene = app.try_scene(SceneRevision::new(21), small_viewport)?;
+    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), 17));
+    let first_mid_tab = mid_scene
+        .glyphs()
+        .iter()
+        .find(|glyph| glyph.bounds().origin().y() < TAB_BAR_HEIGHT)
+        .ok_or("first mid tab glyph")?;
+    assert_eq!(
+        first_mid_tab.bounds().origin().x().to_bits(),
+        (-76.0_f32).to_bits()
+    );
+    assert_eq!(
+        first_mid_tab.bounds().origin().y().to_bits(),
+        16.0_f32.to_bits()
+    );
+    assert_eq!(
+        mid_scene
+            .quads()
+            .iter()
+            .filter(|quad| {
+                quad.bounds().origin().y().to_bits() == 0.0_f32.to_bits()
+                    && quad.bounds().size().height().to_bits() == TAB_BAR_HEIGHT.to_bits()
+            })
+            .count(),
+        1
+    );
+    app.ensure_active_tab_visible();
+    assert_eq!(app.tab_scroll_x.to_bits(), 1_440.0_f32.to_bits());
+
+    assert!(app.activate_document_tab(2)?.document_identity_advanced);
+    assert_eq!(app.tab_scroll_x.to_bits(), 320.0_f32.to_bits());
+    app.tab_scroll_x = 170.0;
+    app.ensure_active_tab_visible();
+    assert_eq!(app.tab_scroll_x.to_bits(), 170.0_f32.to_bits());
+    assert!(app.activate_document_tab(1)?.document_identity_advanced);
+    assert_eq!(app.tab_scroll_x.to_bits(), 170.0_f32.to_bits());
+    app.tab_scroll_x = 0.0;
+    assert!(app.activate_document_tab(10)?.document_identity_advanced);
+    assert_eq!(app.tab_scroll_x.to_bits(), 1_440.0_f32.to_bits());
+
+    let tab_five = app.handle_pointer(
+        PointerAction::Down,
+        Point::new(SIDEBAR_WIDTH + 1.0, 1.0).ok_or("tab five")?,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert!(tab_five.document_identity_advanced);
+    assert_eq!(app.tabs.active_index(), 9);
+    let boundary = app.handle_pointer(
+        PointerAction::Down,
+        Point::new(SIDEBAR_WIDTH + TAB_WIDTH + 1.0, TAB_BAR_HEIGHT).ok_or("tab boundary")?,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert!(!boundary.document_identity_advanced);
+    assert_eq!(app.tabs.active_index(), 9);
+
+    assert_eq!(
+        app.handle_key(KEY_LEFT_BRACKET, Modifiers::default()),
+        EventEffect::default()
+    );
+    assert_eq!(app.tabs.active_index(), 9);
+    assert_eq!(
+        app.handle_key(KEY_RETURN, Modifiers::from_bits(Modifiers::COMMAND)),
+        EventEffect::default()
+    );
+    assert_eq!(app.tabs.active_index(), 9);
+    assert!(
+        app.handle_key(KEY_LEFT_BRACKET, Modifiers::from_bits(Modifiers::COMMAND))
+            .document_identity_advanced
+    );
+    assert_eq!(app.tabs.active_index(), 10);
+    assert_eq!(
+        app.handle_key(KEY_RIGHT_BRACKET, Modifiers::default()),
+        EventEffect::default()
+    );
+    assert_eq!(app.tabs.active_index(), 10);
+    assert!(
+        app.handle_key(KEY_RIGHT_BRACKET, Modifiers::from_bits(Modifiers::COMMAND))
+            .document_identity_advanced
+    );
+    assert_eq!(app.tabs.active_index(), 9);
+
+    let before_close = app.tabs.len();
+    assert!(
+        app.handle_key(KEY_W, Modifiers::from_bits(Modifiers::COMMAND))
+            .document_identity_advanced
+    );
+    assert_eq!(app.tabs.len(), before_close - 1);
     Ok(())
 }
 
