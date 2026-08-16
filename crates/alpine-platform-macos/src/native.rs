@@ -3008,6 +3008,17 @@ impl NativeSurface {
         Ok(self.window_close_started.load(Ordering::Acquire))
     }
 
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn replay_close_with_handler<F>(&self, handler: F) -> Result<bool, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        self.delegate.install_event_handler(handler)?;
+        self.window.performClose(None);
+        self.delegate.clear_event_handler();
+        Ok(self.window_close_started.load(Ordering::Acquire))
+    }
+
     pub(crate) fn request_frame(
         &self,
         scene: Scene,

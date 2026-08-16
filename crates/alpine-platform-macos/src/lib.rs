@@ -867,6 +867,22 @@ pub mod native_validation {
         surface.implementation.replay_close(scenario)
     }
 
+    /// Exercises `windowShouldClose` with one production application handler.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured dispatch error if the handler cannot be installed
+    /// or the production delegate cannot resolve the close request.
+    pub fn replay_close_with_handler<F>(
+        surface: &NativeSurface,
+        handler: F,
+    ) -> Result<bool, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        surface.implementation.replay_close_with_handler(handler)
+    }
+
     /// Injects every initialization-stage failure and verifies complete rollback.
     ///
     /// # Errors

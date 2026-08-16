@@ -56,6 +56,8 @@ RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_input
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_runtime
+RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
+    cargo test --locked -p alpine-studio --test native_process
 /usr/bin/env \
     -u MTL_DEBUG_LAYER \
     -u MTL_DEBUG_LAYER_ERROR_MODE \
