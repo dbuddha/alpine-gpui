@@ -205,6 +205,7 @@ fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeEr
 }
 
 #[test]
+#[cfg(not(target_family = "windows"))]
 fn real_file_open_edit_save_and_conflicts_are_atomic() -> Result<(), Box<dyn std::error::Error>> {
     let file = TestFile::new("before")?;
     let mut app = StudioApp::open_file(TestTextSystem, file.path())?;
@@ -249,6 +250,30 @@ fn real_file_open_edit_save_and_conflicts_are_atomic() -> Result<(), Box<dyn std
         app.last_file_error,
         Some(FileError::Conflict(alpine_text::ExternalChange::Deleted))
     );
+    Ok(())
+}
+
+#[test]
+#[cfg(target_family = "windows")]
+fn windows_file_save_fails_structurally_without_touching_disk()
+-> Result<(), Box<dyn std::error::Error>> {
+    let file = TestFile::new("before")?;
+    let mut app = StudioApp::open_file(TestTextSystem, file.path())?;
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    let effect = app.handle_event(&key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND)));
+    assert!(!effect.visual_changed);
+    assert!(!effect.document_changed);
+    assert_eq!(fs::read_to_string(file.path())?, "before");
+    assert!(app.document.is_dirty());
+    assert_eq!(app.save_failures, 1);
+    assert_eq!(
+        app.last_file_error,
+        Some(FileError::UnsupportedAtomicReplace)
+    );
+    assert_eq!(app.last_save, None);
     Ok(())
 }
 
