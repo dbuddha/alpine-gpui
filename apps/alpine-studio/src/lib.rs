@@ -74,6 +74,10 @@ pub fn initial_scene() -> Result<Scene, SurfaceError> {
 }
 
 /// Rejects native scene construction on unsupported hosts.
+///
+/// # Errors
+///
+/// Always returns [`SurfaceError::UnsupportedPlatform`].
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 pub fn initial_scene() -> Result<Scene, SurfaceError> {
     Err(SurfaceError::UnsupportedPlatform)
