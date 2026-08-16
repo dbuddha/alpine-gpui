@@ -19,7 +19,7 @@ use unicode_segmentation::UnicodeSegmentation;
 mod proofs;
 
 const DEFAULT_HISTORY_ENTRIES: usize = 1_024;
-const DEFAULT_HISTORY_BYTES: usize = 64 * 1_024 * 1_024;
+const DEFAULT_HISTORY_BYTES: usize = 67_108_864;
 const TEMPORARY_FILE_ATTEMPTS: u64 = 32;
 static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -922,17 +922,36 @@ impl Buffer {
     }
 
     fn retain_history(&mut self, entry: HistoryEntry) {
-        if self.history_limits.max_entries == 0
-            || self.history_limits.max_bytes == 0
-            || entry.changed_bytes > self.history_limits.max_bytes
+        if self.history_limits.max_entries == 0 {
+            return;
+        }
+        if self.history_limits.max_bytes == 0 {
+            return;
+        }
+        if self
+            .history_limits
+            .max_bytes
+            .checked_sub(entry.changed_bytes)
+            .is_none()
         {
             return;
         }
         self.history_bytes = self.history_bytes.saturating_add(entry.changed_bytes);
         self.undo.push_back(entry);
-        while self.undo.len() > self.history_limits.max_entries
-            || self.history_bytes > self.history_limits.max_bytes
-        {
+        let entry_excess = self
+            .undo
+            .len()
+            .saturating_sub(self.history_limits.max_entries);
+        for _ in 0..entry_excess {
+            if let Some(evicted) = self.undo.pop_front() {
+                self.history_bytes = self.history_bytes.saturating_sub(evicted.changed_bytes);
+            }
+        }
+        let retained_entries = self.undo.len();
+        for _ in 0..retained_entries {
+            if self.history_bytes <= self.history_limits.max_bytes {
+                break;
+            }
             if let Some(evicted) = self.undo.pop_front() {
                 self.history_bytes = self.history_bytes.saturating_sub(evicted.changed_bytes);
             }
@@ -1098,21 +1117,28 @@ impl Editor {
     /// synchronization failures, and replacement failures. A pre-replacement
     /// failure leaves the accepted file bytes unchanged.
     pub fn save(&mut self) -> Result<SaveReport, FileError> {
-        let external = self.external_change()?;
-        if external != ExternalChange::Unchanged {
-            return Err(FileError::Conflict(external));
+        #[cfg(target_family = "windows")]
+        {
+            Err(FileError::UnsupportedAtomicReplace)
         }
-        let snapshot = self.buffer.snapshot();
-        let accepted = self.accepted_fingerprint;
-        let mut write_snapshot = |file: &mut File| snapshot.write_to(file);
-        atomic_replace(&self.path, accepted, &mut write_snapshot)?;
-        let bytes = file_result(fs::read(&self.path), "verify")?;
-        self.accepted_fingerprint = fingerprint(&bytes);
-        self.saved_revision = snapshot.revision;
-        Ok(SaveReport {
-            revision: snapshot.revision,
-            bytes_written: snapshot.len_bytes(),
-        })
+        #[cfg(not(target_family = "windows"))]
+        {
+            let external = self.external_change()?;
+            if external != ExternalChange::Unchanged {
+                return Err(FileError::Conflict(external));
+            }
+            let snapshot = self.buffer.snapshot();
+            let accepted = self.accepted_fingerprint;
+            let mut write_snapshot = |file: &mut File| snapshot.write_to(file);
+            atomic_replace(&self.path, accepted, &mut write_snapshot)?;
+            let bytes = file_result(fs::read(&self.path), "verify")?;
+            self.accepted_fingerprint = fingerprint(&bytes);
+            self.saved_revision = snapshot.revision;
+            Ok(SaveReport {
+                revision: snapshot.revision,
+                bytes_written: snapshot.len_bytes(),
+            })
+        }
     }
 }
 
@@ -1187,7 +1213,7 @@ impl Iterator for LineBoundsIter<'_> {
     type Item = LineBounds;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.cursor > self.text.len() || self.yielded_terminal {
+        if self.yielded_terminal {
             return None;
         }
         let start = self.cursor;
@@ -1206,8 +1232,8 @@ impl Iterator for LineBoundsIter<'_> {
                 '\u{0085}' | '\u{2028}' | '\u{2029}' => character.len_utf8(),
                 _ => continue,
             };
-            let content_end = start + relative;
-            self.cursor = content_end + terminator;
+            let content_end = start.checked_add(relative)?;
+            self.cursor = content_end.checked_add(terminator)?;
             return Some(LineBounds {
                 start,
                 content_end,
@@ -1249,16 +1275,8 @@ fn file_result<T>(result: io::Result<T>, operation: &'static str) -> Result<T, F
     }
 }
 
+#[cfg(not(target_family = "windows"))]
 type FileWriter<'a> = dyn FnMut(&mut File) -> io::Result<()> + 'a;
-
-#[cfg(target_family = "windows")]
-fn atomic_replace(
-    _path: &Path,
-    _accepted: FileFingerprint,
-    _write: &mut FileWriter<'_>,
-) -> Result<(), FileError> {
-    Err(FileError::UnsupportedAtomicReplace)
-}
 
 #[cfg(not(target_family = "windows"))]
 fn atomic_replace(
@@ -1333,6 +1351,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_PATH_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+    static FILE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn transaction(buffer: &Buffer, range: Range<usize>, replacement: &str) -> Transaction {
         let mut transaction = Transaction::new(buffer.revision());
@@ -1351,6 +1370,12 @@ mod tests {
             std::env::temp_dir().join(format!("alpine-text-{}-{sequence}", std::process::id()));
         fs::create_dir(&path)?;
         Ok(path)
+    }
+
+    fn lock_file_tests() -> std::sync::MutexGuard<'static, ()> {
+        FILE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn write_nothing(file: &mut File) -> io::Result<()> {
@@ -1500,12 +1525,14 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
     fn editor_saves_atomically_and_detects_external_change()
     -> Result<(), Box<dyn std::error::Error>> {
+        let _file_test = lock_file_tests();
         let directory = test_directory()?;
         let path = directory.join("document.txt");
         fs::write(&path, "before")?;
         let mut editor = Editor::open(&path)?;
         let replace = transaction(editor.buffer(), 0..6, "after");
         editor.buffer_mut().apply(replace)?;
+        assert!(editor.is_dirty());
         let report = editor.save()?;
         assert_eq!(report.revision(), editor.buffer().revision());
         assert_eq!(report.bytes_written(), 5);
@@ -1530,6 +1557,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
     fn injected_write_failure_preserves_target_and_cleans_temporary_file()
     -> Result<(), Box<dyn std::error::Error>> {
+        let _file_test = lock_file_tests();
         let directory = test_directory()?;
         let path = directory.join("document.txt");
         fs::write(&path, "accepted")?;
@@ -1681,6 +1709,91 @@ mod tests {
     }
 
     #[test]
+    fn transaction_reports_and_private_validation_are_discriminating() -> Result<(), TextError> {
+        let mut buffer = Buffer::new("abcd");
+        assert_eq!(buffer.revision().get(), 0);
+        assert!(!buffer.snapshot().is_empty());
+        assert_eq!(buffer.history_snapshot().max_bytes(), 67_108_864);
+
+        let mut adjacent = Transaction::new(buffer.revision());
+        adjacent.replace(0..1, "A")?;
+        adjacent.replace(1..3, "BC")?;
+        let report = buffer.apply(adjacent)?;
+        assert_eq!(report.replacements(), 2);
+        assert_eq!(report.removed_bytes(), 3);
+        assert_eq!(report.inserted_bytes(), 3);
+        assert_eq!(buffer.snapshot().text(), "ABCd");
+
+        let accepted = buffer.snapshot();
+        let accepted_selections = buffer.selections().clone();
+        let mut invalid_selection = Transaction::new(buffer.revision());
+        invalid_selection.set_selections(SelectionSet {
+            selections: vec![Selection::caret(ByteOffset::new(99))],
+        });
+        assert!(matches!(
+            buffer.apply(invalid_selection),
+            Err(TextError::ByteOutOfBounds { offset: 99, .. })
+        ));
+        let rejected = buffer.snapshot();
+        assert_eq!(rejected.revision(), accepted.revision());
+        assert_eq!(rejected.text(), accepted.text());
+        assert_eq!(buffer.selections(), &accepted_selections);
+        assert_eq!(fingerprint(b"a").hash, 0xaf63_dc4c_8601_ec8c);
+        Ok(())
+    }
+
+    #[test]
+    fn empty_and_multiline_coordinate_boundaries_round_trip() -> Result<(), TextError> {
+        let empty = Buffer::new("").snapshot();
+        assert_eq!(
+            empty.byte_of_line_column(LineColumn::new(0, 0))?,
+            ByteOffset::new(0)
+        );
+        assert_eq!(
+            empty.line_column_of_byte(ByteOffset::new(0))?,
+            LineColumn::new(0, 0)
+        );
+
+        let lines = Buffer::new("a\nb\nc").snapshot();
+        assert_eq!(
+            lines.line_column_of_byte(ByteOffset::new(2))?,
+            LineColumn::new(1, 0)
+        );
+        assert_eq!(
+            lines.byte_of_line_column(LineColumn::new(1, 0))?,
+            ByteOffset::new(2)
+        );
+        assert_eq!(
+            lines.byte_of_line_column(LineColumn::new(1, 2)),
+            Err(TextError::InvalidLineColumn(LineColumn::new(1, 2)))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn entry_and_byte_history_budgets_evict_independently() -> Result<(), TextError> {
+        let mut by_entries = Buffer::with_history_limits("a", HistoryLimits::new(2, 100));
+        for replacement in ["b", "c", "d"] {
+            by_entries.apply(transaction(&by_entries, 0..1, replacement))?;
+        }
+        assert_eq!(by_entries.history_snapshot().undo_entries(), 2);
+        assert_eq!(by_entries.history_snapshot().retained_changed_bytes(), 4);
+
+        let mut by_bytes = Buffer::with_history_limits("a", HistoryLimits::new(10, 4));
+        for replacement in ["b", "c", "d"] {
+            by_bytes.apply(transaction(&by_bytes, 0..1, replacement))?;
+        }
+        assert_eq!(by_bytes.history_snapshot().undo_entries(), 2);
+        assert_eq!(by_bytes.history_snapshot().retained_changed_bytes(), 4);
+
+        let mut exact = Buffer::with_history_limits("a", HistoryLimits::new(1, 2));
+        exact.apply(transaction(&exact, 0..1, "b"))?;
+        assert_eq!(exact.history_snapshot().undo_entries(), 1);
+        assert_eq!(exact.history_snapshot().retained_changed_bytes(), 2);
+        Ok(())
+    }
+
+    #[test]
     fn revision_exhaustion_history_limits_and_redo_invalidation_are_bounded()
     -> Result<(), TextError> {
         let mut exhausted = Buffer::new("a");
@@ -1756,6 +1869,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
     fn file_observers_and_atomic_replace_failures_are_structured()
     -> Result<(), Box<dyn std::error::Error>> {
+        let _file_test = lock_file_tests();
         let directory = test_directory()?;
         let missing = directory.join("missing.txt");
         assert!(matches!(
@@ -1804,6 +1918,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
     fn atomic_replace_failures_are_structured() -> Result<(), Box<dyn std::error::Error>> {
+        let _file_test = lock_file_tests();
         let directory = test_directory()?;
         let collision_target = directory.join("collision.txt");
         fs::write(&collision_target, "old")?;
