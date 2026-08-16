@@ -1,6 +1,164 @@
 schema = "alpine-evidence/v1"
 
 [[claims]]
+id = "AEP-0139-C01"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0139-checked-local-text-buffer.md"
+requirement_issue = 33
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "required"
+tla_properties = ["RejectedIsAtomic", "RevisionNeverDecreases"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "kani", "unit", "property"]
+
+[[claims]]
+id = "AEP-0139-C02"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0139-checked-local-text-buffer.md"
+requirement_issue = 33
+claim_type = "memory"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = ["HistoryIsBounded", "RevisionNeverDecreases"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[claims]]
+id = "AEP-0139-C03"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0139-checked-local-text-buffer.md"
+requirement_issue = 33
+claim_type = "lifecycle"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["ConflictPreservesAcceptedDisk"]
+platform_scope = ["macos-metal"]
+required_evidence = ["tla", "integration"]
+
+[[evidence]]
+id = "EV-0139-TLA01A"
+claim = "AEP-0139-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0139/LocalTextBuffer.tla#RejectedIsAtomic"
+assertion = "A rejected transaction preserves the exact prior content and revision."
+scope = "Finite local transaction, undo, and redo publication state."
+bounds = ["pull request: three content identities and four attempts", "nightly: four content identities and six attempts"]
+assumptions = ["one content identity represents one complete immutable text tree"]
+exclusions = ["Ropey implementation", "Unicode conversion", "filesystem persistence", "Rust formal refinement"]
+companion = "crates/alpine-text/src/lib.rs#snapshots_remain_immutable_and_rejected_edits_are_atomic"
+
+[[evidence]]
+id = "EV-0139-TLA01B"
+claim = "AEP-0139-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0139/LocalTextBuffer.tla#RevisionNeverDecreases"
+assertion = "Accepted edits, undo, and redo never restore an older live revision."
+scope = "Finite local transaction and history state."
+bounds = ["pull request: four revisions", "nightly: six revisions"]
+assumptions = ["revision exhaustion rejects before publication"]
+exclusions = ["u64 arithmetic implementation", "unbounded traces", "Rust formal refinement"]
+companion = "crates/alpine-text/src/lib.rs#undo_redo_are_bounded_and_revisions_never_move_backward"
+
+[[evidence]]
+id = "EV-0139-KANI01"
+claim = "AEP-0139-C01"
+kind = "kani"
+artifact = "crates/alpine-text/src/proofs.rs#selection_transform_stays_at_or_after_replacement_start"
+assertion = "Every bounded selection offset transforms before, to the start of, or after one replacement according to endpoint affinity."
+scope = "Compiled pure selection transform for one edit."
+bounds = ["complete u8 start, removed, inserted, and offset domains"]
+assumptions = ["replacement ranges and UTF-8 boundaries were validated before transformation"]
+exclusions = ["multiple edits", "Ropey mutation", "Unicode segmentation"]
+companion = "crates/alpine-text/src/lib.rs#transaction_overlap_and_selection_transform_are_deterministic"
+
+[[evidence]]
+id = "EV-0139-UNIT01"
+claim = "AEP-0139-C01"
+kind = "unit"
+artifact = "crates/alpine-text/src/lib.rs#snapshots_remain_immutable_and_rejected_edits_are_atomic"
+assertion = "A valid Unicode replacement leaves its prior snapshot immutable, while invalid and stale transactions preserve current state."
+scope = "Public local Buffer and Transaction API."
+exclusions = ["native input", "concurrent writers"]
+
+[[evidence]]
+id = "EV-0139-PROPERTY01"
+claim = "AEP-0139-C01"
+kind = "property"
+artifact = "crates/alpine-text/src/lib.rs#random_edits_match_an_independent_string_oracle"
+assertion = "One thousand deterministic random UTF-8 replacements match an independent String oracle after every accepted edit."
+scope = "Unicode, CRLF, LF, insertion, deletion, and replacement sequences."
+bounds = ["1,000 edits", "five replacement classes"]
+exclusions = ["all possible Unicode strings", "concurrent edits"]
+
+[[evidence]]
+id = "EV-0139-TLA02A"
+claim = "AEP-0139-C02"
+kind = "tla"
+artifact = "formal/tla/aep-0139/LocalTextBuffer.tla#HistoryIsBounded"
+assertion = "Undo and redo retain no more than the configured finite entry ceiling."
+scope = "Finite accepted edits, undo, and redo."
+bounds = ["pull request: two entries per direction", "nightly: three entries per direction"]
+assumptions = ["one abstract entry represents one bounded changed-byte payload"]
+exclusions = ["allocator overhead", "Ropey node sharing", "Rust formal refinement"]
+companion = "crates/alpine-text/src/lib.rs#undo_redo_are_bounded_and_revisions_never_move_backward"
+
+[[evidence]]
+id = "EV-0139-TLA02B"
+claim = "AEP-0139-C02"
+kind = "tla"
+artifact = "formal/tla/aep-0139/LocalTextBuffer.tla#RevisionNeverDecreases"
+assertion = "History navigation advances rather than restoring historical revision identity."
+scope = "Finite local edit and history state."
+bounds = ["pull request: four revisions", "nightly: six revisions"]
+assumptions = ["revision exhaustion rejects before publication"]
+exclusions = ["u64 arithmetic implementation", "unbounded traces", "Rust formal refinement"]
+companion = "crates/alpine-text/src/lib.rs#undo_redo_are_bounded_and_revisions_never_move_backward"
+
+[[evidence]]
+id = "EV-0139-UNIT02"
+claim = "AEP-0139-C02"
+kind = "unit"
+artifact = "crates/alpine-text/src/lib.rs#undo_redo_are_bounded_and_revisions_never_move_backward"
+assertion = "Entry and changed-byte ceilings evict oldest history while undo and redo preserve text and monotonic revisions."
+scope = "Public Buffer history API with two entries and two changed bytes."
+exclusions = ["process footprint", "allocator instrumentation"]
+
+[[evidence]]
+id = "EV-0139-INTEGRATION03A"
+claim = "AEP-0139-C03"
+kind = "integration"
+artifact = "crates/alpine-text/src/lib.rs#editor_saves_atomically_and_detects_external_change"
+assertion = "A real local file is atomically replaced, then an external write is detected and preserved instead of overwritten."
+scope = "One same-directory UTF-8 file on the Unix platform family."
+assumptions = ["same-directory rename is atomic on the v1 filesystem"]
+exclusions = ["Windows replacement", "network filesystems", "malicious concurrent rename in the final comparison interval"]
+
+[[evidence]]
+id = "EV-0139-INTEGRATION03B"
+claim = "AEP-0139-C03"
+kind = "integration"
+artifact = "crates/alpine-text/src/lib.rs#injected_write_failure_preserves_target_and_cleans_temporary_file"
+assertion = "An injected pre-replacement write failure preserves accepted target bytes and removes the temporary file."
+scope = "Same-directory temporary-file replacement helper."
+exclusions = ["power loss after rename", "parent-directory synchronization", "Windows replacement"]
+
+[[evidence]]
+id = "EV-0139-TLA03"
+claim = "AEP-0139-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0139/LocalTextBuffer.tla#ConflictPreservesAcceptedDisk"
+assertion = "A save rejected after external divergence preserves the observed disk identity and last accepted saved content."
+scope = "Finite local content, accepted disk identity, external change, and save disposition."
+bounds = ["pull request: three content identities and four attempts", "nightly: four content identities and six attempts"]
+assumptions = ["one disk identity represents one complete file generation"]
+exclusions = ["filesystem implementation", "final compare-and-rename race", "power loss", "Rust formal refinement"]
+companion = "crates/alpine-text/src/lib.rs#editor_saves_atomically_and_detects_external_change"
+
+[[claims]]
 id = "AEP-0009-C01"
 mission = "MP-03"
 capability_issue = 9
