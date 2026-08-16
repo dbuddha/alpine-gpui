@@ -7,7 +7,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 mod validation {
-    use std::{error::Error, ffi::OsStr, time::Duration};
+    use std::{
+        error::Error,
+        ffi::OsStr,
+        process::{Command, ExitStatus},
+        thread,
+        time::{Duration, Instant},
+    };
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_platform::PresentationOutcome;
@@ -18,19 +24,77 @@ mod validation {
 
     const OWNER_KINDS: usize = 9;
     const SOAK_ITERATIONS: usize = 32;
+    const CHILD_SCENARIO_ENV: &str = "ALPINE_NATIVE_LIFECYCLE_SCENARIO";
+    const MISSING_CLOSE_SCENARIO: &str = "missing-close-control";
+    const POST_COMMIT_CLOSE_SCENARIO: &str = "post-commit-close";
 
     pub(super) fn run() -> TestResult {
-        let hosted_direct = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
-            None => false,
-            Some(mode) if mode == OsStr::new("hosted-direct") => true,
-            Some(_) => return Err("unsupported presentation evidence mode".into()),
-        };
+        if let Some(scenario) = std::env::var_os(CHILD_SCENARIO_ENV) {
+            return run_child_scenario(&scenario);
+        }
+
+        validate_bounded_child(MISSING_CLOSE_SCENARIO, Duration::from_secs(2))?;
+        validate_bounded_child(POST_COMMIT_CLOSE_SCENARIO, Duration::from_secs(8))?;
+
+        let hosted_direct = hosted_direct()?;
         let (scene, clear) = validation_scene()?;
         validate_visible_clean_idle(hosted_direct)?;
-        validate_missing_close_control()?;
-        validate_pending_close(scene.clone(), clear)?;
-        validate_post_commit_close(scene, clear, hosted_direct)?;
+        validate_pending_close(scene, clear)?;
         validate_owner_soak()
+    }
+
+    fn hosted_direct() -> TestResult<bool> {
+        Ok(
+            match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
+                None => false,
+                Some(mode) if mode == OsStr::new("hosted-direct") => true,
+                Some(_) => return Err("unsupported presentation evidence mode".into()),
+            },
+        )
+    }
+
+    fn run_child_scenario(scenario: &OsStr) -> TestResult {
+        if scenario == OsStr::new(MISSING_CLOSE_SCENARIO) {
+            return validate_missing_close_control();
+        }
+        if scenario == OsStr::new(POST_COMMIT_CLOSE_SCENARIO) {
+            let (scene, clear) = validation_scene()?;
+            return validate_post_commit_close(scene, clear, hosted_direct()?);
+        }
+        Err(format!("unsupported native lifecycle child scenario: {scenario:?}").into())
+    }
+
+    fn validate_bounded_child(scenario: &str, timeout: Duration) -> TestResult {
+        let mut child = Command::new(std::env::current_exe()?)
+            .env(CHILD_SCENARIO_ENV, scenario)
+            .spawn()?;
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return require_child_success(scenario, status);
+            }
+            if Instant::now() >= deadline {
+                if let Some(status) = child.try_wait()? {
+                    return require_child_success(scenario, status);
+                }
+                child.kill()?;
+                let status = child.wait()?;
+                return Err(format!(
+                    "native lifecycle child {scenario:?} exceeded {timeout:?} and was terminated with {status}"
+                )
+                .into());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn require_child_success(scenario: &str, status: ExitStatus) -> TestResult {
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("native lifecycle child {scenario:?} failed with {status}").into())
+        }
     }
 
     fn validate_missing_close_control() -> TestResult {
@@ -89,6 +153,12 @@ mod validation {
 
         native_validation::close_window(&surface);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
+        assert_eq!(
+            surface.run(),
+            Err(alpine_platform_macos::SurfaceError::RunLoopNotRunnable {
+                lifecycle: SurfaceLifecycle::Closing,
+            })
+        );
         let admitted = observer.callback_count();
         let rejected = observer.rejected_callback_count();
         native_validation::inject_late_callback(&surface);
