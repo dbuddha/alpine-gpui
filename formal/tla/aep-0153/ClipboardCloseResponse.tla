@@ -118,7 +118,7 @@ CompleteCut(success) ==
     /\ documentBytes' = IF mutates THEN documentBytes - 1 ELSE documentBytes
     /\ documentRevision' = IF mutates THEN ~documentRevision ELSE documentRevision
     /\ dirty' = IF mutates THEN TRUE ELSE dirty
-    /\ invalidCutMutation' = invalidCutMutation \/ (mutates /\ ~matches)
+    /\ invalidCutMutation' = (invalidCutMutation \/ (mutates /\ ~matches))
     /\ UNCHANGED <<live, closeState, selectionIdentity,
                     pendingCutRevision, pendingCutSelection, closeWasDirty>>
 
