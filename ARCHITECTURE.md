@@ -47,8 +47,11 @@ metadata have a configurable hard ceiling, with 32 MiB as the default. Its A8
 glyph atlas starts empty, grows geometrically, reserves metadata before
 ownership mutation, removes least-recently-used entries, coalesces returned
 rectangles, exposes exact pixel and metadata capacity, defaults to a 16 MiB hard
-ceiling, and releases all storage under explicit pressure. CoreText shaping,
-scene glyph operations, and Metal atlas sampling remain unimplemented.
+ceiling, and releases all storage under explicit pressure. Its audited Apple
+Silicon boundary shapes and rasterizes through CoreText and CoreGraphics while
+returning copied Alpine values. `alpine-scene` stores clips, quads, glyphs, and
+ordered paint operations in separate immutable arrays, and the Metal path
+samples the scene-owned A8 atlas without exposing native handles.
 `alpine-runtime` depends on core, scene, and the safe cross-target
 `alpine-platform-macos` facade. It owns one foreground application delegate,
 monotonic workspace and document revisions, dirty-only scene construction, and
@@ -56,10 +59,14 @@ fixed standard worker threads connected by bounded request and result channels.
 Every result carries workspace, document, and process-local sequence identity;
 stale results are rejected before delegate mutation. The runtime exposes no
 native handle and adds no general async executor or reactive graph.
-`alpine-studio` is the first shipping application. It constructs one immutable
-scene through its `AppDelegate`, runs it through one `Application`, requests
-frames only while dirty, and enters the production AppKit run loop until that
-window closes. It has no native handles or validation-only dependencies.
+`alpine-studio` is the first shipping application. It owns one local buffer,
+primary selection, IME composition, viewport state, two-frame layout cache, and
+hard-budgeted glyph atlas. Its `AppDelegate` maps native events to checked local
+edits and builds only visible text plus bounded overscan when dirty. Production
+typography uses the safe CoreText service; deterministic test typography proves
+portable editor behavior without claiming native validation. It runs through
+one `Application` until the owned AppKit window closes and has no native handles,
+collaboration state, extension host, telemetry, AI, or general async runtime.
 The non-shipping `alpine-trace` crate depends only on Alpine workspace crates
 and owns typed, fail-closed conversion from versioned workload values into an
 immutable scene and exact offscreen target. The non-shipping
