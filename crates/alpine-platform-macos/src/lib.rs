@@ -1949,12 +1949,16 @@ mod tests {
         let frame = SurfaceFrame::new(scene.clone(), clear);
         assert_eq!(frame.scene(), &scene);
         assert_eq!(frame.clear(), clear);
+        let response = SurfaceResponse::from(Some(frame.clone()));
+        assert_eq!(response.frame(), Some(&frame));
+        assert_eq!(response.into_frame(), Some(frame.clone()));
         assert_eq!(frame.into_parts(), (scene, clear));
         Ok(())
     }
 
     #[test]
     fn clipboard_and_response_values_preserve_public_identity() -> Result<(), SurfaceError> {
+        assert_eq!(MAX_CLIPBOARD_TEXT_BYTES, 67_108_864);
         let text = ClipboardText::new("bounded").map_err(|_| SurfaceError::DriverUnavailable)?;
         assert_eq!(text.as_str(), "bounded");
         assert_eq!(text.clone().into_inner().as_ref(), "bounded");
