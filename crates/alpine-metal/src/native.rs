@@ -1666,12 +1666,28 @@ fn encode_render_pass(
     }
     if let Some(upload) = upload {
         if let Some(atlas) = atlas {
+            let atlas_extent = [
+                u32::try_from(atlas.width())
+                    .map_err(|_| RenderError::SubmissionInvariantViolated)?,
+                u32::try_from(atlas.height())
+                    .map_err(|_| RenderError::SubmissionInvariantViolated)?,
+            ];
             let resource: &ProtocolObject<dyn MTLResource> = atlas.as_ref();
             #[allow(
                 deprecated,
                 reason = "the macOS 15 Metal 3 path requires all-stage residency evidence"
             )]
             encoder.useResource_usage(resource, MTLResourceUsage::Read);
+            // SAFETY: `atlas_extent` contains exactly two initialized u32
+            // values and Metal copies all eight bytes into fragment buffer
+            // index zero immediately.
+            unsafe {
+                encoder.setFragmentBytes_length_atIndex(
+                    NonNull::from(&atlas_extent).cast::<c_void>(),
+                    size_of::<[u32; 2]>(),
+                    0,
+                );
+            }
         }
         // SAFETY: The retained upload buffer contains exactly the validated
         // LoweredPaint slice, offset zero is aligned, shader index one is fixed,
