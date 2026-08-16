@@ -135,6 +135,133 @@ pub enum ClipboardOperation {
     Paste,
 }
 
+/// Maximum UTF-8 bytes retained by one Alpine clipboard value.
+pub const MAX_CLIPBOARD_TEXT_BYTES: usize = 64 * 1024 * 1024;
+
+/// A structured clipboard boundary failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClipboardError {
+    /// The platform did not provide plain UTF-8 text.
+    Unavailable,
+    /// The owned UTF-8 value exceeded the retained clipboard ceiling.
+    TooLarge {
+        /// Observed UTF-8 byte length.
+        bytes: usize,
+        /// Enforced UTF-8 byte ceiling.
+        limit: usize,
+    },
+    /// A paste operation cannot be used as a clipboard write identity.
+    InvalidWriteOperation,
+    /// The platform rejected a requested clipboard write.
+    WriteRejected,
+}
+
+impl core::fmt::Display for ClipboardError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unavailable => formatter.write_str("plain UTF-8 clipboard text is unavailable"),
+            Self::TooLarge { bytes, limit } => {
+                write!(
+                    formatter,
+                    "clipboard text has {bytes} bytes; limit is {limit}"
+                )
+            }
+            Self::InvalidWriteOperation => {
+                formatter.write_str("paste cannot be returned as a clipboard write")
+            }
+            Self::WriteRejected => formatter.write_str("the platform rejected the clipboard write"),
+        }
+    }
+}
+
+impl core::error::Error for ClipboardError {}
+
+/// Bounded owned plain text crossing the handle-free clipboard boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClipboardText(Box<str>);
+
+impl ClipboardText {
+    /// Validates one owned UTF-8 clipboard value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClipboardError::TooLarge`] when the value exceeds
+    /// [`MAX_CLIPBOARD_TEXT_BYTES`].
+    pub fn new(text: impl Into<Box<str>>) -> Result<Self, ClipboardError> {
+        let text = text.into();
+        if text.len() > MAX_CLIPBOARD_TEXT_BYTES {
+            return Err(ClipboardError::TooLarge {
+                bytes: text.len(),
+                limit: MAX_CLIPBOARD_TEXT_BYTES,
+            });
+        }
+        Ok(Self(text))
+    }
+
+    /// Returns the retained UTF-8 text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consumes the value into its owned UTF-8 text.
+    #[must_use]
+    pub fn into_inner(self) -> Box<str> {
+        self.0
+    }
+}
+
+/// One bounded plain-text write requested by an application event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClipboardWrite {
+    operation: ClipboardOperation,
+    text: ClipboardText,
+}
+
+impl ClipboardWrite {
+    /// Creates a copy or cut write request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClipboardError::InvalidWriteOperation`] for paste.
+    pub fn new(operation: ClipboardOperation, text: ClipboardText) -> Result<Self, ClipboardError> {
+        match operation {
+            ClipboardOperation::Copy | ClipboardOperation::Cut => Ok(Self { operation, text }),
+            ClipboardOperation::Paste => Err(ClipboardError::InvalidWriteOperation),
+        }
+    }
+
+    /// Returns the operation that will receive completion identity.
+    #[must_use]
+    pub const fn operation(&self) -> ClipboardOperation {
+        self.operation
+    }
+
+    /// Returns the bounded text to write.
+    #[must_use]
+    pub const fn text(&self) -> &ClipboardText {
+        &self.text
+    }
+
+    /// Consumes the request into operation and bounded text.
+    #[must_use]
+    pub fn into_parts(self) -> (ClipboardOperation, ClipboardText) {
+        (self.operation, self.text)
+    }
+}
+
+/// Synchronous disposition for one native close request.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CloseDisposition {
+    /// The current event is not a close request.
+    #[default]
+    NotRequested,
+    /// The application accepts the close and irreversible drain may begin.
+    Allow,
+    /// The application keeps the window and runtime live.
+    Cancel,
+}
+
 /// Input-method composition lifecycle and owned text payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ImeEvent {
@@ -291,6 +418,72 @@ impl SurfaceFrame {
     #[must_use]
     pub fn into_parts(self) -> (Scene, LinearRgba) {
         (self.scene, self.clear)
+    }
+}
+
+/// One bounded, handle-free application response to a native event.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SurfaceResponse {
+    frame: Option<SurfaceFrame>,
+    clipboard_write: Option<ClipboardWrite>,
+    close: CloseDisposition,
+}
+
+impl SurfaceResponse {
+    /// Creates one response with at most one frame and clipboard write.
+    #[must_use]
+    pub const fn new(
+        frame: Option<SurfaceFrame>,
+        clipboard_write: Option<ClipboardWrite>,
+        close: CloseDisposition,
+    ) -> Self {
+        Self {
+            frame,
+            clipboard_write,
+            close,
+        }
+    }
+
+    /// Returns the optional immutable frame.
+    #[must_use]
+    pub const fn frame(&self) -> Option<&SurfaceFrame> {
+        self.frame.as_ref()
+    }
+
+    /// Returns the optional bounded clipboard write.
+    #[must_use]
+    pub const fn clipboard_write(&self) -> Option<&ClipboardWrite> {
+        self.clipboard_write.as_ref()
+    }
+
+    /// Returns the close disposition for this event.
+    #[must_use]
+    pub const fn close_disposition(&self) -> CloseDisposition {
+        self.close
+    }
+
+    /// Consumes the response into its independent output channels.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Option<SurfaceFrame>,
+        Option<ClipboardWrite>,
+        CloseDisposition,
+    ) {
+        (self.frame, self.clipboard_write, self.close)
+    }
+
+    /// Consumes the response and returns only its optional frame.
+    #[must_use]
+    pub fn into_frame(self) -> Option<SurfaceFrame> {
+        self.frame
+    }
+}
+
+impl From<Option<SurfaceFrame>> for SurfaceResponse {
+    fn from(frame: Option<SurfaceFrame>) -> Self {
+        Self::new(frame, None, CloseDisposition::NotRequested)
     }
 }
 
@@ -1757,6 +1950,46 @@ mod tests {
         assert_eq!(frame.scene(), &scene);
         assert_eq!(frame.clear(), clear);
         assert_eq!(frame.into_parts(), (scene, clear));
+        Ok(())
+    }
+
+    #[test]
+    fn clipboard_and_response_values_preserve_public_identity() -> Result<(), SurfaceError> {
+        let text = ClipboardText::new("bounded").map_err(|_| SurfaceError::DriverUnavailable)?;
+        assert_eq!(text.as_str(), "bounded");
+        let write = ClipboardWrite::new(ClipboardOperation::Copy, text.clone())
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        assert_eq!(write.operation(), ClipboardOperation::Copy);
+        assert_eq!(write.text(), &text);
+        assert_eq!(
+            ClipboardWrite::new(ClipboardOperation::Paste, text.clone()),
+            Err(ClipboardError::InvalidWriteOperation)
+        );
+        let oversized: Box<str> = "x".repeat(MAX_CLIPBOARD_TEXT_BYTES + 1).into_boxed_str();
+        assert_eq!(
+            ClipboardText::new(oversized),
+            Err(ClipboardError::TooLarge {
+                bytes: MAX_CLIPBOARD_TEXT_BYTES + 1,
+                limit: MAX_CLIPBOARD_TEXT_BYTES,
+            })
+        );
+        assert_eq!(
+            ClipboardError::Unavailable.to_string(),
+            "plain UTF-8 clipboard text is unavailable"
+        );
+        assert_eq!(
+            ClipboardError::WriteRejected.to_string(),
+            "the platform rejected the clipboard write"
+        );
+
+        let response = SurfaceResponse::new(None, Some(write.clone()), CloseDisposition::Cancel);
+        assert!(response.frame().is_none());
+        assert_eq!(response.clipboard_write(), Some(&write));
+        assert_eq!(response.close_disposition(), CloseDisposition::Cancel);
+        assert_eq!(
+            response.into_parts(),
+            (None, Some(write), CloseDisposition::Cancel)
+        );
         Ok(())
     }
 
