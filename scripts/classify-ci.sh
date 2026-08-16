@@ -40,6 +40,10 @@ if matches '^(crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal|alpi
     kani=true
 fi
 
+if matches '^(apps/alpine-studio/.+\.rs$|apps/alpine-studio/Cargo\.toml$)'; then
+    mutation=true
+fi
+
 if matches '^(tools/alpine-assurance/.+\.rs$|assurance/qualification/)'; then
     coverage=true
     mutation=true
@@ -53,7 +57,7 @@ if has_label review:unsafe || matches '^(crates/alpine-text-layout/|crates/.+/(u
     miri=true
 fi
 
-if matches '^(crates/(alpine-metal|alpine-platform-macos)/|shaders/|.+\.metal$)'; then
+if matches '^(apps/alpine-studio/(.+\.rs|Cargo\.toml)$|crates/(alpine-metal|alpine-platform-macos)/|shaders/|.+\.metal$)'; then
     metal=true
 fi
 
