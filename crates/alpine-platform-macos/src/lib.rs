@@ -556,6 +556,19 @@ pub mod native_validation {
         }
     }
 
+    /// Validation-only close path selected for one production delegate replay.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum CloseReplayScenario {
+        /// Invoke close without an installed application handler.
+        MissingHandler,
+        /// Hold the event-handler borrow while AppKit requests close.
+        ReentrantHandler,
+        /// Install a handler that explicitly cancels close.
+        Cancel,
+        /// Install a handler that explicitly allows close.
+        Allow,
+    }
+
     /// Validation-only exact ownership and teardown counts for one surface.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct NativeOwnerEvidence {
@@ -841,35 +854,17 @@ pub mod native_validation {
         surface.implementation.inject_clipboard_error(error);
     }
 
-    /// Exercises `windowShouldClose` and returns whether AppKit admitted close.
+    /// Exercises one `windowShouldClose` scenario and reports admission.
     ///
     /// # Errors
     ///
-    /// Returns a structured dispatch error if the response handler cannot be
-    /// installed.
-    pub fn replay_close_request<F>(
+    /// Returns a structured dispatch error if the selected scenario cannot be
+    /// installed or executed.
+    pub fn replay_close(
         surface: &NativeSurface,
-        handler: F,
-    ) -> Result<bool, SurfaceError>
-    where
-        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
-    {
-        surface.implementation.replay_close_request(handler)
-    }
-
-    /// Exercises a close request with no installed application handler.
-    #[must_use]
-    pub fn replay_close_without_handler(surface: &NativeSurface) -> bool {
-        surface.implementation.replay_close_without_handler()
-    }
-
-    /// Exercises a close request while event-handler dispatch is reentrant.
-    ///
-    /// # Errors
-    ///
-    /// Returns a structured error if the validation borrow cannot be acquired.
-    pub fn replay_reentrant_close(surface: &NativeSurface) -> Result<bool, SurfaceError> {
-        surface.implementation.replay_reentrant_close()
+        scenario: CloseReplayScenario,
+    ) -> Result<bool, SurfaceError> {
+        surface.implementation.replay_close(scenario)
     }
 
     /// Injects every initialization-stage failure and verifies complete rollback.

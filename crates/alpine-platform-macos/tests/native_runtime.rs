@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         PointerButton, ScrollPhase, SurfaceDescriptor, SurfaceEvent, SurfaceExtent,
         SurfaceLifecycle, SurfaceResponse, native_validation,
     };
+    use native_validation::CloseReplayScenario;
 
     let descriptor = SurfaceDescriptor::new("Alpine runtime events", 96.0, 64.0, 1.0)?;
     let surface = native_validation::new_surface(&descriptor)?;
@@ -207,17 +208,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let observer = surface.observer();
-    assert!(!native_validation::replay_close_without_handler(&surface));
+    assert!(!native_validation::replay_close(
+        &surface,
+        CloseReplayScenario::MissingHandler
+    )?);
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
-    assert!(!native_validation::replay_reentrant_close(&surface)?);
+    assert!(!native_validation::replay_close(
+        &surface,
+        CloseReplayScenario::ReentrantHandler
+    )?);
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
-    assert!(!native_validation::replay_close_request(&surface, |_| {
-        SurfaceResponse::new(None, None, CloseDisposition::Cancel)
-    })?);
+    assert!(!native_validation::replay_close(
+        &surface,
+        CloseReplayScenario::Cancel
+    )?);
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
-    assert!(native_validation::replay_close_request(&surface, |_| {
-        SurfaceResponse::new(None, None, CloseDisposition::Allow)
-    })?);
+    assert!(native_validation::replay_close(
+        &surface,
+        CloseReplayScenario::Allow
+    )?);
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
 
     let evidence = native_validation::close_with_owner_evidence(surface)?;

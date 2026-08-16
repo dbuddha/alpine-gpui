@@ -2962,31 +2962,35 @@ impl NativeSurface {
     }
 
     #[cfg(alpine_native_validation)]
-    pub(crate) fn replay_close_request<F>(&self, handler: F) -> Result<bool, SurfaceError>
-    where
-        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
-    {
-        self.delegate.install_event_handler(handler)?;
-        self.window.performClose(None);
-        self.delegate.clear_event_handler();
-        Ok(self.window_close_started.load(Ordering::Acquire))
-    }
+    pub(crate) fn replay_close(
+        &self,
+        scenario: crate::native_validation::CloseReplayScenario,
+    ) -> Result<bool, SurfaceError> {
+        use crate::native_validation::CloseReplayScenario;
 
-    #[cfg(alpine_native_validation)]
-    pub(crate) fn replay_close_without_handler(&self) -> bool {
-        self.window.performClose(None);
-        self.window_close_started.load(Ordering::Acquire)
-    }
-
-    #[cfg(alpine_native_validation)]
-    pub(crate) fn replay_reentrant_close(&self) -> Result<bool, SurfaceError> {
-        let _borrow = self
-            .delegate
-            .ivars()
-            .event_handler
-            .try_borrow_mut()
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
-        self.window.performClose(None);
+        match scenario {
+            CloseReplayScenario::MissingHandler => self.window.performClose(None),
+            CloseReplayScenario::ReentrantHandler => {
+                let _borrow = self
+                    .delegate
+                    .ivars()
+                    .event_handler
+                    .try_borrow_mut()
+                    .map_err(|_| SurfaceError::DriverUnavailable)?;
+                self.window.performClose(None);
+            }
+            CloseReplayScenario::Cancel | CloseReplayScenario::Allow => {
+                let close = if scenario == CloseReplayScenario::Cancel {
+                    CloseDisposition::Cancel
+                } else {
+                    CloseDisposition::Allow
+                };
+                self.delegate
+                    .install_event_handler(move |_| SurfaceResponse::new(None, None, close))?;
+                self.window.performClose(None);
+                self.delegate.clear_event_handler();
+            }
+        }
         Ok(self.window_close_started.load(Ordering::Acquire))
     }
 
