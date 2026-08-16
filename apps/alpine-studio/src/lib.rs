@@ -10,6 +10,7 @@ use std::{
     fmt,
     num::{NonZeroU32, NonZeroUsize},
     ops::Range,
+    path::Path,
     sync::Arc,
 };
 
@@ -23,7 +24,8 @@ use alpine_scene::{
     SceneRevision,
 };
 use alpine_text::{
-    Buffer, BufferSnapshot, ByteOffset, Selection, SelectionSet, TextError, Transaction,
+    Buffer, BufferSnapshot, ByteOffset, Editor, FileError, SaveReport, Selection, SelectionSet,
+    TextError, Transaction,
 };
 use alpine_text_layout::{
     DEFAULT_ATLAS_BUDGET_BYTES, DEFAULT_LAYOUT_BUDGET_BYTES, DEFAULT_OVERSCAN_LINES, FontKey,
@@ -48,6 +50,7 @@ const SELECTION_ALPHA: f32 = 0.42;
 const INITIAL_TEXT: &str = "fn main() {\n    println!(\"Alpine Studio\");\n}\n\n// Local, direct, and deliberately small.\n";
 
 const KEY_A: u16 = 0;
+const KEY_S: u16 = 1;
 const KEY_Z: u16 = 6;
 const KEY_RETURN: u16 = 36;
 const KEY_TAB: u16 = 48;
@@ -60,6 +63,55 @@ const KEY_LEFT: u16 = 123;
 const KEY_RIGHT: u16 = 124;
 const KEY_DOWN: u16 = 125;
 const KEY_UP: u16 = 126;
+
+/// A structured Alpine Studio launch failure.
+#[derive(Debug)]
+pub enum StudioError {
+    /// More than one positional file path was supplied.
+    Usage,
+    /// Opening or saving the selected local file failed.
+    File(FileError),
+    /// Native application construction or execution failed.
+    Runtime(RuntimeError),
+}
+
+impl fmt::Display for StudioError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Usage => formatter.write_str("usage: alpine-studio [file]"),
+            Self::File(error) => write!(formatter, "Studio file failed: {error}"),
+            Self::Runtime(error) => write!(formatter, "Studio runtime failed: {error}"),
+        }
+    }
+}
+
+impl Error for StudioError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Usage => None,
+            Self::File(error) => Some(error),
+            Self::Runtime(error) => Some(error),
+        }
+    }
+}
+
+impl From<FileError> for StudioError {
+    fn from(error: FileError) -> Self {
+        Self::File(error)
+    }
+}
+
+impl From<RuntimeError> for StudioError {
+    fn from(error: RuntimeError) -> Self {
+        Self::Runtime(error)
+    }
+}
+
+impl From<SurfaceError> for StudioError {
+    fn from(error: SurfaceError) -> Self {
+        Self::Runtime(RuntimeError::Surface(error))
+    }
+}
 
 /// Builds the first immutable native Studio editor scene.
 ///
@@ -92,23 +144,45 @@ pub fn initial_scene() -> Result<Scene, SurfaceError> {
 pub fn run() -> Result<(), RuntimeError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        let clear =
-            LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
-        let descriptor = SurfaceDescriptor::new(
-            "Alpine Studio",
-            f64::from(WINDOW_WIDTH),
-            f64::from(WINDOW_HEIGHT),
-            2.0,
-        )?;
-        let viewport =
-            Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
-        Application::new(native_app()?, viewport, clear, WorkerConfig::default())?.run(&descriptor)
+        run_native(native_app()?)
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
         Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))
     }
+}
+
+/// Opens one existing UTF-8 file before starting the native Studio window.
+///
+/// # Errors
+///
+/// Returns a structured file error before native construction, or the
+/// structured runtime error from native construction and execution.
+pub fn run_file(path: impl AsRef<Path>) -> Result<(), StudioError> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        run_native(native_file_app(path.as_ref())?).map_err(StudioError::from)
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        let _ = path;
+        Err(SurfaceError::UnsupportedPlatform.into())
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let descriptor = SurfaceDescriptor::new(
+        "Alpine Studio",
+        f64::from(WINDOW_WIDTH),
+        f64::from(WINDOW_HEIGHT),
+        2.0,
+    )?;
+    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
+    Application::new(app, viewport, clear, WorkerConfig::default())?.run(&descriptor)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -118,6 +192,16 @@ fn native_app() -> Result<StudioApp, SurfaceError> {
         .register_font(FONT_FAMILY, "Menlo-Regular")
         .map_err(|_| SurfaceError::DriverUnavailable)?;
     StudioApp::new(text_system)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn native_file_app(path: &Path) -> Result<StudioApp, StudioError> {
+    let document = StudioDocument::open(path)?;
+    let mut text_system = alpine_text_layout::CoreTextSystem::new();
+    text_system
+        .register_font(FONT_FAMILY, "Menlo-Regular")
+        .map_err(|_| SurfaceError::DriverUnavailable)?;
+    StudioApp::from_document(text_system, document).map_err(StudioError::from)
 }
 
 trait StudioTextSystem: TextShaper + GlyphRasterizer {}
@@ -206,8 +290,52 @@ impl fmt::Display for StudioRenderError {
 
 impl Error for StudioRenderError {}
 
+enum StudioDocument {
+    Scratch(Buffer),
+    File(Editor),
+}
+
+impl StudioDocument {
+    fn scratch(text: &str) -> Self {
+        Self::Scratch(Buffer::new(text))
+    }
+
+    fn open(path: impl AsRef<Path>) -> Result<Self, FileError> {
+        Editor::open(path).map(Self::File)
+    }
+
+    const fn buffer(&self) -> &Buffer {
+        match self {
+            Self::Scratch(buffer) => buffer,
+            Self::File(editor) => editor.buffer(),
+        }
+    }
+
+    const fn buffer_mut(&mut self) -> &mut Buffer {
+        match self {
+            Self::Scratch(buffer) => buffer,
+            Self::File(editor) => editor.buffer_mut(),
+        }
+    }
+
+    fn save(&mut self) -> Result<Option<SaveReport>, FileError> {
+        match self {
+            Self::Scratch(_) => Ok(None),
+            Self::File(editor) => editor.save().map(Some),
+        }
+    }
+
+    #[cfg(test)]
+    fn is_dirty(&self) -> bool {
+        match self {
+            Self::Scratch(_) => false,
+            Self::File(editor) => editor.is_dirty(),
+        }
+    }
+}
+
 struct StudioApp {
-    buffer: Buffer,
+    document: StudioDocument,
     selection: Selection,
     composition: Option<Composition>,
     scroll_y: f32,
@@ -222,10 +350,29 @@ struct StudioApp {
     text_system: Box<dyn StudioTextSystem>,
     input_failures: u64,
     render_failures: u64,
+    save_failures: u64,
+    last_save: Option<SaveReport>,
+    last_file_error: Option<FileError>,
 }
 
 impl StudioApp {
     fn new(text_system: impl StudioTextSystem + 'static) -> Result<Self, SurfaceError> {
+        Self::from_document(text_system, StudioDocument::scratch(INITIAL_TEXT))
+    }
+
+    #[cfg(test)]
+    fn open_file(
+        text_system: impl StudioTextSystem + 'static,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, StudioError> {
+        let document = StudioDocument::open(path)?;
+        Self::from_document(text_system, document).map_err(StudioError::from)
+    }
+
+    fn from_document(
+        text_system: impl StudioTextSystem + 'static,
+        document: StudioDocument,
+    ) -> Result<Self, SurfaceError> {
         let last_viewport =
             Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
         let layout_budget = NonZeroUsize::new(DEFAULT_LAYOUT_BUDGET_BYTES)
@@ -233,7 +380,7 @@ impl StudioApp {
         let atlas_budget =
             NonZeroUsize::new(DEFAULT_ATLAS_BUDGET_BYTES).ok_or(SurfaceError::DriverUnavailable)?;
         Ok(Self {
-            buffer: Buffer::new(INITIAL_TEXT),
+            document,
             selection: Selection::caret(ByteOffset::new(0)),
             composition: None,
             scroll_y: 0.0,
@@ -248,7 +395,18 @@ impl StudioApp {
             text_system: Box::new(text_system),
             input_failures: 0,
             render_failures: 0,
+            save_failures: 0,
+            last_save: None,
+            last_file_error: None,
         })
+    }
+
+    const fn buffer(&self) -> &Buffer {
+        self.document.buffer()
+    }
+
+    const fn buffer_mut(&mut self) -> &mut Buffer {
+        self.document.buffer_mut()
     }
 
     fn font() -> Result<FontKey, StudioRenderError> {
@@ -312,14 +470,14 @@ impl StudioApp {
         let wrap_width =
             PositiveFinite::new(content_size.width()).ok_or(StudioRenderError::Domain)?;
         let visible = VisibleLines::new(
-            self.buffer.snapshot().line_count(),
+            self.buffer().snapshot().line_count(),
             self.scroll_y,
             viewport_height,
             line_height,
             DEFAULT_OVERSCAN_LINES,
         )?;
         let font = Self::font()?;
-        let snapshot = self.buffer.snapshot();
+        let snapshot = self.buffer().snapshot();
         let background =
             LinearRgba::new(0.035, 0.04, 0.045, 1.0).ok_or(StudioRenderError::Domain)?;
         let editor_background =
@@ -596,8 +754,11 @@ impl StudioApp {
         if command && physical_key == KEY_A {
             return self.set_selection(Selection::new(
                 ByteOffset::new(0),
-                ByteOffset::new(self.buffer.snapshot().len_bytes()),
+                ByteOffset::new(self.buffer().snapshot().len_bytes()),
             ));
+        }
+        if command && physical_key == KEY_S {
+            return self.save_document();
         }
         if command && physical_key == KEY_Z {
             return if shift { self.redo() } else { self.undo() };
@@ -712,7 +873,7 @@ impl StudioApp {
             return Some(ByteOffset::new(0));
         }
         let line = floor_f32_to_usize(line_position)?;
-        let snapshot = self.buffer.snapshot();
+        let snapshot = self.buffer().snapshot();
         let line = line.min(snapshot.line_count().saturating_sub(1));
         let line_range = snapshot.line_byte_range(line).ok()?;
         let text = snapshot.slice(line_range.clone()).ok()?;
@@ -747,13 +908,13 @@ impl StudioApp {
             return EventEffect::default();
         };
         let next_selection = Selection::caret(ByteOffset::new(next_offset));
-        let mut transaction = Transaction::new(self.buffer.revision());
+        let mut transaction = Transaction::new(self.buffer().revision());
         if transaction.replace(range, text).is_err() {
             self.input_failures = self.input_failures.saturating_add(1);
             return EventEffect::default();
         }
         transaction.set_selections(SelectionSet::caret(next_selection.head()));
-        if self.buffer.apply(transaction).is_ok() {
+        if self.buffer_mut().apply(transaction).is_ok() {
             self.selection = next_selection;
             self.composition = None;
             EventEffect::document()
@@ -767,7 +928,7 @@ impl StudioApp {
         if !self.selection.range().is_empty() {
             return self.replace_selection("");
         }
-        let snapshot = self.buffer.snapshot();
+        let snapshot = self.buffer().snapshot();
         let Ok(index) = snapshot.grapheme_index_of_byte(self.selection.head()) else {
             self.input_failures = self.input_failures.saturating_add(1);
             return EventEffect::default();
@@ -785,7 +946,7 @@ impl StudioApp {
         if !self.selection.range().is_empty() {
             return self.replace_selection("");
         }
-        let snapshot = self.buffer.snapshot();
+        let snapshot = self.buffer().snapshot();
         let Ok(index) = snapshot.grapheme_index_of_byte(self.selection.head()) else {
             self.input_failures = self.input_failures.saturating_add(1);
             return EventEffect::default();
@@ -802,7 +963,7 @@ impl StudioApp {
             let offset = if forward { range.end } else { range.start };
             return self.set_selection(Selection::caret(ByteOffset::new(offset)));
         }
-        let snapshot = self.buffer.snapshot();
+        let snapshot = self.buffer().snapshot();
         let Ok(index) = snapshot.grapheme_index_of_byte(self.selection.head()) else {
             self.input_failures = self.input_failures.saturating_add(1);
             return EventEffect::default();
@@ -819,7 +980,7 @@ impl StudioApp {
     }
 
     fn move_vertical(&mut self, delta: isize, extend: bool) -> EventEffect {
-        let snapshot = self.buffer.snapshot();
+        let snapshot = self.buffer().snapshot();
         let target = (|| {
             let line = Self::line_for_offset(&snapshot, self.selection.head().get()).ok()??;
             let line_range = snapshot.line_byte_range(line).ok()?;
@@ -843,7 +1004,7 @@ impl StudioApp {
     }
 
     fn move_to_line_edge(&mut self, end: bool, extend: bool) -> EventEffect {
-        let snapshot = self.buffer.snapshot();
+        let snapshot = self.buffer().snapshot();
         let offset = (|| {
             let line = Self::line_for_offset(&snapshot, self.selection.head().get()).ok()??;
             let range = snapshot.line_byte_range(line).ok()?;
@@ -870,9 +1031,9 @@ impl StudioApp {
     }
 
     fn undo(&mut self) -> EventEffect {
-        match self.buffer.undo() {
+        match self.buffer_mut().undo() {
             Ok(true) => {
-                if let Some(selection) = self.buffer.selections().as_slice().first().copied() {
+                if let Some(selection) = self.buffer().selections().as_slice().first().copied() {
                     self.selection = selection;
                 }
                 self.composition = None;
@@ -888,9 +1049,9 @@ impl StudioApp {
     }
 
     fn redo(&mut self) -> EventEffect {
-        match self.buffer.redo() {
+        match self.buffer_mut().redo() {
             Ok(true) => {
-                if let Some(selection) = self.buffer.selections().as_slice().first().copied() {
+                if let Some(selection) = self.buffer().selections().as_slice().first().copied() {
                     self.selection = selection;
                 }
                 self.composition = None;
@@ -929,7 +1090,23 @@ impl StudioApp {
 
     fn maximum_scroll(&self) -> f32 {
         let content_height = (self.last_viewport.height() - CONTENT_INSET * 2.0).max(1.0);
-        (usize_as_f32(self.buffer.snapshot().line_count()) * LINE_HEIGHT - content_height).max(0.0)
+        (usize_as_f32(self.buffer().snapshot().line_count()) * LINE_HEIGHT - content_height)
+            .max(0.0)
+    }
+
+    fn save_document(&mut self) -> EventEffect {
+        match self.document.save() {
+            Ok(Some(report)) => {
+                self.last_save = Some(report);
+                self.last_file_error = None;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.save_failures = self.save_failures.saturating_add(1);
+                self.last_file_error = Some(error);
+            }
+        }
+        EventEffect::default()
     }
 
     fn clamp_scroll(&mut self) {
@@ -943,7 +1120,7 @@ impl AppDelegate for StudioApp {
     fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, u64>) {
         let effect = self.handle_event(event);
         if effect.document_changed {
-            let revision = DocumentRevision::new(self.buffer.revision().get());
+            let revision = DocumentRevision::new(self.buffer().revision().get());
             let rejected = !context.advance_document(revision);
             self.input_failures = self.input_failures.saturating_add(u64::from(rejected));
         }
