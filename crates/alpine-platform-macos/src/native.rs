@@ -44,8 +44,8 @@ use block2::RcBlock;
 
 use crate::{
     FrameTerminalEvidence, SURFACE_CLOSING, SURFACE_LIVE, SdrColorContract, SurfaceConfiguration,
-    SurfaceDescriptor, SurfaceError, SurfaceObserver, SurfaceSnapshot, SurfaceStage,
-    begin_close_observer_state, finish_close_observer_state, new_observer_state,
+    SurfaceDescriptor, SurfaceError, SurfaceLifecycle, SurfaceObserver, SurfaceSnapshot,
+    SurfaceStage, begin_close_observer_state, finish_close_observer_state, new_observer_state,
     presentation_visible,
 };
 
@@ -873,7 +873,7 @@ impl PresentationDriver {
             active.observation.inject(control.presented_time_bits);
         }
         Ok(if control.close_generation {
-            DisplayLinkDirective::Invalidate
+            DisplayLinkDirective::Pause
         } else {
             directive
         })
@@ -956,7 +956,9 @@ fn render_recovery(error: &SurfaceError) -> Option<RecoveryClassification> {
         | SurfaceError::Presentation(_)
         | SurfaceError::DriverUnavailable
         | SurfaceError::PresentationNotObserved { .. }
-        | SurfaceError::PresentationsSkipped { .. } => None,
+        | SurfaceError::PresentationsSkipped { .. }
+        | SurfaceError::RunLoopNotRunnable { .. }
+        | SurfaceError::UnexpectedRunLoopExit { .. } => None,
     }
 }
 
@@ -996,6 +998,7 @@ struct DisplayLinkDelegateIvars {
     rejected_callback_count: Arc<AtomicU64>,
     counters: Arc<FrameCounters>,
     driver: Option<Rc<RefCell<PresentationDriver>>>,
+    application: Retained<NSApplication>,
     window: Option<Retained<NSWindow>>,
     view: Option<Retained<NSView>>,
     layer: Option<Retained<CAMetalLayer>>,
@@ -1052,6 +1055,13 @@ define_class!(
                     |mut driver| driver.update(update, &self.ivars().counters),
                 );
                 apply_display_link_directive(link, directive);
+                #[cfg(alpine_native_validation)]
+                if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE
+                    && !self.ivars().window_close_started.load(Ordering::Acquire)
+                    && let Some(window) = &self.ivars().window
+                {
+                    schedule_validation_window_close(window);
+                }
             }
         }
     }
@@ -1173,20 +1183,13 @@ impl DisplayLinkDelegate {
     fn begin_native_close(&self) {
         if self
             .ivars()
-            .lifecycle
-            .compare_exchange(
-                SURFACE_LIVE,
-                SURFACE_CLOSING,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
+            .window_close_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
             return;
         }
-        self.ivars()
-            .window_close_started
-            .store(true, Ordering::Release);
+        begin_close_observer_state(&self.ivars().lifecycle);
         #[cfg(alpine_native_validation)]
         if let Some(probe) = &self.ivars().validation_probe {
             probe.record_window_close();
@@ -1201,6 +1204,7 @@ impl DisplayLinkDelegate {
             display_link.invalidate();
             display_link.setDelegate(None);
         }
+        stop_event_loop(&self.ivars().application);
     }
 }
 
@@ -1275,6 +1279,23 @@ fn apply_display_link_directive(link: &CAMetalDisplayLink, directive: DisplayLin
             link.invalidate();
         }
     }
+}
+
+#[cfg(alpine_native_validation)]
+fn schedule_validation_window_close(window: &Retained<NSWindow>) {
+    let window = window.clone();
+    let close_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
+        RcBlock::new(move |timer: NonNull<NSTimer>| {
+            // SAFETY: Foundation supplies a valid borrowed timer for the
+            // complete callback, and the reference does not escape.
+            unsafe { timer.as_ref() }.invalidate();
+            window.close();
+        });
+    // SAFETY: The block and retained window remain main-thread-only,
+    // Foundation copies the block for the scheduled timer lifetime, and the
+    // callback receives a valid NSTimer after the display-link callback exits.
+    let _timer =
+        unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.0, false, &close_block) };
 }
 
 pub(crate) struct NativeSurface {
@@ -1502,6 +1523,11 @@ impl NativeSurface {
                 rejected_callback_count: Arc::clone(&builder.rejected_callback_count),
                 counters: Arc::clone(&builder.counters),
                 driver: Some(driver),
+                application: builder
+                    .application
+                    .as_ref()
+                    .ok_or_else(|| native_unavailable(SurfaceStage::MainThread))?
+                    .clone(),
                 window: builder.window.clone(),
                 view: builder.view.clone(),
                 layer: builder.layer.clone(),
@@ -1553,6 +1579,37 @@ impl NativeSurface {
         )]
         self.application.activateIgnoringOtherApps(true);
         self.delegate.synchronize_native_configuration()
+    }
+
+    pub(crate) fn run(&self) -> Result<(), SurfaceError> {
+        let _main_thread = MainThreadMarker::new().ok_or(SurfaceError::NativeUnavailable {
+            stage: SurfaceStage::MainThread,
+        })?;
+
+        if !matches!(
+            surface_lifecycle(self.lifecycle.load(Ordering::Acquire)),
+            SurfaceLifecycle::Live,
+        ) {
+            return Err(SurfaceError::RunLoopNotRunnable {
+                lifecycle: surface_lifecycle(self.lifecycle.load(Ordering::Acquire)),
+            });
+        }
+
+        self.application.run();
+
+        if matches!(
+            surface_lifecycle(self.lifecycle.load(Ordering::Acquire)),
+            SurfaceLifecycle::Live,
+        ) {
+            return Err(SurfaceError::UnexpectedRunLoopExit {
+                lifecycle: SurfaceLifecycle::Live,
+            });
+        }
+
+        match self.take_error()? {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn request_frame(
@@ -1609,6 +1666,37 @@ impl NativeSurface {
         };
         self.application.run();
         timer.invalidate();
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn arm_run_timeout(
+        &self,
+        timeout: Duration,
+        expired: Arc<std::sync::atomic::AtomicBool>,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let timer_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
+            RcBlock::new(move |timer: NonNull<NSTimer>| {
+                // SAFETY: Foundation supplies a valid borrowed timer for the
+                // complete callback, and the reference does not escape.
+                unsafe { timer.as_ref() }.invalidate();
+                if !cancelled.swap(true, Ordering::AcqRel) {
+                    expired.store(true, Ordering::Release);
+                    if let Some(main_thread) = MainThreadMarker::new() {
+                        stop_validation_event_loop(&NSApplication::sharedApplication(main_thread));
+                    }
+                }
+            });
+        // SAFETY: The block is scheduled on the process main run loop,
+        // Foundation copies it for the timer lifetime, and the callback
+        // receives a valid NSTimer. The scheduled timer retains itself.
+        let _timer = unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_repeats_block(
+                timeout.as_secs_f64(),
+                false,
+                &timer_block,
+            )
+        };
     }
 
     pub(crate) fn snapshot(&self) -> SurfaceSnapshot {
@@ -1817,7 +1905,12 @@ impl NativeSurface {
 
 #[cfg(alpine_native_validation)]
 fn stop_validation_event_loop(application: &NSApplication) {
+    stop_event_loop(application);
+}
+
+fn stop_event_loop(application: &NSApplication) {
     application.stop(None);
+    #[cfg(alpine_native_validation)]
     if let Some(event) = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
         NSEventType::ApplicationDefined,
         NSPoint::new(0.0, 0.0),
@@ -1830,6 +1923,15 @@ fn stop_validation_event_loop(application: &NSApplication) {
         0,
     ) {
         application.postEvent_atStart(&event, true);
+    }
+}
+
+#[allow(clippy::match_like_matches_macro)]
+fn surface_lifecycle(state: u8) -> SurfaceLifecycle {
+    match state {
+        SURFACE_LIVE => SurfaceLifecycle::Live,
+        SURFACE_CLOSING => SurfaceLifecycle::Closing,
+        _ => SurfaceLifecycle::Closed,
     }
 }
 

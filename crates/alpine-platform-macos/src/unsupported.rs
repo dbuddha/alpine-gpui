@@ -25,6 +25,14 @@ impl NativeSurface {
         clippy::unused_self,
         reason = "the unsupported implementation mirrors the native owner contract"
     )]
+    pub(crate) const fn run(&self) -> Result<(), SurfaceError> {
+        Err(SurfaceError::UnsupportedPlatform)
+    }
+
+    #[allow(
+        clippy::unused_self,
+        reason = "the unsupported implementation mirrors the native owner contract"
+    )]
     pub(crate) fn request_frame(
         &self,
         _scene: Scene,
@@ -113,6 +121,7 @@ mod tests {
     fn inert_snapshot_discloses_no_native_configuration() {
         let surface = NativeSurface;
         assert_eq!(surface.show(), Err(SurfaceError::UnsupportedPlatform));
+        assert_eq!(surface.run(), Err(SurfaceError::UnsupportedPlatform));
         assert_eq!(
             surface.snapshot(),
             SurfaceSnapshot {
