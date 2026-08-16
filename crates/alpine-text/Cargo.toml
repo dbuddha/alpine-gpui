@@ -1,0 +1,20 @@
+[package]
+name = "alpine-text"
+version.workspace = true
+description = "Checked local text-buffer and one-file editor contracts for Alpine Studio"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[dependencies]
+unicode-segmentation = { version = "=1.13.3", default-features = false }
+
+[target.'cfg(miri)'.dependencies]
+ropey = { version = "=1.6.1", default-features = false, features = ["cr_lines"] }
+
+[target.'cfg(not(miri))'.dependencies]
+ropey = { version = "=1.6.1", default-features = false, features = ["cr_lines", "simd"] }
+
+[lints]
+workspace = true

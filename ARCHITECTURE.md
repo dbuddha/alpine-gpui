@@ -23,6 +23,21 @@ narrowly featured `objc2-core-graphics` binding to own a standard sRGB color
 space. Its safe application API exposes no native handle,
 remains available on other targets, and returns a structured
 unsupported-platform error without linking Apple frameworks.
+`alpine-text` owns the local-only text domain behind safe Alpine values. It
+uses exact-version, default-feature-minimized Ropey and Unicode Segmentation
+dependencies selected by [Decision #139](https://github.com/dbuddha/alpine-gpui/issues/139)
+after Crop 0.4.3 failed the accepted nested-slice and UTF-16 boundary corpus.
+Canonical coordinates are UTF-8 byte offsets. Every rope conversion is checked
+for bounds and byte-to-character round-trip identity before mutation. Immutable
+snapshots are copy-on-write, transactions are revision-bound and atomic,
+selection transformation and undo/redo are deterministic, and retained history
+has explicit entry and changed-byte ceilings. Global AppKit UTF-16, line-local
+LSP UTF-16, line-column, and grapheme conversions return structured errors for
+ambiguous boundaries. The one-file `Editor` fingerprints accepted disk bytes,
+detects external replacement or deletion, and uses same-directory synchronized
+temporary files plus atomic replacement on the v1 Unix platform family. It owns
+no collaboration, replica, remote-operation, language-service, plugin, AI, or
+native state.
 `alpine-runtime` depends on core, scene, and the safe cross-target
 `alpine-platform-macos` facade. It owns one foreground application delegate,
 monotonic workspace and document revisions, dirty-only scene construction, and

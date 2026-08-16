@@ -23,6 +23,7 @@ Accepted AEPs:
 - [AEP 0064: Native macOS presentation](0064-native-macos-presentation.md)
 - [AEP 0120: Bounded asynchronous Metal presentation](0120-bounded-asynchronous-presentation.md)
 - [AEP 0137: Bounded single-window Studio runtime](0137-bounded-studio-runtime.md)
+- [AEP 0139: Checked local text buffer and one-file editor](0139-checked-local-text-buffer.md)
 
 Proposed AEPs:
 
