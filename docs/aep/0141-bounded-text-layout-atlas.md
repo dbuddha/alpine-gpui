@@ -36,6 +36,12 @@ performance claim from functional and resource-bound evidence alone.
   cached ownership under pressure without invalidating an in-flight command.
   Validation rejects dimensions beyond the Metal 3 guarantee and payloads over
   16 MiB before native allocation.
+- **AEP-0141-C05:** One production-composed Studio process routes the real
+  AppKit keyboard, text-input, IME, pointer, and scroll selectors through the
+  bounded application runtime. The exact seven-event input sequence produces
+  six and only six monotonically revised immutable frames, leaves no residual
+  dirty frame, and atomically persists the expected Unicode document before
+  the clipboard and close journey begins.
 
 ## Ownership and cache generations
 
@@ -95,8 +101,10 @@ The ownership, cache, viewport, and atlas contracts are portable safe Rust. A
 private Apple Silicon CoreText and CoreGraphics module copies shaped glyphs and
 A8 bitmaps into Alpine-owned values. Scene glyph operations preserve painter
 order and clipping, and Metal sampling is checked against the independent CPU
-pixel oracle. IME, editor event integration, and accessibility remain outside
-this claim and are not implied by renderer evidence.
+pixel oracle. The process journey composes native input and editor integration
+with those independently qualified renderer contracts; it does not claim a
+formal refinement from AppKit callbacks to pixels. Accessibility remains
+outside this claim and is not implied by renderer or input evidence.
 
 ## Failure and reversal conditions
 

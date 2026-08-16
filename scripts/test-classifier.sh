@@ -47,13 +47,15 @@ assert_output "$text_layout" metal=false
 
 studio=$(run_fixture apps/alpine-studio/src/lib.rs)
 assert_output "$studio" coverage=true
-assert_output "$studio" mutation=false
+assert_output "$studio" mutation=true
 assert_output "$studio" kani=false
+assert_output "$studio" metal=true
 
 studio_manifest=$(run_fixture apps/alpine-studio/Cargo.toml)
 assert_output "$studio_manifest" coverage=true
-assert_output "$studio_manifest" mutation=false
+assert_output "$studio_manifest" mutation=true
 assert_output "$studio_manifest" kani=false
+assert_output "$studio_manifest" metal=true
 
 studio_docs=$(run_fixture apps/alpine-studio/README.md)
 assert_output "$studio_docs" coverage=false
