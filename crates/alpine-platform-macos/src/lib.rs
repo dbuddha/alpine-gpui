@@ -586,6 +586,22 @@ pub mod native_validation {
             .replay_callback_surface_events(events, handler)
     }
 
+    /// Exercises the production AppKit keyboard and text-input selectors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured native or dispatch error when the production
+    /// responder path cannot deliver every event.
+    pub fn replay_native_input_path<F>(
+        surface: &NativeSurface,
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+    {
+        surface.implementation.replay_native_input_path(handler)
+    }
+
     /// Injects every initialization-stage failure and verifies complete rollback.
     ///
     /// # Errors

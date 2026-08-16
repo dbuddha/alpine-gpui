@@ -8,24 +8,32 @@ use std::{
 };
 use std::{ffi::c_void, ptr::NonNull};
 
+use alpine_core::Point;
+
 #[cfg(alpine_native_validation)]
 use std::time::{Duration, Instant};
 
-use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, rc::Retained};
-use objc2::{MainThreadMarker, runtime::ProtocolObject};
-use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSView, NSWindow,
-    NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
+use objc2::{
+    AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
+    rc::Retained,
+    runtime::{AnyObject, ProtocolObject, Sel},
 };
 #[cfg(alpine_native_validation)]
-use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
+use objc2_app_kit::NSEventType;
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent,
+    NSEventModifierFlags, NSEventPhase, NSTextInputClient, NSView, NSWindow, NSWindowDelegate,
+    NSWindowOcclusionState, NSWindowStyleMask,
+};
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 #[cfg(alpine_native_validation)]
-use objc2_foundation::{NSDate, NSTimer};
+use objc2_core_graphics::{CGEvent, CGScrollEventUnit};
 use objc2_foundation::{
-    NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes,
-    NSSize, NSString,
+    NSArray, NSAttributedString, NSAttributedStringKey, NSNotification, NSObject, NSObjectProtocol,
+    NSPoint, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
 };
+#[cfg(alpine_native_validation)]
+use objc2_foundation::{NSDate, NSTimer};
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLPixelFormat};
 use objc2_quartz_core::{
     CAMetalDisplayLink, CAMetalDisplayLinkDelegate, CAMetalDisplayLinkUpdate, CAMetalDrawable,
@@ -44,7 +52,8 @@ use alpine_scene::Scene;
 use block2::RcBlock;
 
 use crate::{
-    EventTimestamp, FrameTerminalEvidence, SURFACE_CLOSING, SURFACE_LIVE, SdrColorContract,
+    EventTimestamp, FrameTerminalEvidence, ImeEvent, KeyState, Modifiers, PointerAction,
+    PointerButton, SURFACE_CLOSING, SURFACE_LIVE, ScrollPhase, SdrColorContract,
     SurfaceConfiguration, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceFrame,
     SurfaceLifecycle, SurfaceObserver, SurfaceSnapshot, SurfaceStage, begin_close_observer_state,
     finish_close_observer_state, new_observer_state, presentation_visible,
@@ -1144,6 +1153,550 @@ fn install_presented_handler(
         .fetch_add(1, Ordering::Relaxed);
 }
 
+pub(crate) type NativeInputHandler = Box<dyn FnMut(NativeInputEvent) + 'static>;
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum NativeInputEvent {
+    Keyboard {
+        state: KeyState,
+        physical_key: u16,
+        logical_key: Box<str>,
+        modifiers: Modifiers,
+        repeat: bool,
+    },
+    Pointer {
+        action: PointerAction,
+        position: Point,
+        button: PointerButton,
+        modifiers: Modifiers,
+    },
+    Scroll {
+        delta_x: f32,
+        delta_y: f32,
+        phase: ScrollPhase,
+        precise: bool,
+        modifiers: Modifiers,
+    },
+    Ime(ImeEvent),
+}
+
+pub(crate) struct SurfaceViewIvars {
+    input_handler: RefCell<Option<NativeInputHandler>>,
+    input_dispatch_failed: Cell<bool>,
+    marked_text: RefCell<Box<str>>,
+    marked_selection: Cell<NSRange>,
+}
+
+define_class!(
+    // SAFETY:
+    // - NSView supports subclassing and SurfaceView calls its designated frame initializer.
+    // - SurfaceView is main-thread-only, matching AppKit responder dispatch.
+    // - No AppKit object escapes a callback; emitted values own their text.
+    #[unsafe(super = NSView)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = SurfaceViewIvars]
+    pub(crate) struct SurfaceView;
+
+    // SAFETY: NSObjectProtocol adds no methods with unfulfilled invariants.
+    unsafe impl NSObjectProtocol for SurfaceView {}
+
+    unsafe impl NSTextInputClient for SurfaceView {
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        #[unsafe(method(insertText:replacementRange:))]
+        unsafe fn insertText_replacementRange(
+            &self,
+            string: &AnyObject,
+            _replacement_range: NSRange,
+        ) {
+            let text = input_text(string);
+            self.clear_marked_text();
+            if !text.is_empty() {
+                self.emit(NativeInputEvent::Ime(ImeEvent::Committed(text)));
+            }
+        }
+
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        #[unsafe(method(doCommandBySelector:))]
+        unsafe fn doCommandBySelector(&self, _selector: Sel) {}
+
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
+        unsafe fn setMarkedText_selectedRange_replacementRange(
+            &self,
+            string: &AnyObject,
+            selected_range: NSRange,
+            _replacement_range: NSRange,
+        ) {
+            let text = input_text(string);
+            if text.is_empty() {
+                if self.has_marked_text_value() {
+                    self.clear_marked_text();
+                    self.emit(NativeInputEvent::Ime(ImeEvent::Cancelled));
+                }
+                return;
+            }
+
+            if !self.has_marked_text_value() {
+                self.emit(NativeInputEvent::Ime(ImeEvent::Started));
+            }
+            self.ivars().marked_text.replace(text.clone());
+            self.ivars().marked_selection.set(selected_range);
+            self.emit(NativeInputEvent::Ime(ImeEvent::Updated {
+                text,
+                selected_start_utf16: saturating_u32(selected_range.location),
+                selected_length_utf16: saturating_u32(selected_range.length),
+            }));
+        }
+
+        #[unsafe(method(unmarkText))]
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        fn unmarkText(&self) {
+            let text = self.ivars().marked_text.borrow().clone();
+            self.clear_marked_text();
+            if !text.is_empty() {
+                self.emit(NativeInputEvent::Ime(ImeEvent::Committed(text)));
+            }
+        }
+
+        #[unsafe(method(selectedRange))]
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        fn selectedRange(&self) -> NSRange {
+            NSRange::new(0, 0)
+        }
+
+        #[unsafe(method(markedRange))]
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        fn markedRange(&self) -> NSRange {
+            if self.has_marked_text_value() {
+                NSRange::new(0, self.ivars().marked_text.borrow().encode_utf16().count())
+            } else {
+                NSRange::new(NSUInteger::MAX, 0)
+            }
+        }
+
+        #[unsafe(method(hasMarkedText))]
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        fn hasMarkedText(&self) -> bool {
+            self.has_marked_text_value()
+        }
+
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        #[unsafe(method_id(attributedSubstringForProposedRange:actualRange:))]
+        unsafe fn attributedSubstringForProposedRange_actualRange(
+            &self,
+            _range: NSRange,
+            _actual_range: *mut NSRange,
+        ) -> Option<objc2::rc::Retained<NSAttributedString>> {
+            None
+        }
+
+        #[unsafe(method_id(validAttributesForMarkedText))]
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        fn validAttributesForMarkedText(
+            &self,
+        ) -> objc2::rc::Retained<NSArray<NSAttributedStringKey>> {
+            NSArray::new()
+        }
+
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        #[unsafe(method(firstRectForCharacterRange:actualRange:))]
+        unsafe fn firstRectForCharacterRange_actualRange(
+            &self,
+            range: NSRange,
+            actual_range: *mut NSRange,
+        ) -> NSRect {
+            // SAFETY: AppKit supplies either null or a writable output pointer
+            // for the duration of this synchronous callback.
+            if let Some(actual_range) = unsafe { actual_range.as_mut() } {
+                *actual_range = range;
+            }
+            let local = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
+            self.window()
+                .map_or(local, |window| window.convertRectToScreen(local))
+        }
+
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        #[unsafe(method(characterIndexForPoint:))]
+        fn characterIndexForPoint(&self, _point: NSPoint) -> usize {
+            0
+        }
+    }
+
+    impl SurfaceView {
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            self.emit(keyboard_event(event, KeyState::Down));
+            self.interpretKeyEvents(&NSArray::from_retained_slice(&[event.retain()]));
+        }
+
+        #[unsafe(method(keyUp:))]
+        fn key_up(&self, event: &NSEvent) {
+            self.emit(keyboard_event(event, KeyState::Up));
+        }
+
+        #[unsafe(method(flagsChanged:))]
+        fn flags_changed(&self, event: &NSEvent) {
+            self.emit(keyboard_event(event, KeyState::ModifiersChanged));
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            self.emit_pointer(event, PointerAction::Down, PointerButton::Primary);
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, event: &NSEvent) {
+            self.emit_pointer(event, PointerAction::Up, PointerButton::Primary);
+        }
+
+        #[unsafe(method(rightMouseDown:))]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            self.emit_pointer(event, PointerAction::Down, PointerButton::Secondary);
+        }
+
+        #[unsafe(method(rightMouseUp:))]
+        fn right_mouse_up(&self, event: &NSEvent) {
+            self.emit_pointer(event, PointerAction::Up, PointerButton::Secondary);
+        }
+
+        #[unsafe(method(otherMouseDown:))]
+        fn other_mouse_down(&self, event: &NSEvent) {
+            self.emit_pointer(event, PointerAction::Down, pointer_button(event));
+        }
+
+        #[unsafe(method(otherMouseUp:))]
+        fn other_mouse_up(&self, event: &NSEvent) {
+            self.emit_pointer(event, PointerAction::Up, pointer_button(event));
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, event: &NSEvent) {
+            self.emit_pointer(event, PointerAction::Moved, PointerButton::None);
+        }
+
+        #[unsafe(method(mouseDragged:))]
+        fn mouse_dragged(&self, event: &NSEvent) {
+            self.emit_pointer(event, PointerAction::Moved, PointerButton::Primary);
+        }
+
+        #[unsafe(method(rightMouseDragged:))]
+        fn right_mouse_dragged(&self, event: &NSEvent) {
+            self.emit_pointer(event, PointerAction::Moved, PointerButton::Secondary);
+        }
+
+        #[unsafe(method(otherMouseDragged:))]
+        fn other_mouse_dragged(&self, event: &NSEvent) {
+            self.emit_pointer(event, PointerAction::Moved, pointer_button(event));
+        }
+
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            let Some(delta_x) = finite_f32(event.scrollingDeltaX()) else {
+                self.ivars().input_dispatch_failed.set(true);
+                return;
+            };
+            let Some(delta_y) = finite_f32(event.scrollingDeltaY()) else {
+                self.ivars().input_dispatch_failed.set(true);
+                return;
+            };
+            self.emit(NativeInputEvent::Scroll {
+                delta_x,
+                delta_y,
+                phase: scroll_phase(event.phase(), event.momentumPhase()),
+                precise: event.hasPreciseScrollingDeltas(),
+                modifiers: modifiers(event.modifierFlags()),
+            });
+        }
+    }
+);
+
+impl SurfaceView {
+    pub(crate) fn new(main_thread: MainThreadMarker, frame: NSRect) -> objc2::rc::Retained<Self> {
+        let allocated = Self::alloc(main_thread).set_ivars(SurfaceViewIvars {
+            input_handler: RefCell::new(None),
+            input_dispatch_failed: Cell::new(false),
+            marked_text: RefCell::new(Box::default()),
+            marked_selection: Cell::new(NSRange::new(0, 0)),
+        });
+        // SAFETY: `frame` is finite and positive because the surface descriptor
+        // validated it before allocating this view.
+        unsafe { msg_send![super(allocated), initWithFrame: frame] }
+    }
+
+    pub(crate) fn install_input_handler(&self, handler: NativeInputHandler) -> bool {
+        let Ok(mut installed) = self.ivars().input_handler.try_borrow_mut() else {
+            return false;
+        };
+        if installed.is_some() {
+            return false;
+        }
+        self.ivars().input_dispatch_failed.set(false);
+        *installed = Some(handler);
+        true
+    }
+
+    pub(crate) fn clear_input_handler(&self) {
+        if let Ok(mut installed) = self.ivars().input_handler.try_borrow_mut() {
+            installed.take();
+        }
+        self.clear_marked_text();
+    }
+
+    pub(crate) fn take_input_dispatch_failure(&self) -> bool {
+        self.ivars().input_dispatch_failed.replace(false)
+    }
+
+    fn emit(&self, event: NativeInputEvent) {
+        let Ok(mut installed) = self.ivars().input_handler.try_borrow_mut() else {
+            self.ivars().input_dispatch_failed.set(true);
+            return;
+        };
+        let Some(handler) = installed.as_mut() else {
+            self.ivars().input_dispatch_failed.set(true);
+            return;
+        };
+        handler(event);
+    }
+
+    fn emit_pointer(&self, event: &NSEvent, action: PointerAction, button: PointerButton) {
+        let local = self.convertPoint_fromView(event.locationInWindow(), None);
+        let bounds = self.bounds();
+        let Some(x) = finite_f32(local.x) else {
+            self.ivars().input_dispatch_failed.set(true);
+            return;
+        };
+        let Some(y) = finite_f32(bounds.size.height - local.y) else {
+            self.ivars().input_dispatch_failed.set(true);
+            return;
+        };
+        let Some(position) = Point::new(x, y) else {
+            self.ivars().input_dispatch_failed.set(true);
+            return;
+        };
+        self.emit(NativeInputEvent::Pointer {
+            action,
+            position,
+            button,
+            modifiers: modifiers(event.modifierFlags()),
+        });
+    }
+
+    fn clear_marked_text(&self) {
+        self.ivars().marked_text.replace(Box::default());
+        self.ivars().marked_selection.set(NSRange::new(0, 0));
+    }
+
+    fn has_marked_text_value(&self) -> bool {
+        !self.ivars().marked_text.borrow().is_empty()
+    }
+}
+
+fn keyboard_event(event: &NSEvent, state: KeyState) -> NativeInputEvent {
+    NativeInputEvent::Keyboard {
+        state,
+        physical_key: event.keyCode(),
+        logical_key: event
+            .charactersIgnoringModifiers()
+            .map_or_else(Box::default, |characters| {
+                characters.to_string().into_boxed_str()
+            }),
+        modifiers: modifiers(event.modifierFlags()),
+        repeat: event.isARepeat(),
+    }
+}
+
+fn modifiers(flags: NSEventModifierFlags) -> Modifiers {
+    let mut bits = 0;
+    if flags.contains(NSEventModifierFlags::Shift) {
+        bits |= Modifiers::SHIFT;
+    }
+    if flags.contains(NSEventModifierFlags::Control) {
+        bits |= Modifiers::CONTROL;
+    }
+    if flags.contains(NSEventModifierFlags::Option) {
+        bits |= Modifiers::OPTION;
+    }
+    if flags.contains(NSEventModifierFlags::Command) {
+        bits |= Modifiers::COMMAND;
+    }
+    if flags.contains(NSEventModifierFlags::CapsLock) {
+        bits |= Modifiers::CAPS_LOCK;
+    }
+    Modifiers::from_bits(bits)
+}
+
+fn pointer_button(event: &NSEvent) -> PointerButton {
+    match event.buttonNumber() {
+        0 => PointerButton::Primary,
+        1 => PointerButton::Secondary,
+        2 => PointerButton::Middle,
+        number => PointerButton::Other(u8::try_from(number).unwrap_or(u8::MAX)),
+    }
+}
+
+fn scroll_phase(phase: NSEventPhase, momentum_phase: NSEventPhase) -> ScrollPhase {
+    let phase = if phase == NSEventPhase::None {
+        momentum_phase
+    } else {
+        phase
+    };
+    if phase.contains(NSEventPhase::Cancelled) {
+        ScrollPhase::Cancelled
+    } else if phase.intersects(NSEventPhase::Began | NSEventPhase::MayBegin) {
+        ScrollPhase::Began
+    } else if phase.intersects(NSEventPhase::Changed | NSEventPhase::Stationary) {
+        ScrollPhase::Changed
+    } else if phase.contains(NSEventPhase::Ended) {
+        ScrollPhase::Ended
+    } else {
+        ScrollPhase::None
+    }
+}
+
+fn finite_f32(value: f64) -> Option<f32> {
+    if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX) {
+        None
+    } else {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the finite f32 range was checked immediately above"
+        )]
+        Some(value as f32)
+    }
+}
+
+fn input_text(value: &AnyObject) -> Box<str> {
+    if let Some(string) = value.downcast_ref::<NSString>() {
+        return string.to_string().into_boxed_str();
+    }
+    value
+        .downcast_ref::<NSAttributedString>()
+        .map_or_else(Box::default, |string| {
+            string.string().to_string().into_boxed_str()
+        })
+}
+
+fn saturating_u32(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+fn resolve_input_dispatch(
+    result: Result<(), SurfaceError>,
+    input_dispatch_failed: bool,
+) -> Result<(), SurfaceError> {
+    match result {
+        Err(error) => Err(error),
+        Ok(()) if input_dispatch_failed => Err(SurfaceError::DriverUnavailable),
+        Ok(()) => Ok(()),
+    }
+}
+
+type NSUInteger = usize;
+
+#[cfg(test)]
+mod native_input_tests {
+    use super::*;
+
+    #[test]
+    fn modifiers_preserve_only_alpine_supported_bits() {
+        let native = NSEventModifierFlags::Shift
+            | NSEventModifierFlags::Option
+            | NSEventModifierFlags::NumericPad;
+        let translated = modifiers(native);
+        assert_eq!(translated.bits(), Modifiers::SHIFT | Modifiers::OPTION);
+    }
+
+    #[test]
+    fn utf16_ranges_saturate_at_public_width() {
+        assert_eq!(saturating_u32(17), 17);
+        if usize::BITS > u32::BITS {
+            assert_eq!(saturating_u32(usize::MAX), u32::MAX);
+        }
+    }
+
+    #[test]
+    fn scroll_phase_prefers_direct_then_momentum_identity() {
+        assert_eq!(
+            scroll_phase(NSEventPhase::Changed, NSEventPhase::Ended),
+            ScrollPhase::Changed
+        );
+        assert_eq!(
+            scroll_phase(NSEventPhase::None, NSEventPhase::Ended),
+            ScrollPhase::Ended
+        );
+        assert_eq!(
+            scroll_phase(NSEventPhase::Cancelled, NSEventPhase::None),
+            ScrollPhase::Cancelled
+        );
+    }
+
+    #[test]
+    fn finite_f32_rejects_invalid_or_unrepresentable_values() {
+        assert_eq!(finite_f32(1.25), Some(1.25));
+        assert_eq!(finite_f32(f64::NAN), None);
+        assert_eq!(finite_f32(f64::INFINITY), None);
+        assert_eq!(finite_f32(f64::MAX), None);
+    }
+
+    #[test]
+    fn input_dispatch_preserves_root_error_and_reports_independent_failure() {
+        assert_eq!(resolve_input_dispatch(Ok(()), false), Ok(()));
+        assert_eq!(
+            resolve_input_dispatch(Ok(()), true),
+            Err(SurfaceError::DriverUnavailable)
+        );
+        assert_eq!(
+            resolve_input_dispatch(
+                Err(SurfaceError::RunLoopNotRunnable {
+                    lifecycle: SurfaceLifecycle::Closed,
+                }),
+                true
+            ),
+            Err(SurfaceError::RunLoopNotRunnable {
+                lifecycle: SurfaceLifecycle::Closed,
+            })
+        );
+    }
+}
+
 struct DisplayLinkDelegateIvars {
     lifecycle: Arc<AtomicU8>,
     window_close_started: Arc<AtomicBool>,
@@ -1153,7 +1706,7 @@ struct DisplayLinkDelegateIvars {
     driver: Option<Rc<RefCell<PresentationDriver>>>,
     application: Retained<NSApplication>,
     window: Option<Retained<NSWindow>>,
-    view: Option<Retained<NSView>>,
+    view: Option<Retained<SurfaceView>>,
     layer: Option<Retained<CAMetalLayer>>,
     display_link: Option<Retained<CAMetalDisplayLink>>,
     event_handler: RefCell<Option<SurfaceEventHandler>>,
@@ -1390,6 +1943,54 @@ impl DisplayLinkDelegate {
         EventTimestamp::new(next)
     }
 
+    fn dispatch_native_input_event(&self, event: NativeInputEvent) {
+        let timestamp = self.next_event_timestamp();
+        let event = match event {
+            NativeInputEvent::Keyboard {
+                state,
+                physical_key,
+                logical_key,
+                modifiers,
+                repeat,
+            } => SurfaceEvent::Keyboard {
+                timestamp,
+                state,
+                physical_key,
+                logical_key,
+                modifiers,
+                repeat,
+            },
+            NativeInputEvent::Pointer {
+                action,
+                position,
+                button,
+                modifiers,
+            } => SurfaceEvent::Pointer {
+                timestamp,
+                action,
+                position,
+                button,
+                modifiers,
+            },
+            NativeInputEvent::Scroll {
+                delta_x,
+                delta_y,
+                phase,
+                precise,
+                modifiers,
+            } => SurfaceEvent::Scroll {
+                timestamp,
+                delta_x,
+                delta_y,
+                phase,
+                precise,
+                modifiers,
+            },
+            NativeInputEvent::Ime(event) => SurfaceEvent::Ime { timestamp, event },
+        };
+        self.dispatch_callback_event(event);
+    }
+
     fn install_event_handler<F>(&self, handler: F) -> Result<(), SurfaceError>
     where
         F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
@@ -1599,7 +2200,7 @@ pub(crate) struct NativeSurface {
         dead_code,
         reason = "the custom content view owns the layer attachment for the surface lifetime"
     )]
-    view: Retained<NSView>,
+    view: Retained<SurfaceView>,
     window: Retained<NSWindow>,
     #[allow(
         dead_code,
@@ -1711,7 +2312,7 @@ impl NativeSurface {
         builder.track(NativeOwnerKind::Window);
         control.checkpoint(SurfaceStage::Window)?;
 
-        let view = NSView::initWithFrame(NSView::alloc(main_thread), frame);
+        let view = SurfaceView::new(main_thread, frame);
         builder.view = Some(view);
         builder.track(NativeOwnerKind::View);
         control.checkpoint(SurfaceStage::View)?;
@@ -1853,6 +2454,10 @@ impl NativeSurface {
             self.application.finishLaunching();
         }
         self.window.makeKeyAndOrderFront(None);
+        self.window.setAcceptsMouseMovedEvents(true);
+        if !self.window.makeFirstResponder(Some(&self.view)) {
+            return Err(SurfaceError::DriverUnavailable);
+        }
         #[allow(
             deprecated,
             reason = "the initial standalone surface must activate an unbundled Rust executable"
@@ -1897,12 +2502,20 @@ impl NativeSurface {
         F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
     {
         self.delegate.install_event_handler(handler)?;
+        let delegate = self.delegate.clone();
+        if !self.view.install_input_handler(Box::new(move |event| {
+            delegate.dispatch_native_input_event(event);
+        })) {
+            self.delegate.clear_event_handler();
+            return Err(SurfaceError::DriverUnavailable);
+        }
         let wake_result = self.delegate.dispatch_surface_event(SurfaceEvent::Wake {
             timestamp: self.delegate.next_event_timestamp(),
         });
         let run_result = wake_result.and_then(|()| self.run());
+        self.view.clear_input_handler();
         self.delegate.clear_event_handler();
-        run_result
+        resolve_input_dispatch(run_result, self.view.take_input_dispatch_failure())
     }
 
     #[cfg(alpine_native_validation)]
@@ -1921,6 +2534,85 @@ impl NativeSurface {
             .try_for_each(|event| self.delegate.dispatch_surface_event(event));
         self.delegate.clear_event_handler();
         result
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn replay_native_input_path<F>(&self, handler: F) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+    {
+        self.delegate.install_event_handler(handler)?;
+        let delegate = self.delegate.clone();
+        if !self.view.install_input_handler(Box::new(move |event| {
+            delegate.dispatch_native_input_event(event);
+        })) {
+            self.delegate.clear_event_handler();
+            return Err(SurfaceError::DriverUnavailable);
+        }
+
+        let characters = NSString::from_str("A");
+        let ignoring_modifiers = NSString::from_str("a");
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown,
+            NSPoint::new(4.0, 4.0),
+            NSEventModifierFlags::Shift,
+            0.0,
+            self.window.windowNumber(),
+            None,
+            &characters,
+            &ignoring_modifiers,
+            false,
+            0,
+        )
+        .ok_or_else(|| native_unavailable(SurfaceStage::View));
+        let replay_result = event.and_then(|event| {
+            self.view.keyDown(&event);
+            let marked = NSString::from_str("漢字");
+            // SAFETY: These messages target selectors implemented by
+            // SurfaceView's NSTextInputClient conformance. Every object and
+            // range remains valid for each synchronous call.
+            unsafe {
+                let _: () = msg_send![
+                    &*self.view,
+                    setMarkedText: &*marked,
+                    selectedRange: NSRange::new(1, 1),
+                    replacementRange: NSRange::new(usize::MAX, 0)
+                ];
+                let _: () = msg_send![&*self.view, unmarkText];
+            }
+
+            let pointer = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                NSEventType::LeftMouseDown,
+                NSPoint::new(12.0, 18.0),
+                NSEventModifierFlags::Command,
+                0.0,
+                self.window.windowNumber(),
+                None,
+                1,
+                1,
+                1.0,
+            )
+            .ok_or_else(|| native_unavailable(SurfaceStage::View))?;
+            self.view.mouseDown(&pointer);
+
+            let cg_scroll = CGEvent::new_scroll_wheel_event2(
+                None,
+                CGScrollEventUnit::Line,
+                2,
+                -3,
+                4,
+                0,
+            )
+            .ok_or_else(|| native_unavailable(SurfaceStage::View))?;
+            let scroll = NSEvent::eventWithCGEvent(&cg_scroll)
+                .ok_or_else(|| native_unavailable(SurfaceStage::View))?;
+            self.view.scrollWheel(&scroll);
+            Ok(())
+        });
+
+        self.view.clear_input_handler();
+        self.delegate.clear_event_handler();
+        resolve_input_dispatch(replay_result, self.view.take_input_dispatch_failure())
     }
 
     #[cfg(alpine_native_validation)]
@@ -2337,7 +3029,7 @@ struct NativeSurfaceBuilder {
     delegate: Option<Retained<DisplayLinkDelegate>>,
     layer: Option<Retained<CAMetalLayer>>,
     color_space: Option<Retained<CGColorSpace>>,
-    view: Option<Retained<NSView>>,
+    view: Option<Retained<SurfaceView>>,
     window: Option<Retained<NSWindow>>,
     device: Option<Device>,
     application: Option<Retained<NSApplication>>,
