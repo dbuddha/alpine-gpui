@@ -798,6 +798,9 @@ impl StudioApp {
 
     fn handle_event_with_response(&mut self, event: &SurfaceEvent) -> StudioTransition {
         if let Some(operation) = studio_clipboard_shortcut(event) {
+            if operation == ClipboardOperation::Paste {
+                return StudioTransition::default();
+            }
             return self.begin_clipboard_operation(operation);
         }
         let effect = match event {
@@ -844,9 +847,6 @@ impl StudioApp {
     }
 
     fn begin_clipboard_operation(&mut self, operation: ClipboardOperation) -> StudioTransition {
-        if operation == ClipboardOperation::Paste {
-            return StudioTransition::default();
-        }
         self.pending_cut = None;
         let mut effect = self.clear_clipboard_status();
         let selection = self.selection;
@@ -958,6 +958,25 @@ impl StudioApp {
             self.pending_cut = None;
         }
         self.record_clipboard_protocol_failure("Clipboard response was not admitted.")
+    }
+
+    fn resolve_clipboard_admission(
+        &mut self,
+        effect: EventEffect,
+        operation: ClipboardOperation,
+        admitted: bool,
+    ) -> EventEffect {
+        if admitted {
+            effect
+        } else {
+            effect.merge(self.reject_clipboard_response(operation))
+        }
+    }
+
+    fn resolve_close_admission(&mut self, requested: bool, admitted: bool) {
+        if requested && !admitted {
+            self.input_failures = self.input_failures.saturating_add(1);
+        }
     }
 
     fn set_local_status(&mut self, status: LocalStatus) -> EventEffect {
@@ -1363,12 +1382,12 @@ impl AppDelegate for StudioApp {
         } = self.handle_event_with_response(event);
         if let Some(write) = clipboard_write {
             let operation = write.operation();
-            if !context.write_clipboard(write) {
-                effect = effect.merge(self.reject_clipboard_response(operation));
-            }
+            let admitted = context.write_clipboard(write);
+            effect = self.resolve_clipboard_admission(effect, operation, admitted);
         }
-        if cancel_close && !context.cancel_close() {
-            self.input_failures = self.input_failures.saturating_add(1);
+        if cancel_close {
+            let admitted = context.cancel_close();
+            self.resolve_close_admission(true, admitted);
         }
         if effect.document_changed {
             let revision = DocumentRevision::new(self.buffer().revision().get());

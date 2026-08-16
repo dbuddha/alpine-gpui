@@ -132,6 +132,25 @@ impl GlyphRasterizer for FailingTextSystem {
     }
 }
 
+struct FailingRasterTextSystem;
+
+impl TextShaper for FailingRasterTextSystem {
+    fn shape(&mut self, text: &str, font: FontKey) -> Result<LineLayout, LayoutError> {
+        TestTextSystem.shape(text, font)
+    }
+}
+
+impl GlyphRasterizer for FailingRasterTextSystem {
+    fn rasterize(
+        &mut self,
+        _font: FontKey,
+        _glyph_id: u32,
+        _subpixel_x: u8,
+    ) -> Result<RasterizedGlyph, LayoutError> {
+        Err(LayoutError::NativeFailure("injected status raster failure"))
+    }
+}
+
 fn test_app() -> Result<StudioApp, SurfaceError> {
     StudioApp::new(TestTextSystem)
 }
@@ -240,6 +259,94 @@ fn clipboard_policy_controls_distinguish_each_response_boundary() -> Result<(), 
     assert_eq!(app.local_status, None);
     assert_eq!(app.last_clipboard_error, None);
     assert!(!app.clear_clipboard_status().visual_changed);
+
+    let failures = app.input_failures;
+    app.resolve_close_admission(false, false);
+    app.resolve_close_admission(true, true);
+    assert_eq!(app.input_failures, failures);
+    app.resolve_close_admission(true, false);
+    assert_eq!(app.input_failures, failures + 1);
+
+    let admitted =
+        app.resolve_clipboard_admission(EventEffect::document(), ClipboardOperation::Copy, true);
+    assert_eq!(admitted, EventEffect::document());
+    let rejected =
+        app.resolve_clipboard_admission(EventEffect::default(), ClipboardOperation::Copy, false);
+    assert!(rejected.visual_changed);
+    Ok(())
+}
+
+#[test]
+fn clipboard_defensive_paths_preserve_document_state() -> Result<(), SurfaceError> {
+    let mut app = test_app()?;
+    *app.buffer_mut() = Buffer::new("abc");
+
+    let empty = app.begin_clipboard_operation(ClipboardOperation::Copy);
+    assert!(empty.clipboard_write.is_none());
+
+    app.selection = Selection::new(ByteOffset::new(4), ByteOffset::new(5));
+    let invalid = app.begin_clipboard_operation(ClipboardOperation::Copy);
+    assert!(invalid.clipboard_write.is_none());
+    assert!(invalid.effect.visual_changed);
+
+    app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(1));
+    let invalid_operation = app.begin_clipboard_operation(ClipboardOperation::Paste);
+    assert!(invalid_operation.clipboard_write.is_none());
+    assert!(invalid_operation.effect.visual_changed);
+    assert!(app.last_clipboard_error.is_some());
+
+    let copy_failure = app.handle_event_with_response(&clipboard_event(
+        ClipboardEvent::CopyCompleted(Err(ClipboardError::WriteRejected)),
+    ));
+    assert!(copy_failure.effect.visual_changed);
+    assert_eq!(
+        app.last_clipboard_error,
+        Some(ClipboardError::WriteRejected)
+    );
+    let copy_success =
+        app.handle_event_with_response(&clipboard_event(ClipboardEvent::CopyCompleted(Ok(()))));
+    assert!(copy_success.effect.visual_changed);
+    assert_eq!(app.last_clipboard_error, None);
+
+    let missing =
+        app.handle_event_with_response(&clipboard_event(ClipboardEvent::CutCompleted(Ok(()))));
+    assert!(missing.effect.visual_changed);
+    assert!(!missing.effect.document_changed);
+
+    let invalid_selection = Selection::new(ByteOffset::new(4), ByteOffset::new(5));
+    app.selection = invalid_selection;
+    app.pending_cut = Some(PendingCut {
+        revision: app.buffer().revision().get(),
+        selection: invalid_selection,
+    });
+    let before = app.buffer().snapshot().text();
+    let atomic_failure =
+        app.handle_event_with_response(&clipboard_event(ClipboardEvent::CutCompleted(Ok(()))));
+    assert!(atomic_failure.effect.visual_changed);
+    assert!(!atomic_failure.effect.document_changed);
+    assert_eq!(app.buffer().snapshot().text(), before);
+
+    app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(1));
+    let paste_shortcut = app.handle_event_with_response(&clipboard_key("v"));
+    assert!(paste_shortcut.clipboard_write.is_none());
+    assert!(!paste_shortcut.effect.document_changed);
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "the 64 MiB ownership boundary is covered outside Miri")]
+fn oversized_copy_selection_is_rejected_before_response_ownership() -> Result<(), SurfaceError> {
+    let mut app = test_app()?;
+    let oversized = "x".repeat(alpine_platform_macos::MAX_CLIPBOARD_TEXT_BYTES + 1);
+    *app.buffer_mut() = Buffer::new(&oversized);
+    app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(oversized.len()));
+    let response = app.begin_clipboard_operation(ClipboardOperation::Copy);
+    assert!(response.clipboard_write.is_none());
+    assert!(response.effect.visual_changed);
+    assert!(matches!(
+        app.last_clipboard_error,
+        Some(ClipboardError::TooLarge { .. })
+    ));
     Ok(())
 }
 
@@ -403,6 +510,24 @@ fn clipboard_failure_is_visible_and_paste_failure_is_atomic()
     let failure_scene = app.try_scene(SceneRevision::new(1), viewport()?)?;
     assert!(failure_scene.quads().len() > baseline_quads);
     assert!(failure_scene.glyphs().len() > before.len());
+    Ok(())
+}
+
+#[test]
+fn status_raster_failure_is_structured_after_empty_document_layout() -> Result<(), StudioRenderError>
+{
+    let mut app = StudioApp::new(FailingRasterTextSystem).map_err(|_| StudioRenderError::Domain)?;
+    *app.buffer_mut() = Buffer::new("");
+    app.local_status = Some(LocalStatus::Clipboard(Arc::from("status")));
+    assert!(matches!(
+        app.try_scene(
+            SceneRevision::new(1),
+            viewport().map_err(|_| StudioRenderError::Domain)?,
+        ),
+        Err(StudioRenderError::Layout(LayoutError::NativeFailure(
+            "injected status raster failure"
+        )))
+    ));
     Ok(())
 }
 
