@@ -50,8 +50,36 @@ Every run binds these fields into an environment record and hash:
 - cold or warm class, execution order, independent hardware window, run index,
   and invalidation reason when rejected
 
-`workload_identity_hash` and `environment_hash` are mandatory artifact fields,
-not prose-only disclosures.
+`workload_identity_hash`, `environment_hash`, and
+`exclusion_manifest_hash` are mandatory artifact fields, not prose-only
+disclosures.
+
+## Adaptation separation
+
+Comparator trace decoding, validation, normalization, allocation, and native
+scene construction are adaptation work. They are measured as a separate
+distribution and never included in renderer upload, encode, commit, GPU
+completion, or presentation results. A product journey may include adaptation
+only when the same externally observable journey requires it for every product,
+and the adaptation distribution is still reported independently.
+
+Removing adaptation work from one implementation, prewarming only one side, or
+charging protocol conversion to the comparator rather than the tested system
+invalidates the paired run.
+
+## Explicit exclusion manifest
+
+Every normalized product run stores a canonical manifest naming disabled and
+unavailable features, launch arguments, settings, account state, network
+policy, child processes, plugins or packages, background services, and expected
+process inventory. Its canonical bytes produce `exclusion_manifest_hash`.
+
+The Alpine manifest must show that collaboration, AI, cloud accounts, remote
+development, telemetry, plugins, extension hosts, marketplace, debugger,
+terminal, task, and Git UI subsystems are absent. Zed and Sublime manifests
+distinguish features disabled by configuration from stock code that remains in
+the binary or process. Stock-product footprint is reported separately and can
+never be substituted for this normalized comparison.
 
 ## Stage boundaries
 

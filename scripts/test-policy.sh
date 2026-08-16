@@ -118,6 +118,21 @@ run_policy() {
 
 run_policy >/dev/null
 
+ALPINE_POLICY_REFERENCE_INPUT='docs/research/index.md' run_policy >/dev/null
+
+retired_roadmap='docs/ROAD''MAP.md'
+if ALPINE_POLICY_REFERENCE_INPUT="$retired_roadmap" run_policy > "$fixture_dir/retired-reference.log" 2>&1; then
+    printf 'policy test error: retired documentation reference unexpectedly passed\n' >&2
+    exit 1
+fi
+
+if ! grep -Fq 'tracked files reference retired repository documents' "$fixture_dir/retired-reference.log"; then
+    printf 'policy test error: expected retired-reference failure was not reported\n' >&2
+    cat "$fixture_dir/retired-reference.log" >&2
+    exit 1
+fi
+unset ALPINE_POLICY_REFERENCE_INPUT
+
 if ALPINE_POLICY_FIXTURE=unapproved run_policy > "$fixture_dir/failure.log" 2>&1; then
     printf 'policy test error: unapproved requirement unexpectedly passed\n' >&2
     exit 1

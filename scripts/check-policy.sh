@@ -113,10 +113,24 @@ for retired_directory in changes; do
     fi
 done
 
-deleted_references='PRODUCT\.md|CHANGELOG\.md|changes/|docs/(MASTER_PLAN|ROADMAP|adr|research|DEPENDENCIES|ci|engineering)|crates/(AGENTS|README)\.md|provenance-ledger'
-if git grep -n -I -E "$deleted_references" -- . ':!scripts/check-policy.sh' >/dev/null 2>&1; then
+deleted_references='PRODUCT\.md|CHANGELOG\.md|changes/|docs/(MASTER_PLAN|ROADMAP|adr|DEPENDENCIES|ci|engineering)|crates/(AGENTS|README)\.md|provenance-ledger'
+if [ "${ALPINE_POLICY_REFERENCE_INPUT+x}" = x ]; then
+    retired_reference_matches=$(printf '%s\n' "$ALPINE_POLICY_REFERENCE_INPUT" \
+        | grep -nE "$deleted_references" || true)
+else
+    retired_reference_matches=$(git grep -n -I -E "$deleted_references" -- . ':!scripts/check-policy.sh' || true)
+fi
+if [ -n "$retired_reference_matches" ]; then
     fail 'tracked files reference retired repository documents'
-    git grep -n -I -E "$deleted_references" -- . ':!scripts/check-policy.sh' >&2 || true
+    printf '%s\n' "$retired_reference_matches" >&2
+fi
+
+research_files=$(find docs/research -type f -print 2>/dev/null | sort || true)
+expected_research_files='docs/research/alpine-studio-adversarial-review.md
+docs/research/index.md'
+if [ "$research_files" != "$expected_research_files" ]; then
+    fail 'docs/research may contain only the accepted catalog and adversarial review'
+    printf '%s\n' "$research_files" >&2
 fi
 
 agent_lines=$(wc -l < AGENTS.md | tr -d ' ')
@@ -139,7 +153,11 @@ for required_path in \
     scripts/test-metal-library.sh \
     scripts/verify-metal-library.sh \
     scripts/check-workload-hashes.sh \
+    scripts/check-research-retention.sh \
+    scripts/test-research-retention.sh \
     scripts/check-tla.sh \
+    docs/research/index.md \
+    docs/research/alpine-studio-adversarial-review.md \
     .cargo/mutants.toml
 do
     if [ ! -f "$required_path" ]; then
