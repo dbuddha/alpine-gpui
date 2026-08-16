@@ -107,6 +107,8 @@ pub(crate) struct NativeBackend {
     atlas_cache: GlyphAtlasCache,
     #[cfg(feature = "platform-spi")]
     presentation: PresentationSlots,
+    #[cfg(feature = "platform-spi")]
+    atlas_pressure_pending: bool,
     #[cfg(any(test, alpine_native_validation))]
     fault: NativeFault,
     #[cfg(test)]
@@ -324,6 +326,10 @@ impl PresentationSlots {
 
     fn record_upload_peak(&mut self, transient_upload_bytes: usize) {
         self.peak_upload_bytes = self.peak_upload_bytes.max(transient_upload_bytes);
+    }
+
+    fn has_pending(&self) -> bool {
+        self.slots.iter().any(|slot| slot.pending.is_some())
     }
 
     fn pressure(&mut self) {
@@ -1017,14 +1023,19 @@ impl NativeBackend {
             return Err(RenderError::SubmissionInvariantViolated);
         };
         slot.observe_terminal();
-        Ok(Some(NativeDrawableAttempt {
+        let attempt = NativeDrawableAttempt {
             committed: true,
             present_called: true,
             device_lost: terminal.device_lost,
             operations: pending.operations,
             resources: pending.resources,
             result: terminal.result,
-        }))
+        };
+        if self.atlas_pressure_pending && !self.presentation.has_pending() {
+            self.atlas_cache.pressure();
+            self.atlas_pressure_pending = false;
+        }
+        Ok(Some(attempt))
     }
 
     #[cfg(feature = "platform-spi")]
@@ -1053,7 +1064,11 @@ impl NativeBackend {
     #[cfg(feature = "platform-spi")]
     pub(crate) fn release_presentation_uploads_on_pressure(&mut self) {
         self.presentation.pressure();
-        self.atlas_cache.pressure();
+        if self.presentation.has_pending() {
+            self.atlas_pressure_pending = true;
+        } else {
+            self.atlas_cache.pressure();
+        }
     }
 }
 
@@ -1160,6 +1175,8 @@ fn build_backend(
                 atlas_cache: GlyphAtlasCache::new(),
                 #[cfg(feature = "platform-spi")]
                 presentation: PresentationSlots::new(),
+                #[cfg(feature = "platform-spi")]
+                atlas_pressure_pending: false,
                 #[cfg(any(test, alpine_native_validation))]
                 fault: NativeFault::None,
                 #[cfg(test)]
@@ -2116,6 +2133,8 @@ pub(crate) mod tests {
                 atlas_cache: super::GlyphAtlasCache::new(),
                 #[cfg(feature = "platform-spi")]
                 presentation: super::PresentationSlots::new(),
+                #[cfg(feature = "platform-spi")]
+                atlas_pressure_pending: false,
                 fault,
                 probe: probe.clone(),
             },
@@ -2521,8 +2540,8 @@ pub(crate) mod tests {
 
         backend.native.release_presentation_uploads_on_pressure();
         let released = backend.native.presentation_snapshot();
-        assert_eq!(released.current_atlas_bytes, 0);
-        assert_eq!(released.atlas_pressure_releases, 1);
+        assert!(released.current_atlas_bytes >= 3);
+        assert_eq!(released.atlas_pressure_releases, 0);
         assert_eq!(released.occupied_slots, 1);
         assert!(backend.native.wait_drawable(first.id));
         let first = backend
@@ -2531,6 +2550,9 @@ pub(crate) mod tests {
             .ok_or("in-flight glyph drawable did not complete after pressure")?;
         assert_eq!(first.result, Ok(()));
         assert_eq!(first.operations.atlas_upload_bytes, 3);
+        let drained = backend.native.presentation_snapshot();
+        assert_eq!(drained.current_atlas_bytes, 0);
+        assert_eq!(drained.atlas_pressure_releases, 1);
 
         let super::NativeDrawableSubmitAttempt::Submitted(second) = backend.native.submit_drawable(
             0,
