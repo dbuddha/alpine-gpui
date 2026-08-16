@@ -1,9 +1,42 @@
-use std::num::NonZeroU32;
+use std::{
+    fs,
+    num::NonZeroU32,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use alpine_platform_macos::{EventTimestamp, ScrollPhase};
 use alpine_text_layout::{GlyphBitmap, RasterizedGlyph, ShapedGlyph};
 
 use super::*;
+
+static NEXT_TEST_FILE: AtomicU64 = AtomicU64::new(1);
+
+struct TestFile {
+    path: PathBuf,
+}
+
+impl TestFile {
+    fn new(bytes: impl AsRef<[u8]>) -> std::io::Result<Self> {
+        let sequence = NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "alpine-studio-{}-{sequence}.txt",
+            std::process::id()
+        ));
+        fs::write(&path, bytes)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TestFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
 
 #[derive(Default)]
 struct TestTextSystem;
@@ -172,9 +205,88 @@ fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeEr
 }
 
 #[test]
+fn real_file_open_edit_save_and_conflicts_are_atomic() -> Result<(), Box<dyn std::error::Error>> {
+    let file = TestFile::new("before")?;
+    let mut app = StudioApp::open_file(TestTextSystem, file.path())?;
+    assert_eq!(app.buffer().snapshot().text(), "before");
+    assert!(!app.document.is_dirty());
+
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    assert!(app.document.is_dirty());
+    assert!(
+        !app.handle_event(&key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND)))
+            .visual_changed
+    );
+    assert_eq!(fs::read_to_string(file.path())?, "xbefore");
+    assert!(!app.document.is_dirty());
+    let report = app.last_save.ok_or("missing save report")?;
+    assert_eq!(report.revision(), app.buffer().revision());
+    assert_eq!(report.bytes_written(), "xbefore".len());
+    assert_eq!(app.save_failures, 0);
+    assert_eq!(app.last_file_error, None);
+
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("y".into())))
+            .document_changed
+    );
+    fs::write(file.path(), "external")?;
+    let _effect = app.handle_event(&key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND)));
+    assert_eq!(fs::read_to_string(file.path())?, "external");
+    assert!(app.document.is_dirty());
+    assert_eq!(app.save_failures, 1);
+    assert_eq!(
+        app.last_file_error,
+        Some(FileError::Conflict(alpine_text::ExternalChange::Modified))
+    );
+
+    fs::remove_file(file.path())?;
+    let _effect = app.handle_event(&key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND)));
+    assert_eq!(app.save_failures, 2);
+    assert_eq!(
+        app.last_file_error,
+        Some(FileError::Conflict(alpine_text::ExternalChange::Deleted))
+    );
+    Ok(())
+}
+
+#[test]
+fn file_launch_rejects_invalid_utf8_and_scratch_save_is_isolated()
+-> Result<(), Box<dyn std::error::Error>> {
+    let invalid = TestFile::new([0xff])?;
+    assert!(matches!(
+        StudioApp::open_file(TestTextSystem, invalid.path()),
+        Err(StudioError::File(FileError::InvalidUtf8))
+    ));
+
+    let mut scratch = test_app()?;
+    let before = scratch.buffer().snapshot().text();
+    let effect = scratch.handle_event(&key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND)));
+    assert_eq!(scratch.buffer().snapshot().text(), before);
+    assert!(!effect.visual_changed);
+    assert!(!effect.document_changed);
+    assert_eq!(scratch.last_save, None);
+    assert_eq!(scratch.save_failures, 0);
+    assert_eq!(scratch.last_file_error, None);
+
+    let usage = StudioError::Usage;
+    assert_eq!(usage.to_string(), "usage: alpine-studio [file]");
+    assert!(usage.source().is_none());
+    let file_error = StudioError::from(FileError::InvalidUtf8);
+    assert!(file_error.to_string().contains("Studio file failed"));
+    assert!(file_error.source().is_some());
+    let runtime_error = StudioError::from(RuntimeError::Surface(SurfaceError::UnsupportedPlatform));
+    assert!(runtime_error.to_string().contains("Studio runtime failed"));
+    assert!(runtime_error.source().is_some());
+    Ok(())
+}
+
+#[test]
 fn ime_preview_is_non_destructive_and_commit_is_atomic() -> Result<(), StudioRenderError> {
     let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
-    let before = app.buffer.snapshot().text();
+    let before = app.buffer().snapshot().text();
     assert!(app.handle_event(&ime(ImeEvent::Started)).visual_changed);
     assert!(
         app.handle_event(&ime(ImeEvent::Updated {
@@ -184,7 +296,7 @@ fn ime_preview_is_non_destructive_and_commit_is_atomic() -> Result<(), StudioRen
         }))
         .visual_changed
     );
-    assert_eq!(app.buffer.snapshot().text(), before);
+    assert_eq!(app.buffer().snapshot().text(), before);
     let preview = app.try_scene(
         SceneRevision::new(1),
         viewport().map_err(|_| StudioRenderError::Domain)?,
@@ -192,7 +304,7 @@ fn ime_preview_is_non_destructive_and_commit_is_atomic() -> Result<(), StudioRen
     assert!(preview.quads().len() >= 4);
     let effect = app.handle_event(&ime(ImeEvent::Committed("é".into())));
     assert!(effect.document_changed);
-    assert!(app.buffer.snapshot().text().starts_with('é'));
+    assert!(app.buffer().snapshot().text().starts_with('é'));
     assert!(app.composition.is_none());
     Ok(())
 }
@@ -200,30 +312,30 @@ fn ime_preview_is_non_destructive_and_commit_is_atomic() -> Result<(), StudioRen
 #[test]
 fn grapheme_delete_and_command_undo_restore_text() -> Result<(), SurfaceError> {
     let mut app = test_app()?;
-    let original = app.buffer.snapshot().text();
+    let original = app.buffer().snapshot().text();
     assert!(
         app.handle_event(&ime(ImeEvent::Committed("🦀".into())))
             .document_changed
     );
-    let inserted = app.buffer.snapshot().text();
+    let inserted = app.buffer().snapshot().text();
     assert!(inserted.starts_with('🦀'));
     assert!(
         app.handle_event(&key(KEY_DELETE_BACKWARD, Modifiers::default()))
             .document_changed
     );
-    assert_eq!(app.buffer.snapshot().text(), original);
+    assert_eq!(app.buffer().snapshot().text(), original);
     assert!(
         app.handle_event(&key(KEY_Z, Modifiers::from_bits(Modifiers::COMMAND),))
             .document_changed
     );
-    assert_eq!(app.buffer.snapshot().text(), inserted);
+    assert_eq!(app.buffer().snapshot().text(), inserted);
     Ok(())
 }
 
 #[test]
 fn scroll_and_pointer_selection_use_rendered_visible_lines() -> Result<(), StudioRenderError> {
     let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
-    app.buffer = Buffer::new(&"line\n".repeat(100));
+    *app.buffer_mut() = Buffer::new(&"line\n".repeat(100));
     app.selection = Selection::caret(ByteOffset::new(0));
     let _scene = app.try_scene(
         SceneRevision::new(1),
@@ -261,7 +373,7 @@ fn selection_spans_lines_and_unchanged_atlas_storage_is_reused() -> Result<(), S
     let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
     app.selection = Selection::new(
         ByteOffset::new(0),
-        ByteOffset::new(app.buffer.snapshot().len_bytes()),
+        ByteOffset::new(app.buffer().snapshot().len_bytes()),
     );
     let first = app.try_scene(
         SceneRevision::new(1),
@@ -347,7 +459,10 @@ fn keyboard_commands_cover_selection_navigation_and_history() -> Result<(), Surf
         app.handle_event(&key(KEY_A, Modifiers::from_bits(Modifiers::COMMAND)))
             .visual_changed
     );
-    assert_eq!(app.selection.range(), 0..app.buffer.snapshot().len_bytes());
+    assert_eq!(
+        app.selection.range(),
+        0..app.buffer().snapshot().len_bytes()
+    );
     assert!(
         app.handle_event(&key(KEY_LEFT, Modifiers::default()))
             .visual_changed
@@ -356,7 +471,7 @@ fn keyboard_commands_cover_selection_navigation_and_history() -> Result<(), Surf
 
     app.selection = Selection::new(
         ByteOffset::new(0),
-        ByteOffset::new(app.buffer.snapshot().len_bytes()),
+        ByteOffset::new(app.buffer().snapshot().len_bytes()),
     );
     assert!(
         app.handle_event(&key(KEY_RIGHT, Modifiers::default()))
@@ -364,10 +479,10 @@ fn keyboard_commands_cover_selection_navigation_and_history() -> Result<(), Surf
     );
     assert_eq!(
         app.selection.head().get(),
-        app.buffer.snapshot().len_bytes()
+        app.buffer().snapshot().len_bytes()
     );
 
-    app.buffer = Buffer::new("ab\néx\nlast");
+    *app.buffer_mut() = Buffer::new("ab\néx\nlast");
     app.selection = Selection::caret(ByteOffset::new(1));
     assert!(
         app.handle_event(&key(KEY_DOWN, Modifiers::default()))
@@ -475,7 +590,7 @@ fn input_edges_are_bounded_and_failed_edits_are_atomic() -> Result<(), StudioRen
     assert!(!app.replace_range(9_999..9_999, "").visual_changed);
     assert_eq!(app.input_failures, failures + 3);
 
-    app.buffer = Buffer::new("🦀x");
+    *app.buffer_mut() = Buffer::new("🦀x");
     app.selection = Selection::caret(ByteOffset::new(1));
     assert!(!app.delete_backward().visual_changed);
     assert!(!app.delete_forward().visual_changed);
@@ -489,7 +604,7 @@ fn input_edges_are_bounded_and_failed_edits_are_atomic() -> Result<(), StudioRen
     app.selection = Selection::caret(ByteOffset::new(0));
     assert!(!app.delete_backward().visual_changed);
     assert!(!app.move_horizontal(false, false).visual_changed);
-    app.selection = Selection::caret(ByteOffset::new(app.buffer.snapshot().len_bytes()));
+    app.selection = Selection::caret(ByteOffset::new(app.buffer().snapshot().len_bytes()));
     assert!(!app.delete_forward().visual_changed);
     assert!(!app.move_horizontal(true, false).visual_changed);
 
@@ -632,10 +747,10 @@ fn coordinate_helpers_cover_clusters_bounds_and_binary_line_search() -> Result<(
 #[test]
 fn offscreen_caret_and_invalid_scroll_use_safe_scene_fallback() -> Result<(), StudioRenderError> {
     let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
-    app.buffer = Buffer::new(&"line\n".repeat(100));
+    *app.buffer_mut() = Buffer::new(&"line\n".repeat(100));
     app.selection = Selection::caret(ByteOffset::new(0));
     app.scroll_y = app.maximum_scroll();
-    let snapshot = app.buffer.snapshot();
+    let snapshot = app.buffer().snapshot();
     assert!(app.caret_bounds(&snapshot, &[])?.is_none());
     app.selection = Selection::caret(ByteOffset::new(usize::MAX));
     assert!(app.caret_bounds(&snapshot, &[])?.is_none());
@@ -666,5 +781,11 @@ fn run_rejects_an_unsupported_host() {
     assert!(matches!(
         run(),
         Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))
+    ));
+    assert!(matches!(
+        run_file("missing.txt"),
+        Err(StudioError::Runtime(RuntimeError::Surface(
+            SurfaceError::UnsupportedPlatform
+        )))
     ));
 }

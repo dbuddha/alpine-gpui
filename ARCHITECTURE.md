@@ -59,14 +59,21 @@ fixed standard worker threads connected by bounded request and result channels.
 Every result carries workspace, document, and process-local sequence identity;
 stale results are rejected before delegate mutation. The runtime exposes no
 native handle and adds no general async executor or reactive graph.
-`alpine-studio` is the first shipping application. It owns one local buffer,
+`alpine-studio` is the first shipping application. It owns exactly one local
+document as either an unbound scratch `Buffer` or a path-bound `Editor`, plus
 primary selection, IME composition, viewport state, two-frame layout cache, and
-hard-budgeted glyph atlas. Its `AppDelegate` maps native events to checked local
-edits and builds only visible text plus bounded overscan when dirty. Production
-typography uses the safe CoreText service; deterministic test typography proves
-portable editor behavior without claiming native validation. It runs through
-one `Application` until the owned AppKit window closes and has no native handles,
-collaboration state, extension host, telemetry, AI, or general async runtime.
+a hard-budgeted glyph atlas, as accepted by
+[Decision #146](https://github.com/dbuddha/alpine-gpui/issues/146). One optional
+process argument opens and validates
+an existing UTF-8 file before native construction. Command-S reuses the
+editor's conflict-aware atomic replacement and records structured save evidence
+without changing document revision; scratch save is a deterministic no-op. Its
+`AppDelegate` maps native events to checked local edits and builds only visible
+text plus bounded overscan when dirty. Production typography uses the safe
+CoreText service; deterministic test typography proves portable editor behavior
+without claiming native validation. It runs through one `Application` until the
+owned AppKit window closes and has no native handles, collaboration state,
+extension host, telemetry, AI, or general async runtime.
 The non-shipping `alpine-trace` crate depends only on Alpine workspace crates
 and owns typed, fail-closed conversion from versioned workload values into an
 immutable scene and exact offscreen target. The non-shipping
