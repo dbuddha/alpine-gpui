@@ -140,6 +140,7 @@ fn atlas_sampling_and_instance_edges_use_nontrivial_coordinates() -> Result<(), 
     }
     let mut inside = [0.0; 4];
     composite_instance(&frame, instance, 6.0, 8.0, &mut inside);
-    assert!(inside[3] > 0.0);
+    let expected_alpha = 0.5 * (128.0 / 255.0);
+    assert!((inside[3] - expected_alpha).abs() < f32::EPSILON);
     Ok(())
 }
