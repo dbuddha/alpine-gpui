@@ -47,15 +47,15 @@ vertex AlpineVertexOutput alpine_quad_vertex(
 
 fragment float4 alpine_quad_fragment(
     AlpineVertexOutput input [[stage_in]],
-    texture2d<float, access::read> atlas [[texture(0)]],
-    constant uint2 &atlas_extent [[buffer(0)]])
+    constant uint2 &atlas_extent [[buffer(0)]],
+    device const uchar *atlas [[buffer(1)]])
 {
     float coverage = 1.0;
     if (input.atlas_uv.x >= 0.0) {
         const uint2 texel = min(
             uint2(input.atlas_uv * float2(atlas_extent)),
             atlas_extent - uint2(1));
-        coverage = atlas.read(texel).r;
+        coverage = float(atlas[texel.y * atlas_extent.x + texel.x]) / 255.0;
     }
     const float alpha = input.color.a * coverage;
     return float4(input.color.rgb * alpha, alpha);

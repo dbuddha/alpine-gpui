@@ -18,10 +18,9 @@ use objc2_metal::{
     MTLBlendFactor, MTLBlitCommandEncoder, MTLBuffer, MTLClearColor, MTLCommandBuffer,
     MTLCommandBufferError, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
     MTLCreateSystemDefaultDevice, MTLDevice, MTLFunction, MTLGPUFamily, MTLLibrary, MTLLoadAction,
-    MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder,
-    MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResource,
-    MTLResourceOptions, MTLResourceUsage, MTLSize, MTLStorageMode, MTLStoreAction, MTLTexture,
-    MTLTextureDescriptor, MTLTextureUsage,
+    MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
+    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResource, MTLResourceOptions, MTLSize,
+    MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
 };
 
 #[cfg(all(feature = "platform-spi", any(test, alpine_native_validation)))]
@@ -167,7 +166,7 @@ pub(crate) struct NativePresentationSnapshot {
 
 struct GlyphAtlasCache {
     image: Option<alpine_scene::GlyphAtlasImage>,
-    texture: Option<Texture>,
+    buffer: Option<Buffer>,
     current_bytes: usize,
     peak_bytes: usize,
     allocations: u64,
@@ -181,7 +180,7 @@ impl GlyphAtlasCache {
     const fn new() -> Self {
         Self {
             image: None,
-            texture: None,
+            buffer: None,
             current_bytes: 0,
             peak_bytes: 0,
             allocations: 0,
@@ -197,9 +196,9 @@ impl GlyphAtlasCache {
         image: Option<&alpine_scene::GlyphAtlasImage>,
     ) -> Result<AtlasPreparation, RenderError> {
         let Some(image) = image else {
-            if let Some(texture) = &self.texture {
+            if let Some(buffer) = &self.buffer {
                 return Ok(AtlasPreparation {
-                    texture: Some(texture.clone()),
+                    buffer: Some(buffer.clone()),
                     retained_bytes: self.current_bytes,
                     ..AtlasPreparation::default()
                 });
@@ -208,15 +207,15 @@ impl GlyphAtlasCache {
                 .allocations
                 .checked_add(1)
                 .ok_or(RenderError::AccountingOverflow)?;
-            let texture = create_solid_binding_atlas(device)?;
-            let allocated_bytes = texture.allocatedSize();
+            let buffer = create_solid_binding_atlas(device)?;
+            let allocated_bytes = buffer.allocatedSize();
             self.image = None;
-            self.texture = Some(texture.clone());
+            self.buffer = Some(buffer.clone());
             self.current_bytes = allocated_bytes;
             self.peak_bytes = self.peak_bytes.max(allocated_bytes);
             self.allocations = next_allocations;
             return Ok(AtlasPreparation {
-                texture: Some(texture),
+                buffer: Some(buffer),
                 upload: None,
                 allocated_bytes,
                 retained_bytes: allocated_bytes,
@@ -235,7 +234,7 @@ impl GlyphAtlasCache {
                 .checked_add(1)
                 .ok_or(RenderError::AccountingOverflow)?;
             return Ok(AtlasPreparation {
-                texture: self.texture.clone(),
+                buffer: self.buffer.clone(),
                 upload: None,
                 retained_bytes: self.current_bytes,
                 ..AtlasPreparation::default()
@@ -250,19 +249,19 @@ impl GlyphAtlasCache {
             .uploads
             .checked_add(1)
             .ok_or(RenderError::AccountingOverflow)?;
-        let (texture, upload) = create_glyph_atlas(device, image)?;
-        let texture_bytes = texture.allocatedSize();
-        let allocated_bytes = texture_bytes
+        let (buffer, upload) = create_glyph_atlas(device, image)?;
+        let buffer_bytes = buffer.allocatedSize();
+        let allocated_bytes = buffer_bytes
             .checked_add(upload.buffer.allocatedSize())
             .ok_or(RenderError::AccountingOverflow)?;
         self.image = Some(image.clone());
-        self.texture = Some(texture.clone());
-        self.current_bytes = texture_bytes;
-        self.peak_bytes = self.peak_bytes.max(texture_bytes);
+        self.buffer = Some(buffer.clone());
+        self.current_bytes = buffer_bytes;
+        self.peak_bytes = self.peak_bytes.max(buffer_bytes);
         self.allocations = next_allocations;
         self.uploads = next_uploads;
         Ok(AtlasPreparation {
-            texture: Some(texture),
+            buffer: Some(buffer),
             upload: Some(upload),
             allocated_bytes,
             retained_bytes: allocated_bytes,
@@ -272,7 +271,7 @@ impl GlyphAtlasCache {
 
     #[cfg_attr(not(any(test, feature = "platform-spi")), allow(dead_code))]
     fn pressure(&mut self) {
-        if self.texture.take().is_some() {
+        if self.buffer.take().is_some() {
             self.pressure_releases = self.pressure_releases.saturating_add(1);
         }
         self.image = None;
@@ -282,7 +281,7 @@ impl GlyphAtlasCache {
 
 #[derive(Default)]
 struct AtlasPreparation {
-    texture: Option<Texture>,
+    buffer: Option<Buffer>,
     upload: Option<AtlasUpload>,
     allocated_bytes: usize,
     retained_bytes: usize,
@@ -291,7 +290,6 @@ struct AtlasPreparation {
 
 struct AtlasUpload {
     buffer: Buffer,
-    bytes_per_row: usize,
 }
 
 #[cfg(feature = "platform-spi")]
@@ -499,7 +497,7 @@ struct PendingDrawable {
     _command: CommandBuffer,
     operations: FrameOperationUsage,
     resources: FrameResourceUsage,
-    _atlas: Option<Texture>,
+    _atlas: Option<Buffer>,
     _atlas_upload: Option<AtlasUpload>,
 }
 
@@ -1358,7 +1356,7 @@ fn create_pipeline_state(
 
 struct FrameResources {
     texture: Texture,
-    atlas: Option<Texture>,
+    atlas: Option<Buffer>,
     atlas_upload: Option<AtlasUpload>,
     readback: Buffer,
     upload: Option<Buffer>,
@@ -1378,7 +1376,7 @@ struct DrawableResources {
     retained_texture_bytes: usize,
     allocated_atlas_bytes: usize,
     atlas_uploaded_bytes: usize,
-    atlas: Option<Texture>,
+    atlas: Option<Buffer>,
     atlas_upload: Option<AtlasUpload>,
 }
 
@@ -1435,7 +1433,7 @@ impl DrawableResources {
             retained_texture_bytes,
             allocated_atlas_bytes: atlas.allocated_bytes,
             atlas_uploaded_bytes: atlas.uploaded_bytes,
-            atlas: atlas.texture,
+            atlas: atlas.buffer,
             atlas_upload: atlas.upload,
         })
     }
@@ -1643,7 +1641,7 @@ impl FrameResources {
 
         Ok(Self {
             texture,
-            atlas: atlas.texture,
+            atlas: atlas.buffer,
             atlas_upload: atlas.upload,
             readback,
             upload,
@@ -1661,15 +1659,13 @@ fn encode_render_pass(
     pipeline: &PipelineState,
     texture: &ProtocolObject<dyn MTLTexture>,
     upload: Option<&ProtocolObject<dyn MTLBuffer>>,
-    atlas: Option<&ProtocolObject<dyn MTLTexture>>,
+    atlas: Option<&ProtocolObject<dyn MTLBuffer>>,
     frame: &ValidatedFrame,
 ) -> Result<(), RenderError> {
     if !texture.usage().contains(MTLTextureUsage::RenderTarget) {
         return Err(RenderError::SubmissionInvariantViolated);
     }
-    if upload.is_some()
-        && !atlas.is_some_and(|texture| texture.usage().contains(MTLTextureUsage::ShaderRead))
-    {
+    if upload.is_some() && atlas.is_none() {
         return Err(RenderError::SubmissionInvariantViolated);
     }
     let pass = MTLRenderPassDescriptor::renderPassDescriptor();
@@ -1710,18 +1706,9 @@ fn encode_render_pass(
     }
     if let Some(upload) = upload {
         if let Some(atlas) = atlas {
-            let atlas_extent = [
-                u32::try_from(atlas.width())
-                    .map_err(|_| RenderError::SubmissionInvariantViolated)?,
-                u32::try_from(atlas.height())
-                    .map_err(|_| RenderError::SubmissionInvariantViolated)?,
-            ];
-            let resource: &ProtocolObject<dyn MTLResource> = atlas.as_ref();
-            #[allow(
-                deprecated,
-                reason = "the macOS 15 Metal 3 path requires all-stage residency evidence"
-            )]
-            encoder.useResource_usage(resource, MTLResourceUsage::Read);
+            let atlas_extent = frame
+                .glyph_atlas()
+                .map_or([1, 1], |image| [image.width().get(), image.height().get()]);
             // SAFETY: `atlas_extent` contains exactly two initialized u32
             // values and Metal copies all eight bytes into fragment buffer
             // index zero immediately.
@@ -1731,6 +1718,7 @@ fn encode_render_pass(
                     size_of::<[u32; 2]>(),
                     0,
                 );
+                encoder.setFragmentBuffer_offset_atIndex(Some(atlas), 0, 1);
             }
         }
         // SAFETY: The retained upload buffer contains exactly the validated
@@ -1738,7 +1726,6 @@ fn encode_render_pass(
         // and both the local owner and retained command buffer keep it alive.
         unsafe {
             encoder.setVertexBuffer_offset_atIndex(Some(upload), 0, 1);
-            encoder.setFragmentTexture_atIndex(atlas, 0);
             encoder.drawPrimitives_vertexStart_vertexCount_instanceCount(
                 MTLPrimitiveType::Triangle,
                 0,
@@ -1754,31 +1741,25 @@ fn encode_render_pass(
 fn encode_atlas_upload(
     command: &CommandBuffer,
     upload: &AtlasUpload,
-    texture: &ProtocolObject<dyn MTLTexture>,
+    buffer: &ProtocolObject<dyn MTLBuffer>,
 ) -> Result<(), RenderError> {
+    if upload.buffer.length() != buffer.length() {
+        return Err(RenderError::SubmissionInvariantViolated);
+    }
     let encoder = command
         .blitCommandEncoder()
         .ok_or(RenderError::EncoderUnavailable {
             stage: RenderStage::BlitEncoder,
         })?;
-    // SAFETY: The staging allocation uses the device-required row alignment,
-    // covers every tightly bounded R8 atlas row, and both resources remain
-    // retained until the command buffer reaches a terminal state.
+    // SAFETY: Source and destination have the same checked nonzero length and
+    // both resources remain retained until the command reaches a terminal state.
     unsafe {
-        encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
+        encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
             &upload.buffer,
             0,
-            upload.bytes_per_row,
-            upload.buffer.length(),
-            MTLSize {
-                width: texture.width(),
-                height: texture.height(),
-                depth: 1,
-            },
-            texture,
+            buffer,
             0,
-            0,
-            MTLOrigin { x: 0, y: 0, z: 0 },
+            buffer.length(),
         );
     }
     encoder.endEncoding();
@@ -1788,110 +1769,44 @@ fn encode_atlas_upload(
 fn create_glyph_atlas(
     device: &Device,
     atlas: &alpine_scene::GlyphAtlasImage,
-) -> Result<(Texture, AtlasUpload), RenderError> {
-    // SAFETY: Scene atlas dimensions are nonzero and match the tightly packed
-    // owned pixel allocation validated before frame lowering.
-    let descriptor = unsafe {
-        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-            MTLPixelFormat::R8Unorm,
-            atlas.width().get() as usize,
-            atlas.height().get() as usize,
-            false,
-        )
-    };
-    descriptor.setStorageMode(MTLStorageMode::Private);
-    descriptor.setUsage(MTLTextureUsage::ShaderRead);
-    let texture =
-        device
-            .newTextureWithDescriptor(&descriptor)
-            .ok_or(RenderError::ResourceUnavailable {
-                stage: RenderStage::RenderTexture,
-                requested_bytes: Some(atlas.pixels().len()),
-            })?;
-    let width = atlas.width().get() as usize;
-    let height = atlas.height().get() as usize;
-    let alignment = device.minimumLinearTextureAlignmentForPixelFormat(MTLPixelFormat::R8Unorm);
-    if alignment == 0 {
-        return Err(RenderError::SubmissionInvariantViolated);
-    }
-    let bytes_per_row = width
-        .checked_add(alignment - 1)
-        .map(|value| value / alignment * alignment)
-        .ok_or(RenderError::AccountingOverflow)?;
-    let staging_len = bytes_per_row
-        .checked_mul(height)
-        .ok_or(RenderError::AccountingOverflow)?;
+) -> Result<(Buffer, AtlasUpload), RenderError> {
+    let byte_len = atlas.pixels().len();
     let buffer = device
-        .newBufferWithLength_options(staging_len, MTLResourceOptions::StorageModeShared)
+        .newBufferWithLength_options(byte_len, MTLResourceOptions::StorageModePrivate)
         .ok_or(RenderError::ResourceUnavailable {
             stage: RenderStage::UploadBuffer,
-            requested_bytes: Some(staging_len),
+            requested_bytes: Some(byte_len),
         })?;
-    // SAFETY: Shared buffers expose `length` writable bytes. Each source row
-    // has exactly `width` bytes, each destination row has at least that much
-    // capacity, and the checked product bounds every row range.
+    let source = NonNull::new(atlas.pixels().as_ptr().cast_mut().cast::<c_void>())
+        .ok_or(RenderError::SubmissionInvariantViolated)?;
+    // SAFETY: The immutable atlas allocation contains exactly `byte_len`
+    // initialized bytes and Metal copies them into owned shared storage.
     let staging = unsafe {
-        slice::from_raw_parts_mut(buffer.contents().cast::<u8>().as_ptr(), buffer.length())
-    };
-    staging.fill(0);
-    for (source, destination) in atlas
-        .pixels()
-        .chunks_exact(width)
-        .zip(staging.chunks_exact_mut(bytes_per_row))
-    {
-        destination[..width].copy_from_slice(source);
+        device.newBufferWithBytes_length_options(
+            source,
+            byte_len,
+            MTLResourceOptions::StorageModeShared,
+        )
     }
-    Ok((
-        texture,
-        AtlasUpload {
-            buffer,
-            bytes_per_row,
-        },
-    ))
+    .ok_or(RenderError::ResourceUnavailable {
+        stage: RenderStage::UploadBuffer,
+        requested_bytes: Some(byte_len),
+    })?;
+    Ok((buffer, AtlasUpload { buffer: staging }))
 }
 
-fn create_solid_binding_atlas(device: &Device) -> Result<Texture, RenderError> {
-    // SAFETY: A nonempty solid draw needs one valid shader-readable binding.
-    // Initializing the texel also keeps speculative or validation-layer sample
-    // evaluation defined even though the negative UV sentinel selects coverage
-    // one for every solid fragment.
-    let descriptor = unsafe {
-        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-            MTLPixelFormat::R8Unorm,
-            1,
-            1,
-            false,
-        )
-    };
-    descriptor.setStorageMode(MTLStorageMode::Shared);
-    descriptor.setUsage(MTLTextureUsage::ShaderRead);
-    let texture =
-        device
-            .newTextureWithDescriptor(&descriptor)
-            .ok_or(RenderError::ResourceUnavailable {
-                stage: RenderStage::RenderTexture,
-                requested_bytes: Some(1),
-            })?;
+fn create_solid_binding_atlas(device: &Device) -> Result<Buffer, RenderError> {
     let texel = [u8::MAX];
     let bytes = NonNull::from(&texel).cast::<c_void>();
-    // SAFETY: The source is one initialized byte and the destination is a
-    // one-by-one, single-level R8 texture with a one-byte row pitch.
+    // SAFETY: The source is one initialized byte and Metal copies it before
+    // returning, providing a valid fallback binding for solid-only draws.
     unsafe {
-        texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
-            MTLRegion {
-                origin: MTLOrigin { x: 0, y: 0, z: 0 },
-                size: MTLSize {
-                    width: 1,
-                    height: 1,
-                    depth: 1,
-                },
-            },
-            0,
-            bytes,
-            1,
-        );
+        device.newBufferWithBytes_length_options(bytes, 1, MTLResourceOptions::StorageModeShared)
     }
-    Ok(texture)
+    .ok_or(RenderError::ResourceUnavailable {
+        stage: RenderStage::UploadBuffer,
+        requested_bytes: Some(1),
+    })
 }
 
 fn encode_readback(
