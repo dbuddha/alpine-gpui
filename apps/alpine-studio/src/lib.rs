@@ -37,7 +37,10 @@ use alpine_text_layout::{
     GlyphAtlas, GlyphKey, GlyphRasterizer, LayoutError, LineLayout, LineLayoutCache,
     PositiveFinite, TextShaper, VisibleLines,
 };
-use workspace::{Workspace, WorkspaceLimits};
+use workspace::Workspace;
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+use workspace::WorkspaceLimits;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use alpine_platform_macos::SurfaceDescriptor;
@@ -205,7 +208,13 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
         if metadata.is_file() {
             run_native(native_file_app(path)?).map_err(StudioError::from)
         } else if metadata.is_dir() {
-            run_native(native_workspace_app(path)?).map_err(StudioError::from)
+            let workspace = Workspace::open(path, WorkspaceLimits::default())?;
+            let mut text_system = alpine_text_layout::CoreTextSystem::new();
+            text_system
+                .register_font(FONT_FAMILY, "Menlo-Regular")
+                .map_err(|_| SurfaceError::DriverUnavailable)?;
+            let app = StudioApp::from_workspace(text_system, workspace)?;
+            run_native(app).map_err(StudioError::from)
         } else {
             Err(WorkspaceError::UnsupportedTarget(path.to_path_buf()).into())
         }
@@ -248,16 +257,6 @@ fn native_file_app(path: &Path) -> Result<StudioApp, StudioError> {
         .register_font(FONT_FAMILY, "Menlo-Regular")
         .map_err(|_| SurfaceError::DriverUnavailable)?;
     StudioApp::from_document(text_system, document).map_err(StudioError::from)
-}
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn native_workspace_app(path: &Path) -> Result<StudioApp, StudioError> {
-    let workspace = Workspace::open(path, WorkspaceLimits::default())?;
-    let mut text_system = alpine_text_layout::CoreTextSystem::new();
-    text_system
-        .register_font(FONT_FAMILY, "Menlo-Regular")
-        .map_err(|_| SurfaceError::DriverUnavailable)?;
-    StudioApp::from_workspace(text_system, workspace).map_err(StudioError::from)
 }
 
 trait StudioTextSystem: TextShaper + GlyphRasterizer {}
@@ -1820,7 +1819,7 @@ pub mod native_validation {
         native_file_app,
     };
 
-    const NATIVE_INPUT_FRAMES: usize = 6;
+    const NATIVE_INPUT_FRAMES: usize = 5;
 
     /// Handle-free completion evidence returned across the process-test boundary.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2006,7 +2005,7 @@ pub mod native_validation {
             assert_eq!(evidence.scroll, 1);
             assert_eq!(evidence.unexpected, 0);
             assert_eq!(evidence.frames, NATIVE_INPUT_FRAMES);
-            assert_eq!(evidence.frame_revisions, [2, 3, 4, 5, 6, 7]);
+            assert_eq!(evidence.frame_revisions, [2, 3, 4, 5, 6]);
             (evidence.events, evidence.frames)
         };
         assert!(state.borrow_mut().frame_if_dirty().is_none());

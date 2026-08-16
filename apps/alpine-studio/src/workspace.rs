@@ -4,7 +4,7 @@ use std::{
     error::Error,
     fmt, fs, io,
     ops::Range,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -209,15 +209,13 @@ impl Workspace {
         let mut scanned_entries = 0_usize;
         let mut omitted_entries = 0_usize;
         for result in reader {
-            scanned_entries = scanned_entries
-                .checked_add(1)
-                .ok_or(WorkspaceError::AllocationFailed)?;
-            if scanned_entries > limits.scan_ceiling {
+            if scanned_entries == limits.scan_ceiling {
                 return Err(WorkspaceError::ScanLimitExceeded {
                     root: canonical,
                     limit: limits.scan_ceiling,
                 });
             }
+            scanned_entries += 1;
             let entry = result
                 .map_err(|source| WorkspaceError::io("read directory entry", &canonical, source))?;
             let file_type = entry
@@ -236,11 +234,7 @@ impl Workspace {
                 omitted_entries = omitted_entries.saturating_add(1);
                 continue;
             };
-            let mut components = Path::new(name).components();
-            if !matches!(components.next(), Some(Component::Normal(_)))
-                || components.next().is_some()
-                || name.len() > limits.per_name_bytes
-            {
+            if name.len() > limits.per_name_bytes {
                 omitted_entries = omitted_entries.saturating_add(1);
                 continue;
             }
@@ -333,12 +327,12 @@ impl Workspace {
         }
         let metadata = fs::symlink_metadata(&candidate)
             .map_err(|source| WorkspaceError::io("revalidate target", &candidate, source))?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
+        if !metadata.file_type().is_file() {
             return Err(WorkspaceError::NotRegularFile(candidate));
         }
         let canonical = fs::canonicalize(&candidate)
             .map_err(|source| WorkspaceError::io("canonicalize target", &candidate, source))?;
-        if canonical.parent() != Some(self.root.as_path()) || !canonical.starts_with(&self.root) {
+        if canonical.parent() != Some(self.root.as_path()) {
             return Err(WorkspaceError::EscapesRoot(canonical));
         }
         Ok(canonical)

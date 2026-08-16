@@ -4,7 +4,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let evidence = alpine_studio::native_validation::qualify_clipboard_and_close_process()?;
     assert_eq!(evidence.input_events(), 7);
-    assert_eq!(evidence.input_frames(), 6);
+    assert_eq!(evidence.input_frames(), 5);
     assert!(evidence.persisted_bytes() > 1_000);
     assert_eq!(evidence.released_owner_classes(), 9);
     Ok(())

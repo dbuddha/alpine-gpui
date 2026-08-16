@@ -2,6 +2,9 @@
 # not compile on the Linux mutation host. Their dedicated Kani and Apple
 # Silicon mutation gates provide the executable evidence instead.
 exclude_globs = [
+    # The executable wrapper is proven through CARGO_BIN_EXE process tests;
+    # cargo-mutants does not substitute that spawned binary.
+    "apps/alpine-studio/src/main.rs",
     "crates/*/src/proofs.rs",
     "tools/*/src/proofs.rs",
     "crates/alpine-metal/src/native.rs",
@@ -15,6 +18,8 @@ exclude_globs = [
 # by the dedicated Apple Silicon mutation gate.
 # The process-main-thread validation entry point is test orchestration; its
 # shipping cleanup path and oracle support remain mutated on Apple Silicon.
+# run_path is a cfg-split target dispatcher proven by unit and CARGO_BIN_EXE
+# process tests; the Linux mutation host cannot substitute its macOS branch.
 # The symbolic adapter is exercised by the full Kani inventory and delegates
 # directly to the dynamically tested transition.
 exclude_re = [
@@ -26,6 +31,7 @@ exclude_re = [
     "native_validation::new_surface",
     "native_validation::run_until_frame_terminal",
     "native_validation::validate_initialization_rollback",
+    "run_path",
     "record_symbolic",
     "NativeSurface::show",
 ]
