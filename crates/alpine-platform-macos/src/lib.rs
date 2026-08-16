@@ -43,7 +43,7 @@ pub struct Modifiers(u8);
 
 impl Modifiers {
     /// Shift modifier bit.
-    pub const SHIFT: u8 = 1 << 0;
+    pub const SHIFT: u8 = 0x01;
     /// Control modifier bit.
     pub const CONTROL: u8 = 1 << 1;
     /// Option modifier bit.

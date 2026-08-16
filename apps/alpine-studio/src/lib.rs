@@ -1,11 +1,14 @@
 //! First shipping Alpine Studio application boundary.
 
 use alpine_core::{LinearRgba, Point, Rect, Size};
-use alpine_platform_macos::{SurfaceDescriptor, SurfaceError, SurfaceEvent};
-use alpine_runtime::{
-    AppContext, AppDelegate, Application, RuntimeError, WindowContext, WorkerConfig,
-};
+use alpine_platform_macos::SurfaceError;
+use alpine_runtime::RuntimeError;
 use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use alpine_platform_macos::{SurfaceDescriptor, SurfaceEvent};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use alpine_runtime::{AppContext, AppDelegate, Application, WindowContext, WorkerConfig};
 
 const WINDOW_WIDTH: f32 = 960.0;
 const WINDOW_HEIGHT: f32 = 540.0;
@@ -77,6 +80,7 @@ impl StudioApp {
     }
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 impl AppDelegate for StudioApp {
     type WorkerOutput = ();
 
@@ -117,6 +121,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn studio_delegate_builds_only_the_dirty_runtime_frame() -> Result<(), RuntimeError> {
         let viewport =
             Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;

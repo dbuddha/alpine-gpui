@@ -412,6 +412,7 @@ impl<T: Send + 'static> WorkerPool<T> {
         }
     }
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     fn shutdown(&mut self) {
         self.request_sender.take();
         for worker in self.workers.drain(..) {
@@ -767,35 +768,38 @@ impl<D: AppDelegate + 'static> Application<D> {
     /// # Errors
     ///
     /// Returns a structured worker or native surface failure.
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub fn run(mut self, descriptor: &SurfaceDescriptor) -> Result<(), RuntimeError> {
-        let surface = NativeSurface::new(descriptor)?;
-        if let Some(frame) = self.frame_if_dirty() {
-            let (scene, clear) = frame.into_parts();
-            let _revision = surface.request_frame(scene, clear)?;
-        }
-        surface.show()?;
+    pub fn run(self, descriptor: &SurfaceDescriptor) -> Result<(), RuntimeError> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let mut application = self;
+            let surface = NativeSurface::new(descriptor)?;
+            if let Some(frame) = application.frame_if_dirty() {
+                let (scene, clear) = frame.into_parts();
+                let _revision = surface.request_frame(scene, clear)?;
+            }
+            surface.show()?;
 
-        let state = Rc::new(RefCell::new(self));
-        let callback_state = Rc::clone(&state);
-        let run_result = surface.run_with_event_handler(move |event| {
-            callback_state
-                .try_borrow_mut()
-                .ok()
-                .and_then(|mut application| application.dispatch(&event))
-        });
-        if let Ok(mut application) = state.try_borrow_mut() {
-            application.shutting_down = true;
-            application.dirty = false;
-            application.workers.shutdown();
+            let state = Rc::new(RefCell::new(application));
+            let callback_state = Rc::clone(&state);
+            let run_result = surface.run_with_event_handler(move |event| {
+                callback_state
+                    .try_borrow_mut()
+                    .ok()
+                    .and_then(|mut application| application.dispatch(&event))
+            });
+            if let Ok(mut application) = state.try_borrow_mut() {
+                application.shutting_down = true;
+                application.dirty = false;
+                application.workers.shutdown();
+            }
+            run_result.map_err(RuntimeError::Surface)
         }
-        run_result.map_err(RuntimeError::Surface)
-    }
 
-    /// Rejects native execution on unsupported hosts without starting workers.
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-    pub fn run(self, _descriptor: &SurfaceDescriptor) -> Result<(), RuntimeError> {
-        Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            let _ = descriptor;
+            Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))
+        }
     }
 
     fn drain_worker_results(&mut self) {
@@ -967,6 +971,7 @@ mod tests {
         assert!(!context.advance_workspace(WorkspaceRevision::new(2)));
         assert!(context.advance_document(DocumentRevision::new(3)));
         assert!(!context.advance_document(DocumentRevision::new(1)));
+        *context.dirty = false;
         context.invalidate();
         assert_eq!(context.workspace_revision().get(), 2);
         assert_eq!(context.document_revision().get(), 3);
@@ -1004,6 +1009,8 @@ mod tests {
     #[test]
     fn resize_builds_latest_viewport_and_close_revokes_frames() -> Result<(), RuntimeError> {
         let mut application = runtime(TestDelegate::default())?;
+        assert!(!application.snapshot().is_shutting_down());
+        assert_eq!(application.snapshot().invalid_scenes(), 0);
         let _ = application.frame_if_dirty();
         let extent = SurfaceExtent::new(120.0, 80.0, 1.0)?;
         let resized = application
@@ -1201,9 +1208,9 @@ mod tests {
     struct DefaultResultDelegate;
 
     impl AppDelegate for DefaultResultDelegate {
-        type WorkerOutput = ();
+        type WorkerOutput = u64;
 
-        fn event(&mut self, _event: &SurfaceEvent, _context: &mut AppContext<'_, ()>) {}
+        fn event(&mut self, _event: &SurfaceEvent, _context: &mut AppContext<'_, u64>) {}
 
         fn frame(&mut self, context: WindowContext) -> Scene {
             SceneBuilder::new(context.scene_revision(), context.viewport()).finish()
@@ -1232,7 +1239,7 @@ mod tests {
             dirty: &mut application.dirty,
             workers: &mut application.workers,
         };
-        AppDelegate::worker_result(&mut application.delegate, token(3), (), &mut context);
+        AppDelegate::worker_result(&mut application.delegate, token(3), 9, &mut context);
         assert!(!application.dirty);
         Ok(())
     }
