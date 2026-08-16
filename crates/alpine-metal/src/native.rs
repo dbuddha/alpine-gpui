@@ -235,7 +235,6 @@ impl GlyphAtlasCache {
                 .ok_or(RenderError::AccountingOverflow)?;
             return Ok(AtlasPreparation {
                 buffer: self.buffer.clone(),
-                upload: None,
                 retained_bytes: self.current_bytes,
                 ..AtlasPreparation::default()
             });
@@ -2382,6 +2381,14 @@ pub(crate) mod tests {
         let reused = backend.render_offscreen(&scene, descriptor)?;
         assert_pixels_within(reused.image(), &expected, 1);
         assert_eq!(reused.report().atlas_upload_bytes, 0);
+        assert_eq!(
+            reused.report().retained_bytes,
+            reused
+                .report()
+                .allocated_bytes
+                .checked_add(backend.native.atlas_cache.current_bytes)
+                .ok_or("reused atlas accounting overflow")?
+        );
         for _ in 0..32 {
             let steady = backend.render_offscreen(&scene, descriptor)?;
             assert_eq!(steady.report().atlas_upload_bytes, 0);
