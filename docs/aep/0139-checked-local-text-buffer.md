@@ -58,7 +58,11 @@ not call a panicking third-party conversion with untrusted input.
 
 Ropey 1.6.1 is MIT, has `smallvec` and `str_indices` as direct dependencies,
 and contains third-party unsafe tree storage behind its safe public API. Alpine
-disables default features and enables only CR line metrics and SIMD scanning.
+disables default features, enables CR line metrics in every build, and enables
+SIMD scanning in every non-Miri build. Miri exercises the same safe API through
+Ropey's scalar path because the interpreter cannot execute the selected SIMD
+intrinsics. Filesystem tests remain native because Miri isolation forbids their
+syscalls.
 Unicode Segmentation 1.13.3 is MIT OR Apache-2.0, has no required dependencies,
 and supplies UAX #29 grapheme boundaries. Both support the workspace Rust
 version. No unsafe code is permitted in `alpine-text`, and no dependency type

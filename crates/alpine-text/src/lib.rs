@@ -1497,6 +1497,7 @@ mod tests {
 
     #[cfg(not(target_family = "windows"))]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
     fn editor_saves_atomically_and_detects_external_change()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = test_directory()?;
@@ -1526,6 +1527,7 @@ mod tests {
 
     #[cfg(not(target_family = "windows"))]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
     fn injected_write_failure_preserves_target_and_cleans_temporary_file()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = test_directory()?;
@@ -1751,6 +1753,7 @@ mod tests {
 
     #[cfg(not(target_family = "windows"))]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
     fn file_observers_and_atomic_replace_failures_are_structured()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = test_directory()?;
@@ -1799,6 +1802,7 @@ mod tests {
 
     #[cfg(not(target_family = "windows"))]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
     fn atomic_replace_failures_are_structured() -> Result<(), Box<dyn std::error::Error>> {
         let directory = test_directory()?;
         let collision_target = directory.join("collision.txt");
