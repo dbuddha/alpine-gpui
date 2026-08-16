@@ -11,10 +11,10 @@
 
 Alpine must shape and render only the visible editor viewport without importing
 GPUI entities, a retained component tree, collaboration state, or unbounded
-text caches. The first implementation layer adds a safe portable layout and A8
-atlas boundary. Later commits under Task #126 connect copied CoreText output to
-immutable scene arrays and Direct Metal. This AEP makes no text-rendering or
-performance claim before that complete path passes semantic and pixel oracles.
+text caches. The implementation owns a safe portable layout and A8 atlas,
+copies CoreText output into Alpine values, emits immutable scene arrays, and
+samples the atlas through Direct Metal. This AEP makes no comparative
+performance claim from functional and resource-bound evidence alone.
 
 ## Atomic claims
 
@@ -30,6 +30,12 @@ performance claim before that complete path passes semantic and pixel oracles.
   grows geometrically only within its total byte budget, reuses exact glyph
   keys, removes least-recently-used entries deterministically, and releases all
   pixel and metadata storage under explicit pressure.
+- **AEP-0141-C04:** Direct Metal retains at most one cached GPU atlas per
+  backend, reuses it only when revision, dimensions, and immutable pixel storage
+  identity match, accounts instance and atlas uploads separately, and releases
+  cached ownership under pressure without invalidating an in-flight command.
+  Validation rejects dimensions beyond the Metal 3 guarantee and payloads over
+  16 MiB before native allocation.
 
 ## Ownership and cache generations
 
@@ -76,13 +82,21 @@ The default layout ceiling is 32 MiB. The default atlas ceiling is 16 MiB, but
 the atlas starts empty and grows only on demand. These are Alpine policy limits,
 not statements about Zed or Sublime memory behavior.
 
+The native backend retains one current R8 texture independently of the three
+bounded presentation slots. Replacement allocates and uploads once, while an
+unchanged frame reports zero atlas upload bytes. A pending command retains its
+own texture reference, so pressure can remove the cache immediately without
+freeing in-flight resources. Native snapshots expose current and peak atlas
+bytes, allocations, uploads, reuses, and pressure releases.
+
 ## Platform, accessibility, and later integration
 
-The implemented ownership, cache, viewport, and atlas contracts are portable
-safe Rust. The accepted decision permits a private Apple Silicon CoreText and
-CoreGraphics module using narrowly featured objc2 bindings. That native module,
-scene glyph operations, Metal A8 sampling, IME, and accessibility evidence are
-not implemented by this first layer and cannot be claimed from it.
+The ownership, cache, viewport, and atlas contracts are portable safe Rust. A
+private Apple Silicon CoreText and CoreGraphics module copies shaped glyphs and
+A8 bitmaps into Alpine-owned values. Scene glyph operations preserve painter
+order and clipping, and Metal sampling is checked against the independent CPU
+pixel oracle. IME, editor event integration, and accessibility remain outside
+this claim and are not implied by renderer evidence.
 
 ## Failure and reversal conditions
 

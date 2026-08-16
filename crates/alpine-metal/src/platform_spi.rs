@@ -312,7 +312,12 @@ fn finish_presentation_attempt(
                 primitives,
                 omitted_primitives,
                 draw_calls: attempt.operations.draw_calls,
-                uploaded_bytes: attempt.operations.uploaded_bytes,
+                uploaded_bytes: attempt
+                    .operations
+                    .uploaded_bytes()
+                    .ok_or(RenderError::AccountingOverflow)?,
+                instance_upload_bytes: attempt.operations.instance_upload_bytes,
+                atlas_upload_bytes: attempt.operations.atlas_upload_bytes,
                 allocated_bytes: attempt.resources.allocated_bytes,
                 retained_bytes: attempt.resources.peak_retained_bytes,
                 readback_bytes: 0,

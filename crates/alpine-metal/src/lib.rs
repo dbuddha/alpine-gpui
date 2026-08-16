@@ -24,8 +24,8 @@ mod proofs;
 
 pub use accounting::{BackendAccounting, BackendGeneration, BackendState};
 pub use frame::{
-    BGRA_BYTES_PER_PIXEL, LoweredQuad, MAX_METAL3_TEXTURE_DIMENSION_2D, OffscreenDescriptor,
-    OffscreenError, READBACK_ROW_ALIGNMENT, ReadbackLayout, ValidatedFrame,
+    BGRA_BYTES_PER_PIXEL, LoweredPaint, MAX_GLYPH_ATLAS_BYTES, MAX_METAL3_TEXTURE_DIMENSION_2D,
+    OffscreenDescriptor, OffscreenError, READBACK_ROW_ALIGNMENT, ReadbackLayout, ValidatedFrame,
 };
 pub use initialization::{
     InitializationError, InitializationStage, MetalBackend, MetalCapabilities, NativeFailure,

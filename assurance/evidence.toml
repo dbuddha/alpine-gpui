@@ -39,6 +39,19 @@ tla_properties = []
 platform_scope = ["portable"]
 required_evidence = ["kani", "unit"]
 
+[[claims]]
+id = "AEP-0141-C04"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0141-bounded-text-layout-atlas.md"
+requirement_issue = 33
+claim_type = "memory"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["macos-metal"]
+required_evidence = ["unit", "native"]
+
 [[evidence]]
 id = "EV-0141-UNIT01A"
 claim = "AEP-0141-C01"
@@ -86,6 +99,42 @@ artifact = "crates/alpine-text-layout/src/lib.rs#atlas_allocates_on_demand_reuse
 assertion = "The atlas starts empty, reuses one key, stays below budget, evicts under saturation, and releases all storage under pressure."
 scope = "A8 glyphs in one bounded 256-pixel atlas generation."
 exclusions = ["native glyph rasterization", "GPU texture residency", "concurrent frames"]
+
+[[evidence]]
+id = "EV-0141-UNIT04"
+claim = "AEP-0141-C04"
+kind = "unit"
+artifact = "crates/alpine-metal/src/frame.rs#glyph_clipping_crops_destination_and_atlas_uv_together"
+assertion = "Clipping a glyph crops its physical destination and normalized atlas coordinates by the same ratios."
+scope = "One clipped A8 glyph lowered through the portable Metal frame plan."
+exclusions = ["native texture sampling", "subpixel filtering", "color glyphs"]
+
+[[evidence]]
+id = "EV-0141-UNIT04B"
+claim = "AEP-0141-C04"
+kind = "unit"
+artifact = "crates/alpine-metal/src/frame.rs#glyph_atlas_contract_bounds_native_admission"
+assertion = "The frame plan accepts the exact 16 MiB payload boundary and rejects oversized dimensions or payloads before native work."
+scope = "Pure renderer admission at the Metal 3 extent and Alpine A8 byte ceilings."
+exclusions = ["native allocation success", "system-wide memory pressure", "color textures"]
+
+[[evidence]]
+id = "EV-0141-NATIVE04A"
+claim = "AEP-0141-C04"
+kind = "native"
+artifact = "crates/alpine-metal/src/native.rs#renders_a8_glyphs_and_reuses_only_identical_atlas_storage"
+assertion = "Metal output matches the CPU oracle for zero, partial, and full A8 coverage; repeated identical storage performs no atlas upload; same-revision replacement storage uploads once."
+scope = "Apple Silicon native offscreen rendering and a 32-frame steady-state reuse sequence."
+exclusions = ["fixed-hardware latency", "CoreText shaping", "product-level scrolling"]
+
+[[evidence]]
+id = "EV-0141-NATIVE04B"
+claim = "AEP-0141-C04"
+kind = "native"
+artifact = "crates/alpine-metal/src/native.rs#atlas_pressure_release_preserves_in_flight_drawable_ownership"
+assertion = "Pressure drops the cached atlas while one presentation slot remains occupied; the retained command completes and a later frame creates exactly one replacement texture."
+scope = "One split-phase drawable, one pressure event, and one replacement submission on Apple Silicon."
+exclusions = ["device loss", "process memory pressure notification delivery", "multi-window presentation"]
 
 [[claims]]
 id = "AEP-0139-C01"

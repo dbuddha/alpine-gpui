@@ -113,7 +113,10 @@ fn public_backend_enforces_apple_silicon_baseline() -> Result<(), Box<dyn Error>
             let cancellation = backend.cancel_offscreen(&scene, descriptor)?;
             assert_eq!(cancellation.generation().get(), 1);
             assert_eq!(cancellation.primitives(), 1);
-            assert_eq!(cancellation.uploaded_bytes_avoided(), 32);
+            assert_eq!(
+                cancellation.uploaded_bytes_avoided(),
+                std::mem::size_of::<alpine_metal::LoweredPaint>()
+            );
             let accounting = backend.accounting();
             assert_eq!(accounting.completed_frames(), 2);
             assert_eq!(accounting.cancelled_frames(), 1);

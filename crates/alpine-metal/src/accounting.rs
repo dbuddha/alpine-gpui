@@ -48,7 +48,15 @@ impl BackendGeneration {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FrameOperationUsage {
     pub(crate) draw_calls: usize,
-    pub(crate) uploaded_bytes: usize,
+    pub(crate) instance_upload_bytes: usize,
+    pub(crate) atlas_upload_bytes: usize,
+}
+
+impl FrameOperationUsage {
+    pub(crate) const fn uploaded_bytes(self) -> Option<usize> {
+        self.instance_upload_bytes
+            .checked_add(self.atlas_upload_bytes)
+    }
 }
 
 /// Exact native resource use observed during one frame attempt.
@@ -200,7 +208,7 @@ impl BackendAccounting {
             .ok_or(())?;
         next.uploaded_bytes = next
             .uploaded_bytes
-            .checked_add(operations.uploaded_bytes as u128)
+            .checked_add(operations.uploaded_bytes().ok_or(())? as u128)
             .ok_or(())?;
         next.allocated_bytes = next
             .allocated_bytes
@@ -443,7 +451,8 @@ mod tests {
                     committed,
                     FrameOperationUsage {
                         draw_calls: usize::from(has_native_work),
-                        uploaded_bytes: usize::from(has_native_work) * 32,
+                        instance_upload_bytes: usize::from(has_native_work) * 32,
+                        atlas_upload_bytes: 0,
                     },
                     FrameResourceUsage {
                         allocated_bytes: usize::from(has_native_work) * 512,
@@ -505,7 +514,8 @@ mod tests {
                 true,
                 FrameOperationUsage {
                     draw_calls: 1,
-                    uploaded_bytes: 32,
+                    instance_upload_bytes: 32,
+                    atlas_upload_bytes: 0,
                 },
                 FrameResourceUsage {
                     allocated_bytes: 768,
@@ -603,7 +613,8 @@ mod tests {
                 false,
                 FrameOperationUsage {
                     draw_calls: 1,
-                    uploaded_bytes: 32,
+                    instance_upload_bytes: 32,
+                    atlas_upload_bytes: 0,
                 },
                 FrameResourceUsage::default(),
             ),

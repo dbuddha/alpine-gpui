@@ -135,11 +135,11 @@ where
             let center_y = f64::from(physical_y) + 0.5;
             let mut destination = initial;
             if reverse_painter_order {
-                for quad in frame.quads().iter().rev() {
+                for quad in frame.paints().iter().rev() {
                     composite_instance(frame, *quad, center_x, center_y, &mut destination);
                 }
             } else {
-                for quad in frame.quads() {
+                for quad in frame.paints() {
                     composite_instance(frame, *quad, center_x, center_y, &mut destination);
                 }
             }
@@ -164,7 +164,7 @@ where
 
 fn composite_instance(
     frame: &ValidatedFrame,
-    instance: crate::LoweredQuad,
+    instance: crate::LoweredPaint,
     center_x: f64,
     center_y: f64,
     destination: &mut [f32; 4],

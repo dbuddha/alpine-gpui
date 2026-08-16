@@ -5,6 +5,8 @@ use alpine_scene::{GlyphAtlasImage, PaintOperation, Scene, SceneRevision};
 
 /// Bytes in one compact BGRA8 pixel.
 pub const BGRA_BYTES_PER_PIXEL: usize = 4;
+/// Maximum A8 atlas payload admitted by one validated frame.
+pub const MAX_GLYPH_ATLAS_BYTES: usize = 16 * 1024 * 1024;
 
 /// Required byte alignment for one Metal texture-to-buffer row.
 pub const READBACK_ROW_ALIGNMENT: usize = 256;
@@ -136,13 +138,13 @@ impl ReadbackLayout {
 /// One shader-ready paint instance in physical-pixel coordinates.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LoweredQuad {
+pub struct LoweredPaint {
     bounds: [f32; 4],
     color: [f32; 4],
     atlas_uv: [f32; 4],
 }
 
-impl LoweredQuad {
+impl LoweredPaint {
     /// Returns `[left, top, right, bottom]` in physical pixels.
     #[must_use]
     pub const fn bounds(self) -> [f32; 4] {
@@ -168,7 +170,7 @@ pub struct ValidatedFrame {
     revision: SceneRevision,
     descriptor: OffscreenDescriptor,
     readback: ReadbackLayout,
-    quads: Vec<LoweredQuad>,
+    paints: Vec<LoweredPaint>,
     glyph_atlas: Option<GlyphAtlasImage>,
     consumed_primitives: usize,
     omitted_primitives: usize,
@@ -179,7 +181,7 @@ impl ValidatedFrame {
     /// Validates and lowers a complete scene without performing native work.
     ///
     /// Positive physical extents use round-to-nearest with half values rounded
-    /// away from zero. Empty and fully clipped quads are omitted and counted.
+    /// away from zero. Empty and fully clipped paints are omitted and counted.
     ///
     /// # Errors
     ///
@@ -187,10 +189,10 @@ impl ValidatedFrame {
     /// physical coordinates, readback arithmetic overflow, upload overflow, or
     /// frame-plan allocation failure.
     pub fn new(scene: &Scene, descriptor: OffscreenDescriptor) -> Result<Self, OffscreenError> {
-        Self::new_with_reservation(scene, descriptor, |quads, count| {
+        Self::new_with_reservation(scene, descriptor, |paints, count| {
             map_reservation_failure(
-                quads.try_reserve_exact(count),
-                OffscreenError::FramePlanAllocationFailed { quads: count },
+                paints.try_reserve_exact(count),
+                OffscreenError::FramePlanAllocationFailed { paints: count },
             )
         })
     }
@@ -201,13 +203,20 @@ impl ValidatedFrame {
         reserve: F,
     ) -> Result<Self, OffscreenError>
     where
-        F: FnOnce(&mut Vec<LoweredQuad>, usize) -> Result<(), OffscreenError>,
+        F: FnOnce(&mut Vec<LoweredPaint>, usize) -> Result<(), OffscreenError>,
     {
         validate_viewport(scene, descriptor)?;
+        if let Some(atlas) = scene.glyph_atlas() {
+            validate_glyph_atlas_contract(
+                atlas.width().get(),
+                atlas.height().get(),
+                atlas.pixels().len(),
+            )?;
+        }
         let readback = ReadbackLayout::new(descriptor.pixel_width(), descriptor.pixel_height())?;
         let consumed_primitives = scene.operation_count();
-        let mut quads = Vec::new();
-        reserve(&mut quads, consumed_primitives)?;
+        let mut paints = Vec::new();
+        reserve(&mut paints, consumed_primitives)?;
 
         for (primitive_index, operation) in scene.operations().iter().enumerate() {
             match *operation {
@@ -231,7 +240,7 @@ impl ValidatedFrame {
                         primitive_index,
                         clip,
                     )? {
-                        quads.push(quad);
+                        paints.push(quad);
                     }
                 }
                 PaintOperation::Glyph(glyph_id) => {
@@ -252,22 +261,22 @@ impl ValidatedFrame {
                         primitive_index,
                         clip,
                     )? {
-                        quads.push(glyph);
+                        paints.push(glyph);
                     }
                 }
             }
         }
 
-        let upload_bytes = quads
+        let upload_bytes = paints
             .len()
-            .checked_mul(size_of::<LoweredQuad>())
+            .checked_mul(size_of::<LoweredPaint>())
             .ok_or(OffscreenError::UploadSizeOverflow)?;
-        let omitted_primitives = consumed_primitives - quads.len();
+        let omitted_primitives = consumed_primitives - paints.len();
         Ok(Self {
             revision: scene.revision(),
             descriptor,
             readback,
-            quads,
+            paints,
             glyph_atlas: scene.glyph_atlas().cloned(),
             consumed_primitives,
             omitted_primitives,
@@ -293,10 +302,10 @@ impl ValidatedFrame {
         self.readback
     }
 
-    /// Returns visible quads in original painter order.
+    /// Returns visible paints in original painter order.
     #[must_use]
-    pub fn quads(&self) -> &[LoweredQuad] {
-        &self.quads
+    pub fn paints(&self) -> &[LoweredPaint] {
+        &self.paints
     }
 
     /// Returns the immutable A8 atlas used by glyph paint instances.
@@ -322,6 +331,27 @@ impl ValidatedFrame {
     pub const fn upload_bytes(&self) -> usize {
         self.upload_bytes
     }
+}
+
+fn validate_glyph_atlas_contract(
+    width: u32,
+    height: u32,
+    bytes: usize,
+) -> Result<(), OffscreenError> {
+    if width > MAX_METAL3_TEXTURE_DIMENSION_2D || height > MAX_METAL3_TEXTURE_DIMENSION_2D {
+        return Err(OffscreenError::GlyphAtlasExtentUnsupported {
+            width,
+            height,
+            limit: MAX_METAL3_TEXTURE_DIMENSION_2D,
+        });
+    }
+    if bytes > MAX_GLYPH_ATLAS_BYTES {
+        return Err(OffscreenError::GlyphAtlasByteLimitExceeded {
+            bytes,
+            limit: MAX_GLYPH_ATLAS_BYTES,
+        });
+    }
+    Ok(())
 }
 
 fn validate_viewport(scene: &Scene, descriptor: OffscreenDescriptor) -> Result<(), OffscreenError> {
@@ -360,7 +390,7 @@ fn lower_quad(
     scale: f32,
     primitive_index: usize,
     clip: [f32; 4],
-) -> Result<Option<LoweredQuad>, OffscreenError> {
+) -> Result<Option<LoweredPaint>, OffscreenError> {
     let left = f64::from(x).max(0.0).max(f64::from(clip[0]));
     let top = f64::from(y).max(0.0).max(f64::from(clip[1]));
     let right = (f64::from(x) + f64::from(width))
@@ -379,7 +409,7 @@ fn lower_quad(
         return Err(OffscreenError::UnrepresentableQuad { primitive_index });
     }
 
-    Ok(Some(LoweredQuad {
+    Ok(Some(LoweredPaint {
         bounds,
         color: [color.red(), color.green(), color.blue(), color.alpha()],
         atlas_uv: [-1.0; 4],
@@ -421,7 +451,7 @@ fn lower_glyph(
     scale: f32,
     primitive_index: usize,
     clip: [f32; 4],
-) -> Result<Option<LoweredQuad>, OffscreenError> {
+) -> Result<Option<LoweredPaint>, OffscreenError> {
     let source = glyph.atlas_bounds();
     let bounds = glyph.bounds();
     let x = f64::from(bounds.origin().x());
@@ -461,7 +491,7 @@ fn lower_glyph(
     ]
     .map(to_shader_coordinate);
     let color = glyph.color();
-    Ok(Some(LoweredQuad {
+    Ok(Some(LoweredPaint {
         bounds: lowered_bounds,
         color: [color.red(), color.green(), color.blue(), color.alpha()],
         atlas_uv,
@@ -529,7 +559,23 @@ pub enum OffscreenError {
     /// Reserving frame-plan storage failed.
     FramePlanAllocationFailed {
         /// Number of requested quad slots.
-        quads: usize,
+        paints: usize,
+    },
+    /// The glyph atlas exceeds the guaranteed Metal texture extent.
+    GlyphAtlasExtentUnsupported {
+        /// Requested atlas width.
+        width: u32,
+        /// Requested atlas height.
+        height: u32,
+        /// Maximum admitted width or height.
+        limit: u32,
+    },
+    /// The glyph atlas exceeds Alpine's per-backend payload ceiling.
+    GlyphAtlasByteLimitExceeded {
+        /// Requested tightly packed A8 bytes.
+        bytes: usize,
+        /// Maximum admitted bytes.
+        limit: usize,
     },
     /// The CPU oracle workload exceeds its deterministic safety limit.
     OraclePixelLimitExceeded {
@@ -589,12 +635,24 @@ impl fmt::Display for OffscreenError {
                 formatter.write_str("padded readback buffer size overflowed")
             }
             Self::UploadSizeOverflow => formatter.write_str("quad upload size overflowed"),
-            Self::FramePlanAllocationFailed { quads } => {
+            Self::FramePlanAllocationFailed { paints } => {
                 write!(
                     formatter,
-                    "cannot reserve storage for {quads} lowered quads"
+                    "cannot reserve storage for {paints} lowered paints"
                 )
             }
+            Self::GlyphAtlasExtentUnsupported {
+                width,
+                height,
+                limit,
+            } => write!(
+                formatter,
+                "glyph atlas extent {width}x{height} exceeds limit {limit}"
+            ),
+            Self::GlyphAtlasByteLimitExceeded { bytes, limit } => write!(
+                formatter,
+                "glyph atlas payload {bytes} bytes exceeds limit {limit}"
+            ),
             Self::OraclePixelLimitExceeded { pixels, limit } => write!(
                 formatter,
                 "CPU oracle pixel count {pixels} exceeds limit {limit}"
@@ -610,22 +668,28 @@ impl Error for OffscreenError {}
 
 #[cfg(test)]
 mod tests {
-    use std::mem::{offset_of, size_of};
+    use std::{
+        mem::{offset_of, size_of},
+        num::NonZeroU32,
+        sync::Arc,
+    };
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
-    use alpine_scene::{Primitive, SceneBuilder, SceneRevision};
+    use alpine_scene::{
+        AtlasBounds, Clip, Glyph, GlyphAtlasImage, Primitive, SceneBuilder, SceneRevision,
+    };
 
     use super::{
-        LoweredQuad, OffscreenDescriptor, OffscreenError, READBACK_ROW_ALIGNMENT, ReadbackLayout,
-        ValidatedFrame,
+        LoweredPaint, MAX_METAL3_TEXTURE_DIMENSION_2D, OffscreenDescriptor, OffscreenError,
+        READBACK_ROW_ALIGNMENT, ReadbackLayout, ValidatedFrame,
     };
 
     #[test]
-    fn lowered_quad_shader_abi_is_stable() {
-        assert_eq!(size_of::<LoweredQuad>(), 48);
-        assert_eq!(offset_of!(LoweredQuad, bounds), 0);
-        assert_eq!(offset_of!(LoweredQuad, color), 16);
-        assert_eq!(offset_of!(LoweredQuad, atlas_uv), 32);
+    fn lowered_paint_shader_abi_is_stable() {
+        assert_eq!(size_of::<LoweredPaint>(), 48);
+        assert_eq!(offset_of!(LoweredPaint, bounds), 0);
+        assert_eq!(offset_of!(LoweredPaint, color), 16);
+        assert_eq!(offset_of!(LoweredPaint, atlas_uv), 32);
     }
 
     fn color(red: f32, green: f32, blue: f32, alpha: f32) -> Result<LinearRgba, &'static str> {
@@ -692,6 +756,73 @@ mod tests {
     }
 
     #[test]
+    fn glyph_clipping_crops_destination_and_atlas_uv_together()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut builder = SceneBuilder::new(SceneRevision::new(2), size(4.0, 2.0)?);
+        let clip = builder.push_clip(Clip::new(Rect::new(point(1.0, 0.5)?, size(2.0, 1.0)?)));
+        builder.set_glyph_atlas(GlyphAtlasImage::new(
+            7,
+            NonZeroU32::new(4).ok_or("atlas width")?,
+            NonZeroU32::new(2).ok_or("atlas height")?,
+            Arc::from([255_u8; 8]),
+        )?)?;
+        builder.push_glyph(
+            Glyph::new(
+                Rect::new(point(0.0, 0.0)?, size(4.0, 2.0)?),
+                AtlasBounds::new(
+                    0,
+                    0,
+                    NonZeroU32::new(4).ok_or("glyph width")?,
+                    NonZeroU32::new(2).ok_or("glyph height")?,
+                ),
+                color(1.0, 1.0, 1.0, 1.0)?,
+            )
+            .clipped(clip),
+        )?;
+
+        let frame = ValidatedFrame::new(&builder.finish(), descriptor(4, 2, 1.0)?)?;
+        assert_eq!(frame.paints().len(), 1);
+        for (actual, expected) in frame.paints()[0]
+            .bounds()
+            .into_iter()
+            .zip([1.0, 0.5, 3.0, 1.5])
+        {
+            assert!((actual - expected).abs() <= f32::EPSILON);
+        }
+        for (actual, expected) in frame.paints()[0]
+            .atlas_uv()
+            .into_iter()
+            .zip([0.25, 0.25, 0.75, 0.75])
+        {
+            assert!((actual - expected).abs() <= f32::EPSILON);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn glyph_atlas_contract_bounds_native_admission() {
+        assert_eq!(
+            super::validate_glyph_atlas_contract(4_096, 4_096, super::MAX_GLYPH_ATLAS_BYTES),
+            Ok(())
+        );
+        assert_eq!(
+            super::validate_glyph_atlas_contract(16_385, 1, 16_385),
+            Err(OffscreenError::GlyphAtlasExtentUnsupported {
+                width: 16_385,
+                height: 1,
+                limit: MAX_METAL3_TEXTURE_DIMENSION_2D,
+            })
+        );
+        assert_eq!(
+            super::validate_glyph_atlas_contract(4_097, 4_096, super::MAX_GLYPH_ATLAS_BYTES + 1),
+            Err(OffscreenError::GlyphAtlasByteLimitExceeded {
+                bytes: super::MAX_GLYPH_ATLAS_BYTES + 1,
+                limit: super::MAX_GLYPH_ATLAS_BYTES,
+            })
+        );
+    }
+
+    #[test]
     fn readback_layout_companion() -> Result<(), OffscreenError> {
         let layout = ReadbackLayout::new(65, 3)?;
         assert_eq!(layout.compact_bytes_per_row(), 260);
@@ -715,9 +846,9 @@ mod tests {
         assert_eq!(
             super::map_reservation_failure::<()>(
                 Err(()),
-                OffscreenError::FramePlanAllocationFailed { quads: 9 }
+                OffscreenError::FramePlanAllocationFailed { paints: 9 }
             ),
-            Err(OffscreenError::FramePlanAllocationFailed { quads: 9 })
+            Err(OffscreenError::FramePlanAllocationFailed { paints: 9 })
         );
         Ok(())
     }
@@ -726,12 +857,12 @@ mod tests {
     fn frame_plan_allocation_failure_precedes_lowering() -> Result<(), Box<dyn std::error::Error>> {
         let scene = SceneBuilder::new(SceneRevision::new(6), size(1.0, 1.0)?).finish();
         let target = descriptor(1, 1, 1.0)?;
-        let result = ValidatedFrame::new_with_reservation(&scene, target, |_, quads| {
-            Err(OffscreenError::FramePlanAllocationFailed { quads })
+        let result = ValidatedFrame::new_with_reservation(&scene, target, |_, paints| {
+            Err(OffscreenError::FramePlanAllocationFailed { paints })
         });
         assert_eq!(
             result,
-            Err(OffscreenError::FramePlanAllocationFailed { quads: 0 })
+            Err(OffscreenError::FramePlanAllocationFailed { paints: 0 })
         );
         Ok(())
     }
@@ -788,12 +919,12 @@ mod tests {
         let plan = ValidatedFrame::new(&builder.finish(), descriptor(8, 8, 2.0)?)?;
         assert_eq!(plan.consumed_primitives(), 4);
         assert_eq!(plan.omitted_primitives(), 2);
-        assert_eq!(plan.quads().len(), 2);
-        assert_eq!(plan.quads()[0].bounds(), [0.0, 0.0, 4.0, 4.0]);
-        assert_eq!(plan.quads()[0].color(), [1.0, 0.0, 0.0, 1.0]);
-        assert_eq!(plan.quads()[1].bounds(), [2.0, 2.0, 8.0, 8.0]);
-        assert_eq!(plan.quads()[1].color(), [0.0, 0.0, 1.0, 0.5]);
-        assert_eq!(plan.upload_bytes(), 2 * std::mem::size_of::<LoweredQuad>());
+        assert_eq!(plan.paints().len(), 2);
+        assert_eq!(plan.paints()[0].bounds(), [0.0, 0.0, 4.0, 4.0]);
+        assert_eq!(plan.paints()[0].color(), [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(plan.paints()[1].bounds(), [2.0, 2.0, 8.0, 8.0]);
+        assert_eq!(plan.paints()[1].color(), [0.0, 0.0, 1.0, 0.5]);
+        assert_eq!(plan.upload_bytes(), 2 * std::mem::size_of::<LoweredPaint>());
         Ok(())
     }
 
@@ -824,10 +955,10 @@ mod tests {
                     );
                     assert_eq!(
                         plan.as_ref()
-                            .map(|frame| frame.quads().len() + frame.omitted_primitives()),
+                            .map(|frame| frame.paints().len() + frame.omitted_primitives()),
                         Ok(1)
                     );
-                    for quad in plan.iter().flat_map(ValidatedFrame::quads) {
+                    for quad in plan.iter().flat_map(ValidatedFrame::paints) {
                         let [left, top, right, bottom] = quad.bounds();
                         assert!(left >= 0.0 && top >= 0.0);
                         assert!(right <= f32::from(viewport));
@@ -858,7 +989,16 @@ mod tests {
             OffscreenError::CompactImageSizeOverflow,
             OffscreenError::ReadbackSizeOverflow,
             OffscreenError::UploadSizeOverflow,
-            OffscreenError::FramePlanAllocationFailed { quads: 6 },
+            OffscreenError::FramePlanAllocationFailed { paints: 6 },
+            OffscreenError::GlyphAtlasExtentUnsupported {
+                width: 17_000,
+                height: 1,
+                limit: MAX_METAL3_TEXTURE_DIMENSION_2D,
+            },
+            OffscreenError::GlyphAtlasByteLimitExceeded {
+                bytes: super::MAX_GLYPH_ATLAS_BYTES + 1,
+                limit: super::MAX_GLYPH_ATLAS_BYTES,
+            },
             OffscreenError::OraclePixelLimitExceeded {
                 pixels: 7,
                 limit: 6,

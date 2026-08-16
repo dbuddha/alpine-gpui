@@ -269,6 +269,11 @@ impl GlyphAtlasImage {
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
+    /// Returns whether both snapshots retain the same immutable pixel storage.
+    #[must_use]
+    pub fn shares_storage_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.pixels, &other.pixels)
+    }
 }
 
 /// A primitive accepted by the compatibility builder entry point.
@@ -545,6 +550,19 @@ mod tests {
             NonZeroU32::new(4).ok_or(SceneError::ArithmeticOverflow)?,
             Arc::from([255_u8; 16]),
         )
+    }
+
+    #[test]
+    fn atlas_storage_identity_is_distinct_from_content_revision() -> Result<(), SceneError> {
+        let two = NonZeroU32::new(2).ok_or(SceneError::ArithmeticOverflow)?;
+        let pixels: Arc<[u8]> = Arc::from([0_u8, 64, 128, 255]);
+        let first = GlyphAtlasImage::new(1, two, two, Arc::clone(&pixels))?;
+        let revised = GlyphAtlasImage::new(2, two, two, pixels)?;
+        let copied = GlyphAtlasImage::new(1, two, two, Arc::from([0_u8, 64, 128, 255]))?;
+
+        assert!(first.shares_storage_with(&revised));
+        assert!(!first.shares_storage_with(&copied));
+        Ok(())
     }
 
     #[test]
