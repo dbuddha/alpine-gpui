@@ -30,7 +30,8 @@ miri=false
 metal=false
 tla=false
 
-if matches '^(Cargo\.toml$|Cargo\.lock$|crates/.+\.rs$|crates/.+/Cargo\.toml$|tools/alpine-trace/)'; then
+# Shipping application Rust receives the same coverage contract as crate Rust.
+if matches '^(Cargo\.toml$|Cargo\.lock$|crates/.+\.rs$|crates/.+/Cargo\.toml$|apps/.+\.rs$|apps/.+/Cargo\.toml$|tools/alpine-trace/)'; then
     coverage=true
 fi
 

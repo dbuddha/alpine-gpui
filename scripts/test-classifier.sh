@@ -45,6 +45,21 @@ assert_output "$text_layout" kani=true
 assert_output "$text_layout" miri=true
 assert_output "$text_layout" metal=false
 
+studio=$(run_fixture apps/alpine-studio/src/lib.rs)
+assert_output "$studio" coverage=true
+assert_output "$studio" mutation=false
+assert_output "$studio" kani=false
+
+studio_manifest=$(run_fixture apps/alpine-studio/Cargo.toml)
+assert_output "$studio_manifest" coverage=true
+assert_output "$studio_manifest" mutation=false
+assert_output "$studio_manifest" kani=false
+
+studio_docs=$(run_fixture apps/alpine-studio/README.md)
+assert_output "$studio_docs" coverage=false
+assert_output "$studio_docs" mutation=false
+assert_output "$studio_docs" kani=false
+
 formal=$(run_fixture formal/tla/aep-0009/AssuranceLifecycle.tla)
 assert_output "$formal" tla=true
 assert_output "$formal" kani=false
