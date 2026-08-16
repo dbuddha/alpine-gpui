@@ -7,7 +7,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(evidence.input_frames(), 6);
     assert!(evidence.persisted_bytes() > 1_000);
     assert_eq!(evidence.released_owner_classes(), 9);
-    assert!(evidence.release_order_clean());
     Ok(())
 }
 

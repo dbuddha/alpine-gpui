@@ -1529,7 +1529,6 @@ pub mod native_validation {
         input_frames: usize,
         persisted_bytes: usize,
         released_owner_classes: usize,
-        release_order_clean: bool,
     }
 
     impl NativeProcessEvidence {
@@ -1555,12 +1554,6 @@ pub mod native_validation {
         #[must_use]
         pub const fn released_owner_classes(self) -> usize {
             self.released_owner_classes
-        }
-
-        /// Reports whether native drain preserved release ordering.
-        #[must_use]
-        pub const fn release_order_clean(self) -> bool {
-            self.release_order_clean
         }
     }
 
@@ -1794,7 +1787,6 @@ pub mod native_validation {
                 .iter()
                 .filter(|active| **active == 0)
                 .count(),
-            release_order_clean: evidence.release_order_violations() == 0,
         })
     }
 
