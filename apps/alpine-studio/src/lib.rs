@@ -1522,6 +1522,48 @@ pub mod native_validation {
 
     const NATIVE_INPUT_FRAMES: usize = 6;
 
+    /// Handle-free completion evidence returned across the process-test boundary.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct NativeProcessEvidence {
+        input_events: usize,
+        input_frames: usize,
+        persisted_bytes: usize,
+        released_owner_classes: usize,
+        release_order_violations: u64,
+    }
+
+    impl NativeProcessEvidence {
+        /// Returns the native input events consumed by Studio.
+        #[must_use]
+        pub const fn input_events(self) -> usize {
+            self.input_events
+        }
+
+        /// Returns immutable frames admitted by the native input sequence.
+        #[must_use]
+        pub const fn input_frames(self) -> usize {
+            self.input_frames
+        }
+
+        /// Returns the exact persisted UTF-8 document length.
+        #[must_use]
+        pub const fn persisted_bytes(self) -> usize {
+            self.persisted_bytes
+        }
+
+        /// Returns native owner classes observed at zero after drain.
+        #[must_use]
+        pub const fn released_owner_classes(self) -> usize {
+            self.released_owner_classes
+        }
+
+        /// Returns release-order violations observed during drain.
+        #[must_use]
+        pub const fn release_order_violations(self) -> u64 {
+            self.release_order_violations
+        }
+    }
+
     #[derive(Default)]
     struct NativeInputEvidence {
         events: usize,
@@ -1591,7 +1633,8 @@ pub mod native_validation {
     ///
     /// Returns a structured construction, rendering, pasteboard, save, or
     /// teardown failure from the production-composed validation process.
-    pub fn qualify_clipboard_and_close_process() -> Result<(), Box<dyn std::error::Error>> {
+    pub fn qualify_clipboard_and_close_process()
+    -> Result<NativeProcessEvidence, Box<dyn std::error::Error>> {
         let path = std::env::temp_dir().join(format!(
             "alpine-studio-native-process-{}.txt",
             std::process::id()
@@ -1603,8 +1646,8 @@ pub mod native_validation {
         let cleanup = fs::remove_file(path);
         match (result, cleanup) {
             (Err(error), _) => Err(error),
-            (Ok(()), Err(error)) => Err(Box::new(error)),
-            (Ok(()), Ok(())) => Ok(()),
+            (Ok(_), Err(error)) => Err(Box::new(error)),
+            (Ok(evidence), Ok(())) => Ok(evidence),
         }
     }
 
@@ -1620,7 +1663,7 @@ pub mod native_validation {
     fn qualify_path(
         path: &Path,
         expected_after_input: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<NativeProcessEvidence, Box<dyn std::error::Error>> {
         let mut delegate = native_file_app(path)?;
         delegate.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(5));
         let clear = alpine_core::LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(
@@ -1659,7 +1702,7 @@ pub mod native_validation {
         )?;
         let input_revision = state.borrow().snapshot().document_revision();
         assert_ne!(input_revision, initial_revision);
-        {
+        let (input_events, input_frames) = {
             let evidence = input_evidence.borrow();
             assert_eq!(evidence.events, 7);
             assert_eq!(evidence.keyboard, 1);
@@ -1671,7 +1714,8 @@ pub mod native_validation {
             assert_eq!(evidence.unexpected, 0);
             assert_eq!(evidence.frames, NATIVE_INPUT_FRAMES);
             assert_eq!(evidence.frame_revisions, [2, 3, 4, 5, 6, 7]);
-        }
+            (evidence.events, evidence.frames)
+        };
         assert!(state.borrow_mut().frame_if_dirty().is_none());
         dispatch_save(&surface, &state, 1)?;
         assert_eq!(fs::read_to_string(path)?, expected_after_input);
@@ -1741,7 +1785,17 @@ pub mod native_validation {
         let evidence = platform_validation::close_with_owner_evidence(surface)?;
         assert_eq!(evidence.active(), [0; 9]);
         assert_eq!(evidence.release_order_violations(), 0);
-        Ok(())
+        Ok(NativeProcessEvidence {
+            input_events,
+            input_frames,
+            persisted_bytes: expected_after_input.len(),
+            released_owner_classes: evidence
+                .active()
+                .iter()
+                .filter(|active| **active == 0)
+                .count(),
+            release_order_violations: evidence.release_order_violations(),
+        })
     }
 
     fn event_handler(
