@@ -75,6 +75,12 @@ one synchronous event, then resolves close before building a frame. An allowed
 close clears dirty state and returns no frame. A cancelled close may still
 produce one latest dirty frame. Calls after shutdown return an empty response.
 
+The frame-only `Application::dispatch` is a compatibility path for callers
+that intentionally have no native side effects. Task #154 native integration
+must call `dispatch_with_response`; using frame-only dispatch there would
+silently discard clipboard writes and close dispositions and invalidates the
+native acceptance evidence.
+
 ## Accessibility, performance, and memory
 
 No accessibility claim is introduced. The later native slice must preserve
