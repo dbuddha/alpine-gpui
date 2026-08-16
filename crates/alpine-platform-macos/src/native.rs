@@ -1580,9 +1580,10 @@ fn scroll_phase(phase: NSEventPhase, momentum_phase: NSEventPhase) -> ScrollPhas
     };
     if phase.contains(NSEventPhase::Cancelled) {
         ScrollPhase::Cancelled
-    } else if phase.intersects(NSEventPhase::Began | NSEventPhase::MayBegin) {
+    } else if phase.intersects(NSEventPhase::Began) || phase.intersects(NSEventPhase::MayBegin) {
         ScrollPhase::Began
-    } else if phase.intersects(NSEventPhase::Changed | NSEventPhase::Stationary) {
+    } else if phase.intersects(NSEventPhase::Changed) || phase.intersects(NSEventPhase::Stationary)
+    {
         ScrollPhase::Changed
     } else if phase.contains(NSEventPhase::Ended) {
         ScrollPhase::Ended
@@ -1638,10 +1639,20 @@ mod native_input_tests {
     #[test]
     fn modifiers_preserve_only_alpine_supported_bits() {
         let native = NSEventModifierFlags::Shift
+            | NSEventModifierFlags::Control
             | NSEventModifierFlags::Option
+            | NSEventModifierFlags::Command
+            | NSEventModifierFlags::CapsLock
             | NSEventModifierFlags::NumericPad;
         let translated = modifiers(native);
-        assert_eq!(translated.bits(), Modifiers::SHIFT | Modifiers::OPTION);
+        assert_eq!(
+            translated.bits(),
+            Modifiers::SHIFT
+                | Modifiers::CONTROL
+                | Modifiers::OPTION
+                | Modifiers::COMMAND
+                | Modifiers::CAPS_LOCK
+        );
     }
 
     #[test]
@@ -1655,7 +1666,19 @@ mod native_input_tests {
     #[test]
     fn scroll_phase_prefers_direct_then_momentum_identity() {
         assert_eq!(
+            scroll_phase(NSEventPhase::Began, NSEventPhase::None),
+            ScrollPhase::Began
+        );
+        assert_eq!(
+            scroll_phase(NSEventPhase::MayBegin, NSEventPhase::None),
+            ScrollPhase::Began
+        );
+        assert_eq!(
             scroll_phase(NSEventPhase::Changed, NSEventPhase::Ended),
+            ScrollPhase::Changed
+        );
+        assert_eq!(
+            scroll_phase(NSEventPhase::Stationary, NSEventPhase::None),
             ScrollPhase::Changed
         );
         assert_eq!(
@@ -1671,6 +1694,10 @@ mod native_input_tests {
     #[test]
     fn finite_f32_rejects_invalid_or_unrepresentable_values() {
         assert_eq!(finite_f32(1.25), Some(1.25));
+        assert_eq!(finite_f32(f64::from(f32::MIN)), Some(f32::MIN));
+        assert_eq!(finite_f32(f64::from(f32::MAX)), Some(f32::MAX));
+        assert_eq!(finite_f32(f64::from(f32::MIN) * 2.0), None);
+        assert_eq!(finite_f32(f64::from(f32::MAX) * 2.0), None);
         assert_eq!(finite_f32(f64::NAN), None);
         assert_eq!(finite_f32(f64::INFINITY), None);
         assert_eq!(finite_f32(f64::MAX), None);
@@ -2547,7 +2574,11 @@ impl NativeSurface {
     where
         F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
     {
+        self.window.setAcceptsMouseMovedEvents(false);
         self.activate_input_responder()?;
+        if !self.window.acceptsMouseMovedEvents() {
+            return Err(SurfaceError::DriverUnavailable);
+        }
         self.delegate.install_event_handler(handler)?;
         let delegate = self.delegate.clone();
         if !self.view.install_input_handler(Box::new(move |event| {
@@ -2585,7 +2616,25 @@ impl NativeSurface {
                     selectedRange: NSRange::new(1, 1),
                     replacementRange: NSRange::new(usize::MAX, 0)
                 ];
+            }
+            let has_marked: bool = unsafe { msg_send![&*self.view, hasMarkedText] };
+            let marked_range: NSRange = unsafe { msg_send![&*self.view, markedRange] };
+            if !has_marked {
+                return Err(SurfaceError::DriverUnavailable);
+            }
+            if marked_range != NSRange::new(0, 2) {
+                return Err(SurfaceError::DriverUnavailable);
+            }
+            unsafe {
                 let _: () = msg_send![&*self.view, unmarkText];
+            }
+            let has_marked: bool = unsafe { msg_send![&*self.view, hasMarkedText] };
+            let marked_range: NSRange = unsafe { msg_send![&*self.view, markedRange] };
+            if has_marked {
+                return Err(SurfaceError::DriverUnavailable);
+            }
+            if marked_range != NSRange::new(NSUInteger::MAX, 0) {
+                return Err(SurfaceError::DriverUnavailable);
             }
 
             let pointer = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
@@ -2619,7 +2668,15 @@ impl NativeSurface {
 
         self.view.clear_input_handler();
         self.delegate.clear_event_handler();
-        resolve_input_dispatch(replay_result, self.view.take_input_dispatch_failure())
+        resolve_input_dispatch(replay_result, self.view.take_input_dispatch_failure())?;
+        self.view.emit(NativeInputEvent::Ime(ImeEvent::Cancelled));
+        if !self.view.take_input_dispatch_failure() {
+            return Err(SurfaceError::DriverUnavailable);
+        }
+        if self.view.take_input_dispatch_failure() {
+            return Err(SurfaceError::DriverUnavailable);
+        }
+        Ok(())
     }
 
     #[cfg(alpine_native_validation)]

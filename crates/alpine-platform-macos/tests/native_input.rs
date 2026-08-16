@@ -73,10 +73,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &received[5],
         SurfaceEvent::Pointer {
             action: PointerAction::Down,
+            position,
             button: PointerButton::Primary,
             modifiers,
             ..
-        } if modifiers.bits() == Modifiers::COMMAND
+        } if position.x() == 12.0
+            && position.y() == 46.0
+            && modifiers.bits() == Modifiers::COMMAND
     ));
     assert!(matches!(
         &received[6],
