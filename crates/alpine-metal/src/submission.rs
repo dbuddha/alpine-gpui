@@ -494,6 +494,27 @@ pub(crate) struct DrawableRenderAttempt {
     pub(crate) result: Result<FrameReport, RenderError>,
 }
 
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+#[derive(Clone, Copy)]
+pub(crate) struct DrawableSubmission {
+    native: crate::native::NativePresentationId,
+    sequence: u64,
+    primitives: usize,
+    omitted_primitives: usize,
+}
+
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+pub(crate) enum DrawableSubmitAttempt {
+    Rejected(DrawableRenderAttempt),
+    Submitted(DrawableSubmission),
+}
+
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+pub(crate) enum DrawableCompletionPoll {
+    Pending,
+    Complete(DrawableRenderAttempt),
+}
+
 impl MetalBackend {
     /// Validates and renders one immutable scene into a compact BGRA8 image.
     ///
@@ -521,17 +542,46 @@ impl MetalBackend {
         texture: &ProtocolObject<dyn MTLTexture>,
         drawable: &ProtocolObject<dyn MTLDrawable>,
     ) -> DrawableRenderAttempt {
+        match self.submit_callback_drawable(0, scene, descriptor, texture, drawable) {
+            DrawableSubmitAttempt::Rejected(attempt) => attempt,
+            DrawableSubmitAttempt::Submitted(submission) => {
+                if !self.native.wait_drawable(submission.native) {
+                    return invalid_committed_drawable();
+                }
+                match self.poll_callback_drawable(submission) {
+                    DrawableCompletionPoll::Complete(attempt) => attempt,
+                    DrawableCompletionPoll::Pending => invalid_committed_drawable(),
+                }
+            }
+        }
+    }
+
+    #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn submit_callback_drawable(
+        &mut self,
+        slot: u8,
+        scene: &Scene,
+        descriptor: OffscreenDescriptor,
+        texture: &ProtocolObject<dyn MTLTexture>,
+        drawable: &ProtocolObject<dyn MTLDrawable>,
+    ) -> DrawableSubmitAttempt {
         let frame = match self.admit_frame(scene, descriptor) {
             Ok(frame) => frame,
             Err(error) => {
-                return DrawableRenderAttempt {
+                return DrawableSubmitAttempt::Rejected(DrawableRenderAttempt {
                     committed: false,
                     present_called: false,
                     result: Err(error),
-                };
+                });
             }
         };
-        let Some(next_submission) = self.accounting.submitted_frames().checked_add(1) else {
+        let in_flight = u64::from(self.native.presentation_snapshot().occupied_slots);
+        let Some(next_submission) = self
+            .accounting
+            .submitted_frames()
+            .checked_add(in_flight)
+            .and_then(|value| value.checked_add(1))
+        else {
             let result = match self.accounting.record_accepted(
                 &frame,
                 AccountingOutcome::Failed,
@@ -542,24 +592,78 @@ impl MetalBackend {
                 Ok(()) => Err(RenderError::SubmissionSequenceExhausted),
                 Err(()) => Err(RenderError::AccountingOverflow),
             };
-            return DrawableRenderAttempt {
+            return DrawableSubmitAttempt::Rejected(DrawableRenderAttempt {
                 committed: false,
                 present_called: false,
                 result,
-            };
+            });
         };
 
-        let attempt =
-            objc2::rc::autoreleasepool(|_| self.native.render_drawable(&frame, texture, drawable));
+        match objc2::rc::autoreleasepool(|_| {
+            self.native.submit_drawable(slot, &frame, texture, drawable)
+        }) {
+            crate::native::NativeDrawableSubmitAttempt::Rejected(attempt) => {
+                let committed = attempt.committed;
+                let present_called = attempt.present_called;
+                let result = record_drawable_attempt(&mut self.accounting, &frame, &attempt)
+                    .and_then(|()| complete_drawable_attempt(next_submission, &frame, attempt));
+                DrawableSubmitAttempt::Rejected(DrawableRenderAttempt {
+                    committed,
+                    present_called,
+                    result,
+                })
+            }
+            crate::native::NativeDrawableSubmitAttempt::Submitted(submission) => {
+                DrawableSubmitAttempt::Submitted(DrawableSubmission {
+                    native: submission.id,
+                    sequence: next_submission,
+                    primitives: frame.consumed_primitives(),
+                    omitted_primitives: frame.omitted_primitives(),
+                })
+            }
+        }
+    }
+
+    #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn poll_callback_drawable(
+        &mut self,
+        submission: DrawableSubmission,
+    ) -> DrawableCompletionPoll {
+        let attempt = match self.native.poll_drawable(submission.native) {
+            Ok(None) => return DrawableCompletionPoll::Pending,
+            Ok(Some(attempt)) => attempt,
+            Err(error) => {
+                return DrawableCompletionPoll::Complete(DrawableRenderAttempt {
+                    committed: true,
+                    present_called: true,
+                    result: Err(error),
+                });
+            }
+        };
         let committed = attempt.committed;
         let present_called = attempt.present_called;
-        let result = record_drawable_attempt(&mut self.accounting, &frame, &attempt)
-            .and_then(|()| complete_drawable_attempt(next_submission, &frame, attempt));
-        DrawableRenderAttempt {
+        let result = record_drawable_values(
+            &mut self.accounting,
+            submission.primitives,
+            submission.omitted_primitives,
+            &attempt,
+        )
+        .and_then(|()| complete_drawable_values(submission, attempt));
+        DrawableCompletionPoll::Complete(DrawableRenderAttempt {
             committed,
             present_called,
             result,
-        }
+        })
+    }
+
+    #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn presentation_snapshot(&self) -> crate::native::NativePresentationSnapshot {
+        self.native.presentation_snapshot()
+    }
+
+    #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn release_presentation_uploads_on_pressure(&mut self) {
+        self.native.release_presentation_uploads_on_pressure();
     }
 
     /// Validates and cancels one frame before native allocation or submission.
@@ -701,6 +805,32 @@ fn record_drawable_attempt(
     let result = accounting
         .record_accepted(
             frame,
+            outcome,
+            attempt.committed,
+            attempt.operations,
+            attempt.resources,
+        )
+        .map_err(|()| RenderError::AccountingOverflow);
+    if attempt.device_lost {
+        accounting.invalidate_device();
+    } else if result.is_err() && attempt.committed {
+        accounting.stop();
+    }
+    result
+}
+
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+fn record_drawable_values(
+    accounting: &mut crate::BackendAccounting,
+    primitives: usize,
+    omitted_primitives: usize,
+    attempt: &NativeDrawableAttempt,
+) -> Result<(), RenderError> {
+    let outcome = verify_drawable_attempt_lifecycle(attempt)?;
+    let result = accounting
+        .record_presentation(
+            primitives,
+            omitted_primitives,
             outcome,
             attempt.committed,
             attempt.operations,
@@ -878,6 +1008,36 @@ fn complete_drawable_attempt(
         retained_bytes: attempt.resources.peak_retained_bytes,
         readback_bytes: 0,
     })
+}
+
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+fn complete_drawable_values(
+    submission: DrawableSubmission,
+    attempt: NativeDrawableAttempt,
+) -> Result<FrameReport, RenderError> {
+    attempt.result?;
+    if !attempt.committed || !attempt.present_called {
+        return Err(RenderError::SubmissionInvariantViolated);
+    }
+    Ok(FrameReport {
+        submission: submission.sequence,
+        primitives: submission.primitives,
+        omitted_primitives: submission.omitted_primitives,
+        draw_calls: attempt.operations.draw_calls,
+        uploaded_bytes: attempt.operations.uploaded_bytes,
+        allocated_bytes: attempt.resources.allocated_bytes,
+        retained_bytes: attempt.resources.peak_retained_bytes,
+        readback_bytes: 0,
+    })
+}
+
+#[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
+fn invalid_committed_drawable() -> DrawableRenderAttempt {
+    DrawableRenderAttempt {
+        committed: true,
+        present_called: true,
+        result: Err(RenderError::SubmissionInvariantViolated),
+    }
 }
 
 fn store_render_result(

@@ -1,7 +1,11 @@
+#[cfg(feature = "platform-spi")]
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 #[cfg(test)]
 use std::{cell::Cell, rc::Rc};
 use std::{ffi::c_void, mem::size_of, ptr::NonNull, slice};
 
+#[cfg(feature = "platform-spi")]
+use block2::RcBlock;
 use dispatch2::DispatchData;
 use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_foundation::{NSError, NSString};
@@ -96,10 +100,356 @@ pub(crate) struct NativeBackend {
         reason = "the initialized objects must remain retained for the backend lifetime"
     )]
     initialized: Initialized<NativeDriver>,
+    #[cfg(feature = "platform-spi")]
+    presentation: PresentationSlots,
     #[cfg(any(test, alpine_native_validation))]
     fault: NativeFault,
     #[cfg(test)]
     probe: ResourceProbe,
+}
+
+#[cfg(feature = "platform-spi")]
+const PRESENTATION_SLOT_COUNT: usize = 3;
+#[cfg(feature = "platform-spi")]
+const PRESENTATION_UPLOAD_LIMIT: usize = 8 * 1024 * 1024;
+#[cfg(feature = "platform-spi")]
+const PRESENTATION_TRIM_TERMINALS: u16 = 120;
+#[cfg(feature = "platform-spi")]
+type CompletionHandler = dyn Fn(NonNull<ProtocolObject<dyn MTLCommandBuffer>>);
+
+#[cfg(feature = "platform-spi")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NativePresentationId {
+    slot: u8,
+    sequence: u64,
+}
+
+#[cfg(feature = "platform-spi")]
+#[derive(Clone, Copy)]
+pub(crate) struct NativeDrawableSubmission {
+    pub(crate) id: NativePresentationId,
+}
+
+#[cfg(feature = "platform-spi")]
+pub(crate) enum NativeDrawableSubmitAttempt {
+    Rejected(NativeDrawableAttempt),
+    Submitted(NativeDrawableSubmission),
+}
+
+#[cfg(feature = "platform-spi")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NativePresentationSnapshot {
+    pub(crate) occupied_slots: u8,
+    pub(crate) current_upload_bytes: usize,
+    pub(crate) peak_upload_bytes: usize,
+    pub(crate) slot_upload_bytes: [usize; PRESENTATION_SLOT_COUNT],
+    pub(crate) slot_peak_upload_bytes: [usize; PRESENTATION_SLOT_COUNT],
+    pub(crate) upload_allocations: u64,
+    pub(crate) upload_trims: u64,
+}
+
+#[cfg(feature = "platform-spi")]
+struct PresentationSlots {
+    slots: [PresentationSlot; PRESENTATION_SLOT_COUNT],
+    peak_upload_bytes: usize,
+}
+
+#[cfg(feature = "platform-spi")]
+impl PresentationSlots {
+    fn new() -> Self {
+        Self {
+            slots: std::array::from_fn(|_| PresentationSlot::new()),
+            peak_upload_bytes: 0,
+        }
+    }
+
+    fn snapshot(&self) -> NativePresentationSnapshot {
+        let slot_upload_bytes = std::array::from_fn(|index| self.slots[index].upload_bytes());
+        let slot_peak_upload_bytes =
+            std::array::from_fn(|index| self.slots[index].peak_upload_bytes);
+        NativePresentationSnapshot {
+            occupied_slots: u8::try_from(
+                self.slots
+                    .iter()
+                    .filter(|slot| slot.pending.is_some())
+                    .count(),
+            )
+            .unwrap_or(3),
+            current_upload_bytes: slot_upload_bytes.iter().sum(),
+            peak_upload_bytes: self.peak_upload_bytes,
+            slot_upload_bytes,
+            slot_peak_upload_bytes,
+            upload_allocations: self.slots.iter().map(|slot| slot.upload_allocations).sum(),
+            upload_trims: self.slots.iter().map(|slot| slot.upload_trims).sum(),
+        }
+    }
+
+    fn record_upload_peak(&mut self, transient_upload_bytes: usize) {
+        self.peak_upload_bytes = self.peak_upload_bytes.max(transient_upload_bytes);
+    }
+
+    fn pressure(&mut self) {
+        for slot in &mut self.slots {
+            slot.pressure();
+        }
+    }
+}
+
+#[cfg(feature = "platform-spi")]
+struct PresentationSlot {
+    upload: Option<Buffer>,
+    peak_upload_bytes: usize,
+    upload_allocations: u64,
+    upload_trims: u64,
+    next_sequence: u64,
+    last_upload_demand: usize,
+    underused_terminals: u16,
+    pressure_pending: bool,
+    completion: Arc<CompletionSignal>,
+    pending: Option<PendingDrawable>,
+}
+
+#[cfg(feature = "platform-spi")]
+impl PresentationSlot {
+    fn new() -> Self {
+        Self {
+            upload: None,
+            peak_upload_bytes: 0,
+            upload_allocations: 0,
+            upload_trims: 0,
+            next_sequence: 0,
+            last_upload_demand: 0,
+            underused_terminals: 0,
+            pressure_pending: false,
+            completion: Arc::new(CompletionSignal::new()),
+            pending: None,
+        }
+    }
+
+    fn upload_bytes(&self) -> usize {
+        self.upload.as_deref().map_or(0, MTLResource::allocatedSize)
+    }
+
+    fn prepare_upload(
+        &mut self,
+        device: &Device,
+        frame: &ValidatedFrame,
+        #[cfg(any(test, alpine_native_validation))] fault: NativeFault,
+    ) -> Result<UploadPreparation, RenderError> {
+        let required = frame.upload_bytes();
+        let desired =
+            presentation_upload_capacity(required).ok_or(RenderError::ResourceUnavailable {
+                stage: RenderStage::UploadBuffer,
+                requested_bytes: Some(required),
+            })?;
+        let needs_growth = self
+            .upload
+            .as_deref()
+            .is_none_or(|buffer| buffer.length() < desired);
+        let allocated_bytes = if desired == 0 || !needs_growth {
+            0
+        } else {
+            #[cfg(test)]
+            if fault == NativeFault::UploadAllocation {
+                return Err(RenderError::ResourceUnavailable {
+                    stage: RenderStage::UploadBuffer,
+                    requested_bytes: Some(desired),
+                });
+            }
+            let buffer = device
+                .newBufferWithLength_options(desired, MTLResourceOptions::StorageModeShared)
+                .ok_or(RenderError::ResourceUnavailable {
+                    stage: RenderStage::UploadBuffer,
+                    requested_bytes: Some(desired),
+                })?;
+            let allocated = buffer.allocatedSize();
+            self.upload = Some(buffer);
+            self.upload_allocations = self
+                .upload_allocations
+                .checked_add(1)
+                .ok_or(RenderError::AccountingOverflow)?;
+            self.peak_upload_bytes = self.peak_upload_bytes.max(allocated);
+            allocated
+        };
+
+        if required != 0 {
+            let Some(upload) = self.upload.as_deref() else {
+                return Err(RenderError::SubmissionInvariantViolated);
+            };
+            let source = frame.quads().as_ptr().cast::<u8>();
+            let destination = upload.contents().cast::<u8>().as_ptr();
+            // SAFETY: `ValidatedFrame::upload_bytes` is the exact byte length
+            // of the contiguous repr(C) quad slice. The shared Metal buffer is
+            // at least `desired >= required` bytes and this slot cannot be
+            // submitted again until its prior command reaches terminal state.
+            unsafe { std::ptr::copy_nonoverlapping(source, destination, required) };
+        }
+        self.last_upload_demand = required;
+        Ok(UploadPreparation {
+            allocated_bytes,
+            current_upload_bytes: self.upload_bytes(),
+        })
+    }
+
+    fn next_id(&mut self, slot: u8) -> Result<NativePresentationId, RenderError> {
+        let sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or(RenderError::SubmissionSequenceExhausted)?;
+        self.next_sequence = sequence;
+        Ok(NativePresentationId { slot, sequence })
+    }
+
+    fn pressure(&mut self) {
+        if self.pending.is_some() {
+            self.pressure_pending = true;
+        } else {
+            self.trim_upload();
+        }
+    }
+
+    fn observe_terminal(&mut self) {
+        let desired = presentation_upload_capacity(self.last_upload_demand).unwrap_or(0);
+        let (underused_terminals, should_trim) = presentation_trim_decision(
+            self.upload_bytes(),
+            desired,
+            self.underused_terminals,
+            self.pressure_pending,
+        );
+        self.underused_terminals = underused_terminals;
+        if should_trim {
+            self.trim_upload();
+        }
+    }
+
+    fn trim_upload(&mut self) {
+        if self.upload.take().is_some() {
+            self.upload_trims = self.upload_trims.saturating_add(1);
+        }
+        self.underused_terminals = 0;
+        self.pressure_pending = false;
+    }
+}
+
+#[cfg(feature = "platform-spi")]
+struct UploadPreparation {
+    allocated_bytes: usize,
+    current_upload_bytes: usize,
+}
+
+#[cfg(feature = "platform-spi")]
+struct PendingDrawable {
+    id: NativePresentationId,
+    _command: CommandBuffer,
+    operations: FrameOperationUsage,
+    resources: FrameResourceUsage,
+}
+
+#[cfg(feature = "platform-spi")]
+struct NativeTerminal {
+    device_lost: bool,
+    result: Result<(), RenderError>,
+}
+
+#[cfg(feature = "platform-spi")]
+struct CompletionState {
+    sequence: u64,
+    terminal: Option<NativeTerminal>,
+}
+
+#[cfg(feature = "platform-spi")]
+struct CompletionSignal {
+    state: Mutex<CompletionState>,
+    ready: Condvar,
+}
+
+#[cfg(feature = "platform-spi")]
+impl CompletionSignal {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(CompletionState {
+                sequence: 0,
+                terminal: None,
+            }),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, CompletionState> {
+        match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn reset(&self, sequence: u64) -> Result<(), RenderError> {
+        let mut state = self.lock();
+        if state.terminal.is_some() {
+            return Err(RenderError::SubmissionInvariantViolated);
+        }
+        state.sequence = sequence;
+        Ok(())
+    }
+
+    fn publish(&self, sequence: u64, terminal: NativeTerminal) {
+        let mut state = self.lock();
+        if state.sequence == sequence && state.terminal.is_none() {
+            state.terminal = Some(terminal);
+            self.ready.notify_one();
+        }
+    }
+
+    fn take(&self, sequence: u64) -> Option<NativeTerminal> {
+        let mut state = self.lock();
+        if state.sequence == sequence {
+            state.terminal.take()
+        } else {
+            None
+        }
+    }
+
+    fn wait_ready(&self, sequence: u64) -> bool {
+        let mut state = self.lock();
+        loop {
+            if state.sequence != sequence {
+                return false;
+            }
+            if state.terminal.is_some() {
+                return true;
+            }
+            state = match self.ready.wait(state) {
+                Ok(next) => next,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+        }
+    }
+}
+
+#[cfg(feature = "platform-spi")]
+const fn presentation_upload_capacity(required: usize) -> Option<usize> {
+    if required == 0 {
+        Some(0)
+    } else {
+        match required.checked_next_power_of_two() {
+            Some(capacity) if capacity <= PRESENTATION_UPLOAD_LIMIT => Some(capacity),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "platform-spi")]
+const fn presentation_trim_decision(
+    current_capacity: usize,
+    desired_capacity: usize,
+    underused_terminals: u16,
+    pressure: bool,
+) -> (u16, bool) {
+    if !pressure && current_capacity <= desired_capacity {
+        (0, false)
+    } else {
+        let next = underused_terminals.saturating_add(1);
+        (next, pressure || next >= PRESENTATION_TRIM_TERMINALS)
+    }
 }
 
 #[cfg(any(test, alpine_native_validation))]
@@ -317,13 +667,49 @@ impl NativeBackend {
         }
     }
 
-    #[cfg(feature = "platform-spi")]
+    #[cfg(all(feature = "platform-spi", test))]
     pub(crate) fn render_drawable(
         &mut self,
         frame: &ValidatedFrame,
         texture: &ProtocolObject<dyn MTLTexture>,
         drawable: &ProtocolObject<dyn MTLDrawable>,
     ) -> NativeDrawableAttempt {
+        match self.submit_drawable(0, frame, texture, drawable) {
+            NativeDrawableSubmitAttempt::Rejected(attempt) => attempt,
+            NativeDrawableSubmitAttempt::Submitted(submission) => {
+                if !self.wait_drawable(submission.id) {
+                    return invalid_native_committed_drawable();
+                }
+                match self.poll_drawable(submission.id) {
+                    Ok(Some(attempt)) => attempt,
+                    Ok(None) | Err(_) => invalid_native_committed_drawable(),
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "platform-spi")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "slot admission, upload ownership, encoding, handler registration, commit, and direct present remain one audited native transaction"
+    )]
+    pub(crate) fn submit_drawable(
+        &mut self,
+        slot: u8,
+        frame: &ValidatedFrame,
+        texture: &ProtocolObject<dyn MTLTexture>,
+        drawable: &ProtocolObject<dyn MTLDrawable>,
+    ) -> NativeDrawableSubmitAttempt {
+        let index = usize::from(slot);
+        if index >= PRESENTATION_SLOT_COUNT {
+            return rejected_drawable(RenderError::SubmissionInvariantViolated);
+        }
+        if self.presentation.slots[index].pending.is_some() {
+            return rejected_drawable(RenderError::ResourceUnavailable {
+                stage: RenderStage::CommandBuffer,
+                requested_bytes: None,
+            });
+        }
         let target = TargetContract::SrgbPresentation;
         let resources = match DrawableResources::new(
             &self.initialized.device,
@@ -333,26 +719,48 @@ impl NativeBackend {
         ) {
             Ok(resources) => resources,
             Err(failure) => {
-                return NativeDrawableAttempt {
+                return NativeDrawableSubmitAttempt::Rejected(NativeDrawableAttempt {
                     committed: false,
                     present_called: false,
                     device_lost: false,
                     operations: FrameOperationUsage::default(),
                     resources: failure.usage,
                     result: Err(failure.error),
-                };
+                });
             }
         };
-        let resource_usage = resources.usage;
+        let upload_before = self.presentation.snapshot().current_upload_bytes;
+        let upload = match self.presentation.slots[index].prepare_upload(
+            &self.initialized.device,
+            frame,
+            #[cfg(any(test, alpine_native_validation))]
+            self.fault,
+        ) {
+            Ok(upload) => upload,
+            Err(error) => return rejected_drawable(error),
+        };
+        let Some(transient_upload) = upload_before.checked_add(upload.allocated_bytes) else {
+            return rejected_drawable(RenderError::AccountingOverflow);
+        };
+        self.presentation.record_upload_peak(transient_upload);
+        let Some(retained_bytes) = resources
+            .retained_texture_bytes
+            .checked_add(upload.current_upload_bytes)
+        else {
+            return rejected_drawable(RenderError::AccountingOverflow);
+        };
+        let resource_usage = FrameResourceUsage {
+            allocated_bytes: upload.allocated_bytes,
+            peak_retained_bytes: retained_bytes,
+            current_retained_bytes: 0,
+            readback_bytes: 0,
+        };
         let mut operations = FrameOperationUsage {
             draw_calls: 0,
-            uploaded_bytes: resources
-                .upload
-                .as_ref()
-                .map_or(0, |_| frame.upload_bytes()),
+            uploaded_bytes: frame.upload_bytes(),
         };
         let Some(command) = self.initialized.queue.commandBuffer() else {
-            return NativeDrawableAttempt {
+            return NativeDrawableSubmitAttempt::Rejected(NativeDrawableAttempt {
                 committed: false,
                 present_called: false,
                 device_lost: false,
@@ -362,58 +770,178 @@ impl NativeBackend {
                     stage: RenderStage::CommandBuffer,
                     requested_bytes: None,
                 }),
-            };
+            });
         };
+        #[cfg(test)]
+        if self.fault == NativeFault::RenderEncoder {
+            return NativeDrawableSubmitAttempt::Rejected(NativeDrawableAttempt {
+                committed: false,
+                present_called: false,
+                device_lost: false,
+                operations,
+                resources: resource_usage,
+                result: Err(RenderError::EncoderUnavailable {
+                    stage: RenderStage::RenderEncoder,
+                }),
+            });
+        }
+        let upload_buffer = self.presentation.slots[index].upload.clone();
         if let Err(error) = encode_render_pass(
             &command,
             target.pipeline(&self.initialized.pipeline),
             texture,
-            resources.upload.as_deref(),
+            upload_buffer.as_deref(),
             frame,
         ) {
-            return NativeDrawableAttempt {
+            return NativeDrawableSubmitAttempt::Rejected(NativeDrawableAttempt {
                 committed: false,
                 present_called: false,
                 device_lost: false,
                 operations,
                 resources: resource_usage,
                 result: Err(error),
-            };
+            });
         }
         operations.draw_calls = usize::from(!frame.quads().is_empty());
-
-        command.commit();
-        drawable.present();
-        command.waitUntilCompleted();
-
-        let status = command_status(command.status());
-        let failure = command.error().as_deref().map(copy_error);
-        let (result, device_lost) = match (status, failure) {
-            (CommandStatus::Completed, None) => (Ok(()), false),
-            (CommandStatus::Completed | CommandStatus::Error, failure) => {
-                let (recovery, device_lost) = classify_command_failure(failure.as_ref());
-                (
-                    Err(RenderError::CommandFailed {
-                        status,
-                        failure,
-                        recovery,
-                    }),
-                    device_lost,
-                )
-            }
-            (status, _) => (Err(RenderError::UnexpectedCommandStatus { status }), false),
+        let id = match self.presentation.slots[index].next_id(slot) {
+            Ok(id) => id,
+            Err(error) => return rejected_drawable(error),
         };
+        let completion = Arc::clone(&self.presentation.slots[index].completion);
+        if let Err(error) = completion.reset(id.sequence) {
+            return rejected_drawable(error);
+        }
         #[cfg(any(test, alpine_native_validation))]
-        let (result, device_lost) =
-            injected_command_failure(self.fault).unwrap_or((result, device_lost));
-        NativeDrawableAttempt {
-            committed: true,
-            present_called: true,
-            device_lost,
+        let fault = self.fault;
+        let handler: RcBlock<CompletionHandler> = RcBlock::new(
+            move |command: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+                // SAFETY: Metal invokes this handler with the valid command
+                // buffer registered below for the duration of this call.
+                let command = unsafe { command.as_ref() };
+                let terminal = drawable_terminal(
+                    command,
+                    #[cfg(any(test, alpine_native_validation))]
+                    fault,
+                );
+                completion.publish(id.sequence, terminal);
+            },
+        );
+        // SAFETY: `handler` has the exact generated Metal block signature and
+        // remains valid for this call. Metal copies completion handlers and
+        // releases its copy after invocation.
+        unsafe { command.addCompletedHandler(RcBlock::as_ptr(&handler)) };
+        self.presentation.slots[index].pending = Some(PendingDrawable {
+            id,
+            _command: command.clone(),
             operations,
             resources: resource_usage,
-            result,
+        });
+        command.commit();
+        drawable.present();
+        NativeDrawableSubmitAttempt::Submitted(NativeDrawableSubmission { id })
+    }
+
+    #[cfg(feature = "platform-spi")]
+    pub(crate) fn poll_drawable(
+        &mut self,
+        id: NativePresentationId,
+    ) -> Result<Option<NativeDrawableAttempt>, RenderError> {
+        let Some(slot) = self.presentation.slots.get_mut(usize::from(id.slot)) else {
+            return Err(RenderError::SubmissionInvariantViolated);
+        };
+        if slot.pending.as_ref().map(|pending| pending.id) != Some(id) {
+            return Err(RenderError::SubmissionInvariantViolated);
         }
+        let Some(terminal) = slot.completion.take(id.sequence) else {
+            return Ok(None);
+        };
+        let Some(pending) = slot.pending.take() else {
+            return Err(RenderError::SubmissionInvariantViolated);
+        };
+        slot.observe_terminal();
+        Ok(Some(NativeDrawableAttempt {
+            committed: true,
+            present_called: true,
+            device_lost: terminal.device_lost,
+            operations: pending.operations,
+            resources: pending.resources,
+            result: terminal.result,
+        }))
+    }
+
+    #[cfg(feature = "platform-spi")]
+    pub(crate) fn wait_drawable(&self, id: NativePresentationId) -> bool {
+        self.presentation
+            .slots
+            .get(usize::from(id.slot))
+            .is_some_and(|slot| {
+                slot.pending.as_ref().map(|pending| pending.id) == Some(id)
+                    && slot.completion.wait_ready(id.sequence)
+            })
+    }
+
+    #[cfg(feature = "platform-spi")]
+    pub(crate) fn presentation_snapshot(&self) -> NativePresentationSnapshot {
+        self.presentation.snapshot()
+    }
+
+    #[cfg(feature = "platform-spi")]
+    pub(crate) fn release_presentation_uploads_on_pressure(&mut self) {
+        self.presentation.pressure();
+    }
+}
+
+#[cfg(feature = "platform-spi")]
+fn rejected_drawable(error: RenderError) -> NativeDrawableSubmitAttempt {
+    NativeDrawableSubmitAttempt::Rejected(NativeDrawableAttempt {
+        committed: false,
+        present_called: false,
+        device_lost: false,
+        operations: FrameOperationUsage::default(),
+        resources: FrameResourceUsage::default(),
+        result: Err(error),
+    })
+}
+
+#[cfg(all(feature = "platform-spi", test))]
+fn invalid_native_committed_drawable() -> NativeDrawableAttempt {
+    NativeDrawableAttempt {
+        committed: true,
+        present_called: true,
+        device_lost: false,
+        operations: FrameOperationUsage::default(),
+        resources: FrameResourceUsage::default(),
+        result: Err(RenderError::SubmissionInvariantViolated),
+    }
+}
+
+#[cfg(feature = "platform-spi")]
+fn drawable_terminal(
+    command: &ProtocolObject<dyn MTLCommandBuffer>,
+    #[cfg(any(test, alpine_native_validation))] fault: NativeFault,
+) -> NativeTerminal {
+    let status = command_status(command.status());
+    let failure = command.error().as_deref().map(copy_error);
+    let (result, device_lost) = match (status, failure) {
+        (CommandStatus::Completed, None) => (Ok(()), false),
+        (CommandStatus::Completed | CommandStatus::Error, failure) => {
+            let (recovery, device_lost) = classify_command_failure(failure.as_ref());
+            (
+                Err(RenderError::CommandFailed {
+                    status,
+                    failure,
+                    recovery,
+                }),
+                device_lost,
+            )
+        }
+        (status, _) => (Err(RenderError::UnexpectedCommandStatus { status }), false),
+    };
+    #[cfg(any(test, alpine_native_validation))]
+    let (result, device_lost) = injected_command_failure(fault).unwrap_or((result, device_lost));
+    NativeTerminal {
+        device_lost,
+        result,
     }
 }
 
@@ -463,6 +991,8 @@ fn build_backend(
         (
             NativeBackend {
                 initialized,
+                #[cfg(feature = "platform-spi")]
+                presentation: PresentationSlots::new(),
                 #[cfg(any(test, alpine_native_validation))]
                 fault: NativeFault::None,
                 #[cfg(test)]
@@ -618,14 +1148,13 @@ struct ResourceBuildFailure {
 
 #[cfg(feature = "platform-spi")]
 struct DrawableResources {
-    upload: Option<Buffer>,
-    usage: FrameResourceUsage,
+    retained_texture_bytes: usize,
 }
 
 #[cfg(feature = "platform-spi")]
 impl DrawableResources {
     fn new(
-        device: &Device,
+        _device: &Device,
         texture: &ProtocolObject<dyn MTLTexture>,
         frame: &ValidatedFrame,
         expected_pixel_format: MTLPixelFormat,
@@ -653,49 +1182,8 @@ impl DrawableResources {
             });
         }
 
-        let retained_texture_bytes = texture.allocatedSize();
-        let upload = if frame.quads().is_empty() {
-            None
-        } else {
-            let first = NonNull::from(&frame.quads()[0]).cast::<c_void>();
-            // SAFETY: `first` points to the complete validated repr(C) quad
-            // slice, and Metal copies the bytes before returning.
-            unsafe {
-                device.newBufferWithBytes_length_options(
-                    first,
-                    frame.upload_bytes(),
-                    MTLResourceOptions::StorageModeShared,
-                )
-            }
-            .ok_or_else(|| ResourceBuildFailure {
-                error: RenderError::ResourceUnavailable {
-                    stage: RenderStage::UploadBuffer,
-                    requested_bytes: Some(frame.upload_bytes()),
-                },
-                usage: FrameResourceUsage {
-                    allocated_bytes: 0,
-                    peak_retained_bytes: retained_texture_bytes,
-                    current_retained_bytes: 0,
-                    readback_bytes: 0,
-                },
-            })?
-            .into()
-        };
-        let allocated_bytes = upload.as_deref().map_or(0, MTLResource::allocatedSize);
-        let peak_retained_bytes = retained_texture_bytes
-            .checked_add(allocated_bytes)
-            .ok_or_else(|| ResourceBuildFailure {
-                error: RenderError::AccountingOverflow,
-                usage: FrameResourceUsage::default(),
-            })?;
         Ok(Self {
-            upload,
-            usage: FrameResourceUsage {
-                allocated_bytes,
-                peak_retained_bytes,
-                current_retained_bytes: 0,
-                readback_bytes: 0,
-            },
+            retained_texture_bytes: texture.allocatedSize(),
         })
     }
 }
@@ -1244,6 +1732,8 @@ mod tests {
         let backend = MetalBackend::from_platform_parts((
             NativeBackend {
                 initialized,
+                #[cfg(feature = "platform-spi")]
+                presentation: super::PresentationSlots::new(),
                 fault,
                 probe: probe.clone(),
             },
@@ -1495,6 +1985,167 @@ mod tests {
         assert_eq!(attempt.operations.uploaded_bytes, frame.upload_bytes());
         assert_eq!(attempt.resources.readback_bytes, 0);
         assert_eq!(drawable.present_calls(), 1);
+        let first = backend.native.presentation_snapshot();
+        assert_eq!(first.occupied_slots, 0);
+        assert_eq!(first.upload_allocations, 1);
+        assert!(first.current_upload_bytes >= frame.upload_bytes());
+
+        let reused =
+            backend
+                .native
+                .render_drawable(&frame, &texture, ProtocolObject::from_ref(&*drawable));
+        assert_eq!(reused.result, Ok(()));
+        assert_eq!(reused.resources.allocated_bytes, 0);
+        assert_eq!(backend.native.presentation_snapshot().upload_allocations, 1);
+        assert_eq!(drawable.present_calls(), 2);
+
+        backend.native.release_presentation_uploads_on_pressure();
+        let released = backend.native.presentation_snapshot();
+        assert_eq!(released.current_upload_bytes, 0);
+        assert_eq!(released.upload_trims, 1);
+        Ok(())
+    }
+
+    #[cfg(feature = "platform-spi")]
+    #[test]
+    fn split_phase_drawables_bound_reorder_and_reuse_three_slots() -> Result<(), Box<dyn Error>> {
+        let (scene, descriptor) = discriminating_scene()?;
+        let frame = ValidatedFrame::new(&scene, descriptor)?;
+        let mut backend = validation_backend(BlendConfiguration::PremultipliedSourceOver)?;
+        // SAFETY: The validated finite dimensions are supported by the test
+        // device and this fixture creates no mip levels or CPU texture mapping.
+        let texture_descriptor = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                MTLPixelFormat::BGRA8Unorm_sRGB,
+                descriptor.pixel_width() as usize,
+                descriptor.pixel_height() as usize,
+                false,
+            )
+        };
+        texture_descriptor.setStorageMode(MTLStorageMode::Private);
+        texture_descriptor.setUsage(MTLTextureUsage::RenderTarget);
+        let texture = backend
+            .native
+            .initialized
+            .device
+            .newTextureWithDescriptor(&texture_descriptor)
+            .ok_or("split-phase callback texture")?;
+        let drawable = TestDrawable::new();
+        let mut submissions = [None; 3];
+
+        for slot in 0_u8..3 {
+            let super::NativeDrawableSubmitAttempt::Submitted(submission) = backend
+                .native
+                .submit_drawable(slot, &frame, &texture, ProtocolObject::from_ref(&*drawable))
+            else {
+                return Err("one of three native slots rejected valid work".into());
+            };
+            submissions[usize::from(slot)] = Some(submission);
+        }
+
+        let saturated = backend.native.submit_drawable(
+            0,
+            &frame,
+            &texture,
+            ProtocolObject::from_ref(&*drawable),
+        );
+        let super::NativeDrawableSubmitAttempt::Rejected(saturated) = saturated else {
+            return Err("occupied slot admitted a replacement command".into());
+        };
+        assert!(!saturated.committed);
+        assert_eq!(
+            saturated.result.as_ref().err().map(RenderError::stage),
+            Some(RenderStage::CommandBuffer)
+        );
+
+        let occupied = backend.native.presentation_snapshot();
+        assert_eq!(occupied.occupied_slots, 3);
+        assert_eq!(occupied.upload_allocations, 3);
+        assert!(occupied.current_upload_bytes <= 24 * 1024 * 1024);
+        assert!(occupied.peak_upload_bytes <= 24 * 1024 * 1024);
+        assert_eq!(drawable.present_calls(), 3);
+
+        for index in [2_usize, 0, 1] {
+            let submission = submissions[index].ok_or("missing native submission")?;
+            assert!(backend.native.wait_drawable(submission.id));
+            let attempt = backend
+                .native
+                .poll_drawable(submission.id)?
+                .ok_or("terminal command was not observable")?;
+            assert_eq!(attempt.result, Ok(()));
+        }
+        assert_eq!(backend.native.presentation_snapshot().occupied_slots, 0);
+
+        let super::NativeDrawableSubmitAttempt::Submitted(reused) = backend.native.submit_drawable(
+            0,
+            &frame,
+            &texture,
+            ProtocolObject::from_ref(&*drawable),
+        ) else {
+            return Err("released slot did not admit replacement work".into());
+        };
+        assert!(backend.native.wait_drawable(reused.id));
+        let reused = backend
+            .native
+            .poll_drawable(reused.id)?
+            .ok_or("reused slot did not complete")?;
+        assert_eq!(reused.resources.allocated_bytes, 0);
+        assert_eq!(backend.native.presentation_snapshot().upload_allocations, 3);
+        Ok(())
+    }
+
+    #[cfg(feature = "platform-spi")]
+    #[test]
+    fn presentation_capacity_signal_and_trim_policy_fail_closed() -> Result<(), RenderError> {
+        assert_eq!(super::presentation_upload_capacity(0), Some(0));
+        assert_eq!(super::presentation_upload_capacity(1), Some(1));
+        assert_eq!(super::presentation_upload_capacity(33), Some(64));
+        assert_eq!(
+            super::presentation_upload_capacity(8 * 1024 * 1024),
+            Some(8 * 1024 * 1024)
+        );
+        assert_eq!(
+            super::presentation_upload_capacity(8 * 1024 * 1024 + 1),
+            None
+        );
+        assert_eq!(super::presentation_upload_capacity(usize::MAX), None);
+
+        assert_eq!(
+            super::presentation_trim_decision(64, 64, 119, false),
+            (0, false)
+        );
+        assert_eq!(
+            super::presentation_trim_decision(64, 32, 118, false),
+            (119, false)
+        );
+        assert_eq!(
+            super::presentation_trim_decision(64, 32, 119, false),
+            (120, true)
+        );
+        assert_eq!(
+            super::presentation_trim_decision(64, 64, 0, true),
+            (1, true)
+        );
+
+        let signal = super::CompletionSignal::new();
+        signal.reset(7)?;
+        signal.publish(
+            6,
+            super::NativeTerminal {
+                device_lost: false,
+                result: Ok(()),
+            },
+        );
+        assert!(signal.take(7).is_none());
+        signal.publish(
+            7,
+            super::NativeTerminal {
+                device_lost: false,
+                result: Ok(()),
+            },
+        );
+        assert_eq!(signal.take(7).map(|terminal| terminal.result), Some(Ok(())));
+        assert!(signal.take(6).is_none());
         Ok(())
     }
 

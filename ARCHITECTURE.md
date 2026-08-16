@@ -13,7 +13,7 @@ no external dependencies. `alpine-core` has no workspace dependencies.
 `alpine-scene`, `alpine-platform` is dependency-free, and `alpine-metal`
 depends on the core, scene, and renderer crates.
 On Apple Silicon macOS only, `alpine-metal` uses narrowly featured, exact-version
-`objc2`, `objc2-foundation`, `objc2-metal`, and `dispatch2` bindings. Other
+`block2`, `objc2`, `objc2-foundation`, `objc2-metal`, and `dispatch2` bindings. Other
 targets neither compile nor link those dependencies.
 `alpine-platform-macos` depends on the portable platform, core, scene, and Metal
 crates. On Apple Silicon macOS only, it uses narrowly featured, exact-version
@@ -180,8 +180,20 @@ then does it remove row padding and return owned compact pixels plus a monotonic
 `FrameReport`. Each accepted target is bounded by the Metal 3 guaranteed 16,384
 pixel dimension. Every native attempt runs inside a frame-local Objective-C
 autorelease pool; no native object escapes, while the owned image, copied error
-data, and accounting report remain valid after the pool drains. Resource reuse
-and asynchronous submission are not implemented.
+data, and accounting report remain valid after the pool drains.
+The target-only platform SPI also owns three private presentation-resource
+slots. Each slot retains at most one committed command, one reusable shared
+upload buffer, and one bounded completion signal. Presentation upload capacity
+grows geometrically to 8 MiB per slot, never exceeds 24 MiB across the three
+slots, records exact current and peak retention, and can shed free capacity on
+pressure. A typed Metal completion block copies terminal status and native error
+details into Alpine-owned state without exposing a handle. The split-phase SPI
+can commit and directly present, return immediately, and later consume that
+terminal state on the owner thread. The existing AppKit callback still uses a
+temporary synchronous compatibility wrapper over this path, so removal of the
+main-thread completion wait, shutdown drain, and asynchronous lifecycle
+qualification remain unimplemented. Offscreen readback remains intentionally
+synchronous.
 Every render call updates a generation-scoped `BackendAccounting` snapshot.
 Validated cancellation performs no native allocation or submission. Shutdown is
 synchronous and closes admission only after the current exclusive call returns.
