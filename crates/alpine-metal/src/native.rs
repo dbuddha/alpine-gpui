@@ -19,9 +19,9 @@ use objc2_metal::{
     MTLCommandBufferError, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
     MTLCreateSystemDefaultDevice, MTLDevice, MTLFunction, MTLGPUFamily, MTLLibrary, MTLLoadAction,
     MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder,
-    MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLRenderStages,
-    MTLResource, MTLResourceOptions, MTLResourceUsage, MTLSize, MTLStorageMode, MTLStoreAction,
-    MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
+    MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResource,
+    MTLResourceOptions, MTLSize, MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor,
+    MTLTextureUsage,
 };
 
 #[cfg(all(feature = "platform-spi", any(test, alpine_native_validation)))]
@@ -1654,21 +1654,6 @@ fn encode_render_pass(
         unsafe {
             encoder.setVertexBuffer_offset_atIndex(Some(upload), 0, 1);
             encoder.setFragmentTexture_atIndex(atlas, 0);
-            if let Some(atlas) = atlas {
-                // Metal 3 shader validation distinguishes descriptor intent
-                // from encoder residency intent. Declare the narrow sampled
-                // fragment use as late as possible before the draw.
-                let resource: &ProtocolObject<dyn MTLResource> = atlas.as_ref();
-                #[allow(
-                    deprecated,
-                    reason = "Metal 3 validation requires the sampled-resource flag"
-                )]
-                encoder.useResource_usage_stages(
-                    resource,
-                    MTLResourceUsage::Read | MTLResourceUsage::Sample,
-                    MTLRenderStages::Fragment,
-                );
-            }
             encoder.drawPrimitives_vertexStart_vertexCount_instanceCount(
                 MTLPrimitiveType::Triangle,
                 0,

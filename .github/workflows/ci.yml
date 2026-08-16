@@ -177,7 +177,9 @@ jobs:
           if cargo metadata --format-version 1 --no-deps | grep -q '"name":"alpine-assurance"'; then
             coverage_scope="$coverage_scope --exclude alpine-assurance"
           fi
-          CARGO_TARGET_DIR="$RUNNER_TEMP/alpine-coverage-base-target" cargo llvm-cov $coverage_scope --all-features --locked --ignore-filename-regex '(/tests/|_coverage_tests\.rs$|/embedded_tests\.rs$)' --json --summary-only --output-path "$GITHUB_WORKSPACE/target/coverage-base.json"
+          CARGO_TARGET_DIR="$RUNNER_TEMP/alpine-coverage-base-target" cargo llvm-cov $coverage_scope --all-features --locked --no-report
+          CARGO_TARGET_DIR="$RUNNER_TEMP/alpine-coverage-base-target" cargo llvm-cov report --ignore-filename-regex '(/tests/|_coverage_tests\.rs$|/embedded_tests\.rs$)' --json --summary-only --output-path "$GITHUB_WORKSPACE/target/coverage-base.json"
+          CARGO_TARGET_DIR="$RUNNER_TEMP/alpine-coverage-base-target" cargo llvm-cov report --ignore-filename-regex '(/tests/|_coverage_tests\.rs$|/embedded_tests\.rs$)' --lcov --output-path "$GITHUB_WORKSPACE/target/lcov-base.info"
       - name: Measure head coverage
         run: |
           cargo llvm-cov clean --workspace
@@ -188,7 +190,7 @@ jobs:
       - name: Enforce coverage contracts
         env:
           ALPINE_HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
-        run: scripts/check-coverage.sh target/coverage-base.json target/coverage-head.json target/lcov.info ${{ needs.classify.outputs.base_sha }}
+        run: scripts/check-coverage.sh target/coverage-base.json target/coverage-head.json target/lcov-base.info target/lcov.info ${{ needs.classify.outputs.base_sha }}
       - name: Enforce assurance-tool coverage floor
         run: |
           cargo llvm-cov clean --workspace
@@ -200,6 +202,7 @@ jobs:
           name: coverage-${{ github.sha }}
           path: |
             target/coverage-head.json
+            target/lcov-base.info
             target/lcov.info
             target/coverage-html
           retention-days: 7
