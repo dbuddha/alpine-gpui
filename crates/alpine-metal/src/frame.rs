@@ -1,7 +1,7 @@
 use std::{error::Error, fmt, mem::size_of};
 
 use alpine_core::LinearRgba;
-use alpine_scene::{Primitive, Scene, SceneRevision};
+use alpine_scene::{PaintOperation, Scene, SceneRevision};
 
 /// Bytes in one compact BGRA8 pixel.
 pub const BGRA_BYTES_PER_PIXEL: usize = 4;
@@ -197,13 +197,19 @@ impl ValidatedFrame {
     {
         validate_viewport(scene, descriptor)?;
         let readback = ReadbackLayout::new(descriptor.pixel_width(), descriptor.pixel_height())?;
-        let consumed_primitives = scene.primitives().len();
+        let consumed_primitives = scene.operation_count();
         let mut quads = Vec::new();
         reserve(&mut quads, consumed_primitives)?;
 
-        for (primitive_index, primitive) in scene.primitives().iter().enumerate() {
-            match *primitive {
-                Primitive::Quad { bounds, color } => {
+        for (primitive_index, operation) in scene.operations().iter().enumerate() {
+            match *operation {
+                PaintOperation::Quad(quad_id) => {
+                    let quad = scene
+                        .quads()
+                        .get(quad_id.index())
+                        .ok_or(OffscreenError::InvalidSceneOperation { primitive_index })?;
+                    let bounds = quad.bounds();
+                    let color = quad.color();
                     if let Some(quad) = lower_quad(
                         bounds.origin().x(),
                         bounds.origin().y(),
@@ -217,6 +223,9 @@ impl ValidatedFrame {
                     )? {
                         quads.push(quad);
                     }
+                }
+                PaintOperation::Glyph(_) => {
+                    return Err(OffscreenError::UnsupportedGlyphPrimitive { primitive_index });
                 }
             }
         }
@@ -374,6 +383,16 @@ pub enum OffscreenError {
         /// Painter-order index of the rejected primitive.
         primitive_index: usize,
     },
+    /// A paint operation referenced an absent structure-of-arrays entry.
+    InvalidSceneOperation {
+        /// Painter-order index of the rejected operation.
+        primitive_index: usize,
+    },
+    /// The current offscreen pipeline has not yet lowered a glyph operation.
+    UnsupportedGlyphPrimitive {
+        /// Painter-order index of the rejected operation.
+        primitive_index: usize,
+    },
     /// Compact row-byte arithmetic overflowed.
     CompactRowSizeOverflow,
     /// Aligned row-byte arithmetic overflowed.
@@ -425,6 +444,14 @@ impl fmt::Display for OffscreenError {
             Self::UnrepresentableQuad { primitive_index } => write!(
                 formatter,
                 "primitive {primitive_index} does not fit the shader coordinate representation"
+            ),
+            Self::InvalidSceneOperation { primitive_index } => write!(
+                formatter,
+                "scene operation at painter index {primitive_index} is invalid"
+            ),
+            Self::UnsupportedGlyphPrimitive { primitive_index } => write!(
+                formatter,
+                "glyph at painter index {primitive_index} is not supported by this pipeline"
             ),
             Self::CompactRowSizeOverflow => {
                 formatter.write_str("compact readback row size overflowed")

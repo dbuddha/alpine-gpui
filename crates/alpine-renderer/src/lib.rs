@@ -107,9 +107,9 @@ mod tests {
             target.push(scene.revision().get());
             Ok(FrameReport {
                 submission: self.submission,
-                primitives: scene.primitives().len(),
+                primitives: scene.operation_count(),
                 omitted_primitives: 0,
-                draw_calls: usize::from(!scene.primitives().is_empty()),
+                draw_calls: usize::from(!scene.operations().is_empty()),
                 uploaded_bytes: 0,
                 allocated_bytes: 0,
                 retained_bytes: 0,
