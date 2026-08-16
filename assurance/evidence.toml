@@ -3109,6 +3109,128 @@ assumptions = ["native dispatch preserves the typed cut completion identity"]
 exclusions = ["formal refinement to AppKit delivery", "native resource ownership", "elapsed time"]
 companion = "apps/alpine-studio/tests/native_process.rs#main"
 
+[[claims]]
+id = "AEP-0160-C01"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0160-bounded-local-workspace-foundation.md"
+requirement_issue = 32
+claim_type = "memory"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0160-C02"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0160-bounded-local-workspace-foundation.md"
+requirement_issue = 32
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0160-C03"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0160-bounded-local-workspace-foundation.md"
+requirement_issue = 32
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["FailedSelectionPreservesDocument"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[claims]]
+id = "AEP-0160-C04"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0160-bounded-local-workspace-foundation.md"
+requirement_issue = 32
+claim_type = "lifecycle"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["SuccessfulReplacementAdvancesIdentity", "DocumentIdentityNeverDecreases"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[evidence]]
+id = "EV-0160-UNIT01"
+claim = "AEP-0160-C01"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#bounded_workspace_is_sorted_capped_and_projects_only_visible_rows"
+assertion = "Top-level enumeration enforces scan, entry, and retained-name-byte ceilings while publishing exact omission and capacity evidence."
+scope = "One local directory containing regular files and one direct child directory."
+exclusions = ["recursive indexing", "filesystem watcher", "process footprint", "launch latency"]
+
+[[evidence]]
+id = "EV-0160-UNIT02"
+claim = "AEP-0160-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#bounded_workspace_is_sorted_capped_and_projects_only_visible_rows"
+assertion = "Directories and files retain deterministic byte ordering, and scene construction shapes exactly the projected tree rows plus the visible editor lines."
+scope = "One bounded immutable top-level workspace snapshot and one scene over a one-hundred-file folder."
+exclusions = ["locale-aware sorting", "recursive tree expansion", "variable-height rows"]
+
+[[evidence]]
+id = "EV-0160-UNIT03"
+claim = "AEP-0160-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#workspace_click_revalidates_target_and_preserves_current_document_on_failure"
+assertion = "Invalid UTF-8, directory, missing, symlink-replaced, and dirty-document selections preserve the current accepted document bytes and identity while publishing visible failure state."
+scope = "One bounded workspace, one accepted file, and portable plus Unix-specific rejected file-switch attempts."
+exclusions = ["recursive paths", "filesystem race after Editor open", "save prompts", "accessibility announcement"]
+
+[[evidence]]
+id = "EV-0160-UNIT04"
+claim = "AEP-0160-C04"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#workspace_click_revalidates_target_and_preserves_current_document_on_failure"
+assertion = "A sidebar click replaces the sole Studio document through the existing Editor and advances a private monotonic runtime document identity exactly once."
+scope = "One portable Studio scene and one successful top-level file switch."
+exclusions = ["native pointer delivery", "background worker cancellation", "multi-window identity", "performance claims"]
+
+[[evidence]]
+id = "EV-0160-TLA03"
+claim = "AEP-0160-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0160/WorkspaceSelection.tla#FailedSelectionPreservesDocument"
+assertion = "Every modeled rejected file selection preserves the accepted document bytes and identity."
+scope = "Finite current-document, dirty, valid-open, and rejected-selection transitions."
+bounds = ["pull request: four document identities and four abstract byte states", "nightly: nine document identities and nine abstract byte states"]
+assumptions = ["one rejection represents a typed dirty, UTF-8, directory, missing, replacement, or root-admission failure"]
+exclusions = ["Rust formal refinement", "filesystem implementation", "path bytes", "allocation", "native event delivery"]
+companion = "apps/alpine-studio/src/studio_coverage_tests.rs#workspace_click_revalidates_target_and_preserves_current_document_on_failure"
+
+[[evidence]]
+id = "EV-0160-TLA04"
+claim = "AEP-0160-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0160/WorkspaceSelection.tla#SuccessfulReplacementAdvancesIdentity"
+assertion = "Every modeled successful file replacement advances a monotonic document identity before the next state is published."
+scope = "Finite edits, saves, valid replacements, rejected selections, and process-local document identities."
+bounds = ["pull request: four document identities and four abstract byte states", "nightly: nine document identities and nine abstract byte states"]
+assumptions = ["a valid open changes the selected local document", "identity exhaustion rejects rather than wraps"]
+exclusions = ["Rust formal refinement", "background result transport", "multi-window identity", "elapsed time"]
+companion = "apps/alpine-studio/src/studio_coverage_tests.rs#workspace_click_revalidates_target_and_preserves_current_document_on_failure"
+
+[[evidence]]
+id = "EV-0160-TLA04B"
+claim = "AEP-0160-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0160/WorkspaceSelection.tla#DocumentIdentityNeverDecreases"
+assertion = "The modeled process-local document identity never decreases across edits, saves, valid replacements, or rejected selections."
+scope = "Finite current and previous document identities across every workspace-selection transition."
+bounds = ["pull request: four document identities and four abstract byte states", "nightly: nine document identities and nine abstract byte states"]
+assumptions = ["identity exhaustion rejects rather than wraps"]
+exclusions = ["Rust formal refinement", "identity persistence across process restart", "multi-window identity", "background result transport"]
+companion = "apps/alpine-studio/src/studio_coverage_tests.rs#workspace_click_revalidates_target_and_preserves_current_document_on_failure"
+
 [[evidence]]
 id = "EV-0153-TLA08B"
 claim = "AEP-0153-C08"

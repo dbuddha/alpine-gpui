@@ -9,6 +9,6 @@ fn main() -> Result<(), alpine_studio::StudioError> {
 
     path.map_or_else(
         || alpine_studio::run().map_err(alpine_studio::StudioError::from),
-        alpine_studio::run_file,
+        alpine_studio::run_path,
     )
 }

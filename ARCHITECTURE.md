@@ -75,6 +75,17 @@ without claiming native validation. It runs through one `Application` until the
 owned AppKit window closes and has no native handles, collaboration state,
 extension host, telemetry, AI, or general async runtime.
 
+One optional process path now admits either the existing direct-file journey or
+one canonical local folder. Folder ownership is a private bounded top-level
+snapshot: at most 4,096 entries are inspected, at most 1,024 UTF-8 file or
+directory names and 256 KiB of name bytes are retained, and every omission is
+counted. Names are sorted deterministically before retention and only visible
+rows plus three-row overscan are shaped. A clicked file is revalidated as a
+non-symlink direct child of the canonical root before the existing `Editor`
+opens it. Invalid UTF-8, replacement, directory, escape, and dirty-document
+failures preserve the current document and paint local status. File replacement
+advances a Studio-owned monotonic document identity before runtime publication.
+
 The native event handler returns one bounded `SurfaceResponse`. AppKit
 Command-C and Command-X writes complete through a typed later event, allowing
 Studio to defer cut mutation until native success. Command-V checks the native

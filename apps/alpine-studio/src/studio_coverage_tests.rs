@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     fs,
     num::NonZeroU32,
     path::{Path, PathBuf},
@@ -11,6 +12,10 @@ use alpine_text_layout::{GlyphBitmap, RasterizedGlyph, ShapedGlyph};
 use super::*;
 
 static NEXT_TEST_FILE: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    static TEST_SHAPE_CALLS: Cell<u64> = const { Cell::new(0) };
+}
 
 struct TestFile {
     path: PathBuf,
@@ -38,11 +43,46 @@ impl Drop for TestFile {
     }
 }
 
+struct TestWorkspace {
+    path: PathBuf,
+}
+
+impl TestWorkspace {
+    fn new() -> std::io::Result<Self> {
+        let sequence = NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "alpine-studio-workspace-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn write(&self, name: &str, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+        fs::write(self.path.join(name), bytes)
+    }
+
+    fn create_dir(&self, name: &str) -> std::io::Result<()> {
+        fs::create_dir(self.path.join(name))
+    }
+}
+
+impl Drop for TestWorkspace {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 #[derive(Default)]
 struct TestTextSystem;
 
 impl TextShaper for TestTextSystem {
     fn shape(&mut self, text: &str, _font: FontKey) -> Result<LineLayout, LayoutError> {
+        TEST_SHAPE_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
         let mut glyphs = Vec::new();
         let mut x = 0.0;
         let mut utf16 = 0_u32;
@@ -212,6 +252,14 @@ fn clipboard_policy_controls_distinguish_each_response_boundary() -> Result<(), 
     assert_eq!(
         EventEffect::default().merge(EventEffect::document()),
         EventEffect::document()
+    );
+    assert_eq!(
+        EventEffect::document_replacement().merge(EventEffect::default()),
+        EventEffect::document_replacement()
+    );
+    assert_eq!(
+        EventEffect::default().merge(EventEffect::document_replacement()),
+        EventEffect::document_replacement()
     );
 
     let shortcut = |modifiers: u8| SurfaceEvent::Keyboard {
@@ -707,7 +755,7 @@ fn file_launch_rejects_invalid_utf8_and_scratch_save_is_isolated()
     assert_eq!(scratch.last_file_error, None);
 
     let usage = StudioError::Usage;
-    assert_eq!(usage.to_string(), "usage: alpine-studio [file]");
+    assert_eq!(usage.to_string(), "usage: alpine-studio [path]");
     assert!(usage.source().is_none());
     let file_error = StudioError::from(FileError::InvalidUtf8);
     assert!(file_error.to_string().contains("Studio file failed"));
@@ -715,6 +763,507 @@ fn file_launch_rejects_invalid_utf8_and_scratch_save_is_isolated()
     let runtime_error = StudioError::from(RuntimeError::Surface(SurfaceError::UnsupportedPlatform));
     assert!(runtime_error.to_string().contains("Studio runtime failed"));
     assert!(runtime_error.source().is_some());
+    Ok(())
+}
+
+#[test]
+fn bounded_workspace_is_sorted_capped_and_projects_only_visible_rows()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("z.rs", "z")?;
+    root.write("a.rs", "a")?;
+    root.write("long-name.rs", "long")?;
+    root.create_dir("src")?;
+    let limits = WorkspaceLimits::new(16, 3, 64, 9);
+    let workspace = Workspace::open(root.path(), limits)?;
+    let snapshot = workspace.snapshot();
+    assert_eq!(snapshot.scanned_entries, 4);
+    assert_eq!(snapshot.retained_entries, 2);
+    assert_eq!(snapshot.retained_name_bytes, 7);
+    assert_eq!(snapshot.omitted_entries, 2);
+    assert_eq!(snapshot.scan_limit, 16);
+    assert_eq!(snapshot.entry_limit, 3);
+    assert_eq!(snapshot.name_byte_limit, 9);
+    assert_eq!(
+        workspace
+            .entry(0)
+            .map(super::workspace::WorkspaceEntry::name)
+            .as_deref(),
+        Some("src")
+    );
+    assert_eq!(
+        workspace
+            .entry(1)
+            .map(super::workspace::WorkspaceEntry::name)
+            .as_deref(),
+        Some("a.rs")
+    );
+    assert_eq!(workspace.visible_range(1, 1, 0), 1..2);
+    assert_eq!(workspace.visible_range(9, 2, 1), 2..2);
+    assert_eq!(workspace.len(), 2);
+
+    let defaults = Workspace::open(root.path(), WorkspaceLimits::default())?;
+    assert_eq!(defaults.snapshot().name_byte_limit, 256 * 1_024);
+
+    let exact_scan = Workspace::open(root.path(), WorkspaceLimits::new(4, 4, 64, 64))?;
+    assert_eq!(exact_scan.snapshot().scanned_entries, 4);
+
+    let exact_name = Workspace::open(root.path(), WorkspaceLimits::new(4, 4, 3, 64))?;
+    assert_eq!(exact_name.index_named("src"), Some(0));
+    assert_eq!(exact_name.len(), 1);
+
+    let exact_aggregate = Workspace::open(root.path(), WorkspaceLimits::new(4, 4, 64, 7))?;
+    assert_eq!(exact_aggregate.len(), 2);
+    assert_eq!(exact_aggregate.snapshot().retained_name_bytes, 7);
+
+    let exact_capacity = Workspace::open(root.path(), WorkspaceLimits::new(4, 2, 64, 64))?;
+    assert_eq!(exact_capacity.len(), 2);
+
+    let truncated_app = StudioApp::from_workspace(TestTextSystem, workspace)?;
+    assert_eq!(
+        truncated_app
+            .local_status
+            .as_ref()
+            .map(LocalStatus::message),
+        Some("Workspace tree truncated: 2 entries omitted.")
+    );
+
+    let too_small = WorkspaceLimits::new(1, 1, 64, 64);
+    assert!(matches!(
+        Workspace::open(root.path(), too_small),
+        Err(WorkspaceError::ScanLimitExceeded { limit: 1, .. })
+    ));
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::{ffi::OsStrExt, fs::symlink};
+
+        let omitted_root = TestWorkspace::new()?;
+        fs::write(
+            omitted_root
+                .path()
+                .join(std::ffi::OsStr::from_bytes(b"invalid-\xff")),
+            "invalid name",
+        )?;
+        let outside = TestFile::new("outside")?;
+        symlink(outside.path(), omitted_root.path().join("link"))?;
+        let omitted = Workspace::open(omitted_root.path(), WorkspaceLimits::new(2, 2, 64, 64))?;
+        assert_eq!(omitted.snapshot().scanned_entries, 2);
+        assert_eq!(omitted.snapshot().omitted_entries, 2);
+        assert_eq!(omitted.len(), 0);
+    }
+
+    let rendered_root = TestWorkspace::new()?;
+    for index in 0..100 {
+        rendered_root.write(&format!("file-{index:03}.rs"), "x")?;
+    }
+    let mut app = StudioApp::open_workspace(TestTextSystem, rendered_root.path())?;
+    let viewport = viewport().map_err(|_| StudioRenderError::Domain)?;
+    let visible_rows = floor_f32_to_usize(viewport.height() / TREE_ROW_HEIGHT)
+        .ok_or("invalid visible row count")?
+        .saturating_add(1);
+    let projected_tree_rows = app
+        .workspace
+        .as_ref()
+        .ok_or("missing rendered workspace")?
+        .visible_range(0, visible_rows, TREE_OVERSCAN_ROWS)
+        .len();
+    let editor_rows = app.buffer().snapshot().line_count();
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let _scene = app.try_scene(SceneRevision::new(1), viewport)?;
+    let expected_shapes = u64::try_from(projected_tree_rows.saturating_add(editor_rows))?;
+    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), expected_shapes));
+    Ok(())
+}
+
+#[test]
+fn workspace_errors_and_statuses_preserve_exact_sources_and_messages()
+-> Result<(), Box<dyn std::error::Error>> {
+    let missing = std::env::temp_dir().join("alpine-studio-definitely-missing-workspace");
+    let io_error = Workspace::open(&missing, WorkspaceLimits::default())
+        .err()
+        .ok_or("missing workspace unexpectedly opened")?;
+    assert!(std::error::Error::source(&io_error).is_some());
+    assert!(io_error.to_string().contains("canonicalize"));
+    let file = TestFile::new("not a directory")?;
+    assert!(matches!(
+        Workspace::open(file.path(), WorkspaceLimits::default()),
+        Err(WorkspaceError::NotDirectory(_))
+    ));
+
+    let variants = [
+        WorkspaceError::NotDirectory(PathBuf::from("file")),
+        WorkspaceError::UnsupportedTarget(PathBuf::from("target")),
+        WorkspaceError::ScanLimitExceeded {
+            root: PathBuf::from("root"),
+            limit: 7,
+        },
+        WorkspaceError::AllocationFailed,
+        WorkspaceError::EntryNotFound(9),
+        WorkspaceError::NotRegularFile(PathBuf::from("directory")),
+        WorkspaceError::EscapesRoot(PathBuf::from("outside")),
+    ];
+    for error in variants {
+        assert!(!error.to_string().is_empty());
+        assert!(std::error::Error::source(&error).is_none());
+    }
+
+    let wrapped = StudioError::from(WorkspaceError::AllocationFailed);
+    assert!(wrapped.to_string().contains("Studio workspace failed"));
+    assert!(std::error::Error::source(&wrapped).is_some());
+    let workspace_selection = WorkspaceSelectionError::Workspace(WorkspaceError::AllocationFailed);
+    assert!(std::error::Error::source(&workspace_selection).is_some());
+    let invalid_file = TestFile::new([0xff])?;
+    let file_error = StudioDocument::open(invalid_file.path())
+        .err()
+        .ok_or("invalid UTF-8 file unexpectedly opened")?;
+    let file_selection = WorkspaceSelectionError::File(file_error);
+    assert!(std::error::Error::source(&file_selection).is_some());
+    for error in [
+        WorkspaceSelectionError::NoWorkspace,
+        WorkspaceSelectionError::DirtyDocument,
+        WorkspaceSelectionError::RevisionExhausted,
+    ] {
+        assert!(!error.to_string().is_empty());
+        assert!(std::error::Error::source(&error).is_none());
+    }
+    assert_eq!(
+        LocalStatus::CloseBlocked.message(),
+        "Save changes before closing."
+    );
+    assert_eq!(
+        LocalStatus::Workspace(Arc::from("workspace status")).message(),
+        "workspace status"
+    );
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::float_cmp,
+    clippy::too_many_lines,
+    reason = "exact geometry values distinguish the workspace painter and routing mutants"
+)]
+fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = TestWorkspace::new()?;
+    for index in 0..40 {
+        root.write(&format!("file-{index:03}.rs"), "line\n".repeat(100))?;
+    }
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = viewport().map_err(|_| StudioRenderError::Domain)?;
+    assert_eq!(app.sidebar_width(viewport), SIDEBAR_WIDTH);
+    assert_eq!(app.maximum_workspace_scroll(), 364.0);
+    let scene = app.try_scene(SceneRevision::new(1), viewport)?;
+    let expected_editor = Rect::new(
+        Point::new(260.0, 24.0).ok_or("editor origin")?,
+        Size::new(676.0, 492.0).ok_or("editor size")?,
+    );
+    let expected_sidebar = Rect::new(
+        Point::new(0.0, 0.0).ok_or("sidebar origin")?,
+        Size::new(236.0, 540.0).ok_or("sidebar size")?,
+    );
+    assert_eq!(scene.clips()[0].bounds(), expected_editor);
+    assert_eq!(scene.clips()[1].bounds(), expected_sidebar);
+    assert_eq!(scene.quads()[1].bounds(), expected_editor);
+    assert_eq!(scene.quads()[2].bounds(), expected_sidebar);
+    assert_eq!(scene.glyphs()[0].bounds().origin().x(), CONTENT_INSET);
+    assert_eq!(scene.glyphs()[0].bounds().origin().y(), 36.0);
+
+    let file_index = app
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.index_named("file-010.rs"))
+        .ok_or("missing file")?;
+    let opened = app.open_workspace_entry(file_index)?;
+    assert_eq!(opened, EventEffect::document_replacement());
+    let active_scene = app.try_scene(SceneRevision::new(2), viewport)?;
+    let expected_active = Rect::new(
+        Point::new(
+            0.0,
+            CONTENT_INSET + usize_as_f32(file_index) * TREE_ROW_HEIGHT,
+        )
+        .ok_or("active origin")?,
+        Size::new(SIDEBAR_WIDTH, TREE_ROW_HEIGHT).ok_or("active size")?,
+    );
+    assert_eq!(active_scene.quads()[3].bounds(), expected_active);
+
+    app.workspace_scroll_y = 110.0;
+    let scrolled_scene = app.try_scene(SceneRevision::new(3), viewport)?;
+    assert_eq!(scrolled_scene.glyphs()[0].bounds().origin().y(), -30.0);
+
+    app.workspace_scroll_y = 0.0;
+    app.composition = Some(Composition {
+        replacement: 1..1,
+        text: "q".into(),
+        selected_start_utf16: 0,
+        selected_length_utf16: 0,
+    });
+    let composition_scene = app.try_scene(SceneRevision::new(4), viewport)?;
+    assert_eq!(
+        composition_scene
+            .glyphs()
+            .last()
+            .ok_or("missing composition glyph")?
+            .bounds()
+            .origin()
+            .x(),
+        268.0
+    );
+    app.composition = None;
+    app.local_status = Some(LocalStatus::Workspace(Arc::from("s")));
+    let status_scene = app.try_scene(SceneRevision::new(5), viewport)?;
+    assert_eq!(
+        status_scene
+            .glyphs()
+            .last()
+            .ok_or("missing status glyph")?
+            .bounds()
+            .origin()
+            .x(),
+        266.0
+    );
+    app.local_status = None;
+
+    app.last_pointer_position = Point::new(SIDEBAR_WIDTH - 1.0, CONTENT_INSET);
+    assert!(
+        app.handle_event(&SurfaceEvent::Scroll {
+            timestamp: EventTimestamp::new(1),
+            delta_x: 0.0,
+            delta_y: -22.0,
+            phase: ScrollPhase::Changed,
+            precise: true,
+            modifiers: Modifiers::default(),
+        })
+        .visual_changed
+    );
+    assert_eq!(app.workspace_scroll_y, 22.0);
+    assert_eq!(app.scroll_y, 0.0);
+
+    app.last_pointer_position = Point::new(SIDEBAR_WIDTH, CONTENT_INSET);
+    assert!(
+        app.handle_event(&SurfaceEvent::Scroll {
+            timestamp: EventTimestamp::new(2),
+            delta_x: 0.0,
+            delta_y: -22.0,
+            phase: ScrollPhase::Changed,
+            precise: true,
+            modifiers: Modifiers::default(),
+        })
+        .visual_changed
+    );
+    assert_eq!(app.workspace_scroll_y, 22.0);
+    assert_eq!(app.scroll_y, 22.0);
+
+    assert_eq!(
+        app.offset_at_point(Point::new(259.0, CONTENT_INSET).ok_or("outside editor")?),
+        None
+    );
+    app.scroll_y = 0.0;
+    assert_eq!(
+        app.offset_at_point(Point::new(260.0, CONTENT_INSET).ok_or("editor edge")?),
+        Some(ByteOffset::new(0))
+    );
+    assert_eq!(
+        app.offset_at_point(Point::new(268.0, CONTENT_INSET).ok_or("editor glyph")?),
+        Some(ByteOffset::new(1))
+    );
+    let tiny = Size::new(100.0, WINDOW_HEIGHT).ok_or("tiny viewport")?;
+    assert_eq!(app.sidebar_width(tiny), 99.0);
+
+    let mut pointer_app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let failures = pointer_app.workspace_failures;
+    let secondary = pointer_app.handle_pointer(
+        PointerAction::Down,
+        Point::new(1.0, CONTENT_INSET + 1.0).ok_or("secondary point")?,
+        PointerButton::Secondary,
+        Modifiers::default(),
+    );
+    assert_eq!(secondary, EventEffect::default());
+    assert_eq!(pointer_app.workspace_failures, failures);
+    let edge = pointer_app.handle_pointer(
+        PointerAction::Down,
+        Point::new(SIDEBAR_WIDTH, CONTENT_INSET + 1.0).ok_or("sidebar edge")?,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert_eq!(edge, EventEffect::default());
+    assert_eq!(pointer_app.active_workspace_entry, None);
+    let unrepresentable_row = pointer_app.handle_pointer(
+        PointerAction::Down,
+        Point::new(1.0, CONTENT_INSET + 20_000_000.0 * TREE_ROW_HEIGHT)
+            .ok_or("unrepresentable row")?,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert_eq!(unrepresentable_row, EventEffect::default());
+    pointer_app.workspace_scroll_y = TREE_ROW_HEIGHT;
+    let row_one = pointer_app.handle_pointer(
+        PointerAction::Down,
+        Point::new(1.0, CONTENT_INSET + 1.0).ok_or("row one")?,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert_eq!(row_one, EventEffect::document_replacement());
+    assert_eq!(pointer_app.active_workspace_entry, Some(1));
+
+    let mut exact_paint = test_app()?;
+    exact_paint.selection = Selection::new(ByteOffset::new(1), ByteOffset::new(2));
+    let exact_scene = exact_paint.try_scene(SceneRevision::new(1), viewport)?;
+    let expected_selection = Rect::new(
+        Point::new(32.0, CONTENT_INSET).ok_or("selection origin")?,
+        Size::new(8.0, LINE_HEIGHT).ok_or("selection size")?,
+    );
+    let expected_caret = Rect::new(
+        Point::new(40.0, CONTENT_INSET).ok_or("caret origin")?,
+        Size::new(CARET_WIDTH, LINE_HEIGHT).ok_or("caret size")?,
+    );
+    assert_eq!(exact_scene.quads()[2].bounds(), expected_selection);
+    assert_eq!(
+        exact_scene.quads().last().ok_or("missing caret")?.bounds(),
+        expected_caret
+    );
+
+    let mut exhausted = test_app()?;
+    exhausted.runtime_document_revision = u64::MAX;
+    let failures = exhausted.input_failures;
+    exhausted.advance_runtime_document_identity(false);
+    assert_eq!(exhausted.runtime_document_revision, u64::MAX);
+    assert_eq!(exhausted.input_failures, failures + 1);
+    exhausted.advance_runtime_document_identity(true);
+    assert_eq!(exhausted.input_failures, failures + 1);
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the adversarial workspace selection journey keeps all atomicity checks together"
+)]
+fn workspace_click_revalidates_target_and_preserves_current_document_on_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    root.write("invalid.rs", [0xff])?;
+    root.write("replace.rs", "replace")?;
+    root.create_dir("src")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = viewport().map_err(|_| StudioRenderError::Domain)?;
+    let _scene = app.try_scene(SceneRevision::new(1), viewport)?;
+    let workspace = app.workspace.as_ref().ok_or("missing workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("missing alpha")?;
+    let invalid = workspace
+        .index_named("invalid.rs")
+        .ok_or("missing invalid")?;
+    let replacement = workspace
+        .index_named("replace.rs")
+        .ok_or("missing replacement")?;
+    let directory = workspace.index_named("src").ok_or("missing directory")?;
+
+    let click = |index: usize, timestamp: u64| -> Result<SurfaceEvent, StudioRenderError> {
+        Ok(SurfaceEvent::Pointer {
+            timestamp: EventTimestamp::new(timestamp),
+            action: PointerAction::Down,
+            position: Point::new(
+                CONTENT_INSET,
+                CONTENT_INSET + usize_as_f32(index) * TREE_ROW_HEIGHT + 1.0,
+            )
+            .ok_or(StudioRenderError::Domain)?,
+            button: PointerButton::Primary,
+            modifiers: Modifiers::default(),
+        })
+    };
+    let opened = app.handle_event(&click(alpha, 1)?);
+    assert!(opened.visual_changed);
+    assert!(opened.document_changed);
+    assert!(opened.document_identity_advanced);
+    assert_eq!(app.buffer().snapshot().text(), "alpha");
+    assert_eq!(app.active_workspace_entry, Some(alpha));
+    let accepted_revision = app.runtime_document_revision;
+
+    let failed = app.handle_event(&click(invalid, 2)?);
+    assert!(failed.visual_changed);
+    assert!(!failed.document_changed);
+    assert_eq!(app.buffer().snapshot().text(), "alpha");
+    assert_eq!(app.runtime_document_revision, accepted_revision);
+    assert_eq!(app.workspace_failures, 1);
+    assert!(app.last_workspace_error.is_some());
+
+    let directory_failed = app.handle_event(&click(directory, 3)?);
+    assert!(directory_failed.visual_changed);
+    assert!(matches!(
+        app.workspace
+            .as_ref()
+            .ok_or("missing workspace")?
+            .path_for_file(directory),
+        Err(WorkspaceError::NotRegularFile(_))
+    ));
+    assert_eq!(app.buffer().snapshot().text(), "alpha");
+    assert_eq!(app.workspace_failures, 2);
+
+    fs::remove_file(root.path().join("replace.rs"))?;
+    let missing_failed = app.handle_event(&click(replacement, 4)?);
+    assert!(missing_failed.visual_changed);
+    assert_eq!(app.buffer().snapshot().text(), "alpha");
+    assert_eq!(app.runtime_document_revision, accepted_revision);
+    assert_eq!(app.workspace_failures, 3);
+
+    #[cfg(unix)]
+    {
+        let outside = TestFile::new("outside")?;
+        std::os::unix::fs::symlink(outside.path(), root.path().join("replace.rs"))?;
+        let symlink_failed = app.handle_event(&click(replacement, 5)?);
+        assert!(symlink_failed.visual_changed);
+        assert!(matches!(
+            app.workspace
+                .as_ref()
+                .ok_or("missing workspace")?
+                .path_for_file(replacement),
+            Err(WorkspaceError::NotRegularFile(_))
+        ));
+        assert_eq!(app.buffer().snapshot().text(), "alpha");
+        assert_eq!(app.runtime_document_revision, accepted_revision);
+        assert_eq!(app.workspace_failures, 4);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let race_root = TestWorkspace::new()?;
+        race_root.write("race.rs", "inside")?;
+        let race_workspace = Workspace::open(race_root.path(), WorkspaceLimits::default())?;
+        let race_index = race_workspace
+            .index_named("race.rs")
+            .ok_or("missing race")?;
+        let outside = TestFile::new("outside")?;
+        let outside_path = outside.path().to_path_buf();
+        super::workspace::set_revalidation_hook(move |candidate| {
+            assert!(fs::remove_file(candidate).is_ok(), "remove raced target");
+            assert!(
+                symlink(&outside_path, candidate).is_ok(),
+                "replace raced target"
+            );
+        });
+        assert!(matches!(
+            race_workspace.path_for_file(race_index),
+            Err(WorkspaceError::EscapesRoot(_))
+        ));
+    }
+
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    let dirty_before = app.buffer().snapshot().text();
+    let failures_before_dirty = app.workspace_failures;
+    let dirty_failed = app.handle_event(&click(invalid, 6)?);
+    assert!(dirty_failed.visual_changed);
+    assert_eq!(app.buffer().snapshot().text(), dirty_before);
+    assert_eq!(
+        app.workspace_failures,
+        failures_before_dirty.saturating_add(1)
+    );
     Ok(())
 }
 
@@ -1186,9 +1735,9 @@ fn offscreen_caret_and_invalid_scroll_use_safe_scene_fallback() -> Result<(), St
     app.selection = Selection::caret(ByteOffset::new(0));
     app.scroll_y = app.maximum_scroll();
     let snapshot = app.buffer().snapshot();
-    assert!(app.caret_bounds(&snapshot, &[])?.is_none());
+    assert!(app.caret_bounds(&snapshot, &[], CONTENT_INSET)?.is_none());
     app.selection = Selection::caret(ByteOffset::new(usize::MAX));
-    assert!(app.caret_bounds(&snapshot, &[])?.is_none());
+    assert!(app.caret_bounds(&snapshot, &[], CONTENT_INSET)?.is_none());
     app.selection = Selection::caret(ByteOffset::new(0));
     let scene = app.try_scene(
         SceneRevision::new(1),
@@ -1219,6 +1768,12 @@ fn run_rejects_an_unsupported_host() {
     ));
     assert!(matches!(
         run_file("missing.txt"),
+        Err(StudioError::Runtime(RuntimeError::Surface(
+            SurfaceError::UnsupportedPlatform
+        )))
+    ));
+    assert!(matches!(
+        run_path("."),
         Err(StudioError::Runtime(RuntimeError::Surface(
             SurfaceError::UnsupportedPlatform
         )))
