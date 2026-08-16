@@ -5,7 +5,8 @@ designs remain in linked GitHub issues until code makes them current.
 
 ## Implemented system
 
-The workspace currently has six Rust shipping library crates. `alpine-core`,
+The workspace currently has six Rust shipping library crates and one shipping
+application crate. `alpine-core`,
 `alpine-scene`, `alpine-renderer`, and `alpine-platform` are fully safe and have
 no external dependencies. `alpine-core` has no workspace dependencies.
 `alpine-scene` depends on `alpine-core`, `alpine-renderer` depends on
@@ -22,6 +23,10 @@ narrowly featured `objc2-core-graphics` binding to own a standard sRGB color
 space. Its safe application API exposes no native handle,
 remains available on other targets, and returns a structured
 unsupported-platform error without linking Apple frameworks.
+`alpine-studio` is the first shipping application. It constructs one immutable
+scene through public Alpine values, owns one `NativeSurface`, requests one
+demand-driven frame, and enters the production AppKit run loop until that
+window closes. It has no native handles or validation-only dependencies.
 The non-shipping `alpine-trace` crate depends only on Alpine workspace crates
 and owns typed, fail-closed conversion from versioned workload values into an
 immutable scene and exact offscreen target. The non-shipping
@@ -44,7 +49,7 @@ interval, or performance claim.
 
 ```mermaid
 flowchart LR
-    caller["Application or test caller<br/>not implemented by Alpine"]
+    caller["alpine-studio or test caller<br/>public Alpine APIs only"]
     core["alpine-core<br/>Point, Size, Rect, LinearRgba"]
     scene["alpine-scene<br/>SceneRevision, Primitive, SceneBuilder, Scene"]
     renderer["alpine-renderer<br/>Renderer, capabilities, FrameReport"]

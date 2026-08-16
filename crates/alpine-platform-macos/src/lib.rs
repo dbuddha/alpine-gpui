@@ -28,9 +28,41 @@ mod unsupported;
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 #[doc(hidden)]
 pub mod native_validation {
-    use std::time::Duration;
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
 
     use crate::{NativeSurface, SurfaceDescriptor, SurfaceError, native};
+
+    /// Evidence that bounds a production event-loop validation run.
+    #[derive(Debug)]
+    pub struct RunTimeoutEvidence {
+        expired: Arc<AtomicBool>,
+        cancelled: Arc<AtomicBool>,
+    }
+
+    impl RunTimeoutEvidence {
+        /// Returns whether the guard had to stop the application run loop.
+        #[must_use]
+        pub fn expired(&self) -> bool {
+            self.expired.load(Ordering::Acquire)
+        }
+
+        /// Returns whether expiration has been disarmed or already consumed.
+        #[must_use]
+        pub fn cancelled(&self) -> bool {
+            self.cancelled.load(Ordering::Acquire)
+        }
+
+        /// Disarms the guard after the production run loop exits normally.
+        pub fn cancel(&self) {
+            self.cancelled.store(true, Ordering::Release);
+        }
+    }
 
     /// Validation-only exact ownership and teardown counts for one surface.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,6 +179,22 @@ pub mod native_validation {
     /// Runs the real `AppKit` event loop until one frame terminates or timeout.
     pub fn run_until_frame_terminal(surface: &NativeSurface, timeout: Duration) {
         surface.implementation.run_until_frame_terminal(timeout);
+    }
+
+    /// Arms a bounded guard around a subsequent production `run` call.
+    ///
+    /// The guard is validation-only. Expiration wakes and stops AppKit without
+    /// changing surface lifecycle, causing production `run` to fail closed.
+    #[must_use]
+    pub fn arm_run_timeout(surface: &NativeSurface, timeout: Duration) -> RunTimeoutEvidence {
+        let expired = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        surface.implementation.arm_run_timeout(
+            timeout,
+            Arc::clone(&expired),
+            Arc::clone(&cancelled),
+        );
+        RunTimeoutEvidence { expired, cancelled }
     }
 
     /// Installs one deterministic asynchronous driver failure for contract tests.
@@ -673,6 +721,16 @@ pub enum SurfaceError {
         /// Consecutive dropped presentation attempts.
         attempts: u16,
     },
+    /// The surface run method cannot execute in the requested lifecycle state.
+    RunLoopNotRunnable {
+        /// Lifecycle state of the surface when run started.
+        lifecycle: SurfaceLifecycle,
+    },
+    /// The application run loop exited before the surface stopped.
+    UnexpectedRunLoopExit {
+        /// Lifecycle state of the surface after application exit.
+        lifecycle: SurfaceLifecycle,
+    },
 }
 
 impl fmt::Display for SurfaceError {
@@ -708,6 +766,15 @@ impl fmt::Display for SurfaceError {
                 formatter,
                 "Core Animation skipped {attempts} consecutive presentation attempts"
             ),
+            Self::RunLoopNotRunnable { lifecycle } => {
+                write!(formatter, "run is not valid while surface is {lifecycle:?}")
+            }
+            Self::UnexpectedRunLoopExit { lifecycle } => {
+                write!(
+                    formatter,
+                    "application run loop exited before surface closed: lifecycle {lifecycle:?}"
+                )
+            }
         }
     }
 }
@@ -724,7 +791,9 @@ impl Error for SurfaceError {
             | Self::NativeUnavailable { .. }
             | Self::DriverUnavailable
             | Self::PresentationNotObserved { .. }
-            | Self::PresentationsSkipped { .. } => None,
+            | Self::PresentationsSkipped { .. }
+            | Self::RunLoopNotRunnable { .. }
+            | Self::UnexpectedRunLoopExit { .. } => None,
         }
     }
 }
@@ -1073,6 +1142,18 @@ impl NativeSurface {
     /// enter visible demand-driven presentation.
     pub fn show(&self) -> Result<(), SurfaceError> {
         self.implementation.show()
+    }
+
+    /// Runs the `AppKit` event loop until the surface closes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SurfaceError::UnsupportedPlatform`] outside Apple Silicon
+    /// macOS, [`SurfaceError::RunLoopNotRunnable`] if already closing or
+    /// closed, and [`SurfaceError::UnexpectedRunLoopExit`] for unexpected
+    /// loop termination while still live.
+    pub fn run(&self) -> Result<(), SurfaceError> {
+        self.implementation.run()
     }
 
     /// Replaces pending immutable work and wakes pacing only when eligible.
@@ -1426,6 +1507,20 @@ mod tests {
             .to_string(),
             "native surface unavailable at ColorSpace stage"
         );
+        assert_eq!(
+            SurfaceError::RunLoopNotRunnable {
+                lifecycle: SurfaceLifecycle::Closing,
+            }
+            .to_string(),
+            "run is not valid while surface is Closing"
+        );
+        assert_eq!(
+            SurfaceError::UnexpectedRunLoopExit {
+                lifecycle: SurfaceLifecycle::Live,
+            }
+            .to_string(),
+            "application run loop exited before surface closed: lifecycle Live"
+        );
 
         let initialization: SurfaceError = InitializationError::DeviceUnavailable.into();
         let render: SurfaceError =
@@ -1739,6 +1834,7 @@ mod tests {
         let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
 
         assert_eq!(surface.show(), Err(SurfaceError::UnsupportedPlatform));
+        assert_eq!(surface.run(), Err(SurfaceError::UnsupportedPlatform));
         assert_eq!(
             surface.request_frame(scene, clear),
             Err(SurfaceError::UnsupportedPlatform)

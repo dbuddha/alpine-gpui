@@ -66,6 +66,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpine-studio"
+version = "0.0.0"
+dependencies = [
+ "alpine-core",
+ "alpine-platform-macos",
+ "alpine-scene",
+]
+
+[[package]]
 name = "alpine-trace"
 version = "0.0.0"
 dependencies = [
