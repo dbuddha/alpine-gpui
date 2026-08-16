@@ -2,8 +2,6 @@
 
 use core::{error::Error, fmt, num::NonZeroUsize};
 use std::{
-    cell::RefCell,
-    rc::Rc,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -13,10 +11,13 @@ use std::{
 };
 
 use alpine_core::{LinearRgba, Size};
-use alpine_platform_macos::{
-    NativeSurface, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceFrame,
-};
+use alpine_platform_macos::{SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceFrame};
 use alpine_scene::{Scene, SceneRevision};
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use alpine_platform_macos::NativeSurface;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use std::{cell::RefCell, rc::Rc};
 
 type WorkerJob<T> = Box<dyn FnOnce() -> T + Send + 'static>;
 type WorkerWake = Arc<dyn Fn() + Send + Sync + 'static>;
@@ -286,6 +287,23 @@ struct WorkerPool<T> {
 
 impl<T: Send + 'static> WorkerPool<T> {
     fn new(config: WorkerConfig) -> Result<Self, RuntimeError> {
+        Self::new_with_spawner(config, |index, requests, results, counters, wake| {
+            thread::Builder::new()
+                .name(format!("alpine-worker-{index}"))
+                .spawn(move || worker_loop(&requests, &results, &counters, &wake))
+        })
+    }
+
+    fn new_with_spawner<S>(config: WorkerConfig, mut spawn: S) -> Result<Self, RuntimeError>
+    where
+        S: FnMut(
+            usize,
+            Arc<Mutex<Receiver<WorkerRequest<T>>>>,
+            SyncSender<WorkerCompletion<T>>,
+            Arc<WorkerCounters>,
+            Arc<Mutex<WorkerWake>>,
+        ) -> std::io::Result<JoinHandle<()>>,
+    {
         let (request_sender, request_receiver) = sync_channel(config.request_capacity());
         let (result_sender, result_receiver) = sync_channel(config.result_capacity());
         let request_receiver = Arc::new(Mutex::new(request_receiver));
@@ -298,10 +316,7 @@ impl<T: Send + 'static> WorkerPool<T> {
             let results = result_sender.clone();
             let worker_counters = Arc::clone(&counters);
             let worker_wake = Arc::clone(&wake);
-            let spawn = thread::Builder::new()
-                .name(format!("alpine-worker-{index}"))
-                .spawn(move || worker_loop(&requests, &results, &worker_counters, &worker_wake));
-            match spawn {
+            match spawn(index, requests, results, worker_counters, worker_wake) {
                 Ok(worker) => workers.push(worker),
                 Err(error) => {
                     drop(request_sender);
@@ -459,14 +474,7 @@ fn worker_loop<T: Send + 'static>(
 }
 
 fn update_peak(peak: &AtomicUsize, candidate: usize) {
-    let mut observed = peak.load(Ordering::Relaxed);
-    while candidate > observed {
-        match peak.compare_exchange_weak(observed, candidate, Ordering::Relaxed, Ordering::Relaxed)
-        {
-            Ok(_) => return,
-            Err(actual) => observed = actual,
-        }
-    }
+    peak.fetch_max(candidate, Ordering::Relaxed);
 }
 
 /// Mutable foreground capabilities available during event and result handling.
@@ -759,6 +767,7 @@ impl<D: AppDelegate + 'static> Application<D> {
     /// # Errors
     ///
     /// Returns a structured worker or native surface failure.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub fn run(mut self, descriptor: &SurfaceDescriptor) -> Result<(), RuntimeError> {
         let surface = NativeSurface::new(descriptor)?;
         if let Some(frame) = self.frame_if_dirty() {
@@ -781,6 +790,12 @@ impl<D: AppDelegate + 'static> Application<D> {
             application.workers.shutdown();
         }
         run_result.map_err(RuntimeError::Surface)
+    }
+
+    /// Rejects native execution on unsupported hosts without starting workers.
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    pub fn run(self, _descriptor: &SurfaceDescriptor) -> Result<(), RuntimeError> {
+        Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))
     }
 
     fn drain_worker_results(&mut self) {
@@ -808,10 +823,14 @@ impl<D: AppDelegate + 'static> Application<D> {
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, sync::Barrier, time::Duration};
+    use std::{
+        num::NonZeroUsize,
+        sync::mpsc::{RecvTimeoutError, sync_channel},
+        time::Duration,
+    };
 
     use alpine_core::Size;
-    use alpine_platform_macos::{EventTimestamp, SurfaceEvent};
+    use alpine_platform_macos::{EventTimestamp, SurfaceEvent, SurfaceExtent};
     use alpine_scene::{SceneBuilder, SceneRevision};
 
     use super::*;
@@ -820,19 +839,14 @@ mod tests {
     struct TestDelegate {
         events: Vec<SurfaceEvent>,
         results: Vec<(WorkToken, u64)>,
-        submit_on_wake: bool,
         invalid_scene: bool,
     }
 
     impl AppDelegate for TestDelegate {
         type WorkerOutput = u64;
 
-        fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, u64>) {
+        fn event(&mut self, event: &SurfaceEvent, _context: &mut AppContext<'_, u64>) {
             self.events.push(event.clone());
-            if self.submit_on_wake && matches!(event, SurfaceEvent::Wake { .. }) {
-                self.submit_on_wake = false;
-                let _ = context.spawn(|| 41);
-            }
         }
 
         fn worker_result(
@@ -868,6 +882,374 @@ mod tests {
         )
     }
 
+    fn token(sequence: u64) -> WorkToken {
+        WorkToken {
+            sequence,
+            workspace_revision: WorkspaceRevision::new(7),
+            document_revision: DocumentRevision::new(11),
+        }
+    }
+
+    #[test]
+    fn public_values_and_errors_preserve_exact_identity() {
+        let config = WorkerConfig::new(
+            NonZeroUsize::new(2).unwrap_or(NonZeroUsize::MIN),
+            NonZeroUsize::new(3).unwrap_or(NonZeroUsize::MIN),
+            NonZeroUsize::new(4).unwrap_or(NonZeroUsize::MIN),
+        );
+        assert_eq!(config.worker_count(), 2);
+        assert_eq!(config.request_capacity(), 3);
+        assert_eq!(config.result_capacity(), 4);
+        assert_eq!(WorkerConfig::default().worker_count(), 1);
+
+        let work = token(13);
+        assert_eq!(work.sequence(), 13);
+        assert_eq!(work.workspace_revision().get(), 7);
+        assert_eq!(work.document_revision().get(), 11);
+
+        let snapshot = WorkerSnapshot {
+            queued_requests: 2,
+            peak_queued_requests: 3,
+            queued_results: 4,
+            peak_queued_results: 5,
+            request_saturations: 6,
+            dropped_results: 7,
+            panicked_jobs: 8,
+        };
+        assert_eq!(snapshot.queued_requests(), 2);
+        assert_eq!(snapshot.peak_queued_requests(), 3);
+        assert_eq!(snapshot.queued_results(), 4);
+        assert_eq!(snapshot.peak_queued_results(), 5);
+        assert_eq!(snapshot.request_saturations(), 6);
+        assert_eq!(snapshot.dropped_results(), 7);
+        assert_eq!(snapshot.panicked_jobs(), 8);
+
+        assert_eq!(
+            SubmitError::Saturated.to_string(),
+            "the bounded worker request queue is full"
+        );
+        assert_eq!(
+            SubmitError::Closed.to_string(),
+            "the worker pool no longer accepts requests"
+        );
+        assert_eq!(
+            SubmitError::SequenceExhausted.to_string(),
+            "the worker request sequence is exhausted"
+        );
+        let worker_error = RuntimeError::WorkerSpawn(std::io::Error::other("fault"));
+        assert_eq!(
+            worker_error.to_string(),
+            "failed to create bounded worker: fault"
+        );
+        assert!(worker_error.source().is_some());
+        let surface_error = RuntimeError::from(SurfaceError::UnsupportedPlatform);
+        assert!(
+            surface_error
+                .to_string()
+                .starts_with("native application surface failed:")
+        );
+        assert!(surface_error.source().is_some());
+    }
+
+    #[test]
+    fn foreground_context_only_accepts_newer_revisions() -> Result<(), RuntimeError> {
+        let mut application = runtime(TestDelegate::default())?;
+        application.dirty = false;
+        let mut context = AppContext {
+            workspace_revision: &mut application.workspace_revision,
+            document_revision: &mut application.document_revision,
+            dirty: &mut application.dirty,
+            workers: &mut application.workers,
+        };
+        assert_eq!(context.workspace_revision().get(), 0);
+        assert_eq!(context.document_revision().get(), 0);
+        assert!(context.advance_workspace(WorkspaceRevision::new(2)));
+        assert!(!context.advance_workspace(WorkspaceRevision::new(2)));
+        assert!(context.advance_document(DocumentRevision::new(3)));
+        assert!(!context.advance_document(DocumentRevision::new(1)));
+        context.invalidate();
+        assert_eq!(context.workspace_revision().get(), 2);
+        assert_eq!(context.document_revision().get(), 3);
+        assert!(application.dirty);
+        Ok(())
+    }
+
+    #[test]
+    fn current_result_wakes_and_mutates_the_delegate() -> Result<(), RuntimeError> {
+        let mut application = runtime(TestDelegate::default())?;
+        let (wake_sender, wake_receiver) = sync_channel(1);
+        application.set_worker_waker(move || {
+            let _ = wake_sender.try_send(());
+        });
+        let submitted = application.workers.submit(
+            WorkspaceRevision::default(),
+            DocumentRevision::default(),
+            || 55,
+        );
+        assert!(submitted.is_ok());
+        assert_eq!(wake_receiver.recv_timeout(Duration::from_secs(1)), Ok(()));
+        let evidence = application.snapshot().worker();
+        assert_eq!(evidence.queued_results(), 1);
+        assert_eq!(evidence.peak_queued_requests(), 1);
+        assert_eq!(evidence.peak_queued_results(), 1);
+        let _ = application.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(4),
+        });
+        assert_eq!(application.delegate.results.len(), 1);
+        assert_eq!(application.delegate.results[0].1, 55);
+        assert_eq!(application.snapshot().worker().queued_results(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn resize_builds_latest_viewport_and_close_revokes_frames() -> Result<(), RuntimeError> {
+        let mut application = runtime(TestDelegate::default())?;
+        let _ = application.frame_if_dirty();
+        let extent = SurfaceExtent::new(120.0, 80.0, 1.0)?;
+        let resized = application
+            .dispatch(&SurfaceEvent::Resize {
+                timestamp: EventTimestamp::new(5),
+                extent,
+            })
+            .ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        assert_eq!(
+            resized.scene().viewport(),
+            Size::new(120.0, 80.0).unwrap_or_default()
+        );
+        assert!(
+            application
+                .dispatch(&SurfaceEvent::CloseRequested {
+                    timestamp: EventTimestamp::new(6),
+                })
+                .is_none()
+        );
+        let snapshot = application.snapshot();
+        assert_eq!(snapshot.workspace_revision().get(), 0);
+        assert_eq!(snapshot.document_revision().get(), 0);
+        assert_eq!(snapshot.stale_results(), 0);
+        assert!(snapshot.is_shutting_down());
+        assert!(!snapshot.is_dirty());
+        assert!(
+            application
+                .dispatch(&SurfaceEvent::Wake {
+                    timestamp: EventTimestamp::new(7),
+                })
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exhausted_scene_and_work_sequences_are_rejected() -> Result<(), RuntimeError> {
+        let mut application = runtime(TestDelegate::default())?;
+        application.scene_revision = u64::MAX;
+        assert!(application.frame_if_dirty().is_none());
+        assert_eq!(application.snapshot().invalid_scenes(), 1);
+        application.workers.next_sequence = u64::MAX;
+        assert_eq!(
+            application.workers.submit(
+                WorkspaceRevision::default(),
+                DocumentRevision::default(),
+                || 1,
+            ),
+            Err(SubmitError::SequenceExhausted)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn spawn_failure_rolls_back_started_workers() {
+        let config = WorkerConfig::new(
+            NonZeroUsize::new(2).unwrap_or(NonZeroUsize::MIN),
+            NonZeroUsize::MIN,
+            NonZeroUsize::MIN,
+        );
+        let result = WorkerPool::<u64>::new_with_spawner(
+            config,
+            |index, requests, results, counters, wake| {
+                if index == 1 {
+                    return Err(std::io::Error::other("injected spawn failure"));
+                }
+                thread::Builder::new()
+                    .name("alpine-test-worker".to_owned())
+                    .spawn(move || worker_loop(&requests, &results, &counters, &wake))
+            },
+        );
+        assert!(
+            matches!(result, Err(RuntimeError::WorkerSpawn(error)) if error.kind() == std::io::ErrorKind::Other)
+        );
+    }
+
+    #[test]
+    fn disconnected_and_shutdown_pools_reject_admission() -> Result<(), RuntimeError> {
+        let (request_sender, request_receiver) = sync_channel(1);
+        drop(request_receiver);
+        let (result_sender, result_receiver) = sync_channel(1);
+        drop(result_sender);
+        let mut disconnected = WorkerPool::<u64> {
+            request_sender: Some(request_sender),
+            result_receiver,
+            workers: Vec::new(),
+            counters: Arc::new(WorkerCounters::default()),
+            next_sequence: 0,
+            wake: Arc::new(Mutex::new(Arc::new(|| {}))),
+        };
+        assert_eq!(
+            disconnected.submit(
+                WorkspaceRevision::default(),
+                DocumentRevision::default(),
+                || 1
+            ),
+            Err(SubmitError::Closed)
+        );
+
+        let mut shutdown = WorkerPool::<u64>::new(WorkerConfig::default())?;
+        shutdown.workers.push(thread::spawn(|| {
+            std::panic::resume_unwind(Box::new("injected worker teardown panic"));
+        }));
+        shutdown.shutdown();
+        assert_eq!(shutdown.snapshot().panicked_jobs(), 1);
+        assert_eq!(
+            shutdown.submit(
+                WorkspaceRevision::default(),
+                DocumentRevision::default(),
+                || 2
+            ),
+            Err(SubmitError::Closed)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn drop_waits_for_admitted_work_to_finish() -> Result<(), RuntimeError> {
+        let (started_sender, started_receiver) = sync_channel(1);
+        let (release_sender, release_receiver) = sync_channel(1);
+        let mut pool = WorkerPool::<u64>::new(WorkerConfig::default())?;
+        pool.submit(
+            WorkspaceRevision::default(),
+            DocumentRevision::default(),
+            move || {
+                let _ = started_sender.send(());
+                let _ = release_receiver.recv();
+                1
+            },
+        )
+        .map_err(|_| RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        assert_eq!(
+            started_receiver.recv_timeout(Duration::from_secs(1)),
+            Ok(())
+        );
+        let (done_sender, done_receiver) = sync_channel(1);
+        let dropper = thread::spawn(move || {
+            drop(pool);
+            let _ = done_sender.send(());
+        });
+        assert_eq!(
+            done_receiver.recv_timeout(Duration::from_millis(20)),
+            Err(RecvTimeoutError::Timeout)
+        );
+        assert_eq!(release_sender.send(()), Ok(()));
+        assert_eq!(done_receiver.recv_timeout(Duration::from_secs(1)), Ok(()));
+        assert!(dropper.join().is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn worker_loop_counts_bounded_result_omission_and_poison() {
+        let (request_sender, request_receiver) = sync_channel(1);
+        let (result_sender, result_receiver) = sync_channel(1);
+        let counters = WorkerCounters::default();
+        counters.queued_requests.store(1, Ordering::Release);
+        let wake: Mutex<WorkerWake> = Mutex::new(Arc::new(|| {}));
+        let occupied = WorkerCompletion {
+            token: token(1),
+            outcome: WorkerOutcome::Completed(1_u64),
+        };
+        assert!(result_sender.try_send(occupied).is_ok());
+        assert!(
+            request_sender
+                .try_send(WorkerRequest {
+                    token: token(2),
+                    job: Box::new(|| 2),
+                })
+                .is_ok()
+        );
+        drop(request_sender);
+        worker_loop(
+            &Mutex::new(request_receiver),
+            &result_sender,
+            &counters,
+            &wake,
+        );
+        assert_eq!(counters.dropped_results.load(Ordering::Acquire), 1);
+        assert_eq!(counters.queued_results.load(Ordering::Acquire), 0);
+        drop(result_receiver);
+
+        let (_sender, receiver) = sync_channel::<WorkerRequest<u64>>(1);
+        let poisoned = Mutex::new(receiver);
+        let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = poisoned
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::panic::resume_unwind(Box::new("poison request receiver"));
+        }));
+        assert!(fault.is_err());
+        let (results, _results_receiver) = sync_channel(1);
+        worker_loop(&poisoned, &results, &WorkerCounters::default(), &wake);
+    }
+
+    struct DefaultResultDelegate;
+
+    impl AppDelegate for DefaultResultDelegate {
+        type WorkerOutput = ();
+
+        fn event(&mut self, _event: &SurfaceEvent, _context: &mut AppContext<'_, ()>) {}
+
+        fn frame(&mut self, context: WindowContext) -> Scene {
+            SceneBuilder::new(context.scene_revision(), context.viewport()).finish()
+        }
+    }
+
+    #[test]
+    fn default_worker_result_is_a_noop() -> Result<(), RuntimeError> {
+        let viewport =
+            Size::new(10.0, 10.0).ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0)
+            .ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        let config = WorkerConfig::default();
+        let mut application = Application::new(DefaultResultDelegate, viewport, clear, config)?;
+        assert!(
+            application
+                .dispatch(&SurfaceEvent::Wake {
+                    timestamp: EventTimestamp::new(8),
+                })
+                .is_some()
+        );
+        assert!(!application.dirty);
+        let mut context = AppContext {
+            workspace_revision: &mut application.workspace_revision,
+            document_revision: &mut application.document_revision,
+            dirty: &mut application.dirty,
+            workers: &mut application.workers,
+        };
+        AppDelegate::worker_result(&mut application.delegate, token(3), (), &mut context);
+        assert!(!application.dirty);
+        Ok(())
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[test]
+    fn application_run_rejects_unsupported_host() -> Result<(), SurfaceError> {
+        let descriptor = SurfaceDescriptor::new("Alpine", 10.0, 10.0, 1.0)?;
+        let application =
+            runtime(TestDelegate::default()).map_err(|_| SurfaceError::DriverUnavailable)?;
+        assert!(matches!(
+            application.run(&descriptor),
+            Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))
+        ));
+        Ok(())
+    }
+
     #[test]
     fn clean_events_do_not_build_or_submit_another_frame() -> Result<(), RuntimeError> {
         let mut application = runtime(TestDelegate::default())?;
@@ -901,9 +1283,13 @@ mod tests {
 
     #[test]
     fn stale_background_result_never_mutates_delegate_state() -> Result<(), RuntimeError> {
-        let barrier = Arc::new(Barrier::new(2));
         let mut application = runtime(TestDelegate::default())?;
-        let worker_barrier = Arc::clone(&barrier);
+        let (started_sender, started_receiver) = sync_channel(1);
+        let (release_sender, release_receiver) = sync_channel(1);
+        let (wake_sender, wake_receiver) = sync_channel(1);
+        application.set_worker_waker(move || {
+            let _ = wake_sender.try_send(());
+        });
         {
             let mut context = AppContext {
                 workspace_revision: &mut application.workspace_revision,
@@ -913,19 +1299,19 @@ mod tests {
             };
             context
                 .spawn(move || {
-                    worker_barrier.wait();
+                    let _ = started_sender.send(());
+                    let _ = release_receiver.recv();
                     89
                 })
                 .map_err(|_| RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
             assert!(context.advance_document(DocumentRevision::new(1)));
         }
-        barrier.wait();
-        for _ in 0..100 {
-            if application.snapshot().worker().queued_results() > 0 {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        assert_eq!(
+            started_receiver.recv_timeout(Duration::from_secs(1)),
+            Ok(())
+        );
+        assert_eq!(release_sender.send(()), Ok(()));
+        assert_eq!(wake_receiver.recv_timeout(Duration::from_secs(1)), Ok(()));
         let _ = application.dispatch(&SurfaceEvent::Wake {
             timestamp: EventTimestamp::new(2),
         });
@@ -936,39 +1322,53 @@ mod tests {
 
     #[test]
     fn saturated_submission_returns_without_waiting() -> Result<(), RuntimeError> {
-        let barrier = Arc::new(Barrier::new(2));
         let mut application = runtime(TestDelegate::default())?;
-        let worker_barrier = Arc::clone(&barrier);
+        let (started_sender, started_receiver) = sync_channel(1);
+        let (release_sender, release_receiver) = sync_channel(1);
         let first = application.workers.submit(
             WorkspaceRevision::default(),
             DocumentRevision::default(),
             move || {
-                worker_barrier.wait();
+                let _ = started_sender.send(());
+                let _ = release_receiver.recv();
                 1
             },
         );
         assert!(first.is_ok());
-        let mut saturated = false;
-        for value in 2..=4 {
-            if application.workers.submit(
+        assert_eq!(
+            started_receiver.recv_timeout(Duration::from_secs(1)),
+            Ok(())
+        );
+        assert!(
+            application
+                .workers
+                .submit(
+                    WorkspaceRevision::default(),
+                    DocumentRevision::default(),
+                    || 2,
+                )
+                .is_ok()
+        );
+        assert_eq!(
+            application.workers.submit(
                 WorkspaceRevision::default(),
                 DocumentRevision::default(),
-                move || value,
-            ) == Err(SubmitError::Saturated)
-            {
-                saturated = true;
-                break;
-            }
-        }
-        assert!(saturated);
+                || 3,
+            ),
+            Err(SubmitError::Saturated)
+        );
         assert!(application.snapshot().worker().request_saturations() > 0);
-        barrier.wait();
+        assert_eq!(release_sender.send(()), Ok(()));
         Ok(())
     }
 
     #[test]
     fn worker_panic_is_contained_and_counted() -> Result<(), RuntimeError> {
         let mut application = runtime(TestDelegate::default())?;
+        let (wake_sender, wake_receiver) = sync_channel(1);
+        application.set_worker_waker(move || {
+            let _ = wake_sender.try_send(());
+        });
         application
             .workers
             .submit(
@@ -977,12 +1377,7 @@ mod tests {
                 || std::panic::resume_unwind(Box::new("fault")),
             )
             .map_err(|_| RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
-        for _ in 0..100 {
-            if application.snapshot().worker().panicked_jobs() > 0 {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        assert_eq!(wake_receiver.recv_timeout(Duration::from_secs(1)), Ok(()));
         assert_eq!(application.snapshot().worker().panicked_jobs(), 1);
         let _ = application.dispatch(&SurfaceEvent::Wake {
             timestamp: EventTimestamp::new(3),

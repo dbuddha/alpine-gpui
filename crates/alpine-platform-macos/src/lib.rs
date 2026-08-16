@@ -1653,6 +1653,90 @@ mod tests {
     }
 
     #[test]
+    fn event_and_frame_values_preserve_public_identity() -> Result<(), SurfaceError> {
+        assert_eq!(Modifiers::SHIFT, 1);
+        assert_eq!(Modifiers::CONTROL, 2);
+        assert_eq!(Modifiers::OPTION, 4);
+        assert_eq!(Modifiers::COMMAND, 8);
+        assert_eq!(Modifiers::CAPS_LOCK, 16);
+        let modifiers = Modifiers::from_bits(u8::MAX);
+        assert_eq!(modifiers.bits(), 0x1f);
+        assert!(modifiers.contains(Modifiers::SHIFT | Modifiers::COMMAND));
+        assert!(!modifiers.contains(1 << 5));
+
+        let timestamp = EventTimestamp::new(23);
+        let extent = SurfaceExtent::new(40.0, 20.0, 2.0)?;
+        let position = Point::new(3.0, 4.0).ok_or(SurfaceError::DriverUnavailable)?;
+        let events = [
+            SurfaceEvent::Keyboard {
+                timestamp,
+                state: KeyState::Down,
+                physical_key: 4,
+                logical_key: "a".into(),
+                modifiers,
+                repeat: false,
+            },
+            SurfaceEvent::Pointer {
+                timestamp,
+                action: PointerAction::Moved,
+                position,
+                button: PointerButton::None,
+                modifiers,
+            },
+            SurfaceEvent::Scroll {
+                timestamp,
+                delta_x: 1.0,
+                delta_y: -2.0,
+                phase: ScrollPhase::Changed,
+                precise: true,
+                modifiers,
+            },
+            SurfaceEvent::Focus {
+                timestamp,
+                focused: true,
+            },
+            SurfaceEvent::Resize { timestamp, extent },
+            SurfaceEvent::Clipboard {
+                timestamp,
+                operation: ClipboardOperation::Copy,
+                succeeded: true,
+            },
+            SurfaceEvent::Ime {
+                timestamp,
+                event: ImeEvent::Started,
+            },
+            SurfaceEvent::Wake { timestamp },
+            SurfaceEvent::CloseRequested { timestamp },
+        ];
+        for event in events {
+            assert_eq!(event.timestamp().get(), 23);
+        }
+        assert_eq!(extent.logical_size(), Size::new(40.0, 20.0));
+
+        let scene = alpine_scene::SceneBuilder::new(
+            alpine_scene::SceneRevision::new(5),
+            Size::new(40.0, 20.0).ok_or(SurfaceError::DriverUnavailable)?,
+        )
+        .finish();
+        let clear = LinearRgba::new(0.1, 0.2, 0.3, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+        let frame = SurfaceFrame::new(scene.clone(), clear);
+        assert_eq!(frame.scene(), &scene);
+        assert_eq!(frame.clear(), clear);
+        assert_eq!(frame.into_parts(), (scene, clear));
+        Ok(())
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[test]
+    fn public_event_loop_wrapper_preserves_unsupported_error() {
+        let surface = NativeSurface::from_implementation(implementation::NativeSurface);
+        assert_eq!(
+            surface.run_with_event_handler(|_| None),
+            Err(SurfaceError::UnsupportedPlatform)
+        );
+    }
+
+    #[test]
     fn extent_rounds_each_physical_dimension() -> Result<(), SurfaceError> {
         let extent = SurfaceExtent::new(100.25, 50.75, 2.0)?;
 
