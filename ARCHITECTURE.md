@@ -106,8 +106,9 @@ encoding, and submitted ownership. Opaque leases bind slot, monotonic sequence,
 owner generation, frame token, revision, and surface epoch. Saturation is an
 observable bounded admission result; terminal completion always releases the
 exact lease but classifies publication as current only when generation,
-revision, and epoch still match. This portable model is implemented and
-qualified, but it is not yet connected to native Metal submission.
+revision, and epoch still match. The native macOS owner binds every committed
+drawable submission to one exact portable slot lease and releases it only after
+the Metal completion boundary reports a terminal result.
 
 `alpine-platform-macos` now owns the first native object graph: the shared
 `NSApplication`, one retained `NSWindow`, one custom `NSView`, one opaque
@@ -128,7 +129,10 @@ extent intact, records a structured error, and fails closed as ineligible.
 
 The display link starts paused, requests a two-frame render latency, resumes
 only for visible dirty work backed by an owned pending or active frame, and
-pauses after the newest revision reaches a terminal result. A delayed native
+pauses after the newest revision reaches a terminal result. Its callback commits
+and directly presents, then returns without waiting for GPU completion. Later
+display-link callbacks poll only Alpine-owned terminal state on the main thread.
+A delayed native
 configuration notification cannot restart pacing after terminal failure unless
 the driver owns replacement work. The native owner initializes the renderer
 from the exact device installed on the layer and queues one immutable scene
@@ -150,11 +154,11 @@ space, and disables extended-dynamic-range compositing. Teardown first revokes
 callback admission, classifies active work as cancelled, stops the renderer,
 pauses and invalidates pacing, clears both weak delegate registrations, and
 closes the retained window. Callback admission and rejection are counted
-independently. A second lifecycle check after synchronous command completion
-prevents a reentrant close from publishing success through a closing owner
-generation. Native handles stay private. Native asynchronous GPU completion,
-physical multi-display qualification, and onscreen pixel capture remain
-unimplemented.
+independently. A closing owner advances its generation, rejects new frame
+admission, and keeps only drain callbacks alive until committed work terminates.
+Stale completions release their exact leases but cannot publish success. Native
+handles stay private. Physical multi-display qualification and onscreen pixel
+capture remain unimplemented.
 
 `alpine-metal` validates a
 non-empty BGRA8 offscreen descriptor, proves its logical viewport and rounded
@@ -189,12 +193,10 @@ slots, records exact current and peak retention, and can shed free capacity on
 pressure. A typed Metal completion block copies terminal status and native error
 details into Alpine-owned state without exposing a handle. The split-phase SPI
 can commit and directly present, return immediately, and later consume that
-terminal state on the owner thread. The existing AppKit callback still uses a
-temporary synchronous compatibility wrapper over this path, so removal of the
-main-thread completion wait, shutdown drain, and asynchronous lifecycle
-qualification remain unimplemented. Offscreen readback remains intentionally
-synchronous. The compatibility wait fails closed after five seconds rather than
-blocking indefinitely; production AppKit removal remains the required path.
+terminal state on the owner thread. The AppKit callback uses this split-phase
+path directly. The synchronous compatibility wrapper remains only for narrow
+renderer callers outside the production presentation loop. Offscreen readback
+remains intentionally synchronous.
 Every render call updates a generation-scoped `BackendAccounting` snapshot.
 Validated cancellation performs no native allocation or submission. Shutdown is
 synchronous and closes admission only after the current exclusive call returns.
@@ -272,7 +274,9 @@ sequenceDiagram
     Plan-->>Scene: structured error before native work
     Scene->>Renderer: callback drawable plus immutable scene
     Renderer->>Backend: validate and encode
-    Backend->>Backend: commit once, call direct present, await command completion
+    Backend->>Backend: commit once and call direct present
+    Backend-->>Surface: opaque bounded submission
+    Surface->>Backend: poll copied terminal state on a later callback
     Backend-->>Surface: FrameReport or structured failure
     Surface->>Surface: correlate presented-handler timestamp
     Surface->>Scheduler: presented, dropped retry, or classified failure
@@ -439,7 +443,7 @@ rejects later surface attempts before another native submission. Automatic
 backend recreation remains outside this slice. Cancellation is a distinct
 portable and native terminal result, never an alias for stale work or execution
 failure. Precommit shutdown releases immediately. A committed native attempt is
-cancelled only after shutdown enters its draining state and the synchronous
+cancelled only after shutdown enters its draining state and the asynchronous
 Metal boundary has reached command completion, and it cannot increment
 qualified-presentation evidence.
 Dirty work closed before `Prepare` receives separate pending-cancellation

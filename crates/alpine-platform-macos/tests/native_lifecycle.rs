@@ -227,6 +227,8 @@ mod validation {
         assert_eq!(snapshot.cancelled_count(), 1);
         assert_eq!(snapshot.failed_count(), 0);
         assert_eq!(snapshot.current_retained_bytes(), 0);
+        assert_eq!(snapshot.occupied_frame_slots(), 0);
+        assert_eq!(snapshot.submitted_frame_slots(), 0);
         assert!(snapshot.display_link_paused());
 
         let admitted = observer.callback_count();

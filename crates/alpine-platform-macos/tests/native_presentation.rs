@@ -74,6 +74,8 @@ mod validation {
         let snapshot = surface.snapshot();
         assert!(snapshot.regular_activation_policy());
         assert!(snapshot.submission_count() >= 1);
+        assert_eq!(snapshot.frame_slot_capacity(), 3);
+        assert!(snapshot.peak_occupied_frame_slots() >= 1);
         assert_eq!(snapshot.direct_present_count(), snapshot.submission_count());
         assert_eq!(
             snapshot.installed_presented_handler_count(),
@@ -81,6 +83,11 @@ mod validation {
         );
         if hosted_direct && snapshot.presented_count() == 0 {
             assert!(first_error.is_none());
+            assert!(snapshot.occupied_frame_slots() <= 1);
+            assert_eq!(
+                snapshot.submitted_frame_slots(),
+                snapshot.occupied_frame_slots()
+            );
             assert_eq!(snapshot.last_presented_time_bits(), 0);
             assert_eq!(snapshot.skipped_count() + 1, snapshot.submission_count());
             assert_eq!(snapshot.failed_count(), 0);
@@ -96,6 +103,8 @@ mod validation {
             return Err(error.into());
         }
         assert_eq!(snapshot.presented_count(), 1);
+        assert_eq!(snapshot.occupied_frame_slots(), 0);
+        assert_eq!(snapshot.submitted_frame_slots(), 0);
         assert_ne!(snapshot.last_presented_time_bits(), 0);
         assert_eq!(
             snapshot.skipped_count(),
@@ -169,6 +178,8 @@ mod validation {
         );
         assert_eq!(recovered.failed_count(), 1);
         assert!(recovered.display_link_paused());
+        assert_eq!(recovered.occupied_frame_slots(), 0);
+        assert_eq!(recovered.submitted_frame_slots(), 0);
         Ok(())
     }
 

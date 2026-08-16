@@ -35,7 +35,8 @@ use objc2_quartz_core::{
 use alpine_core::LinearRgba;
 use alpine_metal::{MetalBackend, OffscreenDescriptor, RecoveryClassification, platform_spi};
 use alpine_platform::{
-    ApplicationState, DisplayLinkDirective, DisplayLinkState, FrameToken,
+    ApplicationState, DisplayLinkDirective, DisplayLinkState, FrameCompletionStatus,
+    FrameOwnerGeneration, FrameSlotAdmission, FrameSlotLease, FrameSlotRing, FrameToken,
     PendingCancellationEvidence, PresentationAction, PresentationEvent, PresentationOutcome,
     PresentationState, PresentationTransition,
 };
@@ -372,6 +373,8 @@ struct PostCommitControl {
 
 struct ActiveFrame {
     token: FrameToken,
+    lease: FrameSlotLease,
+    submission: platform_spi::DrawableSubmission,
     #[allow(
         dead_code,
         reason = "the callback drawable must remain retained until terminal presentation evidence"
@@ -379,6 +382,7 @@ struct ActiveFrame {
     drawable: Retained<ProtocolObject<dyn CAMetalDrawable>>,
     frame: Option<PendingFrame>,
     observation: PresentationObservation,
+    command_terminal: bool,
     presentation_polls: u16,
     timing: AttemptTiming,
 }
@@ -432,6 +436,8 @@ struct PresentationDriver {
     configuration: SurfaceConfiguration,
     pending: Option<PendingFrame>,
     active: Option<ActiveFrame>,
+    frame_slots: FrameSlotRing,
+    owner_generation: FrameOwnerGeneration,
     backend: MetalBackend,
     consecutive_skips: u16,
     last_error: Option<SurfaceError>,
@@ -451,12 +457,16 @@ impl PresentationDriver {
     ) -> Result<Self, SurfaceError> {
         let mut state = PresentationState::new();
         state.apply(PresentationAction::SetSized(configuration.is_sized()))?;
+        let owner_generation =
+            FrameOwnerGeneration::new(1).ok_or(SurfaceError::DriverUnavailable)?;
         Ok(Self {
             state,
             lifecycle,
             configuration,
             pending: None,
             active: None,
+            frame_slots: FrameSlotRing::new(),
+            owner_generation,
             backend,
             consecutive_skips: 0,
             last_error: None,
@@ -547,6 +557,9 @@ impl PresentationDriver {
             Ok(directive) => directive,
             Err(error) => {
                 let recovery = render_recovery(&error);
+                if discards_pending_work(recovery) {
+                    self.pending = None;
+                }
                 self.last_error = Some(error);
                 counters.failed.fetch_add(1, Ordering::Relaxed);
                 let active = self.active.take();
@@ -592,6 +605,9 @@ impl PresentationDriver {
         &mut self,
         counters: &FrameCounters,
     ) -> Result<Option<DisplayLinkDirective>, SurfaceError> {
+        if let Some(directive) = self.poll_active_command(counters)? {
+            return Ok(Some(directive));
+        }
         if self
             .active
             .as_ref()
@@ -657,6 +673,61 @@ impl PresentationDriver {
         Ok(None)
     }
 
+    fn poll_active_command(
+        &mut self,
+        counters: &FrameCounters,
+    ) -> Result<Option<DisplayLinkDirective>, SurfaceError> {
+        let Some(active) = self.active.as_ref() else {
+            return Ok(None);
+        };
+        if active.command_terminal {
+            return Ok(None);
+        }
+        let submission = active.submission;
+        let lease = active.lease;
+        let platform_spi::DrawableCompletionPoll::Complete(attempt) =
+            platform_spi::poll_callback_drawable(&mut self.backend, submission)
+        else {
+            return Ok(Some(DisplayLinkDirective::None));
+        };
+        let result = attempt.into_result();
+        let status = if result.is_ok() {
+            FrameCompletionStatus::Completed
+        } else {
+            FrameCompletionStatus::Failed
+        };
+        self.frame_slots
+            .complete(
+                lease,
+                status,
+                self.owner_generation,
+                self.state.requested_revision(),
+                self.state.surface_epoch(),
+            )
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        if let Err(error) = result {
+            let active = self.active.take().ok_or(SurfaceError::DriverUnavailable)?;
+            let error = SurfaceError::from(error);
+            let recovery = render_recovery(&error);
+            if discards_pending_work(recovery) {
+                self.pending = None;
+            }
+            self.last_error = Some(error);
+            counters.failed.fetch_add(1, Ordering::Relaxed);
+            let transition = self
+                .state
+                .apply(PresentationAction::FailActive(active.token))?;
+            return self
+                .record_terminal(transition, active.timing, 0, recovery, counters)
+                .map(Some);
+        }
+        self.active
+            .as_mut()
+            .ok_or(SurfaceError::DriverUnavailable)?
+            .command_terminal = true;
+        Ok(None)
+    }
+
     fn submit_pending(
         &mut self,
         update: &CAMetalDisplayLinkUpdate,
@@ -692,28 +763,41 @@ impl PresentationDriver {
         let drawable_protocol = ProtocolObject::from_ref(&*drawable);
         let presentation = Arc::new(PresentationSignal::default());
         install_presented_handler(drawable_protocol, &presentation, counters);
-        let attempt = platform_spi::render_callback_drawable(
+        let admission = self
+            .frame_slots
+            .acquire(token, self.owner_generation)
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        let FrameSlotAdmission::Acquired(lease) = admission else {
+            self.pending = Some(frame);
+            return Err(SurfaceError::DriverUnavailable);
+        };
+        let slot = platform_spi::DrawableSlot::new(lease.slot().get())
+            .ok_or(SurfaceError::DriverUnavailable)?;
+        let attempt = platform_spi::submit_callback_drawable(
             &mut self.backend,
+            slot,
             &frame.scene,
             descriptor,
             &texture,
             drawable_protocol,
         );
-        if attempt.committed() {
-            self.state.apply(PresentationAction::Submit(token))?;
-            counters.submissions.fetch_add(1, Ordering::Relaxed);
-        }
-        if attempt.present_called() {
-            self.state.apply(PresentationAction::CallPresent(token))?;
-            counters.direct_presents.fetch_add(1, Ordering::Relaxed);
-        }
-        match attempt.into_result() {
-            Ok(_) => {
+        match attempt {
+            platform_spi::DrawableSubmitAttempt::Submitted(submission) => {
+                self.frame_slots
+                    .mark_submitted(lease)
+                    .map_err(|_| SurfaceError::DriverUnavailable)?;
+                self.state.apply(PresentationAction::Submit(token))?;
+                counters.submissions.fetch_add(1, Ordering::Relaxed);
+                self.state.apply(PresentationAction::CallPresent(token))?;
+                counters.direct_presents.fetch_add(1, Ordering::Relaxed);
                 self.active = Some(ActiveFrame {
                     token,
+                    lease,
+                    submission,
                     drawable,
                     frame: Some(frame),
                     observation: PresentationObservation::new(presentation),
+                    command_terminal: false,
                     presentation_polls: 0,
                     timing,
                 });
@@ -721,24 +805,34 @@ impl PresentationDriver {
                 if self.post_commit_control.is_some() {
                     let directive = self.apply_post_commit_control()?;
                     if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
-                        let active = self.active.take().ok_or(SurfaceError::DriverUnavailable)?;
-                        let cancellation =
-                            self.cancel_attempt(active.token, active.timing, counters)?;
-                        return Ok(if matches!(directive, DisplayLinkDirective::Invalidate) {
-                            directive
-                        } else {
-                            cancellation
-                        });
+                        let _ = self.begin_shutdown(counters);
+                        return Ok(DisplayLinkDirective::None);
                     }
                     return Ok(directive);
                 }
                 if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
-                    let active = self.active.take().ok_or(SurfaceError::DriverUnavailable)?;
-                    return self.cancel_attempt(active.token, active.timing, counters);
+                    let _ = self.begin_shutdown(counters);
+                    return Ok(DisplayLinkDirective::None);
                 }
                 Ok(DisplayLinkDirective::None)
             }
-            Err(error) => Err(error.into()),
+            platform_spi::DrawableSubmitAttempt::Rejected(attempt) => {
+                self.frame_slots
+                    .cancel_encoding(lease)
+                    .map_err(|_| SurfaceError::DriverUnavailable)?;
+                if attempt.committed() {
+                    self.state.apply(PresentationAction::Submit(token))?;
+                    counters.submissions.fetch_add(1, Ordering::Relaxed);
+                }
+                if attempt.present_called() {
+                    self.state.apply(PresentationAction::CallPresent(token))?;
+                    counters.direct_presents.fetch_add(1, Ordering::Relaxed);
+                }
+                attempt
+                    .into_result()
+                    .map(|_| DisplayLinkDirective::None)
+                    .map_err(SurfaceError::from)
+            }
         }
     }
 
@@ -873,7 +967,7 @@ impl PresentationDriver {
             active.observation.inject(control.presented_time_bits);
         }
         Ok(if control.close_generation {
-            DisplayLinkDirective::Pause
+            DisplayLinkDirective::None
         } else {
             directive
         })
@@ -888,7 +982,16 @@ impl PresentationDriver {
         self.last_error = Some(error);
     }
 
-    fn shutdown(&mut self, counters: &FrameCounters) {
+    fn begin_shutdown(&mut self, counters: &FrameCounters) -> bool {
+        if matches!(self.state.application(), ApplicationState::Running)
+            && let Some(generation) = self
+                .owner_generation
+                .get()
+                .checked_add(1)
+                .and_then(FrameOwnerGeneration::new)
+        {
+            self.owner_generation = generation;
+        }
         let shutdown = self.state.apply(PresentationAction::BeginShutdown);
         if let Ok(transition) = shutdown {
             match transition.event() {
@@ -923,13 +1026,59 @@ impl PresentationDriver {
                 | PresentationEvent::Stopped => {}
             }
         }
-        if let Some(active) = self.active.take() {
+        self.pending = None;
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.command_terminal)
+            && let Some(active) = self.active.take()
+        {
             let _ = self.cancel_attempt(active.token, active.timing, counters);
         }
         if matches!(self.state.application(), ApplicationState::Stopping) {
-            let _ = self.state.apply(PresentationAction::StopAfterDrain);
+            return false;
         }
-        self.pending = None;
+        self.backend.shutdown();
+        true
+    }
+
+    fn drain_shutdown(&mut self, counters: &FrameCounters) -> DisplayLinkDirective {
+        let Some(submission) = self.active.as_ref().map(|active| active.submission) else {
+            if matches!(self.state.application(), ApplicationState::Stopping) {
+                let _ = self.state.apply(PresentationAction::StopAfterDrain);
+            }
+            self.backend.shutdown();
+            return DisplayLinkDirective::Invalidate;
+        };
+        match platform_spi::poll_callback_drawable(&mut self.backend, submission) {
+            platform_spi::DrawableCompletionPoll::Pending => DisplayLinkDirective::None,
+            platform_spi::DrawableCompletionPoll::Complete(attempt) => {
+                let Some(active) = self.active.take() else {
+                    return DisplayLinkDirective::Invalidate;
+                };
+                let native_result = attempt.into_result();
+                let _ = self.frame_slots.complete(
+                    active.lease,
+                    FrameCompletionStatus::Cancelled,
+                    self.owner_generation,
+                    self.state.requested_revision(),
+                    self.state.surface_epoch(),
+                );
+                if let Err(error) = native_result {
+                    self.last_error = Some(error.into());
+                    counters.failed.fetch_add(1, Ordering::Relaxed);
+                }
+                let _ = self.cancel_attempt(active.token, active.timing, counters);
+                self.backend.shutdown();
+                DisplayLinkDirective::Invalidate
+            }
+        }
+    }
+
+    fn shutdown(&mut self, counters: &FrameCounters) {
+        if self.begin_shutdown(counters) {
+            return;
+        }
         self.backend.shutdown();
     }
 }
@@ -960,6 +1109,10 @@ fn render_recovery(error: &SurfaceError) -> Option<RecoveryClassification> {
         | SurfaceError::RunLoopNotRunnable { .. }
         | SurfaceError::UnexpectedRunLoopExit { .. } => None,
     }
+}
+
+const fn discards_pending_work(recovery: Option<RecoveryClassification>) -> bool {
+    matches!(recovery, Some(RecoveryClassification::RecreateBackend))
 }
 
 fn install_presented_handler(
@@ -1035,11 +1188,19 @@ define_class!(
             link: &CAMetalDisplayLink,
             update: &CAMetalDisplayLinkUpdate,
         ) {
-            if !admit_callback(
-                &self.ivars().lifecycle,
-                &self.ivars().callback_count,
-                &self.ivars().rejected_callback_count,
-            ) {
+            let lifecycle = self.ivars().lifecycle.load(Ordering::Acquire);
+            if lifecycle == SURFACE_LIVE {
+                if !admit_callback(
+                    &self.ivars().lifecycle,
+                    &self.ivars().callback_count,
+                    &self.ivars().rejected_callback_count,
+                ) {
+                    return;
+                }
+            } else if lifecycle != SURFACE_CLOSING {
+                self.ivars()
+                    .rejected_callback_count
+                    .fetch_add(1, Ordering::Relaxed);
                 return;
             }
             if MainThreadMarker::new().is_none() {
@@ -1052,9 +1213,22 @@ define_class!(
                         self.ivars().counters.failed.fetch_add(1, Ordering::Relaxed);
                         DisplayLinkDirective::Pause
                     },
-                    |mut driver| driver.update(update, &self.ivars().counters),
+                    |mut driver| {
+                        if lifecycle == SURFACE_CLOSING {
+                            driver.drain_shutdown(&self.ivars().counters)
+                        } else {
+                            driver.update(update, &self.ivars().counters)
+                        }
+                    },
                 );
-                apply_display_link_directive(link, directive);
+                if lifecycle == SURFACE_CLOSING
+                    && matches!(directive, DisplayLinkDirective::Invalidate)
+                {
+                    link.setPaused(true);
+                    stop_event_loop(&self.ivars().application);
+                } else {
+                    apply_display_link_directive(link, directive);
+                }
                 #[cfg(alpine_native_validation)]
                 if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE
                     && !self.ivars().window_close_started.load(Ordering::Acquire)
@@ -1194,11 +1368,18 @@ impl DisplayLinkDelegate {
         if let Some(probe) = &self.ivars().validation_probe {
             probe.record_window_close();
         }
+        let mut drained = true;
         if let Some(driver) = &self.ivars().driver
             && let Ok(mut driver) = driver.try_borrow_mut()
         {
-            driver.shutdown(&self.ivars().counters);
+            drained = driver.begin_shutdown(&self.ivars().counters);
         }
+        if drained {
+            self.finish_native_close();
+        }
+    }
+
+    fn finish_native_close(&self) {
         if let Some(display_link) = &self.ivars().display_link {
             display_link.setPaused(true);
             display_link.invalidate();
@@ -1720,17 +1901,26 @@ impl NativeSurface {
         let (
             allocated_bytes,
             current_retained_bytes,
+            occupied_frame_slots,
+            submitted_frame_slots,
+            peak_occupied_frame_slots,
+            frame_slot_saturation_count,
             last_terminal,
             last_superseded,
             last_cancelled,
             last_pending_cancellation,
         ) = driver
             .as_ref()
-            .map_or((0, 0, None, None, None, None), |driver| {
+            .map_or((0, 0, 0, 0, 0, 0, None, None, None, None), |driver| {
                 let accounting = driver.backend.accounting();
+                let slots = driver.frame_slots.snapshot();
                 (
                     accounting.allocated_bytes(),
                     accounting.current_retained_bytes(),
+                    slots.occupied_slots(),
+                    slots.submitted_slots(),
+                    slots.peak_occupied_slots(),
+                    slots.saturation_count(),
                     driver.last_terminal,
                     driver.last_superseded,
                     driver.last_cancelled,
@@ -1774,6 +1964,11 @@ impl NativeSurface {
             failed_count: self.counters.failed.load(Ordering::Acquire),
             allocated_bytes,
             current_retained_bytes,
+            frame_slot_capacity: 3,
+            occupied_frame_slots,
+            submitted_frame_slots,
+            peak_occupied_frame_slots,
+            frame_slot_saturation_count,
             last_terminal,
             last_superseded,
             last_cancelled,
@@ -2260,6 +2455,17 @@ mod tests {
     #[test]
     fn standard_window_style_has_exactly_the_supported_controls() {
         assert_eq!(standard_window_style_mask(), NSWindowStyleMask(0b1111));
+    }
+
+    #[test]
+    fn only_lost_backend_recovery_discards_queued_work() {
+        assert!(!discards_pending_work(None));
+        assert!(!discards_pending_work(Some(
+            RecoveryClassification::RetryFrame
+        )));
+        assert!(discards_pending_work(Some(
+            RecoveryClassification::RecreateBackend
+        )));
     }
 
     #[test]

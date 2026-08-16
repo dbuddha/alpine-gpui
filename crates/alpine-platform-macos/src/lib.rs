@@ -852,6 +852,11 @@ pub struct SurfaceSnapshot {
     failed_count: u64,
     allocated_bytes: u128,
     current_retained_bytes: usize,
+    frame_slot_capacity: u8,
+    occupied_frame_slots: u8,
+    submitted_frame_slots: u8,
+    peak_occupied_frame_slots: u8,
+    frame_slot_saturation_count: u64,
     last_terminal: Option<FrameTerminalEvidence>,
     last_superseded: Option<FrameTerminalEvidence>,
     last_cancelled: Option<FrameTerminalEvidence>,
@@ -1031,6 +1036,36 @@ impl SurfaceSnapshot {
     #[must_use]
     pub const fn current_retained_bytes(self) -> usize {
         self.current_retained_bytes
+    }
+
+    /// Returns the fixed number of reusable native presentation slots.
+    #[must_use]
+    pub const fn frame_slot_capacity(self) -> u8 {
+        self.frame_slot_capacity
+    }
+
+    /// Returns frame slots currently owning encoding or submitted work.
+    #[must_use]
+    pub const fn occupied_frame_slots(self) -> u8 {
+        self.occupied_frame_slots
+    }
+
+    /// Returns frame slots currently retaining committed GPU work.
+    #[must_use]
+    pub const fn submitted_frame_slots(self) -> u8 {
+        self.submitted_frame_slots
+    }
+
+    /// Returns the largest observed frame-slot occupancy.
+    #[must_use]
+    pub const fn peak_occupied_frame_slots(self) -> u8 {
+        self.peak_occupied_frame_slots
+    }
+
+    /// Returns valid frame attempts omitted because all slots were occupied.
+    #[must_use]
+    pub const fn frame_slot_saturation_count(self) -> u64 {
+        self.frame_slot_saturation_count
     }
 
     /// Returns the most recent attempt's complete handle-free terminal record.
@@ -1669,6 +1704,11 @@ mod tests {
             failed_count: 43,
             allocated_bytes: 47,
             current_retained_bytes: 53,
+            frame_slot_capacity: 3,
+            occupied_frame_slots: 2,
+            submitted_frame_slots: 1,
+            peak_occupied_frame_slots: 3,
+            frame_slot_saturation_count: 59,
             last_terminal: Some(terminal),
             last_superseded: None,
             last_cancelled: None,
@@ -1704,6 +1744,11 @@ mod tests {
             failed_count: 61,
             allocated_bytes: 67,
             current_retained_bytes: 71,
+            frame_slot_capacity: 3,
+            occupied_frame_slots: 0,
+            submitted_frame_slots: 0,
+            peak_occupied_frame_slots: 2,
+            frame_slot_saturation_count: 73,
             last_terminal: Some(failed_terminal),
             last_superseded: Some(terminal),
             last_cancelled: Some(failed_terminal),
@@ -1739,6 +1784,11 @@ mod tests {
         assert_eq!(snapshot.failed_count(), 43);
         assert_eq!(snapshot.allocated_bytes(), 47);
         assert_eq!(snapshot.current_retained_bytes(), 53);
+        assert_eq!(snapshot.frame_slot_capacity(), 3);
+        assert_eq!(snapshot.occupied_frame_slots(), 2);
+        assert_eq!(snapshot.submitted_frame_slots(), 1);
+        assert_eq!(snapshot.peak_occupied_frame_slots(), 3);
+        assert_eq!(snapshot.frame_slot_saturation_count(), 59);
         assert_eq!(snapshot.last_terminal(), Some(terminal));
         assert_eq!(snapshot.last_superseded(), None);
         assert_eq!(terminal.attempt(), 1);
@@ -1787,6 +1837,11 @@ mod tests {
         assert_eq!(inverse.failed_count(), 61);
         assert_eq!(inverse.allocated_bytes(), 67);
         assert_eq!(inverse.current_retained_bytes(), 71);
+        assert_eq!(inverse.frame_slot_capacity(), 3);
+        assert_eq!(inverse.occupied_frame_slots(), 0);
+        assert_eq!(inverse.submitted_frame_slots(), 0);
+        assert_eq!(inverse.peak_occupied_frame_slots(), 2);
+        assert_eq!(inverse.frame_slot_saturation_count(), 73);
         assert_eq!(inverse.last_terminal(), Some(failed_terminal));
         assert_eq!(inverse.last_superseded(), Some(terminal));
         assert_eq!(inverse.last_cancelled(), Some(failed_terminal));
