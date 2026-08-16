@@ -30,6 +30,15 @@ export MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING=1
 export MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1
 export MTL_SHADER_VALIDATION_ABORT_ON_FAULT=1
 
+for validation_test in \
+    native::tests::renders_discriminating_scene_once_and_matches_cpu_oracle \
+    native::tests::renders_a8_glyphs_and_reuses_only_identical_atlas_storage \
+    native::tests::atlas_pressure_release_preserves_in_flight_drawable_ownership
+do
+    cargo test --locked -p alpine-metal --all-features "$validation_test" -- \
+        --exact --nocapture --test-threads=1
+done
+
 cargo test --locked -p alpine-metal --all-features -- --test-threads=1
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_initialization
