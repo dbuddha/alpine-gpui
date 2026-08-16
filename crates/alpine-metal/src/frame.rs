@@ -1,7 +1,7 @@
 use std::{error::Error, fmt, mem::size_of};
 
 use alpine_core::LinearRgba;
-use alpine_scene::{PaintOperation, Scene, SceneRevision};
+use alpine_scene::{GlyphAtlasImage, PaintOperation, Scene, SceneRevision};
 
 /// Bytes in one compact BGRA8 pixel.
 pub const BGRA_BYTES_PER_PIXEL: usize = 4;
@@ -133,12 +133,13 @@ impl ReadbackLayout {
     }
 }
 
-/// One shader-ready solid quad in physical-pixel coordinates.
+/// One shader-ready paint instance in physical-pixel coordinates.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoweredQuad {
     bounds: [f32; 4],
     color: [f32; 4],
+    atlas_uv: [f32; 4],
 }
 
 impl LoweredQuad {
@@ -153,6 +154,12 @@ impl LoweredQuad {
     pub const fn color(self) -> [f32; 4] {
         self.color
     }
+
+    /// Returns normalized atlas UV bounds, or negative values for a solid.
+    #[must_use]
+    pub const fn atlas_uv(self) -> [f32; 4] {
+        self.atlas_uv
+    }
 }
 
 /// A fully checked, immutable frame ready for native encoding.
@@ -162,6 +169,7 @@ pub struct ValidatedFrame {
     descriptor: OffscreenDescriptor,
     readback: ReadbackLayout,
     quads: Vec<LoweredQuad>,
+    glyph_atlas: Option<GlyphAtlasImage>,
     consumed_primitives: usize,
     omitted_primitives: usize,
     upload_bytes: usize,
@@ -210,6 +218,7 @@ impl ValidatedFrame {
                         .ok_or(OffscreenError::InvalidSceneOperation { primitive_index })?;
                     let bounds = quad.bounds();
                     let color = quad.color();
+                    let clip = operation_clip(scene, quad.clip(), primitive_index)?;
                     if let Some(quad) = lower_quad(
                         bounds.origin().x(),
                         bounds.origin().y(),
@@ -220,12 +229,31 @@ impl ValidatedFrame {
                         scene.viewport().height(),
                         descriptor.scale(),
                         primitive_index,
+                        clip,
                     )? {
                         quads.push(quad);
                     }
                 }
-                PaintOperation::Glyph(_) => {
-                    return Err(OffscreenError::UnsupportedGlyphPrimitive { primitive_index });
+                PaintOperation::Glyph(glyph_id) => {
+                    let glyph = scene
+                        .glyphs()
+                        .get(glyph_id.index())
+                        .ok_or(OffscreenError::InvalidSceneOperation { primitive_index })?;
+                    let atlas = scene
+                        .glyph_atlas()
+                        .ok_or(OffscreenError::MissingGlyphAtlas { primitive_index })?;
+                    let clip = operation_clip(scene, glyph.clip(), primitive_index)?;
+                    if let Some(glyph) = lower_glyph(
+                        *glyph,
+                        atlas,
+                        scene.viewport().width(),
+                        scene.viewport().height(),
+                        descriptor.scale(),
+                        primitive_index,
+                        clip,
+                    )? {
+                        quads.push(glyph);
+                    }
                 }
             }
         }
@@ -240,6 +268,7 @@ impl ValidatedFrame {
             descriptor,
             readback,
             quads,
+            glyph_atlas: scene.glyph_atlas().cloned(),
             consumed_primitives,
             omitted_primitives,
             upload_bytes,
@@ -268,6 +297,12 @@ impl ValidatedFrame {
     #[must_use]
     pub fn quads(&self) -> &[LoweredQuad] {
         &self.quads
+    }
+
+    /// Returns the immutable A8 atlas used by glyph paint instances.
+    #[must_use]
+    pub const fn glyph_atlas(&self) -> Option<&GlyphAtlasImage> {
+        self.glyph_atlas.as_ref()
     }
 
     /// Returns every consumed source primitive, including omitted primitives.
@@ -324,11 +359,16 @@ fn lower_quad(
     viewport_height: f32,
     scale: f32,
     primitive_index: usize,
+    clip: [f32; 4],
 ) -> Result<Option<LoweredQuad>, OffscreenError> {
-    let left = f64::from(x).max(0.0);
-    let top = f64::from(y).max(0.0);
-    let right = (f64::from(x) + f64::from(width)).min(f64::from(viewport_width));
-    let bottom = (f64::from(y) + f64::from(height)).min(f64::from(viewport_height));
+    let left = f64::from(x).max(0.0).max(f64::from(clip[0]));
+    let top = f64::from(y).max(0.0).max(f64::from(clip[1]));
+    let right = (f64::from(x) + f64::from(width))
+        .min(f64::from(viewport_width))
+        .min(f64::from(clip[2]));
+    let bottom = (f64::from(y) + f64::from(height))
+        .min(f64::from(viewport_height))
+        .min(f64::from(clip[3]));
     if right <= left || bottom <= top {
         return Ok(None);
     }
@@ -342,6 +382,89 @@ fn lower_quad(
     Ok(Some(LoweredQuad {
         bounds,
         color: [color.red(), color.green(), color.blue(), color.alpha()],
+        atlas_uv: [-1.0; 4],
+    }))
+}
+
+fn operation_clip(
+    scene: &Scene,
+    clip: Option<alpine_scene::ClipId>,
+    primitive_index: usize,
+) -> Result<[f32; 4], OffscreenError> {
+    let Some(clip) = clip else {
+        return Ok([
+            0.0,
+            0.0,
+            scene.viewport().width(),
+            scene.viewport().height(),
+        ]);
+    };
+    let bounds = scene
+        .clips()
+        .get(clip.index())
+        .ok_or(OffscreenError::InvalidSceneOperation { primitive_index })?
+        .bounds();
+    Ok([
+        bounds.origin().x(),
+        bounds.origin().y(),
+        bounds.origin().x() + bounds.size().width(),
+        bounds.origin().y() + bounds.size().height(),
+    ])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_glyph(
+    glyph: alpine_scene::Glyph,
+    atlas: &GlyphAtlasImage,
+    viewport_width: f32,
+    viewport_height: f32,
+    scale: f32,
+    primitive_index: usize,
+    clip: [f32; 4],
+) -> Result<Option<LoweredQuad>, OffscreenError> {
+    let source = glyph.atlas_bounds();
+    let bounds = glyph.bounds();
+    let x = f64::from(bounds.origin().x());
+    let y = f64::from(bounds.origin().y());
+    let width = f64::from(bounds.size().width());
+    let height = f64::from(bounds.size().height());
+    if width <= 0.0 || height <= 0.0 {
+        return Ok(None);
+    }
+    let left = x.max(0.0).max(f64::from(clip[0]));
+    let top = y.max(0.0).max(f64::from(clip[1]));
+    let right = (x + width)
+        .min(f64::from(viewport_width))
+        .min(f64::from(clip[2]));
+    let bottom = (y + height)
+        .min(f64::from(viewport_height))
+        .min(f64::from(clip[3]));
+    if right <= left || bottom <= top {
+        return Ok(None);
+    }
+    let physical = [left, top, right, bottom].map(|value| value * f64::from(scale));
+    let lowered_bounds = physical.map(to_shader_coordinate);
+    if lowered_bounds[2] <= lowered_bounds[0] || lowered_bounds[3] <= lowered_bounds[1] {
+        return Err(OffscreenError::UnrepresentableQuad { primitive_index });
+    }
+    let atlas_width = f64::from(atlas.width().get());
+    let atlas_height = f64::from(atlas.height().get());
+    let source_x = f64::from(source.x());
+    let source_y = f64::from(source.y());
+    let source_width = f64::from(source.width().get());
+    let source_height = f64::from(source.height().get());
+    let atlas_uv = [
+        (source_x + (left - x) / width * source_width) / atlas_width,
+        (source_y + (top - y) / height * source_height) / atlas_height,
+        (source_x + (right - x) / width * source_width) / atlas_width,
+        (source_y + (bottom - y) / height * source_height) / atlas_height,
+    ]
+    .map(to_shader_coordinate);
+    let color = glyph.color();
+    Ok(Some(LoweredQuad {
+        bounds: lowered_bounds,
+        color: [color.red(), color.green(), color.blue(), color.alpha()],
+        atlas_uv,
     }))
 }
 
@@ -389,7 +512,7 @@ pub enum OffscreenError {
         primitive_index: usize,
     },
     /// The current offscreen pipeline has not yet lowered a glyph operation.
-    UnsupportedGlyphPrimitive {
+    MissingGlyphAtlas {
         /// Painter-order index of the rejected operation.
         primitive_index: usize,
     },
@@ -449,9 +572,9 @@ impl fmt::Display for OffscreenError {
                 formatter,
                 "scene operation at painter index {primitive_index} is invalid"
             ),
-            Self::UnsupportedGlyphPrimitive { primitive_index } => write!(
+            Self::MissingGlyphAtlas { primitive_index } => write!(
                 formatter,
-                "glyph at painter index {primitive_index} is not supported by this pipeline"
+                "glyph at painter index {primitive_index} has no A8 atlas"
             ),
             Self::CompactRowSizeOverflow => {
                 formatter.write_str("compact readback row size overflowed")
@@ -499,9 +622,10 @@ mod tests {
 
     #[test]
     fn lowered_quad_shader_abi_is_stable() {
-        assert_eq!(size_of::<LoweredQuad>(), 32);
+        assert_eq!(size_of::<LoweredQuad>(), 48);
         assert_eq!(offset_of!(LoweredQuad, bounds), 0);
         assert_eq!(offset_of!(LoweredQuad, color), 16);
+        assert_eq!(offset_of!(LoweredQuad, atlas_uv), 32);
     }
 
     fn color(red: f32, green: f32, blue: f32, alpha: f32) -> Result<LinearRgba, &'static str> {

@@ -136,23 +136,11 @@ where
             let mut destination = initial;
             if reverse_painter_order {
                 for quad in frame.quads().iter().rev() {
-                    composite_if_covered(
-                        quad.bounds(),
-                        quad.color(),
-                        center_x,
-                        center_y,
-                        &mut destination,
-                    );
+                    composite_instance(frame, *quad, center_x, center_y, &mut destination);
                 }
             } else {
                 for quad in frame.quads() {
-                    composite_if_covered(
-                        quad.bounds(),
-                        quad.color(),
-                        center_x,
-                        center_y,
-                        &mut destination,
-                    );
+                    composite_instance(frame, *quad, center_x, center_y, &mut destination);
                 }
             }
             let y = usize::try_from(physical_y)
@@ -172,6 +160,71 @@ where
         height: descriptor.pixel_height(),
         bytes,
     })
+}
+
+fn composite_instance(
+    frame: &ValidatedFrame,
+    instance: crate::LoweredQuad,
+    center_x: f64,
+    center_y: f64,
+    destination: &mut [f32; 4],
+) {
+    let bounds = instance.bounds();
+    if center_x < f64::from(bounds[0])
+        || center_y < f64::from(bounds[1])
+        || center_x >= f64::from(bounds[2])
+        || center_y >= f64::from(bounds[3])
+    {
+        return;
+    }
+    let atlas_uv = instance.atlas_uv();
+    let coverage = if atlas_uv[0] < 0.0 {
+        1.0
+    } else {
+        sample_atlas(frame, bounds, atlas_uv, center_x, center_y)
+    };
+    let mut source = instance.color();
+    source[3] *= coverage;
+    composite_if_covered(bounds, source, center_x, center_y, destination);
+}
+
+fn sample_atlas(
+    frame: &ValidatedFrame,
+    bounds: [f32; 4],
+    atlas_uv: [f32; 4],
+    center_x: f64,
+    center_y: f64,
+) -> f32 {
+    let Some(atlas) = frame.glyph_atlas() else {
+        return 0.0;
+    };
+    let horizontal = (center_x - f64::from(bounds[0])) / f64::from(bounds[2] - bounds[0]);
+    let vertical = (center_y - f64::from(bounds[1])) / f64::from(bounds[3] - bounds[1]);
+    let u = f64::from(atlas_uv[0]) + horizontal * f64::from(atlas_uv[2] - atlas_uv[0]);
+    let v = f64::from(atlas_uv[1]) + vertical * f64::from(atlas_uv[3] - atlas_uv[1]);
+    let x = (u * f64::from(atlas.width().get())).floor();
+    let y = (v * f64::from(atlas.height().get())).floor();
+    if x < 0.0 || y < 0.0 {
+        return 0.0;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let (x, y) = (x as usize, y as usize);
+    let Ok(width) = usize::try_from(atlas.width().get()) else {
+        return 0.0;
+    };
+    let Ok(height) = usize::try_from(atlas.height().get()) else {
+        return 0.0;
+    };
+    if x >= width || y >= height {
+        return 0.0;
+    }
+    let Some(index) = y.checked_mul(width).and_then(|row| row.checked_add(x)) else {
+        return 0.0;
+    };
+    atlas
+        .pixels()
+        .get(index)
+        .map_or(0.0, |coverage| f32::from(*coverage) / 255.0)
 }
 
 fn validate_oracle_pixel_count(pixels: usize) -> Result<(), OffscreenError> {

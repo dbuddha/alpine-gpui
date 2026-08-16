@@ -18,9 +18,10 @@ use objc2_metal::{
     MTLBlendFactor, MTLBlitCommandEncoder, MTLBuffer, MTLClearColor, MTLCommandBuffer,
     MTLCommandBufferError, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
     MTLCreateSystemDefaultDevice, MTLDevice, MTLFunction, MTLGPUFamily, MTLLibrary, MTLLoadAction,
-    MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResource, MTLResourceOptions, MTLSize,
-    MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
+    MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder,
+    MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResource,
+    MTLResourceOptions, MTLSize, MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor,
+    MTLTextureUsage,
 };
 
 #[cfg(all(feature = "platform-spi", any(test, alpine_native_validation)))]
@@ -350,6 +351,7 @@ struct PendingDrawable {
     _command: CommandBuffer,
     operations: FrameOperationUsage,
     resources: FrameResourceUsage,
+    _atlas: Option<Texture>,
 }
 
 #[cfg(feature = "platform-spi")]
@@ -613,6 +615,7 @@ impl NativeBackend {
             target.pipeline(&self.initialized.pipeline),
             &resources.texture,
             resources.upload.as_deref(),
+            resources.atlas.as_deref(),
             frame,
         ) {
             return NativeRenderAttempt {
@@ -760,8 +763,14 @@ impl NativeBackend {
         else {
             return rejected_drawable(RenderError::AccountingOverflow);
         };
+        let Some(allocated_bytes) = upload
+            .allocated_bytes
+            .checked_add(resources.allocated_atlas_bytes)
+        else {
+            return rejected_drawable(RenderError::AccountingOverflow);
+        };
         let resource_usage = FrameResourceUsage {
-            allocated_bytes: upload.allocated_bytes,
+            allocated_bytes,
             peak_retained_bytes: retained_bytes,
             current_retained_bytes: 0,
             readback_bytes: 0,
@@ -802,6 +811,7 @@ impl NativeBackend {
             target.pipeline(&self.initialized.pipeline),
             texture,
             upload_buffer.as_deref(),
+            resources.atlas.as_deref(),
             frame,
         ) {
             return NativeDrawableSubmitAttempt::Rejected(NativeDrawableAttempt {
@@ -846,6 +856,7 @@ impl NativeBackend {
             _command: command.clone(),
             operations,
             resources: resource_usage,
+            _atlas: resources.atlas,
         });
         command.commit();
         drawable.present();
@@ -1145,6 +1156,7 @@ fn create_pipeline_state(
 
 struct FrameResources {
     texture: Texture,
+    atlas: Option<Texture>,
     readback: Buffer,
     upload: Option<Buffer>,
     usage: FrameResourceUsage,
@@ -1160,12 +1172,14 @@ struct ResourceBuildFailure {
 #[cfg(feature = "platform-spi")]
 struct DrawableResources {
     retained_texture_bytes: usize,
+    allocated_atlas_bytes: usize,
+    atlas: Option<Texture>,
 }
 
 #[cfg(feature = "platform-spi")]
 impl DrawableResources {
     fn new(
-        _device: &Device,
+        device: &Device,
         texture: &ProtocolObject<dyn MTLTexture>,
         frame: &ValidatedFrame,
         expected_pixel_format: MTLPixelFormat,
@@ -1193,8 +1207,22 @@ impl DrawableResources {
             });
         }
 
+        let atlas = create_glyph_atlas(device, frame).map_err(|error| ResourceBuildFailure {
+            error,
+            usage: FrameResourceUsage::default(),
+        })?;
+        let allocated_atlas_bytes = atlas.as_deref().map_or(0, MTLResource::allocatedSize);
+        let retained_texture_bytes = texture
+            .allocatedSize()
+            .checked_add(allocated_atlas_bytes)
+            .ok_or_else(|| ResourceBuildFailure {
+                error: RenderError::AccountingOverflow,
+                usage: FrameResourceUsage::default(),
+            })?;
         Ok(Self {
-            retained_texture_bytes: texture.allocatedSize(),
+            retained_texture_bytes,
+            allocated_atlas_bytes,
+            atlas,
         })
     }
 }
@@ -1258,6 +1286,16 @@ impl FrameResources {
                 usage: FrameResourceUsage::default(),
             })?;
         let texture_bytes = texture.allocatedSize();
+        let atlas = create_glyph_atlas(device, frame).map_err(|error| ResourceBuildFailure {
+            error,
+            usage: FrameResourceUsage {
+                allocated_bytes: texture_bytes,
+                peak_retained_bytes: texture_bytes,
+                current_retained_bytes: 0,
+                readback_bytes: 0,
+            },
+        })?;
+        let atlas_bytes = atlas.as_deref().map_or(0, MTLResource::allocatedSize);
 
         let layout = frame.readback_layout();
         #[cfg(test)]
@@ -1290,13 +1328,13 @@ impl FrameResources {
                 },
             })?;
         let readback_bytes = readback.allocatedSize();
-        let base_allocated =
-            texture_bytes
-                .checked_add(readback_bytes)
-                .ok_or_else(|| ResourceBuildFailure {
-                    error: RenderError::AccountingOverflow,
-                    usage: FrameResourceUsage::default(),
-                })?;
+        let base_allocated = texture_bytes
+            .checked_add(atlas_bytes)
+            .and_then(|bytes| bytes.checked_add(readback_bytes))
+            .ok_or_else(|| ResourceBuildFailure {
+                error: RenderError::AccountingOverflow,
+                usage: FrameResourceUsage::default(),
+            })?;
 
         let upload = if frame.quads().is_empty() {
             None
@@ -1358,6 +1396,7 @@ impl FrameResources {
 
         Ok(Self {
             texture,
+            atlas,
             readback,
             upload,
             usage,
@@ -1373,6 +1412,7 @@ fn encode_render_pass(
     pipeline: &PipelineState,
     texture: &ProtocolObject<dyn MTLTexture>,
     upload: Option<&ProtocolObject<dyn MTLBuffer>>,
+    atlas: Option<&ProtocolObject<dyn MTLTexture>>,
     frame: &ValidatedFrame,
 ) -> Result<(), RenderError> {
     let pass = MTLRenderPassDescriptor::renderPassDescriptor();
@@ -1417,6 +1457,7 @@ fn encode_render_pass(
         // and both the local owner and retained command buffer keep it alive.
         unsafe {
             encoder.setVertexBuffer_offset_atIndex(Some(upload), 0, 1);
+            encoder.setFragmentTexture_atIndex(atlas, 0);
             encoder.drawPrimitives_vertexStart_vertexCount_instanceCount(
                 MTLPrimitiveType::Triangle,
                 0,
@@ -1427,6 +1468,55 @@ fn encode_render_pass(
     }
     encoder.endEncoding();
     Ok(())
+}
+
+fn create_glyph_atlas(
+    device: &Device,
+    frame: &ValidatedFrame,
+) -> Result<Option<Texture>, RenderError> {
+    let Some(atlas) = frame.glyph_atlas() else {
+        return Ok(None);
+    };
+    // SAFETY: Scene atlas dimensions are nonzero and match the tightly packed
+    // owned pixel allocation validated before frame lowering.
+    let descriptor = unsafe {
+        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            MTLPixelFormat::R8Unorm,
+            atlas.width().get() as usize,
+            atlas.height().get() as usize,
+            false,
+        )
+    };
+    descriptor.setStorageMode(MTLStorageMode::Shared);
+    descriptor.setUsage(MTLTextureUsage::ShaderRead);
+    let texture =
+        device
+            .newTextureWithDescriptor(&descriptor)
+            .ok_or(RenderError::ResourceUnavailable {
+                stage: RenderStage::RenderTexture,
+                requested_bytes: Some(atlas.pixels().len()),
+            })?;
+    let region = MTLRegion {
+        origin: MTLOrigin { x: 0, y: 0, z: 0 },
+        size: MTLSize {
+            width: atlas.width().get() as usize,
+            height: atlas.height().get() as usize,
+            depth: 1,
+        },
+    };
+    let pixels = NonNull::new(atlas.pixels().as_ptr().cast_mut().cast::<c_void>())
+        .ok_or(RenderError::SubmissionInvariantViolated)?;
+    // SAFETY: The source covers exactly width times height bytes, row bytes
+    // equal width, and the destination is a same-sized single-level R8 texture.
+    unsafe {
+        texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+            region,
+            0,
+            pixels,
+            atlas.width().get() as usize,
+        );
+    }
+    Ok(Some(texture))
 }
 
 fn encode_readback(
@@ -2591,16 +2681,16 @@ pub(crate) mod tests {
             (
                 NativeFault::CommandBuffer,
                 RenderStage::CommandBuffer,
-                96,
+                144,
                 0,
             ),
             (
                 NativeFault::RenderEncoder,
                 RenderStage::RenderEncoder,
-                96,
+                144,
                 0,
             ),
-            (NativeFault::BlitEncoder, RenderStage::BlitEncoder, 96, 1),
+            (NativeFault::BlitEncoder, RenderStage::BlitEncoder, 144, 1),
         ];
 
         for (fault, expected_stage, uploaded_bytes, draw_calls) in cases {
