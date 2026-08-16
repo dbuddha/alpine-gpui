@@ -411,6 +411,10 @@ fn cache_budget_atlas_geometry_and_error_evidence_are_complete() -> Result<(), B
         no_region.insert(GlyphKey::new(font()?, 4, 0), &pixel),
         Err(LayoutError::AtlasSaturated)
     );
+    assert_eq!(
+        GlyphAtlas::new(growth_budget).insert_miss(GlyphKey::new(font()?, 40, 0), &pixel, 0,),
+        Err(LayoutError::AtlasSaturated)
+    );
     assert_eq!(GlyphAtlas::new(modest_budget).evict_oldest(), Ok(false));
     assert_eq!(
         GlyphAtlas::new(modest_budget).grow(u32::MAX),

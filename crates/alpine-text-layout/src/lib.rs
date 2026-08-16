@@ -1033,6 +1033,15 @@ impl GlyphAtlas {
             .len()
             .checked_add(u32::BITS as usize)
             .ok_or(LayoutError::ArithmeticOverflow)?;
+        self.insert_miss(key, bitmap, attempts)
+    }
+
+    fn insert_miss(
+        &mut self,
+        key: GlyphKey,
+        bitmap: &GlyphBitmap,
+        attempts: usize,
+    ) -> Result<AtlasRect, LayoutError> {
         for _ in 0..attempts {
             reserve(&mut self.entries, 1)?;
             reserve(&mut self.free, 2)?;
@@ -1138,21 +1147,16 @@ impl GlyphAtlas {
     }
 
     fn grow(&mut self, minimum: u32) -> Result<bool, LayoutError> {
-        let mut next = NonZeroU32::new(self.dimension).map_or(Ok(256), |dimension| {
+        let geometric = NonZeroU32::new(self.dimension).map_or(Ok(256), |dimension| {
             dimension
                 .get()
                 .checked_mul(2)
                 .ok_or(LayoutError::ArithmeticOverflow)
         })?;
-        for _ in 0..u32::BITS {
-            if next >= minimum {
-                break;
-            }
-            next = next.checked_mul(2).ok_or(LayoutError::ArithmeticOverflow)?;
-        }
-        if next < minimum {
-            return Err(LayoutError::ArithmeticOverflow);
-        }
+        let required = minimum
+            .checked_next_power_of_two()
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        let next = geometric.max(required);
         let pixel_bytes = usize_from_u32(next)
             .checked_mul(usize_from_u32(next))
             .ok_or(LayoutError::ArithmeticOverflow)?;
