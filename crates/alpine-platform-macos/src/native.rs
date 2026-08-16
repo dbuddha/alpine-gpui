@@ -2,14 +2,14 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 use std::{ffi::c_void, ptr::NonNull};
 
 #[cfg(alpine_native_validation)]
-use std::{
-    cell::Cell,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, rc::Retained};
 use objc2::{MainThreadMarker, runtime::ProtocolObject};
@@ -44,13 +44,14 @@ use alpine_scene::Scene;
 use block2::RcBlock;
 
 use crate::{
-    FrameTerminalEvidence, SURFACE_CLOSING, SURFACE_LIVE, SdrColorContract, SurfaceConfiguration,
-    SurfaceDescriptor, SurfaceError, SurfaceLifecycle, SurfaceObserver, SurfaceSnapshot,
-    SurfaceStage, begin_close_observer_state, finish_close_observer_state, new_observer_state,
-    presentation_visible,
+    EventTimestamp, FrameTerminalEvidence, SURFACE_CLOSING, SURFACE_LIVE, SdrColorContract,
+    SurfaceConfiguration, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceFrame,
+    SurfaceLifecycle, SurfaceObserver, SurfaceSnapshot, SurfaceStage, begin_close_observer_state,
+    finish_close_observer_state, new_observer_state, presentation_visible,
 };
 
 type Device = Retained<ProtocolObject<dyn MTLDevice>>;
+type SurfaceEventHandler = Box<dyn FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static>;
 
 #[cfg(alpine_native_validation)]
 const NATIVE_OWNER_KINDS: usize = 9;
@@ -977,8 +978,7 @@ impl PresentationDriver {
         self.last_error.take()
     }
 
-    #[cfg(alpine_native_validation)]
-    fn inject_error(&mut self, error: SurfaceError) {
+    fn record_error(&mut self, error: SurfaceError) {
         self.last_error = Some(error);
     }
 
@@ -1156,6 +1156,8 @@ struct DisplayLinkDelegateIvars {
     view: Option<Retained<NSView>>,
     layer: Option<Retained<CAMetalLayer>>,
     display_link: Option<Retained<CAMetalDisplayLink>>,
+    event_handler: RefCell<Option<SurfaceEventHandler>>,
+    event_sequence: Cell<u64>,
     #[cfg(alpine_native_validation)]
     validation_probe: Option<InitializationProbe>,
 }
@@ -1249,6 +1251,22 @@ define_class!(
             let _ = self.synchronize_native_configuration_from_callback();
         }
 
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &NSNotification) {
+            self.dispatch_callback_event(SurfaceEvent::Focus {
+                timestamp: self.next_event_timestamp(),
+                focused: true,
+            });
+        }
+
+        #[unsafe(method(windowDidResignKey:))]
+        fn window_did_resign_key(&self, _notification: &NSNotification) {
+            self.dispatch_callback_event(SurfaceEvent::Focus {
+                timestamp: self.next_event_timestamp(),
+                focused: false,
+            });
+        }
+
         #[unsafe(method(windowDidChangeScreen:))]
         fn window_did_change_screen(&self, _notification: &NSNotification) {
             let _ = self.synchronize_native_configuration_from_callback();
@@ -1276,6 +1294,9 @@ define_class!(
 
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, _notification: &NSNotification) {
+            self.dispatch_callback_event(SurfaceEvent::CloseRequested {
+                timestamp: self.next_event_timestamp(),
+            });
             self.begin_native_close();
         }
     }
@@ -1351,7 +1372,83 @@ impl DisplayLinkDelegate {
             .map_err(|_| SurfaceError::DriverUnavailable)?
             .apply_configuration(configuration)?;
         apply_display_link_directive(display_link, directive);
+        let extent = crate::SurfaceExtent::new(
+            configuration.logical_width,
+            configuration.logical_height,
+            configuration.scale,
+        )?;
+        self.dispatch_surface_event(SurfaceEvent::Resize {
+            timestamp: self.next_event_timestamp(),
+            extent,
+        })?;
         Ok(())
+    }
+
+    fn next_event_timestamp(&self) -> EventTimestamp {
+        let next = self.ivars().event_sequence.get().saturating_add(1);
+        self.ivars().event_sequence.set(next);
+        EventTimestamp::new(next)
+    }
+
+    fn install_event_handler<F>(&self, handler: F) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+    {
+        let mut installed = self
+            .ivars()
+            .event_handler
+            .try_borrow_mut()
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        if installed.is_some() {
+            return Err(SurfaceError::DriverUnavailable);
+        }
+        *installed = Some(Box::new(handler));
+        Ok(())
+    }
+
+    fn clear_event_handler(&self) {
+        if let Ok(mut installed) = self.ivars().event_handler.try_borrow_mut() {
+            installed.take();
+        }
+    }
+
+    fn dispatch_surface_event(&self, event: SurfaceEvent) -> Result<(), SurfaceError> {
+        let frame = {
+            let mut installed = self
+                .ivars()
+                .event_handler
+                .try_borrow_mut()
+                .map_err(|_| SurfaceError::DriverUnavailable)?;
+            installed.as_mut().and_then(|handler| handler(event))
+        };
+        let Some(frame) = frame else {
+            return Ok(());
+        };
+        let (scene, clear) = frame.into_parts();
+        let (_, directive) = self
+            .ivars()
+            .driver
+            .as_ref()
+            .ok_or(SurfaceError::DriverUnavailable)?
+            .try_borrow_mut()
+            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .request_frame(scene, clear)?;
+        let display_link = self
+            .ivars()
+            .display_link
+            .as_ref()
+            .ok_or(SurfaceError::DriverUnavailable)?;
+        apply_display_link_directive(display_link, directive);
+        Ok(())
+    }
+
+    fn dispatch_callback_event(&self, event: SurfaceEvent) {
+        if let Err(error) = self.dispatch_surface_event(event)
+            && let Some(driver) = &self.ivars().driver
+            && let Ok(mut driver) = driver.try_borrow_mut()
+        {
+            driver.record_error(error);
+        }
     }
 
     fn begin_native_close(&self) {
@@ -1713,6 +1810,8 @@ impl NativeSurface {
                 view: builder.view.clone(),
                 layer: builder.layer.clone(),
                 display_link: builder.display_link.clone(),
+                event_handler: RefCell::new(None),
+                event_sequence: Cell::new(0),
                 #[cfg(alpine_native_validation)]
                 validation_probe: builder.validation_probe.clone(),
             },
@@ -1791,6 +1890,37 @@ impl NativeSurface {
             Some(error) => Err(error),
             None => Ok(()),
         }
+    }
+
+    pub(crate) fn run_with_event_handler<F>(&self, handler: F) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+    {
+        self.delegate.install_event_handler(handler)?;
+        let wake_result = self.delegate.dispatch_surface_event(SurfaceEvent::Wake {
+            timestamp: self.delegate.next_event_timestamp(),
+        });
+        let run_result = wake_result.and_then(|()| self.run());
+        self.delegate.clear_event_handler();
+        run_result
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn replay_surface_events<F>(
+        &self,
+        events: &[SurfaceEvent],
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+    {
+        self.delegate.install_event_handler(handler)?;
+        let result = events
+            .iter()
+            .cloned()
+            .try_for_each(|event| self.delegate.dispatch_surface_event(event));
+        self.delegate.clear_event_handler();
+        result
     }
 
     pub(crate) fn request_frame(
@@ -1987,7 +2117,7 @@ impl NativeSurface {
     #[cfg(alpine_native_validation)]
     pub(crate) fn inject_driver_error(&self, error: SurfaceError) {
         if let Ok(mut driver) = self.driver.try_borrow_mut() {
-            driver.inject_error(error);
+            driver.record_error(error);
         }
     }
 

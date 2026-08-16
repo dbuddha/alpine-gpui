@@ -10,6 +10,7 @@ license-file.workspace = true
 [dependencies]
 alpine-core = { path = "../../crates/alpine-core", version = "=0.0.0" }
 alpine-platform-macos = { path = "../../crates/alpine-platform-macos", version = "=0.0.0" }
+alpine-runtime = { path = "../../crates/alpine-runtime", version = "=0.0.0" }
 alpine-scene = { path = "../../crates/alpine-scene", version = "=0.0.0" }
 
 [lints.rust]

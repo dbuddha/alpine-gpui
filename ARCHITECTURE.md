@@ -5,7 +5,7 @@ designs remain in linked GitHub issues until code makes them current.
 
 ## Implemented system
 
-The workspace currently has six Rust shipping library crates and one shipping
+The workspace currently has seven Rust shipping library crates and one shipping
 application crate. `alpine-core`,
 `alpine-scene`, `alpine-renderer`, and `alpine-platform` are fully safe and have
 no external dependencies. `alpine-core` has no workspace dependencies.
@@ -23,9 +23,16 @@ narrowly featured `objc2-core-graphics` binding to own a standard sRGB color
 space. Its safe application API exposes no native handle,
 remains available on other targets, and returns a structured
 unsupported-platform error without linking Apple frameworks.
+`alpine-runtime` depends on core, scene, and the safe cross-target
+`alpine-platform-macos` facade. It owns one foreground application delegate,
+monotonic workspace and document revisions, dirty-only scene construction, and
+fixed standard worker threads connected by bounded request and result channels.
+Every result carries workspace, document, and process-local sequence identity;
+stale results are rejected before delegate mutation. The runtime exposes no
+native handle and adds no general async executor or reactive graph.
 `alpine-studio` is the first shipping application. It constructs one immutable
-scene through public Alpine values, owns one `NativeSurface`, requests one
-demand-driven frame, and enters the production AppKit run loop until that
+scene through its `AppDelegate`, runs it through one `Application`, requests
+frames only while dirty, and enters the production AppKit run loop until that
 window closes. It has no native handles or validation-only dependencies.
 The non-shipping `alpine-trace` crate depends only on Alpine workspace crates
 and owns typed, fail-closed conversion from versioned workload values into an
@@ -54,6 +61,7 @@ flowchart LR
     scene["alpine-scene<br/>SceneRevision, Primitive, SceneBuilder, Scene"]
     renderer["alpine-renderer<br/>Renderer, capabilities, FrameReport"]
     platform["alpine-platform<br/>portable presentation lifecycle"]
+    runtime["alpine-runtime<br/>single-window state and bounded workers"]
     macos["alpine-platform-macos<br/>safe native surface owner"]
     metal["alpine-metal safe boundary<br/>validation, pixels, FrameReport"]
     native["Private Direct Metal specialization<br/>linear and sRGB pipelines, submission, readback"]
@@ -62,6 +70,8 @@ flowchart LR
 
     core --> scene --> renderer
     platform -->|"drives presentation transitions"| macos
+    macos --> runtime
+    scene --> runtime
     macos -->|"target-only device and drawable SPI"| metal
     core --> metal
     scene --> metal
@@ -71,6 +81,7 @@ flowchart LR
     caller -. "constructs values" .-> core
     caller -. "builds immutable snapshot" .-> scene
     caller -. "invokes" .-> renderer
+    caller -. "owns delegate" .-> runtime
     assurance --> trace
     trace -. "constructs exact inputs" .-> core
     trace -. "constructs exact inputs" .-> scene

@@ -64,3 +64,7 @@ harness = false
 [[test]]
 name = "native_lifecycle"
 harness = false
+
+[[test]]
+name = "native_runtime"
+harness = false

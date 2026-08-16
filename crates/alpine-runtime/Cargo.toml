@@ -1,0 +1,16 @@
+[package]
+name = "alpine-runtime"
+version.workspace = true
+description = "Bounded single-window Alpine application runtime"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[dependencies]
+alpine-core = { path = "../alpine-core", version = "=0.0.0" }
+alpine-platform-macos = { path = "../alpine-platform-macos", version = "=0.0.0" }
+alpine-scene = { path = "../alpine-scene", version = "=0.0.0" }
+
+[lints]
+workspace = true
