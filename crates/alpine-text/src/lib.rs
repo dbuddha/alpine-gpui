@@ -399,13 +399,7 @@ impl BufferSnapshot {
     /// Returns a structured bounds or UTF-8 boundary error.
     pub fn slice(&self, range: Range<usize>) -> Result<String, TextError> {
         self.validate_range(&range)?;
-        self.rope
-            .get_byte_slice(range.clone())
-            .map(|slice| slice.to_string())
-            .ok_or(TextError::InvalidEditRange {
-                start: range.start,
-                end: range.end,
-            })
+        Ok(self.rope.byte_slice(range).to_string())
     }
 
     /// Returns whether an offset is an in-bounds UTF-8 character boundary.
@@ -414,11 +408,8 @@ impl BufferSnapshot {
         if offset.0 > self.len_bytes() {
             return false;
         }
-        self.rope.try_byte_to_char(offset.0).is_ok_and(|character| {
-            self.rope
-                .try_char_to_byte(character)
-                .is_ok_and(|round_trip| round_trip == offset.0)
-        })
+        let character = self.rope.byte_to_char(offset.0);
+        self.rope.char_to_byte(character) == offset.0
     }
 
     /// Converts a canonical byte offset to a line and byte column.
@@ -429,18 +420,17 @@ impl BufferSnapshot {
     pub fn line_column_of_byte(&self, offset: ByteOffset) -> Result<LineColumn, TextError> {
         self.validate_offset(offset.0)?;
         let text = self.text();
+        let mut result = LineColumn::new(0, offset.0);
         for (line, bounds) in LineBounds::all(&text).enumerate() {
             if offset.0 <= bounds.content_end {
-                return Ok(LineColumn::new(line, offset.0 - bounds.start));
+                result = LineColumn::new(line, offset.0 - bounds.start);
+                break;
             }
             if offset.0 < bounds.next_start {
                 return Err(TextError::InvalidByteBoundary { offset: offset.0 });
             }
         }
-        Err(TextError::ByteOutOfBounds {
-            offset: offset.0,
-            len: text.len(),
-        })
+        Ok(result)
     }
 
     /// Converts a line and byte column to a canonical byte offset.
@@ -816,6 +806,7 @@ impl Buffer {
         });
         let snapshot = self.snapshot();
         let mut prior: Option<&Edit> = None;
+        let mut character_ranges = Vec::with_capacity(transaction.edits.len());
         let mut removed_bytes = 0_usize;
         let mut inserted_bytes = 0_usize;
         for edit in &transaction.edits {
@@ -829,6 +820,10 @@ impl Buffer {
                     end: edit.range.end,
                 });
             }
+            character_ranges.push(
+                snapshot.rope.byte_to_char(edit.range.start)
+                    ..snapshot.rope.byte_to_char(edit.range.end),
+            );
             removed_bytes = removed_bytes.saturating_add(edit.range.len());
             inserted_bytes = inserted_bytes.saturating_add(edit.replacement.len());
             prior = Some(edit);
@@ -839,22 +834,12 @@ impl Buffer {
             selections: self.selections.clone(),
         };
         let mut next_rope = self.rope.clone();
-        for edit in transaction.edits.iter().rev() {
-            let start = next_rope.try_byte_to_char(edit.range.start).map_err(|_| {
-                TextError::InvalidByteBoundary {
-                    offset: edit.range.start,
-                }
-            })?;
-            let end = next_rope.try_byte_to_char(edit.range.end).map_err(|_| {
-                TextError::InvalidByteBoundary {
-                    offset: edit.range.end,
-                }
-            })?;
-            if start != end {
-                next_rope.remove(start..end);
+        for (edit, character_range) in transaction.edits.iter().zip(character_ranges).rev() {
+            if !character_range.is_empty() {
+                next_rope.remove(character_range.clone());
             }
             if !edit.replacement.is_empty() {
-                next_rope.insert(start, &edit.replacement);
+                next_rope.insert(character_range.start, &edit.replacement);
             }
         }
         let next_snapshot = BufferSnapshot {
@@ -950,8 +935,6 @@ impl Buffer {
         {
             if let Some(evicted) = self.undo.pop_front() {
                 self.history_bytes = self.history_bytes.saturating_sub(evicted.changed_bytes);
-            } else {
-                break;
             }
         }
     }
@@ -1054,9 +1037,11 @@ impl Editor {
     /// Reports read errors and invalid UTF-8 without creating editor state.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, FileError> {
         let path = path.as_ref().to_path_buf();
-        let bytes = fs::read(&path).map_err(|error| file_io("read", &error))?;
+        let bytes = file_result(fs::read(&path), "read")?;
         let accepted_fingerprint = fingerprint(&bytes);
-        let text = String::from_utf8(bytes).map_err(|_| FileError::InvalidUtf8)?;
+        let Ok(text) = String::from_utf8(bytes) else {
+            return Err(FileError::InvalidUtf8);
+        };
         Ok(Self {
             path,
             buffer: Buffer::new(&text),
@@ -1119,8 +1104,9 @@ impl Editor {
         }
         let snapshot = self.buffer.snapshot();
         let accepted = self.accepted_fingerprint;
-        atomic_replace(&self.path, accepted, |file| snapshot.write_to(file))?;
-        let bytes = fs::read(&self.path).map_err(|error| file_io("verify", &error))?;
+        let mut write_snapshot = |file: &mut File| snapshot.write_to(file);
+        atomic_replace(&self.path, accepted, &mut write_snapshot)?;
+        let bytes = file_result(fs::read(&self.path), "verify")?;
         self.accepted_fingerprint = fingerprint(&bytes);
         self.saved_revision = snapshot.revision;
         Ok(SaveReport {
@@ -1256,24 +1242,35 @@ fn file_io(operation: &'static str, error: &io::Error) -> FileError {
     }
 }
 
+fn file_result<T>(result: io::Result<T>, operation: &'static str) -> Result<T, FileError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(file_io(operation, &error)),
+    }
+}
+
+type FileWriter<'a> = dyn FnMut(&mut File) -> io::Result<()> + 'a;
+
 #[cfg(target_family = "windows")]
-fn atomic_replace<F>(_path: &Path, _accepted: FileFingerprint, _write: F) -> Result<(), FileError>
-where
-    F: FnOnce(&mut File) -> io::Result<()>,
-{
+fn atomic_replace(
+    _path: &Path,
+    _accepted: FileFingerprint,
+    _write: &mut FileWriter<'_>,
+) -> Result<(), FileError> {
     Err(FileError::UnsupportedAtomicReplace)
 }
 
 #[cfg(not(target_family = "windows"))]
-fn atomic_replace<F>(path: &Path, accepted: FileFingerprint, write: F) -> Result<(), FileError>
-where
-    F: FnOnce(&mut File) -> io::Result<()>,
-{
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+fn atomic_replace(
+    path: &Path,
+    accepted: FileFingerprint,
+    write: &mut FileWriter<'_>,
+) -> Result<(), FileError> {
     let file_name = path.file_name().ok_or(FileError::Io {
         operation: "temporary-name",
         kind: io::ErrorKind::InvalidInput,
     })?;
+    let parent = path.with_file_name("");
     let mut created: Option<(PathBuf, File)> = None;
     for _ in 0..TEMPORARY_FILE_ATTEMPTS {
         let sequence = TEMPORARY_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1294,37 +1291,40 @@ where
             Err(error) => return Err(file_io("create-temporary", &error)),
         }
     }
-    let (temporary_path, mut temporary_file) = created.ok_or(FileError::Io {
+    let (temporary_path, temporary_file) = created.ok_or(FileError::Io {
         operation: "create-temporary",
         kind: io::ErrorKind::AlreadyExists,
     })?;
-
-    let operation = (|| {
-        let permissions = fs::metadata(path)
-            .map_err(|error| file_io("metadata", &error))?
-            .permissions();
-        fs::set_permissions(&temporary_path, permissions)
-            .map_err(|error| file_io("permissions", &error))?;
-        write(&mut temporary_file).map_err(|error| file_io("write", &error))?;
-        temporary_file
-            .flush()
-            .map_err(|error| file_io("flush", &error))?;
-        temporary_file
-            .sync_all()
-            .map_err(|error| file_io("sync", &error))?;
-        drop(temporary_file);
-        let current = fs::read(path).map_err(|error| file_io("conflict-check", &error))?;
-        if fingerprint(&current) != accepted {
-            return Err(FileError::Conflict(ExternalChange::Modified));
-        }
-        fs::rename(&temporary_path, path).map_err(|error| file_io("replace", &error))?;
-        Ok(())
-    })();
+    let operation = finish_atomic_replace(path, accepted, &temporary_path, temporary_file, write);
 
     if operation.is_err() {
         let _ = fs::remove_file(&temporary_path);
     }
     operation
+}
+
+#[cfg(not(target_family = "windows"))]
+fn finish_atomic_replace(
+    path: &Path,
+    accepted: FileFingerprint,
+    temporary_path: &Path,
+    mut temporary_file: File,
+    write: &mut FileWriter<'_>,
+) -> Result<(), FileError> {
+    let permissions = file_result(fs::metadata(path), "metadata")?.permissions();
+    file_result(write(&mut temporary_file), "write")?;
+    file_result(temporary_file.flush(), "flush")?;
+    file_result(temporary_file.sync_all(), "sync")?;
+    drop(temporary_file);
+    file_result(
+        fs::set_permissions(temporary_path, permissions),
+        "permissions",
+    )?;
+    let current = file_result(fs::read(path), "conflict-check")?;
+    if fingerprint(&current) != accepted {
+        return Err(FileError::Conflict(ExternalChange::Modified));
+    }
+    file_result(fs::rename(temporary_path, path), "replace")
 }
 
 #[cfg(test)]
@@ -1345,12 +1345,16 @@ mod tests {
         usize::from(u16::from_le_bytes([bytes[0], bytes[1]])) % len
     }
 
-    fn test_directory() -> Result<PathBuf, FileError> {
+    fn test_directory() -> Result<PathBuf, Box<dyn std::error::Error>> {
         let sequence = TEST_PATH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path =
             std::env::temp_dir().join(format!("alpine-text-{}-{sequence}", std::process::id()));
-        fs::create_dir(&path).map_err(|error| file_io("test-directory", &error))?;
+        fs::create_dir(&path)?;
         Ok(path)
+    }
+
+    fn write_nothing(file: &mut File) -> io::Result<()> {
+        file.write_all(&[])
     }
 
     #[test]
@@ -1385,10 +1389,9 @@ mod tests {
     fn transaction_overlap_and_selection_transform_are_deterministic() -> Result<(), TextError> {
         let mut buffer = Buffer::new("abcdef");
         let mut selections = Transaction::new(buffer.revision());
-        selections.set_selections(SelectionSet::new(vec![Selection::new(
-            ByteOffset::new(2),
-            ByteOffset::new(5),
-        )])?);
+        selections.set_selections(SelectionSet {
+            selections: vec![Selection::new(ByteOffset::new(2), ByteOffset::new(5))],
+        });
         buffer.apply(selections)?;
 
         let mut edit = Transaction::new(buffer.revision());
@@ -1503,6 +1506,7 @@ mod tests {
         let replace = transaction(editor.buffer(), 0..6, "after");
         editor.buffer_mut().apply(replace)?;
         let report = editor.save()?;
+        assert_eq!(report.revision(), editor.buffer().revision());
         assert_eq!(report.bytes_written(), 5);
         assert_eq!(fs::read_to_string(&path)?, "after");
         assert!(!editor.is_dirty());
@@ -1528,9 +1532,9 @@ mod tests {
         let path = directory.join("document.txt");
         fs::write(&path, "accepted")?;
         let accepted = fingerprint(b"accepted");
-        let result = atomic_replace(&path, accepted, |_file| {
-            Err(io::Error::new(io::ErrorKind::StorageFull, "injected"))
-        });
+        let mut fail_write =
+            |_file: &mut File| Err(io::Error::new(io::ErrorKind::StorageFull, "injected"));
+        let result = atomic_replace(&path, accepted, &mut fail_write);
         assert!(matches!(
             result,
             Err(FileError::Io {
@@ -1554,6 +1558,331 @@ mod tests {
         assert_eq!(snapshot.slice(0..4)?, "line");
         assert_eq!(buffer.snapshot().slice(0..3)?, "row");
         assert!(buffer.history_snapshot().retained_changed_bytes() <= 7);
+        Ok(())
+    }
+
+    #[test]
+    fn public_value_observers_are_discriminating() {
+        let offset = ByteOffset::new(7);
+        assert_eq!(offset.get(), 7);
+        let line_column = LineColumn::new(3, 5);
+        assert_eq!(line_column.line(), 3);
+        assert_eq!(line_column.byte_column(), 5);
+        let lsp = LspPosition::new(4, 6);
+        assert_eq!(lsp.line(), 4);
+        assert_eq!(lsp.utf16_column(), 6);
+
+        let directional = Selection::new(ByteOffset::new(5), ByteOffset::new(2));
+        assert_eq!(directional.anchor(), ByteOffset::new(5));
+        assert_eq!(directional.head(), ByteOffset::new(2));
+        assert_eq!(directional.range(), 2..5);
+        assert_eq!(
+            SelectionSet::new(Vec::new()),
+            Err(TextError::EmptySelectionSet)
+        );
+        assert_eq!(
+            SelectionSet::new(vec![
+                directional,
+                Selection::caret(ByteOffset::new(1)),
+                directional,
+            ])
+            .map(|set| set.selections),
+            Ok(vec![Selection::caret(ByteOffset::new(1)), directional])
+        );
+
+        let limits = HistoryLimits::new(12, 34);
+        assert_eq!(limits.max_entries(), 12);
+        assert_eq!(limits.max_bytes(), 34);
+        let empty = Buffer::with_history_limits("", limits);
+        let empty_snapshot = empty.snapshot();
+        assert_eq!(empty_snapshot.revision(), BufferRevision::INITIAL);
+        assert!(empty_snapshot.is_empty());
+        assert_eq!(empty_snapshot.text(), "");
+        assert!(format!("{empty_snapshot:?}").contains("len_bytes: 0"));
+        assert!(format!("{empty:?}").contains("HistorySnapshot"));
+        assert_eq!(empty.history_snapshot().max_entries(), 12);
+        assert_eq!(empty.history_snapshot().max_bytes(), 34);
+        assert_eq!(empty.history_snapshot().redo_entries(), 0);
+    }
+
+    #[test]
+    fn coordinate_errors_and_change_reports_are_discriminating() -> Result<(), TextError> {
+        let snapshot = Buffer::new("a😀\r\nb").snapshot();
+        assert!(!snapshot.is_char_boundary(ByteOffset::new(99)));
+        assert!(matches!(
+            snapshot.slice(2..3),
+            Err(TextError::InvalidByteBoundary { offset: 2 })
+        ));
+        assert!(matches!(
+            snapshot.slice(std::ops::Range { start: 5, end: 4 }),
+            Err(TextError::InvalidEditRange { start: 5, end: 4 })
+        ));
+        assert!(matches!(
+            snapshot.byte_of_line_column(LineColumn::new(9, 0)),
+            Err(TextError::LineOutOfBounds { line: 9, .. })
+        ));
+        assert!(matches!(
+            snapshot.byte_of_line_column(LineColumn::new(1, usize::MAX)),
+            Err(TextError::InvalidLineColumn(_))
+        ));
+        assert!(matches!(
+            snapshot.byte_of_line_column(LineColumn::new(0, 2)),
+            Err(TextError::InvalidLineColumn(_))
+        ));
+        assert!(matches!(
+            snapshot.byte_of_lsp_position(LspPosition::new(9, 0)),
+            Err(TextError::LineOutOfBounds { line: 9, .. })
+        ));
+        assert!(matches!(
+            snapshot.byte_of_appkit_utf16(999),
+            Err(TextError::InvalidUtf16Boundary { offset: 999 })
+        ));
+        assert_eq!(
+            snapshot.byte_of_appkit_utf16(snapshot.text().encode_utf16().count())?,
+            ByteOffset::new(snapshot.len_bytes())
+        );
+        assert_eq!(
+            snapshot.line_column_of_byte(ByteOffset::new(snapshot.len_bytes()))?,
+            LineColumn::new(1, 1)
+        );
+        let grapheme_count = snapshot.text().graphemes(true).count();
+        assert_eq!(
+            snapshot.grapheme_index_of_byte(ByteOffset::new(snapshot.len_bytes()))?,
+            grapheme_count
+        );
+        assert_eq!(snapshot.byte_of_grapheme_index(1)?, ByteOffset::new(1));
+        assert_eq!(
+            snapshot.byte_of_grapheme_index(grapheme_count)?,
+            ByteOffset::new(snapshot.len_bytes())
+        );
+        assert!(matches!(
+            snapshot.byte_of_grapheme_index(grapheme_count + 1),
+            Err(TextError::ByteOutOfBounds { .. })
+        ));
+        assert!(format!("{}", TextError::RevisionExhausted).contains("RevisionExhausted"));
+
+        let mut reversed = Transaction::new(BufferRevision::INITIAL);
+        assert_eq!(
+            reversed.replace(std::ops::Range { start: 2, end: 1 }, "x"),
+            Err(TextError::InvalidEditRange { start: 2, end: 1 })
+        );
+        assert_eq!(reversed.base_revision(), BufferRevision::INITIAL);
+
+        let mut buffer = Buffer::new("abc");
+        let report = buffer.apply(transaction(&buffer, 1..2, "XYZ"))?;
+        assert_eq!(report.replacements(), 1);
+        assert_eq!(report.removed_bytes(), 1);
+        assert_eq!(report.inserted_bytes(), 3);
+        assert_eq!(report.before(), BufferRevision::INITIAL);
+        assert_eq!(report.after(), buffer.revision());
+        Ok(())
+    }
+
+    #[test]
+    fn revision_exhaustion_history_limits_and_redo_invalidation_are_bounded()
+    -> Result<(), TextError> {
+        let mut exhausted = Buffer::new("a");
+        exhausted.revision = BufferRevision(u64::MAX);
+        let rejected = Transaction::new(exhausted.revision());
+        assert_eq!(exhausted.apply(rejected), Err(TextError::RevisionExhausted));
+
+        let mut undo_exhausted = Buffer::new("a");
+        undo_exhausted.apply(transaction(&undo_exhausted, 1..1, "b"))?;
+        undo_exhausted.revision = BufferRevision(u64::MAX);
+        assert_eq!(undo_exhausted.undo(), Err(TextError::RevisionExhausted));
+        assert_eq!(undo_exhausted.history_snapshot().undo_entries(), 1);
+
+        undo_exhausted.revision = BufferRevision(10);
+        assert!(undo_exhausted.undo()?);
+        undo_exhausted.revision = BufferRevision(u64::MAX);
+        assert_eq!(undo_exhausted.redo(), Err(TextError::RevisionExhausted));
+        assert_eq!(undo_exhausted.history_snapshot().redo_entries(), 1);
+        undo_exhausted.revision = BufferRevision(20);
+        assert!(undo_exhausted.redo()?);
+        assert!(!undo_exhausted.redo()?);
+
+        let mut no_entries = Buffer::with_history_limits("a", HistoryLimits::new(0, 10));
+        no_entries.apply(transaction(&no_entries, 1..1, "b"))?;
+        assert_eq!(no_entries.history_snapshot().undo_entries(), 0);
+        let mut no_bytes = Buffer::with_history_limits("a", HistoryLimits::new(10, 0));
+        no_bytes.apply(transaction(&no_bytes, 1..1, "b"))?;
+        assert_eq!(no_bytes.history_snapshot().undo_entries(), 0);
+        let mut oversized = Buffer::with_history_limits("a", HistoryLimits::new(10, 1));
+        oversized.apply(transaction(&oversized, 1..1, "bc"))?;
+        assert_eq!(oversized.history_snapshot().undo_entries(), 0);
+
+        let mut invalidated = Buffer::new("a");
+        invalidated.apply(transaction(&invalidated, 1..1, "b"))?;
+        assert!(invalidated.undo()?);
+        assert_eq!(invalidated.history_snapshot().redo_entries(), 1);
+        invalidated.apply(transaction(&invalidated, 0..1, "A"))?;
+        assert_eq!(invalidated.history_snapshot().redo_entries(), 0);
+        assert_eq!(invalidated.history_snapshot().retained_changed_bytes(), 2);
+
+        let edits = [Edit {
+            range: 2..2,
+            replacement: String::from("xy"),
+        }];
+        assert_eq!(transform_offset(1, &edits), 1);
+        assert_eq!(transform_offset(2, &edits), 4);
+        assert_eq!(transform_offset(4, &edits), 6);
+        let removal = [Edit {
+            range: 1..3,
+            replacement: String::new(),
+        }];
+        assert_eq!(transform_offset(1, &removal), 1);
+        assert_eq!(transform_offset(2, &removal), 1);
+        assert_eq!(transform_offset(4, &removal), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn every_supported_line_terminator_maps_to_the_next_line() -> Result<(), TextError> {
+        for terminator in ["\r", "\n", "\u{0085}", "\u{2028}", "\u{2029}"] {
+            let text = format!("a{terminator}b");
+            let snapshot = Buffer::new(&text).snapshot();
+            assert_eq!(
+                snapshot.byte_of_line_column(LineColumn::new(1, 1))?,
+                ByteOffset::new(text.len())
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_family = "windows"))]
+    #[test]
+    fn file_observers_and_atomic_replace_failures_are_structured()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = test_directory()?;
+        let missing = directory.join("missing.txt");
+        assert!(matches!(
+            Editor::open(&missing),
+            Err(FileError::Io {
+                operation: "read",
+                kind: io::ErrorKind::NotFound,
+            })
+        ));
+        let invalid_utf8 = directory.join("invalid.txt");
+        fs::write(&invalid_utf8, [0xff])?;
+        assert!(matches!(
+            Editor::open(&invalid_utf8),
+            Err(FileError::InvalidUtf8)
+        ));
+
+        let path = directory.join("document.txt");
+        fs::write(&path, "accepted")?;
+        let mut editor = Editor::open(&path)?;
+        assert_eq!(editor.path(), path);
+        assert_eq!(editor.buffer().snapshot().text(), "accepted");
+        assert!(format!("{editor:?}").contains("saved_revision"));
+        assert!(format!("{}", FileError::InvalidUtf8).contains("InvalidUtf8"));
+        fs::remove_file(&path)?;
+        assert_eq!(editor.external_change()?, ExternalChange::Deleted);
+        assert_eq!(
+            editor.save(),
+            Err(FileError::Conflict(ExternalChange::Deleted))
+        );
+
+        fs::write(&path, "accepted")?;
+        editor = Editor::open(&path)?;
+        editor.path = directory.clone();
+        assert!(matches!(
+            editor.external_change(),
+            Err(FileError::Io {
+                operation: "read",
+                ..
+            })
+        ));
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[cfg(not(target_family = "windows"))]
+    #[test]
+    fn atomic_replace_failures_are_structured() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = test_directory()?;
+        let collision_target = directory.join("collision.txt");
+        fs::write(&collision_target, "old")?;
+        let sequence = 500_000_u64;
+        TEMPORARY_FILE_SEQUENCE.store(sequence, Ordering::Relaxed);
+        let collision = directory.join(format!(
+            ".collision.txt.alpine-save-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::write(&collision, "occupied")?;
+        let mut write_new = |file: &mut File| file.write_all(b"new");
+        atomic_replace(&collision_target, fingerprint(b"old"), &mut write_new)?;
+        assert_eq!(fs::read_to_string(&collision_target)?, "new");
+        assert_eq!(fs::read_to_string(&collision)?, "occupied");
+
+        fs::write(&collision_target, "accepted")?;
+        let mut write_then_conflict = |file: &mut File| {
+            file.write_all(b"local")?;
+            fs::write(&collision_target, "external")
+        };
+        let conflict = atomic_replace(
+            &collision_target,
+            fingerprint(b"accepted"),
+            &mut write_then_conflict,
+        );
+        assert_eq!(conflict, Err(FileError::Conflict(ExternalChange::Modified)));
+        assert_eq!(fs::read_to_string(&collision_target)?, "external");
+
+        fs::write(&collision_target, "accepted")?;
+        let mut write_then_remove = |file: &mut File| {
+            file.write_all(b"local")?;
+            fs::remove_file(&collision_target)
+        };
+        let vanished = atomic_replace(
+            &collision_target,
+            fingerprint(b"accepted"),
+            &mut write_then_remove,
+        );
+        assert!(matches!(
+            vanished,
+            Err(FileError::Io {
+                operation: "conflict-check",
+                kind: io::ErrorKind::NotFound,
+            })
+        ));
+
+        fs::write(&collision_target, "accepted")?;
+        let sequence = 600_000_u64;
+        TEMPORARY_FILE_SEQUENCE.store(sequence, Ordering::Relaxed);
+        let unlinked_temporary = directory.join(format!(
+            ".collision.txt.alpine-save-{}-{sequence}",
+            std::process::id()
+        ));
+        let mut unlink_temporary = |file: &mut File| {
+            file.write_all(b"local")?;
+            fs::remove_file(&unlinked_temporary)
+        };
+        assert!(matches!(
+            atomic_replace(
+                &collision_target,
+                fingerprint(b"accepted"),
+                &mut unlink_temporary,
+            ),
+            Err(FileError::Io {
+                operation: "permissions",
+                kind: io::ErrorKind::NotFound,
+            })
+        ));
+        assert_eq!(fs::read_to_string(&collision_target)?, "accepted");
+        assert!(!unlinked_temporary.exists());
+
+        fs::write(&collision_target, "")?;
+        let mut no_write = write_nothing;
+        atomic_replace(&collision_target, fingerprint(b""), &mut no_write)?;
+        let absent_parent = directory.join("absent").join("file.txt");
+        assert!(matches!(
+            atomic_replace(&absent_parent, fingerprint(b""), &mut no_write),
+            Err(FileError::Io {
+                operation: "create-temporary",
+                kind: io::ErrorKind::NotFound,
+            })
+        ));
+        fs::remove_dir_all(directory)?;
         Ok(())
     }
 }

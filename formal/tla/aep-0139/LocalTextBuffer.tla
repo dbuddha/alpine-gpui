@@ -6,7 +6,8 @@ CONSTANTS Contents, MaxRevision, MaxAttempts, MaxHistory,
 
 Dispositions == {"None", "Accepted", "Rejected", "Undo", "Redo"}
 SaveDispositions == {"None", "Saved", "Conflict"}
-DiskValues == Contents \cup {"Missing"}
+MissingDisk == MaxRevision + 1
+DiskValues == Contents \cup {MissingDisk}
 
 VARIABLES content, revision, undo, redo, attempts,
           priorContent, priorRevision, disposition,
