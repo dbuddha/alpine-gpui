@@ -3207,6 +3207,140 @@ assumptions = ["one rejection represents a typed dirty, UTF-8, directory, missin
 exclusions = ["Rust formal refinement", "filesystem implementation", "path bytes", "allocation", "native event delivery"]
 companion = "apps/alpine-studio/src/studio_coverage_tests.rs#workspace_click_revalidates_target_and_preserves_current_document_on_failure"
 
+[[claims]]
+id = "AEP-0165-C01"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0165-bounded-in-file-find.md"
+requirement_issue = 32
+claim_type = "memory"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0165-C02"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0165-bounded-in-file-find.md"
+requirement_issue = 32
+claim_type = "lifecycle"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["AdmittedIsCurrent", "StaleCompletionNeverPublishes"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[claims]]
+id = "AEP-0165-C03"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0165-bounded-in-file-find.md"
+requirement_issue = 32
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0165-C04"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0165-bounded-in-file-find.md"
+requirement_issue = 32
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["ReplacementRequiresCurrent", "MatchesAreBounded"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[evidence]]
+id = "EV-0165-UNIT01"
+claim = "AEP-0165-C01"
+kind = "unit"
+artifact = "apps/alpine-studio/src/find.rs#literal_unicode_matches_are_ordered_non_overlapping_and_bounded"
+assertion = "Literal scanning caps query, source text, retained match count, and exact range metadata while preserving UTF-8 boundaries and explicit truncation."
+scope = "One immutable local buffer snapshot and one non-overlapping literal query."
+exclusions = ["regex", "case folding", "project search", "process footprint"]
+
+[[evidence]]
+id = "EV-0165-UNIT02"
+claim = "AEP-0165-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#stale_find_completion_preserves_the_current_selection"
+assertion = "A completion captured before a query generation change cannot mutate the current selection or publish visual state."
+scope = "One local document, two query generations, and one delayed completion."
+exclusions = ["worker elapsed time", "native wake delivery", "Rust formal refinement"]
+
+[[evidence]]
+id = "EV-0165-UNIT03"
+claim = "AEP-0165-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#bounded_find_routes_ime_selects_matches_and_paints_only_after_admission"
+assertion = "IME mutates the focused find field without changing document bytes, accepted matches select and wrap deterministically, and match geometry appears only after admission."
+scope = "One visible local document containing two literal matches."
+exclusions = ["native IME process journey", "offscreen match geometry", "accessibility"]
+
+[[evidence]]
+id = "EV-0165-UNIT04"
+claim = "AEP-0165-C04"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#current_and_all_replacement_are_atomic_and_undoable"
+assertion = "Current and all replacement use checked transactions, and one undo restores the complete prior document for each operation."
+scope = "One local document, two retained matches, and bounded replacement text."
+exclusions = ["truncated replace-all", "save persistence", "native keyboard delivery"]
+
+[[evidence]]
+id = "EV-0165-TLA02"
+claim = "AEP-0165-C02"
+kind = "tla"
+artifact = "formal/tla/aep-0165/FindAdmission.tla#StaleCompletionNeverPublishes"
+assertion = "A modeled completion publishes only while its document and query identities remain current."
+scope = "Finite request, query change, document edit, completion, cancellation, and replacement interleavings."
+bounds = ["pull request: three document revisions, four query generations, four match counts", "nightly: five document revisions, seven query generations, nine match counts"]
+assumptions = ["one pending scan represents one revision-tagged bounded worker request"]
+exclusions = ["Rust formal refinement", "text bytes", "allocation", "worker scheduling"]
+companion = "apps/alpine-studio/src/studio_coverage_tests.rs#stale_find_completion_preserves_the_current_selection"
+
+[[evidence]]
+id = "EV-0165-TLA02B"
+claim = "AEP-0165-C02"
+kind = "tla"
+artifact = "formal/tla/aep-0165/FindAdmission.tla#AdmittedIsCurrent"
+assertion = "Every modeled admitted find result carries the current document and query identity."
+scope = "Finite request, query change, document edit, completion, cancellation, and replacement interleavings."
+bounds = ["pull request: three document revisions, four query generations, four match counts", "nightly: five document revisions, seven query generations, nine match counts"]
+assumptions = ["buffer revision changes are abstracted by document edit and query-generation invalidation"]
+exclusions = ["Rust formal refinement", "buffer bytes", "worker scheduling", "native wake delivery"]
+companion = "apps/alpine-studio/src/find.rs#stale_result_never_replaces_current_generation"
+
+[[evidence]]
+id = "EV-0165-TLA04"
+claim = "AEP-0165-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0165/FindAdmission.tla#ReplacementRequiresCurrent"
+assertion = "A modeled replacement is admitted only from result identity matching the current document and query."
+scope = "Finite admitted and stale result states with bounded abstract match counts."
+bounds = ["pull request: three document revisions, four query generations, four match counts", "nightly: five document revisions, seven query generations, nine match counts"]
+assumptions = ["Rust range and transaction checks separately enforce byte validity and byte ceilings"]
+exclusions = ["Rust formal refinement", "replacement bytes", "undo implementation", "filesystem persistence"]
+companion = "apps/alpine-studio/src/studio_coverage_tests.rs#current_and_all_replacement_are_atomic_and_undoable"
+
+[[evidence]]
+id = "EV-0165-TLA04B"
+claim = "AEP-0165-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0165/FindAdmission.tla#MatchesAreBounded"
+assertion = "Every modeled admitted result retains no more than the configured abstract match ceiling."
+scope = "Finite admitted and stale result states with bounded abstract match counts."
+bounds = ["pull request: three document revisions, four query generations, four match counts", "nightly: five document revisions, seven query generations, nine match counts"]
+assumptions = ["the Rust scanner enforces the concrete 16,384-match and 256-KiB metadata ceilings"]
+exclusions = ["Rust formal refinement", "allocator capacity", "rendered highlight count", "process footprint"]
+companion = "apps/alpine-studio/src/find.rs#literal_unicode_matches_are_ordered_non_overlapping_and_bounded"
+
 [[evidence]]
 id = "EV-0160-TLA04"
 claim = "AEP-0160-C04"

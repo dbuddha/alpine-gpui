@@ -445,6 +445,249 @@ fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeEr
 }
 
 #[test]
+fn runtime_find_worker_admits_current_results_and_schedules_replacement()
+-> Result<(), Box<dyn std::error::Error>> {
+    let viewport = viewport()?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let mut app = test_app()?;
+    *app.buffer_mut() = Buffer::new("alpha beta alpha");
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let command_option = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION);
+
+    runtime.dispatch(&key(KEY_F, command)).ok_or("find frame")?;
+    let pending = runtime
+        .dispatch(&ime(ImeEvent::Committed("alpha".into())))
+        .ok_or("query frame")?;
+    let pending_quads = pending.scene().quads().len();
+    let mut admitted = false;
+    for timestamp in 10..266 {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(timestamp),
+        }) && frame.scene().quads().len() > pending_quads
+        {
+            admitted = true;
+            break;
+        }
+    }
+    assert!(admitted);
+
+    runtime
+        .dispatch(&key(KEY_F, command_option))
+        .ok_or("replace frame")?;
+    runtime
+        .dispatch(&ime(ImeEvent::Committed("x".into())))
+        .ok_or("replacement frame")?;
+    runtime
+        .dispatch(&key(KEY_RETURN, command))
+        .ok_or("replace current frame")?;
+    assert_eq!(runtime.snapshot().document_revision().get(), 1);
+
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    root.write("beta.rs", "beta")?;
+    let mut tab_app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = tab_app.workspace.as_ref().ok_or("workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("alpha")?;
+    let beta = workspace.index_named("beta.rs").ok_or("beta")?;
+    tab_app.open_workspace_entry(alpha)?;
+    tab_app.open_workspace_entry(beta)?;
+    let mut tab_runtime = Application::new(tab_app, viewport, clear, WorkerConfig::default())?;
+    let before = tab_runtime.snapshot().document_revision().get();
+    tab_runtime
+        .dispatch(&key(KEY_LEFT_BRACKET, command))
+        .ok_or("tab frame")?;
+    assert!(tab_runtime.snapshot().document_revision().get() > before);
+    Ok(())
+}
+
+#[test]
+fn find_failure_paths_fail_closed_without_mutating_the_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let command_option = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION);
+
+    let mut failed = test_app()?;
+    assert!(failed.handle_event(&key(KEY_F, command)).visual_changed);
+    assert!(
+        failed
+            .handle_event(&ime(ImeEvent::Committed("alpha".into())))
+            .visual_changed
+    );
+    let request = failed
+        .prepare_find_request()?
+        .ok_or(StudioRenderError::Domain)?;
+    let identity = request.identity();
+    assert!(
+        failed
+            .apply_find_output(FindWorkerOutput::failure_for_test(
+                identity,
+                FindError::IncompleteResult,
+            ))
+            .visual_changed
+    );
+
+    for ranges in [
+        std::iter::once(usize::MAX..usize::MAX).collect(),
+        vec![0..2, 1..3],
+        std::iter::once(std::ops::Range { start: 3, end: 2 }).collect(),
+        std::iter::once(usize::from(u16::MAX)..usize::from(u16::MAX) + 1).collect(),
+    ] {
+        let mut app = test_app()?;
+        *app.buffer_mut() = Buffer::new("alpha beta alpha");
+        assert!(app.handle_event(&key(KEY_F, command)).visual_changed);
+        assert!(
+            app.handle_event(&ime(ImeEvent::Committed("alpha".into())))
+                .visual_changed
+        );
+        assert!(app.complete_pending_find_for_test()?.visual_changed);
+        app.find.replace_ranges_for_test(ranges);
+        assert!(app.handle_event(&key(KEY_F, command_option)).visual_changed);
+        assert!(
+            app.handle_event(&ime(ImeEvent::Committed("x".into())))
+                .visual_changed
+        );
+        let before = app.buffer().snapshot().text();
+        let effect = app.handle_event(&key(KEY_RETURN, command_option));
+        assert!(!effect.document_changed);
+        assert_eq!(app.buffer().snapshot().text(), before);
+    }
+
+    let mut oversized = test_app()?;
+    oversized.find.oversize_query_for_test();
+    oversized.find_needs_search = true;
+    assert!(matches!(
+        oversized.prepare_find_request(),
+        Err(FindError::QueryTooLong { .. })
+    ));
+
+    let mut invalid_navigation = test_app()?;
+    *invalid_navigation.buffer_mut() = Buffer::new("alpha");
+    invalid_navigation.handle_event(&key(KEY_F, command));
+    invalid_navigation.handle_event(&ime(ImeEvent::Committed("alpha".into())));
+    invalid_navigation.complete_pending_find_for_test()?;
+    invalid_navigation
+        .find
+        .replace_ranges_for_test(std::iter::once(usize::MAX..usize::MAX).collect());
+    assert!(
+        invalid_navigation
+            .handle_event(&key(KEY_RETURN, Modifiers::default()))
+            .visual_changed
+    );
+
+    let mut scrolled_navigation = test_app()?;
+    let deep_source = format!("{}target{}", "\n".repeat(40), "\n".repeat(40));
+    *scrolled_navigation.buffer_mut() = Buffer::new(&deep_source);
+    scrolled_navigation.try_scene(
+        SceneRevision::new(1),
+        viewport().map_err(|_| StudioRenderError::Domain)?,
+    )?;
+    scrolled_navigation.handle_event(&key(KEY_F, command));
+    scrolled_navigation.handle_event(&ime(ImeEvent::Committed("target".into())));
+    assert!(
+        scrolled_navigation
+            .complete_pending_find_for_test()?
+            .visual_changed
+    );
+    assert_eq!(scrolled_navigation.scroll_y.to_bits(), 410.0_f32.to_bits());
+    Ok(())
+}
+
+#[test]
+fn runtime_find_failures_are_bounded_and_visible() -> Result<(), Box<dyn std::error::Error>> {
+    let viewport = viewport()?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let command_option = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION);
+
+    let mut exhausted = test_app()?;
+    *exhausted.buffer_mut() = Buffer::new("alpha beta alpha");
+    exhausted.handle_event(&key(KEY_F, command));
+    exhausted.handle_event(&ime(ImeEvent::Committed("alpha".into())));
+    exhausted.find.exhaust_generation_for_test();
+    exhausted.complete_pending_find_for_test()?;
+    exhausted.handle_event(&key(KEY_F, command_option));
+    exhausted.handle_event(&ime(ImeEvent::Committed("x".into())));
+    let mut exhausted_runtime =
+        Application::new(exhausted, viewport, clear, WorkerConfig::default())?;
+    assert!(
+        exhausted_runtime
+            .dispatch(&key(KEY_RETURN, command))
+            .is_some()
+    );
+
+    let mut oversized = test_app()?;
+    oversized.find.oversize_query_for_test();
+    oversized.find_needs_search = true;
+    let mut oversized_runtime =
+        Application::new(oversized, viewport, clear, WorkerConfig::default())?;
+    assert!(
+        oversized_runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(1),
+            })
+            .is_some()
+    );
+
+    let mut saturated = test_app()?;
+    let saturated_source = "x".repeat(16 * 1024 * 1024);
+    *saturated.buffer_mut() = Buffer::new(&saturated_source);
+    let mut saturated_runtime =
+        Application::new(saturated, viewport, clear, WorkerConfig::default())?;
+    saturated_runtime.dispatch(&key(KEY_F, command));
+    for query_byte in ["y", "y", "y"] {
+        assert!(
+            saturated_runtime
+                .dispatch(&ime(ImeEvent::Committed(query_byte.into())))
+                .is_some()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn find_scroll_and_replacement_budget_boundaries_are_exact()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut scrolling = test_app()?;
+    let scrolling_source = "\n".repeat(80);
+    *scrolling.buffer_mut() = Buffer::new(&scrolling_source);
+    scrolling.scroll_y = 0.0;
+    scrolling.select_find_range(22..22);
+    assert_eq!(scrolling.scroll_y.to_bits(), 14.0_f32.to_bits());
+    scrolling.scroll_y = 10.0;
+    scrolling.select_find_range(21..21);
+    assert_eq!(scrolling.scroll_y.to_bits(), 10.0_f32.to_bits());
+    scrolling.scroll_y = 400.0;
+    scrolling.select_find_range(40..40);
+    assert_eq!(scrolling.scroll_y.to_bits(), 410.0_f32.to_bits());
+    scrolling.scroll_y = 500.0;
+    scrolling.select_find_range(44..44);
+    assert_eq!(scrolling.scroll_y.to_bits(), 500.0_f32.to_bits());
+
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let command_option = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION);
+    let mut budget = test_app()?;
+    *budget.buffer_mut() = Buffer::new("x");
+    budget.handle_event(&key(KEY_F, command));
+    budget.handle_event(&ime(ImeEvent::Committed("x".into())));
+    budget.complete_pending_find_for_test()?;
+    budget.find.replace_ranges_for_test(
+        std::iter::once(0..MAX_REPLACEMENT_TRANSACTION_BYTES - crate::find::MAX_QUERY_BYTES)
+            .collect(),
+    );
+    budget.handle_event(&key(KEY_F, command_option));
+    budget.handle_event(&ime(ImeEvent::Committed(
+        "r".repeat(crate::find::MAX_QUERY_BYTES).into(),
+    )));
+    let failures = budget.input_failures;
+    let effect = budget.handle_event(&key(KEY_RETURN, command_option));
+    assert!(!effect.document_changed);
+    assert_eq!(budget.input_failures, failures + 1);
+    Ok(())
+}
+
+#[test]
 fn clipboard_copy_cut_and_paste_preserve_revision_and_selection_identity()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut app = test_app()?;
@@ -2128,6 +2371,374 @@ fn offscreen_caret_and_invalid_scroll_use_safe_scene_fallback() -> Result<(), St
     );
     assert_eq!(fallback.quads().len(), 1);
     assert_eq!(app.render_failures, 1);
+    Ok(())
+}
+
+#[test]
+fn bounded_find_routes_ime_selects_matches_and_paints_only_after_admission()
+-> Result<(), StudioRenderError> {
+    let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
+    *app.buffer_mut() = Buffer::new("alpha beta alpha gamma alpha\n");
+    let original = app.buffer().snapshot().text();
+
+    assert!(
+        app.handle_event(&key(KEY_F, Modifiers::from_bits(Modifiers::COMMAND),))
+            .visual_changed
+    );
+    assert!(app.handle_event(&ime(ImeEvent::Started)).visual_changed);
+    assert!(
+        app.handle_event(&ime(ImeEvent::Updated {
+            text: "alpha".into(),
+            selected_start_utf16: 5,
+            selected_length_utf16: 0,
+        }))
+        .visual_changed
+    );
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("alpha".into())))
+            .visual_changed
+    );
+    app.find_needs_search = false;
+    assert!(
+        app.handle_event(&key(KEY_DELETE_BACKWARD, Modifiers::default()))
+            .visual_changed
+    );
+    assert_eq!(app.find.query(), "alph");
+    assert!(app.find_needs_search);
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("a".into())))
+            .visual_changed
+    );
+    assert_eq!(app.buffer().snapshot().text(), original);
+
+    let scene_viewport = viewport().map_err(|_| StudioRenderError::Domain)?;
+    let before = app.try_scene(SceneRevision::new(1), scene_viewport)?;
+    let expected_overlay = Rect::new(
+        Point::new(
+            WINDOW_WIDTH - CONTENT_INSET - FIND_BAR_WIDTH,
+            TAB_BAR_HEIGHT + FIND_BAR_INSET,
+        )
+        .ok_or(StudioRenderError::Domain)?,
+        Size::new(FIND_BAR_WIDTH, FIND_BAR_HEIGHT).ok_or(StudioRenderError::Domain)?,
+    );
+    assert_eq!(
+        before
+            .clips()
+            .last()
+            .ok_or(StudioRenderError::Domain)?
+            .bounds(),
+        expected_overlay
+    );
+    let overlay_clip_index = before.clips().len() - 1;
+    let first_overlay_glyph = before
+        .glyphs()
+        .iter()
+        .filter(|glyph| glyph.clip().map(alpine_scene::ClipId::index) == Some(overlay_clip_index))
+        .min_by(|left, right| {
+            left.bounds()
+                .origin()
+                .x()
+                .total_cmp(&right.bounds().origin().x())
+        })
+        .ok_or(StudioRenderError::Domain)?;
+    let overlay_glyph_origin = first_overlay_glyph.bounds().origin();
+    assert_eq!(
+        overlay_glyph_origin.x().to_bits(),
+        (WINDOW_WIDTH - CONTENT_INSET - FIND_BAR_WIDTH + FIND_BAR_INSET).to_bits()
+    );
+    assert_eq!(
+        overlay_glyph_origin.y().to_bits(),
+        (TAB_BAR_HEIGHT + FIND_BAR_INSET + 15.0 + 6.0 - 3.0).to_bits()
+    );
+    assert!(app.complete_pending_find_for_test()?.visual_changed);
+    assert_eq!(app.selection.range(), 0..5);
+    let after = app.try_scene(
+        SceneRevision::new(2),
+        viewport().map_err(|_| StudioRenderError::Domain)?,
+    )?;
+    assert!(after.quads().len() > before.quads().len());
+
+    assert!(
+        app.handle_event(&key(KEY_RETURN, Modifiers::from_bits(Modifiers::SHIFT),))
+            .visual_changed
+    );
+    assert_eq!(app.selection.range(), 23..28);
+    assert!(
+        app.handle_event(&key(KEY_RETURN, Modifiers::default()))
+            .visual_changed
+    );
+    assert_eq!(app.selection.range(), 0..5);
+    assert_eq!(app.buffer().snapshot().text(), original);
+    assert!(
+        app.handle_event(&key(KEY_ESCAPE, Modifiers::default()))
+            .visual_changed
+    );
+    app.find_needs_search = false;
+    assert!(
+        app.handle_event(&key(KEY_F, Modifiers::from_bits(Modifiers::COMMAND)))
+            .visual_changed
+    );
+    assert!(app.find_needs_search);
+    Ok(())
+}
+
+#[test]
+fn find_command_modifiers_do_not_edit_or_switch_fields() -> Result<(), StudioRenderError> {
+    let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let command_option = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION);
+    app.handle_event(&key(KEY_F, command));
+    app.handle_event(&ime(ImeEvent::Committed("alpha".into())));
+    assert!(app.handle_event(&key(KEY_F, command_option)).visual_changed);
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("replacement".into())))
+            .visual_changed
+    );
+    let replacement = app.find.replacement().to_owned();
+    assert!(!app.handle_event(&key(KEY_TAB, command)).visual_changed);
+    assert_eq!(app.find.field(), crate::find::FindField::Replacement);
+    assert!(
+        !app.handle_event(&key(KEY_DELETE_BACKWARD, command))
+            .visual_changed
+    );
+    assert_eq!(app.find.replacement(), replacement);
+    Ok(())
+}
+
+#[test]
+fn stale_find_completion_preserves_the_current_selection() -> Result<(), StudioRenderError> {
+    let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
+    *app.buffer_mut() = Buffer::new("alpha beta alpha");
+    assert!(
+        app.handle_event(&key(KEY_F, Modifiers::from_bits(Modifiers::COMMAND),))
+            .visual_changed
+    );
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("alpha".into())))
+            .visual_changed
+    );
+    let stale = app
+        .prepare_find_request()?
+        .ok_or(StudioRenderError::Domain)?
+        .execute();
+    app.selection = Selection::caret(ByteOffset::new(3));
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .visual_changed
+    );
+    assert!(!app.apply_find_output(stale).visual_changed);
+    assert_eq!(app.selection, Selection::caret(ByteOffset::new(3)));
+    Ok(())
+}
+
+#[test]
+fn current_and_all_replacement_are_atomic_and_undoable() -> Result<(), StudioRenderError> {
+    let original = "alpha beta alpha";
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let command_option = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION);
+
+    let mut current = test_app().map_err(|_| StudioRenderError::Domain)?;
+    *current.buffer_mut() = Buffer::new(original);
+    assert!(current.handle_event(&key(KEY_F, command)).visual_changed);
+    assert!(
+        current
+            .handle_event(&ime(ImeEvent::Committed("alpha".into())))
+            .visual_changed
+    );
+    assert!(current.complete_pending_find_for_test()?.visual_changed);
+    assert!(
+        current
+            .handle_event(&key(KEY_F, command_option))
+            .visual_changed
+    );
+    assert!(
+        current
+            .handle_event(&ime(ImeEvent::Committed("omega".into())))
+            .visual_changed
+    );
+    assert!(
+        current
+            .handle_event(&key(KEY_RETURN, command))
+            .document_changed
+    );
+    assert_eq!(current.buffer().snapshot().text(), "omega beta alpha");
+    current.find_needs_search = false;
+    assert!(!current.update_find_after_document_change().visual_changed);
+    assert!(current.find_needs_search);
+    assert!(current.complete_pending_find_for_test()?.visual_changed);
+    assert_eq!(current.selection.range(), 11..16);
+    assert!(
+        current
+            .handle_event(&key(KEY_ESCAPE, Modifiers::default()))
+            .visual_changed
+    );
+    assert!(current.handle_event(&key(KEY_Z, command)).document_changed);
+    assert_eq!(current.buffer().snapshot().text(), original);
+
+    let mut all = test_app().map_err(|_| StudioRenderError::Domain)?;
+    *all.buffer_mut() = Buffer::new(original);
+    assert!(all.handle_event(&key(KEY_F, command)).visual_changed);
+    assert!(
+        all.handle_event(&ime(ImeEvent::Committed("alpha".into())))
+            .visual_changed
+    );
+    assert!(all.complete_pending_find_for_test()?.visual_changed);
+    assert!(all.handle_event(&key(KEY_F, command_option)).visual_changed);
+    assert!(
+        all.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .visual_changed
+    );
+    assert!(
+        all.handle_event(&key(KEY_RETURN, command_option))
+            .document_changed
+    );
+    assert_eq!(all.buffer().snapshot().text(), "x beta x");
+    assert!(
+        all.handle_event(&key(KEY_ESCAPE, Modifiers::default()))
+            .visual_changed
+    );
+    assert!(all.handle_event(&key(KEY_Z, command)).document_changed);
+    assert_eq!(all.buffer().snapshot().text(), original);
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one application-level matrix discriminates coupled find focus and rejection paths"
+)]
+fn find_focus_rejections_and_empty_actions_remain_bounded() -> Result<(), StudioRenderError> {
+    let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let command_option = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION);
+    assert!(app.handle_event(&key(KEY_F, command)).visual_changed);
+    assert!(
+        !app.handle_event(&key(KEY_TAB, Modifiers::default()))
+            .visual_changed
+    );
+    assert!(
+        !app.handle_event(&key(KEY_LEFT, Modifiers::default()))
+            .visual_changed
+    );
+    assert!(
+        app.handle_event(&key(KEY_DELETE_BACKWARD, Modifiers::default()))
+            .visual_changed
+    );
+    assert!(
+        !app.handle_event(&ime(ImeEvent::Updated {
+            text: "x".into(),
+            selected_start_utf16: 2,
+            selected_length_utf16: 0,
+        }))
+        .visual_changed
+    );
+    assert!(app.handle_event(&ime(ImeEvent::Started)).visual_changed);
+    assert!(app.handle_event(&ime(ImeEvent::Cancelled)).visual_changed);
+    assert!(!app.handle_event(&ime(ImeEvent::Cancelled)).visual_changed);
+
+    let oversized = "x".repeat(find::MAX_QUERY_BYTES + 1);
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed(oversized.into())))
+            .visual_changed
+    );
+    assert!(app.handle_event(&key(KEY_RETURN, command)).visual_changed);
+    assert!(
+        app.handle_event(&key(KEY_RETURN, command_option))
+            .visual_changed
+    );
+    assert!(!app.navigate_find(true).visual_changed);
+    assert!(!app.complete_pending_find_for_test()?.visual_changed);
+
+    assert!(app.handle_event(&key(KEY_F, command_option)).visual_changed);
+    assert!(
+        app.handle_event(&key(KEY_TAB, Modifiers::default()))
+            .visual_changed
+    );
+    assert!(
+        app.handle_event(&key(KEY_TAB, Modifiers::default()))
+            .visual_changed
+    );
+
+    *app.buffer_mut() = Buffer::new(&"line\n".repeat(100));
+    app.last_viewport = viewport().map_err(|_| StudioRenderError::Domain)?;
+    app.scroll_y = 50.0;
+    assert!(app.select_find_range(0..1).visual_changed);
+    assert!(app.scroll_y.abs() < f32::EPSILON);
+    app.scroll_y = 0.0;
+    let last = app.buffer().snapshot().len_bytes().saturating_sub(2);
+    assert!(app.select_find_range(last..last + 1).visual_changed);
+    assert!(app.scroll_y > 0.0);
+
+    let mut empty = test_app().map_err(|_| StudioRenderError::Domain)?;
+    *empty.buffer_mut() = Buffer::new("alpha");
+    assert!(empty.handle_event(&key(KEY_F, command)).visual_changed);
+    assert!(
+        empty
+            .handle_event(&ime(ImeEvent::Committed("missing".into())))
+            .visual_changed
+    );
+    assert!(empty.complete_pending_find_for_test()?.visual_changed);
+    assert!(
+        empty
+            .handle_event(&key(KEY_F, command_option))
+            .visual_changed
+    );
+    assert!(
+        !empty
+            .handle_event(&key(KEY_RETURN, command_option))
+            .visual_changed
+    );
+
+    let mut budget = test_app().map_err(|_| StudioRenderError::Domain)?;
+    *budget.buffer_mut() = Buffer::new(&"x".repeat(5_000));
+    assert!(budget.handle_event(&key(KEY_F, command)).visual_changed);
+    assert!(
+        budget
+            .handle_event(&ime(ImeEvent::Committed("x".into())))
+            .visual_changed
+    );
+    assert!(budget.complete_pending_find_for_test()?.visual_changed);
+    assert!(
+        budget
+            .handle_event(&key(KEY_F, command_option))
+            .visual_changed
+    );
+    assert!(
+        budget
+            .handle_event(&ime(ImeEvent::Committed(
+                "r".repeat(find::MAX_QUERY_BYTES).into()
+            )))
+            .visual_changed
+    );
+    let before = budget.buffer().snapshot().text();
+    assert!(
+        budget
+            .handle_event(&key(KEY_RETURN, command_option))
+            .visual_changed
+    );
+    assert_eq!(budget.buffer().snapshot().text(), before);
+    assert!(
+        budget
+            .find
+            .display_text()?
+            .contains("replacement transaction")
+    );
+
+    let mut exhausted = test_app().map_err(|_| StudioRenderError::Domain)?;
+    assert!(exhausted.handle_event(&key(KEY_F, command)).visual_changed);
+    assert!(
+        exhausted
+            .handle_event(&ime(ImeEvent::Committed("x".into())))
+            .visual_changed
+    );
+    exhausted.find.exhaust_generation_for_test();
+    let query = exhausted.find.query().to_owned();
+    assert!(
+        exhausted
+            .handle_event(&key(KEY_DELETE_BACKWARD, Modifiers::default()))
+            .visual_changed
+    );
+    assert_eq!(exhausted.find.query(), query);
     Ok(())
 }
 
