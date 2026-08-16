@@ -5,6 +5,9 @@ use crate::FrameToken;
 /// Exact number of reusable presentation frame slots.
 pub const FRAME_SLOT_COUNT: usize = 3;
 
+const FRAME_SLOT_IDS: [FrameSlotId; FRAME_SLOT_COUNT] =
+    [FrameSlotId(0), FrameSlotId(1), FrameSlotId(2)];
+
 /// Monotonic identity of one native presentation owner generation.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct FrameOwnerGeneration(u64);
@@ -523,10 +526,8 @@ impl FrameSlotRing {
             .admissions
             .checked_add(1)
             .ok_or_else(|| Self::error(FrameSlotErrorKind::SequenceExhausted, None))?;
-        let slot_index = u8::try_from(index)
-            .map_err(|_| Self::error(FrameSlotErrorKind::InvariantViolation, None))?;
         let lease = FrameSlotLease {
-            slot: FrameSlotId(slot_index),
+            slot: FRAME_SLOT_IDS[index],
             sequence,
             generation,
             token,
@@ -816,6 +817,237 @@ mod tests {
         assert_eq!(snapshot.cancellation_count(), 1);
         assert_eq!(snapshot.occupied_slots(), 0);
         assert!(ring.invariants_hold());
+        Ok(())
+    }
+
+    #[test]
+    fn accessors_errors_and_terminal_accounting_are_stable() -> Result<(), &'static str> {
+        assert_eq!(generation(0).get(), 1);
+        let mut ring = FrameSlotRing::default();
+        let first_token = token(1, 1, 1);
+        let first = acquire(&mut ring, first_token)?;
+        assert_eq!(first.slot().get(), 0);
+        assert_eq!(first.generation().get(), 1);
+        assert_eq!(first.token(), first_token);
+
+        let duplicate = ring
+            .acquire(first_token, generation(1))
+            .map_err(|error| (error.kind(), error.slot(), std::format!("{error}")));
+        assert_eq!(
+            duplicate,
+            Err((
+                FrameSlotErrorKind::LeaseMismatch,
+                None,
+                std::string::String::from("frame-slot transition rejected for None: LeaseMismatch"),
+            ))
+        );
+
+        ring.mark_submitted(first).map_err(|_| "submit")?;
+        assert_eq!(
+            ring.mark_submitted(first)
+                .map_err(|error| (error.kind(), error.slot())),
+            Err((FrameSlotErrorKind::ActionDisabled, Some(first.slot())))
+        );
+        assert_eq!(
+            ring.cancel_encoding(first)
+                .map_err(super::FrameSlotError::kind),
+            Err(FrameSlotErrorKind::ActionDisabled)
+        );
+        ring.complete(
+            first,
+            FrameCompletionStatus::Failed,
+            generation(1),
+            PresentationRevision(1),
+            SurfaceEpoch(1),
+        )
+        .map_err(|_| "failed completion")?;
+
+        let second = acquire(&mut ring, token(2, 2, 1))?;
+        ring.mark_submitted(second).map_err(|_| "submit second")?;
+        ring.complete(
+            second,
+            FrameCompletionStatus::Completed,
+            generation(1),
+            PresentationRevision(2),
+            SurfaceEpoch(1),
+        )
+        .map_err(|_| "complete second")?;
+        let snapshot = ring.snapshot();
+        assert_eq!(snapshot.admission_count(), 2);
+        assert_eq!(snapshot.release_count(), 2);
+        assert_eq!(snapshot.completion_count(), 1);
+        assert_eq!(snapshot.failure_count(), 1);
+        assert_eq!(snapshot.cancellation_count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn every_defensive_invariant_and_atomic_rollback_is_discriminated() -> Result<(), &'static str>
+    {
+        let mut occupied = FrameSlotRing::new();
+        let lease = acquire(&mut occupied, token(1, 1, 1))?;
+
+        let mut bad = occupied;
+        bad.peak_occupied = 0;
+        assert!(!bad.invariants_hold());
+
+        let mut bad = occupied;
+        bad.releases = u64::MAX;
+        assert!(!bad.invariants_hold());
+
+        let mut bad = FrameSlotRing::new();
+        bad.completions = u64::MAX;
+        bad.failures = 1;
+        assert!(!bad.invariants_hold());
+
+        let mut bad = FrameSlotRing::new();
+        bad.admissions = 1;
+        assert!(!bad.invariants_hold());
+
+        let mut bad = FrameSlotRing::new();
+        bad.slots[0].phase = FrameSlotPhase::Encoding;
+        bad.admissions = 1;
+        bad.peak_occupied = 1;
+        assert!(!bad.invariants_hold());
+
+        let mut bad = occupied;
+        bad.slots[0].lease = Some(FrameSlotLease {
+            slot: super::FrameSlotId(1),
+            ..lease
+        });
+        assert!(!bad.invariants_hold());
+
+        let mut bad = occupied;
+        bad.slots[0].lease = Some(FrameSlotLease {
+            sequence: 0,
+            ..lease
+        });
+        assert!(!bad.invariants_hold());
+
+        let mut bad = occupied;
+        bad.next_sequence = 0;
+        assert!(!bad.invariants_hold());
+
+        let mut duplicate = occupied;
+        duplicate.slots[1] = super::FrameSlot {
+            phase: FrameSlotPhase::Encoding,
+            lease: Some(FrameSlotLease {
+                slot: super::FrameSlotId(1),
+                ..lease
+            }),
+        };
+        duplicate.admissions = 2;
+        duplicate.peak_occupied = 2;
+        assert!(!duplicate.invariants_hold());
+
+        let mut acquire_rollback = FrameSlotRing::new();
+        acquire_rollback.releases = 1;
+        let before = acquire_rollback;
+        assert_eq!(
+            acquire_rollback
+                .acquire(token(2, 2, 1), generation(1))
+                .map_err(super::FrameSlotError::kind),
+            Err(FrameSlotErrorKind::InvariantViolation)
+        );
+        assert_eq!(acquire_rollback, before);
+
+        let mut action_rollback = occupied;
+        action_rollback.releases = 1;
+        let before = action_rollback;
+        assert_eq!(
+            action_rollback
+                .mark_submitted(lease)
+                .map_err(super::FrameSlotError::kind),
+            Err(FrameSlotErrorKind::InvariantViolation)
+        );
+        assert_eq!(action_rollback, before);
+
+        let invalid_slot = FrameSlotLease {
+            slot: super::FrameSlotId(3),
+            ..lease
+        };
+        let before = occupied;
+        assert_eq!(
+            occupied
+                .mark_submitted(invalid_slot)
+                .map_err(super::FrameSlotError::kind),
+            Err(FrameSlotErrorKind::LeaseMismatch)
+        );
+        assert_eq!(occupied, before);
+
+        let mut saturated = FrameSlotRing::new();
+        for attempt in 1..=3 {
+            let slot = acquire(&mut saturated, token(attempt, attempt, 1))?;
+            saturated.mark_submitted(slot).map_err(|_| "submit")?;
+        }
+        assert_eq!(
+            acquire(&mut saturated, token(4, 4, 1)),
+            Err("unexpected saturation")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn every_frame_slot_counter_overflow_is_structured_and_atomic() -> Result<(), &'static str> {
+        let mut saturated = FrameSlotRing::new();
+        for attempt in 1..=3 {
+            acquire(&mut saturated, token(attempt, attempt, 1))?;
+        }
+        saturated.saturations = u64::MAX;
+        let before = saturated;
+        assert_eq!(
+            saturated
+                .acquire_inner(token(4, 4, 1), generation(1))
+                .map_err(super::FrameSlotError::kind),
+            Err(FrameSlotErrorKind::SequenceExhausted)
+        );
+        assert_eq!(saturated, before);
+
+        let mut sequence = FrameSlotRing::new();
+        sequence.next_sequence = u64::MAX;
+        let before = sequence;
+        assert_eq!(
+            sequence
+                .acquire_inner(token(1, 1, 1), generation(1))
+                .map_err(super::FrameSlotError::kind),
+            Err(FrameSlotErrorKind::SequenceExhausted)
+        );
+        assert_eq!(sequence, before);
+
+        let mut admissions = FrameSlotRing::new();
+        admissions.admissions = u64::MAX;
+        let before = admissions;
+        assert_eq!(
+            admissions
+                .acquire_inner(token(1, 1, 1), generation(1))
+                .map_err(super::FrameSlotError::kind),
+            Err(FrameSlotErrorKind::SequenceExhausted)
+        );
+        assert_eq!(admissions, before);
+
+        let mut releases = FrameSlotRing::new();
+        let release_lease = acquire(&mut releases, token(1, 1, 1))?;
+        releases.releases = u64::MAX;
+        let before = releases;
+        assert_eq!(
+            releases
+                .release(release_lease, FrameCompletionStatus::Completed)
+                .map_err(super::FrameSlotError::kind),
+            Err(FrameSlotErrorKind::SequenceExhausted)
+        );
+        assert_eq!(releases, before);
+
+        let mut terminal = FrameSlotRing::new();
+        let terminal_lease = acquire(&mut terminal, token(1, 1, 1))?;
+        terminal.completions = u64::MAX;
+        let before = terminal;
+        assert_eq!(
+            terminal
+                .release(terminal_lease, FrameCompletionStatus::Completed)
+                .map_err(super::FrameSlotError::kind),
+            Err(FrameSlotErrorKind::SequenceExhausted)
+        );
+        assert_eq!(terminal, before);
         Ok(())
     }
 
