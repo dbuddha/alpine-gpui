@@ -2217,6 +2217,7 @@ pub(crate) mod tests {
         assert!(first.allocated_bytes > 0);
         assert!(first.current_upload_bytes >= frame.upload_bytes());
         let upload = slot.upload.as_deref().ok_or("first presentation upload")?;
+        let first_capacity = upload.length();
         // SAFETY: The slot owns a shared buffer of at least upload_bytes and
         // the validated repr(C) quad slice remains alive for both byte views.
         let actual = unsafe {
@@ -2236,20 +2237,21 @@ pub(crate) mod tests {
         assert_eq!(reused.allocated_bytes, 0);
         assert_eq!(reused.current_upload_bytes, first.current_upload_bytes);
 
+        let quad_bytes = frame.upload_bytes() / frame.quads().len();
+        let required_quads = first_capacity / quad_bytes + 1;
         let mut builder = SceneBuilder::new(SceneRevision::new(72), size(4.0, 3.0)?);
-        for y in [0.0, 1.0, 2.0] {
-            for x in [0.0, 1.0, 2.0] {
-                builder.push(Primitive::Quad {
-                    bounds: Rect::new(point(x, y)?, size(1.0, 1.0)?),
-                    color: color(0.25, 0.5, 0.75, 1.0)?,
-                });
-            }
+        for _ in 0..required_quads {
+            builder.push(Primitive::Quad {
+                bounds: Rect::new(point(1.0, 1.0)?, size(1.0, 1.0)?),
+                color: color(0.25, 0.5, 0.75, 1.0)?,
+            });
         }
         let larger = ValidatedFrame::new(&builder.finish(), descriptor)?;
+        assert!(larger.upload_bytes() > first_capacity);
         let grown = slot.prepare_upload(&device, &larger, NativeFault::None)?;
         assert!(grown.allocated_bytes > 0);
-        assert!(grown.current_upload_bytes > first.current_upload_bytes);
         let upload = slot.upload.as_deref().ok_or("grown presentation upload")?;
+        assert!(upload.length() > first_capacity);
         // SAFETY: The grown shared buffer is at least the validated upload byte
         // count and the larger frame remains alive for this comparison.
         let actual = unsafe {
