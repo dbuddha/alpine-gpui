@@ -467,8 +467,7 @@ impl FrameSlotRing {
         if expected_admissions != self.admissions || terminal_releases != self.releases {
             return false;
         }
-        let mut left = 0;
-        while left < FRAME_SLOT_COUNT {
+        for left in 0..FRAME_SLOT_COUNT {
             let slot = self.slots[left];
             if matches!(slot.phase, FrameSlotPhase::Free) != slot.lease.is_none() {
                 return false;
@@ -480,17 +479,14 @@ impl FrameSlotRing {
                 {
                     return false;
                 }
-                let mut right = left + 1;
-                while right < FRAME_SLOT_COUNT {
+                for right in (left + 1)..FRAME_SLOT_COUNT {
                     if let Some(other) = self.slots[right].lease
                         && (other.sequence == lease.sequence || other.token == lease.token)
                     {
                         return false;
                     }
-                    right += 1;
                 }
             }
-            left += 1;
         }
         true
     }
@@ -601,24 +597,20 @@ impl FrameSlotRing {
 
     fn occupied_slots(self) -> u8 {
         let mut count = 0_u8;
-        let mut index = 0;
-        while index < FRAME_SLOT_COUNT {
-            if !matches!(self.slots[index].phase, FrameSlotPhase::Free) {
+        for slot in self.slots {
+            if !matches!(slot.phase, FrameSlotPhase::Free) {
                 count += 1;
             }
-            index += 1;
         }
         count
     }
 
     fn submitted_slots(self) -> u8 {
         let mut count = 0_u8;
-        let mut index = 0;
-        while index < FRAME_SLOT_COUNT {
-            if matches!(self.slots[index].phase, FrameSlotPhase::Submitted) {
+        for slot in self.slots {
+            if matches!(slot.phase, FrameSlotPhase::Submitted) {
                 count += 1;
             }
-            index += 1;
         }
         count
     }
@@ -823,7 +815,18 @@ mod tests {
     #[test]
     fn accessors_errors_and_terminal_accounting_are_stable() -> Result<(), &'static str> {
         assert_eq!(generation(0).get(), 1);
+        assert_eq!(generation(2).get(), 2);
         let mut ring = FrameSlotRing::default();
+        let empty = ring.snapshot();
+        assert_eq!(empty.completion_count(), 0);
+        assert_eq!(empty.failure_count(), 0);
+        assert_eq!(empty.saturation_count(), 0);
+
+        let mut slot_ids = FrameSlotRing::new();
+        acquire(&mut slot_ids, token(8, 8, 1))?;
+        let second_slot = acquire(&mut slot_ids, token(9, 9, 1))?;
+        assert_eq!(second_slot.slot().get(), 1);
+
         let first_token = token(1, 1, 1);
         let first = acquire(&mut ring, first_token)?;
         assert_eq!(first.slot().get(), 0);
@@ -933,6 +936,7 @@ mod tests {
             phase: FrameSlotPhase::Encoding,
             lease: Some(FrameSlotLease {
                 slot: super::FrameSlotId(1),
+                token: token(2, 2, 1),
                 ..lease
             }),
         };
