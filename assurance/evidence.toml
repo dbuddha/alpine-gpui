@@ -2943,6 +2943,104 @@ assumptions = ["one modeled byte represents one retained UTF-8 byte"]
 exclusions = ["formal refinement to NSPasteboard", "native transient allocation", "clipboard latency"]
 companion = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
 
+[[claims]]
+id = "AEP-0153-C06"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0153-bounded-clipboard-close-response.md"
+requirement_issue = 37
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["CutMutationRequiresMatchingCompletion"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[claims]]
+id = "AEP-0153-C07"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0153-bounded-clipboard-close-response.md"
+requirement_issue = 37
+claim_type = "lifecycle"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["DirtyCloseNeverAllows", "CancelledCloseStaysLive"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[evidence]]
+id = "EV-0153-UNIT06"
+claim = "AEP-0153-C06"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#clipboard_copy_cut_and_paste_preserve_revision_and_selection_identity"
+assertion = "Copy preserves bytes, cut waits for matching revision and selection completion, and paste applies only successful bounded text."
+scope = "One portable Studio document, one event-local response, and terminal clipboard completions."
+exclusions = ["AppKit pasteboard I/O", "process event loop", "rich clipboard formats", "clipboard latency"]
+
+[[evidence]]
+id = "EV-0153-UNIT06B"
+claim = "AEP-0153-C06"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#cut_completion_rejects_stale_selection_revision_and_native_failure"
+assertion = "Changed selection, changed revision, and native write failure each preserve document bytes at cut completion."
+scope = "Portable Studio pending-cut identity and failure transitions."
+exclusions = ["native callback reentrancy", "process event loop", "clipboard manager behavior"]
+
+[[evidence]]
+id = "EV-0153-TLA06"
+claim = "AEP-0153-C06"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#CutMutationRequiresMatchingCompletion"
+assertion = "A cut mutation cannot occur after either the finite document revision or selection identity changes."
+scope = "One pending cut, Boolean revision and selection identities, and one abstract removed byte."
+bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
+assumptions = ["a successful matching cut removes one abstract byte"]
+exclusions = ["text contents", "AppKit callback ordering", "allocator behavior"]
+companion = "apps/alpine-studio/src/studio_coverage_tests.rs#cut_completion_rejects_stale_selection_revision_and_native_failure"
+
+[[evidence]]
+id = "EV-0153-UNIT07"
+claim = "AEP-0153-C07"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#studio_runtime_returns_clipboard_and_dirty_close_responses"
+assertion = "The Studio delegate returns one selected-text response, cancels dirty close while staying live, and allows clean close."
+scope = "Portable Application dispatch with one Studio delegate and bounded response slots."
+exclusions = ["NSWindowDelegate delivery", "native process termination", "save prompts"]
+
+[[evidence]]
+id = "EV-0153-UNIT07B"
+claim = "AEP-0153-C07"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#clipboard_failure_is_visible_and_paste_failure_is_atomic"
+assertion = "Clipboard failure preserves bytes and selection while adding a rendered local status layer."
+scope = "Portable Studio transition and semantic scene output."
+exclusions = ["accessibility announcement", "native pasteboard I/O", "pixel readback"]
+
+[[evidence]]
+id = "EV-0153-TLA07"
+claim = "AEP-0153-C07"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#DirtyCloseNeverAllows"
+assertion = "A close requested while the abstract document is dirty never reaches the allowed state."
+scope = "Finite edit, save, close-request, cancel, and allow transitions."
+bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
+assumptions = ["dirty identity is sampled synchronously at close request"]
+exclusions = ["NSWindowDelegate delivery", "save prompts", "process termination"]
+companion = "apps/alpine-studio/src/studio_coverage_tests.rs#studio_runtime_returns_clipboard_and_dirty_close_responses"
+
+[[evidence]]
+id = "EV-0153-TLA07B"
+claim = "AEP-0153-C07"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#CancelledCloseStaysLive"
+assertion = "A dirty close that resolves to cancellation leaves the abstract runtime live."
+scope = "Finite dirty close request and synchronous cancellation."
+bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
+assumptions = ["dirty close selects cancellation unless the faulty control is enabled"]
+exclusions = ["NSWindowDelegate delivery", "native resource drain", "elapsed time"]
+companion = "apps/alpine-studio/src/studio_coverage_tests.rs#studio_runtime_returns_clipboard_and_dirty_close_responses"
+
 [[evidence]]
 id = "EV-0153-TLA04B"
 claim = "AEP-0153-C04"

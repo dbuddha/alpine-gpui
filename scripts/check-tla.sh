@@ -41,19 +41,23 @@ for model_dir in formal/tla/aep-*; do
             -cleanup -deadlock -workers auto -config "$config" "$model_name"
     ) >"$model_output/$config.log" 2>&1
 
-    if (
-        cd "$model_dir"
-        java -XX:+UseParallelGC -cp "../../../$jar" tlc2.TLC \
-            -cleanup -deadlock -workers auto -config Faulty.cfg "$model_name"
-    ) >"$model_output/Faulty.cfg.log" 2>&1; then
-        printf 'faulty model unexpectedly passed: %s\n' "$model_dir" >&2
-        exit 1
-    fi
+    for faulty_path in "$model_dir"/Faulty*.cfg; do
+        faulty_config=$(basename "$faulty_path")
+        if (
+            cd "$model_dir"
+            java -XX:+UseParallelGC -cp "../../../$jar" tlc2.TLC \
+                -cleanup -deadlock -workers auto -config "$faulty_config" "$model_name"
+        ) >"$model_output/$faulty_config.log" 2>&1; then
+            printf 'faulty model unexpectedly passed: %s %s\n' \
+                "$model_dir" "$faulty_config" >&2
+            exit 1
+        fi
 
-    if ! grep -Eq 'Invariant .* is violated|Invariant .* is violated\.' \
-        "$model_output/Faulty.cfg.log"; then
-        printf 'faulty model did not produce the expected invariant violation: %s\n' \
-            "$model_dir" >&2
-        exit 1
-    fi
+        if ! grep -Eq 'Invariant .* is violated|Invariant .* is violated\.' \
+            "$model_output/$faulty_config.log"; then
+            printf 'faulty model did not produce the expected invariant violation: %s %s\n' \
+                "$model_dir" "$faulty_config" >&2
+            exit 1
+        fi
+    done
 done
