@@ -1501,6 +1501,169 @@ fn floor_f32_to_usize(value: f32) -> Option<usize> {
     (value <= 16_777_216.0).then_some(value.floor() as usize)
 }
 
+/// Non-shipping native Alpine Studio process qualification.
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+#[doc(hidden)]
+pub mod native_validation {
+    use std::{cell::RefCell, fs, path::Path, rc::Rc, time::Duration};
+
+    use alpine_platform_macos::{
+        ClipboardError, ClipboardOperation, EventTimestamp, KeyState, Modifiers, NativeSurface,
+        SurfaceDescriptor, SurfaceEvent, SurfaceLifecycle, SurfaceResponse,
+        native_validation as platform_validation,
+    };
+    use alpine_runtime::{Application, WorkerConfig};
+    use alpine_text::{ByteOffset, Selection};
+
+    use super::{
+        DEFAULT_SCALE, KEY_S, StudioApp, StudioError, WINDOW_HEIGHT, WINDOW_WIDTH, native_file_app,
+    };
+
+    /// Runs one real AppKit, runtime, and Studio clipboard and close journey.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured construction, rendering, pasteboard, save, or
+    /// teardown failure from the production-composed validation process.
+    pub fn qualify_clipboard_and_close_process() -> Result<(), Box<dyn std::error::Error>> {
+        let path = std::env::temp_dir().join(format!(
+            "alpine-studio-native-process-{}.txt",
+            std::process::id()
+        ));
+        fs::write(&path, "alpha beta")?;
+        let result = qualify_path(&path);
+        let cleanup = fs::remove_file(path);
+        match (result, cleanup) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(Box::new(error)),
+            (Ok(()), Ok(())) => Ok(()),
+        }
+    }
+
+    fn qualify_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let mut delegate = native_file_app(path)?;
+        delegate.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(5));
+        let clear = alpine_core::LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(
+            StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
+                alpine_platform_macos::SurfaceError::DriverUnavailable,
+            )),
+        )?;
+        let viewport = alpine_core::Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(
+            StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
+                alpine_platform_macos::SurfaceError::DriverUnavailable,
+            )),
+        )?;
+        let descriptor = SurfaceDescriptor::new(
+            "Alpine Studio native process",
+            f64::from(WINDOW_WIDTH),
+            f64::from(WINDOW_HEIGHT),
+            f64::from(DEFAULT_SCALE),
+        )?;
+        let mut application = Application::new(delegate, viewport, clear, WorkerConfig::default())?;
+        let surface = platform_validation::new_surface(&descriptor)?;
+        let initial_frame = application
+            .frame_if_dirty()
+            .ok_or("Studio did not build its initial dirty frame")?;
+        let (scene, clear) = initial_frame.into_parts();
+        let _revision = surface.request_frame(scene, clear)?;
+        surface.show()?;
+        platform_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+        assert_eq!(surface.take_error()?, None);
+
+        let state = Rc::new(RefCell::new(application));
+        let initial_revision = state.borrow().snapshot().document_revision();
+        platform_validation::replay_native_clipboard_operation(
+            &surface,
+            ClipboardOperation::Copy,
+            event_handler(&state),
+        )?;
+        assert_eq!(
+            state.borrow().snapshot().document_revision(),
+            initial_revision
+        );
+        dispatch_save(&surface, &state, 1)?;
+        assert_eq!(fs::read_to_string(path)?, "alpha beta");
+
+        platform_validation::inject_clipboard_error(&surface, ClipboardError::WriteRejected);
+        platform_validation::replay_native_clipboard_operation(
+            &surface,
+            ClipboardOperation::Cut,
+            event_handler(&state),
+        )?;
+        assert_eq!(
+            state.borrow().snapshot().document_revision(),
+            initial_revision
+        );
+        dispatch_save(&surface, &state, 2)?;
+        assert_eq!(fs::read_to_string(path)?, "alpha beta");
+
+        platform_validation::replay_native_clipboard_operation(
+            &surface,
+            ClipboardOperation::Cut,
+            event_handler(&state),
+        )?;
+        let cut_revision = state.borrow().snapshot().document_revision();
+        assert_ne!(cut_revision, initial_revision);
+        let observer = surface.observer();
+        assert!(!platform_validation::replay_close_with_handler(
+            &surface,
+            event_handler(&state),
+        )?);
+        assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
+        assert!(!state.borrow().snapshot().is_shutting_down());
+        assert_eq!(fs::read_to_string(path)?, "alpha beta");
+
+        platform_validation::replay_native_clipboard_operation(
+            &surface,
+            ClipboardOperation::Paste,
+            event_handler(&state),
+        )?;
+        assert_ne!(state.borrow().snapshot().document_revision(), cut_revision);
+        dispatch_save(&surface, &state, 3)?;
+        assert_eq!(fs::read_to_string(path)?, "alpha beta");
+        assert!(platform_validation::replay_close_with_handler(
+            &surface,
+            event_handler(&state),
+        )?);
+        assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
+        assert!(state.borrow().snapshot().is_shutting_down());
+
+        drop(state);
+        let evidence = platform_validation::close_with_owner_evidence(surface)?;
+        assert_eq!(evidence.active(), [0; 9]);
+        assert_eq!(evidence.release_order_violations(), 0);
+        Ok(())
+    }
+
+    fn event_handler(
+        state: &Rc<RefCell<Application<StudioApp>>>,
+    ) -> impl FnMut(SurfaceEvent) -> SurfaceResponse + 'static {
+        let state = Rc::clone(state);
+        move |event| {
+            state.try_borrow_mut().map_or_else(
+                |_| SurfaceResponse::default(),
+                |mut application| application.dispatch_with_response(&event),
+            )
+        }
+    }
+
+    fn dispatch_save(
+        surface: &NativeSurface,
+        state: &Rc<RefCell<Application<StudioApp>>>,
+        timestamp: u64,
+    ) -> Result<(), alpine_platform_macos::SurfaceError> {
+        let events = [SurfaceEvent::Keyboard {
+            timestamp: EventTimestamp::new(timestamp),
+            state: KeyState::Down,
+            physical_key: KEY_S,
+            logical_key: "s".into(),
+            modifiers: Modifiers::from_bits(Modifiers::COMMAND),
+            repeat: false,
+        }];
+        platform_validation::replay_callback_surface_events(surface, &events, event_handler(state))
+    }
+}
+
 #[cfg(test)]
 #[path = "studio_coverage_tests.rs"]
 mod tests;

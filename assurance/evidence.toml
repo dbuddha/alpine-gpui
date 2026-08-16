@@ -2969,6 +2969,19 @@ tla_properties = ["DirtyCloseNeverAllows", "CancelledCloseStaysLive"]
 platform_scope = ["portable"]
 required_evidence = ["tla", "unit"]
 
+[[claims]]
+id = "AEP-0153-C08"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0153-bounded-clipboard-close-response.md"
+requirement_issue = 37
+claim_type = "lifecycle"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["CutMutationRequiresMatchingCompletion", "DirtyCloseNeverAllows", "CancelledCloseStaysLive", "AllowedCloseRevokesAdmission"]
+platform_scope = ["macos-metal"]
+required_evidence = ["tla", "e2e", "native"]
+
 [[evidence]]
 id = "EV-0153-UNIT06"
 claim = "AEP-0153-C06"
@@ -3052,6 +3065,72 @@ bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstra
 assumptions = ["native dispatch preserves the typed response channels"]
 exclusions = ["formal refinement to Objective-C callbacks", "NSPasteboard failure semantics"]
 companion = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
+
+[[evidence]]
+id = "EV-0153-E2E08"
+claim = "AEP-0153-C08"
+kind = "e2e"
+artifact = "apps/alpine-studio/tests/native_process.rs#main"
+assertion = "One harness-free process composes Studio runtime dispatch with native copy, cut failure, successful cut and paste, atomic save, dirty close veto, and clean close admission."
+scope = "One local UTF-8 file, one Alpine Studio application, one Apple Silicon AppKit window, and one isolated validation pasteboard."
+exclusions = ["general user pasteboard contents", "save prompts", "clipboard latency", "multi-window behavior", "performance claims"]
+
+[[evidence]]
+id = "EV-0153-NATIVE08"
+claim = "AEP-0153-C08"
+kind = "native"
+artifact = "apps/alpine-studio/src/lib.rs#qualify_clipboard_and_close_process"
+assertion = "The composed journey presents an initial frame through the AppKit event loop, leaves the native owner live after dirty veto, enters closing only after a clean response, and releases every tracked owner with no ordering violation."
+scope = "Production native surface construction, display callback, NSResponder clipboard selectors, NSWindowDelegate close callbacks, and validation-only owner counters."
+exclusions = ["formal refinement to Objective-C callbacks", "elapsed-time qualification", "physical pixel capture", "process memory"]
+
+[[evidence]]
+id = "EV-0153-TLA08"
+claim = "AEP-0153-C08"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#CutMutationRequiresMatchingCompletion"
+assertion = "The finite companion model requires matching revision and selection identity before cut mutation."
+scope = "Portable cut transition independently transported by the native process journey."
+bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
+assumptions = ["native dispatch preserves the typed cut completion identity"]
+exclusions = ["formal refinement to AppKit delivery", "native resource ownership", "elapsed time"]
+companion = "apps/alpine-studio/tests/native_process.rs#main"
+
+[[evidence]]
+id = "EV-0153-TLA08B"
+claim = "AEP-0153-C08"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#DirtyCloseNeverAllows"
+assertion = "The finite companion model prevents a close requested while dirty from reaching the allowed state."
+scope = "Portable dirty-close transition independently transported by the native process journey."
+bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
+assumptions = ["native dispatch samples dirty identity synchronously"]
+exclusions = ["formal refinement to AppKit delivery", "native resource ownership", "elapsed time"]
+companion = "apps/alpine-studio/tests/native_process.rs#main"
+
+[[evidence]]
+id = "EV-0153-TLA08C"
+claim = "AEP-0153-C08"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#CancelledCloseStaysLive"
+assertion = "The finite companion model keeps runtime admission live after a cancelled close."
+scope = "Portable cancelled-close transition independently transported by the native process journey."
+bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
+assumptions = ["native dispatch preserves the typed cancel response"]
+exclusions = ["formal refinement to AppKit delivery", "native resource ownership", "elapsed time"]
+companion = "apps/alpine-studio/tests/native_process.rs#main"
+
+[[evidence]]
+id = "EV-0153-TLA08D"
+claim = "AEP-0153-C08"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#AllowedCloseRevokesAdmission"
+assertion = "The finite companion model revokes foreground admission after an allowed close."
+scope = "Portable allowed-close transition independently transported by the native process journey."
+bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
+assumptions = ["native dispatch preserves the typed allow response"]
+exclusions = ["formal refinement to AppKit delivery", "native resource ownership", "elapsed time"]
+companion = "apps/alpine-studio/tests/native_process.rs#main"
 
 [[evidence]]
 id = "EV-0153-NATIVE05"

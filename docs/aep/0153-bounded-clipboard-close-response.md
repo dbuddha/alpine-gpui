@@ -56,10 +56,10 @@ polling.
 - **AEP-0153-C07:** Studio synchronously cancels close for dirty or failed
   documents, allows clean close, and paints local clipboard or close-failure
   status without retaining clipboard payload text.
-
-The production process journey that composes Studio, AppKit pasteboard I/O, and
-window close remains required by Task #154. C06 and C07 cover the portable
-Studio transition and runtime response boundary only.
+- **AEP-0153-C08:** One native validation process composes Studio's production
+  delegate, bounded runtime dispatch, a presented initial frame, AppKit
+  pasteboard selectors, `windowShouldClose`, atomic save, and exact native owner
+  drain without accessing the developer's general pasteboard.
 
 ## Model and implementation mapping
 
@@ -133,8 +133,11 @@ unique validation pasteboard to avoid changing a developer clipboard; shipping
 uses `generalPasteboard` through the same read and write conversion functions.
 Portable Studio unit evidence now covers revision-correlated copy, cut, paste,
 dirty-close cancellation, response wiring, atomic failure, and rendered local
-status. Full native process composition remains unqualified, and no product or
-performance claim may infer it from the separate Studio and AppKit controls.
+status. A harness-free native process additionally composes those transitions
+with a real AppKit owner, isolated pasteboard, initial event-loop presentation,
+atomic file persistence, dirty veto, clean close, and exact teardown. This is a
+scoped correctness claim and provides no clipboard latency or product
+performance evidence.
 
 ## Risks and reversal conditions
 
