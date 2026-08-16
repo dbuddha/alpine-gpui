@@ -571,6 +571,11 @@ fn find_failure_paths_fail_closed_without_mutating_the_document()
         .find
         .replace_ranges_for_test(std::iter::once(usize::MAX..usize::MAX).collect());
     assert!(
+        !invalid_navigation
+            .apply_find_navigation(FindNavigation::new(usize::MAX, false))
+            .visual_changed
+    );
+    assert!(
         invalid_navigation
             .handle_event(&key(KEY_RETURN, Modifiers::default()))
             .visual_changed
@@ -591,6 +596,34 @@ fn find_failure_paths_fail_closed_without_mutating_the_document()
             .visual_changed
     );
     assert_eq!(scrolled_navigation.scroll_y.to_bits(), 410.0_f32.to_bits());
+    let highlighted = scrolled_navigation.try_scene(
+        SceneRevision::new(2),
+        viewport().map_err(|_| StudioRenderError::Domain)?,
+    )?;
+    assert!(!highlighted.glyphs().is_empty());
+    assert!(highlighted.quads().len() > 3);
+
+    Ok(())
+}
+
+#[test]
+fn malformed_find_highlight_fails_before_scene_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app()?;
+    *app.buffer_mut() = Buffer::new("é");
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    app.handle_event(&key(KEY_F, command));
+    app.handle_event(&ime(ImeEvent::Committed("é".into())));
+    app.complete_pending_find_for_test()?;
+    app.find
+        .replace_ranges_for_test(std::iter::once(1..2).collect());
+    assert!(matches!(
+        app.try_scene(
+            SceneRevision::new(3),
+            viewport().map_err(|_| StudioRenderError::Domain)?,
+        ),
+        Err(StudioRenderError::Text(_))
+    ));
     Ok(())
 }
 
@@ -813,6 +846,24 @@ fn status_raster_failure_is_structured_after_empty_document_layout() -> Result<(
     assert!(matches!(
         app.try_scene(
             SceneRevision::new(1),
+            viewport().map_err(|_| StudioRenderError::Domain)?,
+        ),
+        Err(StudioRenderError::Layout(LayoutError::NativeFailure(
+            "injected status raster failure"
+        )))
+    ));
+
+    let mut overlay =
+        StudioApp::new(FailingRasterTextSystem).map_err(|_| StudioRenderError::Domain)?;
+    *overlay.buffer_mut() = Buffer::new("");
+    assert!(
+        overlay
+            .handle_event(&key(KEY_F, Modifiers::from_bits(Modifiers::COMMAND),))
+            .visual_changed
+    );
+    assert!(matches!(
+        overlay.try_scene(
+            SceneRevision::new(2),
             viewport().map_err(|_| StudioRenderError::Domain)?,
         ),
         Err(StudioRenderError::Layout(LayoutError::NativeFailure(
@@ -2025,6 +2076,7 @@ fn empty_raster_output_and_render_failure_degrade_without_invalid_scene()
     assert!(failing.rendered_lines.is_empty());
 
     let text_error: StudioRenderError = TextError::EmptySelectionSet.into();
+    let find_error: StudioRenderError = FindError::IncompleteResult.into();
     let layout_error: StudioRenderError = LayoutError::InvalidScroll.into();
     let scene_error: StudioRenderError = SceneError::MissingGlyphAtlas.into();
     assert!(
@@ -2032,6 +2084,7 @@ fn empty_raster_output_and_render_failure_degrade_without_invalid_scene()
             .to_string()
             .starts_with("text layout input failed")
     );
+    assert!(find_error.to_string().starts_with("find rendering failed"));
     assert!(
         layout_error
             .to_string()
@@ -2612,6 +2665,18 @@ fn find_focus_rejections_and_empty_actions_remain_bounded() -> Result<(), Studio
     let command = Modifiers::from_bits(Modifiers::COMMAND);
     let command_option = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION);
     assert!(app.handle_event(&key(KEY_F, command)).visual_changed);
+    assert!(matches!(
+        app.handle_event_with_response(&clipboard_key("c")),
+        StudioTransition {
+            effect: EventEffect {
+                visual_changed: false,
+                document_changed: false,
+                document_identity_advanced: false,
+            },
+            clipboard_write: None,
+            cancel_close: false,
+        }
+    ));
     assert!(
         !app.handle_event(&key(KEY_TAB, Modifiers::default()))
             .visual_changed

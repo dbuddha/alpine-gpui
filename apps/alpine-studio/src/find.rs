@@ -146,6 +146,10 @@ pub(crate) struct FindNavigation {
 }
 
 impl FindNavigation {
+    pub(crate) const fn new(index: usize, wrapped: bool) -> Self {
+        Self { index, wrapped }
+    }
+
     pub(crate) const fn index(self) -> usize {
         self.index
     }
@@ -221,6 +225,8 @@ pub(crate) struct FindRequest {
     snapshot: BufferSnapshot,
     query: Box<str>,
     limits: FindLimits,
+    #[cfg(test)]
+    injected_slice_error: Option<TextError>,
 }
 
 impl FindRequest {
@@ -257,6 +263,8 @@ impl FindRequest {
             snapshot,
             query: owned.into_boxed_str(),
             limits,
+            #[cfg(test)]
+            injected_slice_error: None,
         })
     }
 
@@ -270,12 +278,26 @@ impl FindRequest {
         FindWorkerOutput { identity, result }
     }
 
-    fn execute_inner(self) -> Result<FindResult, FindError> {
+    #[cfg(test)]
+    fn with_slice_error_for_test(mut self, error: TextError) -> Self {
+        self.injected_slice_error = Some(error);
+        self
+    }
+
+    fn slice(&mut self, end: usize) -> Result<String, TextError> {
+        #[cfg(test)]
+        if let Some(error) = self.injected_slice_error.take() {
+            return Err(error);
+        }
+        self.snapshot.slice(0..end)
+    }
+
+    fn execute_inner(mut self) -> Result<FindResult, FindError> {
         let total_source_bytes = self.snapshot.len_bytes();
         let retained_limit = total_source_bytes.min(self.limits.source_bytes);
         let mut retained_end = retained_limit;
         for _ in 0..UTF8_BOUNDARY_BACKTRACK {
-            match self.snapshot.slice(0..retained_end) {
+            match self.slice(retained_end) {
                 Ok(source) => {
                     return search_text(
                         self.identity,
@@ -710,7 +732,7 @@ impl FindState {
             (Some(_), false) => (result.len() - 1, true),
         };
         self.active = Some(index);
-        Some(FindNavigation { index, wrapped })
+        Some(FindNavigation::new(index, wrapped))
     }
 
     pub(crate) fn active_range(&self, document: u64, buffer_revision: u64) -> Option<Range<usize>> {

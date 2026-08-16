@@ -41,7 +41,7 @@ use alpine_text_layout::{
 };
 use documents::{DocumentTabError, DocumentTabLimits, DocumentTabs, DocumentViewState};
 use find::{
-    FindAdmission, FindError, FindRequest, FindState, FindWorkerOutput,
+    FindAdmission, FindError, FindNavigation, FindRequest, FindState, FindWorkerOutput,
     MAX_REPLACEMENT_TRANSACTION_BYTES,
 };
 use workspace::Workspace;
@@ -927,13 +927,10 @@ impl StudioApp {
             builder.push_quad(Quad::new(overlay_bounds, find_background_color))?;
             let display = self.find.display_text()?;
             let layout = self.text_system.shape(&display, font)?;
-            let overlay_glyphs = self.collect_glyphs(
-                &layout,
-                font,
-                left + FIND_BAR_INSET,
-                overlay_origin.y() + layout.ascent() + 6.0,
-                overlay_clip,
-            )?;
+            let origin_x = left + FIND_BAR_INSET;
+            let baseline = overlay_origin.y() + layout.ascent() + 6.0;
+            let overlay_glyphs =
+                self.collect_glyphs(&layout, font, origin_x, baseline, overlay_clip)?;
             pending_glyphs.extend(overlay_glyphs);
         }
         builder.push_quad(Quad::new(tab_bounds, tab_background).clipped(tab_clip))?;
@@ -1517,6 +1514,10 @@ impl StudioApp {
         let Some(navigation) = self.find.navigate(forward) else {
             return EventEffect::default();
         };
+        self.apply_find_navigation(navigation)
+    }
+
+    fn apply_find_navigation(&mut self, navigation: FindNavigation) -> EventEffect {
         let Some(range) = self
             .find
             .result()

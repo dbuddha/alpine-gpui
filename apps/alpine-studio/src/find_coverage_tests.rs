@@ -72,6 +72,18 @@ fn visibility_end_and_query_cap_boundaries_are_exclusive_and_exact()
         FindRequest::with_limits(identity, snapshot, &oversized, FindLimits::shipping(),),
         Err(FindError::QueryTooLong { .. })
     ));
+    let injected = FindRequest::with_limits(
+        identity,
+        Buffer::new("x").snapshot(),
+        "x",
+        FindLimits::shipping(),
+    )?
+    .with_slice_error_for_test(TextError::EmptySelectionSet)
+    .execute();
+    assert!(matches!(
+        injected.result,
+        Err(FindError::Text(TextError::EmptySelectionSet))
+    ));
 
     let mut state = FindState::default();
     assert!(state.open(false));
