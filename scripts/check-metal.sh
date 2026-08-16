@@ -7,8 +7,8 @@ if ! cargo metadata --format-version 1 --no-deps | grep -q '"name":"alpine-metal
 fi
 
 metallib_path=$(pwd)/target/metal/offscreen.metallib
-scripts/verify-metal-library.sh
 scripts/build-metal-shaders.sh "$metallib_path"
+scripts/verify-metal-library.sh
 if ! cmp -s shaders/offscreen.metallib "$metallib_path"; then
     printf 'metal validation error: pinned compiler output differs from the checked-in library\n' >&2
     printf 'checked-in: ' >&2
