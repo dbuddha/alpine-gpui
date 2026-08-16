@@ -1603,6 +1603,14 @@ fn encode_render_pass(
     atlas: Option<&ProtocolObject<dyn MTLTexture>>,
     frame: &ValidatedFrame,
 ) -> Result<(), RenderError> {
+    if !texture.usage().contains(MTLTextureUsage::RenderTarget) {
+        return Err(RenderError::SubmissionInvariantViolated);
+    }
+    if upload.is_some()
+        && !atlas.is_some_and(|texture| texture.usage().contains(MTLTextureUsage::ShaderRead))
+    {
+        return Err(RenderError::SubmissionInvariantViolated);
+    }
     let pass = MTLRenderPassDescriptor::renderPassDescriptor();
     let attachments = pass.colorAttachments();
     // SAFETY: Metal render-pass descriptors always expose eight color
@@ -1705,8 +1713,10 @@ fn create_glyph_atlas(
 }
 
 fn create_solid_binding_atlas(device: &Device) -> Result<Texture, RenderError> {
-    // SAFETY: A nonempty solid draw needs one valid shader-readable binding,
-    // but the negative UV sentinel guarantees the fragment does not sample it.
+    // SAFETY: A nonempty solid draw needs one valid shader-readable binding.
+    // Initializing the texel also keeps speculative or validation-layer sample
+    // evaluation defined even though the negative UV sentinel selects coverage
+    // one for every solid fragment.
     let descriptor = unsafe {
         MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
             MTLPixelFormat::R8Unorm,
@@ -1715,14 +1725,35 @@ fn create_solid_binding_atlas(device: &Device) -> Result<Texture, RenderError> {
             false,
         )
     };
-    descriptor.setStorageMode(MTLStorageMode::Private);
+    descriptor.setStorageMode(MTLStorageMode::Shared);
     descriptor.setUsage(MTLTextureUsage::ShaderRead);
-    device
-        .newTextureWithDescriptor(&descriptor)
-        .ok_or(RenderError::ResourceUnavailable {
-            stage: RenderStage::RenderTexture,
-            requested_bytes: Some(1),
-        })
+    let texture =
+        device
+            .newTextureWithDescriptor(&descriptor)
+            .ok_or(RenderError::ResourceUnavailable {
+                stage: RenderStage::RenderTexture,
+                requested_bytes: Some(1),
+            })?;
+    let texel = [u8::MAX];
+    let bytes = NonNull::from(&texel).cast::<c_void>();
+    // SAFETY: The source is one initialized byte and the destination is a
+    // one-by-one, single-level R8 texture with a one-byte row pitch.
+    unsafe {
+        texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+            MTLRegion {
+                origin: MTLOrigin { x: 0, y: 0, z: 0 },
+                size: MTLSize {
+                    width: 1,
+                    height: 1,
+                    depth: 1,
+                },
+            },
+            0,
+            bytes,
+            1,
+        );
+    }
+    Ok(texture)
 }
 
 fn encode_readback(

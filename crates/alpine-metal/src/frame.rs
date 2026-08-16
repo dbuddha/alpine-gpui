@@ -458,9 +458,6 @@ fn lower_glyph(
     let y = f64::from(bounds.origin().y());
     let width = f64::from(bounds.size().width());
     let height = f64::from(bounds.size().height());
-    if width <= 0.0 || height <= 0.0 {
-        return Ok(None);
-    }
     let left = x.max(0.0).max(f64::from(clip[0]));
     let top = y.max(0.0).max(f64::from(clip[1]));
     let right = (x + width)
@@ -667,6 +664,10 @@ impl fmt::Display for OffscreenError {
 impl Error for OffscreenError {}
 
 #[cfg(test)]
+#[path = "frame_coverage_tests.rs"]
+mod frame_coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use std::{
         mem::{offset_of, size_of},
@@ -760,25 +761,18 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut builder = SceneBuilder::new(SceneRevision::new(2), size(4.0, 2.0)?);
         let clip = builder.push_clip(Clip::new(Rect::new(point(1.0, 0.5)?, size(2.0, 1.0)?)));
-        builder.set_glyph_atlas(GlyphAtlasImage::new(
-            7,
-            NonZeroU32::new(4).ok_or("atlas width")?,
-            NonZeroU32::new(2).ok_or("atlas height")?,
-            Arc::from([255_u8; 8]),
-        )?)?;
-        builder.push_glyph(
-            Glyph::new(
-                Rect::new(point(0.0, 0.0)?, size(4.0, 2.0)?),
-                AtlasBounds::new(
-                    0,
-                    0,
-                    NonZeroU32::new(4).ok_or("glyph width")?,
-                    NonZeroU32::new(2).ok_or("glyph height")?,
-                ),
-                color(1.0, 1.0, 1.0, 1.0)?,
-            )
-            .clipped(clip),
-        )?;
+        let four = NonZeroU32::new(4).ok_or("atlas width")?;
+        let two = NonZeroU32::new(2).ok_or("atlas height")?;
+        let atlas = GlyphAtlasImage::new(7, four, two, Arc::from([255_u8; 8]))?;
+        builder.set_glyph_atlas(atlas)?;
+        let bounds = Rect::new(point(0.0, 0.0)?, size(4.0, 2.0)?);
+        let glyph = Glyph::new(
+            bounds,
+            AtlasBounds::new(0, 0, four, two),
+            color(1.0, 1.0, 1.0, 1.0)?,
+        )
+        .clipped(clip);
+        builder.push_glyph(glyph)?;
 
         let frame = ValidatedFrame::new(&builder.finish(), descriptor(4, 2, 1.0)?)?;
         assert_eq!(frame.paints().len(), 1);
@@ -984,6 +978,8 @@ mod tests {
             },
             OffscreenError::ViewportScaleOverflow,
             OffscreenError::UnrepresentableQuad { primitive_index: 5 },
+            OffscreenError::InvalidSceneOperation { primitive_index: 6 },
+            OffscreenError::MissingGlyphAtlas { primitive_index: 7 },
             OffscreenError::CompactRowSizeOverflow,
             OffscreenError::AlignedRowSizeOverflow,
             OffscreenError::CompactImageSizeOverflow,

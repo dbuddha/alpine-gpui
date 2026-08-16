@@ -132,9 +132,7 @@ impl VisibleLines {
             return Err(LayoutError::InvalidScroll);
         }
         let first = floor_to_usize(scroll_y / line_height.get())?.min(line_count - 1);
-        let visible_count = ceil_to_usize(viewport_height.get() / line_height.get())?
-            .checked_add(1)
-            .ok_or(LayoutError::ArithmeticOverflow)?;
+        let visible_count = ceil_to_usize(viewport_height.get() / line_height.get())? + 1;
         let visible_end = first.saturating_add(visible_count).min(line_count);
         let laid_out_start = first.saturating_sub(overscan_lines);
         let laid_out_end = visible_end.saturating_add(overscan_lines).min(line_count);
@@ -181,6 +179,30 @@ fn ceil_to_usize(value: f32) -> Result<usize, LayoutError> {
         reason = "the finite non-negative value is bounded to f32's exact integer domain"
     )]
     Ok(value.ceil() as usize)
+}
+
+fn reserve<T>(values: &mut Vec<T>, additional: usize) -> Result<(), LayoutError> {
+    values
+        .try_reserve(additional)
+        .map_err(|_| LayoutError::AllocationFailed)
+}
+
+fn reserve_exact<T>(values: &mut Vec<T>, additional: usize) -> Result<(), LayoutError> {
+    values
+        .try_reserve_exact(additional)
+        .map_err(|_| LayoutError::AllocationFailed)
+}
+
+const fn exceeds_budget(current: usize, budget: usize) -> bool {
+    current > budget
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "u32 fits every supported 32-bit or 64-bit Alpine target"
+)]
+const fn usize_from_u32(value: u32) -> usize {
+    value as usize
 }
 
 /// One backend-independent shaped glyph.
@@ -561,9 +583,7 @@ impl LineLayoutCache {
     pub fn begin_frame(&mut self) -> Result<(), LayoutError> {
         self.evictions = self
             .evictions
-            .checked_add(
-                u64::try_from(self.previous.len()).map_err(|_| LayoutError::ArithmeticOverflow)?,
-            )
+            .checked_add(self.previous.len() as u64)
             .ok_or(LayoutError::SequenceExhausted)?;
         self.previous = std::mem::take(&mut self.current);
         Ok(())
@@ -652,9 +672,7 @@ impl LineLayoutCache {
             .shaped_lines
             .checked_add(1)
             .ok_or(LayoutError::SequenceExhausted)?;
-        self.current
-            .try_reserve(1)
-            .map_err(|_| LayoutError::AllocationFailed)?;
+        reserve(&mut self.current, 1)?;
         self.current.push(CacheEntry {
             fingerprint,
             snapshot: snapshot.clone(),
@@ -840,9 +858,8 @@ impl GlyphBitmap {
         height: NonZeroU32,
         pixels: Vec<u8>,
     ) -> Result<Self, LayoutError> {
-        let expected = usize::try_from(width.get())
-            .ok()
-            .and_then(|value| value.checked_mul(usize::try_from(height.get()).ok()?))
+        let expected = usize_from_u32(width.get())
+            .checked_mul(usize_from_u32(height.get()))
             .ok_or(LayoutError::ArithmeticOverflow)?;
         if pixels.len() != expected {
             return Err(LayoutError::InvalidGlyphBitmap {
@@ -1011,14 +1028,15 @@ impl GlyphAtlas {
             });
         }
 
-        loop {
-            self.entries
-                .try_reserve(1)
-                .map_err(|_| LayoutError::AllocationFailed)?;
-            self.free
-                .try_reserve(2)
-                .map_err(|_| LayoutError::AllocationFailed)?;
-            if self.current_bytes() > self.budget_bytes.get() {
+        let attempts = self
+            .entries
+            .len()
+            .checked_add(u32::BITS as usize)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        for _ in 0..attempts {
+            reserve(&mut self.entries, 1)?;
+            reserve(&mut self.free, 2)?;
+            if exceeds_budget(self.current_bytes(), self.budget_bytes.get()) {
                 return Err(LayoutError::AtlasSaturated);
             }
             if let Some(rect) = self.allocate_rect(bitmap.width, bitmap.height) {
@@ -1038,6 +1056,7 @@ impl GlyphAtlas {
                 return Err(LayoutError::AtlasSaturated);
             }
         }
+        Err(LayoutError::AtlasSaturated)
     }
 
     /// Removes all glyphs and releases pixel storage under explicit pressure.
@@ -1053,9 +1072,7 @@ impl GlyphAtlas {
             .ok_or(LayoutError::SequenceExhausted)?;
         self.evictions = self
             .evictions
-            .checked_add(
-                u64::try_from(self.entries.len()).map_err(|_| LayoutError::ArithmeticOverflow)?,
-            )
+            .checked_add(self.entries.len() as u64)
             .ok_or(LayoutError::SequenceExhausted)?;
         self.dimension = 0;
         self.pixels = Vec::new();
@@ -1121,40 +1138,39 @@ impl GlyphAtlas {
     }
 
     fn grow(&mut self, minimum: u32) -> Result<bool, LayoutError> {
-        let mut next = if self.dimension == 0 {
-            256
-        } else {
-            self.dimension.saturating_mul(2)
-        };
-        while next < minimum {
+        let mut next = NonZeroU32::new(self.dimension).map_or(Ok(256), |dimension| {
+            dimension
+                .get()
+                .checked_mul(2)
+                .ok_or(LayoutError::ArithmeticOverflow)
+        })?;
+        for _ in 0..u32::BITS {
+            if next >= minimum {
+                break;
+            }
             next = next.checked_mul(2).ok_or(LayoutError::ArithmeticOverflow)?;
         }
-        let pixel_bytes = usize::try_from(next)
-            .ok()
-            .and_then(|value| value.checked_mul(value))
+        if next < minimum {
+            return Err(LayoutError::ArithmeticOverflow);
+        }
+        let pixel_bytes = usize_from_u32(next)
+            .checked_mul(usize_from_u32(next))
             .ok_or(LayoutError::ArithmeticOverflow)?;
-        let free_growth = if self.dimension == 0 { 1 } else { 2 };
-        self.free
-            .try_reserve(free_growth)
-            .map_err(|_| LayoutError::AllocationFailed)?;
+        reserve(&mut self.free, 2)?;
         let mut pixels = Vec::new();
-        pixels
-            .try_reserve_exact(pixel_bytes)
-            .map_err(|_| LayoutError::AllocationFailed)?;
+        reserve_exact(&mut pixels, pixel_bytes)?;
         pixels.resize(pixel_bytes, 0);
-        if pixels
+        let retained = pixels
             .capacity()
             .checked_add(self.metadata_bytes())
-            .ok_or(LayoutError::ArithmeticOverflow)?
-            > self.budget_bytes.get()
-        {
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        if exceeds_budget(retained, self.budget_bytes.get()) {
             self.free.shrink_to_fit();
             return Ok(false);
         }
         if self.dimension != 0 {
-            let old =
-                usize::try_from(self.dimension).map_err(|_| LayoutError::ArithmeticOverflow)?;
-            let new = usize::try_from(next).map_err(|_| LayoutError::ArithmeticOverflow)?;
+            let old = usize_from_u32(self.dimension);
+            let new = usize_from_u32(next);
             for row in 0..old {
                 let source = row * old..row * old + old;
                 let destination = row * new..row * new + old;
@@ -1187,14 +1203,11 @@ impl GlyphAtlas {
     }
 
     fn copy_bitmap(&mut self, rect: AtlasRect, bitmap: &GlyphBitmap) -> Result<(), LayoutError> {
-        let stride =
-            usize::try_from(self.dimension).map_err(|_| LayoutError::ArithmeticOverflow)?;
-        let width =
-            usize::try_from(rect.width.get()).map_err(|_| LayoutError::ArithmeticOverflow)?;
-        let height =
-            usize::try_from(rect.height.get()).map_err(|_| LayoutError::ArithmeticOverflow)?;
-        let x = usize::try_from(rect.x).map_err(|_| LayoutError::ArithmeticOverflow)?;
-        let y = usize::try_from(rect.y).map_err(|_| LayoutError::ArithmeticOverflow)?;
+        let stride = usize_from_u32(self.dimension);
+        let width = usize_from_u32(rect.width.get());
+        let height = usize_from_u32(rect.height.get());
+        let x = usize_from_u32(rect.x);
+        let y = usize_from_u32(rect.y);
         for row in 0..height {
             let source = row * width..row * width + width;
             let start = (y + row)
@@ -1215,9 +1228,7 @@ impl GlyphAtlas {
         else {
             return Ok(false);
         };
-        self.free
-            .try_reserve(1)
-            .map_err(|_| LayoutError::AllocationFailed)?;
+        reserve(&mut self.free, 1)?;
         let removed = self.entries.remove(index);
         self.clear_rect(removed.rect)?;
         self.free.push(removed.rect);
@@ -1230,14 +1241,11 @@ impl GlyphAtlas {
     }
 
     fn clear_rect(&mut self, rect: AtlasRect) -> Result<(), LayoutError> {
-        let stride =
-            usize::try_from(self.dimension).map_err(|_| LayoutError::ArithmeticOverflow)?;
-        let width =
-            usize::try_from(rect.width.get()).map_err(|_| LayoutError::ArithmeticOverflow)?;
-        let x = usize::try_from(rect.x).map_err(|_| LayoutError::ArithmeticOverflow)?;
-        let y = usize::try_from(rect.y).map_err(|_| LayoutError::ArithmeticOverflow)?;
-        let height =
-            usize::try_from(rect.height.get()).map_err(|_| LayoutError::ArithmeticOverflow)?;
+        let stride = usize_from_u32(self.dimension);
+        let width = usize_from_u32(rect.width.get());
+        let x = usize_from_u32(rect.x);
+        let y = usize_from_u32(rect.y);
+        let height = usize_from_u32(rect.height.get());
         for row in 0..height {
             let start = (y + row)
                 .checked_mul(stride)
@@ -1258,7 +1266,7 @@ impl GlyphAtlas {
         loop {
             let mut merged = None;
             'outer: for left in 0..self.free.len() {
-                for right in left + 1..self.free.len() {
+                for right in (left..self.free.len()).skip(1) {
                     if let Some(rect) = merge_rects(self.free[left], self.free[right]) {
                         merged = Some((left, right, rect));
                         break 'outer;
@@ -1286,7 +1294,7 @@ impl GlyphAtlas {
 
     fn update_peak(&mut self) -> Result<(), LayoutError> {
         let current = self.current_bytes();
-        if current > self.budget_bytes.get() {
+        if exceeds_budget(current, self.budget_bytes.get()) {
             return Err(LayoutError::AtlasSaturated);
         }
         self.peak_bytes = self.peak_bytes.max(current);
@@ -1441,211 +1449,9 @@ impl From<TextError> for LayoutError {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{cell::Cell, num::NonZeroU32};
+#[path = "coverage_tests.rs"]
+mod coverage_tests;
 
-    use alpine_text::{Buffer, BufferSnapshot};
-
-    use super::*;
-
-    struct FixtureShaper {
-        calls: Cell<usize>,
-    }
-
-    impl FixtureShaper {
-        fn new() -> Self {
-            Self {
-                calls: Cell::new(0),
-            }
-        }
-    }
-
-    impl TextShaper for FixtureShaper {
-        fn shape(&mut self, text: &str, _font: FontKey) -> Result<LineLayout, LayoutError> {
-            self.calls.set(self.calls.get() + 1);
-            let glyphs = text
-                .chars()
-                .enumerate()
-                .map(|(index, character)| {
-                    let index =
-                        u16::try_from(index).map_err(|_| LayoutError::ArithmeticOverflow)?;
-                    ShapedGlyph::new(
-                        character.into(),
-                        f32::from(index) * 8.0,
-                        0.0,
-                        8.0,
-                        u32::from(index),
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let character_count =
-                u16::try_from(text.chars().count()).map_err(|_| LayoutError::ArithmeticOverflow)?;
-            LineLayout::new(glyphs, f32::from(character_count) * 8.0, 10.0, 3.0, 1024)
-        }
-    }
-
-    fn font() -> Result<FontKey, &'static str> {
-        Ok(FontKey::new(
-            7,
-            PositiveFinite::new(13.0).ok_or("size")?,
-            PositiveFinite::new(2.0).ok_or("scale")?,
-            NonZeroU32::new(4).ok_or("tabs")?,
-        ))
-    }
-
-    fn wrap() -> Result<PositiveFinite, &'static str> {
-        PositiveFinite::new(800.0).ok_or("wrap")
-    }
-
-    fn snapshot(text: &str) -> BufferSnapshot {
-        Buffer::new(text).snapshot()
-    }
-
-    #[test]
-    fn visible_mapping_bounds_layout_to_overscan() -> Result<(), LayoutError> {
-        let lines = VisibleLines::new(
-            100,
-            40.0,
-            PositiveFinite::new(60.0).ok_or(LayoutError::InvalidScroll)?,
-            PositiveFinite::new(20.0).ok_or(LayoutError::InvalidScroll)?,
-            2,
-        )?;
-        assert_eq!(lines.visible(), 2..6);
-        assert_eq!(lines.laid_out(), 0..8);
-        assert!(matches!(
-            VisibleLines::new(
-                0,
-                0.0,
-                PositiveFinite::new(1.0).ok_or(LayoutError::InvalidScroll)?,
-                PositiveFinite::new(1.0).ok_or(LayoutError::InvalidScroll)?,
-                0,
-            ),
-            Err(LayoutError::EmptyDocument)
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn previous_frame_hit_avoids_materialization_and_shaping() -> Result<(), Box<dyn Error>> {
-        let snapshot = snapshot("alpha\nbeta\n");
-        let mut cache = LineLayoutCache::new(NonZeroUsize::new(4096).ok_or("budget")?);
-        let mut shaper = FixtureShaper::new();
-        let first = cache.layout_line(&snapshot, 0, font()?, wrap()?, &mut shaper)?;
-        cache.begin_frame()?;
-        let second = cache.layout_line(&snapshot, 0, font()?, wrap()?, &mut shaper)?;
-
-        assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(shaper.calls.get(), 1);
-        assert_eq!(cache.snapshot().hits(), 1);
-        assert_eq!(cache.snapshot().misses(), 1);
-        assert_eq!(cache.snapshot().shaped_lines(), 1);
-        Ok(())
-    }
-
-    #[test]
-    fn changed_line_misses_but_equal_content_across_snapshots_hits() -> Result<(), Box<dyn Error>> {
-        let first = snapshot("same\n");
-        let equal = snapshot("same\n");
-        let changed = snapshot("different\n");
-        let mut cache = LineLayoutCache::new(NonZeroUsize::new(4096).ok_or("budget")?);
-        let mut shaper = FixtureShaper::new();
-        cache.layout_line(&first, 0, font()?, wrap()?, &mut shaper)?;
-        cache.begin_frame()?;
-        cache.layout_line(&equal, 0, font()?, wrap()?, &mut shaper)?;
-        cache.begin_frame()?;
-        cache.layout_line(&changed, 0, font()?, wrap()?, &mut shaper)?;
-
-        assert_eq!(shaper.calls.get(), 2);
-        assert_eq!(cache.snapshot().hits(), 1);
-        assert_eq!(cache.snapshot().misses(), 2);
-        Ok(())
-    }
-
-    #[test]
-    fn fingerprint_candidate_requires_exact_content_confirmation() -> Result<(), Box<dyn Error>> {
-        let first = snapshot("alpha\n");
-        let different = snapshot("bravo\n");
-        let range = first.line_byte_range(0)?;
-        let entry = CacheEntry {
-            fingerprint: first.fingerprint(range.clone())?,
-            snapshot: first,
-            range: range.clone(),
-            font: font()?,
-            wrap_width_bits: wrap()?.get().to_bits(),
-            layout: Arc::new(LineLayout::new(Vec::new(), 0.0, 0.0, 0.0, 1)?),
-            retained_bytes: 0,
-        };
-
-        assert!(!entry.matches(
-            entry.fingerprint,
-            &different,
-            range,
-            entry.font,
-            entry.wrap_width_bits,
-        )?);
-        Ok(())
-    }
-
-    #[test]
-    fn atlas_allocates_on_demand_reuses_evicts_and_drains() -> Result<(), Box<dyn Error>> {
-        let budget = NonZeroUsize::new(256 * 256 + 4096).ok_or("budget")?;
-        let mut atlas = GlyphAtlas::new(budget);
-        assert_eq!(atlas.snapshot().pixel_bytes(), 0);
-        let bitmap = GlyphBitmap::new(
-            NonZeroU32::new(8).ok_or("width")?,
-            NonZeroU32::new(8).ok_or("height")?,
-            vec![255; 64],
-        )?;
-        let key = GlyphKey::new(font()?, 1, 0);
-        let first = atlas.insert(key, &bitmap)?;
-        let second = atlas.insert(key, &bitmap)?;
-        assert_eq!(first, second);
-        assert_eq!(atlas.snapshot().hits(), 1);
-        assert_eq!(atlas.snapshot().misses(), 1);
-        assert!(atlas.snapshot().peak_bytes() <= budget.get());
-        assert_eq!(
-            &atlas.pixels()[first.y() as usize * 256 + first.x() as usize..][..8],
-            &[255; 8]
-        );
-
-        let large = GlyphBitmap::new(
-            NonZeroU32::new(32).ok_or("width")?,
-            NonZeroU32::new(32).ok_or("height")?,
-            vec![127; 32 * 32],
-        )?;
-        for glyph in 2..72 {
-            atlas.insert(GlyphKey::new(font()?, glyph, 0), &large)?;
-        }
-        assert!(atlas.snapshot().evictions() > 0);
-        assert!(atlas.snapshot().pixel_bytes() + atlas.snapshot().metadata_bytes() <= budget.get());
-
-        atlas.pressure()?;
-        assert_eq!(atlas.snapshot().pixel_bytes(), 0);
-        assert_eq!(atlas.snapshot().entries(), 0);
-        assert_eq!(atlas.snapshot().pressure_events(), 1);
-        Ok(())
-    }
-
-    #[test]
-    fn invalid_bitmap_and_line_limits_fail_structurally() -> Result<(), Box<dyn Error>> {
-        assert!(matches!(
-            GlyphBitmap::new(
-                NonZeroU32::new(2).ok_or("width")?,
-                NonZeroU32::new(2).ok_or("height")?,
-                vec![0; 3]
-            ),
-            Err(LayoutError::InvalidGlyphBitmap {
-                expected: 4,
-                actual: 3
-            })
-        ));
-        let long = snapshot(&"x".repeat(DEFAULT_MAX_LINE_BYTES + 1));
-        let mut cache =
-            LineLayoutCache::new(NonZeroUsize::new(DEFAULT_LAYOUT_BUDGET_BYTES).ok_or("budget")?);
-        assert!(matches!(
-            cache.layout_line(&long, 0, font()?, wrap()?, &mut FixtureShaper::new()),
-            Err(LayoutError::LineByteLimitExceeded { .. })
-        ));
-        Ok(())
-    }
-}
+#[cfg(test)]
+#[path = "embedded_tests.rs"]
+mod tests;

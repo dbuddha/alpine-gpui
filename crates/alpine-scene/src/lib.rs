@@ -524,6 +524,10 @@ impl fmt::Display for SceneError {
 impl Error for SceneError {}
 
 #[cfg(test)]
+#[path = "coverage_tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use std::{error::Error, num::NonZeroU32, sync::Arc};
 

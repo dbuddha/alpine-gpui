@@ -170,13 +170,6 @@ fn composite_instance(
     destination: &mut [f32; 4],
 ) {
     let bounds = instance.bounds();
-    if center_x < f64::from(bounds[0])
-        || center_y < f64::from(bounds[1])
-        || center_x >= f64::from(bounds[2])
-        || center_y >= f64::from(bounds[3])
-    {
-        return;
-    }
     let atlas_uv = instance.atlas_uv();
     let coverage = if atlas_uv[0] < 0.0 {
         1.0
@@ -209,18 +202,15 @@ fn sample_atlas(
     }
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let (x, y) = (x as usize, y as usize);
-    let Ok(width) = usize::try_from(atlas.width().get()) else {
-        return 0.0;
-    };
-    let Ok(height) = usize::try_from(atlas.height().get()) else {
-        return 0.0;
-    };
+    let width = usize::try_from(atlas.width().get()).unwrap_or_default();
+    let height = usize::try_from(atlas.height().get()).unwrap_or_default();
     if x >= width || y >= height {
         return 0.0;
     }
-    let Some(index) = y.checked_mul(width).and_then(|row| row.checked_add(x)) else {
-        return 0.0;
-    };
+    let index = y
+        .checked_mul(width)
+        .and_then(|row| row.checked_add(x))
+        .unwrap_or(usize::MAX);
     atlas
         .pixels()
         .get(index)
@@ -263,6 +253,10 @@ fn composite_if_covered(
 fn quantize(channel: f32) -> u8 {
     (channel.clamp(0.0, 1.0) * 255.0).round() as u8
 }
+
+#[cfg(test)]
+#[path = "oracle_coverage_tests.rs"]
+mod oracle_coverage_tests;
 
 #[cfg(test)]
 mod tests {

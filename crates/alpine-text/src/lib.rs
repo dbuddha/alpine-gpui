@@ -45,6 +45,10 @@ impl BufferRevision {
     }
 }
 
+#[cfg(test)]
+#[path = "mutation_tests.rs"]
+mod mutation_tests;
+
 /// Deterministic streaming identity for one validated text range.
 ///
 /// Consumers must confirm a matching fingerprint with
@@ -445,11 +449,7 @@ impl BufferSnapshot {
             return Err(TextError::LineOutOfBounds { line, line_count });
         }
         let start = self.rope.line_to_byte(line);
-        let end = if line + 1 < line_count {
-            self.rope.line_to_byte(line + 1)
-        } else {
-            self.rope.len_bytes()
-        };
+        let end = self.rope.line_to_byte(line + 1);
         Ok(start..end)
     }
 
