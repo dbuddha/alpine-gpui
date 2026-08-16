@@ -1,8 +1,14 @@
 //! First shipping Alpine Studio application boundary.
 
 use alpine_core::{LinearRgba, Point, Rect, Size};
-use alpine_platform_macos::SurfaceError;
+use alpine_platform_macos::{SurfaceError, SurfaceEvent};
+use alpine_runtime::{AppContext, AppDelegate, RuntimeError, WindowContext};
 use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use alpine_platform_macos::SurfaceDescriptor;
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+use alpine_runtime::{Application, WorkerConfig};
 
 const WINDOW_WIDTH: f32 = 960.0;
 const WINDOW_HEIGHT: f32 = 540.0;
@@ -15,15 +21,7 @@ const WINDOW_HEIGHT: f32 = 540.0;
 /// violates an Alpine domain invariant.
 pub fn initial_scene() -> Result<Scene, SurfaceError> {
     let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
-    let origin = Point::new(40.0, 40.0).ok_or(SurfaceError::DriverUnavailable)?;
-    let bounds = Rect::new(
-        origin,
-        Size::new(240.0, 120.0).ok_or(SurfaceError::DriverUnavailable)?,
-    );
-    let color = LinearRgba::new(0.22, 0.57, 0.92, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
-    let mut builder = SceneBuilder::new(SceneRevision::new(1), viewport);
-    builder.push(Primitive::Quad { bounds, color });
-    Ok(builder.finish())
+    Ok(StudioApp::new()?.scene(SceneRevision::new(1), viewport))
 }
 
 /// Opens one native Studio window, requests one frame, and runs until close.
@@ -32,11 +30,9 @@ pub fn initial_scene() -> Result<Scene, SurfaceError> {
 ///
 /// Returns the structured surface error from scene construction, native
 /// initialization, frame admission, or the application run loop.
-pub fn run() -> Result<(), SurfaceError> {
+pub fn run() -> Result<(), RuntimeError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        use alpine_platform_macos::{NativeSurface, SurfaceDescriptor};
-
         let clear =
             LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
         let descriptor = SurfaceDescriptor::new(
@@ -45,15 +41,52 @@ pub fn run() -> Result<(), SurfaceError> {
             f64::from(WINDOW_HEIGHT),
             2.0,
         )?;
-        let surface = NativeSurface::new(&descriptor)?;
-        surface.show()?;
-        let _revision = surface.request_frame(initial_scene()?, clear)?;
-        surface.run()
+        let viewport =
+            Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
+        Application::new(StudioApp::new()?, viewport, clear, WorkerConfig::default())?
+            .run(&descriptor)
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
-        Err(SurfaceError::UnsupportedPlatform)
+        Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))
+    }
+}
+
+struct StudioApp {
+    bounds: Rect,
+    color: LinearRgba,
+}
+
+impl StudioApp {
+    fn new() -> Result<Self, SurfaceError> {
+        let origin = Point::new(40.0, 40.0).ok_or(SurfaceError::DriverUnavailable)?;
+        let bounds = Rect::new(
+            origin,
+            Size::new(240.0, 120.0).ok_or(SurfaceError::DriverUnavailable)?,
+        );
+        let color =
+            LinearRgba::new(0.22, 0.57, 0.92, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+        Ok(Self { bounds, color })
+    }
+
+    fn scene(&self, revision: SceneRevision, viewport: Size) -> Scene {
+        let mut builder = SceneBuilder::new(revision, viewport);
+        builder.push(Primitive::Quad {
+            bounds: self.bounds,
+            color: self.color,
+        });
+        builder.finish()
+    }
+}
+
+impl AppDelegate for StudioApp {
+    type WorkerOutput = u64;
+
+    fn event(&mut self, _event: &SurfaceEvent, _context: &mut AppContext<'_, u64>) {}
+
+    fn frame(&mut self, context: WindowContext) -> Scene {
+        self.scene(context.scene_revision(), context.viewport())
     }
 }
 
@@ -86,9 +119,34 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn studio_delegate_builds_only_the_dirty_runtime_frame() -> Result<(), RuntimeError> {
+        let viewport =
+            Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
+        let clear =
+            LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+        let mut application =
+            Application::new(StudioApp::new()?, viewport, clear, WorkerConfig::default())?;
+        let frame = application
+            .frame_if_dirty()
+            .ok_or(SurfaceError::DriverUnavailable)?;
+        assert_eq!(frame.scene(), &initial_scene()?);
+        assert!(
+            application
+                .dispatch(&SurfaceEvent::Wake {
+                    timestamp: alpine_platform_macos::EventTimestamp::new(1),
+                })
+                .is_none()
+        );
+        Ok(())
+    }
+
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     #[test]
     fn run_rejects_an_unsupported_host() {
-        assert_eq!(run(), Err(SurfaceError::UnsupportedPlatform));
+        assert!(matches!(
+            run(),
+            Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))
+        ));
     }
 }

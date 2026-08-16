@@ -103,7 +103,7 @@ mod validation {
         surface.show()?;
         let timeout = native_validation::arm_run_timeout(&surface, Duration::from_millis(25));
         assert_eq!(
-            surface.run(),
+            surface.run_with_event_handler(|_| None),
             Err(alpine_platform_macos::SurfaceError::UnexpectedRunLoopExit {
                 lifecycle: SurfaceLifecycle::Live,
             })

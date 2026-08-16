@@ -2342,3 +2342,136 @@ artifact = "scripts/test-qualification.sh"
 assertion = "The repository command accepts the executable trace, rejects an unsupported primitive instead of silently dropping it, and removes stale output before a failed render."
 scope = "CLI protocol boundary used by the isolated Zed lab."
 exclusions = ["lab build", "hardware reproduction"]
+[[evidence]]
+id = "EV-0137-TLA01"
+claim = "AEP-0137-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#BoundedRequestQueue"
+assertion = "The fixed request capacity bounds every queued request state."
+scope = "Three pull-request jobs with one request slot, one result slot, and bounded revision advances."
+bounds = ["pull request: three jobs and one revision advance", "nightly: four jobs and two revision advances"]
+assumptions = ["one modeled queue slot represents one standard-channel message"]
+exclusions = ["thread scheduling", "mutex implementation", "elapsed time", "Rust formal refinement"]
+companion = "crates/alpine-runtime/src/lib.rs#saturated_submission_returns_without_waiting"
+
+[[evidence]]
+id = "EV-0137-TLA01B"
+claim = "AEP-0137-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#BoundedResultQueue"
+assertion = "The fixed result capacity bounds every completed result awaiting foreground inspection."
+scope = "Three pull-request jobs with one request slot and one result slot."
+bounds = ["pull request: three jobs and one result slot", "nightly: four jobs and two result slots"]
+assumptions = ["one modeled result slot represents one standard-channel message"]
+exclusions = ["allocator bytes", "thread scheduling", "Rust formal refinement"]
+companion = "crates/alpine-runtime/src/lib.rs#worker_panic_is_contained_and_counted"
+
+[[evidence]]
+id = "EV-0137-TLA01C"
+claim = "AEP-0137-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#ShutdownEventuallyDrains"
+assertion = "After shutdown begins, weakly fair cancellation eventually removes every queued, running, or completed owned job."
+scope = "Finite owned jobs after admission has been revoked."
+bounds = ["pull request: three jobs", "nightly: four jobs"]
+assumptions = ["shutdown cancellation remains weakly fair"]
+exclusions = ["non-cooperative operating-system thread termination", "process termination", "Rust formal refinement"]
+companion = "crates/alpine-runtime/src/lib.rs#stale_background_result_never_mutates_delegate_state"
+
+[[evidence]]
+id = "EV-0137-TLA02"
+claim = "AEP-0137-C02"
+kind = "tla"
+artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#CurrentApplicationIsCurrent"
+assertion = "A foreground application classified current carries the active workspace and document revisions."
+scope = "Bounded completion interleavings across independent workspace and document advances."
+bounds = ["pull request: one workspace and document advance", "nightly: two workspace and document advances"]
+assumptions = ["native wake eventually causes foreground result inspection"]
+exclusions = ["application result semantics", "unbounded revisions", "Rust formal refinement"]
+companion = "crates/alpine-runtime/src/lib.rs#stale_background_result_never_mutates_delegate_state"
+
+[[evidence]]
+id = "EV-0137-UNIT01"
+claim = "AEP-0137-C01"
+kind = "unit"
+artifact = "crates/alpine-runtime/src/lib.rs#saturated_submission_returns_without_waiting"
+assertion = "A fixed request channel rejects excess foreground work without waiting and records saturation."
+scope = "One standard worker with one queued request slot."
+exclusions = ["native wake delivery", "job-duration bounds", "process scheduling"]
+
+[[evidence]]
+id = "EV-0137-UNIT02"
+claim = "AEP-0137-C02"
+kind = "unit"
+artifact = "crates/alpine-runtime/src/lib.rs#stale_background_result_never_mutates_delegate_state"
+assertion = "A result tagged before a document revision advance is discarded before delegate mutation."
+scope = "One workspace, one document, and one bounded worker result."
+exclusions = ["filesystem I/O", "language servers", "unbounded revision traces"]
+
+[[evidence]]
+id = "EV-0137-UNIT03"
+claim = "AEP-0137-C03"
+kind = "unit"
+artifact = "crates/alpine-runtime/src/lib.rs#clean_events_do_not_build_or_submit_another_frame"
+assertion = "After the initial dirty frame, a clean wake builds no scene and leaves the next revision unchanged."
+scope = "One foreground delegate and one empty immutable scene."
+exclusions = ["native presentation", "text layout", "input latency"]
+
+[[evidence]]
+id = "EV-0137-NATIVE04"
+claim = "AEP-0137-C04"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_runtime.rs"
+assertion = "The real native delegate owner replays every handle-free event variant without changing payload identity and tears down exactly."
+scope = "One Apple Silicon macOS AppKit owner and validation event replay seam."
+assumptions = ["Task #130 separately qualifies conversion from real keyboard, pointer, clipboard, and IME callbacks"]
+exclusions = ["accessibility", "real text input conversion", "multiple windows"]
+[[claims]]
+id = "AEP-0137-C01"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0137-bounded-studio-runtime.md"
+requirement_issue = 37
+claim_type = "safety"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = ["BoundedRequestQueue", "BoundedResultQueue", "ShutdownEventuallyDrains"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[claims]]
+id = "AEP-0137-C02"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0137-bounded-studio-runtime.md"
+requirement_issue = 37
+claim_type = "safety"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = ["CurrentApplicationIsCurrent"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[claims]]
+id = "AEP-0137-C03"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0137-bounded-studio-runtime.md"
+requirement_issue = 32
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0137-C04"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0137-bounded-studio-runtime.md"
+requirement_issue = 37
+claim_type = "accessibility"
+risk = "critical"
+kani_applicability = "not_applicable"
+platform_scope = ["macos-metal"]
+required_evidence = ["native"]

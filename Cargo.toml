@@ -6,6 +6,7 @@ members = [
   "crates/alpine-platform",
   "crates/alpine-platform-macos",
   "crates/alpine-renderer",
+  "crates/alpine-runtime",
   "crates/alpine-scene",
   "tools/alpine-assurance",
   "tools/alpine-trace",

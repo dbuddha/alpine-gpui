@@ -60,6 +60,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpine-runtime"
+version = "0.0.0"
+dependencies = [
+ "alpine-core",
+ "alpine-platform-macos",
+ "alpine-scene",
+]
+
+[[package]]
 name = "alpine-scene"
 version = "0.0.0"
 dependencies = [
@@ -72,6 +81,7 @@ version = "0.0.0"
 dependencies = [
  "alpine-core",
  "alpine-platform-macos",
+ "alpine-runtime",
  "alpine-scene",
 ]
 

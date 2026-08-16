@@ -22,6 +22,7 @@ Accepted AEPs:
 - [AEP 0028: Zed golden qualification](0028-zed-golden-qualification.md)
 - [AEP 0064: Native macOS presentation](0064-native-macos-presentation.md)
 - [AEP 0120: Bounded asynchronous Metal presentation](0120-bounded-asynchronous-presentation.md)
+- [AEP 0137: Bounded single-window Studio runtime](0137-bounded-studio-runtime.md)
 
 Proposed AEPs:
 

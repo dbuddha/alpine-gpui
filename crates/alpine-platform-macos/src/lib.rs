@@ -11,13 +11,288 @@ use std::sync::{
     atomic::{AtomicU8, AtomicU64, Ordering},
 };
 
-use alpine_core::LinearRgba;
+use alpine_core::{LinearRgba, Point, Size};
 use alpine_metal::{InitializationError, RecoveryClassification, RenderError};
 use alpine_platform::{
     AttemptEvidence, PendingCancellationEvidence, PresentationOutcome, PresentationRevision,
     TransitionError,
 };
 use alpine_scene::Scene;
+
+/// Monotonic timestamp assigned at the native event-dispatch boundary.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct EventTimestamp(u64);
+
+impl EventTimestamp {
+    /// Creates a timestamp from one monotonic process-local tick value.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the process-local tick value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Compact platform modifier identity preserved on input events.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Modifiers(u8);
+
+impl Modifiers {
+    /// Shift modifier bit.
+    pub const SHIFT: u8 = 0x01;
+    /// Control modifier bit.
+    pub const CONTROL: u8 = 1 << 1;
+    /// Option modifier bit.
+    pub const OPTION: u8 = 1 << 2;
+    /// Command modifier bit.
+    pub const COMMAND: u8 = 1 << 3;
+    /// Caps Lock modifier bit.
+    pub const CAPS_LOCK: u8 = 1 << 4;
+
+    /// Creates a modifier set from Alpine's stable bit vocabulary.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits & 0x1f)
+    }
+
+    /// Returns Alpine's stable modifier bits.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Returns whether every requested modifier bit is set.
+    #[must_use]
+    pub const fn contains(self, bits: u8) -> bool {
+        self.0 & bits == bits
+    }
+}
+
+/// Keyboard transition represented independently of `AppKit` objects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KeyState {
+    /// A key became pressed.
+    Down,
+    /// A key became released.
+    Up,
+    /// Modifier state changed without text input.
+    ModifiersChanged,
+}
+
+/// Pointer transition represented independently of `AppKit` objects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PointerAction {
+    /// Pointer position changed.
+    Moved,
+    /// A pointer button became pressed.
+    Down,
+    /// A pointer button became released.
+    Up,
+}
+
+/// Stable pointer-button identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PointerButton {
+    /// No button is associated with a movement event.
+    None,
+    /// Primary pointer button.
+    Primary,
+    /// Secondary pointer button.
+    Secondary,
+    /// Middle pointer button.
+    Middle,
+    /// Additional platform button number.
+    Other(u8),
+}
+
+/// Scroll gesture lifecycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScrollPhase {
+    /// Gesture began.
+    Began,
+    /// Gesture remains active.
+    Changed,
+    /// Gesture ended.
+    Ended,
+    /// Gesture was cancelled.
+    Cancelled,
+    /// Device supplied no phase identity.
+    None,
+}
+
+/// Clipboard operation represented without clipboard contents or handles.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClipboardOperation {
+    /// Copy selected content.
+    Copy,
+    /// Cut selected content.
+    Cut,
+    /// Paste available content.
+    Paste,
+}
+
+/// Input-method composition lifecycle and owned text payload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ImeEvent {
+    /// A new composition began.
+    Started,
+    /// Marked text and its UTF-16 selection changed.
+    Updated {
+        /// Current marked text.
+        text: Box<str>,
+        /// Selected UTF-16 start offset inside marked text.
+        selected_start_utf16: u32,
+        /// Selected UTF-16 length inside marked text.
+        selected_length_utf16: u32,
+    },
+    /// Composition committed owned text.
+    Committed(Box<str>),
+    /// Composition ended without committed text.
+    Cancelled,
+}
+
+/// Handle-free event vocabulary crossing the native surface boundary.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SurfaceEvent {
+    /// Keyboard identity, text, modifiers, and repeat state.
+    Keyboard {
+        /// Monotonic event timestamp.
+        timestamp: EventTimestamp,
+        /// Press, release, or modifier transition.
+        state: KeyState,
+        /// Platform-independent physical key code when known.
+        physical_key: u16,
+        /// Owned logical key or text identity.
+        logical_key: Box<str>,
+        /// Active modifiers.
+        modifiers: Modifiers,
+        /// Whether this is a platform repeat.
+        repeat: bool,
+    },
+    /// Pointer position and button transition.
+    Pointer {
+        /// Monotonic event timestamp.
+        timestamp: EventTimestamp,
+        /// Movement, press, or release.
+        action: PointerAction,
+        /// Logical surface position.
+        position: Point,
+        /// Associated button identity.
+        button: PointerButton,
+        /// Active modifiers.
+        modifiers: Modifiers,
+    },
+    /// Precision-preserving scroll delta and phase.
+    Scroll {
+        /// Monotonic event timestamp.
+        timestamp: EventTimestamp,
+        /// Horizontal logical delta.
+        delta_x: f32,
+        /// Vertical logical delta.
+        delta_y: f32,
+        /// Gesture lifecycle.
+        phase: ScrollPhase,
+        /// Whether the device reports precise deltas.
+        precise: bool,
+        /// Active modifiers.
+        modifiers: Modifiers,
+    },
+    /// Key-window focus transition.
+    Focus {
+        /// Monotonic event timestamp.
+        timestamp: EventTimestamp,
+        /// Whether the Studio window became focused.
+        focused: bool,
+    },
+    /// Validated logical, scale, and physical extent update.
+    Resize {
+        /// Monotonic event timestamp.
+        timestamp: EventTimestamp,
+        /// New validated surface extent.
+        extent: SurfaceExtent,
+    },
+    /// Clipboard operation completion without retained contents.
+    Clipboard {
+        /// Monotonic event timestamp.
+        timestamp: EventTimestamp,
+        /// Requested clipboard operation.
+        operation: ClipboardOperation,
+        /// Whether the platform operation succeeded.
+        succeeded: bool,
+    },
+    /// Input-method composition transition.
+    Ime {
+        /// Monotonic event timestamp.
+        timestamp: EventTimestamp,
+        /// Composition lifecycle and text.
+        event: ImeEvent,
+    },
+    /// Main-loop wake used to publish bounded background results.
+    Wake {
+        /// Monotonic event timestamp.
+        timestamp: EventTimestamp,
+    },
+    /// Owned-window close intent before event admission is revoked.
+    CloseRequested {
+        /// Monotonic event timestamp.
+        timestamp: EventTimestamp,
+    },
+}
+
+impl SurfaceEvent {
+    /// Returns the exact timestamp carried by this event.
+    #[must_use]
+    pub const fn timestamp(&self) -> EventTimestamp {
+        match self {
+            Self::Keyboard { timestamp, .. }
+            | Self::Pointer { timestamp, .. }
+            | Self::Scroll { timestamp, .. }
+            | Self::Focus { timestamp, .. }
+            | Self::Resize { timestamp, .. }
+            | Self::Clipboard { timestamp, .. }
+            | Self::Ime { timestamp, .. }
+            | Self::Wake { timestamp }
+            | Self::CloseRequested { timestamp } => *timestamp,
+        }
+    }
+}
+
+/// One immutable scene and clear value requested by an event handler.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SurfaceFrame {
+    scene: Scene,
+    clear: LinearRgba,
+}
+
+impl SurfaceFrame {
+    /// Creates one handle-free frame request.
+    #[must_use]
+    pub const fn new(scene: Scene, clear: LinearRgba) -> Self {
+        Self { scene, clear }
+    }
+
+    /// Returns the immutable scene.
+    #[must_use]
+    pub const fn scene(&self) -> &Scene {
+        &self.scene
+    }
+
+    /// Returns the linear clear value.
+    #[must_use]
+    pub const fn clear(&self) -> LinearRgba {
+        self.clear
+    }
+
+    /// Consumes the request into its scene and clear value.
+    #[must_use]
+    pub fn into_parts(self) -> (Scene, LinearRgba) {
+        (self.scene, self.clear)
+    }
+}
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native;
@@ -36,7 +311,9 @@ pub mod native_validation {
         time::Duration,
     };
 
-    use crate::{NativeSurface, SurfaceDescriptor, SurfaceError, native};
+    use crate::{
+        NativeSurface, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceFrame, native,
+    };
 
     /// Evidence that bounds a production event-loop validation run.
     #[derive(Debug)]
@@ -272,6 +549,43 @@ pub mod native_validation {
         surface.implementation.close_window();
     }
 
+    /// Replays handle-free event values through the production delegate seam.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured error if handler ownership or a returned frame
+    /// cannot be admitted by the synchronized native driver.
+    pub fn replay_surface_events<F>(
+        surface: &NativeSurface,
+        events: &[SurfaceEvent],
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+    {
+        surface
+            .implementation
+            .replay_surface_events(events, handler)
+    }
+
+    /// Replays handle-free values through the non-returning AppKit callback seam.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured error if the callback handler cannot be installed.
+    pub fn replay_callback_surface_events<F>(
+        surface: &NativeSurface,
+        events: &[SurfaceEvent],
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+    {
+        surface
+            .implementation
+            .replay_callback_surface_events(events, handler)
+    }
+
     /// Injects every initialization-stage failure and verifies complete rollback.
     ///
     /// # Errors
@@ -380,6 +694,16 @@ impl SurfaceExtent {
     #[must_use]
     pub const fn scale(self) -> f64 {
         self.scale
+    }
+
+    /// Converts the validated logical extent to Alpine scene coordinates.
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "drawable dimensions are bounded to values exactly representable by f32"
+    )]
+    pub fn logical_size(self) -> Option<Size> {
+        Size::new(self.logical_width as f32, self.logical_height as f32)
     }
 
     /// Returns the rounded physical width in pixels.
@@ -1191,6 +1515,21 @@ impl NativeSurface {
         self.implementation.run()
     }
 
+    /// Runs `AppKit` while dispatching handle-free events on the main thread.
+    ///
+    /// A handler may return one immutable frame. Repeated requests retain the
+    /// surface's existing latest-wins coalescing and bounded presentation path.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same structured lifecycle and native errors as [`Self::run`].
+    pub fn run_with_event_handler<F>(&self, handler: F) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+    {
+        self.implementation.run_with_event_handler(handler)
+    }
+
     /// Replaces pending immutable work and wakes pacing only when eligible.
     ///
     /// # Errors
@@ -1329,6 +1668,90 @@ mod tests {
         } else {
             None
         }
+    }
+
+    #[test]
+    fn event_and_frame_values_preserve_public_identity() -> Result<(), SurfaceError> {
+        assert_eq!(Modifiers::SHIFT, 1);
+        assert_eq!(Modifiers::CONTROL, 2);
+        assert_eq!(Modifiers::OPTION, 4);
+        assert_eq!(Modifiers::COMMAND, 8);
+        assert_eq!(Modifiers::CAPS_LOCK, 16);
+        let modifiers = Modifiers::from_bits(u8::MAX);
+        assert_eq!(modifiers.bits(), 0x1f);
+        assert!(modifiers.contains(Modifiers::SHIFT | Modifiers::COMMAND));
+        assert!(!modifiers.contains(1 << 5));
+
+        let timestamp = EventTimestamp::new(23);
+        let extent = SurfaceExtent::new(40.0, 20.0, 2.0)?;
+        let position = Point::new(3.0, 4.0).ok_or(SurfaceError::DriverUnavailable)?;
+        let events = [
+            SurfaceEvent::Keyboard {
+                timestamp,
+                state: KeyState::Down,
+                physical_key: 4,
+                logical_key: "a".into(),
+                modifiers,
+                repeat: false,
+            },
+            SurfaceEvent::Pointer {
+                timestamp,
+                action: PointerAction::Moved,
+                position,
+                button: PointerButton::None,
+                modifiers,
+            },
+            SurfaceEvent::Scroll {
+                timestamp,
+                delta_x: 1.0,
+                delta_y: -2.0,
+                phase: ScrollPhase::Changed,
+                precise: true,
+                modifiers,
+            },
+            SurfaceEvent::Focus {
+                timestamp,
+                focused: true,
+            },
+            SurfaceEvent::Resize { timestamp, extent },
+            SurfaceEvent::Clipboard {
+                timestamp,
+                operation: ClipboardOperation::Copy,
+                succeeded: true,
+            },
+            SurfaceEvent::Ime {
+                timestamp,
+                event: ImeEvent::Started,
+            },
+            SurfaceEvent::Wake { timestamp },
+            SurfaceEvent::CloseRequested { timestamp },
+        ];
+        for event in events {
+            assert_eq!(event.timestamp().get(), 23);
+        }
+        assert_eq!(extent.logical_size(), Size::new(40.0, 20.0));
+
+        let scene = alpine_scene::SceneBuilder::new(
+            alpine_scene::SceneRevision::new(5),
+            Size::new(40.0, 20.0).ok_or(SurfaceError::DriverUnavailable)?,
+        )
+        .finish();
+        let clear = LinearRgba::new(0.1, 0.2, 0.3, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+        let frame = SurfaceFrame::new(scene.clone(), clear);
+        assert_eq!(frame.scene(), &scene);
+        assert_eq!(frame.clear(), clear);
+        assert_eq!(frame.into_parts(), (scene, clear));
+        Ok(())
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[test]
+    fn public_event_loop_wrapper_preserves_unsupported_error() {
+        let surface = NativeSurface::from_implementation(implementation::NativeSurface);
+        assert_eq!(
+            surface.run_with_event_handler(|_| None),
+            Err(SurfaceError::UnsupportedPlatform)
+        );
     }
 
     #[test]
