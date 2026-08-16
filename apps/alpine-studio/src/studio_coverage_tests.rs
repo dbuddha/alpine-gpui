@@ -288,6 +288,7 @@ fn file_launch_rejects_invalid_utf8_and_scratch_save_is_isolated()
 
     let mut scratch = test_app()?;
     let before = scratch.buffer().snapshot().text();
+    assert!(!scratch.document.is_dirty());
     let effect = scratch.handle_event(&key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND)));
     assert_eq!(scratch.buffer().snapshot().text(), before);
     assert!(!effect.visual_changed);
