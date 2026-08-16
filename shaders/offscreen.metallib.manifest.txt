@@ -1,7 +1,7 @@
 source=shaders/offscreen.metal
 deployment_target=15.0
-source_sha256=98bec2d1b5e38de8131852a95498cb994a5978f7c5feca6440bff5a20ec74756
-metallib_sha256=cc11eba18b5847e368e92a1e00c17b79b2855e9848de7e3ca35a8b013abd9563
+source_sha256=ce17d5a8884b5556941a31a030efbbb4da74cef2f4361157fce86cad91a21b7f
+metallib_sha256=ac85d2fbcb9189ab0a4c4bfbd26758fa8349e8932da66ff8cce15e540fe1fb05
 sdk_path=/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk
 xcode_version=Xcode 26.6 Build version 17F113
 metal_version=Apple metal version 32023.883 (metalfe-32023.883)
