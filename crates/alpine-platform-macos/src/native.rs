@@ -557,6 +557,9 @@ impl PresentationDriver {
             Ok(directive) => directive,
             Err(error) => {
                 let recovery = render_recovery(&error);
+                if discards_pending_work(recovery) {
+                    self.pending = None;
+                }
                 self.last_error = Some(error);
                 counters.failed.fetch_add(1, Ordering::Relaxed);
                 let active = self.active.take();
@@ -706,6 +709,9 @@ impl PresentationDriver {
             let active = self.active.take().ok_or(SurfaceError::DriverUnavailable)?;
             let error = SurfaceError::from(error);
             let recovery = render_recovery(&error);
+            if discards_pending_work(recovery) {
+                self.pending = None;
+            }
             self.last_error = Some(error);
             counters.failed.fetch_add(1, Ordering::Relaxed);
             let transition = self
@@ -1103,6 +1109,10 @@ fn render_recovery(error: &SurfaceError) -> Option<RecoveryClassification> {
         | SurfaceError::RunLoopNotRunnable { .. }
         | SurfaceError::UnexpectedRunLoopExit { .. } => None,
     }
+}
+
+const fn discards_pending_work(recovery: Option<RecoveryClassification>) -> bool {
+    matches!(recovery, Some(RecoveryClassification::RecreateBackend))
 }
 
 fn install_presented_handler(
@@ -2445,6 +2455,17 @@ mod tests {
     #[test]
     fn standard_window_style_has_exactly_the_supported_controls() {
         assert_eq!(standard_window_style_mask(), NSWindowStyleMask(0b1111));
+    }
+
+    #[test]
+    fn only_lost_backend_recovery_discards_queued_work() {
+        assert!(!discards_pending_work(None));
+        assert!(!discards_pending_work(Some(
+            RecoveryClassification::RetryFrame
+        )));
+        assert!(discards_pending_work(Some(
+            RecoveryClassification::RecreateBackend
+        )));
     }
 
     #[test]
