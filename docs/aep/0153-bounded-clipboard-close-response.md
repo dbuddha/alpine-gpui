@@ -43,10 +43,17 @@ polling.
 - **AEP-0153-C03:** A close request starts as allowed. A delegate may cancel it
   exactly while that request is active. Allowed close revokes foreground work
   and dirty-frame production; cancelled close keeps both live.
+- **AEP-0153-C04:** Native copy and cut publish typed completion only after the
+  bounded AppKit write terminates. Native paste checks its UTF-8 byte length
+  before constructing Alpine-owned text and publishes success or structured
+  failure without retaining an AppKit object.
+- **AEP-0153-C05:** `windowShouldClose` admits irreversible close only after a
+  synchronous `Allow` response. Cancel, missing response, reentrant dispatch,
+  and dispatch failure veto close; `windowWillClose` performs drain only.
 
-Native pasteboard conversion, two-phase cut completion, clipboard failure
-publication, and AppKit `windowShouldClose` ordering are required by Task #154
-but are not claims of this portable dependency slice.
+Studio selection/revision correlation, post-success cut mutation, and visible
+local failure status remain required by Task #154 and are not claimed by this
+native transport slice.
 
 ## Model and implementation mapping
 
@@ -59,8 +66,9 @@ and `AllowedCloseRevokesAdmission` map to
 cancel and must violate `CancelledCloseStaysLive`.
 
 The model does not refine Rust allocation, AppKit pasteboard behavior, native
-callback reentrancy, or operating-system close delivery. Those boundaries need
-their own native evidence before Task #154 can close.
+callback reentrancy, or operating-system close delivery. Native validation
+tests those concrete boundaries independently and makes no formal-refinement
+claim.
 
 ## Ownership and correctness
 
@@ -100,9 +108,13 @@ duplicate rejection, cancelled-close liveness, and allowed-close shutdown.
 TLA+ checks the corresponding finite state abstraction and a deliberately
 faulty cancel transition.
 
-Apple Silicon AppKit pasteboard reads, writes, failures, close delegate
-ordering, and process journeys remain unqualified until the next Task #154
-slice. No product or performance claim may cite this AEP alone.
+Apple Silicon native validation exercises copy, cut, paste, injected write
+failure, bounded owned completion values, synchronous cancel, synchronous
+allow, and drain ordering through the production delegate methods. It uses a
+unique validation pasteboard to avoid changing a developer clipboard; shipping
+uses `generalPasteboard` through the same read and write conversion functions.
+Studio mutation, visible status, and full process journeys remain unqualified.
+No product or performance claim may cite this AEP alone.
 
 ## Risks and reversal conditions
 

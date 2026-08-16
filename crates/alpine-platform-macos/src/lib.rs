@@ -135,6 +135,29 @@ pub enum ClipboardOperation {
     Paste,
 }
 
+/// Terminal result of one native plain-text clipboard operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClipboardEvent {
+    /// A copy write completed or failed without mutating application text.
+    CopyCompleted(Result<(), ClipboardError>),
+    /// A cut write completed or failed before application text may be removed.
+    CutCompleted(Result<(), ClipboardError>),
+    /// A paste read produced bounded UTF-8 or a structured failure.
+    PasteCompleted(Result<ClipboardText, ClipboardError>),
+}
+
+impl ClipboardEvent {
+    /// Returns the operation whose terminal result this event carries.
+    #[must_use]
+    pub const fn operation(&self) -> ClipboardOperation {
+        match self {
+            Self::CopyCompleted(_) => ClipboardOperation::Copy,
+            Self::CutCompleted(_) => ClipboardOperation::Cut,
+            Self::PasteCompleted(_) => ClipboardOperation::Paste,
+        }
+    }
+}
+
 /// Maximum UTF-8 bytes retained by one Alpine clipboard value.
 pub const MAX_CLIPBOARD_TEXT_BYTES: usize = 64 * 1024 * 1024;
 
@@ -342,14 +365,12 @@ pub enum SurfaceEvent {
         /// New validated surface extent.
         extent: SurfaceExtent,
     },
-    /// Clipboard operation completion without retained contents.
+    /// Terminal native clipboard result with bounded owned paste text.
     Clipboard {
         /// Monotonic event timestamp.
         timestamp: EventTimestamp,
-        /// Requested clipboard operation.
-        operation: ClipboardOperation,
-        /// Whether the platform operation succeeded.
-        succeeded: bool,
+        /// Typed completion that prevents invalid operation/payload pairs.
+        event: ClipboardEvent,
     },
     /// Input-method composition transition.
     Ime {
@@ -505,7 +526,8 @@ pub mod native_validation {
     };
 
     use crate::{
-        NativeSurface, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceFrame, native,
+        ClipboardError, ClipboardOperation, NativeSurface, SurfaceDescriptor, SurfaceError,
+        SurfaceEvent, SurfaceResponse, native,
     };
 
     /// Evidence that bounds a production event-loop validation run.
@@ -754,7 +776,7 @@ pub mod native_validation {
         handler: F,
     ) -> Result<(), SurfaceError>
     where
-        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         surface
             .implementation
@@ -772,7 +794,7 @@ pub mod native_validation {
         handler: F,
     ) -> Result<(), SurfaceError>
     where
-        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         surface
             .implementation
@@ -790,9 +812,64 @@ pub mod native_validation {
         handler: F,
     ) -> Result<(), SurfaceError>
     where
-        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         surface.implementation.replay_native_input_path(handler)
+    }
+
+    /// Replays one exact Command-C, Command-X, or Command-V input path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured dispatch error if the response or completion
+    /// cannot cross the production delegate boundary.
+    pub fn replay_native_clipboard_operation<F>(
+        surface: &NativeSurface,
+        operation: ClipboardOperation,
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        surface
+            .implementation
+            .replay_native_clipboard_operation(operation, handler)
+    }
+
+    /// Injects one terminal clipboard failure before the next native operation.
+    pub fn inject_clipboard_error(surface: &NativeSurface, error: ClipboardError) {
+        surface.implementation.inject_clipboard_error(error);
+    }
+
+    /// Exercises `windowShouldClose` and returns whether AppKit admitted close.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured dispatch error if the response handler cannot be
+    /// installed.
+    pub fn replay_close_request<F>(
+        surface: &NativeSurface,
+        handler: F,
+    ) -> Result<bool, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        surface.implementation.replay_close_request(handler)
+    }
+
+    /// Exercises a close request with no installed application handler.
+    #[must_use]
+    pub fn replay_close_without_handler(surface: &NativeSurface) -> bool {
+        surface.implementation.replay_close_without_handler()
+    }
+
+    /// Exercises a close request while event-handler dispatch is reentrant.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured error if the validation borrow cannot be acquired.
+    pub fn replay_reentrant_close(surface: &NativeSurface) -> Result<bool, SurfaceError> {
+        surface.implementation.replay_reentrant_close()
     }
 
     /// Injects every initialization-stage failure and verifies complete rollback.
@@ -1726,15 +1803,16 @@ impl NativeSurface {
 
     /// Runs `AppKit` while dispatching handle-free events on the main thread.
     ///
-    /// A handler may return one immutable frame. Repeated requests retain the
-    /// surface's existing latest-wins coalescing and bounded presentation path.
+    /// A handler returns one bounded response. Repeated frame requests retain
+    /// the surface's existing latest-wins coalescing and bounded presentation
+    /// path. Clipboard writes complete through a later [`ClipboardEvent`].
     ///
     /// # Errors
     ///
     /// Returns the same structured lifecycle and native errors as [`Self::run`].
     pub fn run_with_event_handler<F>(&self, handler: F) -> Result<(), SurfaceError>
     where
-        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         self.implementation.run_with_event_handler(handler)
     }
@@ -1925,8 +2003,7 @@ mod tests {
             SurfaceEvent::Resize { timestamp, extent },
             SurfaceEvent::Clipboard {
                 timestamp,
-                operation: ClipboardOperation::Copy,
-                succeeded: true,
+                event: ClipboardEvent::CopyCompleted(Ok(())),
             },
             SurfaceEvent::Ime {
                 timestamp,
@@ -1998,6 +2075,18 @@ mod tests {
             ClipboardError::TooLarge { bytes: 9, limit: 8 }.to_string(),
             "clipboard text has 9 bytes; limit is 8"
         );
+        assert_eq!(
+            ClipboardEvent::CopyCompleted(Ok(())).operation(),
+            ClipboardOperation::Copy
+        );
+        assert_eq!(
+            ClipboardEvent::CutCompleted(Err(ClipboardError::WriteRejected)).operation(),
+            ClipboardOperation::Cut
+        );
+        assert_eq!(
+            ClipboardEvent::PasteCompleted(Ok(text.clone())).operation(),
+            ClipboardOperation::Paste
+        );
 
         let response = SurfaceResponse::new(None, Some(write.clone()), CloseDisposition::Cancel);
         assert!(response.frame().is_none());
@@ -2016,7 +2105,7 @@ mod tests {
     fn public_event_loop_wrapper_preserves_unsupported_error() {
         let surface = NativeSurface::from_implementation(implementation::NativeSurface);
         assert_eq!(
-            surface.run_with_event_handler(|_| None),
+            surface.run_with_event_handler(|_| SurfaceResponse::default()),
             Err(SurfaceError::UnsupportedPlatform)
         );
     }

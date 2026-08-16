@@ -6,9 +6,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     use alpine_core::Point;
     use alpine_platform_macos::{
-        ClipboardOperation, EventTimestamp, ImeEvent, KeyState, Modifiers, PointerAction,
+        ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite,
+        CloseDisposition, EventTimestamp, ImeEvent, KeyState, Modifiers, PointerAction,
         PointerButton, ScrollPhase, SurfaceDescriptor, SurfaceEvent, SurfaceExtent,
-        native_validation,
+        SurfaceLifecycle, SurfaceResponse, native_validation,
     };
 
     let descriptor = SurfaceDescriptor::new("Alpine runtime events", 96.0, 64.0, 1.0)?;
@@ -48,8 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         SurfaceEvent::Clipboard {
             timestamp: EventTimestamp::new(6),
-            operation: ClipboardOperation::Paste,
-            succeeded: false,
+            event: ClipboardEvent::PasteCompleted(Err(ClipboardError::Unavailable)),
         },
         SurfaceEvent::Ime {
             timestamp: EventTimestamp::new(7),
@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(mut received) = callback_received.lock() {
             received.push(event);
         }
-        None
+        SurfaceResponse::default()
     })?;
     assert_eq!(
         *received.lock().map_err(|_| "event receiver poisoned")?,
@@ -85,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(mut replayed) = callback_replayed.lock() {
             replayed.push(event);
         }
-        None
+        SurfaceResponse::default()
     })?;
     assert_eq!(
         *replayed
@@ -100,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(mut received) = appkit_callback_received.lock() {
             received.push(event);
         }
-        None
+        SurfaceResponse::default()
     })?;
     assert_eq!(
         *callback_received
@@ -108,6 +108,117 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|_| "AppKit callback receiver poisoned")?,
         events
     );
+
+    let copy_events = Arc::new(Mutex::new(Vec::new()));
+    let copy_received = Arc::clone(&copy_events);
+    native_validation::replay_native_clipboard_operation(
+        &surface,
+        ClipboardOperation::Copy,
+        move |event| {
+            let response = if matches!(
+                &event,
+                SurfaceEvent::Keyboard {
+                    state: KeyState::Down,
+                    logical_key,
+                    modifiers,
+                    repeat: false,
+                    ..
+                } if logical_key.as_ref() == "c"
+                    && modifiers.bits() == Modifiers::COMMAND
+            ) {
+                let text = ClipboardText::new("native-copy")
+                    .and_then(|text| ClipboardWrite::new(ClipboardOperation::Copy, text));
+                text.map_or_else(
+                    |_| SurfaceResponse::default(),
+                    |write| SurfaceResponse::new(None, Some(write), CloseDisposition::NotRequested),
+                )
+            } else {
+                SurfaceResponse::default()
+            };
+            if let SurfaceEvent::Clipboard { event, .. } = event
+                && let Ok(mut received) = copy_received.lock()
+            {
+                received.push(event);
+            }
+            response
+        },
+    )?;
+    assert_eq!(
+        *copy_events.lock().map_err(|_| "copy receiver poisoned")?,
+        vec![ClipboardEvent::CopyCompleted(Ok(()))]
+    );
+
+    let paste_events = Arc::new(Mutex::new(Vec::new()));
+    let paste_received = Arc::clone(&paste_events);
+    native_validation::replay_native_clipboard_operation(
+        &surface,
+        ClipboardOperation::Paste,
+        move |event| {
+            if let SurfaceEvent::Clipboard { event, .. } = event
+                && let Ok(mut received) = paste_received.lock()
+            {
+                received.push(event);
+            }
+            SurfaceResponse::default()
+        },
+    )?;
+    assert!(matches!(
+        paste_events
+            .lock()
+            .map_err(|_| "paste receiver poisoned")?
+            .as_slice(),
+        [ClipboardEvent::PasteCompleted(Ok(text))] if text.as_str() == "native-copy"
+    ));
+
+    native_validation::inject_clipboard_error(&surface, ClipboardError::WriteRejected);
+    let failure_events = Arc::new(Mutex::new(Vec::new()));
+    let failure_received = Arc::clone(&failure_events);
+    native_validation::replay_native_clipboard_operation(
+        &surface,
+        ClipboardOperation::Cut,
+        move |event| {
+            let response = if matches!(&event, SurfaceEvent::Keyboard { .. }) {
+                ClipboardText::new("preserved-cut")
+                    .and_then(|text| ClipboardWrite::new(ClipboardOperation::Cut, text))
+                    .map_or_else(
+                        |_| SurfaceResponse::default(),
+                        |write| {
+                            SurfaceResponse::new(None, Some(write), CloseDisposition::NotRequested)
+                        },
+                    )
+            } else {
+                SurfaceResponse::default()
+            };
+            if let SurfaceEvent::Clipboard { event, .. } = event
+                && let Ok(mut received) = failure_received.lock()
+            {
+                received.push(event);
+            }
+            response
+        },
+    )?;
+    assert_eq!(
+        *failure_events
+            .lock()
+            .map_err(|_| "clipboard failure receiver poisoned")?,
+        vec![ClipboardEvent::CutCompleted(Err(
+            ClipboardError::WriteRejected
+        ))]
+    );
+
+    let observer = surface.observer();
+    assert!(!native_validation::replay_close_without_handler(&surface));
+    assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
+    assert!(!native_validation::replay_reentrant_close(&surface)?);
+    assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
+    assert!(!native_validation::replay_close_request(&surface, |_| {
+        SurfaceResponse::new(None, None, CloseDisposition::Cancel)
+    })?);
+    assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
+    assert!(native_validation::replay_close_request(&surface, |_| {
+        SurfaceResponse::new(None, None, CloseDisposition::Allow)
+    })?);
+    assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
 
     let evidence = native_validation::close_with_owner_evidence(surface)?;
     assert_eq!(evidence.active(), [0; 9]);

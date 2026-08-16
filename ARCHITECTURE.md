@@ -74,6 +74,16 @@ CoreText service; deterministic test typography proves portable editor behavior
 without claiming native validation. It runs through one `Application` until the
 owned AppKit window closes and has no native handles, collaboration state,
 extension host, telemetry, AI, or general async runtime.
+
+The native event handler returns one bounded `SurfaceResponse`. AppKit
+Command-C and Command-X writes complete through a typed later event, allowing
+Studio to defer cut mutation until native success. Command-V checks the native
+UTF-8 byte length before allocating Alpine-owned text and reports unavailable,
+oversize, or successful bounded text explicitly. `windowShouldClose` resolves
+allow or cancel synchronously and fails closed when a handler is missing or
+reentrant; only an admitted `windowWillClose` begins irreversible presentation
+drain. Validation builds use an isolated pasteboard while shipping builds use
+the general pasteboard, with identical conversion functions.
 The non-shipping `alpine-trace` crate depends only on Alpine workspace crates
 and owns typed, fail-closed conversion from versioned workload values into an
 immutable scene and exact offscreen target. The non-shipping
