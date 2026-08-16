@@ -50,10 +50,16 @@ polling.
 - **AEP-0153-C05:** `windowShouldClose` admits irreversible close only after a
   synchronous `Allow` response. Cancel, missing response, reentrant dispatch,
   and dispatch failure veto close; `windowWillClose` performs drain only.
+- **AEP-0153-C06:** Studio copy never mutates text, cut mutates only after a
+  successful completion matches both the initiating buffer revision and
+  selection, and paste mutates only from a successful bounded completion.
+- **AEP-0153-C07:** Studio synchronously cancels close for dirty or failed
+  documents, allows clean close, and paints local clipboard or close-failure
+  status without retaining clipboard payload text.
 
-Studio selection/revision correlation, post-success cut mutation, and visible
-local failure status remain required by Task #154 and are not claimed by this
-native transport slice.
+The production process journey that composes Studio, AppKit pasteboard I/O, and
+window close remains required by Task #154. C06 and C07 cover the portable
+Studio transition and runtime response boundary only.
 
 ## Model and implementation mapping
 
@@ -65,10 +71,15 @@ and `AllowedCloseRevokesAdmission` map to
 `Application::dispatch_with_response`. The faulty configuration closes after a
 cancel and must violate `CancelledCloseStaysLive`.
 
-The model does not refine Rust allocation, AppKit pasteboard behavior, native
-callback reentrancy, or operating-system close delivery. Native validation
-tests those concrete boundaries independently and makes no formal-refinement
-claim.
+`CutMutationRequiresMatchingCompletion` models finite revision and selection
+identity around one pending cut. `DirtyCloseNeverAllows` records whether the
+document was dirty when close was requested. Independent faulty configurations
+mutate a stale cut and admit dirty close, and each must violate its property.
+
+The model does not refine Rust allocation, text bytes, AppKit pasteboard
+behavior, native callback reentrancy, or operating-system close delivery.
+Native validation tests those concrete boundaries independently and makes no
+formal-refinement claim.
 
 ## Ownership and correctness
 
@@ -88,6 +99,13 @@ that intentionally have no native side effects. Task #154 native integration
 must call `dispatch_with_response`; using frame-only dispatch there would
 silently discard clipboard writes and close dispositions and invalidates the
 native acceptance evidence.
+
+Studio retains a pending cut as only one buffer revision and one selection.
+The native response owns the selected text. A successful completion consumes
+the pending identity exactly once; failure, missing identity, changed
+selection, or changed revision preserves document bytes. Dirty scratch state
+is measured from its initial buffer revision, while file dirty state remains
+owned by the atomic editor save contract.
 
 ## Accessibility, performance, and memory
 
@@ -113,8 +131,10 @@ failure, bounded owned completion values, synchronous cancel, synchronous
 allow, and drain ordering through the production delegate methods. It uses a
 unique validation pasteboard to avoid changing a developer clipboard; shipping
 uses `generalPasteboard` through the same read and write conversion functions.
-Studio mutation, visible status, and full process journeys remain unqualified.
-No product or performance claim may cite this AEP alone.
+Portable Studio unit evidence now covers revision-correlated copy, cut, paste,
+dirty-close cancellation, response wiring, atomic failure, and rendered local
+status. Full native process composition remains unqualified, and no product or
+performance claim may infer it from the separate Studio and AppKit controls.
 
 ## Risks and reversal conditions
 

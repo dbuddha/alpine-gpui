@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use alpine_platform_macos::{EventTimestamp, ScrollPhase};
+use alpine_platform_macos::{CloseDisposition, EventTimestamp, ScrollPhase};
 use alpine_text_layout::{GlyphBitmap, RasterizedGlyph, ShapedGlyph};
 
 use super::*;
@@ -158,6 +158,91 @@ fn key(physical_key: u16, modifiers: Modifiers) -> SurfaceEvent {
     }
 }
 
+fn clipboard_key(logical_key: &str) -> SurfaceEvent {
+    SurfaceEvent::Keyboard {
+        timestamp: EventTimestamp::new(1),
+        state: KeyState::Down,
+        physical_key: 0,
+        logical_key: logical_key.into(),
+        modifiers: Modifiers::from_bits(Modifiers::COMMAND),
+        repeat: false,
+    }
+}
+
+fn clipboard_event(event: ClipboardEvent) -> SurfaceEvent {
+    SurfaceEvent::Clipboard {
+        timestamp: EventTimestamp::new(2),
+        event,
+    }
+}
+
+#[test]
+fn clipboard_policy_controls_distinguish_each_response_boundary() -> Result<(), SurfaceError> {
+    assert_eq!(
+        EventEffect::visual().merge(EventEffect::default()),
+        EventEffect::visual()
+    );
+    assert_eq!(
+        EventEffect::default().merge(EventEffect::visual()),
+        EventEffect::visual()
+    );
+    assert_eq!(
+        EventEffect::document().merge(EventEffect::default()),
+        EventEffect::document()
+    );
+    assert_eq!(
+        EventEffect::default().merge(EventEffect::document()),
+        EventEffect::document()
+    );
+
+    let shortcut = |modifiers: u8| SurfaceEvent::Keyboard {
+        timestamp: EventTimestamp::new(1),
+        state: KeyState::Down,
+        physical_key: 0,
+        logical_key: "c".into(),
+        modifiers: Modifiers::from_bits(modifiers),
+        repeat: false,
+    };
+    assert_eq!(
+        studio_clipboard_shortcut(&shortcut(Modifiers::COMMAND)),
+        Some(ClipboardOperation::Copy)
+    );
+    for modifiers in [
+        0,
+        Modifiers::COMMAND | Modifiers::CONTROL,
+        Modifiers::COMMAND | Modifiers::OPTION,
+        Modifiers::COMMAND | Modifiers::SHIFT,
+    ] {
+        assert_eq!(studio_clipboard_shortcut(&shortcut(modifiers)), None);
+    }
+
+    let mut app = test_app()?;
+    let pending = PendingCut {
+        revision: app.buffer().revision().get(),
+        selection: Selection::new(ByteOffset::new(0), ByteOffset::new(1)),
+    };
+    app.pending_cut = Some(pending);
+    let rejected_copy = app.reject_clipboard_response(ClipboardOperation::Copy);
+    assert!(rejected_copy.visual_changed);
+    assert_eq!(app.pending_cut, Some(pending));
+    assert_eq!(app.clipboard_failures, 1);
+    assert!(matches!(app.local_status, Some(LocalStatus::Clipboard(_))));
+    assert!(app.clear_clipboard_status().visual_changed);
+
+    let rejected_cut = app.reject_clipboard_response(ClipboardOperation::Cut);
+    assert!(rejected_cut.visual_changed);
+    assert_eq!(app.pending_cut, None);
+    assert_eq!(app.clipboard_failures, 2);
+
+    app.last_clipboard_error = Some(ClipboardError::Unavailable);
+    let cleared = app.clear_clipboard_status();
+    assert!(cleared.visual_changed);
+    assert_eq!(app.local_status, None);
+    assert_eq!(app.last_clipboard_error, None);
+    assert!(!app.clear_clipboard_status().visual_changed);
+    Ok(())
+}
+
 #[test]
 fn editor_scene_contains_clipped_glyphs_atlas_and_caret() -> Result<(), StudioRenderError> {
     let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
@@ -200,6 +285,205 @@ fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeEr
                 timestamp: EventTimestamp::new(2),
             })
             .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn clipboard_copy_cut_and_paste_preserve_revision_and_selection_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app()?;
+    *app.buffer_mut() = Buffer::new("alpha");
+    app.selection = Selection::new(ByteOffset::new(1), ByteOffset::new(4));
+
+    let before_copy = app.buffer().snapshot().text();
+    let copy = app.handle_event_with_response(&clipboard_key("c"));
+    let (operation, text) = copy
+        .clipboard_write
+        .ok_or("copy did not produce a response")?
+        .into_parts();
+    assert_eq!(operation, ClipboardOperation::Copy);
+    assert_eq!(text.as_str(), "lph");
+    assert_eq!(app.buffer().snapshot().text(), before_copy);
+    assert_eq!(app.selection.range(), 1..4);
+
+    let cut = app.handle_event_with_response(&clipboard_key("x"));
+    let (operation, text) = cut
+        .clipboard_write
+        .ok_or("cut did not produce a response")?
+        .into_parts();
+    assert_eq!(operation, ClipboardOperation::Cut);
+    assert_eq!(text.as_str(), "lph");
+    assert_eq!(app.buffer().snapshot().text(), "alpha");
+    let completed =
+        app.handle_event_with_response(&clipboard_event(ClipboardEvent::CutCompleted(Ok(()))));
+    assert!(completed.effect.document_changed);
+    assert_eq!(app.buffer().snapshot().text(), "aa");
+    assert_eq!(app.selection, Selection::caret(ByteOffset::new(1)));
+
+    app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(1));
+    let pasted = app.handle_event_with_response(&clipboard_event(ClipboardEvent::PasteCompleted(
+        Ok(ClipboardText::new("z")?),
+    )));
+    assert!(pasted.effect.document_changed);
+    assert_eq!(app.buffer().snapshot().text(), "za");
+    assert_eq!(app.selection, Selection::caret(ByteOffset::new(1)));
+    assert_eq!(app.clipboard_failures, 0);
+    Ok(())
+}
+
+#[test]
+fn cut_completion_rejects_stale_selection_revision_and_native_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app()?;
+    *app.buffer_mut() = Buffer::new("alpha");
+    app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(2));
+
+    let selection_cut = app.handle_event_with_response(&clipboard_key("x"));
+    assert!(selection_cut.clipboard_write.is_some());
+    app.selection = Selection::new(ByteOffset::new(1), ByteOffset::new(2));
+    let before_selection_completion = app.buffer().snapshot().text();
+    let stale_selection =
+        app.handle_event_with_response(&clipboard_event(ClipboardEvent::CutCompleted(Ok(()))));
+    assert!(!stale_selection.effect.document_changed);
+    assert_eq!(app.buffer().snapshot().text(), before_selection_completion);
+
+    app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(2));
+    let revision_cut = app.handle_event_with_response(&clipboard_key("x"));
+    assert!(revision_cut.clipboard_write.is_some());
+    assert!(app.replace_range(5..5, "!").document_changed);
+    app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(2));
+    let before_revision_completion = app.buffer().snapshot().text();
+    let stale_revision =
+        app.handle_event_with_response(&clipboard_event(ClipboardEvent::CutCompleted(Ok(()))));
+    assert!(!stale_revision.effect.document_changed);
+    assert_eq!(app.buffer().snapshot().text(), before_revision_completion);
+
+    let failure_cut = app.handle_event_with_response(&clipboard_key("x"));
+    assert!(failure_cut.clipboard_write.is_some());
+    let before_failure = app.buffer().snapshot().text();
+    let selection_before_failure = app.selection;
+    let failed = app.handle_event_with_response(&clipboard_event(ClipboardEvent::CutCompleted(
+        Err(ClipboardError::WriteRejected),
+    )));
+    assert!(failed.effect.visual_changed);
+    assert!(!failed.effect.document_changed);
+    assert_eq!(app.buffer().snapshot().text(), before_failure);
+    assert_eq!(app.selection, selection_before_failure);
+    assert_eq!(
+        app.last_clipboard_error,
+        Some(ClipboardError::WriteRejected)
+    );
+    assert!(matches!(app.local_status, Some(LocalStatus::Clipboard(_))));
+    assert_eq!(app.clipboard_failures, 3);
+    Ok(())
+}
+
+#[test]
+fn clipboard_failure_is_visible_and_paste_failure_is_atomic()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app()?;
+    *app.buffer_mut() = Buffer::new("stable");
+    app.selection = Selection::new(ByteOffset::new(1), ByteOffset::new(4));
+    let before = app.buffer().snapshot().text();
+    let before_selection = app.selection;
+    let failed = app.handle_event_with_response(&clipboard_event(ClipboardEvent::PasteCompleted(
+        Err(ClipboardError::Unavailable),
+    )));
+    assert!(failed.effect.visual_changed);
+    assert!(!failed.effect.document_changed);
+    assert_eq!(app.buffer().snapshot().text(), before);
+    assert_eq!(app.selection, before_selection);
+    assert_eq!(app.last_clipboard_error, Some(ClipboardError::Unavailable));
+
+    let baseline_quads = test_app()?
+        .try_scene(SceneRevision::new(1), viewport()?)?
+        .quads()
+        .len();
+    let failure_scene = app.try_scene(SceneRevision::new(1), viewport()?)?;
+    assert!(failure_scene.quads().len() > baseline_quads);
+    assert!(failure_scene.glyphs().len() > before.len());
+    Ok(())
+}
+
+#[test]
+fn studio_runtime_returns_clipboard_and_dirty_close_responses()
+-> Result<(), Box<dyn std::error::Error>> {
+    let viewport = viewport()?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let mut copy_app = test_app()?;
+    copy_app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(2));
+    let mut copy_runtime = Application::new(copy_app, viewport, clear, WorkerConfig::default())?;
+    let (_, write, close) = copy_runtime
+        .dispatch_with_response(&clipboard_key("c"))
+        .into_parts();
+    let (operation, text) = write
+        .ok_or("runtime omitted clipboard response")?
+        .into_parts();
+    assert_eq!(operation, ClipboardOperation::Copy);
+    assert_eq!(text.as_str(), &INITIAL_TEXT[..2]);
+    assert_eq!(close, CloseDisposition::NotRequested);
+
+    let mut dirty_app = test_app()?;
+    assert!(
+        dirty_app
+            .handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    assert!(dirty_app.document.is_dirty());
+    let mut dirty_runtime = Application::new(dirty_app, viewport, clear, WorkerConfig::default())?;
+    let (_, _, close) = dirty_runtime
+        .dispatch_with_response(&SurfaceEvent::CloseRequested {
+            timestamp: EventTimestamp::new(3),
+        })
+        .into_parts();
+    assert_eq!(close, CloseDisposition::Cancel);
+    assert!(!dirty_runtime.snapshot().is_shutting_down());
+
+    let mut clean_runtime =
+        Application::new(test_app()?, viewport, clear, WorkerConfig::default())?;
+    let (_, _, close) = clean_runtime
+        .dispatch_with_response(&SurfaceEvent::CloseRequested {
+            timestamp: EventTimestamp::new(4),
+        })
+        .into_parts();
+    assert_eq!(close, CloseDisposition::Allow);
+    assert!(clean_runtime.snapshot().is_shutting_down());
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_family = "windows"))]
+fn dirty_file_close_is_blocked_until_atomic_save_succeeds() -> Result<(), Box<dyn std::error::Error>>
+{
+    let file = TestFile::new("before")?;
+    let mut app = StudioApp::open_file(TestTextSystem, file.path())?;
+    assert!(
+        !app.handle_event_with_response(&SurfaceEvent::CloseRequested {
+            timestamp: EventTimestamp::new(1),
+        })
+        .cancel_close
+    );
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    let blocked = app.handle_event_with_response(&SurfaceEvent::CloseRequested {
+        timestamp: EventTimestamp::new(2),
+    });
+    assert!(blocked.cancel_close);
+    assert_eq!(app.local_status, Some(LocalStatus::CloseBlocked));
+    assert!(
+        app.handle_event(&key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND)))
+            .visual_changed
+    );
+    assert!(!app.document.is_dirty());
+    assert_eq!(app.local_status, None);
+    assert!(
+        !app.handle_event_with_response(&SurfaceEvent::CloseRequested {
+            timestamp: EventTimestamp::new(3),
+        })
+        .cancel_close
     );
     Ok(())
 }

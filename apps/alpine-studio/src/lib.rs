@@ -16,7 +16,8 @@ use std::{
 
 use alpine_core::{LinearRgba, Point, Rect, Size};
 use alpine_platform_macos::{
-    ImeEvent, KeyState, Modifiers, PointerAction, PointerButton, SurfaceError, SurfaceEvent,
+    ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite, ImeEvent,
+    KeyState, Modifiers, PointerAction, PointerButton, SurfaceError, SurfaceEvent,
 };
 use alpine_runtime::{AppContext, AppDelegate, DocumentRevision, RuntimeError, WindowContext};
 use alpine_scene::{
@@ -249,6 +250,51 @@ impl EventEffect {
             document_changed: true,
         }
     }
+
+    const fn merge(self, other: Self) -> Self {
+        Self {
+            visual_changed: self.visual_changed || other.visual_changed,
+            document_changed: self.document_changed || other.document_changed,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingCut {
+    revision: u64,
+    selection: Selection,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LocalStatus {
+    Clipboard(Arc<str>),
+    CloseBlocked,
+}
+
+impl LocalStatus {
+    fn message(&self) -> &str {
+        match self {
+            Self::Clipboard(message) => message,
+            Self::CloseBlocked => "Save changes before closing.",
+        }
+    }
+}
+
+#[derive(Default)]
+struct StudioTransition {
+    effect: EventEffect,
+    clipboard_write: Option<ClipboardWrite>,
+    cancel_close: bool,
+}
+
+impl StudioTransition {
+    const fn effect(effect: EventEffect) -> Self {
+        Self {
+            effect,
+            clipboard_write: None,
+            cancel_close: false,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -291,13 +337,18 @@ impl fmt::Display for StudioRenderError {
 impl Error for StudioRenderError {}
 
 enum StudioDocument {
-    Scratch(Buffer),
+    Scratch { buffer: Buffer, clean_revision: u64 },
     File(Editor),
 }
 
 impl StudioDocument {
     fn scratch(text: &str) -> Self {
-        Self::Scratch(Buffer::new(text))
+        let buffer = Buffer::new(text);
+        let clean_revision = buffer.revision().get();
+        Self::Scratch {
+            buffer,
+            clean_revision,
+        }
     }
 
     fn open(path: impl AsRef<Path>) -> Result<Self, FileError> {
@@ -306,29 +357,31 @@ impl StudioDocument {
 
     const fn buffer(&self) -> &Buffer {
         match self {
-            Self::Scratch(buffer) => buffer,
+            Self::Scratch { buffer, .. } => buffer,
             Self::File(editor) => editor.buffer(),
         }
     }
 
     const fn buffer_mut(&mut self) -> &mut Buffer {
         match self {
-            Self::Scratch(buffer) => buffer,
+            Self::Scratch { buffer, .. } => buffer,
             Self::File(editor) => editor.buffer_mut(),
         }
     }
 
     fn save(&mut self) -> Result<Option<SaveReport>, FileError> {
         match self {
-            Self::Scratch(_) => Ok(None),
+            Self::Scratch { .. } => Ok(None),
             Self::File(editor) => editor.save().map(Some),
         }
     }
 
-    #[cfg(test)]
     fn is_dirty(&self) -> bool {
         match self {
-            Self::Scratch(_) => false,
+            Self::Scratch {
+                buffer,
+                clean_revision,
+            } => buffer.revision().get() != *clean_revision,
             Self::File(editor) => editor.is_dirty(),
         }
     }
@@ -351,8 +404,12 @@ struct StudioApp {
     input_failures: u64,
     render_failures: u64,
     save_failures: u64,
+    clipboard_failures: u64,
     last_save: Option<SaveReport>,
     last_file_error: Option<FileError>,
+    last_clipboard_error: Option<ClipboardError>,
+    pending_cut: Option<PendingCut>,
+    local_status: Option<LocalStatus>,
 }
 
 impl StudioApp {
@@ -396,8 +453,12 @@ impl StudioApp {
             input_failures: 0,
             render_failures: 0,
             save_failures: 0,
+            clipboard_failures: 0,
             last_save: None,
             last_file_error: None,
+            last_clipboard_error: None,
+            pending_cut: None,
+            local_status: None,
         })
     }
 
@@ -487,6 +548,8 @@ impl StudioApp {
         let text_color = LinearRgba::new(0.86, 0.88, 0.9, 1.0).ok_or(StudioRenderError::Domain)?;
         let caret_color =
             LinearRgba::new(0.94, 0.72, 0.25, 1.0).ok_or(StudioRenderError::Domain)?;
+        let status_background_color =
+            LinearRgba::new(0.34, 0.075, 0.065, 0.96).ok_or(StudioRenderError::Domain)?;
 
         let mut builder = SceneBuilder::new(revision, viewport);
         builder.push_quad(Quad::new(Rect::new(origin, viewport), background))?;
@@ -551,6 +614,27 @@ impl StudioApp {
             let underline_size = Size::new(composition_layout.width().max(1.0), 1.0)
                 .ok_or(StudioRenderError::Domain)?;
             composition_underline = Some(Rect::new(underline_origin, underline_size));
+        }
+
+        let status_background = if let Some(status) = self.local_status.clone() {
+            let layout = self.text_system.shape(status.message(), font)?;
+            let top = (viewport.height() - CONTENT_INSET - LINE_HEIGHT).max(CONTENT_INSET);
+            let baseline = top + layout.ascent();
+            pending_glyphs.extend(self.collect_glyphs(
+                &layout,
+                font,
+                CONTENT_INSET + 6.0,
+                baseline,
+            )?);
+            let origin = Point::new(CONTENT_INSET, top).ok_or(StudioRenderError::Domain)?;
+            let size =
+                Size::new(content_size.width(), LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
+            Some(Rect::new(origin, size))
+        } else {
+            None
+        };
+        if let Some(bounds) = status_background {
+            builder.push_quad(Quad::new(bounds, status_background_color).clipped(clip))?;
         }
 
         self.publish_atlas_if_needed(&pending_glyphs)?;
@@ -712,8 +796,11 @@ impl StudioApp {
         Ok(Some(Rect::new(origin, size)))
     }
 
-    fn handle_event(&mut self, event: &SurfaceEvent) -> EventEffect {
-        match event {
+    fn handle_event_with_response(&mut self, event: &SurfaceEvent) -> StudioTransition {
+        if let Some(operation) = studio_clipboard_shortcut(event) {
+            return self.begin_clipboard_operation(operation);
+        }
+        let effect = match event {
             SurfaceEvent::Keyboard {
                 state: KeyState::Down,
                 physical_key,
@@ -740,11 +827,161 @@ impl StudioApp {
                 changed.then(EventEffect::visual).unwrap_or_default()
             }
             SurfaceEvent::Ime { event, .. } => self.handle_ime(event),
+            SurfaceEvent::Clipboard { event, .. } => {
+                return self.handle_clipboard_completion(event);
+            }
+            SurfaceEvent::CloseRequested { .. } => return self.handle_close_request(),
             SurfaceEvent::Keyboard { .. }
             | SurfaceEvent::Resize { .. }
-            | SurfaceEvent::Clipboard { .. }
-            | SurfaceEvent::Wake { .. }
-            | SurfaceEvent::CloseRequested { .. } => EventEffect::default(),
+            | SurfaceEvent::Wake { .. } => EventEffect::default(),
+        };
+        StudioTransition::effect(effect)
+    }
+
+    #[cfg(test)]
+    fn handle_event(&mut self, event: &SurfaceEvent) -> EventEffect {
+        self.handle_event_with_response(event).effect
+    }
+
+    fn begin_clipboard_operation(&mut self, operation: ClipboardOperation) -> StudioTransition {
+        if operation == ClipboardOperation::Paste {
+            return StudioTransition::default();
+        }
+        self.pending_cut = None;
+        let mut effect = self.clear_clipboard_status();
+        let selection = self.selection;
+        if selection.range().is_empty() {
+            return StudioTransition::effect(effect);
+        }
+        let Ok(text) = self.buffer().snapshot().slice(selection.range()) else {
+            self.input_failures = self.input_failures.saturating_add(1);
+            effect = effect.merge(
+                self.record_clipboard_protocol_failure("Clipboard selection is no longer valid."),
+            );
+            return StudioTransition::effect(effect);
+        };
+        let text = match ClipboardText::new(text) {
+            Ok(text) => text,
+            Err(error) => {
+                effect = effect.merge(self.record_clipboard_error(error));
+                return StudioTransition::effect(effect);
+            }
+        };
+        let write = match ClipboardWrite::new(operation, text) {
+            Ok(write) => write,
+            Err(error) => {
+                effect = effect.merge(self.record_clipboard_error(error));
+                return StudioTransition::effect(effect);
+            }
+        };
+        if operation == ClipboardOperation::Cut {
+            self.pending_cut = Some(PendingCut {
+                revision: self.buffer().revision().get(),
+                selection,
+            });
+        }
+        StudioTransition {
+            effect,
+            clipboard_write: Some(write),
+            cancel_close: false,
+        }
+    }
+
+    fn handle_clipboard_completion(&mut self, event: &ClipboardEvent) -> StudioTransition {
+        let effect = match event {
+            ClipboardEvent::CopyCompleted(Ok(())) => self.clear_clipboard_status(),
+            ClipboardEvent::CopyCompleted(Err(error))
+            | ClipboardEvent::PasteCompleted(Err(error)) => self.record_clipboard_error(*error),
+            ClipboardEvent::CutCompleted(Ok(())) => self.complete_cut(),
+            ClipboardEvent::CutCompleted(Err(error)) => {
+                self.pending_cut = None;
+                self.record_clipboard_error(*error)
+            }
+            ClipboardEvent::PasteCompleted(Ok(text)) => self
+                .clear_clipboard_status()
+                .merge(self.replace_selection(text.as_str())),
+        };
+        StudioTransition::effect(effect)
+    }
+
+    fn complete_cut(&mut self) -> EventEffect {
+        let Some(pending) = self.pending_cut.take() else {
+            return self.record_clipboard_protocol_failure(
+                "Cut completion did not match an active selection.",
+            );
+        };
+        if self.buffer().revision().get() != pending.revision || self.selection != pending.selection
+        {
+            return self.record_clipboard_protocol_failure(
+                "Cut was not applied because the document changed.",
+            );
+        }
+        let cleared = self.clear_clipboard_status();
+        let edited = self.replace_range(pending.selection.range(), "");
+        if edited.document_changed {
+            cleared.merge(edited)
+        } else {
+            cleared.merge(
+                self.record_clipboard_protocol_failure("Cut could not be applied atomically."),
+            )
+        }
+    }
+
+    fn handle_close_request(&mut self) -> StudioTransition {
+        if self.document.is_dirty() || self.last_file_error.is_some() {
+            let effect = self.set_local_status(LocalStatus::CloseBlocked);
+            StudioTransition {
+                effect,
+                clipboard_write: None,
+                cancel_close: true,
+            }
+        } else {
+            StudioTransition::default()
+        }
+    }
+
+    fn record_clipboard_error(&mut self, error: ClipboardError) -> EventEffect {
+        let message: Arc<str> = format!("Clipboard failed: {error}").into();
+        self.last_clipboard_error = Some(error);
+        self.clipboard_failures = self.clipboard_failures.saturating_add(1);
+        self.set_local_status(LocalStatus::Clipboard(message))
+    }
+
+    fn record_clipboard_protocol_failure(&mut self, message: &'static str) -> EventEffect {
+        self.last_clipboard_error = None;
+        self.clipboard_failures = self.clipboard_failures.saturating_add(1);
+        self.set_local_status(LocalStatus::Clipboard(Arc::from(message)))
+    }
+
+    fn reject_clipboard_response(&mut self, operation: ClipboardOperation) -> EventEffect {
+        if operation == ClipboardOperation::Cut {
+            self.pending_cut = None;
+        }
+        self.record_clipboard_protocol_failure("Clipboard response was not admitted.")
+    }
+
+    fn set_local_status(&mut self, status: LocalStatus) -> EventEffect {
+        let changed = self.local_status.as_ref() != Some(&status);
+        self.local_status = Some(status);
+        changed.then(EventEffect::visual).unwrap_or_default()
+    }
+
+    fn clear_clipboard_status(&mut self) -> EventEffect {
+        self.last_clipboard_error = None;
+        if matches!(self.local_status, Some(LocalStatus::Clipboard(_))) {
+            self.local_status = None;
+            EventEffect::visual()
+        } else {
+            EventEffect::default()
+        }
+    }
+
+    fn clear_close_status(&mut self) -> EventEffect {
+        if self.local_status == Some(LocalStatus::CloseBlocked) {
+            self.local_status = None;
+            EventEffect::visual()
+        } else {
+            EventEffect::default()
         }
     }
 
@@ -1099,14 +1336,15 @@ impl StudioApp {
             Ok(Some(report)) => {
                 self.last_save = Some(report);
                 self.last_file_error = None;
+                self.clear_close_status()
             }
-            Ok(None) => {}
+            Ok(None) => EventEffect::default(),
             Err(error) => {
                 self.save_failures = self.save_failures.saturating_add(1);
                 self.last_file_error = Some(error);
+                EventEffect::default()
             }
         }
-        EventEffect::default()
     }
 
     fn clamp_scroll(&mut self) {
@@ -1118,7 +1356,20 @@ impl AppDelegate for StudioApp {
     type WorkerOutput = u64;
 
     fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, u64>) {
-        let effect = self.handle_event(event);
+        let StudioTransition {
+            mut effect,
+            clipboard_write,
+            cancel_close,
+        } = self.handle_event_with_response(event);
+        if let Some(write) = clipboard_write {
+            let operation = write.operation();
+            if !context.write_clipboard(write) {
+                effect = effect.merge(self.reject_clipboard_response(operation));
+            }
+        }
+        if cancel_close && !context.cancel_close() {
+            self.input_failures = self.input_failures.saturating_add(1);
+        }
         if effect.document_changed {
             let revision = DocumentRevision::new(self.buffer().revision().get());
             let rejected = !context.advance_document(revision);
@@ -1131,6 +1382,35 @@ impl AppDelegate for StudioApp {
 
     fn frame(&mut self, context: WindowContext) -> Scene {
         self.scene(context.scene_revision(), context.viewport())
+    }
+}
+
+fn studio_clipboard_shortcut(event: &SurfaceEvent) -> Option<ClipboardOperation> {
+    let SurfaceEvent::Keyboard {
+        state: KeyState::Down,
+        logical_key,
+        modifiers,
+        repeat: false,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    if !modifiers.contains(Modifiers::COMMAND)
+        || modifiers.contains(Modifiers::CONTROL)
+        || modifiers.contains(Modifiers::OPTION)
+        || modifiers.contains(Modifiers::SHIFT)
+    {
+        return None;
+    }
+    if logical_key.eq_ignore_ascii_case("c") {
+        Some(ClipboardOperation::Copy)
+    } else if logical_key.eq_ignore_ascii_case("x") {
+        Some(ClipboardOperation::Cut)
+    } else if logical_key.eq_ignore_ascii_case("v") {
+        Some(ClipboardOperation::Paste)
+    } else {
+        None
     }
 }
 
