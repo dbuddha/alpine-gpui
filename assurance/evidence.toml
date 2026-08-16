@@ -52,6 +52,19 @@ tla_properties = []
 platform_scope = ["macos-metal"]
 required_evidence = ["unit", "native"]
 
+[[claims]]
+id = "AEP-0141-C05"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0141-bounded-text-layout-atlas.md"
+requirement_issue = 33
+claim_type = "functional"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["macos-metal"]
+required_evidence = ["e2e", "native"]
+
 [[evidence]]
 id = "EV-0141-UNIT01A"
 claim = "AEP-0141-C01"
@@ -3176,3 +3189,22 @@ bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstra
 assumptions = ["the foreground delegate resolves every admitted close synchronously"]
 exclusions = ["formal refinement to AppKit delivery", "elapsed time", "process termination"]
 companion = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
+
+[[evidence]]
+id = "EV-0141-E2E05"
+claim = "AEP-0141-C05"
+kind = "e2e"
+artifact = "apps/alpine-studio/tests/native_process.rs#main"
+assertion = "The harness-free Studio process accepts the exact native keyboard, committed text, IME composition, pointer, and scroll sequence, produces exactly six sequential dirty frames, leaves no residual frame, and saves the expected Unicode bytes."
+scope = "One local 129-line UTF-8 file, one real Studio Application, one Apple Silicon AppKit window, and the production NSResponder event callback seam."
+exclusions = ["accessibility tree", "VoiceOver", "input latency", "formal refinement to AppKit", "comparative performance"]
+
+[[evidence]]
+id = "EV-0141-NATIVE05"
+claim = "AEP-0141-C05"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_input.rs#main"
+assertion = "Production AppKit selectors preserve the exact ordered keyboard, text commit, composition start/update/commit, pointer, scroll, modifier, coordinate, and timestamp identities consumed by the Studio process journey."
+scope = "One Apple Silicon NSWindow, SurfaceView NSTextInputClient, NSResponder keyboard and pointer selectors, and CGEvent-backed scroll input."
+exclusions = ["Studio document policy", "pixel readback", "accessibility actions", "physical input hardware"]
+companion = "apps/alpine-studio/tests/native_process.rs#main"

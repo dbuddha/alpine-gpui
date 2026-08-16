@@ -1505,19 +1505,85 @@ fn floor_f32_to_usize(value: f32) -> Option<usize> {
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 #[doc(hidden)]
 pub mod native_validation {
-    use std::{cell::RefCell, fs, path::Path, rc::Rc, time::Duration};
+    use std::{cell::RefCell, fmt, fmt::Write as _, fs, path::Path, rc::Rc, time::Duration};
 
     use alpine_platform_macos::{
-        ClipboardError, ClipboardOperation, EventTimestamp, KeyState, Modifiers, NativeSurface,
-        SurfaceDescriptor, SurfaceEvent, SurfaceLifecycle, SurfaceResponse,
+        ClipboardError, ClipboardOperation, EventTimestamp, ImeEvent, KeyState, Modifiers,
+        NativeSurface, SurfaceDescriptor, SurfaceEvent, SurfaceLifecycle, SurfaceResponse,
         native_validation as platform_validation,
     };
     use alpine_runtime::{Application, WorkerConfig};
     use alpine_text::{ByteOffset, Selection};
 
     use super::{
-        DEFAULT_SCALE, KEY_S, StudioApp, StudioError, WINDOW_HEIGHT, WINDOW_WIDTH, native_file_app,
+        DEFAULT_SCALE, KEY_A, KEY_S, StudioApp, StudioError, WINDOW_HEIGHT, WINDOW_WIDTH,
+        native_file_app,
     };
+
+    const NATIVE_INPUT_FRAMES: usize = 6;
+
+    #[derive(Default)]
+    struct NativeInputEvidence {
+        events: usize,
+        keyboard: usize,
+        ime_started: usize,
+        ime_updated: usize,
+        ime_committed: usize,
+        pointer: usize,
+        scroll: usize,
+        unexpected: usize,
+        frame_revisions: [u64; NATIVE_INPUT_FRAMES],
+        frames: usize,
+    }
+
+    impl NativeInputEvidence {
+        fn observe(&mut self, event: &SurfaceEvent) {
+            self.events = self.events.saturating_add(1);
+            match event {
+                SurfaceEvent::Keyboard { .. } => {
+                    self.keyboard = self.keyboard.saturating_add(1);
+                }
+                SurfaceEvent::Ime {
+                    event: ImeEvent::Started,
+                    ..
+                } => self.ime_started = self.ime_started.saturating_add(1),
+                SurfaceEvent::Ime {
+                    event: ImeEvent::Updated { .. },
+                    ..
+                } => self.ime_updated = self.ime_updated.saturating_add(1),
+                SurfaceEvent::Ime {
+                    event: ImeEvent::Committed(_),
+                    ..
+                } => self.ime_committed = self.ime_committed.saturating_add(1),
+                SurfaceEvent::Pointer { .. } => {
+                    self.pointer = self.pointer.saturating_add(1);
+                }
+                SurfaceEvent::Scroll { .. } => {
+                    self.scroll = self.scroll.saturating_add(1);
+                }
+                SurfaceEvent::Ime {
+                    event: ImeEvent::Cancelled,
+                    ..
+                }
+                | SurfaceEvent::Focus { .. }
+                | SurfaceEvent::Resize { .. }
+                | SurfaceEvent::Clipboard { .. }
+                | SurfaceEvent::Wake { .. }
+                | SurfaceEvent::CloseRequested { .. } => {
+                    self.unexpected = self.unexpected.saturating_add(1);
+                }
+            }
+        }
+
+        fn observe_response(&mut self, response: &SurfaceResponse) {
+            let Some(frame) = response.frame() else {
+                return;
+            };
+            assert!(self.frames < self.frame_revisions.len());
+            self.frame_revisions[self.frames] = frame.scene().revision().get();
+            self.frames += 1;
+        }
+    }
 
     /// Runs one real AppKit, runtime, and Studio clipboard and close journey.
     ///
@@ -1530,8 +1596,10 @@ pub mod native_validation {
             "alpine-studio-native-process-{}.txt",
             std::process::id()
         ));
-        fs::write(&path, "alpha beta")?;
-        let result = qualify_path(&path);
+        let source = native_source("alpha beta")?;
+        let expected_after_input = native_source("A漢字 beta")?;
+        fs::write(&path, source)?;
+        let result = qualify_path(&path, &expected_after_input);
         let cleanup = fs::remove_file(path);
         match (result, cleanup) {
             (Err(error), _) => Err(error),
@@ -1540,7 +1608,19 @@ pub mod native_validation {
         }
     }
 
-    fn qualify_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    fn native_source(first_line: &str) -> Result<String, fmt::Error> {
+        let mut source = String::new();
+        writeln!(&mut source, "{first_line}")?;
+        for line in 0..128 {
+            writeln!(&mut source, "line {line:03}")?;
+        }
+        Ok(source)
+    }
+
+    fn qualify_path(
+        path: &Path,
+        expected_after_input: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let mut delegate = native_file_app(path)?;
         delegate.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(5));
         let clear = alpine_core::LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(
@@ -1572,6 +1652,35 @@ pub mod native_validation {
 
         let state = Rc::new(RefCell::new(application));
         let initial_revision = state.borrow().snapshot().document_revision();
+        let input_evidence = Rc::new(RefCell::new(NativeInputEvidence::default()));
+        platform_validation::replay_native_input_path(
+            &surface,
+            observed_event_handler(&state, &input_evidence),
+        )?;
+        let input_revision = state.borrow().snapshot().document_revision();
+        assert_ne!(input_revision, initial_revision);
+        {
+            let evidence = input_evidence.borrow();
+            assert_eq!(evidence.events, 7);
+            assert_eq!(evidence.keyboard, 1);
+            assert_eq!(evidence.ime_started, 1);
+            assert_eq!(evidence.ime_updated, 1);
+            assert_eq!(evidence.ime_committed, 2);
+            assert_eq!(evidence.pointer, 1);
+            assert_eq!(evidence.scroll, 1);
+            assert_eq!(evidence.unexpected, 0);
+            assert_eq!(evidence.frames, NATIVE_INPUT_FRAMES);
+            assert_eq!(evidence.frame_revisions, [2, 3, 4, 5, 6, 7]);
+        }
+        assert!(state.borrow_mut().frame_if_dirty().is_none());
+        dispatch_save(&surface, &state, 1)?;
+        assert_eq!(fs::read_to_string(path)?, expected_after_input);
+        dispatch_select_all(&surface, &state, 2)?;
+        assert_eq!(
+            state.borrow().snapshot().document_revision(),
+            input_revision
+        );
+
         platform_validation::replay_native_clipboard_operation(
             &surface,
             ClipboardOperation::Copy,
@@ -1579,10 +1688,10 @@ pub mod native_validation {
         )?;
         assert_eq!(
             state.borrow().snapshot().document_revision(),
-            initial_revision
+            input_revision
         );
-        dispatch_save(&surface, &state, 1)?;
-        assert_eq!(fs::read_to_string(path)?, "alpha beta");
+        dispatch_save(&surface, &state, 3)?;
+        assert_eq!(fs::read_to_string(path)?, expected_after_input);
 
         platform_validation::inject_clipboard_error(&surface, ClipboardError::WriteRejected);
         platform_validation::replay_native_clipboard_operation(
@@ -1592,10 +1701,10 @@ pub mod native_validation {
         )?;
         assert_eq!(
             state.borrow().snapshot().document_revision(),
-            initial_revision
+            input_revision
         );
-        dispatch_save(&surface, &state, 2)?;
-        assert_eq!(fs::read_to_string(path)?, "alpha beta");
+        dispatch_save(&surface, &state, 4)?;
+        assert_eq!(fs::read_to_string(path)?, expected_after_input);
 
         platform_validation::replay_native_clipboard_operation(
             &surface,
@@ -1603,7 +1712,7 @@ pub mod native_validation {
             event_handler(&state),
         )?;
         let cut_revision = state.borrow().snapshot().document_revision();
-        assert_ne!(cut_revision, initial_revision);
+        assert_ne!(cut_revision, input_revision);
         let observer = surface.observer();
         assert!(!platform_validation::replay_close_with_handler(
             &surface,
@@ -1611,7 +1720,7 @@ pub mod native_validation {
         )?);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
         assert!(!state.borrow().snapshot().is_shutting_down());
-        assert_eq!(fs::read_to_string(path)?, "alpha beta");
+        assert_eq!(fs::read_to_string(path)?, expected_after_input);
 
         platform_validation::replay_native_clipboard_operation(
             &surface,
@@ -1619,8 +1728,8 @@ pub mod native_validation {
             event_handler(&state),
         )?;
         assert_ne!(state.borrow().snapshot().document_revision(), cut_revision);
-        dispatch_save(&surface, &state, 3)?;
-        assert_eq!(fs::read_to_string(path)?, "alpha beta");
+        dispatch_save(&surface, &state, 5)?;
+        assert_eq!(fs::read_to_string(path)?, expected_after_input);
         assert!(platform_validation::replay_close_with_handler(
             &surface,
             event_handler(&state),
@@ -1645,6 +1754,39 @@ pub mod native_validation {
                 |mut application| application.dispatch_with_response(&event),
             )
         }
+    }
+
+    fn observed_event_handler(
+        state: &Rc<RefCell<Application<StudioApp>>>,
+        evidence: &Rc<RefCell<NativeInputEvidence>>,
+    ) -> impl FnMut(SurfaceEvent) -> SurfaceResponse + 'static {
+        let state = Rc::clone(state);
+        let evidence = Rc::clone(evidence);
+        move |event| {
+            evidence.borrow_mut().observe(&event);
+            let response = state.try_borrow_mut().map_or_else(
+                |_| SurfaceResponse::default(),
+                |mut application| application.dispatch_with_response(&event),
+            );
+            evidence.borrow_mut().observe_response(&response);
+            response
+        }
+    }
+
+    fn dispatch_select_all(
+        surface: &NativeSurface,
+        state: &Rc<RefCell<Application<StudioApp>>>,
+        timestamp: u64,
+    ) -> Result<(), alpine_platform_macos::SurfaceError> {
+        let events = [SurfaceEvent::Keyboard {
+            timestamp: EventTimestamp::new(timestamp),
+            state: KeyState::Down,
+            physical_key: KEY_A,
+            logical_key: "a".into(),
+            modifiers: Modifiers::from_bits(Modifiers::COMMAND),
+            repeat: false,
+        }];
+        platform_validation::replay_callback_surface_events(surface, &events, event_handler(state))
     }
 
     fn dispatch_save(
