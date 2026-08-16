@@ -19,9 +19,9 @@ use objc2_metal::{
     MTLCommandBufferError, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
     MTLCreateSystemDefaultDevice, MTLDevice, MTLFunction, MTLGPUFamily, MTLLibrary, MTLLoadAction,
     MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder,
-    MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLRenderStages,
-    MTLResource, MTLResourceOptions, MTLResourceUsage, MTLSize, MTLStorageMode, MTLStoreAction,
-    MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
+    MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResource,
+    MTLResourceOptions, MTLResourceUsage, MTLSize, MTLStorageMode, MTLStoreAction, MTLTexture,
+    MTLTextureDescriptor, MTLTextureUsage,
 };
 
 #[cfg(all(feature = "platform-spi", any(test, alpine_native_validation)))]
@@ -1667,11 +1667,11 @@ fn encode_render_pass(
     if let Some(upload) = upload {
         if let Some(atlas) = atlas {
             let resource: &ProtocolObject<dyn MTLResource> = atlas.as_ref();
-            encoder.useResource_usage_stages(
-                resource,
-                MTLResourceUsage::Read,
-                MTLRenderStages::Fragment,
-            );
+            #[allow(
+                deprecated,
+                reason = "the macOS 15 Metal 3 path requires all-stage residency evidence"
+            )]
+            encoder.useResource_usage(resource, MTLResourceUsage::Read);
         }
         // SAFETY: The retained upload buffer contains exactly the validated
         // LoweredPaint slice, offset zero is aligned, shader index one is fixed,
