@@ -19,6 +19,10 @@ if ! cmp -s shaders/offscreen.metallib "$metallib_path"; then
 fi
 export ALPINE_METALLIB_PATH="$metallib_path"
 
+# Keep the pinned shader at the shipping target above, but let hosted runtime
+# validation match its OS so Shader Validation loads current diagnostics.
+export MACOSX_DEPLOYMENT_TARGET=${ALPINE_VALIDATION_DEPLOYMENT_TARGET:-${MACOSX_DEPLOYMENT_TARGET:-15.0}}
+
 export MTL_DEBUG_LAYER=1
 export MTL_DEBUG_LAYER_ERROR_MODE=assert
 export MTL_SHADER_VALIDATION=1

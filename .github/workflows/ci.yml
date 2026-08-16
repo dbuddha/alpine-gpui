@@ -319,6 +319,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       MACOSX_DEPLOYMENT_TARGET: "15.0"
+      ALPINE_VALIDATION_DEPLOYMENT_TARGET: "26.0"
       # Hosted macOS runners may have no display that Core Animation can
       # qualify. Validation and mutation controls inherit the same explicit
       # non-qualifying evidence mode. Fixed hardware leaves this unset.
