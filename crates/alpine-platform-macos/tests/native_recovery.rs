@@ -53,7 +53,11 @@ mod validation {
         assert_eq!(terminal.attempt(), 1);
         assert_eq!(terminal.requested_revision().get(), 1);
         assert_eq!(terminal.frame_revision().get(), 1);
-        assert_eq!(terminal.frame_epoch().get(), before.surface_epoch());
+        // AppKit may deliver a legitimate geometry or display notification
+        // after the pre-request snapshot but before callback encoding. The
+        // attempt must never move backward, and the injected replacement must
+        // still supersede whichever epoch the callback captured.
+        assert!(terminal.frame_epoch().get() >= before.surface_epoch());
         assert_eq!(terminal.outcome(), PresentationOutcome::Superseded);
         assert_eq!(terminal.submission_count(), 1);
         assert_eq!(terminal.present_call_count(), 1);
