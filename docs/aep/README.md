@@ -25,6 +25,7 @@ Accepted AEPs:
 - [AEP 0137: Bounded single-window Studio runtime](0137-bounded-studio-runtime.md)
 - [AEP 0139: Checked local text buffer and one-file editor](0139-checked-local-text-buffer.md)
 - [AEP 0141: Bounded text layout and monochrome glyph atlas](0141-bounded-text-layout-atlas.md)
+- [AEP 0153: Bounded clipboard and close responses](0153-bounded-clipboard-close-response.md)
 
 Proposed AEPs:
 
