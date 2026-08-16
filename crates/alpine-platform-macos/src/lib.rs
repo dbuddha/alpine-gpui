@@ -568,6 +568,24 @@ pub mod native_validation {
             .replay_surface_events(events, handler)
     }
 
+    /// Replays handle-free values through the non-returning AppKit callback seam.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured error if the callback handler cannot be installed.
+    pub fn replay_callback_surface_events<F>(
+        surface: &NativeSurface,
+        events: &[SurfaceEvent],
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+    {
+        surface
+            .implementation
+            .replay_callback_surface_events(events, handler)
+    }
+
     /// Injects every initialization-stage failure and verifies complete rollback.
     ///
     /// # Errors

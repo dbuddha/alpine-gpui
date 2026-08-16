@@ -79,6 +79,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         events
     );
 
+    let replayed = Arc::new(Mutex::new(Vec::new()));
+    let callback_replayed = Arc::clone(&replayed);
+    native_validation::replay_surface_events(&surface, &events, move |event| {
+        if let Ok(mut replayed) = callback_replayed.lock() {
+            replayed.push(event);
+        }
+        None
+    })?;
+    assert_eq!(
+        *replayed
+            .lock()
+            .map_err(|_| "event replay receiver poisoned")?,
+        events
+    );
+
+    let callback_received = Arc::new(Mutex::new(Vec::new()));
+    let appkit_callback_received = Arc::clone(&callback_received);
+    native_validation::replay_callback_surface_events(&surface, &events, move |event| {
+        if let Ok(mut received) = appkit_callback_received.lock() {
+            received.push(event);
+        }
+        None
+    })?;
+    assert_eq!(
+        *callback_received
+            .lock()
+            .map_err(|_| "AppKit callback receiver poisoned")?,
+        events
+    );
+
     let evidence = native_validation::close_with_owner_evidence(surface)?;
     assert_eq!(evidence.active(), [0; 9]);
     assert_eq!(evidence.release_order_violations(), 0);

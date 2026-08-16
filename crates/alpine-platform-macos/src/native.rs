@@ -1923,6 +1923,24 @@ impl NativeSurface {
         result
     }
 
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn replay_callback_surface_events<F>(
+        &self,
+        events: &[SurfaceEvent],
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+    {
+        self.delegate.install_event_handler(handler)?;
+        events
+            .iter()
+            .cloned()
+            .for_each(|event| self.delegate.dispatch_callback_event(event));
+        self.delegate.clear_event_handler();
+        Ok(())
+    }
+
     pub(crate) fn request_frame(
         &self,
         scene: Scene,
