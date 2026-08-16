@@ -835,10 +835,10 @@ impl<D: AppDelegate + 'static> Application<D> {
             let state = Rc::new(RefCell::new(application));
             let callback_state = Rc::clone(&state);
             let run_result = surface.run_with_event_handler(move |event| {
-                callback_state
-                    .try_borrow_mut()
-                    .ok()
-                    .and_then(|mut application| application.dispatch(&event))
+                callback_state.try_borrow_mut().map_or_else(
+                    |_| SurfaceResponse::default(),
+                    |mut application| application.dispatch_with_response(&event),
+                )
             });
             if let Ok(mut application) = state.try_borrow_mut() {
                 application.shutting_down = true;

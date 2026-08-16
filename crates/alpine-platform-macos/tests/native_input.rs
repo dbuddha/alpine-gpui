@@ -6,7 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     use alpine_platform_macos::{
         ImeEvent, KeyState, Modifiers, PointerAction, PointerButton, ScrollPhase,
-        SurfaceDescriptor, SurfaceEvent, native_validation,
+        SurfaceDescriptor, SurfaceEvent, SurfaceResponse, native_validation,
     };
 
     let descriptor = SurfaceDescriptor::new("Alpine native input", 96.0, 64.0, 1.0)?;
@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(mut received) = callback_received.lock() {
             received.push(event);
         }
-        None
+        SurfaceResponse::default()
     })?;
 
     let received = received

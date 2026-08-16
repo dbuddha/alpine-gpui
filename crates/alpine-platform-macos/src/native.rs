@@ -22,8 +22,9 @@ use objc2::{
 use objc2_app_kit::NSEventType;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent,
-    NSEventModifierFlags, NSEventPhase, NSTextInputClient, NSView, NSWindow, NSWindowDelegate,
-    NSWindowOcclusionState, NSWindowStyleMask,
+    NSEventModifierFlags, NSEventPhase, NSPasteboard, NSPasteboardType, NSPasteboardTypeString,
+    NSTextInputClient, NSView, NSWindow, NSWindowDelegate, NSWindowOcclusionState,
+    NSWindowStyleMask,
 };
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 #[cfg(alpine_native_validation)]
@@ -31,6 +32,7 @@ use objc2_core_graphics::{CGEvent, CGScrollEventUnit};
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotification, NSObject, NSObjectProtocol,
     NSPoint, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
+    NSUTF8StringEncoding,
 };
 #[cfg(alpine_native_validation)]
 use objc2_foundation::{NSDate, NSTimer};
@@ -52,15 +54,16 @@ use alpine_scene::Scene;
 use block2::RcBlock;
 
 use crate::{
-    EventTimestamp, FrameTerminalEvidence, ImeEvent, KeyState, Modifiers, PointerAction,
-    PointerButton, SURFACE_CLOSING, SURFACE_LIVE, ScrollPhase, SdrColorContract,
-    SurfaceConfiguration, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceFrame,
-    SurfaceLifecycle, SurfaceObserver, SurfaceSnapshot, SurfaceStage, begin_close_observer_state,
+    ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite,
+    CloseDisposition, EventTimestamp, FrameTerminalEvidence, ImeEvent, KeyState, Modifiers,
+    PointerAction, PointerButton, SURFACE_CLOSING, SURFACE_LIVE, ScrollPhase, SdrColorContract,
+    SurfaceConfiguration, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceLifecycle,
+    SurfaceObserver, SurfaceResponse, SurfaceSnapshot, SurfaceStage, begin_close_observer_state,
     finish_close_observer_state, new_observer_state, presentation_visible,
 };
 
 type Device = Retained<ProtocolObject<dyn MTLDevice>>;
-type SurfaceEventHandler = Box<dyn FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static>;
+type SurfaceEventHandler = Box<dyn FnMut(SurfaceEvent) -> SurfaceResponse + 'static>;
 
 #[cfg(alpine_native_validation)]
 const NATIVE_OWNER_KINDS: usize = 9;
@@ -1543,6 +1546,41 @@ fn keyboard_event(event: &NSEvent, state: KeyState) -> NativeInputEvent {
     }
 }
 
+fn clipboard_shortcut(event: &NativeInputEvent) -> Option<ClipboardOperation> {
+    let NativeInputEvent::Keyboard {
+        state: KeyState::Down,
+        logical_key,
+        modifiers,
+        repeat: false,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    if !modifiers.contains(Modifiers::COMMAND)
+        || modifiers.contains(Modifiers::CONTROL)
+        || modifiers.contains(Modifiers::OPTION)
+        || modifiers.contains(Modifiers::SHIFT)
+    {
+        return None;
+    }
+    if logical_key.eq_ignore_ascii_case("c") {
+        Some(ClipboardOperation::Copy)
+    } else if logical_key.eq_ignore_ascii_case("x") {
+        Some(ClipboardOperation::Cut)
+    } else if logical_key.eq_ignore_ascii_case("v") {
+        Some(ClipboardOperation::Paste)
+    } else {
+        None
+    }
+}
+
+fn plain_text_pasteboard_type() -> &'static NSPasteboardType {
+    // SAFETY: AppKit exports NSPasteboardTypeString as a non-null,
+    // process-lifetime NSString constant on every supported macOS version.
+    unsafe { NSPasteboardTypeString }
+}
+
 fn modifiers(flags: NSEventModifierFlags) -> Modifiers {
     let mut bits = 0;
     if flags.contains(NSEventModifierFlags::Shift) {
@@ -1704,6 +1742,50 @@ mod native_input_tests {
     }
 
     #[test]
+    fn clipboard_shortcuts_require_exact_nonrepeating_command_identity() {
+        let event = |logical_key: &str, modifiers: u8, repeat| NativeInputEvent::Keyboard {
+            state: KeyState::Down,
+            physical_key: 0,
+            logical_key: logical_key.into(),
+            modifiers: Modifiers::from_bits(modifiers),
+            repeat,
+        };
+        assert_eq!(
+            clipboard_shortcut(&event("c", Modifiers::COMMAND, false)),
+            Some(ClipboardOperation::Copy)
+        );
+        assert_eq!(
+            clipboard_shortcut(&event(
+                "X",
+                Modifiers::COMMAND | Modifiers::CAPS_LOCK,
+                false
+            )),
+            Some(ClipboardOperation::Cut)
+        );
+        assert_eq!(
+            clipboard_shortcut(&event("v", Modifiers::COMMAND, false)),
+            Some(ClipboardOperation::Paste)
+        );
+        assert_eq!(
+            clipboard_shortcut(&event("v", Modifiers::COMMAND | Modifiers::SHIFT, false)),
+            None
+        );
+        assert_eq!(
+            clipboard_shortcut(&event("v", Modifiers::COMMAND | Modifiers::CONTROL, false)),
+            None
+        );
+        assert_eq!(
+            clipboard_shortcut(&event("v", Modifiers::COMMAND | Modifiers::OPTION, false)),
+            None
+        );
+        assert_eq!(
+            clipboard_shortcut(&event("v", Modifiers::COMMAND, true)),
+            None
+        );
+        assert_eq!(clipboard_shortcut(&event("v", 0, false)), None);
+    }
+
+    #[test]
     fn input_dispatch_preserves_root_error_and_reports_independent_failure() {
         assert_eq!(resolve_input_dispatch(Ok(()), false), Ok(()));
         assert_eq!(
@@ -1738,6 +1820,10 @@ struct DisplayLinkDelegateIvars {
     display_link: Option<Retained<CAMetalDisplayLink>>,
     event_handler: RefCell<Option<SurfaceEventHandler>>,
     event_sequence: Cell<u64>,
+    #[cfg(alpine_native_validation)]
+    validation_pasteboard: Retained<NSPasteboard>,
+    #[cfg(alpine_native_validation)]
+    clipboard_fault: Cell<Option<ClipboardError>>,
     #[cfg(alpine_native_validation)]
     validation_probe: Option<InitializationProbe>,
 }
@@ -1826,6 +1912,24 @@ define_class!(
     // AppKit invokes these callbacks on the main thread and no notification
     // object or native reference escapes the callback.
     unsafe impl NSWindowDelegate for DisplayLinkDelegate {
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        #[unsafe(method(windowShouldClose:))]
+        fn windowShouldClose(&self, _sender: &NSWindow) -> bool {
+            match self.dispatch_surface_event(SurfaceEvent::CloseRequested {
+                timestamp: self.next_event_timestamp(),
+            }) {
+                Ok(CloseDisposition::Allow) => true,
+                Ok(CloseDisposition::Cancel | CloseDisposition::NotRequested) => false,
+                Err(error) => {
+                    self.record_dispatch_error(error);
+                    false
+                }
+            }
+        }
+
         #[unsafe(method(windowDidResize:))]
         fn window_did_resize(&self, _notification: &NSNotification) {
             let _ = self.synchronize_native_configuration_from_callback();
@@ -1874,9 +1978,6 @@ define_class!(
 
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, _notification: &NSNotification) {
-            self.dispatch_callback_event(SurfaceEvent::CloseRequested {
-                timestamp: self.next_event_timestamp(),
-            });
             self.begin_native_close();
         }
     }
@@ -1971,6 +2072,13 @@ impl DisplayLinkDelegate {
     }
 
     fn dispatch_native_input_event(&self, event: NativeInputEvent) {
+        if let Err(error) = self.try_dispatch_native_input_event(event) {
+            self.record_dispatch_error(error);
+        }
+    }
+
+    fn try_dispatch_native_input_event(&self, event: NativeInputEvent) -> Result<(), SurfaceError> {
+        let clipboard_operation = clipboard_shortcut(&event);
         let timestamp = self.next_event_timestamp();
         let event = match event {
             NativeInputEvent::Keyboard {
@@ -2015,12 +2123,23 @@ impl DisplayLinkDelegate {
             },
             NativeInputEvent::Ime(event) => SurfaceEvent::Ime { timestamp, event },
         };
-        self.dispatch_callback_event(event);
+        let _close = self.dispatch_surface_event(event)?;
+        if clipboard_operation == Some(ClipboardOperation::Paste) {
+            let event = ClipboardEvent::PasteCompleted(self.read_clipboard());
+            let _close = self.dispatch_surface_event_inner(
+                SurfaceEvent::Clipboard {
+                    timestamp: self.next_event_timestamp(),
+                    event,
+                },
+                false,
+            )?;
+        }
+        Ok(())
     }
 
     fn install_event_handler<F>(&self, handler: F) -> Result<(), SurfaceError>
     where
-        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         let mut installed = self
             .ivars()
@@ -2040,43 +2159,154 @@ impl DisplayLinkDelegate {
         }
     }
 
-    fn dispatch_surface_event(&self, event: SurfaceEvent) -> Result<(), SurfaceError> {
-        let frame = {
+    fn dispatch_surface_event(
+        &self,
+        event: SurfaceEvent,
+    ) -> Result<CloseDisposition, SurfaceError> {
+        self.dispatch_surface_event_inner(event, true)
+    }
+
+    fn dispatch_surface_event_inner(
+        &self,
+        event: SurfaceEvent,
+        clipboard_write_allowed: bool,
+    ) -> Result<CloseDisposition, SurfaceError> {
+        let close_requested = matches!(event, SurfaceEvent::CloseRequested { .. });
+        let response = {
             let mut installed = self
                 .ivars()
                 .event_handler
                 .try_borrow_mut()
                 .map_err(|_| SurfaceError::DriverUnavailable)?;
-            installed.as_mut().and_then(|handler| handler(event))
+            installed
+                .as_mut()
+                .map_or_else(SurfaceResponse::default, |handler| handler(event))
         };
-        let Some(frame) = frame else {
-            return Ok(());
-        };
-        let (scene, clear) = frame.into_parts();
-        let (_, directive) = self
-            .ivars()
-            .driver
-            .as_ref()
-            .ok_or(SurfaceError::DriverUnavailable)?
-            .try_borrow_mut()
-            .map_err(|_| SurfaceError::DriverUnavailable)?
-            .request_frame(scene, clear)?;
-        let display_link = self
-            .ivars()
-            .display_link
-            .as_ref()
-            .ok_or(SurfaceError::DriverUnavailable)?;
-        apply_display_link_directive(display_link, directive);
-        Ok(())
+        let (frame, clipboard_write, close) = response.into_parts();
+        if close_requested {
+            if close == CloseDisposition::NotRequested {
+                return Ok(close);
+            }
+        } else if close != CloseDisposition::NotRequested {
+            return Err(SurfaceError::DriverUnavailable);
+        }
+
+        if let Some(frame) = frame {
+            let (scene, clear) = frame.into_parts();
+            let (_, directive) = self
+                .ivars()
+                .driver
+                .as_ref()
+                .ok_or(SurfaceError::DriverUnavailable)?
+                .try_borrow_mut()
+                .map_err(|_| SurfaceError::DriverUnavailable)?
+                .request_frame(scene, clear)?;
+            let display_link = self
+                .ivars()
+                .display_link
+                .as_ref()
+                .ok_or(SurfaceError::DriverUnavailable)?;
+            apply_display_link_directive(display_link, directive);
+        }
+
+        if let Some(write) = clipboard_write {
+            if !clipboard_write_allowed {
+                return Err(SurfaceError::DriverUnavailable);
+            }
+            let operation = write.operation();
+            let result = self.write_clipboard(write);
+            let event = match operation {
+                ClipboardOperation::Copy => ClipboardEvent::CopyCompleted(result),
+                ClipboardOperation::Cut => ClipboardEvent::CutCompleted(result),
+                ClipboardOperation::Paste => return Err(SurfaceError::DriverUnavailable),
+            };
+            let _close = self.dispatch_surface_event_inner(
+                SurfaceEvent::Clipboard {
+                    timestamp: self.next_event_timestamp(),
+                    event,
+                },
+                false,
+            )?;
+        }
+        Ok(close)
     }
 
     fn dispatch_callback_event(&self, event: SurfaceEvent) {
-        if let Err(error) = self.dispatch_surface_event(event)
-            && let Some(driver) = &self.ivars().driver
+        if let Err(error) = self.dispatch_surface_event(event) {
+            self.record_dispatch_error(error);
+        }
+    }
+
+    fn record_dispatch_error(&self, error: SurfaceError) {
+        if let Some(driver) = &self.ivars().driver
             && let Ok(mut driver) = driver.try_borrow_mut()
         {
             driver.record_error(error);
         }
+    }
+
+    #[cfg_attr(
+        not(alpine_native_validation),
+        allow(
+            clippy::unused_self,
+            reason = "validation selects the delegate-owned isolated pasteboard"
+        )
+    )]
+    fn pasteboard(&self) -> Retained<NSPasteboard> {
+        #[cfg(alpine_native_validation)]
+        {
+            return self.ivars().validation_pasteboard.clone();
+        }
+        #[cfg(not(alpine_native_validation))]
+        {
+            NSPasteboard::generalPasteboard()
+        }
+    }
+
+    #[cfg_attr(
+        not(alpine_native_validation),
+        allow(
+            clippy::unused_self,
+            reason = "validation consumes the delegate-owned injected fault"
+        )
+    )]
+    fn take_clipboard_fault(&self) -> Option<ClipboardError> {
+        #[cfg(alpine_native_validation)]
+        {
+            return self.ivars().clipboard_fault.take();
+        }
+        #[cfg(not(alpine_native_validation))]
+        {
+            None
+        }
+    }
+
+    fn write_clipboard(&self, write: ClipboardWrite) -> Result<(), ClipboardError> {
+        if let Some(error) = self.take_clipboard_fault() {
+            return Err(error);
+        }
+        let pasteboard = self.pasteboard();
+        let (_, text) = write.into_parts();
+        let text = NSString::from_str(text.as_str());
+        let _change_count = pasteboard.clearContents();
+        if pasteboard.setString_forType(&text, plain_text_pasteboard_type()) {
+            Ok(())
+        } else {
+            Err(ClipboardError::WriteRejected)
+        }
+    }
+
+    fn read_clipboard(&self) -> Result<ClipboardText, ClipboardError> {
+        if let Some(error) = self.take_clipboard_fault() {
+            return Err(error);
+        }
+        let text = self
+            .pasteboard()
+            .stringForType(plain_text_pasteboard_type())
+            .ok_or(ClipboardError::Unavailable)?;
+        let bytes = text.lengthOfBytesUsingEncoding(NSUTF8StringEncoding);
+        validate_clipboard_text_bytes(bytes)?;
+        ClipboardText::new(text.to_string().into_boxed_str())
     }
 
     fn begin_native_close(&self) {
@@ -2111,6 +2341,17 @@ impl DisplayLinkDelegate {
             display_link.setDelegate(None);
         }
         stop_event_loop(&self.ivars().application);
+    }
+}
+
+fn validate_clipboard_text_bytes(bytes: usize) -> Result<(), ClipboardError> {
+    if bytes > crate::MAX_CLIPBOARD_TEXT_BYTES {
+        Err(ClipboardError::TooLarge {
+            bytes,
+            limit: crate::MAX_CLIPBOARD_TEXT_BYTES,
+        })
+    } else {
+        Ok(())
     }
 }
 
@@ -2441,6 +2682,10 @@ impl NativeSurface {
                 event_handler: RefCell::new(None),
                 event_sequence: Cell::new(0),
                 #[cfg(alpine_native_validation)]
+                validation_pasteboard: NSPasteboard::pasteboardWithUniqueName(),
+                #[cfg(alpine_native_validation)]
+                clipboard_fault: Cell::new(None),
+                #[cfg(alpine_native_validation)]
                 validation_probe: builder.validation_probe.clone(),
             },
         );
@@ -2531,7 +2776,7 @@ impl NativeSurface {
 
     pub(crate) fn run_with_event_handler<F>(&self, handler: F) -> Result<(), SurfaceError>
     where
-        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         self.activate_input_responder()?;
         self.delegate.install_event_handler(handler)?;
@@ -2545,7 +2790,7 @@ impl NativeSurface {
         let wake_result = self.delegate.dispatch_surface_event(SurfaceEvent::Wake {
             timestamp: self.delegate.next_event_timestamp(),
         });
-        let run_result = wake_result.and_then(|()| self.run());
+        let run_result = wake_result.and_then(|_| self.run());
         self.view.clear_input_handler();
         self.delegate.clear_event_handler();
         resolve_input_dispatch(run_result, self.view.take_input_dispatch_failure())
@@ -2558,13 +2803,13 @@ impl NativeSurface {
         handler: F,
     ) -> Result<(), SurfaceError>
     where
-        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         self.delegate.install_event_handler(handler)?;
         let result = events
             .iter()
             .cloned()
-            .try_for_each(|event| self.delegate.dispatch_surface_event(event));
+            .try_for_each(|event| self.delegate.dispatch_surface_event(event).map(|_| ()));
         self.delegate.clear_event_handler();
         result
     }
@@ -2572,7 +2817,7 @@ impl NativeSurface {
     #[cfg(alpine_native_validation)]
     pub(crate) fn replay_native_input_path<F>(&self, handler: F) -> Result<(), SurfaceError>
     where
-        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         self.window.setAcceptsMouseMovedEvents(false);
         self.activate_input_responder()?;
@@ -2686,7 +2931,7 @@ impl NativeSurface {
         handler: F,
     ) -> Result<(), SurfaceError>
     where
-        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         self.delegate.install_event_handler(handler)?;
         events
@@ -2695,6 +2940,72 @@ impl NativeSurface {
             .for_each(|event| self.delegate.dispatch_callback_event(event));
         self.delegate.clear_event_handler();
         Ok(())
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn replay_native_clipboard_operation<F>(
+        &self,
+        operation: ClipboardOperation,
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        self.delegate.install_event_handler(handler)?;
+        let logical_key: Box<str> = match operation {
+            ClipboardOperation::Copy => "c".into(),
+            ClipboardOperation::Cut => "x".into(),
+            ClipboardOperation::Paste => "v".into(),
+        };
+        let result = self
+            .delegate
+            .try_dispatch_native_input_event(NativeInputEvent::Keyboard {
+                state: KeyState::Down,
+                physical_key: 0,
+                logical_key,
+                modifiers: Modifiers::from_bits(Modifiers::COMMAND),
+                repeat: false,
+            });
+        self.delegate.clear_event_handler();
+        result
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn inject_clipboard_error(&self, error: ClipboardError) {
+        self.delegate.ivars().clipboard_fault.set(Some(error));
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn replay_close(
+        &self,
+        scenario: crate::native_validation::CloseReplayScenario,
+    ) -> Result<bool, SurfaceError> {
+        use crate::native_validation::CloseReplayScenario;
+
+        match scenario {
+            CloseReplayScenario::MissingHandler => self.window.performClose(None),
+            CloseReplayScenario::ReentrantHandler => {
+                let _borrow = self
+                    .delegate
+                    .ivars()
+                    .event_handler
+                    .try_borrow_mut()
+                    .map_err(|_| SurfaceError::DriverUnavailable)?;
+                self.window.performClose(None);
+            }
+            CloseReplayScenario::Cancel | CloseReplayScenario::Allow => {
+                let close = if scenario == CloseReplayScenario::Cancel {
+                    CloseDisposition::Cancel
+                } else {
+                    CloseDisposition::Allow
+                };
+                self.delegate
+                    .install_event_handler(move |_| SurfaceResponse::new(None, None, close))?;
+                self.window.performClose(None);
+                self.delegate.clear_event_handler();
+            }
+        }
+        Ok(self.window_close_started.load(Ordering::Acquire))
     }
 
     pub(crate) fn request_frame(
@@ -3332,6 +3643,21 @@ fn expected_owner_counts(owner_count: usize) -> [u64; NATIVE_OWNER_KINDS] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_text_byte_limit_accepts_the_limit_and_rejects_overflow() {
+        assert_eq!(
+            validate_clipboard_text_bytes(crate::MAX_CLIPBOARD_TEXT_BYTES),
+            Ok(())
+        );
+        assert_eq!(
+            validate_clipboard_text_bytes(crate::MAX_CLIPBOARD_TEXT_BYTES + 1),
+            Err(ClipboardError::TooLarge {
+                bytes: crate::MAX_CLIPBOARD_TEXT_BYTES + 1,
+                limit: crate::MAX_CLIPBOARD_TEXT_BYTES,
+            })
+        );
+    }
 
     #[test]
     fn worker_thread_is_rejected_before_native_acquisition() -> Result<(), SurfaceError> {

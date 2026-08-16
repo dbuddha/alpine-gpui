@@ -17,7 +17,9 @@ mod validation {
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_platform::PresentationOutcome;
-    use alpine_platform_macos::{SurfaceDescriptor, SurfaceLifecycle, native_validation};
+    use alpine_platform_macos::{
+        SurfaceDescriptor, SurfaceLifecycle, SurfaceResponse, native_validation,
+    };
     use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
 
     type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -103,7 +105,7 @@ mod validation {
         surface.show()?;
         let timeout = native_validation::arm_run_timeout(&surface, Duration::from_millis(25));
         assert_eq!(
-            surface.run_with_event_handler(|_| None),
+            surface.run_with_event_handler(|_| SurfaceResponse::default()),
             Err(alpine_platform_macos::SurfaceError::UnexpectedRunLoopExit {
                 lifecycle: SurfaceLifecycle::Live,
             })

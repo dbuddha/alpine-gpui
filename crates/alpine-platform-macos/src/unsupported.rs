@@ -1,6 +1,6 @@
 use crate::{
-    SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceFrame, SurfaceObserver, SurfaceSnapshot,
-    begin_close_observer_state, finish_close_observer_state, new_observer_state,
+    SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceObserver, SurfaceResponse,
+    SurfaceSnapshot, begin_close_observer_state, finish_close_observer_state, new_observer_state,
 };
 use alpine_core::LinearRgba;
 use alpine_platform::PresentationRevision;
@@ -35,7 +35,7 @@ impl NativeSurface {
     )]
     pub(crate) fn run_with_event_handler<F>(&self, _handler: F) -> Result<(), SurfaceError>
     where
-        F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         Err(SurfaceError::UnsupportedPlatform)
     }

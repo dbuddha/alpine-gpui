@@ -16,7 +16,7 @@ alpine-scene = { path = "../alpine-scene", version = "=0.0.0" }
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 block2 = { version = "=0.6.2", default-features = false }
 objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSAttributedString", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSResponder", "NSRunningApplication", "NSScreen", "NSTextInputClient", "NSView", "NSWindow", "objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSAttributedString", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSScreen", "NSTextInputClient", "NSView", "NSWindow", "objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core"] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["CGColorSpace", "CGEvent", "CGEventTypes"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSAttributedString", "NSDate", "NSGeometry", "NSNotification", "NSObject", "NSRange", "NSRunLoop", "NSString", "NSTimer"] }
 objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "block2", "objc2-core-foundation", "MTLDevice", "MTLDrawable", "MTLPixelFormat", "MTLTexture"] }

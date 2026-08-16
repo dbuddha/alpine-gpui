@@ -2895,3 +2895,107 @@ artifact = "crates/alpine-runtime/src/lib.rs#cancelled_close_returns_one_bounded
 assertion = "A cancelled close returns explicit evidence and stays live, while the next allowed close revokes the runtime."
 scope = "One portable application and two sequential close requests."
 exclusions = ["AppKit window delegate ordering", "native resource drain", "close prompts"]
+
+[[claims]]
+id = "AEP-0153-C04"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0153-bounded-clipboard-close-response.md"
+requirement_issue = 37
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["ClipboardResponseIsBounded", "ResponseChannelsAreIndependent"]
+platform_scope = ["macos-metal"]
+required_evidence = ["tla", "native"]
+
+[[claims]]
+id = "AEP-0153-C05"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0153-bounded-clipboard-close-response.md"
+requirement_issue = 37
+claim_type = "lifecycle"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["CancelledCloseStaysLive", "AllowedCloseRevokesAdmission", "RequestedCloseEventuallyResolves"]
+platform_scope = ["macos-metal"]
+required_evidence = ["tla", "native"]
+
+[[evidence]]
+id = "EV-0153-NATIVE04"
+claim = "AEP-0153-C04"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
+assertion = "Production native dispatch writes copy text, reads it through paste completion, preserves operation identity, and publishes an injected cut-write failure."
+scope = "Apple Silicon AppKit selectors, an isolated validation pasteboard, bounded Alpine values, and the production delegate response path."
+exclusions = ["Studio selection mutation", "general user pasteboard contents", "rich clipboard formats", "clipboard latency"]
+
+[[evidence]]
+id = "EV-0153-TLA04A"
+claim = "AEP-0153-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#ClipboardResponseIsBounded"
+assertion = "Every abstract clipboard response remains within its configured byte ceiling."
+scope = "Finite portable response state transported by the native delegate."
+bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
+assumptions = ["one modeled byte represents one retained UTF-8 byte"]
+exclusions = ["formal refinement to NSPasteboard", "native transient allocation", "clipboard latency"]
+companion = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
+
+[[evidence]]
+id = "EV-0153-TLA04B"
+claim = "AEP-0153-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#ResponseChannelsAreIndependent"
+assertion = "The abstract clipboard response remains independent from frame and close channels."
+scope = "One finite portable response before native transport."
+bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
+assumptions = ["native dispatch preserves the typed response channels"]
+exclusions = ["formal refinement to Objective-C callbacks", "NSPasteboard failure semantics"]
+companion = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
+
+[[evidence]]
+id = "EV-0153-NATIVE05"
+claim = "AEP-0153-C05"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
+assertion = "Missing, reentrant, and explicit cancel responses keep the native owner live, while a later synchronous allow reaches windowWillClose and starts deterministic drain."
+scope = "One real Apple Silicon NSWindow and its production NSWindowDelegate callbacks."
+exclusions = ["Studio dirty-document policy", "save prompts", "multi-window behavior"]
+
+[[evidence]]
+id = "EV-0153-TLA05"
+claim = "AEP-0153-C05"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#CancelledCloseStaysLive"
+assertion = "The abstract close state remains live after cancel, revokes admission after allow, and resolves every weakly fair request."
+scope = "Finite portable close disposition states that the native delegate transports synchronously."
+bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
+assumptions = ["AppKit invokes windowShouldClose synchronously before windowWillClose"]
+exclusions = ["formal refinement to Objective-C callbacks", "native resource drain", "elapsed time"]
+companion = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
+
+[[evidence]]
+id = "EV-0153-TLA05B"
+claim = "AEP-0153-C05"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#AllowedCloseRevokesAdmission"
+assertion = "An abstract allowed close revokes foreground admission."
+scope = "Finite portable close disposition state transported by windowShouldClose."
+bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
+assumptions = ["AppKit calls windowWillClose only after windowShouldClose returns true"]
+exclusions = ["formal refinement to Objective-C callbacks", "native resource drain"]
+companion = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
+
+[[evidence]]
+id = "EV-0153-TLA05C"
+claim = "AEP-0153-C05"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#RequestedCloseEventuallyResolves"
+assertion = "Every weakly fair abstract close request eventually resolves to cancel or allow."
+scope = "Finite portable close resolution before native delegate transport."
+bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
+assumptions = ["the foreground delegate resolves every admitted close synchronously"]
+exclusions = ["formal refinement to AppKit delivery", "elapsed time", "process termination"]
+companion = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
