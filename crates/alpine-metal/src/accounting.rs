@@ -157,7 +157,7 @@ impl BackendAccounting {
         )
     }
 
-    fn record_values(
+    pub(crate) fn record_values(
         &mut self,
         primitives: usize,
         omitted_primitives: usize,

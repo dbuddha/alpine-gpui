@@ -17,6 +17,7 @@ alpine-renderer = { path = "../alpine-renderer", version = "=0.0.0" }
 alpine-scene = { path = "../alpine-scene", version = "=0.0.0" }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+block2 = { version = "=0.6.2", default-features = false }
 dispatch2 = { version = "=0.3.0", default-features = false, features = ["std", "block2", "objc2"] }
 objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSObject", "NSString"] }

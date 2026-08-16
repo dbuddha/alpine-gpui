@@ -642,7 +642,7 @@ impl MetalBackend {
         complete_attempt(next_submission, frame, attempt)
     }
 
-    fn admit_frame(
+    pub(crate) fn admit_frame(
         &mut self,
         scene: &Scene,
         descriptor: OffscreenDescriptor,
