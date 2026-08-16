@@ -1,3 +1,8 @@
+#![cfg_attr(
+    not(any(test, all(target_os = "macos", target_arch = "aarch64"))),
+    expect(dead_code)
+)]
+
 //! Local-only Alpine Studio editor boundary.
 
 use std::{
