@@ -1611,7 +1611,10 @@ mod tests {
         assert_eq!(cancellation.generation().get(), 1);
         assert_eq!(cancellation.primitives(), 3);
         assert_eq!(cancellation.omitted_primitives(), 2);
-        assert_eq!(cancellation.uploaded_bytes_avoided(), 32);
+        assert_eq!(
+            cancellation.uploaded_bytes_avoided(),
+            std::mem::size_of::<crate::LoweredPaint>()
+        );
         assert_eq!(backend.accounting().cancelled_frames(), 1);
         assert_eq!(backend.accounting().draw_calls(), 0);
         assert_eq!(backend.accounting().uploaded_bytes(), 0);

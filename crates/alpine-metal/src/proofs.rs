@@ -80,7 +80,8 @@ fn accepted_frame_accounting_is_atomic_and_balanced() {
     let primitives: u8 = kani::any();
     let omitted: u8 = kani::any();
     let draw_calls: u8 = kani::any();
-    let uploaded_bytes: u16 = kani::any();
+    let instance_upload_bytes: u16 = kani::any();
+    let atlas_upload_bytes: u16 = kani::any();
     let allocated_bytes: u16 = kani::any();
     let readback_bytes: u16 = kani::any();
     kani::assume(omitted <= primitives);
@@ -97,7 +98,8 @@ fn accepted_frame_accounting_is_atomic_and_balanced() {
         usize::from(omitted),
         FrameOperationUsage {
             draw_calls: usize::from(draw_calls),
-            uploaded_bytes: usize::from(uploaded_bytes),
+            instance_upload_bytes: usize::from(instance_upload_bytes),
+            atlas_upload_bytes: usize::from(atlas_upload_bytes),
         },
         FrameResourceUsage {
             allocated_bytes: usize::from(allocated_bytes),

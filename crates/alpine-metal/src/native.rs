@@ -195,7 +195,30 @@ impl GlyphAtlasCache {
         image: Option<&alpine_scene::GlyphAtlasImage>,
     ) -> Result<AtlasPreparation, RenderError> {
         let Some(image) = image else {
-            return Ok(AtlasPreparation::default());
+            if let Some(texture) = &self.texture {
+                return Ok(AtlasPreparation {
+                    texture: Some(texture.clone()),
+                    retained_bytes: self.current_bytes,
+                    ..AtlasPreparation::default()
+                });
+            }
+            let next_allocations = self
+                .allocations
+                .checked_add(1)
+                .ok_or(RenderError::AccountingOverflow)?;
+            let texture = create_solid_binding_atlas(device)?;
+            let allocated_bytes = texture.allocatedSize();
+            self.image = None;
+            self.texture = Some(texture.clone());
+            self.current_bytes = allocated_bytes;
+            self.peak_bytes = self.peak_bytes.max(allocated_bytes);
+            self.allocations = next_allocations;
+            return Ok(AtlasPreparation {
+                texture: Some(texture),
+                allocated_bytes,
+                retained_bytes: allocated_bytes,
+                uploaded_bytes: 0,
+            });
         };
         let matches = self.image.as_ref().is_some_and(|cached| {
             cached.revision() == image.revision()
@@ -1332,12 +1355,16 @@ impl DrawableResources {
             });
         }
 
-        let atlas = atlas_cache
-            .prepare(device, frame.glyph_atlas())
-            .map_err(|error| ResourceBuildFailure {
-                error,
-                usage: FrameResourceUsage::default(),
-            })?;
+        let atlas = if frame.paints().is_empty() {
+            AtlasPreparation::default()
+        } else {
+            atlas_cache
+                .prepare(device, frame.glyph_atlas())
+                .map_err(|error| ResourceBuildFailure {
+                    error,
+                    usage: FrameResourceUsage::default(),
+                })?
+        };
         let retained_texture_bytes = texture
             .allocatedSize()
             .checked_add(atlas.retained_bytes)
@@ -1414,17 +1441,21 @@ impl FrameResources {
                 usage: FrameResourceUsage::default(),
             })?;
         let texture_bytes = texture.allocatedSize();
-        let atlas = atlas_cache
-            .prepare(device, frame.glyph_atlas())
-            .map_err(|error| ResourceBuildFailure {
-                error,
-                usage: FrameResourceUsage {
-                    allocated_bytes: texture_bytes,
-                    peak_retained_bytes: texture_bytes,
-                    current_retained_bytes: 0,
-                    readback_bytes: 0,
-                },
-            })?;
+        let atlas = if frame.paints().is_empty() {
+            AtlasPreparation::default()
+        } else {
+            atlas_cache
+                .prepare(device, frame.glyph_atlas())
+                .map_err(|error| ResourceBuildFailure {
+                    error,
+                    usage: FrameResourceUsage {
+                        allocated_bytes: texture_bytes,
+                        peak_retained_bytes: texture_bytes,
+                        current_retained_bytes: 0,
+                        readback_bytes: 0,
+                    },
+                })?
+        };
         let atlas_retained_bytes = atlas.retained_bytes;
         let atlas_allocated_bytes = atlas.allocated_bytes;
         let allocated_before_readback = texture_bytes
@@ -1671,6 +1702,27 @@ fn create_glyph_atlas(
         );
     }
     Ok(texture)
+}
+
+fn create_solid_binding_atlas(device: &Device) -> Result<Texture, RenderError> {
+    // SAFETY: A nonempty solid draw needs one valid shader-readable binding,
+    // but the negative UV sentinel guarantees the fragment does not sample it.
+    let descriptor = unsafe {
+        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            MTLPixelFormat::R8Unorm,
+            1,
+            1,
+            false,
+        )
+    };
+    descriptor.setStorageMode(MTLStorageMode::Private);
+    descriptor.setUsage(MTLTextureUsage::ShaderRead);
+    device
+        .newTextureWithDescriptor(&descriptor)
+        .ok_or(RenderError::ResourceUnavailable {
+            stage: RenderStage::RenderTexture,
+            requested_bytes: Some(1),
+        })
 }
 
 fn encode_readback(
@@ -2372,6 +2424,9 @@ pub(crate) mod tests {
         assert_eq!(first.occupied_slots, 0);
         assert_eq!(first.upload_allocations, 1);
         assert!(first.current_upload_bytes >= frame.upload_bytes());
+        assert_eq!(first.atlas_allocations, 1);
+        assert_eq!(first.atlas_uploads, 0);
+        assert!(first.current_atlas_bytes >= 1);
 
         let reused =
             backend
@@ -2380,12 +2435,15 @@ pub(crate) mod tests {
         assert_eq!(reused.result, Ok(()));
         assert_eq!(reused.resources.allocated_bytes, 0);
         assert_eq!(backend.native.presentation_snapshot().upload_allocations, 1);
+        assert_eq!(backend.native.presentation_snapshot().atlas_allocations, 1);
         assert_eq!(drawable.present_calls(), 2);
 
         backend.native.release_presentation_uploads_on_pressure();
         let released = backend.native.presentation_snapshot();
         assert_eq!(released.current_upload_bytes, 0);
         assert_eq!(released.upload_trims, 1);
+        assert_eq!(released.current_atlas_bytes, 0);
+        assert_eq!(released.atlas_pressure_releases, 1);
         Ok(())
     }
 
