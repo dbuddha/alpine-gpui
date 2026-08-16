@@ -110,6 +110,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         events
     );
 
+    let unresolved_close_events = Arc::new(Mutex::new(Vec::new()));
+    let unresolved_close_received = Arc::clone(&unresolved_close_events);
+    native_validation::replay_surface_events(
+        &surface,
+        &[SurfaceEvent::CloseRequested {
+            timestamp: EventTimestamp::new(10),
+        }],
+        move |event| {
+            if let Ok(mut received) = unresolved_close_received.lock() {
+                received.push(event.clone());
+            }
+            if matches!(event, SurfaceEvent::CloseRequested { .. }) {
+                ClipboardText::new("must-not-write")
+                    .and_then(|text| ClipboardWrite::new(ClipboardOperation::Copy, text))
+                    .map_or_else(
+                        |_| SurfaceResponse::default(),
+                        |write| {
+                            SurfaceResponse::new(None, Some(write), CloseDisposition::NotRequested)
+                        },
+                    )
+            } else {
+                SurfaceResponse::default()
+            }
+        },
+    )?;
+    assert_eq!(
+        *unresolved_close_events
+            .lock()
+            .map_err(|_| "unresolved close receiver poisoned")?,
+        vec![SurfaceEvent::CloseRequested {
+            timestamp: EventTimestamp::new(10),
+        }]
+    );
+
+    assert_eq!(surface.take_error()?, None);
+    native_validation::replay_callback_surface_events(
+        &surface,
+        &[SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(11),
+        }],
+        |_| SurfaceResponse::new(None, None, CloseDisposition::Allow),
+    )?;
+    assert_eq!(
+        surface.take_error()?,
+        Some(alpine_platform_macos::SurfaceError::DriverUnavailable)
+    );
+    assert_eq!(surface.take_error()?, None);
+
     let copy_events = Arc::new(Mutex::new(Vec::new()));
     let copy_received = Arc::clone(&copy_events);
     native_validation::replay_native_clipboard_operation(

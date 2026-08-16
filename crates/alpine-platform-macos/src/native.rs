@@ -1771,6 +1771,14 @@ mod native_input_tests {
             None
         );
         assert_eq!(
+            clipboard_shortcut(&event("v", Modifiers::COMMAND | Modifiers::CONTROL, false)),
+            None
+        );
+        assert_eq!(
+            clipboard_shortcut(&event("v", Modifiers::COMMAND | Modifiers::OPTION, false)),
+            None
+        );
+        assert_eq!(
             clipboard_shortcut(&event("v", Modifiers::COMMAND, true)),
             None
         );
@@ -2297,12 +2305,7 @@ impl DisplayLinkDelegate {
             .stringForType(plain_text_pasteboard_type())
             .ok_or(ClipboardError::Unavailable)?;
         let bytes = text.lengthOfBytesUsingEncoding(NSUTF8StringEncoding);
-        if bytes > crate::MAX_CLIPBOARD_TEXT_BYTES {
-            return Err(ClipboardError::TooLarge {
-                bytes,
-                limit: crate::MAX_CLIPBOARD_TEXT_BYTES,
-            });
-        }
+        validate_clipboard_text_bytes(bytes)?;
         ClipboardText::new(text.to_string().into_boxed_str())
     }
 
@@ -2338,6 +2341,17 @@ impl DisplayLinkDelegate {
             display_link.setDelegate(None);
         }
         stop_event_loop(&self.ivars().application);
+    }
+}
+
+fn validate_clipboard_text_bytes(bytes: usize) -> Result<(), ClipboardError> {
+    if bytes > crate::MAX_CLIPBOARD_TEXT_BYTES {
+        Err(ClipboardError::TooLarge {
+            bytes,
+            limit: crate::MAX_CLIPBOARD_TEXT_BYTES,
+        })
+    } else {
+        Ok(())
     }
 }
 
@@ -3629,6 +3643,21 @@ fn expected_owner_counts(owner_count: usize) -> [u64; NATIVE_OWNER_KINDS] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_text_byte_limit_accepts_the_limit_and_rejects_overflow() {
+        assert_eq!(
+            validate_clipboard_text_bytes(crate::MAX_CLIPBOARD_TEXT_BYTES),
+            Ok(())
+        );
+        assert_eq!(
+            validate_clipboard_text_bytes(crate::MAX_CLIPBOARD_TEXT_BYTES + 1),
+            Err(ClipboardError::TooLarge {
+                bytes: crate::MAX_CLIPBOARD_TEXT_BYTES + 1,
+                limit: crate::MAX_CLIPBOARD_TEXT_BYTES,
+            })
+        );
+    }
 
     #[test]
     fn worker_thread_is_rejected_before_native_acquisition() -> Result<(), SurfaceError> {
