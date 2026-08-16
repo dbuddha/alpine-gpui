@@ -20,10 +20,12 @@ Accepted AEPs:
 - [AEP 0016: Portable value contracts](0016-portable-value-contracts.md)
 - [AEP 0025: Direct Metal offscreen renderer](0025-direct-metal-offscreen.md)
 - [AEP 0028: Zed golden qualification](0028-zed-golden-qualification.md)
+- [AEP 0064: Native macOS presentation](0064-native-macos-presentation.md)
+- [AEP 0120: Bounded asynchronous Metal presentation](0120-bounded-asynchronous-presentation.md)
 
 Proposed AEPs:
 
-- [AEP 0064: Native macOS presentation](0064-native-macos-presentation.md)
+- None.
 
 Required sections are motivation, journeys, goals, non-goals, atomic claims,
 model, Rust ownership, correctness, accessibility, performance, memory, failure,

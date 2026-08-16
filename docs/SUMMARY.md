@@ -29,3 +29,4 @@
   - [AEP 0025: Direct Metal offscreen renderer](aep/0025-direct-metal-offscreen.md)
   - [AEP 0028: Zed golden qualification](aep/0028-zed-golden-qualification.md)
   - [AEP 0064: Native macOS presentation](aep/0064-native-macos-presentation.md)
+  - [AEP 0120: Bounded asynchronous Metal presentation](aep/0120-bounded-asynchronous-presentation.md)

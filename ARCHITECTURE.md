@@ -100,6 +100,14 @@ phase-to-resource ownership, command and direct-presentation counts, terminal
 classification, and shutdown drain state. Disabled, stale, exhausted, or
 token-mismatched actions restore the exact prior state and return structured
 errors.
+It also owns an independent allocation-free `FrameSlotRing` for the accepted
+asynchronous presentation design. Exactly three slots transition through free,
+encoding, and submitted ownership. Opaque leases bind slot, monotonic sequence,
+owner generation, frame token, revision, and surface epoch. Saturation is an
+observable bounded admission result; terminal completion always releases the
+exact lease but classifies publication as current only when generation,
+revision, and epoch still match. This portable model is implemented and
+qualified, but it is not yet connected to native Metal submission.
 
 `alpine-platform-macos` now owns the first native object graph: the shared
 `NSApplication`, one retained `NSWindow`, one custom `NSView`, one opaque
@@ -144,9 +152,9 @@ pauses and invalidates pacing, clears both weak delegate registrations, and
 closes the retained window. Callback admission and rejection are counted
 independently. A second lifecycle check after synchronous command completion
 prevents a reentrant close from publishing success through a closing owner
-generation. Native handles stay private. Asynchronous GPU completion,
-physical multi-display qualification, onscreen pixel capture, and the shipping
-application event loop remain unimplemented.
+generation. Native handles stay private. Native asynchronous GPU completion,
+physical multi-display qualification, and onscreen pixel capture remain
+unimplemented.
 
 `alpine-metal` validates a
 non-empty BGRA8 offscreen descriptor, proves its logical viewport and rounded
