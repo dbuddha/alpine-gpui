@@ -1,5 +1,8 @@
 //! Bounded local-folder ownership for Alpine Studio.
 
+#[cfg(test)]
+use std::cell::RefCell;
+
 use std::{
     error::Error,
     fmt, fs, io,
@@ -7,6 +10,14 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+
+#[cfg(test)]
+type RevalidationHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static REVALIDATION_HOOK: RefCell<Option<RevalidationHook>> = RefCell::new(None);
+}
 
 const DEFAULT_MAX_SCANNED_ENTRIES: usize = 4_096;
 const DEFAULT_MAX_RETAINED_ENTRIES: usize = 1_024;
@@ -255,20 +266,22 @@ impl Workspace {
         let mut entries = Vec::new();
         let mut retained_name_bytes = 0_usize;
         for candidate in candidates {
-            let Some(next_bytes) = retained_name_bytes.checked_add(candidate.name.len()) else {
+            if candidate.name.len()
+                > limits
+                    .aggregate_name_budget
+                    .saturating_sub(retained_name_bytes)
+            {
                 omitted_entries = omitted_entries.saturating_add(1);
                 continue;
-            };
-            if entries.len() >= limits.retained_capacity
-                || next_bytes > limits.aggregate_name_budget
-            {
+            }
+            if entries.len() >= limits.retained_capacity {
                 omitted_entries = omitted_entries.saturating_add(1);
                 continue;
             }
             entries
                 .try_reserve(1)
                 .map_err(|_| WorkspaceError::AllocationFailed)?;
-            retained_name_bytes = next_bytes;
+            retained_name_bytes += candidate.name.len();
             entries.push(candidate);
         }
         entries.shrink_to_fit();
@@ -330,6 +343,8 @@ impl Workspace {
         if !metadata.file_type().is_file() {
             return Err(WorkspaceError::NotRegularFile(candidate));
         }
+        #[cfg(test)]
+        run_revalidation_hook(&candidate);
         let canonical = fs::canonicalize(&candidate)
             .map_err(|source| WorkspaceError::io("canonicalize target", &candidate, source))?;
         if canonical.parent() != Some(self.root.as_path()) {
@@ -344,4 +359,20 @@ impl Workspace {
             .iter()
             .position(|entry| entry.name.as_ref() == name)
     }
+}
+
+#[cfg(test)]
+pub(crate) fn set_revalidation_hook(hook: impl FnOnce(&Path) + 'static) {
+    REVALIDATION_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_revalidation_hook(path: &Path) {
+    REVALIDATION_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook(path);
+        }
+    });
 }

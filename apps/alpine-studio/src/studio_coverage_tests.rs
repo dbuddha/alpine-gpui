@@ -834,6 +834,25 @@ fn bounded_workspace_is_sorted_capped_and_projects_only_visible_rows()
         Err(WorkspaceError::ScanLimitExceeded { limit: 1, .. })
     ));
 
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::{ffi::OsStrExt, fs::symlink};
+
+        let omitted_root = TestWorkspace::new()?;
+        fs::write(
+            omitted_root
+                .path()
+                .join(std::ffi::OsStr::from_bytes(b"invalid-\xff")),
+            "invalid name",
+        )?;
+        let outside = TestFile::new("outside")?;
+        symlink(outside.path(), omitted_root.path().join("link"))?;
+        let omitted = Workspace::open(omitted_root.path(), WorkspaceLimits::new(2, 2, 64, 64))?;
+        assert_eq!(omitted.snapshot().scanned_entries, 2);
+        assert_eq!(omitted.snapshot().omitted_entries, 2);
+        assert_eq!(omitted.len(), 0);
+    }
+
     let rendered_root = TestWorkspace::new()?;
     for index in 0..100 {
         rendered_root.write(&format!("file-{index:03}.rs"), "x")?;
@@ -866,6 +885,11 @@ fn workspace_errors_and_statuses_preserve_exact_sources_and_messages()
         .ok_or("missing workspace unexpectedly opened")?;
     assert!(std::error::Error::source(&io_error).is_some());
     assert!(io_error.to_string().contains("canonicalize"));
+    let file = TestFile::new("not a directory")?;
+    assert!(matches!(
+        Workspace::open(file.path(), WorkspaceLimits::default()),
+        Err(WorkspaceError::NotDirectory(_))
+    ));
 
     let variants = [
         WorkspaceError::NotDirectory(PathBuf::from("file")),
@@ -1065,6 +1089,14 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
     );
     assert_eq!(edge, EventEffect::default());
     assert_eq!(pointer_app.active_workspace_entry, None);
+    let unrepresentable_row = pointer_app.handle_pointer(
+        PointerAction::Down,
+        Point::new(1.0, CONTENT_INSET + 20_000_000.0 * TREE_ROW_HEIGHT)
+            .ok_or("unrepresentable row")?,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert_eq!(unrepresentable_row, EventEffect::default());
     pointer_app.workspace_scroll_y = TREE_ROW_HEIGHT;
     let row_one = pointer_app.handle_pointer(
         PointerAction::Down,
@@ -1091,10 +1123,23 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
         exact_scene.quads().last().ok_or("missing caret")?.bounds(),
         expected_caret
     );
+
+    let mut exhausted = test_app()?;
+    exhausted.runtime_document_revision = u64::MAX;
+    let failures = exhausted.input_failures;
+    exhausted.advance_runtime_document_identity(false);
+    assert_eq!(exhausted.runtime_document_revision, u64::MAX);
+    assert_eq!(exhausted.input_failures, failures + 1);
+    exhausted.advance_runtime_document_identity(true);
+    assert_eq!(exhausted.input_failures, failures + 1);
     Ok(())
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the adversarial workspace selection journey keeps all atomicity checks together"
+)]
 fn workspace_click_revalidates_target_and_preserves_current_document_on_failure()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = TestWorkspace::new()?;
@@ -1179,6 +1224,31 @@ fn workspace_click_revalidates_target_and_preserves_current_document_on_failure(
         assert_eq!(app.buffer().snapshot().text(), "alpha");
         assert_eq!(app.runtime_document_revision, accepted_revision);
         assert_eq!(app.workspace_failures, 4);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let race_root = TestWorkspace::new()?;
+        race_root.write("race.rs", "inside")?;
+        let race_workspace = Workspace::open(race_root.path(), WorkspaceLimits::default())?;
+        let race_index = race_workspace
+            .index_named("race.rs")
+            .ok_or("missing race")?;
+        let outside = TestFile::new("outside")?;
+        let outside_path = outside.path().to_path_buf();
+        super::workspace::set_revalidation_hook(move |candidate| {
+            assert!(fs::remove_file(candidate).is_ok(), "remove raced target");
+            assert!(
+                symlink(&outside_path, candidate).is_ok(),
+                "replace raced target"
+            );
+        });
+        assert!(matches!(
+            race_workspace.path_for_file(race_index),
+            Err(WorkspaceError::EscapesRoot(_))
+        ));
     }
 
     assert!(

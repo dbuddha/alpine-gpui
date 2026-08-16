@@ -554,11 +554,8 @@ impl StudioApp {
         workspace: Workspace,
     ) -> Result<Self, SurfaceError> {
         let omitted_entries = workspace.snapshot().omitted_entries;
-        let mut app = Self::from_parts(
-            text_system,
-            StudioDocument::scratch(INITIAL_TEXT),
-            Some(workspace),
-        )?;
+        let document = StudioDocument::scratch(INITIAL_TEXT);
+        let mut app = Self::from_parts(text_system, document, Some(workspace))?;
         if omitted_entries > 0 {
             app.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
                 "Workspace tree truncated: {omitted_entries} entries omitted."
@@ -736,20 +733,15 @@ impl StudioApp {
                     let row_origin = Point::new(0.0, top).ok_or(StudioRenderError::Domain)?;
                     let row_size = Size::new(sidebar_width.max(1.0), TREE_ROW_HEIGHT)
                         .ok_or(StudioRenderError::Domain)?;
-                    builder.push_quad(
-                        Quad::new(Rect::new(row_origin, row_size), active_row_color)
-                            .clipped(sidebar_clip),
-                    )?;
+                    let row = Quad::new(Rect::new(row_origin, row_size), active_row_color)
+                        .clipped(sidebar_clip);
+                    builder.push_quad(row)?;
                 }
                 let layout = self.text_system.shape(&label, font)?;
                 let baseline = top + layout.ascent();
-                pending_glyphs.extend(self.collect_glyphs(
-                    &layout,
-                    font,
-                    CONTENT_INSET,
-                    baseline,
-                    sidebar_clip,
-                )?);
+                let glyphs =
+                    self.collect_glyphs(&layout, font, CONTENT_INSET, baseline, sidebar_clip)?;
+                pending_glyphs.extend(glyphs);
             }
         }
         let selected = self.selection.range();
@@ -777,13 +769,8 @@ impl StudioApp {
                 );
                 selection_result?;
             }
-            pending_glyphs.extend(self.collect_glyphs(
-                &layout,
-                font,
-                editor_origin_x,
-                baseline,
-                clip,
-            )?);
+            let glyphs = self.collect_glyphs(&layout, font, editor_origin_x, baseline, clip)?;
+            pending_glyphs.extend(glyphs);
             rendered_lines.push(RenderedLine {
                 line,
                 top,
@@ -1661,6 +1648,18 @@ impl StudioApp {
     fn clamp_scroll(&mut self) {
         self.scroll_y = self.scroll_y.clamp(0.0, self.maximum_scroll());
     }
+
+    fn advance_runtime_document_identity(&mut self, identity_already_advanced: bool) {
+        if identity_already_advanced {
+            return;
+        }
+        let current = self.runtime_document_revision;
+        let next = current.saturating_add(1);
+        self.runtime_document_revision = next;
+        self.input_failures = self
+            .input_failures
+            .saturating_add(u64::from(next == current));
+    }
 }
 
 impl AppDelegate for StudioApp {
@@ -1682,13 +1681,7 @@ impl AppDelegate for StudioApp {
             self.resolve_close_admission(true, admitted);
         }
         if effect.document_changed {
-            if !effect.document_identity_advanced {
-                if let Some(next) = self.runtime_document_revision.checked_add(1) {
-                    self.runtime_document_revision = next;
-                } else {
-                    self.input_failures = self.input_failures.saturating_add(1);
-                }
-            }
+            self.advance_runtime_document_identity(effect.document_identity_advanced);
             let revision = DocumentRevision::new(self.runtime_document_revision);
             let rejected = !context.advance_document(revision);
             self.input_failures = self.input_failures.saturating_add(u64::from(rejected));
