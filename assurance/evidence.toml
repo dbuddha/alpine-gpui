@@ -2769,3 +2769,129 @@ risk = "critical"
 kani_applicability = "not_applicable"
 platform_scope = ["macos-metal"]
 required_evidence = ["native"]
+
+[[claims]]
+id = "AEP-0153-C01"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0153-bounded-clipboard-close-response.md"
+requirement_issue = 37
+claim_type = "memory"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = ["ClipboardResponseIsBounded"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[claims]]
+id = "AEP-0153-C02"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0153-bounded-clipboard-close-response.md"
+requirement_issue = 37
+claim_type = "safety"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = ["ResponseChannelsAreIndependent"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[claims]]
+id = "AEP-0153-C03"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0153-bounded-clipboard-close-response.md"
+requirement_issue = 37
+claim_type = "lifecycle"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["CancelledCloseStaysLive", "AllowedCloseRevokesAdmission", "RequestedCloseEventuallyResolves"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[evidence]]
+id = "EV-0153-TLA01"
+claim = "AEP-0153-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#ClipboardResponseIsBounded"
+assertion = "Every modeled clipboard response slot remains at or below the configured byte ceiling."
+scope = "One finite event response with zero or one plain-text clipboard write."
+bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
+assumptions = ["one modeled byte represents one retained UTF-8 byte"]
+exclusions = ["allocator overhead", "native transient pasteboard conversion", "process footprint"]
+companion = "crates/alpine-platform-macos/src/lib.rs#clipboard_and_response_values_preserve_public_identity"
+
+[[evidence]]
+id = "EV-0153-UNIT01"
+claim = "AEP-0153-C01"
+kind = "unit"
+artifact = "crates/alpine-platform-macos/src/lib.rs#clipboard_and_response_values_preserve_public_identity"
+assertion = "The public clipboard constructor rejects text above 64 MiB and one response exposes at most one validated write."
+scope = "Owned UTF-8 clipboard values and one safe response value."
+exclusions = ["AppKit conversion", "clipboard latency", "rich clipboard formats"]
+
+[[evidence]]
+id = "EV-0153-UNIT02"
+claim = "AEP-0153-C02"
+kind = "unit"
+artifact = "crates/alpine-runtime/src/lib.rs#foreground_context_only_accepts_newer_revisions"
+assertion = "One event context accepts the first clipboard write, rejects a duplicate, and keeps response channels independent."
+scope = "One portable foreground event context."
+exclusions = ["native pasteboard write", "reentrant AppKit callbacks"]
+
+[[evidence]]
+id = "EV-0153-TLA02"
+claim = "AEP-0153-C02"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#ResponseChannelsAreIndependent"
+assertion = "Clipboard occupancy and close disposition remain independently typed finite response channels."
+scope = "One finite portable response with a bounded clipboard slot and close state."
+bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
+assumptions = ["the frame slot is independently covered by the Rust value test"]
+exclusions = ["native callback transport", "Rust layout", "allocator behavior"]
+companion = "crates/alpine-platform-macos/src/lib.rs#clipboard_and_response_values_preserve_public_identity"
+
+[[evidence]]
+id = "EV-0153-TLA03A"
+claim = "AEP-0153-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#CancelledCloseStaysLive"
+assertion = "A cancelled close leaves the modeled runtime live."
+scope = "Finite requested, cancelled, and allowed close transitions."
+bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
+assumptions = ["the foreground delegate resolves each admitted close synchronously"]
+exclusions = ["AppKit delegate delivery", "process termination", "Rust formal refinement"]
+companion = "crates/alpine-runtime/src/lib.rs#cancelled_close_returns_one_bounded_response_and_stays_live"
+
+[[evidence]]
+id = "EV-0153-TLA03B"
+claim = "AEP-0153-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#AllowedCloseRevokesAdmission"
+assertion = "An allowed close makes the modeled runtime non-live."
+scope = "Finite requested, cancelled, and allowed close transitions."
+bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
+assumptions = ["allowed close is the portable irreversible runtime boundary"]
+exclusions = ["native presentation drain", "AppKit window destruction", "Rust formal refinement"]
+companion = "crates/alpine-runtime/src/lib.rs#resize_builds_latest_viewport_and_close_revokes_frames"
+
+[[evidence]]
+id = "EV-0153-TLA03C"
+claim = "AEP-0153-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#RequestedCloseEventuallyResolves"
+assertion = "Under weakly fair synchronous disposition, every modeled requested close eventually becomes cancelled or allowed."
+scope = "Finite requested, cancelled, and allowed close transitions."
+bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
+assumptions = ["close disposition remains weakly fair once requested"]
+exclusions = ["AppKit event delivery", "elapsed time", "Rust formal refinement"]
+companion = "crates/alpine-runtime/src/lib.rs#cancelled_close_returns_one_bounded_response_and_stays_live"
+
+[[evidence]]
+id = "EV-0153-UNIT03"
+claim = "AEP-0153-C03"
+kind = "unit"
+artifact = "crates/alpine-runtime/src/lib.rs#cancelled_close_returns_one_bounded_response_and_stays_live"
+assertion = "A cancelled close returns explicit evidence and stays live, while the next allowed close revokes the runtime."
+scope = "One portable application and two sequential close requests."
+exclusions = ["AppKit window delegate ordering", "native resource drain", "close prompts"]

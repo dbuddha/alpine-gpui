@@ -11,7 +11,10 @@ use std::{
 };
 
 use alpine_core::{LinearRgba, Size};
-use alpine_platform_macos::{SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceFrame};
+use alpine_platform_macos::{
+    ClipboardWrite, CloseDisposition, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceFrame,
+    SurfaceResponse,
+};
 use alpine_scene::{Scene, SceneRevision};
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -492,6 +495,8 @@ pub struct AppContext<'a, T> {
     document_revision: &'a mut DocumentRevision,
     dirty: &'a mut bool,
     workers: &'a mut WorkerPool<T>,
+    clipboard_write: Option<&'a mut Option<ClipboardWrite>>,
+    close_disposition: Option<&'a mut CloseDisposition>,
 }
 
 impl<T: Send + 'static> AppContext<'_, T> {
@@ -529,6 +534,32 @@ impl<T: Send + 'static> AppContext<'_, T> {
         }
         *self.document_revision = revision;
         *self.dirty = true;
+        true
+    }
+
+    /// Requests one bounded clipboard write for the current native event.
+    ///
+    /// Returns `false` outside event dispatch or when a write is already set.
+    pub fn write_clipboard(&mut self, write: ClipboardWrite) -> bool {
+        let Some(slot) = self.clipboard_write.as_deref_mut() else {
+            return false;
+        };
+        if slot.is_some() {
+            return false;
+        }
+        *slot = Some(write);
+        true
+    }
+
+    /// Cancels the current close request while leaving non-close events unchanged.
+    pub fn cancel_close(&mut self) -> bool {
+        let Some(disposition) = self.close_disposition.as_deref_mut() else {
+            return false;
+        };
+        if *disposition != CloseDisposition::Allow {
+            return false;
+        }
+        *disposition = CloseDisposition::Cancel;
         true
     }
 
@@ -705,9 +736,21 @@ impl<D: AppDelegate + 'static> Application<D> {
 
     /// Dispatches one event, rejects stale results, and builds at most one frame.
     pub fn dispatch(&mut self, event: &SurfaceEvent) -> Option<SurfaceFrame> {
+        self.dispatch_with_response(event).into_frame()
+    }
+
+    /// Dispatches one event and returns bounded native side effects plus a frame.
+    #[must_use]
+    pub fn dispatch_with_response(&mut self, event: &SurfaceEvent) -> SurfaceResponse {
         if self.shutting_down {
-            return None;
+            return SurfaceResponse::default();
         }
+        let mut clipboard_write = None;
+        let mut close_disposition = if matches!(event, SurfaceEvent::CloseRequested { .. }) {
+            CloseDisposition::Allow
+        } else {
+            CloseDisposition::NotRequested
+        };
         self.drain_worker_results();
         if let SurfaceEvent::Resize { extent, .. } = event
             && let Some(viewport) = extent.logical_size()
@@ -722,15 +765,17 @@ impl<D: AppDelegate + 'static> Application<D> {
                 document_revision: &mut self.document_revision,
                 dirty: &mut self.dirty,
                 workers: &mut self.workers,
+                clipboard_write: Some(&mut clipboard_write),
+                close_disposition: Some(&mut close_disposition),
             };
             self.delegate.event(event, &mut context);
         }
-        if matches!(event, SurfaceEvent::CloseRequested { .. }) {
+        if close_disposition == CloseDisposition::Allow {
             self.shutting_down = true;
             self.dirty = false;
-            return None;
+            return SurfaceResponse::new(None, clipboard_write, close_disposition);
         }
-        self.frame_if_dirty()
+        SurfaceResponse::new(self.frame_if_dirty(), clipboard_write, close_disposition)
     }
 
     /// Builds the current immutable frame only when observable state is dirty.
@@ -826,6 +871,8 @@ impl<D: AppDelegate + 'static> Application<D> {
                 document_revision: &mut self.document_revision,
                 dirty: &mut self.dirty,
                 workers: &mut self.workers,
+                clipboard_write: None,
+                close_disposition: None,
             };
             self.delegate
                 .worker_result(completion.token, result, &mut context);
@@ -845,7 +892,9 @@ mod tests {
     };
 
     use alpine_core::Size;
-    use alpine_platform_macos::{EventTimestamp, SurfaceEvent, SurfaceExtent};
+    use alpine_platform_macos::{
+        ClipboardOperation, ClipboardText, EventTimestamp, SurfaceEvent, SurfaceExtent,
+    };
     use alpine_scene::{SceneBuilder, SceneRevision};
 
     use super::*;
@@ -877,13 +926,21 @@ mod tests {
         events: Vec<SurfaceEvent>,
         results: Vec<(WorkToken, u64)>,
         invalid_scene: bool,
+        cancel_close: bool,
+        clipboard_write: Option<ClipboardWrite>,
     }
 
     impl AppDelegate for TestDelegate {
         type WorkerOutput = u64;
 
-        fn event(&mut self, event: &SurfaceEvent, _context: &mut AppContext<'_, u64>) {
+        fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, u64>) {
             self.events.push(event.clone());
+            if let Some(write) = self.clipboard_write.take() {
+                assert!(context.write_clipboard(write));
+            }
+            if self.cancel_close && matches!(event, SurfaceEvent::CloseRequested { .. }) {
+                assert!(context.cancel_close());
+            }
         }
 
         fn worker_result(
@@ -992,11 +1049,15 @@ mod tests {
     fn foreground_context_only_accepts_newer_revisions() -> Result<(), RuntimeError> {
         let mut application = runtime(TestDelegate::default())?;
         application.dirty = false;
+        let mut clipboard_write = None;
+        let mut close_disposition = CloseDisposition::Allow;
         let mut context = AppContext {
             workspace_revision: &mut application.workspace_revision,
             document_revision: &mut application.document_revision,
             dirty: &mut application.dirty,
             workers: &mut application.workers,
+            clipboard_write: Some(&mut clipboard_write),
+            close_disposition: Some(&mut close_disposition),
         };
         assert_eq!(context.workspace_revision().get(), 0);
         assert_eq!(context.document_revision().get(), 0);
@@ -1006,8 +1067,27 @@ mod tests {
         assert!(!context.advance_document(DocumentRevision::new(1)));
         *context.dirty = false;
         context.invalidate();
+        let text = ClipboardText::new("response").map_err(|_| SurfaceError::DriverUnavailable)?;
+        let write = ClipboardWrite::new(ClipboardOperation::Copy, text)
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        assert!(context.write_clipboard(write.clone()));
+        assert!(!context.write_clipboard(write.clone()));
+        assert!(context.cancel_close());
+        assert!(!context.cancel_close());
         assert_eq!(context.workspace_revision().get(), 2);
         assert_eq!(context.document_revision().get(), 3);
+        assert_eq!(clipboard_write.as_ref(), Some(&write));
+        assert_eq!(close_disposition, CloseDisposition::Cancel);
+        let mut no_response_context = AppContext {
+            workspace_revision: &mut application.workspace_revision,
+            document_revision: &mut application.document_revision,
+            dirty: &mut application.dirty,
+            workers: &mut application.workers,
+            clipboard_write: None,
+            close_disposition: None,
+        };
+        assert!(!no_response_context.write_clipboard(write));
+        assert!(!no_response_context.cancel_close());
         assert!(application.dirty);
         Ok(())
     }
@@ -1076,6 +1156,36 @@ mod tests {
                 })
                 .is_none()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_close_returns_one_bounded_response_and_stays_live() -> Result<(), RuntimeError> {
+        let text = ClipboardText::new("selected").map_err(|_| SurfaceError::DriverUnavailable)?;
+        let write = ClipboardWrite::new(ClipboardOperation::Cut, text)
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        let delegate = TestDelegate {
+            cancel_close: true,
+            clipboard_write: Some(write.clone()),
+            ..TestDelegate::default()
+        };
+        let mut application = runtime(delegate)?;
+        let _ = application.frame_if_dirty();
+
+        let cancelled = application.dispatch_with_response(&SurfaceEvent::CloseRequested {
+            timestamp: EventTimestamp::new(8),
+        });
+        assert_eq!(cancelled.frame(), None);
+        assert_eq!(cancelled.clipboard_write(), Some(&write));
+        assert_eq!(cancelled.close_disposition(), CloseDisposition::Cancel);
+        assert!(!application.snapshot().is_shutting_down());
+
+        application.delegate.cancel_close = false;
+        let allowed = application.dispatch_with_response(&SurfaceEvent::CloseRequested {
+            timestamp: EventTimestamp::new(9),
+        });
+        assert_eq!(allowed.into_parts(), (None, None, CloseDisposition::Allow));
+        assert!(application.snapshot().is_shutting_down());
         Ok(())
     }
 
@@ -1263,6 +1373,8 @@ mod tests {
             document_revision: &mut application.document_revision,
             dirty: &mut application.dirty,
             workers: &mut application.workers,
+            clipboard_write: None,
+            close_disposition: None,
         };
         AppDelegate::worker_result(&mut application.delegate, token(3), 9, &mut context);
         assert!(!application.dirty);
@@ -1328,6 +1440,8 @@ mod tests {
                 document_revision: &mut application.document_revision,
                 dirty: &mut application.dirty,
                 workers: &mut application.workers,
+                clipboard_write: None,
+                close_disposition: None,
             };
             let submitted = context.spawn(move || {
                 let _ = started_sender.send(());
