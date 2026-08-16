@@ -5,14 +5,14 @@ use crate::{Edit, transform_offset};
 fn selection_transform_stays_at_or_after_replacement_start() {
     let start = usize::from(kani::any::<u8>());
     let removed = usize::from(kani::any::<u8>());
-    let inserted = usize::from(kani::any::<u8>());
+    let inserted = usize::from(kani::any::<u8>() % 4);
     let Some(end) = start.checked_add(removed) else {
         return;
     };
     let offset = usize::from(kani::any::<u8>());
     let edit = Edit {
         range: start..end,
-        replacement: "x".repeat(inserted),
+        replacement: ["", "x", "xx", "xxx"][inserted].to_owned(),
     };
     let transformed = transform_offset(offset, &[edit]);
     if offset == start && removed > 0 {
