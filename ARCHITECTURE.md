@@ -193,7 +193,8 @@ terminal state on the owner thread. The existing AppKit callback still uses a
 temporary synchronous compatibility wrapper over this path, so removal of the
 main-thread completion wait, shutdown drain, and asynchronous lifecycle
 qualification remain unimplemented. Offscreen readback remains intentionally
-synchronous.
+synchronous. The compatibility wait fails closed after five seconds rather than
+blocking indefinitely; production AppKit removal remains the required path.
 Every render call updates a generation-scoped `BackendAccounting` snapshot.
 Validated cancellation performs no native allocation or submission. Shutdown is
 synchronous and closes admission only after the current exclusive call returns.

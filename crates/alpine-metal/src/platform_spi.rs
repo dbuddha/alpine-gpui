@@ -9,11 +9,10 @@ use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_metal::{MTLDevice, MTLDrawable, MTLTexture};
 
 use crate::{
-    InitializationError, MetalBackend, OffscreenDescriptor, RenderError,
-    submission::{
-        DrawableCompletionPoll as NativeCompletionPoll, DrawableRenderAttempt,
-        DrawableSubmission as NativeSubmission, DrawableSubmitAttempt as NativeSubmitAttempt,
-    },
+    FrameLifecycle, InitializationError, LifecycleAction, MetalBackend, OffscreenDescriptor,
+    RenderError,
+    accounting::{AccountingOutcome, FrameOperationUsage, FrameResourceUsage},
+    submission::{DrawableRenderAttempt, NativeDrawableAttempt},
 };
 
 /// Retained Metal device shared by one layer and its renderer generation.
@@ -48,7 +47,12 @@ impl DrawableSlot {
 /// Opaque ownership token for one committed callback drawable.
 #[derive(Clone, Copy)]
 #[must_use]
-pub struct DrawableSubmission(NativeSubmission);
+pub struct DrawableSubmission {
+    native: crate::native::NativePresentationId,
+    sequence: u64,
+    primitives: usize,
+    omitted_primitives: usize,
+}
 
 /// Result of one split-phase callback submission attempt.
 #[must_use]
@@ -210,12 +214,61 @@ pub fn submit_callback_drawable(
     texture: &ProtocolObject<dyn MTLTexture>,
     drawable: &ProtocolObject<dyn MTLDrawable>,
 ) -> DrawableSubmitAttempt {
-    match backend.submit_callback_drawable(slot.get(), scene, descriptor, texture, drawable) {
-        NativeSubmitAttempt::Rejected(attempt) => {
-            DrawableSubmitAttempt::Rejected(DrawableAttempt::from_native(attempt))
+    let frame = match backend.admit_frame(scene, descriptor) {
+        Ok(frame) => frame,
+        Err(error) => {
+            return DrawableSubmitAttempt::Rejected(DrawableAttempt {
+                committed: false,
+                present_called: false,
+                result: Err(error),
+            });
         }
-        NativeSubmitAttempt::Submitted(submission) => {
-            DrawableSubmitAttempt::Submitted(DrawableSubmission(submission))
+    };
+    let in_flight = u64::from(backend.native.presentation_snapshot().occupied_slots);
+    let Some(sequence) = backend
+        .accounting
+        .submitted_frames()
+        .checked_add(in_flight)
+        .and_then(|value| value.checked_add(1))
+    else {
+        let result = match backend.accounting.record_accepted(
+            &frame,
+            AccountingOutcome::Failed,
+            false,
+            FrameOperationUsage::default(),
+            FrameResourceUsage::default(),
+        ) {
+            Ok(()) => Err(RenderError::SubmissionSequenceExhausted),
+            Err(()) => Err(RenderError::AccountingOverflow),
+        };
+        return DrawableSubmitAttempt::Rejected(DrawableAttempt {
+            committed: false,
+            present_called: false,
+            result,
+        });
+    };
+
+    match objc2::rc::autoreleasepool(|_| {
+        backend
+            .native
+            .submit_drawable(slot.get(), &frame, texture, drawable)
+    }) {
+        crate::native::NativeDrawableSubmitAttempt::Rejected(attempt) => {
+            DrawableSubmitAttempt::Rejected(finish_presentation_attempt(
+                backend,
+                frame.consumed_primitives(),
+                frame.omitted_primitives(),
+                sequence,
+                attempt,
+            ))
+        }
+        crate::native::NativeDrawableSubmitAttempt::Submitted(submission) => {
+            DrawableSubmitAttempt::Submitted(DrawableSubmission {
+                native: submission.id,
+                sequence,
+                primitives: frame.consumed_primitives(),
+                omitted_primitives: frame.omitted_primitives(),
+            })
         }
     }
 }
@@ -225,33 +278,154 @@ pub fn poll_callback_drawable(
     backend: &mut MetalBackend,
     submission: DrawableSubmission,
 ) -> DrawableCompletionPoll {
-    match backend.poll_callback_drawable(submission.0) {
-        NativeCompletionPoll::Pending => DrawableCompletionPoll::Pending,
-        NativeCompletionPoll::Complete(attempt) => {
-            DrawableCompletionPoll::Complete(DrawableAttempt::from_native(attempt))
+    match backend.native.poll_drawable(submission.native) {
+        Ok(None) => DrawableCompletionPoll::Pending,
+        Ok(Some(attempt)) => DrawableCompletionPoll::Complete(finish_presentation_attempt(
+            backend,
+            submission.primitives,
+            submission.omitted_primitives,
+            submission.sequence,
+            attempt,
+        )),
+        Err(error) => DrawableCompletionPoll::Complete(DrawableAttempt {
+            committed: true,
+            present_called: true,
+            result: Err(error),
+        }),
+    }
+}
+
+fn finish_presentation_attempt(
+    backend: &mut MetalBackend,
+    primitives: usize,
+    omitted_primitives: usize,
+    sequence: u64,
+    attempt: NativeDrawableAttempt,
+) -> DrawableAttempt {
+    let committed = attempt.committed;
+    let present_called = attempt.present_called;
+    let result = record_presentation_attempt(backend, primitives, omitted_primitives, &attempt)
+        .and_then(|()| {
+            attempt.result?;
+            Ok(FrameReport {
+                submission: sequence,
+                primitives,
+                omitted_primitives,
+                draw_calls: attempt.operations.draw_calls,
+                uploaded_bytes: attempt.operations.uploaded_bytes,
+                allocated_bytes: attempt.resources.allocated_bytes,
+                retained_bytes: attempt.resources.peak_retained_bytes,
+                readback_bytes: 0,
+            })
+        });
+    DrawableAttempt {
+        committed,
+        present_called,
+        result,
+    }
+}
+
+fn record_presentation_attempt(
+    backend: &mut MetalBackend,
+    primitives: usize,
+    omitted_primitives: usize,
+    attempt: &NativeDrawableAttempt,
+) -> Result<(), RenderError> {
+    let outcome = verify_presentation_lifecycle(attempt)?;
+    let result = backend
+        .accounting
+        .record_values(
+            primitives,
+            omitted_primitives,
+            outcome,
+            attempt.committed,
+            attempt.operations,
+            attempt.resources,
+        )
+        .map_err(|()| RenderError::AccountingOverflow);
+    if attempt.device_lost {
+        backend.accounting.invalidate_device();
+    } else if result.is_err() && attempt.committed {
+        backend.accounting.stop();
+    }
+    result
+}
+
+fn verify_presentation_lifecycle(
+    attempt: &NativeDrawableAttempt,
+) -> Result<AccountingOutcome, RenderError> {
+    let mut lifecycle = FrameLifecycle::new();
+    lifecycle
+        .apply(LifecycleAction::BeginFrame)
+        .and_then(|()| lifecycle.apply(LifecycleAction::Encode))
+        .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+    if attempt.committed {
+        lifecycle
+            .apply(LifecycleAction::Submit)
+            .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+    }
+    if attempt.present_called != attempt.committed {
+        return Err(RenderError::SubmissionInvariantViolated);
+    }
+    let outcome = match (&attempt.result, attempt.committed) {
+        (Ok(()), true) => {
+            lifecycle
+                .apply(LifecycleAction::Complete)
+                .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+            AccountingOutcome::Completed
         }
+        (Err(_), true) => {
+            lifecycle
+                .apply(LifecycleAction::Fail)
+                .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+            AccountingOutcome::Failed
+        }
+        (Err(_), false) => {
+            lifecycle
+                .apply(LifecycleAction::FailBeforeSubmit)
+                .map_err(|_| RenderError::SubmissionInvariantViolated)?;
+            AccountingOutcome::Failed
+        }
+        (Ok(()), false) => return Err(RenderError::SubmissionInvariantViolated),
+    };
+    if lifecycle.invariants_hold() {
+        Ok(outcome)
+    } else {
+        Err(RenderError::SubmissionInvariantViolated)
     }
 }
 
 /// Returns exact bounded presentation-resource ownership evidence.
 #[must_use]
 pub fn presentation_snapshot(backend: &MetalBackend) -> PresentationSnapshot {
-    PresentationSnapshot(backend.presentation_snapshot())
+    PresentationSnapshot(backend.native.presentation_snapshot())
 }
 
 /// Releases free reusable uploads immediately and marks occupied slots to shed
 /// their upload after terminal completion.
 pub fn release_presentation_uploads_on_pressure(backend: &mut MetalBackend) {
-    backend.release_presentation_uploads_on_pressure();
+    backend.native.release_presentation_uploads_on_pressure();
 }
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+
     use alpine_renderer::FrameReport;
 
-    use crate::{RenderError, submission::DrawableRenderAttempt};
+    use crate::{
+        BackendState, RenderError, RenderStage,
+        accounting::{FrameOperationUsage, FrameResourceUsage},
+        native::tests::callback_fixture,
+        submission::{DrawableRenderAttempt, NativeDrawableAttempt},
+    };
 
-    use super::{DrawableAttempt, DrawableSlot};
+    use super::{
+        DrawableAttempt, DrawableCompletionPoll, DrawableSlot, DrawableSubmitAttempt,
+        finish_presentation_attempt, poll_callback_drawable, presentation_snapshot,
+        release_presentation_uploads_on_pressure, submit_callback_drawable,
+        verify_presentation_lifecycle,
+    };
 
     #[test]
     fn drawable_slots_admit_exactly_three_stable_indices() {
@@ -260,6 +434,153 @@ mod tests {
         assert_eq!(DrawableSlot::new(2).map(DrawableSlot::get), Some(2));
         assert_eq!(DrawableSlot::new(3), None);
         assert_eq!(DrawableSlot::new(u8::MAX), None);
+    }
+
+    #[test]
+    fn split_phase_spi_submits_polls_accounts_reuses_and_sheds() -> Result<(), Box<dyn Error>> {
+        let mut fixture = callback_fixture()?;
+        let slot = DrawableSlot::new(0).ok_or("slot zero")?;
+        let submitted = submit_callback_drawable(
+            &mut fixture.backend,
+            slot,
+            &fixture.scene,
+            fixture.descriptor,
+            &fixture.texture,
+            objc2::runtime::ProtocolObject::from_ref(&*fixture.drawable),
+        );
+        let DrawableSubmitAttempt::Submitted(submission) = submitted else {
+            return Err("valid split-phase submission was rejected".into());
+        };
+        let in_flight = presentation_snapshot(&fixture.backend);
+        assert_eq!(in_flight.capacity(), 3);
+        assert_eq!(in_flight.occupied_slots(), 1);
+        assert!(in_flight.current_upload_bytes() > 0);
+        assert!(in_flight.peak_upload_bytes() >= in_flight.current_upload_bytes());
+        assert_eq!(in_flight.upload_allocations(), 1);
+        assert_eq!(in_flight.upload_trims(), 0);
+        assert_eq!(
+            in_flight.slot_upload_bytes(),
+            [in_flight.current_upload_bytes(), 0, 0]
+        );
+        assert_eq!(
+            in_flight.slot_peak_upload_bytes(),
+            [in_flight.peak_upload_bytes(), 0, 0]
+        );
+        assert_eq!(fixture.drawable.present_calls(), 1);
+
+        release_presentation_uploads_on_pressure(&mut fixture.backend);
+        let pressure_pending = presentation_snapshot(&fixture.backend);
+        assert!(pressure_pending.current_upload_bytes() > 0);
+        assert_eq!(pressure_pending.upload_trims(), 0);
+        assert!(fixture.backend.native.wait_drawable(submission.native));
+        let DrawableCompletionPoll::Complete(completed) =
+            poll_callback_drawable(&mut fixture.backend, submission)
+        else {
+            return Err("ready completion remained pending".into());
+        };
+        assert!(completed.committed());
+        assert!(completed.present_called());
+        let report = completed.into_result()?;
+        assert_eq!(report.submission, 1);
+        assert_eq!(report.primitives, 4);
+        assert_eq!(report.omitted_primitives, 1);
+        assert_eq!(report.draw_calls, 1);
+        assert!(report.uploaded_bytes > 0);
+        assert!(report.allocated_bytes > 0);
+        assert!(report.retained_bytes >= report.allocated_bytes);
+        assert_eq!(report.readback_bytes, 0);
+        assert_eq!(fixture.backend.submission_count(), 1);
+        assert_eq!(fixture.backend.accounting.state(), BackendState::Ready);
+        assert_eq!(presentation_snapshot(&fixture.backend).occupied_slots(), 0);
+
+        let released = presentation_snapshot(&fixture.backend);
+        assert_eq!(released.current_upload_bytes(), 0);
+        assert_eq!(released.upload_trims(), 1);
+
+        let resubmitted = submit_callback_drawable(
+            &mut fixture.backend,
+            slot,
+            &fixture.scene,
+            fixture.descriptor,
+            &fixture.texture,
+            objc2::runtime::ProtocolObject::from_ref(&*fixture.drawable),
+        );
+        let DrawableSubmitAttempt::Submitted(second_submission) = resubmitted else {
+            return Err("released presentation slot was not reusable".into());
+        };
+        assert_eq!(
+            presentation_snapshot(&fixture.backend).upload_allocations(),
+            2
+        );
+        assert!(
+            fixture
+                .backend
+                .native
+                .wait_drawable(second_submission.native)
+        );
+        let DrawableCompletionPoll::Complete(second_completion) =
+            poll_callback_drawable(&mut fixture.backend, second_submission)
+        else {
+            return Err("second ready completion remained pending".into());
+        };
+        assert_eq!(second_completion.into_result()?.submission, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn split_phase_spi_rejects_invalid_lifecycle_and_stops_on_accounting_failure()
+    -> Result<(), Box<dyn Error>> {
+        let attempt = |committed, present_called, result| NativeDrawableAttempt {
+            committed,
+            present_called,
+            device_lost: false,
+            operations: FrameOperationUsage::default(),
+            resources: FrameResourceUsage::default(),
+            result,
+        };
+        assert!(verify_presentation_lifecycle(&attempt(true, true, Ok(()))).is_ok());
+        assert!(
+            verify_presentation_lifecycle(&attempt(
+                false,
+                false,
+                Err(RenderError::SubmissionInvariantViolated,)
+            ))
+            .is_ok()
+        );
+        for invalid in [
+            attempt(true, false, Ok(())),
+            attempt(false, true, Err(RenderError::SubmissionInvariantViolated)),
+            attempt(false, false, Ok(())),
+        ] {
+            assert_eq!(
+                verify_presentation_lifecycle(&invalid),
+                Err(RenderError::SubmissionInvariantViolated)
+            );
+        }
+
+        let mut fixture = callback_fixture()?;
+        fixture.backend.accounting.exhaust_render_sequence();
+        let failed =
+            finish_presentation_attempt(&mut fixture.backend, 1, 0, 1, attempt(true, true, Ok(())));
+        assert_eq!(failed.into_result(), Err(RenderError::AccountingOverflow));
+        assert_eq!(fixture.backend.accounting.state(), BackendState::Stopped);
+
+        let rejected = submit_callback_drawable(
+            &mut fixture.backend,
+            DrawableSlot::new(0).ok_or("slot zero")?,
+            &fixture.scene,
+            fixture.descriptor,
+            &fixture.texture,
+            objc2::runtime::ProtocolObject::from_ref(&*fixture.drawable),
+        );
+        let DrawableSubmitAttempt::Rejected(rejected) = rejected else {
+            return Err("stopped backend admitted split-phase work".into());
+        };
+        assert_eq!(
+            rejected.into_result().err().map(|error| error.stage()),
+            Some(RenderStage::SubmissionSequence)
+        );
+        Ok(())
     }
 
     #[test]

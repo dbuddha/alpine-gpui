@@ -1,8 +1,11 @@
-#[cfg(feature = "platform-spi")]
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 #[cfg(test)]
 use std::{cell::Cell, rc::Rc};
 use std::{ffi::c_void, mem::size_of, ptr::NonNull, slice};
+#[cfg(feature = "platform-spi")]
+use std::{
+    sync::{Arc, Condvar, Mutex, MutexGuard},
+    time::Duration,
+};
 
 #[cfg(feature = "platform-spi")]
 use block2::RcBlock;
@@ -114,6 +117,10 @@ const PRESENTATION_SLOT_COUNT: usize = 3;
 const PRESENTATION_UPLOAD_LIMIT: usize = 8 * 1024 * 1024;
 #[cfg(feature = "platform-spi")]
 const PRESENTATION_TRIM_TERMINALS: u16 = 120;
+#[cfg(feature = "platform-spi")]
+const COMPLETION_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(feature = "platform-spi")]
+const TEST_COMPLETION_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 #[cfg(feature = "platform-spi")]
 type CompletionHandler = dyn Fn(NonNull<ProtocolObject<dyn MTLCommandBuffer>>);
 
@@ -409,19 +416,23 @@ impl CompletionSignal {
     }
 
     fn wait_ready(&self, sequence: u64) -> bool {
-        let mut state = self.lock();
-        loop {
-            if state.sequence != sequence {
-                return false;
-            }
-            if state.terminal.is_some() {
-                return true;
-            }
-            state = match self.ready.wait(state) {
-                Ok(next) => next,
-                Err(poisoned) => poisoned.into_inner(),
-            };
+        let timeout = if cfg!(test) {
+            TEST_COMPLETION_WAIT_TIMEOUT
+        } else {
+            COMPLETION_WAIT_TIMEOUT
+        };
+        let state = self.lock();
+        if state.sequence != sequence {
+            return false;
         }
+        let (state, _) = match self
+            .ready
+            .wait_timeout_while(state, timeout, |state| state.terminal.is_none())
+        {
+            Ok(result) => result,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.terminal.is_some()
     }
 }
 
@@ -667,7 +678,7 @@ impl NativeBackend {
         }
     }
 
-    #[cfg(all(feature = "platform-spi", test))]
+    #[cfg(feature = "platform-spi")]
     pub(crate) fn render_drawable(
         &mut self,
         frame: &ValidatedFrame,
@@ -903,7 +914,7 @@ fn rejected_drawable(error: RenderError) -> NativeDrawableSubmitAttempt {
     })
 }
 
-#[cfg(all(feature = "platform-spi", test))]
+#[cfg(feature = "platform-spi")]
 fn invalid_native_committed_drawable() -> NativeDrawableAttempt {
     NativeDrawableAttempt {
         committed: true,
@@ -1572,7 +1583,7 @@ fn injected_terminal_result(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #[cfg(feature = "platform-spi")]
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::{error::Error, process::Command};
@@ -1588,8 +1599,9 @@ mod tests {
     use objc2_foundation::{NSObject, NSObjectProtocol};
     #[cfg(feature = "platform-spi")]
     use objc2_metal::{
-        MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLDrawablePresentedHandler,
-        MTLPixelFormat, MTLStorageMode, MTLTextureDescriptor, MTLTextureUsage,
+        MTLBuffer, MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable,
+        MTLDrawablePresentedHandler, MTLPixelFormat, MTLStorageMode, MTLTexture,
+        MTLTextureDescriptor, MTLTextureUsage,
     };
 
     use crate::initialization::{
@@ -1613,7 +1625,7 @@ mod tests {
     static CORRUPT_LIBRARY: &[u8] = b"not a Metal library";
 
     #[cfg(feature = "platform-spi")]
-    struct TestDrawableIvars {
+    pub(crate) struct TestDrawableIvars {
         present_calls: AtomicU64,
     }
 
@@ -1623,7 +1635,7 @@ mod tests {
         // valid for any callback thread, and this fixture has no custom Drop.
         #[unsafe(super = NSObject)]
         #[ivars = TestDrawableIvars]
-        struct TestDrawable;
+        pub(crate) struct TestDrawable;
 
         // SAFETY: NSObjectProtocol adds no unimplemented requirements.
         unsafe impl NSObjectProtocol for TestDrawable {}
@@ -1678,7 +1690,7 @@ mod tests {
 
     #[cfg(feature = "platform-spi")]
     impl TestDrawable {
-        fn new() -> Retained<Self> {
+        pub(crate) fn new() -> Retained<Self> {
             let allocated = Self::alloc().set_ivars(TestDrawableIvars {
                 present_calls: AtomicU64::new(0),
             });
@@ -1687,7 +1699,7 @@ mod tests {
             unsafe { msg_send![super(allocated), init] }
         }
 
-        fn present_calls(&self) -> u64 {
+        pub(crate) fn present_calls(&self) -> u64 {
             self.ivars().present_calls.load(Ordering::Relaxed)
         }
     }
@@ -1706,6 +1718,46 @@ mod tests {
 
     fn validation_backend(blend: BlendConfiguration) -> Result<MetalBackend, InitializationError> {
         validation_backend_with_fault(blend, NativeFault::None)
+    }
+
+    #[cfg(feature = "platform-spi")]
+    pub(crate) struct CallbackFixture {
+        pub(crate) backend: MetalBackend,
+        pub(crate) scene: Scene,
+        pub(crate) descriptor: OffscreenDescriptor,
+        pub(crate) texture: Retained<ProtocolObject<dyn MTLTexture>>,
+        pub(crate) drawable: Retained<TestDrawable>,
+    }
+
+    #[cfg(feature = "platform-spi")]
+    pub(crate) fn callback_fixture() -> Result<CallbackFixture, Box<dyn Error>> {
+        let (scene, descriptor) = discriminating_scene()?;
+        let backend = validation_backend(BlendConfiguration::PremultipliedSourceOver)?;
+        // SAFETY: The dimensions are finite, nonzero, and admitted by the
+        // validated descriptor; this fixture creates no mip levels or mapping.
+        let texture_descriptor = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                MTLPixelFormat::BGRA8Unorm_sRGB,
+                descriptor.pixel_width() as usize,
+                descriptor.pixel_height() as usize,
+                false,
+            )
+        };
+        texture_descriptor.setStorageMode(MTLStorageMode::Private);
+        texture_descriptor.setUsage(MTLTextureUsage::RenderTarget);
+        let texture = backend
+            .native
+            .initialized
+            .device
+            .newTextureWithDescriptor(&texture_descriptor)
+            .ok_or("callback fixture texture")?;
+        Ok(CallbackFixture {
+            backend,
+            scene,
+            descriptor,
+            texture,
+            drawable: TestDrawable::new(),
+        })
     }
 
     fn validation_backend_with_fault(
@@ -2144,8 +2196,73 @@ mod tests {
                 result: Ok(()),
             },
         );
+        assert!(signal.wait_ready(7));
+        assert!(!signal.wait_ready(6));
         assert_eq!(signal.take(7).map(|terminal| terminal.result), Some(Ok(())));
         assert!(signal.take(6).is_none());
+        Ok(())
+    }
+
+    #[cfg(feature = "platform-spi")]
+    #[test]
+    fn presentation_upload_copies_reuses_and_grows_exact_quad_bytes() -> Result<(), Box<dyn Error>>
+    {
+        let (scene, descriptor) = discriminating_scene()?;
+        let frame = ValidatedFrame::new(&scene, descriptor)?;
+        let mut backend = validation_backend(BlendConfiguration::PremultipliedSourceOver)?;
+        let device = backend.native.initialized.device.clone();
+        let slot = &mut backend.native.presentation.slots[0];
+
+        let first = slot.prepare_upload(&device, &frame, NativeFault::None)?;
+        assert!(first.allocated_bytes > 0);
+        assert!(first.current_upload_bytes >= frame.upload_bytes());
+        let upload = slot.upload.as_deref().ok_or("first presentation upload")?;
+        // SAFETY: The slot owns a shared buffer of at least upload_bytes and
+        // the validated repr(C) quad slice remains alive for both byte views.
+        let actual = unsafe {
+            std::slice::from_raw_parts(
+                upload.contents().cast::<u8>().as_ptr(),
+                frame.upload_bytes(),
+            )
+        };
+        // SAFETY: `upload_bytes` is defined as the exact contiguous byte size
+        // of this validated quad slice.
+        let expected = unsafe {
+            std::slice::from_raw_parts(frame.quads().as_ptr().cast::<u8>(), frame.upload_bytes())
+        };
+        assert_eq!(actual, expected);
+
+        let reused = slot.prepare_upload(&device, &frame, NativeFault::None)?;
+        assert_eq!(reused.allocated_bytes, 0);
+        assert_eq!(reused.current_upload_bytes, first.current_upload_bytes);
+
+        let mut builder = SceneBuilder::new(SceneRevision::new(72), size(4.0, 3.0)?);
+        for y in [0.0, 1.0, 2.0] {
+            for x in [0.0, 1.0, 2.0] {
+                builder.push(Primitive::Quad {
+                    bounds: Rect::new(point(x, y)?, size(1.0, 1.0)?),
+                    color: color(0.25, 0.5, 0.75, 1.0)?,
+                });
+            }
+        }
+        let larger = ValidatedFrame::new(&builder.finish(), descriptor)?;
+        let grown = slot.prepare_upload(&device, &larger, NativeFault::None)?;
+        assert!(grown.allocated_bytes > 0);
+        assert!(grown.current_upload_bytes > first.current_upload_bytes);
+        let upload = slot.upload.as_deref().ok_or("grown presentation upload")?;
+        // SAFETY: The grown shared buffer is at least the validated upload byte
+        // count and the larger frame remains alive for this comparison.
+        let actual = unsafe {
+            std::slice::from_raw_parts(
+                upload.contents().cast::<u8>().as_ptr(),
+                larger.upload_bytes(),
+            )
+        };
+        // SAFETY: `upload_bytes` exactly covers the contiguous larger quad slice.
+        let expected = unsafe {
+            std::slice::from_raw_parts(larger.quads().as_ptr().cast::<u8>(), larger.upload_bytes())
+        };
+        assert_eq!(actual, expected);
         Ok(())
     }
 

@@ -157,27 +157,7 @@ impl BackendAccounting {
         )
     }
 
-    #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
-    pub(crate) fn record_presentation(
-        &mut self,
-        primitives: usize,
-        omitted_primitives: usize,
-        outcome: AccountingOutcome,
-        committed: bool,
-        operations: FrameOperationUsage,
-        resources: FrameResourceUsage,
-    ) -> Result<(), ()> {
-        self.record_values(
-            primitives,
-            omitted_primitives,
-            outcome,
-            committed,
-            operations,
-            resources,
-        )
-    }
-
-    fn record_values(
+    pub(crate) fn record_values(
         &mut self,
         primitives: usize,
         omitted_primitives: usize,
