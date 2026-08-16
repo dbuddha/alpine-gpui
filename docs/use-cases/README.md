@@ -6,6 +6,7 @@ testable behavior. A use case changes only when the intended user outcome
 changes, not when an implementation task moves between columns.
 
 The first journey is the [desktop application foundation](desktop-application.md).
-Future journeys will cover text editing, large virtualized data, multi-window
-tools, embedded media, and accessible component composition only when their
+The [Alpine Studio daily-driver path](alpine-studio-highfidelity.md) defines the
+acceptance-gated local editor that consumes it. Future journeys cover broader
+tools, embedded media, and multi-window composition only when their
 Capabilities are ready for owner review.
