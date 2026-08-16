@@ -297,18 +297,32 @@ jobs:
           if-no-files-found: error
 
   miri:
-    name: miri
+    name: miri-${{ matrix.partition }}
     needs: classify
     if: needs.classify.outputs.miri == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - partition: foundation
+            packages: >-
+              -p alpine-core -p alpine-metal -p alpine-platform
+              -p alpine-platform-macos -p alpine-renderer -p alpine-runtime
+              -p alpine-scene -p alpine-studio -p alpine-trace
+          - partition: text
+            packages: -p alpine-text
+          - partition: text-layout
+            packages: -p alpine-text-layout
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install pinned Miri toolchain
         run: rustup toolchain install nightly-2026-08-01 --profile minimal --component miri
       - name: Check host-testable memory behavior
-        run: cargo +nightly-2026-08-01 miri test --workspace --lib --locked
+        run: cargo +nightly-2026-08-01 miri test ${{ matrix.packages }} --lib --locked
 
   metal-validation:
     name: metal-validation
