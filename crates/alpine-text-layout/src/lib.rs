@@ -14,6 +14,12 @@ use alpine_text::{BufferSnapshot, TextError, TextFingerprint};
 #[cfg(kani)]
 mod proofs;
 
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+mod native;
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub use native::CoreTextSystem;
+
 /// Default combined retention ceiling for current and previous line layouts.
 pub const DEFAULT_LAYOUT_BUDGET_BYTES: usize = 32 * 1024 * 1024;
 
@@ -185,6 +191,7 @@ pub struct ShapedGlyph {
     y: f32,
     advance: f32,
     source_utf16: u32,
+    resolved_family: u64,
 }
 
 impl ShapedGlyph {
@@ -210,7 +217,27 @@ impl ShapedGlyph {
             y,
             advance,
             source_utf16,
+            resolved_family: 0,
         })
+    }
+
+    /// Creates one validated glyph with the native font family selected by
+    /// the shaper, including a fallback family when required.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LayoutError::InvalidShaperOutput`] for invalid metrics.
+    pub fn new_resolved(
+        glyph_id: u32,
+        x: f32,
+        y: f32,
+        advance: f32,
+        source_utf16: u32,
+        resolved_family: u64,
+    ) -> Result<Self, LayoutError> {
+        let mut glyph = Self::new(glyph_id, x, y, advance, source_utf16)?;
+        glyph.resolved_family = resolved_family;
+        Ok(glyph)
     }
 
     /// Returns the native font glyph identity.
@@ -241,6 +268,15 @@ impl ShapedGlyph {
     #[must_use]
     pub const fn source_utf16(self) -> u32 {
         self.source_utf16
+    }
+
+    /// Returns the shaper-selected family identity.
+    ///
+    /// Zero means the backend-independent constructor did not resolve a
+    /// native family. Native shapers always return a nonzero identity.
+    #[must_use]
+    pub const fn resolved_family(self) -> u64 {
+        self.resolved_family
     }
 }
 
@@ -327,6 +363,61 @@ pub trait TextShaper {
     ///
     /// Returns a structured unsupported, native, allocation, or output error.
     fn shape(&mut self, text: &str, font: FontKey) -> Result<LineLayout, LayoutError>;
+}
+
+/// Copied monochrome raster output and its logical baseline bearings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RasterizedGlyph {
+    bitmap: Option<GlyphBitmap>,
+    left: f32,
+    top: f32,
+}
+
+impl RasterizedGlyph {
+    /// Creates copied raster output with finite logical bearings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LayoutError::InvalidShaperOutput`] for invalid bearings.
+    pub fn new(bitmap: Option<GlyphBitmap>, left: f32, top: f32) -> Result<Self, LayoutError> {
+        if !left.is_finite() || !top.is_finite() {
+            return Err(LayoutError::InvalidShaperOutput);
+        }
+        Ok(Self { bitmap, left, top })
+    }
+
+    /// Returns the tightly packed A8 bitmap, or `None` for an empty glyph.
+    #[must_use]
+    pub const fn bitmap(&self) -> Option<&GlyphBitmap> {
+        self.bitmap.as_ref()
+    }
+
+    /// Returns the logical left bearing from the glyph origin.
+    #[must_use]
+    pub const fn left(&self) -> f32 {
+        self.left
+    }
+
+    /// Returns the logical top bearing above the baseline.
+    #[must_use]
+    pub const fn top(&self) -> f32 {
+        self.top
+    }
+}
+
+/// Alpine-owned monochrome glyph-rasterization interface.
+pub trait GlyphRasterizer {
+    /// Rasterizes one native glyph at a quarter-device-pixel x phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured unsupported, native, allocation, or output error.
+    fn rasterize(
+        &mut self,
+        font: FontKey,
+        glyph_id: u32,
+        subpixel_x: u8,
+    ) -> Result<RasterizedGlyph, LayoutError>;
 }
 
 #[derive(Clone)]
