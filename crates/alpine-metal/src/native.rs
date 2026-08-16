@@ -103,8 +103,11 @@ pub(crate) struct NativeBackend {
         reason = "the initialized objects must remain retained for the backend lifetime"
     )]
     initialized: Initialized<NativeDriver>,
+    atlas_cache: GlyphAtlasCache,
     #[cfg(feature = "platform-spi")]
     presentation: PresentationSlots,
+    #[cfg(feature = "platform-spi")]
+    atlas_pressure_pending: bool,
     #[cfg(any(test, alpine_native_validation))]
     fault: NativeFault,
     #[cfg(test)]
@@ -153,6 +156,139 @@ pub(crate) struct NativePresentationSnapshot {
     pub(crate) slot_peak_upload_bytes: [usize; PRESENTATION_SLOT_COUNT],
     pub(crate) upload_allocations: u64,
     pub(crate) upload_trims: u64,
+    pub(crate) current_atlas_bytes: usize,
+    pub(crate) peak_atlas_bytes: usize,
+    pub(crate) atlas_allocations: u64,
+    pub(crate) atlas_uploads: u64,
+    pub(crate) atlas_reuses: u64,
+    pub(crate) atlas_pressure_releases: u64,
+}
+
+struct GlyphAtlasCache {
+    image: Option<alpine_scene::GlyphAtlasImage>,
+    buffer: Option<Buffer>,
+    current_bytes: usize,
+    peak_bytes: usize,
+    allocations: u64,
+    uploads: u64,
+    reuses: u64,
+    #[cfg_attr(not(feature = "platform-spi"), allow(dead_code))]
+    pressure_releases: u64,
+}
+
+impl GlyphAtlasCache {
+    const fn new() -> Self {
+        Self {
+            image: None,
+            buffer: None,
+            current_bytes: 0,
+            peak_bytes: 0,
+            allocations: 0,
+            uploads: 0,
+            reuses: 0,
+            pressure_releases: 0,
+        }
+    }
+
+    fn prepare(
+        &mut self,
+        device: &Device,
+        image: Option<&alpine_scene::GlyphAtlasImage>,
+    ) -> Result<AtlasPreparation, RenderError> {
+        let Some(image) = image else {
+            if let Some(buffer) = &self.buffer {
+                return Ok(AtlasPreparation {
+                    buffer: Some(buffer.clone()),
+                    retained_bytes: self.current_bytes,
+                    ..AtlasPreparation::default()
+                });
+            }
+            let next_allocations = self
+                .allocations
+                .checked_add(1)
+                .ok_or(RenderError::AccountingOverflow)?;
+            let buffer = create_solid_binding_atlas(device)?;
+            let allocated_bytes = buffer.allocatedSize();
+            self.image = None;
+            self.buffer = Some(buffer.clone());
+            self.current_bytes = allocated_bytes;
+            self.peak_bytes = self.peak_bytes.max(allocated_bytes);
+            self.allocations = next_allocations;
+            return Ok(AtlasPreparation {
+                buffer: Some(buffer),
+                upload: None,
+                allocated_bytes,
+                retained_bytes: allocated_bytes,
+                uploaded_bytes: 0,
+            });
+        };
+        let matches = self.image.as_ref().is_some_and(|cached| {
+            cached.revision() == image.revision()
+                && cached.width() == image.width()
+                && cached.height() == image.height()
+                && cached.shares_storage_with(image)
+        });
+        if matches {
+            self.reuses = self
+                .reuses
+                .checked_add(1)
+                .ok_or(RenderError::AccountingOverflow)?;
+            return Ok(AtlasPreparation {
+                buffer: self.buffer.clone(),
+                retained_bytes: self.current_bytes,
+                ..AtlasPreparation::default()
+            });
+        }
+
+        let next_allocations = self
+            .allocations
+            .checked_add(1)
+            .ok_or(RenderError::AccountingOverflow)?;
+        let next_uploads = self
+            .uploads
+            .checked_add(1)
+            .ok_or(RenderError::AccountingOverflow)?;
+        let (buffer, upload) = create_glyph_atlas(device, image)?;
+        let buffer_bytes = buffer.allocatedSize();
+        let allocated_bytes = buffer_bytes
+            .checked_add(upload.buffer.allocatedSize())
+            .ok_or(RenderError::AccountingOverflow)?;
+        self.image = Some(image.clone());
+        self.buffer = Some(buffer.clone());
+        self.current_bytes = buffer_bytes;
+        self.peak_bytes = self.peak_bytes.max(buffer_bytes);
+        self.allocations = next_allocations;
+        self.uploads = next_uploads;
+        Ok(AtlasPreparation {
+            buffer: Some(buffer),
+            upload: Some(upload),
+            allocated_bytes,
+            retained_bytes: allocated_bytes,
+            uploaded_bytes: image.pixels().len(),
+        })
+    }
+
+    #[cfg_attr(not(any(test, feature = "platform-spi")), allow(dead_code))]
+    fn pressure(&mut self) {
+        if self.buffer.take().is_some() {
+            self.pressure_releases = self.pressure_releases.saturating_add(1);
+        }
+        self.image = None;
+        self.current_bytes = 0;
+    }
+}
+
+#[derive(Default)]
+struct AtlasPreparation {
+    buffer: Option<Buffer>,
+    upload: Option<AtlasUpload>,
+    allocated_bytes: usize,
+    retained_bytes: usize,
+    uploaded_bytes: usize,
+}
+
+struct AtlasUpload {
+    buffer: Buffer,
 }
 
 #[cfg(feature = "platform-spi")]
@@ -188,11 +324,21 @@ impl PresentationSlots {
             slot_peak_upload_bytes,
             upload_allocations: self.slots.iter().map(|slot| slot.upload_allocations).sum(),
             upload_trims: self.slots.iter().map(|slot| slot.upload_trims).sum(),
+            current_atlas_bytes: 0,
+            peak_atlas_bytes: 0,
+            atlas_allocations: 0,
+            atlas_uploads: 0,
+            atlas_reuses: 0,
+            atlas_pressure_releases: 0,
         }
     }
 
     fn record_upload_peak(&mut self, transient_upload_bytes: usize) {
         self.peak_upload_bytes = self.peak_upload_bytes.max(transient_upload_bytes);
+    }
+
+    fn has_pending(&self) -> bool {
+        self.slots.iter().any(|slot| slot.pending.is_some())
     }
 
     fn pressure(&mut self) {
@@ -283,7 +429,7 @@ impl PresentationSlot {
             let Some(upload) = self.upload.as_deref() else {
                 return Err(RenderError::SubmissionInvariantViolated);
             };
-            let source = frame.quads().as_ptr().cast::<u8>();
+            let source = frame.paints().as_ptr().cast::<u8>();
             let destination = upload.contents().cast::<u8>().as_ptr();
             // SAFETY: `ValidatedFrame::upload_bytes` is the exact byte length
             // of the contiguous repr(C) quad slice. The shared Metal buffer is
@@ -350,6 +496,8 @@ struct PendingDrawable {
     _command: CommandBuffer,
     operations: FrameOperationUsage,
     resources: FrameResourceUsage,
+    _atlas: Option<Buffer>,
+    _atlas_upload: Option<AtlasUpload>,
 }
 
 #[cfg(feature = "platform-spi")]
@@ -541,10 +689,12 @@ impl NativeBackend {
         frame: &ValidatedFrame,
         target: TargetContract,
     ) -> NativeRenderAttempt {
+        let device = self.initialized.device.clone();
         let resources = match FrameResources::new(
-            &self.initialized.device,
+            &device,
             frame,
             target.pixel_format(),
+            &mut self.atlas_cache,
             #[cfg(test)]
             self.fault,
             #[cfg(test)]
@@ -564,10 +714,11 @@ impl NativeBackend {
         let resource_usage = resources.usage;
         let mut operations = FrameOperationUsage {
             draw_calls: 0,
-            uploaded_bytes: resources
+            instance_upload_bytes: resources
                 .upload
                 .as_ref()
                 .map_or(0, |_| frame.upload_bytes()),
+            atlas_upload_bytes: resources.atlas_uploaded_bytes,
         };
         #[cfg(test)]
         if self.fault == NativeFault::CommandBuffer {
@@ -608,11 +759,25 @@ impl NativeBackend {
             };
         }
 
+        if let (Some(upload), Some(atlas)) =
+            (resources.atlas_upload.as_ref(), resources.atlas.as_deref())
+            && let Err(error) = encode_atlas_upload(&command, upload, atlas)
+        {
+            return NativeRenderAttempt {
+                committed: false,
+                device_lost: false,
+                operations,
+                resources: resource_usage,
+                result: Err(error),
+            };
+        }
+
         if let Err(error) = encode_render_pass(
             &command,
             target.pipeline(&self.initialized.pipeline),
             &resources.texture,
             resources.upload.as_deref(),
+            resources.atlas.as_deref(),
             frame,
         ) {
             return NativeRenderAttempt {
@@ -623,7 +788,7 @@ impl NativeBackend {
                 result: Err(error),
             };
         }
-        operations.draw_calls = usize::from(!frame.quads().is_empty());
+        operations.draw_calls = usize::from(!frame.paints().is_empty());
         #[cfg(test)]
         if self.fault == NativeFault::BlitEncoder {
             return NativeRenderAttempt {
@@ -722,11 +887,13 @@ impl NativeBackend {
             });
         }
         let target = TargetContract::SrgbPresentation;
+        let device = self.initialized.device.clone();
         let resources = match DrawableResources::new(
-            &self.initialized.device,
+            &device,
             texture,
             frame,
             target.pixel_format(),
+            &mut self.atlas_cache,
         ) {
             Ok(resources) => resources,
             Err(failure) => {
@@ -760,15 +927,22 @@ impl NativeBackend {
         else {
             return rejected_drawable(RenderError::AccountingOverflow);
         };
+        let Some(allocated_bytes) = upload
+            .allocated_bytes
+            .checked_add(resources.allocated_atlas_bytes)
+        else {
+            return rejected_drawable(RenderError::AccountingOverflow);
+        };
         let resource_usage = FrameResourceUsage {
-            allocated_bytes: upload.allocated_bytes,
+            allocated_bytes,
             peak_retained_bytes: retained_bytes,
             current_retained_bytes: 0,
             readback_bytes: 0,
         };
         let mut operations = FrameOperationUsage {
             draw_calls: 0,
-            uploaded_bytes: frame.upload_bytes(),
+            instance_upload_bytes: frame.upload_bytes(),
+            atlas_upload_bytes: resources.atlas_uploaded_bytes,
         };
         let Some(command) = self.initialized.queue.commandBuffer() else {
             return NativeDrawableSubmitAttempt::Rejected(NativeDrawableAttempt {
@@ -796,12 +970,26 @@ impl NativeBackend {
                 }),
             });
         }
+        if let (Some(upload), Some(atlas)) =
+            (resources.atlas_upload.as_ref(), resources.atlas.as_deref())
+            && let Err(error) = encode_atlas_upload(&command, upload, atlas)
+        {
+            return NativeDrawableSubmitAttempt::Rejected(NativeDrawableAttempt {
+                committed: false,
+                present_called: false,
+                device_lost: false,
+                operations,
+                resources: resource_usage,
+                result: Err(error),
+            });
+        }
         let upload_buffer = self.presentation.slots[index].upload.clone();
         if let Err(error) = encode_render_pass(
             &command,
             target.pipeline(&self.initialized.pipeline),
             texture,
             upload_buffer.as_deref(),
+            resources.atlas.as_deref(),
             frame,
         ) {
             return NativeDrawableSubmitAttempt::Rejected(NativeDrawableAttempt {
@@ -813,7 +1001,7 @@ impl NativeBackend {
                 result: Err(error),
             });
         }
-        operations.draw_calls = usize::from(!frame.quads().is_empty());
+        operations.draw_calls = usize::from(!frame.paints().is_empty());
         let id = match self.presentation.slots[index].next_id(slot) {
             Ok(id) => id,
             Err(error) => return rejected_drawable(error),
@@ -846,6 +1034,8 @@ impl NativeBackend {
             _command: command.clone(),
             operations,
             resources: resource_usage,
+            _atlas: resources.atlas,
+            _atlas_upload: resources.atlas_upload,
         });
         command.commit();
         drawable.present();
@@ -870,14 +1060,19 @@ impl NativeBackend {
             return Err(RenderError::SubmissionInvariantViolated);
         };
         slot.observe_terminal();
-        Ok(Some(NativeDrawableAttempt {
+        let attempt = NativeDrawableAttempt {
             committed: true,
             present_called: true,
             device_lost: terminal.device_lost,
             operations: pending.operations,
             resources: pending.resources,
             result: terminal.result,
-        }))
+        };
+        if self.atlas_pressure_pending && !self.presentation.has_pending() {
+            self.atlas_cache.pressure();
+            self.atlas_pressure_pending = false;
+        }
+        Ok(Some(attempt))
     }
 
     #[cfg(feature = "platform-spi")]
@@ -893,12 +1088,24 @@ impl NativeBackend {
 
     #[cfg(feature = "platform-spi")]
     pub(crate) fn presentation_snapshot(&self) -> NativePresentationSnapshot {
-        self.presentation.snapshot()
+        let mut snapshot = self.presentation.snapshot();
+        snapshot.current_atlas_bytes = self.atlas_cache.current_bytes;
+        snapshot.peak_atlas_bytes = self.atlas_cache.peak_bytes;
+        snapshot.atlas_allocations = self.atlas_cache.allocations;
+        snapshot.atlas_uploads = self.atlas_cache.uploads;
+        snapshot.atlas_reuses = self.atlas_cache.reuses;
+        snapshot.atlas_pressure_releases = self.atlas_cache.pressure_releases;
+        snapshot
     }
 
     #[cfg(feature = "platform-spi")]
     pub(crate) fn release_presentation_uploads_on_pressure(&mut self) {
         self.presentation.pressure();
+        if self.presentation.has_pending() {
+            self.atlas_pressure_pending = true;
+        } else {
+            self.atlas_cache.pressure();
+        }
     }
 }
 
@@ -1002,8 +1209,11 @@ fn build_backend(
         (
             NativeBackend {
                 initialized,
+                atlas_cache: GlyphAtlasCache::new(),
                 #[cfg(feature = "platform-spi")]
                 presentation: PresentationSlots::new(),
+                #[cfg(feature = "platform-spi")]
+                atlas_pressure_pending: false,
                 #[cfg(any(test, alpine_native_validation))]
                 fault: NativeFault::None,
                 #[cfg(test)]
@@ -1145,8 +1355,11 @@ fn create_pipeline_state(
 
 struct FrameResources {
     texture: Texture,
+    atlas: Option<Buffer>,
+    atlas_upload: Option<AtlasUpload>,
     readback: Buffer,
     upload: Option<Buffer>,
+    atlas_uploaded_bytes: usize,
     usage: FrameResourceUsage,
     #[cfg(test)]
     _lease: ResourceLease,
@@ -1160,15 +1373,20 @@ struct ResourceBuildFailure {
 #[cfg(feature = "platform-spi")]
 struct DrawableResources {
     retained_texture_bytes: usize,
+    allocated_atlas_bytes: usize,
+    atlas_uploaded_bytes: usize,
+    atlas: Option<Buffer>,
+    atlas_upload: Option<AtlasUpload>,
 }
 
 #[cfg(feature = "platform-spi")]
 impl DrawableResources {
     fn new(
-        _device: &Device,
+        device: &Device,
         texture: &ProtocolObject<dyn MTLTexture>,
         frame: &ValidatedFrame,
         expected_pixel_format: MTLPixelFormat,
+        atlas_cache: &mut GlyphAtlasCache,
     ) -> Result<Self, ResourceBuildFailure> {
         let descriptor = frame.descriptor();
         if texture.width() != descriptor.pixel_width() as usize
@@ -1193,8 +1411,29 @@ impl DrawableResources {
             });
         }
 
+        let atlas = if frame.paints().is_empty() {
+            AtlasPreparation::default()
+        } else {
+            atlas_cache
+                .prepare(device, frame.glyph_atlas())
+                .map_err(|error| ResourceBuildFailure {
+                    error,
+                    usage: FrameResourceUsage::default(),
+                })?
+        };
+        let retained_texture_bytes = texture
+            .allocatedSize()
+            .checked_add(atlas.retained_bytes)
+            .ok_or_else(|| ResourceBuildFailure {
+                error: RenderError::AccountingOverflow,
+                usage: FrameResourceUsage::default(),
+            })?;
         Ok(Self {
-            retained_texture_bytes: texture.allocatedSize(),
+            retained_texture_bytes,
+            allocated_atlas_bytes: atlas.allocated_bytes,
+            atlas_uploaded_bytes: atlas.uploaded_bytes,
+            atlas: atlas.buffer,
+            atlas_upload: atlas.upload,
         })
     }
 }
@@ -1208,6 +1447,7 @@ impl FrameResources {
         device: &Device,
         frame: &ValidatedFrame,
         pixel_format: MTLPixelFormat,
+        atlas_cache: &mut GlyphAtlasCache,
         #[cfg(test)] fault: NativeFault,
         #[cfg(test)] probe: &ResourceProbe,
     ) -> Result<Self, ResourceBuildFailure> {
@@ -1258,6 +1498,36 @@ impl FrameResources {
                 usage: FrameResourceUsage::default(),
             })?;
         let texture_bytes = texture.allocatedSize();
+        let atlas = if frame.paints().is_empty() {
+            AtlasPreparation::default()
+        } else {
+            atlas_cache
+                .prepare(device, frame.glyph_atlas())
+                .map_err(|error| ResourceBuildFailure {
+                    error,
+                    usage: FrameResourceUsage {
+                        allocated_bytes: texture_bytes,
+                        peak_retained_bytes: texture_bytes,
+                        current_retained_bytes: 0,
+                        readback_bytes: 0,
+                    },
+                })?
+        };
+        let atlas_retained_bytes = atlas.retained_bytes;
+        let atlas_allocated_bytes = atlas.allocated_bytes;
+        let allocated_before_readback = texture_bytes
+            .checked_add(atlas_allocated_bytes)
+            .ok_or_else(|| ResourceBuildFailure {
+                error: RenderError::AccountingOverflow,
+                usage: FrameResourceUsage::default(),
+            })?;
+        let retained_before_readback =
+            texture_bytes
+                .checked_add(atlas_retained_bytes)
+                .ok_or_else(|| ResourceBuildFailure {
+                    error: RenderError::AccountingOverflow,
+                    usage: FrameResourceUsage::default(),
+                })?;
 
         let layout = frame.readback_layout();
         #[cfg(test)]
@@ -1268,8 +1538,8 @@ impl FrameResources {
                     requested_bytes: Some(layout.buffer_len()),
                 },
                 usage: FrameResourceUsage {
-                    allocated_bytes: texture_bytes,
-                    peak_retained_bytes: texture_bytes,
+                    allocated_bytes: allocated_before_readback,
+                    peak_retained_bytes: retained_before_readback,
                     current_retained_bytes: 0,
                     readback_bytes: 0,
                 },
@@ -1283,22 +1553,27 @@ impl FrameResources {
                     requested_bytes: Some(layout.buffer_len()),
                 },
                 usage: FrameResourceUsage {
-                    allocated_bytes: texture_bytes,
-                    peak_retained_bytes: texture_bytes,
+                    allocated_bytes: allocated_before_readback,
+                    peak_retained_bytes: retained_before_readback,
                     current_retained_bytes: 0,
                     readback_bytes: 0,
                 },
             })?;
         let readback_bytes = readback.allocatedSize();
-        let base_allocated =
-            texture_bytes
-                .checked_add(readback_bytes)
-                .ok_or_else(|| ResourceBuildFailure {
-                    error: RenderError::AccountingOverflow,
-                    usage: FrameResourceUsage::default(),
-                })?;
+        let base_allocated = allocated_before_readback
+            .checked_add(readback_bytes)
+            .ok_or_else(|| ResourceBuildFailure {
+                error: RenderError::AccountingOverflow,
+                usage: FrameResourceUsage::default(),
+            })?;
+        let base_retained = retained_before_readback
+            .checked_add(readback_bytes)
+            .ok_or_else(|| ResourceBuildFailure {
+                error: RenderError::AccountingOverflow,
+                usage: FrameResourceUsage::default(),
+            })?;
 
-        let upload = if frame.quads().is_empty() {
+        let upload = if frame.paints().is_empty() {
             None
         } else {
             #[cfg(test)]
@@ -1310,15 +1585,15 @@ impl FrameResources {
                     },
                     usage: FrameResourceUsage {
                         allocated_bytes: base_allocated,
-                        peak_retained_bytes: base_allocated,
+                        peak_retained_bytes: base_retained,
                         current_retained_bytes: 0,
                         readback_bytes: readback.length(),
                     },
                 });
             }
-            let first = NonNull::from(&frame.quads()[0]).cast::<c_void>();
+            let first = NonNull::from(&frame.paints()[0]).cast::<c_void>();
             // SAFETY: `first` points to `frame.upload_bytes()` initialized,
-            // contiguous bytes because LoweredQuad is Copy and repr(C). Metal
+            // contiguous bytes because LoweredPaint is Copy and repr(C). Metal
             // copies those bytes before this call returns.
             unsafe {
                 device.newBufferWithBytes_length_options(
@@ -1334,7 +1609,7 @@ impl FrameResources {
                 },
                 usage: FrameResourceUsage {
                     allocated_bytes: base_allocated,
-                    peak_retained_bytes: base_allocated,
+                    peak_retained_bytes: base_retained,
                     current_retained_bytes: 0,
                     readback_bytes: readback.length(),
                 },
@@ -1349,17 +1624,27 @@ impl FrameResources {
             error: RenderError::AccountingOverflow,
             usage: FrameResourceUsage::default(),
         })?;
+        let retained_bytes = upload.as_deref().map_or(Some(base_retained), |upload| {
+            base_retained.checked_add(upload.allocatedSize())
+        });
+        let retained_bytes = retained_bytes.ok_or_else(|| ResourceBuildFailure {
+            error: RenderError::AccountingOverflow,
+            usage: FrameResourceUsage::default(),
+        })?;
         let usage = FrameResourceUsage {
             allocated_bytes,
-            peak_retained_bytes: allocated_bytes,
+            peak_retained_bytes: retained_bytes,
             current_retained_bytes: 0,
             readback_bytes: readback.length(),
         };
 
         Ok(Self {
             texture,
+            atlas: atlas.buffer,
+            atlas_upload: atlas.upload,
             readback,
             upload,
+            atlas_uploaded_bytes: atlas.uploaded_bytes,
             usage,
             #[cfg(test)]
             _lease: lease,
@@ -1373,8 +1658,15 @@ fn encode_render_pass(
     pipeline: &PipelineState,
     texture: &ProtocolObject<dyn MTLTexture>,
     upload: Option<&ProtocolObject<dyn MTLBuffer>>,
+    atlas: Option<&ProtocolObject<dyn MTLBuffer>>,
     frame: &ValidatedFrame,
 ) -> Result<(), RenderError> {
+    if !texture.usage().contains(MTLTextureUsage::RenderTarget) {
+        return Err(RenderError::SubmissionInvariantViolated);
+    }
+    if upload.is_some() && atlas.is_none() {
+        return Err(RenderError::SubmissionInvariantViolated);
+    }
     let pass = MTLRenderPassDescriptor::renderPassDescriptor();
     let attachments = pass.colorAttachments();
     // SAFETY: Metal render-pass descriptors always expose eight color
@@ -1412,8 +1704,24 @@ fn encode_render_pass(
         );
     }
     if let Some(upload) = upload {
+        if let Some(atlas) = atlas {
+            let atlas_extent = frame
+                .glyph_atlas()
+                .map_or([1, 1], |image| [image.width().get(), image.height().get()]);
+            // SAFETY: `atlas_extent` contains exactly two initialized u32
+            // values and Metal copies all eight bytes into fragment buffer
+            // index zero immediately.
+            unsafe {
+                encoder.setFragmentBytes_length_atIndex(
+                    NonNull::from(&atlas_extent).cast::<c_void>(),
+                    size_of::<[u32; 2]>(),
+                    0,
+                );
+                encoder.setFragmentBuffer_offset_atIndex(Some(atlas), 0, 1);
+            }
+        }
         // SAFETY: The retained upload buffer contains exactly the validated
-        // LoweredQuad slice, offset zero is aligned, shader index one is fixed,
+        // LoweredPaint slice, offset zero is aligned, shader index one is fixed,
         // and both the local owner and retained command buffer keep it alive.
         unsafe {
             encoder.setVertexBuffer_offset_atIndex(Some(upload), 0, 1);
@@ -1421,12 +1729,83 @@ fn encode_render_pass(
                 MTLPrimitiveType::Triangle,
                 0,
                 6,
-                frame.quads().len(),
+                frame.paints().len(),
             );
         }
     }
     encoder.endEncoding();
     Ok(())
+}
+
+fn encode_atlas_upload(
+    command: &CommandBuffer,
+    upload: &AtlasUpload,
+    buffer: &ProtocolObject<dyn MTLBuffer>,
+) -> Result<(), RenderError> {
+    if upload.buffer.length() != buffer.length() {
+        return Err(RenderError::SubmissionInvariantViolated);
+    }
+    let encoder = command
+        .blitCommandEncoder()
+        .ok_or(RenderError::EncoderUnavailable {
+            stage: RenderStage::BlitEncoder,
+        })?;
+    // SAFETY: Source and destination have the same checked nonzero length and
+    // both resources remain retained until the command reaches a terminal state.
+    unsafe {
+        encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+            &upload.buffer,
+            0,
+            buffer,
+            0,
+            buffer.length(),
+        );
+    }
+    encoder.endEncoding();
+    Ok(())
+}
+
+fn create_glyph_atlas(
+    device: &Device,
+    atlas: &alpine_scene::GlyphAtlasImage,
+) -> Result<(Buffer, AtlasUpload), RenderError> {
+    let byte_len = atlas.pixels().len();
+    let buffer = device
+        .newBufferWithLength_options(byte_len, MTLResourceOptions::StorageModePrivate)
+        .ok_or(RenderError::ResourceUnavailable {
+            stage: RenderStage::UploadBuffer,
+            requested_bytes: Some(byte_len),
+        })?;
+    let source = NonNull::new(atlas.pixels().as_ptr().cast_mut().cast::<c_void>())
+        .ok_or(RenderError::SubmissionInvariantViolated)?;
+    // SAFETY: The immutable atlas allocation contains exactly `byte_len`
+    // initialized bytes and Metal copies them into owned shared storage.
+    let staging = unsafe {
+        device.newBufferWithBytes_length_options(
+            source,
+            byte_len,
+            MTLResourceOptions::StorageModeShared,
+        )
+    }
+    .ok_or(RenderError::ResourceUnavailable {
+        stage: RenderStage::UploadBuffer,
+        requested_bytes: Some(byte_len),
+    })?;
+    Ok((buffer, AtlasUpload { buffer: staging }))
+}
+
+fn create_solid_binding_atlas(device: &Device) -> Result<Buffer, RenderError> {
+    let texel = [u8::MAX];
+    let bytes = NonNull::from(&texel).cast::<c_void>();
+    // SAFETY: The source is one initialized byte and Metal copies it before
+    // returning, providing a valid fallback binding for solid-only draws.
+    unsafe {
+        device.newBufferWithBytes_length_options(bytes, 1, MTLResourceOptions::StorageModeShared)
+    }
+    .ok_or(RenderError::ResourceUnavailable {
+        stage: RenderStage::UploadBuffer,
+        requested_bytes: Some(1),
+    })
 }
 
 fn encode_readback(
@@ -1586,11 +1965,13 @@ fn injected_terminal_result(
 pub(crate) mod tests {
     #[cfg(feature = "platform-spi")]
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::{error::Error, process::Command};
+    use std::{error::Error, num::NonZeroU32, process::Command, sync::Arc};
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_renderer::Renderer;
-    use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
+    use alpine_scene::{
+        AtlasBounds, Glyph, GlyphAtlasImage, Primitive, Scene, SceneBuilder, SceneRevision,
+    };
     #[cfg(feature = "platform-spi")]
     use objc2::{
         AnyThread, DefinedClass, define_class, msg_send, rc::Retained, runtime::ProtocolObject,
@@ -1784,8 +2165,11 @@ pub(crate) mod tests {
         let backend = MetalBackend::from_platform_parts((
             NativeBackend {
                 initialized,
+                atlas_cache: super::GlyphAtlasCache::new(),
                 #[cfg(feature = "platform-spi")]
                 presentation: super::PresentationSlots::new(),
+                #[cfg(feature = "platform-spi")]
+                atlas_pressure_pending: false,
                 fault,
                 probe: probe.clone(),
             },
@@ -1941,6 +2325,95 @@ pub(crate) mod tests {
         Ok((builder.finish(), descriptor))
     }
 
+    fn glyph_scene(
+        revision: u64,
+        pixels: Arc<[u8]>,
+    ) -> Result<(Scene, OffscreenDescriptor), Box<dyn Error>> {
+        let mut builder = SceneBuilder::new(SceneRevision::new(revision), size(3.0, 1.0)?);
+        builder.push(Primitive::Quad {
+            bounds: Rect::new(point(0.0, 0.0)?, size(3.0, 1.0)?),
+            color: color(1.0, 0.0, 0.0, 1.0)?,
+        });
+        builder.set_glyph_atlas(GlyphAtlasImage::new(
+            revision,
+            NonZeroU32::new(3).ok_or("atlas width")?,
+            NonZeroU32::new(1).ok_or("atlas height")?,
+            pixels,
+        )?)?;
+        for (source_x, destination_x) in [0_u32, 1, 2].into_iter().zip([0.0_f32, 1.0, 2.0]) {
+            builder.push_glyph(Glyph::new(
+                Rect::new(point(destination_x, 0.0)?, size(1.0, 1.0)?),
+                AtlasBounds::new(
+                    source_x,
+                    0,
+                    NonZeroU32::new(1).ok_or("glyph width")?,
+                    NonZeroU32::new(1).ok_or("glyph height")?,
+                ),
+                color(1.0, 1.0, 1.0, 1.0)?,
+            ))?;
+        }
+        let descriptor = OffscreenDescriptor::new(3, 1, 1.0, color(0.0, 0.0, 0.0, 0.0)?)?;
+        Ok((builder.finish(), descriptor))
+    }
+
+    #[test]
+    fn renders_a8_glyphs_and_reuses_only_identical_atlas_storage() -> Result<(), Box<dyn Error>> {
+        let pixels: Arc<[u8]> = Arc::from([0_u8, 128, 255]);
+        let (scene, descriptor) = glyph_scene(81, Arc::clone(&pixels))?;
+        let expected = ValidatedFrame::new(&scene, descriptor)?.reference_image()?;
+        assert_eq!(expected.pixel(0, 0), Some([0, 0, 255, 255]));
+        assert_eq!(expected.pixel(1, 0), Some([128, 128, 255, 255]));
+        assert_eq!(expected.pixel(2, 0), Some([255, 255, 255, 255]));
+
+        let mut backend = validation_backend(BlendConfiguration::PremultipliedSourceOver)?;
+        let first = backend.render_offscreen(&scene, descriptor)?;
+        assert_pixels_within(first.image(), &expected, 1);
+        assert_eq!(
+            first.report().instance_upload_bytes,
+            4 * size_of::<crate::LoweredPaint>()
+        );
+        assert_eq!(first.report().atlas_upload_bytes, 3);
+        assert_eq!(
+            first.report().uploaded_bytes,
+            first.report().instance_upload_bytes + 3
+        );
+
+        let reused = backend.render_offscreen(&scene, descriptor)?;
+        assert_pixels_within(reused.image(), &expected, 1);
+        assert_eq!(reused.report().atlas_upload_bytes, 0);
+        assert_eq!(
+            reused.report().retained_bytes,
+            reused
+                .report()
+                .allocated_bytes
+                .checked_add(backend.native.atlas_cache.current_bytes)
+                .ok_or("reused atlas accounting overflow")?
+        );
+        for _ in 0..32 {
+            let steady = backend.render_offscreen(&scene, descriptor)?;
+            assert_eq!(steady.report().atlas_upload_bytes, 0);
+        }
+        assert_eq!(backend.native.atlas_cache.allocations, 1);
+        assert_eq!(backend.native.atlas_cache.uploads, 1);
+        assert_eq!(backend.native.atlas_cache.reuses, 33);
+
+        let (replacement, replacement_descriptor) = glyph_scene(81, Arc::from([255_u8, 128, 0]))?;
+        let replaced = backend.render_offscreen(&replacement, replacement_descriptor)?;
+        assert_eq!(replaced.report().atlas_upload_bytes, 3);
+        assert_eq!(backend.native.atlas_cache.allocations, 2);
+        assert_eq!(backend.native.atlas_cache.uploads, 2);
+        assert!(backend.native.atlas_cache.current_bytes >= 3);
+        assert_eq!(
+            backend.native.atlas_cache.peak_bytes,
+            backend.native.atlas_cache.current_bytes
+        );
+
+        backend.native.atlas_cache.pressure();
+        assert_eq!(backend.native.atlas_cache.current_bytes, 0);
+        assert_eq!(backend.native.atlas_cache.pressure_releases, 1);
+        Ok(())
+    }
+
     #[test]
     fn production_initialization_enforces_the_device_baseline() -> Result<(), Box<dyn Error>> {
         match new_backend() {
@@ -2034,13 +2507,19 @@ pub(crate) mod tests {
         assert!(attempt.present_called);
         assert_eq!(attempt.result, Ok(()));
         assert_eq!(attempt.operations.draw_calls, 1);
-        assert_eq!(attempt.operations.uploaded_bytes, frame.upload_bytes());
+        assert_eq!(
+            attempt.operations.uploaded_bytes(),
+            Some(frame.upload_bytes())
+        );
         assert_eq!(attempt.resources.readback_bytes, 0);
         assert_eq!(drawable.present_calls(), 1);
         let first = backend.native.presentation_snapshot();
         assert_eq!(first.occupied_slots, 0);
         assert_eq!(first.upload_allocations, 1);
         assert!(first.current_upload_bytes >= frame.upload_bytes());
+        assert_eq!(first.atlas_allocations, 1);
+        assert_eq!(first.atlas_uploads, 0);
+        assert!(first.current_atlas_bytes >= 1);
 
         let reused =
             backend
@@ -2049,12 +2528,94 @@ pub(crate) mod tests {
         assert_eq!(reused.result, Ok(()));
         assert_eq!(reused.resources.allocated_bytes, 0);
         assert_eq!(backend.native.presentation_snapshot().upload_allocations, 1);
+        assert_eq!(backend.native.presentation_snapshot().atlas_allocations, 1);
         assert_eq!(drawable.present_calls(), 2);
 
         backend.native.release_presentation_uploads_on_pressure();
         let released = backend.native.presentation_snapshot();
         assert_eq!(released.current_upload_bytes, 0);
         assert_eq!(released.upload_trims, 1);
+        assert_eq!(released.current_atlas_bytes, 0);
+        assert_eq!(released.atlas_pressure_releases, 1);
+        Ok(())
+    }
+
+    #[cfg(feature = "platform-spi")]
+    #[test]
+    fn atlas_pressure_release_preserves_in_flight_drawable_ownership() -> Result<(), Box<dyn Error>>
+    {
+        let (scene, descriptor) = glyph_scene(82, Arc::from([0_u8, 128, 255]))?;
+        let frame = ValidatedFrame::new(&scene, descriptor)?;
+        let mut backend = validation_backend(BlendConfiguration::PremultipliedSourceOver)?;
+        // SAFETY: The dimensions come from a validated frame and the fixture
+        // creates one render-target texture without mip levels or CPU mapping.
+        let texture_descriptor = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                MTLPixelFormat::BGRA8Unorm_sRGB,
+                descriptor.pixel_width() as usize,
+                descriptor.pixel_height() as usize,
+                false,
+            )
+        };
+        texture_descriptor.setStorageMode(MTLStorageMode::Private);
+        texture_descriptor.setUsage(MTLTextureUsage::RenderTarget);
+        let texture = backend
+            .native
+            .initialized
+            .device
+            .newTextureWithDescriptor(&texture_descriptor)
+            .ok_or("glyph callback texture")?;
+        let drawable = TestDrawable::new();
+
+        let super::NativeDrawableSubmitAttempt::Submitted(first) = backend.native.submit_drawable(
+            0,
+            &frame,
+            &texture,
+            ProtocolObject::from_ref(&*drawable),
+        ) else {
+            return Err("glyph drawable submission was rejected".into());
+        };
+        let occupied = backend.native.presentation_snapshot();
+        assert_eq!(occupied.occupied_slots, 1);
+        assert_eq!(occupied.atlas_allocations, 1);
+        assert_eq!(occupied.atlas_uploads, 1);
+        assert!(occupied.current_atlas_bytes >= 3);
+
+        backend.native.release_presentation_uploads_on_pressure();
+        let released = backend.native.presentation_snapshot();
+        assert!(released.current_atlas_bytes >= 3);
+        assert_eq!(released.atlas_pressure_releases, 0);
+        assert_eq!(released.occupied_slots, 1);
+        assert!(backend.native.wait_drawable(first.id));
+        let first = backend
+            .native
+            .poll_drawable(first.id)?
+            .ok_or("in-flight glyph drawable did not complete after pressure")?;
+        assert_eq!(first.result, Ok(()));
+        assert_eq!(first.operations.atlas_upload_bytes, 3);
+        let drained = backend.native.presentation_snapshot();
+        assert_eq!(drained.current_atlas_bytes, 0);
+        assert_eq!(drained.atlas_pressure_releases, 1);
+
+        let super::NativeDrawableSubmitAttempt::Submitted(second) = backend.native.submit_drawable(
+            0,
+            &frame,
+            &texture,
+            ProtocolObject::from_ref(&*drawable),
+        ) else {
+            return Err("glyph drawable was not admitted after pressure".into());
+        };
+        assert!(backend.native.wait_drawable(second.id));
+        let second = backend
+            .native
+            .poll_drawable(second.id)?
+            .ok_or("replacement glyph drawable did not complete")?;
+        assert_eq!(second.result, Ok(()));
+        assert_eq!(second.operations.atlas_upload_bytes, 3);
+        let replaced = backend.native.presentation_snapshot();
+        assert_eq!(replaced.atlas_allocations, 2);
+        assert_eq!(replaced.atlas_uploads, 2);
+        assert_eq!(replaced.atlas_reuses, 0);
         Ok(())
     }
 
@@ -2205,7 +2766,7 @@ pub(crate) mod tests {
 
     #[cfg(feature = "platform-spi")]
     #[test]
-    fn presentation_upload_copies_reuses_and_grows_exact_quad_bytes() -> Result<(), Box<dyn Error>>
+    fn presentation_upload_copies_reuses_and_grows_exact_paint_bytes() -> Result<(), Box<dyn Error>>
     {
         let (scene, descriptor) = discriminating_scene()?;
         let frame = ValidatedFrame::new(&scene, descriptor)?;
@@ -2229,7 +2790,7 @@ pub(crate) mod tests {
         // SAFETY: `upload_bytes` is defined as the exact contiguous byte size
         // of this validated quad slice.
         let expected = unsafe {
-            std::slice::from_raw_parts(frame.quads().as_ptr().cast::<u8>(), frame.upload_bytes())
+            std::slice::from_raw_parts(frame.paints().as_ptr().cast::<u8>(), frame.upload_bytes())
         };
         assert_eq!(actual, expected);
 
@@ -2237,7 +2798,7 @@ pub(crate) mod tests {
         assert_eq!(reused.allocated_bytes, 0);
         assert_eq!(reused.current_upload_bytes, first.current_upload_bytes);
 
-        let quad_bytes = frame.upload_bytes() / frame.quads().len();
+        let quad_bytes = frame.upload_bytes() / frame.paints().len();
         let required_quads = first_capacity / quad_bytes + 1;
         let mut builder = SceneBuilder::new(SceneRevision::new(72), size(4.0, 3.0)?);
         for _ in 0..required_quads {
@@ -2262,7 +2823,7 @@ pub(crate) mod tests {
         };
         // SAFETY: `upload_bytes` exactly covers the contiguous larger quad slice.
         let expected = unsafe {
-            std::slice::from_raw_parts(larger.quads().as_ptr().cast::<u8>(), larger.upload_bytes())
+            std::slice::from_raw_parts(larger.paints().as_ptr().cast::<u8>(), larger.upload_bytes())
         };
         assert_eq!(actual, expected);
         Ok(())
@@ -2316,7 +2877,10 @@ pub(crate) mod tests {
         assert_eq!(completed.report().submission, 1);
         assert_eq!(completed.report().primitives, 4);
         assert_eq!(completed.report().draw_calls, 1);
-        assert_eq!(completed.report().uploaded_bytes, 3 * 32);
+        assert_eq!(
+            completed.report().uploaded_bytes,
+            3 * std::mem::size_of::<crate::LoweredPaint>()
+        );
         assert_pixels_within(completed.image(), &expected, 1);
 
         let mut target = OffscreenTarget::new(descriptor);
@@ -2452,6 +3016,7 @@ pub(crate) mod tests {
             &wrong_extent,
             &frame,
             MTLPixelFormat::BGRA8Unorm_sRGB,
+            &mut super::GlyphAtlasCache::new(),
         )
         .err()
         .ok_or("wrong extent must fail")?;
@@ -2487,6 +3052,7 @@ pub(crate) mod tests {
             &wrong_format,
             &frame,
             MTLPixelFormat::BGRA8Unorm_sRGB,
+            &mut super::GlyphAtlasCache::new(),
         )
         .err()
         .ok_or("wrong format must fail")?;
@@ -2591,16 +3157,16 @@ pub(crate) mod tests {
             (
                 NativeFault::CommandBuffer,
                 RenderStage::CommandBuffer,
-                96,
+                144,
                 0,
             ),
             (
                 NativeFault::RenderEncoder,
                 RenderStage::RenderEncoder,
-                96,
+                144,
                 0,
             ),
-            (NativeFault::BlitEncoder, RenderStage::BlitEncoder, 96, 1),
+            (NativeFault::BlitEncoder, RenderStage::BlitEncoder, 144, 1),
         ];
 
         for (fault, expected_stage, uploaded_bytes, draw_calls) in cases {
@@ -2672,7 +3238,10 @@ pub(crate) mod tests {
             assert_eq!(backend.submission_count(), 1);
             assert_eq!(accounting.state(), state);
             assert_eq!(accounting.failed_frames(), 1);
-            assert_eq!(accounting.uploaded_bytes(), 3 * 32);
+            assert_eq!(
+                accounting.uploaded_bytes(),
+                u128::try_from(3 * std::mem::size_of::<crate::LoweredPaint>())?
+            );
             assert_eq!(accounting.draw_calls(), 1);
             assert_eq!(accounting.current_retained_bytes(), 0);
             assert!(accounting.allocated_bytes() > 0);
@@ -2703,6 +3272,10 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the cancellation, shutdown, and steady-state accounting journey remains one fixture"
+    )]
     fn cancellation_shutdown_and_steady_state_have_no_hidden_native_work()
     -> Result<(), Box<dyn Error>> {
         const VALIDATION_WARMUP_FRAMES: u16 = 256;
@@ -2720,7 +3293,10 @@ pub(crate) mod tests {
         assert_eq!(cancellation.generation().get(), 1);
         assert_eq!(cancellation.primitives(), 4);
         assert_eq!(cancellation.omitted_primitives(), 1);
-        assert_eq!(cancellation.uploaded_bytes_avoided(), 3 * 32);
+        assert_eq!(
+            cancellation.uploaded_bytes_avoided(),
+            3 * std::mem::size_of::<crate::LoweredPaint>()
+        );
         assert_eq!(probe.counts(), (0, 0, 0));
         assert_eq!(backend.accounting().uploaded_bytes(), 0);
         assert_eq!(backend.accounting().draw_calls(), 0);
@@ -2767,9 +3343,10 @@ pub(crate) mod tests {
         assert_eq!(accounting.completed_frames(), u128::from(total_frames));
         assert_eq!(accounting.submitted_frames(), u64::from(total_frames));
         assert_eq!(accounting.draw_calls(), u128::from(total_frames));
+        let frame_upload_bytes = u128::try_from(3 * std::mem::size_of::<crate::LoweredPaint>())?;
         assert_eq!(
             accounting.uploaded_bytes(),
-            u128::from(total_frames) * 3 * 32
+            u128::from(total_frames) * frame_upload_bytes
         );
         assert_eq!(accounting.allocated_bytes(), expected_allocated);
         assert_eq!(accounting.readback_bytes(), expected_readback);

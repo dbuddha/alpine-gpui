@@ -109,13 +109,10 @@ mod tests {
         );
         let expected_color =
             LinearRgba::new(0.22, 0.57, 0.92, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
-        assert_eq!(
-            scene.primitives(),
-            &[Primitive::Quad {
-                bounds: expected_bounds,
-                color: expected_color,
-            }]
-        );
+        assert_eq!(scene.quads().len(), 1);
+        assert_eq!(scene.quads()[0].bounds(), expected_bounds);
+        assert_eq!(scene.quads()[0].color(), expected_color);
+        assert_eq!(scene.operation_count(), 1);
         Ok(())
     }
 

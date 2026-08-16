@@ -28,6 +28,10 @@ pub struct FrameReport {
     pub draw_calls: usize,
     /// Bytes uploaded during this submission.
     pub uploaded_bytes: usize,
+    /// Shader-instance bytes uploaded during this submission.
+    pub instance_upload_bytes: usize,
+    /// Glyph-atlas bytes uploaded during this submission.
+    pub atlas_upload_bytes: usize,
     /// Native resource bytes allocated for this frame.
     pub allocated_bytes: usize,
     /// Peak native resource bytes retained until terminal completion.
@@ -107,10 +111,12 @@ mod tests {
             target.push(scene.revision().get());
             Ok(FrameReport {
                 submission: self.submission,
-                primitives: scene.primitives().len(),
+                primitives: scene.operation_count(),
                 omitted_primitives: 0,
-                draw_calls: usize::from(!scene.primitives().is_empty()),
+                draw_calls: usize::from(!scene.operations().is_empty()),
                 uploaded_bytes: 0,
+                instance_upload_bytes: 0,
+                atlas_upload_bytes: 0,
                 allocated_bytes: 0,
                 retained_bytes: 0,
                 readback_bytes: 0,
@@ -142,6 +148,8 @@ mod tests {
                 omitted_primitives: 0,
                 draw_calls: 0,
                 uploaded_bytes: 0,
+                instance_upload_bytes: 0,
+                atlas_upload_bytes: 0,
                 allocated_bytes: 0,
                 retained_bytes: 0,
                 readback_bytes: 0,

@@ -1,0 +1,20 @@
+[package]
+name = "alpine-text-layout"
+version.workspace = true
+description = "Bounded visible text layout and monochrome glyph atlas for Alpine"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[dependencies]
+alpine-text = { path = "../alpine-text", version = "=0.0.0" }
+
+[target.'cfg(all(target_arch = "aarch64", target_os = "macos"))'.dependencies]
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFArray", "CFAttributedString", "CFDictionary", "CFString"] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGGeometry", "CGImage"] }
+objc2-core-text = { version = "=0.3.2", default-features = false, features = ["std", "CTFont", "CTFontDescriptor", "CTLine", "CTRun", "CTStringAttributes", "objc2-core-graphics"] }
+
+[lints.rust]
+unsafe_code = "allow"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

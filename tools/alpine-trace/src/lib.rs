@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(
             decoded.as_ref().map(|decoded| (
                 decoded.scene().revision().get(),
-                decoded.scene().primitives().len(),
+                decoded.scene().operation_count(),
                 decoded.descriptor().pixel_width(),
                 decoded.descriptor().pixel_height(),
                 decoded.descriptor().scale().to_bits(),

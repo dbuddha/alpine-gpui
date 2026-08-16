@@ -45,6 +45,41 @@ impl BufferRevision {
     }
 }
 
+#[cfg(test)]
+#[path = "mutation_tests.rs"]
+mod mutation_tests;
+
+/// Deterministic streaming identity for one validated text range.
+///
+/// Consumers must confirm a matching fingerprint with
+/// [`BufferSnapshot::range_eq`] before reusing content-derived state.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TextFingerprint {
+    bytes: usize,
+    first: u64,
+    second: u64,
+}
+
+impl TextFingerprint {
+    /// Returns the number of UTF-8 bytes represented by this identity.
+    #[must_use]
+    pub const fn bytes(self) -> usize {
+        self.bytes
+    }
+
+    /// Returns the first deterministic streaming hash lane.
+    #[must_use]
+    pub const fn first(self) -> u64 {
+        self.first
+    }
+
+    /// Returns the independent second streaming hash lane.
+    #[must_use]
+    pub const fn second(self) -> u64 {
+        self.second
+    }
+}
+
 /// A canonical UTF-8 byte offset in a buffer.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ByteOffset(usize);
@@ -400,6 +435,85 @@ impl BufferSnapshot {
     pub fn slice(&self, range: Range<usize>) -> Result<String, TextError> {
         self.validate_range(&range)?;
         Ok(self.rope.byte_slice(range).to_string())
+    }
+
+    /// Returns the checked byte range of one logical line, including its line
+    /// terminator when present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TextError::LineOutOfBounds`] when `line` does not exist.
+    pub fn line_byte_range(&self, line: usize) -> Result<Range<usize>, TextError> {
+        let line_count = self.rope.len_lines();
+        if line >= line_count {
+            return Err(TextError::LineOutOfBounds { line, line_count });
+        }
+        let start = self.rope.line_to_byte(line);
+        let end = self.rope.line_to_byte(line + 1);
+        Ok(start..end)
+    }
+
+    /// Returns the number of logical lines in this snapshot.
+    #[must_use]
+    pub fn line_count(&self) -> usize {
+        self.rope.len_lines()
+    }
+
+    /// Computes a deterministic two-lane identity without materializing a
+    /// contiguous string.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured bounds or UTF-8 boundary error.
+    pub fn fingerprint(&self, range: Range<usize>) -> Result<TextFingerprint, TextError> {
+        self.validate_range(&range)?;
+        let mut first = 0xcbf2_9ce4_8422_2325_u64;
+        let mut second = 0x6eed_0e9d_a4d9_4a4f_u64;
+        for byte in self
+            .rope
+            .byte_slice(range.clone())
+            .chunks()
+            .flat_map(str::bytes)
+        {
+            first ^= u64::from(byte);
+            first = first.wrapping_mul(0x0000_0100_0000_01b3);
+            second ^= u64::from(byte).wrapping_add(0x9e37_79b9_7f4a_7c15);
+            second = second.rotate_left(27).wrapping_mul(0x3c79_ac49_2ba7_b653);
+        }
+        Ok(TextFingerprint {
+            bytes: range.end - range.start,
+            first,
+            second,
+        })
+    }
+
+    /// Compares two validated ranges exactly without materializing either as a
+    /// contiguous string.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured bounds or UTF-8 boundary error from either range.
+    pub fn range_eq(
+        &self,
+        range: Range<usize>,
+        other: &Self,
+        other_range: Range<usize>,
+    ) -> Result<bool, TextError> {
+        self.validate_range(&range)?;
+        other.validate_range(&other_range)?;
+        if range.end - range.start != other_range.end - other_range.start {
+            return Ok(false);
+        }
+        Ok(self
+            .rope
+            .byte_slice(range)
+            .chunks()
+            .flat_map(str::bytes)
+            .eq(other
+                .rope
+                .byte_slice(other_range)
+                .chunks()
+                .flat_map(str::bytes)))
     }
 
     /// Returns whether an offset is an in-bounds UTF-8 character boundary.

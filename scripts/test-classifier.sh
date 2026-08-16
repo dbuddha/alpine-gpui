@@ -38,6 +38,13 @@ assert_output "$text" mutation=true
 assert_output "$text" kani=true
 assert_output "$text" metal=false
 
+text_layout=$(run_fixture crates/alpine-text-layout/src/lib.rs)
+assert_output "$text_layout" coverage=true
+assert_output "$text_layout" mutation=true
+assert_output "$text_layout" kani=true
+assert_output "$text_layout" miri=true
+assert_output "$text_layout" metal=false
+
 formal=$(run_fixture formal/tla/aep-0009/AssuranceLifecycle.tla)
 assert_output "$formal" tla=true
 assert_output "$formal" kani=false

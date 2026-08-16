@@ -7,8 +7,8 @@ if ! cargo metadata --format-version 1 --no-deps | grep -q '"name":"alpine-metal
 fi
 
 metallib_path=$(pwd)/target/metal/offscreen.metallib
-scripts/verify-metal-library.sh
 scripts/build-metal-shaders.sh "$metallib_path"
+scripts/verify-metal-library.sh
 if ! cmp -s shaders/offscreen.metallib "$metallib_path"; then
     printf 'metal validation error: pinned compiler output differs from the checked-in library\n' >&2
     printf 'checked-in: ' >&2
@@ -19,6 +19,10 @@ if ! cmp -s shaders/offscreen.metallib "$metallib_path"; then
 fi
 export ALPINE_METALLIB_PATH="$metallib_path"
 
+# Keep the pinned shader at the shipping target above, but let hosted runtime
+# validation match its OS so Shader Validation loads current diagnostics.
+export MACOSX_DEPLOYMENT_TARGET=${ALPINE_VALIDATION_DEPLOYMENT_TARGET:-${MACOSX_DEPLOYMENT_TARGET:-15.0}}
+
 export MTL_DEBUG_LAYER=1
 export MTL_DEBUG_LAYER_ERROR_MODE=assert
 export MTL_SHADER_VALIDATION=1
@@ -26,7 +30,16 @@ export MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING=1
 export MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1
 export MTL_SHADER_VALIDATION_ABORT_ON_FAULT=1
 
-cargo test --locked -p alpine-metal --all-features
+for validation_test in \
+    native::tests::renders_discriminating_scene_once_and_matches_cpu_oracle \
+    native::tests::renders_a8_glyphs_and_reuses_only_identical_atlas_storage \
+    native::tests::atlas_pressure_release_preserves_in_flight_drawable_ownership
+do
+    cargo test --locked -p alpine-metal --all-features "$validation_test" -- \
+        --exact --nocapture --test-threads=1
+done
+
+cargo test --locked -p alpine-metal --all-features -- --test-threads=1
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_initialization
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \

@@ -850,7 +850,12 @@ fn complete_attempt(
             primitives: frame.consumed_primitives(),
             omitted_primitives: frame.omitted_primitives(),
             draw_calls: attempt.operations.draw_calls,
-            uploaded_bytes: attempt.operations.uploaded_bytes,
+            uploaded_bytes: attempt
+                .operations
+                .uploaded_bytes()
+                .ok_or(RenderError::AccountingOverflow)?,
+            instance_upload_bytes: attempt.operations.instance_upload_bytes,
+            atlas_upload_bytes: attempt.operations.atlas_upload_bytes,
             allocated_bytes: attempt.resources.allocated_bytes,
             retained_bytes: attempt.resources.peak_retained_bytes,
             readback_bytes: attempt.resources.readback_bytes,
@@ -873,7 +878,12 @@ fn complete_drawable_attempt(
         primitives: frame.consumed_primitives(),
         omitted_primitives: frame.omitted_primitives(),
         draw_calls: attempt.operations.draw_calls,
-        uploaded_bytes: attempt.operations.uploaded_bytes,
+        uploaded_bytes: attempt
+            .operations
+            .uploaded_bytes()
+            .ok_or(RenderError::AccountingOverflow)?,
+        instance_upload_bytes: attempt.operations.instance_upload_bytes,
+        atlas_upload_bytes: attempt.operations.atlas_upload_bytes,
         allocated_bytes: attempt.resources.allocated_bytes,
         retained_bytes: attempt.resources.peak_retained_bytes,
         readback_bytes: 0,
@@ -1043,7 +1053,8 @@ mod tests {
         let frame = empty_frame(2, 3)?;
         let operations = FrameOperationUsage {
             draw_calls: 4,
-            uploaded_bytes: 5,
+            instance_upload_bytes: 5,
+            atlas_upload_bytes: 0,
         };
         let resources = FrameResourceUsage {
             allocated_bytes: 6,
@@ -1078,6 +1089,8 @@ mod tests {
                 omitted_primitives: 0,
                 draw_calls: 4,
                 uploaded_bytes: 5,
+                instance_upload_bytes: 5,
+                atlas_upload_bytes: 0,
                 allocated_bytes: 6,
                 retained_bytes: 7,
                 readback_bytes: 0,
@@ -1186,6 +1199,8 @@ mod tests {
                     omitted_primitives: 0,
                     draw_calls: 0,
                     uploaded_bytes: 0,
+                    instance_upload_bytes: 0,
+                    atlas_upload_bytes: 0,
                     allocated_bytes: 512,
                     retained_bytes: 512,
                     readback_bytes: 256,
@@ -1204,6 +1219,8 @@ mod tests {
                 omitted_primitives: 0,
                 draw_calls: 0,
                 uploaded_bytes: 0,
+                instance_upload_bytes: 0,
+                atlas_upload_bytes: 0,
                 allocated_bytes: 512,
                 retained_bytes: 512,
                 readback_bytes: 256,
@@ -1264,6 +1281,8 @@ mod tests {
             omitted_primitives: 0,
             draw_calls: 1,
             uploaded_bytes: 32,
+            instance_upload_bytes: 32,
+            atlas_upload_bytes: 0,
             allocated_bytes: 512,
             retained_bytes: 512,
             readback_bytes: 256,
@@ -1592,7 +1611,10 @@ mod tests {
         assert_eq!(cancellation.generation().get(), 1);
         assert_eq!(cancellation.primitives(), 3);
         assert_eq!(cancellation.omitted_primitives(), 2);
-        assert_eq!(cancellation.uploaded_bytes_avoided(), 32);
+        assert_eq!(
+            cancellation.uploaded_bytes_avoided(),
+            std::mem::size_of::<crate::LoweredPaint>()
+        );
         assert_eq!(backend.accounting().cancelled_frames(), 1);
         assert_eq!(backend.accounting().draw_calls(), 0);
         assert_eq!(backend.accounting().uploaded_bytes(), 0);

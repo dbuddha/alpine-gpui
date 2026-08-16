@@ -1,5 +1,4 @@
 use super::{TraceClip, TraceInput, TraceQuad, TraceViewport};
-use alpine_scene::Primitive;
 
 #[kani::proof]
 fn bounded_trace_preserves_operation_order_and_values() {
@@ -37,10 +36,12 @@ fn bounded_trace_preserves_operation_order_and_values() {
 
     assert!(decoded.is_ok());
     if let Ok(decoded) = decoded {
-        assert_eq!(decoded.scene().primitives().len(), 2);
+        assert_eq!(decoded.scene().operation_count(), 2);
         assert_eq!(decoded.descriptor().pixel_width(), u32::from(width));
         assert_eq!(decoded.descriptor().pixel_height(), u32::from(height));
-        let Primitive::Quad { bounds, color } = decoded.scene().primitives()[0];
+        let quad = decoded.scene().quads()[0];
+        let bounds = quad.bounds();
+        let color = quad.color();
         assert_eq!(bounds.origin().x().to_bits(), 0.0_f32.to_bits());
         assert_eq!(bounds.origin().y().to_bits(), 0.0_f32.to_bits());
         assert_eq!(bounds.size().width().to_bits(), f32::from(width).to_bits());

@@ -1,15 +1,16 @@
 #!/bin/sh
 set -eu
 
-if [ "$#" -ne 4 ]; then
-    printf 'usage: %s BASE_SUMMARY HEAD_SUMMARY LCOV BASE_SHA\n' "$0" >&2
+if [ "$#" -ne 5 ]; then
+    printf 'usage: %s BASE_SUMMARY HEAD_SUMMARY BASE_LCOV HEAD_LCOV BASE_SHA\n' "$0" >&2
     exit 2
 fi
 
 base_summary=$1
 head_summary=$2
-lcov_file=$3
-base_sha=$4
+base_lcov_file=$3
+lcov_file=$4
+base_sha=$5
 head_sha=${ALPINE_HEAD_SHA:-HEAD}
 
 for command in jq awk; do
@@ -33,13 +34,24 @@ awk -v value="$head_functions" 'BEGIN { exit !(value + 0 >= 90) }' || {
 }
 
 if [ -s "$base_summary" ]; then
-    base_lines=$(jq -r '.data[0].totals.lines.percent' "$base_summary")
-    awk -v base="$base_lines" -v head="$head_lines" 'BEGIN {
-        base = int(base * 100 + 0.5) / 100
-        head = int(head * 100 + 0.5) / 100
-        exit !(head >= base)
+    if [ ! -s "$base_lcov_file" ]; then
+        printf 'coverage error: base LCOV evidence is missing\n' >&2
+        exit 1
+    fi
+    base_line_counts=$(awk -F'[:,]' '/^DA:/ { total++; if ($3 + 0 > 0) covered++ } END { printf "%d %d", covered + 0, total + 0 }' "$base_lcov_file")
+    head_line_counts=$(awk -F'[:,]' '/^DA:/ { total++; if ($3 + 0 > 0) covered++ } END { printf "%d %d", covered + 0, total + 0 }' "$lcov_file")
+    base_covered=$(printf '%s\n' "$base_line_counts" | awk '{print $1}')
+    base_total=$(printf '%s\n' "$base_line_counts" | awk '{print $2}')
+    head_covered=$(printf '%s\n' "$head_line_counts" | awk '{print $1}')
+    head_total=$(printf '%s\n' "$head_line_counts" | awk '{print $2}')
+    if [ "$base_total" -eq 0 ] || [ "$head_total" -eq 0 ]; then
+        printf 'coverage error: concrete LCOV line evidence is empty\n' >&2
+        exit 1
+    fi
+    awk -v base_covered="$base_covered" -v base_total="$base_total" -v head_covered="$head_covered" -v head_total="$head_total" 'BEGIN {
+        exit !(head_covered * base_total >= base_covered * head_total)
     }' || {
-        printf 'coverage error: line coverage regressed from %.2f%% to %.2f%%\n' "$base_lines" "$head_lines" >&2
+        printf 'coverage error: concrete line coverage regressed from %s/%s to %s/%s\n' "$base_covered" "$base_total" "$head_covered" "$head_total" >&2
         exit 1
     }
 fi

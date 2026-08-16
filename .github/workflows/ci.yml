@@ -177,18 +177,20 @@ jobs:
           if cargo metadata --format-version 1 --no-deps | grep -q '"name":"alpine-assurance"'; then
             coverage_scope="$coverage_scope --exclude alpine-assurance"
           fi
-          CARGO_TARGET_DIR="$RUNNER_TEMP/alpine-coverage-base-target" cargo llvm-cov $coverage_scope --all-features --locked --json --summary-only --output-path "$GITHUB_WORKSPACE/target/coverage-base.json"
+          CARGO_TARGET_DIR="$RUNNER_TEMP/alpine-coverage-base-target" cargo llvm-cov $coverage_scope --all-features --locked --no-report
+          CARGO_TARGET_DIR="$RUNNER_TEMP/alpine-coverage-base-target" cargo llvm-cov report --ignore-filename-regex '(/tests/|_coverage_tests\.rs$|/embedded_tests\.rs$)' --json --summary-only --output-path "$GITHUB_WORKSPACE/target/coverage-base.json"
+          CARGO_TARGET_DIR="$RUNNER_TEMP/alpine-coverage-base-target" cargo llvm-cov report --ignore-filename-regex '(/tests/|_coverage_tests\.rs$|/embedded_tests\.rs$)' --lcov --output-path "$GITHUB_WORKSPACE/target/lcov-base.info"
       - name: Measure head coverage
         run: |
           cargo llvm-cov clean --workspace
           cargo llvm-cov --workspace --exclude alpine-assurance --all-features --locked --no-report
-          cargo llvm-cov report --json --summary-only --output-path target/coverage-head.json
-          cargo llvm-cov report --lcov --output-path target/lcov.info
-          cargo llvm-cov report --html --output-dir target/coverage-html
+          cargo llvm-cov report --ignore-filename-regex '(/tests/|_coverage_tests\.rs$|/embedded_tests\.rs$)' --json --summary-only --output-path target/coverage-head.json
+          cargo llvm-cov report --ignore-filename-regex '(/tests/|_coverage_tests\.rs$|/embedded_tests\.rs$)' --lcov --output-path target/lcov.info
+          cargo llvm-cov report --ignore-filename-regex '(/tests/|_coverage_tests\.rs$|/embedded_tests\.rs$)' --html --output-dir target/coverage-html
       - name: Enforce coverage contracts
         env:
           ALPINE_HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
-        run: scripts/check-coverage.sh target/coverage-base.json target/coverage-head.json target/lcov.info ${{ needs.classify.outputs.base_sha }}
+        run: scripts/check-coverage.sh target/coverage-base.json target/coverage-head.json target/lcov-base.info target/lcov.info ${{ needs.classify.outputs.base_sha }}
       - name: Enforce assurance-tool coverage floor
         run: |
           cargo llvm-cov clean --workspace
@@ -200,6 +202,7 @@ jobs:
           name: coverage-${{ github.sha }}
           path: |
             target/coverage-head.json
+            target/lcov-base.info
             target/lcov.info
             target/coverage-html
           retention-days: 7
@@ -225,7 +228,7 @@ jobs:
       - name: Require changed shipping mutants to be killed
         # Linux cannot execute macOS-only validation entry points. Their
         # mutations are owned by the required Apple Silicon Metal job below.
-        run: cargo mutants --workspace --exclude alpine-assurance --exclude-re 'native_validation::' --no-shuffle --in-diff target/alpine.diff --output target/mutants.out -- --locked
+        run: cargo mutants --workspace --exclude alpine-assurance --exclude 'crates/alpine-text-layout/src/native.rs' --exclude-re 'native_validation::' --no-shuffle --in-diff target/alpine.diff --output target/mutants.out -- --locked
       - name: Require changed assurance mutants to be killed
         run: cargo mutants -p alpine-assurance --no-shuffle --in-diff target/alpine.diff --output target/assurance-mutants.out -- --locked
       - name: Upload mutation evidence
@@ -294,18 +297,32 @@ jobs:
           if-no-files-found: error
 
   miri:
-    name: miri
+    name: miri-${{ matrix.partition }}
     needs: classify
     if: needs.classify.outputs.miri == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - partition: foundation
+            packages: >-
+              -p alpine-core -p alpine-metal -p alpine-platform
+              -p alpine-platform-macos -p alpine-renderer -p alpine-runtime
+              -p alpine-scene -p alpine-studio -p alpine-trace
+          - partition: text
+            packages: -p alpine-text
+          - partition: text-layout
+            packages: -p alpine-text-layout
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install pinned Miri toolchain
         run: rustup toolchain install nightly-2026-08-01 --profile minimal --component miri
       - name: Check host-testable memory behavior
-        run: cargo +nightly-2026-08-01 miri test --workspace --lib --locked
+        run: cargo +nightly-2026-08-01 miri test ${{ matrix.packages }} --lib --locked
 
   metal-validation:
     name: metal-validation
@@ -316,6 +333,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       MACOSX_DEPLOYMENT_TARGET: "15.0"
+      ALPINE_VALIDATION_DEPLOYMENT_TARGET: "26.0"
       # Hosted macOS runners may have no display that Core Animation can
       # qualify. Validation and mutation controls inherit the same explicit
       # non-qualifying evidence mode. Fixed hardware leaves this unset.

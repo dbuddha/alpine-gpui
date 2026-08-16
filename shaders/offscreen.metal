@@ -5,11 +5,13 @@ using namespace metal;
 struct AlpineQuad {
     float4 bounds;
     float4 color;
+    float4 atlas_uv;
 };
 
 struct AlpineVertexOutput {
     float4 position [[position]];
     float4 color;
+    float2 atlas_uv;
 };
 
 vertex AlpineVertexOutput alpine_quad_vertex(
@@ -39,10 +41,22 @@ vertex AlpineVertexOutput alpine_quad_vertex(
         0.0,
         1.0);
     output.color = quad.color;
+    output.atlas_uv = mix(quad.atlas_uv.xy, quad.atlas_uv.zw, corners[vertex_id]);
     return output;
 }
 
-fragment float4 alpine_quad_fragment(AlpineVertexOutput input [[stage_in]])
+fragment float4 alpine_quad_fragment(
+    AlpineVertexOutput input [[stage_in]],
+    constant uint2 &atlas_extent [[buffer(0)]],
+    device const uchar *atlas [[buffer(1)]])
 {
-    return float4(input.color.rgb * input.color.a, input.color.a);
+    float coverage = 1.0;
+    if (input.atlas_uv.x >= 0.0) {
+        const uint2 texel = min(
+            uint2(input.atlas_uv * float2(atlas_extent)),
+            atlas_extent - uint2(1));
+        coverage = float(atlas[texel.y * atlas_extent.x + texel.x]) / 255.0;
+    }
+    const float alpha = input.color.a * coverage;
+    return float4(input.color.rgb * alpha, alpha);
 }
