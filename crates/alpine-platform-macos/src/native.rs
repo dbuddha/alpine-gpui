@@ -2454,16 +2454,21 @@ impl NativeSurface {
             self.application.finishLaunching();
         }
         self.window.makeKeyAndOrderFront(None);
-        self.window.setAcceptsMouseMovedEvents(true);
-        if !self.window.makeFirstResponder(Some(&self.view)) {
-            return Err(SurfaceError::DriverUnavailable);
-        }
         #[allow(
             deprecated,
             reason = "the initial standalone surface must activate an unbundled Rust executable"
         )]
         self.application.activateIgnoringOtherApps(true);
         self.delegate.synchronize_native_configuration()
+    }
+
+    fn activate_input_responder(&self) -> Result<(), SurfaceError> {
+        self.window.setAcceptsMouseMovedEvents(true);
+        if self.window.makeFirstResponder(Some(&self.view)) {
+            Ok(())
+        } else {
+            Err(SurfaceError::DriverUnavailable)
+        }
     }
 
     pub(crate) fn run(&self) -> Result<(), SurfaceError> {
@@ -2501,6 +2506,7 @@ impl NativeSurface {
     where
         F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
     {
+        self.activate_input_responder()?;
         self.delegate.install_event_handler(handler)?;
         let delegate = self.delegate.clone();
         if !self.view.install_input_handler(Box::new(move |event| {
@@ -2541,6 +2547,7 @@ impl NativeSurface {
     where
         F: FnMut(SurfaceEvent) -> Option<SurfaceFrame> + 'static,
     {
+        self.activate_input_responder()?;
         self.delegate.install_event_handler(handler)?;
         let delegate = self.delegate.clone();
         if !self.view.install_input_handler(Box::new(move |event| {
