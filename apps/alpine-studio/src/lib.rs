@@ -103,7 +103,7 @@ pub fn run() -> Result<(), RuntimeError> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn native_app() -> Result<StudioApp<alpine_text_layout::CoreTextSystem>, SurfaceError> {
+fn native_app() -> Result<StudioApp, SurfaceError> {
     let mut text_system = alpine_text_layout::CoreTextSystem::new();
     text_system
         .register_font(FONT_FAMILY, "Menlo-Regular")
@@ -197,7 +197,7 @@ impl fmt::Display for StudioRenderError {
 
 impl Error for StudioRenderError {}
 
-struct StudioApp<T: StudioTextSystem> {
+struct StudioApp {
     buffer: Buffer,
     selection: Selection,
     composition: Option<Composition>,
@@ -210,13 +210,13 @@ struct StudioApp<T: StudioTextSystem> {
     glyph_atlas: GlyphAtlas,
     published_atlas: Option<GlyphAtlasImage>,
     atlas_revision: u64,
-    text_system: T,
+    text_system: Box<dyn StudioTextSystem>,
     input_failures: u64,
     render_failures: u64,
 }
 
-impl<T: StudioTextSystem> StudioApp<T> {
-    fn new(text_system: T) -> Result<Self, SurfaceError> {
+impl StudioApp {
+    fn new(text_system: impl StudioTextSystem + 'static) -> Result<Self, SurfaceError> {
         let last_viewport =
             Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
         let layout_budget = NonZeroUsize::new(DEFAULT_LAYOUT_BUDGET_BYTES)
@@ -236,7 +236,7 @@ impl<T: StudioTextSystem> StudioApp<T> {
             glyph_atlas: GlyphAtlas::new(atlas_budget),
             published_atlas: None,
             atlas_revision: 0,
-            text_system,
+            text_system: Box::new(text_system),
             input_failures: 0,
             render_failures: 0,
         })
@@ -335,12 +335,12 @@ impl<T: StudioTextSystem> StudioApp<T> {
                 line,
                 font,
                 wrap_width,
-                &mut self.text_system,
+                &mut *self.text_system,
             )?;
             let top = CONTENT_INSET + usize_as_f32(line) * LINE_HEIGHT - self.scroll_y;
             let baseline = top + layout.ascent();
             if !selected.is_empty() {
-                Self::paint_selection(
+                let selection_result = Self::paint_selection(
                     &mut builder,
                     clip,
                     &snapshot,
@@ -349,7 +349,8 @@ impl<T: StudioTextSystem> StudioApp<T> {
                     &layout,
                     selected.clone(),
                     selection_color,
-                )?;
+                );
+                selection_result?;
             }
             pending_glyphs.extend(self.collect_glyphs(&layout, font, CONTENT_INSET, baseline)?);
             rendered_lines.push(RenderedLine {
@@ -372,12 +373,9 @@ impl<T: StudioTextSystem> StudioApp<T> {
                 .map_err(|_| StudioRenderError::Domain)?;
             let start_x = CONTENT_INSET + x_for_utf16(&rendered.layout, prefix_utf16);
             let composition_layout = self.text_system.shape(&composition.text, font)?;
-            pending_glyphs.extend(self.collect_glyphs(
-                &composition_layout,
-                font,
-                start_x,
-                rendered.baseline,
-            )?);
+            let composition_glyphs =
+                self.collect_glyphs(&composition_layout, font, start_x, rendered.baseline);
+            pending_glyphs.extend(composition_glyphs?);
             let underline_origin = Point::new(
                 start_x,
                 rendered.baseline + composition_layout.descent() + 1.0,
@@ -396,9 +394,9 @@ impl<T: StudioTextSystem> StudioApp<T> {
                 .ok_or(StudioRenderError::Domain)?;
             builder.set_glyph_atlas(atlas)?;
             for pending in pending_glyphs {
-                builder.push_glyph(
-                    Glyph::new(pending.bounds, pending.atlas_bounds, text_color).clipped(clip),
-                )?;
+                let glyph =
+                    Glyph::new(pending.bounds, pending.atlas_bounds, text_color).clipped(clip);
+                builder.push_glyph(glyph)?;
             }
         }
         if let Some(bounds) = composition_underline {
@@ -521,12 +519,8 @@ impl<T: StudioTextSystem> StudioApp<T> {
                 .checked_add(1)
                 .ok_or(LayoutError::SequenceExhausted)?;
             let pixels: Arc<[u8]> = self.glyph_atlas.pixels().to_vec().into();
-            self.published_atlas = Some(GlyphAtlasImage::new(
-                self.atlas_revision,
-                dimension,
-                dimension,
-                pixels,
-            )?);
+            let image = GlyphAtlasImage::new(self.atlas_revision, dimension, dimension, pixels);
+            self.published_atlas = Some(image?);
         }
         Ok(())
     }
@@ -769,11 +763,10 @@ impl<T: StudioTextSystem> StudioApp<T> {
             self.input_failures = self.input_failures.saturating_add(1);
             return EventEffect::default();
         };
-        if index == 0 {
-            return EventEffect::default();
-        }
-        let Ok(start) = snapshot.byte_of_grapheme_index(index - 1) else {
-            self.input_failures = self.input_failures.saturating_add(1);
+        let start = index
+            .checked_sub(1)
+            .and_then(|previous| snapshot.byte_of_grapheme_index(previous).ok());
+        let Some(start) = start else {
             return EventEffect::default();
         };
         self.replace_range(start.get()..self.selection.head().get(), "")
@@ -818,51 +811,42 @@ impl<T: StudioTextSystem> StudioApp<T> {
 
     fn move_vertical(&mut self, delta: isize, extend: bool) -> EventEffect {
         let snapshot = self.buffer.snapshot();
-        let Some(line) = Self::line_for_offset(&snapshot, self.selection.head().get())
-            .ok()
-            .flatten()
-        else {
+        let target = (|| {
+            let line = Self::line_for_offset(&snapshot, self.selection.head().get()).ok()??;
+            let line_range = snapshot.line_byte_range(line).ok()?;
+            let column = self.selection.head().get().saturating_sub(line_range.start);
+            let target_line = line
+                .saturating_add_signed(delta)
+                .min(snapshot.line_count() - 1);
+            let target_range = snapshot.line_byte_range(target_line).ok()?;
+            let text = snapshot.slice(target_range.clone()).ok()?;
+            let content = text.trim_end_matches(['\r', '\n']);
+            let mut target_column = column.min(content.len());
+            while target_column > 0 && !content.is_char_boundary(target_column) {
+                target_column -= 1;
+            }
+            Some(ByteOffset::new(target_range.start + target_column))
+        })();
+        let Some(target) = target else {
             return EventEffect::default();
         };
-        let Ok(line_range) = snapshot.line_byte_range(line) else {
-            return EventEffect::default();
-        };
-        let column = self.selection.head().get().saturating_sub(line_range.start);
-        let target_line = line
-            .saturating_add_signed(delta)
-            .min(snapshot.line_count() - 1);
-        let Ok(target_range) = snapshot.line_byte_range(target_line) else {
-            return EventEffect::default();
-        };
-        let Ok(text) = snapshot.slice(target_range.clone()) else {
-            return EventEffect::default();
-        };
-        let content = text.trim_end_matches(['\r', '\n']);
-        let mut target_column = column.min(content.len());
-        while target_column > 0 && !content.is_char_boundary(target_column) {
-            target_column -= 1;
-        }
-        self.extend_or_collapse(ByteOffset::new(target_range.start + target_column), extend)
+        self.extend_or_collapse(target, extend)
     }
 
     fn move_to_line_edge(&mut self, end: bool, extend: bool) -> EventEffect {
         let snapshot = self.buffer.snapshot();
-        let Some(line) = Self::line_for_offset(&snapshot, self.selection.head().get())
-            .ok()
-            .flatten()
-        else {
+        let offset = (|| {
+            let line = Self::line_for_offset(&snapshot, self.selection.head().get()).ok()??;
+            let range = snapshot.line_byte_range(line).ok()?;
+            if end {
+                let text = snapshot.slice(range.clone()).ok()?;
+                Some(range.start + text.trim_end_matches(['\r', '\n']).len())
+            } else {
+                Some(range.start)
+            }
+        })();
+        let Some(offset) = offset else {
             return EventEffect::default();
-        };
-        let Ok(range) = snapshot.line_byte_range(line) else {
-            return EventEffect::default();
-        };
-        let offset = if end {
-            let Ok(text) = snapshot.slice(range.clone()) else {
-                return EventEffect::default();
-            };
-            range.start + text.trim_end_matches(['\r', '\n']).len()
-        } else {
-            range.start
         };
         self.extend_or_collapse(ByteOffset::new(offset), extend)
     }
@@ -885,9 +869,10 @@ impl<T: StudioTextSystem> StudioApp<T> {
                 self.composition = None;
                 EventEffect::document()
             }
-            Ok(false) => EventEffect::default(),
-            Err(_) => {
-                self.input_failures = self.input_failures.saturating_add(1);
+            result => {
+                self.input_failures = self
+                    .input_failures
+                    .saturating_add(u64::from(result.is_err()));
                 EventEffect::default()
             }
         }
@@ -902,9 +887,10 @@ impl<T: StudioTextSystem> StudioApp<T> {
                 self.composition = None;
                 EventEffect::document()
             }
-            Ok(false) => EventEffect::default(),
-            Err(_) => {
-                self.input_failures = self.input_failures.saturating_add(1);
+            result => {
+                self.input_failures = self
+                    .input_failures
+                    .saturating_add(u64::from(result.is_err()));
                 EventEffect::default()
             }
         }
@@ -914,20 +900,19 @@ impl<T: StudioTextSystem> StudioApp<T> {
         snapshot: &BufferSnapshot,
         offset: usize,
     ) -> Result<Option<usize>, TextError> {
-        if offset > snapshot.len_bytes() {
-            return Ok(None);
-        }
-        let mut low = 0;
-        let mut high = snapshot.line_count();
-        while low < high {
-            let middle = low + (high - low) / 2;
-            let range = snapshot.line_byte_range(middle)?;
-            if offset < range.start {
-                high = middle;
-            } else if offset >= range.end && middle + 1 < snapshot.line_count() {
-                low = middle + 1;
-            } else {
-                return Ok(Some(middle));
+        if offset <= snapshot.len_bytes() {
+            let mut low = 0;
+            let mut high = snapshot.line_count();
+            while low < high {
+                let middle = low + (high - low) / 2;
+                let range = snapshot.line_byte_range(middle)?;
+                if offset < range.start {
+                    high = middle;
+                } else if offset >= range.end && middle + 1 < snapshot.line_count() {
+                    low = middle + 1;
+                } else {
+                    return Ok(Some(middle));
+                }
             }
         }
         Ok(None)
@@ -943,16 +928,15 @@ impl<T: StudioTextSystem> StudioApp<T> {
     }
 }
 
-impl<T: StudioTextSystem> AppDelegate for StudioApp<T> {
+impl AppDelegate for StudioApp {
     type WorkerOutput = u64;
 
     fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, u64>) {
         let effect = self.handle_event(event);
         if effect.document_changed {
             let revision = DocumentRevision::new(self.buffer.revision().get());
-            if !context.advance_document(revision) {
-                self.input_failures = self.input_failures.saturating_add(1);
-            }
+            let rejected = !context.advance_document(revision);
+            self.input_failures = self.input_failures.saturating_add(u64::from(rejected));
         }
         if effect.visual_changed {
             context.invalidate();
@@ -1033,222 +1017,5 @@ fn floor_f32_to_usize(value: f32) -> Option<usize> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::num::NonZeroU32;
-
-    use alpine_platform_macos::{EventTimestamp, ScrollPhase};
-    use alpine_text_layout::{GlyphBitmap, RasterizedGlyph, ShapedGlyph};
-
-    use super::*;
-
-    #[derive(Default)]
-    struct TestTextSystem;
-
-    impl TextShaper for TestTextSystem {
-        fn shape(&mut self, text: &str, _font: FontKey) -> Result<LineLayout, LayoutError> {
-            let mut glyphs = Vec::new();
-            let mut x = 0.0;
-            let mut utf16 = 0_u32;
-            for character in text.chars() {
-                glyphs.push(ShapedGlyph::new_resolved(
-                    u32::from(character),
-                    x,
-                    0.0,
-                    8.0,
-                    utf16,
-                    FONT_FAMILY,
-                )?);
-                x += 8.0;
-                utf16 = utf16
-                    .checked_add(
-                        u32::try_from(character.len_utf16())
-                            .map_err(|_| LayoutError::ArithmeticOverflow)?,
-                    )
-                    .ok_or(LayoutError::ArithmeticOverflow)?;
-            }
-            LineLayout::new(glyphs, x, 15.0, 4.0, 1_024)
-        }
-    }
-
-    impl GlyphRasterizer for TestTextSystem {
-        fn rasterize(
-            &mut self,
-            _font: FontKey,
-            _glyph_id: u32,
-            _subpixel_x: u8,
-        ) -> Result<alpine_text_layout::RasterizedGlyph, LayoutError> {
-            let width = NonZeroU32::new(2).ok_or(LayoutError::InvalidShaperOutput)?;
-            let height = NonZeroU32::new(3).ok_or(LayoutError::InvalidShaperOutput)?;
-            let bitmap = GlyphBitmap::new(width, height, vec![255; 6])?;
-            RasterizedGlyph::new(Some(bitmap), 0.0, 3.0)
-        }
-    }
-
-    fn test_app() -> Result<StudioApp<TestTextSystem>, SurfaceError> {
-        StudioApp::new(TestTextSystem)
-    }
-
-    fn viewport() -> Result<Size, SurfaceError> {
-        Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)
-    }
-
-    fn ime(event: ImeEvent) -> SurfaceEvent {
-        SurfaceEvent::Ime {
-            timestamp: EventTimestamp::new(1),
-            event,
-        }
-    }
-
-    fn key(physical_key: u16, modifiers: Modifiers) -> SurfaceEvent {
-        SurfaceEvent::Keyboard {
-            timestamp: EventTimestamp::new(1),
-            state: KeyState::Down,
-            physical_key,
-            logical_key: Box::default(),
-            modifiers,
-            repeat: false,
-        }
-    }
-
-    #[test]
-    fn editor_scene_contains_clipped_glyphs_atlas_and_caret() -> Result<(), StudioRenderError> {
-        let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
-        let scene = app.try_scene(
-            SceneRevision::new(1),
-            viewport().map_err(|_| StudioRenderError::Domain)?,
-        )?;
-        assert_eq!(scene.revision(), SceneRevision::new(1));
-        assert_eq!(scene.clips().len(), 1);
-        assert!(!scene.glyphs().is_empty());
-        assert!(scene.glyph_atlas().is_some());
-        assert!(scene.quads().len() >= 3);
-        assert_eq!(app.render_failures, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeError> {
-        let viewport = viewport()?;
-        let clear =
-            LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
-        let mut application =
-            Application::new(test_app()?, viewport, clear, WorkerConfig::default())?;
-        let first = application
-            .frame_if_dirty()
-            .ok_or(SurfaceError::DriverUnavailable)?;
-        assert!(
-            application
-                .dispatch(&SurfaceEvent::Wake {
-                    timestamp: alpine_platform_macos::EventTimestamp::new(1),
-                })
-                .is_none()
-        );
-        let changed = application
-            .dispatch(&ime(ImeEvent::Committed("x".into())))
-            .ok_or(SurfaceError::DriverUnavailable)?;
-        assert!(changed.scene().glyphs().len() > first.scene().glyphs().len());
-        assert_eq!(application.snapshot().document_revision().get(), 1);
-        assert!(
-            application
-                .dispatch(&SurfaceEvent::Wake {
-                    timestamp: EventTimestamp::new(2),
-                })
-                .is_none()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn ime_preview_is_non_destructive_and_commit_is_atomic() -> Result<(), StudioRenderError> {
-        let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
-        let before = app.buffer.snapshot().text();
-        assert!(app.handle_event(&ime(ImeEvent::Started)).visual_changed);
-        assert!(
-            app.handle_event(&ime(ImeEvent::Updated {
-                text: "é".into(),
-                selected_start_utf16: 1,
-                selected_length_utf16: 0,
-            }))
-            .visual_changed
-        );
-        assert_eq!(app.buffer.snapshot().text(), before);
-        let preview = app.try_scene(
-            SceneRevision::new(1),
-            viewport().map_err(|_| StudioRenderError::Domain)?,
-        )?;
-        assert!(preview.quads().len() >= 4);
-        let effect = app.handle_event(&ime(ImeEvent::Committed("é".into())));
-        assert!(effect.document_changed);
-        assert!(app.buffer.snapshot().text().starts_with('é'));
-        assert!(app.composition.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn grapheme_delete_and_command_undo_restore_text() -> Result<(), SurfaceError> {
-        let mut app = test_app()?;
-        let original = app.buffer.snapshot().text();
-        assert!(
-            app.handle_event(&ime(ImeEvent::Committed("🦀".into())))
-                .document_changed
-        );
-        let inserted = app.buffer.snapshot().text();
-        assert!(inserted.starts_with('🦀'));
-        assert!(
-            app.handle_event(&key(KEY_DELETE_BACKWARD, Modifiers::default()))
-                .document_changed
-        );
-        assert_eq!(app.buffer.snapshot().text(), original);
-        assert!(
-            app.handle_event(&key(KEY_Z, Modifiers::from_bits(Modifiers::COMMAND),))
-                .document_changed
-        );
-        assert_eq!(app.buffer.snapshot().text(), inserted);
-        Ok(())
-    }
-
-    #[test]
-    fn scroll_and_pointer_selection_use_rendered_visible_lines() -> Result<(), StudioRenderError> {
-        let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
-        app.buffer = Buffer::new(&"line\n".repeat(100));
-        app.selection = Selection::caret(ByteOffset::new(0));
-        let _scene = app.try_scene(
-            SceneRevision::new(1),
-            viewport().map_err(|_| StudioRenderError::Domain)?,
-        )?;
-        let scrolled = app.handle_event(&SurfaceEvent::Scroll {
-            timestamp: EventTimestamp::new(1),
-            delta_x: 0.0,
-            delta_y: -220.0,
-            phase: ScrollPhase::Changed,
-            precise: true,
-            modifiers: Modifiers::default(),
-        });
-        assert!(scrolled.visual_changed);
-        assert!((app.scroll_y - 220.0).abs() < f32::EPSILON);
-        let _scene = app.try_scene(
-            SceneRevision::new(2),
-            viewport().map_err(|_| StudioRenderError::Domain)?,
-        )?;
-        let pointer = app.handle_event(&SurfaceEvent::Pointer {
-            timestamp: EventTimestamp::new(2),
-            action: PointerAction::Down,
-            position: Point::new(CONTENT_INSET + 9.0, CONTENT_INSET + 2.0)
-                .ok_or(StudioRenderError::Domain)?,
-            button: PointerButton::Primary,
-            modifiers: Modifiers::default(),
-        });
-        assert!(pointer.visual_changed);
-        assert!(app.selection.head().get() > 0);
-        Ok(())
-    }
-
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-    #[test]
-    fn run_rejects_an_unsupported_host() {
-        assert!(matches!(
-            run(),
-            Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))
-        ));
-    }
-}
+#[path = "studio_coverage_tests.rs"]
+mod tests;
