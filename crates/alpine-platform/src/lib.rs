@@ -8,6 +8,14 @@
 
 use core::{error::Error, fmt};
 
+mod frame_slots;
+
+pub use frame_slots::{
+    FRAME_SLOT_COUNT, FrameCompletionDisposition, FrameCompletionStatus, FrameOwnerGeneration,
+    FrameSlotAdmission, FrameSlotCompletion, FrameSlotError, FrameSlotErrorKind, FrameSlotId,
+    FrameSlotLease, FrameSlotPhase, FrameSlotRing, FrameSlotSnapshot,
+};
+
 /// Application ownership state for one native surface.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ApplicationState {

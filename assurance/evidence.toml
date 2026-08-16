@@ -322,6 +322,114 @@ tla_properties = ["LinkOwnership", "ResourceMatchesPhase", "SingleSubmissionPerA
 platform_scope = ["portable", "macos-metal"]
 required_evidence = ["tla", "kani", "unit", "property", "integration", "e2e", "mutation", "coverage", "native"]
 
+[[claims]]
+id = "AEP-0120-C01"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0120-bounded-asynchronous-presentation.md"
+requirement_issue = 37
+claim_type = "safety"
+risk = "critical"
+case_study_findings = ["CS-ZED-006", "CS-ZED-008", "CS-ZED-PRESENT-003"]
+kani_applicability = "required"
+tla_properties = ["BoundedFrameSlots", "CurrentPublicationIsCurrent", "ShutdownEventuallyDrains"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "kani", "unit", "property", "integration", "mutation", "coverage"]
+
+[[evidence]]
+id = "EV-0120-TLA01A"
+claim = "AEP-0120-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0120/FrameSlots.tla#BoundedFrameSlots"
+assertion = "Exactly three abstract slots bound concurrent encoding and submitted ownership."
+scope = "One three-slot ring with bounded lease and environment identities."
+bounds = ["pull request: three admissions", "nightly: four admissions"]
+assumptions = ["one occupied abstract slot represents all native resources for one frame"]
+exclusions = ["native retain counts", "elapsed time", "Rust formal refinement"]
+companion = "crates/alpine-platform/src/frame_slots.rs#admission_is_bounded_and_saturation_is_observable"
+
+[[evidence]]
+id = "EV-0120-TLA01B"
+claim = "AEP-0120-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0120/FrameSlots.tla#CurrentPublicationIsCurrent"
+assertion = "A current publication must match the live owner generation, revision, and surface epoch."
+scope = "Reordered terminal completion with bounded generation and supersession changes."
+bounds = ["pull request: one generation, revision, and epoch advance", "nightly: two advances"]
+assumptions = ["native completion identity maps to the slot lease before publication"]
+exclusions = ["native callback delivery", "physical presentation", "Rust formal refinement"]
+companion = "crates/alpine-platform/src/frame_slots.rs#terminal_classification_checks_status_generation_revision_and_epoch"
+
+[[evidence]]
+id = "EV-0120-TLA01C"
+claim = "AEP-0120-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0120/FrameSlots.tla#ShutdownEventuallyDrains"
+assertion = "After shutdown begins, fair cancellation and completion eventually release every occupied slot."
+scope = "Three abstract encoding or submitted slots."
+bounds = ["three slots", "finite admissions before shutdown"]
+assumptions = ["terminal release remains weakly fair after shutdown"]
+exclusions = ["GPU hangs", "process termination", "Rust formal refinement"]
+companion = "crates/alpine-platform/src/frame_slots.rs#invalid_transitions_are_atomic_and_precommit_cancellation_balances"
+
+[[evidence]]
+id = "EV-0120-KANI01"
+claim = "AEP-0120-C01"
+kind = "kani"
+artifact = "crates/alpine-platform/src/proofs.rs#frame_slot_actions_preserve_bounded_unique_ownership"
+assertion = "Seven symbolic admissions, submissions, completions, and cancellations preserve bounded unique ownership."
+scope = "Compiled allocation-free FrameSlotRing transitions."
+bounds = ["seven actions", "three slots", "two revision and epoch classes"]
+assumptions = ["symbolic actions retain returned leases by slot"]
+exclusions = ["native resources", "concurrent callbacks", "unbounded traces"]
+companion = "crates/alpine-platform/src/frame_slots.rs#bounded_reachable_sequences_preserve_invariants"
+
+[[evidence]]
+id = "EV-0120-UNIT01"
+claim = "AEP-0120-C01"
+kind = "unit"
+artifact = "crates/alpine-platform/src/frame_slots.rs#completion_reordering_releases_exact_slots_and_rejects_aba"
+assertion = "Reordered completion releases only its exact lease, slot reuse advances sequence, and stale ABA completion is rejected atomically."
+scope = "Three occupied slots and one replacement lease."
+exclusions = ["native command completion"]
+
+[[evidence]]
+id = "EV-0120-PROPERTY01"
+claim = "AEP-0120-C01"
+kind = "property"
+artifact = "crates/alpine-platform/src/frame_slots.rs#bounded_reachable_sequences_preserve_invariants"
+assertion = "Every one of 78,125 bounded seven-action sequences preserves ring invariants after each action."
+scope = "Admissions, submissions, completions, cancellations, saturation, stale generations, revisions, and epochs."
+bounds = ["five action choices", "seven steps"]
+exclusions = ["unbounded traces", "native callbacks"]
+
+[[evidence]]
+id = "EV-0120-INTEGRATION01"
+claim = "AEP-0120-C01"
+kind = "integration"
+artifact = "crates/alpine-platform/tests/frame_slots.rs#public_three_slot_contract_bounds_and_reuses_completion_ownership"
+assertion = "An external consumer fills exactly three slots, observes saturation, completes out of order, and reuses only the released slot with a newer sequence."
+scope = "Public dependency-free alpine-platform API."
+exclusions = ["native Metal integration"]
+
+[[evidence]]
+id = "EV-0120-MUTATION01"
+claim = "AEP-0120-C01"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#mutation-diff"
+assertion = "Every viable changed-code mutant in the frame-slot model must be killed before ci-pass succeeds."
+scope = "Changed executable alpine-platform Rust."
+exclusions = ["Kani-only code", "unviable mutants", "unchanged code"]
+
+[[evidence]]
+id = "EV-0120-COVERAGE01"
+claim = "AEP-0120-C01"
+kind = "coverage"
+artifact = "scripts/check-coverage.sh"
+assertion = "Critical-file and changed-line ratchets include every executable frame-slot transition and accessor."
+scope = "Host-portable alpine-platform frame-slot Rust."
+exclusions = ["semantic proof", "native code", "Kani-only code"]
+
 [[evidence]]
 id = "EV-0064-UNIT06A"
 claim = "AEP-0064-C06"
