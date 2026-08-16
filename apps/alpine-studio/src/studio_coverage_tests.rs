@@ -406,7 +406,7 @@ fn editor_scene_contains_clipped_glyphs_atlas_and_caret() -> Result<(), StudioRe
         viewport().map_err(|_| StudioRenderError::Domain)?,
     )?;
     assert_eq!(scene.revision(), SceneRevision::new(1));
-    assert_eq!(scene.clips().len(), 1);
+    assert_eq!(scene.clips().len(), 2);
     assert!(!scene.glyphs().is_empty());
     assert!(scene.glyph_atlas().is_some());
     assert!(scene.quads().len() >= 3);
@@ -871,7 +871,11 @@ fn bounded_workspace_is_sorted_capped_and_projects_only_visible_rows()
     let editor_rows = app.buffer().snapshot().line_count();
     TEST_SHAPE_CALLS.with(|calls| calls.set(0));
     let _scene = app.try_scene(SceneRevision::new(1), viewport)?;
-    let expected_shapes = u64::try_from(projected_tree_rows.saturating_add(editor_rows))?;
+    let expected_shapes = u64::try_from(
+        projected_tree_rows
+            .saturating_add(app.tabs.len())
+            .saturating_add(editor_rows),
+    )?;
     TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), expected_shapes));
     Ok(())
 }
@@ -1022,6 +1026,16 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
             .origin()
             .x(),
         266.0
+    );
+    assert_eq!(
+        status_scene
+            .glyphs()
+            .last()
+            .ok_or("missing status glyph")?
+            .bounds()
+            .origin()
+            .y(),
+        506.0
     );
     app.local_status = None;
 
@@ -1264,6 +1278,368 @@ fn workspace_click_revalidates_target_and_preserves_current_document_on_failure(
         app.workspace_failures,
         failures_before_dirty.saturating_add(1)
     );
+    Ok(())
+}
+
+#[test]
+fn bounded_tabs_preserve_dirty_documents_and_refuse_dirty_close()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    root.write("beta.rs", "beta")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = app.workspace.as_ref().ok_or("workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("alpha")?;
+    let beta = workspace.index_named("beta.rs").ok_or("beta")?;
+
+    assert!(app.open_workspace_entry(alpha)?.document_changed);
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    let dirty_alpha = app.buffer().snapshot().text();
+    assert!(app.open_workspace_entry(beta)?.document_changed);
+    assert_eq!(app.buffer().snapshot().text(), "beta");
+    let tab_count = app.tabs.len();
+    assert!(app.handle_close_request().cancel_close);
+
+    assert!(app.open_workspace_entry(alpha)?.document_changed);
+    assert_eq!(app.tabs.len(), tab_count);
+    assert_eq!(app.buffer().snapshot().text(), dirty_alpha);
+    assert!(matches!(
+        app.close_active_tab(),
+        Err(WorkspaceSelectionError::DirtyDocument)
+    ));
+    assert_eq!(app.tabs.len(), tab_count);
+    assert_eq!(app.buffer().snapshot().text(), dirty_alpha);
+
+    let _save_effect = app.save_document();
+    #[cfg(not(target_family = "windows"))]
+    {
+        assert!(!app.document.is_dirty());
+        assert!(app.close_active_tab()?.document_changed);
+        assert_eq!(app.tabs.len(), tab_count - 1);
+        assert_eq!(
+            fs::read_to_string(root.path().join("alpha.rs"))?,
+            dirty_alpha
+        );
+    }
+    #[cfg(target_family = "windows")]
+    {
+        assert!(app.document.is_dirty());
+        assert_eq!(
+            app.last_file_error,
+            Some(FileError::UnsupportedAtomicReplace)
+        );
+        assert!(matches!(
+            app.close_active_tab(),
+            Err(WorkspaceSelectionError::DirtyDocument)
+        ));
+        assert_eq!(app.tabs.len(), tab_count);
+        assert_eq!(fs::read_to_string(root.path().join("alpha.rs"))?, "alpha");
+    }
+    Ok(())
+}
+
+#[test]
+fn tab_fault_paths_are_structured_and_non_destructive() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    root.write("beta.rs", "beta")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = app.workspace.as_ref().ok_or("workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("alpha")?;
+    let beta = workspace.index_named("beta.rs").ok_or("beta")?;
+    app.open_workspace_entry(alpha)?;
+    app.open_workspace_entry(beta)?;
+
+    assert_eq!(
+        app.activate_document_tab(app.tabs.active_index())?,
+        EventEffect::default()
+    );
+    let tabs_error = WorkspaceSelectionError::Tabs(DocumentTabError::LastTab);
+    assert_eq!(
+        tabs_error.to_string(),
+        "document tabs failed: the final document tab cannot be closed"
+    );
+    assert!(tabs_error.source().is_some());
+
+    app.last_viewport = viewport()?;
+    app.tab_scroll_x = f32::NAN;
+    let tab_point =
+        Point::new(app.sidebar_width(app.last_viewport) + 1.0, 1.0).ok_or("tab point")?;
+    assert_eq!(
+        app.handle_pointer(
+            PointerAction::Down,
+            tab_point,
+            PointerButton::Primary,
+            Modifiers::default()
+        ),
+        EventEffect::default()
+    );
+    app.tab_scroll_x = TAB_WIDTH * 100.0;
+    let failures = app.workspace_failures;
+    assert!(
+        app.handle_pointer(
+            PointerAction::Down,
+            tab_point,
+            PointerButton::Primary,
+            Modifiers::default()
+        )
+        .visual_changed
+    );
+    assert_eq!(app.workspace_failures, failures + 1);
+
+    app.runtime_document_revision = u64::MAX;
+    let failures = app.workspace_failures;
+    assert!(app.navigate_document_history(false).visual_changed);
+    assert_eq!(app.workspace_failures, failures + 1);
+    app.runtime_document_revision = 10;
+
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    let failures = app.workspace_failures;
+    assert!(app.close_active_tab_or_record().visual_changed);
+    assert_eq!(app.workspace_failures, failures + 1);
+
+    app.tabs
+        .inject_active_payload_for_test(StudioDocument::Scratch {
+            buffer: Buffer::new("fault"),
+            clean_revision: 0,
+        });
+    let active_before = app.buffer().snapshot().text();
+    let failures = app.workspace_failures;
+    assert!(app.navigate_document_history(false).visual_changed);
+    assert_eq!(app.workspace_failures, failures + 1);
+    assert_eq!(app.buffer().snapshot().text(), active_before);
+    Ok(())
+}
+
+#[test]
+fn tab_history_branches_and_pointer_activation_restore_exact_view_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    root.write("beta.rs", "beta")?;
+    root.write("gamma.rs", "gamma")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = app.workspace.as_ref().ok_or("workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("alpha")?;
+    let beta = workspace.index_named("beta.rs").ok_or("beta")?;
+    let gamma = workspace.index_named("gamma.rs").ok_or("gamma")?;
+    app.open_workspace_entry(alpha)?;
+    app.selection = Selection::caret(ByteOffset::new(2));
+    app.scroll_y = 11.0;
+    app.open_workspace_entry(beta)?;
+    app.selection = Selection::caret(ByteOffset::new(3));
+    app.open_workspace_entry(gamma)?;
+
+    assert!(
+        app.navigate_document_history(false)
+            .document_identity_advanced
+    );
+    assert_eq!(app.buffer().snapshot().text(), "beta");
+    assert_eq!(app.selection, Selection::caret(ByteOffset::new(3)));
+    assert!(
+        app.navigate_document_history(false)
+            .document_identity_advanced
+    );
+    assert_eq!(app.buffer().snapshot().text(), "alpha");
+    assert_eq!(app.selection, Selection::caret(ByteOffset::new(2)));
+    assert!((app.scroll_y - 11.0).abs() < f32::EPSILON);
+    assert!(
+        app.navigate_document_history(true)
+            .document_identity_advanced
+    );
+    assert_eq!(app.buffer().snapshot().text(), "beta");
+    assert!(app.open_workspace_entry(alpha)?.document_identity_advanced);
+    assert_eq!(app.navigate_document_history(true), EventEffect::default());
+
+    let viewport = viewport().map_err(|_| StudioRenderError::Domain)?;
+    let _scene = app.try_scene(SceneRevision::new(9), viewport)?;
+    let canonical_beta = fs::canonicalize(root.path().join("beta.rs"))?;
+    let beta_tab = app.tabs.index_for_path(&canonical_beta).ok_or("beta tab")?;
+    let pointer = app.handle_pointer(
+        PointerAction::Down,
+        Point::new(
+            app.sidebar_width(viewport) + usize_as_f32(beta_tab) * TAB_WIDTH + 1.0,
+            1.0,
+        )
+        .ok_or("tab point")?,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert!(pointer.document_identity_advanced);
+    assert_eq!(app.buffer().snapshot().text(), "beta");
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "exact tab geometry and routing controls distinguish projection mutations"
+)]
+fn tab_projection_scroll_keyboard_and_pointer_boundaries_are_exact()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut single = test_app()?;
+    single.tab_scroll_x = 100.0;
+    single.ensure_active_tab_visible();
+    assert_eq!(single.tab_scroll_x.to_bits(), 0.0_f32.to_bits());
+
+    let root = TestWorkspace::new()?;
+    let names = [
+        "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs", "i.rs", "j.rs",
+    ];
+    for name in names {
+        root.write(name, name)?;
+    }
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    for name in names {
+        let index = app
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.index_named(name))
+            .ok_or("workspace entry")?;
+        app.open_workspace_entry(index)?;
+    }
+    let small_viewport = Size::new(556.0, WINDOW_HEIGHT).ok_or("viewport")?;
+    app.last_viewport = small_viewport;
+    app.ensure_active_tab_visible();
+    assert_eq!(app.tabs.active_index(), 10);
+    assert_eq!(app.tab_scroll_x.to_bits(), 1_440.0_f32.to_bits());
+
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let scene = app.try_scene(SceneRevision::new(20), small_viewport)?;
+    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), 15));
+    let expected_tab_bounds = Rect::new(
+        Point::new(SIDEBAR_WIDTH, 0.0).ok_or("tab origin")?,
+        Size::new(320.0, TAB_BAR_HEIGHT).ok_or("tab size")?,
+    );
+    assert_eq!(scene.clips()[2].bounds(), expected_tab_bounds);
+    assert!(
+        scene
+            .quads()
+            .iter()
+            .any(|quad| quad.bounds() == expected_tab_bounds)
+    );
+    let expected_active = Rect::new(
+        Point::new(396.0, 0.0).ok_or("active tab origin")?,
+        Size::new(TAB_WIDTH, TAB_BAR_HEIGHT).ok_or("active tab size")?,
+    );
+    assert!(
+        scene
+            .quads()
+            .iter()
+            .any(|quad| quad.bounds() == expected_active)
+    );
+    let tab_glyphs: Vec<_> = scene
+        .glyphs()
+        .iter()
+        .filter(|glyph| glyph.bounds().origin().y() < TAB_BAR_HEIGHT)
+        .collect();
+    assert!(!tab_glyphs.is_empty());
+    assert!(tab_glyphs.iter().any(|glyph| {
+        glyph.bounds().origin().x().to_bits() == (-76.0_f32).to_bits()
+            && glyph.bounds().origin().y().to_bits() == 16.0_f32.to_bits()
+    }));
+    assert!(tab_glyphs.iter().any(|glyph| {
+        glyph.bounds().origin().x().to_bits() == 404.0_f32.to_bits()
+            && glyph.bounds().origin().y().to_bits() == 16.0_f32.to_bits()
+    }));
+
+    app.tab_scroll_x = 320.0;
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let mid_scene = app.try_scene(SceneRevision::new(21), small_viewport)?;
+    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), 17));
+    let first_mid_tab = mid_scene
+        .glyphs()
+        .iter()
+        .find(|glyph| glyph.bounds().origin().y() < TAB_BAR_HEIGHT)
+        .ok_or("first mid tab glyph")?;
+    assert_eq!(
+        first_mid_tab.bounds().origin().x().to_bits(),
+        (-76.0_f32).to_bits()
+    );
+    assert_eq!(
+        first_mid_tab.bounds().origin().y().to_bits(),
+        16.0_f32.to_bits()
+    );
+    assert_eq!(
+        mid_scene
+            .quads()
+            .iter()
+            .filter(|quad| {
+                quad.bounds().origin().y().to_bits() == 0.0_f32.to_bits()
+                    && quad.bounds().size().height().to_bits() == TAB_BAR_HEIGHT.to_bits()
+            })
+            .count(),
+        1
+    );
+    app.ensure_active_tab_visible();
+    assert_eq!(app.tab_scroll_x.to_bits(), 1_440.0_f32.to_bits());
+
+    assert!(app.activate_document_tab(2)?.document_identity_advanced);
+    assert_eq!(app.tab_scroll_x.to_bits(), 320.0_f32.to_bits());
+    app.tab_scroll_x = 170.0;
+    app.ensure_active_tab_visible();
+    assert_eq!(app.tab_scroll_x.to_bits(), 170.0_f32.to_bits());
+    assert!(app.activate_document_tab(1)?.document_identity_advanced);
+    assert_eq!(app.tab_scroll_x.to_bits(), 170.0_f32.to_bits());
+    app.tab_scroll_x = 0.0;
+    assert!(app.activate_document_tab(10)?.document_identity_advanced);
+    assert_eq!(app.tab_scroll_x.to_bits(), 1_440.0_f32.to_bits());
+
+    let tab_five = app.handle_pointer(
+        PointerAction::Down,
+        Point::new(SIDEBAR_WIDTH + 1.0, 1.0).ok_or("tab five")?,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert!(tab_five.document_identity_advanced);
+    assert_eq!(app.tabs.active_index(), 9);
+    let boundary = app.handle_pointer(
+        PointerAction::Down,
+        Point::new(SIDEBAR_WIDTH + TAB_WIDTH + 1.0, TAB_BAR_HEIGHT).ok_or("tab boundary")?,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert!(!boundary.document_identity_advanced);
+    assert_eq!(app.tabs.active_index(), 9);
+
+    assert_eq!(
+        app.handle_key(KEY_LEFT_BRACKET, Modifiers::default()),
+        EventEffect::default()
+    );
+    assert_eq!(app.tabs.active_index(), 9);
+    assert_eq!(
+        app.handle_key(KEY_RETURN, Modifiers::from_bits(Modifiers::COMMAND)),
+        EventEffect::default()
+    );
+    assert_eq!(app.tabs.active_index(), 9);
+    assert!(
+        app.handle_key(KEY_LEFT_BRACKET, Modifiers::from_bits(Modifiers::COMMAND))
+            .document_identity_advanced
+    );
+    assert_eq!(app.tabs.active_index(), 10);
+    assert_eq!(
+        app.handle_key(KEY_RIGHT_BRACKET, Modifiers::default()),
+        EventEffect::default()
+    );
+    assert_eq!(app.tabs.active_index(), 10);
+    assert!(
+        app.handle_key(KEY_RIGHT_BRACKET, Modifiers::from_bits(Modifiers::COMMAND))
+            .document_identity_advanced
+    );
+    assert_eq!(app.tabs.active_index(), 9);
+
+    let before_close = app.tabs.len();
+    assert!(
+        app.handle_key(KEY_W, Modifiers::from_bits(Modifiers::COMMAND))
+            .document_identity_advanced
+    );
+    assert_eq!(app.tabs.len(), before_close - 1);
     Ok(())
 }
 
@@ -1778,4 +2154,16 @@ fn run_rejects_an_unsupported_host() {
             SurfaceError::UnsupportedPlatform
         )))
     ));
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn native_file_constructor_rejects_a_missing_file_before_native_setup()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    assert!(matches!(
+        native_file_app(&root.path().join("missing.rs")),
+        Err(StudioError::File(_))
+    ));
+    Ok(())
 }

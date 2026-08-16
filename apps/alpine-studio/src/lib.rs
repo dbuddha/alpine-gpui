@@ -5,6 +5,7 @@
 
 //! Local-only Alpine Studio editor boundary.
 
+mod documents;
 mod workspace;
 
 pub use workspace::WorkspaceError;
@@ -37,6 +38,7 @@ use alpine_text_layout::{
     GlyphAtlas, GlyphKey, GlyphRasterizer, LayoutError, LineLayout, LineLayoutCache,
     PositiveFinite, TextShaper, VisibleLines,
 };
+use documents::{DocumentTabError, DocumentTabLimits, DocumentTabs, DocumentViewState};
 use workspace::Workspace;
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
@@ -59,11 +61,17 @@ const SELECTION_ALPHA: f32 = 0.42;
 const SIDEBAR_WIDTH: f32 = 236.0;
 const TREE_ROW_HEIGHT: f32 = 22.0;
 const TREE_OVERSCAN_ROWS: usize = 3;
+const TAB_BAR_HEIGHT: f32 = 24.0;
+const TAB_WIDTH: f32 = 160.0;
+const TAB_OVERSCAN: usize = 2;
 const INITIAL_TEXT: &str = "fn main() {\n    println!(\"Alpine Studio\");\n}\n\n// Local, direct, and deliberately small.\n";
 
 const KEY_A: u16 = 0;
 const KEY_S: u16 = 1;
 const KEY_Z: u16 = 6;
+const KEY_W: u16 = 13;
+const KEY_RIGHT_BRACKET: u16 = 30;
+const KEY_LEFT_BRACKET: u16 = 33;
 const KEY_RETURN: u16 = 36;
 const KEY_TAB: u16 = 48;
 const KEY_DELETE_BACKWARD: u16 = 51;
@@ -256,7 +264,7 @@ fn native_file_app(path: &Path) -> Result<StudioApp, StudioError> {
     text_system
         .register_font(FONT_FAMILY, "Menlo-Regular")
         .map_err(|_| SurfaceError::DriverUnavailable)?;
-    StudioApp::from_document(text_system, document).map_err(StudioError::from)
+    StudioApp::from_document(text_system, document, Some(path)).map_err(StudioError::from)
 }
 
 trait StudioTextSystem: TextShaper + GlyphRasterizer {}
@@ -410,6 +418,7 @@ enum WorkspaceSelectionError {
     NoWorkspace,
     DirtyDocument,
     RevisionExhausted,
+    Tabs(DocumentTabError),
     Workspace(WorkspaceError),
     File(FileError),
 }
@@ -420,6 +429,7 @@ impl fmt::Display for WorkspaceSelectionError {
             Self::NoWorkspace => formatter.write_str("no local workspace is open"),
             Self::DirtyDocument => formatter.write_str("save changes before switching files"),
             Self::RevisionExhausted => formatter.write_str("document identity is exhausted"),
+            Self::Tabs(error) => write!(formatter, "document tabs failed: {error}"),
             Self::Workspace(error) => write!(formatter, "workspace selection failed: {error}"),
             Self::File(error) => write!(formatter, "workspace file failed: {error}"),
         }
@@ -431,6 +441,7 @@ impl Error for WorkspaceSelectionError {
         match self {
             Self::Workspace(error) => Some(error),
             Self::File(error) => Some(error),
+            Self::Tabs(error) => Some(error),
             Self::NoWorkspace | Self::DirtyDocument | Self::RevisionExhausted => None,
         }
     }
@@ -489,9 +500,11 @@ impl StudioDocument {
 
 struct StudioApp {
     document: StudioDocument,
+    tabs: DocumentTabs<StudioDocument>,
     workspace: Option<Workspace>,
     active_workspace_entry: Option<usize>,
     workspace_scroll_y: f32,
+    tab_scroll_x: f32,
     last_pointer_position: Option<Point>,
     runtime_document_revision: u64,
     selection: Selection,
@@ -521,7 +534,7 @@ struct StudioApp {
 
 impl StudioApp {
     fn new(text_system: impl StudioTextSystem + 'static) -> Result<Self, SurfaceError> {
-        Self::from_document(text_system, StudioDocument::scratch(INITIAL_TEXT))
+        Self::from_document(text_system, StudioDocument::scratch(INITIAL_TEXT), None)
     }
 
     #[cfg(test)]
@@ -529,8 +542,9 @@ impl StudioApp {
         text_system: impl StudioTextSystem + 'static,
         path: impl AsRef<Path>,
     ) -> Result<Self, StudioError> {
+        let path = path.as_ref();
         let document = StudioDocument::open(path)?;
-        Self::from_document(text_system, document).map_err(StudioError::from)
+        Self::from_document(text_system, document, Some(path)).map_err(StudioError::from)
     }
 
     #[cfg(test)]
@@ -545,8 +559,9 @@ impl StudioApp {
     fn from_document(
         text_system: impl StudioTextSystem + 'static,
         document: StudioDocument,
+        path: Option<&Path>,
     ) -> Result<Self, SurfaceError> {
-        Self::from_parts(text_system, document, None)
+        Self::from_parts(text_system, document, path, None)
     }
 
     fn from_workspace(
@@ -555,7 +570,7 @@ impl StudioApp {
     ) -> Result<Self, SurfaceError> {
         let omitted_entries = workspace.snapshot().omitted_entries;
         let document = StudioDocument::scratch(INITIAL_TEXT);
-        let mut app = Self::from_parts(text_system, document, Some(workspace))?;
+        let mut app = Self::from_parts(text_system, document, None, Some(workspace))?;
         if omitted_entries > 0 {
             app.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
                 "Workspace tree truncated: {omitted_entries} entries omitted."
@@ -567,6 +582,7 @@ impl StudioApp {
     fn from_parts(
         text_system: impl StudioTextSystem + 'static,
         document: StudioDocument,
+        path: Option<&Path>,
         workspace: Option<Workspace>,
     ) -> Result<Self, SurfaceError> {
         let last_viewport =
@@ -576,11 +592,15 @@ impl StudioApp {
         let atlas_budget =
             NonZeroUsize::new(DEFAULT_ATLAS_BUDGET_BYTES).ok_or(SurfaceError::DriverUnavailable)?;
         let runtime_document_revision = document.buffer().revision().get();
+        let tabs = DocumentTabs::new(path, None, DocumentTabLimits::default())
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
         Ok(Self {
             document,
+            tabs,
             workspace,
             active_workspace_entry: None,
             workspace_scroll_y: 0.0,
+            tab_scroll_x: 0.0,
             last_pointer_position: None,
             runtime_document_revision,
             selection: Selection::caret(ByteOffset::new(0)),
@@ -703,6 +723,10 @@ impl StudioApp {
             LinearRgba::new(0.027, 0.031, 0.035, 1.0).ok_or(StudioRenderError::Domain)?;
         let active_row_color =
             LinearRgba::new(0.12, 0.16, 0.19, 1.0).ok_or(StudioRenderError::Domain)?;
+        let tab_background =
+            LinearRgba::new(0.025, 0.028, 0.032, 1.0).ok_or(StudioRenderError::Domain)?;
+        let active_tab_color =
+            LinearRgba::new(0.095, 0.105, 0.115, 1.0).ok_or(StudioRenderError::Domain)?;
 
         let mut builder = SceneBuilder::new(revision, viewport);
         builder.push_quad(Quad::new(Rect::new(origin, viewport), background))?;
@@ -744,15 +768,42 @@ impl StudioApp {
                 pending_glyphs.extend(glyphs);
             }
         }
+        let tab_origin = Point::new(sidebar_width, 0.0).ok_or(StudioRenderError::Domain)?;
+        let tab_size = Size::new((viewport.width() - sidebar_width).max(1.0), TAB_BAR_HEIGHT)
+            .ok_or(StudioRenderError::Domain)?;
+        let tab_bounds = Rect::new(tab_origin, tab_size);
+        let tab_clip = builder.push_clip(Clip::new(tab_bounds));
+        let first_visible = floor_f32_to_usize(self.tab_scroll_x / TAB_WIDTH).unwrap_or(0);
+        let visible_tabs = floor_f32_to_usize(tab_size.width() / TAB_WIDTH)
+            .unwrap_or(0)
+            .saturating_add(1);
+        let tab_range = self
+            .tabs
+            .visible_range(first_visible, visible_tabs, TAB_OVERSCAN);
+        let tab_labels: Vec<(usize, Arc<str>)> = tab_range
+            .filter_map(|index| self.tabs.label(index).map(|label| (index, label)))
+            .collect();
+        for (index, label) in &tab_labels {
+            let left = sidebar_width + usize_as_f32(*index) * TAB_WIDTH - self.tab_scroll_x;
+            let layout = self.text_system.shape(label, font)?;
+            pending_glyphs.extend(self.collect_glyphs(
+                &layout,
+                font,
+                left + 8.0,
+                layout.ascent() + 4.0,
+                tab_clip,
+            )?);
+        }
         let selected = self.selection.range();
         for line in visible.laid_out() {
-            let layout = self.layout_cache.layout_line(
+            let layout_result = self.layout_cache.layout_line(
                 &snapshot,
                 line,
                 font,
                 wrap_width,
                 &mut *self.text_system,
-            )?;
+            );
+            let layout = layout_result?;
             let top = CONTENT_INSET + usize_as_f32(line) * LINE_HEIGHT - self.scroll_y;
             let baseline = top + layout.ascent();
             if !selected.is_empty() {
@@ -808,13 +859,9 @@ impl StudioApp {
             let layout = self.text_system.shape(status.message(), font)?;
             let top = (viewport.height() - CONTENT_INSET - LINE_HEIGHT).max(CONTENT_INSET);
             let baseline = top + layout.ascent();
-            pending_glyphs.extend(self.collect_glyphs(
-                &layout,
-                font,
-                editor_origin_x + 6.0,
-                baseline,
-                clip,
-            )?);
+            let status_glyphs =
+                self.collect_glyphs(&layout, font, editor_origin_x + 6.0, baseline, clip);
+            pending_glyphs.extend(status_glyphs?);
             let origin = Point::new(editor_origin_x, top).ok_or(StudioRenderError::Domain)?;
             let size =
                 Size::new(content_size.width(), LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
@@ -824,6 +871,20 @@ impl StudioApp {
         };
         if let Some(bounds) = status_background {
             builder.push_quad(Quad::new(bounds, status_background_color).clipped(clip))?;
+        }
+        builder.push_quad(Quad::new(tab_bounds, tab_background).clipped(tab_clip))?;
+        if tab_labels
+            .iter()
+            .any(|(index, _)| *index == self.tabs.active_index())
+        {
+            let active_left = sidebar_width + usize_as_f32(self.tabs.active_index()) * TAB_WIDTH
+                - self.tab_scroll_x;
+            let active_origin = Point::new(active_left, 0.0).ok_or(StudioRenderError::Domain)?;
+            let active_size =
+                Size::new(TAB_WIDTH, TAB_BAR_HEIGHT).ok_or(StudioRenderError::Domain)?;
+            let active_quad = Quad::new(Rect::new(active_origin, active_size), active_tab_color)
+                .clipped(tab_clip);
+            builder.push_quad(active_quad)?;
         }
 
         self.publish_atlas_if_needed(&pending_glyphs)?;
@@ -1131,7 +1192,10 @@ impl StudioApp {
     }
 
     fn handle_close_request(&mut self) -> StudioTransition {
-        if self.document.is_dirty() || self.last_file_error.is_some() {
+        if self.document.is_dirty()
+            || self.tabs.inactive_documents().any(StudioDocument::is_dirty)
+            || self.last_file_error.is_some()
+        {
             let effect = self.set_local_status(LocalStatus::CloseBlocked);
             StudioTransition {
                 effect,
@@ -1222,6 +1286,15 @@ impl StudioApp {
         if command && physical_key == KEY_Z {
             return if shift { self.redo() } else { self.undo() };
         }
+        if command && physical_key == KEY_W {
+            return self.close_active_tab_or_record();
+        }
+        if command && physical_key == KEY_LEFT_BRACKET {
+            return self.navigate_document_history(false);
+        }
+        if command && physical_key == KEY_RIGHT_BRACKET {
+            return self.navigate_document_history(true);
+        }
         match physical_key {
             KEY_DELETE_BACKWARD => self.delete_backward(),
             KEY_DELETE_FORWARD => self.delete_forward(),
@@ -1298,6 +1371,23 @@ impl StudioApp {
         modifiers: Modifiers,
     ) -> EventEffect {
         self.last_pointer_position = Some(position);
+        if action == PointerAction::Down
+            && button == PointerButton::Primary
+            && position.y() < TAB_BAR_HEIGHT
+            && position.x() >= self.sidebar_width(self.last_viewport)
+        {
+            self.pointer_selecting = false;
+            let tab_position = (position.x() - self.sidebar_width(self.last_viewport)
+                + self.tab_scroll_x)
+                / TAB_WIDTH;
+            let Some(index) = floor_f32_to_usize(tab_position) else {
+                return EventEffect::default();
+            };
+            return match self.activate_document_tab(index) {
+                Ok(effect) => effect,
+                Err(error) => self.record_workspace_error(&error),
+            };
+        }
         if action == PointerAction::Down
             && button == PointerButton::Primary
             && self.workspace.is_some()
@@ -1592,26 +1682,41 @@ impl StudioApp {
         &mut self,
         index: usize,
     ) -> Result<EventEffect, WorkspaceSelectionError> {
-        if self.document.is_dirty() {
-            return Err(WorkspaceSelectionError::DirtyDocument);
-        }
         let path = self
             .workspace
             .as_ref()
             .ok_or(WorkspaceSelectionError::NoWorkspace)?
             .path_for_file(index)
             .map_err(WorkspaceSelectionError::Workspace)?;
-        let document = StudioDocument::open(path).map_err(WorkspaceSelectionError::File)?;
+        if let Some(tab) = self.tabs.index_for_path(&path) {
+            return self.activate_document_tab(tab);
+        }
+        let document = StudioDocument::open(&path).map_err(WorkspaceSelectionError::File)?;
         let next_revision = self
             .runtime_document_revision
             .checked_add(1)
             .ok_or(WorkspaceSelectionError::RevisionExhausted)?;
-        self.document = document;
+        let view = self.active_document_view();
+        self.tabs
+            .insert_and_activate(&path, Some(index), document, &mut self.document, view)
+            .map_err(WorkspaceSelectionError::Tabs)?;
         self.runtime_document_revision = next_revision;
-        self.active_workspace_entry = Some(index);
-        self.selection = Selection::caret(ByteOffset::new(0));
+        self.active_workspace_entry = self.tabs.active_workspace_entry();
+        self.apply_document_view(DocumentViewState::default());
+        Ok(EventEffect::document_replacement())
+    }
+
+    fn active_document_view(&self) -> DocumentViewState {
+        DocumentViewState {
+            selection: self.selection,
+            scroll_y: self.scroll_y,
+        }
+    }
+
+    fn apply_document_view(&mut self, view: DocumentViewState) {
+        self.selection = view.selection;
+        self.scroll_y = view.scroll_y;
         self.composition = None;
-        self.scroll_y = 0.0;
         self.pointer_selecting = false;
         self.rendered_lines.clear();
         self.pending_cut = None;
@@ -1619,7 +1724,97 @@ impl StudioApp {
         self.last_file_error = None;
         self.last_workspace_error = None;
         self.local_status = None;
+        self.ensure_active_tab_visible();
+    }
+
+    fn activate_document_tab(
+        &mut self,
+        index: usize,
+    ) -> Result<EventEffect, WorkspaceSelectionError> {
+        if index == self.tabs.active_index() {
+            return Ok(EventEffect::default());
+        }
+        let next_revision = self
+            .runtime_document_revision
+            .checked_add(1)
+            .ok_or(WorkspaceSelectionError::RevisionExhausted)?;
+        let current_view = self.active_document_view();
+        let view = self
+            .tabs
+            .activate(index, &mut self.document, current_view)
+            .map_err(WorkspaceSelectionError::Tabs)?
+            .ok_or(WorkspaceSelectionError::Tabs(
+                DocumentTabError::InvalidPayloadState,
+            ))?;
+        self.runtime_document_revision = next_revision;
+        self.active_workspace_entry = self.tabs.active_workspace_entry();
+        self.apply_document_view(view);
         Ok(EventEffect::document_replacement())
+    }
+
+    fn navigate_document_history(&mut self, forward: bool) -> EventEffect {
+        let Some(next_revision) = self.runtime_document_revision.checked_add(1) else {
+            return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
+        };
+        let current_view = self.active_document_view();
+        let result = if forward {
+            self.tabs.navigate_forward(&mut self.document, current_view)
+        } else {
+            self.tabs.navigate_back(&mut self.document, current_view)
+        };
+        match result {
+            Ok(Some(view)) => {
+                self.runtime_document_revision = next_revision;
+                self.active_workspace_entry = self.tabs.active_workspace_entry();
+                self.apply_document_view(view);
+                EventEffect::document_replacement()
+            }
+            Ok(None) => EventEffect::default(),
+            Err(error) => self.record_workspace_error(&WorkspaceSelectionError::Tabs(error)),
+        }
+    }
+
+    fn close_active_tab_or_record(&mut self) -> EventEffect {
+        match self.close_active_tab() {
+            Ok(effect) => effect,
+            Err(error) => self.record_workspace_error(&error),
+        }
+    }
+
+    fn close_active_tab(&mut self) -> Result<EventEffect, WorkspaceSelectionError> {
+        if self.document.is_dirty() || self.last_file_error.is_some() {
+            return Err(WorkspaceSelectionError::DirtyDocument);
+        }
+        let next_revision = self
+            .runtime_document_revision
+            .checked_add(1)
+            .ok_or(WorkspaceSelectionError::RevisionExhausted)?;
+        let view = self
+            .tabs
+            .close_active(&mut self.document)
+            .map_err(WorkspaceSelectionError::Tabs)?;
+        self.runtime_document_revision = next_revision;
+        self.active_workspace_entry = self.tabs.active_workspace_entry();
+        self.apply_document_view(view);
+        Ok(EventEffect::document_replacement())
+    }
+
+    fn ensure_active_tab_visible(&mut self) {
+        let available =
+            (self.last_viewport.width() - self.sidebar_width(self.last_viewport)).max(TAB_WIDTH);
+        let visible = floor_f32_to_usize(available / TAB_WIDTH)
+            .unwrap_or(1)
+            .max(1);
+        let active = self.tabs.active_index();
+        let first = floor_f32_to_usize(self.tab_scroll_x / TAB_WIDTH).unwrap_or(0);
+        if active < first {
+            self.tab_scroll_x = usize_as_f32(active) * TAB_WIDTH;
+        } else if active >= first.saturating_add(visible) {
+            self.tab_scroll_x =
+                usize_as_f32(active.saturating_add(1).saturating_sub(visible)) * TAB_WIDTH;
+        }
+        let maximum = (usize_as_f32(self.tabs.len()) * TAB_WIDTH - available).max(0.0);
+        self.tab_scroll_x = self.tab_scroll_x.clamp(0.0, maximum);
     }
 
     fn record_workspace_error(&mut self, error: &WorkspaceSelectionError) -> EventEffect {
