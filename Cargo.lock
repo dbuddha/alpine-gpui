@@ -83,6 +83,8 @@ dependencies = [
  "alpine-platform-macos",
  "alpine-runtime",
  "alpine-scene",
+ "alpine-text",
+ "alpine-text-layout",
 ]
 
 [[package]]

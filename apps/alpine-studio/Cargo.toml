@@ -12,6 +12,8 @@ alpine-core = { path = "../../crates/alpine-core", version = "=0.0.0" }
 alpine-platform-macos = { path = "../../crates/alpine-platform-macos", version = "=0.0.0" }
 alpine-runtime = { path = "../../crates/alpine-runtime", version = "=0.0.0" }
 alpine-scene = { path = "../../crates/alpine-scene", version = "=0.0.0" }
+alpine-text = { path = "../../crates/alpine-text", version = "=0.0.0" }
+alpine-text-layout = { path = "../../crates/alpine-text-layout", version = "=0.0.0" }
 
 [lints.rust]
 missing_docs = "deny"
