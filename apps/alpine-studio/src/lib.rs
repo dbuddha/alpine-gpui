@@ -5,6 +5,10 @@
 
 //! Local-only Alpine Studio editor boundary.
 
+mod workspace;
+
+pub use workspace::WorkspaceError;
+
 use std::{
     error::Error,
     fmt,
@@ -33,6 +37,7 @@ use alpine_text_layout::{
     GlyphAtlas, GlyphKey, GlyphRasterizer, LayoutError, LineLayout, LineLayoutCache,
     PositiveFinite, TextShaper, VisibleLines,
 };
+use workspace::{Workspace, WorkspaceLimits};
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use alpine_platform_macos::SurfaceDescriptor;
@@ -48,6 +53,9 @@ const DEFAULT_SCALE: f32 = 2.0;
 const FONT_FAMILY: u64 = 1;
 const CARET_WIDTH: f32 = 1.5;
 const SELECTION_ALPHA: f32 = 0.42;
+const SIDEBAR_WIDTH: f32 = 236.0;
+const TREE_ROW_HEIGHT: f32 = 22.0;
+const TREE_OVERSCAN_ROWS: usize = 3;
 const INITIAL_TEXT: &str = "fn main() {\n    println!(\"Alpine Studio\");\n}\n\n// Local, direct, and deliberately small.\n";
 
 const KEY_A: u16 = 0;
@@ -72,6 +80,8 @@ pub enum StudioError {
     Usage,
     /// Opening or saving the selected local file failed.
     File(FileError),
+    /// Opening or enumerating the selected local folder failed.
+    Workspace(WorkspaceError),
     /// Native application construction or execution failed.
     Runtime(RuntimeError),
 }
@@ -79,8 +89,9 @@ pub enum StudioError {
 impl fmt::Display for StudioError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Usage => formatter.write_str("usage: alpine-studio [file]"),
+            Self::Usage => formatter.write_str("usage: alpine-studio [path]"),
             Self::File(error) => write!(formatter, "Studio file failed: {error}"),
+            Self::Workspace(error) => write!(formatter, "Studio workspace failed: {error}"),
             Self::Runtime(error) => write!(formatter, "Studio runtime failed: {error}"),
         }
     }
@@ -91,6 +102,7 @@ impl Error for StudioError {
         match self {
             Self::Usage => None,
             Self::File(error) => Some(error),
+            Self::Workspace(error) => Some(error),
             Self::Runtime(error) => Some(error),
         }
     }
@@ -99,6 +111,12 @@ impl Error for StudioError {
 impl From<FileError> for StudioError {
     fn from(error: FileError) -> Self {
         Self::File(error)
+    }
+}
+
+impl From<WorkspaceError> for StudioError {
+    fn from(error: WorkspaceError) -> Self {
+        Self::Workspace(error)
     }
 }
 
@@ -173,6 +191,33 @@ pub fn run_file(path: impl AsRef<Path>) -> Result<(), StudioError> {
     }
 }
 
+/// Opens one existing regular file or one bounded local folder.
+///
+/// # Errors
+///
+/// Returns a structured path, file, workspace, or runtime failure.
+pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        let path = path.as_ref();
+        let metadata = std::fs::metadata(path)
+            .map_err(|source| WorkspaceError::io("read launch metadata", path, source))?;
+        if metadata.is_file() {
+            run_native(native_file_app(path)?).map_err(StudioError::from)
+        } else if metadata.is_dir() {
+            run_native(native_workspace_app(path)?).map_err(StudioError::from)
+        } else {
+            Err(WorkspaceError::UnsupportedTarget(path.to_path_buf()).into())
+        }
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        let _ = path;
+        Err(SurfaceError::UnsupportedPlatform.into())
+    }
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
     let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
@@ -205,6 +250,16 @@ fn native_file_app(path: &Path) -> Result<StudioApp, StudioError> {
     StudioApp::from_document(text_system, document).map_err(StudioError::from)
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn native_workspace_app(path: &Path) -> Result<StudioApp, StudioError> {
+    let workspace = Workspace::open(path, WorkspaceLimits::default())?;
+    let mut text_system = alpine_text_layout::CoreTextSystem::new();
+    text_system
+        .register_font(FONT_FAMILY, "Menlo-Regular")
+        .map_err(|_| SurfaceError::DriverUnavailable)?;
+    StudioApp::from_workspace(text_system, workspace).map_err(StudioError::from)
+}
+
 trait StudioTextSystem: TextShaper + GlyphRasterizer {}
 
 impl<T: TextShaper + GlyphRasterizer> StudioTextSystem for T {}
@@ -228,12 +283,14 @@ struct RenderedLine {
 struct PendingGlyph {
     bounds: Rect,
     atlas_bounds: AtlasBounds,
+    clip: alpine_scene::ClipId,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct EventEffect {
     visual_changed: bool,
     document_changed: bool,
+    document_identity_advanced: bool,
 }
 
 impl EventEffect {
@@ -241,6 +298,7 @@ impl EventEffect {
         Self {
             visual_changed: true,
             document_changed: false,
+            document_identity_advanced: false,
         }
     }
 
@@ -248,6 +306,15 @@ impl EventEffect {
         Self {
             visual_changed: true,
             document_changed: true,
+            document_identity_advanced: false,
+        }
+    }
+
+    const fn document_replacement() -> Self {
+        Self {
+            visual_changed: true,
+            document_changed: true,
+            document_identity_advanced: true,
         }
     }
 
@@ -255,6 +322,8 @@ impl EventEffect {
         Self {
             visual_changed: self.visual_changed || other.visual_changed,
             document_changed: self.document_changed || other.document_changed,
+            document_identity_advanced: self.document_identity_advanced
+                || other.document_identity_advanced,
         }
     }
 }
@@ -269,12 +338,13 @@ struct PendingCut {
 enum LocalStatus {
     Clipboard(Arc<str>),
     CloseBlocked,
+    Workspace(Arc<str>),
 }
 
 impl LocalStatus {
     fn message(&self) -> &str {
         match self {
-            Self::Clipboard(message) => message,
+            Self::Clipboard(message) | Self::Workspace(message) => message,
             Self::CloseBlocked => "Save changes before closing.",
         }
     }
@@ -336,6 +406,37 @@ impl fmt::Display for StudioRenderError {
 
 impl Error for StudioRenderError {}
 
+#[derive(Debug)]
+enum WorkspaceSelectionError {
+    NoWorkspace,
+    DirtyDocument,
+    RevisionExhausted,
+    Workspace(WorkspaceError),
+    File(FileError),
+}
+
+impl fmt::Display for WorkspaceSelectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoWorkspace => formatter.write_str("no local workspace is open"),
+            Self::DirtyDocument => formatter.write_str("save changes before switching files"),
+            Self::RevisionExhausted => formatter.write_str("document identity is exhausted"),
+            Self::Workspace(error) => write!(formatter, "workspace selection failed: {error}"),
+            Self::File(error) => write!(formatter, "workspace file failed: {error}"),
+        }
+    }
+}
+
+impl Error for WorkspaceSelectionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Workspace(error) => Some(error),
+            Self::File(error) => Some(error),
+            Self::NoWorkspace | Self::DirtyDocument | Self::RevisionExhausted => None,
+        }
+    }
+}
+
 enum StudioDocument {
     Scratch { buffer: Buffer, clean_revision: u64 },
     File(Editor),
@@ -389,6 +490,11 @@ impl StudioDocument {
 
 struct StudioApp {
     document: StudioDocument,
+    workspace: Option<Workspace>,
+    active_workspace_entry: Option<usize>,
+    workspace_scroll_y: f32,
+    last_pointer_position: Option<Point>,
+    runtime_document_revision: u64,
     selection: Selection,
     composition: Option<Composition>,
     scroll_y: f32,
@@ -408,6 +514,8 @@ struct StudioApp {
     last_save: Option<SaveReport>,
     last_file_error: Option<FileError>,
     last_clipboard_error: Option<ClipboardError>,
+    workspace_failures: u64,
+    last_workspace_error: Option<Arc<str>>,
     pending_cut: Option<PendingCut>,
     local_status: Option<LocalStatus>,
 }
@@ -426,9 +534,44 @@ impl StudioApp {
         Self::from_document(text_system, document).map_err(StudioError::from)
     }
 
+    #[cfg(test)]
+    fn open_workspace(
+        text_system: impl StudioTextSystem + 'static,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, StudioError> {
+        let workspace = Workspace::open(path.as_ref(), WorkspaceLimits::default())?;
+        Self::from_workspace(text_system, workspace).map_err(StudioError::from)
+    }
+
     fn from_document(
         text_system: impl StudioTextSystem + 'static,
         document: StudioDocument,
+    ) -> Result<Self, SurfaceError> {
+        Self::from_parts(text_system, document, None)
+    }
+
+    fn from_workspace(
+        text_system: impl StudioTextSystem + 'static,
+        workspace: Workspace,
+    ) -> Result<Self, SurfaceError> {
+        let omitted_entries = workspace.snapshot().omitted_entries;
+        let mut app = Self::from_parts(
+            text_system,
+            StudioDocument::scratch(INITIAL_TEXT),
+            Some(workspace),
+        )?;
+        if omitted_entries > 0 {
+            app.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
+                "Workspace tree truncated: {omitted_entries} entries omitted."
+            ))));
+        }
+        Ok(app)
+    }
+
+    fn from_parts(
+        text_system: impl StudioTextSystem + 'static,
+        document: StudioDocument,
+        workspace: Option<Workspace>,
     ) -> Result<Self, SurfaceError> {
         let last_viewport =
             Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
@@ -436,8 +579,14 @@ impl StudioApp {
             .ok_or(SurfaceError::DriverUnavailable)?;
         let atlas_budget =
             NonZeroUsize::new(DEFAULT_ATLAS_BUDGET_BYTES).ok_or(SurfaceError::DriverUnavailable)?;
+        let runtime_document_revision = document.buffer().revision().get();
         Ok(Self {
             document,
+            workspace,
+            active_workspace_entry: None,
+            workspace_scroll_y: 0.0,
+            last_pointer_position: None,
+            runtime_document_revision,
             selection: Selection::caret(ByteOffset::new(0)),
             composition: None,
             scroll_y: 0.0,
@@ -457,6 +606,8 @@ impl StudioApp {
             last_save: None,
             last_file_error: None,
             last_clipboard_error: None,
+            workspace_failures: 0,
+            last_workspace_error: None,
             pending_cut: None,
             local_status: None,
         })
@@ -517,10 +668,12 @@ impl StudioApp {
         self.layout_cache.begin_frame()?;
 
         let origin = Point::new(0.0, 0.0).ok_or(StudioRenderError::Domain)?;
+        let sidebar_width = self.sidebar_width(viewport);
+        let editor_origin_x = sidebar_width + CONTENT_INSET;
         let content_origin =
-            Point::new(CONTENT_INSET, CONTENT_INSET).ok_or(StudioRenderError::Domain)?;
+            Point::new(editor_origin_x, CONTENT_INSET).ok_or(StudioRenderError::Domain)?;
         let content_size = Size::new(
-            (viewport.width() - CONTENT_INSET * 2.0).max(1.0),
+            (viewport.width() - sidebar_width - CONTENT_INSET * 2.0).max(1.0),
             (viewport.height() - CONTENT_INSET * 2.0).max(1.0),
         )
         .ok_or(StudioRenderError::Domain)?;
@@ -550,6 +703,10 @@ impl StudioApp {
             LinearRgba::new(0.94, 0.72, 0.25, 1.0).ok_or(StudioRenderError::Domain)?;
         let status_background_color =
             LinearRgba::new(0.34, 0.075, 0.065, 0.96).ok_or(StudioRenderError::Domain)?;
+        let sidebar_background =
+            LinearRgba::new(0.027, 0.031, 0.035, 1.0).ok_or(StudioRenderError::Domain)?;
+        let active_row_color =
+            LinearRgba::new(0.12, 0.16, 0.19, 1.0).ok_or(StudioRenderError::Domain)?;
 
         let mut builder = SceneBuilder::new(revision, viewport);
         builder.push_quad(Quad::new(Rect::new(origin, viewport), background))?;
@@ -558,6 +715,44 @@ impl StudioApp {
 
         let mut rendered_lines = Vec::new();
         let mut pending_glyphs = Vec::new();
+        if let Some(workspace) = &self.workspace {
+            let sidebar_size = Size::new(sidebar_width.max(1.0), viewport.height())
+                .ok_or(StudioRenderError::Domain)?;
+            let sidebar_bounds = Rect::new(origin, sidebar_size);
+            let sidebar_clip = builder.push_clip(Clip::new(sidebar_bounds));
+            builder.push_quad(Quad::new(sidebar_bounds, sidebar_background))?;
+            let first_visible =
+                floor_f32_to_usize(self.workspace_scroll_y / TREE_ROW_HEIGHT).unwrap_or(0);
+            let visible_rows = floor_f32_to_usize(viewport.height() / TREE_ROW_HEIGHT)
+                .unwrap_or(0)
+                .saturating_add(1);
+            let range = workspace.visible_range(first_visible, visible_rows, TREE_OVERSCAN_ROWS);
+            let labels: Vec<(usize, Arc<str>)> = range
+                .filter_map(|index| workspace.entry(index).map(|entry| (index, entry.name())))
+                .collect();
+            for (index, label) in labels {
+                let top =
+                    CONTENT_INSET + usize_as_f32(index) * TREE_ROW_HEIGHT - self.workspace_scroll_y;
+                if self.active_workspace_entry == Some(index) {
+                    let row_origin = Point::new(0.0, top).ok_or(StudioRenderError::Domain)?;
+                    let row_size = Size::new(sidebar_width.max(1.0), TREE_ROW_HEIGHT)
+                        .ok_or(StudioRenderError::Domain)?;
+                    builder.push_quad(
+                        Quad::new(Rect::new(row_origin, row_size), active_row_color)
+                            .clipped(sidebar_clip),
+                    )?;
+                }
+                let layout = self.text_system.shape(&label, font)?;
+                let baseline = top + layout.ascent();
+                pending_glyphs.extend(self.collect_glyphs(
+                    &layout,
+                    font,
+                    CONTENT_INSET,
+                    baseline,
+                    sidebar_clip,
+                )?);
+            }
+        }
         let selected = self.selection.range();
         for line in visible.laid_out() {
             let layout = self.layout_cache.layout_line(
@@ -579,10 +774,17 @@ impl StudioApp {
                     &layout,
                     selected.clone(),
                     selection_color,
+                    editor_origin_x,
                 );
                 selection_result?;
             }
-            pending_glyphs.extend(self.collect_glyphs(&layout, font, CONTENT_INSET, baseline)?);
+            pending_glyphs.extend(self.collect_glyphs(
+                &layout,
+                font,
+                editor_origin_x,
+                baseline,
+                clip,
+            )?);
             rendered_lines.push(RenderedLine {
                 line,
                 top,
@@ -601,10 +803,10 @@ impl StudioApp {
             let prefix = snapshot.slice(source.start..prefix_end)?;
             let prefix_utf16 = u32::try_from(prefix.encode_utf16().count())
                 .map_err(|_| StudioRenderError::Domain)?;
-            let start_x = CONTENT_INSET + x_for_utf16(&rendered.layout, prefix_utf16);
+            let start_x = editor_origin_x + x_for_utf16(&rendered.layout, prefix_utf16);
             let composition_layout = self.text_system.shape(&composition.text, font)?;
             let composition_glyphs =
-                self.collect_glyphs(&composition_layout, font, start_x, rendered.baseline);
+                self.collect_glyphs(&composition_layout, font, start_x, rendered.baseline, clip);
             pending_glyphs.extend(composition_glyphs?);
             let underline_origin = Point::new(
                 start_x,
@@ -623,10 +825,11 @@ impl StudioApp {
             pending_glyphs.extend(self.collect_glyphs(
                 &layout,
                 font,
-                CONTENT_INSET + 6.0,
+                editor_origin_x + 6.0,
                 baseline,
+                clip,
             )?);
-            let origin = Point::new(CONTENT_INSET, top).ok_or(StudioRenderError::Domain)?;
+            let origin = Point::new(editor_origin_x, top).ok_or(StudioRenderError::Domain)?;
             let size =
                 Size::new(content_size.width(), LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
             Some(Rect::new(origin, size))
@@ -645,8 +848,8 @@ impl StudioApp {
                 .ok_or(StudioRenderError::Domain)?;
             builder.set_glyph_atlas(atlas)?;
             for pending in pending_glyphs {
-                let glyph =
-                    Glyph::new(pending.bounds, pending.atlas_bounds, text_color).clipped(clip);
+                let glyph = Glyph::new(pending.bounds, pending.atlas_bounds, text_color)
+                    .clipped(pending.clip);
                 builder.push_glyph(glyph)?;
             }
         }
@@ -654,7 +857,7 @@ impl StudioApp {
             builder.push_quad(Quad::new(bounds, caret_color).clipped(clip))?;
         }
         if self.focused
-            && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines)?
+            && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_origin_x)?
         {
             builder.push_quad(Quad::new(caret, caret_color).clipped(clip))?;
         }
@@ -676,6 +879,7 @@ impl StudioApp {
         layout: &LineLayout,
         selection: Range<usize>,
         color: LinearRgba,
+        origin_x: f32,
     ) -> Result<(), StudioRenderError> {
         let line_range = snapshot.line_byte_range(line)?;
         if selection.end <= line_range.start || selection.start >= line_range.end {
@@ -693,8 +897,8 @@ impl StudioApp {
         } else {
             local_utf16(snapshot, line_range.start, end)?
         };
-        let start_x = CONTENT_INSET + x_for_utf16(layout, start_utf16);
-        let end_x = CONTENT_INSET + x_for_utf16(layout, end_utf16);
+        let start_x = origin_x + x_for_utf16(layout, start_utf16);
+        let end_x = origin_x + x_for_utf16(layout, end_utf16);
         let width = (end_x - start_x).max(if selection.end > content_end {
             6.0
         } else {
@@ -712,6 +916,7 @@ impl StudioApp {
         requested_font: FontKey,
         origin_x: f32,
         baseline: f32,
+        clip: alpine_scene::ClipId,
     ) -> Result<Vec<PendingGlyph>, StudioRenderError> {
         let mut pending = Vec::new();
         pending
@@ -747,6 +952,7 @@ impl StudioApp {
             pending.push(PendingGlyph {
                 bounds: Rect::new(origin, size),
                 atlas_bounds: AtlasBounds::new(rect.x(), rect.y(), rect.width(), rect.height()),
+                clip,
             });
         }
         Ok(pending)
@@ -780,6 +986,7 @@ impl StudioApp {
         &self,
         snapshot: &BufferSnapshot,
         rendered_lines: &[RenderedLine],
+        origin_x: f32,
     ) -> Result<Option<Rect>, StudioRenderError> {
         let offset = self.selection.head();
         let Some(line) = Self::line_for_offset(snapshot, offset.get())? else {
@@ -790,7 +997,7 @@ impl StudioApp {
         };
         let line_range = snapshot.line_byte_range(line)?;
         let utf16 = local_utf16(snapshot, line_range.start, offset.get())?;
-        let x = CONTENT_INSET + x_for_utf16(&rendered.layout, utf16);
+        let x = origin_x + x_for_utf16(&rendered.layout, utf16);
         let origin = Point::new(x, rendered.top).ok_or(StudioRenderError::Domain)?;
         let size = Size::new(CARET_WIDTH, LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
         Ok(Some(Rect::new(origin, size)))
@@ -818,11 +1025,21 @@ impl StudioApp {
                 ..
             } => self.handle_pointer(*action, *position, *button, *modifiers),
             SurfaceEvent::Scroll { delta_y, .. } => {
-                let before = self.scroll_y;
-                self.scroll_y = (self.scroll_y - *delta_y).clamp(0.0, self.maximum_scroll());
-                (self.scroll_y.to_bits() != before.to_bits())
-                    .then(EventEffect::visual)
-                    .unwrap_or_default()
+                let over_workspace = self.last_pointer_position.is_some_and(|position| {
+                    self.workspace.is_some()
+                        && position.x() < self.sidebar_width(self.last_viewport)
+                });
+                let changed = if over_workspace {
+                    let before = self.workspace_scroll_y;
+                    self.workspace_scroll_y = (self.workspace_scroll_y - *delta_y)
+                        .clamp(0.0, self.maximum_workspace_scroll());
+                    self.workspace_scroll_y.to_bits() != before.to_bits()
+                } else {
+                    let before = self.scroll_y;
+                    self.scroll_y = (self.scroll_y - *delta_y).clamp(0.0, self.maximum_scroll());
+                    self.scroll_y.to_bits() != before.to_bits()
+                };
+                changed.then(EventEffect::visual).unwrap_or_default()
             }
             SurfaceEvent::Focus { focused, .. } => {
                 let changed = self.focused != *focused;
@@ -1094,6 +1311,23 @@ impl StudioApp {
         button: PointerButton,
         modifiers: Modifiers,
     ) -> EventEffect {
+        self.last_pointer_position = Some(position);
+        if action == PointerAction::Down
+            && button == PointerButton::Primary
+            && self.workspace.is_some()
+            && position.x() < self.sidebar_width(self.last_viewport)
+        {
+            self.pointer_selecting = false;
+            let row_position =
+                (position.y() - CONTENT_INSET + self.workspace_scroll_y) / TREE_ROW_HEIGHT;
+            let Some(index) = floor_f32_to_usize(row_position) else {
+                return EventEffect::default();
+            };
+            return match self.open_workspace_entry(index) {
+                Ok(effect) => effect,
+                Err(error) => self.record_workspace_error(&error),
+            };
+        }
         match action {
             PointerAction::Down if button == PointerButton::Primary => {
                 let Some(offset) = self.offset_at_point(position) else {
@@ -1124,6 +1358,10 @@ impl StudioApp {
     }
 
     fn offset_at_point(&mut self, position: Point) -> Option<ByteOffset> {
+        let origin_x = self.sidebar_width(self.last_viewport) + CONTENT_INSET;
+        if position.x() < origin_x {
+            return None;
+        }
         let line_position = (position.y() - CONTENT_INSET + self.scroll_y) / LINE_HEIGHT;
         if !line_position.is_finite() || line_position < 0.0 {
             return Some(ByteOffset::new(0));
@@ -1134,7 +1372,7 @@ impl StudioApp {
         let line_range = snapshot.line_byte_range(line).ok()?;
         let text = snapshot.slice(line_range.clone()).ok()?;
         let content = text.trim_end_matches(['\r', '\n']);
-        let x = (position.x() - CONTENT_INSET).max(0.0);
+        let x = (position.x() - origin_x).max(0.0);
         let target_utf16 = self
             .rendered_lines
             .iter()
@@ -1350,6 +1588,61 @@ impl StudioApp {
             .max(0.0)
     }
 
+    fn sidebar_width(&self, viewport: Size) -> f32 {
+        if self.workspace.is_some() {
+            SIDEBAR_WIDTH.min((viewport.width() - 1.0).max(0.0))
+        } else {
+            0.0
+        }
+    }
+
+    fn maximum_workspace_scroll(&self) -> f32 {
+        let rows = self.workspace.as_ref().map_or(0, Workspace::len);
+        let content_height = (self.last_viewport.height() - CONTENT_INSET).max(1.0);
+        (usize_as_f32(rows) * TREE_ROW_HEIGHT - content_height).max(0.0)
+    }
+
+    fn open_workspace_entry(
+        &mut self,
+        index: usize,
+    ) -> Result<EventEffect, WorkspaceSelectionError> {
+        if self.document.is_dirty() {
+            return Err(WorkspaceSelectionError::DirtyDocument);
+        }
+        let path = self
+            .workspace
+            .as_ref()
+            .ok_or(WorkspaceSelectionError::NoWorkspace)?
+            .path_for_file(index)
+            .map_err(WorkspaceSelectionError::Workspace)?;
+        let document = StudioDocument::open(path).map_err(WorkspaceSelectionError::File)?;
+        let next_revision = self
+            .runtime_document_revision
+            .checked_add(1)
+            .ok_or(WorkspaceSelectionError::RevisionExhausted)?;
+        self.document = document;
+        self.runtime_document_revision = next_revision;
+        self.active_workspace_entry = Some(index);
+        self.selection = Selection::caret(ByteOffset::new(0));
+        self.composition = None;
+        self.scroll_y = 0.0;
+        self.pointer_selecting = false;
+        self.rendered_lines.clear();
+        self.pending_cut = None;
+        self.last_save = None;
+        self.last_file_error = None;
+        self.last_workspace_error = None;
+        self.local_status = None;
+        Ok(EventEffect::document_replacement())
+    }
+
+    fn record_workspace_error(&mut self, error: &WorkspaceSelectionError) -> EventEffect {
+        self.workspace_failures = self.workspace_failures.saturating_add(1);
+        let message: Arc<str> = Arc::from(error.to_string());
+        self.last_workspace_error = Some(Arc::clone(&message));
+        self.set_local_status(LocalStatus::Workspace(message))
+    }
+
     fn save_document(&mut self) -> EventEffect {
         match self.document.save() {
             Ok(Some(report)) => {
@@ -1390,7 +1683,14 @@ impl AppDelegate for StudioApp {
             self.resolve_close_admission(true, admitted);
         }
         if effect.document_changed {
-            let revision = DocumentRevision::new(self.buffer().revision().get());
+            if !effect.document_identity_advanced {
+                if let Some(next) = self.runtime_document_revision.checked_add(1) {
+                    self.runtime_document_revision = next;
+                } else {
+                    self.input_failures = self.input_failures.saturating_add(1);
+                }
+            }
+            let revision = DocumentRevision::new(self.runtime_document_revision);
             let rejected = !context.advance_document(revision);
             self.input_failures = self.input_failures.saturating_add(u64::from(rejected));
         }

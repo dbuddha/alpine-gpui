@@ -5,7 +5,7 @@
 fn executable_propagates_the_structured_platform_failure() -> Result<(), Box<dyn std::error::Error>>
 {
     let executable = env!("CARGO_BIN_EXE_alpine-studio");
-    for arguments in [Vec::new(), vec!["document.txt"]] {
+    for arguments in [Vec::new(), vec!["document.txt"], vec!["."]] {
         let output = std::process::Command::new(executable)
             .args(arguments)
             .output()?;

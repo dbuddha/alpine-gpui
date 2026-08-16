@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     fs,
     num::NonZeroU32,
     path::{Path, PathBuf},
@@ -11,6 +12,10 @@ use alpine_text_layout::{GlyphBitmap, RasterizedGlyph, ShapedGlyph};
 use super::*;
 
 static NEXT_TEST_FILE: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    static TEST_SHAPE_CALLS: Cell<u64> = const { Cell::new(0) };
+}
 
 struct TestFile {
     path: PathBuf,
@@ -38,11 +43,46 @@ impl Drop for TestFile {
     }
 }
 
+struct TestWorkspace {
+    path: PathBuf,
+}
+
+impl TestWorkspace {
+    fn new() -> std::io::Result<Self> {
+        let sequence = NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "alpine-studio-workspace-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn write(&self, name: &str, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+        fs::write(self.path.join(name), bytes)
+    }
+
+    fn create_dir(&self, name: &str) -> std::io::Result<()> {
+        fs::create_dir(self.path.join(name))
+    }
+}
+
+impl Drop for TestWorkspace {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 #[derive(Default)]
 struct TestTextSystem;
 
 impl TextShaper for TestTextSystem {
     fn shape(&mut self, text: &str, _font: FontKey) -> Result<LineLayout, LayoutError> {
+        TEST_SHAPE_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
         let mut glyphs = Vec::new();
         let mut x = 0.0;
         let mut utf16 = 0_u32;
@@ -707,7 +747,7 @@ fn file_launch_rejects_invalid_utf8_and_scratch_save_is_isolated()
     assert_eq!(scratch.last_file_error, None);
 
     let usage = StudioError::Usage;
-    assert_eq!(usage.to_string(), "usage: alpine-studio [file]");
+    assert_eq!(usage.to_string(), "usage: alpine-studio [path]");
     assert!(usage.source().is_none());
     let file_error = StudioError::from(FileError::InvalidUtf8);
     assert!(file_error.to_string().contains("Studio file failed"));
@@ -715,6 +755,159 @@ fn file_launch_rejects_invalid_utf8_and_scratch_save_is_isolated()
     let runtime_error = StudioError::from(RuntimeError::Surface(SurfaceError::UnsupportedPlatform));
     assert!(runtime_error.to_string().contains("Studio runtime failed"));
     assert!(runtime_error.source().is_some());
+    Ok(())
+}
+
+#[test]
+fn bounded_workspace_is_sorted_capped_and_projects_only_visible_rows()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("z.rs", "z")?;
+    root.write("a.rs", "a")?;
+    root.write("long-name.rs", "long")?;
+    root.create_dir("src")?;
+    let limits = WorkspaceLimits::new(16, 3, 64, 9);
+    let workspace = Workspace::open(root.path(), limits)?;
+    let snapshot = workspace.snapshot();
+    assert_eq!(snapshot.scanned_entries, 4);
+    assert_eq!(snapshot.retained_entries, 2);
+    assert_eq!(snapshot.retained_name_bytes, 7);
+    assert_eq!(snapshot.omitted_entries, 2);
+    assert_eq!(snapshot.scan_limit, 16);
+    assert_eq!(snapshot.entry_limit, 3);
+    assert_eq!(snapshot.name_byte_limit, 9);
+    assert_eq!(
+        workspace
+            .entry(0)
+            .map(super::workspace::WorkspaceEntry::name)
+            .as_deref(),
+        Some("src")
+    );
+    assert_eq!(
+        workspace
+            .entry(1)
+            .map(super::workspace::WorkspaceEntry::name)
+            .as_deref(),
+        Some("a.rs")
+    );
+    assert_eq!(workspace.visible_range(1, 1, 0), 1..2);
+    assert_eq!(workspace.visible_range(9, 2, 1), 2..2);
+
+    let too_small = WorkspaceLimits::new(1, 1, 64, 64);
+    assert!(matches!(
+        Workspace::open(root.path(), too_small),
+        Err(WorkspaceError::ScanLimitExceeded { limit: 1, .. })
+    ));
+
+    let rendered_root = TestWorkspace::new()?;
+    for index in 0..100 {
+        rendered_root.write(&format!("file-{index:03}.rs"), "x")?;
+    }
+    let mut app = StudioApp::open_workspace(TestTextSystem, rendered_root.path())?;
+    let viewport = viewport().map_err(|_| StudioRenderError::Domain)?;
+    let visible_rows = floor_f32_to_usize(viewport.height() / TREE_ROW_HEIGHT)
+        .ok_or("invalid visible row count")?
+        .saturating_add(1);
+    let projected_tree_rows = app
+        .workspace
+        .as_ref()
+        .ok_or("missing rendered workspace")?
+        .visible_range(0, visible_rows, TREE_OVERSCAN_ROWS)
+        .len();
+    let editor_rows = app.buffer().snapshot().line_count();
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let _scene = app.try_scene(SceneRevision::new(1), viewport)?;
+    let expected_shapes = u64::try_from(projected_tree_rows.saturating_add(editor_rows))?;
+    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), expected_shapes));
+    Ok(())
+}
+
+#[test]
+fn workspace_click_revalidates_target_and_preserves_current_document_on_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    root.write("invalid.rs", [0xff])?;
+    root.write("replace.rs", "replace")?;
+    root.create_dir("src")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = viewport().map_err(|_| StudioRenderError::Domain)?;
+    let _scene = app.try_scene(SceneRevision::new(1), viewport)?;
+    let workspace = app.workspace.as_ref().ok_or("missing workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("missing alpha")?;
+    let invalid = workspace
+        .index_named("invalid.rs")
+        .ok_or("missing invalid")?;
+    let replacement = workspace
+        .index_named("replace.rs")
+        .ok_or("missing replacement")?;
+    let directory = workspace.index_named("src").ok_or("missing directory")?;
+
+    let click = |index: usize, timestamp: u64| -> Result<SurfaceEvent, StudioRenderError> {
+        Ok(SurfaceEvent::Pointer {
+            timestamp: EventTimestamp::new(timestamp),
+            action: PointerAction::Down,
+            position: Point::new(
+                CONTENT_INSET,
+                CONTENT_INSET + usize_as_f32(index) * TREE_ROW_HEIGHT + 1.0,
+            )
+            .ok_or(StudioRenderError::Domain)?,
+            button: PointerButton::Primary,
+            modifiers: Modifiers::default(),
+        })
+    };
+    let opened = app.handle_event(&click(alpha, 1)?);
+    assert!(opened.visual_changed);
+    assert!(opened.document_changed);
+    assert!(opened.document_identity_advanced);
+    assert_eq!(app.buffer().snapshot().text(), "alpha");
+    assert_eq!(app.active_workspace_entry, Some(alpha));
+    let accepted_revision = app.runtime_document_revision;
+
+    let failed = app.handle_event(&click(invalid, 2)?);
+    assert!(failed.visual_changed);
+    assert!(!failed.document_changed);
+    assert_eq!(app.buffer().snapshot().text(), "alpha");
+    assert_eq!(app.runtime_document_revision, accepted_revision);
+    assert_eq!(app.workspace_failures, 1);
+    assert!(app.last_workspace_error.is_some());
+
+    let directory_failed = app.handle_event(&click(directory, 3)?);
+    assert!(directory_failed.visual_changed);
+    assert_eq!(app.buffer().snapshot().text(), "alpha");
+    assert_eq!(app.workspace_failures, 2);
+
+    fs::remove_file(root.path().join("replace.rs"))?;
+    let missing_failed = app.handle_event(&click(replacement, 4)?);
+    assert!(missing_failed.visual_changed);
+    assert_eq!(app.buffer().snapshot().text(), "alpha");
+    assert_eq!(app.runtime_document_revision, accepted_revision);
+    assert_eq!(app.workspace_failures, 3);
+
+    #[cfg(unix)]
+    {
+        let outside = TestFile::new("outside")?;
+        std::os::unix::fs::symlink(outside.path(), root.path().join("replace.rs"))?;
+        let symlink_failed = app.handle_event(&click(replacement, 5)?);
+        assert!(symlink_failed.visual_changed);
+        assert_eq!(app.buffer().snapshot().text(), "alpha");
+        assert_eq!(app.runtime_document_revision, accepted_revision);
+        assert_eq!(app.workspace_failures, 4);
+    }
+
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    let dirty_before = app.buffer().snapshot().text();
+    let failures_before_dirty = app.workspace_failures;
+    let dirty_failed = app.handle_event(&click(invalid, 6)?);
+    assert!(dirty_failed.visual_changed);
+    assert_eq!(app.buffer().snapshot().text(), dirty_before);
+    assert_eq!(
+        app.workspace_failures,
+        failures_before_dirty.saturating_add(1)
+    );
     Ok(())
 }
 
@@ -1186,9 +1379,9 @@ fn offscreen_caret_and_invalid_scroll_use_safe_scene_fallback() -> Result<(), St
     app.selection = Selection::caret(ByteOffset::new(0));
     app.scroll_y = app.maximum_scroll();
     let snapshot = app.buffer().snapshot();
-    assert!(app.caret_bounds(&snapshot, &[])?.is_none());
+    assert!(app.caret_bounds(&snapshot, &[], CONTENT_INSET)?.is_none());
     app.selection = Selection::caret(ByteOffset::new(usize::MAX));
-    assert!(app.caret_bounds(&snapshot, &[])?.is_none());
+    assert!(app.caret_bounds(&snapshot, &[], CONTENT_INSET)?.is_none());
     app.selection = Selection::caret(ByteOffset::new(0));
     let scene = app.try_scene(
         SceneRevision::new(1),
