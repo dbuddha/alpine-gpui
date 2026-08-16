@@ -838,7 +838,6 @@ mod tests {
     use std::{
         num::NonZeroUsize,
         sync::{
-            Barrier,
             atomic::AtomicBool,
             mpsc::{RecvTimeoutError, sync_channel},
         },
@@ -851,11 +850,9 @@ mod tests {
 
     use super::*;
 
-    static ROLLBACK_WORKER_STARTED: Barrier = Barrier::new(2);
     static ROLLBACK_WORKER_FINISHED: AtomicBool = AtomicBool::new(false);
 
     fn rollback_worker_probe() {
-        ROLLBACK_WORKER_STARTED.wait();
         thread::sleep(Duration::from_millis(100));
         ROLLBACK_WORKER_FINISHED.store(true, Ordering::Release);
     }
@@ -868,7 +865,6 @@ mod tests {
         _wake: Arc<Mutex<Option<WorkerWake>>>,
     ) -> std::io::Result<JoinHandle<()>> {
         if index == 1 {
-            ROLLBACK_WORKER_STARTED.wait();
             return Err(std::io::Error::other("injected spawn failure"));
         }
         thread::Builder::new()

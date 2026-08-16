@@ -1,14 +1,14 @@
 //! First shipping Alpine Studio application boundary.
 
 use alpine_core::{LinearRgba, Point, Rect, Size};
-use alpine_platform_macos::SurfaceError;
-use alpine_runtime::RuntimeError;
+use alpine_platform_macos::{SurfaceError, SurfaceEvent};
+use alpine_runtime::{AppContext, AppDelegate, RuntimeError, WindowContext};
 use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-use alpine_platform_macos::{SurfaceDescriptor, SurfaceEvent};
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-use alpine_runtime::{AppContext, AppDelegate, Application, WindowContext, WorkerConfig};
+use alpine_platform_macos::SurfaceDescriptor;
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+use alpine_runtime::{Application, WorkerConfig};
 
 const WINDOW_WIDTH: f32 = 960.0;
 const WINDOW_HEIGHT: f32 = 540.0;
@@ -80,11 +80,10 @@ impl StudioApp {
     }
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 impl AppDelegate for StudioApp {
-    type WorkerOutput = ();
+    type WorkerOutput = u64;
 
-    fn event(&mut self, _event: &SurfaceEvent, _context: &mut AppContext<'_, ()>) {}
+    fn event(&mut self, _event: &SurfaceEvent, _context: &mut AppContext<'_, u64>) {}
 
     fn frame(&mut self, context: WindowContext) -> Scene {
         self.scene(context.scene_revision(), context.viewport())
@@ -121,7 +120,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn studio_delegate_builds_only_the_dirty_runtime_frame() -> Result<(), RuntimeError> {
         let viewport =
             Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
