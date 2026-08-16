@@ -406,7 +406,7 @@ fn editor_scene_contains_clipped_glyphs_atlas_and_caret() -> Result<(), StudioRe
         viewport().map_err(|_| StudioRenderError::Domain)?,
     )?;
     assert_eq!(scene.revision(), SceneRevision::new(1));
-    assert_eq!(scene.clips().len(), 1);
+    assert_eq!(scene.clips().len(), 2);
     assert!(!scene.glyphs().is_empty());
     assert!(scene.glyph_atlas().is_some());
     assert!(scene.quads().len() >= 3);
@@ -871,7 +871,11 @@ fn bounded_workspace_is_sorted_capped_and_projects_only_visible_rows()
     let editor_rows = app.buffer().snapshot().line_count();
     TEST_SHAPE_CALLS.with(|calls| calls.set(0));
     let _scene = app.try_scene(SceneRevision::new(1), viewport)?;
-    let expected_shapes = u64::try_from(projected_tree_rows.saturating_add(editor_rows))?;
+    let expected_shapes = u64::try_from(
+        projected_tree_rows
+            .saturating_add(app.tabs.len())
+            .saturating_add(editor_rows),
+    )?;
     TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), expected_shapes));
     Ok(())
 }
@@ -1264,6 +1268,107 @@ fn workspace_click_revalidates_target_and_preserves_current_document_on_failure(
         app.workspace_failures,
         failures_before_dirty.saturating_add(1)
     );
+    Ok(())
+}
+
+#[test]
+fn bounded_tabs_preserve_dirty_documents_and_refuse_dirty_close()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    root.write("beta.rs", "beta")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = app.workspace.as_ref().ok_or("workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("alpha")?;
+    let beta = workspace.index_named("beta.rs").ok_or("beta")?;
+
+    assert!(app.open_workspace_entry(alpha)?.document_changed);
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    let dirty_alpha = app.buffer().snapshot().text();
+    assert!(app.open_workspace_entry(beta)?.document_changed);
+    assert_eq!(app.buffer().snapshot().text(), "beta");
+    let tab_count = app.tabs.len();
+
+    assert!(app.open_workspace_entry(alpha)?.document_changed);
+    assert_eq!(app.tabs.len(), tab_count);
+    assert_eq!(app.buffer().snapshot().text(), dirty_alpha);
+    assert!(matches!(
+        app.close_active_tab(),
+        Err(WorkspaceSelectionError::DirtyDocument)
+    ));
+    assert_eq!(app.tabs.len(), tab_count);
+    assert_eq!(app.buffer().snapshot().text(), dirty_alpha);
+
+    let _save_effect = app.save_document();
+    assert!(!app.document.is_dirty());
+    assert!(app.close_active_tab()?.document_changed);
+    assert_eq!(app.tabs.len(), tab_count - 1);
+    assert_eq!(
+        fs::read_to_string(root.path().join("alpha.rs"))?,
+        dirty_alpha
+    );
+    Ok(())
+}
+
+#[test]
+fn tab_history_branches_and_pointer_activation_restore_exact_view_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    root.write("beta.rs", "beta")?;
+    root.write("gamma.rs", "gamma")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = app.workspace.as_ref().ok_or("workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("alpha")?;
+    let beta = workspace.index_named("beta.rs").ok_or("beta")?;
+    let gamma = workspace.index_named("gamma.rs").ok_or("gamma")?;
+    app.open_workspace_entry(alpha)?;
+    app.selection = Selection::caret(ByteOffset::new(2));
+    app.scroll_y = 11.0;
+    app.open_workspace_entry(beta)?;
+    app.selection = Selection::caret(ByteOffset::new(3));
+    app.open_workspace_entry(gamma)?;
+
+    assert!(
+        app.navigate_document_history(false)
+            .document_identity_advanced
+    );
+    assert_eq!(app.buffer().snapshot().text(), "beta");
+    assert_eq!(app.selection, Selection::caret(ByteOffset::new(3)));
+    assert!(
+        app.navigate_document_history(false)
+            .document_identity_advanced
+    );
+    assert_eq!(app.buffer().snapshot().text(), "alpha");
+    assert_eq!(app.selection, Selection::caret(ByteOffset::new(2)));
+    assert!((app.scroll_y - 11.0).abs() < f32::EPSILON);
+    assert!(
+        app.navigate_document_history(true)
+            .document_identity_advanced
+    );
+    assert_eq!(app.buffer().snapshot().text(), "beta");
+    assert!(app.open_workspace_entry(alpha)?.document_identity_advanced);
+    assert_eq!(app.navigate_document_history(true), EventEffect::default());
+
+    let viewport = viewport().map_err(|_| StudioRenderError::Domain)?;
+    let _scene = app.try_scene(SceneRevision::new(9), viewport)?;
+    let canonical_beta = fs::canonicalize(root.path().join("beta.rs"))?;
+    let beta_tab = app.tabs.index_for_path(&canonical_beta).ok_or("beta tab")?;
+    let pointer = app.handle_pointer(
+        PointerAction::Down,
+        Point::new(
+            app.sidebar_width(viewport) + usize_as_f32(beta_tab) * TAB_WIDTH + 1.0,
+            1.0,
+        )
+        .ok_or("tab point")?,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert!(pointer.document_identity_advanced);
+    assert_eq!(app.buffer().snapshot().text(), "beta");
     Ok(())
 }
 
