@@ -1957,10 +1957,15 @@ mod tests {
     fn clipboard_and_response_values_preserve_public_identity() -> Result<(), SurfaceError> {
         let text = ClipboardText::new("bounded").map_err(|_| SurfaceError::DriverUnavailable)?;
         assert_eq!(text.as_str(), "bounded");
+        assert_eq!(text.clone().into_inner().as_ref(), "bounded");
         let write = ClipboardWrite::new(ClipboardOperation::Copy, text.clone())
             .map_err(|_| SurfaceError::DriverUnavailable)?;
         assert_eq!(write.operation(), ClipboardOperation::Copy);
         assert_eq!(write.text(), &text);
+        assert_eq!(
+            write.clone().into_parts(),
+            (ClipboardOperation::Copy, text.clone())
+        );
         assert_eq!(
             ClipboardWrite::new(ClipboardOperation::Paste, text.clone()),
             Err(ClipboardError::InvalidWriteOperation)
@@ -1981,6 +1986,14 @@ mod tests {
             ClipboardError::WriteRejected.to_string(),
             "the platform rejected the clipboard write"
         );
+        assert_eq!(
+            ClipboardError::InvalidWriteOperation.to_string(),
+            "paste cannot be returned as a clipboard write"
+        );
+        assert_eq!(
+            ClipboardError::TooLarge { bytes: 9, limit: 8 }.to_string(),
+            "clipboard text has 9 bytes; limit is 8"
+        );
 
         let response = SurfaceResponse::new(None, Some(write.clone()), CloseDisposition::Cancel);
         assert!(response.frame().is_none());
@@ -1990,6 +2003,7 @@ mod tests {
             response.into_parts(),
             (None, Some(write), CloseDisposition::Cancel)
         );
+        assert!(SurfaceResponse::from(None).into_frame().is_none());
         Ok(())
     }
 

@@ -1076,8 +1076,18 @@ mod tests {
         assert!(!context.cancel_close());
         assert_eq!(context.workspace_revision().get(), 2);
         assert_eq!(context.document_revision().get(), 3);
-        assert_eq!(clipboard_write, Some(write));
+        assert_eq!(clipboard_write.as_ref(), Some(&write));
         assert_eq!(close_disposition, CloseDisposition::Cancel);
+        let mut no_response_context = AppContext {
+            workspace_revision: &mut application.workspace_revision,
+            document_revision: &mut application.document_revision,
+            dirty: &mut application.dirty,
+            workers: &mut application.workers,
+            clipboard_write: None,
+            close_disposition: None,
+        };
+        assert!(!no_response_context.write_clipboard(write));
+        assert!(!no_response_context.cancel_close());
         assert!(application.dirty);
         Ok(())
     }
