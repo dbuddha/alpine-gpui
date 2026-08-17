@@ -776,6 +776,10 @@ impl StudioApp {
         let runtime_document_revision = document.buffer().revision().get();
         let tabs = DocumentTabs::new(path, None, DocumentTabLimits::default())
             .map_err(|_| SurfaceError::DriverUnavailable)?;
+        let active_tab = tabs
+            .active_id()
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        let panes = PaneGrid::new(active_tab, DocumentViewState::default());
         Ok(Self {
             document,
             tabs,
@@ -814,7 +818,7 @@ impl StudioApp {
             project_search: ProjectSearchState::default(),
             file_tree: FileTreeState::default(),
             command_palette: CommandPalette::default(),
-            panes: PaneGrid::new(0.0),
+            panes,
             #[cfg(test)]
             force_quick_open_submission_failure: None,
             #[cfg(test)]
@@ -887,8 +891,13 @@ impl StudioApp {
         let content_bounds = self
             .editor_region(viewport)
             .map_err(|_| StudioRenderError::Domain)?;
+        let active_tab = self
+            .tabs
+            .active_id()
+            .map_err(|_| StudioRenderError::Domain)?;
+        let active_view = self.active_document_view();
         self.panes
-            .sync_active(self.scroll_y)
+            .sync_active_document(active_tab, active_view)
             .map_err(|_| StudioRenderError::Domain)?;
         let pane_layout = self
             .panes
@@ -1012,28 +1021,35 @@ impl StudioApp {
                 tab_clip,
             )?);
         }
-        let selected = self.selection.range();
         for (pane_index, pane) in pane_layout.iter().enumerate() {
             let pane_clip = pane_clips[pane_index].ok_or(StudioRenderError::Domain)?;
-            let pane_scroll = self
+            let (pane_tab, pane_view) = self
                 .panes
-                .scroll_for(pane.id, self.scroll_y)
+                .document_for(pane.id, active_tab, active_view)
                 .map_err(|_| StudioRenderError::Domain)?;
+            let pane_snapshot = self
+                .tabs
+                .document_for_id(pane_tab, &self.document)
+                .map_err(|_| StudioRenderError::Domain)?
+                .buffer()
+                .snapshot();
+            let pane_scroll = pane_view.scroll_y;
             let viewport_height = PositiveFinite::new(pane.bounds.size().height())
                 .ok_or(StudioRenderError::Domain)?;
             let wrap_width =
                 PositiveFinite::new(pane.bounds.size().width()).ok_or(StudioRenderError::Domain)?;
             let visible = VisibleLines::new(
-                snapshot.line_count(),
+                pane_snapshot.line_count(),
                 pane_scroll,
                 viewport_height,
                 line_height,
                 DEFAULT_OVERSCAN_LINES,
             )?;
             let pane_origin_x = pane.bounds.origin().x();
+            let pane_selection = pane_view.selection.range();
             for line in visible.laid_out() {
                 let layout = self.layout_cache.layout_line(
-                    &snapshot,
+                    &pane_snapshot,
                     line,
                     font,
                     wrap_width,
@@ -1041,33 +1057,35 @@ impl StudioApp {
                 )?;
                 let top = pane.bounds.origin().y() + usize_as_f32(line) * LINE_HEIGHT - pane_scroll;
                 let baseline = top + layout.ascent();
-                let line_range = snapshot.line_byte_range(line)?;
-                for found in self.find.visible_ranges(
-                    self.runtime_document_revision,
-                    snapshot.revision().get(),
-                    line_range,
-                ) {
-                    Self::paint_selection(
-                        &mut builder,
-                        pane_clip,
-                        &snapshot,
-                        line,
-                        top,
-                        &layout,
-                        found.clone(),
-                        find_match_color,
-                        pane_origin_x,
-                    )?;
+                let line_range = pane_snapshot.line_byte_range(line)?;
+                if pane.active {
+                    for found in self.find.visible_ranges(
+                        self.runtime_document_revision,
+                        pane_snapshot.revision().get(),
+                        line_range,
+                    ) {
+                        Self::paint_selection(
+                            &mut builder,
+                            pane_clip,
+                            &pane_snapshot,
+                            line,
+                            top,
+                            &layout,
+                            found.clone(),
+                            find_match_color,
+                            pane_origin_x,
+                        )?;
+                    }
                 }
-                if !selected.is_empty() {
+                if !pane_selection.is_empty() {
                     let selection_result = Self::paint_selection(
                         &mut builder,
                         pane_clip,
-                        &snapshot,
+                        &pane_snapshot,
                         line,
                         top,
                         &layout,
-                        selected.clone(),
+                        pane_selection.clone(),
                         selection_color,
                         pane_origin_x,
                     );
@@ -2125,6 +2143,9 @@ impl StudioApp {
     }
 
     fn split_active_pane(&mut self, axis: SplitAxis) -> EventEffect {
+        if let Err(error) = self.sync_active_pane_document() {
+            return self.record_pane_error(&error);
+        }
         let result = self
             .editor_region(self.last_viewport)
             .and_then(|bounds| self.panes.split(axis, self.scroll_y, bounds));
@@ -2140,28 +2161,61 @@ impl StudioApp {
     }
 
     fn focus_next_pane(&mut self) -> EventEffect {
+        if let Err(error) = self.sync_active_pane_document() {
+            return self.record_pane_error(&error);
+        }
         match self.panes.focus_next(self.scroll_y) {
-            Ok(Some(scroll_y)) => {
-                self.scroll_y = scroll_y.clamp(0.0, self.maximum_scroll());
-                self.composition = None;
-                self.pointer_selecting = false;
-                EventEffect::visual()
-            }
+            Ok(Some(_)) => self.apply_focused_pane_document(),
             Ok(None) => EventEffect::default(),
             Err(error) => self.record_pane_error(&error),
         }
     }
 
     fn close_active_pane(&mut self) -> EventEffect {
+        if let Err(error) = self.sync_active_pane_document() {
+            return self.record_pane_error(&error);
+        }
         match self.panes.close_active(self.scroll_y) {
-            Ok(scroll_y) => {
-                self.scroll_y = scroll_y.clamp(0.0, self.maximum_scroll());
-                self.composition = None;
-                self.pointer_selecting = false;
-                EventEffect::visual()
-            }
+            Ok(_) => self.apply_focused_pane_document(),
             Err(error) => self.record_pane_error(&error),
         }
+    }
+
+    fn sync_active_pane_document(&mut self) -> Result<(), PaneError> {
+        let tab = self
+            .tabs
+            .active_id()
+            .map_err(|_| PaneError::InconsistentState)?;
+        self.panes
+            .sync_active_document(tab, self.active_document_view())
+    }
+
+    fn apply_focused_pane_document(&mut self) -> EventEffect {
+        let (target_tab, target_view) = match self.panes.active_document() {
+            Ok(target) => target,
+            Err(error) => return self.record_pane_error(&error),
+        };
+        let Ok(active_tab) = self.tabs.active_id() else {
+            return self.record_pane_error(&PaneError::InconsistentState);
+        };
+        let mut effect = EventEffect::default();
+        if target_tab != active_tab {
+            let Some(index) = self.tabs.index_for_id(target_tab) else {
+                return self.record_pane_error(&PaneError::InconsistentState);
+            };
+            effect = match self.activate_document_tab(index) {
+                Ok(effect) => effect,
+                Err(error) => return self.record_workspace_error(&error),
+            };
+        }
+        self.selection = target_view.selection;
+        self.scroll_y = target_view.scroll_y.clamp(0.0, self.maximum_scroll());
+        self.composition = None;
+        self.pointer_selecting = false;
+        if let Err(error) = self.sync_active_pane_document() {
+            return self.record_pane_error(&error);
+        }
+        effect.merge(EventEffect::visual())
     }
 
     fn record_pane_error(&mut self, error: &PaneError) -> EventEffect {
@@ -2612,23 +2666,10 @@ impl StudioApp {
                 Err(error) => self.record_file_tree_error(&error),
             };
         }
-        let pane_focus = if action == PointerAction::Down && button == PointerButton::Primary {
-            let focus = self
-                .editor_region(self.last_viewport)
-                .and_then(|bounds| self.panes.focus_at(position, bounds, self.scroll_y));
-            match focus {
-                Ok(Some(scroll_y)) => {
-                    self.scroll_y = scroll_y.clamp(0.0, self.maximum_scroll());
-                    self.composition = None;
-                    self.pointer_selecting = false;
-                    EventEffect::visual()
-                }
-                Ok(None) => EventEffect::default(),
-                Err(error) => return self.record_pane_error(&error),
-            }
-        } else {
-            EventEffect::default()
-        };
+        let pane_focus = self.focus_pane_for_pointer(action, button, position);
+        if pane_focus.document_identity_advanced {
+            return pane_focus;
+        }
         let pointer_effect = match action {
             PointerAction::Down if button == PointerButton::Primary => {
                 self.file_tree.unfocus();
@@ -2658,6 +2699,28 @@ impl StudioApp {
             }
         };
         pane_focus.merge(pointer_effect)
+    }
+
+    fn focus_pane_for_pointer(
+        &mut self,
+        action: PointerAction,
+        button: PointerButton,
+        position: Point,
+    ) -> EventEffect {
+        if action != PointerAction::Down || button != PointerButton::Primary {
+            return EventEffect::default();
+        }
+        if let Err(error) = self.sync_active_pane_document() {
+            return self.record_pane_error(&error);
+        }
+        let focus = self
+            .editor_region(self.last_viewport)
+            .and_then(|bounds| self.panes.focus_at(position, bounds, self.scroll_y));
+        match focus {
+            Ok(Some(_)) => self.apply_focused_pane_document(),
+            Ok(None) => EventEffect::default(),
+            Err(error) => self.record_pane_error(&error),
+        }
     }
 
     fn offset_at_point(&mut self, position: Point) -> Option<ByteOffset> {
@@ -3203,12 +3266,21 @@ impl StudioApp {
             .runtime_document_revision
             .checked_add(1)
             .ok_or(WorkspaceSelectionError::RevisionExhausted)?;
+        let closed = self
+            .tabs
+            .active_id()
+            .map_err(WorkspaceSelectionError::Tabs)?;
         let view = self
             .tabs
             .close_active(&mut self.document)
             .map_err(WorkspaceSelectionError::Tabs)?;
         self.runtime_document_revision = next_revision;
         self.active_workspace_entry = self.tabs.active_workspace_entry();
+        let replacement = self
+            .tabs
+            .active_id()
+            .map_err(WorkspaceSelectionError::Tabs)?;
+        self.panes.retarget_closed_tab(closed, replacement, view);
         self.apply_document_view(view);
         Ok(EventEffect::document_replacement())
     }
