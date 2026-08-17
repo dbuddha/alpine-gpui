@@ -136,7 +136,7 @@ that leaf's retained scroll before hit testing. The command palette provides
 static split-right, split-down, focus-next, and close-pane commands. This slice
 does not duplicate a buffer, create another document authority, add a layout
 framework, or allocate work on startup. Independent tab groups and crash-safe
-split restoration remain unimplemented parts of Task #127.
+dirty-buffer recovery journaling and file-tree expansion restoration remain unimplemented parts of Task #127.
 
 The native event handler returns one bounded `SurfaceResponse`. AppKit
 Command-C and Command-X writes complete through a typed later event, allowing
@@ -831,3 +831,11 @@ telemetry, or startup work. See AEP-0180.
 Pane leaves retain a stable document-tab identity and pane-local view state. The global document-tab store remains the sole owner of document payloads and buffers; panes never clone an editor or buffer. Scene construction resolves each pane identity to an immutable snapshot, while focus activates that identity through the existing checked tab transition. Selection state follows the document revision and is synchronized across panes showing the same tab, while scroll remains pane-local. Closing a tab retargets every referencing pane to the replacement active tab before the next scene is admitted.
 
 The top-level tab strip controls the focused pane in this slice. Pane-local tab strips, duplicated document stores, GPUI-compatible entities, collaboration clocks, and a general reactive component graph are intentionally excluded. This keeps tab/pane composition bounded and local while leaving a narrow path to independent pane tab groups without changing buffer ownership.
+
+### Local session persistence (Task #127)
+
+Studio owns one private version-1 binary session manifest under the user's macOS application-support directory. The manifest is capped at 128 KiB and retains at most 32 tabs, four panes, seven split-tree nodes, 4 KiB per path, and 64 KiB of aggregate path bytes. Runtime tab and pane identities are never serialized. Stable tab indices, fixed split nodes, active focus, directional selections, and pane-local scroll are validated as one graph before publication.
+
+The payload carries a CRC-32 corruption check and is written through a unique mode-0600 temporary file, flush, file synchronization, atomic rename, and parent-directory synchronization. Restore occurs before native surface creation. Missing, incompatible, corrupt, stale, or structurally invalid state cannot mutate files and falls back to a clean application with a bounded local diagnostic. Session capture occurs only after the event loop releases `StudioApp`, so persistence performs no typing, rendering, or startup-enrichment work.
+
+Only clean document state is currently persisted. If any tab is dirty, shutdown leaves the previous known-good manifest untouched rather than serializing text without a conflict identity or risking overwrite of an externally changed file. Dirty-buffer recovery journaling is a separate required Task #127 slice and must preserve both local edits and external file bytes before this implementation can support hot-exit or crash recovery claims.
