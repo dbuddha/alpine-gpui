@@ -248,6 +248,7 @@ fn command_availability_refresh_prevents_stale_execution() -> Result<(), Box<dyn
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "wall-clock qualification is not meaningful under Miri")]
 fn command_palette_stage_measurements_are_separate_and_bounded()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut app = StudioApp::new(PaletteTextSystem::default())?;

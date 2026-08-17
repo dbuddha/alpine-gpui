@@ -314,17 +314,20 @@ jobs:
     needs: classify
     if: needs.classify.outputs.miri == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 4
       matrix:
         include:
           - partition: foundation
             packages: >-
               -p alpine-core -p alpine-metal -p alpine-platform
               -p alpine-platform-macos -p alpine-renderer -p alpine-runtime
-              -p alpine-scene -p alpine-studio -p alpine-trace
+              -p alpine-scene -p alpine-trace
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio
+            packages: -p alpine-studio
             miri_flags: -Zmiri-disable-isolation
           - partition: text
             packages: -p alpine-text
@@ -340,7 +343,9 @@ jobs:
       - name: Check host-testable memory behavior
         env:
           MIRIFLAGS: ${{ matrix.miri_flags }}
-        run: cargo +nightly-2026-08-01 miri test ${{ matrix.packages }} --lib --locked
+        run: >-
+          cargo +nightly-2026-08-01 miri test ${{ matrix.packages }}
+          --lib --locked -- --test-threads=1
 
   metal-validation:
     name: metal-validation
