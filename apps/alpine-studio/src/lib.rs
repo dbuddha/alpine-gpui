@@ -9,6 +9,7 @@ mod commands;
 mod documents;
 mod file_tree;
 mod find;
+mod panes;
 mod project_search;
 mod quick_open;
 mod workspace;
@@ -53,6 +54,7 @@ use find::{
     FindAdmission, FindError, FindNavigation, FindRequest, FindState, FindWorkerOutput,
     MAX_REPLACEMENT_TRANSACTION_BYTES,
 };
+use panes::{MAX_PANES, PaneError, PaneGrid, SplitAxis};
 use project_search::{
     ProjectSearchAdmission, ProjectSearchError, ProjectSearchRequest, ProjectSearchState,
     ProjectSearchWorkerOutput, SelectedProjectMatch,
@@ -673,6 +675,7 @@ struct StudioApp {
     project_search: ProjectSearchState,
     file_tree: FileTreeState,
     command_palette: CommandPalette,
+    panes: PaneGrid,
     #[cfg(test)]
     force_quick_open_submission_failure: Option<()>,
     #[cfg(test)]
@@ -811,6 +814,7 @@ impl StudioApp {
             project_search: ProjectSearchState::default(),
             file_tree: FileTreeState::default(),
             command_palette: CommandPalette::default(),
+            panes: PaneGrid::new(0.0),
             #[cfg(test)]
             force_quick_open_submission_failure: None,
             #[cfg(test)]
@@ -880,27 +884,20 @@ impl StudioApp {
 
         let origin = Point::new(0.0, 0.0).ok_or(StudioRenderError::Domain)?;
         let sidebar_width = self.sidebar_width(viewport);
-        let editor_origin_x = sidebar_width + CONTENT_INSET;
-        let content_origin =
-            Point::new(editor_origin_x, CONTENT_INSET).ok_or(StudioRenderError::Domain)?;
-        let content_size = Size::new(
-            (viewport.width() - sidebar_width - CONTENT_INSET * 2.0).max(1.0),
-            (viewport.height() - CONTENT_INSET * 2.0).max(1.0),
-        )
-        .ok_or(StudioRenderError::Domain)?;
-        let content_bounds = Rect::new(content_origin, content_size);
-        let viewport_height =
-            PositiveFinite::new(content_size.height()).ok_or(StudioRenderError::Domain)?;
+        let content_bounds = self
+            .editor_region(viewport)
+            .map_err(|_| StudioRenderError::Domain)?;
+        self.panes
+            .sync_active(self.scroll_y)
+            .map_err(|_| StudioRenderError::Domain)?;
+        let pane_layout = self
+            .panes
+            .layout(content_bounds)
+            .map_err(|_| StudioRenderError::Domain)?;
+        let active_pane = pane_layout.active().ok_or(StudioRenderError::Domain)?;
+        let editor_origin_x = active_pane.bounds.origin().x();
+        let content_size = active_pane.bounds.size();
         let line_height = PositiveFinite::new(LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
-        let wrap_width =
-            PositiveFinite::new(content_size.width()).ok_or(StudioRenderError::Domain)?;
-        let visible = VisibleLines::new(
-            self.buffer().snapshot().line_count(),
-            self.scroll_y,
-            viewport_height,
-            line_height,
-            DEFAULT_OVERSCAN_LINES,
-        )?;
         let font = Self::font()?;
         let snapshot = self.buffer().snapshot();
         let background =
@@ -941,8 +938,18 @@ impl StudioApp {
 
         let mut builder = SceneBuilder::new(revision, viewport);
         builder.push_quad(Quad::new(Rect::new(origin, viewport), background))?;
-        let clip = builder.push_clip(Clip::new(content_bounds));
-        builder.push_quad(Quad::new(content_bounds, editor_background))?;
+        let mut pane_clips = [None; MAX_PANES];
+        for (index, pane) in pane_layout.iter().enumerate() {
+            let pane_clip = builder.push_clip(Clip::new(pane.bounds));
+            pane_clips[index] = Some(pane_clip);
+            builder.push_quad(Quad::new(pane.bounds, editor_background))?;
+        }
+        let active_clip = pane_layout
+            .iter()
+            .enumerate()
+            .find(|(_, pane)| pane.active)
+            .and_then(|(index, _)| pane_clips[index])
+            .ok_or(StudioRenderError::Domain)?;
 
         let mut rendered_lines = Vec::new();
         let mut pending_glyphs = Vec::new();
@@ -1006,57 +1013,82 @@ impl StudioApp {
             )?);
         }
         let selected = self.selection.range();
-        for line in visible.laid_out() {
-            let layout_result = self.layout_cache.layout_line(
-                &snapshot,
-                line,
-                font,
-                wrap_width,
-                &mut *self.text_system,
-            );
-            let layout = layout_result?;
-            let top = CONTENT_INSET + usize_as_f32(line) * LINE_HEIGHT - self.scroll_y;
-            let baseline = top + layout.ascent();
-            let line_range = snapshot.line_byte_range(line)?;
-            for found in self.find.visible_ranges(
-                self.runtime_document_revision,
-                snapshot.revision().get(),
-                line_range,
-            ) {
-                Self::paint_selection(
-                    &mut builder,
-                    clip,
+        for (pane_index, pane) in pane_layout.iter().enumerate() {
+            let pane_clip = pane_clips[pane_index].ok_or(StudioRenderError::Domain)?;
+            let pane_scroll = self
+                .panes
+                .scroll_for(pane.id, self.scroll_y)
+                .map_err(|_| StudioRenderError::Domain)?;
+            let viewport_height = PositiveFinite::new(pane.bounds.size().height())
+                .ok_or(StudioRenderError::Domain)?;
+            let wrap_width =
+                PositiveFinite::new(pane.bounds.size().width()).ok_or(StudioRenderError::Domain)?;
+            let visible = VisibleLines::new(
+                snapshot.line_count(),
+                pane_scroll,
+                viewport_height,
+                line_height,
+                DEFAULT_OVERSCAN_LINES,
+            )?;
+            let pane_origin_x = pane.bounds.origin().x();
+            for line in visible.laid_out() {
+                let layout = self.layout_cache.layout_line(
                     &snapshot,
                     line,
-                    top,
-                    &layout,
-                    found.clone(),
-                    find_match_color,
-                    editor_origin_x,
+                    font,
+                    wrap_width,
+                    &mut *self.text_system,
                 )?;
-            }
-            if !selected.is_empty() {
-                let selection_result = Self::paint_selection(
-                    &mut builder,
-                    clip,
-                    &snapshot,
-                    line,
-                    top,
+                let top = pane.bounds.origin().y() + usize_as_f32(line) * LINE_HEIGHT - pane_scroll;
+                let baseline = top + layout.ascent();
+                let line_range = snapshot.line_byte_range(line)?;
+                for found in self.find.visible_ranges(
+                    self.runtime_document_revision,
+                    snapshot.revision().get(),
+                    line_range,
+                ) {
+                    Self::paint_selection(
+                        &mut builder,
+                        pane_clip,
+                        &snapshot,
+                        line,
+                        top,
+                        &layout,
+                        found.clone(),
+                        find_match_color,
+                        pane_origin_x,
+                    )?;
+                }
+                if !selected.is_empty() {
+                    let selection_result = Self::paint_selection(
+                        &mut builder,
+                        pane_clip,
+                        &snapshot,
+                        line,
+                        top,
+                        &layout,
+                        selected.clone(),
+                        selection_color,
+                        pane_origin_x,
+                    );
+                    selection_result?;
+                }
+                pending_glyphs.extend(self.collect_glyphs(
                     &layout,
-                    selected.clone(),
-                    selection_color,
-                    editor_origin_x,
-                );
-                selection_result?;
+                    font,
+                    pane_origin_x,
+                    baseline,
+                    pane_clip,
+                )?);
+                if pane.active {
+                    rendered_lines.push(RenderedLine {
+                        line,
+                        top,
+                        baseline,
+                        layout,
+                    });
+                }
             }
-            let glyphs = self.collect_glyphs(&layout, font, editor_origin_x, baseline, clip)?;
-            pending_glyphs.extend(glyphs);
-            rendered_lines.push(RenderedLine {
-                line,
-                top,
-                baseline,
-                layout,
-            });
         }
 
         let mut composition_underline = None;
@@ -1071,8 +1103,13 @@ impl StudioApp {
                 .map_err(|_| StudioRenderError::Domain)?;
             let start_x = editor_origin_x + x_for_utf16(&rendered.layout, prefix_utf16);
             let composition_layout = self.text_system.shape(&composition.text, font)?;
-            let composition_glyphs =
-                self.collect_glyphs(&composition_layout, font, start_x, rendered.baseline, clip);
+            let composition_glyphs = self.collect_glyphs(
+                &composition_layout,
+                font,
+                start_x,
+                rendered.baseline,
+                active_clip,
+            );
             pending_glyphs.extend(composition_glyphs?);
             let underline_origin = Point::new(
                 start_x,
@@ -1086,10 +1123,11 @@ impl StudioApp {
 
         let status_background = if let Some(status) = self.local_status.clone() {
             let layout = self.text_system.shape(status.message(), font)?;
-            let top = (viewport.height() - CONTENT_INSET - LINE_HEIGHT).max(CONTENT_INSET);
+            let top = (active_pane.bounds.origin().y() + content_size.height() - LINE_HEIGHT)
+                .max(active_pane.bounds.origin().y());
             let baseline = top + layout.ascent();
             let status_glyphs =
-                self.collect_glyphs(&layout, font, editor_origin_x + 6.0, baseline, clip);
+                self.collect_glyphs(&layout, font, editor_origin_x + 6.0, baseline, active_clip);
             pending_glyphs.extend(status_glyphs?);
             let origin = Point::new(editor_origin_x, top).ok_or(StudioRenderError::Domain)?;
             let size =
@@ -1099,11 +1137,12 @@ impl StudioApp {
             None
         };
         if let Some(bounds) = status_background {
-            builder.push_quad(Quad::new(bounds, status_background_color).clipped(clip))?;
+            builder.push_quad(Quad::new(bounds, status_background_color).clipped(active_clip))?;
         }
         if self.find.is_open() {
             let width = FIND_BAR_WIDTH.min(content_size.width());
-            let left = (viewport.width() - CONTENT_INSET - width).max(sidebar_width);
+            let left = (active_pane.bounds.origin().x() + content_size.width() - width)
+                .max(active_pane.bounds.origin().x());
             let overlay_origin = Point::new(left, TAB_BAR_HEIGHT + FIND_BAR_INSET)
                 .ok_or(StudioRenderError::Domain)?;
             let overlay_size =
@@ -1319,7 +1358,7 @@ impl StudioApp {
             }
         }
         if let Some(bounds) = composition_underline {
-            builder.push_quad(Quad::new(bounds, caret_color).clipped(clip))?;
+            builder.push_quad(Quad::new(bounds, caret_color).clipped(active_clip))?;
         }
         if self.focused
             && !self.find.is_open()
@@ -1328,7 +1367,7 @@ impl StudioApp {
             && !self.file_tree.is_focused()
             && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_origin_x)?
         {
-            builder.push_quad(Quad::new(caret, caret_color).clipped(clip))?;
+            builder.push_quad(Quad::new(caret, caret_color).clipped(active_clip))?;
         }
 
         self.rendered_lines = rendered_lines;
@@ -2022,6 +2061,7 @@ impl StudioApp {
     }
 
     fn command_context(&self) -> CommandContext {
+        let editor_bounds = self.editor_region(self.last_viewport).ok();
         CommandContext {
             can_save: self.document.is_file() && self.document.is_dirty(),
             can_close_tab: self.tabs.len() > 1
@@ -2030,6 +2070,11 @@ impl StudioApp {
             can_navigate_back: self.tabs.can_navigate_back(),
             can_navigate_forward: self.tabs.can_navigate_forward(),
             has_workspace: self.workspace.is_some(),
+            can_split_right: editor_bounds
+                .is_some_and(|bounds| self.panes.can_split(SplitAxis::Columns, bounds)),
+            can_split_down: editor_bounds
+                .is_some_and(|bounds| self.panes.can_split(SplitAxis::Rows, bounds)),
+            can_close_pane: self.panes.len() > 1,
         }
     }
 
@@ -2072,7 +2117,56 @@ impl StudioApp {
                 Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
                 Err(error) => self.record_file_tree_error(&error),
             },
+            StudioCommand::SplitRight => self.split_active_pane(SplitAxis::Columns),
+            StudioCommand::SplitDown => self.split_active_pane(SplitAxis::Rows),
+            StudioCommand::FocusNextPane => self.focus_next_pane(),
+            StudioCommand::ClosePane => self.close_active_pane(),
         }
+    }
+
+    fn split_active_pane(&mut self, axis: SplitAxis) -> EventEffect {
+        let result = self
+            .editor_region(self.last_viewport)
+            .and_then(|bounds| self.panes.split(axis, self.scroll_y, bounds));
+        match result {
+            Ok(scroll_y) => {
+                self.scroll_y = scroll_y.clamp(0.0, self.maximum_scroll());
+                self.composition = None;
+                self.pointer_selecting = false;
+                EventEffect::visual()
+            }
+            Err(error) => self.record_pane_error(&error),
+        }
+    }
+
+    fn focus_next_pane(&mut self) -> EventEffect {
+        match self.panes.focus_next(self.scroll_y) {
+            Ok(Some(scroll_y)) => {
+                self.scroll_y = scroll_y.clamp(0.0, self.maximum_scroll());
+                self.composition = None;
+                self.pointer_selecting = false;
+                EventEffect::visual()
+            }
+            Ok(None) => EventEffect::default(),
+            Err(error) => self.record_pane_error(&error),
+        }
+    }
+
+    fn close_active_pane(&mut self) -> EventEffect {
+        match self.panes.close_active(self.scroll_y) {
+            Ok(scroll_y) => {
+                self.scroll_y = scroll_y.clamp(0.0, self.maximum_scroll());
+                self.composition = None;
+                self.pointer_selecting = false;
+                EventEffect::visual()
+            }
+            Err(error) => self.record_pane_error(&error),
+        }
+    }
+
+    fn record_pane_error(&mut self, error: &PaneError) -> EventEffect {
+        self.workspace_failures = self.workspace_failures.saturating_add(1);
+        self.set_local_status(LocalStatus::Workspace(Arc::from(error.to_string())))
     }
 
     fn record_command_palette_error(&mut self, error: &CommandPaletteError) -> EventEffect {
@@ -2518,7 +2612,24 @@ impl StudioApp {
                 Err(error) => self.record_file_tree_error(&error),
             };
         }
-        match action {
+        let pane_focus = if action == PointerAction::Down && button == PointerButton::Primary {
+            let focus = self
+                .editor_region(self.last_viewport)
+                .and_then(|bounds| self.panes.focus_at(position, bounds, self.scroll_y));
+            match focus {
+                Ok(Some(scroll_y)) => {
+                    self.scroll_y = scroll_y.clamp(0.0, self.maximum_scroll());
+                    self.composition = None;
+                    self.pointer_selecting = false;
+                    EventEffect::visual()
+                }
+                Ok(None) => EventEffect::default(),
+                Err(error) => return self.record_pane_error(&error),
+            }
+        } else {
+            EventEffect::default()
+        };
+        let pointer_effect = match action {
             PointerAction::Down if button == PointerButton::Primary => {
                 self.file_tree.unfocus();
                 let Some(offset) = self.offset_at_point(position) else {
@@ -2545,15 +2656,21 @@ impl StudioApp {
             PointerAction::Moved | PointerAction::Down | PointerAction::Up => {
                 EventEffect::default()
             }
-        }
+        };
+        pane_focus.merge(pointer_effect)
     }
 
     fn offset_at_point(&mut self, position: Point) -> Option<ByteOffset> {
-        let origin_x = self.sidebar_width(self.last_viewport) + CONTENT_INSET;
-        if position.x() < origin_x {
+        let bounds = self.active_pane_bounds().ok()?;
+        let origin_x = bounds.origin().x();
+        if position.x() < origin_x
+            || position.x() >= origin_x + bounds.size().width()
+            || position.y() >= bounds.origin().y() + bounds.size().height()
+            || (self.panes.len() > 1 && position.y() < bounds.origin().y())
+        {
             return None;
         }
-        let line_position = (position.y() - CONTENT_INSET + self.scroll_y) / LINE_HEIGHT;
+        let line_position = (position.y() - bounds.origin().y() + self.scroll_y) / LINE_HEIGHT;
         if !line_position.is_finite() || line_position < 0.0 {
             return Some(ByteOffset::new(0));
         }
@@ -2774,9 +2891,31 @@ impl StudioApp {
     }
 
     fn maximum_scroll(&self) -> f32 {
-        let content_height = (self.last_viewport.height() - CONTENT_INSET * 2.0).max(1.0);
+        let content_height = self
+            .active_pane_bounds()
+            .map_or(1.0, |bounds| bounds.size().height().max(1.0));
         (usize_as_f32(self.buffer().snapshot().line_count()) * LINE_HEIGHT - content_height)
             .max(0.0)
+    }
+
+    fn editor_region(&self, viewport: Size) -> Result<Rect, PaneError> {
+        let sidebar_width = self.sidebar_width(viewport);
+        let origin = Point::new(sidebar_width + CONTENT_INSET, CONTENT_INSET)
+            .ok_or(PaneError::InvalidGeometry)?;
+        let size = Size::new(
+            (viewport.width() - sidebar_width - CONTENT_INSET * 2.0).max(1.0),
+            (viewport.height() - CONTENT_INSET * 2.0).max(1.0),
+        )
+        .ok_or(PaneError::InvalidGeometry)?;
+        Ok(Rect::new(origin, size))
+    }
+
+    fn active_pane_bounds(&self) -> Result<Rect, PaneError> {
+        self.panes
+            .layout(self.editor_region(self.last_viewport)?)?
+            .active()
+            .map(|pane| pane.bounds)
+            .ok_or(PaneError::InconsistentState)
     }
 
     fn sidebar_width(&self, viewport: Size) -> f32 {
