@@ -2056,9 +2056,6 @@ impl StudioApp {
                 Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
                 Err(error) => self.record_quick_open_error(&error),
             },
-            StudioCommand::OpenProjectSearch if self.workspace.is_none() => {
-                self.record_project_search_error(&ProjectSearchError::NoWorkspace)
-            }
             StudioCommand::OpenProjectSearch => self.open_project_search(),
             StudioCommand::ToggleFileTree if self.workspace.is_none() => {
                 self.record_file_tree_error(&FileTreeError::NoWorkspace)
@@ -3272,7 +3269,7 @@ impl StudioApp {
                     || context
                         .spawn(move || StudioWorkerOutput::ProjectSearch(request.execute()))
                         .is_err();
-                if failed && self.project_search.reject_submission(identity) {
+                if self.reject_failed_project_search_submission(identity, failed) {
                     context.invalidate();
                 }
             }
@@ -3290,6 +3287,14 @@ impl StudioApp {
         submission_failed: bool,
     ) -> bool {
         submission_failed && self.quick_open.reject_submission(identity)
+    }
+
+    fn reject_failed_project_search_submission(
+        &mut self,
+        identity: project_search::RequestIdentity,
+        submission_failed: bool,
+    ) -> bool {
+        submission_failed && self.project_search.reject_submission(identity)
     }
 }
 

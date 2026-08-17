@@ -148,7 +148,6 @@ impl ProjectSearchLimits {
             && self.depth > 0
             && self.file_bytes > 0
             && self.total_read_bytes >= self.file_bytes
-            && self.results > 0
             && self.result_bytes >= size_of::<ProjectMatch>()
             && self.batch_matches > 0
             && self.batch_matches <= self.results
@@ -915,13 +914,12 @@ impl ProjectSearchState {
             first_error.map_or_else(String::new, |message| format!(" | {message}")),
         )
         .map_err(|_| ProjectSearchError::AllocationFailed)?;
-        if display.len() > MAX_DIAGNOSTIC_BYTES {
-            let mut end = MAX_DIAGNOSTIC_BYTES;
-            while !display.is_char_boundary(end) {
-                end = end.saturating_sub(1);
-            }
-            display.truncate(end);
-        }
+        let maximum = display.len().min(MAX_DIAGNOSTIC_BYTES);
+        let end = (0..=maximum)
+            .rev()
+            .find(|index| display.is_char_boundary(*index))
+            .unwrap_or(0);
+        display.truncate(end);
         Ok(display)
     }
 
@@ -1271,9 +1269,7 @@ fn scan_batch(
                 terminal = true;
                 break;
             }
-            if delta.files == limits.files_per_batch
-                || delta.read_bytes == limits.read_bytes_per_batch
-            {
+            if batch_budget_exhausted(delta.files, delta.read_bytes, limits) {
                 break;
             }
             let relative = Arc::clone(&inventory.paths[cursor.next_file]);
@@ -1328,17 +1324,34 @@ fn scan_batch(
             retained_bytes,
             limits,
         )?;
-        if !completed {
+        if completed {
+            cursor.next_file = cursor.next_file.max(file.file_index.saturating_add(1));
+            continue;
+        }
+        if matches.is_empty() {
+            truncated = true;
+            terminal = true;
+            cursor.file = None;
+        } else {
             cursor.file = Some(file);
-            break;
         }
-        if file.file_index.saturating_add(1) > cursor.next_file {
-            cursor.next_file = file.file_index.saturating_add(1);
-        }
+        break;
     }
     let mut counters = cumulative;
     counters.add(delta);
-    let continuation = (!terminal && !cancelled).then_some(cursor);
+    let lifecycle = classify_scan_lifecycle(terminal, cancelled);
+    let progress = classify_scan_progress(delta.files, matches.len(), cursor.file.is_some());
+    let continuation = match classify_scan_exit(lifecycle, truncated, progress) {
+        ScanExit::Continue => Some(cursor),
+        ScanExit::Stop {
+            terminal: normalized_terminal,
+            truncated: normalized_truncated,
+        } => {
+            terminal = normalized_terminal;
+            truncated = normalized_truncated;
+            None
+        }
+    };
     Ok(SearchBatch {
         identity,
         matches: matches.into_boxed_slice(),
@@ -1349,6 +1362,69 @@ fn scan_batch(
         truncated,
         cancelled,
     })
+}
+
+fn batch_budget_exhausted(files: usize, read_bytes: usize, limits: ProjectSearchLimits) -> bool {
+    files >= limits.files_per_batch || read_bytes >= limits.read_bytes_per_batch
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScanLifecycle {
+    Active,
+    Terminal,
+    Cancelled,
+}
+
+fn classify_scan_lifecycle(terminal: bool, cancelled: bool) -> ScanLifecycle {
+    if terminal {
+        ScanLifecycle::Terminal
+    } else if cancelled {
+        ScanLifecycle::Cancelled
+    } else {
+        ScanLifecycle::Active
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScanProgress {
+    Made,
+    Stalled,
+}
+
+fn classify_scan_progress(files: usize, matches: usize, partial_file: bool) -> ScanProgress {
+    if files > 0 || matches > 0 || partial_file {
+        ScanProgress::Made
+    } else {
+        ScanProgress::Stalled
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ScanExit {
+    Continue,
+    Stop { terminal: bool, truncated: bool },
+}
+
+fn classify_scan_exit(
+    lifecycle: ScanLifecycle,
+    truncated: bool,
+    progress: ScanProgress,
+) -> ScanExit {
+    match (lifecycle, progress) {
+        (ScanLifecycle::Terminal, _) => ScanExit::Stop {
+            terminal: true,
+            truncated,
+        },
+        (ScanLifecycle::Cancelled, _) => ScanExit::Stop {
+            terminal: false,
+            truncated,
+        },
+        (ScanLifecycle::Active, ScanProgress::Made) => ScanExit::Continue,
+        (ScanLifecycle::Active, ScanProgress::Stalled) => ScanExit::Stop {
+            terminal: true,
+            truncated: true,
+        },
+    }
 }
 
 enum FileRead {
@@ -1407,17 +1483,17 @@ fn read_search_file(
             });
         }
     };
-    if before.len() > u64::try_from(file_limit).unwrap_or(u64::MAX) {
+    let length = usize::try_from(before.len()).map_err(|_| ProjectSearchError::InvalidLimits)?;
+    if file_limit.checked_sub(length).is_none() {
         return Ok(FileRead::Skipped {
             reason: SkipReason::Oversized,
             read_bytes: 0,
         });
     }
-    let length = usize::try_from(before.len()).map_err(|_| ProjectSearchError::InvalidLimits)?;
-    if length > remaining_total {
+    if remaining_total.checked_sub(length).is_none() {
         return Ok(FileRead::TotalLimit);
     }
-    if length > remaining_batch {
+    if remaining_batch.checked_sub(length).is_none() {
         return Ok(FileRead::Yield);
     }
     let fingerprint = FileFingerprint::new(&before);
@@ -1654,20 +1730,17 @@ fn excerpt_for(
         .position(|byte| *byte == b'\n')
         .map_or(bytes.len(), |offset| match_start.saturating_add(offset));
     let text = str::from_utf8(bytes).map_err(|_| ProjectSearchError::AllocationFailed)?;
-    let mut start = line_start;
-    let mut end = line_end;
-    if end.saturating_sub(start) > limit {
-        let half = limit / 2;
-        start = match_start.saturating_sub(half).max(line_start);
-        end = start.saturating_add(limit).min(line_end);
-        start = end.saturating_sub(limit).max(line_start);
-        while start < end && !text.is_char_boundary(start) {
-            start = start.saturating_add(1);
-        }
-        while end > start && !text.is_char_boundary(end) {
-            end = end.saturating_sub(1);
-        }
-    }
+    let half = limit / 2;
+    let mut start = match_start.saturating_sub(half).max(line_start);
+    let mut end = start.saturating_add(limit).min(line_end);
+    start = end.saturating_sub(limit).max(line_start);
+    start = (start..=end)
+        .find(|index| text.is_char_boundary(*index))
+        .unwrap_or(end);
+    end = (start..=end)
+        .rev()
+        .find(|index| text.is_char_boundary(*index))
+        .unwrap_or(start);
     let source = text
         .get(start..end)
         .ok_or(ProjectSearchError::AllocationFailed)?;
@@ -2122,6 +2195,7 @@ mod tests {
         let display = state.display_text()?;
         assert!(display.len() <= MAX_DIAGNOSTIC_BYTES);
         assert!(display.is_char_boundary(display.len()));
+        assert!(display.starts_with("Project Search: "));
         Ok(())
     }
 
@@ -2452,6 +2526,725 @@ mod tests {
             ),
             Err(ProjectSearchError::AllocationFailed)
         ));
+        Ok(())
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "every independent configuration and state boundary needs a discriminating control"
+    )]
+    fn constants_limits_and_state_boundaries_are_exact() -> Result<(), Box<dyn Error>> {
+        assert_eq!(MAX_QUERY_BYTES, 4_096);
+        assert_eq!(MAX_PATH_BYTES, 4_096);
+        assert_eq!(MAX_INVENTORY_BYTES, 16_777_216);
+        assert_eq!(MAX_FILE_BYTES, 16_777_216);
+        assert_eq!(MAX_TOTAL_READ_BYTES, 536_870_912);
+        assert_eq!(MAX_RESULT_BYTES, 4_194_304);
+        assert_eq!(MAX_BATCH_BYTES, 262_144);
+        assert_eq!(MAX_DIAGNOSTIC_BYTES, 4_096);
+
+        let valid = tiny_limits();
+        assert!(valid.is_valid());
+        let mut invalid = [valid; 9];
+        invalid[0].files = 0;
+        invalid[1].path_bytes = 0;
+        invalid[2].inventory_bytes = 0;
+        invalid[3].depth = 0;
+        invalid[4].file_bytes = 0;
+        invalid[5].results = 0;
+        invalid[6].batch_matches = 0;
+        invalid[7].excerpt_bytes = 0;
+        invalid[8].files_per_batch = 0;
+        assert!(invalid.into_iter().all(|limits| !limits.is_valid()));
+        let mut exact = valid;
+        exact.total_read_bytes = exact.file_bytes;
+        exact.result_bytes = size_of::<ProjectMatch>();
+        exact.batch_matches = exact.results;
+        exact.batch_bytes = size_of::<ProjectMatch>();
+        exact.excerpt_bytes = exact.batch_bytes;
+        exact.read_bytes_per_batch = exact.file_bytes;
+        assert!(exact.is_valid());
+
+        let found = ProjectMatch {
+            relative: "a.rs".into(),
+            excerpt: "needle".into(),
+            start: 1,
+            end: 7,
+            line: 1,
+            column: 2,
+        };
+        assert_eq!(
+            found.retained_bytes(),
+            size_of::<ProjectMatch>() + "a.rs".len() + "needle".len()
+        );
+
+        let mut state = ProjectSearchState::with_test_limits(valid);
+        assert!(state.open(1)?);
+        assert!(!state.open(1)?);
+        assert!(state.open(2)?);
+        assert!(!state.cancel_composition());
+        assert!(state.begin_composition());
+        assert!(state.cancel_composition());
+        assert!(!state.cancel_composition());
+
+        for cancellation_case in 0..3 {
+            let mut closing = ProjectSearchState::with_test_limits(valid);
+            closing.open = true;
+            closing.workspace = Some(1);
+            match cancellation_case {
+                0 => {
+                    closing.pending_inventory = Some(InventoryIdentity {
+                        workspace: 1,
+                        generation: 1,
+                    });
+                }
+                1 => {
+                    closing.pending_search = Some(SearchIdentity {
+                        workspace: 1,
+                        inventory: 1,
+                        query: 1,
+                        request: 1,
+                    });
+                }
+                _ => closing.needs_search = true,
+            }
+            assert!(closing.close());
+            assert_eq!(closing.cancellations, 1);
+        }
+        let mut quiet_close = ProjectSearchState::with_test_limits(valid);
+        quiet_close.open = true;
+        assert!(quiet_close.close());
+        assert_eq!(quiet_close.cancellations, 0);
+        assert!(!quiet_close.close());
+
+        let root = Path::new("unused");
+        let mut closed_with_query = ProjectSearchState::with_test_limits(valid);
+        closed_with_query.query.push('x');
+        assert!(closed_with_query.take_request(root)?.is_none());
+        let mut open_without_query = ProjectSearchState::with_test_limits(valid);
+        open_without_query.open = true;
+        open_without_query.workspace = Some(1);
+        assert!(open_without_query.take_request(root)?.is_none());
+
+        let inventory_identity = InventoryIdentity {
+            workspace: 1,
+            generation: 1,
+        };
+        for (open, query) in [(true, ""), (false, "x")] {
+            let mut rejected = ProjectSearchState::with_test_limits(valid);
+            rejected.open = open;
+            rejected.workspace = Some(1);
+            rejected.query.push_str(query);
+            rejected.pending_inventory = Some(inventory_identity);
+            assert!(rejected.reject_submission(RequestIdentity::Inventory(inventory_identity)));
+            assert!(!rejected.needs_inventory);
+        }
+        let search_identity = SearchIdentity {
+            workspace: 1,
+            inventory: 1,
+            query: 1,
+            request: 1,
+        };
+        let mut stale_rejection = ProjectSearchState::with_test_limits(valid);
+        stale_rejection.pending_search = Some(search_identity);
+        let different_search = SearchIdentity {
+            request: 2,
+            ..search_identity
+        };
+        assert!(!stale_rejection.reject_submission(RequestIdentity::Search(different_search)));
+        assert_eq!(stale_rejection.pending_search, Some(search_identity));
+
+        let inventory = Arc::new(SearchInventory {
+            generation: 1,
+            paths: Box::default(),
+            report: InventoryReport::default(),
+            first_error: None,
+        });
+        for stale_case in 0..4 {
+            let mut admission = ProjectSearchState::with_test_limits(valid);
+            admission.open = true;
+            admission.workspace = Some(1);
+            admission.inventory_generation = 1;
+            admission.pending_inventory = Some(inventory_identity);
+            let mut delivered = inventory_identity;
+            match stale_case {
+                0 => admission.open = false,
+                1 => {
+                    delivered.workspace = 2;
+                    admission.pending_inventory = Some(delivered);
+                }
+                2 => {
+                    delivered.generation = 2;
+                    admission.pending_inventory = Some(delivered);
+                }
+                _ => admission.pending_inventory = None,
+            }
+            assert_eq!(
+                admission.admit(ProjectSearchWorkerOutput::Inventory {
+                    identity: delivered,
+                    result: Err(ProjectSearchError::InvalidLimits),
+                }),
+                ProjectSearchAdmission::Stale
+            );
+            assert_eq!(admission.stale_rejections, 1);
+        }
+        for stale_case in 0..5 {
+            let mut admission = ProjectSearchState::with_test_limits(valid);
+            admission.open = true;
+            admission.workspace = Some(1);
+            admission.inventory = Some(Arc::clone(&inventory));
+            admission.query_generation = 1;
+            admission.pending_search = Some(search_identity);
+            let mut delivered = search_identity;
+            match stale_case {
+                0 => admission.open = false,
+                1 => {
+                    delivered.workspace = 2;
+                    admission.pending_search = Some(delivered);
+                }
+                2 => {
+                    delivered.inventory = 2;
+                    admission.pending_search = Some(delivered);
+                }
+                3 => {
+                    delivered.query = 2;
+                    admission.pending_search = Some(delivered);
+                }
+                _ => admission.pending_search = None,
+            }
+            assert_eq!(
+                admission.admit(ProjectSearchWorkerOutput::Batch {
+                    identity: delivered,
+                    result: Err(ProjectSearchError::InvalidLimits),
+                }),
+                ProjectSearchAdmission::Stale
+            );
+            assert_eq!(admission.stale_rejections, 1);
+        }
+
+        let mut continuing = ProjectSearchState::with_test_limits(valid);
+        continuing.open = true;
+        continuing.workspace = Some(1);
+        continuing.inventory = Some(Arc::clone(&inventory));
+        continuing.query_generation = 1;
+        continuing.pending_search = Some(search_identity);
+        continuing.truncated = true;
+        assert_eq!(
+            continuing.admit(ProjectSearchWorkerOutput::Batch {
+                identity: search_identity,
+                result: Ok(SearchBatch {
+                    identity: search_identity,
+                    matches: Box::default(),
+                    bytes: 0,
+                    cursor: Some(ScanCursor::default()),
+                    counters: ScanCounters::default(),
+                    terminal: false,
+                    truncated: false,
+                    cancelled: false,
+                }),
+            }),
+            ProjectSearchAdmission::Batch
+        );
+        assert!(continuing.truncated);
+        assert!(continuing.needs_search);
+
+        for (terminal, cursor) in [(false, None), (true, Some(ScanCursor::default()))] {
+            let mut completed = ProjectSearchState::with_test_limits(valid);
+            completed.open = true;
+            completed.workspace = Some(1);
+            completed.inventory = Some(Arc::clone(&inventory));
+            completed.query_generation = 1;
+            completed.pending_search = Some(search_identity);
+            let expected = if terminal {
+                ProjectSearchAdmission::Complete
+            } else {
+                ProjectSearchAdmission::Batch
+            };
+            assert_eq!(
+                completed.admit(ProjectSearchWorkerOutput::Batch {
+                    identity: search_identity,
+                    result: Ok(SearchBatch {
+                        identity: search_identity,
+                        matches: Box::default(),
+                        bytes: 0,
+                        cursor,
+                        counters: ScanCounters::default(),
+                        terminal,
+                        truncated: false,
+                        cancelled: false,
+                    }),
+                }),
+                expected
+            );
+            assert!(!completed.needs_search);
+        }
+
+        let rows = ["a", "b", "c"].map(|relative| ProjectMatch {
+            relative: relative.into(),
+            excerpt: relative.into(),
+            start: 0,
+            end: 1,
+            line: 1,
+            column: 1,
+        });
+        let mut navigation = ProjectSearchState::with_test_limits(valid);
+        navigation.results = rows.into();
+        navigation.selected = 1;
+        assert!(navigation.navigate(true, 2));
+        assert_eq!(navigation.first_visible, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "every independent worker budget needs exact equality and overflow controls"
+    )]
+    fn inventory_scan_and_text_boundaries_are_exact() -> Result<(), Box<dyn Error>> {
+        let empty = TempProject::new()?;
+        let identity = InventoryIdentity {
+            workspace: 1,
+            generation: 1,
+        };
+        let empty_inventory = build_inventory(identity, &empty.0, tiny_limits())?;
+        assert_eq!(empty_inventory.report.scanned, 0);
+        assert_eq!(empty_inventory.report.omitted, 0);
+
+        let project = TempProject::new()?;
+        project.write("abc", b"x")?;
+        project.write("def", b"y")?;
+        let mut exact_path = tiny_limits();
+        exact_path.path_bytes = 3;
+        exact_path.inventory_bytes = 6;
+        let exact_path_inventory = build_inventory(identity, &project.0, exact_path)?;
+        assert_eq!(exact_path_inventory.report.files, 2);
+        let mut short_path = exact_path;
+        short_path.path_bytes = 2;
+        let short_path_inventory = build_inventory(identity, &project.0, short_path)?;
+        assert_eq!(short_path_inventory.report.files, 0);
+        assert_eq!(short_path_inventory.report.omitted, 2);
+        let mut exact_inventory_bytes = exact_path;
+        exact_inventory_bytes.inventory_bytes = 3;
+        let bounded = build_inventory(identity, &project.0, exact_inventory_bytes)?;
+        assert_eq!(bounded.report.files, 1);
+        assert_eq!(bounded.report.path_bytes, 3);
+        let mut one_file = exact_path;
+        one_file.files = 1;
+        let one_file_inventory = build_inventory(identity, &project.0, one_file)?;
+        assert_eq!(one_file_inventory.report.files, 1);
+        assert_eq!(one_file_inventory.report.omitted, 1);
+
+        let search_identity = SearchIdentity {
+            workspace: 1,
+            inventory: 1,
+            query: 1,
+            request: 1,
+        };
+        let cancellation = AtomicU64::new(1);
+        let no_paths = SearchInventory {
+            generation: 1,
+            paths: Box::default(),
+            report: InventoryReport::default(),
+            first_error: None,
+        };
+        let exact_query = "q".repeat(MAX_QUERY_BYTES);
+        assert!(matches!(
+            scan_batch(
+                search_identity,
+                &project.0,
+                &no_paths,
+                &exact_query,
+                ScanCursor::default(),
+                ScanCounters::default(),
+                0,
+                0,
+                tiny_limits(),
+                &cancellation,
+            )?,
+            SearchBatch { terminal: true, .. }
+        ));
+        let oversized_query = format!("{exact_query}q");
+        assert!(matches!(
+            scan_batch(
+                search_identity,
+                &project.0,
+                &no_paths,
+                &oversized_query,
+                ScanCursor::default(),
+                ScanCounters::default(),
+                0,
+                0,
+                tiny_limits(),
+                &cancellation,
+            ),
+            Err(ProjectSearchError::InvalidLimits)
+        ));
+
+        let inventory = SearchInventory {
+            generation: 1,
+            paths: vec![Arc::from("abc"), Arc::from("def")].into_boxed_slice(),
+            report: InventoryReport::default(),
+            first_error: None,
+        };
+        let mut one_file_per_batch = tiny_limits();
+        one_file_per_batch.files_per_batch = 1;
+        assert!(!batch_budget_exhausted(0, 0, one_file_per_batch));
+        assert!(batch_budget_exhausted(1, 0, one_file_per_batch));
+        assert!(batch_budget_exhausted(
+            0,
+            one_file_per_batch.read_bytes_per_batch,
+            one_file_per_batch,
+        ));
+        assert_eq!(classify_scan_lifecycle(false, false), ScanLifecycle::Active);
+        assert_eq!(
+            classify_scan_lifecycle(true, false),
+            ScanLifecycle::Terminal
+        );
+        assert_eq!(
+            classify_scan_lifecycle(false, true),
+            ScanLifecycle::Cancelled
+        );
+        assert_eq!(classify_scan_lifecycle(true, true), ScanLifecycle::Terminal);
+        for (files, matches, partial_file, expected) in [
+            (0, 0, false, ScanProgress::Stalled),
+            (1, 0, false, ScanProgress::Made),
+            (0, 1, false, ScanProgress::Made),
+            (0, 0, true, ScanProgress::Made),
+            (1, 1, true, ScanProgress::Made),
+        ] {
+            assert_eq!(
+                classify_scan_progress(files, matches, partial_file),
+                expected
+            );
+        }
+        assert_eq!(
+            classify_scan_exit(ScanLifecycle::Active, false, ScanProgress::Made),
+            ScanExit::Continue
+        );
+        assert_eq!(
+            classify_scan_exit(ScanLifecycle::Active, false, ScanProgress::Stalled),
+            ScanExit::Stop {
+                terminal: true,
+                truncated: true,
+            }
+        );
+        assert_eq!(
+            classify_scan_exit(ScanLifecycle::Terminal, false, ScanProgress::Made),
+            ScanExit::Stop {
+                terminal: true,
+                truncated: false,
+            }
+        );
+        assert_eq!(
+            classify_scan_exit(ScanLifecycle::Cancelled, false, ScanProgress::Made),
+            ScanExit::Stop {
+                terminal: false,
+                truncated: false,
+            }
+        );
+        let file_batch = scan_batch(
+            search_identity,
+            &project.0,
+            &inventory,
+            "missing",
+            ScanCursor::default(),
+            ScanCounters::default(),
+            0,
+            0,
+            one_file_per_batch,
+            &cancellation,
+        )?;
+        assert!(!file_batch.terminal);
+        assert_eq!(file_batch.counters.files, 1);
+        assert_eq!(
+            file_batch.cursor.as_ref().map(|cursor| cursor.next_file),
+            Some(1)
+        );
+
+        let mut one_byte_per_batch = tiny_limits();
+        one_byte_per_batch.file_bytes = 1;
+        one_byte_per_batch.read_bytes_per_batch = 1;
+        let byte_batch = scan_batch(
+            search_identity,
+            &project.0,
+            &inventory,
+            "missing",
+            ScanCursor::default(),
+            ScanCounters::default(),
+            0,
+            0,
+            one_byte_per_batch,
+            &cancellation,
+        )?;
+        assert!(!byte_batch.terminal);
+        assert_eq!(byte_batch.counters.files, 1);
+        assert_eq!(byte_batch.counters.read_bytes, 1);
+
+        project.write("matches", b"x x")?;
+        let matching_inventory = SearchInventory {
+            generation: 1,
+            paths: vec![Arc::from("matches")].into_boxed_slice(),
+            report: InventoryReport::default(),
+            first_error: None,
+        };
+        let mut one_match = tiny_limits();
+        one_match.batch_matches = 1;
+        let continuation = scan_batch(
+            search_identity,
+            &project.0,
+            &matching_inventory,
+            "x",
+            ScanCursor::default(),
+            ScanCounters::default(),
+            0,
+            0,
+            one_match,
+            &cancellation,
+        )?;
+        assert_eq!(continuation.matches.len(), 1);
+        assert!(!continuation.terminal);
+        assert!(
+            continuation
+                .cursor
+                .as_ref()
+                .and_then(|cursor| cursor.file.as_ref())
+                .is_some()
+        );
+        let mut no_fit = tiny_limits();
+        no_fit.result_bytes = size_of::<ProjectMatch>();
+        no_fit.batch_bytes = size_of::<ProjectMatch>();
+        no_fit.excerpt_bytes = 1;
+        let no_fit_batch = scan_batch(
+            search_identity,
+            &project.0,
+            &matching_inventory,
+            "x",
+            ScanCursor::default(),
+            ScanCounters::default(),
+            0,
+            0,
+            no_fit,
+            &cancellation,
+        )?;
+        assert!(no_fit_batch.terminal);
+        assert!(no_fit_batch.truncated);
+        assert!(no_fit_batch.matches.is_empty());
+        assert!(no_fit_batch.cursor.is_none());
+        let cancelled = AtomicU64::new(2);
+        let cancelled_batch = scan_batch(
+            search_identity,
+            &project.0,
+            &matching_inventory,
+            "x",
+            ScanCursor::default(),
+            ScanCounters::default(),
+            0,
+            0,
+            tiny_limits(),
+            &cancelled,
+        )?;
+        assert!(cancelled_batch.cancelled);
+        assert!(cancelled_batch.cursor.is_none());
+
+        let expected = ProjectMatch {
+            relative: "a".into(),
+            excerpt: "x".into(),
+            start: 0,
+            end: 1,
+            line: 1,
+            column: 1,
+        };
+        let found_bytes = expected.retained_bytes();
+        let make_file = || FileContinuation {
+            file_index: 0,
+            relative: Arc::from("a"),
+            bytes: Box::from(&b"x"[..]),
+            cursor: 0,
+            line: 1,
+            line_start: 0,
+        };
+        let mut exact_limits = tiny_limits();
+        exact_limits.results = 1;
+        exact_limits.result_bytes = found_bytes;
+        exact_limits.batch_matches = 1;
+        exact_limits.batch_bytes = found_bytes;
+        let mut exact_matches = Vec::new();
+        let mut exact_bytes = 0;
+        assert!(scan_file_matches(
+            &mut make_file(),
+            b"x",
+            &mut exact_matches,
+            &mut exact_bytes,
+            0,
+            0,
+            exact_limits,
+        )?);
+        assert_eq!(exact_matches, vec![expected.clone()]);
+        assert_eq!(exact_bytes, found_bytes);
+
+        let mut full_matches = vec![expected.clone()];
+        let mut full_bytes = found_bytes;
+        assert!(!scan_file_matches(
+            &mut make_file(),
+            b"x",
+            &mut full_matches,
+            &mut full_bytes,
+            0,
+            0,
+            exact_limits,
+        )?);
+        let mut byte_limited = exact_limits;
+        byte_limited.batch_matches = 2;
+        byte_limited.batch_bytes = size_of::<ProjectMatch>();
+        let mut matches = Vec::new();
+        let mut bytes = 0;
+        assert!(!scan_file_matches(
+            &mut make_file(),
+            b"x",
+            &mut matches,
+            &mut bytes,
+            0,
+            0,
+            byte_limited,
+        )?);
+        let mut matches = Vec::new();
+        let mut bytes = 0;
+        assert!(!scan_file_matches(
+            &mut make_file(),
+            b"x",
+            &mut matches,
+            &mut bytes,
+            exact_limits.results,
+            0,
+            exact_limits,
+        )?);
+        let mut result_limited = exact_limits;
+        result_limited.batch_matches = 2;
+        result_limited.batch_bytes = size_of::<ProjectMatch>();
+        result_limited.result_bytes = size_of::<ProjectMatch>();
+        let mut matches = Vec::new();
+        let mut bytes = 0;
+        assert!(!scan_file_matches(
+            &mut make_file(),
+            b"x",
+            &mut matches,
+            &mut bytes,
+            0,
+            1,
+            result_limited,
+        )?);
+
+        let exact_file = project.0.join("matches");
+        assert!(matches!(
+            read_search_file(&exact_file, 3, 3, 3, None)?,
+            FileRead::Ready { read_bytes: 3, .. }
+        ));
+        assert!(matches!(
+            read_search_file(&exact_file, 4, 4, 4, None)?,
+            FileRead::Ready { read_bytes: 3, .. }
+        ));
+        assert!(matches!(
+            read_search_file(&exact_file, 2, 3, 3, None)?,
+            FileRead::Skipped {
+                reason: SkipReason::Oversized,
+                read_bytes: 0,
+            }
+        ));
+        assert!(matches!(
+            read_search_file(&exact_file, 3, 2, 3, None)?,
+            FileRead::TotalLimit
+        ));
+        assert!(matches!(
+            read_search_file(&exact_file, 3, 3, 2, None)?,
+            FileRead::Yield
+        ));
+
+        assert_eq!(find_literal(b"ab", b"abc", 0), None);
+        assert_eq!(find_literal(b"ababa", b"aba", 2), Some(2));
+        assert_eq!(find_literal(b"ababa", b"aba", 3), None);
+        let mut line = 1;
+        let mut line_start = 0;
+        advance_position(b"a\nb\n", &mut line, &mut line_start, 10);
+        assert_eq!((line, line_start), (3, 14));
+        assert_eq!(excerpt_for(b"left\nmatch\nright", 5, 64)?.as_ref(), "match");
+        assert_eq!(excerpt_for(b"0123456789", 5, 4)?.as_ref(), "3456");
+        assert_eq!(
+            excerpt_for("ééééneedle".as_bytes(), 8, 7)?.as_ref(),
+            "éneed"
+        );
+
+        let exact_match = ProjectMatch {
+            relative: "a".into(),
+            excerpt: "x".into(),
+            start: 0,
+            end: 1,
+            line: 1,
+            column: 1,
+        };
+        let exact_match_bytes = exact_match.retained_bytes();
+        let mut exact_append_limits = tiny_limits();
+        exact_append_limits.results = 1;
+        exact_append_limits.result_bytes = exact_match_bytes;
+        let mut exact_append = ProjectSearchState::with_test_limits(exact_append_limits);
+        assert!(
+            exact_append
+                .append_batch(
+                    vec![exact_match.clone()].into_boxed_slice(),
+                    exact_match_bytes
+                )
+                .is_ok()
+        );
+        let mut count_overflow = ProjectSearchState::with_test_limits(exact_append_limits);
+        assert!(
+            count_overflow
+                .append_batch(
+                    vec![exact_match.clone(), exact_match.clone()].into_boxed_slice(),
+                    0,
+                )
+                .is_err()
+        );
+        let mut byte_overflow = ProjectSearchState::with_test_limits(exact_append_limits);
+        assert!(
+            byte_overflow
+                .append_batch(
+                    vec![exact_match].into_boxed_slice(),
+                    exact_match_bytes.saturating_add(1),
+                )
+                .is_err()
+        );
+
+        for (has_inventory, query, has_pending, expected_inventory) in [
+            (true, "x", false, false),
+            (false, "", false, false),
+            (false, "x", true, false),
+            (false, "x", false, true),
+        ] {
+            let mut replacement = ProjectSearchState::with_test_limits(tiny_limits());
+            replacement.open = true;
+            replacement.workspace = Some(1);
+            replacement.inventory_generation = 7;
+            replacement.inventory = has_inventory.then(|| {
+                Arc::new(SearchInventory {
+                    generation: 7,
+                    paths: Box::default(),
+                    report: InventoryReport::default(),
+                    first_error: None,
+                })
+            });
+            replacement.pending_inventory = has_pending.then_some(InventoryIdentity {
+                workspace: 1,
+                generation: 7,
+            });
+            replacement.replace_query(query.to_owned(), 1)?;
+            assert_eq!(replacement.needs_inventory, expected_inventory);
+            assert_eq!(replacement.needs_search, has_inventory && !query.is_empty());
+            assert_eq!(
+                replacement.inventory_generation,
+                if expected_inventory { 8 } else { 7 }
+            );
+        }
         Ok(())
     }
 }

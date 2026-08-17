@@ -641,3 +641,35 @@ fn runtime_project_search_admits_workers_and_rolls_back_submission_failures()
     );
     Ok(())
 }
+
+#[test]
+fn project_search_selection_and_submission_boundaries_are_exact()
+-> Result<(), Box<dyn std::error::Error>> {
+    let project = TempProject::new()?;
+    let mut source = String::new();
+    for line in 0..128 {
+        use std::fmt::Write as _;
+        writeln!(&mut source, "line {line:03} needle")?;
+    }
+    fs::write(project.root.join("alpha.rs"), source)?;
+    let mut app = StudioApp::open_workspace_lazy(SearchTextSystem, &project.root)?;
+    app.open_workspace_path(&project.root.join("alpha.rs"), None)?;
+    app.select_project_search_match(&project_search::SelectedProjectMatch {
+        relative: "alpha.rs".into(),
+        query: "needle".into(),
+        start: 9,
+        end: 15,
+        line: 3,
+    });
+    assert_eq!(app.selection.range(), 9..15);
+    assert_eq!(app.scroll_y.to_bits(), (2.0 * LINE_HEIGHT).to_bits());
+
+    assert!(app.open_project_search().visual_changed);
+    assert!(app.handle_event(&ime("needle")).visual_changed);
+    let request = app.prepare_project_search_request()?.ok_or("inventory")?;
+    let identity = request.identity();
+    assert!(!app.reject_failed_project_search_submission(identity, false));
+    assert!(app.reject_failed_project_search_submission(identity, true));
+    assert!(!app.reject_failed_project_search_submission(identity, true));
+    Ok(())
+}
