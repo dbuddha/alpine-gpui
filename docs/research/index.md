@@ -22,7 +22,7 @@ measurement rules so implementation does not depend on chat history.
 | [Zed stable application](../case-studies/zed-editor.md) | Product architecture, editor behavior, useful patterns, and excluded collaborative weight | [Research #113](https://github.com/dbuddha/alpine-gpui/issues/113) |
 | [Zed GPUI and macOS renderer](../case-studies/zed-gpui.md) | Invalidation, render phases, scene organization, batching, caches, atlas ownership, and Metal scheduling | [Research #113](https://github.com/dbuddha/alpine-gpui/issues/113) |
 | [Sublime Text local-speed model](../case-studies/sublime-editor.md) | Official public facts, Alpine inferences, and explicitly unknown proprietary internals | [Research #114](https://github.com/dbuddha/alpine-gpui/issues/114) |
-| [WGPU](../case-studies/wgpu.md) | Portable GPU lessons, differential-oracle opportunity, and explicit non-shipping v1 boundary | [Capability #28](https://github.com/dbuddha/alpine-gpui/issues/28) |
+| [WGPU](../case-studies/wgpu.md) | Pinned architecture, Metal path, lifetime and staging analysis, adopt/adapt/reject decisions, and fair direct-Metal comparison protocol | [Research #23](https://github.com/dbuddha/alpine-gpui/issues/23) |
 
 ## Qualification records
 
