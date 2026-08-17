@@ -2862,8 +2862,8 @@ mod tests {
                 0,
                 tiny_limits(),
                 &cancellation,
-            )?,
-            SearchBatch { terminal: true, .. }
+            ),
+            Ok(SearchBatch { terminal: true, .. })
         ));
         let oversized_query = format!("{exact_query}q");
         assert!(matches!(
@@ -2955,13 +2955,13 @@ mod tests {
             0,
             one_file_per_batch,
             &cancellation,
-        )?;
-        assert!(!file_batch.terminal);
-        assert_eq!(file_batch.counters.files, 1);
-        assert_eq!(
-            file_batch.cursor.as_ref().map(|cursor| cursor.next_file),
-            Some(1)
         );
+        assert!(matches!(&file_batch, Ok(batch) if !batch.terminal));
+        assert!(matches!(&file_batch, Ok(batch) if batch.counters.files == 1));
+        assert!(matches!(
+            &file_batch,
+            Ok(batch) if batch.cursor.as_ref().map(|cursor| cursor.next_file) == Some(1)
+        ));
 
         let mut one_byte_per_batch = tiny_limits();
         one_byte_per_batch.file_bytes = 1;
@@ -2977,10 +2977,10 @@ mod tests {
             0,
             one_byte_per_batch,
             &cancellation,
-        )?;
-        assert!(!byte_batch.terminal);
-        assert_eq!(byte_batch.counters.files, 1);
-        assert_eq!(byte_batch.counters.read_bytes, 1);
+        );
+        assert!(matches!(&byte_batch, Ok(batch) if !batch.terminal));
+        assert!(matches!(&byte_batch, Ok(batch) if batch.counters.files == 1));
+        assert!(matches!(&byte_batch, Ok(batch) if batch.counters.read_bytes == 1));
 
         project.write("matches", b"x x")?;
         let matching_inventory = SearchInventory {
@@ -3002,16 +3002,18 @@ mod tests {
             0,
             one_match,
             &cancellation,
-        )?;
-        assert_eq!(continuation.matches.len(), 1);
-        assert!(!continuation.terminal);
-        assert!(
-            continuation
-                .cursor
-                .as_ref()
-                .and_then(|cursor| cursor.file.as_ref())
-                .is_some()
         );
+        assert!(matches!(&continuation, Ok(batch) if batch.matches.len() == 1));
+        assert!(matches!(&continuation, Ok(batch) if !batch.terminal));
+        assert!(matches!(
+            &continuation,
+            Ok(batch)
+                if batch
+                    .cursor
+                    .as_ref()
+                    .and_then(|cursor| cursor.file.as_ref())
+                    .is_some()
+        ));
         let mut no_fit = tiny_limits();
         no_fit.result_bytes = size_of::<ProjectMatch>();
         no_fit.batch_bytes = size_of::<ProjectMatch>();
@@ -3027,11 +3029,11 @@ mod tests {
             0,
             no_fit,
             &cancellation,
-        )?;
-        assert!(no_fit_batch.terminal);
-        assert!(no_fit_batch.truncated);
-        assert!(no_fit_batch.matches.is_empty());
-        assert!(no_fit_batch.cursor.is_none());
+        );
+        assert!(matches!(&no_fit_batch, Ok(batch) if batch.terminal));
+        assert!(matches!(&no_fit_batch, Ok(batch) if batch.truncated));
+        assert!(matches!(&no_fit_batch, Ok(batch) if batch.matches.is_empty()));
+        assert!(matches!(&no_fit_batch, Ok(batch) if batch.cursor.is_none()));
         let cancelled = AtomicU64::new(2);
         let cancelled_batch = scan_batch(
             search_identity,
@@ -3044,9 +3046,9 @@ mod tests {
             0,
             tiny_limits(),
             &cancelled,
-        )?;
-        assert!(cancelled_batch.cancelled);
-        assert!(cancelled_batch.cursor.is_none());
+        );
+        assert!(matches!(&cancelled_batch, Ok(batch) if batch.cancelled));
+        assert!(matches!(&cancelled_batch, Ok(batch) if batch.cursor.is_none()));
 
         let expected = ProjectMatch {
             relative: "a".into(),
@@ -3072,69 +3074,84 @@ mod tests {
         exact_limits.batch_bytes = found_bytes;
         let mut exact_matches = Vec::new();
         let mut exact_bytes = 0;
-        assert!(scan_file_matches(
-            &mut make_file(),
-            b"x",
-            &mut exact_matches,
-            &mut exact_bytes,
-            0,
-            0,
-            exact_limits,
-        )?);
+        assert!(matches!(
+            scan_file_matches(
+                &mut make_file(),
+                b"x",
+                &mut exact_matches,
+                &mut exact_bytes,
+                0,
+                0,
+                exact_limits,
+            ),
+            Ok(true)
+        ));
         assert_eq!(exact_matches, vec![expected.clone()]);
         assert_eq!(exact_bytes, found_bytes);
 
         let mut full_matches = vec![expected.clone()];
         let mut full_bytes = found_bytes;
-        assert!(!scan_file_matches(
-            &mut make_file(),
-            b"x",
-            &mut full_matches,
-            &mut full_bytes,
-            0,
-            0,
-            exact_limits,
-        )?);
+        assert!(matches!(
+            scan_file_matches(
+                &mut make_file(),
+                b"x",
+                &mut full_matches,
+                &mut full_bytes,
+                0,
+                0,
+                exact_limits,
+            ),
+            Ok(false)
+        ));
         let mut byte_limited = exact_limits;
         byte_limited.batch_matches = 2;
         byte_limited.batch_bytes = size_of::<ProjectMatch>();
         let mut matches = Vec::new();
         let mut bytes = 0;
-        assert!(!scan_file_matches(
-            &mut make_file(),
-            b"x",
-            &mut matches,
-            &mut bytes,
-            0,
-            0,
-            byte_limited,
-        )?);
+        assert!(matches!(
+            scan_file_matches(
+                &mut make_file(),
+                b"x",
+                &mut matches,
+                &mut bytes,
+                0,
+                0,
+                byte_limited,
+            ),
+            Ok(false)
+        ));
         let mut matches = Vec::new();
         let mut bytes = 0;
-        assert!(!scan_file_matches(
-            &mut make_file(),
-            b"x",
-            &mut matches,
-            &mut bytes,
-            exact_limits.results,
-            0,
-            exact_limits,
-        )?);
+        assert!(matches!(
+            scan_file_matches(
+                &mut make_file(),
+                b"x",
+                &mut matches,
+                &mut bytes,
+                exact_limits.results,
+                0,
+                exact_limits,
+            ),
+            Ok(false)
+        ));
         let mut result_limited = exact_limits;
         result_limited.batch_matches = 2;
         result_limited.batch_bytes = size_of::<ProjectMatch>();
         result_limited.result_bytes = size_of::<ProjectMatch>();
         let mut matches = Vec::new();
         let mut bytes = 0;
-        assert!(!scan_file_matches(
-            &mut make_file(),
-            b"x",
-            &mut matches,
-            &mut bytes,
-            0,
-            1,
-            result_limited,
-        )?);
+        assert!(matches!(
+            scan_file_matches(
+                &mut make_file(),
+                b"x",
+                &mut matches,
+                &mut bytes,
+                0,
+                1,
+                result_limited,
+            ),
+            Ok(false)
+        ));
 
         let exact_file = project.0.join("matches");
         assert!(matches!(
