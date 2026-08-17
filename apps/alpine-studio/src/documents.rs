@@ -195,6 +195,13 @@ impl<T> DocumentTabs<T> {
             .position(|tab| tab.path.as_deref() == Some(path))
     }
 
+    pub(crate) fn inactive_document_for_path(&self, path: &Path) -> Option<&T> {
+        self.tabs
+            .iter()
+            .find(|tab| tab.path.as_deref() == Some(path))
+            .and_then(|tab| tab.document.as_ref())
+    }
+
     pub(crate) fn inactive_documents(&self) -> impl Iterator<Item = &T> {
         self.tabs.iter().filter_map(|tab| tab.document.as_ref())
     }

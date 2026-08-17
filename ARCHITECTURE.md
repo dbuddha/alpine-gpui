@@ -768,6 +768,27 @@ composition, results, visible rows, and diagnostics. There is no runtime
 registration, plugin hook, closure registry, worker, timer, or public framework
 API at this boundary. See AEP-0177.
 
+### Bounded streaming local project search
+
+Alpine Studio privately owns a lazy local project-search state machine. One
+explicit Command-Shift-F or static command opens it; no inventory or content
+read exists on direct-file launch, folder admission, first frame, or idle. A
+serial project-local ignore-aware inventory admits at most 250,000 entries,
+100,000 regular UTF-8 relative paths, and 16 MiB of path bytes. Content work
+then advances through bounded worker continuations, each covering at most 64
+files, 16 MiB read bytes, 256 matches, and 256 KiB of result data.
+
+One query reads at most 512 MiB, one file at most 16 MiB, and retained results
+at most 16,384 matches or 4 MiB. Invalid UTF-8, NUL-bearing, unreadable,
+oversized, replaced, and non-regular files are skipped with separate counters.
+Inventory, query, and request generations reject stale publication. A bounded
+file buffer may move between worker continuations while one file has later
+matches, but no result retains source contents and close releases foreground
+search allocations. Selection revalidates the canonical path and exact current
+buffer bytes before any tab mutation. The boundary adds no public API,
+dependency, persistent index, watcher, regex engine, plugin path, network path,
+telemetry, or startup work. See AEP-0180.
+
 ## Binding invariants
 
 1. Public behavior is specified independently of upstream implementations.

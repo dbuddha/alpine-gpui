@@ -9,6 +9,7 @@ mod commands;
 mod documents;
 mod file_tree;
 mod find;
+mod project_search;
 mod quick_open;
 mod workspace;
 
@@ -52,6 +53,10 @@ use find::{
     FindAdmission, FindError, FindNavigation, FindRequest, FindState, FindWorkerOutput,
     MAX_REPLACEMENT_TRANSACTION_BYTES,
 };
+use project_search::{
+    ProjectSearchAdmission, ProjectSearchError, ProjectSearchRequest, ProjectSearchState,
+    ProjectSearchWorkerOutput, SelectedProjectMatch,
+};
 use quick_open::{
     QuickOpenAdmission, QuickOpenError, QuickOpenRequest, QuickOpenState, QuickOpenWorkerOutput,
 };
@@ -88,6 +93,11 @@ const QUICK_OPEN_QUERY_HEIGHT: f32 = 34.0;
 const QUICK_OPEN_ROW_HEIGHT: f32 = 24.0;
 const QUICK_OPEN_VISIBLE_ROWS: usize = 12;
 const QUICK_OPEN_OVERSCAN_ROWS: usize = 3;
+const PROJECT_SEARCH_WIDTH: f32 = 760.0;
+const PROJECT_SEARCH_QUERY_HEIGHT: f32 = 34.0;
+const PROJECT_SEARCH_ROW_HEIGHT: f32 = 24.0;
+const PROJECT_SEARCH_VISIBLE_ROWS: usize = 12;
+const PROJECT_SEARCH_OVERSCAN_ROWS: usize = 3;
 const COMMAND_PALETTE_WIDTH: f32 = 620.0;
 const COMMAND_PALETTE_QUERY_HEIGHT: f32 = 34.0;
 const COMMAND_PALETTE_ROW_HEIGHT: f32 = 24.0;
@@ -412,6 +422,7 @@ enum StudioRenderError {
     FileTree(FileTreeError),
     Find(FindError),
     QuickOpen(QuickOpenError),
+    ProjectSearch(ProjectSearchError),
     Text(TextError),
     Layout(LayoutError),
     Scene(SceneError),
@@ -447,6 +458,12 @@ impl From<QuickOpenError> for StudioRenderError {
     }
 }
 
+impl From<ProjectSearchError> for StudioRenderError {
+    fn from(error: ProjectSearchError) -> Self {
+        Self::ProjectSearch(error)
+    }
+}
+
 impl From<LayoutError> for StudioRenderError {
     fn from(error: LayoutError) -> Self {
         Self::Layout(error)
@@ -469,6 +486,9 @@ impl fmt::Display for StudioRenderError {
             Self::FileTree(error) => write!(formatter, "file-tree rendering failed: {error}"),
             Self::Find(error) => write!(formatter, "find rendering failed: {error}"),
             Self::QuickOpen(error) => write!(formatter, "quick-open rendering failed: {error}"),
+            Self::ProjectSearch(error) => {
+                write!(formatter, "project-search rendering failed: {error}")
+            }
             Self::Text(error) => write!(formatter, "text layout input failed: {error}"),
             Self::Layout(error) => write!(formatter, "visible layout failed: {error}"),
             Self::Scene(error) => write!(formatter, "scene construction failed: {error}"),
@@ -487,6 +507,7 @@ enum WorkspaceSelectionError {
     Workspace(WorkspaceError),
     File(FileError),
     QuickOpen(QuickOpenError),
+    ProjectSearch(ProjectSearchError),
 }
 
 impl fmt::Display for WorkspaceSelectionError {
@@ -499,6 +520,7 @@ impl fmt::Display for WorkspaceSelectionError {
             Self::Workspace(error) => write!(formatter, "workspace selection failed: {error}"),
             Self::File(error) => write!(formatter, "workspace file failed: {error}"),
             Self::QuickOpen(error) => write!(formatter, "quick open failed: {error}"),
+            Self::ProjectSearch(error) => write!(formatter, "project search failed: {error}"),
         }
     }
 }
@@ -510,6 +532,7 @@ impl Error for WorkspaceSelectionError {
             Self::File(error) => Some(error),
             Self::Tabs(error) => Some(error),
             Self::QuickOpen(error) => Some(error),
+            Self::ProjectSearch(error) => Some(error),
             Self::NoWorkspace | Self::DirtyDocument | Self::RevisionExhausted => None,
         }
     }
@@ -578,6 +601,13 @@ macro_rules! force_quick_open_submission_failure {
 }
 
 #[cfg(test)]
+macro_rules! force_project_search_submission_failure {
+    ($app:expr) => {
+        $app.force_project_search_submission_failure.is_some()
+    };
+}
+
+#[cfg(test)]
 macro_rules! force_file_tree_submission_failure {
     ($app:expr) => {
         $app.force_file_tree_submission_failure.is_some()
@@ -593,6 +623,13 @@ macro_rules! force_file_tree_submission_failure {
 
 #[cfg(not(test))]
 macro_rules! force_quick_open_submission_failure {
+    ($app:expr) => {
+        false
+    };
+}
+
+#[cfg(not(test))]
+macro_rules! force_project_search_submission_failure {
     ($app:expr) => {
         false
     };
@@ -633,10 +670,13 @@ struct StudioApp {
     find: FindState,
     find_needs_search: bool,
     quick_open: QuickOpenState,
+    project_search: ProjectSearchState,
     file_tree: FileTreeState,
     command_palette: CommandPalette,
     #[cfg(test)]
     force_quick_open_submission_failure: Option<()>,
+    #[cfg(test)]
+    force_project_search_submission_failure: Option<()>,
     #[cfg(test)]
     force_file_tree_submission_failure: Option<()>,
     #[cfg(test)]
@@ -766,10 +806,13 @@ impl StudioApp {
             find: FindState::default(),
             find_needs_search: false,
             quick_open: QuickOpenState::default(),
+            project_search: ProjectSearchState::default(),
             file_tree: FileTreeState::default(),
             command_palette: CommandPalette::default(),
             #[cfg(test)]
             force_quick_open_submission_failure: None,
+            #[cfg(test)]
+            force_project_search_submission_failure: None,
             #[cfg(test)]
             force_file_tree_submission_failure: None,
             #[cfg(test)]
@@ -883,6 +926,10 @@ impl StudioApp {
             LinearRgba::new(0.045, 0.052, 0.058, 0.99).ok_or(StudioRenderError::Domain)?;
         let quick_open_selected =
             LinearRgba::new(0.12, 0.25, 0.31, 1.0).ok_or(StudioRenderError::Domain)?;
+        let project_search_background =
+            LinearRgba::new(0.04, 0.06, 0.055, 0.995).ok_or(StudioRenderError::Domain)?;
+        let project_search_selected =
+            LinearRgba::new(0.10, 0.30, 0.22, 1.0).ok_or(StudioRenderError::Domain)?;
         let command_palette_background =
             LinearRgba::new(0.055, 0.062, 0.067, 0.995).ok_or(StudioRenderError::Domain)?;
         let command_palette_selected =
@@ -1111,6 +1158,54 @@ impl StudioApp {
                 pending_glyphs.extend(row_glyphs);
             }
         }
+        if self.project_search.is_open() {
+            let rows = self
+                .project_search
+                .visible_results(PROJECT_SEARCH_VISIBLE_ROWS, PROJECT_SEARCH_OVERSCAN_ROWS)?;
+            let width = PROJECT_SEARCH_WIDTH.min((viewport.width() - CONTENT_INSET * 2.0).max(1.0));
+            let left = ((viewport.width() - width) * 0.5).max(0.0);
+            let top = TAB_BAR_HEIGHT + CONTENT_INSET;
+            let height =
+                PROJECT_SEARCH_QUERY_HEIGHT + usize_as_f32(rows.len()) * PROJECT_SEARCH_ROW_HEIGHT;
+            let overlay_origin = Point::new(left, top).ok_or(StudioRenderError::Domain)?;
+            let overlay_size =
+                Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
+            let overlay_bounds = Rect::new(overlay_origin, overlay_size);
+            let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
+            builder.push_quad(Quad::new(overlay_bounds, project_search_background))?;
+            let display = self.project_search.display_text()?;
+            let query_layout = self.text_system.shape(&display, font)?;
+            pending_glyphs.extend(self.collect_glyphs(
+                &query_layout,
+                font,
+                left + FIND_BAR_INSET,
+                top + query_layout.ascent() + 7.0,
+                overlay_clip,
+            )?);
+            for (row_index, row) in rows.iter().enumerate() {
+                let row_top = top
+                    + PROJECT_SEARCH_QUERY_HEIGHT
+                    + usize_as_f32(row_index) * PROJECT_SEARCH_ROW_HEIGHT;
+                if row.selected {
+                    let row_origin = Point::new(left, row_top).ok_or(StudioRenderError::Domain)?;
+                    let row_size = Size::new(width, PROJECT_SEARCH_ROW_HEIGHT)
+                        .ok_or(StudioRenderError::Domain)?;
+                    builder.push_quad(
+                        Quad::new(Rect::new(row_origin, row_size), project_search_selected)
+                            .clipped(overlay_clip),
+                    )?;
+                }
+                let layout = self.text_system.shape(&row.label, font)?;
+                let baseline = row_top + layout.ascent() + 4.0;
+                pending_glyphs.extend(self.collect_glyphs(
+                    &layout,
+                    font,
+                    left + FIND_BAR_INSET,
+                    baseline,
+                    overlay_clip,
+                )?);
+            }
+        }
         if self.command_palette.is_open() {
             let rows = self.command_palette.visible_commands()?;
             let width =
@@ -1204,6 +1299,7 @@ impl StudioApp {
         if self.focused
             && !self.find.is_open()
             && !self.quick_open.is_open()
+            && !self.project_search.is_open()
             && !self.file_tree.is_focused()
             && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_origin_x)?
         {
@@ -1354,6 +1450,7 @@ impl StudioApp {
     fn handle_event_with_response(&mut self, event: &SurfaceEvent) -> StudioTransition {
         if (self.find.is_open()
             || self.quick_open.is_open()
+            || self.project_search.is_open()
             || self.command_palette.is_open()
             || self.file_tree.is_focused())
             && studio_clipboard_shortcut(event).is_some()
@@ -1591,10 +1688,17 @@ impl StudioApp {
         if self.command_palette.is_open() {
             return self.handle_command_palette_key(physical_key, command);
         }
+        if command && shift && physical_key == KEY_F {
+            return self.open_project_search();
+        }
+        if self.project_search.is_open() {
+            return self.handle_project_search_key(physical_key, command);
+        }
         if command && shift && physical_key == KEY_E {
             self.find.close();
             self.find_needs_search = false;
             self.quick_open.close();
+            self.project_search.close();
             if self.workspace.is_none() {
                 return self.record_file_tree_error(&FileTreeError::NoWorkspace);
             }
@@ -1616,6 +1720,7 @@ impl StudioApp {
             }
             self.find.close();
             self.find_needs_search = false;
+            self.project_search.close();
             return match self.quick_open.open(1) {
                 Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
                 Err(error) => self.record_quick_open_error(&error),
@@ -1676,6 +1781,9 @@ impl StudioApp {
         if self.command_palette.is_open() {
             return self.handle_command_palette_ime(event);
         }
+        if self.project_search.is_open() {
+            return self.handle_project_search_ime(event);
+        }
         if self.quick_open.is_open() {
             return self.handle_quick_open_ime(event);
         }
@@ -1733,6 +1841,7 @@ impl StudioApp {
         self.find.close();
         self.find_needs_search = false;
         self.quick_open.close();
+        self.project_search.close();
         self.file_tree.unfocus();
         let context = self.command_context();
         match self.command_palette.open(context) {
@@ -1810,6 +1919,83 @@ impl StudioApp {
         }
     }
 
+    fn open_project_search(&mut self) -> EventEffect {
+        if self.workspace.is_none() {
+            return self.record_project_search_error(&ProjectSearchError::NoWorkspace);
+        }
+        self.find.close();
+        self.find_needs_search = false;
+        self.quick_open.close();
+        self.command_palette.cancel();
+        self.file_tree.unfocus();
+        match self.project_search.open(1) {
+            Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+            Err(error) => self.record_project_search_error(&error),
+        }
+    }
+
+    fn handle_project_search_key(&mut self, physical_key: u16, command: bool) -> EventEffect {
+        match physical_key {
+            KEY_ESCAPE => self
+                .project_search
+                .close()
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_DELETE_BACKWARD if !command => match self.project_search.delete_backward() {
+                Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+                Err(error) => self.record_project_search_error(&error),
+            },
+            KEY_UP if !command => self
+                .project_search
+                .navigate(false, PROJECT_SEARCH_VISIBLE_ROWS)
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_DOWN if !command => self
+                .project_search
+                .navigate(true, PROJECT_SEARCH_VISIBLE_ROWS)
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_RETURN if !command => match self.open_project_search_selection() {
+                Ok(effect) => effect,
+                Err(error) => self.record_workspace_error(&error),
+            },
+            _ => EventEffect::default(),
+        }
+    }
+
+    fn handle_project_search_ime(&mut self, event: &ImeEvent) -> EventEffect {
+        let result = match event {
+            ImeEvent::Started => {
+                return self
+                    .project_search
+                    .begin_composition()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
+            ImeEvent::Updated {
+                text,
+                selected_start_utf16,
+                selected_length_utf16,
+            } => self.project_search.update_composition(
+                text,
+                *selected_start_utf16,
+                *selected_length_utf16,
+            ),
+            ImeEvent::Committed(text) => self.project_search.commit_text(text),
+            ImeEvent::Cancelled => {
+                return self
+                    .project_search
+                    .cancel_composition()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
+        };
+        match result {
+            Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+            Err(error) => self.record_project_search_error(&error),
+        }
+    }
+
     fn command_context(&self) -> CommandContext {
         CommandContext {
             can_save: self.document.is_file() && self.document.is_dirty(),
@@ -1845,6 +2031,10 @@ impl StudioApp {
                 Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
                 Err(error) => self.record_quick_open_error(&error),
             },
+            StudioCommand::OpenProjectSearch if self.workspace.is_none() => {
+                self.record_project_search_error(&ProjectSearchError::NoWorkspace)
+            }
+            StudioCommand::OpenProjectSearch => self.open_project_search(),
             StudioCommand::ToggleFileTree if self.workspace.is_none() => {
                 self.record_file_tree_error(&FileTreeError::NoWorkspace)
             }
@@ -1869,6 +2059,14 @@ impl StudioApp {
             format!("Command palette failed: {error}").into(),
         ))
         .merge(EventEffect::visual())
+    }
+
+    fn record_project_search_error(&mut self, error: &ProjectSearchError) -> EventEffect {
+        self.workspace_failures = self.workspace_failures.saturating_add(1);
+        let message: Arc<str> = format!("Project search failed: {error}").into();
+        self.last_workspace_error = Some(Arc::clone(&message));
+        self.set_local_status(LocalStatus::Workspace(message))
+            .merge(EventEffect::visual())
     }
 
     fn handle_quick_open_key(&mut self, physical_key: u16, command: bool) -> EventEffect {
@@ -2154,6 +2352,29 @@ impl StudioApp {
         Ok(self.quick_open.take_request(workspace.root()))
     }
 
+    fn prepare_project_search_request(
+        &mut self,
+    ) -> Result<Option<ProjectSearchRequest>, ProjectSearchError> {
+        let Some(workspace) = &self.workspace else {
+            return if self.project_search.is_open() {
+                Err(ProjectSearchError::NoWorkspace)
+            } else {
+                Ok(None)
+            };
+        };
+        self.project_search.take_request(workspace.root())
+    }
+
+    fn apply_project_search_output(&mut self, output: ProjectSearchWorkerOutput) -> EventEffect {
+        match self.project_search.admit(output) {
+            ProjectSearchAdmission::Inventory
+            | ProjectSearchAdmission::Batch
+            | ProjectSearchAdmission::Complete
+            | ProjectSearchAdmission::Failed => EventEffect::visual(),
+            ProjectSearchAdmission::Stale => EventEffect::default(),
+        }
+    }
+
     fn apply_quick_open_output(&mut self, output: QuickOpenWorkerOutput) -> EventEffect {
         match self.quick_open.admit(output) {
             QuickOpenAdmission::Inventory
@@ -2223,6 +2444,10 @@ impl StudioApp {
     ) -> EventEffect {
         self.last_pointer_position = Some(position);
         if self.command_palette.is_open() {
+            self.pointer_selecting = false;
+            return EventEffect::default();
+        }
+        if self.project_search.is_open() {
             self.pointer_selecting = false;
             return EventEffect::default();
         }
@@ -2644,6 +2869,69 @@ impl StudioApp {
         Ok(effect.merge(EventEffect::visual()))
     }
 
+    fn open_project_search_selection(&mut self) -> Result<EventEffect, WorkspaceSelectionError> {
+        let selected = self
+            .project_search
+            .selected_match()
+            .map_err(WorkspaceSelectionError::ProjectSearch)?;
+        let path = self
+            .workspace
+            .as_ref()
+            .ok_or(WorkspaceSelectionError::NoWorkspace)?
+            .path_for_relative_file(Path::new(selected.relative.as_ref()))
+            .map_err(WorkspaceSelectionError::Workspace)?;
+        let effect = if let Some(tab) = self.tabs.index_for_path(&path) {
+            let document =
+                if tab == self.tabs.active_index() {
+                    &self.document
+                } else {
+                    self.tabs.inactive_document_for_path(&path).ok_or(
+                        WorkspaceSelectionError::Tabs(DocumentTabError::InvalidPayloadState),
+                    )?
+                };
+            project_search::verify_snapshot_match(&document.buffer().snapshot(), &selected)
+                .map_err(WorkspaceSelectionError::ProjectSearch)?;
+            self.activate_document_tab(tab)?
+        } else {
+            let document = StudioDocument::open(&path).map_err(WorkspaceSelectionError::File)?;
+            project_search::verify_snapshot_match(&document.buffer().snapshot(), &selected)
+                .map_err(WorkspaceSelectionError::ProjectSearch)?;
+            self.insert_project_search_document(&path, document)?
+        };
+        self.select_project_search_match(&selected);
+        self.project_search.close();
+        Ok(effect.merge(EventEffect::visual()))
+    }
+
+    fn insert_project_search_document(
+        &mut self,
+        path: &Path,
+        document: StudioDocument,
+    ) -> Result<EventEffect, WorkspaceSelectionError> {
+        let next_revision = self
+            .runtime_document_revision
+            .checked_add(1)
+            .ok_or(WorkspaceSelectionError::RevisionExhausted)?;
+        let view = self.active_document_view();
+        self.tabs
+            .insert_and_activate(path, None, document, &mut self.document, view)
+            .map_err(WorkspaceSelectionError::Tabs)?;
+        self.runtime_document_revision = next_revision;
+        self.active_workspace_entry = self.tabs.active_workspace_entry();
+        self.apply_document_view(DocumentViewState::default());
+        Ok(EventEffect::document_replacement())
+    }
+
+    fn select_project_search_match(&mut self, selected: &SelectedProjectMatch) {
+        self.selection = Selection::new(
+            ByteOffset::new(selected.start),
+            ByteOffset::new(selected.end),
+        );
+        self.composition = None;
+        self.scroll_y = (u32_as_f32(selected.line.saturating_sub(1)) * LINE_HEIGHT)
+            .clamp(0.0, self.maximum_scroll());
+    }
+
     fn open_workspace_path(
         &mut self,
         path: &Path,
@@ -2688,6 +2976,7 @@ impl StudioApp {
         self.find.close();
         self.find_needs_search = false;
         self.quick_open.close();
+        self.project_search.close();
         self.ensure_active_tab_visible();
     }
 
@@ -2824,6 +3113,7 @@ impl StudioApp {
 enum StudioWorkerOutput {
     Find(FindWorkerOutput),
     QuickOpen(QuickOpenWorkerOutput),
+    ProjectSearch(ProjectSearchWorkerOutput),
     FileTree(FileTreeWorkerOutput),
 }
 
@@ -2878,6 +3168,7 @@ impl AppDelegate for StudioApp {
             }
         }
         self.submit_quick_open_request(context);
+        self.submit_project_search_request(context);
         self.submit_file_tree_request(context);
     }
 
@@ -2890,12 +3181,14 @@ impl AppDelegate for StudioApp {
         let effect = match result {
             StudioWorkerOutput::Find(result) => self.apply_find_output(result),
             StudioWorkerOutput::QuickOpen(result) => self.apply_quick_open_output(result),
+            StudioWorkerOutput::ProjectSearch(result) => self.apply_project_search_output(result),
             StudioWorkerOutput::FileTree(result) => self.apply_file_tree_output(result),
         };
         if effect.visual_changed {
             context.invalidate();
         }
         self.submit_quick_open_request(context);
+        self.submit_project_search_request(context);
         self.submit_file_tree_request(context);
     }
 
@@ -2941,6 +3234,26 @@ impl StudioApp {
             Ok(None) => {}
             Err(error) => {
                 self.record_quick_open_error(&error);
+                context.invalidate();
+            }
+        }
+    }
+
+    fn submit_project_search_request(&mut self, context: &mut AppContext<'_, StudioWorkerOutput>) {
+        match self.prepare_project_search_request() {
+            Ok(Some(request)) => {
+                let identity = request.identity();
+                let failed = force_project_search_submission_failure!(self)
+                    || context
+                        .spawn(move || StudioWorkerOutput::ProjectSearch(request.execute()))
+                        .is_err();
+                if failed && self.project_search.reject_submission(identity) {
+                    context.invalidate();
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.record_project_search_error(&error);
                 context.invalidate();
             }
         }
@@ -3075,9 +3388,9 @@ pub mod native_validation {
     use alpine_text::{ByteOffset, Selection};
 
     use super::{
-        CONTENT_INSET, DEFAULT_SCALE, FONT_FAMILY, KEY_A, KEY_DOWN, KEY_E, KEY_P, KEY_RETURN,
-        KEY_S, KEY_UP, StudioApp, StudioError, TREE_ROW_HEIGHT, WINDOW_HEIGHT, WINDOW_WIDTH,
-        Workspace, native_file_app,
+        CONTENT_INSET, DEFAULT_SCALE, FONT_FAMILY, KEY_A, KEY_DOWN, KEY_E, KEY_F, KEY_P,
+        KEY_RETURN, KEY_S, KEY_UP, StudioApp, StudioError, TREE_ROW_HEIGHT, WINDOW_HEIGHT,
+        WINDOW_WIDTH, Workspace, native_file_app,
     };
 
     const NATIVE_INPUT_FRAMES: usize = 5;
@@ -3168,9 +3481,59 @@ pub mod native_validation {
         }
     }
 
+    /// Handle-free evidence from the native streaming project-search journey.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct NativeProjectSearchEvidence {
+        keyboard_events: usize,
+        ime_events: usize,
+        worker_wakes: usize,
+        admitted_frames: usize,
+        matched_bytes: usize,
+        released_owner_classes: usize,
+    }
+
+    impl NativeProjectSearchEvidence {
+        /// Returns keyboard events dispatched through the AppKit callback.
+        #[must_use]
+        pub const fn keyboard_events(self) -> usize {
+            self.keyboard_events
+        }
+
+        /// Returns IME events dispatched through the AppKit callback.
+        #[must_use]
+        pub const fn ime_events(self) -> usize {
+            self.ime_events
+        }
+
+        /// Returns wake events used to publish and drain bounded worker work.
+        #[must_use]
+        pub const fn worker_wakes(self) -> usize {
+            self.worker_wakes
+        }
+
+        /// Returns immutable frames admitted across the native journey.
+        #[must_use]
+        pub const fn admitted_frames(self) -> usize {
+            self.admitted_frames
+        }
+
+        /// Returns the exact UTF-8 byte length replaced at the selected match.
+        #[must_use]
+        pub const fn matched_bytes(self) -> usize {
+            self.matched_bytes
+        }
+
+        /// Returns native owner classes observed at zero after drain.
+        #[must_use]
+        pub const fn released_owner_classes(self) -> usize {
+            self.released_owner_classes
+        }
+    }
+
     #[derive(Default)]
     struct NativeFileTreeJourney {
         keyboard: usize,
+        ime: usize,
         pointer: usize,
         wakes: usize,
         frames: usize,
@@ -3181,6 +3544,7 @@ pub mod native_validation {
         fn observe(&mut self, event: &SurfaceEvent, response: &SurfaceResponse) {
             match event {
                 SurfaceEvent::Keyboard { .. } => self.keyboard = self.keyboard.saturating_add(1),
+                SurfaceEvent::Ime { .. } => self.ime = self.ime.saturating_add(1),
                 SurfaceEvent::Pointer { .. } => self.pointer = self.pointer.saturating_add(1),
                 SurfaceEvent::Wake { .. } => self.wakes = self.wakes.saturating_add(1),
                 _ => {}
@@ -3300,6 +3664,33 @@ pub mod native_validation {
         fs::write(&beta, "beta")?;
         fs::write(&gamma, "gamma")?;
         let result = qualify_file_tree_path(&root, &alpha, &beta, &gamma);
+        let cleanup = fs::remove_dir_all(root);
+        match (result, cleanup) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(Box::new(error)),
+            (Ok(evidence), Ok(())) => Ok(evidence),
+        }
+    }
+
+    /// Runs one real AppKit, runtime, and streaming project-search journey.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured workspace, construction, rendering, input, search,
+    /// save, or teardown failure from the production-composed process.
+    pub fn qualify_project_search_process()
+    -> Result<NativeProjectSearchEvidence, Box<dyn std::error::Error>> {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "alpine-studio-native-project-search-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&root)?;
+        let matched = root.join("alpha.rs");
+        let unmatched = root.join("beta.rs");
+        fs::write(&matched, "zero\nneedle alpha\n")?;
+        fs::write(&unmatched, "zero\nother beta\n")?;
+        let result = qualify_project_search_path(&root, &matched);
         let cleanup = fs::remove_dir_all(root);
         match (result, cleanup) {
             (Err(error), _) => Err(error),
@@ -3509,6 +3900,158 @@ pub mod native_validation {
             worker_wakes,
             admitted_frames,
             persisted_bytes: "!beta".len(),
+            released_owner_classes: owner_evidence
+                .active()
+                .iter()
+                .filter(|active| **active == 0)
+                .count(),
+        })
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one process journey preserves surface, worker, search, save, and drain identity"
+    )]
+    fn qualify_project_search_path(
+        root: &Path,
+        matched: &Path,
+    ) -> Result<NativeProjectSearchEvidence, Box<dyn std::error::Error>> {
+        let workspace = Workspace::open_root(root)?;
+        let mut text_system = alpine_text_layout::CoreTextSystem::new();
+        text_system.register_font(FONT_FAMILY, "Menlo-Regular")?;
+        let delegate = StudioApp::from_workspace(text_system, workspace)?;
+        let clear = alpine_core::LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(
+            StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
+                alpine_platform_macos::SurfaceError::DriverUnavailable,
+            )),
+        )?;
+        let viewport = alpine_core::Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(
+            StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
+                alpine_platform_macos::SurfaceError::DriverUnavailable,
+            )),
+        )?;
+        let descriptor = SurfaceDescriptor::new(
+            "Alpine Studio native project search",
+            f64::from(WINDOW_WIDTH),
+            f64::from(WINDOW_HEIGHT),
+            f64::from(DEFAULT_SCALE),
+        )?;
+        let mut application = Application::new(delegate, viewport, clear, WorkerConfig::default())?;
+        let surface = platform_validation::new_surface(&descriptor)?;
+        let initial_frame = application
+            .frame_if_dirty()
+            .ok_or("Studio did not build its initial project-search frame")?;
+        let (scene, clear) = initial_frame.into_parts();
+        let _revision = surface.request_frame(scene, clear)?;
+        surface.show()?;
+        platform_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+        assert_eq!(surface.take_error()?, None);
+
+        let state = Rc::new(RefCell::new(application));
+        let journey = Rc::new(RefCell::new(NativeFileTreeJourney::default()));
+        replay_tree_events(
+            &surface,
+            &state,
+            &journey,
+            &[
+                keyboard_event(700, KEY_F, "f", COMMAND_SHIFT_MODIFIERS),
+                SurfaceEvent::Ime {
+                    timestamp: EventTimestamp::new(701),
+                    event: ImeEvent::Committed("needle".into()),
+                },
+            ],
+        )?;
+        let frames_after_query = journey.borrow().frames;
+        let mut latest_frames = frames_after_query;
+        let mut stable_wakes = 0_usize;
+        let mut published_terminal = false;
+        for timestamp in 702..1_214 {
+            std::thread::sleep(Duration::from_millis(1));
+            replay_tree_events(
+                &surface,
+                &state,
+                &journey,
+                &[SurfaceEvent::Wake {
+                    timestamp: EventTimestamp::new(timestamp),
+                }],
+            )?;
+            let current_frames = journey.borrow().frames;
+            if current_frames > latest_frames {
+                latest_frames = current_frames;
+                stable_wakes = 0;
+            } else if latest_frames >= frames_after_query.saturating_add(2) {
+                stable_wakes = stable_wakes.saturating_add(1);
+            }
+            if stable_wakes == 16 {
+                published_terminal = true;
+                break;
+            }
+        }
+        assert!(published_terminal);
+        let terminal_frames = journey.borrow().frames;
+        replay_tree_events(
+            &surface,
+            &state,
+            &journey,
+            &[SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(1_214),
+            }],
+        )?;
+        assert_eq!(journey.borrow().frames, terminal_frames);
+
+        let before_open = state.borrow().snapshot().document_revision();
+        replay_tree_events(
+            &surface,
+            &state,
+            &journey,
+            &[keyboard_event(
+                1_215,
+                KEY_RETURN,
+                "Enter",
+                Modifiers::default(),
+            )],
+        )?;
+        assert_ne!(state.borrow().snapshot().document_revision(), before_open);
+        replay_tree_events(
+            &surface,
+            &state,
+            &journey,
+            &[
+                SurfaceEvent::Ime {
+                    timestamp: EventTimestamp::new(1_216),
+                    event: ImeEvent::Committed("!".into()),
+                },
+                keyboard_event(1_217, KEY_S, "s", Modifiers::from_bits(Modifiers::COMMAND)),
+            ],
+        )?;
+        assert_eq!(fs::read_to_string(matched)?, "zero\n! alpha\n");
+
+        let observer = surface.observer();
+        assert!(platform_validation::replay_close_with_handler(
+            &surface,
+            event_handler(&state),
+        )?);
+        assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
+        assert!(state.borrow().snapshot().is_shutting_down());
+        let (keyboard_events, ime_events, worker_wakes, admitted_frames) = {
+            let evidence = journey.borrow();
+            (
+                evidence.keyboard,
+                evidence.ime,
+                evidence.wakes,
+                evidence.frames,
+            )
+        };
+        drop(state);
+        let owner_evidence = platform_validation::close_with_owner_evidence(surface)?;
+        assert_eq!(owner_evidence.active(), [0; 9]);
+        assert_eq!(owner_evidence.release_order_violations(), 0);
+        Ok(NativeProjectSearchEvidence {
+            keyboard_events,
+            ime_events,
+            worker_wakes,
+            admitted_frames,
+            matched_bytes: "needle".len(),
             released_owner_classes: owner_evidence
                 .active()
                 .iter()
@@ -3753,6 +4296,10 @@ pub mod native_validation {
 #[cfg(test)]
 #[path = "command_palette_tests.rs"]
 mod command_palette_tests;
+
+#[cfg(test)]
+#[path = "project_search_tests.rs"]
+mod project_search_tests;
 
 #[cfg(test)]
 #[path = "studio_coverage_tests.rs"]
