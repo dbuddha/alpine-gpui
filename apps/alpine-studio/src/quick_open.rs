@@ -1333,25 +1333,29 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn invalid_utf8_and_unreadable_entries_are_omitted() -> Result<(), Box<dyn Error>> {
-        use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt};
+        use std::os::unix::ffi::OsStringExt;
+        #[cfg(not(miri))]
+        use std::os::unix::fs::PermissionsExt;
 
         let root = TestRoot::new()?;
         let invalid = std::ffi::OsString::from_vec(vec![b'b', b'a', b'd', 0xff]);
         let invalid = root.0.join(invalid);
-        #[cfg(target_os = "linux")]
-        fs::write(&invalid, "")?;
-        #[cfg(not(target_os = "linux"))]
         assert_eq!(portable_relative_path(&root.0, &invalid)?, None);
-        let blocked = root.0.join("blocked");
-        fs::create_dir(&blocked)?;
-        fs::write(blocked.join("hidden.rs"), "")?;
-        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000))?;
-        let inventory = inventory(&root.0, QuickOpenLimits::default());
-        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700))?;
-        let inventory = inventory?;
-        assert!(inventory.report.omitted >= 1);
-        assert!(inventory.report.errors >= 1);
-        assert!(inventory.first_error.is_some());
+        #[cfg(all(target_os = "linux", not(miri)))]
+        fs::write(&invalid, "")?;
+        #[cfg(not(miri))]
+        {
+            let blocked = root.0.join("blocked");
+            fs::create_dir(&blocked)?;
+            fs::write(blocked.join("hidden.rs"), "")?;
+            fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000))?;
+            let inventory = inventory(&root.0, QuickOpenLimits::default());
+            fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700))?;
+            let inventory = inventory?;
+            assert!(inventory.report.omitted >= 1);
+            assert!(inventory.report.errors >= 1);
+            assert!(inventory.first_error.is_some());
+        }
         Ok(())
     }
 
