@@ -1491,6 +1491,7 @@ fn split_views_render_focus_and_close_with_bounded_independent_scroll()
     assert_eq!(app.panes.len(), 2);
     assert!(app.command_context().can_close_pane);
     app.scroll_y = 44.0;
+    app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(4));
     let scene = app.try_scene(SceneRevision::new(70), viewport)?;
     let layout = app.panes.layout(region)?;
     let entries: Vec<_> = layout.iter().collect();
@@ -1557,6 +1558,59 @@ fn split_views_render_focus_and_close_with_bounded_independent_scroll()
             .visual_changed
     );
     assert_eq!(app.panes.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn pane_command_pointer_and_projection_failures_are_structured()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app()?;
+    app.last_viewport = viewport()?;
+
+    assert!(!app.focus_next_pane().visual_changed);
+    let failures = app.workspace_failures;
+    assert!(app.close_active_pane().visual_changed);
+    assert_eq!(app.workspace_failures, failures + 1);
+
+    for _ in 0..MAX_PANES - 1 {
+        assert!(app.split_active_pane(SplitAxis::Columns).visual_changed);
+    }
+    let failures = app.workspace_failures;
+    app.split_active_pane(SplitAxis::Columns);
+    assert_eq!(app.workspace_failures, failures + 1);
+
+    app.scroll_y = f32::NAN;
+    let failures = app.workspace_failures;
+    app.focus_next_pane();
+    assert_eq!(app.workspace_failures, failures + 1);
+    let point = app.editor_region(app.last_viewport)?.origin();
+    app.handle_pointer(
+        PointerAction::Down,
+        point,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert_eq!(app.workspace_failures, failures + 2);
+
+    let mut projection = test_app()?;
+    let viewport = viewport()?;
+    projection.last_viewport = viewport;
+    projection.split_active_pane(SplitAxis::Columns);
+    let layout = projection
+        .panes
+        .layout(projection.editor_region(viewport)?)?;
+    let inactive = layout
+        .iter()
+        .find(|pane| !pane.active)
+        .ok_or("inactive pane")?;
+    projection
+        .panes
+        .inject_scroll_fault(inactive.id, f32::MAX)?;
+    assert!(
+        projection
+            .try_scene(SceneRevision::new(71), viewport)
+            .is_err()
+    );
     Ok(())
 }
 

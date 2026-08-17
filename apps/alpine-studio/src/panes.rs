@@ -137,6 +137,21 @@ impl PaneGrid {
         self.active
     }
 
+    #[cfg(test)]
+    pub(crate) fn inject_scroll_fault(
+        &mut self,
+        id: PaneId,
+        scroll_y: f32,
+    ) -> Result<(), PaneError> {
+        let state = self
+            .states
+            .iter_mut()
+            .find(|state| state.occupied && state.id == id)
+            .ok_or(PaneError::InconsistentState)?;
+        state.scroll_y = scroll_y;
+        Ok(())
+    }
+
     pub(crate) fn sync_active(&mut self, scroll_y: f32) -> Result<(), PaneError> {
         if !scroll_y.is_finite() || scroll_y < 0.0 {
             return Err(PaneError::InvalidGeometry);
@@ -188,13 +203,9 @@ impl PaneGrid {
             .active()
             .ok_or(PaneError::InconsistentState)?;
         let _ = split_bounds(active_geometry.bounds, axis)?;
-        let active_node = self
+        let (active_node, old_state) = self
             .leaf_node(self.active)
             .ok_or(PaneError::InconsistentState)?;
-        let old_state = match self.nodes[active_node] {
-            Node::Leaf { state } => state,
-            Node::Empty | Node::Split { .. } => return Err(PaneError::InconsistentState),
-        };
         let mut vacant_nodes = self
             .nodes
             .iter()
@@ -268,7 +279,7 @@ impl PaneGrid {
             return Err(PaneError::LastPane);
         }
         self.sync_active(active_scroll)?;
-        let active_node = self
+        let (active_node, removed_state) = self
             .leaf_node(self.active)
             .ok_or(PaneError::InconsistentState)?;
         let (parent, sibling) = self
@@ -285,10 +296,7 @@ impl PaneGrid {
                 Node::Empty | Node::Leaf { .. } | Node::Split { .. } => None,
             })
             .ok_or(PaneError::InconsistentState)?;
-        let removed_state = match self.nodes[active_node] {
-            Node::Leaf { state } => usize::from(state),
-            Node::Empty | Node::Split { .. } => return Err(PaneError::InconsistentState),
-        };
+        let removed_state = usize::from(removed_state);
         let promoted = self.nodes[sibling];
         if promoted == Node::Empty {
             return Err(PaneError::InconsistentState);
@@ -335,13 +343,13 @@ impl PaneGrid {
         Ok(Some(scroll_y))
     }
 
-    fn leaf_node(&self, id: PaneId) -> Option<usize> {
+    fn leaf_node(&self, id: PaneId) -> Option<(usize, u8)> {
         self.nodes.iter().enumerate().find_map(|(index, node)| {
-            let Node::Leaf { state } = *node else {
+            let Node::Leaf { state: state_index } = *node else {
                 return None;
             };
-            let state = self.states.get(usize::from(state))?;
-            (state.occupied && state.id == id).then_some(index)
+            let state = self.states.get(usize::from(state_index))?;
+            (state.occupied && state.id == id).then_some((index, state_index))
         })
     }
 
@@ -607,6 +615,60 @@ mod tests {
             assert_eq!(panes.active_id(), created);
             previous = created;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn corrupted_topologies_fail_closed_without_partial_mutation() -> Result<(), Box<dyn Error>> {
+        let bounds = bounds(1_200.0, 900.0)?;
+
+        let mut nested = PaneGrid::new(0.0);
+        nested.split(SplitAxis::Columns, 0.0, bounds)?;
+        nested.split(SplitAxis::Rows, 1.0, bounds)?;
+        assert_eq!(nested.close_active(2.0)?.to_bits(), 1.0_f32.to_bits());
+
+        let mut missing_sibling = PaneGrid::new(0.0);
+        missing_sibling.split(SplitAxis::Columns, 0.0, bounds)?;
+        missing_sibling.nodes[1] = Node::Empty;
+        assert_eq!(
+            missing_sibling.close_active(0.0),
+            Err(PaneError::InconsistentState)
+        );
+        assert_eq!(missing_sibling.pane_count, 2);
+
+        let mut wrong_count = PaneGrid::new(0.0);
+        wrong_count.pane_count = 2;
+        assert_eq!(
+            wrong_count.layout(bounds),
+            Err(PaneError::InconsistentState)
+        );
+
+        let mut empty = PaneGrid::new(0.0);
+        empty.nodes[0] = Node::Empty;
+        assert_eq!(empty.first_leaf_id(0), Err(PaneError::InconsistentState));
+        let mut layout = PaneLayout {
+            entries: [None; MAX_PANES],
+            len: 0,
+        };
+        assert_eq!(
+            empty.layout_node(0, bounds, &mut layout),
+            Err(PaneError::InconsistentState)
+        );
+
+        let valid = PaneGrid::new(0.0);
+        layout.len = MAX_PANES;
+        assert_eq!(
+            valid.layout_node(0, bounds, &mut layout),
+            Err(PaneError::InconsistentState)
+        );
+
+        let mut cycle = PaneGrid::new(0.0);
+        cycle.nodes[0] = Node::Split {
+            axis: SplitAxis::Columns,
+            first: 0,
+            second: 0,
+        };
+        assert_eq!(cycle.first_leaf_id(0), Err(PaneError::InconsistentState));
         Ok(())
     }
 }
