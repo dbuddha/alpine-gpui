@@ -13,6 +13,7 @@ measurement rules so implementation does not depend on chat history.
 | [Alpine Studio daily-driver path](../use-cases/alpine-studio-highfidelity.md) | Accepted product boundary and gate sequence | [Capability #28](https://github.com/dbuddha/alpine-gpui/issues/28) |
 | [Comparator protocol v1](../quality/comparator-protocol.md) | Correctness admission, stage separation, identities, sampling, memory, and claim grammar | [Research #115](https://github.com/dbuddha/alpine-gpui/issues/115) |
 | Research retention requirement | Queryable evidence and deterministic CI audit | [Requirement #132](https://github.com/dbuddha/alpine-gpui/issues/132) |
+| [GitHub Wiki mirror policy](../wiki/README.md) | Revision-pinned, one-way retrieval mirror with mdBook as canonical authority | [Decision #174](https://github.com/dbuddha/alpine-gpui/issues/174), [Task #175](https://github.com/dbuddha/alpine-gpui/issues/175) |
 
 ## Comparative case studies
 
@@ -21,6 +22,7 @@ measurement rules so implementation does not depend on chat history.
 | [Zed stable application](../case-studies/zed-editor.md) | Product architecture, editor behavior, useful patterns, and excluded collaborative weight | [Research #113](https://github.com/dbuddha/alpine-gpui/issues/113) |
 | [Zed GPUI and macOS renderer](../case-studies/zed-gpui.md) | Invalidation, render phases, scene organization, batching, caches, atlas ownership, and Metal scheduling | [Research #113](https://github.com/dbuddha/alpine-gpui/issues/113) |
 | [Sublime Text local-speed model](../case-studies/sublime-editor.md) | Official public facts, Alpine inferences, and explicitly unknown proprietary internals | [Research #114](https://github.com/dbuddha/alpine-gpui/issues/114) |
+| [WGPU](../case-studies/wgpu.md) | Portable GPU lessons, differential-oracle opportunity, and explicit non-shipping v1 boundary | [Capability #28](https://github.com/dbuddha/alpine-gpui/issues/28) |
 
 ## Qualification records
 
@@ -32,11 +34,16 @@ measurement rules so implementation does not depend on chat history.
   this narrow catalog and its deterministic retention audit.
 - [Decision #120](https://github.com/dbuddha/alpine-gpui/issues/120) authorizes
   the bounded asynchronous presentation design derived from the research.
+- [Decision #174](https://github.com/dbuddha/alpine-gpui/issues/174) and
+  [Task #175](https://github.com/dbuddha/alpine-gpui/issues/175) own the
+  mdBook-canonical GitHub Wiki retrieval mirror.
 
 ## Retrieval rules
 
 - Start here for accepted research, then follow the linked GitHub issue for
   current state and implementation tasks.
+- Treat repository docs and mdBook as authoritative. Wiki pages are generated
+  retrieval mirrors and may not contain unique evidence or decisions.
 - Treat immutable revision links and official product sources as evidence.
 - Treat Alpine design conclusions as inferences unless implementation evidence
   proves them.
