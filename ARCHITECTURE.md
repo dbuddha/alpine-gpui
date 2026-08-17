@@ -86,6 +86,17 @@ opens it. Invalid UTF-8, replacement, directory, escape, and dirty-document
 failures preserve the current document and paint local status. File replacement
 advances a Studio-owned monotonic document identity before runtime publication.
 
+Studio also owns one bounded in-file find and replacement surface. Query and
+replacement fields retain at most 4 KiB each. A literal background scan clones
+the immutable buffer snapshot but materializes at most 16 MiB of UTF-8 text,
+then retains at most 16,384 non-overlapping ranges or 256 KiB of exact metadata.
+Document, buffer, and query-generation identity gate completion publication;
+stale work cannot select or replace text. Frames project only visible matches
+with a separate 2,048-range ceiling. Replace-all is one checked transaction,
+refuses truncated results and more than 16 MiB of changed transaction bytes,
+and adds no dependency, timer, polling loop, native handle, regex engine, or
+startup work.
+
 The native event handler returns one bounded `SurfaceResponse`. AppKit
 Command-C and Command-X writes complete through a typed later event, allowing
 Studio to defer cut mutation until native success. Command-V checks the native

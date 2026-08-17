@@ -6,6 +6,7 @@
 //! Local-only Alpine Studio editor boundary.
 
 mod documents;
+mod find;
 mod workspace;
 
 pub use workspace::WorkspaceError;
@@ -39,6 +40,10 @@ use alpine_text_layout::{
     PositiveFinite, TextShaper, VisibleLines,
 };
 use documents::{DocumentTabError, DocumentTabLimits, DocumentTabs, DocumentViewState};
+use find::{
+    FindAdmission, FindError, FindNavigation, FindRequest, FindState, FindWorkerOutput,
+    MAX_REPLACEMENT_TRANSACTION_BYTES,
+};
 use workspace::Workspace;
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
@@ -64,10 +69,14 @@ const TREE_OVERSCAN_ROWS: usize = 3;
 const TAB_BAR_HEIGHT: f32 = 24.0;
 const TAB_WIDTH: f32 = 160.0;
 const TAB_OVERSCAN: usize = 2;
+const FIND_BAR_WIDTH: f32 = 420.0;
+const FIND_BAR_HEIGHT: f32 = 30.0;
+const FIND_BAR_INSET: f32 = 8.0;
 const INITIAL_TEXT: &str = "fn main() {\n    println!(\"Alpine Studio\");\n}\n\n// Local, direct, and deliberately small.\n";
 
 const KEY_A: u16 = 0;
 const KEY_S: u16 = 1;
+const KEY_F: u16 = 3;
 const KEY_Z: u16 = 6;
 const KEY_W: u16 = 13;
 const KEY_RIGHT_BRACKET: u16 = 30;
@@ -377,6 +386,7 @@ impl StudioTransition {
 #[derive(Debug)]
 enum StudioRenderError {
     Domain,
+    Find(FindError),
     Text(TextError),
     Layout(LayoutError),
     Scene(SceneError),
@@ -385,6 +395,12 @@ enum StudioRenderError {
 impl From<TextError> for StudioRenderError {
     fn from(error: TextError) -> Self {
         Self::Text(error)
+    }
+}
+
+impl From<FindError> for StudioRenderError {
+    fn from(error: FindError) -> Self {
+        Self::Find(error)
     }
 }
 
@@ -404,6 +420,7 @@ impl fmt::Display for StudioRenderError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Domain => formatter.write_str("invalid Studio render domain value"),
+            Self::Find(error) => write!(formatter, "find rendering failed: {error}"),
             Self::Text(error) => write!(formatter, "text layout input failed: {error}"),
             Self::Layout(error) => write!(formatter, "visible layout failed: {error}"),
             Self::Scene(error) => write!(formatter, "scene construction failed: {error}"),
@@ -530,6 +547,8 @@ struct StudioApp {
     last_workspace_error: Option<Arc<str>>,
     pending_cut: Option<PendingCut>,
     local_status: Option<LocalStatus>,
+    find: FindState,
+    find_needs_search: bool,
 }
 
 impl StudioApp {
@@ -626,6 +645,8 @@ impl StudioApp {
             last_workspace_error: None,
             pending_cut: None,
             local_status: None,
+            find: FindState::default(),
+            find_needs_search: false,
         })
     }
 
@@ -727,6 +748,10 @@ impl StudioApp {
             LinearRgba::new(0.025, 0.028, 0.032, 1.0).ok_or(StudioRenderError::Domain)?;
         let active_tab_color =
             LinearRgba::new(0.095, 0.105, 0.115, 1.0).ok_or(StudioRenderError::Domain)?;
+        let find_match_color =
+            LinearRgba::new(0.62, 0.45, 0.08, 0.38).ok_or(StudioRenderError::Domain)?;
+        let find_background_color =
+            LinearRgba::new(0.08, 0.09, 0.10, 0.98).ok_or(StudioRenderError::Domain)?;
 
         let mut builder = SceneBuilder::new(revision, viewport);
         builder.push_quad(Quad::new(Rect::new(origin, viewport), background))?;
@@ -806,6 +831,24 @@ impl StudioApp {
             let layout = layout_result?;
             let top = CONTENT_INSET + usize_as_f32(line) * LINE_HEIGHT - self.scroll_y;
             let baseline = top + layout.ascent();
+            let line_range = snapshot.line_byte_range(line)?;
+            for found in self.find.visible_ranges(
+                self.runtime_document_revision,
+                snapshot.revision().get(),
+                line_range,
+            ) {
+                Self::paint_selection(
+                    &mut builder,
+                    clip,
+                    &snapshot,
+                    line,
+                    top,
+                    &layout,
+                    found.clone(),
+                    find_match_color,
+                    editor_origin_x,
+                )?;
+            }
             if !selected.is_empty() {
                 let selection_result = Self::paint_selection(
                     &mut builder,
@@ -872,6 +915,24 @@ impl StudioApp {
         if let Some(bounds) = status_background {
             builder.push_quad(Quad::new(bounds, status_background_color).clipped(clip))?;
         }
+        if self.find.is_open() {
+            let width = FIND_BAR_WIDTH.min(content_size.width());
+            let left = (viewport.width() - CONTENT_INSET - width).max(sidebar_width);
+            let overlay_origin = Point::new(left, TAB_BAR_HEIGHT + FIND_BAR_INSET)
+                .ok_or(StudioRenderError::Domain)?;
+            let overlay_size =
+                Size::new(width.max(1.0), FIND_BAR_HEIGHT).ok_or(StudioRenderError::Domain)?;
+            let overlay_bounds = Rect::new(overlay_origin, overlay_size);
+            let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
+            builder.push_quad(Quad::new(overlay_bounds, find_background_color))?;
+            let display = self.find.display_text()?;
+            let layout = self.text_system.shape(&display, font)?;
+            let origin_x = left + FIND_BAR_INSET;
+            let baseline = overlay_origin.y() + layout.ascent() + 6.0;
+            let overlay_glyphs =
+                self.collect_glyphs(&layout, font, origin_x, baseline, overlay_clip)?;
+            pending_glyphs.extend(overlay_glyphs);
+        }
         builder.push_quad(Quad::new(tab_bounds, tab_background).clipped(tab_clip))?;
         if tab_labels
             .iter()
@@ -904,6 +965,7 @@ impl StudioApp {
             builder.push_quad(Quad::new(bounds, caret_color).clipped(clip))?;
         }
         if self.focused
+            && !self.find.is_open()
             && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_origin_x)?
         {
             builder.push_quad(Quad::new(caret, caret_color).clipped(clip))?;
@@ -1051,6 +1113,9 @@ impl StudioApp {
     }
 
     fn handle_event_with_response(&mut self, event: &SurfaceEvent) -> StudioTransition {
+        if self.find.is_open() && studio_clipboard_shortcut(event).is_some() {
+            return StudioTransition::default();
+        }
         if let Some(operation) = studio_clipboard_shortcut(event) {
             if operation == ClipboardOperation::Paste {
                 return StudioTransition::default();
@@ -1274,6 +1339,15 @@ impl StudioApp {
     fn handle_key(&mut self, physical_key: u16, modifiers: Modifiers) -> EventEffect {
         let command = modifiers.contains(Modifiers::COMMAND);
         let shift = modifiers.contains(Modifiers::SHIFT);
+        let option = modifiers.contains(Modifiers::OPTION);
+        if command && physical_key == KEY_F {
+            let changed = self.find.open(option);
+            self.find_needs_search |= !self.find.query().is_empty();
+            return changed.then(EventEffect::visual).unwrap_or_default();
+        }
+        if self.find.is_open() {
+            return self.handle_find_key(physical_key, command, option, shift);
+        }
         if command && physical_key == KEY_A {
             return self.set_selection(Selection::new(
                 ByteOffset::new(0),
@@ -1312,6 +1386,9 @@ impl StudioApp {
     }
 
     fn handle_ime(&mut self, event: &ImeEvent) -> EventEffect {
+        if self.find.is_open() {
+            return self.handle_find_ime(event);
+        }
         match event {
             ImeEvent::Started => {
                 self.composition = Some(Composition {
@@ -1354,6 +1431,224 @@ impl StudioApp {
             }
             ImeEvent::Cancelled => self.cancel_composition(),
         }
+    }
+
+    fn handle_find_key(
+        &mut self,
+        physical_key: u16,
+        command: bool,
+        option: bool,
+        shift: bool,
+    ) -> EventEffect {
+        match physical_key {
+            KEY_ESCAPE => self
+                .find
+                .close()
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_TAB if !command => self
+                .find
+                .toggle_field()
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_DELETE_BACKWARD if !command => match self.find.delete_backward() {
+                Ok(changed_query) => {
+                    self.find_needs_search |= changed_query;
+                    EventEffect::visual()
+                }
+                Err(error) => self.record_find_error(&error),
+            },
+            KEY_RETURN if command && option => self.replace_all_find_matches(),
+            KEY_RETURN if command => self.replace_current_find_match(),
+            KEY_RETURN => self.navigate_find(!shift),
+            _ => EventEffect::default(),
+        }
+    }
+
+    fn handle_find_ime(&mut self, event: &ImeEvent) -> EventEffect {
+        let result = match event {
+            ImeEvent::Started => {
+                return self
+                    .find
+                    .begin_composition()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
+            ImeEvent::Updated {
+                text,
+                selected_start_utf16,
+                selected_length_utf16,
+            } => {
+                let selected_end = selected_start_utf16.checked_add(*selected_length_utf16);
+                let units = u32::try_from(text.encode_utf16().count()).ok();
+                if selected_end.is_none_or(|end| units.is_none_or(|units| end > units)) {
+                    self.input_failures = self.input_failures.saturating_add(1);
+                    return EventEffect::default();
+                }
+                self.find.update_composition(text)
+            }
+            ImeEvent::Committed(text) => self.find.commit_text(text),
+            ImeEvent::Cancelled => {
+                return self
+                    .find
+                    .cancel_composition()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
+        };
+        match result {
+            Ok(changed_query) => {
+                self.find_needs_search |= changed_query;
+                EventEffect::visual()
+            }
+            Err(error) => self.record_find_error(&error),
+        }
+    }
+
+    fn record_find_error(&mut self, error: &FindError) -> EventEffect {
+        self.find.record_error(error);
+        EventEffect::visual()
+    }
+
+    fn navigate_find(&mut self, forward: bool) -> EventEffect {
+        let Some(navigation) = self.find.navigate(forward) else {
+            return EventEffect::default();
+        };
+        self.apply_find_navigation(navigation)
+    }
+
+    fn apply_find_navigation(&mut self, navigation: FindNavigation) -> EventEffect {
+        let Some(range) = self
+            .find
+            .result()
+            .and_then(|result| result.range(navigation.index()))
+        else {
+            return EventEffect::default();
+        };
+        let _wrapped = navigation.wrapped();
+        self.select_find_range(range)
+    }
+
+    fn select_find_range(&mut self, range: Range<usize>) -> EventEffect {
+        self.selection = Selection::new(ByteOffset::new(range.start), ByteOffset::new(range.end));
+        self.composition = None;
+        let snapshot = self.buffer().snapshot();
+        if let Ok(Some(line)) = Self::line_for_offset(&snapshot, range.start) {
+            let top = usize_as_f32(line) * LINE_HEIGHT;
+            let height = (self.last_viewport.height() - CONTENT_INSET * 2.0).max(LINE_HEIGHT);
+            if matches!(top.total_cmp(&self.scroll_y), std::cmp::Ordering::Less) {
+                self.scroll_y = top;
+            } else if matches!(
+                (top + LINE_HEIGHT).total_cmp(&(self.scroll_y + height)),
+                std::cmp::Ordering::Greater
+            ) {
+                self.scroll_y = (top + LINE_HEIGHT - height).max(0.0);
+            }
+            self.clamp_scroll();
+        }
+        EventEffect::visual()
+    }
+
+    fn replace_current_find_match(&mut self) -> EventEffect {
+        let buffer_revision = self.buffer().revision().get();
+        let Some(range) = self
+            .find
+            .active_range(self.runtime_document_revision, buffer_revision)
+        else {
+            return self.record_find_error(&FindError::IncompleteResult);
+        };
+        let replacement = self.find.replacement().to_owned();
+        self.replace_range(range, &replacement)
+    }
+
+    fn replace_all_find_matches(&mut self) -> EventEffect {
+        let buffer_revision = self.buffer().revision().get();
+        let Some(ranges) = self
+            .find
+            .all_ranges(self.runtime_document_revision, buffer_revision)
+        else {
+            return self.record_find_error(&FindError::IncompleteResult);
+        };
+        if ranges.is_empty() {
+            return EventEffect::default();
+        }
+        let replacement = self.find.replacement();
+        let mut transaction_bytes: usize = 0;
+        for range in ranges {
+            transaction_bytes =
+                transaction_bytes.saturating_add(range.len().saturating_add(replacement.len()));
+        }
+        if transaction_bytes > MAX_REPLACEMENT_TRANSACTION_BYTES {
+            return self.record_find_error(&FindError::ReplacementBudgetExceeded {
+                actual: transaction_bytes,
+                limit: MAX_REPLACEMENT_TRANSACTION_BYTES,
+            });
+        }
+        let first_start = ranges[0].start;
+        let Some(next_offset) = first_start.checked_add(replacement.len()) else {
+            return self.record_find_error(&FindError::OffsetOverflow);
+        };
+        let mut transaction = Transaction::new(self.buffer().revision());
+        for range in ranges {
+            if transaction.replace(range.clone(), replacement).is_err() {
+                return self.record_find_error(&FindError::OffsetOverflow);
+            }
+        }
+        transaction.set_selections(SelectionSet::caret(ByteOffset::new(next_offset)));
+        if self.buffer_mut().apply(transaction).is_ok() {
+            self.selection = Selection::caret(ByteOffset::new(next_offset));
+            self.composition = None;
+            EventEffect::document()
+        } else {
+            self.input_failures = self.input_failures.saturating_add(1);
+            EventEffect::default()
+        }
+    }
+
+    fn prepare_find_request(&mut self) -> Result<Option<FindRequest>, FindError> {
+        if !self.find_needs_search {
+            return Ok(None);
+        }
+        self.find_needs_search = false;
+        self.find
+            .request(self.runtime_document_revision, self.buffer().snapshot())
+    }
+
+    fn update_find_after_document_change(&mut self) -> EventEffect {
+        match self.find.document_changed() {
+            Ok(needs_search) => {
+                self.find_needs_search |= needs_search;
+                EventEffect::default()
+            }
+            Err(error) => self.record_find_error(&error),
+        }
+    }
+
+    fn apply_find_output(&mut self, output: FindWorkerOutput) -> EventEffect {
+        let admission = self.find.admit(
+            output,
+            self.runtime_document_revision,
+            self.buffer().revision().get(),
+        );
+        match admission {
+            FindAdmission::Accepted => {
+                let range = self.find.active_range(
+                    self.runtime_document_revision,
+                    self.buffer().revision().get(),
+                );
+                range.map_or_else(EventEffect::visual, |range| self.select_find_range(range))
+            }
+            FindAdmission::Failed => EventEffect::visual(),
+            FindAdmission::Stale => EventEffect::default(),
+        }
+    }
+
+    #[cfg(test)]
+    fn complete_pending_find_for_test(&mut self) -> Result<EventEffect, FindError> {
+        let Some(request) = self.prepare_find_request()? else {
+            return Ok(EventEffect::default());
+        };
+        Ok(self.apply_find_output(request.execute()))
     }
 
     fn cancel_composition(&mut self) -> EventEffect {
@@ -1724,6 +2019,8 @@ impl StudioApp {
         self.last_file_error = None;
         self.last_workspace_error = None;
         self.local_status = None;
+        self.find.close();
+        self.find_needs_search = false;
         self.ensure_active_tab_visible();
     }
 
@@ -1858,9 +2155,9 @@ impl StudioApp {
 }
 
 impl AppDelegate for StudioApp {
-    type WorkerOutput = u64;
+    type WorkerOutput = FindWorkerOutput;
 
-    fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, u64>) {
+    fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, FindWorkerOutput>) {
         let StudioTransition {
             mut effect,
             clipboard_write,
@@ -1876,12 +2173,44 @@ impl AppDelegate for StudioApp {
             self.resolve_close_admission(true, admitted);
         }
         if effect.document_changed {
+            if effect.document_identity_advanced {
+                self.find.close();
+                self.find_needs_search = false;
+            } else {
+                effect = effect.merge(self.update_find_after_document_change());
+            }
             self.advance_runtime_document_identity(effect.document_identity_advanced);
             let revision = DocumentRevision::new(self.runtime_document_revision);
             let rejected = !context.advance_document(revision);
             self.input_failures = self.input_failures.saturating_add(u64::from(rejected));
         }
         if effect.visual_changed {
+            context.invalidate();
+        }
+        match self.prepare_find_request() {
+            Ok(Some(request)) => {
+                let identity = request.identity();
+                if context.spawn(move || request.execute()).is_err()
+                    && self.find.reject_submission(identity)
+                {
+                    context.invalidate();
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.find.record_error(&error);
+                context.invalidate();
+            }
+        }
+    }
+
+    fn worker_result(
+        &mut self,
+        _token: alpine_runtime::WorkToken,
+        result: FindWorkerOutput,
+        context: &mut AppContext<'_, FindWorkerOutput>,
+    ) {
+        if self.apply_find_output(result).visual_changed {
             context.invalidate();
         }
     }

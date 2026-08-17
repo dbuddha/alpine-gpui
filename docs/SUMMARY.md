@@ -35,3 +35,4 @@
   - [AEP 0141: Bounded text layout and monochrome glyph atlas](aep/0141-bounded-text-layout-atlas.md)
   - [AEP 0153: Bounded clipboard and close responses](aep/0153-bounded-clipboard-close-response.md)
   - [AEP 0160: Bounded local workspace foundation](aep/0160-bounded-local-workspace-foundation.md)
+  - [AEP 0165: Bounded in-file find and replace](aep/0165-bounded-in-file-find.md)
