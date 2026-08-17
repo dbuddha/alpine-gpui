@@ -40,3 +40,4 @@
   - [AEP 0168: Bounded lazy workspace inventory and quick open](aep/0168-bounded-lazy-workspace-inventory.md)
   - [AEP 0171: Lazy bounded workspace file tree](aep/0171-lazy-bounded-workspace-file-tree.md)
   - [AEP 0177: Bounded static command palette](aep/0177-bounded-static-command-palette.md)
+  - [AEP 0180: Bounded streaming local project search](aep/0180-bounded-streaming-project-search.md)

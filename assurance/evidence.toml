@@ -3906,3 +3906,183 @@ bounds = ["32 commands", "256 query bytes", "one current selection"]
 assumptions = ["Studio derives availability from current main-thread state."]
 exclusions = ["native event delivery", "filesystem effects", "render timing"]
 companion = "formal/tla/aep-0177/CommandPalette.tla#ClosedOwnsNoSelection"
+
+[[claims]]
+id = "AEP-0180-C01"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0180-bounded-streaming-project-search.md"
+requirement_issue = 32
+claim_type = "memory"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit", "benchmark"]
+
+[[claims]]
+id = "AEP-0180-C02"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0180-bounded-streaming-project-search.md"
+requirement_issue = 32
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0180-C03"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0180-bounded-streaming-project-search.md"
+requirement_issue = 32
+claim_type = "lifecycle"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["PublishedIsCurrent", "ResultsAreBounded", "ClosedOwnsNoResults"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit", "property"]
+
+[[claims]]
+id = "AEP-0180-C04"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0180-bounded-streaming-project-search.md"
+requirement_issue = 32
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["SelectionIsCurrent"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "unit", "native"]
+
+[[evidence]]
+id = "EV-0180-UNIT01"
+claim = "AEP-0180-C01"
+kind = "unit"
+artifact = "apps/alpine-studio/src/project_search.rs#search_is_lazy_streaming_bounded_and_releases_every_dynamic_byte"
+assertion = "Search owns no startup work, publishes multiple bounded batches, preserves every inventory, read, result, excerpt, visible-row, and diagnostics ceiling, classifies malformed files, and releases foreground dynamic bytes on close."
+scope = "Private Studio project-search inventory, scan continuation, result projection, and release state."
+bounds = ["250,000 inspected entries", "100,000 files", "16 MiB inventory", "16 MiB per file", "512 MiB per query", "16,384 matches", "4 MiB results", "256 matches and 256 KiB per batch"]
+assumptions = ["The allocator honors successful Rust allocation contracts.", "The filesystem reports regular-file metadata consistently during one read."]
+exclusions = ["allocator physical footprint", "filesystem latency", "fixed-hardware threshold"]
+
+[[evidence]]
+id = "EV-0180-UNIT02"
+claim = "AEP-0180-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/project_search_tests.rs#project_search_is_off_startup_streams_and_opens_the_exact_current_match"
+assertion = "The production Studio folder constructor submits no search work before explicit input, then streams two current matches, paints the overlay, opens through existing tabs, and selects the exact query bytes."
+scope = "Portable Studio event, worker-request, scene, tab, document, and selection composition over a local filesystem fixture."
+bounds = ["one explicit search", "two files", "two matches", "one selected tab"]
+assumptions = ["Deterministic test typography stands in for native shaping only."]
+exclusions = ["AppKit event delivery", "fixed-hardware latency", "accessibility API publication"]
+companion = "apps/alpine-studio/src/project_search.rs#search_is_lazy_streaming_bounded_and_releases_every_dynamic_byte"
+
+[[evidence]]
+id = "EV-0180-PROPERTY03"
+claim = "AEP-0180-C03"
+kind = "property"
+artifact = "apps/alpine-studio/src/project_search.rs#randomized_query_cancel_and_publication_sequences_preserve_bounds"
+assertion = "A deterministic 4,096-action query, cancellation, reopening, navigation, publication, and close sequence preserves generation, selection, and every retained-byte ceiling."
+scope = "Private foreground search transitions and typed worker outputs over one finite fixture."
+bounds = ["4,096 actions", "16 retained matches", "two matches per batch"]
+assumptions = ["The deterministic generator samples a finite transition subset."]
+exclusions = ["unbounded traces", "native scheduling", "allocator physical footprint"]
+companion = "formal/tla/aep-0180/ProjectSearchAdmission.tla#PublishedIsCurrent"
+
+[[evidence]]
+id = "EV-0180-UNIT03"
+claim = "AEP-0180-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/project_search.rs#stale_and_cancelled_outputs_never_publish"
+assertion = "A query generation change rejects the prior in-flight batch, close releases current state, and stale output cannot retain or select a match."
+scope = "Inventory, query, request, cancellation, and close identity admission."
+bounds = ["one inventory", "two query generations", "one stale batch"]
+assumptions = ["Worker outputs preserve typed identities."]
+exclusions = ["worker elapsed time", "native wake delivery", "Rust formal refinement"]
+companion = "formal/tla/aep-0180/ProjectSearchAdmission.tla#PublishedIsCurrent"
+
+[[evidence]]
+id = "EV-0180-UNIT04"
+claim = "AEP-0180-C04"
+kind = "unit"
+artifact = "apps/alpine-studio/src/project_search_tests.rs#stale_selected_file_preserves_the_current_document_and_tab_identity"
+assertion = "Replacing a selected file after search fails exact snapshot verification before tab mutation and preserves the active document, tab count, and open search state."
+scope = "Canonical workspace path revalidation, temporary document ownership, exact range verification, and tab admission."
+bounds = ["one selected result", "one post-search replacement", "one preserved active tab"]
+assumptions = ["The local filesystem replacement is visible to the test process."]
+exclusions = ["network filesystems", "native event delivery", "cross-process advisory locking"]
+companion = "formal/tla/aep-0180/ProjectSearchAdmission.tla#SelectionIsCurrent"
+
+[[evidence]]
+id = "EV-0180-NATIVE04"
+claim = "AEP-0180-C04"
+kind = "native"
+artifact = "apps/alpine-studio/src/lib.rs#qualify_project_search_process"
+assertion = "A real Apple Silicon AppKit surface opens project search, commits a query through native IME delivery, wakes bounded workers through terminal publication, opens the exact result by keyboard, presents current frames, closes cleanly, and drains all nine native owner classes."
+scope = "One local folder, one matched file, native keyboard and IME callbacks, bounded worker wakes, direct Metal presentation, and deterministic close."
+bounds = ["512 worker wake attempts", "one selected result", "nine native owner classes"]
+assumptions = ["The Apple Silicon validation host provides AppKit, CoreText, and Metal."]
+exclusions = ["fixed-hardware latency", "multi-window input", "accessibility API publication"]
+companion = "apps/alpine-studio/tests/native_process.rs"
+
+[[evidence]]
+id = "EV-0180-BENCH01"
+claim = "AEP-0180-C01"
+kind = "benchmark"
+artifact = "apps/alpine-studio/src/project_search_tests.rs#project_search_stages_are_separate_bounded_and_diagnostic_only"
+assertion = "Open, inventory and scan work, visible projection, and scene build are timed separately while inventory, result, batch, and visible-row ceilings remain green."
+scope = "One uncontrolled local diagnostic sample over 130 matching files."
+bounds = ["130 files", "130 matches", "18 maximum projected rows", "five-second hang ceiling per stage"]
+assumptions = ["Test timing is diagnostic and runs on an uncontrolled local or hosted machine."]
+exclusions = ["performance claim", "fixed-hardware threshold", "statistical distribution", "cross-product comparison"]
+
+[[evidence]]
+id = "EV-0180-TLA03A"
+claim = "AEP-0180-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0180/ProjectSearchAdmission.tla#PublishedIsCurrent"
+assertion = "Finite match publication is empty or exactly current; the faulty stale-publication control violates the invariant."
+scope = "Finite open, query, pending batch, publication, completion, selection, and close generations."
+bounds = ["pull request: four generations, eight results, two per batch", "nightly: eight generations, sixteen results, four per batch"]
+assumptions = ["Typed worker outcomes", "monotonic finite generations"]
+exclusions = ["Rust refinement", "filesystem I/O", "runtime queue scheduling"]
+companion = "apps/alpine-studio/src/project_search.rs#stale_and_cancelled_outputs_never_publish"
+
+[[evidence]]
+id = "EV-0180-TLA03B"
+claim = "AEP-0180-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0180/ProjectSearchAdmission.tla#ResultsAreBounded"
+assertion = "Finite retained matches never exceed the admitted result ceiling; the faulty overflow control violates the invariant."
+scope = "Finite batch publication and terminal completion."
+bounds = ["pull request: eight results", "nightly: sixteen results"]
+assumptions = ["Each typed batch carries a count no greater than BatchLimit."]
+exclusions = ["byte accounting", "allocation", "Rust refinement"]
+companion = "apps/alpine-studio/src/project_search.rs#search_is_lazy_streaming_bounded_and_releases_every_dynamic_byte"
+
+[[evidence]]
+id = "EV-0180-TLA03C"
+claim = "AEP-0180-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0180/ProjectSearchAdmission.tla#ClosedOwnsNoResults"
+assertion = "Closed finite state owns no retained result or selection generation."
+scope = "Finite open, publication, selection, and close transitions."
+bounds = ["pull request: four generations", "nightly: eight generations"]
+assumptions = ["Close maps to foreground state release."]
+exclusions = ["runtime queue retention", "allocator behavior", "Rust refinement"]
+companion = "apps/alpine-studio/src/project_search.rs#search_is_lazy_streaming_bounded_and_releases_every_dynamic_byte"
+
+[[evidence]]
+id = "EV-0180-TLA04"
+claim = "AEP-0180-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0180/ProjectSearchAdmission.tla#SelectionIsCurrent"
+assertion = "Finite selection is empty or uses the exact current published query generation."
+scope = "Finite current publication and selection admission."
+bounds = ["pull request: four generations", "nightly: eight generations"]
+assumptions = ["Filesystem and buffer revalidation return one typed admission outcome."]
+exclusions = ["path component semantics", "native input", "Rust refinement"]
+companion = "apps/alpine-studio/src/project_search_tests.rs#stale_selected_file_preserves_the_current_document_and_tab_identity"

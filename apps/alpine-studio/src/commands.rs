@@ -21,6 +21,7 @@ pub(crate) enum StudioCommand {
     NavigateBack,
     NavigateForward,
     OpenQuickOpen,
+    OpenProjectSearch,
     OpenFind,
     OpenReplace,
     ToggleFileTree,
@@ -46,7 +47,9 @@ impl CommandContext {
             StudioCommand::CloseTab => self.can_close_tab,
             StudioCommand::NavigateBack => self.can_navigate_back,
             StudioCommand::NavigateForward => self.can_navigate_forward,
-            StudioCommand::OpenQuickOpen | StudioCommand::ToggleFileTree => self.has_workspace,
+            StudioCommand::OpenQuickOpen
+            | StudioCommand::OpenProjectSearch
+            | StudioCommand::ToggleFileTree => self.has_workspace,
             StudioCommand::OpenFind | StudioCommand::OpenReplace => true,
         }
     }
@@ -59,7 +62,7 @@ struct CommandSpec {
     search_terms: &'static str,
 }
 
-const REGISTRY: [CommandSpec; 8] = [
+const REGISTRY: [CommandSpec; 9] = [
     CommandSpec {
         command: StudioCommand::SaveFile,
         title: "File: Save",
@@ -84,6 +87,11 @@ const REGISTRY: [CommandSpec; 8] = [
         command: StudioCommand::OpenQuickOpen,
         title: "Workspace: Quick Open",
         search_terms: "file fuzzy path",
+    },
+    CommandSpec {
+        command: StudioCommand::OpenProjectSearch,
+        title: "Workspace: Project Search",
+        search_terms: "search content folder",
     },
     CommandSpec {
         command: StudioCommand::OpenFind,
@@ -589,7 +597,7 @@ mod tests {
 
     #[test]
     fn locked_registry_query_and_memory_limits_are_exact() -> Result<(), Box<dyn Error>> {
-        assert_eq!(REGISTRY.len(), 8);
+        assert_eq!(REGISTRY.len(), 9);
         assert!(REGISTRY.len() <= MAX_COMMANDS);
         let mut palette = CommandPalette::default();
         assert!(palette.open(all_available())?);
