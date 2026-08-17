@@ -419,6 +419,8 @@ impl Workspace {
         if depth == 0 {
             return Err(WorkspaceError::InvalidRelativePath(relative.to_path_buf()));
         }
+        #[cfg(test)]
+        run_revalidation_hook(&candidate);
         let metadata = fs::symlink_metadata(&candidate)
             .map_err(|source| WorkspaceError::io("revalidate target", &candidate, source))?;
         if metadata.file_type().is_symlink() {
@@ -434,6 +436,8 @@ impl Workspace {
         if final_metadata.file_type().is_symlink() {
             return Err(WorkspaceError::Symlink(candidate));
         }
+        #[cfg(test)]
+        run_revalidation_hook(&candidate);
         let canonical = fs::canonicalize(&candidate)
             .map_err(|source| WorkspaceError::io("canonicalize target", &candidate, source))?;
         if !canonical.starts_with(&self.root) {
@@ -462,9 +466,8 @@ pub(crate) fn set_revalidation_hook(hook: impl FnOnce(&Path) + 'static) {
 
 #[cfg(test)]
 fn run_revalidation_hook(path: &Path) {
-    REVALIDATION_HOOK.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().take() {
-            hook(path);
-        }
-    });
+    let hook = REVALIDATION_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook(path);
+    }
 }

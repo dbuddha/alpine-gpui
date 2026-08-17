@@ -7,7 +7,7 @@ use std::{
     ffi::OsStr,
     fmt,
     mem::size_of,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::Arc,
 };
 
@@ -67,13 +67,9 @@ impl QuickOpenLimits {
             && self.result_bytes >= size_of::<RankedPath>()
     }
 
-    const fn result_capacity(self) -> usize {
+    fn result_capacity(self) -> usize {
         let by_bytes = self.result_bytes / size_of::<RankedPath>();
-        if self.results < by_bytes {
-            self.results
-        } else {
-            by_bytes
-        }
+        self.results.min(by_bytes)
     }
 }
 
@@ -541,11 +537,10 @@ impl QuickOpenState {
             self.selected - 1
         };
         let visible_rows = visible_rows.clamp(1, MAX_VISIBLE_RESULTS);
-        if self.selected < self.first_visible {
-            self.first_visible = self.selected;
-        } else if self.selected >= self.first_visible.saturating_add(visible_rows) {
+        if self.selected >= self.first_visible.saturating_add(visible_rows) {
             self.first_visible = self.selected.saturating_add(1).saturating_sub(visible_rows);
         }
+        self.first_visible = self.first_visible.min(self.selected);
         self.selected != previous
     }
 
@@ -765,11 +760,7 @@ fn build_inventory(
         if !entry.file_type().is_some_and(|kind| kind.is_file()) {
             continue;
         }
-        let Ok(relative) = entry.path().strip_prefix(root) else {
-            omitted = omitted.saturating_add(1);
-            continue;
-        };
-        let Some(relative) = relative.to_str() else {
+        let Some(relative) = portable_relative_path(root, entry.path())? else {
             omitted = omitted.saturating_add(1);
             continue;
         };
@@ -812,6 +803,29 @@ fn build_inventory(
     }))
 }
 
+fn portable_relative_path(root: &Path, path: &Path) -> Result<Option<String>, QuickOpenError> {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return Ok(None);
+    };
+    let mut rendered = String::new();
+    rendered
+        .try_reserve(relative.as_os_str().as_encoded_bytes().len())
+        .map_err(|_| QuickOpenError::AllocationFailed)?;
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Ok(None);
+        };
+        let Some(component) = component.to_str() else {
+            return Ok(None);
+        };
+        if !rendered.is_empty() {
+            rendered.push('/');
+        }
+        rendered.push_str(component);
+    }
+    Ok((!rendered.is_empty()).then_some(rendered))
+}
+
 fn rank_inventory(
     identity: QueryIdentity,
     inventory: &Inventory,
@@ -840,7 +854,10 @@ fn rank_inventory(
         let candidate = HeapEntry(RankedPath { index, score });
         if heap.len() < capacity {
             heap.push(candidate);
-        } else if heap.peek().is_some_and(|worst| candidate < *worst) {
+        } else if heap
+            .peek()
+            .is_some_and(|worst| candidate.cmp(worst).is_lt())
+        {
             let _ = heap.pop();
             heap.push(candidate);
         }
@@ -922,9 +939,7 @@ mod tests {
 
         fn write(&self, relative: &str) -> Result<(), std::io::Error> {
             let path = self.0.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
+            fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
             fs::write(path, "")
         }
     }
@@ -1065,6 +1080,566 @@ mod tests {
         let mut invalid =
             QuickOpenState::with_test_limits(QuickOpenLimits::new(0, 0, 0, 0, 0, 0, 0));
         assert_eq!(invalid.open(1), Err(QuickOpenError::InvalidLimits));
+        Ok(())
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one defensive state corpus proves each independent admission and failure branch"
+    )]
+    fn defensive_state_and_worker_failures_are_structured() -> Result<(), Box<dyn Error>> {
+        for error in [
+            QuickOpenError::NoWorkspace,
+            QuickOpenError::InvalidLimits,
+            QuickOpenError::GenerationExhausted,
+            QuickOpenError::QueryTooLong {
+                actual: MAX_QUERY_BYTES + 1,
+                limit: MAX_QUERY_BYTES,
+            },
+            QuickOpenError::AllocationFailed,
+            QuickOpenError::MissingSelection,
+        ] {
+            assert!(!error.to_string().is_empty());
+            assert!(error.source().is_none());
+        }
+
+        let root = TestRoot::new()?;
+        root.write("alpha.rs")?;
+        root.write("beta.rs")?;
+        let invalid_limits = QuickOpenLimits::new(0, 0, 0, 0, 0, 0, 0);
+        let inventory_identity = InventoryIdentity {
+            workspace: 1,
+            generation: 1,
+        };
+        assert!(matches!(
+            build_inventory(inventory_identity, &root.0, invalid_limits),
+            Err(QuickOpenError::InvalidLimits)
+        ));
+        let empty_inventory = Inventory {
+            generation: 1,
+            paths: Vec::new().into_boxed_slice(),
+            report: InventoryReport {
+                scanned: 0,
+                paths: 0,
+                path_bytes: 0,
+                omitted: 0,
+                errors: 0,
+                truncated: false,
+            },
+            first_error: None,
+        };
+        let query_identity = QueryIdentity {
+            workspace: 1,
+            inventory: 1,
+            query: 1,
+        };
+        assert!(matches!(
+            rank_inventory(query_identity, &empty_inventory, "", invalid_limits),
+            Err(QuickOpenError::InvalidLimits)
+        ));
+        assert!(matches!(
+            rank_inventory(
+                query_identity,
+                &empty_inventory,
+                &"x".repeat(MAX_QUERY_BYTES + 1),
+                QuickOpenLimits::default(),
+            ),
+            Err(QuickOpenError::QueryTooLong { .. })
+        ));
+
+        let mut state = QuickOpenState::default();
+        assert!(!state.close());
+        assert!(!state.delete_backward()?);
+        assert!(!state.commit_text("")?);
+        assert!(!state.navigate(true, 0));
+        assert_eq!(state.selected_path(), Err(QuickOpenError::MissingSelection));
+        assert!(state.visible_results(1, 1).is_empty());
+        assert!(state.open(1)?);
+        assert!(!state.open(1)?);
+        let request = state.take_request(&root.0).ok_or("inventory request")?;
+        let identity = request.identity();
+        assert!(
+            !state.reject_submission(RequestIdentity::Query(QueryIdentity {
+                workspace: 9,
+                inventory: 9,
+                query: 9,
+            }))
+        );
+        assert!(state.reject_submission(identity));
+        let retry = state.take_request(&root.0).ok_or("inventory retry")?;
+        assert_eq!(state.admit(retry.execute()), QuickOpenAdmission::Inventory);
+        let query = state.take_request(&root.0).ok_or("query request")?;
+        let query_identity = query.identity();
+        assert!(state.reject_submission(query_identity));
+        let query = state.take_request(&root.0).ok_or("query retry")?;
+        assert_eq!(state.admit(query.execute()), QuickOpenAdmission::Query);
+        assert_eq!(
+            state.admit(QuickOpenWorkerOutput::Query {
+                identity: QueryIdentity {
+                    workspace: 9,
+                    inventory: 9,
+                    query: 9,
+                },
+                result: Err(QuickOpenError::AllocationFailed),
+            }),
+            QuickOpenAdmission::Stale
+        );
+        assert!(state.navigate(false, 1));
+        assert_eq!(state.selected_path()?.as_ref(), "beta.rs");
+        assert!(state.navigate(false, 1));
+        assert_eq!(state.selected_path()?.as_ref(), "alpha.rs");
+        assert!(state.close());
+        assert!(state.open(1)?);
+        assert!(matches!(
+            state.take_request(&root.0),
+            Some(QuickOpenRequest::Query { .. })
+        ));
+
+        let mut failed_inventory = QuickOpenState::default();
+        assert!(failed_inventory.open(1)?);
+        let request = failed_inventory
+            .take_request(&root.0)
+            .ok_or("failed inventory request")?;
+        assert!(matches!(request.identity(), RequestIdentity::Inventory(_)));
+        let identity = InventoryIdentity {
+            workspace: 1,
+            generation: 1,
+        };
+        assert_eq!(
+            failed_inventory.admit(QuickOpenWorkerOutput::Inventory {
+                identity,
+                result: Err(QuickOpenError::AllocationFailed),
+            }),
+            QuickOpenAdmission::Failed
+        );
+        assert!(
+            failed_inventory
+                .display_text()?
+                .contains("allocation failed")
+        );
+
+        let mut exhausted_query = QuickOpenState::default();
+        assert!(exhausted_query.open(1)?);
+        let request = exhausted_query
+            .take_request(&root.0)
+            .ok_or("exhausted inventory request")?;
+        exhausted_query.query_generation = u64::MAX;
+        assert_eq!(
+            exhausted_query.admit(request.execute()),
+            QuickOpenAdmission::Failed
+        );
+
+        let mut failed_query = QuickOpenState::default();
+        assert!(failed_query.open(1)?);
+        let request = failed_query
+            .take_request(&root.0)
+            .ok_or("query inventory request")?;
+        assert_eq!(
+            failed_query.admit(request.execute()),
+            QuickOpenAdmission::Inventory
+        );
+        let request = failed_query
+            .take_request(&root.0)
+            .ok_or("failed query request")?;
+        assert!(matches!(request.identity(), RequestIdentity::Query(_)));
+        let identity = QueryIdentity {
+            workspace: 1,
+            inventory: 1,
+            query: 1,
+        };
+        assert_eq!(
+            failed_query.admit(QuickOpenWorkerOutput::Query {
+                identity,
+                result: Err(QuickOpenError::AllocationFailed),
+            }),
+            QuickOpenAdmission::Failed
+        );
+
+        assert!(failed_query.take_request(&root.0).is_none());
+        assert!(failed_query.commit_text("x")?);
+        let request = failed_query
+            .take_request(&root.0)
+            .ok_or("query after input change")?;
+        assert!(matches!(request.identity(), RequestIdentity::Query(_)));
+        let identity = QueryIdentity {
+            workspace: 1,
+            inventory: 1,
+            query: 2,
+        };
+        let inventory = Arc::clone(failed_query.inventory.as_ref().ok_or("inventory")?);
+        let wrong_identity = QueryIdentity {
+            query: identity.query.saturating_add(1),
+            ..identity
+        };
+        let result = rank_inventory(wrong_identity, &inventory, "x", QuickOpenLimits::default())?;
+        assert_eq!(
+            failed_query.admit(QuickOpenWorkerOutput::Query {
+                identity,
+                result: Ok(result),
+            }),
+            QuickOpenAdmission::Stale
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn portable_paths_and_scan_caps_are_explicit() -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        root.write("src/main.rs")?;
+        root.write("src/lib.rs")?;
+        assert_eq!(
+            portable_relative_path(&root.0, &root.0.join("src").join("main.rs"))?,
+            Some("src/main.rs".to_owned())
+        );
+        assert_eq!(portable_relative_path(&root.0, &root.0)?, None);
+        assert_eq!(
+            portable_relative_path(&root.0, &root.0.join("src/../src/main.rs"))?,
+            None
+        );
+        assert_eq!(
+            portable_relative_path(&root.0, &std::env::temp_dir().join("outside.rs"))?,
+            None
+        );
+        let limits = QuickOpenLimits::new(1, 8, 128, 1_024, 8, 8, 1_024);
+        let inventory = inventory(&root.0, limits)?;
+        assert_eq!(inventory.report.scanned, 1);
+        assert!(inventory.report.truncated);
+        assert!(inventory.report.omitted >= 1);
+        let ranked_inventory = Inventory {
+            generation: 1,
+            paths: vec![Arc::from("zzzzm.rs"), Arc::from("m.rs")].into_boxed_slice(),
+            report: InventoryReport {
+                scanned: 2,
+                paths: 2,
+                path_bytes: 12,
+                omitted: 0,
+                errors: 0,
+                truncated: false,
+            },
+            first_error: None,
+        };
+        let rank_limits = QuickOpenLimits::new(8, 8, 128, 1_024, 8, 1, 1_024);
+        let identity = QueryIdentity {
+            workspace: 1,
+            inventory: 1,
+            query: 1,
+        };
+        let ranked = rank_inventory(identity, &ranked_inventory, "m", rank_limits)?;
+        assert_eq!(ranked.paths[0].index, 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_utf8_and_unreadable_entries_are_omitted() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt};
+
+        let root = TestRoot::new()?;
+        let invalid = std::ffi::OsString::from_vec(vec![b'b', b'a', b'd', 0xff]);
+        let invalid = root.0.join(invalid);
+        #[cfg(target_os = "linux")]
+        fs::write(&invalid, "")?;
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(portable_relative_path(&root.0, &invalid)?, None);
+        let blocked = root.0.join("blocked");
+        fs::create_dir(&blocked)?;
+        fs::write(blocked.join("hidden.rs"), "")?;
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000))?;
+        let inventory = inventory(&root.0, QuickOpenLimits::default());
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700))?;
+        let inventory = inventory?;
+        assert!(inventory.report.omitted >= 1);
+        assert!(inventory.report.errors >= 1);
+        assert!(inventory.first_error.is_some());
+        Ok(())
+    }
+
+    fn current_inventory_state(identity: InventoryIdentity) -> QuickOpenState {
+        QuickOpenState {
+            open: true,
+            workspace: Some(identity.workspace),
+            inventory_generation: identity.generation,
+            pending_inventory: Some(identity),
+            ..QuickOpenState::default()
+        }
+    }
+
+    fn failed_inventory_output(identity: InventoryIdentity) -> QuickOpenWorkerOutput {
+        QuickOpenWorkerOutput::Inventory {
+            identity,
+            result: Err(QuickOpenError::AllocationFailed),
+        }
+    }
+
+    fn inventory_for_state(generation: u64) -> Arc<Inventory> {
+        Arc::new(Inventory {
+            generation,
+            paths: vec![Arc::from("alpha.rs")].into_boxed_slice(),
+            report: InventoryReport {
+                scanned: 1,
+                paths: 1,
+                path_bytes: 8,
+                omitted: 0,
+                errors: 0,
+                truncated: false,
+            },
+            first_error: None,
+        })
+    }
+
+    fn current_query_state(identity: QueryIdentity) -> QuickOpenState {
+        QuickOpenState {
+            open: true,
+            workspace: Some(identity.workspace),
+            inventory: Some(inventory_for_state(identity.inventory)),
+            query_generation: identity.query,
+            pending_query: Some(identity),
+            ..QuickOpenState::default()
+        }
+    }
+
+    fn failed_query_output(identity: QueryIdentity) -> QuickOpenWorkerOutput {
+        QuickOpenWorkerOutput::Query {
+            identity,
+            result: Err(QuickOpenError::AllocationFailed),
+        }
+    }
+
+    #[test]
+    fn locked_limits_and_capacity_boundaries_are_exact() -> Result<(), Box<dyn Error>> {
+        assert_eq!(MAX_QUERY_BYTES, 4_096);
+        assert_eq!(MAX_SCANNED_ENTRIES, 250_000);
+        assert_eq!(MAX_RETAINED_PATHS, 100_000);
+        assert_eq!(MAX_PATH_BYTES, 4_096);
+        assert_eq!(MAX_RETAINED_PATH_BYTES, 16_777_216);
+        assert_eq!(MAX_DEPTH, 256);
+        assert_eq!(MAX_RESULTS, 1_024);
+        assert_eq!(MAX_RESULT_METADATA_BYTES, 1_048_576);
+        assert_eq!(MAX_VISIBLE_RESULTS, 256);
+
+        let ranked_bytes = size_of::<RankedPath>();
+        let valid = QuickOpenLimits::new(1, 1, 1, 1, 1, 1, ranked_bytes);
+        assert!(valid.is_valid());
+        for invalid in [
+            QuickOpenLimits::new(0, 1, 1, 1, 1, 1, ranked_bytes),
+            QuickOpenLimits::new(1, 0, 1, 1, 1, 1, ranked_bytes),
+            QuickOpenLimits::new(1, 1, 0, 1, 1, 1, ranked_bytes),
+            QuickOpenLimits::new(1, 1, 1, 0, 1, 1, ranked_bytes),
+            QuickOpenLimits::new(1, 1, 1, 1, 0, 1, ranked_bytes),
+            QuickOpenLimits::new(1, 1, 1, 1, 1, 0, ranked_bytes),
+            QuickOpenLimits::new(1, 1, 1, 1, 1, 1, ranked_bytes - 1),
+        ] {
+            assert!(!invalid.is_valid());
+        }
+        assert_eq!(
+            QuickOpenLimits::new(1, 1, 1, 1, 1, 3, 2 * ranked_bytes).result_capacity(),
+            2
+        );
+        assert_eq!(
+            QuickOpenLimits::new(1, 1, 1, 1, 1, 2, 3 * ranked_bytes).result_capacity(),
+            2
+        );
+
+        let mut exact_query = QuickOpenState::default();
+        assert!(exact_query.commit_text(&"x".repeat(MAX_QUERY_BYTES))?);
+        assert_eq!(exact_query.query().len(), MAX_QUERY_BYTES);
+        assert!(exact_query.begin_composition());
+        assert!(!exact_query.update_composition("")?);
+        assert!(exact_query.cancel_composition());
+        assert!(!exact_query.cancel_composition());
+        Ok(())
+    }
+
+    #[test]
+    fn each_admission_identity_guard_is_independent() {
+        let inventory_identity = InventoryIdentity {
+            workspace: 7,
+            generation: 11,
+        };
+        let mut closed_inventory = current_inventory_state(inventory_identity);
+        closed_inventory.open = false;
+        assert_eq!(
+            closed_inventory.admit(failed_inventory_output(inventory_identity)),
+            QuickOpenAdmission::Stale
+        );
+        let mut wrong_workspace = current_inventory_state(inventory_identity);
+        wrong_workspace.workspace = Some(8);
+        assert_eq!(
+            wrong_workspace.admit(failed_inventory_output(inventory_identity)),
+            QuickOpenAdmission::Stale
+        );
+        let mut wrong_generation = current_inventory_state(inventory_identity);
+        wrong_generation.inventory_generation = 12;
+        assert_eq!(
+            wrong_generation.admit(failed_inventory_output(inventory_identity)),
+            QuickOpenAdmission::Stale
+        );
+        let mut no_pending_inventory = current_inventory_state(inventory_identity);
+        no_pending_inventory.pending_inventory = None;
+        assert_eq!(
+            no_pending_inventory.admit(failed_inventory_output(inventory_identity)),
+            QuickOpenAdmission::Stale
+        );
+
+        let query_identity = QueryIdentity {
+            workspace: 7,
+            inventory: 11,
+            query: 13,
+        };
+        let mut closed_query = current_query_state(query_identity);
+        closed_query.open = false;
+        assert_eq!(
+            closed_query.admit(failed_query_output(query_identity)),
+            QuickOpenAdmission::Stale
+        );
+        assert!(closed_query.reject_submission(RequestIdentity::Query(query_identity)));
+        assert!(!closed_query.needs_query);
+        let mut wrong_query_workspace = current_query_state(query_identity);
+        wrong_query_workspace.workspace = Some(8);
+        assert_eq!(
+            wrong_query_workspace.admit(failed_query_output(query_identity)),
+            QuickOpenAdmission::Stale
+        );
+        let mut wrong_inventory = current_query_state(query_identity);
+        wrong_inventory.inventory = Some(inventory_for_state(12));
+        assert_eq!(
+            wrong_inventory.admit(failed_query_output(query_identity)),
+            QuickOpenAdmission::Stale
+        );
+        let mut wrong_query_generation = current_query_state(query_identity);
+        wrong_query_generation.query_generation = 14;
+        assert_eq!(
+            wrong_query_generation.admit(failed_query_output(query_identity)),
+            QuickOpenAdmission::Stale
+        );
+        let mut no_pending_query = current_query_state(query_identity);
+        no_pending_query.pending_query = None;
+        assert_eq!(
+            no_pending_query.admit(failed_query_output(query_identity)),
+            QuickOpenAdmission::Stale
+        );
+    }
+
+    #[test]
+    fn navigation_window_edges_are_exact() {
+        let identity = QueryIdentity {
+            workspace: 1,
+            inventory: 1,
+            query: 1,
+        };
+        let result = || QueryResult {
+            identity,
+            paths: (0..5)
+                .map(|index| RankedPath { index, score: 0 })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            matched: 5,
+            bytes: 5 * size_of::<RankedPath>(),
+            truncated: false,
+        };
+        let mut downward = QuickOpenState {
+            result: Some(result()),
+            selected: 3,
+            first_visible: 3,
+            ..QuickOpenState::default()
+        };
+        assert!(downward.navigate(false, 2));
+        assert_eq!(downward.selected, 2);
+        assert_eq!(downward.first_visible, 2);
+
+        let mut lower_edge = QuickOpenState {
+            result: Some(result()),
+            selected: 1,
+            ..QuickOpenState::default()
+        };
+        assert!(lower_edge.navigate(true, 2));
+        assert_eq!(lower_edge.selected, 2);
+        assert_eq!(lower_edge.first_visible, 1);
+    }
+
+    #[test]
+    fn inventory_limits_are_independent_and_inclusive() -> Result<(), Box<dyn Error>> {
+        let metadata_bytes = 8 * size_of::<RankedPath>();
+
+        let scanned_root = TestRoot::new()?;
+        scanned_root.write("only.rs")?;
+        let scanned = inventory(&scanned_root.0, QuickOpenLimits::default())?;
+        assert_eq!(scanned.report.scanned, 1);
+
+        let exact_path = TestRoot::new()?;
+        exact_path.write("four")?;
+        let path_limits = QuickOpenLimits::new(8, 8, 4, 32, 8, 8, metadata_bytes);
+        let exact = inventory(&exact_path.0, path_limits)?;
+        assert_eq!(exact.paths.len(), 1);
+        assert_eq!(exact.report.path_bytes, 4);
+
+        let long_path = TestRoot::new()?;
+        long_path.write("five5")?;
+        let long = inventory(&long_path.0, path_limits)?;
+        assert!(long.paths.is_empty());
+        assert!(long.report.truncated);
+
+        let path_cap = TestRoot::new()?;
+        path_cap.write("a")?;
+        path_cap.write("b")?;
+        let cap_limits = QuickOpenLimits::new(8, 1, 8, 32, 8, 8, metadata_bytes);
+        let capped = inventory(&path_cap.0, cap_limits)?;
+        assert_eq!(capped.paths.len(), 1);
+        assert!(capped.report.truncated);
+
+        let total_exact = TestRoot::new()?;
+        total_exact.write("aa")?;
+        total_exact.write("bb")?;
+        let exact_total_limits = QuickOpenLimits::new(8, 8, 8, 4, 8, 8, metadata_bytes);
+        let exact_total = inventory(&total_exact.0, exact_total_limits)?;
+        assert_eq!(exact_total.paths.len(), 2);
+        assert_eq!(exact_total.report.path_bytes, 4);
+        let over_total_limits = QuickOpenLimits::new(8, 8, 8, 3, 8, 8, metadata_bytes);
+        let over_total = inventory(&total_exact.0, over_total_limits)?;
+        assert_eq!(over_total.paths.len(), 1);
+        assert!(over_total.report.truncated);
+        Ok(())
+    }
+
+    #[test]
+    fn ranking_boundaries_and_scores_are_exact() -> Result<(), Box<dyn Error>> {
+        let lower = HeapEntry(RankedPath { index: 1, score: 2 });
+        let higher = HeapEntry(RankedPath { index: 2, score: 3 });
+        assert_eq!(lower.partial_cmp(&higher), Some(std::cmp::Ordering::Less));
+        assert_eq!(score_path("src/main.rs", "m")?, Some(11));
+        assert_eq!(score_path("src/main.rs", "sm")?, Some(31));
+        assert_eq!(score_path("src/main.rs", "ma")?, Some(10));
+        assert_eq!(score_path("src/main.rs", "z")?, None);
+
+        let identity = QueryIdentity {
+            workspace: 1,
+            inventory: 1,
+            query: 1,
+        };
+        let paths = vec![Arc::from("alpha.rs"), Arc::from("beta.rs")].into_boxed_slice();
+        let inventory = Inventory {
+            generation: 1,
+            report: InventoryReport {
+                scanned: 2,
+                paths: 2,
+                path_bytes: 15,
+                omitted: 0,
+                errors: 0,
+                truncated: false,
+            },
+            paths,
+            first_error: None,
+        };
+        let limits = QuickOpenLimits::new(8, 8, 32, 64, 8, 2, 2 * size_of::<RankedPath>());
+        let exact = rank_inventory(identity, &inventory, "", limits)?;
+        assert_eq!(exact.matched, 2);
+        assert_eq!(exact.paths.len(), 2);
+        assert!(!exact.truncated);
+        let maximum_query = "x".repeat(MAX_QUERY_BYTES);
+        let maximum = rank_inventory(identity, &inventory, &maximum_query, limits)?;
+        assert_eq!(maximum.matched, 0);
+        assert!(!maximum.truncated);
         Ok(())
     }
 }

@@ -49,7 +49,7 @@ PublishCurrentInventory ==
     /\ pendingQueries' = pendingQueries \cup {queryGeneration + 1}
     /\ publishedQuery' = 0
     /\ selectedQuery' = 0
-    /\ UNCHANGED open
+    /\ UNCHANGED <<open, inventoryGeneration>>
 
 DropStaleInventory ==
     /\ \E generation \in pendingInventories:
@@ -112,8 +112,9 @@ FaultyPublishStale ==
 
 FaultySelectStale ==
     /\ open
-    /\ publishedQuery # queryGeneration
-    /\ selectedQuery' = publishedQuery
+    /\ \E generation \in pendingQueries:
+        /\ generation # queryGeneration
+        /\ selectedQuery' = generation
     /\ UNCHANGED <<open, inventoryGeneration, pendingInventories,
                     publishedInventory, queryGeneration, pendingQueries, publishedQuery>>
 

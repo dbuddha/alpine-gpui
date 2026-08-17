@@ -536,6 +536,20 @@ impl StudioDocument {
     }
 }
 
+#[cfg(test)]
+macro_rules! force_quick_open_submission_failure {
+    ($app:expr) => {
+        $app.force_quick_open_submission_failure.is_some()
+    };
+}
+
+#[cfg(not(test))]
+macro_rules! force_quick_open_submission_failure {
+    ($app:expr) => {
+        false
+    };
+}
+
 struct StudioApp {
     document: StudioDocument,
     tabs: DocumentTabs<StudioDocument>,
@@ -571,6 +585,8 @@ struct StudioApp {
     find: FindState,
     find_needs_search: bool,
     quick_open: QuickOpenState,
+    #[cfg(test)]
+    force_quick_open_submission_failure: Option<()>,
 }
 
 impl StudioApp {
@@ -670,6 +686,8 @@ impl StudioApp {
             find: FindState::default(),
             find_needs_search: false,
             quick_open: QuickOpenState::default(),
+            #[cfg(test)]
+            force_quick_open_submission_failure: None,
         })
     }
 
@@ -990,19 +1008,17 @@ impl StudioApp {
                     let row_origin = Point::new(left, row_top).ok_or(StudioRenderError::Domain)?;
                     let row_size =
                         Size::new(width, QUICK_OPEN_ROW_HEIGHT).ok_or(StudioRenderError::Domain)?;
-                    builder.push_quad(
+                    let selected_quad =
                         Quad::new(Rect::new(row_origin, row_size), quick_open_selected)
-                            .clipped(overlay_clip),
-                    )?;
+                            .clipped(overlay_clip);
+                    builder.push_quad(selected_quad)?;
                 }
                 let layout = self.text_system.shape(path, font)?;
-                pending_glyphs.extend(self.collect_glyphs(
-                    &layout,
-                    font,
-                    left + FIND_BAR_INSET,
-                    row_top + layout.ascent() + 4.0,
-                    overlay_clip,
-                )?);
+                let origin_x = left + FIND_BAR_INSET;
+                let baseline = row_top + layout.ascent() + 4.0;
+                let row_glyphs =
+                    self.collect_glyphs(&layout, font, origin_x, baseline, overlay_clip)?;
+                pending_glyphs.extend(row_glyphs);
             }
         }
         builder.push_quad(Quad::new(tab_bounds, tab_background).clipped(tab_clip))?;
@@ -2452,9 +2468,11 @@ impl StudioApp {
         match self.prepare_quick_open_request() {
             Ok(Some(request)) => {
                 let identity = request.identity();
-                let submission_failed = context
-                    .spawn(move || StudioWorkerOutput::QuickOpen(request.execute()))
-                    .is_err();
+                let force_submission_failure = force_quick_open_submission_failure!(self);
+                let submission_failed = force_submission_failure
+                    || context
+                        .spawn(move || StudioWorkerOutput::QuickOpen(request.execute()))
+                        .is_err();
                 if self.reject_failed_quick_open_submission(identity, submission_failed) {
                     context.invalidate();
                 }
