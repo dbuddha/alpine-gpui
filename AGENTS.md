@@ -115,3 +115,6 @@ rustdoc are current, dependency and provenance policy is satisfied, the PR
 records exact results and remaining risk, `ci-pass` succeeds, and the merged PR
 closes its task. Requirements and capabilities close only when all child work
 and end-to-end acceptance are complete.
+## Repository skills
+- Use github-project-operator for planning state, github-documentation-architect for mdBook, Wiki, or Releases, and github-deep-researcher for consequential research or agent evaluation.
+- Install only repository-owned links with scripts/install-agent-skills.sh; skills never supersede this policy, accepted issues, required checks, or owner-held approvals.
