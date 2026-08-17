@@ -1,6 +1,7 @@
 //! Lazy, bounded local workspace tree state.
 
 use std::{
+    collections::BinaryHeap,
     error::Error,
     ffi::OsStr,
     fmt, fs, io,
@@ -202,12 +203,12 @@ pub(crate) enum FileTreeEntryKind {
     File,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct FileTreeEntry {
+    kind: FileTreeEntryKind,
     path: Arc<str>,
     name_start: u16,
     depth: u16,
-    kind: FileTreeEntryKind,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -889,7 +890,7 @@ fn read_directory(
     } else {
         relative.split('/').count()
     };
-    let mut entries = Vec::new();
+    let mut entries = BinaryHeap::new();
     let mut path_bytes = 0_usize;
     for result in reader {
         if report.scanned == limits.scanned_per_directory {
@@ -934,13 +935,6 @@ fn read_directory(
             report.truncated = true;
             continue;
         }
-        if entries.len() == limits.children_per_directory
-            || path.len() > limits.directory_path_bytes.saturating_sub(path_bytes)
-        {
-            report.omitted = report.omitted.saturating_add(1);
-            report.truncated = true;
-            continue;
-        }
         entries
             .try_reserve(1)
             .map_err(|_| FileTreeError::AllocationFailed)?;
@@ -948,18 +942,29 @@ fn read_directory(
         let name_start = u16::try_from(name_start).map_err(|_| FileTreeError::AllocationFailed)?;
         let entry_depth = u16::try_from(depth).map_err(|_| FileTreeError::AllocationFailed)?;
         path_bytes = path_bytes.saturating_add(path.len());
-        entries.push(FileTreeEntry {
-            path: Arc::from(path),
-            name_start,
-            depth: entry_depth,
-            kind,
-        });
+        entries.push((
+            path.len(),
+            FileTreeEntry {
+                kind,
+                path: Arc::from(path),
+                name_start,
+                depth: entry_depth,
+            },
+        ));
+        if entries.len() > limits.children_per_directory || path_bytes > limits.directory_path_bytes
+        {
+            let omitted = entries.pop().ok_or(FileTreeError::AllocationFailed)?.1;
+            path_bytes = path_bytes.saturating_sub(omitted.path.len());
+            report.omitted = report.omitted.saturating_add(1);
+            report.truncated = true;
+        }
     }
-    entries.sort_unstable_by(|left, right| {
-        left.kind
-            .cmp(&right.kind)
-            .then_with(|| left.path.as_bytes().cmp(right.path.as_bytes()))
-    });
+    let mut entries: Vec<_> = entries
+        .into_vec()
+        .into_iter()
+        .map(|(_, entry)| entry)
+        .collect();
+    entries.sort_unstable();
     entries.shrink_to_fit();
     report.retained = entries.len();
     report.path_bytes = path_bytes;
@@ -1586,6 +1591,36 @@ mod tests {
                 validate_directory(&root.0, "linked-src", MAX_DEPTH),
                 Err(FileTreeError::Symlink(_))
             ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn directory_byte_cap_is_independent_of_enumeration_order() -> Result<(), Box<dyn Error>> {
+        for order in [
+            ["z", "yy", "aaa"],
+            ["z", "aaa", "yy"],
+            ["yy", "z", "aaa"],
+            ["yy", "aaa", "z"],
+            ["aaa", "z", "yy"],
+            ["aaa", "yy", "z"],
+        ] {
+            let root = TestRoot::new()?;
+            for path in order {
+                root.write(path)?;
+            }
+            let limits = FileTreeLimits::new(16, 16, 3, 8, 8, 64, 16, 4, 8);
+            let result = read_directory(&root.0, "", limits)?;
+            let paths: Vec<_> = result
+                .entries
+                .iter()
+                .map(|entry| entry.path.as_ref())
+                .collect();
+            assert_eq!(paths, ["yy", "z"]);
+            assert_eq!(result.report.retained, 2);
+            assert_eq!(result.report.path_bytes, 3);
+            assert_eq!(result.report.omitted, 1);
+            assert!(result.report.truncated);
         }
         Ok(())
     }
