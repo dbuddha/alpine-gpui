@@ -150,6 +150,17 @@ jobs:
         run: rustc --version --verbose
       - name: Test workspace
         run: cargo test --workspace --all-targets --all-features --locked
+      - name: Audit Alpine Studio release product boundary
+        if: matrix.name == 'macos-arm64'
+        run: scripts/check-product-boundary.sh --binary | tee target/studio-product-boundary.txt
+      - name: Upload Alpine Studio product-boundary evidence
+        if: matrix.name == 'macos-arm64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: studio-product-boundary-${{ github.sha }}
+          path: target/studio-product-boundary.txt
+          retention-days: 7
+          if-no-files-found: error
 
   coverage:
     name: coverage

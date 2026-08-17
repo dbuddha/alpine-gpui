@@ -3,6 +3,8 @@ set -eu
 
 scripts/check-policy.sh
 scripts/test-policy.sh
+scripts/check-product-boundary.sh
+scripts/test-product-boundary.sh
 scripts/check-research-retention.sh
 scripts/test-research-retention.sh
 scripts/check-wiki.sh
