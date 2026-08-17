@@ -689,8 +689,8 @@ mod tests {
     use super::*;
     use crate::documents::DocumentViewState;
     use crate::session::{
-        SESSION_NODE_CAPACITY, SESSION_PANE_CAPACITY, SessionAxis, SessionNode, SessionPane,
-        SessionPanes, SessionTab,
+        SESSION_NODE_CAPACITY, SESSION_PANE_CAPACITY, SessionAxis, SessionFileTree, SessionNode,
+        SessionPane, SessionPanes, SessionTab,
     };
     use alpine_text::{Buffer, ByteOffset, Selection};
     use std::time::{Duration, Instant};
@@ -735,6 +735,7 @@ mod tests {
                 panes,
                 active_pane: 1,
             },
+            file_tree: SessionFileTree::default(),
         }
     }
 

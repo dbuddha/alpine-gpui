@@ -343,6 +343,7 @@ pub(crate) struct FileTreeState {
     pending: Option<FileTreeRequestIdentity>,
     nodes: Vec<DirectoryNode>,
     selected: Option<usize>,
+    selected_path: Option<Arc<str>>,
     error: Option<Arc<str>>,
     retained_entries: usize,
     retained_path_bytes: usize,
@@ -368,6 +369,7 @@ impl FileTreeState {
             pending: None,
             nodes: Vec::new(),
             selected: None,
+            selected_path: None,
             error: None,
             retained_entries: 0,
             retained_path_bytes: 0,
@@ -438,6 +440,7 @@ impl FileTreeState {
         self.pending = None;
         self.nodes.clear();
         self.selected = None;
+        self.selected_path = None;
         self.error = None;
         self.retained_entries = 0;
         self.retained_path_bytes = 0;
@@ -455,6 +458,90 @@ impl FileTreeState {
         self.nodes
             .push(DirectoryNode::new(Arc::from(""), self.directory_generation));
         Ok(())
+    }
+
+    pub(crate) fn restore_session(
+        &mut self,
+        workspace: u64,
+        state: &crate::session::SessionFileTree,
+    ) -> Result<(), FileTreeError> {
+        let mut restored = Self::with_limits(self.limits);
+        restored.visible = self.visible;
+        restored.tree_generation = self.tree_generation;
+        restored.directory_generation = self.directory_generation;
+        restored.request_generation = self.request_generation;
+        restored.restore_session_in_place(workspace, state)?;
+        *self = restored;
+        Ok(())
+    }
+
+    fn restore_session_in_place(
+        &mut self,
+        workspace: u64,
+        state: &crate::session::SessionFileTree,
+    ) -> Result<(), FileTreeError> {
+        self.reset_for_workspace(workspace)?;
+        if state.expanded.len() >= self.limits.cached_directories {
+            return Err(FileTreeError::CacheLimitExceeded {
+                resource: "directory count",
+                limit: self.limits.cached_directories,
+            });
+        }
+        self.nodes
+            .try_reserve_exact(state.expanded.len())
+            .map_err(|_| FileTreeError::AllocationFailed)?;
+        for path in &state.expanded {
+            let path = restored_identity(path, self.limits)?;
+            if path.is_empty() || self.node_index(&path).is_some() {
+                return Err(FileTreeError::InvalidRelativePath(PathBuf::from(
+                    path.as_ref(),
+                )));
+            }
+            self.directory_generation = self
+                .directory_generation
+                .checked_add(1)
+                .ok_or(FileTreeError::GenerationExhausted)?;
+            let insertion = self
+                .nodes
+                .binary_search_by(|node| node.path.as_ref().cmp(path.as_ref()))
+                .unwrap_or_else(|index| index);
+            self.nodes.insert(
+                insertion,
+                DirectoryNode::new(path, self.directory_generation),
+            );
+        }
+        self.selected_path = state
+            .selected
+            .as_deref()
+            .map(|path| restored_identity(path, self.limits))
+            .transpose()?;
+        self.selected = None;
+        Ok(())
+    }
+
+    pub(crate) fn session_state(&self) -> Result<crate::session::SessionFileTree, FileTreeError> {
+        if self.workspace.is_none() {
+            return Ok(crate::session::SessionFileTree::default());
+        }
+        let count = self
+            .nodes
+            .iter()
+            .filter(|node| node.expanded && !node.path.is_empty())
+            .count();
+        let mut expanded = Vec::new();
+        expanded
+            .try_reserve_exact(count)
+            .map_err(|_| FileTreeError::AllocationFailed)?;
+        expanded.extend(
+            self.nodes
+                .iter()
+                .filter(|node| node.expanded && !node.path.is_empty())
+                .map(|node| PathBuf::from(node.path.as_ref())),
+        );
+        Ok(crate::session::SessionFileTree {
+            expanded,
+            selected: self.selected_path.as_deref().map(PathBuf::from),
+        })
     }
 
     pub(crate) fn take_request(&mut self, root: &Path) -> Option<FileTreeRequest> {
@@ -523,6 +610,7 @@ impl FileTreeState {
                 Err(error) => {
                     self.nodes[index].load = DirectoryLoad::Failed;
                     self.record_error(&error);
+                    self.rebind_selected();
                     FileTreeAdmission::Failed
                 }
             },
@@ -530,6 +618,7 @@ impl FileTreeState {
                 self.nodes[index].load = DirectoryLoad::Failed;
                 self.nodes[index].first_error = Some(bounded_message(&error));
                 self.record_error(&error);
+                self.rebind_selected();
                 FileTreeAdmission::Failed
             }
         }
@@ -586,6 +675,7 @@ impl FileTreeState {
             node.load = DirectoryLoad::Ready;
         }
         self.recompute_prefixes()?;
+        self.rebind_selected();
         self.error = self.nodes[index].first_error.clone();
         Ok(())
     }
@@ -668,17 +758,22 @@ impl FileTreeState {
         }
         let previous = self.selected;
         let selected = previous.unwrap_or(0);
-        self.selected = Some(if forward {
+        let selected = if forward {
             selected.saturating_add(1).min(count - 1)
         } else {
             selected.saturating_sub(1)
-        });
+        };
+        self.selected = Some(selected);
+        self.selected_path = self.visible_path_at(selected);
         let _ = visible_rows.min(self.limits.visible_rows);
         self.selected != previous
     }
 
     pub(crate) fn activate_row(&mut self, index: usize) -> Result<FileTreeAction, FileTreeError> {
-        self.selected = Some(index.min(self.total_rows().saturating_sub(1)));
+        let index = index.min(self.total_rows().saturating_sub(1));
+        let row = self.row_at(index)?.ok_or(FileTreeError::MissingSelection)?;
+        self.selected = Some(index);
+        self.selected_path = Some(row.path);
         self.activate_selected()
     }
 
@@ -704,6 +799,7 @@ impl FileTreeState {
             {
                 let changed = self.selected != Some(index);
                 self.selected = Some(index);
+                self.selected_path = Some(Arc::from(path));
                 return Ok(changed);
             }
         }
@@ -746,7 +842,9 @@ impl FileTreeState {
                 DirectoryNode::new(path, self.directory_generation),
             );
         }
-        self.recompute_prefixes()
+        self.recompute_prefixes()?;
+        self.rebind_selected();
+        Ok(())
     }
 
     fn remove_descendants(&mut self, path: &str) {
@@ -819,6 +917,81 @@ impl FileTreeState {
             .ok()
     }
 
+    fn visible_path_at(&self, target: usize) -> Option<Arc<str>> {
+        let mut current = 0_usize;
+        self.visible_path_at_from("", target, &mut current)
+    }
+
+    fn visible_path_at_from(
+        &self,
+        directory: &str,
+        target: usize,
+        current: &mut usize,
+    ) -> Option<Arc<str>> {
+        let node = self.node_index(directory).map(|index| &self.nodes[index])?;
+        if !node.expanded || node.load != DirectoryLoad::Ready {
+            return None;
+        }
+        for entry in &node.entries {
+            if *current == target {
+                return Some(Arc::clone(&entry.path));
+            }
+            *current = current.saturating_add(1);
+            if entry.kind == FileTreeEntryKind::Directory
+                && let Some(path) = self.visible_path_at_from(&entry.path, target, current)
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    fn visible_index_of(&self, target: &str) -> Option<usize> {
+        let mut current = 0_usize;
+        self.visible_index_of_from("", target, &mut current)
+    }
+
+    fn visible_index_of_from(
+        &self,
+        directory: &str,
+        target: &str,
+        current: &mut usize,
+    ) -> Option<usize> {
+        let node = self.node_index(directory).map(|index| &self.nodes[index])?;
+        if !node.expanded || node.load != DirectoryLoad::Ready {
+            return None;
+        }
+        for entry in &node.entries {
+            if entry.path.as_ref() == target {
+                return Some(*current);
+            }
+            *current = current.saturating_add(1);
+            if entry.kind == FileTreeEntryKind::Directory
+                && let Some(index) = self.visible_index_of_from(&entry.path, target, current)
+            {
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    fn rebind_selected(&mut self) {
+        self.selected = self
+            .selected_path
+            .as_deref()
+            .and_then(|path| self.visible_index_of(path));
+        let has_future_load = self.nodes.iter().any(|node| {
+            node.expanded
+                && matches!(
+                    node.load,
+                    DirectoryLoad::Dormant | DirectoryLoad::Loading(_)
+                )
+        });
+        if self.selected.is_none() && !has_future_load {
+            self.selected_path = None;
+        }
+    }
+
     fn cancel_pending(&mut self) {
         let Some(identity) = self.pending.take() else {
             return;
@@ -851,6 +1024,24 @@ impl FileTreeState {
             self.selected,
         )
     }
+}
+
+fn restored_identity(path: &Path, limits: FileTreeLimits) -> Result<Arc<str>, FileTreeError> {
+    let relative = path
+        .to_str()
+        .ok_or_else(|| FileTreeError::InvalidRelativePath(path.to_path_buf()))?;
+    if path.is_absolute()
+        || relative.is_empty()
+        || relative.len() > limits.path_bytes
+        || relative.as_bytes().contains(&0)
+        || relative
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || relative.split('/').count() > limits.depth
+    {
+        return Err(FileTreeError::InvalidRelativePath(path.to_path_buf()));
+    }
+    Ok(Arc::from(relative))
 }
 
 fn admit_io<T>(
@@ -1407,6 +1598,87 @@ mod tests {
             state.activate_selected()?,
             FileTreeAction::Open(path) if path.as_ref() == "top.rs"
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn restored_expansion_and_selection_remain_dormant_then_rebind_by_path()
+    -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        root.write("src/nested/main.rs")?;
+        root.write("top.rs")?;
+        let session = crate::session::SessionFileTree {
+            expanded: vec![PathBuf::from("src"), PathBuf::from("src/nested")],
+            selected: Some(PathBuf::from("src/nested/main.rs")),
+        };
+        let mut state = FileTreeState::default();
+        state.restore_session(9, &session)?;
+        assert_eq!(state.snapshot(), (3, 0, 0, None));
+        assert!(state.take_request(&root.0).is_none());
+        assert_eq!(state.session_state()?, session);
+
+        state.activate(9)?;
+        assert_eq!(
+            admit_next(&mut state, &root.0)?,
+            FileTreeAdmission::Directory
+        );
+        assert_eq!(state.snapshot().3, None);
+        assert_eq!(
+            admit_next(&mut state, &root.0)?,
+            FileTreeAdmission::Directory
+        );
+        assert_eq!(state.snapshot().3, None);
+        assert_eq!(
+            admit_next(&mut state, &root.0)?,
+            FileTreeAdmission::Directory
+        );
+        assert!(matches!(
+            state.activate_selected()?,
+            FileTreeAction::Open(path) if path.as_ref() == "src/nested/main.rs"
+        ));
+        assert_eq!(state.session_state()?, session);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_restored_directory_fails_without_retargeting_selection() -> Result<(), Box<dyn Error>>
+    {
+        let root = TestRoot::new()?;
+        root.write("top.rs")?;
+        let mut state = FileTreeState::default();
+        state.restore_session(
+            3,
+            &crate::session::SessionFileTree {
+                expanded: vec![PathBuf::from("missing")],
+                selected: Some(PathBuf::from("missing/file.rs")),
+            },
+        )?;
+        state.activate(3)?;
+        assert_eq!(
+            admit_next(&mut state, &root.0)?,
+            FileTreeAdmission::Directory
+        );
+        assert_eq!(admit_next(&mut state, &root.0)?, FileTreeAdmission::Failed);
+        assert!(matches!(
+            state.activate_selected(),
+            Err(FileTreeError::MissingSelection)
+        ));
+        assert_eq!(state.session_state()?.selected, None);
+
+        let accepted = state.session_state()?;
+        let snapshot = state.snapshot();
+        assert!(matches!(
+            state.restore_session(
+                4,
+                &crate::session::SessionFileTree {
+                    expanded: vec![PathBuf::from("../escape")],
+                    selected: None,
+                },
+            ),
+            Err(FileTreeError::InvalidRelativePath(_))
+        ));
+        assert_eq!(state.snapshot(), snapshot);
+        assert_eq!(state.session_state()?, accepted);
         Ok(())
     }
 

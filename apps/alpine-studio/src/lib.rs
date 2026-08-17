@@ -965,6 +965,7 @@ enum SessionRestoreError {
     Surface,
     Tabs,
     Panes,
+    FileTree,
     Allocation,
 }
 
@@ -977,6 +978,7 @@ impl fmt::Display for SessionRestoreError {
             Self::Surface => "session application construction failed",
             Self::Tabs => "session tab state is inconsistent",
             Self::Panes => "session pane state is inconsistent",
+            Self::FileTree => "session file-tree state is inconsistent",
             Self::Allocation => "session restoration allocation failed",
         };
         formatter.write_str(message)
@@ -1001,6 +1003,7 @@ enum SessionCaptureError {
     DirtyDocument,
     Tabs,
     Panes,
+    FileTree,
     Allocation,
     Invalid,
 }
@@ -1236,6 +1239,7 @@ impl StudioApp {
             tabs,
             active_tab,
             mut panes,
+            file_tree,
             ..
         } = state;
         let active_index = usize::from(active_tab);
@@ -1262,6 +1266,11 @@ impl StudioApp {
             workspace,
         )
         .map_err(|_| SessionRestoreError::Surface)?;
+        if app.workspace.is_some() {
+            app.file_tree
+                .restore_session(1, &file_tree)
+                .map_err(|_| SessionRestoreError::FileTree)?;
+        }
         let restored_tabs = tabs
             .into_iter()
             .map(|tab| RestoredDocumentTab {
@@ -1488,6 +1497,10 @@ impl StudioApp {
             .map_err(|_| SessionCaptureError::Panes)?;
         let active_tab =
             u8::try_from(self.tabs.active_index()).map_err(|_| SessionCaptureError::Tabs)?;
+        let file_tree = self
+            .file_tree
+            .session_state()
+            .map_err(|_| SessionCaptureError::FileTree)?;
         let state = session::SessionState {
             workspace: self
                 .workspace
@@ -1496,6 +1509,7 @@ impl StudioApp {
             tabs,
             active_tab,
             panes,
+            file_tree,
         };
         session::validate(&state).map_err(|_| SessionCaptureError::Invalid)?;
         Ok(state)
@@ -5350,6 +5364,10 @@ mod session_integration_tests {
                 ],
                 active_pane: 1,
             },
+            file_tree: session::SessionFileTree {
+                expanded: vec![PathBuf::from("src")],
+                selected: Some(PathBuf::from("src/main.rs")),
+            },
         }
     }
 
@@ -5470,6 +5488,7 @@ mod session_integration_tests {
                 ],
                 active_pane: 0,
             },
+            file_tree: session::SessionFileTree::default(),
         };
         let mut clamped = StudioApp::from_session(tests::TestTextSystem, clamped_state)
             .map_err(|error| error.to_string())?;
@@ -5580,6 +5599,7 @@ mod session_integration_tests {
             SessionRestoreError::Surface,
             SessionRestoreError::Tabs,
             SessionRestoreError::Panes,
+            SessionRestoreError::FileTree,
             SessionRestoreError::Allocation,
         ] {
             assert!(!error.to_string().is_empty());
@@ -5594,6 +5614,7 @@ mod session_integration_tests {
                 panes: [None; session::SESSION_PANE_CAPACITY],
                 active_pane: 0,
             },
+            file_tree: session::SessionFileTree::default(),
         };
         assert!(matches!(
             StudioApp::from_session(tests::TestTextSystem, invalid),

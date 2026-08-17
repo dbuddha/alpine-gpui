@@ -6,7 +6,7 @@ use std::fs::{self, File, OpenOptions};
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 use std::io::Read;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use alpine_text::{ByteOffset, Selection};
@@ -16,13 +16,16 @@ use crate::documents::DocumentViewState;
 pub(crate) const SESSION_NODE_CAPACITY: usize = 7;
 pub(crate) const SESSION_PANE_CAPACITY: usize = 4;
 const SESSION_TAB_CAPACITY: usize = 32;
+pub(crate) const SESSION_EXPANDED_DIRECTORY_CAPACITY: usize = 256;
 const MAX_PATH_BYTES: usize = 4_096;
 const MAX_RETAINED_PATH_BYTES: usize = 65_536;
+const MAX_TREE_DEPTH: usize = 256;
 const MAX_SESSION_BYTES: usize = 131_072;
 const MAX_READ_BYTES: u64 = 131_073;
 const HEADER_BYTES: usize = 18;
 const MAGIC: &[u8; 8] = b"ALPNSESS";
-const VERSION: u16 = 1;
+const LEGACY_VERSION: u16 = 1;
+const VERSION: u16 = 2;
 const TEMPORARY_ATTEMPTS: usize = 16;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -64,12 +67,19 @@ pub(crate) struct SessionTab {
     pub(crate) view: DocumentViewState,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SessionFileTree {
+    pub(crate) expanded: Vec<PathBuf>,
+    pub(crate) selected: Option<PathBuf>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SessionState {
     pub(crate) workspace: Option<PathBuf>,
     pub(crate) tabs: Vec<SessionTab>,
     pub(crate) active_tab: u8,
     pub(crate) panes: SessionPanes,
+    pub(crate) file_tree: SessionFileTree,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -82,6 +92,10 @@ pub(crate) enum SessionInvalid {
     RelativePath,
     PathTooLong,
     PathBudget,
+    TreeWithoutWorkspace,
+    TooManyExpandedDirectories,
+    InvalidTreePath,
+    TreePathOrder,
     InvalidView,
     EmptyRoot,
     NodeReference,
@@ -104,6 +118,10 @@ impl fmt::Display for SessionInvalid {
             Self::RelativePath => "session contains a relative path",
             Self::PathTooLong => "session path exceeds its byte limit",
             Self::PathBudget => "session paths exceed their retained byte budget",
+            Self::TreeWithoutWorkspace => "session file tree has no workspace",
+            Self::TooManyExpandedDirectories => "session exceeds the expanded-directory limit",
+            Self::InvalidTreePath => "session file tree contains an invalid relative path",
+            Self::TreePathOrder => "session expanded-directory paths are not strictly ordered",
             Self::InvalidView => "session document view is invalid",
             Self::EmptyRoot => "session pane root is empty",
             Self::NodeReference => "session pane node reference is invalid",
@@ -267,6 +285,12 @@ pub(crate) fn validate(state: &SessionState) -> Result<(), SessionInvalid> {
             .ok_or(SessionInvalid::PathBudget)?;
         validate_view(tab.view)?;
     }
+    retained_path_bytes = retained_path_bytes
+        .checked_add(validate_file_tree(
+            &state.file_tree,
+            state.workspace.is_some(),
+        )?)
+        .ok_or(SessionInvalid::PathBudget)?;
     if retained_path_bytes > MAX_RETAINED_PATH_BYTES {
         return Err(SessionInvalid::PathBudget);
     }
@@ -277,6 +301,65 @@ pub(crate) fn validate(state: &SessionState) -> Result<(), SessionInvalid> {
         return Err(SessionInvalid::ActivePane);
     }
     Ok(())
+}
+
+fn validate_file_tree(
+    tree: &SessionFileTree,
+    has_workspace: bool,
+) -> Result<usize, SessionInvalid> {
+    if !has_workspace && (!tree.expanded.is_empty() || tree.selected.is_some()) {
+        return Err(SessionInvalid::TreeWithoutWorkspace);
+    }
+    if tree.expanded.len() > SESSION_EXPANDED_DIRECTORY_CAPACITY {
+        return Err(SessionInvalid::TooManyExpandedDirectories);
+    }
+    let mut retained = 0_usize;
+    let mut previous: Option<&str> = None;
+    for path in &tree.expanded {
+        let path_bytes = validate_tree_path(path)?;
+        let path = path.to_str().ok_or(SessionInvalid::InvalidTreePath)?;
+        if previous.is_some_and(|previous| previous >= path) {
+            return Err(SessionInvalid::TreePathOrder);
+        }
+        retained = retained
+            .checked_add(path_bytes)
+            .ok_or(SessionInvalid::PathBudget)?;
+        previous = Some(path);
+    }
+    if let Some(selected) = tree.selected.as_deref() {
+        retained = retained
+            .checked_add(validate_tree_path(selected)?)
+            .ok_or(SessionInvalid::PathBudget)?;
+    }
+    Ok(retained)
+}
+
+fn validate_tree_path(path: &Path) -> Result<usize, SessionInvalid> {
+    let bytes = os_bytes(path.as_os_str());
+    if path.is_absolute()
+        || bytes.is_empty()
+        || bytes.len() > MAX_PATH_BYTES
+        || path.to_str().is_none()
+        || bytes.contains(&0)
+    {
+        return Err(SessionInvalid::InvalidTreePath);
+    }
+    let mut depth = 0_usize;
+    for component in path.components() {
+        if !matches!(component, Component::Normal(_)) {
+            return Err(SessionInvalid::InvalidTreePath);
+        }
+        depth = depth
+            .checked_add(1)
+            .ok_or(SessionInvalid::InvalidTreePath)?;
+        if depth > MAX_TREE_DEPTH {
+            return Err(SessionInvalid::InvalidTreePath);
+        }
+    }
+    if depth == 0 {
+        return Err(SessionInvalid::InvalidTreePath);
+    }
+    Ok(bytes.len())
 }
 
 fn validate_optional_path(path: Option<&Path>) -> Result<usize, SessionInvalid> {
@@ -420,6 +503,15 @@ fn encode(state: &SessionState) -> Result<Vec<u8>, SessionError> {
         }
     }
     put_u8(&mut bytes, state.panes.active_pane);
+    bytes.extend_from_slice(
+        &u16::try_from(state.file_tree.expanded.len())
+            .map_err(|_| SessionError::Invalid(SessionInvalid::TooManyExpandedDirectories))?
+            .to_le_bytes(),
+    );
+    for path in &state.file_tree.expanded {
+        put_path(&mut bytes, Some(path))?;
+    }
+    put_path(&mut bytes, state.file_tree.selected.as_deref())?;
     ensure_encoded_size(bytes.len())?;
     let payload_len = bytes
         .len()
@@ -467,7 +559,7 @@ fn decode(bytes: &[u8]) -> Result<SessionState, SessionCorrupt> {
         return Err(SessionCorrupt::Header);
     }
     let version = u16::from_le_bytes([bytes[8], bytes[9]]);
-    if version != VERSION {
+    if version != LEGACY_VERSION && version != VERSION {
         return Err(SessionCorrupt::Version(version));
     }
     let payload_len = u32::from_le_bytes([bytes[10], bytes[11], bytes[12], bytes[13]]) as usize;
@@ -519,6 +611,23 @@ fn decode(bytes: &[u8]) -> Result<SessionState, SessionCorrupt> {
             _ => return Err(SessionCorrupt::Tag),
         };
     }
+    let active_pane = reader.u8()?;
+    let file_tree = if version == LEGACY_VERSION {
+        SessionFileTree::default()
+    } else {
+        let expanded_count = usize::from(reader.u16()?);
+        let mut expanded = Vec::new();
+        expanded
+            .try_reserve_exact(expanded_count)
+            .map_err(|_| SessionCorrupt::Length)?;
+        for _ in 0..expanded_count {
+            expanded.push(reader.path()?.ok_or(SessionCorrupt::Tag)?);
+        }
+        SessionFileTree {
+            expanded,
+            selected: reader.path()?,
+        }
+    };
     let state = SessionState {
         workspace,
         tabs,
@@ -526,8 +635,9 @@ fn decode(bytes: &[u8]) -> Result<SessionState, SessionCorrupt> {
         panes: SessionPanes {
             nodes,
             panes,
-            active_pane: reader.u8()?,
+            active_pane,
         },
+        file_tree,
     };
     if !reader.is_empty() {
         return Err(SessionCorrupt::TrailingBytes);
@@ -911,6 +1021,10 @@ mod tests {
                 ],
                 active_pane: 1,
             },
+            file_tree: SessionFileTree {
+                expanded: vec![PathBuf::from("src"), PathBuf::from("src/nested")],
+                selected: Some(PathBuf::from("src/nested/main.rs")),
+            },
         }
     }
 
@@ -942,11 +1056,15 @@ mod tests {
         assert_eq!(SESSION_NODE_CAPACITY, 7);
         assert_eq!(SESSION_PANE_CAPACITY, 4);
         assert_eq!(SESSION_TAB_CAPACITY, 32);
+        assert_eq!(SESSION_EXPANDED_DIRECTORY_CAPACITY, 256);
         assert_eq!(MAX_PATH_BYTES, 4_096);
         assert_eq!(MAX_RETAINED_PATH_BYTES, 65_536);
+        assert_eq!(MAX_TREE_DEPTH, 256);
         assert_eq!(MAX_SESSION_BYTES, 131_072);
         assert_eq!(MAX_READ_BYTES, 131_073);
         assert_eq!(HEADER_BYTES, 18);
+        assert_eq!(LEGACY_VERSION, 1);
+        assert_eq!(VERSION, 2);
 
         assert_eq!(default_path_from_home(None), Err(SessionError::MissingHome));
         assert_eq!(
@@ -975,6 +1093,10 @@ mod tests {
             SessionInvalid::RelativePath,
             SessionInvalid::PathTooLong,
             SessionInvalid::PathBudget,
+            SessionInvalid::TreeWithoutWorkspace,
+            SessionInvalid::TooManyExpandedDirectories,
+            SessionInvalid::InvalidTreePath,
+            SessionInvalid::TreePathOrder,
             SessionInvalid::InvalidView,
             SessionInvalid::EmptyRoot,
             SessionInvalid::NodeReference,
@@ -1013,6 +1135,36 @@ mod tests {
             assert!(!error.to_string().is_empty());
             assert!(Error::source(&error).is_none());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn version_one_migrates_without_stranding_embedded_recovery_state() -> Result<(), Box<dyn Error>>
+    {
+        let state = state();
+        let encoded = encode(&state)?;
+        let tree_bytes = 2
+            + state
+                .file_tree
+                .expanded
+                .iter()
+                .map(|path| 3 + os_bytes(path.as_os_str()).len())
+                .sum::<usize>()
+            + state
+                .file_tree
+                .selected
+                .as_ref()
+                .map_or(1, |path| 3 + os_bytes(path.as_os_str()).len());
+        let legacy_payload = &encoded[HEADER_BYTES..encoded.len() - tree_bytes];
+        let mut legacy = Vec::new();
+        legacy.extend_from_slice(MAGIC);
+        legacy.extend_from_slice(&LEGACY_VERSION.to_le_bytes());
+        legacy.extend_from_slice(&u32::try_from(legacy_payload.len())?.to_le_bytes());
+        legacy.extend_from_slice(&crc32(legacy_payload).to_le_bytes());
+        legacy.extend_from_slice(legacy_payload);
+        let mut expected = state;
+        expected.file_tree = SessionFileTree::default();
+        assert_eq!(decode(&legacy)?, expected);
         Ok(())
     }
 
@@ -1170,6 +1322,7 @@ mod tests {
         );
 
         let mut maximum = state();
+        maximum.file_tree = SessionFileTree::default();
         maximum.workspace = Some(path(MAX_PATH_BYTES, b'A'));
         maximum.tabs = (0_u8..15)
             .map(|index| SessionTab {
@@ -1208,6 +1361,38 @@ mod tests {
     }
 
     #[test]
+    fn file_tree_paths_are_workspace_bound_ordered_relative_and_capped() {
+        let mut invalid = state();
+        invalid.workspace = None;
+        assert_eq!(
+            validate(&invalid),
+            Err(SessionInvalid::TreeWithoutWorkspace)
+        );
+
+        let mut invalid = state();
+        invalid.file_tree.expanded.swap(0, 1);
+        assert_eq!(validate(&invalid), Err(SessionInvalid::TreePathOrder));
+
+        let mut punctuation = state();
+        punctuation.file_tree.expanded = vec![PathBuf::from("a-b"), PathBuf::from("a/b")];
+        punctuation.file_tree.selected = None;
+        assert_eq!(validate(&punctuation), Ok(()));
+
+        let mut invalid = state();
+        invalid.file_tree.expanded[0] = PathBuf::from("../escape");
+        assert_eq!(validate(&invalid), Err(SessionInvalid::InvalidTreePath));
+
+        let mut invalid = state();
+        invalid.file_tree.expanded = (0..=SESSION_EXPANDED_DIRECTORY_CAPACITY)
+            .map(|index| PathBuf::from(format!("directory-{index:03}")))
+            .collect();
+        assert_eq!(
+            validate(&invalid),
+            Err(SessionInvalid::TooManyExpandedDirectories)
+        );
+    }
+
+    #[test]
     fn corruption_version_length_checksum_and_tags_fail_closed() -> Result<(), Box<dyn Error>> {
         let encoded = encode(&state())?;
         let mut corrupt = encoded.clone();
@@ -1215,8 +1400,8 @@ mod tests {
         assert_eq!(decode(&corrupt), Err(SessionCorrupt::Header));
 
         let mut corrupt = encoded.clone();
-        corrupt[8..10].copy_from_slice(&2_u16.to_le_bytes());
-        assert_eq!(decode(&corrupt), Err(SessionCorrupt::Version(2)));
+        corrupt[8..10].copy_from_slice(&3_u16.to_le_bytes());
+        assert_eq!(decode(&corrupt), Err(SessionCorrupt::Version(3)));
 
         let mut corrupt = encoded.clone();
         corrupt[encoded.len() - 1] ^= 0x5a;
