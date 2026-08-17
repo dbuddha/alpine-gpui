@@ -878,7 +878,6 @@ impl StudioApp {
                     .visible_rows(first_visible, visible_rows, TREE_OVERSCAN_ROWS)?;
             for row in rows {
                 let index = row.index;
-                let label = row.label;
                 let top =
                     CONTENT_INSET + usize_as_f32(index) * TREE_ROW_HEIGHT - self.workspace_scroll_y;
                 if row.selected {
@@ -889,7 +888,7 @@ impl StudioApp {
                         .clipped(sidebar_clip);
                     builder.push_quad(row)?;
                 }
-                let layout = self.text_system.shape(&label, font)?;
+                let layout = self.text_system.shape(row.label(), font)?;
                 let baseline = top + layout.ascent();
                 let indent = usize_as_f32(row.depth).mul_add(12.0, CONTENT_INSET);
                 let glyphs = self.collect_glyphs(&layout, font, indent, baseline, sidebar_clip)?;

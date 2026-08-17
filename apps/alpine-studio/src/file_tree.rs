@@ -210,12 +210,6 @@ struct FileTreeEntry {
     kind: FileTreeEntryKind,
 }
 
-impl FileTreeEntry {
-    fn label(&self) -> &str {
-        &self.path[usize::from(self.name_start)..]
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DirectoryReport {
     pub(crate) scanned: usize,
@@ -317,11 +311,17 @@ impl DirectoryNode {
 pub(crate) struct VisibleFileTreeRow {
     pub(crate) index: usize,
     pub(crate) path: Arc<str>,
-    pub(crate) label: Arc<str>,
+    name_start: u16,
     pub(crate) depth: usize,
     pub(crate) kind: FileTreeEntryKind,
     pub(crate) expanded: bool,
     pub(crate) selected: bool,
+}
+
+impl VisibleFileTreeRow {
+    pub(crate) fn label(&self) -> &str {
+        &self.path[usize::from(self.name_start)..]
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -629,18 +629,17 @@ impl FileTreeState {
                     && self
                         .node_index(&entry.path)
                         .is_some_and(|index| self.nodes[index].expanded);
-                let label: Arc<str> = Arc::from(entry.label());
                 let index = base.saturating_add(rows.len());
                 rows.push(VisibleFileTreeRow {
                     index,
                     path: Arc::clone(&entry.path),
-                    label,
+                    name_start: entry.name_start,
                     depth: usize::from(entry.depth),
                     kind: entry.kind,
                     expanded,
                     selected: self.selected == Some(index),
                 });
-                if expanded && rows.len() < limit {
+                if expanded {
                     self.collect_rows(&entry.path, 0, limit, base, rows)?;
                 }
             } else if entry.kind == FileTreeEntryKind::Directory {
@@ -1007,7 +1006,7 @@ fn validate_directory(
     }
     let canonical = fs::canonicalize(&directory)
         .map_err(|source| FileTreeError::io("canonicalize directory", &directory, source))?;
-    if !canonical.starts_with(root) || canonical != directory {
+    if canonical != directory {
         return Err(FileTreeError::Symlink(directory));
     }
     Ok(directory)
@@ -1117,7 +1116,7 @@ fn ignored(matchers: &[Gitignore], path: &Path, is_dir: bool) -> bool {
 fn portable_child(relative: &str, name: &str) -> Result<String, FileTreeError> {
     let capacity = relative
         .len()
-        .checked_add(usize::from(!relative.is_empty()))
+        .checked_add(1)
         .and_then(|length| length.checked_add(name.len()))
         .ok_or(FileTreeError::AllocationFailed)?;
     let mut path = String::new();
@@ -1213,6 +1212,7 @@ mod tests {
         assert_eq!(state.total_rows(), 1);
         let row = state.visible_rows(0, 1, 0)?.remove(0);
         assert_eq!(row.path.as_ref(), "a.rs");
+        assert_eq!(row.label(), "a.rs");
         assert_eq!(MAX_SCANNED_PER_DIRECTORY, 16_384);
         assert_eq!(MAX_CHILDREN_PER_DIRECTORY, 4_096);
         assert_eq!(MAX_DIRECTORY_PATH_BYTES, 1_048_576);
@@ -1692,6 +1692,296 @@ mod tests {
         assert_eq!(report.errors, 1);
         assert!(first_error.is_some());
         assert!(matchers.is_empty());
+        Ok(())
+    }
+
+    fn admitted_report(
+        root: &Path,
+        limits: FileTreeLimits,
+    ) -> Result<DirectoryReport, Box<dyn Error>> {
+        let mut state = FileTreeState::with_test_limits(limits);
+        state.activate(1)?;
+        assert_eq!(admit_next(&mut state, root)?, FileTreeAdmission::Directory);
+        let index = state.node_index("").ok_or("root node")?;
+        Ok(state.nodes[index].report)
+    }
+
+    #[derive(Clone, Copy)]
+    enum AdmissionGuard {
+        Visible,
+        Active,
+        Workspace,
+        Tree,
+        Pending,
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each independent limit and admission identity is a separate policy boundary"
+    )]
+    fn every_limit_and_state_authority_guard_is_independent() -> Result<(), Box<dyn Error>> {
+        let invalid = [
+            FileTreeLimits::new(0, 1, 1, 1, 1, 1, 1, 1, 1),
+            FileTreeLimits::new(1, 0, 1, 1, 1, 1, 1, 1, 1),
+            FileTreeLimits::new(1, 1, 0, 1, 1, 1, 1, 1, 1),
+            FileTreeLimits::new(1, 1, 1, 0, 1, 1, 1, 1, 1),
+            FileTreeLimits::new(1, 1, 1, 1, 0, 1, 1, 1, 1),
+            FileTreeLimits::new(1, 1, 1, 1, 1, 0, 1, 1, 1),
+            FileTreeLimits::new(1, 1, 1, 1, 1, 1, 0, 1, 1),
+            FileTreeLimits::new(1, 1, 1, 1, 1, 1, 1, 0, 1),
+            FileTreeLimits::new(1, 1, 1, 1, 1, 1, 1, 1, 0),
+        ];
+        for limits in invalid {
+            assert!(!limits.is_valid());
+            assert!(matches!(
+                FileTreeState::with_test_limits(limits).activate(1),
+                Err(FileTreeError::InvalidLimits)
+            ));
+        }
+
+        for (visible, active, focused) in [
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+        ] {
+            let mut state = FileTreeState {
+                visible,
+                active,
+                focused,
+                workspace: Some(1),
+                ..FileTreeState::default()
+            };
+            state.insert_root()?;
+            assert!(state.activate(1)?);
+        }
+
+        let root = TestRoot::new()?;
+        root.write("a.rs")?;
+        let mut hidden = FileTreeState::default();
+        hidden.activate(1)?;
+        hidden.visible = false;
+        assert!(!hidden.is_visible());
+        assert!(hidden.take_request(&root.0).is_none());
+        let mut inactive = FileTreeState::default();
+        inactive.activate(1)?;
+        inactive.active = false;
+        assert!(inactive.take_request(&root.0).is_none());
+        let mut pending = FileTreeState::default();
+        pending.activate(1)?;
+        let _request = pending.take_request(&root.0).ok_or("pending request")?;
+        pending.nodes[0].load = DirectoryLoad::Dormant;
+        assert!(pending.take_request(&root.0).is_none());
+
+        for guard in [
+            AdmissionGuard::Visible,
+            AdmissionGuard::Active,
+            AdmissionGuard::Workspace,
+            AdmissionGuard::Tree,
+            AdmissionGuard::Pending,
+        ] {
+            let mut state = FileTreeState::default();
+            state.activate(7)?;
+            let request = state.take_request(&root.0).ok_or("guard request")?;
+            let identity = request.identity();
+            let output = request.execute();
+            match guard {
+                AdmissionGuard::Visible => state.visible = false,
+                AdmissionGuard::Active => state.active = false,
+                AdmissionGuard::Workspace => state.workspace = Some(8),
+                AdmissionGuard::Tree => {
+                    state.tree_generation = state.tree_generation.saturating_add(1);
+                }
+                AdmissionGuard::Pending => {
+                    state.pending = Some(FileTreeRequestIdentity {
+                        request: identity.request.saturating_add(1),
+                        ..identity
+                    });
+                }
+            }
+            assert_eq!(state.admit(output), FileTreeAdmission::Stale);
+            assert_eq!(state.snapshot().1, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "cache accounting, projection, and navigation share one admitted tree fixture"
+    )]
+    fn cache_reports_projection_and_navigation_boundaries_are_exact() -> Result<(), Box<dyn Error>>
+    {
+        let root = TestRoot::new()?;
+        root.write("a")?;
+        root.write("bb")?;
+        root.write("ccc")?;
+        let exact = FileTreeLimits::new(8, 8, 32, 8, 8, 32, 8, 8, 8);
+        assert_eq!(
+            admitted_report(&root.0, exact)?,
+            DirectoryReport {
+                scanned: 3,
+                retained: 3,
+                path_bytes: 6,
+                omitted: 0,
+                errors: 0,
+                truncated: false,
+            }
+        );
+        let entry_capped = FileTreeLimits::new(8, 8, 32, 8, 1, 32, 8, 8, 8);
+        assert_eq!(
+            admitted_report(&root.0, entry_capped)?,
+            DirectoryReport {
+                scanned: 3,
+                retained: 1,
+                path_bytes: 1,
+                omitted: 2,
+                errors: 0,
+                truncated: true,
+            }
+        );
+        let byte_capped = FileTreeLimits::new(8, 8, 32, 8, 8, 3, 8, 8, 8);
+        assert_eq!(
+            admitted_report(&root.0, byte_capped)?,
+            DirectoryReport {
+                scanned: 3,
+                retained: 2,
+                path_bytes: 3,
+                omitted: 1,
+                errors: 0,
+                truncated: true,
+            }
+        );
+        let source_capped = FileTreeLimits::new(1, 8, 32, 8, 8, 32, 8, 8, 8);
+        let source_report = admitted_report(&root.0, source_capped)?;
+        assert_eq!((source_report.scanned, source_report.retained), (1, 1));
+        assert_eq!(source_report.omitted, 1);
+        assert!(source_report.truncated);
+
+        let directory_root = TestRoot::new()?;
+        directory_root.write("dir/child")?;
+        let mut state = FileTreeState::default();
+        state.activate(1)?;
+        assert_eq!(
+            admit_next(&mut state, &directory_root.0)?,
+            FileTreeAdmission::Directory
+        );
+        let row = state.visible_rows(0, 1, 0)?.remove(0);
+        assert_eq!(row.kind, FileTreeEntryKind::Directory);
+        assert!(!row.expanded);
+
+        let mut navigation = FileTreeState::default();
+        navigation.activate(1)?;
+        assert_eq!(
+            admit_next(&mut navigation, &root.0)?,
+            FileTreeAdmission::Directory
+        );
+        assert!(navigation.navigate(true, 3));
+        assert!(navigation.navigate(true, 3));
+        assert!(!navigation.navigate(true, 3));
+        assert_eq!(navigation.snapshot().3, Some(2));
+        assert!(matches!(
+            navigation.activate_selected()?,
+            FileTreeAction::Open(path) if path.as_ref() == "ccc"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "filesystem threshold and ignore-type cases prove independent admission classes"
+    )]
+    fn filesystem_thresholds_and_ignore_types_are_independent() -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        root.write("a")?;
+        root.write("bb")?;
+        root.write("ccc")?;
+        let path_limits = FileTreeLimits::new(8, 8, 32, 8, 8, 32, 2, 8, 8);
+        let path_report = read_directory(&root.0, "", path_limits)?.report;
+        assert_eq!((path_report.retained, path_report.path_bytes), (2, 3));
+        assert_eq!(path_report.omitted, 1);
+        assert!(path_report.truncated);
+        let depth_limits = FileTreeLimits::new(8, 8, 32, 8, 8, 32, 8, 1, 8);
+        assert_eq!(
+            read_directory(&root.0, "", depth_limits)?.report.retained,
+            3
+        );
+        let child_limits = FileTreeLimits::new(8, 1, 32, 8, 8, 32, 8, 8, 8);
+        let child_report = read_directory(&root.0, "", child_limits)?.report;
+        assert_eq!((child_report.retained, child_report.omitted), (1, 2));
+        let byte_limits = FileTreeLimits::new(8, 8, 3, 8, 8, 32, 8, 8, 8);
+        let byte_report = read_directory(&root.0, "", byte_limits)?.report;
+        assert_eq!((byte_report.retained, byte_report.path_bytes), (2, 3));
+        assert_eq!(byte_report.omitted, 1);
+
+        let nested = TestRoot::new()?;
+        nested.write("dir/a")?;
+        let nested_report = read_directory(&nested.0, "dir", depth_limits)?.report;
+        assert_eq!((nested_report.retained, nested_report.omitted), (0, 1));
+        assert!(nested_report.truncated);
+
+        let ignored_root = TestRoot::new()?;
+        fs::write(ignored_root.0.join(".gitignore"), "ignored/\n")?;
+        ignored_root.write("ignored/lost")?;
+        ignored_root.write("keep")?;
+        let ignored_result = read_directory(&ignored_root.0, "", FileTreeLimits::default())?;
+        assert!(
+            ignored_result
+                .entries
+                .iter()
+                .all(|entry| entry.path.as_ref() != "ignored")
+        );
+        assert!(
+            ignored_result
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_ref() == "keep")
+        );
+
+        let mut matchers = Vec::new();
+        let mut report = DirectoryReport::default();
+        let mut first_error = None;
+        add_ignore_file(
+            &ignored_root.0,
+            &ignored_root.0.join("missing-ignore"),
+            &mut matchers,
+            &mut report,
+            &mut first_error,
+        )?;
+        assert_eq!(report.errors, 0);
+        assert!(matchers.is_empty());
+        let directory_ignore = ignored_root.0.join("directory-ignore");
+        fs::create_dir(&directory_ignore)?;
+        add_ignore_file(
+            &ignored_root.0,
+            &directory_ignore,
+            &mut matchers,
+            &mut report,
+            &mut first_error,
+        )?;
+        assert_eq!(report.errors, 1);
+        assert!(matchers.is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let target = ignored_root.0.join("real-ignore");
+            fs::write(&target, "*.tmp\n")?;
+            let link = ignored_root.0.join("linked-ignore");
+            symlink(target, &link)?;
+            add_ignore_file(
+                &ignored_root.0,
+                &link,
+                &mut matchers,
+                &mut report,
+                &mut first_error,
+            )?;
+            assert_eq!(report.errors, 2);
+            assert!(matchers.is_empty());
+        }
+        assert_eq!(portable_child("", "a")?, "a");
+        assert_eq!(portable_child("dir", "a")?, "dir/a");
         Ok(())
     }
 }
