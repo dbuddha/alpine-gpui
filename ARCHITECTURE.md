@@ -74,7 +74,19 @@ an existing UTF-8 file before native construction. Command-S reuses the
 editor's conflict-aware atomic replacement and records structured save evidence
 without changing document revision; scratch save is a deterministic no-op. Its
 `AppDelegate` maps native events to checked local edits and builds only visible
-text plus bounded overscan when dirty. Production typography uses the safe
+text plus bounded overscan when dirty.
+
+Studio privately compiles line-local syntax presentation for Rust, Markdown,
+TOML, and JSON with plain text as the deterministic fallback. Syntax work is
+admitted only for lines already selected by visible-range layout, stores ordered
+UTF-16 spans for direct projection onto shaped glyph source positions, and
+reuses exact current-frame or previous-frame content after fingerprint
+confirmation. The cache has a 4 MiB logical metadata and span ceiling, each
+line scans at most 64 KiB and retains at most 1,024 spans, and oversized or
+over-complex lines degrade to unstyled text. This initial compiled lexer adds no
+runtime grammar loading, plugin boundary, background work, dependency, native
+handle, or syntax authority outside Alpine Studio.
+Production typography uses the safe
 CoreText service; deterministic test typography proves portable editor behavior
 without claiming native validation. It runs through one `Application` until the
 owned AppKit window closes and has no native handles, collaboration state,
