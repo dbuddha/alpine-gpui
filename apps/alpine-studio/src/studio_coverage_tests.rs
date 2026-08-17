@@ -1157,10 +1157,8 @@ fn bounded_workspace_is_sorted_capped_and_projects_only_visible_rows()
         .ok_or("invalid visible row count")?
         .saturating_add(1);
     let projected_tree_rows = app
-        .workspace
-        .as_ref()
-        .ok_or("missing rendered workspace")?
-        .visible_range(0, visible_rows, TREE_OVERSCAN_ROWS)
+        .file_tree
+        .visible_rows(0, visible_rows, TREE_OVERSCAN_ROWS)?
         .len();
     let editor_rows = app.buffer().snapshot().line_count();
     TEST_SHAPE_CALLS.with(|calls| calls.set(0));
@@ -1432,7 +1430,15 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
         Modifiers::default(),
     );
     assert_eq!(row_one, EventEffect::document_replacement());
-    assert_eq!(pointer_app.active_workspace_entry, Some(1));
+    assert_eq!(pointer_app.active_workspace_entry, None);
+    let selected = pointer_app
+        .file_tree
+        .visible_rows(1, 1, 0)?
+        .into_iter()
+        .next()
+        .ok_or("selected tree row")?;
+    assert!(selected.selected);
+    assert_eq!(selected.path.as_ref(), "file-001.rs");
 
     let mut exact_paint = test_app()?;
     exact_paint.selection = Selection::new(ByteOffset::new(1), ByteOffset::new(2));
@@ -1474,6 +1480,7 @@ fn workspace_click_revalidates_target_and_preserves_current_document_on_failure(
     root.write("invalid.rs", [0xff])?;
     root.write("replace.rs", "replace")?;
     root.create_dir("src")?;
+    root.write("src/nested.rs", "nested")?;
     let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
     let viewport = viewport().map_err(|_| StudioRenderError::Domain)?;
     let _scene = app.try_scene(SceneRevision::new(1), viewport)?;
@@ -1505,7 +1512,15 @@ fn workspace_click_revalidates_target_and_preserves_current_document_on_failure(
     assert!(opened.document_changed);
     assert!(opened.document_identity_advanced);
     assert_eq!(app.buffer().snapshot().text(), "alpha");
-    assert_eq!(app.active_workspace_entry, Some(alpha));
+    assert_eq!(app.active_workspace_entry, None);
+    let selected = app
+        .file_tree
+        .visible_rows(alpha, 1, 0)?
+        .into_iter()
+        .next()
+        .ok_or("selected alpha row")?;
+    assert!(selected.selected);
+    assert_eq!(selected.path.as_ref(), "alpha.rs");
     let accepted_revision = app.runtime_document_revision;
 
     let failed = app.handle_event(&click(invalid, 2)?);
@@ -1516,30 +1531,41 @@ fn workspace_click_revalidates_target_and_preserves_current_document_on_failure(
     assert_eq!(app.workspace_failures, 1);
     assert!(app.last_workspace_error.is_some());
 
-    let directory_failed = app.handle_event(&click(directory, 3)?);
-    assert!(directory_failed.visual_changed);
-    assert!(matches!(
-        app.workspace
-            .as_ref()
-            .ok_or("missing workspace")?
-            .path_for_file(directory),
-        Err(WorkspaceError::NotRegularFile(_))
-    ));
+    let directory_changed = app.handle_event(&click(directory, 3)?);
+    assert!(directory_changed.visual_changed);
+    assert!(!directory_changed.document_changed);
+    let nested_request = app
+        .prepare_file_tree_request()?
+        .ok_or("nested directory request")?;
+    assert!(
+        app.apply_file_tree_output(nested_request.execute())
+            .visual_changed
+    );
+    let nested = app
+        .file_tree
+        .visible_rows(directory.saturating_add(1), 1, 0)?
+        .into_iter()
+        .next()
+        .ok_or("nested directory row")?;
+    assert_eq!(nested.path.as_ref(), "src/nested.rs");
     assert_eq!(app.buffer().snapshot().text(), "alpha");
-    assert_eq!(app.workspace_failures, 2);
+    assert_eq!(app.runtime_document_revision, accepted_revision);
+    assert_eq!(app.workspace_failures, 1);
+    assert!(app.handle_event(&click(directory, 4)?).visual_changed);
+    assert_eq!(app.file_tree.total_rows(), 4);
 
     fs::remove_file(root.path().join("replace.rs"))?;
-    let missing_failed = app.handle_event(&click(replacement, 4)?);
+    let missing_failed = app.handle_event(&click(replacement, 5)?);
     assert!(missing_failed.visual_changed);
     assert_eq!(app.buffer().snapshot().text(), "alpha");
     assert_eq!(app.runtime_document_revision, accepted_revision);
-    assert_eq!(app.workspace_failures, 3);
+    assert_eq!(app.workspace_failures, 2);
 
     #[cfg(unix)]
     {
         let outside = TestFile::new("outside")?;
         std::os::unix::fs::symlink(outside.path(), root.path().join("replace.rs"))?;
-        let symlink_failed = app.handle_event(&click(replacement, 5)?);
+        let symlink_failed = app.handle_event(&click(replacement, 6)?);
         assert!(symlink_failed.visual_changed);
         assert!(matches!(
             app.workspace
@@ -1550,7 +1576,7 @@ fn workspace_click_revalidates_target_and_preserves_current_document_on_failure(
         ));
         assert_eq!(app.buffer().snapshot().text(), "alpha");
         assert_eq!(app.runtime_document_revision, accepted_revision);
-        assert_eq!(app.workspace_failures, 4);
+        assert_eq!(app.workspace_failures, 3);
     }
 
     #[cfg(unix)]
@@ -3582,5 +3608,397 @@ fn runtime_quick_open_submission_failures_invalidate_without_blocking()
             })
             .is_some()
     );
+    Ok(())
+}
+
+#[test]
+fn file_tree_lazily_loads_and_opens_a_nested_file() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.create_dir("src")?;
+    root.write("src/main.rs", "fn nested() {}\n")?;
+    let mut app = StudioApp::open_workspace_lazy(TestTextSystem, root.path())?;
+    assert!(!app.file_tree.is_active());
+    assert!(app.prepare_file_tree_request()?.is_none());
+    let _first_scene = app.try_scene(SceneRevision::new(1), viewport()?)?;
+    assert!(app.prepare_file_tree_request()?.is_none());
+
+    let command_shift = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
+    assert!(app.handle_event(&key(KEY_E, command_shift)).visual_changed);
+    let root_request = app
+        .prepare_file_tree_request()?
+        .ok_or("root tree request")?;
+    assert!(
+        app.apply_file_tree_output(root_request.execute())
+            .visual_changed
+    );
+    let rows = app.file_tree.visible_rows(0, 8, TREE_OVERSCAN_ROWS)?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].path.as_ref(), "src");
+    assert!(matches!(
+        app.file_tree.activate_row(0)?,
+        FileTreeAction::Changed
+    ));
+    let nested_request = app
+        .prepare_file_tree_request()?
+        .ok_or("nested tree request")?;
+    assert!(
+        app.apply_file_tree_output(nested_request.execute())
+            .visual_changed
+    );
+    assert_eq!(app.file_tree.total_rows(), 2);
+    assert!(app.file_tree.navigate(true, 8));
+    let action = app.file_tree.activate_selected()?;
+    assert!(matches!(
+        &action,
+        FileTreeAction::Open(path) if path.as_ref() == "src/main.rs"
+    ));
+    let effect = app.apply_file_tree_action(action);
+    assert!(effect.document_changed);
+    assert!(effect.document_identity_advanced);
+    assert_eq!(app.buffer().snapshot().text(), "fn nested() {}\n");
+    assert!(!app.file_tree.is_focused());
+    Ok(())
+}
+
+#[test]
+fn file_tree_keyboard_geometry_and_error_routing_are_discriminating()
+-> Result<(), Box<dyn std::error::Error>> {
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let shift = Modifiers::from_bits(Modifiers::SHIFT);
+    let command_shift = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
+    let mut no_workspace = test_app()?;
+    let missing = no_workspace.handle_event(&key(KEY_E, command_shift));
+    assert!(missing.visual_changed);
+    assert_eq!(no_workspace.workspace_failures, 1);
+    assert!(
+        no_workspace
+            .last_workspace_error
+            .as_deref()
+            .is_some_and(|message| message.contains("requires one local workspace"))
+    );
+
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    root.write("beta.rs", "beta")?;
+    let mut app = StudioApp::open_workspace_lazy(TestTextSystem, root.path())?;
+    assert_eq!(
+        app.handle_event(&key(KEY_E, command)),
+        EventEffect::default()
+    );
+    assert_eq!(app.handle_event(&key(KEY_E, shift)), EventEffect::default());
+    assert!(!app.file_tree.is_active());
+    assert!(app.handle_event(&key(KEY_E, command_shift)).visual_changed);
+    let text_before_ignored_ime = app.buffer().snapshot().text().clone();
+    assert_eq!(
+        app.handle_event(&ime(ImeEvent::Committed("ignored".into()))),
+        EventEffect::default()
+    );
+    assert_eq!(app.buffer().snapshot().text(), text_before_ignored_ime);
+    let no_selection = app.handle_event(&key(KEY_RETURN, Modifiers::default()));
+    assert!(no_selection.visual_changed);
+    assert_eq!(app.workspace_failures, 1);
+    let request = app
+        .prepare_file_tree_request()?
+        .ok_or("root file-tree request")?;
+    assert!(app.apply_file_tree_output(request.execute()).visual_changed);
+
+    let tree_viewport = Size::new(640.0, 440.0).ok_or("tree viewport")?;
+    let _scene = app.try_scene(SceneRevision::new(20), tree_viewport)?;
+    assert_eq!(app.visible_tree_rows(), 20);
+    assert_eq!(app.file_tree.total_rows(), 2);
+
+    assert!(
+        app.handle_event(&key(KEY_DOWN, Modifiers::default()))
+            .visual_changed
+    );
+    let selected = app
+        .file_tree
+        .visible_rows(0, 2, 0)?
+        .into_iter()
+        .find(|row| row.selected)
+        .ok_or("down selection")?;
+    assert_eq!(selected.path.as_ref(), "beta.rs");
+    assert_eq!(
+        app.handle_event(&key(KEY_UP, command)),
+        EventEffect::default()
+    );
+    assert!(
+        app.handle_event(&key(KEY_UP, Modifiers::default()))
+            .visual_changed
+    );
+    let selected = app
+        .file_tree
+        .visible_rows(0, 2, 0)?
+        .into_iter()
+        .find(|row| row.selected)
+        .ok_or("up selection")?;
+    assert_eq!(selected.path.as_ref(), "alpha.rs");
+    assert_eq!(
+        app.handle_event(&key(KEY_DOWN, command)),
+        EventEffect::default()
+    );
+    assert!(
+        app.handle_event(&key(KEY_DOWN, Modifiers::default()))
+            .visual_changed
+    );
+
+    assert!(
+        app.handle_event(&key(KEY_ESCAPE, Modifiers::default()))
+            .visual_changed
+    );
+    assert!(!app.file_tree.is_focused());
+    assert!(app.handle_event(&key(KEY_E, command_shift)).visual_changed);
+    assert!(app.file_tree.is_focused());
+    assert!(app.handle_event(&key(KEY_E, command_shift)).visual_changed);
+    assert!(!app.file_tree.is_visible());
+    assert!(app.handle_event(&key(KEY_E, command_shift)).visual_changed);
+    assert!(app.file_tree.is_focused());
+    let before_open = app.buffer().snapshot().text().clone();
+    assert_eq!(
+        app.handle_event(&key(KEY_RETURN, command)),
+        EventEffect::default()
+    );
+    assert_eq!(app.buffer().snapshot().text(), before_open);
+    let opened = app.handle_event(&key(KEY_RETURN, Modifiers::default()));
+    assert!(opened.document_changed);
+    assert!(opened.document_identity_advanced);
+    assert_eq!(app.buffer().snapshot().text(), "beta");
+    assert!(!app.file_tree.is_focused());
+    Ok(())
+}
+
+#[test]
+fn runtime_file_tree_submission_admits_and_forced_failure_rolls_back()
+-> Result<(), Box<dyn std::error::Error>> {
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let command_shift = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
+
+    let admitted_root = TestWorkspace::new()?;
+    admitted_root.write("alpha.rs", "alpha")?;
+    let mut admitted = StudioApp::open_workspace_lazy(TestTextSystem, admitted_root.path())?;
+    assert!(
+        admitted
+            .handle_event(&key(KEY_E, command_shift))
+            .visual_changed
+    );
+    let mut admitted_runtime =
+        Application::new(admitted, viewport()?, clear, WorkerConfig::default())?;
+    let pending = admitted_runtime
+        .dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(920),
+        })
+        .ok_or("pending file-tree frame")?;
+    let pending_glyphs = pending.scene().glyphs().len();
+    let mut published = false;
+    for timestamp in 921..1_433 {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        if let Some(frame) = admitted_runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(timestamp),
+        }) && frame.scene().glyphs().len() > pending_glyphs
+        {
+            published = true;
+            break;
+        }
+    }
+    assert!(published);
+
+    let rejected_root = TestWorkspace::new()?;
+    rejected_root.write("alpha.rs", "alpha")?;
+    let mut rejected = StudioApp::open_workspace_lazy(TestTextSystem, rejected_root.path())?;
+    assert!(
+        rejected
+            .handle_event(&key(KEY_E, command_shift))
+            .visual_changed
+    );
+    rejected.force_file_tree_submission_failure = Some(());
+    let mut rejected_runtime =
+        Application::new(rejected, viewport()?, clear, WorkerConfig::default())?;
+    let rejected_frame = rejected_runtime
+        .dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(1_434),
+        })
+        .ok_or("rejected file-tree frame")?;
+    let rejected_glyphs = rejected_frame.scene().glyphs().len();
+    for timestamp in 1_435..1_499 {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        if let Some(frame) = rejected_runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(timestamp),
+        }) {
+            assert_eq!(frame.scene().glyphs().len(), rejected_glyphs);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn file_tree_stage_measurements_are_separate_and_bounded() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = TestWorkspace::new()?;
+    for index in 0..1_024 {
+        root.write(&format!("file-{index:04}.rs"), "x")?;
+    }
+    let mut app = StudioApp::open_workspace_lazy(TestTextSystem, root.path())?;
+    let command_shift = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
+
+    let activation_start = std::time::Instant::now();
+    assert!(app.handle_event(&key(KEY_E, command_shift)).visual_changed);
+    let activation = activation_start.elapsed();
+
+    let request = app
+        .prepare_file_tree_request()?
+        .ok_or("stage directory request")?;
+    let enumeration_start = std::time::Instant::now();
+    let output = request.execute();
+    let enumeration = enumeration_start.elapsed();
+    assert!(app.apply_file_tree_output(output).visual_changed);
+
+    let flatten_start = std::time::Instant::now();
+    let rows = app.file_tree.visible_rows(0, 40, TREE_OVERSCAN_ROWS)?;
+    let flatten = flatten_start.elapsed();
+    assert_eq!(rows.len(), 46);
+    assert_eq!(app.file_tree.snapshot().1, 1_024);
+
+    let scene_start = std::time::Instant::now();
+    let scene = app.try_scene(SceneRevision::new(200), viewport()?)?;
+    let scene_build = scene_start.elapsed();
+    assert!(!scene.glyphs().is_empty());
+    for elapsed in [activation, enumeration, flatten, scene_build] {
+        assert!(elapsed < std::time::Duration::from_secs(5));
+    }
+    eprintln!(
+        "file-tree stages: activation={activation:?} enumeration={enumeration:?} flatten={flatten:?} scene={scene_build:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn file_tree_error_and_generation_failure_remain_structured()
+-> Result<(), Box<dyn std::error::Error>> {
+    let render_error = StudioRenderError::from(FileTreeError::NoWorkspace);
+    assert!(
+        render_error
+            .to_string()
+            .contains("file-tree rendering failed")
+    );
+
+    let root = TestWorkspace::new()?;
+    root.write("a.rs", "a")?;
+    let mut app = StudioApp::open_workspace_lazy(TestTextSystem, root.path())?;
+    app.file_tree.exhaust_tree_generation();
+    let command_shift = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
+    let effect = app.handle_event(&key(KEY_E, command_shift));
+    assert!(effect.visual_changed);
+    assert_eq!(app.workspace_failures, 1);
+    assert!(app.last_workspace_error.is_some());
+    Ok(())
+}
+
+#[test]
+fn file_tree_pointer_activation_failed_output_and_stale_output_are_admitted_correctly()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("a.rs", "a")?;
+    let mut pointer_app = StudioApp::open_workspace_lazy(TestTextSystem, root.path())?;
+    let point = Point::new(8.0, CONTENT_INSET + 1.0).ok_or("tree point")?;
+    let activated = pointer_app.handle_pointer(
+        PointerAction::Down,
+        point,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert!(activated.visual_changed);
+    assert!(pointer_app.file_tree.is_active());
+    let missing_row = pointer_app.handle_pointer(
+        PointerAction::Down,
+        point,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert!(missing_row.visual_changed);
+    assert_eq!(pointer_app.workspace_failures, 1);
+
+    let mut exhausted = StudioApp::open_workspace_lazy(TestTextSystem, root.path())?;
+    exhausted.file_tree.exhaust_tree_generation();
+    let exhausted_effect = exhausted.handle_pointer(
+        PointerAction::Down,
+        point,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert!(exhausted_effect.visual_changed);
+    assert_eq!(exhausted.workspace_failures, 1);
+
+    let stale_root = TestWorkspace::new()?;
+    stale_root.write("a.rs", "a")?;
+    let mut stale = StudioApp::open_workspace_lazy(TestTextSystem, stale_root.path())?;
+    assert!(stale.file_tree.activate(1)?);
+    let stale_request = stale
+        .prepare_file_tree_request()?
+        .ok_or("stale root request")?;
+    let stale_output = stale_request.execute();
+    assert!(stale.file_tree.hide());
+    assert_eq!(
+        stale.apply_file_tree_output(stale_output),
+        EventEffect::default()
+    );
+
+    let failed_root = TestWorkspace::new()?;
+    failed_root.write("a.rs", "a")?;
+    let mut failed = StudioApp::open_workspace_lazy(TestTextSystem, failed_root.path())?;
+    assert!(failed.file_tree.activate(1)?);
+    let failed_request = failed
+        .prepare_file_tree_request()?
+        .ok_or("failed root request")?;
+    std::fs::remove_dir_all(failed_root.path())?;
+    let failed_effect = failed.apply_file_tree_output(failed_request.execute());
+    assert!(failed_effect.visual_changed);
+    assert_eq!(failed.workspace_failures, 1);
+    assert!(failed.last_workspace_error.is_some());
+    Ok(())
+}
+
+#[test]
+fn active_tree_without_workspace_fails_before_worker_submission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app()?;
+    assert!(app.file_tree.activate(1)?);
+    assert!(matches!(
+        app.prepare_file_tree_request(),
+        Err(FileTreeError::NoWorkspace)
+    ));
+
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    assert!(
+        runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(2_000),
+            })
+            .is_some()
+    );
+    Ok(())
+}
+
+#[test]
+fn workspace_root_and_eager_directory_selection_reject_non_files()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("not-a-directory", "x")?;
+    assert!(matches!(
+        Workspace::open_root(&root.path().join("not-a-directory")),
+        Err(workspace::WorkspaceError::NotDirectory(_))
+    ));
+
+    std::fs::create_dir(root.path().join("directory"))?;
+    root.write("directory/file.rs", "x")?;
+    let workspace = Workspace::open(root.path(), WorkspaceLimits::default())?;
+    let snapshot = workspace.snapshot();
+    let rejected_directory = (0..snapshot.retained_entries).any(|index| {
+        matches!(
+            workspace.path_for_file(index),
+            Err(workspace::WorkspaceError::NotRegularFile(_))
+        )
+    });
+    assert!(rejected_directory);
     Ok(())
 }

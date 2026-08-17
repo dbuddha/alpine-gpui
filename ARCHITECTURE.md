@@ -81,15 +81,21 @@ owned AppKit window closes and has no native handles, collaboration state,
 extension host, telemetry, AI, or general async runtime.
 
 One optional process path now admits either the existing direct-file journey or
-one canonical local folder. Folder ownership is a private bounded top-level
-snapshot: at most 4,096 entries are inspected, at most 1,024 UTF-8 file or
-directory names and 256 KiB of name bytes are retained, and every omission is
-counted. Names are sorted deterministically before retention and only visible
-rows plus three-row overscan are shaped. A clicked file is revalidated as a
-non-symlink direct child of the canonical root before the existing `Editor`
-opens it. Invalid UTF-8, replacement, directory, escape, and dirty-document
-failures preserve the current document and paint local status. File replacement
-advances a Studio-owned monotonic document identity before runtime publication.
+one canonical local folder. Production folder admission owns only the canonical
+root and performs no directory enumeration before the first frame. The fixed
+sidebar activates explicitly and submits one immediate-directory request on the
+existing serial bounded worker. Each request inspects at most 16,384 entries,
+retains at most 4,096 children and 1 MiB of path bytes, and never recurses.
+The private cache retains at most 4,096 directory nodes, 65,536 entries, 8 MiB
+of path bytes, 4 KiB per path, and 256 path components. Project-local ignore
+rules are evaluated from root to the requested directory, hidden paths remain
+eligible, `.git` is omitted, and symlinks are never traversed. Workspace, tree,
+directory, and request generations reject stale publication. Prefix row counts
+project at most 512 rows including three-row overscan without flattening the
+complete project. A selected file is revalidated component by component under
+the canonical root before the existing `Editor` opens it. Failures preserve the
+current document and paint local status. File replacement advances a
+Studio-owned monotonic document identity before runtime publication.
 
 Studio also owns one bounded in-file find and replacement surface. Query and
 replacement fields retain at most 4 KiB each. A literal background scan clones

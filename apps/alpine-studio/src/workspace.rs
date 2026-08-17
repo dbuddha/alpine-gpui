@@ -1,14 +1,12 @@
 //! Bounded local-folder ownership for Alpine Studio.
 
 #[cfg(test)]
-use std::cell::RefCell;
+use std::{cell::RefCell, ops::Range, sync::Arc};
 
 use std::{
     error::Error,
     fmt, fs, io,
-    ops::Range,
     path::{Component, Path, PathBuf},
-    sync::Arc,
 };
 
 #[cfg(test)]
@@ -19,9 +17,13 @@ thread_local! {
     static REVALIDATION_HOOK: RefCell<Option<RevalidationHook>> = RefCell::new(None);
 }
 
+#[cfg(test)]
 const DEFAULT_MAX_SCANNED_ENTRIES: usize = 4_096;
+#[cfg(test)]
 const DEFAULT_MAX_RETAINED_ENTRIES: usize = 1_024;
+#[cfg(test)]
 const DEFAULT_MAX_NAME_BYTES: usize = 1_024;
+#[cfg(test)]
 const DEFAULT_MAX_RETAINED_NAME_BYTES: usize = 256 * 1_024;
 
 /// A structured failure while admitting one local Studio workspace.
@@ -161,24 +163,28 @@ impl Error for WorkspaceError {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum WorkspaceEntryKind {
     Directory,
     File,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WorkspaceEntry {
     name: Arc<str>,
     kind: WorkspaceEntryKind,
 }
 
+#[cfg(test)]
 impl WorkspaceEntry {
     pub(crate) fn name(&self) -> Arc<str> {
         Arc::clone(&self.name)
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WorkspaceLimits {
     scan_ceiling: usize,
@@ -187,8 +193,8 @@ pub(crate) struct WorkspaceLimits {
     aggregate_name_budget: usize,
 }
 
+#[cfg(test)]
 impl WorkspaceLimits {
-    #[cfg(test)]
     pub(crate) const fn new(
         max_scanned_entries: usize,
         max_retained_entries: usize,
@@ -204,6 +210,7 @@ impl WorkspaceLimits {
     }
 }
 
+#[cfg(test)]
 impl Default for WorkspaceLimits {
     fn default() -> Self {
         Self {
@@ -215,6 +222,7 @@ impl Default for WorkspaceLimits {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WorkspaceSnapshot {
     pub(crate) scanned_entries: usize,
@@ -228,11 +236,39 @@ pub(crate) struct WorkspaceSnapshot {
 
 pub(crate) struct Workspace {
     root: PathBuf,
+    #[cfg(test)]
     entries: Box<[WorkspaceEntry]>,
+    #[cfg(test)]
     snapshot: WorkspaceSnapshot,
 }
 
 impl Workspace {
+    pub(crate) fn open_root(root: &Path) -> Result<Self, WorkspaceError> {
+        let canonical = fs::canonicalize(root)
+            .map_err(|source| WorkspaceError::io("canonicalize", root, source))?;
+        let metadata = fs::metadata(&canonical)
+            .map_err(|source| WorkspaceError::io("read metadata", &canonical, source))?;
+        if !metadata.is_dir() {
+            return Err(WorkspaceError::NotDirectory(canonical));
+        }
+        Ok(Self {
+            root: canonical,
+            #[cfg(test)]
+            entries: Box::default(),
+            #[cfg(test)]
+            snapshot: WorkspaceSnapshot {
+                scanned_entries: 0,
+                retained_entries: 0,
+                retained_name_bytes: 0,
+                omitted_entries: 0,
+                scan_limit: DEFAULT_MAX_SCANNED_ENTRIES,
+                entry_limit: DEFAULT_MAX_RETAINED_ENTRIES,
+                name_byte_limit: DEFAULT_MAX_RETAINED_NAME_BYTES,
+            },
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn open(root: &Path, limits: WorkspaceLimits) -> Result<Self, WorkspaceError> {
         let canonical = fs::canonicalize(root)
             .map_err(|source| WorkspaceError::io("canonicalize", root, source))?;
@@ -329,6 +365,7 @@ impl Workspace {
         })
     }
 
+    #[cfg(test)]
     pub(crate) const fn len(&self) -> usize {
         self.entries.len()
     }
@@ -337,14 +374,17 @@ impl Workspace {
         &self.root
     }
 
+    #[cfg(test)]
     pub(crate) fn entry(&self, index: usize) -> Option<&WorkspaceEntry> {
         self.entries.get(index)
     }
 
+    #[cfg(test)]
     pub(crate) const fn snapshot(&self) -> WorkspaceSnapshot {
         self.snapshot
     }
 
+    #[cfg(test)]
     pub(crate) fn visible_range(
         &self,
         first_visible: usize,
@@ -361,6 +401,7 @@ impl Workspace {
         start..end.max(start)
     }
 
+    #[cfg(test)]
     pub(crate) fn path_for_file(&self, index: usize) -> Result<PathBuf, WorkspaceError> {
         let entry = self
             .entries

@@ -29,6 +29,7 @@ Accepted AEPs:
 - [AEP 0160: Bounded local workspace foundation](0160-bounded-local-workspace-foundation.md)
 - [AEP 0165: Bounded in-file find](0165-bounded-in-file-find.md)
 - [AEP 0168: Bounded lazy workspace inventory and quick open](0168-bounded-lazy-workspace-inventory.md)
+- [AEP 0171: Lazy bounded workspace file tree](0171-lazy-bounded-workspace-file-tree.md)
 
 Proposed AEPs:
 
