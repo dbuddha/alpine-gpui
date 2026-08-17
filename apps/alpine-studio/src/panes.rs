@@ -428,7 +428,7 @@ fn split_bounds(bounds: Rect, axis: SplitAxis) -> Result<(Rect, Rect), PaneError
             let available = size.width() - DIVIDER_EXTENT;
             let first = available * 0.5;
             let second = available - first;
-            if first < MIN_COLUMN_WIDTH || second < MIN_COLUMN_WIDTH {
+            if first.min(second) < MIN_COLUMN_WIDTH {
                 return Err(PaneError::GeometryTooSmall);
             }
             (
@@ -443,7 +443,7 @@ fn split_bounds(bounds: Rect, axis: SplitAxis) -> Result<(Rect, Rect), PaneError
             let available = size.height() - DIVIDER_EXTENT;
             let first = available * 0.5;
             let second = available - first;
-            if first < MIN_ROW_HEIGHT || second < MIN_ROW_HEIGHT {
+            if first.min(second) < MIN_ROW_HEIGHT {
                 return Err(PaneError::GeometryTooSmall);
             }
             (
@@ -669,6 +669,68 @@ mod tests {
             second: 0,
         };
         assert_eq!(cycle.first_leaf_id(0), Err(PaneError::InconsistentState));
+        Ok(())
+    }
+
+    #[test]
+    fn primitive_geometry_boundaries_are_exact() -> Result<(), Box<dyn Error>> {
+        assert_eq!(MAX_NODES, 7);
+        assert_eq!(finite_scroll(7.5).to_bits(), 7.5_f32.to_bits());
+        assert_eq!(finite_scroll(-3.0).to_bits(), 0.0_f32.to_bits());
+        assert_eq!(finite_scroll(f32::NAN).to_bits(), 0.0_f32.to_bits());
+        assert_eq!(finite_scroll(f32::INFINITY).to_bits(), 0.0_f32.to_bits());
+
+        let exact = bounds(242.0, 162.0)?;
+        let (left, right) = split_bounds(exact, SplitAxis::Columns)?;
+        assert_eq!(left.origin(), exact.origin());
+        assert_eq!(left.size().width().to_bits(), 120.0_f32.to_bits());
+        assert_eq!(right.origin().x().to_bits(), 132.0_f32.to_bits());
+        assert_eq!(right.origin().y().to_bits(), 20.0_f32.to_bits());
+        assert_eq!(right.size().width().to_bits(), 120.0_f32.to_bits());
+        assert_eq!(
+            split_bounds(bounds(241.0, 162.0)?, SplitAxis::Columns),
+            Err(PaneError::GeometryTooSmall)
+        );
+
+        let (top, bottom) = split_bounds(exact, SplitAxis::Rows)?;
+        assert_eq!(top.origin(), exact.origin());
+        assert_eq!(top.size().height().to_bits(), 80.0_f32.to_bits());
+        assert_eq!(bottom.origin().x().to_bits(), 10.0_f32.to_bits());
+        assert_eq!(bottom.origin().y().to_bits(), 102.0_f32.to_bits());
+        assert_eq!(bottom.size().height().to_bits(), 80.0_f32.to_bits());
+        assert_eq!(
+            split_bounds(bounds(242.0, 161.0)?, SplitAxis::Rows),
+            Err(PaneError::GeometryTooSmall)
+        );
+
+        assert!(contains(
+            exact,
+            Point::new(10.0, 20.0).ok_or(PaneError::InvalidGeometry)?
+        ));
+        assert!(contains(
+            exact,
+            Point::new(251.5, 181.5).ok_or(PaneError::InvalidGeometry)?
+        ));
+        assert!(!contains(
+            exact,
+            Point::new(252.0, 20.0).ok_or(PaneError::InvalidGeometry)?
+        ));
+        assert!(!contains(
+            exact,
+            Point::new(10.0, 182.0).ok_or(PaneError::InvalidGeometry)?
+        ));
+
+        let mut panes = PaneGrid::new(3.0);
+        assert_eq!(
+            panes.scroll_for(PaneId(0), 0.0),
+            Err(PaneError::InconsistentState)
+        );
+        let large = bounds(1_200.0, 900.0)?;
+        panes.split(SplitAxis::Columns, 3.0, large)?;
+        panes.split(SplitAxis::Rows, 4.0, large)?;
+        panes.split(SplitAxis::Rows, 5.0, large)?;
+        assert!(!panes.can_split(SplitAxis::Columns, large));
+        assert!(!panes.can_split(SplitAxis::Rows, large));
         Ok(())
     }
 }

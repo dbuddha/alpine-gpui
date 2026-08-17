@@ -1471,6 +1471,7 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
 #[test]
 #[allow(
     clippy::float_cmp,
+    clippy::too_many_lines,
     reason = "exact split geometry and retained scroll distinguish pane ownership mutations"
 )]
 fn split_views_render_focus_and_close_with_bounded_independent_scroll()
@@ -1491,7 +1492,7 @@ fn split_views_render_focus_and_close_with_bounded_independent_scroll()
     assert_eq!(app.panes.len(), 2);
     assert!(app.command_context().can_close_pane);
     app.scroll_y = 44.0;
-    app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(4));
+    app.selection = Selection::new(ByteOffset::new(5), ByteOffset::new(9));
     let scene = app.try_scene(SceneRevision::new(70), viewport)?;
     let layout = app.panes.layout(region)?;
     let entries: Vec<_> = layout.iter().collect();
@@ -1508,12 +1509,45 @@ fn split_views_render_focus_and_close_with_bounded_independent_scroll()
         x >= entries[1].bounds.origin().x()
             && x < entries[1].bounds.origin().x() + entries[1].bounds.size().width()
     }));
+    let expected_tops = [
+        entries[0].bounds.origin().y() + LINE_HEIGHT,
+        entries[1].bounds.origin().y() + LINE_HEIGHT - 44.0,
+    ];
+    for (entry, expected_top) in entries.iter().zip(expected_tops) {
+        let expected_selection = Rect::new(
+            Point::new(entry.bounds.origin().x(), expected_top).ok_or("pane selection origin")?,
+            Size::new(32.0, LINE_HEIGHT).ok_or("pane selection size")?,
+        );
+        assert!(
+            scene
+                .quads()
+                .iter()
+                .any(|quad| quad.bounds() == expected_selection)
+        );
+        assert!(scene.glyphs().iter().any(|glyph| {
+            glyph.bounds().origin().x() >= entry.bounds.origin().x()
+                && glyph.bounds().origin().x()
+                    < entry.bounds.origin().x() + entry.bounds.size().width()
+                && glyph.bounds().origin().y().to_bits() == (expected_top + 12.0).to_bits()
+        }));
+    }
 
     let left_point = Point::new(
         entries[0].bounds.origin().x() + 4.0,
         entries[0].bounds.origin().y() + 4.0,
     )
     .ok_or("left pane point")?;
+    let active = app.panes.active_id();
+    assert_eq!(
+        app.handle_pointer(
+            PointerAction::Down,
+            left_point,
+            PointerButton::Secondary,
+            Modifiers::default(),
+        ),
+        EventEffect::default()
+    );
+    assert_eq!(app.panes.active_id(), active);
     assert!(
         app.handle_pointer(
             PointerAction::Down,
@@ -1558,6 +1592,74 @@ fn split_views_render_focus_and_close_with_bounded_independent_scroll()
             .visual_changed
     );
     assert_eq!(app.panes.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn pane_projection_uses_half_open_bounds_and_relative_lines()
+-> Result<(), Box<dyn std::error::Error>> {
+    let text = "zero\none\ntwo\n";
+    let viewport = viewport()?;
+    let mut app = StudioApp::from_document(TestTextSystem, StudioDocument::scratch(text), None)?;
+    app.last_viewport = viewport;
+    app.split_active_pane(SplitAxis::Columns);
+    app.try_scene(SceneRevision::new(72), viewport)?;
+    let active = app
+        .panes
+        .layout(app.editor_region(viewport)?)?
+        .active()
+        .ok_or("active pane")?;
+    let origin = active.bounds.origin();
+    let size = active.bounds.size();
+    let inside_x = origin.x() + 0.5;
+
+    assert_eq!(
+        app.offset_at_point(Point::new(origin.x() - 0.5, origin.y()).ok_or("left outside")?),
+        None
+    );
+    assert_eq!(
+        app.offset_at_point(Point::new(origin.x(), origin.y()).ok_or("top left")?),
+        Some(ByteOffset::new(0))
+    );
+    assert_eq!(
+        app.offset_at_point(Point::new(origin.x() + size.width(), origin.y()).ok_or("right edge")?),
+        None
+    );
+    assert!(
+        app.offset_at_point(
+            Point::new(origin.x() + size.width() - 0.5, origin.y()).ok_or("right inside")?
+        )
+        .is_some()
+    );
+    assert_eq!(
+        app.offset_at_point(Point::new(inside_x, origin.y() + size.height()).ok_or("bottom edge")?),
+        None
+    );
+    assert_eq!(
+        app.offset_at_point(Point::new(inside_x, origin.y() - 0.5).ok_or("top outside")?),
+        None
+    );
+    assert_eq!(
+        app.offset_at_point(
+            Point::new(inside_x, origin.y() + LINE_HEIGHT * 2.0 + 1.0).ok_or("third line")?
+        ),
+        Some(ByteOffset::new(9))
+    );
+
+    let mut single = StudioApp::from_document(TestTextSystem, StudioDocument::scratch(text), None)?;
+    single.last_viewport = viewport;
+    single.try_scene(SceneRevision::new(73), viewport)?;
+    let single_bounds = single.active_pane_bounds()?;
+    assert_eq!(
+        single.offset_at_point(
+            Point::new(
+                single_bounds.origin().x() + 0.5,
+                single_bounds.origin().y() - 0.5,
+            )
+            .ok_or("single pane overscroll")?
+        ),
+        Some(ByteOffset::new(0))
+    );
     Ok(())
 }
 
