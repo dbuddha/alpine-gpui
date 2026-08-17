@@ -1717,6 +1717,97 @@ fn pane_command_pointer_and_projection_failures_are_structured()
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each explicit pane and tab corruption boundary is proven independently"
+)]
+fn pane_document_failure_boundaries_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let mut split = test_app()?;
+    split.last_viewport = viewport()?;
+    split.scroll_y = f32::NAN;
+    let failures = split.workspace_failures;
+    split.split_active_pane(SplitAxis::Columns);
+    assert_eq!(split.workspace_failures, failures + 1);
+
+    let mut close = test_app()?;
+    close.scroll_y = f32::NAN;
+    let failures = close.workspace_failures;
+    close.close_active_pane();
+    assert_eq!(close.workspace_failures, failures + 1);
+
+    let mut focus = test_app()?;
+    focus.panes.inject_layout_fault();
+    let failures = focus.workspace_failures;
+    focus.focus_next_pane();
+    assert_eq!(focus.workspace_failures, failures + 1);
+
+    let mut missing_document = test_app()?;
+    missing_document.panes.inject_active_document_fault()?;
+    let failures = missing_document.workspace_failures;
+    missing_document.apply_focused_pane_document();
+    assert_eq!(missing_document.workspace_failures, failures + 1);
+
+    let mut invalid_active_tab = test_app()?;
+    invalid_active_tab.tabs.inject_active_index_fault();
+    let failures = invalid_active_tab.workspace_failures;
+    invalid_active_tab.apply_focused_pane_document();
+    assert_eq!(invalid_active_tab.workspace_failures, failures + 1);
+
+    let mut missing_tab = test_app()?;
+    missing_tab.panes.sync_active_document(
+        crate::documents::DocumentTabId(u64::MAX),
+        missing_tab.active_document_view(),
+    )?;
+    let failures = missing_tab.workspace_failures;
+    missing_tab.apply_focused_pane_document();
+    assert_eq!(missing_tab.workspace_failures, failures + 1);
+
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    root.write("beta.rs", "beta")?;
+    let mut invalid_switch = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let alpha = invalid_switch
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.index_named("alpha.rs"))
+        .ok_or("alpha entry")?;
+    let beta = invalid_switch
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.index_named("beta.rs"))
+        .ok_or("beta entry")?;
+    invalid_switch.open_workspace_entry(alpha)?;
+    let alpha_tab = invalid_switch.tabs.active_id()?;
+    invalid_switch.open_workspace_entry(beta)?;
+    invalid_switch
+        .panes
+        .sync_active_document(alpha_tab, invalid_switch.active_document_view())?;
+    invalid_switch
+        .tabs
+        .inject_active_payload_for_test(StudioDocument::scratch("duplicate active payload"));
+    let failures = invalid_switch.workspace_failures;
+    invalid_switch.apply_focused_pane_document();
+    assert_eq!(invalid_switch.workspace_failures, failures + 1);
+
+    let mut invalid_restored_view = test_app()?;
+    invalid_restored_view
+        .panes
+        .inject_scroll_fault(invalid_restored_view.panes.active_id(), f32::NAN)?;
+    let failures = invalid_restored_view.workspace_failures;
+    invalid_restored_view.apply_focused_pane_document();
+    assert_eq!(invalid_restored_view.workspace_failures, failures + 1);
+
+    let mut pointer = test_app()?;
+    pointer.last_viewport = viewport()?;
+    pointer.panes.inject_layout_fault();
+    let failures = pointer.workspace_failures;
+    let point = pointer.editor_region(pointer.last_viewport)?.origin();
+    pointer.focus_pane_for_pointer(PointerAction::Down, PointerButton::Primary, point);
+    assert_eq!(pointer.workspace_failures, failures + 1);
+    Ok(())
+}
+
+#[test]
 fn pane_focus_restores_exact_document_and_view_identity() -> Result<(), Box<dyn std::error::Error>>
 {
     let root = TestWorkspace::new()?;
@@ -1762,7 +1853,15 @@ fn pane_focus_restores_exact_document_and_view_identity() -> Result<(), Box<dyn 
     );
     assert_eq!(app.panes.active_id(), active);
 
-    assert!(app.focus_next_pane().document_identity_advanced);
+    assert!(
+        app.handle_pointer(
+            PointerAction::Down,
+            point,
+            PointerButton::Primary,
+            Modifiers::default(),
+        )
+        .document_identity_advanced
+    );
     assert!(app.buffer().snapshot().text().starts_with("alpha\n"));
     assert_eq!(app.selection, Selection::caret(ByteOffset::new(2)));
     assert_eq!(app.scroll_y.to_bits(), 11.0_f32.to_bits());

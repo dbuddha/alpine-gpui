@@ -246,6 +246,11 @@ impl<T> DocumentTabs<T> {
         true
     }
 
+    #[cfg(test)]
+    pub(crate) fn inject_active_index_fault(&mut self) {
+        self.active = self.tabs.len();
+    }
+
     pub(crate) fn inactive_documents(&self) -> impl Iterator<Item = &T> {
         self.tabs.iter().filter_map(|tab| tab.document.as_ref())
     }
@@ -711,6 +716,8 @@ mod tests {
 
         let active_id = tabs.tabs[tabs.active].id;
         let scratch_id = tabs.tabs[0].id;
+        assert_eq!(tabs.document_for_id(active_id, &active)?, "b");
+        assert_eq!(tabs.document_for_id(scratch_id, &active)?, "scratch");
         tabs.history.clear();
         tabs.history
             .extend([scratch_id, DocumentTabId(u64::MAX), active_id]);

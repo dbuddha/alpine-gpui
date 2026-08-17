@@ -161,6 +161,22 @@ impl PaneGrid {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn inject_layout_fault(&mut self) {
+        self.nodes[0] = Node::Empty;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_active_document_fault(&mut self) -> Result<(), PaneError> {
+        let state = self
+            .states
+            .iter_mut()
+            .find(|state| state.occupied && state.id == self.active)
+            .ok_or(PaneError::InconsistentState)?;
+        state.view = None;
+        Ok(())
+    }
+
     pub(crate) fn sync_active(&mut self, scroll_y: f32) -> Result<(), PaneError> {
         if !scroll_y.is_finite() || scroll_y < 0.0 {
             return Err(PaneError::InvalidGeometry);
@@ -658,6 +674,12 @@ mod tests {
     fn invalid_transitions_are_atomic_and_descriptive() -> Result<(), Box<dyn Error>> {
         let large = bounds(800.0, 600.0)?;
         let mut panes = grid(f32::NAN);
+        assert_eq!(panes.sync_active(f32::NAN), Err(PaneError::InvalidGeometry));
+        assert_eq!(panes.sync_active(-1.0), Err(PaneError::InvalidGeometry));
+        assert_eq!(
+            panes.scroll_for(panes.active_id(), 7.5)?.to_bits(),
+            7.5_f32.to_bits()
+        );
         assert!(matches!(
             panes.scroll_for(panes.active_id(), f32::NAN),
             Err(PaneError::InvalidGeometry)
