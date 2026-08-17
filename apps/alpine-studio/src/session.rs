@@ -422,6 +422,10 @@ fn encode(state: &SessionState) -> Result<Vec<u8>, SessionError> {
     Ok(bytes)
 }
 
+pub(crate) fn encode_for_recovery(state: &SessionState) -> Result<Vec<u8>, SessionError> {
+    encode(state)
+}
+
 fn decode(bytes: &[u8]) -> Result<SessionState, SessionCorrupt> {
     if bytes.len() < HEADER_BYTES || bytes.get(..8) != Some(MAGIC) {
         return Err(SessionCorrupt::Header);
@@ -498,6 +502,10 @@ fn decode(bytes: &[u8]) -> Result<SessionState, SessionCorrupt> {
     }
     validate(&state).map_err(SessionCorrupt::Invalid)?;
     Ok(state)
+}
+
+pub(crate) fn decode_for_recovery(bytes: &[u8]) -> Result<SessionState, SessionCorrupt> {
+    decode(bytes)
 }
 
 fn put_path(bytes: &mut Vec<u8>, path: Option<&Path>) -> Result<(), SessionError> {
