@@ -825,3 +825,9 @@ telemetry, or startup work. See AEP-0180.
    gates require qualified fixed hardware.
 10. Any architecture-changing pull request updates this document in the same
     change and links the accepted decision that authorized it.
+
+### Pane document ownership (Task #127)
+
+Pane leaves retain a stable document-tab identity and pane-local view state. The global document-tab store remains the sole owner of document payloads and buffers; panes never clone an editor or buffer. Scene construction resolves each pane identity to an immutable snapshot, while focus activates that identity through the existing checked tab transition. Selection state follows the document revision and is synchronized across panes showing the same tab, while scroll remains pane-local. Closing a tab retargets every referencing pane to the replacement active tab before the next scene is admitted.
+
+The top-level tab strip controls the focused pane in this slice. Pane-local tab strips, duplicated document stores, GPUI-compatible entities, collaboration clocks, and a general reactive component graph are intentionally excluded. This keeps tab/pane composition bounded and local while leaving a narrow path to independent pane tab groups without changing buffer ownership.

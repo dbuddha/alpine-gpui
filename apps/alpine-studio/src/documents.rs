@@ -14,6 +14,9 @@ const DEFAULT_TAB_CAPACITY: usize = 32;
 const DEFAULT_PATH_BYTE_BUDGET: usize = 64 * 1_024;
 const DEFAULT_HISTORY_CAPACITY: usize = 256;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DocumentTabId(pub(crate) u64);
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DocumentViewState {
     pub(crate) selection: Selection,
@@ -108,7 +111,7 @@ impl fmt::Display for DocumentTabError {
 impl Error for DocumentTabError {}
 
 struct DocumentTab<T> {
-    id: u64,
+    id: DocumentTabId,
     path: Option<PathBuf>,
     label: Arc<str>,
     retained_path_bytes: usize,
@@ -122,7 +125,7 @@ pub(crate) struct DocumentTabs<T> {
     active: usize,
     next_id: u64,
     retained_path_bytes: usize,
-    history: Vec<u64>,
+    history: Vec<DocumentTabId>,
     history_cursor: usize,
     limits: DocumentTabLimits,
 }
@@ -147,7 +150,7 @@ impl<T> DocumentTabs<T> {
         tabs.try_reserve(1)
             .map_err(|_| DocumentTabError::AllocationFailed)?;
         tabs.push(DocumentTab {
-            id: 1,
+            id: DocumentTabId(1),
             path: path.map(Path::to_path_buf),
             label,
             retained_path_bytes,
@@ -159,7 +162,7 @@ impl<T> DocumentTabs<T> {
         history
             .try_reserve_exact(limits.history_capacity)
             .map_err(|_| DocumentTabError::AllocationFailed)?;
-        history.push(1);
+        history.push(DocumentTabId(1));
         Ok(Self {
             tabs,
             active: 0,
@@ -177,6 +180,34 @@ impl<T> DocumentTabs<T> {
 
     pub(crate) const fn active_index(&self) -> usize {
         self.active
+    }
+
+    pub(crate) fn active_id(&self) -> Result<DocumentTabId, DocumentTabError> {
+        self.tabs
+            .get(self.active)
+            .map(|tab| tab.id)
+            .ok_or(DocumentTabError::InvalidPayloadState)
+    }
+
+    pub(crate) fn index_for_id(&self, id: DocumentTabId) -> Option<usize> {
+        self.tabs.iter().position(|tab| tab.id == id)
+    }
+
+    pub(crate) fn document_for_id<'a>(
+        &'a self,
+        id: DocumentTabId,
+        active_document: &'a T,
+    ) -> Result<&'a T, DocumentTabError> {
+        let index = self
+            .index_for_id(id)
+            .ok_or(DocumentTabError::InvalidPayloadState)?;
+        if index == self.active {
+            return Ok(active_document);
+        }
+        self.tabs[index]
+            .document
+            .as_ref()
+            .ok_or(DocumentTabError::InvalidPayloadState)
     }
 
     pub(crate) fn active_workspace_entry(&self) -> Option<usize> {
@@ -300,7 +331,7 @@ impl<T> DocumentTabs<T> {
         let active_tab = &mut self.tabs[self.active];
         active_tab.document = Some(previous);
         active_tab.view = active_view;
-        let id = self.next_id;
+        let id = DocumentTabId(self.next_id);
         self.tabs.push(DocumentTab {
             id,
             path: Some(path.to_path_buf()),
@@ -456,11 +487,7 @@ impl<T> DocumentTabs<T> {
         Ok(target_view)
     }
 
-    fn index_for_id(&self, id: u64) -> Option<usize> {
-        self.tabs.iter().position(|tab| tab.id == id)
-    }
-
-    fn record_navigation(&mut self, id: u64) {
+    fn record_navigation(&mut self, id: DocumentTabId) {
         if self.history.get(self.history_cursor) == Some(&id) {
             return;
         }
@@ -685,7 +712,8 @@ mod tests {
         let active_id = tabs.tabs[tabs.active].id;
         let scratch_id = tabs.tabs[0].id;
         tabs.history.clear();
-        tabs.history.extend([scratch_id, u64::MAX, active_id]);
+        tabs.history
+            .extend([scratch_id, DocumentTabId(u64::MAX), active_id]);
         tabs.history_cursor = 2;
         assert!(tabs.navigate_back(&mut active, view(7, 7.0))?.is_some());
         assert_eq!(active, "scratch");

@@ -4,6 +4,8 @@ use std::{error::Error, fmt};
 
 use alpine_core::{Point, Rect, Size};
 
+use crate::documents::{DocumentTabId, DocumentViewState};
+
 pub(crate) const MAX_PANES: usize = 4;
 const MAX_NODES: usize = MAX_PANES * 2 - 1;
 const DIVIDER_EXTENT: f32 = 2.0;
@@ -42,14 +44,16 @@ enum Node {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PaneState {
     id: PaneId,
-    scroll_y: f32,
+    tab: Option<DocumentTabId>,
+    view: Option<DocumentViewState>,
     occupied: bool,
 }
 
 impl PaneState {
     const EMPTY: Self = Self {
         id: PaneId(0),
-        scroll_y: 0.0,
+        tab: None,
+        view: None,
         occupied: false,
     };
 }
@@ -109,14 +113,18 @@ pub(crate) struct PaneGrid {
 }
 
 impl PaneGrid {
-    pub(crate) fn new(scroll_y: f32) -> Self {
+    pub(crate) fn new(tab: DocumentTabId, view: DocumentViewState) -> Self {
         let mut nodes = [Node::Empty; MAX_NODES];
         let mut states = [PaneState::EMPTY; MAX_PANES];
         let id = PaneId(1);
         nodes[0] = Node::Leaf { state: 0 };
         states[0] = PaneState {
             id,
-            scroll_y: finite_scroll(scroll_y),
+            tab: Some(tab),
+            view: Some(DocumentViewState {
+                selection: view.selection,
+                scroll_y: finite_scroll(view.scroll_y),
+            }),
             occupied: true,
         };
         Self {
@@ -146,10 +154,82 @@ impl PaneGrid {
             .iter_mut()
             .find(|state| state.occupied && state.id == self.active)
             .ok_or(PaneError::InconsistentState)?;
-        state.scroll_y = scroll_y;
+        let view = state.view.as_mut().ok_or(PaneError::InconsistentState)?;
+        view.scroll_y = scroll_y;
         Ok(())
     }
 
+    pub(crate) fn sync_active_document(
+        &mut self,
+        tab: DocumentTabId,
+        view: DocumentViewState,
+    ) -> Result<(), PaneError> {
+        if !view.scroll_y.is_finite() || view.scroll_y < 0.0 {
+            return Err(PaneError::InvalidGeometry);
+        }
+        let state = self
+            .states
+            .iter_mut()
+            .find(|state| state.occupied && state.id == self.active)
+            .ok_or(PaneError::InconsistentState)?;
+        state.tab = Some(tab);
+        state.view = Some(view);
+        for sibling in &mut self.states {
+            if sibling.occupied && sibling.id != self.active && sibling.tab == Some(tab) {
+                let sibling_view = sibling.view.as_mut().ok_or(PaneError::InconsistentState)?;
+                sibling_view.selection = view.selection;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn document_for(
+        &self,
+        id: PaneId,
+        active_tab: DocumentTabId,
+        active_view: DocumentViewState,
+    ) -> Result<(DocumentTabId, DocumentViewState), PaneError> {
+        if id == self.active {
+            return Ok((active_tab, active_view));
+        }
+        let state = self
+            .states
+            .iter()
+            .find(|state| state.occupied && state.id == id)
+            .ok_or(PaneError::InconsistentState)?;
+        Ok((
+            state.tab.ok_or(PaneError::InconsistentState)?,
+            state.view.ok_or(PaneError::InconsistentState)?,
+        ))
+    }
+
+    pub(crate) fn active_document(&self) -> Result<(DocumentTabId, DocumentViewState), PaneError> {
+        let state = self
+            .states
+            .iter()
+            .find(|state| state.occupied && state.id == self.active)
+            .ok_or(PaneError::InconsistentState)?;
+        Ok((
+            state.tab.ok_or(PaneError::InconsistentState)?,
+            state.view.ok_or(PaneError::InconsistentState)?,
+        ))
+    }
+
+    pub(crate) fn retarget_closed_tab(
+        &mut self,
+        closed: DocumentTabId,
+        replacement: DocumentTabId,
+        replacement_view: DocumentViewState,
+    ) {
+        for state in &mut self.states {
+            if state.occupied && state.tab == Some(closed) {
+                state.tab = Some(replacement);
+                state.view = Some(replacement_view);
+            }
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn scroll_for(&self, id: PaneId, active_scroll: f32) -> Result<f32, PaneError> {
         if id == self.active {
             if !active_scroll.is_finite() || active_scroll < 0.0 {
@@ -160,7 +240,7 @@ impl PaneGrid {
         self.states
             .iter()
             .find(|state| state.occupied && state.id == id)
-            .map(|state| state.scroll_y)
+            .and_then(|state| state.view.map(|view| view.scroll_y))
             .ok_or(PaneError::InconsistentState)
     }
 
@@ -212,10 +292,12 @@ impl PaneGrid {
             .checked_add(1)
             .ok_or(PaneError::IdentityExhausted)?;
         let id = PaneId(self.next_id);
-        let scroll_y = self.states[usize::from(old_state)].scroll_y;
+        let old = self.states[usize::from(old_state)];
+        let scroll_y = old.view.ok_or(PaneError::InconsistentState)?.scroll_y;
         self.states[new_state] = PaneState {
             id,
-            scroll_y,
+            tab: old.tab,
+            view: old.view,
             occupied: true,
         };
         self.nodes[first_node] = Node::Leaf { state: old_state };
@@ -303,7 +385,7 @@ impl PaneGrid {
             .states
             .iter()
             .find(|state| state.occupied && state.id == target)
-            .map(|state| state.scroll_y)
+            .and_then(|state| state.view.map(|view| view.scroll_y))
             .ok_or(PaneError::InconsistentState)?;
         self.active = target;
         Ok(scroll_y)
@@ -329,7 +411,7 @@ impl PaneGrid {
             .states
             .iter()
             .find(|state| state.occupied && state.id == id)
-            .map(|state| state.scroll_y)
+            .and_then(|state| state.view.map(|view| view.scroll_y))
             .ok_or(PaneError::InconsistentState)?;
         self.active = id;
         Ok(Some(scroll_y))
@@ -480,6 +562,16 @@ fn unit_bounds() -> Result<Rect, PaneError> {
 mod tests {
     use super::*;
 
+    fn grid(scroll_y: f32) -> PaneGrid {
+        PaneGrid::new(
+            DocumentTabId(1),
+            DocumentViewState {
+                selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(0)),
+                scroll_y,
+            },
+        )
+    }
+
     fn bounds(width: f32, height: f32) -> Result<Rect, PaneError> {
         let origin = Point::new(10.0, 20.0).ok_or(PaneError::InvalidGeometry)?;
         let size = Size::new(width, height).ok_or(PaneError::InvalidGeometry)?;
@@ -489,7 +581,7 @@ mod tests {
     #[test]
     fn row_column_focus_and_close_preserve_exact_scroll() -> Result<(), Box<dyn Error>> {
         let bounds = bounds(800.0, 600.0)?;
-        let mut panes = PaneGrid::new(11.0);
+        let mut panes = grid(11.0);
         let first = panes.active_id();
         assert_eq!(
             panes.split(SplitAxis::Columns, 11.0, bounds)?.to_bits(),
@@ -528,7 +620,7 @@ mod tests {
     #[test]
     fn nested_geometry_capacity_and_hit_testing_are_bounded() -> Result<(), Box<dyn Error>> {
         let bounds = bounds(1_200.0, 900.0)?;
-        let mut panes = PaneGrid::new(0.0);
+        let mut panes = grid(0.0);
         panes.split(SplitAxis::Columns, 0.0, bounds)?;
         panes.split(SplitAxis::Rows, 10.0, bounds)?;
         panes.split(SplitAxis::Rows, 20.0, bounds)?;
@@ -556,7 +648,7 @@ mod tests {
     #[test]
     fn invalid_transitions_are_atomic_and_descriptive() -> Result<(), Box<dyn Error>> {
         let large = bounds(800.0, 600.0)?;
-        let mut panes = PaneGrid::new(f32::NAN);
+        let mut panes = grid(f32::NAN);
         assert!(matches!(
             panes.scroll_for(panes.active_id(), f32::NAN),
             Err(PaneError::InvalidGeometry)
@@ -587,10 +679,39 @@ mod tests {
     }
 
     #[test]
+    fn panes_retain_independent_tab_identity_and_view_state() -> Result<(), Box<dyn Error>> {
+        let alpha = DocumentTabId(1);
+        let beta = DocumentTabId(2);
+        let alpha_view = DocumentViewState {
+            scroll_y: 12.0,
+            ..DocumentViewState::default()
+        };
+        let beta_view = DocumentViewState {
+            scroll_y: 48.0,
+            ..DocumentViewState::default()
+        };
+        let mut panes = PaneGrid::new(alpha, alpha_view);
+        let bounds = bounds(1_200.0, 900.0)?;
+
+        panes.split(SplitAxis::Columns, 12.0, bounds)?;
+        panes.sync_active_document(beta, beta_view)?;
+        assert_eq!(panes.active_document(), Ok((beta, beta_view)));
+
+        panes.focus_next(48.0)?;
+        assert_eq!(panes.active_document(), Ok((alpha, alpha_view)));
+        panes.focus_next(12.0)?;
+        assert_eq!(panes.active_document(), Ok((beta, beta_view)));
+
+        panes.retarget_closed_tab(beta, alpha, alpha_view);
+        assert_eq!(panes.active_document(), Ok((alpha, alpha_view)));
+        Ok(())
+    }
+
+    #[test]
     fn repeated_split_focus_close_reuses_nodes_without_identity_alias() -> Result<(), Box<dyn Error>>
     {
         let bounds = bounds(1_200.0, 900.0)?;
-        let mut panes = PaneGrid::new(0.0);
+        let mut panes = grid(0.0);
         let mut previous = panes.active_id();
         for index in 0_u16..4_096 {
             let scroll = f32::from(index);
