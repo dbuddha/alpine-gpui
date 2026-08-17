@@ -216,10 +216,44 @@ pub fn initial_scene() -> Result<Scene, SurfaceError> {
 ///
 /// Returns the structured surface error from scene construction, native
 /// initialization, frame admission, or the application run loop.
+#[cfg_attr(test, mutants::skip)] // Entering AppKit is qualified by native process E2E.
 pub fn run() -> Result<(), RuntimeError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        run_native(native_restored_app()?)
+        let app = match session::default_path() {
+            Err(_) => native_app()?,
+            Ok(path) => {
+                let restored = match session::load(&path) {
+                    Ok(state) => {
+                        let mut text_system = alpine_text_layout::CoreTextSystem::new();
+                        text_system
+                            .register_font(FONT_FAMILY, "Menlo-Regular")
+                            .map_err(|_| SurfaceError::DriverUnavailable)?;
+                        StudioApp::from_session(text_system, state)
+                    }
+                    Err(session::SessionError::Io {
+                        kind: std::io::ErrorKind::NotFound,
+                        ..
+                    }) => Ok(native_app()?),
+                    Err(error) => Err(SessionRestoreError::Session(error.to_string())),
+                };
+                match restored {
+                    Ok(mut app) => {
+                        app.session_path = Some(path);
+                        app
+                    }
+                    Err(error) => {
+                        let mut app = native_app()?;
+                        app.session_path = Some(path);
+                        app.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
+                            "Session restore skipped: {error}"
+                        ))));
+                        app
+                    }
+                }
+            }
+        };
+        run_native(app)
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -234,6 +268,7 @@ pub fn run() -> Result<(), RuntimeError> {
 ///
 /// Returns a structured file error before native construction, or the
 /// structured runtime error from native construction and execution.
+#[cfg_attr(test, mutants::skip)] // Entering AppKit is qualified by native process E2E.
 pub fn run_file(path: impl AsRef<Path>) -> Result<(), StudioError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
@@ -244,6 +279,18 @@ pub fn run_file(path: impl AsRef<Path>) -> Result<(), StudioError> {
     {
         let _ = path;
         Err(SurfaceError::UnsupportedPlatform.into())
+    }
+}
+
+#[cfg(all(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
+mod entry_point_contract_tests {
+    use super::{run, run_file};
+    use std::path::Path;
+
+    #[test]
+    fn unsupported_platform_entry_points_return_structured_errors() {
+        assert!(run().is_err());
+        assert!(run_file(Path::new("alpine-entry-point-probe")).is_err());
     }
 }
 
@@ -303,42 +350,6 @@ fn native_app() -> Result<StudioApp, SurfaceError> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn native_restored_app() -> Result<StudioApp, SurfaceError> {
-    let Ok(path) = session::default_path() else {
-        return native_app();
-    };
-    match session::load(&path) {
-        Ok(state) => {
-            let mut text_system = alpine_text_layout::CoreTextSystem::new();
-            text_system
-                .register_font(FONT_FAMILY, "Menlo-Regular")
-                .map_err(|_| SurfaceError::DriverUnavailable)?;
-            match StudioApp::from_session(text_system, state) {
-                Ok(mut app) => {
-                    app.session_path = Some(path);
-                    Ok(app)
-                }
-                Err(error) => session_fallback(path, &error.to_string()),
-            }
-        }
-        Err(session::SessionError::Io {
-            kind: std::io::ErrorKind::NotFound,
-            ..
-        }) => Ok(with_default_session(native_app()?)),
-        Err(error) => session_fallback(path, &error.to_string()),
-    }
-}
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn session_fallback(path: PathBuf, detail: &str) -> Result<StudioApp, SurfaceError> {
-    let mut app = native_app()?;
-    app.session_path = Some(path);
-    app.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
-        "Session restore skipped: {detail}"
-    ))));
-    Ok(app)
-}
-
 fn with_default_session(mut app: StudioApp) -> StudioApp {
     app.session_path = session::default_path().ok();
     app
@@ -734,8 +745,10 @@ struct StudioApp {
     force_command_clip_failure: Option<()>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum SessionRestoreError {
+    Session(String),
     Invalid,
     Workspace,
     File,
@@ -746,9 +759,11 @@ enum SessionRestoreError {
     Allocation,
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 impl fmt::Display for SessionRestoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
+            Self::Session(detail) => return formatter.write_str(detail),
             Self::Invalid => "session contract is invalid",
             Self::Workspace => "session workspace is unavailable",
             Self::File => "session document is unavailable",
@@ -928,6 +943,7 @@ impl StudioApp {
         })
     }
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     fn from_session(
         text_system: impl StudioTextSystem + 'static,
         state: session::SessionState,
@@ -1005,15 +1021,19 @@ impl StudioApp {
         Ok(app)
     }
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     fn clamp_document_view(&self, view: DocumentViewState) -> DocumentViewState {
         let snapshot = self.buffer().snapshot();
         let length = snapshot.len_bytes();
         let clamp = |offset: ByteOffset| {
             let mut value = offset.get().min(length);
-            while value > 0 && snapshot.slice(value..value).is_err() {
-                value -= 1;
+            for _ in 0..4 {
+                if snapshot.slice(value..value).is_ok() {
+                    return ByteOffset::new(value);
+                }
+                value = value.saturating_sub(1);
             }
-            ByteOffset::new(value)
+            ByteOffset::new(0)
         };
         DocumentViewState {
             selection: Selection::new(clamp(view.selection.anchor()), clamp(view.selection.head())),
@@ -1309,7 +1329,7 @@ impl StudioApp {
                     }
                 }
                 if !pane_selection.is_empty() {
-                    Self::paint_selection(
+                    let selection_result = Self::paint_selection(
                         &mut builder,
                         pane_clip,
                         &pane_snapshot,
@@ -1319,7 +1339,8 @@ impl StudioApp {
                         pane_selection.clone(),
                         selection_color,
                         pane_origin_x,
-                    )?;
+                    );
+                    selection_result?;
                 }
                 pending_glyphs.extend(self.collect_glyphs(
                     &layout,
@@ -4776,7 +4797,7 @@ mod project_search_tests;
 #[path = "studio_coverage_tests.rs"]
 mod tests;
 
-#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+#[cfg(test)]
 mod session_integration_tests {
     use super::*;
     use std::fs;
@@ -4784,24 +4805,41 @@ mod session_integration_tests {
 
     static SESSION_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-    fn view(offset: usize) -> DocumentViewState {
-        DocumentViewState {
-            selection: Selection::caret(ByteOffset::new(offset)),
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "drop, codec, restore, clamp, and missing-file controls form one durability journey"
+    )]
+    fn clean_session_drop_and_restore_preserve_exact_tabs_and_split()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "alpine-studio-restoration-{}-{}",
+            std::process::id(),
+            SESSION_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        fs::write(root.join("alpha.rs"), "alpha\n")?;
+        fs::write(root.join("beta.rs"), "beta\n")?;
+        let alpha_view = DocumentViewState {
+            selection: Selection::caret(ByteOffset::new(2)),
             scroll_y: 0.0,
-        }
-    }
-
-    fn test_state(root: &Path) -> session::SessionState {
-        session::SessionState {
-            workspace: Some(root.to_path_buf()),
+        };
+        let beta_view = DocumentViewState {
+            selection: Selection::caret(ByteOffset::new(1)),
+            scroll_y: 0.0,
+        };
+        let state = session::SessionState {
+            workspace: Some(root.clone()),
             tabs: vec![
                 session::SessionTab {
                     path: Some(root.join("alpha.rs")),
-                    view: view(2),
+                    view: alpha_view,
                 },
                 session::SessionTab {
                     path: Some(root.join("beta.rs")),
-                    view: view(1),
+                    view: beta_view,
                 },
             ],
             active_tab: 1,
@@ -4822,39 +4860,22 @@ mod session_integration_tests {
                 panes: [
                     Some(session::SessionPane {
                         tab: 0,
-                        view: view(2),
+                        view: alpha_view,
                     }),
                     Some(session::SessionPane {
                         tab: 1,
-                        view: view(1),
+                        view: beta_view,
                     }),
                     None,
                     None,
                 ],
                 active_pane: 1,
             },
-        }
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
-    fn clean_session_drop_and_restore_preserve_exact_tabs_and_split()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = std::env::temp_dir().join(format!(
-            "alpine-studio-restoration-{}-{}",
-            std::process::id(),
-            SESSION_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&root)?;
-        let root = fs::canonicalize(root)?;
-        fs::write(root.join("alpha.rs"), "alpha\n")?;
-        fs::write(root.join("beta.rs"), "beta\n")?;
-        let state = test_state(&root);
+        };
         let path = root.join("state").join("session.bin");
 
-        let mut app =
-            StudioApp::from_session(alpine_text_layout::CoreTextSystem::new(), state.clone())
-                .map_err(|error| error.to_string())?;
+        let mut app = StudioApp::from_session(tests::TestTextSystem, state.clone())
+            .map_err(|error| error.to_string())?;
         assert_eq!(
             app.capture_session()
                 .map_err(|error| format!("{error:?}"))?,
@@ -4865,9 +4886,8 @@ mod session_integration_tests {
 
         let persisted = session::load(&path)?;
         assert_eq!(persisted, state);
-        let mut restored =
-            StudioApp::from_session(alpine_text_layout::CoreTextSystem::new(), persisted)
-                .map_err(|error| error.to_string())?;
+        let mut restored = StudioApp::from_session(tests::TestTextSystem, persisted)
+            .map_err(|error| error.to_string())?;
         restored.session_path = None;
         assert_eq!(
             restored
@@ -4876,12 +4896,94 @@ mod session_integration_tests {
             state
         );
 
+        fs::write(root.join("unicode.rs"), "é\n")?;
+        let invalid_boundary = DocumentViewState {
+            selection: Selection::caret(ByteOffset::new(1)),
+            scroll_y: f32::MAX,
+        };
+        let clamped_state = session::SessionState {
+            workspace: Some(root.clone()),
+            tabs: vec![session::SessionTab {
+                path: Some(root.join("unicode.rs")),
+                view: invalid_boundary,
+            }],
+            active_tab: 0,
+            panes: session::SessionPanes {
+                nodes: [
+                    session::SessionNode::Leaf { pane: 0 },
+                    session::SessionNode::Empty,
+                    session::SessionNode::Empty,
+                    session::SessionNode::Empty,
+                    session::SessionNode::Empty,
+                    session::SessionNode::Empty,
+                    session::SessionNode::Empty,
+                ],
+                panes: [
+                    Some(session::SessionPane {
+                        tab: 0,
+                        view: invalid_boundary,
+                    }),
+                    None,
+                    None,
+                    None,
+                ],
+                active_pane: 0,
+            },
+        };
+        let mut clamped = StudioApp::from_session(tests::TestTextSystem, clamped_state)
+            .map_err(|error| error.to_string())?;
+        let clamped_capture = clamped
+            .capture_session()
+            .map_err(|error| format!("{error:?}"))?;
+        assert_eq!(
+            clamped_capture.tabs[0].view.selection,
+            Selection::caret(ByteOffset::new(0))
+        );
+        assert_eq!(
+            clamped_capture.tabs[0].view.scroll_y.to_bits(),
+            0.0_f32.to_bits()
+        );
+        assert_eq!(clamped.panes.len(), 1);
+        clamped.session_path = None;
+
         fs::remove_file(root.join("alpha.rs"))?;
         assert!(matches!(
-            StudioApp::from_session(alpine_text_layout::CoreTextSystem::new(), state),
+            StudioApp::from_session(tests::TestTextSystem, state),
             Err(SessionRestoreError::File)
         ));
         fs::remove_dir_all(root)?;
         Ok(())
+    }
+
+    #[test]
+    fn session_restore_error_messages_and_rejections_are_structured() {
+        for error in [
+            SessionRestoreError::Session("codec".into()),
+            SessionRestoreError::Invalid,
+            SessionRestoreError::Workspace,
+            SessionRestoreError::File,
+            SessionRestoreError::Surface,
+            SessionRestoreError::Tabs,
+            SessionRestoreError::Panes,
+            SessionRestoreError::Revision,
+            SessionRestoreError::Allocation,
+        ] {
+            assert!(!error.to_string().is_empty());
+        }
+
+        let invalid = session::SessionState {
+            workspace: None,
+            tabs: Vec::new(),
+            active_tab: 0,
+            panes: session::SessionPanes {
+                nodes: [session::SessionNode::Empty; session::SESSION_NODE_CAPACITY],
+                panes: [None; session::SESSION_PANE_CAPACITY],
+                active_pane: 0,
+            },
+        };
+        assert!(matches!(
+            StudioApp::from_session(tests::TestTextSystem, invalid),
+            Err(SessionRestoreError::Invalid)
+        ));
     }
 }
