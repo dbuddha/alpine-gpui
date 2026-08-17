@@ -639,6 +639,8 @@ struct StudioApp {
     force_quick_open_submission_failure: Option<()>,
     #[cfg(test)]
     force_file_tree_submission_failure: Option<()>,
+    #[cfg(test)]
+    force_command_clip_failure: Option<()>,
 }
 
 impl StudioApp {
@@ -770,6 +772,8 @@ impl StudioApp {
             force_quick_open_submission_failure: None,
             #[cfg(test)]
             force_file_tree_submission_failure: None,
+            #[cfg(test)]
+            force_command_clip_failure: None,
         })
     }
 
@@ -1120,6 +1124,18 @@ impl StudioApp {
                 Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
             let overlay_bounds = Rect::new(overlay_origin, overlay_size);
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
+            let command_selection_clip = overlay_clip;
+            #[cfg(test)]
+            let command_selection_clip = if self.force_command_clip_failure.take().is_some() {
+                let mut foreign = SceneBuilder::new(revision, viewport);
+                let mut invalid = foreign.push_clip(Clip::new(overlay_bounds));
+                for _ in 0..128 {
+                    invalid = foreign.push_clip(Clip::new(overlay_bounds));
+                }
+                invalid
+            } else {
+                command_selection_clip
+            };
             builder.push_quad(Quad::new(overlay_bounds, command_palette_background))?;
             let display = self.command_palette.display_text()?;
             let query_layout = self.text_system.shape(&display, font)?;
@@ -1140,7 +1156,7 @@ impl StudioApp {
                         .ok_or(StudioRenderError::Domain)?;
                     builder.push_quad(
                         Quad::new(Rect::new(row_origin, row_size), command_palette_selected)
-                            .clipped(overlay_clip),
+                            .clipped(command_selection_clip),
                     )?;
                 }
                 let layout = self.text_system.shape(row.title, font)?;
@@ -1822,10 +1838,16 @@ impl StudioApp {
                 self.find_needs_search |= !self.find.query().is_empty();
                 changed.then(EventEffect::visual).unwrap_or_default()
             }
+            StudioCommand::OpenQuickOpen if self.workspace.is_none() => {
+                self.record_quick_open_error(&QuickOpenError::NoWorkspace)
+            }
             StudioCommand::OpenQuickOpen => match self.quick_open.open(1) {
                 Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
                 Err(error) => self.record_quick_open_error(&error),
             },
+            StudioCommand::ToggleFileTree if self.workspace.is_none() => {
+                self.record_file_tree_error(&FileTreeError::NoWorkspace)
+            }
             StudioCommand::ToggleFileTree
                 if self.file_tree.is_visible() && self.file_tree.is_focused() =>
             {
@@ -3053,9 +3075,9 @@ pub mod native_validation {
     use alpine_text::{ByteOffset, Selection};
 
     use super::{
-        CONTENT_INSET, DEFAULT_SCALE, FONT_FAMILY, KEY_A, KEY_DOWN, KEY_E, KEY_RETURN, KEY_S,
-        KEY_UP, StudioApp, StudioError, TREE_ROW_HEIGHT, WINDOW_HEIGHT, WINDOW_WIDTH, Workspace,
-        native_file_app,
+        CONTENT_INSET, DEFAULT_SCALE, FONT_FAMILY, KEY_A, KEY_DOWN, KEY_E, KEY_P, KEY_RETURN,
+        KEY_S, KEY_UP, StudioApp, StudioError, TREE_ROW_HEIGHT, WINDOW_HEIGHT, WINDOW_WIDTH,
+        Workspace, native_file_app,
     };
 
     const NATIVE_INPUT_FRAMES: usize = 5;

@@ -43,7 +43,9 @@ impl Drop for TempFile {
 }
 
 #[derive(Default)]
-struct PaletteTextSystem;
+struct PaletteTextSystem {
+    rejected_glyph: Option<u32>,
+}
 
 impl TextShaper for PaletteTextSystem {
     fn shape(&mut self, text: &str, _font: FontKey) -> Result<LineLayout, LayoutError> {
@@ -75,9 +77,12 @@ impl GlyphRasterizer for PaletteTextSystem {
     fn rasterize(
         &mut self,
         _font: FontKey,
-        _glyph_id: u32,
+        glyph_id: u32,
         _subpixel_x: u8,
     ) -> Result<RasterizedGlyph, LayoutError> {
+        if self.rejected_glyph == Some(glyph_id) {
+            return Err(LayoutError::InvalidShaperOutput);
+        }
         let width = NonZeroU32::new(2).ok_or(LayoutError::InvalidShaperOutput)?;
         let height = NonZeroU32::new(3).ok_or(LayoutError::InvalidShaperOutput)?;
         let bitmap = GlyphBitmap::new(width, height, vec![255; 6])?;
@@ -111,7 +116,7 @@ fn command_shift() -> Modifiers {
 fn command_palette_routes_save_through_existing_editor_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let file = TempFile::new("before")?;
-    let mut app = StudioApp::open_file(PaletteTextSystem, &file.path)?;
+    let mut app = StudioApp::open_file(PaletteTextSystem::default(), &file.path)?;
     app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(6));
     assert!(
         app.handle_event(&ime(ImeEvent::Committed("after".into())))
@@ -131,7 +136,10 @@ fn command_palette_routes_save_through_existing_editor_state()
         app.handle_event(&key(KEY_RETURN, Modifiers::default()))
             .visual_changed
     );
+    #[cfg(not(target_os = "windows"))]
     assert_eq!(fs::read_to_string(&file.path)?, "after");
+    #[cfg(target_os = "windows")]
+    assert_eq!(fs::read_to_string(&file.path)?, "before");
     assert!(!app.command_palette.is_open());
     assert_eq!(app.command_palette.report().executions, 1);
     assert_eq!(app.command_palette.report().retained_bytes, 0);
@@ -140,7 +148,7 @@ fn command_palette_routes_save_through_existing_editor_state()
 
 #[test]
 fn command_palette_focus_cancel_and_scene_are_bounded() -> Result<(), Box<dyn std::error::Error>> {
-    let mut app = StudioApp::new(PaletteTextSystem)?;
+    let mut app = StudioApp::new(PaletteTextSystem::default())?;
     app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(2));
     let before = app.buffer().snapshot().text();
     assert!(
@@ -177,10 +185,11 @@ fn command_palette_focus_cancel_and_scene_are_bounded() -> Result<(), Box<dyn st
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn command_availability_refresh_prevents_stale_execution() -> Result<(), Box<dyn std::error::Error>>
 {
     let file = TempFile::new("clean")?;
-    let mut app = StudioApp::open_file(PaletteTextSystem, &file.path)?;
+    let mut app = StudioApp::open_file(PaletteTextSystem::default(), &file.path)?;
     app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(5));
     assert!(
         app.handle_event(&ime(ImeEvent::Committed("dirty".into())))
@@ -210,7 +219,7 @@ fn command_availability_refresh_prevents_stale_execution() -> Result<(), Box<dyn
 #[test]
 fn command_palette_stage_measurements_are_separate_and_bounded()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut app = StudioApp::new(PaletteTextSystem)?;
+    let mut app = StudioApp::new(PaletteTextSystem::default())?;
     let open_start = Instant::now();
     assert!(
         app.handle_event(&key(KEY_P, command_shift()))
@@ -243,5 +252,209 @@ fn command_palette_stage_measurements_are_separate_and_bounded()
     eprintln!(
         "command-palette stages: open={open:?} match={matching:?} projection={projection:?} scene={scene_build:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn command_routes_cover_history_workspace_overlays_and_close()
+-> Result<(), Box<dyn std::error::Error>> {
+    let file = TempFile::new("first")?;
+    let second = file.root.join("second.rs");
+    fs::write(&second, "second")?;
+    let mut app = StudioApp::open_workspace_lazy(PaletteTextSystem::default(), &file.root)?;
+    app.open_workspace_path(&file.path, None)?;
+    app.open_workspace_path(&second, None)?;
+
+    let context = app.command_context();
+    assert!(context.can_close_tab);
+    assert!(context.can_navigate_back);
+    assert!(!context.can_navigate_forward);
+    let _ = app.dispatch_command(StudioCommand::SaveFile);
+    let _ = app.dispatch_command(StudioCommand::NavigateBack);
+    assert!(app.command_context().can_navigate_forward);
+    let _ = app.dispatch_command(StudioCommand::NavigateForward);
+    let _ = app.dispatch_command(StudioCommand::OpenFind);
+    assert!(app.find.is_open());
+    app.find.close();
+    let _ = app.dispatch_command(StudioCommand::OpenReplace);
+    assert!(app.find.is_open());
+    app.find.close();
+    let _ = app.dispatch_command(StudioCommand::OpenQuickOpen);
+    assert!(app.quick_open.is_open());
+    app.quick_open.close();
+    let _ = app.dispatch_command(StudioCommand::ToggleFileTree);
+    assert!(app.file_tree.is_visible());
+    assert!(app.file_tree.is_focused());
+    let _ = app.dispatch_command(StudioCommand::ToggleFileTree);
+    assert!(!app.file_tree.is_visible());
+    let before = app.tabs.len();
+    let _ = app.dispatch_command(StudioCommand::CloseTab);
+    assert_eq!(app.tabs.len(), before - 1);
+    Ok(())
+}
+
+#[test]
+fn command_focus_routes_every_key_ime_pointer_and_open_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = StudioApp::new(PaletteTextSystem::default())?;
+    app.command_palette.fail_next_open();
+    assert!(app.open_command_palette().visual_changed);
+    assert!(!app.command_palette.is_open());
+    assert!(
+        app.local_status
+            .as_ref()
+            .is_some_and(|status| status.message().contains("allocation"))
+    );
+
+    assert!(app.open_command_palette().visual_changed);
+    assert!(app.handle_event(&ime(ImeEvent::Started)).visual_changed);
+    assert!(
+        app.handle_event(&ime(ImeEvent::Updated {
+            text: "x".into(),
+            selected_start_utf16: 0,
+            selected_length_utf16: 2,
+        }))
+        .visual_changed
+    );
+    assert!(
+        app.handle_event(&ime(ImeEvent::Updated {
+            text: "find".into(),
+            selected_start_utf16: 0,
+            selected_length_utf16: 4,
+        }))
+        .visual_changed
+    );
+    assert!(
+        !app.handle_event(&ime(ImeEvent::Updated {
+            text: "find".into(),
+            selected_start_utf16: 0,
+            selected_length_utf16: 4,
+        }))
+        .visual_changed
+    );
+    assert!(app.handle_event(&ime(ImeEvent::Cancelled)).visual_changed);
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("find".into())))
+            .visual_changed
+    );
+    let _ = app.handle_event(&key(KEY_DOWN, Modifiers::default()));
+    let _ = app.handle_event(&key(KEY_UP, Modifiers::default()));
+    app.command_palette.fail_next_query_update();
+    assert!(
+        app.handle_event(&key(KEY_DELETE_BACKWARD, Modifiers::default()))
+            .visual_changed
+    );
+    let _ = app.handle_event(&key(KEY_DELETE_BACKWARD, Modifiers::default()));
+    assert!(
+        !app.handle_event(&key(
+            KEY_DELETE_BACKWARD,
+            Modifiers::from_bits(Modifiers::COMMAND),
+        ))
+        .visual_changed
+    );
+    assert!(
+        !app.handle_event(&key(u16::MAX, Modifiers::default()))
+            .visual_changed
+    );
+    let position = Point::new(4.0, 4.0).ok_or("pointer")?;
+    assert!(
+        !app.handle_pointer(
+            PointerAction::Down,
+            position,
+            PointerButton::Primary,
+            Modifiers::default(),
+        )
+        .visual_changed
+    );
+    assert!(
+        app.handle_event(&key(KEY_ESCAPE, Modifiers::default()))
+            .visual_changed
+    );
+    assert!(
+        app.dispatch_command(StudioCommand::OpenQuickOpen)
+            .visual_changed
+    );
+    assert!(
+        app.dispatch_command(StudioCommand::ToggleFileTree)
+            .visual_changed
+    );
+
+    Ok(())
+}
+
+#[test]
+fn command_dispatch_preserves_bounded_workspace_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let workspace = TempFile::new("workspace")?;
+    let mut app = StudioApp::open_workspace_lazy(PaletteTextSystem::default(), &workspace.root)?;
+    app.quick_open = crate::quick_open::QuickOpenState::with_test_limits(
+        crate::quick_open::QuickOpenLimits::new(0, 1, 1, 1, 1, 1, 1),
+    );
+    assert!(
+        app.dispatch_command(StudioCommand::OpenQuickOpen)
+            .visual_changed
+    );
+    assert!(
+        app.local_status
+            .as_ref()
+            .is_some_and(|status| status.message().contains("limits"))
+    );
+
+    app.file_tree = crate::file_tree::FileTreeState::with_test_limits(
+        crate::file_tree::FileTreeLimits::new(0, 1, 1, 1, 1, 1, 1, 1, 1),
+    );
+    assert!(
+        app.dispatch_command(StudioCommand::ToggleFileTree)
+            .visual_changed
+    );
+    assert!(
+        app.local_status
+            .as_ref()
+            .is_some_and(|status| status.message().contains("limits"))
+    );
+    Ok(())
+}
+
+#[test]
+fn command_palette_render_errors_preserve_stage_and_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    let converted = StudioRenderError::from(CommandPaletteError::InvalidComposition);
+    assert!(converted.to_string().contains("command-palette rendering"));
+
+    let mut query_failure = StudioApp::new(PaletteTextSystem {
+        rejected_glyph: Some(u32::from('>')),
+    })?;
+    assert!(query_failure.open_command_palette().visual_changed);
+    let query_result = query_failure.try_scene(
+        SceneRevision::new(903),
+        Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?,
+    );
+    assert!(matches!(query_result, Err(StudioRenderError::Layout(_))));
+
+    let mut row_failure = StudioApp::new(PaletteTextSystem {
+        rejected_glyph: Some(u32::from('E')),
+    })?;
+    assert!(row_failure.open_command_palette().visual_changed);
+    assert!(
+        row_failure
+            .handle_event(&ime(ImeEvent::Committed("find".into())))
+            .visual_changed
+    );
+    let row_result = row_failure.try_scene(
+        SceneRevision::new(904),
+        Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?,
+    );
+    assert!(matches!(row_result, Err(StudioRenderError::Layout(_))));
+
+    let mut scene_failure = StudioApp::new(PaletteTextSystem::default())?;
+    scene_failure.force_command_clip_failure = Some(());
+    assert!(scene_failure.open_command_palette().visual_changed);
+    let scene_result = scene_failure.try_scene(
+        SceneRevision::new(905),
+        Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?,
+    );
+    assert!(matches!(
+        scene_result,
+        Err(StudioRenderError::Scene(SceneError::InvalidClip { .. }))
+    ));
     Ok(())
 }

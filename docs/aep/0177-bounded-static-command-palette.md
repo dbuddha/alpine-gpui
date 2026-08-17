@@ -33,7 +33,7 @@ timer, polling loop, plugin boundary, or executable configuration is added.
 | Retained matches | 32 | Registry bound makes truncation impossible |
 | Visible rows | 12 | Project one bounded window |
 | Visible overscan | 3 rows per side | Never exceed 18 projected rows |
-| Diagnostic display | 512 bytes | Return a structured render error |
+| Diagnostic display | 512 bytes | Statically guaranteed by the query ceiling |
 
 Closing or executing releases query, composition, and match allocations to zero
 current retained bytes. Peak bytes, current bytes, match count, visible rows,

@@ -634,10 +634,16 @@ mod tests {
             view(0, 0.0),
         );
         c_insertion?;
+        assert!(tabs.can_navigate_back());
+        assert!(!tabs.can_navigate_forward());
         assert_eq!(tabs.history_len(), 3);
         assert!(tabs.navigate_back(&mut active, view(1, 1.0))?.is_some());
+        assert!(tabs.can_navigate_back());
+        assert!(tabs.can_navigate_forward());
         assert_eq!(active, "b");
         assert!(tabs.navigate_back(&mut active, view(2, 2.0))?.is_some());
+        assert!(!tabs.can_navigate_back());
+        assert!(tabs.can_navigate_forward());
         assert_eq!(active, "a");
         assert!(tabs.navigate_forward(&mut active, view(3, 3.0))?.is_some());
         assert_eq!(active, "b");

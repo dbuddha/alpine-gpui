@@ -11,6 +11,7 @@ pub(crate) const MAX_QUERY_BYTES: usize = 256;
 pub(crate) const MAX_VISIBLE_COMMANDS: usize = 12;
 pub(crate) const MAX_VISIBLE_OVERSCAN: usize = 3;
 pub(crate) const MAX_DIAGNOSTIC_BYTES: usize = 512;
+const _: () = assert!(MAX_QUERY_BYTES + 48 <= MAX_DIAGNOSTIC_BYTES);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
@@ -180,6 +181,10 @@ pub(crate) struct CommandPalette {
         reason = "reserved for bounded diagnostic truncation accounting"
     )]
     truncations: u64,
+    #[cfg(test)]
+    fail_next_open: bool,
+    #[cfg(test)]
+    fail_next_query_update: bool,
 }
 
 impl CommandPalette {
@@ -188,6 +193,10 @@ impl CommandPalette {
     }
 
     pub(crate) fn open(&mut self, context: CommandContext) -> Result<bool, CommandPaletteError> {
+        #[cfg(test)]
+        if mem::take(&mut self.fail_next_open) {
+            return Err(CommandPaletteError::AllocationFailed);
+        }
         if self.open {
             return Ok(false);
         }
@@ -388,12 +397,6 @@ impl CommandPalette {
             .len()
             .saturating_add(composition.len())
             .saturating_add(48);
-        if required > MAX_DIAGNOSTIC_BYTES {
-            return Err(CommandPaletteError::QueryTooLong {
-                actual: required,
-                limit: MAX_DIAGNOSTIC_BYTES,
-            });
-        }
         display
             .try_reserve(required)
             .map_err(|_| CommandPaletteError::AllocationFailed)?;
@@ -430,11 +433,25 @@ impl CommandPalette {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_next_open(&mut self) {
+        self.fail_next_open = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_query_update(&mut self) {
+        self.fail_next_query_update = true;
+    }
+
     fn replace_query(
         &mut self,
         query: String,
         context: CommandContext,
     ) -> Result<bool, CommandPaletteError> {
+        #[cfg(test)]
+        if mem::take(&mut self.fail_next_query_update) {
+            return Err(CommandPaletteError::AllocationFailed);
+        }
         let matches = rank_matches(&query, context)?;
         let changed = query != self.query;
         self.query = query;
@@ -727,6 +744,58 @@ mod tests {
         }
         palette.cancel();
         assert_eq!(palette.report().retained_bytes, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn defensive_noops_errors_and_scroll_window_are_discriminating() -> Result<(), Box<dyn Error>> {
+        let errors = [
+            CommandPaletteError::QueryTooLong {
+                actual: MAX_QUERY_BYTES + 1,
+                limit: MAX_QUERY_BYTES,
+            },
+            CommandPaletteError::AllocationFailed,
+            CommandPaletteError::MissingSelection,
+            CommandPaletteError::Unavailable(StudioCommand::SaveFile),
+            CommandPaletteError::InvalidComposition,
+        ];
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            assert!(Error::source(&error).is_none());
+        }
+
+        let mut palette = CommandPalette::default();
+        assert!(!palette.begin_composition());
+        assert!(!palette.commit_text("ignored", all_available())?);
+        assert!(!palette.refresh(all_available())?);
+        palette.fail_next_open();
+        assert!(matches!(
+            palette.open(all_available()),
+            Err(CommandPaletteError::AllocationFailed)
+        ));
+        assert!(palette.open(all_available())?);
+        assert!(palette.begin_composition());
+        assert!(!palette.begin_composition());
+        assert!(palette.update_composition("same", 0, 4)?);
+        assert!(!palette.update_composition("same", 0, 4)?);
+        assert!(palette.cancel_composition());
+        assert!(!palette.commit_text("", all_available())?);
+
+        palette.matches = vec![
+            CommandMatch {
+                registry_index: 0,
+                rank: 0,
+                gaps: 0,
+            };
+            14
+        ];
+        palette.selected = 11;
+        palette.first_visible = 0;
+        assert!(palette.navigate(true));
+        assert_eq!(palette.selected, 12);
+        assert_eq!(palette.first_visible, 1);
+        palette.matches.clear();
+        assert!(!palette.navigate(true));
         Ok(())
     }
 }
