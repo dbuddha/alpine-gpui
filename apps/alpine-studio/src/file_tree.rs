@@ -1984,4 +1984,94 @@ mod tests {
         assert_eq!(portable_child("dir", "a")?, "dir/a");
         Ok(())
     }
+
+    #[test]
+    fn randomized_expand_collapse_selection_soak_releases_on_replacement()
+    -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        for directory in 0..8 {
+            root.write(&format!("d{directory}/file.rs"))?;
+        }
+        let mut state = FileTreeState::default();
+        state.activate(1)?;
+        assert_eq!(
+            admit_next(&mut state, &root.0)?,
+            FileTreeAdmission::Directory
+        );
+        for directory in 0..8 {
+            assert!(state.select_path(&format!("d{directory}"))?);
+            assert!(matches!(
+                state.activate_selected()?,
+                FileTreeAction::Changed
+            ));
+            assert_eq!(
+                admit_next(&mut state, &root.0)?,
+                FileTreeAdmission::Directory
+            );
+        }
+        assert_eq!(state.snapshot(), (9, 16, 96, Some(14)));
+
+        let mut random = 0x9E37_79B9_u64;
+        for _ in 0..4_096 {
+            random = random
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let total = state.total_rows();
+            match random & 3 {
+                0 => {
+                    let _changed = state.navigate(random & 4 != 0, 32);
+                }
+                1 if total > 0 => {
+                    let index = usize::try_from(random % u64::try_from(total)?)?;
+                    if matches!(state.activate_row(index)?, FileTreeAction::Changed)
+                        && let Some(request) = state.take_request(&root.0)
+                    {
+                        assert_eq!(state.admit(request.execute()), FileTreeAdmission::Directory);
+                    }
+                }
+                2 => {
+                    let first = usize::try_from(random & 31)?;
+                    assert!(state.visible_rows(first, 16, 3)?.len() <= 22);
+                }
+                _ => {
+                    assert!(state.hide());
+                    assert!(!state.is_visible());
+                    assert!(state.activate(1)?);
+                }
+            }
+            let (nodes, entries, bytes, selected) = state.snapshot();
+            assert!(nodes <= MAX_CACHED_DIRECTORIES);
+            assert!(entries <= MAX_CACHED_ENTRIES);
+            assert!(bytes <= MAX_CACHED_PATH_BYTES);
+            assert!(selected.is_none_or(|index| index < state.total_rows()));
+        }
+
+        let _changed = state.activate(2)?;
+        assert_eq!(state.snapshot(), (1, 0, 0, None));
+        assert_eq!(state.total_rows(), 0);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn permission_denial_is_structured_and_does_not_publish() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = TestRoot::new()?;
+        root.write("blocked/file.rs")?;
+        let blocked = root.0.join("blocked");
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000))?;
+        let result = read_directory(&root.0, "blocked", FileTreeLimits::default());
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700))?;
+        match result {
+            Err(FileTreeError::Io {
+                operation, source, ..
+            }) => {
+                assert_eq!(operation, "enumerate");
+                assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+            }
+            other => return Err(format!("expected permission denial, got {other:?}").into()),
+        }
+        Ok(())
+    }
 }

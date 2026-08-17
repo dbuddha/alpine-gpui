@@ -2806,22 +2806,32 @@ fn floor_f32_to_usize(value: f32) -> Option<usize> {
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 #[doc(hidden)]
 pub mod native_validation {
-    use std::{cell::RefCell, fmt, fmt::Write as _, fs, path::Path, rc::Rc, time::Duration};
+    use std::{
+        cell::RefCell,
+        fmt,
+        fmt::Write as _,
+        fs,
+        path::Path,
+        rc::Rc,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
 
     use alpine_platform_macos::{
         ClipboardError, ClipboardOperation, EventTimestamp, ImeEvent, KeyState, Modifiers,
-        NativeSurface, SurfaceDescriptor, SurfaceEvent, SurfaceLifecycle, SurfaceResponse,
-        native_validation as platform_validation,
+        NativeSurface, PointerAction, PointerButton, SurfaceDescriptor, SurfaceEvent,
+        SurfaceLifecycle, SurfaceResponse, native_validation as platform_validation,
     };
     use alpine_runtime::{Application, WorkerConfig};
     use alpine_text::{ByteOffset, Selection};
 
     use super::{
-        DEFAULT_SCALE, KEY_A, KEY_S, StudioApp, StudioError, WINDOW_HEIGHT, WINDOW_WIDTH,
+        CONTENT_INSET, DEFAULT_SCALE, FONT_FAMILY, KEY_A, KEY_DOWN, KEY_E, KEY_RETURN, KEY_S,
+        KEY_UP, StudioApp, StudioError, TREE_ROW_HEIGHT, WINDOW_HEIGHT, WINDOW_WIDTH, Workspace,
         native_file_app,
     };
 
     const NATIVE_INPUT_FRAMES: usize = 5;
+    const TREE_TOGGLE_MODIFIER_BITS: u8 = 0x09;
 
     /// Handle-free completion evidence returned across the process-test boundary.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2855,6 +2865,79 @@ pub mod native_validation {
         #[must_use]
         pub const fn released_owner_classes(self) -> usize {
             self.released_owner_classes
+        }
+    }
+
+    /// Handle-free evidence from the native lazy file-tree journey.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct NativeFileTreeEvidence {
+        keyboard_events: usize,
+        pointer_events: usize,
+        worker_wakes: usize,
+        admitted_frames: usize,
+        persisted_bytes: usize,
+        released_owner_classes: usize,
+    }
+
+    impl NativeFileTreeEvidence {
+        /// Returns keyboard events dispatched through the AppKit callback.
+        #[must_use]
+        pub const fn keyboard_events(self) -> usize {
+            self.keyboard_events
+        }
+
+        /// Returns pointer events dispatched through the AppKit callback.
+        #[must_use]
+        pub const fn pointer_events(self) -> usize {
+            self.pointer_events
+        }
+
+        /// Returns wake events required before the directory result published.
+        #[must_use]
+        pub const fn worker_wakes(self) -> usize {
+            self.worker_wakes
+        }
+
+        /// Returns frames admitted by tree activation, navigation, and opening.
+        #[must_use]
+        pub const fn admitted_frames(self) -> usize {
+            self.admitted_frames
+        }
+
+        /// Returns the exact saved UTF-8 length of the pointer-opened file.
+        #[must_use]
+        pub const fn persisted_bytes(self) -> usize {
+            self.persisted_bytes
+        }
+
+        /// Returns native owner classes observed at zero after drain.
+        #[must_use]
+        pub const fn released_owner_classes(self) -> usize {
+            self.released_owner_classes
+        }
+    }
+
+    #[derive(Default)]
+    struct NativeFileTreeJourney {
+        keyboard: usize,
+        pointer: usize,
+        wakes: usize,
+        frames: usize,
+        maximum_glyphs: usize,
+    }
+
+    impl NativeFileTreeJourney {
+        fn observe(&mut self, event: &SurfaceEvent, response: &SurfaceResponse) {
+            match event {
+                SurfaceEvent::Keyboard { .. } => self.keyboard = self.keyboard.saturating_add(1),
+                SurfaceEvent::Pointer { .. } => self.pointer = self.pointer.saturating_add(1),
+                SurfaceEvent::Wake { .. } => self.wakes = self.wakes.saturating_add(1),
+                _ => {}
+            }
+            if let Some(frame) = response.frame() {
+                self.frames = self.frames.saturating_add(1);
+                self.maximum_glyphs = self.maximum_glyphs.max(frame.scene().glyphs().len());
+            }
         }
     }
 
@@ -2945,6 +3028,35 @@ pub mod native_validation {
         }
     }
 
+    /// Runs one real AppKit, runtime, and lazy file-tree journey.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured workspace, construction, rendering, input, save,
+    /// or teardown failure from the production-composed validation process.
+    pub fn qualify_file_tree_process() -> Result<NativeFileTreeEvidence, Box<dyn std::error::Error>>
+    {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "alpine-studio-native-tree-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&root)?;
+        let alpha = root.join("alpha.txt");
+        let beta = root.join("beta.txt");
+        let gamma = root.join("gamma.txt");
+        fs::write(&alpha, "alpha")?;
+        fs::write(&beta, "beta")?;
+        fs::write(&gamma, "gamma")?;
+        let result = qualify_file_tree_path(&root, &alpha, &beta, &gamma);
+        let cleanup = fs::remove_dir_all(root);
+        match (result, cleanup) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(Box::new(error)),
+            (Ok(evidence), Ok(())) => Ok(evidence),
+        }
+    }
+
     fn native_source(first_line: &str) -> Result<String, fmt::Error> {
         let mut source = String::new();
         writeln!(&mut source, "{first_line}")?;
@@ -2952,6 +3064,204 @@ pub mod native_validation {
             writeln!(&mut source, "line {line:03}")?;
         }
         Ok(source)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one process journey preserves surface, worker, input, save, and drain identity"
+    )]
+    fn qualify_file_tree_path(
+        root: &Path,
+        alpha: &Path,
+        beta: &Path,
+        gamma: &Path,
+    ) -> Result<NativeFileTreeEvidence, Box<dyn std::error::Error>> {
+        let workspace = Workspace::open_root(root)?;
+        let mut text_system = alpine_text_layout::CoreTextSystem::new();
+        text_system.register_font(FONT_FAMILY, "Menlo-Regular")?;
+        let delegate = StudioApp::from_workspace(text_system, workspace)?;
+        let clear = alpine_core::LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(
+            StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
+                alpine_platform_macos::SurfaceError::DriverUnavailable,
+            )),
+        )?;
+        let viewport = alpine_core::Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(
+            StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
+                alpine_platform_macos::SurfaceError::DriverUnavailable,
+            )),
+        )?;
+        let descriptor = SurfaceDescriptor::new(
+            "Alpine Studio native file tree",
+            f64::from(WINDOW_WIDTH),
+            f64::from(WINDOW_HEIGHT),
+            f64::from(DEFAULT_SCALE),
+        )?;
+        let mut application = Application::new(delegate, viewport, clear, WorkerConfig::default())?;
+        let surface = platform_validation::new_surface(&descriptor)?;
+        let initial_frame = application
+            .frame_if_dirty()
+            .ok_or("Studio did not build its initial file-tree frame")?;
+        let initial_glyphs = initial_frame.scene().glyphs().len();
+        let (scene, clear) = initial_frame.into_parts();
+        let _revision = surface.request_frame(scene, clear)?;
+        surface.show()?;
+        platform_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+        assert_eq!(surface.take_error()?, None);
+
+        let state = Rc::new(RefCell::new(application));
+        let journey = Rc::new(RefCell::new(NativeFileTreeJourney::default()));
+        replay_tree_events(
+            &surface,
+            &state,
+            &journey,
+            &[keyboard_event(
+                100,
+                KEY_E,
+                "e",
+                Modifiers::from_bits(TREE_TOGGLE_MODIFIER_BITS),
+            )],
+        )?;
+        let activation_glyphs = journey.borrow().maximum_glyphs.max(initial_glyphs);
+        let mut published = false;
+        for timestamp in 101..613 {
+            if journey.borrow().maximum_glyphs > activation_glyphs {
+                published = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+            replay_tree_events(
+                &surface,
+                &state,
+                &journey,
+                &[SurfaceEvent::Wake {
+                    timestamp: EventTimestamp::new(timestamp),
+                }],
+            )?;
+        }
+        assert!(published);
+        assert!(journey.borrow().maximum_glyphs > activation_glyphs);
+        let frames_after_publication = journey.borrow().frames;
+        replay_tree_events(
+            &surface,
+            &state,
+            &journey,
+            &[SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(613),
+            }],
+        )?;
+        assert_eq!(journey.borrow().frames, frames_after_publication);
+
+        replay_tree_events(
+            &surface,
+            &state,
+            &journey,
+            &[
+                keyboard_event(614, KEY_DOWN, "ArrowDown", Modifiers::default()),
+                keyboard_event(615, KEY_UP, "ArrowUp", Modifiers::default()),
+            ],
+        )?;
+        let before_keyboard_open = state.borrow().snapshot().document_revision();
+        replay_tree_events(
+            &surface,
+            &state,
+            &journey,
+            &[keyboard_event(
+                616,
+                KEY_RETURN,
+                "Enter",
+                Modifiers::default(),
+            )],
+        )?;
+        assert_ne!(
+            state.borrow().snapshot().document_revision(),
+            before_keyboard_open
+        );
+
+        let pointer =
+            alpine_core::Point::new(10.0, CONTENT_INSET + TREE_ROW_HEIGHT.mul_add(1.5, 0.0))
+                .ok_or("invalid file-tree pointer")?;
+        let before_pointer_open = state.borrow().snapshot().document_revision();
+        replay_tree_events(
+            &surface,
+            &state,
+            &journey,
+            &[
+                SurfaceEvent::Pointer {
+                    timestamp: EventTimestamp::new(618),
+                    action: PointerAction::Down,
+                    position: pointer,
+                    button: PointerButton::Primary,
+                    modifiers: Modifiers::default(),
+                },
+                SurfaceEvent::Pointer {
+                    timestamp: EventTimestamp::new(619),
+                    action: PointerAction::Up,
+                    position: pointer,
+                    button: PointerButton::Primary,
+                    modifiers: Modifiers::default(),
+                },
+            ],
+        )?;
+        assert_ne!(
+            state.borrow().snapshot().document_revision(),
+            before_pointer_open
+        );
+        replay_tree_events(
+            &surface,
+            &state,
+            &journey,
+            &[SurfaceEvent::Ime {
+                timestamp: EventTimestamp::new(620),
+                event: ImeEvent::Committed("!".into()),
+            }],
+        )?;
+        replay_tree_events(
+            &surface,
+            &state,
+            &journey,
+            &[keyboard_event(
+                621,
+                KEY_S,
+                "s",
+                Modifiers::from_bits(Modifiers::COMMAND),
+            )],
+        )?;
+        assert_eq!(fs::read_to_string(alpha)?, "alpha");
+        assert_eq!(fs::read_to_string(beta)?, "!beta");
+        assert_eq!(fs::read_to_string(gamma)?, "gamma");
+
+        let observer = surface.observer();
+        assert!(platform_validation::replay_close_with_handler(
+            &surface,
+            event_handler(&state),
+        )?);
+        assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
+        assert!(state.borrow().snapshot().is_shutting_down());
+        let (keyboard_events, pointer_events, worker_wakes, admitted_frames) = {
+            let evidence = journey.borrow();
+            (
+                evidence.keyboard,
+                evidence.pointer,
+                evidence.wakes,
+                evidence.frames,
+            )
+        };
+        drop(state);
+        let owner_evidence = platform_validation::close_with_owner_evidence(surface)?;
+        assert_eq!(owner_evidence.active(), [0; 9]);
+        assert_eq!(owner_evidence.release_order_violations(), 0);
+        Ok(NativeFileTreeEvidence {
+            keyboard_events,
+            pointer_events,
+            worker_wakes,
+            admitted_frames,
+            persisted_bytes: "!beta".len(),
+            released_owner_classes: owner_evidence
+                .active()
+                .iter()
+                .filter(|active| **active == 0)
+                .count(),
+        })
     }
 
     fn qualify_path(
@@ -3118,6 +3428,40 @@ pub mod native_validation {
             evidence.borrow_mut().observe_response(&response);
             response
         }
+    }
+
+    fn keyboard_event(
+        timestamp: u64,
+        physical_key: u16,
+        logical_key: &str,
+        modifiers: Modifiers,
+    ) -> SurfaceEvent {
+        SurfaceEvent::Keyboard {
+            timestamp: EventTimestamp::new(timestamp),
+            state: KeyState::Down,
+            physical_key,
+            logical_key: logical_key.into(),
+            modifiers,
+            repeat: false,
+        }
+    }
+
+    fn replay_tree_events(
+        surface: &NativeSurface,
+        state: &Rc<RefCell<Application<StudioApp>>>,
+        journey: &Rc<RefCell<NativeFileTreeJourney>>,
+        events: &[SurfaceEvent],
+    ) -> Result<(), alpine_platform_macos::SurfaceError> {
+        let state = Rc::clone(state);
+        let journey = Rc::clone(journey);
+        platform_validation::replay_callback_surface_events(surface, events, move |event| {
+            let response = state.try_borrow_mut().map_or_else(
+                |_| SurfaceResponse::default(),
+                |mut application| application.dispatch_with_response(&event),
+            );
+            journey.borrow_mut().observe(&event, &response);
+            response
+        })
     }
 
     fn dispatch_select_all(

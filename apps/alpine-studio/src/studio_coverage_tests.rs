@@ -3816,3 +3816,44 @@ fn runtime_file_tree_submission_admits_and_forced_failure_rolls_back()
     }
     Ok(())
 }
+
+#[test]
+fn file_tree_stage_measurements_are_separate_and_bounded() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = TestWorkspace::new()?;
+    for index in 0..1_024 {
+        root.write(&format!("file-{index:04}.rs"), "x")?;
+    }
+    let mut app = StudioApp::open_workspace_lazy(TestTextSystem, root.path())?;
+    let command_shift = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
+
+    let activation_start = std::time::Instant::now();
+    assert!(app.handle_event(&key(KEY_E, command_shift)).visual_changed);
+    let activation = activation_start.elapsed();
+
+    let request = app
+        .prepare_file_tree_request()?
+        .ok_or("stage directory request")?;
+    let enumeration_start = std::time::Instant::now();
+    let output = request.execute();
+    let enumeration = enumeration_start.elapsed();
+    assert!(app.apply_file_tree_output(output).visual_changed);
+
+    let flatten_start = std::time::Instant::now();
+    let rows = app.file_tree.visible_rows(0, 40, TREE_OVERSCAN_ROWS)?;
+    let flatten = flatten_start.elapsed();
+    assert_eq!(rows.len(), 46);
+    assert_eq!(app.file_tree.snapshot().1, 1_024);
+
+    let scene_start = std::time::Instant::now();
+    let scene = app.try_scene(SceneRevision::new(200), viewport()?)?;
+    let scene_build = scene_start.elapsed();
+    assert!(!scene.glyphs().is_empty());
+    for elapsed in [activation, enumeration, flatten, scene_build] {
+        assert!(elapsed < std::time::Duration::from_secs(5));
+    }
+    eprintln!(
+        "file-tree stages: activation={activation:?} enumeration={enumeration:?} flatten={flatten:?} scene={scene_build:?}"
+    );
+    Ok(())
+}

@@ -3598,7 +3598,7 @@ claim_type = "memory"
 risk = "high"
 kani_applicability = "not_applicable"
 platform_scope = ["portable"]
-required_evidence = ["unit"]
+required_evidence = ["unit", "benchmark"]
 
 [[claims]]
 id = "AEP-0171-C02"
@@ -3623,7 +3623,7 @@ risk = "critical"
 kani_applicability = "not_applicable"
 tla_properties = ["PublishedIsCurrent"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["tla", "unit", "property"]
 
 [[claims]]
 id = "AEP-0171-C04"
@@ -3635,8 +3635,8 @@ claim_type = "safety"
 risk = "critical"
 kani_applicability = "not_applicable"
 tla_properties = ["SelectionIsCurrent"]
-platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "unit", "native"]
 
 [[evidence]]
 id = "EV-0171-UNIT01"
@@ -3661,6 +3661,16 @@ assumptions = ["Filesystem metadata reports link identity correctly."]
 exclusions = ["global ignore files", "network filesystems", "all permission models"]
 
 [[evidence]]
+id = "EV-0171-UNIT02B"
+claim = "AEP-0171-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/file_tree.rs#permission_denial_is_structured_and_does_not_publish"
+assertion = "A directory without search or read permission fails as a structured enumerate error after permissions are restored for deterministic cleanup."
+scope = "Unix owner permission denial for one immediate directory."
+assumptions = ["The test process is not privileged above filesystem permission checks."]
+exclusions = ["Windows ACLs", "network filesystems", "permission changes during read_dir iteration"]
+
+[[evidence]]
 id = "EV-0171-UNIT03"
 claim = "AEP-0171-C03"
 kind = "unit"
@@ -3673,6 +3683,17 @@ exclusions = ["worker elapsed time", "native wake delivery", "Rust formal refine
 companion = "formal/tla/aep-0171/FileTreeAdmission.tla#PublishedIsCurrent"
 
 [[evidence]]
+id = "EV-0171-PROPERTY03"
+claim = "AEP-0171-C03"
+kind = "property"
+artifact = "apps/alpine-studio/src/file_tree.rs#randomized_expand_collapse_selection_soak_releases_on_replacement"
+assertion = "A deterministic 4,096-step expansion, collapse, navigation, projection, hide, and reactivate sequence preserves every cache ceiling and valid selection; replacing the workspace releases all retained entries and path bytes."
+scope = "Eight directories, eight files, nine admitted nodes, and 4,096 deterministic mixed actions."
+bounds = ["4,096 actions", "4,096 directory nodes", "65,536 entries", "8 MiB retained path bytes"]
+assumptions = ["The deterministic generator samples a finite transition subset."]
+exclusions = ["unbounded traces", "concurrent filesystem mutation", "allocator physical footprint"]
+
+[[evidence]]
 id = "EV-0171-UNIT04"
 claim = "AEP-0171-C04"
 kind = "unit"
@@ -3683,6 +3704,29 @@ bounds = ["one root result", "one nested result", "one selected file"]
 assumptions = ["Deterministic test shaping stands in for native typography only."]
 exclusions = ["native pointer delivery", "accessibility", "fixed-hardware latency"]
 companion = "apps/alpine-studio/src/file_tree.rs#tree_navigation_opens_only_current_file_rows"
+
+[[evidence]]
+id = "EV-0171-NATIVE04"
+claim = "AEP-0171-C04"
+kind = "native"
+artifact = "apps/alpine-studio/src/lib.rs#qualify_file_tree_process"
+assertion = "A real Apple Silicon AppKit surface activates and loads one lazy directory through the bounded worker, moves selection by keyboard, opens a second file by pointer, persists an edit to that exact file, closes cleanly, and drains all nine native owner classes."
+scope = "One folder, three immediate files, five keyboard events, two pointer events, bounded worker wakes including one zero-idle probe, and one clean native close."
+bounds = ["512 worker wake attempts", "one pending directory request", "nine native owner classes"]
+assumptions = ["The Apple Silicon validation host provides AppKit, CoreText, and Metal."]
+exclusions = ["accessibility", "fixed-hardware latency", "multi-window input"]
+companion = "apps/alpine-studio/tests/native_process.rs"
+
+[[evidence]]
+id = "EV-0171-BENCH01"
+claim = "AEP-0171-C01"
+kind = "benchmark"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#file_tree_stage_measurements_are_separate_and_bounded"
+assertion = "Activation, one-directory enumeration, visible-row flattening, and panel scene build are timed as four separate stages for a 1,024-file folder while retained and projected counts remain exact."
+scope = "One local diagnostic sample with 1,024 immediate files and 46 projected rows."
+bounds = ["1,024 retained entries", "46 projected rows", "five-second hang ceiling per stage"]
+assumptions = ["Test timing is diagnostic and runs on an uncontrolled local or hosted machine."]
+exclusions = ["performance claim", "fixed-hardware threshold", "statistical distribution", "cross-product comparison"]
 
 [[evidence]]
 id = "EV-0171-TLA03"

@@ -21,7 +21,7 @@ A folder launch admits only one canonical root and paints its first frame withou
 
 ## Ownership, performance, and memory
 
-`alpine-studio` owns the tree, cache, ignore matcher stack, and row projection. It adds no dependency, public API, native handle, worker, watcher, timer, polling loop, or async runtime. The existing `ignore` dependency parses project-local rules, but each request uses immediate `read_dir` enumeration rather than a recursive walker. Result publication accounts retained paths and entry counts before mutation. Prefix rows are recomputed only after accepted tree changes; paint uses subtree spans to skip non-visible ranges and shapes only the bounded returned rows.
+`alpine-studio` owns the tree, cache, ignore matcher stack, and row projection. It adds no dependency, public API, native handle, worker, watcher, timer, polling loop, or async runtime. The existing `ignore` dependency parses project-local rules, but each request uses immediate `read_dir` enumeration rather than a recursive walker. Result publication accounts retained paths and entry counts before mutation. Prefix rows are recomputed only after accepted tree changes; paint uses subtree spans to skip non-visible ranges, shares each row path with a compact name offset, and shapes only the bounded returned rows without allocating a second label string.
 
 The initial sidebar remains fixed width and deliberately has no drag resizing, icons, thumbnails, file operations, or restoration. There is no performance superiority claim. Fixed-hardware activation and scene-build distributions remain required before any latency claim.
 
@@ -30,6 +30,8 @@ The initial sidebar remains fixed width and deliberately has no drag resizing, i
 Directory requests revalidate each normal relative component with `symlink_metadata`, reject links and non-directories, canonicalize the target, and require exact canonical identity beneath the admitted root. Ignore files must be regular files and are never followed through a symlink. Selection delegates final file identity to `Workspace::path_for_relative_file`, preserving the existing race defenses.
 
 `FileTreeAdmission.tla` models finite activation, hide, expansion, publication, and selection generations. It checks that publication and selection use the current tree and request. Faulty stale-publication and stale-selection controls must violate those invariants. The model does not claim Rust refinement, filesystem semantics, ignore correctness, allocation behavior, runtime scheduling, native event delivery, or elapsed-time bounds.
+
+`qualify_file_tree_process` supplies separate Apple Silicon evidence through a real AppKit surface: native keyboard activation and selection, bounded worker publication, native pointer opening, exact file persistence, clean close, and zero retained native owner classes after drain.
 
 ## Exclusions and reversal conditions
 
