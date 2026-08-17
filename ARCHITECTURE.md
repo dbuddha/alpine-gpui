@@ -121,6 +121,23 @@ revalidates every path component, rejects symlinks and canonical mismatch, and
 then reuses the existing atomic tab-open path. There is no startup index,
 watcher, parallel traversal, global ignore state, plugin API, or network path.
 
+Studio now also owns an application-private bounded split-view tree under
+[Requirement #32](https://github.com/dbuddha/alpine-gpui/issues/32) and
+[Task #127](https://github.com/dbuddha/alpine-gpui/issues/127). The tree uses
+fixed storage for at most four pane leaves and seven total nodes, so split,
+focus, close, and geometry projection allocate no heap state. Row and column
+splits use a fixed two-pixel divider, refuse leaves narrower than 120 pixels or
+shorter than 80 pixels, retain monotonic pane identities, and preserve one
+independent non-negative finite scroll offset per leaf. Every visible leaf
+renders simultaneously from the same immutable active-document snapshot and
+the existing bounded line-layout cache and glyph atlas. Only the focused leaf
+accepts pointer selection, caret, and IME composition; pointer focus restores
+that leaf's retained scroll before hit testing. The command palette provides
+static split-right, split-down, focus-next, and close-pane commands. This slice
+does not duplicate a buffer, create another document authority, add a layout
+framework, or allocate work on startup. Independent tab groups and crash-safe
+split restoration remain unimplemented parts of Task #127.
+
 The native event handler returns one bounded `SurfaceResponse`. AppKit
 Command-C and Command-X writes complete through a typed later event, allowing
 Studio to defer cut mutation until native success. Command-V checks the native

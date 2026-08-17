@@ -1470,6 +1470,98 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
 
 #[test]
 #[allow(
+    clippy::float_cmp,
+    reason = "exact split geometry and retained scroll distinguish pane ownership mutations"
+)]
+fn split_views_render_focus_and_close_with_bounded_independent_scroll()
+-> Result<(), Box<dyn std::error::Error>> {
+    let text = "line\n".repeat(100);
+    let mut app = StudioApp::from_document(TestTextSystem, StudioDocument::scratch(&text), None)?;
+    let viewport = viewport()?;
+    app.last_viewport = viewport;
+    let region = app.editor_region(viewport)?;
+    assert_eq!(app.panes.len(), 1);
+    assert!(app.command_context().can_split_right);
+    assert!(!app.command_context().can_close_pane);
+
+    assert!(
+        app.dispatch_command(StudioCommand::SplitRight)
+            .visual_changed
+    );
+    assert_eq!(app.panes.len(), 2);
+    assert!(app.command_context().can_close_pane);
+    app.scroll_y = 44.0;
+    let scene = app.try_scene(SceneRevision::new(70), viewport)?;
+    let layout = app.panes.layout(region)?;
+    let entries: Vec<_> = layout.iter().collect();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(scene.clips()[0].bounds(), entries[0].bounds);
+    assert_eq!(scene.clips()[1].bounds(), entries[1].bounds);
+    assert!(scene.glyphs().iter().any(|glyph| {
+        let x = glyph.bounds().origin().x();
+        x >= entries[0].bounds.origin().x()
+            && x < entries[0].bounds.origin().x() + entries[0].bounds.size().width()
+    }));
+    assert!(scene.glyphs().iter().any(|glyph| {
+        let x = glyph.bounds().origin().x();
+        x >= entries[1].bounds.origin().x()
+            && x < entries[1].bounds.origin().x() + entries[1].bounds.size().width()
+    }));
+
+    let left_point = Point::new(
+        entries[0].bounds.origin().x() + 4.0,
+        entries[0].bounds.origin().y() + 4.0,
+    )
+    .ok_or("left pane point")?;
+    assert!(
+        app.handle_pointer(
+            PointerAction::Down,
+            left_point,
+            PointerButton::Primary,
+            Modifiers::default(),
+        )
+        .visual_changed
+    );
+    assert_eq!(app.panes.active_id(), entries[0].id);
+    assert_eq!(app.scroll_y, 0.0);
+    app.scroll_y = 22.0;
+
+    let right_point = Point::new(
+        entries[1].bounds.origin().x() + 4.0,
+        entries[1].bounds.origin().y() + 4.0,
+    )
+    .ok_or("right pane point")?;
+    assert!(
+        app.handle_pointer(
+            PointerAction::Down,
+            right_point,
+            PointerButton::Primary,
+            Modifiers::default(),
+        )
+        .visual_changed
+    );
+    assert_eq!(app.panes.active_id(), entries[1].id);
+    assert_eq!(app.scroll_y, 44.0);
+
+    assert!(
+        app.dispatch_command(StudioCommand::SplitDown)
+            .visual_changed
+    );
+    assert_eq!(app.panes.len(), 3);
+    assert!(
+        app.dispatch_command(StudioCommand::FocusNextPane)
+            .visual_changed
+    );
+    assert!(
+        app.dispatch_command(StudioCommand::ClosePane)
+            .visual_changed
+    );
+    assert_eq!(app.panes.len(), 2);
+    Ok(())
+}
+
+#[test]
+#[allow(
     clippy::too_many_lines,
     reason = "the adversarial workspace selection journey keeps all atomicity checks together"
 )]

@@ -25,6 +25,10 @@ pub(crate) enum StudioCommand {
     OpenFind,
     OpenReplace,
     ToggleFileTree,
+    SplitRight,
+    SplitDown,
+    FocusNextPane,
+    ClosePane,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -38,6 +42,9 @@ pub(crate) struct CommandContext {
     pub(crate) can_navigate_back: bool,
     pub(crate) can_navigate_forward: bool,
     pub(crate) has_workspace: bool,
+    pub(crate) can_split_right: bool,
+    pub(crate) can_split_down: bool,
+    pub(crate) can_close_pane: bool,
 }
 
 impl CommandContext {
@@ -51,6 +58,9 @@ impl CommandContext {
             | StudioCommand::OpenProjectSearch
             | StudioCommand::ToggleFileTree => self.has_workspace,
             StudioCommand::OpenFind | StudioCommand::OpenReplace => true,
+            StudioCommand::SplitRight => self.can_split_right,
+            StudioCommand::SplitDown => self.can_split_down,
+            StudioCommand::FocusNextPane | StudioCommand::ClosePane => self.can_close_pane,
         }
     }
 }
@@ -62,7 +72,7 @@ struct CommandSpec {
     search_terms: &'static str,
 }
 
-const REGISTRY: [CommandSpec; 9] = [
+const REGISTRY: [CommandSpec; 13] = [
     CommandSpec {
         command: StudioCommand::SaveFile,
         title: "File: Save",
@@ -107,6 +117,26 @@ const REGISTRY: [CommandSpec; 9] = [
         command: StudioCommand::ToggleFileTree,
         title: "Workspace: Toggle File Tree",
         search_terms: "sidebar explorer files",
+    },
+    CommandSpec {
+        command: StudioCommand::SplitRight,
+        title: "Pane: Split Right",
+        search_terms: "editor column view",
+    },
+    CommandSpec {
+        command: StudioCommand::SplitDown,
+        title: "Pane: Split Down",
+        search_terms: "editor row view",
+    },
+    CommandSpec {
+        command: StudioCommand::FocusNextPane,
+        title: "Pane: Focus Next",
+        search_terms: "editor navigate view",
+    },
+    CommandSpec {
+        command: StudioCommand::ClosePane,
+        title: "Pane: Close",
+        search_terms: "editor remove view",
     },
 ];
 
@@ -592,12 +622,15 @@ mod tests {
             can_navigate_back: true,
             can_navigate_forward: true,
             has_workspace: true,
+            can_split_right: true,
+            can_split_down: true,
+            can_close_pane: true,
         }
     }
 
     #[test]
     fn locked_registry_query_and_memory_limits_are_exact() -> Result<(), Box<dyn Error>> {
-        assert_eq!(REGISTRY.len(), 9);
+        assert_eq!(REGISTRY.len(), 13);
         assert!(REGISTRY.len() <= MAX_COMMANDS);
         let mut palette = CommandPalette::default();
         assert!(palette.open(all_available())?);
@@ -661,7 +694,7 @@ mod tests {
                 .iter()
                 .find(|row| row.selected)
                 .map(|row| row.command),
-            Some(StudioCommand::ToggleFileTree)
+            Some(StudioCommand::ClosePane)
         );
         assert!(palette.begin_composition());
         assert!(palette.update_composition("save", 0, 4)?);
