@@ -30,6 +30,7 @@ Accepted AEPs:
 - [AEP 0165: Bounded in-file find](0165-bounded-in-file-find.md)
 - [AEP 0168: Bounded lazy workspace inventory and quick open](0168-bounded-lazy-workspace-inventory.md)
 - [AEP 0171: Lazy bounded workspace file tree](0171-lazy-bounded-workspace-file-tree.md)
+- [AEP 0177: Bounded static command palette](0177-bounded-static-command-palette.md)
 
 Proposed AEPs:
 

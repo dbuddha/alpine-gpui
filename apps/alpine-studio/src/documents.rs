@@ -199,6 +199,29 @@ impl<T> DocumentTabs<T> {
         self.tabs.iter().filter_map(|tab| tab.document.as_ref())
     }
 
+    pub(crate) fn can_navigate_back(&self) -> bool {
+        self.history
+            .get(..self.history_cursor)
+            .unwrap_or_default()
+            .iter()
+            .rev()
+            .any(|id| {
+                self.index_for_id(*id)
+                    .is_some_and(|index| index != self.active)
+            })
+    }
+
+    pub(crate) fn can_navigate_forward(&self) -> bool {
+        self.history
+            .get(self.history_cursor.saturating_add(1)..)
+            .unwrap_or_default()
+            .iter()
+            .any(|id| {
+                self.index_for_id(*id)
+                    .is_some_and(|index| index != self.active)
+            })
+    }
+
     pub(crate) fn visible_range(
         &self,
         first_visible: usize,

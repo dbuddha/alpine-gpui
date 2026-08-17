@@ -758,6 +758,16 @@ with verified raw samples and qualified environments; its report remains
 non-inferential until physical data supports a later statistical decision. No
 shipping crate depends on either boundary.
 
+### Bounded static command discovery
+
+Alpine Studio owns a closed compile-time command registry and a private bounded
+palette state. Command availability is derived from current Studio state, and
+execution refreshes that availability before dispatching an existing typed
+transition. Matching is deterministic and allocation ceilings cover query,
+composition, results, visible rows, and diagnostics. There is no runtime
+registration, plugin hook, closure registry, worker, timer, or public framework
+API at this boundary. See AEP-0177.
+
 ## Binding invariants
 
 1. Public behavior is specified independently of upstream implementations.

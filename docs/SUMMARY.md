@@ -37,3 +37,6 @@
   - [AEP 0153: Bounded clipboard and close responses](aep/0153-bounded-clipboard-close-response.md)
   - [AEP 0160: Bounded local workspace foundation](aep/0160-bounded-local-workspace-foundation.md)
   - [AEP 0165: Bounded in-file find and replace](aep/0165-bounded-in-file-find.md)
+  - [AEP 0168: Bounded lazy workspace inventory and quick open](aep/0168-bounded-lazy-workspace-inventory.md)
+  - [AEP 0171: Lazy bounded workspace file tree](aep/0171-lazy-bounded-workspace-file-tree.md)
+  - [AEP 0177: Bounded static command palette](aep/0177-bounded-static-command-palette.md)

@@ -3751,3 +3751,158 @@ bounds = ["pull request: four generations", "nightly: eight generations"]
 assumptions = ["Selection occurs only after a typed publication."]
 exclusions = ["path revalidation", "native input", "Rust refinement"]
 companion = "apps/alpine-studio/src/file_tree.rs#tree_navigation_opens_only_current_file_rows"
+
+[[claims]]
+id = "AEP-0177-C01"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0177-bounded-static-command-palette.md"
+requirement_issue = 32
+claim_type = "memory"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit", "benchmark"]
+
+[[claims]]
+id = "AEP-0177-C02"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0177-bounded-static-command-palette.md"
+requirement_issue = 32
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0177-C03"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0177-bounded-static-command-palette.md"
+requirement_issue = 32
+claim_type = "lifecycle"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["ClosedOwnsNoSelection"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit", "property"]
+
+[[claims]]
+id = "AEP-0177-C04"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0177-bounded-static-command-palette.md"
+requirement_issue = 32
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["ExecutedWasCurrent"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "unit", "native"]
+
+[[evidence]]
+id = "EV-0177-UNIT01"
+claim = "AEP-0177-C01"
+kind = "unit"
+artifact = "apps/alpine-studio/src/commands.rs#locked_registry_query_and_memory_limits_are_exact"
+assertion = "The static registry, query, composition, result, visible-row, and diagnostic limits are exact inclusive ceilings, and closing releases every dynamic allocation owned by the palette."
+scope = "Private Studio command registry and foreground palette state."
+bounds = ["32 commands", "256 query bytes", "12 visible rows", "3 overscan rows per side", "512 diagnostic bytes"]
+assumptions = ["Registry entries contain only static strings and typed command identifiers."]
+exclusions = ["allocator implementation", "native typography", "fixed-hardware latency"]
+
+[[evidence]]
+id = "EV-0177-UNIT02"
+claim = "AEP-0177-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/commands.rs#exact_token_and_subsequence_ranking_are_stable"
+assertion = "Whole-prefix, token-prefix, and ordered-subsequence matching preserve deterministic rank and compile-time registry order."
+scope = "Eight built-in commands under static and filtered queries."
+bounds = ["32 commands", "256 query bytes"]
+assumptions = ["ASCII command search terms are fixed at compile time."]
+exclusions = ["locale-specific collation", "fuzzy edit distance", "runtime command registration"]
+
+[[evidence]]
+id = "EV-0177-PROPERTY03"
+claim = "AEP-0177-C03"
+kind = "property"
+artifact = "apps/alpine-studio/src/commands.rs#randomized_query_navigation_sequences_preserve_every_bound"
+assertion = "A deterministic mixed query, navigation, cancellation, reopening, and availability sequence preserves all ownership, selection, and byte ceilings."
+scope = "Private command-palette transitions over a bounded deterministic action stream."
+bounds = ["4,096 actions", "32 commands", "18 maximum projected rows"]
+assumptions = ["The deterministic generator samples a finite transition subset."]
+exclusions = ["unbounded traces", "native event delivery", "allocator physical footprint"]
+companion = "formal/tla/aep-0177/CommandPalette.tla#ClosedOwnsNoSelection"
+
+[[evidence]]
+id = "EV-0177-UNIT04"
+claim = "AEP-0177-C04"
+kind = "unit"
+artifact = "apps/alpine-studio/src/command_palette_tests.rs#command_palette_routes_save_through_existing_editor_state"
+assertion = "The production palette filters to Save, executes exactly once through the existing Studio save transition, closes, and persists the current buffer."
+scope = "One file-backed Studio document and one typed command dispatch."
+bounds = ["one command execution", "one atomic file save"]
+assumptions = ["The temporary filesystem supports atomic replacement semantics exercised by StudioDocument."]
+exclusions = ["native input timing", "fixed-hardware latency", "plugin commands"]
+companion = "apps/alpine-studio/src/commands.rs#navigation_composition_and_stale_availability_fail_closed"
+
+[[evidence]]
+id = "EV-0177-NATIVE04"
+claim = "AEP-0177-C04"
+kind = "native"
+artifact = "apps/alpine-studio/src/lib.rs#qualify_file_tree_process"
+assertion = "A real Apple Silicon AppKit surface opens the palette, filters to Save through IME delivery, executes the existing save transition, persists the active file, closes cleanly, and drains all nine native owner classes."
+scope = "One folder, one edited file, six keyboard events, two pointer events, bounded worker wakes, and one clean native close."
+bounds = ["one command execution", "512 worker wake attempts", "nine native owner classes"]
+assumptions = ["The Apple Silicon validation host provides AppKit, CoreText, and Metal."]
+exclusions = ["accessibility", "fixed-hardware latency", "multi-window input"]
+companion = "apps/alpine-studio/tests/native_process.rs"
+
+[[evidence]]
+id = "EV-0177-BENCH01"
+claim = "AEP-0177-C01"
+kind = "benchmark"
+artifact = "apps/alpine-studio/src/command_palette_tests.rs#command_palette_stage_measurements_are_separate_and_bounded"
+assertion = "Open, query matching, visible-row projection, and palette scene build are timed as separate diagnostic stages while retained and projected counts remain bounded."
+scope = "One local diagnostic sample over the static command registry."
+bounds = ["32 commands", "18 maximum projected rows", "five-second hang ceiling per stage"]
+assumptions = ["Test timing is diagnostic and runs on an uncontrolled local or hosted machine."]
+exclusions = ["performance claim", "fixed-hardware threshold", "statistical distribution", "cross-product comparison"]
+
+[[evidence]]
+id = "EV-0177-TLA03"
+claim = "AEP-0177-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0177/CommandPalette.tla#ClosedOwnsNoSelection"
+assertion = "A closed palette owns neither selection nor execution state, and the faulty cancel control violates the invariant."
+scope = "Finite open, query, availability, selection, execute, and cancel transitions."
+bounds = ["pull request: four generations", "nightly: eight generations"]
+assumptions = ["Monotonic finite generations", "typed command identities"]
+exclusions = ["Rust formal refinement", "native input scheduling", "rendering"]
+companion = "apps/alpine-studio/src/commands.rs#unicode_delete_display_and_execution_accounting_are_bounded"
+
+[[evidence]]
+id = "EV-0177-TLA04"
+claim = "AEP-0177-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0177/CommandPalette.tla#ExecutedWasCurrent"
+assertion = "Every executed command carries the current query and availability generations, and the faulty stale-execution control violates the invariant."
+scope = "Finite generation changes and command execution admission."
+bounds = ["pull request: four generations", "nightly: eight generations"]
+assumptions = ["Availability refresh advances a monotonic finite generation."]
+exclusions = ["Rust formal refinement", "native event delivery", "filesystem effects"]
+companion = "apps/alpine-studio/src/command_palette_tests.rs#command_availability_refresh_prevents_stale_execution"
+
+[[evidence]]
+id = "EV-0177-UNIT03"
+claim = "AEP-0177-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/commands.rs#navigation_composition_and_stale_availability_fail_closed"
+assertion = "Cancellation releases query, composition, matches, and selection; execution refreshes command availability and rejects a selection that is no longer current."
+scope = "Private command-palette lifecycle and execution admission."
+bounds = ["32 commands", "256 query bytes", "one current selection"]
+assumptions = ["Studio derives availability from current main-thread state."]
+exclusions = ["native event delivery", "filesystem effects", "render timing"]
+companion = "formal/tla/aep-0177/CommandPalette.tla#ClosedOwnsNoSelection"
