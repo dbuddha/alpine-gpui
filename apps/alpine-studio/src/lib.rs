@@ -3081,6 +3081,8 @@ pub mod native_validation {
     };
 
     const NATIVE_INPUT_FRAMES: usize = 5;
+    const COMMAND_SHIFT_MODIFIERS: Modifiers =
+        Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
     const TREE_TOGGLE_MODIFIER_BITS: u8 = 0x09;
 
     /// Handle-free completion evidence returned across the process-test boundary.
@@ -3470,12 +3472,7 @@ pub mod native_validation {
             &state,
             &journey,
             &[
-                keyboard_event(
-                    621,
-                    KEY_P,
-                    "p",
-                    Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT),
-                ),
+                keyboard_event(621, KEY_P, "p", COMMAND_SHIFT_MODIFIERS),
                 SurfaceEvent::Ime {
                     timestamp: EventTimestamp::new(622),
                     event: ImeEvent::Committed("save".into()),
