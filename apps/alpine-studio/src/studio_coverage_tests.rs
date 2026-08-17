@@ -4127,3 +4127,26 @@ fn workspace_root_and_eager_directory_selection_reject_non_files()
     assert!(rejected_directory);
     Ok(())
 }
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn folder_launch_primes_lazy_tree_without_stealing_editor_focus()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn main() {}\n")?;
+    let mut app = native_workspace_app(root.path())?;
+
+    assert!(app.file_tree.is_visible());
+    assert!(app.file_tree.is_active());
+    assert!(!app.file_tree.is_focused());
+    let request = app
+        .prepare_file_tree_request()?
+        .ok_or("primed root request")?;
+    assert!(app.prepare_file_tree_request()?.is_none());
+    assert!(app.apply_file_tree_output(request.execute()).visual_changed);
+    let rows = app.file_tree.visible_rows(0, 8, TREE_OVERSCAN_ROWS)?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].path.as_ref(), "main.rs");
+    assert!(!app.file_tree.is_focused());
+    Ok(())
+}
