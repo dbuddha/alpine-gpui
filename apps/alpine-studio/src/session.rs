@@ -3,10 +3,13 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+use std::io::Read;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 use alpine_text::{ByteOffset, Selection};
 
 use crate::documents::DocumentViewState;
@@ -429,14 +432,17 @@ fn encode(state: &SessionState) -> Result<Vec<u8>, SessionError> {
     Ok(bytes)
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn encoded_size_exceeds_limit(length: usize) -> bool {
     length > MAX_SESSION_BYTES
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn header_is_truncated(length: usize) -> bool {
     length < HEADER_BYTES
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn decode_axis(tag: u8) -> Result<SessionAxis, SessionCorrupt> {
     match tag {
         0 => Ok(SessionAxis::Columns),
