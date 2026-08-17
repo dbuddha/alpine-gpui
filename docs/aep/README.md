@@ -26,6 +26,9 @@ Accepted AEPs:
 - [AEP 0139: Checked local text buffer and one-file editor](0139-checked-local-text-buffer.md)
 - [AEP 0141: Bounded text layout and monochrome glyph atlas](0141-bounded-text-layout-atlas.md)
 - [AEP 0153: Bounded clipboard and close responses](0153-bounded-clipboard-close-response.md)
+- [AEP 0160: Bounded local workspace foundation](0160-bounded-local-workspace-foundation.md)
+- [AEP 0165: Bounded in-file find](0165-bounded-in-file-find.md)
+- [AEP 0168: Bounded lazy workspace inventory and quick open](0168-bounded-lazy-workspace-inventory.md)
 
 Proposed AEPs:
 

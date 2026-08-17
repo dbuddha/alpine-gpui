@@ -3464,3 +3464,126 @@ assertion = "Production AppKit selectors preserve the exact ordered keyboard, te
 scope = "One Apple Silicon NSWindow, SurfaceView NSTextInputClient, NSResponder keyboard and pointer selectors, and CGEvent-backed scroll input."
 exclusions = ["Studio document policy", "pixel readback", "accessibility actions", "physical input hardware"]
 companion = "apps/alpine-studio/tests/native_process.rs#main"
+[[claims]]
+id = "AEP-0168-C01"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0168-bounded-lazy-workspace-inventory.md"
+requirement_issue = 32
+claim_type = "memory"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0168-C02"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0168-bounded-lazy-workspace-inventory.md"
+requirement_issue = 32
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0168-C03"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0168-bounded-lazy-workspace-inventory.md"
+requirement_issue = 32
+claim_type = "lifecycle"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["PublishedInventoryIsCurrent", "PublishedQueryIsCurrent"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[claims]]
+id = "AEP-0168-C04"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0168-bounded-lazy-workspace-inventory.md"
+requirement_issue = 32
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["SelectionUsesCurrentQuery"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[evidence]]
+id = "EV-0168-UNIT01"
+claim = "AEP-0168-C01"
+kind = "unit"
+artifact = "apps/alpine-studio/src/quick_open.rs#inventory_ranking_and_projection_enforce_caps"
+assertion = "The serial inventory and result builder enforce scan, retained-path, path-byte, result-count, and metadata ceilings with explicit truncation and omission accounting."
+scope = "Private Alpine Studio inventory values over deterministic local filesystem fixtures."
+bounds = ["250000 inspected entries", "100000 retained paths", "16 MiB retained path bytes", "1024 ranked results", "1 MiB result metadata"]
+exclusions = ["allocator implementation", "filesystem performance", "native process latency"]
+
+[[evidence]]
+id = "EV-0168-UNIT02"
+claim = "AEP-0168-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/quick_open.rs#project_rules_hidden_files_and_git_exclusion_are_deterministic"
+assertion = "Project ignore rules, whitelist precedence, hidden-file admission, .git exclusion, deterministic order, and nested-file retention are independently exercised."
+scope = "One serial ignore 0.4.33 walker with global and parent ignore state disabled."
+exclusions = ["all operating-system permission failures", "network filesystems", "global ignore behavior"]
+
+[[evidence]]
+id = "EV-0168-UNIT03"
+claim = "AEP-0168-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/quick_open.rs#state_rejects_stale_work_and_navigates_current_results"
+assertion = "A closed and reopened quick-open state rejects a stale inventory, admits only current inventory and query work, and navigates only the current ranked result set."
+scope = "One workspace identity, two inventory generations, current query publication, and bounded navigation."
+exclusions = ["worker elapsed time", "native wake delivery", "Rust formal refinement"]
+
+[[evidence]]
+id = "EV-0168-UNIT04"
+claim = "AEP-0168-C04"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#quick_open_lazily_indexes_renders_and_opens_a_nested_file"
+assertion = "No inventory exists before Command-P, current inventory and query work publish in order, the overlay renders, and one qualified nested result opens through the document replacement path."
+scope = "Portable Studio application state, bounded runtime request semantics, deterministic text system, and local filesystem fixture."
+exclusions = ["AppKit keyboard delivery", "fixed-hardware latency", "live filesystem watching"]
+companion = "apps/alpine-studio/src/quick_open.rs#state_rejects_stale_work_and_navigates_current_results"
+
+[[evidence]]
+id = "EV-0168-TLA03"
+claim = "AEP-0168-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0168/QuickOpenAdmission.tla#PublishedInventoryIsCurrent"
+assertion = "A finite inventory publication is empty or exactly current; the faulty stale-publication control violates the invariant."
+scope = "Finite open, close, inventory, query, and selection generations."
+bounds = ["pull request: four generations", "nightly: eight generations"]
+assumptions = ["generation exhaustion rejects rather than wraps", "worker outcomes preserve typed identity"]
+exclusions = ["Rust formal refinement", "filesystem I/O", "ignore parsing", "elapsed time"]
+companion = "apps/alpine-studio/src/quick_open.rs#state_rejects_stale_work_and_navigates_current_results"
+
+[[evidence]]
+id = "EV-0168-TLA03B"
+claim = "AEP-0168-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0168/QuickOpenAdmission.tla#PublishedQueryIsCurrent"
+assertion = "A finite query publication is empty or exactly current after inventory admission and every query change."
+scope = "Finite open, close, inventory, query, and selection generations."
+bounds = ["pull request: four generations", "nightly: eight generations"]
+assumptions = ["generation exhaustion rejects rather than wraps", "worker outcomes preserve typed identity"]
+exclusions = ["Rust formal refinement", "query bytes", "worker scheduling", "elapsed time"]
+companion = "apps/alpine-studio/src/quick_open.rs#state_rejects_stale_work_and_navigates_current_results"
+
+[[evidence]]
+id = "EV-0168-TLA04"
+claim = "AEP-0168-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0168/QuickOpenAdmission.tla#SelectionUsesCurrentQuery"
+assertion = "Selection remains empty or uses the exact current published query; the faulty stale-selection control violates the invariant."
+scope = "Finite query publication and selection admission after one current inventory."
+bounds = ["pull request: four generations", "nightly: eight generations"]
+assumptions = ["path revalidation returns one typed admission outcome"]
+exclusions = ["Rust formal refinement", "path component semantics", "document open I/O"]
+companion = "apps/alpine-studio/src/studio_coverage_tests.rs#quick_open_lazily_indexes_renders_and_opens_a_nested_file"

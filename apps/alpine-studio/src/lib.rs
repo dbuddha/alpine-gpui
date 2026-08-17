@@ -7,6 +7,7 @@
 
 mod documents;
 mod find;
+mod quick_open;
 mod workspace;
 
 pub use workspace::WorkspaceError;
@@ -44,6 +45,9 @@ use find::{
     FindAdmission, FindError, FindNavigation, FindRequest, FindState, FindWorkerOutput,
     MAX_REPLACEMENT_TRANSACTION_BYTES,
 };
+use quick_open::{
+    QuickOpenAdmission, QuickOpenError, QuickOpenRequest, QuickOpenState, QuickOpenWorkerOutput,
+};
 use workspace::Workspace;
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
@@ -72,11 +76,17 @@ const TAB_OVERSCAN: usize = 2;
 const FIND_BAR_WIDTH: f32 = 420.0;
 const FIND_BAR_HEIGHT: f32 = 30.0;
 const FIND_BAR_INSET: f32 = 8.0;
+const QUICK_OPEN_WIDTH: f32 = 620.0;
+const QUICK_OPEN_QUERY_HEIGHT: f32 = 34.0;
+const QUICK_OPEN_ROW_HEIGHT: f32 = 24.0;
+const QUICK_OPEN_VISIBLE_ROWS: usize = 12;
+const QUICK_OPEN_OVERSCAN_ROWS: usize = 3;
 const INITIAL_TEXT: &str = "fn main() {\n    println!(\"Alpine Studio\");\n}\n\n// Local, direct, and deliberately small.\n";
 
 const KEY_A: u16 = 0;
 const KEY_S: u16 = 1;
 const KEY_F: u16 = 3;
+const KEY_P: u16 = 35;
 const KEY_Z: u16 = 6;
 const KEY_W: u16 = 13;
 const KEY_RIGHT_BRACKET: u16 = 30;
@@ -387,6 +397,7 @@ impl StudioTransition {
 enum StudioRenderError {
     Domain,
     Find(FindError),
+    QuickOpen(QuickOpenError),
     Text(TextError),
     Layout(LayoutError),
     Scene(SceneError),
@@ -401,6 +412,12 @@ impl From<TextError> for StudioRenderError {
 impl From<FindError> for StudioRenderError {
     fn from(error: FindError) -> Self {
         Self::Find(error)
+    }
+}
+
+impl From<QuickOpenError> for StudioRenderError {
+    fn from(error: QuickOpenError) -> Self {
+        Self::QuickOpen(error)
     }
 }
 
@@ -421,6 +438,7 @@ impl fmt::Display for StudioRenderError {
         match self {
             Self::Domain => formatter.write_str("invalid Studio render domain value"),
             Self::Find(error) => write!(formatter, "find rendering failed: {error}"),
+            Self::QuickOpen(error) => write!(formatter, "quick-open rendering failed: {error}"),
             Self::Text(error) => write!(formatter, "text layout input failed: {error}"),
             Self::Layout(error) => write!(formatter, "visible layout failed: {error}"),
             Self::Scene(error) => write!(formatter, "scene construction failed: {error}"),
@@ -438,6 +456,7 @@ enum WorkspaceSelectionError {
     Tabs(DocumentTabError),
     Workspace(WorkspaceError),
     File(FileError),
+    QuickOpen(QuickOpenError),
 }
 
 impl fmt::Display for WorkspaceSelectionError {
@@ -449,6 +468,7 @@ impl fmt::Display for WorkspaceSelectionError {
             Self::Tabs(error) => write!(formatter, "document tabs failed: {error}"),
             Self::Workspace(error) => write!(formatter, "workspace selection failed: {error}"),
             Self::File(error) => write!(formatter, "workspace file failed: {error}"),
+            Self::QuickOpen(error) => write!(formatter, "quick open failed: {error}"),
         }
     }
 }
@@ -459,6 +479,7 @@ impl Error for WorkspaceSelectionError {
             Self::Workspace(error) => Some(error),
             Self::File(error) => Some(error),
             Self::Tabs(error) => Some(error),
+            Self::QuickOpen(error) => Some(error),
             Self::NoWorkspace | Self::DirtyDocument | Self::RevisionExhausted => None,
         }
     }
@@ -515,6 +536,20 @@ impl StudioDocument {
     }
 }
 
+#[cfg(test)]
+macro_rules! force_quick_open_submission_failure {
+    ($app:expr) => {
+        $app.force_quick_open_submission_failure.is_some()
+    };
+}
+
+#[cfg(not(test))]
+macro_rules! force_quick_open_submission_failure {
+    ($app:expr) => {
+        false
+    };
+}
+
 struct StudioApp {
     document: StudioDocument,
     tabs: DocumentTabs<StudioDocument>,
@@ -549,6 +584,9 @@ struct StudioApp {
     local_status: Option<LocalStatus>,
     find: FindState,
     find_needs_search: bool,
+    quick_open: QuickOpenState,
+    #[cfg(test)]
+    force_quick_open_submission_failure: Option<()>,
 }
 
 impl StudioApp {
@@ -647,6 +685,9 @@ impl StudioApp {
             local_status: None,
             find: FindState::default(),
             find_needs_search: false,
+            quick_open: QuickOpenState::default(),
+            #[cfg(test)]
+            force_quick_open_submission_failure: None,
         })
     }
 
@@ -752,6 +793,10 @@ impl StudioApp {
             LinearRgba::new(0.62, 0.45, 0.08, 0.38).ok_or(StudioRenderError::Domain)?;
         let find_background_color =
             LinearRgba::new(0.08, 0.09, 0.10, 0.98).ok_or(StudioRenderError::Domain)?;
+        let quick_open_background =
+            LinearRgba::new(0.045, 0.052, 0.058, 0.99).ok_or(StudioRenderError::Domain)?;
+        let quick_open_selected =
+            LinearRgba::new(0.12, 0.25, 0.31, 1.0).ok_or(StudioRenderError::Domain)?;
 
         let mut builder = SceneBuilder::new(revision, viewport);
         builder.push_quad(Quad::new(Rect::new(origin, viewport), background))?;
@@ -933,6 +978,49 @@ impl StudioApp {
                 self.collect_glyphs(&layout, font, origin_x, baseline, overlay_clip)?;
             pending_glyphs.extend(overlay_glyphs);
         }
+        if self.quick_open.is_open() {
+            let rows = self
+                .quick_open
+                .visible_results(QUICK_OPEN_VISIBLE_ROWS, QUICK_OPEN_OVERSCAN_ROWS);
+            let width = QUICK_OPEN_WIDTH.min((viewport.width() - CONTENT_INSET * 2.0).max(1.0));
+            let left = ((viewport.width() - width) * 0.5).max(0.0);
+            let top = TAB_BAR_HEIGHT + CONTENT_INSET;
+            let height = QUICK_OPEN_QUERY_HEIGHT + usize_as_f32(rows.len()) * QUICK_OPEN_ROW_HEIGHT;
+            let overlay_origin = Point::new(left, top).ok_or(StudioRenderError::Domain)?;
+            let overlay_size =
+                Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
+            let overlay_bounds = Rect::new(overlay_origin, overlay_size);
+            let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
+            builder.push_quad(Quad::new(overlay_bounds, quick_open_background))?;
+            let display = self.quick_open.display_text()?;
+            let query_layout = self.text_system.shape(&display, font)?;
+            pending_glyphs.extend(self.collect_glyphs(
+                &query_layout,
+                font,
+                left + FIND_BAR_INSET,
+                top + query_layout.ascent() + 7.0,
+                overlay_clip,
+            )?);
+            for (row, (path, selected)) in rows.iter().enumerate() {
+                let row_top =
+                    top + QUICK_OPEN_QUERY_HEIGHT + usize_as_f32(row) * QUICK_OPEN_ROW_HEIGHT;
+                if *selected {
+                    let row_origin = Point::new(left, row_top).ok_or(StudioRenderError::Domain)?;
+                    let row_size =
+                        Size::new(width, QUICK_OPEN_ROW_HEIGHT).ok_or(StudioRenderError::Domain)?;
+                    let selected_quad =
+                        Quad::new(Rect::new(row_origin, row_size), quick_open_selected)
+                            .clipped(overlay_clip);
+                    builder.push_quad(selected_quad)?;
+                }
+                let layout = self.text_system.shape(path, font)?;
+                let origin_x = left + FIND_BAR_INSET;
+                let baseline = row_top + layout.ascent() + 4.0;
+                let row_glyphs =
+                    self.collect_glyphs(&layout, font, origin_x, baseline, overlay_clip)?;
+                pending_glyphs.extend(row_glyphs);
+            }
+        }
         builder.push_quad(Quad::new(tab_bounds, tab_background).clipped(tab_clip))?;
         if tab_labels
             .iter()
@@ -966,6 +1054,7 @@ impl StudioApp {
         }
         if self.focused
             && !self.find.is_open()
+            && !self.quick_open.is_open()
             && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_origin_x)?
         {
             builder.push_quad(Quad::new(caret, caret_color).clipped(clip))?;
@@ -1113,7 +1202,9 @@ impl StudioApp {
     }
 
     fn handle_event_with_response(&mut self, event: &SurfaceEvent) -> StudioTransition {
-        if self.find.is_open() && studio_clipboard_shortcut(event).is_some() {
+        if (self.find.is_open() || self.quick_open.is_open())
+            && studio_clipboard_shortcut(event).is_some()
+        {
             return StudioTransition::default();
         }
         if let Some(operation) = studio_clipboard_shortcut(event) {
@@ -1340,6 +1431,20 @@ impl StudioApp {
         let command = modifiers.contains(Modifiers::COMMAND);
         let shift = modifiers.contains(Modifiers::SHIFT);
         let option = modifiers.contains(Modifiers::OPTION);
+        if command && physical_key == KEY_P {
+            if self.workspace.is_none() {
+                return self.record_quick_open_error(&QuickOpenError::NoWorkspace);
+            }
+            self.find.close();
+            self.find_needs_search = false;
+            return match self.quick_open.open(1) {
+                Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+                Err(error) => self.record_quick_open_error(&error),
+            };
+        }
+        if self.quick_open.is_open() {
+            return self.handle_quick_open_key(physical_key, command);
+        }
         if command && physical_key == KEY_F {
             let changed = self.find.open(option);
             self.find_needs_search |= !self.find.query().is_empty();
@@ -1386,6 +1491,9 @@ impl StudioApp {
     }
 
     fn handle_ime(&mut self, event: &ImeEvent) -> EventEffect {
+        if self.quick_open.is_open() {
+            return self.handle_quick_open_ime(event);
+        }
         if self.find.is_open() {
             return self.handle_find_ime(event);
         }
@@ -1430,6 +1538,72 @@ impl StudioApp {
                 self.replace_range(replacement, text)
             }
             ImeEvent::Cancelled => self.cancel_composition(),
+        }
+    }
+
+    fn handle_quick_open_key(&mut self, physical_key: u16, command: bool) -> EventEffect {
+        match physical_key {
+            KEY_ESCAPE => self
+                .quick_open
+                .close()
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_DELETE_BACKWARD if !command => match self.quick_open.delete_backward() {
+                Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+                Err(error) => self.record_quick_open_error(&error),
+            },
+            KEY_UP if !command => self
+                .quick_open
+                .navigate(false, QUICK_OPEN_VISIBLE_ROWS)
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_DOWN if !command => self
+                .quick_open
+                .navigate(true, QUICK_OPEN_VISIBLE_ROWS)
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_RETURN if !command => match self.open_quick_open_selection() {
+                Ok(effect) => effect,
+                Err(error) => self.record_workspace_error(&error),
+            },
+            _ => EventEffect::default(),
+        }
+    }
+
+    fn handle_quick_open_ime(&mut self, event: &ImeEvent) -> EventEffect {
+        let result = match event {
+            ImeEvent::Started => {
+                return self
+                    .quick_open
+                    .begin_composition()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
+            ImeEvent::Updated {
+                text,
+                selected_start_utf16,
+                selected_length_utf16,
+            } => {
+                let selected_end = selected_start_utf16.checked_add(*selected_length_utf16);
+                let units = u32::try_from(text.encode_utf16().count()).ok();
+                if selected_end.is_none_or(|end| units.is_none_or(|units| end > units)) {
+                    self.input_failures = self.input_failures.saturating_add(1);
+                    return EventEffect::default();
+                }
+                self.quick_open.update_composition(text)
+            }
+            ImeEvent::Committed(text) => self.quick_open.commit_text(text),
+            ImeEvent::Cancelled => {
+                return self
+                    .quick_open
+                    .cancel_composition()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
+        };
+        match result {
+            Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+            Err(error) => self.record_quick_open_error(&error),
         }
     }
 
@@ -1614,6 +1788,33 @@ impl StudioApp {
             .request(self.runtime_document_revision, self.buffer().snapshot())
     }
 
+    fn prepare_quick_open_request(&mut self) -> Result<Option<QuickOpenRequest>, QuickOpenError> {
+        let Some(workspace) = &self.workspace else {
+            return if self.quick_open.is_open() {
+                Err(QuickOpenError::NoWorkspace)
+            } else {
+                Ok(None)
+            };
+        };
+        Ok(self.quick_open.take_request(workspace.root()))
+    }
+
+    fn apply_quick_open_output(&mut self, output: QuickOpenWorkerOutput) -> EventEffect {
+        match self.quick_open.admit(output) {
+            QuickOpenAdmission::Inventory
+            | QuickOpenAdmission::Query
+            | QuickOpenAdmission::Failed => EventEffect::visual(),
+            QuickOpenAdmission::Stale => EventEffect::default(),
+        }
+    }
+
+    fn record_quick_open_error(&mut self, error: &QuickOpenError) -> EventEffect {
+        self.workspace_failures = self.workspace_failures.saturating_add(1);
+        let message: Arc<str> = format!("Quick open failed: {error}").into();
+        self.last_workspace_error = Some(Arc::clone(&message));
+        self.set_local_status(LocalStatus::Workspace(message))
+    }
+
     fn update_find_after_document_change(&mut self) -> EventEffect {
         match self.find.document_changed() {
             Ok(needs_search) => {
@@ -1666,6 +1867,10 @@ impl StudioApp {
         modifiers: Modifiers,
     ) -> EventEffect {
         self.last_pointer_position = Some(position);
+        if self.quick_open.is_open() {
+            self.pointer_selecting = false;
+            return EventEffect::default();
+        }
         if action == PointerAction::Down
             && button == PointerButton::Primary
             && position.y() < TAB_BAR_HEIGHT
@@ -1983,17 +2188,41 @@ impl StudioApp {
             .ok_or(WorkspaceSelectionError::NoWorkspace)?
             .path_for_file(index)
             .map_err(WorkspaceSelectionError::Workspace)?;
-        if let Some(tab) = self.tabs.index_for_path(&path) {
+        self.open_workspace_path(&path, Some(index))
+    }
+
+    fn open_quick_open_selection(&mut self) -> Result<EventEffect, WorkspaceSelectionError> {
+        let relative = self
+            .quick_open
+            .selected_path()
+            .map_err(WorkspaceSelectionError::QuickOpen)?;
+        let path = self
+            .workspace
+            .as_ref()
+            .ok_or(WorkspaceSelectionError::NoWorkspace)?
+            .path_for_relative_file(Path::new(relative.as_ref()))
+            .map_err(WorkspaceSelectionError::Workspace)?;
+        let effect = self.open_workspace_path(&path, None)?;
+        self.quick_open.close();
+        Ok(effect.merge(EventEffect::visual()))
+    }
+
+    fn open_workspace_path(
+        &mut self,
+        path: &Path,
+        workspace_entry: Option<usize>,
+    ) -> Result<EventEffect, WorkspaceSelectionError> {
+        if let Some(tab) = self.tabs.index_for_path(path) {
             return self.activate_document_tab(tab);
         }
-        let document = StudioDocument::open(&path).map_err(WorkspaceSelectionError::File)?;
+        let document = StudioDocument::open(path).map_err(WorkspaceSelectionError::File)?;
         let next_revision = self
             .runtime_document_revision
             .checked_add(1)
             .ok_or(WorkspaceSelectionError::RevisionExhausted)?;
         let view = self.active_document_view();
         self.tabs
-            .insert_and_activate(&path, Some(index), document, &mut self.document, view)
+            .insert_and_activate(path, workspace_entry, document, &mut self.document, view)
             .map_err(WorkspaceSelectionError::Tabs)?;
         self.runtime_document_revision = next_revision;
         self.active_workspace_entry = self.tabs.active_workspace_entry();
@@ -2021,6 +2250,7 @@ impl StudioApp {
         self.local_status = None;
         self.find.close();
         self.find_needs_search = false;
+        self.quick_open.close();
         self.ensure_active_tab_visible();
     }
 
@@ -2154,10 +2384,15 @@ impl StudioApp {
     }
 }
 
-impl AppDelegate for StudioApp {
-    type WorkerOutput = FindWorkerOutput;
+enum StudioWorkerOutput {
+    Find(FindWorkerOutput),
+    QuickOpen(QuickOpenWorkerOutput),
+}
 
-    fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, FindWorkerOutput>) {
+impl AppDelegate for StudioApp {
+    type WorkerOutput = StudioWorkerOutput;
+
+    fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, StudioWorkerOutput>) {
         let StudioTransition {
             mut effect,
             clipboard_write,
@@ -2190,7 +2425,9 @@ impl AppDelegate for StudioApp {
         match self.prepare_find_request() {
             Ok(Some(request)) => {
                 let identity = request.identity();
-                if context.spawn(move || request.execute()).is_err()
+                if context
+                    .spawn(move || StudioWorkerOutput::Find(request.execute()))
+                    .is_err()
                     && self.find.reject_submission(identity)
                 {
                     context.invalidate();
@@ -2202,21 +2439,58 @@ impl AppDelegate for StudioApp {
                 context.invalidate();
             }
         }
+        self.submit_quick_open_request(context);
     }
 
     fn worker_result(
         &mut self,
         _token: alpine_runtime::WorkToken,
-        result: FindWorkerOutput,
-        context: &mut AppContext<'_, FindWorkerOutput>,
+        result: StudioWorkerOutput,
+        context: &mut AppContext<'_, StudioWorkerOutput>,
     ) {
-        if self.apply_find_output(result).visual_changed {
+        let effect = match result {
+            StudioWorkerOutput::Find(result) => self.apply_find_output(result),
+            StudioWorkerOutput::QuickOpen(result) => self.apply_quick_open_output(result),
+        };
+        if effect.visual_changed {
             context.invalidate();
         }
+        self.submit_quick_open_request(context);
     }
 
     fn frame(&mut self, context: WindowContext) -> Scene {
         self.scene(context.scene_revision(), context.viewport())
+    }
+}
+
+impl StudioApp {
+    fn submit_quick_open_request(&mut self, context: &mut AppContext<'_, StudioWorkerOutput>) {
+        match self.prepare_quick_open_request() {
+            Ok(Some(request)) => {
+                let identity = request.identity();
+                let force_submission_failure = force_quick_open_submission_failure!(self);
+                let submission_failed = force_submission_failure
+                    || context
+                        .spawn(move || StudioWorkerOutput::QuickOpen(request.execute()))
+                        .is_err();
+                if self.reject_failed_quick_open_submission(identity, submission_failed) {
+                    context.invalidate();
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.record_quick_open_error(&error);
+                context.invalidate();
+            }
+        }
+    }
+
+    fn reject_failed_quick_open_submission(
+        &mut self,
+        identity: quick_open::RequestIdentity,
+        submission_failed: bool,
+    ) -> bool {
+        submission_failed && self.quick_open.reject_submission(identity)
     }
 }
 

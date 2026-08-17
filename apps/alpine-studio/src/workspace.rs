@@ -7,7 +7,7 @@ use std::{
     error::Error,
     fmt, fs, io,
     ops::Range,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::Arc,
 };
 
@@ -55,6 +55,17 @@ pub enum WorkspaceError {
     NotRegularFile(PathBuf),
     /// Revalidation found that the selected target escaped the canonical root.
     EscapesRoot(PathBuf),
+    /// A recursive selection contains a non-normal relative component.
+    InvalidRelativePath(PathBuf),
+    /// A recursive selection contains or became a symbolic link.
+    Symlink(PathBuf),
+    /// A recursive selection exceeds the admitted component ceiling.
+    PathDepthExceeded {
+        /// Number of normal path components observed.
+        actual: usize,
+        /// Maximum admitted component count.
+        limit: usize,
+    },
 }
 
 impl WorkspaceError {
@@ -114,6 +125,20 @@ impl fmt::Display for WorkspaceError {
                 "workspace target escapes the canonical root: {}",
                 path.display()
             ),
+            Self::InvalidRelativePath(path) => write!(
+                formatter,
+                "workspace target is not a normal relative path: {}",
+                path.display()
+            ),
+            Self::Symlink(path) => write!(
+                formatter,
+                "workspace target contains a symbolic link: {}",
+                path.display()
+            ),
+            Self::PathDepthExceeded { actual, limit } => write!(
+                formatter,
+                "workspace target depth {actual} exceeds the {limit}-component ceiling"
+            ),
         }
     }
 }
@@ -128,7 +153,10 @@ impl Error for WorkspaceError {
             | Self::AllocationFailed
             | Self::EntryNotFound(_)
             | Self::NotRegularFile(_)
-            | Self::EscapesRoot(_) => None,
+            | Self::EscapesRoot(_)
+            | Self::InvalidRelativePath(_)
+            | Self::Symlink(_)
+            | Self::PathDepthExceeded { .. } => None,
         }
     }
 }
@@ -305,6 +333,10 @@ impl Workspace {
         self.entries.len()
     }
 
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub(crate) fn entry(&self, index: usize) -> Option<&WorkspaceEntry> {
         self.entries.get(index)
     }
@@ -334,10 +366,12 @@ impl Workspace {
             .entries
             .get(index)
             .ok_or(WorkspaceError::EntryNotFound(index))?;
-        let candidate = self.root.join(entry.name.as_ref());
         if entry.kind != WorkspaceEntryKind::File {
-            return Err(WorkspaceError::NotRegularFile(candidate));
+            return Err(WorkspaceError::NotRegularFile(
+                self.root.join(entry.name.as_ref()),
+            ));
         }
+        let candidate = self.root.join(entry.name.as_ref());
         let metadata = fs::symlink_metadata(&candidate)
             .map_err(|source| WorkspaceError::io("revalidate target", &candidate, source))?;
         if !metadata.file_type().is_file() {
@@ -349,6 +383,68 @@ impl Workspace {
             .map_err(|source| WorkspaceError::io("canonicalize target", &candidate, source))?;
         if canonical.parent() != Some(self.root.as_path()) {
             return Err(WorkspaceError::EscapesRoot(canonical));
+        }
+        Ok(canonical)
+    }
+
+    pub(crate) fn path_for_relative_file(
+        &self,
+        relative: &Path,
+    ) -> Result<PathBuf, WorkspaceError> {
+        let mut components = relative.components().peekable();
+        let mut depth = 0_usize;
+        let mut candidate = self.root.clone();
+        while let Some(component) = components.next() {
+            let Component::Normal(component) = component else {
+                return Err(WorkspaceError::InvalidRelativePath(relative.to_path_buf()));
+            };
+            depth = depth.saturating_add(1);
+            if depth > crate::quick_open::MAX_DEPTH {
+                return Err(WorkspaceError::PathDepthExceeded {
+                    actual: depth,
+                    limit: crate::quick_open::MAX_DEPTH,
+                });
+            }
+            candidate.push(component);
+            let metadata = fs::symlink_metadata(&candidate).map_err(|source| {
+                WorkspaceError::io("revalidate path component", &candidate, source)
+            })?;
+            if metadata.file_type().is_symlink() {
+                return Err(WorkspaceError::Symlink(candidate));
+            }
+            if components.peek().is_some() && !metadata.is_dir() {
+                return Err(WorkspaceError::NotRegularFile(candidate));
+            }
+        }
+        if depth == 0 {
+            return Err(WorkspaceError::InvalidRelativePath(relative.to_path_buf()));
+        }
+        #[cfg(test)]
+        run_revalidation_hook(&candidate);
+        let metadata = fs::symlink_metadata(&candidate)
+            .map_err(|source| WorkspaceError::io("revalidate target", &candidate, source))?;
+        if metadata.file_type().is_symlink() {
+            return Err(WorkspaceError::Symlink(candidate));
+        }
+        if !metadata.is_file() {
+            return Err(WorkspaceError::NotRegularFile(candidate));
+        }
+        #[cfg(test)]
+        run_revalidation_hook(&candidate);
+        let final_metadata = fs::symlink_metadata(&candidate)
+            .map_err(|source| WorkspaceError::io("revalidate target", &candidate, source))?;
+        if final_metadata.file_type().is_symlink() {
+            return Err(WorkspaceError::Symlink(candidate));
+        }
+        #[cfg(test)]
+        run_revalidation_hook(&candidate);
+        let canonical = fs::canonicalize(&candidate)
+            .map_err(|source| WorkspaceError::io("canonicalize target", &candidate, source))?;
+        if !canonical.starts_with(&self.root) {
+            return Err(WorkspaceError::EscapesRoot(canonical));
+        }
+        if canonical != candidate {
+            return Err(WorkspaceError::Symlink(candidate));
         }
         Ok(canonical)
     }
@@ -370,9 +466,8 @@ pub(crate) fn set_revalidation_hook(hook: impl FnOnce(&Path) + 'static) {
 
 #[cfg(test)]
 fn run_revalidation_hook(path: &Path) {
-    REVALIDATION_HOOK.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().take() {
-            hook(path);
-        }
-    });
+    let hook = REVALIDATION_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook(path);
+    }
 }

@@ -1200,6 +1200,12 @@ fn workspace_errors_and_statuses_preserve_exact_sources_and_messages()
         WorkspaceError::EntryNotFound(9),
         WorkspaceError::NotRegularFile(PathBuf::from("directory")),
         WorkspaceError::EscapesRoot(PathBuf::from("outside")),
+        WorkspaceError::InvalidRelativePath(PathBuf::from("invalid")),
+        WorkspaceError::Symlink(PathBuf::from("link")),
+        WorkspaceError::PathDepthExceeded {
+            actual: 2,
+            limit: 1,
+        },
     ];
     for error in variants {
         assert!(!error.to_string().is_empty());
@@ -1211,6 +1217,19 @@ fn workspace_errors_and_statuses_preserve_exact_sources_and_messages()
     assert!(std::error::Error::source(&wrapped).is_some());
     let workspace_selection = WorkspaceSelectionError::Workspace(WorkspaceError::AllocationFailed);
     assert!(std::error::Error::source(&workspace_selection).is_some());
+    let quick_open_selection = WorkspaceSelectionError::QuickOpen(QuickOpenError::MissingSelection);
+    assert!(
+        quick_open_selection
+            .to_string()
+            .contains("quick open failed")
+    );
+    assert!(std::error::Error::source(&quick_open_selection).is_some());
+    let quick_open_render = StudioRenderError::from(QuickOpenError::InvalidLimits);
+    assert!(
+        quick_open_render
+            .to_string()
+            .contains("quick-open rendering failed")
+    );
     let invalid_file = TestFile::new([0xff])?;
     let file_error = StudioDocument::open(invalid_file.path())
         .err()
@@ -2807,6 +2826,304 @@ fn find_focus_rejections_and_empty_actions_remain_bounded() -> Result<(), Studio
     Ok(())
 }
 
+#[test]
+fn runtime_quick_open_worker_admits_inventory_and_ranked_results()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    let app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = viewport()?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+
+    let pending = runtime
+        .dispatch(&key(KEY_P, command))
+        .ok_or("quick-open frame")?;
+    let pending_quads = pending.scene().quads().len();
+    let mut admitted = false;
+    for timestamp in 300..812 {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(timestamp),
+        }) && frame.scene().quads().len() > pending_quads
+        {
+            admitted = true;
+            break;
+        }
+    }
+    assert!(admitted);
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end journey distinguishes the quick-open painter, input, and selection mutants"
+)]
+fn quick_open_lazily_indexes_renders_and_opens_a_nested_file()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write(".gitignore", "ignored/\n")?;
+    root.create_dir("src")?;
+    root.write("src/main.rs", "fn nested() {}\n")?;
+    root.create_dir("ignored")?;
+    root.write("ignored/lost.rs", "lost")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    assert!(app.quick_open.inventory_report().is_none());
+
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    assert!(app.handle_event(&key(KEY_P, command)).visual_changed);
+    let inventory = app
+        .prepare_quick_open_request()?
+        .ok_or("inventory request")?;
+    assert!(
+        app.apply_quick_open_output(inventory.execute())
+            .visual_changed
+    );
+    let initial_query = app
+        .prepare_quick_open_request()?
+        .ok_or("initial query request")?;
+    assert!(
+        app.apply_quick_open_output(initial_query.execute())
+            .visual_changed
+    );
+    let report = app
+        .quick_open
+        .inventory_report()
+        .ok_or("inventory report")?;
+    assert_eq!(report.paths, 2);
+    assert_eq!(report.errors, 0);
+
+    let first_path = app.quick_open.selected_path()?;
+    assert!(
+        app.handle_event(&key(KEY_DOWN, Modifiers::default()))
+            .visual_changed
+    );
+    let second_path = app.quick_open.selected_path()?;
+    assert_ne!(first_path, second_path);
+    assert_eq!(
+        app.handle_event(&key(KEY_UP, command)),
+        EventEffect::default()
+    );
+    assert_eq!(app.quick_open.selected_path()?, second_path);
+
+    let narrow_viewport = Size::new(300.0, 180.0).ok_or("narrow viewport")?;
+    let scene = app.try_scene(SceneRevision::new(90), narrow_viewport)?;
+    let overlay_width = QUICK_OPEN_WIDTH.min(narrow_viewport.width() - CONTENT_INSET * 2.0);
+    let overlay_left = (narrow_viewport.width() - overlay_width) * 0.5;
+    let overlay_top = TAB_BAR_HEIGHT + CONTENT_INSET;
+    let overlay_height = QUICK_OPEN_QUERY_HEIGHT + QUICK_OPEN_ROW_HEIGHT * 2.0;
+    let expected_overlay = Rect::new(
+        Point::new(overlay_left, overlay_top).ok_or("overlay origin")?,
+        Size::new(overlay_width, overlay_height).ok_or("overlay size")?,
+    );
+    let overlay_clip = scene
+        .clips()
+        .iter()
+        .position(|clip| clip.bounds() == expected_overlay)
+        .ok_or("quick-open clip")?;
+    let expected_selected = Rect::new(
+        Point::new(
+            overlay_left,
+            overlay_top + QUICK_OPEN_QUERY_HEIGHT + QUICK_OPEN_ROW_HEIGHT,
+        )
+        .ok_or("selected origin")?,
+        Size::new(overlay_width, QUICK_OPEN_ROW_HEIGHT).ok_or("selected size")?,
+    );
+    assert!(scene.quads().iter().any(|quad| {
+        quad.clip().is_some_and(|clip| clip.index() == overlay_clip)
+            && quad.bounds() == expected_selected
+    }));
+    let query_y = overlay_top + 19.0;
+    let query_glyph = scene
+        .glyphs()
+        .iter()
+        .find(|glyph| {
+            glyph
+                .clip()
+                .is_some_and(|clip| clip.index() == overlay_clip)
+                && glyph.bounds().origin().y().to_bits() == query_y.to_bits()
+        })
+        .ok_or("query glyph")?;
+    assert_eq!(
+        query_glyph.bounds().origin().x().to_bits(),
+        (overlay_left + FIND_BAR_INSET).to_bits()
+    );
+    let second_row_y = overlay_top + QUICK_OPEN_QUERY_HEIGHT + QUICK_OPEN_ROW_HEIGHT + 16.0;
+    let second_row_glyph = scene
+        .glyphs()
+        .iter()
+        .find(|glyph| {
+            glyph
+                .clip()
+                .is_some_and(|clip| clip.index() == overlay_clip)
+                && glyph.bounds().origin().y().to_bits() == second_row_y.to_bits()
+        })
+        .ok_or("second-row glyph")?;
+    assert_eq!(
+        second_row_glyph.bounds().origin().x().to_bits(),
+        (overlay_left + FIND_BAR_INSET).to_bits()
+    );
+
+    assert!(
+        app.handle_event(&key(KEY_UP, Modifiers::default()))
+            .visual_changed
+    );
+    assert_eq!(app.quick_open.selected_path()?, first_path);
+    assert_eq!(
+        app.handle_event(&key(KEY_DOWN, command)),
+        EventEffect::default()
+    );
+    assert_eq!(app.quick_open.selected_path()?, first_path);
+
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("main".into())))
+            .visual_changed
+    );
+    let query = app
+        .prepare_quick_open_request()?
+        .ok_or("filtered query request")?;
+    assert!(app.apply_quick_open_output(query.execute()).visual_changed);
+    assert_eq!(app.quick_open.selected_path()?.as_ref(), "src/main.rs");
+    let result = app.quick_open.result_report().ok_or("query result")?;
+    assert_eq!(result.0, 1);
+    assert!(result.1 <= quick_open::MAX_RESULT_METADATA_BYTES);
+
+    assert_eq!(
+        app.handle_event(&key(KEY_DELETE_BACKWARD, command)),
+        EventEffect::default()
+    );
+    assert_eq!(app.quick_open.query(), "main");
+    assert!(
+        app.handle_event(&key(KEY_DELETE_BACKWARD, Modifiers::default()))
+            .visual_changed
+    );
+    assert_eq!(app.quick_open.query(), "mai");
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("n".into())))
+            .visual_changed
+    );
+    let restored_query = app
+        .prepare_quick_open_request()?
+        .ok_or("restored query request")?;
+    assert!(
+        app.apply_quick_open_output(restored_query.execute())
+            .visual_changed
+    );
+    assert_eq!(
+        app.handle_event(&key(KEY_RETURN, command)),
+        EventEffect::default()
+    );
+    assert!(app.quick_open.is_open());
+    let effect = app.handle_event(&key(KEY_RETURN, Modifiers::default()));
+    assert!(effect.document_changed);
+    assert!(effect.document_identity_advanced);
+    assert!(!app.quick_open.is_open());
+    assert_eq!(app.buffer().snapshot().text(), "fn nested() {}\n");
+    Ok(())
+}
+
+#[test]
+fn quick_open_focus_suppresses_editor_input_and_requires_a_workspace()
+-> Result<(), Box<dyn std::error::Error>> {
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let mut scratch = test_app()?;
+    assert!(scratch.handle_event(&key(KEY_P, command)).visual_changed);
+    assert!(scratch.last_workspace_error.is_some());
+
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    *app.buffer_mut() = Buffer::new("alpha");
+    app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(5));
+    let before = app.buffer().snapshot().text();
+    assert!(app.handle_event(&key(KEY_P, command)).visual_changed);
+    assert!(app.handle_event(&ime(ImeEvent::Started)).visual_changed);
+    assert!(
+        app.handle_event(&ime(ImeEvent::Updated {
+            text: "alpha".into(),
+            selected_start_utf16: 0,
+            selected_length_utf16: 1,
+        }))
+        .visual_changed
+    );
+    assert!(
+        app.handle_event(&ime(ImeEvent::Updated {
+            text: "alphab".into(),
+            selected_start_utf16: 6,
+            selected_length_utf16: 0,
+        }))
+        .visual_changed
+    );
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("alpha".into())))
+            .visual_changed
+    );
+    assert_eq!(app.buffer().snapshot().text(), before);
+    assert!(matches!(
+        app.handle_event_with_response(&clipboard_key("c")),
+        StudioTransition {
+            clipboard_write: None,
+            ..
+        }
+    ));
+    assert!(
+        app.handle_event(&key(KEY_ESCAPE, Modifiers::default()))
+            .visual_changed
+    );
+    assert_eq!(app.buffer().snapshot().text(), before);
+    Ok(())
+}
+
+#[test]
+fn quick_open_path_revalidation_accepts_the_limit_and_rejects_the_next_component()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let mut parent = PathBuf::new();
+    for _ in 0..quick_open::MAX_DEPTH.saturating_sub(1) {
+        parent.push("d");
+    }
+    fs::create_dir_all(root.path().join(&parent))?;
+
+    let accepted = parent.join("accepted.rs");
+    root.write(accepted.to_str().ok_or("accepted UTF-8 path")?, "accepted")?;
+    let workspace = Workspace::open(root.path(), WorkspaceLimits::default())?;
+    assert_eq!(
+        workspace.path_for_relative_file(&accepted)?,
+        fs::canonicalize(root.path().join(&accepted))?
+    );
+
+    let overflow_parent = parent.join("overflow");
+    fs::create_dir(root.path().join(&overflow_parent))?;
+    let overflow = overflow_parent.join("rejected.rs");
+    root.write(overflow.to_str().ok_or("overflow UTF-8 path")?, "rejected")?;
+    assert!(matches!(
+        workspace.path_for_relative_file(&overflow),
+        Err(WorkspaceError::PathDepthExceeded { actual, limit })
+            if actual == quick_open::MAX_DEPTH + 1 && limit == quick_open::MAX_DEPTH
+    ));
+    Ok(())
+}
+
+#[test]
+fn quick_open_submission_rollback_only_rejects_failed_admission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    assert!(app.handle_event(&key(KEY_P, command)).visual_changed);
+    let request = app
+        .prepare_quick_open_request()?
+        .ok_or("inventory request")?;
+    let identity = request.identity();
+    assert!(!app.reject_failed_quick_open_submission(identity, false));
+    assert!(app.reject_failed_quick_open_submission(identity, true));
+    assert!(app.prepare_quick_open_request()?.is_some());
+    Ok(())
+}
+
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 #[test]
 fn run_rejects_an_unsupported_host() {
@@ -2841,5 +3158,429 @@ fn native_file_constructor_rejects_a_missing_file_before_native_setup()
         native_file_app(&root.path().join("missing.rs")),
         Err(StudioError::File(_))
     ));
+    Ok(())
+}
+
+struct SelectiveFailingRasterTextSystem {
+    glyph_id: u32,
+}
+
+impl TextShaper for SelectiveFailingRasterTextSystem {
+    fn shape(&mut self, text: &str, font: FontKey) -> Result<LineLayout, LayoutError> {
+        TestTextSystem.shape(text, font)
+    }
+}
+
+impl GlyphRasterizer for SelectiveFailingRasterTextSystem {
+    fn rasterize(
+        &mut self,
+        font: FontKey,
+        glyph_id: u32,
+        subpixel_x: u8,
+    ) -> Result<RasterizedGlyph, LayoutError> {
+        if glyph_id == self.glyph_id {
+            Err(LayoutError::NativeFailure(
+                "injected selective raster failure",
+            ))
+        } else {
+            TestTextSystem.rasterize(font, glyph_id, subpixel_x)
+        }
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one corpus distinguishes independent quick-open orchestration failures"
+)]
+fn quick_open_orchestration_failures_are_bounded_and_visible()
+-> Result<(), Box<dyn std::error::Error>> {
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+
+    let mut scratch = test_app()?;
+    assert!(scratch.quick_open.open(1)?);
+    assert!(matches!(
+        scratch.prepare_quick_open_request(),
+        Err(QuickOpenError::NoWorkspace)
+    ));
+    assert!(scratch.quick_open.close());
+
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+
+    let mut exhausted_open = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    exhausted_open.quick_open.exhaust_generations_for_test();
+    assert!(
+        exhausted_open
+            .handle_event(&key(KEY_P, command))
+            .visual_changed
+    );
+    assert!(exhausted_open.last_workspace_error.is_some());
+
+    let mut missing = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    assert!(missing.handle_event(&key(KEY_P, command)).visual_changed);
+    assert!(
+        missing
+            .handle_event(&key(KEY_RETURN, Modifiers::default()))
+            .visual_changed
+    );
+    assert!(missing.last_workspace_error.is_some());
+    let position = Point::new(20.0, 20.0).ok_or(StudioRenderError::Domain)?;
+    assert_eq!(
+        missing.handle_pointer(
+            PointerAction::Down,
+            position,
+            PointerButton::Primary,
+            Modifiers::default(),
+        ),
+        EventEffect::default()
+    );
+
+    let mut ime_app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    assert!(ime_app.handle_event(&key(KEY_P, command)).visual_changed);
+    let failures = ime_app.input_failures;
+    assert_eq!(
+        ime_app.handle_event(&ime(ImeEvent::Updated {
+            text: "a".into(),
+            selected_start_utf16: u32::MAX,
+            selected_length_utf16: 1,
+        })),
+        EventEffect::default()
+    );
+    assert_eq!(
+        ime_app.handle_event(&ime(ImeEvent::Updated {
+            text: "a".into(),
+            selected_start_utf16: 2,
+            selected_length_utf16: 0,
+        })),
+        EventEffect::default()
+    );
+    assert_eq!(ime_app.input_failures, failures + 2);
+    assert!(ime_app.handle_event(&ime(ImeEvent::Started)).visual_changed);
+    assert!(
+        ime_app
+            .handle_event(&ime(ImeEvent::Cancelled))
+            .visual_changed
+    );
+    ime_app.quick_open.exhaust_generations_for_test();
+    assert!(
+        ime_app
+            .handle_event(&ime(ImeEvent::Committed("x".into())))
+            .visual_changed
+    );
+
+    let mut delete_error = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    assert!(
+        delete_error
+            .handle_event(&key(KEY_P, command))
+            .visual_changed
+    );
+    assert!(delete_error.quick_open.commit_text("x")?);
+    delete_error.quick_open.exhaust_generations_for_test();
+    assert!(
+        delete_error
+            .handle_event(&key(KEY_DELETE_BACKWARD, Modifiers::default()))
+            .visual_changed
+    );
+
+    let mut stale = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    assert!(stale.handle_event(&key(KEY_P, command)).visual_changed);
+    let request = stale
+        .prepare_quick_open_request()?
+        .ok_or("stale inventory request")?;
+    assert!(stale.quick_open.close());
+    assert_eq!(
+        stale.apply_quick_open_output(request.execute()),
+        EventEffect::default()
+    );
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "filesystem identity defenses require independent malformed and race fixtures"
+)]
+fn quick_open_path_revalidation_rejects_every_identity_break()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("plain.rs", "plain")?;
+    root.create_dir("directory")?;
+    let workspace = Workspace::open(root.path(), WorkspaceLimits::default())?;
+
+    for relative in [Path::new(""), root.path(), Path::new("../outside.rs")] {
+        assert!(matches!(
+            workspace.path_for_relative_file(relative),
+            Err(WorkspaceError::InvalidRelativePath(_))
+        ));
+    }
+    assert!(matches!(
+        workspace.path_for_relative_file(Path::new("missing.rs")),
+        Err(WorkspaceError::Io { .. })
+    ));
+    assert!(matches!(
+        workspace.path_for_relative_file(Path::new("plain.rs/child")),
+        Err(WorkspaceError::NotRegularFile(_))
+    ));
+    assert!(matches!(
+        workspace.path_for_relative_file(Path::new("directory")),
+        Err(WorkspaceError::NotRegularFile(_))
+    ));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        root.create_dir("real-directory")?;
+        symlink(
+            root.path().join("real-directory"),
+            root.path().join("linked-directory"),
+        )?;
+        assert!(matches!(
+            workspace.path_for_relative_file(Path::new("linked-directory/file.rs")),
+            Err(WorkspaceError::Symlink(_))
+        ));
+
+        root.write("real.rs", "real")?;
+        symlink(root.path().join("real.rs"), root.path().join("linked.rs"))?;
+        assert!(matches!(
+            workspace.path_for_relative_file(Path::new("linked.rs")),
+            Err(WorkspaceError::Symlink(_))
+        ));
+
+        root.write("metadata-race.rs", "inside")?;
+        let metadata_outside = TestFile::new("outside")?;
+        let metadata_outside_path = metadata_outside.path().to_path_buf();
+        super::workspace::set_revalidation_hook(move |candidate| {
+            assert!(
+                fs::remove_file(candidate).is_ok(),
+                "remove metadata race target"
+            );
+            assert!(
+                symlink(&metadata_outside_path, candidate).is_ok(),
+                "replace metadata race target"
+            );
+        });
+        assert!(matches!(
+            workspace.path_for_relative_file(Path::new("metadata-race.rs")),
+            Err(WorkspaceError::Symlink(_))
+        ));
+
+        root.write("final-metadata-race.rs", "inside")?;
+        let final_outside = TestFile::new("outside")?;
+        let final_outside_path = final_outside.path().to_path_buf();
+        super::workspace::set_revalidation_hook(move |_| {
+            super::workspace::set_revalidation_hook(move |candidate| {
+                assert!(
+                    fs::remove_file(candidate).is_ok(),
+                    "remove final metadata race target"
+                );
+                assert!(
+                    symlink(&final_outside_path, candidate).is_ok(),
+                    "replace final metadata race target"
+                );
+            });
+        });
+        assert!(matches!(
+            workspace.path_for_relative_file(Path::new("final-metadata-race.rs")),
+            Err(WorkspaceError::Symlink(_))
+        ));
+
+        root.write("outside-race.rs", "inside")?;
+        let outside = TestFile::new("outside")?;
+        let outside_path = outside.path().to_path_buf();
+        super::workspace::set_revalidation_hook(move |_| {
+            super::workspace::set_revalidation_hook(move |_| {
+                super::workspace::set_revalidation_hook(move |candidate| {
+                    assert!(
+                        fs::remove_file(candidate).is_ok(),
+                        "remove outside race target"
+                    );
+                    assert!(
+                        symlink(&outside_path, candidate).is_ok(),
+                        "replace outside race target"
+                    );
+                });
+            });
+        });
+        assert!(matches!(
+            workspace.path_for_relative_file(Path::new("outside-race.rs")),
+            Err(WorkspaceError::EscapesRoot(_))
+        ));
+
+        root.write("inside-target.rs", "target")?;
+        root.write("inside-race.rs", "inside")?;
+        let inside_target = root.path().join("inside-target.rs");
+        super::workspace::set_revalidation_hook(move |_| {
+            super::workspace::set_revalidation_hook(move |_| {
+                super::workspace::set_revalidation_hook(move |candidate| {
+                    assert!(
+                        fs::remove_file(candidate).is_ok(),
+                        "remove inside race target"
+                    );
+                    assert!(
+                        symlink(&inside_target, candidate).is_ok(),
+                        "replace inside race target"
+                    );
+                });
+            });
+        });
+        assert!(matches!(
+            workspace.path_for_relative_file(Path::new("inside-race.rs")),
+            Err(WorkspaceError::Symlink(_))
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one rendering corpus proves successful rows and independent query and row failures"
+)]
+fn quick_open_overlay_raster_failures_preserve_scene_atomicity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    let mut query_app = StudioApp::open_workspace(
+        SelectiveFailingRasterTextSystem {
+            glyph_id: u32::from('Q'),
+        },
+        root.path(),
+    )?;
+    assert!(query_app.handle_event(&key(KEY_P, command)).visual_changed);
+    let inventory = query_app
+        .prepare_quick_open_request()?
+        .ok_or("query raster inventory")?;
+    assert!(
+        query_app
+            .apply_quick_open_output(inventory.execute())
+            .visual_changed
+    );
+    let query = query_app
+        .prepare_quick_open_request()?
+        .ok_or("query raster ranking")?;
+    assert!(
+        query_app
+            .apply_quick_open_output(query.execute())
+            .visual_changed
+    );
+    assert!(query_app.quick_open.commit_text("Q")?);
+    assert!(matches!(
+        query_app.try_scene(SceneRevision::new(1), viewport()?),
+        Err(StudioRenderError::Layout(LayoutError::NativeFailure(_)))
+    ));
+
+    let nested = TestWorkspace::new()?;
+    nested.create_dir("src")?;
+    nested.write("src/main.rs", "main")?;
+    let mut success_app = StudioApp::open_workspace(TestTextSystem, nested.path())?;
+    assert!(
+        success_app
+            .handle_event(&key(KEY_P, command))
+            .visual_changed
+    );
+    let inventory = success_app
+        .prepare_quick_open_request()?
+        .ok_or("successful row inventory")?;
+    assert!(
+        success_app
+            .apply_quick_open_output(inventory.execute())
+            .visual_changed
+    );
+    let query = success_app
+        .prepare_quick_open_request()?
+        .ok_or("successful row ranking")?;
+    assert!(
+        success_app
+            .apply_quick_open_output(query.execute())
+            .visual_changed
+    );
+    assert!(
+        !success_app
+            .quick_open
+            .visible_results(QUICK_OPEN_VISIBLE_ROWS, QUICK_OPEN_OVERSCAN_ROWS)
+            .is_empty()
+    );
+    assert!(
+        !success_app
+            .try_scene(SceneRevision::new(1), viewport()?)?
+            .quads()
+            .is_empty()
+    );
+
+    let mut row_app = StudioApp::open_workspace(
+        SelectiveFailingRasterTextSystem {
+            glyph_id: u32::from('/'),
+        },
+        nested.path(),
+    )?;
+    assert!(row_app.handle_event(&key(KEY_P, command)).visual_changed);
+    let inventory = row_app
+        .prepare_quick_open_request()?
+        .ok_or("row raster inventory")?;
+    assert!(
+        row_app
+            .apply_quick_open_output(inventory.execute())
+            .visual_changed
+    );
+    let query = row_app
+        .prepare_quick_open_request()?
+        .ok_or("row raster ranking")?;
+    assert!(
+        row_app
+            .apply_quick_open_output(query.execute())
+            .visual_changed
+    );
+    assert!(
+        !row_app
+            .quick_open
+            .visible_results(QUICK_OPEN_VISIBLE_ROWS, QUICK_OPEN_OVERSCAN_ROWS)
+            .is_empty()
+    );
+    assert!(matches!(
+        row_app.try_scene(SceneRevision::new(1), viewport()?),
+        Err(StudioRenderError::Layout(LayoutError::NativeFailure(_)))
+    ));
+    Ok(())
+}
+
+#[test]
+fn runtime_quick_open_submission_failures_invalidate_without_blocking()
+-> Result<(), Box<dyn std::error::Error>> {
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let worker_config = WorkerConfig::new(
+        std::num::NonZeroUsize::MIN,
+        std::num::NonZeroUsize::MIN,
+        std::num::NonZeroUsize::MIN,
+    );
+
+    let mut no_workspace = test_app()?;
+    assert!(no_workspace.quick_open.open(1)?);
+    let mut no_workspace_runtime =
+        Application::new(no_workspace, viewport()?, clear, worker_config)?;
+    assert!(
+        no_workspace_runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(900),
+            })
+            .is_some()
+    );
+
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    let mut rejected = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    assert!(rejected.handle_event(&key(KEY_P, command)).visual_changed);
+    rejected.force_quick_open_submission_failure = Some(());
+    let mut rejected_runtime = Application::new(rejected, viewport()?, clear, worker_config)?;
+    assert!(
+        rejected_runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(901),
+            })
+            .is_some()
+    );
     Ok(())
 }
