@@ -9,6 +9,14 @@ mod commands;
 mod documents;
 mod file_tree;
 mod find;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Task #128 stages bounded local process ownership before JSON-RPC decoding"
+    )
+)]
+mod lsp_process;
 mod panes;
 mod project_search;
 mod quick_open;

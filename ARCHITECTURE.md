@@ -86,6 +86,23 @@ line scans at most 64 KiB and retains at most 1,024 spans, and oversized or
 over-complex lines degrade to unstyled text. This initial compiled lexer adds no
 runtime grammar loading, plugin boundary, background work, dependency, native
 handle, or syntax authority outside Alpine Studio.
+
+Studio also owns a private local language-server process boundary under
+Requirement #34 and Task #128. Construction canonicalizes one explicit local
+executable and optional working directory, bounds argument count and bytes, and
+never performs network or extension discovery. One fixed supervisor owns one
+child plus dedicated standard threads for stdin, stdout, and stderr so foreground
+submission never waits on process I/O. Control, input, output, write-result, and
+foreground-event queues have fixed capacities. Input and copied output share a
+16 MiB retained-payload ceiling, output is read in 64 KiB chunks, and overflow
+terminates the affected child rather than growing or blocking rendering.
+Workspace identity, process generation, epoch, and input sequence classify every
+event; restart advances the epoch and stale events are discarded before a future
+protocol layer can mutate editor state. Shutdown kills and waits for the child,
+closes its pipes, joins every helper, and releases queued payloads. This slice
+does not decode JSON-RPC, launch during startup, mutate Studio state, expose a
+public API, or add a dependency, network client, plugin host, or async runtime.
+
 Production typography uses the safe
 CoreText service; deterministic test typography proves portable editor behavior
 without claiming native validation. It runs through one `Application` until the
