@@ -1205,7 +1205,7 @@ mod tests {
         root.write("a.rs")?;
         root.write("b.rs")?;
         root.write("c.rs")?;
-        let limits = FileTreeLimits::new(2, 1, 8, 2, 1, 8, 8, 2, 2);
+        let limits = FileTreeLimits::new(16, 1, 8, 2, 1, 8, 8, 2, 2);
         let mut state = FileTreeState::with_test_limits(limits);
         assert!(state.take_request(&root.0).is_none());
         assert!(state.activate(7)?);
