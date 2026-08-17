@@ -3081,9 +3081,8 @@ pub mod native_validation {
     };
 
     const NATIVE_INPUT_FRAMES: usize = 5;
-    const COMMAND_SHIFT_MODIFIERS: Modifiers =
-        Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
     const TREE_TOGGLE_MODIFIER_BITS: u8 = 0x09;
+    const COMMAND_SHIFT_MODIFIERS: Modifiers = Modifiers::from_bits(TREE_TOGGLE_MODIFIER_BITS);
 
     /// Handle-free completion evidence returned across the process-test boundary.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -101,6 +101,17 @@ fn key(physical_key: u16, modifiers: Modifiers) -> SurfaceEvent {
     }
 }
 
+fn logical_key(logical_key: &str, modifiers: Modifiers) -> SurfaceEvent {
+    SurfaceEvent::Keyboard {
+        timestamp: EventTimestamp::new(1),
+        state: KeyState::Down,
+        physical_key: u16::MAX,
+        logical_key: logical_key.into(),
+        modifiers,
+        repeat: false,
+    }
+}
+
 fn ime(event: ImeEvent) -> SurfaceEvent {
     SurfaceEvent::Ime {
         timestamp: EventTimestamp::new(2),
@@ -411,6 +422,197 @@ fn command_dispatch_preserves_bounded_workspace_errors() -> Result<(), Box<dyn s
             .as_ref()
             .is_some_and(|status| status.message().contains("limits"))
     );
+    Ok(())
+}
+
+#[test]
+fn command_palette_scene_geometry_is_exact_at_a_narrow_viewport()
+-> Result<(), Box<dyn std::error::Error>> {
+    let file = TempFile::new("first")?;
+    let second = file.root.join("second.rs");
+    fs::write(&second, "second")?;
+    let mut app = StudioApp::open_workspace_lazy(PaletteTextSystem::default(), &file.root)?;
+    app.open_workspace_path(&file.path, None)?;
+    app.open_workspace_path(&second, None)?;
+    assert!(app.open_command_palette().visual_changed);
+    assert_eq!(app.command_palette.visible_commands()?.len(), 6);
+
+    let viewport = Size::new(300.0, 400.0).ok_or("viewport")?;
+    let scene = app.try_scene(SceneRevision::new(906), viewport)?;
+    let overlay = Rect::new(
+        Point::new(24.0, 48.0).ok_or("overlay origin")?,
+        Size::new(252.0, 178.0).ok_or("overlay size")?,
+    );
+    let selected = Rect::new(
+        Point::new(24.0, 82.0).ok_or("selected origin")?,
+        Size::new(252.0, 24.0).ok_or("selected size")?,
+    );
+    let overlay_clip = scene
+        .clips()
+        .iter()
+        .position(|clip| clip.bounds() == overlay)
+        .ok_or("command overlay clip")?;
+    assert!(scene.quads().iter().any(|quad| quad.bounds() == overlay));
+    assert!(scene.quads().iter().any(|quad| quad.bounds() == selected));
+    for (x, y) in [(32.0, 67.0), (32.0, 98.0), (32.0, 122.0)] {
+        let first_x = scene
+            .glyphs()
+            .iter()
+            .filter(|glyph| {
+                glyph
+                    .clip()
+                    .is_some_and(|clip| clip.index() == overlay_clip)
+                    && glyph.bounds().origin().y().to_bits() == f32::to_bits(y)
+            })
+            .map(|glyph| glyph.bounds().origin().x())
+            .reduce(f32::min)
+            .ok_or("command row glyph")?;
+        assert_eq!(first_x.to_bits(), f32::to_bits(x));
+    }
+    Ok(())
+}
+
+#[test]
+fn command_context_distinguishes_scratch_dirty_and_each_close_guard()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut scratch = StudioApp::new(PaletteTextSystem::default())?;
+    assert!(
+        scratch
+            .handle_event(&ime(ImeEvent::Committed("dirty".into())))
+            .visual_changed
+    );
+    let scratch_context = scratch.command_context();
+    assert!(!scratch_context.can_save);
+    assert!(!scratch_context.can_close_tab);
+
+    let file = TempFile::new("first")?;
+    let second = file.root.join("second.rs");
+    fs::write(&second, "second")?;
+    let mut app = StudioApp::open_workspace_lazy(PaletteTextSystem::default(), &file.root)?;
+    app.open_workspace_path(&file.path, None)?;
+    app.open_workspace_path(&second, None)?;
+    assert!(app.command_context().can_close_tab);
+    app.last_file_error = Some(FileError::InvalidUtf8);
+    assert!(!app.command_context().can_close_tab);
+    app.last_file_error = None;
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("dirty".into())))
+            .visual_changed
+    );
+    assert!(!app.command_context().can_close_tab);
+    Ok(())
+}
+
+#[test]
+fn command_focus_distinguishes_modifiers_and_suppresses_clipboard()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = StudioApp::new(PaletteTextSystem::default())?;
+    app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(2));
+    assert!(app.open_command_palette().visual_changed);
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let copy = app.handle_event_with_response(&logical_key("c", command));
+    assert!(copy.clipboard_write.is_none());
+
+    let selected = app
+        .command_palette
+        .visible_commands()?
+        .into_iter()
+        .find(|row| row.selected)
+        .map(|row| row.command);
+    assert!(!app.handle_event(&key(KEY_DOWN, command)).visual_changed);
+    assert_eq!(
+        app.command_palette
+            .visible_commands()?
+            .into_iter()
+            .find(|row| row.selected)
+            .map(|row| row.command),
+        selected
+    );
+    assert!(
+        app.handle_event(&key(KEY_DOWN, Modifiers::default()))
+            .visual_changed
+    );
+    assert_ne!(
+        app.command_palette
+            .visible_commands()?
+            .into_iter()
+            .find(|row| row.selected)
+            .map(|row| row.command),
+        selected
+    );
+    let selected = app
+        .command_palette
+        .visible_commands()?
+        .into_iter()
+        .find(|row| row.selected)
+        .map(|row| row.command);
+    assert!(!app.handle_event(&key(KEY_UP, command)).visual_changed);
+    assert_eq!(
+        app.command_palette
+            .visible_commands()?
+            .into_iter()
+            .find(|row| row.selected)
+            .map(|row| row.command),
+        selected
+    );
+    assert!(
+        app.handle_event(&key(KEY_UP, Modifiers::default()))
+            .visual_changed
+    );
+    assert_eq!(
+        app.command_palette
+            .visible_commands()?
+            .into_iter()
+            .find(|row| row.selected)
+            .map(|row| row.command),
+        Some(StudioCommand::OpenFind)
+    );
+
+    let executions = app.command_palette.report().executions;
+    assert!(!app.handle_event(&key(KEY_RETURN, command)).visual_changed);
+    assert!(app.command_palette.is_open());
+    assert_eq!(app.command_palette.report().executions, executions);
+    assert!(
+        app.handle_event(&key(KEY_RETURN, Modifiers::default()))
+            .visual_changed
+    );
+    assert!(!app.command_palette.is_open());
+    assert_eq!(app.command_palette.report().executions, executions + 1);
+    Ok(())
+}
+
+#[test]
+fn command_dispatch_records_missing_workspace_and_queued_find_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut missing = StudioApp::new(PaletteTextSystem::default())?;
+    let _ = missing.dispatch_command(StudioCommand::OpenQuickOpen);
+    assert!(
+        missing
+            .local_status
+            .as_ref()
+            .is_some_and(|status| status.message().contains("requires one local workspace"))
+    );
+    missing.local_status = None;
+    let _ = missing.dispatch_command(StudioCommand::ToggleFileTree);
+    assert!(
+        missing
+            .local_status
+            .as_ref()
+            .is_some_and(|status| status.message().contains("requires one local workspace"))
+    );
+
+    for command in [StudioCommand::OpenFind, StudioCommand::OpenReplace] {
+        let mut app = StudioApp::new(PaletteTextSystem::default())?;
+        assert!(app.find.open(false));
+        assert!(
+            app.handle_event(&ime(ImeEvent::Committed("needle".into())))
+                .visual_changed
+        );
+        app.find.close();
+        app.find_needs_search = false;
+        assert!(app.dispatch_command(command).visual_changed);
+        assert!(app.find_needs_search);
+    }
     Ok(())
 }
 

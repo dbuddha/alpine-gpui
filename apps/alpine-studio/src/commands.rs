@@ -779,7 +779,11 @@ mod tests {
         assert!(palette.update_composition("same", 0, 4)?);
         assert!(!palette.update_composition("same", 0, 4)?);
         assert!(palette.cancel_composition());
+        assert!(!palette.cancel_composition());
         assert!(!palette.commit_text("", all_available())?);
+
+        assert!(palette.refresh(CommandContext::default())?);
+        assert!(!palette.refresh(CommandContext::default())?);
 
         palette.matches = vec![
             CommandMatch {
@@ -794,8 +798,33 @@ mod tests {
         assert!(palette.navigate(true));
         assert_eq!(palette.selected, 12);
         assert_eq!(palette.first_visible, 1);
+        palette.matches = vec![
+            CommandMatch {
+                registry_index: 0,
+                rank: 0,
+                gaps: 0,
+            };
+            40
+        ];
+        palette.selected = 2;
+        palette.first_visible = 0;
+        assert!(palette.navigate(false));
+        assert_eq!(palette.selected, 1);
+        assert_eq!(
+            palette.report().visible_rows,
+            MAX_VISIBLE_COMMANDS + MAX_VISIBLE_OVERSCAN * 2
+        );
         palette.matches.clear();
         assert!(!palette.navigate(true));
         Ok(())
+    }
+
+    #[test]
+    fn ranking_predicates_preserve_prefix_token_and_subsequence_classes() {
+        assert!(ascii_prefix("Workspace", "work"));
+        assert!(!ascii_prefix("Work", "workspace"));
+        assert_eq!(match_score(&REGISTRY[0], "write"), Some((0, 0)));
+        assert_eq!(match_score(&REGISTRY[4], "quick"), Some((1, 0)));
+        assert_eq!(match_score(&REGISTRY[4], "wqop"), Some((2, 15)));
     }
 }
