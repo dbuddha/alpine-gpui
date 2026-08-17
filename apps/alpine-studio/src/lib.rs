@@ -1078,7 +1078,7 @@ impl StudioApp {
                     }
                 }
                 if !pane_selection.is_empty() {
-                    Self::paint_selection(
+                    let selection_result = Self::paint_selection(
                         &mut builder,
                         pane_clip,
                         &pane_snapshot,
@@ -1088,7 +1088,8 @@ impl StudioApp {
                         pane_selection.clone(),
                         selection_color,
                         pane_origin_x,
-                    )?;
+                    );
+                    selection_result?;
                 }
                 pending_glyphs.extend(self.collect_glyphs(
                     &layout,

@@ -19,7 +19,7 @@ expect_failure() {
 "$wiki" validate "$repo_root"
 "$wiki" render "$revision" "$temporary/render-a" "$repo_root"
 "$wiki" render "$revision" "$temporary/render-b" "$repo_root"
-[ "$(find "$temporary/render-a" -type f -name '*.md' | wc -l | tr -d ' ')" = 9 ]
+[ "$(find "$temporary/render-a" -type f -name '*.md' | wc -l | tr -d ' ')" = 10 ]
 diff -ru "$temporary/render-a" "$temporary/render-b"
 grep -F "$revision" "$temporary/render-a/Home.md" >/dev/null
 expect_failure invalid-revision "$wiki" render short "$temporary/invalid" "$repo_root"
@@ -51,7 +51,7 @@ mkdir "$wiki_root"
 git -C "$wiki_root" init -q
 git -C "$wiki_root" remote add origin https://github.com/dbuddha/alpine-gpui.wiki.git
 "$wiki" publish "$wiki_root" "$source_root" >/dev/null
-[ "$(find "$wiki_root" -type f -name '*.md' | wc -l | tr -d ' ')" = 9 ]
+[ "$(find "$wiki_root" -type f -name '*.md' | wc -l | tr -d ' ')" = 10 ]
 
 printf '# unknown\n' > "$wiki_root/Unknown.md"
 expect_failure unknown-destination "$wiki" publish "$wiki_root" "$source_root"

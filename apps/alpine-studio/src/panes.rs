@@ -145,6 +145,22 @@ impl PaneGrid {
         self.active
     }
 
+    #[cfg(test)]
+    pub(crate) fn inject_scroll_fault(
+        &mut self,
+        id: PaneId,
+        scroll_y: f32,
+    ) -> Result<(), PaneError> {
+        let state = self
+            .states
+            .iter_mut()
+            .find(|state| state.occupied && state.id == id)
+            .ok_or(PaneError::InconsistentState)?;
+        let view = state.view.as_mut().ok_or(PaneError::InconsistentState)?;
+        view.scroll_y = scroll_y;
+        Ok(())
+    }
+
     pub(crate) fn sync_active(&mut self, scroll_y: f32) -> Result<(), PaneError> {
         if !scroll_y.is_finite() || scroll_y < 0.0 {
             return Err(PaneError::InvalidGeometry);
@@ -268,13 +284,9 @@ impl PaneGrid {
             .active()
             .ok_or(PaneError::InconsistentState)?;
         let _ = split_bounds(active_geometry.bounds, axis)?;
-        let active_node = self
+        let (active_node, old_state) = self
             .leaf_node(self.active)
             .ok_or(PaneError::InconsistentState)?;
-        let old_state = match self.nodes[active_node] {
-            Node::Leaf { state } => state,
-            Node::Empty | Node::Split { .. } => return Err(PaneError::InconsistentState),
-        };
         let mut vacant_nodes = self
             .nodes
             .iter()
@@ -350,7 +362,7 @@ impl PaneGrid {
             return Err(PaneError::LastPane);
         }
         self.sync_active(active_scroll)?;
-        let active_node = self
+        let (active_node, removed_state) = self
             .leaf_node(self.active)
             .ok_or(PaneError::InconsistentState)?;
         let (parent, sibling) = self
@@ -367,10 +379,7 @@ impl PaneGrid {
                 Node::Empty | Node::Leaf { .. } | Node::Split { .. } => None,
             })
             .ok_or(PaneError::InconsistentState)?;
-        let removed_state = match self.nodes[active_node] {
-            Node::Leaf { state } => usize::from(state),
-            Node::Empty | Node::Split { .. } => return Err(PaneError::InconsistentState),
-        };
+        let removed_state = usize::from(removed_state);
         let promoted = self.nodes[sibling];
         if promoted == Node::Empty {
             return Err(PaneError::InconsistentState);
@@ -417,13 +426,13 @@ impl PaneGrid {
         Ok(Some(scroll_y))
     }
 
-    fn leaf_node(&self, id: PaneId) -> Option<usize> {
+    fn leaf_node(&self, id: PaneId) -> Option<(usize, u8)> {
         self.nodes.iter().enumerate().find_map(|(index, node)| {
-            let Node::Leaf { state } = *node else {
+            let Node::Leaf { state: state_index } = *node else {
                 return None;
             };
-            let state = self.states.get(usize::from(state))?;
-            (state.occupied && state.id == id).then_some(index)
+            let state = self.states.get(usize::from(state_index))?;
+            (state.occupied && state.id == id).then_some((index, state_index))
         })
     }
 
@@ -502,7 +511,7 @@ fn split_bounds(bounds: Rect, axis: SplitAxis) -> Result<(Rect, Rect), PaneError
             let available = size.width() - DIVIDER_EXTENT;
             let first = available * 0.5;
             let second = available - first;
-            if first < MIN_COLUMN_WIDTH || second < MIN_COLUMN_WIDTH {
+            if first.min(second) < MIN_COLUMN_WIDTH {
                 return Err(PaneError::GeometryTooSmall);
             }
             (
@@ -517,7 +526,7 @@ fn split_bounds(bounds: Rect, axis: SplitAxis) -> Result<(Rect, Rect), PaneError
             let available = size.height() - DIVIDER_EXTENT;
             let first = available * 0.5;
             let second = available - first;
-            if first < MIN_ROW_HEIGHT || second < MIN_ROW_HEIGHT {
+            if first.min(second) < MIN_ROW_HEIGHT {
                 return Err(PaneError::GeometryTooSmall);
             }
             (
@@ -808,6 +817,122 @@ mod tests {
             assert_eq!(panes.active_id(), created);
             previous = created;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn corrupted_topologies_fail_closed_without_partial_mutation() -> Result<(), Box<dyn Error>> {
+        let bounds = bounds(1_200.0, 900.0)?;
+
+        let mut nested = grid(0.0);
+        nested.split(SplitAxis::Columns, 0.0, bounds)?;
+        nested.split(SplitAxis::Rows, 1.0, bounds)?;
+        assert_eq!(nested.close_active(2.0)?.to_bits(), 1.0_f32.to_bits());
+
+        let mut missing_sibling = grid(0.0);
+        missing_sibling.split(SplitAxis::Columns, 0.0, bounds)?;
+        missing_sibling.nodes[1] = Node::Empty;
+        assert_eq!(
+            missing_sibling.close_active(0.0),
+            Err(PaneError::InconsistentState)
+        );
+        assert_eq!(missing_sibling.pane_count, 2);
+
+        let mut wrong_count = grid(0.0);
+        wrong_count.pane_count = 2;
+        assert_eq!(
+            wrong_count.layout(bounds),
+            Err(PaneError::InconsistentState)
+        );
+
+        let mut empty = grid(0.0);
+        empty.nodes[0] = Node::Empty;
+        assert_eq!(empty.first_leaf_id(0), Err(PaneError::InconsistentState));
+        let mut layout = PaneLayout {
+            entries: [None; MAX_PANES],
+            len: 0,
+        };
+        assert_eq!(
+            empty.layout_node(0, bounds, &mut layout),
+            Err(PaneError::InconsistentState)
+        );
+
+        let valid = grid(0.0);
+        layout.len = MAX_PANES;
+        assert_eq!(
+            valid.layout_node(0, bounds, &mut layout),
+            Err(PaneError::InconsistentState)
+        );
+
+        let mut cycle = grid(0.0);
+        cycle.nodes[0] = Node::Split {
+            axis: SplitAxis::Columns,
+            first: 0,
+            second: 0,
+        };
+        assert_eq!(cycle.first_leaf_id(0), Err(PaneError::InconsistentState));
+        Ok(())
+    }
+
+    #[test]
+    fn primitive_geometry_boundaries_are_exact() -> Result<(), Box<dyn Error>> {
+        assert_eq!(MAX_NODES, 7);
+        assert_eq!(finite_scroll(7.5).to_bits(), 7.5_f32.to_bits());
+        assert_eq!(finite_scroll(-3.0).to_bits(), 0.0_f32.to_bits());
+        assert_eq!(finite_scroll(f32::NAN).to_bits(), 0.0_f32.to_bits());
+        assert_eq!(finite_scroll(f32::INFINITY).to_bits(), 0.0_f32.to_bits());
+
+        let exact = bounds(242.0, 162.0)?;
+        let (left, right) = split_bounds(exact, SplitAxis::Columns)?;
+        assert_eq!(left.origin(), exact.origin());
+        assert_eq!(left.size().width().to_bits(), 120.0_f32.to_bits());
+        assert_eq!(right.origin().x().to_bits(), 132.0_f32.to_bits());
+        assert_eq!(right.origin().y().to_bits(), 20.0_f32.to_bits());
+        assert_eq!(right.size().width().to_bits(), 120.0_f32.to_bits());
+        assert_eq!(
+            split_bounds(bounds(241.0, 162.0)?, SplitAxis::Columns),
+            Err(PaneError::GeometryTooSmall)
+        );
+
+        let (top, bottom) = split_bounds(exact, SplitAxis::Rows)?;
+        assert_eq!(top.origin(), exact.origin());
+        assert_eq!(top.size().height().to_bits(), 80.0_f32.to_bits());
+        assert_eq!(bottom.origin().x().to_bits(), 10.0_f32.to_bits());
+        assert_eq!(bottom.origin().y().to_bits(), 102.0_f32.to_bits());
+        assert_eq!(bottom.size().height().to_bits(), 80.0_f32.to_bits());
+        assert_eq!(
+            split_bounds(bounds(242.0, 161.0)?, SplitAxis::Rows),
+            Err(PaneError::GeometryTooSmall)
+        );
+
+        assert!(contains(
+            exact,
+            Point::new(10.0, 20.0).ok_or(PaneError::InvalidGeometry)?
+        ));
+        assert!(contains(
+            exact,
+            Point::new(251.5, 181.5).ok_or(PaneError::InvalidGeometry)?
+        ));
+        assert!(!contains(
+            exact,
+            Point::new(252.0, 20.0).ok_or(PaneError::InvalidGeometry)?
+        ));
+        assert!(!contains(
+            exact,
+            Point::new(10.0, 182.0).ok_or(PaneError::InvalidGeometry)?
+        ));
+
+        let mut panes = grid(3.0);
+        assert_eq!(
+            panes.scroll_for(PaneId(0), 0.0),
+            Err(PaneError::InconsistentState)
+        );
+        let large = bounds(1_200.0, 900.0)?;
+        panes.split(SplitAxis::Columns, 3.0, large)?;
+        panes.split(SplitAxis::Rows, 4.0, large)?;
+        panes.split(SplitAxis::Rows, 5.0, large)?;
+        assert!(!panes.can_split(SplitAxis::Columns, large));
+        assert!(!panes.can_split(SplitAxis::Rows, large));
         Ok(())
     }
 }
