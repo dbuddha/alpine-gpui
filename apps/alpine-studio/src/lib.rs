@@ -9,6 +9,11 @@ mod commands;
 mod documents;
 mod file_tree;
 mod find;
+#[expect(
+    dead_code,
+    reason = "Task #128 stages the production LSP framer before approved JSON and process integration"
+)]
+mod lsp_framing;
 mod panes;
 mod project_search;
 mod quick_open;
