@@ -2807,6 +2807,304 @@ fn find_focus_rejections_and_empty_actions_remain_bounded() -> Result<(), Studio
     Ok(())
 }
 
+#[test]
+fn runtime_quick_open_worker_admits_inventory_and_ranked_results()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    let app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = viewport()?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+
+    let pending = runtime
+        .dispatch(&key(KEY_P, command))
+        .ok_or("quick-open frame")?;
+    let pending_quads = pending.scene().quads().len();
+    let mut admitted = false;
+    for timestamp in 300..812 {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(timestamp),
+        }) && frame.scene().quads().len() > pending_quads
+        {
+            admitted = true;
+            break;
+        }
+    }
+    assert!(admitted);
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end journey distinguishes the quick-open painter, input, and selection mutants"
+)]
+fn quick_open_lazily_indexes_renders_and_opens_a_nested_file()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write(".gitignore", "ignored/\n")?;
+    root.create_dir("src")?;
+    root.write("src/main.rs", "fn nested() {}\n")?;
+    root.create_dir("ignored")?;
+    root.write("ignored/lost.rs", "lost")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    assert!(app.quick_open.inventory_report().is_none());
+
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    assert!(app.handle_event(&key(KEY_P, command)).visual_changed);
+    let inventory = app
+        .prepare_quick_open_request()?
+        .ok_or("inventory request")?;
+    assert!(
+        app.apply_quick_open_output(inventory.execute())
+            .visual_changed
+    );
+    let initial_query = app
+        .prepare_quick_open_request()?
+        .ok_or("initial query request")?;
+    assert!(
+        app.apply_quick_open_output(initial_query.execute())
+            .visual_changed
+    );
+    let report = app
+        .quick_open
+        .inventory_report()
+        .ok_or("inventory report")?;
+    assert_eq!(report.paths, 2);
+    assert_eq!(report.errors, 0);
+
+    let first_path = app.quick_open.selected_path()?;
+    assert!(
+        app.handle_event(&key(KEY_DOWN, Modifiers::default()))
+            .visual_changed
+    );
+    let second_path = app.quick_open.selected_path()?;
+    assert_ne!(first_path, second_path);
+    assert_eq!(
+        app.handle_event(&key(KEY_UP, command)),
+        EventEffect::default()
+    );
+    assert_eq!(app.quick_open.selected_path()?, second_path);
+
+    let narrow_viewport = Size::new(300.0, 180.0).ok_or("narrow viewport")?;
+    let scene = app.try_scene(SceneRevision::new(90), narrow_viewport)?;
+    let overlay_width = QUICK_OPEN_WIDTH.min(narrow_viewport.width() - CONTENT_INSET * 2.0);
+    let overlay_left = (narrow_viewport.width() - overlay_width) * 0.5;
+    let overlay_top = TAB_BAR_HEIGHT + CONTENT_INSET;
+    let overlay_height = QUICK_OPEN_QUERY_HEIGHT + QUICK_OPEN_ROW_HEIGHT * 2.0;
+    let expected_overlay = Rect::new(
+        Point::new(overlay_left, overlay_top).ok_or("overlay origin")?,
+        Size::new(overlay_width, overlay_height).ok_or("overlay size")?,
+    );
+    let overlay_clip = scene
+        .clips()
+        .iter()
+        .position(|clip| clip.bounds() == expected_overlay)
+        .ok_or("quick-open clip")?;
+    let expected_selected = Rect::new(
+        Point::new(
+            overlay_left,
+            overlay_top + QUICK_OPEN_QUERY_HEIGHT + QUICK_OPEN_ROW_HEIGHT,
+        )
+        .ok_or("selected origin")?,
+        Size::new(overlay_width, QUICK_OPEN_ROW_HEIGHT).ok_or("selected size")?,
+    );
+    assert!(scene.quads().iter().any(|quad| {
+        quad.clip().is_some_and(|clip| clip.index() == overlay_clip)
+            && quad.bounds() == expected_selected
+    }));
+    let query_y = overlay_top + 19.0;
+    let query_glyph = scene
+        .glyphs()
+        .iter()
+        .find(|glyph| {
+            glyph
+                .clip()
+                .is_some_and(|clip| clip.index() == overlay_clip)
+                && glyph.bounds().origin().y().to_bits() == query_y.to_bits()
+        })
+        .ok_or("query glyph")?;
+    assert_eq!(
+        query_glyph.bounds().origin().x().to_bits(),
+        (overlay_left + FIND_BAR_INSET).to_bits()
+    );
+    let second_row_y = overlay_top + QUICK_OPEN_QUERY_HEIGHT + QUICK_OPEN_ROW_HEIGHT + 16.0;
+    let second_row_glyph = scene
+        .glyphs()
+        .iter()
+        .find(|glyph| {
+            glyph
+                .clip()
+                .is_some_and(|clip| clip.index() == overlay_clip)
+                && glyph.bounds().origin().y().to_bits() == second_row_y.to_bits()
+        })
+        .ok_or("second-row glyph")?;
+    assert_eq!(
+        second_row_glyph.bounds().origin().x().to_bits(),
+        (overlay_left + FIND_BAR_INSET).to_bits()
+    );
+
+    assert!(
+        app.handle_event(&key(KEY_UP, Modifiers::default()))
+            .visual_changed
+    );
+    assert_eq!(app.quick_open.selected_path()?, first_path);
+    assert_eq!(
+        app.handle_event(&key(KEY_DOWN, command)),
+        EventEffect::default()
+    );
+    assert_eq!(app.quick_open.selected_path()?, first_path);
+
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("main".into())))
+            .visual_changed
+    );
+    let query = app
+        .prepare_quick_open_request()?
+        .ok_or("filtered query request")?;
+    assert!(app.apply_quick_open_output(query.execute()).visual_changed);
+    assert_eq!(app.quick_open.selected_path()?.as_ref(), "src/main.rs");
+    let result = app.quick_open.result_report().ok_or("query result")?;
+    assert_eq!(result.0, 1);
+    assert!(result.1 <= quick_open::MAX_RESULT_METADATA_BYTES);
+
+    assert_eq!(
+        app.handle_event(&key(KEY_DELETE_BACKWARD, command)),
+        EventEffect::default()
+    );
+    assert_eq!(app.quick_open.query(), "main");
+    assert!(
+        app.handle_event(&key(KEY_DELETE_BACKWARD, Modifiers::default()))
+            .visual_changed
+    );
+    assert_eq!(app.quick_open.query(), "mai");
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("n".into())))
+            .visual_changed
+    );
+    let restored_query = app
+        .prepare_quick_open_request()?
+        .ok_or("restored query request")?;
+    assert!(
+        app.apply_quick_open_output(restored_query.execute())
+            .visual_changed
+    );
+    assert_eq!(
+        app.handle_event(&key(KEY_RETURN, command)),
+        EventEffect::default()
+    );
+    assert!(app.quick_open.is_open());
+    let effect = app.handle_event(&key(KEY_RETURN, Modifiers::default()));
+    assert!(effect.document_changed);
+    assert!(effect.document_identity_advanced);
+    assert!(!app.quick_open.is_open());
+    assert_eq!(app.buffer().snapshot().text(), "fn nested() {}\n");
+    Ok(())
+}
+
+#[test]
+fn quick_open_focus_suppresses_editor_input_and_requires_a_workspace()
+-> Result<(), Box<dyn std::error::Error>> {
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let mut scratch = test_app()?;
+    assert!(scratch.handle_event(&key(KEY_P, command)).visual_changed);
+    assert!(scratch.last_workspace_error.is_some());
+
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    *app.buffer_mut() = Buffer::new("alpha");
+    app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(5));
+    let before = app.buffer().snapshot().text();
+    assert!(app.handle_event(&key(KEY_P, command)).visual_changed);
+    assert!(app.handle_event(&ime(ImeEvent::Started)).visual_changed);
+    assert!(
+        app.handle_event(&ime(ImeEvent::Updated {
+            text: "alpha".into(),
+            selected_start_utf16: 0,
+            selected_length_utf16: 1,
+        }))
+        .visual_changed
+    );
+    assert!(
+        app.handle_event(&ime(ImeEvent::Updated {
+            text: "alphab".into(),
+            selected_start_utf16: 6,
+            selected_length_utf16: 0,
+        }))
+        .visual_changed
+    );
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("alpha".into())))
+            .visual_changed
+    );
+    assert_eq!(app.buffer().snapshot().text(), before);
+    assert!(matches!(
+        app.handle_event_with_response(&clipboard_key("c")),
+        StudioTransition {
+            clipboard_write: None,
+            ..
+        }
+    ));
+    assert!(
+        app.handle_event(&key(KEY_ESCAPE, Modifiers::default()))
+            .visual_changed
+    );
+    assert_eq!(app.buffer().snapshot().text(), before);
+    Ok(())
+}
+
+#[test]
+fn quick_open_path_revalidation_accepts_the_limit_and_rejects_the_next_component()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let mut parent = PathBuf::new();
+    for _ in 0..quick_open::MAX_DEPTH.saturating_sub(1) {
+        parent.push("d");
+    }
+    fs::create_dir_all(root.path().join(&parent))?;
+
+    let accepted = parent.join("accepted.rs");
+    root.write(accepted.to_str().ok_or("accepted UTF-8 path")?, "accepted")?;
+    let workspace = Workspace::open(root.path(), WorkspaceLimits::default())?;
+    assert_eq!(
+        workspace.path_for_relative_file(&accepted)?,
+        fs::canonicalize(root.path().join(&accepted))?
+    );
+
+    let overflow_parent = parent.join("overflow");
+    fs::create_dir(root.path().join(&overflow_parent))?;
+    let overflow = overflow_parent.join("rejected.rs");
+    root.write(overflow.to_str().ok_or("overflow UTF-8 path")?, "rejected")?;
+    assert!(matches!(
+        workspace.path_for_relative_file(&overflow),
+        Err(WorkspaceError::PathDepthExceeded { actual, limit })
+            if actual == quick_open::MAX_DEPTH + 1 && limit == quick_open::MAX_DEPTH
+    ));
+    Ok(())
+}
+
+#[test]
+fn quick_open_submission_rollback_only_rejects_failed_admission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    assert!(app.handle_event(&key(KEY_P, command)).visual_changed);
+    let request = app
+        .prepare_quick_open_request()?
+        .ok_or("inventory request")?;
+    let identity = request.identity();
+    assert!(!app.reject_failed_quick_open_submission(identity, false));
+    assert!(app.reject_failed_quick_open_submission(identity, true));
+    assert!(app.prepare_quick_open_request()?.is_some());
+    Ok(())
+}
+
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 #[test]
 fn run_rejects_an_unsupported_host() {

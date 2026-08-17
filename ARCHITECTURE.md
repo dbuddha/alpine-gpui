@@ -59,6 +59,11 @@ fixed standard worker threads connected by bounded request and result channels.
 Every result carries workspace, document, and process-local sequence identity;
 stale results are rejected before delegate mutation. The runtime exposes no
 native handle and adds no general async executor or reactive graph.
+`alpine-studio` privately depends on exact-version, default-feature-disabled
+`ignore` 0.4.33 for project-local recursive traversal. It uses only the serial
+walker, disables global and parent ignore state, includes hidden paths except
+`.git`, never follows symlinks, and exposes no dependency type outside the
+application crate.
 `alpine-studio` is the first shipping application. It owns exactly one local
 document as either an unbound scratch `Buffer` or a path-bound `Editor`, plus
 primary selection, IME composition, viewport state, two-frame layout cache, and
@@ -96,6 +101,19 @@ with a separate 2,048-range ceiling. Replace-all is one checked transaction,
 refuses truncated results and more than 16 MiB of changed transaction bytes,
 and adds no dependency, timer, polling loop, native handle, regex engine, or
 startup work.
+
+Studio owns one separate lazy quick-open inventory for an admitted local
+workspace. Command-P is the only initial admission point, so direct-file
+launch, folder construction, and the first frame perform no recursive walk.
+The existing bounded worker builds one serial inventory of at most 250,000
+inspected entries, 100,000 regular UTF-8 root-relative paths, 16 MiB of path
+bytes, 4 KiB per path, and 256 levels. A second worker request ranks at most
+1,024 index and score records for the current 4 KiB query. Workspace,
+inventory, and query generations reject stale publication. Frames clone only
+visible labels plus three overscan rows and at most 256 rows. Selection
+revalidates every path component, rejects symlinks and canonical mismatch, and
+then reuses the existing atomic tab-open path. There is no startup index,
+watcher, parallel traversal, global ignore state, plugin API, or network path.
 
 The native event handler returns one bounded `SurfaceResponse`. AppKit
 Command-C and Command-X writes complete through a typed later event, allowing
