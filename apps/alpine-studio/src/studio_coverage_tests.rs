@@ -1561,6 +1561,63 @@ fn split_views_render_focus_and_close_with_bounded_independent_scroll()
 }
 
 #[test]
+fn pane_focus_restores_exact_document_and_view_identity() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = TestWorkspace::new()?;
+    let alpha_text = "alpha\n".repeat(100);
+    let beta_text = "beta\n".repeat(100);
+    root.write("alpha.rs", &alpha_text)?;
+    root.write("beta.rs", &beta_text)?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let alpha = app
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.index_named("alpha.rs"))
+        .ok_or("alpha entry")?;
+    let beta = app
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.index_named("beta.rs"))
+        .ok_or("beta entry")?;
+    app.open_workspace_entry(alpha)?;
+    app.selection = Selection::caret(ByteOffset::new(2));
+    app.scroll_y = 11.0;
+    app.last_viewport = viewport()?;
+    assert!(app.split_active_pane(SplitAxis::Columns).visual_changed);
+
+    app.open_workspace_entry(beta)?;
+    app.selection = Selection::caret(ByteOffset::new(1));
+    app.scroll_y = 33.0;
+    app.sync_active_pane_document()?;
+    let layout = app.panes.layout(app.editor_region(app.last_viewport)?)?;
+    let inactive = layout
+        .iter()
+        .find(|pane| !pane.active)
+        .ok_or("inactive pane")?;
+    let active = app.panes.active_id();
+    let point = Point::new(
+        inactive.bounds.origin().x() + 1.0,
+        inactive.bounds.origin().y() + 1.0,
+    )
+    .ok_or("inactive pane point")?;
+    assert_eq!(
+        app.focus_pane_for_pointer(PointerAction::Down, PointerButton::Secondary, point),
+        EventEffect::default()
+    );
+    assert_eq!(app.panes.active_id(), active);
+
+    assert!(app.focus_next_pane().document_identity_advanced);
+    assert!(app.buffer().snapshot().text().starts_with("alpha\n"));
+    assert_eq!(app.selection, Selection::caret(ByteOffset::new(2)));
+    assert_eq!(app.scroll_y.to_bits(), 11.0_f32.to_bits());
+    assert!(app.focus_next_pane().document_identity_advanced);
+    assert!(app.buffer().snapshot().text().starts_with("beta\n"));
+    assert_eq!(app.selection, Selection::caret(ByteOffset::new(1)));
+    assert_eq!(app.scroll_y.to_bits(), 33.0_f32.to_bits());
+    Ok(())
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "the adversarial workspace selection journey keeps all atomicity checks together"

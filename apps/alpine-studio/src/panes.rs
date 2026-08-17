@@ -683,27 +683,107 @@ mod tests {
         let alpha = DocumentTabId(1);
         let beta = DocumentTabId(2);
         let alpha_view = DocumentViewState {
+            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(1)),
             scroll_y: 12.0,
-            ..DocumentViewState::default()
         };
         let beta_view = DocumentViewState {
+            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(2)),
             scroll_y: 48.0,
-            ..DocumentViewState::default()
         };
         let mut panes = PaneGrid::new(alpha, alpha_view);
         let bounds = bounds(1_200.0, 900.0)?;
 
+        for invalid_scroll in [f32::NAN, -1.0] {
+            let mut invalid = PaneGrid::new(alpha, alpha_view);
+            assert_eq!(
+                invalid.sync_active_document(
+                    alpha,
+                    DocumentViewState {
+                        selection: alpha_view.selection,
+                        scroll_y: invalid_scroll,
+                    }
+                ),
+                Err(PaneError::InvalidGeometry)
+            );
+            assert_eq!(invalid.active_document(), Ok((alpha, alpha_view)));
+        }
+
         panes.split(SplitAxis::Columns, 12.0, bounds)?;
+        let first = panes
+            .layout(bounds)?
+            .iter()
+            .find(|pane| !pane.active)
+            .ok_or(PaneError::InconsistentState)?
+            .id;
+        let second = panes.active_id();
+        let shared_alpha = DocumentViewState {
+            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(3)),
+            scroll_y: 64.0,
+        };
+        panes.sync_active_document(alpha, shared_alpha)?;
+        assert_eq!(panes.active_document(), Ok((alpha, shared_alpha)));
+        let (first_tab, first_view) = panes.document_for(first, alpha, shared_alpha)?;
+        assert_eq!(first_tab, alpha);
+        assert_eq!(first_view.selection, shared_alpha.selection);
+        assert_eq!(first_view.scroll_y.to_bits(), alpha_view.scroll_y.to_bits());
+
+        let supplied = DocumentViewState {
+            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(4)),
+            scroll_y: 99.0,
+        };
+        assert_eq!(
+            panes.document_for(second, beta, supplied),
+            Ok((beta, supplied))
+        );
+        assert_eq!(
+            panes.document_for(PaneId(0), alpha, alpha_view),
+            Err(PaneError::InconsistentState)
+        );
+
+        let empty = panes
+            .states
+            .iter()
+            .position(|state| !state.occupied)
+            .ok_or(PaneError::InconsistentState)?;
+        panes.states[empty].tab = Some(beta);
+        panes.states[empty].view = Some(alpha_view);
         panes.sync_active_document(beta, beta_view)?;
         assert_eq!(panes.active_document(), Ok((beta, beta_view)));
+        assert_eq!(panes.states[empty].view, Some(alpha_view));
 
         panes.focus_next(48.0)?;
-        assert_eq!(panes.active_document(), Ok((alpha, alpha_view)));
+        assert_eq!(
+            panes.active_document(),
+            Ok((
+                alpha,
+                DocumentViewState {
+                    selection: shared_alpha.selection,
+                    scroll_y: alpha_view.scroll_y,
+                }
+            ))
+        );
         panes.focus_next(12.0)?;
         assert_eq!(panes.active_document(), Ok((beta, beta_view)));
 
         panes.retarget_closed_tab(beta, alpha, alpha_view);
         assert_eq!(panes.active_document(), Ok((alpha, alpha_view)));
+        let (first_tab, first_view) = panes.document_for(first, alpha, alpha_view)?;
+        assert_eq!(first_tab, alpha);
+        assert_eq!(first_view.selection, shared_alpha.selection);
+        assert_eq!(panes.states[empty].tab, Some(beta));
+        assert_eq!(panes.states[empty].view, Some(alpha_view));
+
+        let gamma = DocumentTabId(3);
+        let gamma_view = DocumentViewState {
+            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(5)),
+            scroll_y: 30.0,
+        };
+        let mut nested = PaneGrid::new(alpha, alpha_view);
+        nested.split(SplitAxis::Columns, 12.0, bounds)?;
+        nested.sync_active_document(beta, beta_view)?;
+        nested.split(SplitAxis::Rows, 48.0, bounds)?;
+        nested.sync_active_document(gamma, gamma_view)?;
+        assert_eq!(nested.close_active(30.0)?.to_bits(), 48.0_f32.to_bits());
         Ok(())
     }
 
