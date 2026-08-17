@@ -199,6 +199,29 @@ impl<T> DocumentTabs<T> {
         self.tabs.iter().filter_map(|tab| tab.document.as_ref())
     }
 
+    pub(crate) fn can_navigate_back(&self) -> bool {
+        self.history
+            .get(..self.history_cursor)
+            .unwrap_or_default()
+            .iter()
+            .rev()
+            .any(|id| {
+                self.index_for_id(*id)
+                    .is_some_and(|index| index != self.active)
+            })
+    }
+
+    pub(crate) fn can_navigate_forward(&self) -> bool {
+        self.history
+            .get(self.history_cursor.saturating_add(1)..)
+            .unwrap_or_default()
+            .iter()
+            .any(|id| {
+                self.index_for_id(*id)
+                    .is_some_and(|index| index != self.active)
+            })
+    }
+
     pub(crate) fn visible_range(
         &self,
         first_visible: usize,
@@ -611,10 +634,16 @@ mod tests {
             view(0, 0.0),
         );
         c_insertion?;
+        assert!(tabs.can_navigate_back());
+        assert!(!tabs.can_navigate_forward());
         assert_eq!(tabs.history_len(), 3);
         assert!(tabs.navigate_back(&mut active, view(1, 1.0))?.is_some());
+        assert!(tabs.can_navigate_back());
+        assert!(tabs.can_navigate_forward());
         assert_eq!(active, "b");
         assert!(tabs.navigate_back(&mut active, view(2, 2.0))?.is_some());
+        assert!(!tabs.can_navigate_back());
+        assert!(tabs.can_navigate_forward());
         assert_eq!(active, "a");
         assert!(tabs.navigate_forward(&mut active, view(3, 3.0))?.is_some());
         assert_eq!(active, "b");

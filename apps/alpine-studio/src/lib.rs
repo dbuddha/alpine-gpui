@@ -5,6 +5,7 @@
 
 //! Local-only Alpine Studio editor boundary.
 
+mod commands;
 mod documents;
 mod file_tree;
 mod find;
@@ -41,6 +42,7 @@ use alpine_text_layout::{
     GlyphAtlas, GlyphKey, GlyphRasterizer, LayoutError, LineLayout, LineLayoutCache,
     PositiveFinite, TextShaper, VisibleLines,
 };
+use commands::{CommandContext, CommandPalette, CommandPaletteError, StudioCommand};
 use documents::{DocumentTabError, DocumentTabLimits, DocumentTabs, DocumentViewState};
 use file_tree::{
     FileTreeAction, FileTreeAdmission, FileTreeError, FileTreeRequest, FileTreeState,
@@ -86,6 +88,9 @@ const QUICK_OPEN_QUERY_HEIGHT: f32 = 34.0;
 const QUICK_OPEN_ROW_HEIGHT: f32 = 24.0;
 const QUICK_OPEN_VISIBLE_ROWS: usize = 12;
 const QUICK_OPEN_OVERSCAN_ROWS: usize = 3;
+const COMMAND_PALETTE_WIDTH: f32 = 620.0;
+const COMMAND_PALETTE_QUERY_HEIGHT: f32 = 34.0;
+const COMMAND_PALETTE_ROW_HEIGHT: f32 = 24.0;
 const INITIAL_TEXT: &str = "fn main() {\n    println!(\"Alpine Studio\");\n}\n\n// Local, direct, and deliberately small.\n";
 
 const KEY_A: u16 = 0;
@@ -370,13 +375,14 @@ struct PendingCut {
 enum LocalStatus {
     Clipboard(Arc<str>),
     CloseBlocked,
+    Command(Arc<str>),
     Workspace(Arc<str>),
 }
 
 impl LocalStatus {
     fn message(&self) -> &str {
         match self {
-            Self::Clipboard(message) | Self::Workspace(message) => message,
+            Self::Clipboard(message) | Self::Command(message) | Self::Workspace(message) => message,
             Self::CloseBlocked => "Save changes before closing.",
         }
     }
@@ -401,6 +407,7 @@ impl StudioTransition {
 
 #[derive(Debug)]
 enum StudioRenderError {
+    CommandPalette(CommandPaletteError),
     Domain,
     FileTree(FileTreeError),
     Find(FindError),
@@ -408,6 +415,12 @@ enum StudioRenderError {
     Text(TextError),
     Layout(LayoutError),
     Scene(SceneError),
+}
+
+impl From<CommandPaletteError> for StudioRenderError {
+    fn from(error: CommandPaletteError) -> Self {
+        Self::CommandPalette(error)
+    }
 }
 
 impl From<TextError> for StudioRenderError {
@@ -449,6 +462,9 @@ impl From<SceneError> for StudioRenderError {
 impl fmt::Display for StudioRenderError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CommandPalette(error) => {
+                write!(formatter, "command-palette rendering failed: {error}")
+            }
             Self::Domain => formatter.write_str("invalid Studio render domain value"),
             Self::FileTree(error) => write!(formatter, "file-tree rendering failed: {error}"),
             Self::Find(error) => write!(formatter, "find rendering failed: {error}"),
@@ -548,6 +564,10 @@ impl StudioDocument {
             Self::File(editor) => editor.is_dirty(),
         }
     }
+
+    const fn is_file(&self) -> bool {
+        matches!(self, Self::File(_))
+    }
 }
 
 #[cfg(test)]
@@ -614,10 +634,13 @@ struct StudioApp {
     find_needs_search: bool,
     quick_open: QuickOpenState,
     file_tree: FileTreeState,
+    command_palette: CommandPalette,
     #[cfg(test)]
     force_quick_open_submission_failure: Option<()>,
     #[cfg(test)]
     force_file_tree_submission_failure: Option<()>,
+    #[cfg(test)]
+    force_command_clip_failure: Option<()>,
 }
 
 impl StudioApp {
@@ -744,10 +767,13 @@ impl StudioApp {
             find_needs_search: false,
             quick_open: QuickOpenState::default(),
             file_tree: FileTreeState::default(),
+            command_palette: CommandPalette::default(),
             #[cfg(test)]
             force_quick_open_submission_failure: None,
             #[cfg(test)]
             force_file_tree_submission_failure: None,
+            #[cfg(test)]
+            force_command_clip_failure: None,
         })
     }
 
@@ -857,6 +883,10 @@ impl StudioApp {
             LinearRgba::new(0.045, 0.052, 0.058, 0.99).ok_or(StudioRenderError::Domain)?;
         let quick_open_selected =
             LinearRgba::new(0.12, 0.25, 0.31, 1.0).ok_or(StudioRenderError::Domain)?;
+        let command_palette_background =
+            LinearRgba::new(0.055, 0.062, 0.067, 0.995).ok_or(StudioRenderError::Domain)?;
+        let command_palette_selected =
+            LinearRgba::new(0.34, 0.22, 0.075, 1.0).ok_or(StudioRenderError::Domain)?;
 
         let mut builder = SceneBuilder::new(revision, viewport);
         builder.push_quad(Quad::new(Rect::new(origin, viewport), background))?;
@@ -1081,6 +1111,65 @@ impl StudioApp {
                 pending_glyphs.extend(row_glyphs);
             }
         }
+        if self.command_palette.is_open() {
+            let rows = self.command_palette.visible_commands()?;
+            let width =
+                COMMAND_PALETTE_WIDTH.min((viewport.width() - CONTENT_INSET * 2.0).max(1.0));
+            let left = ((viewport.width() - width) * 0.5).max(0.0);
+            let top = TAB_BAR_HEIGHT + CONTENT_INSET;
+            let height = COMMAND_PALETTE_QUERY_HEIGHT
+                + usize_as_f32(rows.len()) * COMMAND_PALETTE_ROW_HEIGHT;
+            let overlay_origin = Point::new(left, top).ok_or(StudioRenderError::Domain)?;
+            let overlay_size =
+                Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
+            let overlay_bounds = Rect::new(overlay_origin, overlay_size);
+            let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
+            let command_selection_clip = overlay_clip;
+            #[cfg(test)]
+            let command_selection_clip = if self.force_command_clip_failure.take().is_some() {
+                let mut foreign = SceneBuilder::new(revision, viewport);
+                let mut invalid = foreign.push_clip(Clip::new(overlay_bounds));
+                for _ in 0..128 {
+                    invalid = foreign.push_clip(Clip::new(overlay_bounds));
+                }
+                invalid
+            } else {
+                command_selection_clip
+            };
+            builder.push_quad(Quad::new(overlay_bounds, command_palette_background))?;
+            let display = self.command_palette.display_text()?;
+            let query_layout = self.text_system.shape(&display, font)?;
+            pending_glyphs.extend(self.collect_glyphs(
+                &query_layout,
+                font,
+                left + FIND_BAR_INSET,
+                top + query_layout.ascent() + 7.0,
+                overlay_clip,
+            )?);
+            for (row_index, row) in rows.iter().enumerate() {
+                let row_top = top
+                    + COMMAND_PALETTE_QUERY_HEIGHT
+                    + usize_as_f32(row_index) * COMMAND_PALETTE_ROW_HEIGHT;
+                if row.selected {
+                    let row_origin = Point::new(left, row_top).ok_or(StudioRenderError::Domain)?;
+                    let row_size = Size::new(width, COMMAND_PALETTE_ROW_HEIGHT)
+                        .ok_or(StudioRenderError::Domain)?;
+                    builder.push_quad(
+                        Quad::new(Rect::new(row_origin, row_size), command_palette_selected)
+                            .clipped(command_selection_clip),
+                    )?;
+                }
+                let layout = self.text_system.shape(row.title, font)?;
+                let baseline = row_top + layout.ascent() + 4.0;
+                pending_glyphs.extend(self.collect_glyphs(
+                    &layout,
+                    font,
+                    left + FIND_BAR_INSET,
+                    baseline,
+                    overlay_clip,
+                )?);
+            }
+        }
         builder.push_quad(Quad::new(tab_bounds, tab_background).clipped(tab_clip))?;
         if tab_labels
             .iter()
@@ -1263,7 +1352,10 @@ impl StudioApp {
     }
 
     fn handle_event_with_response(&mut self, event: &SurfaceEvent) -> StudioTransition {
-        if (self.find.is_open() || self.quick_open.is_open() || self.file_tree.is_focused())
+        if (self.find.is_open()
+            || self.quick_open.is_open()
+            || self.command_palette.is_open()
+            || self.file_tree.is_focused())
             && studio_clipboard_shortcut(event).is_some()
         {
             return StudioTransition::default();
@@ -1493,6 +1585,12 @@ impl StudioApp {
         let command = modifiers.contains(Modifiers::COMMAND);
         let shift = modifiers.contains(Modifiers::SHIFT);
         let option = modifiers.contains(Modifiers::OPTION);
+        if command && shift && physical_key == KEY_P {
+            return self.open_command_palette();
+        }
+        if self.command_palette.is_open() {
+            return self.handle_command_palette_key(physical_key, command);
+        }
         if command && shift && physical_key == KEY_E {
             self.find.close();
             self.find_needs_search = false;
@@ -1575,6 +1673,9 @@ impl StudioApp {
     }
 
     fn handle_ime(&mut self, event: &ImeEvent) -> EventEffect {
+        if self.command_palette.is_open() {
+            return self.handle_command_palette_ime(event);
+        }
         if self.quick_open.is_open() {
             return self.handle_quick_open_ime(event);
         }
@@ -1626,6 +1727,148 @@ impl StudioApp {
             }
             ImeEvent::Cancelled => self.cancel_composition(),
         }
+    }
+
+    fn open_command_palette(&mut self) -> EventEffect {
+        self.find.close();
+        self.find_needs_search = false;
+        self.quick_open.close();
+        self.file_tree.unfocus();
+        let context = self.command_context();
+        match self.command_palette.open(context) {
+            Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+            Err(error) => self.record_command_palette_error(&error),
+        }
+    }
+
+    fn handle_command_palette_key(&mut self, physical_key: u16, command: bool) -> EventEffect {
+        match physical_key {
+            KEY_ESCAPE => self
+                .command_palette
+                .cancel()
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_DELETE_BACKWARD if !command => {
+                let context = self.command_context();
+                match self.command_palette.delete_backward(context) {
+                    Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+                    Err(error) => self.record_command_palette_error(&error),
+                }
+            }
+            KEY_UP if !command => self
+                .command_palette
+                .navigate(false)
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_DOWN if !command => self
+                .command_palette
+                .navigate(true)
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_RETURN if !command => {
+                let context = self.command_context();
+                match self.command_palette.execute_selected(context) {
+                    Ok(command) => EventEffect::visual().merge(self.dispatch_command(command)),
+                    Err(error) => self.record_command_palette_error(&error),
+                }
+            }
+            _ => EventEffect::default(),
+        }
+    }
+
+    fn handle_command_palette_ime(&mut self, event: &ImeEvent) -> EventEffect {
+        let context = self.command_context();
+        let result = match event {
+            ImeEvent::Started => {
+                return self
+                    .command_palette
+                    .begin_composition()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
+            ImeEvent::Updated {
+                text,
+                selected_start_utf16,
+                selected_length_utf16,
+            } => self.command_palette.update_composition(
+                text,
+                *selected_start_utf16,
+                *selected_length_utf16,
+            ),
+            ImeEvent::Committed(text) => self.command_palette.commit_text(text, context),
+            ImeEvent::Cancelled => {
+                return self
+                    .command_palette
+                    .cancel_composition()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
+        };
+        match result {
+            Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+            Err(error) => self.record_command_palette_error(&error),
+        }
+    }
+
+    fn command_context(&self) -> CommandContext {
+        CommandContext {
+            can_save: self.document.is_file() && self.document.is_dirty(),
+            can_close_tab: self.tabs.len() > 1
+                && !self.document.is_dirty()
+                && self.last_file_error.is_none(),
+            can_navigate_back: self.tabs.can_navigate_back(),
+            can_navigate_forward: self.tabs.can_navigate_forward(),
+            has_workspace: self.workspace.is_some(),
+        }
+    }
+
+    fn dispatch_command(&mut self, command: StudioCommand) -> EventEffect {
+        match command {
+            StudioCommand::SaveFile => self.save_document(),
+            StudioCommand::CloseTab => self.close_active_tab_or_record(),
+            StudioCommand::NavigateBack => self.navigate_document_history(false),
+            StudioCommand::NavigateForward => self.navigate_document_history(true),
+            StudioCommand::OpenFind => {
+                let changed = self.find.open(false);
+                self.find_needs_search |= !self.find.query().is_empty();
+                changed.then(EventEffect::visual).unwrap_or_default()
+            }
+            StudioCommand::OpenReplace => {
+                let changed = self.find.open(true);
+                self.find_needs_search |= !self.find.query().is_empty();
+                changed.then(EventEffect::visual).unwrap_or_default()
+            }
+            StudioCommand::OpenQuickOpen if self.workspace.is_none() => {
+                self.record_quick_open_error(&QuickOpenError::NoWorkspace)
+            }
+            StudioCommand::OpenQuickOpen => match self.quick_open.open(1) {
+                Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+                Err(error) => self.record_quick_open_error(&error),
+            },
+            StudioCommand::ToggleFileTree if self.workspace.is_none() => {
+                self.record_file_tree_error(&FileTreeError::NoWorkspace)
+            }
+            StudioCommand::ToggleFileTree
+                if self.file_tree.is_visible() && self.file_tree.is_focused() =>
+            {
+                self.file_tree
+                    .hide()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default()
+            }
+            StudioCommand::ToggleFileTree => match self.file_tree.activate(1) {
+                Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+                Err(error) => self.record_file_tree_error(&error),
+            },
+        }
+    }
+
+    fn record_command_palette_error(&mut self, error: &CommandPaletteError) -> EventEffect {
+        self.input_failures = self.input_failures.saturating_add(1);
+        self.set_local_status(LocalStatus::Command(
+            format!("Command palette failed: {error}").into(),
+        ))
+        .merge(EventEffect::visual())
     }
 
     fn handle_quick_open_key(&mut self, physical_key: u16, command: bool) -> EventEffect {
@@ -1979,6 +2222,10 @@ impl StudioApp {
         modifiers: Modifiers,
     ) -> EventEffect {
         self.last_pointer_position = Some(position);
+        if self.command_palette.is_open() {
+            self.pointer_selecting = false;
+            return EventEffect::default();
+        }
         if self.quick_open.is_open() {
             self.pointer_selecting = false;
             return EventEffect::default();
@@ -2828,13 +3075,14 @@ pub mod native_validation {
     use alpine_text::{ByteOffset, Selection};
 
     use super::{
-        CONTENT_INSET, DEFAULT_SCALE, FONT_FAMILY, KEY_A, KEY_DOWN, KEY_E, KEY_RETURN, KEY_S,
-        KEY_UP, StudioApp, StudioError, TREE_ROW_HEIGHT, WINDOW_HEIGHT, WINDOW_WIDTH, Workspace,
-        native_file_app,
+        CONTENT_INSET, DEFAULT_SCALE, FONT_FAMILY, KEY_A, KEY_DOWN, KEY_E, KEY_P, KEY_RETURN,
+        KEY_S, KEY_UP, StudioApp, StudioError, TREE_ROW_HEIGHT, WINDOW_HEIGHT, WINDOW_WIDTH,
+        Workspace, native_file_app,
     };
 
     const NATIVE_INPUT_FRAMES: usize = 5;
     const TREE_TOGGLE_MODIFIER_BITS: u8 = 0x09;
+    const COMMAND_SHIFT_MODIFIERS: Modifiers = Modifiers::from_bits(TREE_TOGGLE_MODIFIER_BITS);
 
     /// Handle-free completion evidence returned across the process-test boundary.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3222,12 +3470,14 @@ pub mod native_validation {
             &surface,
             &state,
             &journey,
-            &[keyboard_event(
-                621,
-                KEY_S,
-                "s",
-                Modifiers::from_bits(Modifiers::COMMAND),
-            )],
+            &[
+                keyboard_event(621, KEY_P, "p", COMMAND_SHIFT_MODIFIERS),
+                SurfaceEvent::Ime {
+                    timestamp: EventTimestamp::new(622),
+                    event: ImeEvent::Committed("save".into()),
+                },
+                keyboard_event(623, KEY_RETURN, "Enter", Modifiers::default()),
+            ],
         )?;
         assert_eq!(fs::read_to_string(alpha)?, "alpha");
         assert_eq!(fs::read_to_string(beta)?, "!beta");
@@ -3499,6 +3749,10 @@ pub mod native_validation {
         platform_validation::replay_callback_surface_events(surface, &events, event_handler(state))
     }
 }
+
+#[cfg(test)]
+#[path = "command_palette_tests.rs"]
+mod command_palette_tests;
 
 #[cfg(test)]
 #[path = "studio_coverage_tests.rs"]

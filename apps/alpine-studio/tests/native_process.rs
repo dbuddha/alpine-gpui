@@ -8,10 +8,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(evidence.persisted_bytes() > 1_000);
     assert_eq!(evidence.released_owner_classes(), 9);
     let tree = alpine_studio::native_validation::qualify_file_tree_process()?;
-    assert_eq!(tree.keyboard_events(), 5);
+    assert_eq!(tree.keyboard_events(), 6);
     assert_eq!(tree.pointer_events(), 2);
     assert!(tree.worker_wakes() > 1);
-    assert!(tree.admitted_frames() >= 7);
+    assert!(tree.admitted_frames() >= 9);
     assert_eq!(tree.persisted_bytes(), 5);
     assert_eq!(tree.released_owner_classes(), 9);
     Ok(())
