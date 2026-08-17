@@ -853,6 +853,23 @@ telemetry, or startup work. See AEP-0180.
 10. Any architecture-changing pull request updates this document in the same
     change and links the accepted decision that authorized it.
 
+### Accessibility semantics (Task #130)
+
+Studio derives a bounded semantic tree from the authoritative tab, focus,
+status, selection, and immutable buffer state. Tree and action identities carry
+both document and buffer revisions; stale assistive-technology actions fail
+before mutation. Text remains in the copy-on-write snapshot and is materialized
+only for an explicitly bounded UTF-16 range request. Existing AppKit UTF-16
+conversion walks rope storage directly without allocating a whole-document
+string. The model exposes stable roles for the window, tabs, active code editor,
+file tree, transient search and command surfaces, and announcing status.
+
+This safe internal slice adds no native object, callback, dependency, or public
+API. A separately reviewed `alpine-platform-macos` adapter will translate these
+semantics to AppKit accessibility objects and marshal actions back to the main
+thread; it may not retain Studio objects or mutate text outside the
+revision-checked action boundary.
+
 ### Pane document ownership (Task #127)
 
 Pane leaves retain a stable document-tab identity and pane-local view state. The global document-tab store remains the sole owner of document payloads and buffers; panes never clone an editor or buffer. Scene construction resolves each pane identity to an immutable snapshot, while focus activates that identity through the existing checked tab transition. Selection state follows the document revision and is synchronized across panes showing the same tab, while scroll remains pane-local. Closing a tab retargets every referencing pane to the replacement active tab before the next scene is admitted.
