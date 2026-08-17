@@ -641,16 +641,18 @@ impl StudioApp {
         path: impl AsRef<Path>,
     ) -> Result<Self, StudioError> {
         let workspace = Workspace::open(path.as_ref(), WorkspaceLimits::default())?;
+        let root = workspace.root().to_path_buf();
         let mut app = Self::from_workspace(text_system, workspace).map_err(StudioError::from)?;
         app.file_tree
             .activate(1)
             .map_err(|_| SurfaceError::DriverUnavailable)?;
-        if let Some(request) = app.prepare_file_tree_request().map_err(|_| {
-            StudioError::Runtime(RuntimeError::Surface(SurfaceError::DriverUnavailable))
-        })? && app.file_tree.admit(request.execute()) != FileTreeAdmission::Directory
-        {
-            return Err(SurfaceError::DriverUnavailable.into());
-        }
+        let request = app.file_tree.take_request(&root);
+        let admission = request.map(|request| app.file_tree.admit(request.execute()));
+        assert_eq!(
+            admission,
+            Some(FileTreeAdmission::Directory),
+            "test workspace root must be readable"
+        );
         app.file_tree.unfocus();
         Ok(app)
     }
@@ -678,10 +680,11 @@ impl StudioApp {
     ) -> Result<Self, SurfaceError> {
         #[cfg(test)]
         let omitted_entries = workspace.snapshot().omitted_entries;
-        #[cfg(not(test))]
-        let omitted_entries = 0;
         let document = StudioDocument::scratch(INITIAL_TEXT);
-        let mut app = Self::from_parts(text_system, document, None, Some(workspace))?;
+        let app = Self::from_parts(text_system, document, None, Some(workspace))?;
+        #[cfg(test)]
+        let mut app = app;
+        #[cfg(test)]
         if omitted_entries > 0 {
             app.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
                 "Workspace tree truncated: {omitted_entries} entries omitted."

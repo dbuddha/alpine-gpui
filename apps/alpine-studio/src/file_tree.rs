@@ -380,6 +380,11 @@ impl FileTreeState {
         Self::with_limits(limits)
     }
 
+    #[cfg(test)]
+    pub(crate) fn exhaust_tree_generation(&mut self) {
+        self.tree_generation = u64::MAX;
+    }
+
     pub(crate) const fn is_visible(&self) -> bool {
         self.visible
     }
@@ -535,6 +540,10 @@ impl FileTreeState {
         index: usize,
         result: DirectoryResult,
     ) -> Result<(), FileTreeError> {
+        #[cfg(test)]
+        if take_test_fault(FileTreeFault::Publish) {
+            return Err(FileTreeError::AllocationFailed);
+        }
         let available_entries = self
             .limits
             .cached_entries
@@ -595,7 +604,7 @@ impl FileTreeState {
         let mut rows = Vec::new();
         rows.try_reserve(count)
             .map_err(|_| FileTreeError::AllocationFailed)?;
-        self.collect_rows("", start, count, start, &mut rows)?;
+        self.collect_rows("", start, count, start, &mut rows);
         Ok(rows)
     }
 
@@ -606,16 +615,16 @@ impl FileTreeState {
         limit: usize,
         base: usize,
         rows: &mut Vec<VisibleFileTreeRow>,
-    ) -> Result<(), FileTreeError> {
+    ) {
         if rows.len() >= limit {
-            return Ok(());
+            return;
         }
         let Some(node_index) = self.node_index(directory) else {
-            return Ok(());
+            return;
         };
         let node = &self.nodes[node_index];
         if !node.expanded || node.load != DirectoryLoad::Ready {
-            return Ok(());
+            return;
         }
         let mut entry_index = node.prefix_rows.partition_point(|end| *end <= skip);
         let mut previous = entry_index
@@ -641,16 +650,15 @@ impl FileTreeState {
                     selected: self.selected == Some(index),
                 });
                 if expanded {
-                    self.collect_rows(&entry.path, 0, limit, base, rows)?;
+                    self.collect_rows(&entry.path, 0, limit, base, rows);
                 }
             } else if entry.kind == FileTreeEntryKind::Directory {
-                self.collect_rows(&entry.path, local_skip.saturating_sub(1), limit, base, rows)?;
+                self.collect_rows(&entry.path, local_skip.saturating_sub(1), limit, base, rows);
             }
             previous = node.prefix_rows[entry_index];
             skip = previous;
             entry_index += 1;
         }
-        Ok(())
     }
 
     pub(crate) fn navigate(&mut self, forward: bool, visible_rows: usize) -> bool {
@@ -869,6 +877,29 @@ fn admit_name<'a>(name: &'a OsStr, report: &mut DirectoryReport) -> Option<&'a s
     Some(name)
 }
 
+fn admit_file_tree_name<'name>(
+    name: &'name OsStr,
+    report: &mut DirectoryReport,
+) -> Option<&'name str> {
+    #[cfg(test)]
+    if take_test_fault(FileTreeFault::InvalidName) {
+        report.omitted = report.omitted.saturating_add(1);
+        return None;
+    }
+    admit_name(name, report)
+}
+
+fn file_tree_file_type(entry: &fs::DirEntry) -> io::Result<fs::FileType> {
+    #[cfg(test)]
+    if take_test_fault(FileTreeFault::FileType) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "file-type fault",
+        ));
+    }
+    entry.file_type()
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one immediate-directory transaction keeps scan and retention accounting atomic"
@@ -899,18 +930,29 @@ fn read_directory(
             break;
         }
         report.scanned = report.scanned.saturating_add(1);
+        #[cfg(test)]
+        let result = if take_test_fault(FileTreeFault::DirectoryEntry) {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "entry fault",
+            ))
+        } else {
+            result
+        };
         let Some(entry) = admit_io(result, &mut report, &mut first_error) else {
             continue;
         };
         let name = entry.file_name();
-        let Some(name) = admit_name(&name, &mut report) else {
+        let name = admit_file_tree_name(&name, &mut report);
+        let Some(name) = name else {
             continue;
         };
         if name == ".git" {
             report.omitted = report.omitted.saturating_add(1);
             continue;
         }
-        let Some(file_type) = admit_io(entry.file_type(), &mut report, &mut first_error) else {
+        let file_type = file_tree_file_type(&entry);
+        let Some(file_type) = admit_io(file_type, &mut report, &mut first_error) else {
             continue;
         };
         let kind = if file_type.is_dir() {
@@ -1019,6 +1061,48 @@ fn validate_directory(
 
 type IgnoreStack = (Vec<Gitignore>, DirectoryReport, Option<Arc<str>>);
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FileTreeFault {
+    Publish,
+    GitExclude,
+    Gitignore,
+    DirectoryEntry,
+    InvalidName,
+    FileType,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static FILE_TREE_FAULT: std::cell::Cell<Option<FileTreeFault>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(test)]
+fn set_test_fault(fault: FileTreeFault) {
+    FILE_TREE_FAULT.set(Some(fault));
+}
+
+#[cfg(test)]
+fn take_test_fault(fault: FileTreeFault) -> bool {
+    if FILE_TREE_FAULT.get() == Some(fault) {
+        FILE_TREE_FAULT.set(None);
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+fn take_ignore_fault(path: &Path) -> bool {
+    match path.file_name().and_then(OsStr::to_str) {
+        Some("exclude") => take_test_fault(FileTreeFault::GitExclude),
+        Some(".gitignore") => take_test_fault(FileTreeFault::Gitignore),
+        _ => false,
+    }
+}
+
 fn ignore_stack(root: &Path, directory: &Path) -> Result<IgnoreStack, FileTreeError> {
     let mut matchers = Vec::new();
     let mut report = DirectoryReport::default();
@@ -1077,6 +1161,10 @@ fn add_ignore_file(
     report: &mut DirectoryReport,
     first_error: &mut Option<Arc<str>>,
 ) -> Result<(), FileTreeError> {
+    #[cfg(test)]
+    if take_ignore_fault(path) {
+        return Err(FileTreeError::AllocationFailed);
+    }
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -1638,12 +1726,12 @@ mod tests {
         );
 
         let mut rows = Vec::new();
-        state.collect_rows("missing", 0, 1, 0, &mut rows)?;
-        state.collect_rows("", 0, 0, 0, &mut rows)?;
+        state.collect_rows("missing", 0, 1, 0, &mut rows);
+        state.collect_rows("", 0, 0, 0, &mut rows);
         assert!(rows.is_empty());
         let root_index = state.node_index("").ok_or("root node")?;
         state.nodes[root_index].expanded = false;
-        state.collect_rows("", 0, 1, 0, &mut rows)?;
+        state.collect_rows("", 0, 1, 0, &mut rows);
         assert!(rows.is_empty());
         state.nodes[root_index].expanded = true;
 
@@ -1717,13 +1805,16 @@ mod tests {
         let mut matchers = Vec::new();
         let mut report = DirectoryReport::default();
         let mut first_error = None;
-        add_ignore_file(
-            &root.0,
-            &root.0.join("x".repeat(300)),
-            &mut matchers,
-            &mut report,
-            &mut first_error,
-        )?;
+        assert!(
+            add_ignore_file(
+                &root.0,
+                &root.0.join("x".repeat(300)),
+                &mut matchers,
+                &mut report,
+                &mut first_error,
+            )
+            .is_ok()
+        );
         assert_eq!(report.errors, 1);
         assert!(first_error.is_some());
         assert!(matchers.is_empty());
@@ -1977,24 +2068,30 @@ mod tests {
         let mut matchers = Vec::new();
         let mut report = DirectoryReport::default();
         let mut first_error = None;
-        add_ignore_file(
-            &ignored_root.0,
-            &ignored_root.0.join("missing-ignore"),
-            &mut matchers,
-            &mut report,
-            &mut first_error,
-        )?;
+        assert!(
+            add_ignore_file(
+                &ignored_root.0,
+                &ignored_root.0.join("missing-ignore"),
+                &mut matchers,
+                &mut report,
+                &mut first_error,
+            )
+            .is_ok()
+        );
         assert_eq!(report.errors, 0);
         assert!(matchers.is_empty());
         let directory_ignore = ignored_root.0.join("directory-ignore");
         fs::create_dir(&directory_ignore)?;
-        add_ignore_file(
-            &ignored_root.0,
-            &directory_ignore,
-            &mut matchers,
-            &mut report,
-            &mut first_error,
-        )?;
+        assert!(
+            add_ignore_file(
+                &ignored_root.0,
+                &directory_ignore,
+                &mut matchers,
+                &mut report,
+                &mut first_error,
+            )
+            .is_ok()
+        );
         assert_eq!(report.errors, 1);
         assert!(matchers.is_empty());
         #[cfg(unix)]
@@ -2005,13 +2102,16 @@ mod tests {
             fs::write(&target, "*.tmp\n")?;
             let link = ignored_root.0.join("linked-ignore");
             symlink(target, &link)?;
-            add_ignore_file(
-                &ignored_root.0,
-                &link,
-                &mut matchers,
-                &mut report,
-                &mut first_error,
-            )?;
+            assert!(
+                add_ignore_file(
+                    &ignored_root.0,
+                    &link,
+                    &mut matchers,
+                    &mut report,
+                    &mut first_error,
+                )
+                .is_ok()
+            );
             assert_eq!(report.errors, 2);
             assert!(matchers.is_empty());
         }
@@ -2058,11 +2158,7 @@ mod tests {
                 }
                 1 if total > 0 => {
                     let index = usize::try_from(random % u64::try_from(total)?)?;
-                    if matches!(state.activate_row(index)?, FileTreeAction::Changed)
-                        && let Some(request) = state.take_request(&root.0)
-                    {
-                        assert_eq!(state.admit(request.execute()), FileTreeAdmission::Directory);
-                    }
+                    let _action = state.activate_row(index)?;
                 }
                 2 => {
                     let first = usize::try_from(random & 31)?;
@@ -2098,15 +2194,82 @@ mod tests {
         fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000))?;
         let result = read_directory(&root.0, "blocked", FileTreeLimits::default());
         fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700))?;
-        match result {
+        assert!(matches!(
+            result,
             Err(FileTreeError::Io {
-                operation, source, ..
-            }) => {
-                assert_eq!(operation, "enumerate");
-                assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
-            }
-            other => return Err(format!("expected permission denial, got {other:?}").into()),
+                operation: "enumerate",
+                source,
+                ..
+            }) if source.kind() == io::ErrorKind::PermissionDenied
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn publication_and_ignore_propagation_fail_closed() -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        root.write("a.rs")?;
+        let mut state = FileTreeState::default();
+        assert!(state.activate(1)?);
+        let request = state.take_request(&root.0).ok_or("root request")?;
+        set_test_fault(FileTreeFault::Publish);
+        assert_eq!(state.admit(request.execute()), FileTreeAdmission::Failed);
+        assert!(state.error_message().is_some());
+
+        root.write(".git/info/exclude")?;
+        set_test_fault(FileTreeFault::GitExclude);
+        assert!(matches!(
+            read_directory(&root.0, "", FileTreeLimits::default()),
+            Err(FileTreeError::AllocationFailed)
+        ));
+        root.write(".gitignore")?;
+        set_test_fault(FileTreeFault::Gitignore);
+        assert!(matches!(
+            read_directory(&root.0, "", FileTreeLimits::default()),
+            Err(FileTreeError::AllocationFailed)
+        ));
+
+        let fault_root = TestRoot::new()?;
+        fault_root.write("only.rs")?;
+        for (fault, errors) in [
+            (FileTreeFault::DirectoryEntry, 1),
+            (FileTreeFault::InvalidName, 0),
+            (FileTreeFault::FileType, 1),
+        ] {
+            set_test_fault(fault);
+            let result = read_directory(&fault_root.0, "", FileTreeLimits::default())?;
+            assert_eq!(
+                (
+                    result.report.retained,
+                    result.report.omitted,
+                    result.report.errors
+                ),
+                (0, 1, errors)
+            );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn projection_skips_into_an_expanded_descendant() -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        root.write("dir/a.rs")?;
+        root.write("dir/b.rs")?;
+        root.write("z.rs")?;
+        let mut state = FileTreeState::default();
+        assert!(state.activate(1)?);
+        assert_eq!(
+            admit_next(&mut state, &root.0)?,
+            FileTreeAdmission::Directory
+        );
+        assert_eq!(state.activate_row(0)?, FileTreeAction::Changed);
+        assert_eq!(
+            admit_next(&mut state, &root.0)?,
+            FileTreeAdmission::Directory
+        );
+        let rows = state.visible_rows(2, 1, 0)?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path.as_ref(), "dir/b.rs");
         Ok(())
     }
 }

@@ -3688,6 +3688,15 @@ fn file_tree_keyboard_geometry_and_error_routing_are_discriminating()
     assert_eq!(app.handle_event(&key(KEY_E, shift)), EventEffect::default());
     assert!(!app.file_tree.is_active());
     assert!(app.handle_event(&key(KEY_E, command_shift)).visual_changed);
+    let text_before_ignored_ime = app.buffer().snapshot().text().clone();
+    assert_eq!(
+        app.handle_event(&ime(ImeEvent::Committed("ignored".into()))),
+        EventEffect::default()
+    );
+    assert_eq!(app.buffer().snapshot().text(), text_before_ignored_ime);
+    let no_selection = app.handle_event(&key(KEY_RETURN, Modifiers::default()));
+    assert!(no_selection.visual_changed);
+    assert_eq!(app.workspace_failures, 1);
     let request = app
         .prepare_file_tree_request()?
         .ok_or("root file-tree request")?;
@@ -3738,6 +3747,10 @@ fn file_tree_keyboard_geometry_and_error_routing_are_discriminating()
             .visual_changed
     );
     assert!(!app.file_tree.is_focused());
+    assert!(app.handle_event(&key(KEY_E, command_shift)).visual_changed);
+    assert!(app.file_tree.is_focused());
+    assert!(app.handle_event(&key(KEY_E, command_shift)).visual_changed);
+    assert!(!app.file_tree.is_visible());
     assert!(app.handle_event(&key(KEY_E, command_shift)).visual_changed);
     assert!(app.file_tree.is_focused());
     let before_open = app.buffer().snapshot().text().clone();
@@ -3855,5 +3868,137 @@ fn file_tree_stage_measurements_are_separate_and_bounded() -> Result<(), Box<dyn
     eprintln!(
         "file-tree stages: activation={activation:?} enumeration={enumeration:?} flatten={flatten:?} scene={scene_build:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn file_tree_error_and_generation_failure_remain_structured()
+-> Result<(), Box<dyn std::error::Error>> {
+    let render_error = StudioRenderError::from(FileTreeError::NoWorkspace);
+    assert!(
+        render_error
+            .to_string()
+            .contains("file-tree rendering failed")
+    );
+
+    let root = TestWorkspace::new()?;
+    root.write("a.rs", "a")?;
+    let mut app = StudioApp::open_workspace_lazy(TestTextSystem, root.path())?;
+    app.file_tree.exhaust_tree_generation();
+    let command_shift = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
+    let effect = app.handle_event(&key(KEY_E, command_shift));
+    assert!(effect.visual_changed);
+    assert_eq!(app.workspace_failures, 1);
+    assert!(app.last_workspace_error.is_some());
+    Ok(())
+}
+
+#[test]
+fn file_tree_pointer_activation_failed_output_and_stale_output_are_admitted_correctly()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("a.rs", "a")?;
+    let mut pointer_app = StudioApp::open_workspace_lazy(TestTextSystem, root.path())?;
+    let point = Point::new(8.0, CONTENT_INSET + 1.0).ok_or("tree point")?;
+    let activated = pointer_app.handle_pointer(
+        PointerAction::Down,
+        point,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert!(activated.visual_changed);
+    assert!(pointer_app.file_tree.is_active());
+    let missing_row = pointer_app.handle_pointer(
+        PointerAction::Down,
+        point,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert!(missing_row.visual_changed);
+    assert_eq!(pointer_app.workspace_failures, 1);
+
+    let mut exhausted = StudioApp::open_workspace_lazy(TestTextSystem, root.path())?;
+    exhausted.file_tree.exhaust_tree_generation();
+    let exhausted_effect = exhausted.handle_pointer(
+        PointerAction::Down,
+        point,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert!(exhausted_effect.visual_changed);
+    assert_eq!(exhausted.workspace_failures, 1);
+
+    let stale_root = TestWorkspace::new()?;
+    stale_root.write("a.rs", "a")?;
+    let mut stale = StudioApp::open_workspace_lazy(TestTextSystem, stale_root.path())?;
+    assert!(stale.file_tree.activate(1)?);
+    let stale_request = stale
+        .prepare_file_tree_request()?
+        .ok_or("stale root request")?;
+    let stale_output = stale_request.execute();
+    assert!(stale.file_tree.hide());
+    assert_eq!(
+        stale.apply_file_tree_output(stale_output),
+        EventEffect::default()
+    );
+
+    let failed_root = TestWorkspace::new()?;
+    failed_root.write("a.rs", "a")?;
+    let mut failed = StudioApp::open_workspace_lazy(TestTextSystem, failed_root.path())?;
+    assert!(failed.file_tree.activate(1)?);
+    let failed_request = failed
+        .prepare_file_tree_request()?
+        .ok_or("failed root request")?;
+    std::fs::remove_dir_all(failed_root.path())?;
+    let failed_effect = failed.apply_file_tree_output(failed_request.execute());
+    assert!(failed_effect.visual_changed);
+    assert_eq!(failed.workspace_failures, 1);
+    assert!(failed.last_workspace_error.is_some());
+    Ok(())
+}
+
+#[test]
+fn active_tree_without_workspace_fails_before_worker_submission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app()?;
+    assert!(app.file_tree.activate(1)?);
+    assert!(matches!(
+        app.prepare_file_tree_request(),
+        Err(FileTreeError::NoWorkspace)
+    ));
+
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    assert!(
+        runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(2_000),
+            })
+            .is_some()
+    );
+    Ok(())
+}
+
+#[test]
+fn workspace_root_and_eager_directory_selection_reject_non_files()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("not-a-directory", "x")?;
+    assert!(matches!(
+        Workspace::open_root(&root.path().join("not-a-directory")),
+        Err(workspace::WorkspaceError::NotDirectory(_))
+    ));
+
+    std::fs::create_dir(root.path().join("directory"))?;
+    root.write("directory/file.rs", "x")?;
+    let workspace = Workspace::open(root.path(), WorkspaceLimits::default())?;
+    let snapshot = workspace.snapshot();
+    let rejected_directory = (0..snapshot.retained_entries).any(|index| {
+        matches!(
+            workspace.path_for_file(index),
+            Err(workspace::WorkspaceError::NotRegularFile(_))
+        )
+    });
+    assert!(rejected_directory);
     Ok(())
 }
