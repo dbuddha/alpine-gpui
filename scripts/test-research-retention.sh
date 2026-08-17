@@ -62,4 +62,17 @@ if scripts/check-research-retention.sh "$fixture_dir/missing-exclusions" \
 fi
 grep -Fq 'missing mandatory field exclusion_manifest_hash' "$fixture_dir/missing-exclusions.log"
 
+copy_fixture "$fixture_dir/missing-wiki-anchor"
+sed '/issues\/175/d' \
+    "$fixture_dir/missing-wiki-anchor/docs/research/index.md" \
+    > "$fixture_dir/missing-wiki-anchor/catalog.md"
+mv "$fixture_dir/missing-wiki-anchor/catalog.md" \
+    "$fixture_dir/missing-wiki-anchor/docs/research/index.md"
+if scripts/check-research-retention.sh "$fixture_dir/missing-wiki-anchor" \
+    > "$fixture_dir/missing-wiki-anchor.log" 2>&1; then
+    printf 'research retention test error: missing Wiki anchor unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'missing issue anchor #175' "$fixture_dir/missing-wiki-anchor.log"
+
 printf 'research retention tests passed\n'

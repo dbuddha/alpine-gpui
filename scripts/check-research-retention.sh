@@ -9,6 +9,8 @@ studio_path=$repo_root/docs/use-cases/alpine-studio-highfidelity.md
 zed_editor=$repo_root/docs/case-studies/zed-editor.md
 zed_gpui=$repo_root/docs/case-studies/zed-gpui.md
 sublime=$repo_root/docs/case-studies/sublime-editor.md
+wgpu=$repo_root/docs/case-studies/wgpu.md
+wiki_policy=$repo_root/docs/wiki/README.md
 failures=0
 
 fail() {
@@ -23,7 +25,9 @@ for required in \
     "$studio_path" \
     "$zed_editor" \
     "$zed_gpui" \
-    "$sublime"
+    "$sublime" \
+    "$wgpu" \
+    "$wiki_policy"
 do
     if [ ! -f "$required" ]; then
         fail "required research artifact is missing: ${required#"$repo_root"/}"
@@ -39,7 +43,9 @@ for link in \
     '(../case-studies/zed-editor.md)' \
     '(../case-studies/zed-gpui.md)' \
     '(../case-studies/sublime-editor.md)' \
+    '(../case-studies/wgpu.md)' \
     '(../quality/comparator-protocol.md)' \
+    '(../wiki/README.md)' \
     '(../use-cases/alpine-studio-highfidelity.md)'
 do
     if ! grep -Fq "$link" "$catalog"; then
@@ -56,7 +62,9 @@ for source in \
     "$studio_path" \
     "$zed_editor" \
     "$zed_gpui" \
-    "$sublime"
+    "$sublime" \
+    "$wgpu" \
+    "$wiki_policy"
 do
     grep -Eo '\]\([^)]+\)' "$source" 2>/dev/null \
         | sed 's/^](//; s/)$//' \
@@ -82,7 +90,7 @@ for requirement in 32 33 34 35 36 37; do
     fi
 done
 
-for issue in 113 114 115 116 118 132; do
+for issue in 113 114 115 116 118 132 174 175; do
     if ! grep -Fq "https://github.com/dbuddha/alpine-gpui/issues/$issue" "$catalog"; then
         fail "research catalog is missing issue anchor #$issue"
     fi

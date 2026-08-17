@@ -8,6 +8,7 @@
 - [Knowledge and requirements](concepts/traceability.md)
 - [Research catalog](research/index.md)
   - [Alpine Studio adversarial review](research/alpine-studio-adversarial-review.md)
+  - [GitHub Wiki mirror policy](wiki/README.md)
 - [Assurance strategy](quality/assurance.md)
   - [Performance qualification](quality/performance.md)
   - [Comparator protocol v1](quality/comparator-protocol.md)

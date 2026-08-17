@@ -5,6 +5,8 @@ scripts/check-policy.sh
 scripts/test-policy.sh
 scripts/check-research-retention.sh
 scripts/test-research-retention.sh
+scripts/check-wiki.sh
+scripts/test-wiki.sh
 scripts/test-classifier.sh
 scripts/test-hierarchy.sh
 scripts/test-assurance.sh
