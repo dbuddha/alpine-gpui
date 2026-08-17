@@ -492,6 +492,100 @@ fn project_search_render_failures_preserve_layout_and_scene_stages()
 }
 
 #[test]
+fn project_search_geometry_and_command_guards_are_exact() -> Result<(), Box<dyn std::error::Error>>
+{
+    let project = TempProject::new()?;
+    let mut app = StudioApp::open_workspace_lazy(SearchTextSystem, &project.root)?;
+    open_and_search(&mut app, &project.root)?;
+
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    for physical_key in [KEY_DELETE_BACKWARD, KEY_UP, KEY_DOWN, KEY_RETURN] {
+        assert_eq!(
+            app.handle_event(&key(physical_key, command)),
+            EventEffect::default()
+        );
+    }
+    assert!(app.project_search.is_open());
+    assert!(app.project_search.display_text()?.contains("needle"));
+    assert!(
+        app.handle_event(&key(KEY_DOWN, Modifiers::default()))
+            .visual_changed
+    );
+
+    let viewport = Size::new(500.0, 300.0).ok_or("viewport")?;
+    let scene = app.try_scene(SceneRevision::new(910), viewport)?;
+    let overlay_width = PROJECT_SEARCH_WIDTH.min(viewport.width() - CONTENT_INSET * 2.0);
+    let overlay_left = (viewport.width() - overlay_width) * 0.5;
+    let overlay_top = TAB_BAR_HEIGHT + CONTENT_INSET;
+    let overlay_height = PROJECT_SEARCH_QUERY_HEIGHT + PROJECT_SEARCH_ROW_HEIGHT * 2.0;
+    let expected_overlay = Rect::new(
+        Point::new(overlay_left, overlay_top).ok_or("overlay origin")?,
+        Size::new(overlay_width, overlay_height).ok_or("overlay size")?,
+    );
+    let overlay_clip = scene
+        .clips()
+        .iter()
+        .position(|clip| clip.bounds() == expected_overlay)
+        .ok_or("project-search clip")?;
+    assert!(
+        scene
+            .quads()
+            .iter()
+            .any(|quad| { quad.clip().is_none() && quad.bounds() == expected_overlay })
+    );
+
+    let selected_top = overlay_top + PROJECT_SEARCH_QUERY_HEIGHT + PROJECT_SEARCH_ROW_HEIGHT;
+    let expected_selected = Rect::new(
+        Point::new(overlay_left, selected_top).ok_or("selected origin")?,
+        Size::new(overlay_width, PROJECT_SEARCH_ROW_HEIGHT).ok_or("selected size")?,
+    );
+    assert!(scene.quads().iter().any(|quad| {
+        quad.clip().is_some_and(|clip| clip.index() == overlay_clip)
+            && quad.bounds() == expected_selected
+    }));
+
+    let query_origin = Point::new(overlay_left + FIND_BAR_INSET, overlay_top + 19.0)
+        .ok_or("query glyph origin")?;
+    let first_query_glyph = scene
+        .glyphs()
+        .iter()
+        .filter(|glyph| {
+            glyph
+                .clip()
+                .is_some_and(|clip| clip.index() == overlay_clip)
+                && glyph.bounds().origin().y().to_bits() == query_origin.y().to_bits()
+        })
+        .min_by(|left, right| {
+            left.bounds()
+                .origin()
+                .x()
+                .total_cmp(&right.bounds().origin().x())
+        })
+        .ok_or("query glyph")?;
+    assert_eq!(first_query_glyph.bounds().origin(), query_origin);
+    let second_row_origin =
+        Point::new(overlay_left + FIND_BAR_INSET, selected_top + 16.0).ok_or("row glyph origin")?;
+    let first_second_row_glyph = scene
+        .glyphs()
+        .iter()
+        .filter(|glyph| {
+            glyph
+                .clip()
+                .is_some_and(|clip| clip.index() == overlay_clip)
+                && glyph.bounds().origin().y().to_bits() == second_row_origin.y().to_bits()
+        })
+        .min_by(|left, right| {
+            left.bounds()
+                .origin()
+                .x()
+                .total_cmp(&right.bounds().origin().x())
+        })
+        .ok_or("second-row glyph")?;
+    assert_eq!(first_second_row_glyph.bounds().origin(), second_row_origin);
+    Ok(())
+}
+
+#[test]
 fn runtime_project_search_admits_workers_and_rolls_back_submission_failures()
 -> Result<(), Box<dyn std::error::Error>> {
     let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear")?;
