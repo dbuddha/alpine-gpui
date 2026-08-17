@@ -3587,3 +3587,123 @@ bounds = ["pull request: four generations", "nightly: eight generations"]
 assumptions = ["path revalidation returns one typed admission outcome"]
 exclusions = ["Rust formal refinement", "path component semantics", "document open I/O"]
 companion = "apps/alpine-studio/src/studio_coverage_tests.rs#quick_open_lazily_indexes_renders_and_opens_a_nested_file"
+
+[[claims]]
+id = "AEP-0171-C01"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0171-lazy-bounded-workspace-file-tree.md"
+requirement_issue = 32
+claim_type = "memory"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0171-C02"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0171-lazy-bounded-workspace-file-tree.md"
+requirement_issue = 32
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0171-C03"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0171-lazy-bounded-workspace-file-tree.md"
+requirement_issue = 32
+claim_type = "lifecycle"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["PublishedIsCurrent"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[claims]]
+id = "AEP-0171-C04"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0171-lazy-bounded-workspace-file-tree.md"
+requirement_issue = 32
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["SelectionIsCurrent"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[evidence]]
+id = "EV-0171-UNIT01"
+claim = "AEP-0171-C01"
+kind = "unit"
+artifact = "apps/alpine-studio/src/file_tree.rs#activation_and_directory_caps_are_exact"
+assertion = "No directory request exists before explicit activation; immediate enumeration, returned children, path bytes, cache values, depth, and visible rows have exact inclusive ceilings."
+scope = "Private Studio activation and one immediate-directory result."
+bounds = ["16,384 inspected entries per directory", "4,096 returned children", "1 MiB returned path bytes", "512 projected rows"]
+assumptions = ["The admitted workspace root was canonicalized by Workspace."]
+exclusions = ["filesystem latency", "allocator implementation", "native input timing"]
+
+[[evidence]]
+id = "EV-0171-UNIT02"
+claim = "AEP-0171-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/file_tree.rs#project_ignore_stack_and_symlink_policy_are_deterministic"
+assertion = "Root and nested project ignore rules, whitelist precedence, hidden-path admission, Git metadata omission, byte ordering, and symlink omission are exercised independently."
+scope = "Project-local repository exclude, .gitignore, and .ignore evaluation."
+bounds = ["256 path components", "4 KiB per path", "8 MiB aggregate retained path bytes"]
+assumptions = ["Filesystem metadata reports link identity correctly."]
+exclusions = ["global ignore files", "network filesystems", "all permission models"]
+
+[[evidence]]
+id = "EV-0171-UNIT03"
+claim = "AEP-0171-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/file_tree.rs#state_rejects_stale_directory_results_and_bounds_projection"
+assertion = "A hidden tree rejects its late result, only a current retry publishes, and projection remains under the hard row ceiling."
+scope = "Workspace, tree, directory, and request generation admission."
+bounds = ["one pending directory request", "512 projected rows"]
+assumptions = ["Worker outputs preserve their typed identity."]
+exclusions = ["worker elapsed time", "native wake delivery", "Rust formal refinement"]
+companion = "formal/tla/aep-0171/FileTreeAdmission.tla#PublishedIsCurrent"
+
+[[evidence]]
+id = "EV-0171-UNIT04"
+claim = "AEP-0171-C04"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#file_tree_lazily_loads_and_opens_a_nested_file"
+assertion = "The production root-only constructor builds a first scene without a request, explicit activation loads root and nested directories in order, and the current nested file opens through document replacement."
+scope = "Studio folder construction, activation, row navigation, and exact workspace file opening."
+bounds = ["one root result", "one nested result", "one selected file"]
+assumptions = ["Deterministic test shaping stands in for native typography only."]
+exclusions = ["native pointer delivery", "accessibility", "fixed-hardware latency"]
+companion = "apps/alpine-studio/src/file_tree.rs#tree_navigation_opens_only_current_file_rows"
+
+[[evidence]]
+id = "EV-0171-TLA03"
+claim = "AEP-0171-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0171/FileTreeAdmission.tla#PublishedIsCurrent"
+assertion = "Finite publication is empty or exactly matches the current tree, directory, and request; the faulty stale-publication control violates the invariant."
+scope = "Finite activation, hide, expansion, and publication generations."
+bounds = ["pull request: four generations", "nightly: eight generations"]
+assumptions = ["Typed outcomes", "monotonic finite generations"]
+exclusions = ["Rust refinement", "filesystem I/O", "runtime queue scheduling"]
+companion = "apps/alpine-studio/src/file_tree.rs#state_rejects_stale_directory_results_and_bounds_projection"
+
+[[evidence]]
+id = "EV-0171-TLA04"
+claim = "AEP-0171-C04"
+kind = "tla"
+artifact = "formal/tla/aep-0171/FileTreeAdmission.tla#SelectionIsCurrent"
+assertion = "Finite selection is empty or uses the exact current published identity; the faulty stale-selection control violates the invariant."
+scope = "Finite current publication and selection admission."
+bounds = ["pull request: four generations", "nightly: eight generations"]
+assumptions = ["Selection occurs only after a typed publication."]
+exclusions = ["path revalidation", "native input", "Rust refinement"]
+companion = "apps/alpine-studio/src/file_tree.rs#tree_navigation_opens_only_current_file_rows"

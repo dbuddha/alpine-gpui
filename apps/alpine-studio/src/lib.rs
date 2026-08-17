@@ -6,6 +6,7 @@
 //! Local-only Alpine Studio editor boundary.
 
 mod documents;
+mod file_tree;
 mod find;
 mod quick_open;
 mod workspace;
@@ -41,6 +42,10 @@ use alpine_text_layout::{
     PositiveFinite, TextShaper, VisibleLines,
 };
 use documents::{DocumentTabError, DocumentTabLimits, DocumentTabs, DocumentViewState};
+use file_tree::{
+    FileTreeAction, FileTreeAdmission, FileTreeError, FileTreeRequest, FileTreeState,
+    FileTreeWorkerOutput,
+};
 use find::{
     FindAdmission, FindError, FindNavigation, FindRequest, FindState, FindWorkerOutput,
     MAX_REPLACEMENT_TRANSACTION_BYTES,
@@ -50,7 +55,7 @@ use quick_open::{
 };
 use workspace::Workspace;
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(test)]
 use workspace::WorkspaceLimits;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -85,6 +90,7 @@ const INITIAL_TEXT: &str = "fn main() {\n    println!(\"Alpine Studio\");\n}\n\n
 
 const KEY_A: u16 = 0;
 const KEY_S: u16 = 1;
+const KEY_E: u16 = 14;
 const KEY_F: u16 = 3;
 const KEY_P: u16 = 35;
 const KEY_Z: u16 = 6;
@@ -235,7 +241,7 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
         if metadata.is_file() {
             run_native(native_file_app(path)?).map_err(StudioError::from)
         } else if metadata.is_dir() {
-            let workspace = Workspace::open(path, WorkspaceLimits::default())?;
+            let workspace = Workspace::open_root(path)?;
             let mut text_system = alpine_text_layout::CoreTextSystem::new();
             text_system
                 .register_font(FONT_FAMILY, "Menlo-Regular")
@@ -396,6 +402,7 @@ impl StudioTransition {
 #[derive(Debug)]
 enum StudioRenderError {
     Domain,
+    FileTree(FileTreeError),
     Find(FindError),
     QuickOpen(QuickOpenError),
     Text(TextError),
@@ -406,6 +413,12 @@ enum StudioRenderError {
 impl From<TextError> for StudioRenderError {
     fn from(error: TextError) -> Self {
         Self::Text(error)
+    }
+}
+
+impl From<FileTreeError> for StudioRenderError {
+    fn from(error: FileTreeError) -> Self {
+        Self::FileTree(error)
     }
 }
 
@@ -437,6 +450,7 @@ impl fmt::Display for StudioRenderError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Domain => formatter.write_str("invalid Studio render domain value"),
+            Self::FileTree(error) => write!(formatter, "file-tree rendering failed: {error}"),
             Self::Find(error) => write!(formatter, "find rendering failed: {error}"),
             Self::QuickOpen(error) => write!(formatter, "quick-open rendering failed: {error}"),
             Self::Text(error) => write!(formatter, "text layout input failed: {error}"),
@@ -543,6 +557,20 @@ macro_rules! force_quick_open_submission_failure {
     };
 }
 
+#[cfg(test)]
+macro_rules! force_file_tree_submission_failure {
+    ($app:expr) => {
+        $app.force_file_tree_submission_failure.is_some()
+    };
+}
+
+#[cfg(not(test))]
+macro_rules! force_file_tree_submission_failure {
+    ($app:expr) => {
+        false
+    };
+}
+
 #[cfg(not(test))]
 macro_rules! force_quick_open_submission_failure {
     ($app:expr) => {
@@ -585,8 +613,11 @@ struct StudioApp {
     find: FindState,
     find_needs_search: bool,
     quick_open: QuickOpenState,
+    file_tree: FileTreeState,
     #[cfg(test)]
     force_quick_open_submission_failure: Option<()>,
+    #[cfg(test)]
+    force_file_tree_submission_failure: Option<()>,
 }
 
 impl StudioApp {
@@ -610,6 +641,26 @@ impl StudioApp {
         path: impl AsRef<Path>,
     ) -> Result<Self, StudioError> {
         let workspace = Workspace::open(path.as_ref(), WorkspaceLimits::default())?;
+        let mut app = Self::from_workspace(text_system, workspace).map_err(StudioError::from)?;
+        app.file_tree
+            .activate(1)
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        if let Some(request) = app.prepare_file_tree_request().map_err(|_| {
+            StudioError::Runtime(RuntimeError::Surface(SurfaceError::DriverUnavailable))
+        })? && app.file_tree.admit(request.execute()) != FileTreeAdmission::Directory
+        {
+            return Err(SurfaceError::DriverUnavailable.into());
+        }
+        app.file_tree.unfocus();
+        Ok(app)
+    }
+
+    #[cfg(test)]
+    fn open_workspace_lazy(
+        text_system: impl StudioTextSystem + 'static,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, StudioError> {
+        let workspace = Workspace::open_root(path.as_ref())?;
         Self::from_workspace(text_system, workspace).map_err(StudioError::from)
     }
 
@@ -625,7 +676,10 @@ impl StudioApp {
         text_system: impl StudioTextSystem + 'static,
         workspace: Workspace,
     ) -> Result<Self, SurfaceError> {
+        #[cfg(test)]
         let omitted_entries = workspace.snapshot().omitted_entries;
+        #[cfg(not(test))]
+        let omitted_entries = 0;
         let document = StudioDocument::scratch(INITIAL_TEXT);
         let mut app = Self::from_parts(text_system, document, None, Some(workspace))?;
         if omitted_entries > 0 {
@@ -686,8 +740,11 @@ impl StudioApp {
             find: FindState::default(),
             find_needs_search: false,
             quick_open: QuickOpenState::default(),
+            file_tree: FileTreeState::default(),
             #[cfg(test)]
             force_quick_open_submission_failure: None,
+            #[cfg(test)]
+            force_file_tree_submission_failure: None,
         })
     }
 
@@ -805,7 +862,7 @@ impl StudioApp {
 
         let mut rendered_lines = Vec::new();
         let mut pending_glyphs = Vec::new();
-        if let Some(workspace) = &self.workspace {
+        if self.workspace.is_some() && self.file_tree.is_visible() {
             let sidebar_size = Size::new(sidebar_width.max(1.0), viewport.height())
                 .ok_or(StudioRenderError::Domain)?;
             let sidebar_bounds = Rect::new(origin, sidebar_size);
@@ -816,14 +873,15 @@ impl StudioApp {
             let visible_rows = floor_f32_to_usize(viewport.height() / TREE_ROW_HEIGHT)
                 .unwrap_or(0)
                 .saturating_add(1);
-            let range = workspace.visible_range(first_visible, visible_rows, TREE_OVERSCAN_ROWS);
-            let labels: Vec<(usize, Arc<str>)> = range
-                .filter_map(|index| workspace.entry(index).map(|entry| (index, entry.name())))
-                .collect();
-            for (index, label) in labels {
+            let rows =
+                self.file_tree
+                    .visible_rows(first_visible, visible_rows, TREE_OVERSCAN_ROWS)?;
+            for row in rows {
+                let index = row.index;
+                let label = row.label;
                 let top =
                     CONTENT_INSET + usize_as_f32(index) * TREE_ROW_HEIGHT - self.workspace_scroll_y;
-                if self.active_workspace_entry == Some(index) {
+                if row.selected {
                     let row_origin = Point::new(0.0, top).ok_or(StudioRenderError::Domain)?;
                     let row_size = Size::new(sidebar_width.max(1.0), TREE_ROW_HEIGHT)
                         .ok_or(StudioRenderError::Domain)?;
@@ -833,8 +891,8 @@ impl StudioApp {
                 }
                 let layout = self.text_system.shape(&label, font)?;
                 let baseline = top + layout.ascent();
-                let glyphs =
-                    self.collect_glyphs(&layout, font, CONTENT_INSET, baseline, sidebar_clip)?;
+                let indent = usize_as_f32(row.depth).mul_add(12.0, CONTENT_INSET);
+                let glyphs = self.collect_glyphs(&layout, font, indent, baseline, sidebar_clip)?;
                 pending_glyphs.extend(glyphs);
             }
         }
@@ -1055,6 +1113,7 @@ impl StudioApp {
         if self.focused
             && !self.find.is_open()
             && !self.quick_open.is_open()
+            && !self.file_tree.is_focused()
             && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_origin_x)?
         {
             builder.push_quad(Quad::new(caret, caret_color).clipped(clip))?;
@@ -1202,7 +1261,7 @@ impl StudioApp {
     }
 
     fn handle_event_with_response(&mut self, event: &SurfaceEvent) -> StudioTransition {
-        if (self.find.is_open() || self.quick_open.is_open())
+        if (self.find.is_open() || self.quick_open.is_open() || self.file_tree.is_focused())
             && studio_clipboard_shortcut(event).is_some()
         {
             return StudioTransition::default();
@@ -1230,6 +1289,7 @@ impl StudioApp {
             SurfaceEvent::Scroll { delta_y, .. } => {
                 let over_workspace = self.last_pointer_position.is_some_and(|position| {
                     self.workspace.is_some()
+                        && self.file_tree.is_visible()
                         && position.x() < self.sidebar_width(self.last_viewport)
                 });
                 let changed = if over_workspace {
@@ -1431,6 +1491,25 @@ impl StudioApp {
         let command = modifiers.contains(Modifiers::COMMAND);
         let shift = modifiers.contains(Modifiers::SHIFT);
         let option = modifiers.contains(Modifiers::OPTION);
+        if command && shift && physical_key == KEY_E {
+            self.find.close();
+            self.find_needs_search = false;
+            self.quick_open.close();
+            if self.workspace.is_none() {
+                return self.record_file_tree_error(&FileTreeError::NoWorkspace);
+            }
+            if self.file_tree.is_visible() && self.file_tree.is_focused() {
+                return self
+                    .file_tree
+                    .hide()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
+            return match self.file_tree.activate(1) {
+                Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+                Err(error) => self.record_file_tree_error(&error),
+            };
+        }
         if command && physical_key == KEY_P {
             if self.workspace.is_none() {
                 return self.record_quick_open_error(&QuickOpenError::NoWorkspace);
@@ -1452,6 +1531,9 @@ impl StudioApp {
         }
         if self.find.is_open() {
             return self.handle_find_key(physical_key, command, option, shift);
+        }
+        if self.file_tree.is_focused() {
+            return self.handle_file_tree_key(physical_key, command);
         }
         if command && physical_key == KEY_A {
             return self.set_selection(Selection::new(
@@ -1496,6 +1578,9 @@ impl StudioApp {
         }
         if self.find.is_open() {
             return self.handle_find_ime(event);
+        }
+        if self.file_tree.is_focused() {
+            return EventEffect::default();
         }
         match event {
             ImeEvent::Started => {
@@ -1565,6 +1650,31 @@ impl StudioApp {
             KEY_RETURN if !command => match self.open_quick_open_selection() {
                 Ok(effect) => effect,
                 Err(error) => self.record_workspace_error(&error),
+            },
+            _ => EventEffect::default(),
+        }
+    }
+
+    fn handle_file_tree_key(&mut self, physical_key: u16, command: bool) -> EventEffect {
+        match physical_key {
+            KEY_ESCAPE => self
+                .file_tree
+                .unfocus()
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_UP if !command => self
+                .file_tree
+                .navigate(false, self.visible_tree_rows())
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_DOWN if !command => self
+                .file_tree
+                .navigate(true, self.visible_tree_rows())
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_RETURN if !command => match self.file_tree.activate_selected() {
+                Ok(action) => self.apply_file_tree_action(action),
+                Err(error) => self.record_file_tree_error(&error),
             },
             _ => EventEffect::default(),
         }
@@ -1877,6 +1987,7 @@ impl StudioApp {
             && position.x() >= self.sidebar_width(self.last_viewport)
         {
             self.pointer_selecting = false;
+            self.file_tree.unfocus();
             let tab_position = (position.x() - self.sidebar_width(self.last_viewport)
                 + self.tab_scroll_x)
                 / TAB_WIDTH;
@@ -1891,21 +2002,29 @@ impl StudioApp {
         if action == PointerAction::Down
             && button == PointerButton::Primary
             && self.workspace.is_some()
+            && self.file_tree.is_visible()
             && position.x() < self.sidebar_width(self.last_viewport)
         {
             self.pointer_selecting = false;
+            if !self.file_tree.is_active() {
+                return match self.file_tree.activate(1) {
+                    Ok(_) => EventEffect::visual(),
+                    Err(error) => self.record_file_tree_error(&error),
+                };
+            }
             let row_position =
                 (position.y() - CONTENT_INSET + self.workspace_scroll_y) / TREE_ROW_HEIGHT;
             let Some(index) = floor_f32_to_usize(row_position) else {
                 return EventEffect::default();
             };
-            return match self.open_workspace_entry(index) {
-                Ok(effect) => effect,
-                Err(error) => self.record_workspace_error(&error),
+            return match self.file_tree.activate_row(index) {
+                Ok(action) => self.apply_file_tree_action(action),
+                Err(error) => self.record_file_tree_error(&error),
             };
         }
         match action {
             PointerAction::Down if button == PointerButton::Primary => {
+                self.file_tree.unfocus();
                 let Some(offset) = self.offset_at_point(position) else {
                     return EventEffect::default();
                 };
@@ -2165,7 +2284,7 @@ impl StudioApp {
     }
 
     fn sidebar_width(&self, viewport: Size) -> f32 {
-        if self.workspace.is_some() {
+        if self.workspace.is_some() && self.file_tree.is_visible() {
             SIDEBAR_WIDTH.min((viewport.width() - 1.0).max(0.0))
         } else {
             0.0
@@ -2173,11 +2292,77 @@ impl StudioApp {
     }
 
     fn maximum_workspace_scroll(&self) -> f32 {
-        let rows = self.workspace.as_ref().map_or(0, Workspace::len);
+        let rows = self.file_tree.total_rows();
         let content_height = (self.last_viewport.height() - CONTENT_INSET).max(1.0);
         (usize_as_f32(rows) * TREE_ROW_HEIGHT - content_height).max(0.0)
     }
 
+    fn visible_tree_rows(&self) -> usize {
+        floor_f32_to_usize(self.last_viewport.height() / TREE_ROW_HEIGHT)
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    fn apply_file_tree_action(&mut self, action: FileTreeAction) -> EventEffect {
+        match action {
+            FileTreeAction::Changed => EventEffect::visual(),
+            FileTreeAction::Open(relative) => {
+                let path = self
+                    .workspace
+                    .as_ref()
+                    .ok_or(WorkspaceSelectionError::NoWorkspace)
+                    .and_then(|workspace| {
+                        workspace
+                            .path_for_relative_file(Path::new(relative.as_ref()))
+                            .map_err(WorkspaceSelectionError::Workspace)
+                    });
+                match path.and_then(|path| self.open_workspace_path(&path, None)) {
+                    Ok(effect) => {
+                        self.file_tree.unfocus();
+                        effect.merge(EventEffect::visual())
+                    }
+                    Err(error) => self.record_workspace_error(&error),
+                }
+            }
+        }
+    }
+
+    fn prepare_file_tree_request(&mut self) -> Result<Option<FileTreeRequest>, FileTreeError> {
+        let Some(workspace) = &self.workspace else {
+            return if self.file_tree.is_active() {
+                Err(FileTreeError::NoWorkspace)
+            } else {
+                Ok(None)
+            };
+        };
+        Ok(self.file_tree.take_request(workspace.root()))
+    }
+
+    fn apply_file_tree_output(&mut self, output: FileTreeWorkerOutput) -> EventEffect {
+        match self.file_tree.admit(output) {
+            FileTreeAdmission::Directory => EventEffect::visual(),
+            FileTreeAdmission::Failed => {
+                let message = self
+                    .file_tree
+                    .error_message()
+                    .unwrap_or_else(|| Arc::from("File tree failed."));
+                self.workspace_failures = self.workspace_failures.saturating_add(1);
+                self.last_workspace_error = Some(Arc::clone(&message));
+                self.set_local_status(LocalStatus::Workspace(message))
+                    .merge(EventEffect::visual())
+            }
+            FileTreeAdmission::Stale => EventEffect::default(),
+        }
+    }
+
+    fn record_file_tree_error(&mut self, error: &FileTreeError) -> EventEffect {
+        self.workspace_failures = self.workspace_failures.saturating_add(1);
+        let message: Arc<str> = format!("File tree failed: {error}").into();
+        self.last_workspace_error = Some(Arc::clone(&message));
+        self.set_local_status(LocalStatus::Workspace(message))
+    }
+
+    #[cfg(test)]
     fn open_workspace_entry(
         &mut self,
         index: usize,
@@ -2188,6 +2373,9 @@ impl StudioApp {
             .ok_or(WorkspaceSelectionError::NoWorkspace)?
             .path_for_file(index)
             .map_err(WorkspaceSelectionError::Workspace)?;
+        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+            let _ = self.file_tree.select_path(name);
+        }
         self.open_workspace_path(&path, Some(index))
     }
 
@@ -2387,6 +2575,7 @@ impl StudioApp {
 enum StudioWorkerOutput {
     Find(FindWorkerOutput),
     QuickOpen(QuickOpenWorkerOutput),
+    FileTree(FileTreeWorkerOutput),
 }
 
 impl AppDelegate for StudioApp {
@@ -2440,6 +2629,7 @@ impl AppDelegate for StudioApp {
             }
         }
         self.submit_quick_open_request(context);
+        self.submit_file_tree_request(context);
     }
 
     fn worker_result(
@@ -2451,11 +2641,13 @@ impl AppDelegate for StudioApp {
         let effect = match result {
             StudioWorkerOutput::Find(result) => self.apply_find_output(result),
             StudioWorkerOutput::QuickOpen(result) => self.apply_quick_open_output(result),
+            StudioWorkerOutput::FileTree(result) => self.apply_file_tree_output(result),
         };
         if effect.visual_changed {
             context.invalidate();
         }
         self.submit_quick_open_request(context);
+        self.submit_file_tree_request(context);
     }
 
     fn frame(&mut self, context: WindowContext) -> Scene {
@@ -2464,6 +2656,26 @@ impl AppDelegate for StudioApp {
 }
 
 impl StudioApp {
+    fn submit_file_tree_request(&mut self, context: &mut AppContext<'_, StudioWorkerOutput>) {
+        match self.prepare_file_tree_request() {
+            Ok(Some(request)) => {
+                let identity = request.identity();
+                let failed = force_file_tree_submission_failure!(self)
+                    || context
+                        .spawn(move || StudioWorkerOutput::FileTree(request.execute()))
+                        .is_err();
+                if failed && self.file_tree.reject_submission(identity) {
+                    context.invalidate();
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.record_file_tree_error(&error);
+                context.invalidate();
+            }
+        }
+    }
+
     fn submit_quick_open_request(&mut self, context: &mut AppContext<'_, StudioWorkerOutput>) {
         match self.prepare_quick_open_request() {
             Ok(Some(request)) => {
