@@ -19,6 +19,38 @@ use std::{
 use alpine_text::BufferSnapshot;
 use ignore::WalkBuilder;
 
+#[cfg(test)]
+macro_rules! read_fault_or {
+    ($fault:expr, $variant:path, $message:literal, $normal:expr) => {
+        if $fault == Some($variant) {
+            Err(std::io::Error::other($message))
+        } else {
+            $normal
+        }
+    };
+}
+
+#[cfg(not(test))]
+macro_rules! read_fault_or {
+    ($fault:expr, $variant:path, $message:literal, $normal:expr) => {
+        $normal
+    };
+}
+
+#[cfg(test)]
+macro_rules! read_fault_is {
+    ($fault:expr, $variant:path) => {
+        $fault == Some($variant)
+    };
+}
+
+#[cfg(not(test))]
+macro_rules! read_fault_is {
+    ($fault:expr, $variant:path) => {
+        false
+    };
+}
+
 pub(crate) const MAX_QUERY_BYTES: usize = 4 * 1_024;
 pub(crate) const MAX_SCANNED_ENTRIES: usize = 250_000;
 pub(crate) const MAX_FILES: usize = 100_000;
@@ -53,6 +85,18 @@ pub(crate) struct ProjectSearchLimits {
     excerpt_bytes: usize,
     files_per_batch: usize,
     read_bytes_per_batch: usize,
+    #[cfg(test)]
+    read_fault: Option<ReadFault>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReadFault {
+    Allocation,
+    Open,
+    Read,
+    OversizedAfterRead,
+    Replaced,
 }
 
 impl ProjectSearchLimits {
@@ -92,6 +136,7 @@ impl ProjectSearchLimits {
             excerpt_bytes,
             files_per_batch,
             read_bytes_per_batch,
+            read_fault: None,
         }
     }
 
@@ -133,6 +178,8 @@ impl Default for ProjectSearchLimits {
             excerpt_bytes: MAX_EXCERPT_BYTES,
             files_per_batch: MAX_FILES_PER_BATCH,
             read_bytes_per_batch: MAX_READ_BYTES_PER_BATCH,
+            #[cfg(test)]
+            read_fault: None,
         }
     }
 }
@@ -869,10 +916,11 @@ impl ProjectSearchState {
         )
         .map_err(|_| ProjectSearchError::AllocationFailed)?;
         if display.len() > MAX_DIAGNOSTIC_BYTES {
-            display.truncate(MAX_DIAGNOSTIC_BYTES);
-            while !display.is_char_boundary(display.len()) {
-                let _ = display.pop();
+            let mut end = MAX_DIAGNOSTIC_BYTES;
+            while !display.is_char_boundary(end) {
+                end = end.saturating_sub(1);
             }
+            display.truncate(end);
         }
         Ok(display)
     }
@@ -1103,8 +1151,7 @@ fn build_inventory(
         if !entry.file_type().is_some_and(|kind| kind.is_file()) {
             continue;
         }
-        let Some(relative) = portable_relative_path(root, entry.path())? else {
-            report.omitted = report.omitted.saturating_add(1);
+        let Some(relative) = inventory_relative_path(root, entry.path(), &mut report)? else {
             continue;
         };
         let next_bytes = report.path_bytes.checked_add(relative.len());
@@ -1138,6 +1185,18 @@ fn build_inventory(
         report,
         first_error,
     }))
+}
+
+fn inventory_relative_path(
+    root: &Path,
+    path: &Path,
+    report: &mut InventoryReport,
+) -> Result<Option<String>, ProjectSearchError> {
+    let relative = portable_relative_path(root, path)?;
+    if relative.is_none() {
+        report.omitted = report.omitted.saturating_add(1);
+    }
+    Ok(relative)
 }
 
 fn portable_relative_path(root: &Path, path: &Path) -> Result<Option<String>, ProjectSearchError> {
@@ -1229,6 +1288,8 @@ fn scan_batch(
                 limits.file_bytes,
                 remaining_total,
                 remaining_batch,
+                #[cfg(test)]
+                limits.read_fault,
             )? {
                 FileRead::Ready { bytes, read_bytes } => {
                     delta.files = delta.files.saturating_add(1);
@@ -1329,6 +1390,7 @@ fn read_search_file(
     file_limit: usize,
     remaining_total: usize,
     remaining_batch: usize,
+    #[cfg(test)] fault: Option<ReadFault>,
 ) -> Result<FileRead, ProjectSearchError> {
     let before = match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_file() => metadata,
@@ -1345,18 +1407,13 @@ fn read_search_file(
             });
         }
     };
-    let Ok(length) = usize::try_from(before.len()) else {
-        return Ok(FileRead::Skipped {
-            reason: SkipReason::Oversized,
-            read_bytes: 0,
-        });
-    };
-    if length > file_limit {
+    if before.len() > u64::try_from(file_limit).unwrap_or(u64::MAX) {
         return Ok(FileRead::Skipped {
             reason: SkipReason::Oversized,
             read_bytes: 0,
         });
     }
+    let length = usize::try_from(before.len()).map_err(|_| ProjectSearchError::InvalidLimits)?;
     if length > remaining_total {
         return Ok(FileRead::TotalLimit);
     }
@@ -1364,40 +1421,46 @@ fn read_search_file(
         return Ok(FileRead::Yield);
     }
     let fingerprint = FileFingerprint::new(&before);
-    let Ok(mut file) = File::open(path) else {
+    let opened = read_fault_or!(
+        fault,
+        ReadFault::Open,
+        "injected project-search open failure",
+        File::open(path)
+    );
+    let Ok(mut file) = opened else {
         return Ok(FileRead::Skipped {
             reason: SkipReason::Unreadable,
             read_bytes: 0,
         });
     };
     let reserve = length.saturating_add(1).min(file_limit.saturating_add(1));
-    let mut bytes = Vec::new();
-    if bytes.try_reserve_exact(reserve).is_err() {
-        return Err(ProjectSearchError::AllocationFailed);
-    }
-    let take = u64::try_from(length).unwrap_or(u64::MAX);
-    if file.by_ref().take(take).read_to_end(&mut bytes).is_err() {
+    #[cfg(test)]
+    let reserve = if fault == Some(ReadFault::Allocation) {
+        usize::MAX
+    } else {
+        reserve
+    };
+    let mut bytes = allocate_read_buffer(reserve)?;
+    let take = u64::try_from(length.saturating_add(1)).unwrap_or(u64::MAX);
+    let read = read_fault_or!(
+        fault,
+        ReadFault::Read,
+        "injected project-search read failure",
+        file.by_ref().take(take).read_to_end(&mut bytes)
+    );
+    if read.is_err() {
         return Ok(FileRead::Skipped {
             reason: SkipReason::Unreadable,
             read_bytes: bytes.len(),
         });
     }
-    if bytes.len() > file_limit {
+    if bytes.len() > file_limit || read_fault_is!(fault, ReadFault::OversizedAfterRead) {
         return Ok(FileRead::Skipped {
             reason: SkipReason::Oversized,
             read_bytes: bytes.len(),
         });
     }
-    let after = match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_file() => metadata,
-        _ => {
-            return Ok(FileRead::Skipped {
-                reason: SkipReason::Replaced,
-                read_bytes: bytes.len(),
-            });
-        }
-    };
-    if fingerprint != FileFingerprint::new(&after) {
+    if !read_identity_is_current(path, &fingerprint) || read_fault_is!(fault, ReadFault::Replaced) {
         return Ok(FileRead::Skipped {
             reason: SkipReason::Replaced,
             read_bytes: bytes.len(),
@@ -1420,6 +1483,21 @@ fn read_search_file(
         bytes: bytes.into_boxed_slice(),
         read_bytes,
     })
+}
+
+fn allocate_read_buffer(reserve: usize) -> Result<Vec<u8>, ProjectSearchError> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(reserve)
+        .map_err(|_| ProjectSearchError::AllocationFailed)?;
+    Ok(bytes)
+}
+
+fn read_identity_is_current(path: &Path, expected: &FileFingerprint) -> bool {
+    fs::symlink_metadata(path)
+        .ok()
+        .filter(|metadata| metadata.file_type().is_file())
+        .is_some_and(|metadata| FileFingerprint::new(&metadata) == *expected)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1526,7 +1604,10 @@ fn scan_file_matches(
 }
 
 fn find_literal(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    if needle.is_empty() || from > haystack.len().saturating_sub(needle.len()) {
+    if needle.is_empty()
+        || needle.len() > haystack.len()
+        || from > haystack.len().saturating_sub(needle.len())
+    {
         return None;
     }
     let mut skip = [needle.len(); 256];
@@ -1629,9 +1710,7 @@ mod tests {
 
         fn write(&self, relative: &str, bytes: &[u8]) -> io::Result<()> {
             let path = self.0.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
+            fs::create_dir_all(path.parent().unwrap_or(&self.0))?;
             fs::write(path, bytes)
         }
     }
@@ -1894,5 +1973,485 @@ mod tests {
             assert!(!error.to_string().is_empty());
             assert!(error.source().is_none());
         }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one discriminating sequence covers the coupled admission state machine"
+    )]
+    fn every_admission_navigation_and_diagnostic_guard_is_discriminating()
+    -> Result<(), Box<dyn Error>> {
+        let project = TempProject::new()?;
+        project.write("a.txt", b"alpha alpha")?;
+        let limits = tiny_limits();
+        let mut state = ProjectSearchState::with_test_limits(limits);
+        assert!(state.open(9)?);
+        assert!(!state.open(9)?);
+        assert!(state.begin_composition());
+        assert!(state.update_composition("x", 1, 0)?);
+        assert!(!state.update_composition("x", 1, 0)?);
+        assert!(!state.commit_text("")?);
+        assert!(!state.delete_backward()?);
+        assert!(state.commit_text("alpha")?);
+        let inventory_request = state.take_request(&project.0)?.ok_or("inventory")?;
+        let inventory_identity = state
+            .pending_inventory
+            .ok_or("pending inventory identity")?;
+        assert!(
+            !state.reject_submission(RequestIdentity::Inventory(InventoryIdentity {
+                workspace: inventory_identity.workspace,
+                generation: inventory_identity.generation.saturating_add(1),
+            }))
+        );
+        assert_eq!(
+            state.admit(ProjectSearchWorkerOutput::Inventory {
+                identity: InventoryIdentity {
+                    workspace: inventory_identity.workspace,
+                    generation: inventory_identity.generation.saturating_add(1),
+                },
+                result: Err(ProjectSearchError::InvalidLimits),
+            }),
+            ProjectSearchAdmission::Stale
+        );
+        assert!(state.reject_submission(inventory_request.identity()));
+        let _retry = state.take_request(&project.0)?.ok_or("retry inventory")?;
+        let retry_identity = state.pending_inventory.ok_or("retry inventory identity")?;
+        assert_eq!(
+            state.admit(ProjectSearchWorkerOutput::Inventory {
+                identity: retry_identity,
+                result: Err(ProjectSearchError::InvalidLimits),
+            }),
+            ProjectSearchAdmission::Failed
+        );
+
+        assert!(state.close());
+        assert!(!state.commit_text("alpha")?);
+        assert!(state.open(9)?);
+        assert!(state.commit_text("alpha")?);
+        let inventory = state.take_request(&project.0)?.ok_or("inventory")?;
+        assert_eq!(
+            state.admit(inventory.execute()),
+            ProjectSearchAdmission::Inventory
+        );
+        let _search = state.take_request(&project.0)?.ok_or("search")?;
+        let search_identity = state.pending_search.ok_or("pending search identity")?;
+        assert_eq!(
+            state.admit(ProjectSearchWorkerOutput::Batch {
+                identity: search_identity,
+                result: Err(ProjectSearchError::InvalidLimits),
+            }),
+            ProjectSearchAdmission::Failed
+        );
+
+        state.needs_search = true;
+        let _cancelled = state.take_request(&project.0)?.ok_or("cancelled search")?;
+        let cancelled_identity = state.pending_search.ok_or("cancelled search identity")?;
+        assert_eq!(
+            state.admit(ProjectSearchWorkerOutput::Batch {
+                identity: cancelled_identity,
+                result: Ok(SearchBatch {
+                    identity: cancelled_identity,
+                    matches: Box::default(),
+                    bytes: 0,
+                    cursor: None,
+                    counters: ScanCounters::default(),
+                    terminal: false,
+                    truncated: false,
+                    cancelled: true,
+                }),
+            }),
+            ProjectSearchAdmission::Stale
+        );
+
+        state.needs_search = true;
+        let _overflow = state.take_request(&project.0)?.ok_or("overflow search")?;
+        let overflow_identity = state.pending_search.ok_or("overflow search identity")?;
+        assert_eq!(
+            state.admit(ProjectSearchWorkerOutput::Batch {
+                identity: overflow_identity,
+                result: Ok(SearchBatch {
+                    identity: overflow_identity,
+                    matches: Box::default(),
+                    bytes: limits.result_bytes.saturating_add(1),
+                    cursor: None,
+                    counters: ScanCounters::default(),
+                    terminal: false,
+                    truncated: false,
+                    cancelled: false,
+                }),
+            }),
+            ProjectSearchAdmission::Failed
+        );
+
+        state.results = vec![
+            ProjectMatch {
+                relative: "a".into(),
+                excerpt: "one".into(),
+                start: 0,
+                end: 1,
+                line: 1,
+                column: 1,
+            },
+            ProjectMatch {
+                relative: "b".into(),
+                excerpt: "two".into(),
+                start: 1,
+                end: 2,
+                line: 2,
+                column: 1,
+            },
+            ProjectMatch {
+                relative: "c".into(),
+                excerpt: "three".into(),
+                start: 2,
+                end: 3,
+                line: 3,
+                column: 1,
+            },
+        ];
+        assert!(state.navigate(false, 1));
+        assert_eq!(state.selected, 2);
+        assert!(state.navigate(false, 1));
+        assert_eq!(state.selected, 1);
+        assert!(state.navigate(true, 1));
+        assert_eq!(state.selected, 2);
+
+        state.query = format!("a{}", "é".repeat(2_047));
+        state.error = Some(Arc::from("x".repeat(MAX_DIAGNOSTIC_BYTES)));
+        let display = state.display_text()?;
+        assert!(display.len() <= MAX_DIAGNOSTIC_BYTES);
+        assert!(display.is_char_boundary(display.len()));
+        Ok(())
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "every filesystem and continuation limit requires an independent control"
+    )]
+    fn filesystem_limits_faults_and_continuations_are_explicit() -> Result<(), Box<dyn Error>> {
+        let project = TempProject::new()?;
+        project.write("nested/a.txt", b"alpha\n")?;
+        project.write("b.txt", b"beta\n")?;
+        let identity = InventoryIdentity {
+            workspace: 1,
+            generation: 1,
+        };
+        let mut invalid = tiny_limits();
+        invalid.scanned = 0;
+        assert!(matches!(
+            build_inventory(identity, &project.0, invalid),
+            Err(ProjectSearchError::InvalidLimits)
+        ));
+
+        let mut scanned = tiny_limits();
+        scanned.scanned = 1;
+        let inventory = build_inventory(identity, &project.0, scanned)?;
+        assert!(inventory.report.truncated);
+        let mut capped = tiny_limits();
+        capped.files = 1;
+        capped.path_bytes = 5;
+        let inventory = build_inventory(identity, &project.0, capped)?;
+        assert!(inventory.report.truncated);
+        assert!(inventory.report.omitted > 0);
+        assert!(inventory.paths.len() <= 1);
+
+        let missing = project.0.join("missing-root");
+        let missing_inventory = build_inventory(identity, &missing, tiny_limits())?;
+        assert!(missing_inventory.report.errors > 0);
+        assert!(missing_inventory.first_error.is_some());
+        let mut omitted = InventoryReport::default();
+        assert!(inventory_relative_path(&project.0, Path::new("/"), &mut omitted)?.is_none());
+        assert_eq!(omitted.omitted, 1);
+        assert!(portable_relative_path(&project.0, &project.0.join("../outside"))?.is_none());
+        assert_eq!(
+            portable_relative_path(&project.0, &project.0.join("nested/a.txt"))?,
+            Some(String::from("nested/a.txt"))
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt as _;
+            let invalid_name = std::ffi::OsString::from_vec(vec![0xff]);
+            let invalid_path = project.0.join(invalid_name);
+            assert!(portable_relative_path(&project.0, &invalid_path)?.is_none());
+            #[cfg(target_os = "linux")]
+            {
+                fs::write(&invalid_path, b"invalid name")?;
+                let invalid_inventory = build_inventory(identity, &project.0, tiny_limits())?;
+                assert!(invalid_inventory.report.omitted > 0);
+            }
+        }
+
+        let empty_inventory = SearchInventory {
+            generation: 1,
+            paths: Box::default(),
+            report: InventoryReport::default(),
+            first_error: None,
+        };
+        let search_identity = SearchIdentity {
+            workspace: 1,
+            inventory: 1,
+            query: 1,
+            request: 1,
+        };
+        let cancellation = AtomicU64::new(1);
+        assert!(matches!(
+            scan_batch(
+                search_identity,
+                &project.0,
+                &empty_inventory,
+                "",
+                ScanCursor::default(),
+                ScanCounters::default(),
+                0,
+                0,
+                tiny_limits(),
+                &cancellation,
+            ),
+            Err(ProjectSearchError::InvalidLimits)
+        ));
+        assert!(matches!(
+            scan_batch(
+                search_identity,
+                &project.0,
+                &empty_inventory,
+                "x",
+                ScanCursor::default(),
+                ScanCounters::default(),
+                tiny_limits().results,
+                0,
+                tiny_limits(),
+                &cancellation,
+            ),
+            Ok(batch) if batch.terminal && batch.truncated
+        ));
+
+        let two_paths = SearchInventory {
+            generation: 1,
+            paths: vec![Arc::from("nested/a.txt"), Arc::from("b.txt")].into_boxed_slice(),
+            report: InventoryReport::default(),
+            first_error: None,
+        };
+        let mut yielding = tiny_limits();
+        yielding.file_bytes = 8;
+        yielding.read_bytes_per_batch = 8;
+        assert!(matches!(
+            scan_batch(
+                search_identity,
+                &project.0,
+                &two_paths,
+                "missing",
+                ScanCursor::default(),
+                ScanCounters::default(),
+                0,
+                0,
+                yielding,
+                &cancellation,
+            ),
+            Ok(batch) if !batch.terminal && batch.cursor.is_some()
+        ));
+
+        let mut total = tiny_limits();
+        total.total_read_bytes = total.file_bytes;
+        assert!(matches!(
+            scan_batch(
+                search_identity,
+                &project.0,
+                &two_paths,
+                "missing",
+                ScanCursor::default(),
+                ScanCounters {
+                    read_bytes: total.total_read_bytes,
+                    ..ScanCounters::default()
+                },
+                0,
+                0,
+                total,
+                &cancellation,
+            ),
+            Ok(batch) if batch.terminal && batch.truncated
+        ));
+
+        assert!(matches!(
+            scan_batch(
+                search_identity,
+                &project.0,
+                &two_paths,
+                "missing",
+                ScanCursor {
+                    next_file: 0,
+                    file: Some(FileContinuation {
+                        file_index: 1,
+                        relative: Arc::from("b.txt"),
+                        bytes: Box::from(&b"beta\n"[..]),
+                        cursor: 0,
+                        line: 1,
+                        line_start: 0,
+                    }),
+                },
+                ScanCounters::default(),
+                0,
+                0,
+                tiny_limits(),
+                &cancellation,
+            ),
+            Ok(batch) if batch.terminal && batch.counters.files == 0
+        ));
+
+        let directory = project.0.join("nested");
+        assert!(matches!(
+            read_search_file(&directory, 16, 16, 16, None)?,
+            FileRead::Skipped {
+                reason: SkipReason::Replaced,
+                ..
+            }
+        ));
+        assert!(matches!(
+            read_search_file(&missing, 16, 16, 16, None)?,
+            FileRead::Skipped {
+                reason: SkipReason::Unreadable,
+                ..
+            }
+        ));
+        assert!(matches!(
+            read_search_file(&project.0.join("nested/a.txt"), 1, 16, 16, None)?,
+            FileRead::Skipped {
+                reason: SkipReason::Oversized,
+                ..
+            }
+        ));
+        assert!(matches!(
+            read_search_file(&project.0.join("nested/a.txt"), 16, 1, 16, None)?,
+            FileRead::TotalLimit
+        ));
+        assert!(matches!(
+            read_search_file(&project.0.join("nested/a.txt"), 16, 16, 1, None)?,
+            FileRead::Yield
+        ));
+        assert!(matches!(
+            allocate_read_buffer(usize::MAX),
+            Err(ProjectSearchError::AllocationFailed)
+        ));
+        let first = fs::symlink_metadata(project.0.join("nested/a.txt"))?;
+        let fingerprint = FileFingerprint::new(&first);
+        assert!(read_identity_is_current(
+            &project.0.join("nested/a.txt"),
+            &fingerprint
+        ));
+        assert!(!read_identity_is_current(&missing, &fingerprint));
+        assert!(!read_identity_is_current(
+            &project.0.join("b.txt"),
+            &fingerprint
+        ));
+
+        let mut counters = ScanCounters::default();
+        for reason in [
+            SkipReason::Unreadable,
+            SkipReason::InvalidUtf8,
+            SkipReason::Binary,
+            SkipReason::Oversized,
+            SkipReason::Replaced,
+        ] {
+            reason.observe(&mut counters);
+        }
+        assert_eq!(
+            (
+                counters.unreadable,
+                counters.invalid_utf8,
+                counters.binary,
+                counters.oversized,
+                counters.replaced,
+            ),
+            (1, 1, 1, 1, 1)
+        );
+
+        let start_adjusted = excerpt_for("ééééneedle".as_bytes(), 8, 7)?;
+        assert!(start_adjusted.len() <= 7);
+        let end_adjusted = excerpt_for("needleéé".as_bytes(), 0, 7)?;
+        assert!(end_adjusted.len() <= 7);
+        let sanitized = excerpt_for("before\u{7}after".as_bytes(), 6, 64)?;
+        assert!(!sanitized.contains('\u{7}'));
+        #[cfg(target_os = "linux")]
+        {
+            assert!(matches!(
+                read_search_file(Path::new("/proc/self/maps"), 0, 1, 1, None)?,
+                FileRead::Skipped {
+                    reason: SkipReason::Oversized,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                read_search_file(Path::new("/proc/self/mem"), 1, 1, 1, None)?,
+                FileRead::Skipped {
+                    reason: SkipReason::Unreadable,
+                    ..
+                }
+            ));
+        }
+
+        let readable = project.0.join("nested/a.txt");
+        for (fault, reason) in [
+            (ReadFault::Open, SkipReason::Unreadable),
+            (ReadFault::Read, SkipReason::Unreadable),
+            (ReadFault::OversizedAfterRead, SkipReason::Oversized),
+            (ReadFault::Replaced, SkipReason::Replaced),
+        ] {
+            assert!(matches!(
+                read_search_file(&readable, 16, 16, 16, Some(fault))?,
+                FileRead::Skipped { reason: actual, .. }
+                    if std::mem::discriminant(&actual) == std::mem::discriminant(&reason)
+            ));
+        }
+
+        let one_path = SearchInventory {
+            generation: 1,
+            paths: vec![Arc::from("nested/a.txt")].into_boxed_slice(),
+            report: InventoryReport::default(),
+            first_error: None,
+        };
+        let mut allocation_fault = tiny_limits();
+        allocation_fault.read_fault = Some(ReadFault::Allocation);
+        assert!(matches!(
+            scan_batch(
+                search_identity,
+                &project.0,
+                &one_path,
+                "alpha",
+                ScanCursor::default(),
+                ScanCounters::default(),
+                0,
+                0,
+                allocation_fault,
+                &cancellation,
+            ),
+            Err(ProjectSearchError::AllocationFailed)
+        ));
+        assert!(matches!(
+            scan_batch(
+                search_identity,
+                &project.0,
+                &one_path,
+                "x",
+                ScanCursor {
+                    next_file: 1,
+                    file: Some(FileContinuation {
+                        file_index: 0,
+                        relative: Arc::from("nested/a.txt"),
+                        bytes: Box::from(&[0xff, b'x'][..]),
+                        cursor: 0,
+                        line: 1,
+                        line_start: 0,
+                    }),
+                },
+                ScanCounters::default(),
+                0,
+                0,
+                tiny_limits(),
+                &cancellation,
+            ),
+            Err(ProjectSearchError::AllocationFailed)
+        ));
+        Ok(())
     }
 }

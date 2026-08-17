@@ -678,6 +678,8 @@ struct StudioApp {
     #[cfg(test)]
     force_project_search_submission_failure: Option<()>,
     #[cfg(test)]
+    force_project_search_clip_failure: Option<()>,
+    #[cfg(test)]
     force_file_tree_submission_failure: Option<()>,
     #[cfg(test)]
     force_command_clip_failure: Option<()>,
@@ -813,6 +815,8 @@ impl StudioApp {
             force_quick_open_submission_failure: None,
             #[cfg(test)]
             force_project_search_submission_failure: None,
+            #[cfg(test)]
+            force_project_search_clip_failure: None,
             #[cfg(test)]
             force_file_tree_submission_failure: None,
             #[cfg(test)]
@@ -1172,6 +1176,19 @@ impl StudioApp {
                 Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
             let overlay_bounds = Rect::new(overlay_origin, overlay_size);
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
+            let project_selection_clip = overlay_clip;
+            #[cfg(test)]
+            let project_selection_clip = if self.force_project_search_clip_failure.take().is_some()
+            {
+                let mut foreign = SceneBuilder::new(revision, viewport);
+                let mut invalid = foreign.push_clip(Clip::new(overlay_bounds));
+                for _ in 0..128 {
+                    invalid = foreign.push_clip(Clip::new(overlay_bounds));
+                }
+                invalid
+            } else {
+                project_selection_clip
+            };
             builder.push_quad(Quad::new(overlay_bounds, project_search_background))?;
             let display = self.project_search.display_text()?;
             let query_layout = self.text_system.shape(&display, font)?;
@@ -1192,18 +1209,26 @@ impl StudioApp {
                         .ok_or(StudioRenderError::Domain)?;
                     builder.push_quad(
                         Quad::new(Rect::new(row_origin, row_size), project_search_selected)
-                            .clipped(overlay_clip),
+                            .clipped(project_selection_clip),
                     )?;
                 }
                 let layout = self.text_system.shape(&row.label, font)?;
                 let baseline = row_top + layout.ascent() + 4.0;
-                pending_glyphs.extend(self.collect_glyphs(
+                #[allow(
+                    clippy::question_mark,
+                    reason = "explicit propagation keeps both renderer failure paths observable"
+                )]
+                let row_glyphs = match self.collect_glyphs(
                     &layout,
                     font,
                     left + FIND_BAR_INSET,
                     baseline,
                     overlay_clip,
-                )?);
+                ) {
+                    Ok(glyphs) => glyphs,
+                    Err(error) => return Err(error),
+                };
+                pending_glyphs.extend(row_glyphs);
             }
         }
         if self.command_palette.is_open() {

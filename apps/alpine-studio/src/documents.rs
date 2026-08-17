@@ -202,6 +202,19 @@ impl<T> DocumentTabs<T> {
             .and_then(|tab| tab.document.as_ref())
     }
 
+    #[cfg(test)]
+    pub(crate) fn clear_inactive_document_for_test(&mut self, path: &Path) -> bool {
+        let Some(tab) = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.path.as_deref() == Some(path))
+        else {
+            return false;
+        };
+        tab.document = None;
+        true
+    }
+
     pub(crate) fn inactive_documents(&self) -> impl Iterator<Item = &T> {
         self.tabs.iter().filter_map(|tab| tab.document.as_ref())
     }
