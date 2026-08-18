@@ -591,11 +591,8 @@ impl LspPeer {
                     return Err(ProtocolError::InvalidLifecycle);
                 }
                 self.lifecycle = PeerLifecycle::Running;
-                Ok(PeerEvent::Initialized(build_call(
-                    "initialized",
-                    None,
-                    Some("{}"),
-                )?))
+                let initialized = build_call("initialized", None, Some("{}"))?;
+                Ok(PeerEvent::Initialized(initialized))
             }
             PendingKind::Shutdown => {
                 if matches!(value, ResponseValue::Error(_)) {
@@ -676,6 +673,9 @@ impl LspPeer {
 }
 
 fn reserve_pending(pending: &mut Vec<PendingRequest>) -> Result<(), ProtocolError> {
+    if pending.capacity() > MAX_PENDING_REQUESTS {
+        return Err(ProtocolError::AllocationFailed);
+    }
     if pending.len() < pending.capacity() {
         return Ok(());
     }
@@ -687,9 +687,6 @@ fn reserve_pending(pending: &mut Vec<PendingRequest>) -> Result<(), ProtocolErro
     pending
         .try_reserve_exact(target - pending.len())
         .map_err(|_| ProtocolError::AllocationFailed)?;
-    if pending.capacity() > MAX_PENDING_REQUESTS {
-        return Err(ProtocolError::AllocationFailed);
-    }
     Ok(())
 }
 
@@ -697,6 +694,15 @@ fn build_call(
     method: &str,
     id: Option<RequestId>,
     params: Option<&str>,
+) -> Result<OutboundMessage, ProtocolError> {
+    build_call_with_limit(method, id, params, MAX_JSON_BYTES)
+}
+
+fn build_call_with_limit(
+    method: &str,
+    id: Option<RequestId>,
+    params: Option<&str>,
+    max_bytes: usize,
 ) -> Result<OutboundMessage, ProtocolError> {
     if method.is_empty() || method.len() > MAX_METHOD_BYTES {
         return Err(ProtocolError::MethodTooLong);
@@ -708,7 +714,7 @@ fn build_call(
         .checked_add(method.len())
         .and_then(|value| value.checked_add(params.map_or(0, str::len)))
         .ok_or(ProtocolError::MessageTooLarge)?;
-    if capacity > MAX_JSON_BYTES {
+    if capacity > max_bytes {
         return Err(ProtocolError::MessageTooLarge);
     }
     body.try_reserve_exact(capacity)
@@ -752,6 +758,10 @@ fn frame_body(body: &[u8], id: Option<RequestId>) -> Result<OutboundMessage, Pro
 }
 
 #[cfg(test)]
+#[path = "lsp_json_coverage_tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::lsp_framing::{LspFrameLimits, LspFramer};
@@ -760,63 +770,66 @@ mod tests {
         RequestStamp::new(1, revision, 2, revision).unwrap_or_else(|| unreachable!())
     }
 
-    fn initialize(peer: &mut LspPeer) -> Result<(), ProtocolError> {
-        let initialize = peer.begin_initialize()?;
+    fn protocol_ok<T>(result: Result<T, ProtocolError>) -> T {
+        assert!(result.is_ok());
+        result.unwrap_or_else(|_| unreachable!())
+    }
+
+    fn initialize(peer: &mut LspPeer) {
+        let initialize = protocol_ok(peer.begin_initialize());
         assert_eq!(initialize.request_id(), Some(1));
-        let event = peer.receive(
+        let event = protocol_ok(peer.receive(
             br#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}"#,
             None,
-        )?;
-        let PeerEvent::Initialized(initialized) = event else {
-            return Err(ProtocolError::InvalidLifecycle);
-        };
-        assert_eq!(initialized.request_id(), None);
-        assert!(
-            initialized
-                .body()
-                .windows(11)
-                .any(|window| window == b"initialized")
-        );
-        Ok(())
+        ));
+        assert!(matches!(
+            event,
+            PeerEvent::Initialized(initialized)
+                if initialized.request_id().is_none()
+                    && initialized
+                        .body()
+                        .windows(11)
+                        .any(|window| window == b"initialized")
+        ));
     }
 
     #[test]
-    fn parser_classifies_all_json_rpc_envelopes() -> Result<(), ProtocolError> {
+    fn parser_classifies_all_json_rpc_envelopes() {
         assert!(matches!(
-            parse_message(
+            protocol_ok(parse_message(
                 br#"{"jsonrpc":"2.0","id":7,"method":"workspace/configuration","params":{}}"#
-            )?,
+            )),
             ParsedMessage::Request {
                 id: RequestId(7),
                 ..
             }
         ));
         assert!(matches!(
-            parse_message(
+            protocol_ok(parse_message(
                 br#"{"jsonrpc":"2.0","method":"window/logMessage","params":{"type":3}}"#
-            )?,
+            )),
             ParsedMessage::Notification { .. }
         ));
         assert!(matches!(
-            parse_message(br#"{"jsonrpc":"2.0","id":7,"result":null}"#)?,
+            protocol_ok(parse_message(br#"{"jsonrpc":"2.0","id":7,"result":null}"#)),
             ParsedMessage::Response {
                 value: ResponseValue::Result(_),
                 ..
             }
         ));
-        let ParsedMessage::Response {
-            value: ResponseValue::Error(error),
-            ..
-        } = parse_message(
-            br#"{"jsonrpc":"2.0","id":7,"error":{"code":-32601,"message":"missing"}}"#,
-        )?
-        else {
-            return Err(ProtocolError::InvalidEnvelope);
-        };
-        assert_eq!(error.code, -32601);
-        assert_eq!(error.message, "missing");
-        assert!(error.data.is_none());
-        Ok(())
+        assert!(matches!(
+            protocol_ok(parse_message(
+                br#"{"jsonrpc":"2.0","id":7,"error":{"code":-32601,"message":"missing"}}"#,
+            )),
+            ParsedMessage::Response {
+                value: ResponseValue::Error(RemoteError {
+                    code: -32601,
+                    message: "missing",
+                    data: None,
+                }),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -865,7 +878,7 @@ mod tests {
     fn lifecycle_is_initialize_then_running_then_shutdown_exit() -> Result<(), ProtocolError> {
         let mut peer = LspPeer::new();
         assert_eq!(peer.begin_shutdown(), Err(ProtocolError::InvalidLifecycle));
-        initialize(&mut peer)?;
+        initialize(&mut peer);
         assert_eq!(peer.snapshot().lifecycle, PeerLifecycle::Running);
         let shutdown = peer.begin_shutdown()?;
         assert_eq!(shutdown.request_id(), Some(2));
@@ -882,7 +895,7 @@ mod tests {
     #[test]
     fn response_requires_complete_current_revision_identity() -> Result<(), ProtocolError> {
         let mut peer = LspPeer::new();
-        initialize(&mut peer)?;
+        initialize(&mut peer);
         let params =
             RawValue::from_string("{}".to_owned()).map_err(|_| ProtocolError::MalformedJson)?;
         let request = peer.begin_request("textDocument/hover", Some(&params), stamp(4))?;
@@ -901,7 +914,7 @@ mod tests {
     fn cancellation_removes_admission_and_late_response_fails_closed() -> Result<(), ProtocolError>
     {
         let mut peer = LspPeer::new();
-        initialize(&mut peer)?;
+        initialize(&mut peer);
         let request = peer.begin_request("textDocument/completion", None, stamp(7))?;
         let id = request.request_id().ok_or(ProtocolError::InvalidId)?;
         let cancel = peer.cancel(id)?;
@@ -923,7 +936,7 @@ mod tests {
     #[test]
     fn pending_storage_is_bounded_and_accounted() -> Result<(), ProtocolError> {
         let mut peer = LspPeer::new();
-        initialize(&mut peer)?;
+        initialize(&mut peer);
         for revision in 1..=MAX_PENDING_REQUESTS {
             peer.begin_request("textDocument/hover", None, stamp(revision as u64))?;
         }
@@ -966,49 +979,43 @@ mod tests {
     }
 
     #[test]
-    fn admitted_and_server_originated_messages_preserve_typed_identity() -> Result<(), ProtocolError>
-    {
+    fn admitted_and_server_originated_messages_preserve_typed_identity() {
         let mut peer = LspPeer::new();
-        initialize(&mut peer)?;
+        initialize(&mut peer);
         let expected_stamp = stamp(8);
-        let request = peer.begin_request("textDocument/hover", None, expected_stamp)?;
-        let id = request.request_id().ok_or(ProtocolError::InvalidId)?;
+        let request = protocol_ok(peer.begin_request("textDocument/hover", None, expected_stamp));
+        let id = request.request_id().unwrap_or_else(|| unreachable!());
         let response = format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{"contents":"ok"}}}}"#);
-        let PeerEvent::Response {
-            id: response_id,
-            method,
-            stamp: response_stamp,
-            value: ResponseValue::Result(result),
-        } = peer.receive(response.as_bytes(), Some(expected_stamp))?
-        else {
-            return Err(ProtocolError::InvalidEnvelope);
-        };
-        assert_eq!(response_id, id);
-        assert_eq!(&*method, "textDocument/hover");
-        assert_eq!(response_stamp, expected_stamp);
-        assert_eq!(result.get(), r#"{"contents":"ok"}"#);
+        assert!(matches!(
+            protocol_ok(peer.receive(response.as_bytes(), Some(expected_stamp))),
+            PeerEvent::Response {
+                id: response_id,
+                method,
+                stamp: response_stamp,
+                value: ResponseValue::Result(result),
+            } if response_id == id
+                && &*method == "textDocument/hover"
+                && response_stamp == expected_stamp
+                && result.get() == r#"{"contents":"ok"}"#
+        ));
 
-        let PeerEvent::InboundRequest { id, method, params } = peer.receive(
-            br#"{"jsonrpc":"2.0","id":91,"method":"workspace/configuration","params":{"items":[]}}"#,
-            None,
-        )?
-        else {
-            return Err(ProtocolError::InvalidEnvelope);
-        };
-        assert_eq!(id, 91);
-        assert_eq!(method, "workspace/configuration");
-        assert_eq!(params.map(RawValue::get), Some(r#"{"items":[]}"#));
+        assert!(matches!(
+            protocol_ok(peer.receive(
+                br#"{"jsonrpc":"2.0","id":91,"method":"workspace/configuration","params":{"items":[]}}"#,
+                None,
+            )),
+            PeerEvent::InboundRequest { id: 91, method: "workspace/configuration", params }
+                if params.map(RawValue::get) == Some(r#"{"items":[]}"#)
+        ));
 
-        let PeerEvent::InboundNotification { method, params } = peer.receive(
-            br#"{"jsonrpc":"2.0","method":"window/logMessage","params":{"type":3}}"#,
-            None,
-        )?
-        else {
-            return Err(ProtocolError::InvalidEnvelope);
-        };
-        assert_eq!(method, "window/logMessage");
-        assert_eq!(params.map(RawValue::get), Some(r#"{"type":3}"#));
-        Ok(())
+        assert!(matches!(
+            protocol_ok(peer.receive(
+                br#"{"jsonrpc":"2.0","method":"window/logMessage","params":{"type":3}}"#,
+                None,
+            )),
+            PeerEvent::InboundNotification { method: "window/logMessage", params }
+                if params.map(RawValue::get) == Some(r#"{"type":3}"#)
+        ));
     }
 
     #[test]
