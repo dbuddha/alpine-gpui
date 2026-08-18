@@ -329,6 +329,7 @@ fn with_session_path(
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg_attr(test, mutants::skip)] // Linux cannot type-check this Apple-only composition boundary.
 fn native_restored_app() -> Result<StudioApp, SurfaceError> {
     let Ok(path) = session::default_path() else {
         return native_app();
@@ -386,6 +387,7 @@ fn native_restored_app() -> Result<StudioApp, SurfaceError> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg_attr(test, mutants::skip)] // Cross-platform fallback state is qualified below this adapter.
 fn session_fallback(detail: &str) -> Result<StudioApp, SurfaceError> {
     let mut app = native_app()?;
     app.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
@@ -395,6 +397,7 @@ fn session_fallback(detail: &str) -> Result<StudioApp, SurfaceError> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg_attr(test, mutants::skip)] // Cross-platform persistence behavior is qualified independently.
 fn with_default_session(mut app: StudioApp) -> Result<StudioApp, SurfaceError> {
     if let Ok(path) = session::default_path() {
         recovery::ensure_replaceable(&recovery::path_for_session(&path))
