@@ -250,10 +250,11 @@ impl RecoveryCoordinator {
     }
 
     pub(crate) fn status(&self) -> RecoveryStatus {
+        let completed_generation = self.shared.completed_generation.load(Ordering::Acquire);
         let last_error = self.shared.last_error.lock().ok().and_then(|error| *error);
         RecoveryStatus {
             published_generation: self.shared.published_generation.load(Ordering::Acquire),
-            completed_generation: self.shared.completed_generation.load(Ordering::Acquire),
+            completed_generation,
             last_error,
         }
     }

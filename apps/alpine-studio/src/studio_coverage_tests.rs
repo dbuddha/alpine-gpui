@@ -444,7 +444,7 @@ fn editor_scene_projects_compiled_rust_syntax_onto_visible_glyphs() -> Result<()
     assert!(second_cache.hits() > first_cache.hits());
     assert!(second_cache.current_bytes() <= second_cache.budget_bytes());
 
-    let palette = SyntaxPalette::new().ok_or(StudioRenderError::Domain)?;
+    let palette = app.settings.active().theme.syntax;
     let classes = [
         SyntaxClass::Comment,
         SyntaxClass::Keyword,
@@ -2687,6 +2687,17 @@ fn keyboard_commands_cover_selection_navigation_and_history() -> Result<(), Surf
     assert!(app.undo().document_changed);
     assert!(app.redo().document_changed);
     assert!(!app.redo().visual_changed);
+    assert!(
+        app.handle_event(&key(KEY_Z, Modifiers::from_bits(Modifiers::COMMAND)))
+            .document_changed
+    );
+    assert!(
+        app.handle_event(&key(
+            KEY_Z,
+            Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT),
+        ))
+        .document_changed
+    );
 
     app.composition = Some(Composition {
         replacement: app.selection.range(),
@@ -4462,6 +4473,254 @@ fn workspace_root_and_eager_directory_selection_reject_non_files()
         )
     });
     assert!(rejected_directory);
+    Ok(())
+}
+
+fn assert_single_accessibility_focus(snapshot: &AccessibilitySnapshot) {
+    assert_eq!(
+        snapshot
+            .nodes()
+            .iter()
+            .filter(|node| node.is_focused())
+            .count(),
+        1
+    );
+}
+
+fn assert_initial_accessibility_snapshot(
+    snapshot: &AccessibilitySnapshot,
+) -> Result<(), AccessibilityError> {
+    assert_eq!(snapshot.revision().document(), 0);
+    assert_eq!(snapshot.revision().buffer(), 0);
+    assert_eq!(snapshot.text_len_utf16(), 4);
+    assert_eq!(snapshot.line_count(), 1);
+    assert!(!snapshot.is_dirty());
+    assert_eq!(snapshot.selection().anchor_utf16(), 3);
+    assert_eq!(snapshot.selection().head_utf16(), 1);
+    let selection_range = snapshot.selection().range();
+    assert_eq!(selection_range, AccessibilityTextRange::new(1, 2));
+    assert_eq!(selection_range.length_utf16(), 2);
+    assert_eq!(snapshot.text(AccessibilityTextRange::new(1, 2))?, "🦀");
+    assert!(snapshot.nodes().iter().any(|node| {
+        node.role() == AccessibilityRole::CodeEditor
+            && node.name() == "Untitled"
+            && node.is_focused()
+            && node.parent().is_some()
+    }));
+    assert_single_accessibility_focus(snapshot);
+    assert!(!snapshot.nodes()[0].is_focused());
+    assert_eq!(
+        snapshot
+            .nodes()
+            .iter()
+            .filter(|node| node.role() == AccessibilityRole::Tab && node.is_selected())
+            .count(),
+        1
+    );
+    assert_eq!(
+        snapshot
+            .nodes()
+            .iter()
+            .filter(|node| node.is_selected())
+            .count(),
+        1
+    );
+    assert_eq!(
+        snapshot
+            .nodes()
+            .iter()
+            .filter(|node| node.announces())
+            .count(),
+        0
+    );
+    let report = snapshot.report();
+    assert_eq!(report.node_count(), snapshot.nodes().len());
+    let node_bytes = std::mem::size_of::<accessibility::AccessibilityNode>();
+    assert!(report.owned_node_bytes() >= report.node_count() * node_bytes);
+    assert_eq!(report.owned_node_bytes() % node_bytes, 0);
+    assert_eq!(
+        report.referenced_name_bytes(),
+        snapshot.nodes().iter().map(|node| node.name().len()).sum()
+    );
+    assert_eq!(report.max_nodes(), accessibility::MAX_ACCESSIBILITY_NODES);
+    assert_eq!(
+        report.max_text_request_bytes(),
+        accessibility::MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES
+    );
+    Ok(())
+}
+
+#[test]
+fn accessibility_snapshot_preserves_unicode_revision_focus_and_bounded_text()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("a🦀é"), None)?;
+    app.selection = Selection::new(ByteOffset::new(5), ByteOffset::new(1));
+
+    let snapshot = app.accessibility_snapshot()?;
+    assert_initial_accessibility_snapshot(&snapshot)?;
+
+    assert!(matches!(
+        app.handle_accessibility_action(AccessibilityAction::set_selection(
+            snapshot.revision(),
+            2,
+            2,
+        )),
+        Err(AccessibilityError::Text(TextError::InvalidUtf16Boundary {
+            offset: 2
+        }))
+    ));
+    let effect = app.handle_accessibility_action(AccessibilityAction::set_selection(
+        snapshot.revision(),
+        4,
+        3,
+    ))?;
+    assert!(effect.visual_changed);
+    assert_eq!(app.selection.anchor().get(), 7);
+    assert_eq!(app.selection.head().get(), 5);
+
+    assert!(app.open_command_palette().visual_changed);
+    let palette = app.accessibility_snapshot()?;
+    assert!(palette.nodes().iter().any(|node| {
+        node.role() == AccessibilityRole::Dialog
+            && node.name() == "Command palette"
+            && node.is_focused()
+    }));
+    assert_single_accessibility_focus(&palette);
+    assert!(
+        !palette
+            .nodes()
+            .iter()
+            .any(|node| { node.role() == AccessibilityRole::CodeEditor && node.is_focused() })
+    );
+    app.set_local_status(LocalStatus::Command(Arc::from("Selection changed.")));
+    let announced = app.accessibility_snapshot()?;
+    assert!(announced.nodes().iter().any(|node| {
+        node.role() == AccessibilityRole::Status
+            && node.name() == "Selection changed."
+            && node.announces()
+            && node.id() != snapshot.nodes()[0].id()
+    }));
+    assert_eq!(
+        announced
+            .nodes()
+            .iter()
+            .filter(|node| node.announces())
+            .count(),
+        1
+    );
+
+    app.command_palette.cancel();
+    assert!(app.replace_selection("x").document_changed);
+    let actual = accessibility::revision(&app);
+    assert!(matches!(
+        app.handle_accessibility_action(AccessibilityAction::set_selection(
+            snapshot.revision(),
+            0,
+            0,
+        )),
+        Err(AccessibilityError::StaleRevision { expected, actual: found })
+            if expected == snapshot.revision() && found == actual
+    ));
+    Ok(())
+}
+
+#[test]
+fn accessibility_non_identity_state_and_every_focus_owner_are_exact()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut changed =
+        StudioApp::from_document(TestTextSystem, StudioDocument::scratch("a\nb"), None)?;
+    changed.runtime_document_revision = 7;
+    assert!(changed.replace_selection("z").document_changed);
+    let changed_snapshot = changed.accessibility_snapshot()?;
+    assert_eq!(changed_snapshot.revision().document(), 7);
+    assert_eq!(changed_snapshot.revision().buffer(), 1);
+    assert_eq!(changed_snapshot.line_count(), 2);
+    assert!(changed_snapshot.is_dirty());
+
+    let mut unfocused =
+        StudioApp::from_document(TestTextSystem, StudioDocument::scratch("x"), None)?;
+    unfocused.focused = false;
+    assert_eq!(
+        unfocused
+            .accessibility_snapshot()?
+            .nodes()
+            .iter()
+            .filter(|node| node.is_focused())
+            .count(),
+        0
+    );
+
+    let mut find = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("x"), None)?;
+    assert!(find.find.open(false));
+    let find_snapshot = find.accessibility_snapshot()?;
+    assert_single_accessibility_focus(&find_snapshot);
+    assert!(
+        find_snapshot
+            .nodes()
+            .iter()
+            .any(|node| { node.name() == "Find in document" && node.is_focused() })
+    );
+
+    let mut quick = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("x"), None)?;
+    assert!(quick.quick_open.open(1)?);
+    let quick_snapshot = quick.accessibility_snapshot()?;
+    assert_single_accessibility_focus(&quick_snapshot);
+    assert!(
+        quick_snapshot
+            .nodes()
+            .iter()
+            .any(|node| node.name() == "Quick open" && node.is_focused())
+    );
+
+    let mut project = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("x"), None)?;
+    assert!(project.project_search.open(1)?);
+    let project_snapshot = project.accessibility_snapshot()?;
+    assert_single_accessibility_focus(&project_snapshot);
+    assert!(
+        project_snapshot
+            .nodes()
+            .iter()
+            .any(|node| node.name() == "Project search" && node.is_focused())
+    );
+
+    let mut tree = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("x"), None)?;
+    assert!(tree.file_tree.activate(1)?);
+    let tree_snapshot = tree.accessibility_snapshot()?;
+    assert_single_accessibility_focus(&tree_snapshot);
+    assert!(
+        tree_snapshot
+            .nodes()
+            .iter()
+            .any(|node| node.name() == "Files" && node.is_focused())
+    );
+    Ok(())
+}
+
+#[test]
+fn accessibility_text_requests_fail_before_unbounded_materialization()
+-> Result<(), Box<dyn std::error::Error>> {
+    let text = "x".repeat(accessibility::MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES + 1);
+    let app = StudioApp::from_document(TestTextSystem, StudioDocument::scratch(&text), None)?;
+    let snapshot = app.accessibility_snapshot()?;
+    assert_eq!(
+        snapshot
+            .text(AccessibilityTextRange::new(
+                0,
+                accessibility::MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES,
+            ))?
+            .len(),
+        accessibility::MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES
+    );
+    assert!(matches!(
+        snapshot.text(AccessibilityTextRange::new(0, text.len())),
+        Err(AccessibilityError::TextRequestTooLarge { actual, limit })
+            if actual == text.len()
+                && limit == accessibility::MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES
+    ));
+    assert!(matches!(
+        snapshot.text(AccessibilityTextRange::new(usize::MAX, 1)),
+        Err(AccessibilityError::ArithmeticOverflow)
+    ));
     Ok(())
 }
 

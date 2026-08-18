@@ -1104,6 +1104,7 @@ mod tests {
 
     #[test]
     fn scanner_progress_is_strict_bounded_and_complete() -> Result<(), SyntaxError> {
+        assert!(classes(SyntaxLanguage::Markdown, "plain")?.is_empty());
         assert_eq!(require_forward(0, 1, 2)?, 1);
         assert!(matches!(
             require_forward(1, 1, 2),

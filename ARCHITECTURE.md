@@ -87,17 +87,33 @@ over-complex lines degrade to unstyled text. This initial compiled lexer adds no
 runtime grammar loading, plugin boundary, background work, dependency, native
 handle, or syntax authority outside Alpine Studio.
 
-Studio also owns the dependency-free byte-framing boundary for the approved
-local Language Server Protocol path. It incrementally accepts ASCII headers
-and byte-counted bodies, requires exactly one bounded `Content-Length`, accepts
-only the specified UTF-8 JSON-RPC content type, and poisons the stream after
-malformed, unsupported, oversized, allocation-failed, or truncated input. One
-header retains at most 8 KiB, one message at most 16 MiB, and one admission
-returns at most 32 frames and 16 MiB of bodies. Fragmented and pipelined reads
-preserve exact bytes and monotonic frame identity while current and peak buffer
-accounting remains observable. This slice launches no process, decodes no JSON,
-and creates no language-service state before the separately approved parser
-and child-lifecycle slices consume the framing contract.
+Studio also owns a private local language-server process boundary under
+Requirement #34 and Task #128. Construction canonicalizes one explicit local
+executable and optional working directory, bounds argument count and bytes, and
+never performs network or extension discovery. One fixed supervisor owns one
+child plus dedicated standard threads for stdin, stdout, and stderr so foreground
+submission never waits on process I/O. Control, input, output, write-result, and
+foreground-event queues have fixed capacities. Input and copied output share a
+16 MiB retained-payload ceiling, output is read in 64 KiB chunks, and overflow
+terminates the affected child rather than growing or blocking rendering.
+Workspace identity, process generation, epoch, and input sequence classify every
+event; restart advances the epoch and stale events are discarded before a future
+protocol layer can mutate editor state. Shutdown kills and waits for the child,
+closes its pipes, joins every helper, and releases queued payloads. This slice
+does not decode JSON-RPC, launch during startup, mutate Studio state, expose a
+public API, or add a dependency, network client, plugin host, or async runtime.
+
+Studio also owns the dependency-free byte-framing boundary for that local
+Language Server Protocol path. It incrementally accepts ASCII headers and
+byte-counted bodies, requires exactly one bounded `Content-Length`, accepts only
+the specified UTF-8 JSON-RPC content type, and poisons the stream after malformed,
+unsupported, oversized, allocation-failed, or truncated input. One header retains
+at most 8 KiB, one message at most 16 MiB, and one admission returns at most 32
+frames and 16 MiB of bodies. Fragmented and pipelined reads preserve exact bytes
+and monotonic frame identity while current and peak buffer accounting remains
+observable. This slice decodes no JSON and creates no language-service state
+before the separately approved parser and revision-admission slices consume it.
+
 Production typography uses the safe
 CoreText service; deterministic test typography proves portable editor behavior
 without claiming native validation. It runs through one `Application` until the
@@ -811,6 +827,23 @@ composition, results, visible rows, and diagnostics. There is no runtime
 registration, plugin hook, closure registry, worker, timer, or public framework
 API at this boundary. See AEP-0177.
 
+Studio also owns one immutable active settings value under Requirement #36 and
+Task #129. Compiled defaults use borrowed font and keymap storage and perform no
+heap registration. A settings state resolves one complete candidate in fixed
+compiled, global, then project order. Editor fields merge independently while
+themes and keymaps replace as closed typed values; every layer is validated with
+its source before mutation. Stale generations, invalid values, binding conflicts,
+retained-byte excess, and revision exhaustion preserve the prior active value.
+Accepted changes publish monotonic revision identity, source provenance, exact
+current and peak retained bytes under a 64 KiB ceiling, and separate typography,
+theme, and keymap effects. Direct shortcuts resolve to the existing closed
+command vocabulary or one of three local editing actions, and the same binding
+table supplies bounded shortcut labels for visible command-palette rows, so
+dispatch and discovery cannot drift. File parsing, watching, migration, and
+reload submission remain pending the separate serialization dependency decision;
+there is still no runtime registration, executable discovery, plugin lookup, or
+network work during startup.
+
 ### Bounded streaming local project search
 
 Alpine Studio privately owns a lazy local project-search state machine. One
@@ -851,6 +884,23 @@ telemetry, or startup work. See AEP-0180.
    gates require qualified fixed hardware.
 10. Any architecture-changing pull request updates this document in the same
     change and links the accepted decision that authorized it.
+
+### Accessibility semantics (Task #130)
+
+Studio derives a bounded semantic tree from the authoritative tab, focus,
+status, selection, and immutable buffer state. Tree and action identities carry
+both document and buffer revisions; stale assistive-technology actions fail
+before mutation. Text remains in the copy-on-write snapshot and is materialized
+only for an explicitly bounded UTF-16 range request. Existing AppKit UTF-16
+conversion walks rope storage directly without allocating a whole-document
+string. The model exposes stable roles for the window, tabs, active code editor,
+file tree, transient search and command surfaces, and announcing status.
+
+This safe internal slice adds no native object, callback, dependency, or public
+API. A separately reviewed `alpine-platform-macos` adapter will translate these
+semantics to AppKit accessibility objects and marshal actions back to the main
+thread; it may not retain Studio objects or mutate text outside the
+revision-checked action boundary.
 
 ### Pane document ownership (Task #127)
 

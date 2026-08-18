@@ -1,12 +1,12 @@
 //! Bounded byte framing for local Language Server Protocol streams.
 
-use std::{fmt, mem};
+use std::fmt;
 
 const HEADER_TERMINATOR: &[u8; 4] = b"\r\n\r\n";
-pub(crate) const DEFAULT_LSP_HEADER_BYTES: usize = 8 * 1_024;
-pub(crate) const DEFAULT_LSP_MESSAGE_BYTES: usize = 16 * 1_024 * 1_024;
+pub(crate) const DEFAULT_LSP_HEADER_BYTES: usize = 8_192;
+pub(crate) const DEFAULT_LSP_MESSAGE_BYTES: usize = 16_777_216;
 pub(crate) const DEFAULT_LSP_BATCH_FRAMES: usize = 32;
-pub(crate) const DEFAULT_LSP_BATCH_BYTES: usize = 16 * 1_024 * 1_024;
+pub(crate) const DEFAULT_LSP_BATCH_BYTES: usize = 16_777_216;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LspFrameLimits {
@@ -293,7 +293,7 @@ impl LspFramer {
             frames: Vec::new(),
         };
 
-        while batch.consumed < input.len() {
+        while input.get(batch.consumed).is_some() {
             if batch.frames.len() == self.limits.batch_frames {
                 break;
             }
@@ -339,6 +339,9 @@ impl LspFramer {
                     let remaining = expected
                         .checked_sub(bytes.len())
                         .ok_or(LspFrameError::InvalidState)?;
+                    if remaining == 0 {
+                        return Err(LspFrameError::InvalidState);
+                    }
                     let available = input.len() - batch.consumed;
                     let take = remaining.min(available);
                     reserve_bounded(bytes, take, *expected, LspFramePhase::Body)?;
@@ -364,8 +367,8 @@ impl LspFramer {
     }
 
     fn emit_frame(&mut self, batch: &mut LspFrameBatch) -> Result<(), LspFrameError> {
-        let expected = match &self.state {
-            ReadState::Body { expected, bytes } if bytes.len() == *expected => *expected,
+        let (expected, bytes) = match &mut self.state {
+            ReadState::Body { expected, bytes } if bytes.len() == *expected => (*expected, bytes),
             _ => return Err(LspFrameError::InvalidState),
         };
         let sequence = self
@@ -388,20 +391,14 @@ impl LspFramer {
             .frames
             .try_reserve(1)
             .map_err(|_| LspFrameError::AllocationFailed(LspFramePhase::Body))?;
-
-        let state = mem::replace(
-            &mut self.state,
-            ReadState::Header {
-                bytes: Vec::new(),
-                delimiter_match: 0,
-            },
-        );
-        let ReadState::Body { bytes, .. } = state else {
-            return Err(LspFrameError::InvalidState);
+        let body = std::mem::take(bytes);
+        self.state = ReadState::Header {
+            bytes: Vec::new(),
+            delimiter_match: 0,
         };
         batch.frames.push(LspFrame {
             sequence,
-            body: bytes.into_boxed_slice(),
+            body: body.into_boxed_slice(),
         });
         batch.body_bytes = batch_bytes;
         self.frames_emitted = sequence;
@@ -472,9 +469,14 @@ fn reserve_bounded(
     };
     let target = grown.min(limit).max(required);
     bytes
-        .try_reserve_exact(target - bytes.capacity())
+        .try_reserve_exact(target - bytes.len())
         .map_err(|_| LspFrameError::AllocationFailed(phase))?;
-    if bytes.capacity() > limit {
+    validate_capacity(bytes.capacity(), limit)?;
+    Ok(())
+}
+
+fn validate_capacity(capacity: usize, limit: usize) -> Result<(), LspFrameError> {
+    if capacity > limit {
         return Err(LspFrameError::InvalidState);
     }
     Ok(())
@@ -612,14 +614,18 @@ fn trim_ascii_space(mut value: &[u8]) -> &[u8] {
     {
         value = &value[1..];
     }
-    while value
-        .last()
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-    {
-        value = &value[..value.len() - 1];
+    while let Some((last, rest)) = value.split_last() {
+        if !matches!(last, b' ' | b'\t') {
+            break;
+        }
+        value = rest;
     }
     value
 }
+
+#[cfg(test)]
+#[path = "lsp_framing_coverage_tests.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {

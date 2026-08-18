@@ -5,20 +5,40 @@
 
 //! Local-only Alpine Studio editor boundary.
 
+mod accessibility;
 mod commands;
 mod documents;
 mod file_tree;
 mod find;
-#[expect(
-    dead_code,
-    reason = "Task #128 stages the production LSP framer before approved JSON and process integration"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Task #128 stages bounded LSP framing before JSON-RPC decoding"
+    )
 )]
 mod lsp_framing;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Task #128 stages bounded local process ownership before JSON-RPC decoding"
+    )
+)]
+mod lsp_process;
 mod panes;
 mod project_search;
 mod quick_open;
 mod recovery;
 mod session;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Task #129 stages typed reload admission before the approved parser and watcher slice"
+    )
+)]
+mod settings;
 mod syntax;
 
 use std::path::PathBuf;
@@ -35,6 +55,9 @@ use std::{
     sync::Arc,
 };
 
+use accessibility::{AccessibilityAction, AccessibilityError, AccessibilitySnapshot};
+#[cfg(test)]
+use accessibility::{AccessibilityRole, AccessibilityTextRange};
 use alpine_core::{LinearRgba, Point, Rect, Size};
 use alpine_platform_macos::{
     ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite, ImeEvent,
@@ -73,9 +96,35 @@ use project_search::{
 use quick_open::{
     QuickOpenAdmission, QuickOpenError, QuickOpenRequest, QuickOpenState, QuickOpenWorkerOutput,
 };
-use syntax::{
-    DEFAULT_SYNTAX_BUDGET_BYTES, SyntaxCache, SyntaxClass, SyntaxError, SyntaxLanguage, SyntaxLine,
+#[cfg(all(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
+use settings::FONT_FAMILY;
+#[cfg(all(
+    test,
+    alpine_native_validation,
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+use settings::FONT_SCALE as DEFAULT_SCALE;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use settings::{FONT_FAMILY, FONT_NAME};
+#[cfg(all(
+    alpine_native_validation,
+    target_os = "macos",
+    target_arch = "aarch64",
+    not(test)
+))]
+use settings::{FONT_SCALE as DEFAULT_SCALE, KEY_A, KEY_E, KEY_F, KEY_P, KEY_S};
+#[cfg(test)]
+use settings::{
+    KEY_A, KEY_E, KEY_F, KEY_LEFT_BRACKET, KEY_P, KEY_RIGHT_BRACKET, KEY_S, KEY_W, KEY_Z,
 };
+use settings::{
+    KEY_DELETE_BACKWARD, KEY_DELETE_FORWARD, KEY_DOWN, KEY_END, KEY_ESCAPE, KEY_HOME, KEY_LEFT,
+    KEY_RETURN, KEY_RIGHT, KEY_TAB, KEY_UP, KeyAction, LINE_HEIGHT, SettingsState,
+};
+#[cfg(test)]
+use syntax::SyntaxClass;
+use syntax::{DEFAULT_SYNTAX_BUDGET_BYTES, SyntaxCache, SyntaxError, SyntaxLanguage, SyntaxLine};
 use workspace::Workspace;
 
 #[cfg(test)]
@@ -89,12 +138,7 @@ use alpine_runtime::{Application, WorkerConfig};
 const WINDOW_WIDTH: f32 = 960.0;
 const WINDOW_HEIGHT: f32 = 540.0;
 const CONTENT_INSET: f32 = 24.0;
-const LINE_HEIGHT: f32 = 22.0;
-const FONT_SIZE: f32 = 15.0;
-const DEFAULT_SCALE: f32 = 2.0;
-const FONT_FAMILY: u64 = 1;
 const CARET_WIDTH: f32 = 1.5;
-const SELECTION_ALPHA: f32 = 0.42;
 const SIDEBAR_WIDTH: f32 = 236.0;
 const TREE_ROW_HEIGHT: f32 = 22.0;
 const TREE_OVERSCAN_ROWS: usize = 3;
@@ -118,27 +162,6 @@ const COMMAND_PALETTE_WIDTH: f32 = 620.0;
 const COMMAND_PALETTE_QUERY_HEIGHT: f32 = 34.0;
 const COMMAND_PALETTE_ROW_HEIGHT: f32 = 24.0;
 const INITIAL_TEXT: &str = "fn main() {\n    println!(\"Alpine Studio\");\n}\n\n// Local, direct, and deliberately small.\n";
-
-const KEY_A: u16 = 0;
-const KEY_S: u16 = 1;
-const KEY_E: u16 = 14;
-const KEY_F: u16 = 3;
-const KEY_P: u16 = 35;
-const KEY_Z: u16 = 6;
-const KEY_W: u16 = 13;
-const KEY_RIGHT_BRACKET: u16 = 30;
-const KEY_LEFT_BRACKET: u16 = 33;
-const KEY_RETURN: u16 = 36;
-const KEY_TAB: u16 = 48;
-const KEY_DELETE_BACKWARD: u16 = 51;
-const KEY_ESCAPE: u16 = 53;
-const KEY_HOME: u16 = 115;
-const KEY_DELETE_FORWARD: u16 = 117;
-const KEY_END: u16 = 119;
-const KEY_LEFT: u16 = 123;
-const KEY_RIGHT: u16 = 124;
-const KEY_DOWN: u16 = 125;
-const KEY_UP: u16 = 126;
 
 /// A structured Alpine Studio launch failure.
 #[derive(Debug)]
@@ -290,7 +313,7 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
             let workspace = Workspace::open_root(path)?;
             let mut text_system = alpine_text_layout::CoreTextSystem::new();
             text_system
-                .register_font(FONT_FAMILY, "Menlo-Regular")
+                .register_font(FONT_FAMILY, FONT_NAME)
                 .map_err(|_| SurfaceError::DriverUnavailable)?;
             let mut app = StudioApp::from_workspace(text_system, workspace)?;
             app.prime_workspace_launch()?;
@@ -308,8 +331,9 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg_attr(test, mutants::skip)] // Entering AppKit is qualified by native process E2E.
 fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
-    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let clear = app.settings.active().theme.clear;
     let descriptor = SurfaceDescriptor::new(
         "Alpine Studio",
         f64::from(WINDOW_WIDTH),
@@ -321,10 +345,11 @@ fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg_attr(test, mutants::skip)] // Native construction is qualified by native process E2E.
 fn native_app() -> Result<StudioApp, SurfaceError> {
     let mut text_system = alpine_text_layout::CoreTextSystem::new();
     text_system
-        .register_font(FONT_FAMILY, "Menlo-Regular")
+        .register_font(FONT_FAMILY, FONT_NAME)
         .map_err(|_| SurfaceError::DriverUnavailable)?;
     StudioApp::new(text_system)
 }
@@ -349,7 +374,7 @@ fn native_restored_app() -> Result<StudioApp, SurfaceError> {
             let availability = RestoreAvailability::for_recovery(state.documents.len());
             let mut text_system = alpine_text_layout::CoreTextSystem::new();
             text_system
-                .register_font(FONT_FAMILY, "Menlo-Regular")
+                .register_font(FONT_FAMILY, FONT_NAME)
                 .map_err(|_| SurfaceError::DriverUnavailable)?;
             match StudioApp::from_recovery(text_system, state) {
                 Ok(mut app) => {
@@ -376,7 +401,7 @@ fn native_restored_app() -> Result<StudioApp, SurfaceError> {
         Ok(state) => {
             let mut text_system = alpine_text_layout::CoreTextSystem::new();
             text_system
-                .register_font(FONT_FAMILY, "Menlo-Regular")
+                .register_font(FONT_FAMILY, FONT_NAME)
                 .map_err(|_| SurfaceError::DriverUnavailable)?;
             match StudioApp::from_session(text_system, state) {
                 Ok(app) => app,
@@ -422,7 +447,7 @@ fn native_file_app(path: &Path) -> Result<StudioApp, StudioError> {
     let document = StudioDocument::open(path)?;
     let mut text_system = alpine_text_layout::CoreTextSystem::new();
     text_system
-        .register_font(FONT_FAMILY, "Menlo-Regular")
+        .register_font(FONT_FAMILY, FONT_NAME)
         .map_err(|_| SurfaceError::DriverUnavailable)?;
     StudioApp::from_document(text_system, document, Some(path)).map_err(StudioError::from)
 }
@@ -453,46 +478,6 @@ struct PendingGlyph {
     clip: alpine_scene::ClipId,
     source_utf16: u32,
     color: Option<LinearRgba>,
-}
-
-#[derive(Clone, Copy)]
-struct SyntaxPalette {
-    comment: LinearRgba,
-    keyword: LinearRgba,
-    string: LinearRgba,
-    number: LinearRgba,
-    type_name: LinearRgba,
-    property: LinearRgba,
-    heading: LinearRgba,
-    code: LinearRgba,
-}
-
-impl SyntaxPalette {
-    fn new() -> Option<Self> {
-        Some(Self {
-            comment: LinearRgba::new(0.48, 0.60, 0.53, 1.0)?,
-            keyword: LinearRgba::new(0.96, 0.48, 0.39, 1.0)?,
-            string: LinearRgba::new(0.55, 0.78, 0.49, 1.0)?,
-            number: LinearRgba::new(0.42, 0.67, 0.94, 1.0)?,
-            type_name: LinearRgba::new(0.94, 0.70, 0.32, 1.0)?,
-            property: LinearRgba::new(0.35, 0.76, 0.79, 1.0)?,
-            heading: LinearRgba::new(0.96, 0.75, 0.34, 1.0)?,
-            code: LinearRgba::new(0.62, 0.76, 0.55, 1.0)?,
-        })
-    }
-
-    const fn color(self, class: SyntaxClass) -> LinearRgba {
-        match class {
-            SyntaxClass::Comment => self.comment,
-            SyntaxClass::Keyword => self.keyword,
-            SyntaxClass::String => self.string,
-            SyntaxClass::Number => self.number,
-            SyntaxClass::Type => self.type_name,
-            SyntaxClass::Property => self.property,
-            SyntaxClass::Heading => self.heading,
-            SyntaxClass::Code => self.code,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -960,6 +945,7 @@ macro_rules! force_project_search_submission_failure {
 }
 
 struct StudioApp {
+    settings: SettingsState,
     document: StudioDocument,
     tabs: DocumentTabs<StudioDocument>,
     workspace: Option<Workspace>,
@@ -1177,6 +1163,7 @@ impl StudioApp {
         path: Option<&Path>,
         workspace: Option<Workspace>,
     ) -> Result<Self, SurfaceError> {
+        let settings = SettingsState::compiled().map_err(|_| SurfaceError::DriverUnavailable)?;
         let last_viewport =
             Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
         let layout_budget = NonZeroUsize::new(DEFAULT_LAYOUT_BUDGET_BYTES)
@@ -1193,6 +1180,7 @@ impl StudioApp {
             .map_err(|_| SurfaceError::DriverUnavailable)?;
         let panes = PaneGrid::new(active_tab, DocumentViewState::default());
         Ok(Self {
+            settings,
             document,
             tabs,
             workspace,
@@ -1639,11 +1627,45 @@ impl StudioApp {
         self.document.buffer_mut()
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reviewed native adapter will call this demand-driven boundary in the next Task #130 slice"
+        )
+    )]
+    fn accessibility_snapshot(&self) -> Result<AccessibilitySnapshot, AccessibilityError> {
+        accessibility::snapshot(self)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reviewed native adapter will call this revision-checked boundary in the next Task #130 slice"
+        )
+    )]
+    fn handle_accessibility_action(
+        &mut self,
+        action: AccessibilityAction,
+    ) -> Result<EventEffect, AccessibilityError> {
+        accessibility::apply_action(self, action)
+    }
+
+    fn font_from_settings(editor: &settings::EditorSettings) -> Result<FontKey, StudioRenderError> {
+        let size = PositiveFinite::new(editor.font_size).ok_or(StudioRenderError::Domain)?;
+        let scale = PositiveFinite::new(editor.font_scale).ok_or(StudioRenderError::Domain)?;
+        let tabs = NonZeroU32::new(editor.tab_columns).ok_or(StudioRenderError::Domain)?;
+        Ok(FontKey::new(editor.font_family, size, scale, tabs))
+    }
+
+    fn resolved_font(&self) -> Result<FontKey, StudioRenderError> {
+        Self::font_from_settings(&self.settings.active().editor)
+    }
+
+    #[cfg(test)]
     fn font() -> Result<FontKey, StudioRenderError> {
-        let size = PositiveFinite::new(FONT_SIZE).ok_or(StudioRenderError::Domain)?;
-        let scale = PositiveFinite::new(DEFAULT_SCALE).ok_or(StudioRenderError::Domain)?;
-        let tabs = NonZeroU32::new(4).ok_or(StudioRenderError::Domain)?;
-        Ok(FontKey::new(FONT_FAMILY, size, scale, tabs))
+        Self::font_from_settings(&settings::EditorSettings::COMPILED)
     }
 
     fn scene(&mut self, revision: SceneRevision, viewport: Size) -> Scene {
@@ -1653,20 +1675,17 @@ impl StudioApp {
                 let _error_message = error.to_string();
                 self.render_failures = self.render_failures.saturating_add(1);
                 self.rendered_lines.clear();
-                Self::fallback_scene(revision, viewport)
+                self.fallback_scene(revision, viewport)
             }
         }
     }
 
-    fn fallback_scene(revision: SceneRevision, viewport: Size) -> Scene {
+    fn fallback_scene(&self, revision: SceneRevision, viewport: Size) -> Scene {
         let mut builder = SceneBuilder::new(revision, viewport);
-        if let (Some(origin), Some(color)) = (
-            Point::new(0.0, 0.0),
-            LinearRgba::new(0.035, 0.04, 0.045, 1.0),
-        ) {
+        if let Some(origin) = Point::new(0.0, 0.0) {
             builder.push(Primitive::Quad {
                 bounds: Rect::new(origin, viewport),
-                color,
+                color: self.settings.active().theme.background,
             });
         }
         builder.finish()
@@ -1707,44 +1726,28 @@ impl StudioApp {
         let editor_origin_x = active_pane.bounds.origin().x();
         let content_size = active_pane.bounds.size();
         let line_height = PositiveFinite::new(LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
-        let font = Self::font()?;
+        let font = self.resolved_font()?;
         let snapshot = self.buffer().snapshot();
-        let background =
-            LinearRgba::new(0.035, 0.04, 0.045, 1.0).ok_or(StudioRenderError::Domain)?;
-        let editor_background =
-            LinearRgba::new(0.055, 0.06, 0.067, 1.0).ok_or(StudioRenderError::Domain)?;
-        let selection_color =
-            LinearRgba::new(0.18, 0.48, 0.72, SELECTION_ALPHA).ok_or(StudioRenderError::Domain)?;
-        let text_color = LinearRgba::new(0.86, 0.88, 0.9, 1.0).ok_or(StudioRenderError::Domain)?;
-        let syntax_palette = SyntaxPalette::new().ok_or(StudioRenderError::Domain)?;
-        let caret_color =
-            LinearRgba::new(0.94, 0.72, 0.25, 1.0).ok_or(StudioRenderError::Domain)?;
-        let status_background_color =
-            LinearRgba::new(0.34, 0.075, 0.065, 0.96).ok_or(StudioRenderError::Domain)?;
-        let sidebar_background =
-            LinearRgba::new(0.027, 0.031, 0.035, 1.0).ok_or(StudioRenderError::Domain)?;
-        let active_row_color =
-            LinearRgba::new(0.12, 0.16, 0.19, 1.0).ok_or(StudioRenderError::Domain)?;
-        let tab_background =
-            LinearRgba::new(0.025, 0.028, 0.032, 1.0).ok_or(StudioRenderError::Domain)?;
-        let active_tab_color =
-            LinearRgba::new(0.095, 0.105, 0.115, 1.0).ok_or(StudioRenderError::Domain)?;
-        let find_match_color =
-            LinearRgba::new(0.62, 0.45, 0.08, 0.38).ok_or(StudioRenderError::Domain)?;
-        let find_background_color =
-            LinearRgba::new(0.08, 0.09, 0.10, 0.98).ok_or(StudioRenderError::Domain)?;
-        let quick_open_background =
-            LinearRgba::new(0.045, 0.052, 0.058, 0.99).ok_or(StudioRenderError::Domain)?;
-        let quick_open_selected =
-            LinearRgba::new(0.12, 0.25, 0.31, 1.0).ok_or(StudioRenderError::Domain)?;
-        let project_search_background =
-            LinearRgba::new(0.04, 0.06, 0.055, 0.995).ok_or(StudioRenderError::Domain)?;
-        let project_search_selected =
-            LinearRgba::new(0.10, 0.30, 0.22, 1.0).ok_or(StudioRenderError::Domain)?;
-        let command_palette_background =
-            LinearRgba::new(0.055, 0.062, 0.067, 0.995).ok_or(StudioRenderError::Domain)?;
-        let command_palette_selected =
-            LinearRgba::new(0.34, 0.22, 0.075, 1.0).ok_or(StudioRenderError::Domain)?;
+        let theme = self.settings.active().theme;
+        let background = theme.background;
+        let editor_background = theme.editor_background;
+        let selection_color = theme.selection;
+        let text_color = theme.text;
+        let syntax_palette = theme.syntax;
+        let caret_color = theme.caret;
+        let status_background_color = theme.status_background;
+        let sidebar_background = theme.sidebar_background;
+        let active_row_color = theme.active_row;
+        let tab_background = theme.tab_background;
+        let active_tab_color = theme.active_tab;
+        let find_match_color = theme.find_match;
+        let find_background_color = theme.find_background;
+        let quick_open_background = theme.quick_open_background;
+        let quick_open_selected = theme.quick_open_selected;
+        let project_search_background = theme.project_search_background;
+        let project_search_selected = theme.project_search_selected;
+        let command_palette_background = theme.command_palette_background;
+        let command_palette_selected = theme.command_palette_selected;
 
         let mut builder = SceneBuilder::new(revision, viewport);
         builder.push_quad(Quad::new(Rect::new(origin, viewport), background))?;
@@ -2156,6 +2159,18 @@ impl StudioApp {
                     baseline,
                     overlay_clip,
                 )?);
+                if let Some(shortcut) = self.settings.active().keymap.shortcut_for(row.command) {
+                    let shortcut_layout = self.text_system.shape(shortcut, font)?;
+                    let shortcut_left = (left + width - FIND_BAR_INSET - shortcut_layout.width())
+                        .max(left + FIND_BAR_INSET);
+                    pending_glyphs.extend(self.collect_glyphs(
+                        &shortcut_layout,
+                        font,
+                        shortcut_left,
+                        baseline,
+                        overlay_clip,
+                    )?);
+                }
             }
         }
         builder.push_quad(Quad::new(tab_bounds, tab_background).clipped(tab_clip))?;
@@ -2313,7 +2328,7 @@ impl StudioApp {
         baseline: f32,
         clip: alpine_scene::ClipId,
         syntax: &SyntaxLine,
-        palette: SyntaxPalette,
+        palette: settings::SyntaxTheme,
     ) -> Result<Vec<PendingGlyph>, StudioRenderError> {
         let mut pending = self.collect_glyphs(layout, requested_font, origin_x, baseline, clip)?;
         for glyph in &mut pending {
@@ -2604,19 +2619,24 @@ impl StudioApp {
         let command = modifiers.contains(Modifiers::COMMAND);
         let shift = modifiers.contains(Modifiers::SHIFT);
         let option = modifiers.contains(Modifiers::OPTION);
-        if command && shift && physical_key == KEY_P {
+        let action = self
+            .settings
+            .active()
+            .keymap
+            .resolve(physical_key, modifiers);
+        if action == Some(KeyAction::CommandPalette) {
             return self.open_command_palette();
         }
         if self.command_palette.is_open() {
             return self.handle_command_palette_key(physical_key, command);
         }
-        if command && shift && physical_key == KEY_F {
+        if action == Some(KeyAction::Command(StudioCommand::OpenProjectSearch)) {
             return self.open_project_search();
         }
         if self.project_search.is_open() {
             return self.handle_project_search_key(physical_key, command);
         }
-        if command && shift && physical_key == KEY_E {
+        if action == Some(KeyAction::Command(StudioCommand::ToggleFileTree)) {
             self.find.close();
             self.find_needs_search = false;
             self.quick_open.close();
@@ -2636,7 +2656,7 @@ impl StudioApp {
                 Err(error) => self.record_file_tree_error(&error),
             };
         }
-        if command && physical_key == KEY_P {
+        if action == Some(KeyAction::Command(StudioCommand::OpenQuickOpen)) {
             if self.workspace.is_none() {
                 return self.record_quick_open_error(&QuickOpenError::NoWorkspace);
             }
@@ -2651,10 +2671,11 @@ impl StudioApp {
         if self.quick_open.is_open() {
             return self.handle_quick_open_key(physical_key, command);
         }
-        if command && physical_key == KEY_F {
-            let changed = self.find.open(option);
-            self.find_needs_search |= !self.find.query().is_empty();
-            return changed.then(EventEffect::visual).unwrap_or_default();
+        if let Some(KeyAction::Command(
+            command @ (StudioCommand::OpenFind | StudioCommand::OpenReplace),
+        )) = action
+        {
+            return self.dispatch_command(command);
         }
         if self.find.is_open() {
             return self.handle_find_key(physical_key, command, option, shift);
@@ -2662,26 +2683,20 @@ impl StudioApp {
         if self.file_tree.is_focused() {
             return self.handle_file_tree_key(physical_key, command);
         }
-        if command && physical_key == KEY_A {
+        if action == Some(KeyAction::SelectAll) {
             return self.set_selection(Selection::new(
                 ByteOffset::new(0),
                 ByteOffset::new(self.buffer().snapshot().len_bytes()),
             ));
         }
-        if command && physical_key == KEY_S {
-            return self.save_document();
+        if action == Some(KeyAction::Undo) {
+            return self.undo();
         }
-        if command && physical_key == KEY_Z {
-            return if shift { self.redo() } else { self.undo() };
+        if action == Some(KeyAction::Redo) {
+            return self.redo();
         }
-        if command && physical_key == KEY_W {
-            return self.close_active_tab_or_record();
-        }
-        if command && physical_key == KEY_LEFT_BRACKET {
-            return self.navigate_document_history(false);
-        }
-        if command && physical_key == KEY_RIGHT_BRACKET {
-            return self.navigate_document_history(true);
+        if let Some(KeyAction::Command(command)) = action {
+            return self.dispatch_command(command);
         }
         match physical_key {
             KEY_DELETE_BACKWARD => self.delete_backward(),
