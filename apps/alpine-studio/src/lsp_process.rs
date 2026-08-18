@@ -29,7 +29,7 @@ const MAX_ARGUMENTS: usize = 64;
 const MAX_ARGUMENT_BYTES: usize = 4_096;
 const MAX_CONFIGURATION_BYTES: usize = 65_536;
 const SUPERVISOR_POLL: Duration = Duration::from_millis(2);
-const SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+const SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 trait ThreadSpawner {
     fn spawn<F>(

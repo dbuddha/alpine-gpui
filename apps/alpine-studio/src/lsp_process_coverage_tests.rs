@@ -565,7 +565,7 @@ fn supervisor_and_helper_spawn_failures_are_injected_without_bypasses() -> Resul
         assert_eq!(failure.stage, stage);
         assert_eq!(counters.retained_bytes.load(Ordering::Relaxed), 0);
     }
-    let working_spec = ProcessSpec::new("/bin/sh", ["-c", "sleep 30"], Some(&env::temp_dir()))?;
+    let working_spec = ProcessSpec::new("/bin/sleep", ["30"], Some(&env::temp_dir()))?;
     let counters = Arc::new(Counters::default());
     let mut process = spawn_process(&working_spec, identity(1), ProcessEpoch(1), &counters)?;
     assert!(!stop_running(&mut process, true));
