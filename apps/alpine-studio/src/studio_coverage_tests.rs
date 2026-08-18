@@ -2151,6 +2151,7 @@ fn tab_fault_paths_are_structured_and_non_destructive() -> Result<(), Box<dyn st
         .inject_active_payload_for_test(StudioDocument::Scratch {
             buffer: Buffer::new("fault"),
             clean_revision: 0,
+            recovery_base: Buffer::new("fault").snapshot(),
         });
     let active_before = app.buffer().snapshot().text();
     let failures = app.workspace_failures;

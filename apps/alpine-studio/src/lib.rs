@@ -12,6 +12,7 @@ mod find;
 mod panes;
 mod project_search;
 mod quick_open;
+mod recovery;
 mod session;
 
 use std::path::PathBuf;
@@ -39,8 +40,8 @@ use alpine_scene::{
     SceneRevision,
 };
 use alpine_text::{
-    Buffer, BufferSnapshot, ByteOffset, Editor, FileError, SaveReport, Selection, SelectionSet,
-    TextError, Transaction,
+    Buffer, BufferSnapshot, ByteOffset, Editor, ExternalChange, FileError, SaveReport, Selection,
+    SelectionSet, TextError, Transaction,
 };
 use alpine_text_layout::{
     DEFAULT_ATLAS_BUDGET_BYTES, DEFAULT_LAYOUT_BUDGET_BYTES, DEFAULT_OVERSCAN_LINES, FontKey,
@@ -48,7 +49,6 @@ use alpine_text_layout::{
     PositiveFinite, TextShaper, VisibleLines,
 };
 use commands::{CommandContext, CommandPalette, CommandPaletteError, StudioCommand};
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 use documents::RestoredDocumentTab;
 use documents::{DocumentTabError, DocumentTabLimits, DocumentTabs, DocumentViewState};
 use file_tree::{
@@ -222,40 +222,7 @@ pub fn initial_scene() -> Result<Scene, SurfaceError> {
 pub fn run() -> Result<(), RuntimeError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        let app = match session::default_path() {
-            Err(_) => native_app()?,
-            Ok(path) => {
-                let restored = match session::load(&path) {
-                    Ok(state) => {
-                        let mut text_system = alpine_text_layout::CoreTextSystem::new();
-                        text_system
-                            .register_font(FONT_FAMILY, "Menlo-Regular")
-                            .map_err(|_| SurfaceError::DriverUnavailable)?;
-                        StudioApp::from_session(text_system, state)
-                    }
-                    Err(session::SessionError::Io {
-                        kind: std::io::ErrorKind::NotFound,
-                        ..
-                    }) => Ok(native_app()?),
-                    Err(error) => Err(SessionRestoreError::Session(error.to_string())),
-                };
-                match restored {
-                    Ok(mut app) => {
-                        app.session_path = Some(path);
-                        app
-                    }
-                    Err(error) => {
-                        let mut app = native_app()?;
-                        app.session_path = Some(path);
-                        app.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
-                            "Session restore skipped: {error}"
-                        ))));
-                        app
-                    }
-                }
-            }
-        };
-        run_native(app)
+        run_native(native_restored_app()?)
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -274,11 +241,8 @@ pub fn run() -> Result<(), RuntimeError> {
 pub fn run_file(path: impl AsRef<Path>) -> Result<(), StudioError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        run_native(with_session_path(
-            native_file_app(path.as_ref())?,
-            session::default_path(),
-        ))
-        .map_err(StudioError::from)
+        run_native(with_default_session(native_file_app(path.as_ref())?)?)
+            .map_err(StudioError::from)
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -312,11 +276,7 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
         let metadata = std::fs::metadata(path)
             .map_err(|source| WorkspaceError::io("read launch metadata", path, source))?;
         if metadata.is_file() {
-            run_native(with_session_path(
-                native_file_app(path)?,
-                session::default_path(),
-            ))
-            .map_err(StudioError::from)
+            run_native(with_default_session(native_file_app(path)?)?).map_err(StudioError::from)
         } else if metadata.is_dir() {
             let workspace = Workspace::open_root(path)?;
             let mut text_system = alpine_text_layout::CoreTextSystem::new();
@@ -324,7 +284,7 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
                 .register_font(FONT_FAMILY, "Menlo-Regular")
                 .map_err(|_| SurfaceError::DriverUnavailable)?;
             let app = StudioApp::from_workspace(text_system, workspace)?;
-            run_native(with_session_path(app, session::default_path())).map_err(StudioError::from)
+            run_native(with_default_session(app)?).map_err(StudioError::from)
         } else {
             Err(WorkspaceError::UnsupportedTarget(path.to_path_buf()).into())
         }
@@ -359,13 +319,92 @@ fn native_app() -> Result<StudioApp, SurfaceError> {
     StudioApp::new(text_system)
 }
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(test)]
 fn with_session_path(
     mut app: StudioApp,
     session_path: Result<PathBuf, session::SessionError>,
 ) -> StudioApp {
     app.session_path = session_path.ok();
     app
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg_attr(test, mutants::skip)] // Linux cannot type-check this Apple-only composition boundary.
+fn native_restored_app() -> Result<StudioApp, SurfaceError> {
+    let Ok(path) = session::default_path() else {
+        return native_app();
+    };
+    let recovery_warning = match recovery::load(&recovery::path_for_session(&path)) {
+        Ok(state) => {
+            let availability = RestoreAvailability::for_recovery(state.documents.len());
+            let mut text_system = alpine_text_layout::CoreTextSystem::new();
+            text_system
+                .register_font(FONT_FAMILY, "Menlo-Regular")
+                .map_err(|_| SurfaceError::DriverUnavailable)?;
+            match StudioApp::from_recovery(text_system, state) {
+                Ok(mut app) => {
+                    app.configure_persistence(path)?;
+                    return Ok(app);
+                }
+                Err(error) => match availability {
+                    RestoreAvailability::AllowPlaceholder => {
+                        return Err(SurfaceError::DriverUnavailable);
+                    }
+                    RestoreAvailability::Strict => {
+                        Some(format!("Recovery restore skipped: {error}"))
+                    }
+                },
+            }
+        }
+        Err(recovery::RecoveryError::Io {
+            kind: std::io::ErrorKind::NotFound,
+            ..
+        }) => None,
+        Err(error) => Some(format!("Recovery restore skipped: {error}")),
+    };
+    let mut app = match session::load(&path) {
+        Ok(state) => {
+            let mut text_system = alpine_text_layout::CoreTextSystem::new();
+            text_system
+                .register_font(FONT_FAMILY, "Menlo-Regular")
+                .map_err(|_| SurfaceError::DriverUnavailable)?;
+            match StudioApp::from_session(text_system, state) {
+                Ok(app) => app,
+                Err(error) => session_fallback(&error.to_string())?,
+            }
+        }
+        Err(session::SessionError::Io {
+            kind: std::io::ErrorKind::NotFound,
+            ..
+        }) => native_app()?,
+        Err(error) => session_fallback(&error.to_string())?,
+    };
+    if let Some(warning) = recovery_warning {
+        app.local_status = Some(LocalStatus::Workspace(Arc::from(warning)));
+    }
+    app.configure_persistence(path)?;
+    Ok(app)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg_attr(test, mutants::skip)] // Cross-platform fallback state is qualified below this adapter.
+fn session_fallback(detail: &str) -> Result<StudioApp, SurfaceError> {
+    let mut app = native_app()?;
+    app.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
+        "Session restore skipped: {detail}"
+    ))));
+    Ok(app)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg_attr(test, mutants::skip)] // Cross-platform persistence behavior is qualified independently.
+fn with_default_session(mut app: StudioApp) -> Result<StudioApp, SurfaceError> {
+    if let Ok(path) = session::default_path() {
+        recovery::ensure_replaceable(&recovery::path_for_session(&path))
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        app.configure_persistence(path)?;
+    }
+    Ok(app)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -610,42 +649,169 @@ impl Error for WorkspaceSelectionError {
 }
 
 enum StudioDocument {
-    Scratch { buffer: Buffer, clean_revision: u64 },
-    File(Editor),
+    Scratch {
+        buffer: Buffer,
+        clean_revision: u64,
+        recovery_base: BufferSnapshot,
+    },
+    File {
+        editor: Editor,
+        recovery_base: BufferSnapshot,
+    },
+    Recovered {
+        buffer: Buffer,
+        recovery_base: BufferSnapshot,
+        conflict: ExternalChange,
+    },
+    Unavailable {
+        buffer: Buffer,
+        clean_revision: u64,
+        recovery_base: BufferSnapshot,
+        conflict: ExternalChange,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RestoreAvailability {
+    Strict,
+    AllowPlaceholder,
+}
+
+impl RestoreAvailability {
+    const fn for_recovery(recovered_count: usize) -> Self {
+        if recovered_count > 0 {
+            Self::AllowPlaceholder
+        } else {
+            Self::Strict
+        }
+    }
+
+    const fn allows_placeholder(self) -> bool {
+        matches!(self, Self::AllowPlaceholder)
+    }
 }
 
 impl StudioDocument {
     fn scratch(text: &str) -> Self {
         let buffer = Buffer::new(text);
         let clean_revision = buffer.revision().get();
+        let recovery_base = buffer.snapshot();
         Self::Scratch {
             buffer,
             clean_revision,
+            recovery_base,
         }
     }
 
     fn open(path: impl AsRef<Path>) -> Result<Self, FileError> {
-        Editor::open(path).map(Self::File)
+        Editor::open(path).map(|editor| {
+            let recovery_base = editor.buffer().snapshot();
+            Self::File {
+                editor,
+                recovery_base,
+            }
+        })
+    }
+
+    fn open_for_restore(path: &Path, availability: RestoreAvailability) -> Result<Self, FileError> {
+        match Self::open(path) {
+            Ok(document) => Ok(document),
+            Err(_error) if availability.allows_placeholder() => {
+                let buffer = Buffer::new("");
+                let clean_revision = buffer.revision().get();
+                let recovery_base = buffer.snapshot();
+                Ok(Self::Unavailable {
+                    buffer,
+                    clean_revision,
+                    recovery_base,
+                    conflict: if path.exists() {
+                        ExternalChange::Modified
+                    } else {
+                        ExternalChange::Deleted
+                    },
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn recover(
+        path: Option<&Path>,
+        recovered: &recovery::RecoveredDocument,
+    ) -> Result<Self, TextError> {
+        let recovery_base = Buffer::new(&recovered.base).snapshot();
+        let recovered_buffer = || Buffer::new(&recovered.local);
+        let Some(path) = path else {
+            let mut buffer = Buffer::new(&recovered.base);
+            let mut transaction = Transaction::new(buffer.revision());
+            transaction.replace(0..buffer.snapshot().len_bytes(), recovered.local.as_ref())?;
+            buffer.apply(transaction)?;
+            return Ok(Self::Scratch {
+                buffer,
+                clean_revision: 0,
+                recovery_base,
+            });
+        };
+        let Ok(mut editor) = Editor::open(path) else {
+            return Ok(Self::Recovered {
+                buffer: recovered_buffer(),
+                recovery_base,
+                conflict: if path.exists() {
+                    ExternalChange::Modified
+                } else {
+                    ExternalChange::Deleted
+                },
+            });
+        };
+        if editor.buffer().snapshot().text() != recovered.base.as_ref() {
+            return Ok(Self::Recovered {
+                buffer: recovered_buffer(),
+                recovery_base,
+                conflict: ExternalChange::Modified,
+            });
+        }
+        let length = editor.buffer().snapshot().len_bytes();
+        let mut transaction = Transaction::new(editor.buffer().revision());
+        transaction.replace(0..length, recovered.local.as_ref())?;
+        editor.buffer_mut().apply(transaction)?;
+        Ok(Self::File {
+            editor,
+            recovery_base,
+        })
     }
 
     const fn buffer(&self) -> &Buffer {
         match self {
-            Self::Scratch { buffer, .. } => buffer,
-            Self::File(editor) => editor.buffer(),
+            Self::Scratch { buffer, .. }
+            | Self::Recovered { buffer, .. }
+            | Self::Unavailable { buffer, .. } => buffer,
+            Self::File { editor, .. } => editor.buffer(),
         }
     }
 
     const fn buffer_mut(&mut self) -> &mut Buffer {
         match self {
-            Self::Scratch { buffer, .. } => buffer,
-            Self::File(editor) => editor.buffer_mut(),
+            Self::Scratch { buffer, .. }
+            | Self::Recovered { buffer, .. }
+            | Self::Unavailable { buffer, .. } => buffer,
+            Self::File { editor, .. } => editor.buffer_mut(),
         }
     }
 
     fn save(&mut self) -> Result<Option<SaveReport>, FileError> {
         match self {
             Self::Scratch { .. } => Ok(None),
-            Self::File(editor) => editor.save().map(Some),
+            Self::File {
+                editor,
+                recovery_base,
+            } => {
+                let report = editor.save()?;
+                *recovery_base = editor.buffer().snapshot();
+                Ok(Some(report))
+            }
+            Self::Recovered { conflict, .. } | Self::Unavailable { conflict, .. } => {
+                Err(FileError::Conflict(*conflict))
+            }
         }
     }
 
@@ -654,13 +820,40 @@ impl StudioDocument {
             Self::Scratch {
                 buffer,
                 clean_revision,
+                ..
+            }
+            | Self::Unavailable {
+                buffer,
+                clean_revision,
+                ..
             } => buffer.revision().get() != *clean_revision,
-            Self::File(editor) => editor.is_dirty(),
+            Self::File { editor, .. } => editor.is_dirty(),
+            Self::Recovered { .. } => true,
         }
     }
 
     const fn is_file(&self) -> bool {
-        matches!(self, Self::File(_))
+        matches!(
+            self,
+            Self::File { .. } | Self::Recovered { .. } | Self::Unavailable { .. }
+        )
+    }
+
+    fn recovery_base(&self) -> BufferSnapshot {
+        match self {
+            Self::Scratch { recovery_base, .. }
+            | Self::File { recovery_base, .. }
+            | Self::Recovered { recovery_base, .. }
+            | Self::Unavailable { recovery_base, .. } => recovery_base.clone(),
+        }
+    }
+
+    const fn has_recovery_conflict(&self) -> bool {
+        matches!(self, Self::Recovered { .. })
+    }
+
+    const fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Unavailable { .. })
     }
 }
 
@@ -746,6 +939,10 @@ struct StudioApp {
     command_palette: CommandPalette,
     panes: PaneGrid,
     session_path: Option<PathBuf>,
+    recovery: Option<recovery::RecoveryCoordinator>,
+    last_recovery_error: Option<recovery::RecoveryError>,
+    pending_recovery: Vec<Option<recovery::RecoveredDocument>>,
+    restore_availability: RestoreAvailability,
     #[cfg(test)]
     force_quick_open_submission_failure: Option<()>,
     #[cfg(test)]
@@ -760,10 +957,8 @@ struct StudioApp {
     force_empty_navigation_result: Option<()>,
 }
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum SessionRestoreError {
-    Session(String),
     Invalid,
     Workspace,
     File,
@@ -773,11 +968,9 @@ enum SessionRestoreError {
     Allocation,
 }
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 impl fmt::Display for SessionRestoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
-            Self::Session(detail) => return formatter.write_str(detail),
             Self::Invalid => "session contract is invalid",
             Self::Workspace => "session workspace is unavailable",
             Self::File => "session document is unavailable",
@@ -790,7 +983,6 @@ impl fmt::Display for SessionRestoreError {
     }
 }
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn classify_session_document_error(error: &WorkspaceSelectionError) -> SessionRestoreError {
     match error {
         WorkspaceSelectionError::File(_) => SessionRestoreError::File,
@@ -815,6 +1007,15 @@ enum SessionCaptureError {
 
 impl Drop for StudioApp {
     fn drop(&mut self) {
+        if self.recovery.is_some()
+            && let Ok(request) = self.capture_recovery_request()
+            && let Some(recovery) = self.recovery.as_ref()
+        {
+            let _ = recovery.publish(request);
+        }
+        if let Some(mut recovery) = self.recovery.take() {
+            let _ = recovery.shutdown();
+        }
         let Some(path) = self.session_path.clone() else {
             return;
         };
@@ -957,6 +1158,10 @@ impl StudioApp {
             command_palette: CommandPalette::default(),
             panes,
             session_path: None,
+            recovery: None,
+            last_recovery_error: None,
+            pending_recovery: Vec::new(),
+            restore_availability: RestoreAvailability::Strict,
             #[cfg(test)]
             force_quick_open_submission_failure: None,
             #[cfg(test)]
@@ -972,18 +1177,61 @@ impl StudioApp {
         })
     }
 
-    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     fn from_session(
         text_system: impl StudioTextSystem + 'static,
         state: session::SessionState,
     ) -> Result<Self, SessionRestoreError> {
+        Self::from_session_with_recovery(text_system, state, Vec::new())
+    }
+
+    fn from_recovery(
+        text_system: impl StudioTextSystem + 'static,
+        state: recovery::RecoveryState,
+    ) -> Result<Self, SessionRestoreError> {
+        Self::from_session_with_recovery(text_system, state.session, state.documents)
+    }
+
+    fn index_recoveries(
+        tab_count: usize,
+        recovered: Vec<recovery::RecoveredDocument>,
+    ) -> Result<Vec<Option<recovery::RecoveredDocument>>, SessionRestoreError> {
+        let mut recoveries: Vec<Option<recovery::RecoveredDocument>> =
+            std::iter::repeat_with(|| None).take(tab_count).collect();
+        for document in recovered {
+            let index = usize::from(document.tab);
+            let slot = recoveries
+                .get_mut(index)
+                .ok_or(SessionRestoreError::Invalid)?;
+            if slot.replace(document).is_some() {
+                return Err(SessionRestoreError::Invalid);
+            }
+        }
+        Ok(recoveries)
+    }
+
+    fn restore_workspace(
+        path: Option<&Path>,
+        availability: RestoreAvailability,
+    ) -> Result<(Option<Workspace>, Option<PathBuf>), SessionRestoreError> {
+        match path.map(Workspace::open_root).transpose() {
+            Ok(workspace) => Ok((workspace, None)),
+            Err(_error) if availability.allows_placeholder() => {
+                Ok((None, path.map(Path::to_path_buf)))
+            }
+            Err(_error) => Err(SessionRestoreError::Workspace),
+        }
+    }
+
+    fn from_session_with_recovery(
+        text_system: impl StudioTextSystem + 'static,
+        state: session::SessionState,
+        recovered: Vec<recovery::RecoveredDocument>,
+    ) -> Result<Self, SessionRestoreError> {
         session::validate(&state).map_err(|_| SessionRestoreError::Invalid)?;
-        let workspace = state
-            .workspace
-            .as_deref()
-            .map(Workspace::open_root)
-            .transpose()
-            .map_err(|_| SessionRestoreError::Workspace)?;
+        let recovered_count = recovered.len();
+        let availability = RestoreAvailability::for_recovery(recovered_count);
+        let (workspace, unavailable_workspace) =
+            Self::restore_workspace(state.workspace.as_deref(), availability)?;
         let session::SessionState {
             tabs,
             active_tab,
@@ -992,13 +1240,21 @@ impl StudioApp {
         } = state;
         let active_index = usize::from(active_tab);
         let active = tabs.get(active_index).ok_or(SessionRestoreError::Invalid)?;
-        let active_document = active
-            .path
-            .as_deref()
-            .map(StudioDocument::open)
-            .transpose()
-            .map_err(|_| SessionRestoreError::File)?
-            .unwrap_or_else(|| StudioDocument::scratch(INITIAL_TEXT));
+        let mut recoveries = Self::index_recoveries(tabs.len(), recovered)?;
+        let active_document = if let Some(recovered) = recoveries[active_index].as_ref() {
+            let document = StudioDocument::recover(active.path.as_deref(), recovered)
+                .map_err(|_| SessionRestoreError::Invalid)?;
+            recoveries[active_index] = None;
+            document
+        } else {
+            active
+                .path
+                .as_deref()
+                .map(|path| StudioDocument::open_for_restore(path, availability))
+                .transpose()
+                .map_err(|_| SessionRestoreError::File)?
+                .unwrap_or_else(|| StudioDocument::scratch(INITIAL_TEXT))
+        };
         let mut app = Self::from_parts(
             text_system,
             active_document,
@@ -1016,6 +1272,14 @@ impl StudioApp {
         app.tabs =
             DocumentTabs::from_restored(restored_tabs, active_index, DocumentTabLimits::default())
                 .map_err(|_| SessionRestoreError::Tabs)?;
+        app.pending_recovery = recoveries;
+        app.restore_availability = availability;
+        for index in 0..app.pending_recovery.len() {
+            if app.pending_recovery[index].is_some() {
+                app.ensure_document_tab_loaded(index)
+                    .map_err(|_| SessionRestoreError::Invalid)?;
+            }
+        }
         for pane in panes.panes.iter_mut().flatten() {
             let index = usize::from(pane.tab);
             app.ensure_document_tab_loaded(index)
@@ -1024,6 +1288,7 @@ impl StudioApp {
                 .clamp_tab_view(index, pane.view)
                 .map_err(|_| SessionRestoreError::Tabs)?;
         }
+        app.restore_availability = RestoreAvailability::Strict;
         let mut tab_ids = Vec::new();
         tab_ids
             .try_reserve_exact(app.tabs.len())
@@ -1040,7 +1305,42 @@ impl StudioApp {
         let view = app.clamp_document_view(view);
         app.apply_document_view(view);
         app.active_workspace_entry = app.tabs.active_workspace_entry();
+        app.record_recovered_status(recovered_count, unavailable_workspace.as_deref())?;
         Ok(app)
+    }
+
+    fn record_recovered_status(
+        &mut self,
+        recovered_count: usize,
+        unavailable_workspace: Option<&Path>,
+    ) -> Result<(), SessionRestoreError> {
+        if recovered_count > 0 {
+            let mut conflicted_count = 0_usize;
+            let mut unavailable_count = 0_usize;
+            for index in 0..self.tabs.len() {
+                if self
+                    .tabs
+                    .is_deferred(index)
+                    .map_err(|_| SessionRestoreError::Tabs)?
+                {
+                    continue;
+                }
+                let document = self
+                    .tabs
+                    .document_at(index, &self.document)
+                    .map_err(|_| SessionRestoreError::Tabs)?;
+                conflicted_count += usize::from(document.has_recovery_conflict());
+                unavailable_count += usize::from(document.is_unavailable());
+            }
+            let workspace_status = unavailable_workspace.map_or(
+                "",
+                |_| " The prior workspace is unavailable; document recovery remains active.",
+            );
+            self.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
+                "Recovered {recovered_count} dirty buffer(s); {conflicted_count} external conflict(s) and {unavailable_count} unavailable clean file(s) remain save-blocked.{workspace_status}"
+            ))));
+        }
+        Ok(())
     }
 
     fn ensure_document_tab_loaded(&mut self, index: usize) -> Result<(), WorkspaceSelectionError> {
@@ -1051,10 +1351,21 @@ impl StudioApp {
         {
             return Ok(());
         }
-        let document = self.tabs.path_at(index).map_or_else(
-            || Ok(StudioDocument::scratch(INITIAL_TEXT)),
-            |path| StudioDocument::open(path).map_err(WorkspaceSelectionError::File),
-        )?;
+        let document =
+            if let Some(recovered) = self.pending_recovery.get(index).and_then(Option::as_ref) {
+                let document = StudioDocument::recover(self.tabs.path_at(index), recovered)
+                    .map_err(|_| WorkspaceSelectionError::RevisionExhausted)?;
+                self.pending_recovery[index] = None;
+                document
+            } else {
+                self.tabs.path_at(index).map_or_else(
+                    || Ok(StudioDocument::scratch(INITIAL_TEXT)),
+                    |path| {
+                        StudioDocument::open_for_restore(path, self.restore_availability)
+                            .map_err(WorkspaceSelectionError::File)
+                    },
+                )?
+            };
         self.tabs
             .materialize(index, document)
             .map_err(WorkspaceSelectionError::Tabs)
@@ -1101,6 +1412,48 @@ impl StudioApp {
     }
 
     fn capture_session(&mut self) -> Result<session::SessionState, SessionCaptureError> {
+        self.capture_session_state(true)
+    }
+
+    fn capture_recovery_request(
+        &mut self,
+    ) -> Result<recovery::RecoveryRequest, SessionCaptureError> {
+        let session = self.capture_session_state(false)?;
+        let mut documents = Vec::new();
+        documents
+            .try_reserve_exact(self.tabs.len())
+            .map_err(|_| SessionCaptureError::Allocation)?;
+        for index in 0..self.tabs.len() {
+            if self
+                .tabs
+                .is_deferred(index)
+                .map_err(|_| SessionCaptureError::Tabs)?
+            {
+                continue;
+            }
+            let document = self
+                .tabs
+                .document_at(index, &self.document)
+                .map_err(|_| SessionCaptureError::Tabs)?;
+            if document.is_dirty() {
+                documents.push(recovery::RecoverySnapshot {
+                    tab: u8::try_from(index).map_err(|_| SessionCaptureError::Tabs)?,
+                    base: document.recovery_base(),
+                    local: document.buffer().snapshot(),
+                });
+            }
+        }
+        Ok(recovery::RecoveryRequest {
+            session,
+            documents,
+            authority_revision: self.runtime_document_revision,
+        })
+    }
+
+    fn capture_session_state(
+        &mut self,
+        reject_dirty: bool,
+    ) -> Result<session::SessionState, SessionCaptureError> {
         self.sync_active_pane_document()
             .map_err(|_| SessionCaptureError::Panes)?;
         let active_view = self.active_document_view();
@@ -1117,7 +1470,7 @@ impl StudioApp {
                     .tabs
                     .document_at(index, &self.document)
                     .map_err(|_| SessionCaptureError::Tabs)?;
-                if document.is_dirty() {
+                if reject_dirty && document.is_dirty() {
                     return Err(SessionCaptureError::DirtyDocument);
                 }
             }
@@ -1146,6 +1499,50 @@ impl StudioApp {
         };
         session::validate(&state).map_err(|_| SessionCaptureError::Invalid)?;
         Ok(state)
+    }
+
+    fn configure_persistence(&mut self, path: PathBuf) -> Result<(), SurfaceError> {
+        let recovery_path = recovery::path_for_session(&path);
+        self.session_path = Some(path);
+        self.recovery = Some(
+            recovery::RecoveryCoordinator::new(recovery_path)
+                .map_err(|_| SurfaceError::DriverUnavailable)?,
+        );
+        self.publish_recovery();
+        Ok(())
+    }
+
+    fn publish_recovery(&mut self) {
+        if self.recovery.is_none() {
+            return;
+        }
+        let request = match self.capture_recovery_request() {
+            Ok(request) => request,
+            Err(error) => {
+                self.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
+                    "Recovery capture failed: {error:?}"
+                ))));
+                return;
+            }
+        };
+        let result = self
+            .recovery
+            .as_ref()
+            .ok_or(recovery::RecoveryError::Disconnected)
+            .and_then(|coordinator| coordinator.publish(request));
+        let error = result.err().or_else(|| {
+            self.recovery
+                .as_ref()
+                .and_then(|coordinator| coordinator.status().last_error)
+        });
+        if error != self.last_recovery_error {
+            self.last_recovery_error = error;
+            if let Some(error) = error {
+                self.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
+                    "Dirty-buffer recovery degraded: {error}"
+                ))));
+            }
+        }
     }
 
     const fn buffer(&self) -> &Buffer {
@@ -3737,6 +4134,7 @@ impl AppDelegate for StudioApp {
         self.submit_quick_open_request(context);
         self.submit_project_search_request(context);
         self.submit_file_tree_request(context);
+        self.publish_recovery();
     }
 
     fn worker_result(
@@ -3757,6 +4155,7 @@ impl AppDelegate for StudioApp {
         self.submit_quick_open_request(context);
         self.submit_project_search_request(context);
         self.submit_file_tree_request(context);
+        self.publish_recovery();
     }
 
     fn frame(&mut self, context: WindowContext) -> Scene {
@@ -4885,26 +5284,12 @@ mod session_integration_tests {
     use super::*;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     static SESSION_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-    #[test]
-    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "drop, codec, restore, clamp, and missing-file controls form one durability journey"
-    )]
-    fn clean_session_drop_and_restore_preserve_exact_tabs_and_split()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = std::env::temp_dir().join(format!(
-            "alpine-studio-restoration-{}-{}",
-            std::process::id(),
-            SESSION_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&root)?;
-        let root = fs::canonicalize(root)?;
-        fs::write(root.join("alpha.rs"), "alpha\n")?;
-        fs::write(root.join("beta.rs"), "beta\n")?;
+    fn test_state(root: &Path) -> session::SessionState {
         let alpha_view = DocumentViewState {
             selection: Selection::caret(ByteOffset::new(2)),
             scroll_y: 0.0,
@@ -4913,8 +5298,8 @@ mod session_integration_tests {
             selection: Selection::caret(ByteOffset::new(1)),
             scroll_y: 0.0,
         };
-        let state = session::SessionState {
-            workspace: Some(root.clone()),
+        session::SessionState {
+            workspace: Some(root.to_path_buf()),
             tabs: vec![
                 session::SessionTab {
                     path: None,
@@ -4965,7 +5350,27 @@ mod session_integration_tests {
                 ],
                 active_pane: 1,
             },
-        };
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "drop, codec, restore, clamp, and missing-file controls form one durability journey"
+    )]
+    fn clean_session_drop_and_restore_preserve_exact_tabs_and_split()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "alpine-studio-restoration-{}-{}",
+            std::process::id(),
+            SESSION_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        fs::write(root.join("alpha.rs"), "alpha\n")?;
+        fs::write(root.join("beta.rs"), "beta\n")?;
+        let state = test_state(&root);
         let path = root.join("state").join("session.bin");
 
         let mut app = StudioApp::from_session(tests::TestTextSystem, state.clone())
@@ -4991,6 +5396,10 @@ mod session_integration_tests {
         assert_eq!(app.navigate_document_history(true), EventEffect::default());
         assert_eq!(app.tabs.active_index(), 1);
         assert_eq!(app.tabs.is_deferred(0), Ok(false));
+        let recovery_request = app
+            .capture_recovery_request()
+            .map_err(|error| format!("{error:?}"))?;
+        assert!(recovery_request.documents.is_empty());
         assert_eq!(
             app.capture_session()
                 .map_err(|error| format!("{error:?}"))?,
@@ -5016,7 +5425,7 @@ mod session_integration_tests {
         switched_state.panes.active_pane = 0;
         switched_state.panes.panes[0] = Some(session::SessionPane {
             tab: 3,
-            view: alpha_view,
+            view: state.tabs[3].view,
         });
         let mut switched = StudioApp::from_session(tests::TestTextSystem, switched_state.clone())
             .map_err(|error| error.to_string())?;
@@ -5096,6 +5505,7 @@ mod session_integration_tests {
         if let StudioDocument::Scratch {
             buffer,
             clean_revision,
+            ..
         } = &mut dirty.document
         {
             *clean_revision = buffer.revision().get().saturating_add(1);
@@ -5133,6 +5543,20 @@ mod session_integration_tests {
     #[test]
     fn session_restore_error_messages_and_rejections_are_structured() {
         assert_eq!(
+            RestoreAvailability::for_recovery(0),
+            RestoreAvailability::Strict
+        );
+        assert_eq!(
+            RestoreAvailability::for_recovery(1),
+            RestoreAvailability::AllowPlaceholder
+        );
+        assert_eq!(
+            RestoreAvailability::for_recovery(usize::MAX),
+            RestoreAvailability::AllowPlaceholder
+        );
+        assert!(!RestoreAvailability::Strict.allows_placeholder());
+        assert!(RestoreAvailability::AllowPlaceholder.allows_placeholder());
+        assert_eq!(
             classify_session_document_error(&WorkspaceSelectionError::Tabs(
                 DocumentTabError::LastTab
             )),
@@ -5150,7 +5574,6 @@ mod session_integration_tests {
             SessionRestoreError::Invalid
         );
         for error in [
-            SessionRestoreError::Session("codec".into()),
             SessionRestoreError::Invalid,
             SessionRestoreError::Workspace,
             SessionRestoreError::File,
@@ -5176,5 +5599,264 @@ mod session_integration_tests {
             StudioApp::from_session(tests::TestTextSystem, invalid),
             Err(SessionRestoreError::Invalid)
         ));
+    }
+
+    #[test]
+    fn recovery_variants_indexing_and_persistence_failures_are_explicit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "alpine-studio-recovery-branches-{}-{}",
+            std::process::id(),
+            SESSION_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        let recovered = recovery::RecoveredDocument {
+            tab: 0,
+            base: Box::from("base"),
+            local: Box::from("local"),
+        };
+
+        let mut scratch = StudioDocument::recover(None, &recovered)?;
+        assert_eq!(scratch.buffer().snapshot().text(), "local");
+        assert!(scratch.is_dirty());
+        assert!(!scratch.is_file());
+        assert_eq!(scratch.recovery_base().text(), "base");
+        assert_eq!(scratch.buffer_mut().snapshot().text(), "local");
+
+        let invalid = root.join("invalid.rs");
+        fs::write(&invalid, [0xff])?;
+        let mut conflicted = StudioDocument::recover(Some(&invalid), &recovered)?;
+        assert!(conflicted.has_recovery_conflict());
+        assert!(conflicted.is_dirty());
+        assert_eq!(conflicted.recovery_base().text(), "base");
+        assert_eq!(conflicted.buffer_mut().snapshot().text(), "local");
+        assert_eq!(
+            conflicted.save(),
+            Err(FileError::Conflict(ExternalChange::Modified))
+        );
+
+        let mut unavailable =
+            StudioDocument::open_for_restore(&invalid, RestoreAvailability::AllowPlaceholder)?;
+        assert!(unavailable.is_unavailable());
+        assert_eq!(
+            unavailable.save(),
+            Err(FileError::Conflict(ExternalChange::Modified))
+        );
+
+        assert_eq!(
+            StudioApp::index_recoveries(1, vec![recovered.clone(), recovered]),
+            Err(SessionRestoreError::Invalid)
+        );
+
+        let capture_path = root.join("capture").join("session.bin");
+        let mut capture = StudioApp::new(tests::TestTextSystem)?;
+        capture
+            .configure_persistence(capture_path)
+            .map_err(|error| error.to_string())?;
+        capture.tabs.inject_active_index_fault();
+        capture.publish_recovery();
+        assert_eq!(
+            capture.local_status,
+            Some(LocalStatus::Workspace(Arc::from(
+                "Recovery capture failed: Panes"
+            )))
+        );
+        drop(capture);
+
+        let blocked = root.join("not-a-directory");
+        fs::write(&blocked, b"file")?;
+        let mut degraded = StudioApp::new(tests::TestTextSystem)?;
+        degraded
+            .configure_persistence(blocked.join("recovery.bin"))
+            .map_err(|error| error.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let status = degraded
+                .recovery
+                .as_ref()
+                .ok_or("recovery coordinator")?
+                .status();
+            if status.completed_generation >= status.published_generation
+                || Instant::now() >= deadline
+            {
+                break;
+            }
+            thread::yield_now();
+        }
+        degraded.publish_recovery();
+        assert!(degraded.last_recovery_error.is_some());
+        assert!(matches!(
+            degraded.local_status,
+            Some(LocalStatus::Workspace(ref message))
+                if message.starts_with("Dirty-buffer recovery degraded:")
+        ));
+        drop(degraded);
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn dirty_recovery_preserves_local_text_and_never_overwrites_external_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "alpine-studio-dirty-recovery-{}-{}",
+            std::process::id(),
+            SESSION_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        let document_path = root.join("document.rs");
+        let session_path = root.join("state").join("session.bin");
+        fs::write(&document_path, "base")?;
+
+        let mut app = StudioApp::open_file(tests::TestTextSystem, &document_path)?;
+        app.configure_persistence(session_path.clone())
+            .map_err(|error| error.to_string())?;
+        let initial_generation = app
+            .recovery
+            .as_ref()
+            .ok_or("recovery coordinator")?
+            .status()
+            .published_generation;
+        assert!(initial_generation > 0);
+        assert!(app.replace_range(0..4, "local").document_changed);
+        app.publish_recovery();
+        let dirty_generation = app
+            .recovery
+            .as_ref()
+            .ok_or("recovery coordinator")?
+            .status()
+            .published_generation;
+        assert!(dirty_generation > initial_generation);
+        app.last_recovery_error = Some(recovery::RecoveryError::Disconnected);
+        app.publish_recovery();
+        assert_eq!(app.last_recovery_error, None);
+        drop(app);
+
+        let recovery_path = recovery::path_for_session(&session_path);
+        let recovered = recovery::load(&recovery_path)?;
+        assert_eq!(recovered.documents.len(), 1);
+        assert_eq!(&*recovered.documents[0].base, "base");
+        assert_eq!(&*recovered.documents[0].local, "local");
+
+        let mut equal_text = recovered.clone();
+        equal_text.documents[0].local = equal_text.documents[0].base.clone();
+        let equal_text = StudioApp::from_recovery(tests::TestTextSystem, equal_text)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(equal_text.buffer().snapshot().text(), "base");
+        assert!(equal_text.document.is_dirty());
+
+        let mut unchanged = StudioApp::from_recovery(tests::TestTextSystem, recovered.clone())
+            .map_err(|error| error.to_string())?;
+        assert_eq!(unchanged.buffer().snapshot().text(), "local");
+        assert!(unchanged.document.is_dirty());
+        assert!(!unchanged.document.has_recovery_conflict());
+        assert!(!unchanged.document.is_unavailable());
+        #[cfg(not(target_family = "windows"))]
+        {
+            assert!(unchanged.document.save()?.is_some());
+            assert_eq!(fs::read_to_string(&document_path)?, "local");
+        }
+        #[cfg(target_family = "windows")]
+        {
+            assert_eq!(
+                unchanged.document.save(),
+                Err(FileError::UnsupportedAtomicReplace)
+            );
+            assert_eq!(fs::read_to_string(&document_path)?, "base");
+        }
+
+        fs::write(&document_path, "external")?;
+        let mut modified = StudioApp::from_recovery(tests::TestTextSystem, recovered.clone())
+            .map_err(|error| error.to_string())?;
+        assert_eq!(modified.buffer().snapshot().text(), "local");
+        assert!(modified.document.has_recovery_conflict());
+        assert!(!modified.document.is_unavailable());
+        assert_eq!(
+            modified.local_status,
+            Some(LocalStatus::Workspace(Arc::from(
+                "Recovered 1 dirty buffer(s); 1 external conflict(s) and 0 unavailable clean file(s) remain save-blocked."
+            )))
+        );
+        assert_eq!(
+            modified.document.save(),
+            Err(FileError::Conflict(ExternalChange::Modified))
+        );
+        assert_eq!(fs::read_to_string(&document_path)?, "external");
+
+        fs::remove_file(&document_path)?;
+        let mut deleted = StudioApp::from_recovery(tests::TestTextSystem, recovered)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(deleted.buffer().snapshot().text(), "local");
+        assert!(deleted.document.has_recovery_conflict());
+        assert_eq!(
+            deleted.document.save(),
+            Err(FileError::Conflict(ExternalChange::Deleted))
+        );
+        assert!(!document_path.exists());
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_clean_active_file_cannot_hide_an_inactive_dirty_recovery()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "alpine-studio-partial-recovery-{}-{}",
+            std::process::id(),
+            SESSION_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        fs::write(root.join("alpha.rs"), "alpha\n")?;
+        fs::write(root.join("beta.rs"), "beta\n")?;
+        let mut state = test_state(&root);
+        state.workspace = Some(root.join("missing-workspace"));
+        state.active_tab = 2;
+        let active_pane = usize::from(state.panes.active_pane);
+        state.panes.panes[active_pane]
+            .as_mut()
+            .ok_or("active pane")?
+            .tab = 2;
+        session::validate(&state).map_err(|error| error.to_string())?;
+        assert!(matches!(
+            StudioApp::from_session(tests::TestTextSystem, state.clone()),
+            Err(SessionRestoreError::Workspace)
+        ));
+        let recovery = recovery::RecoveryState {
+            session: state,
+            documents: vec![recovery::RecoveredDocument {
+                tab: 1,
+                base: Box::from("beta\n"),
+                local: Box::from("local beta\n"),
+            }],
+        };
+
+        let mut app = StudioApp::from_recovery(tests::TestTextSystem, recovery)
+            .map_err(|error| error.to_string())?;
+        assert!(app.workspace.is_none());
+        assert!(app.document.is_unavailable());
+        assert!(!app.document.is_dirty());
+        assert_eq!(
+            app.local_status,
+            Some(LocalStatus::Workspace(Arc::from(
+                "Recovered 1 dirty buffer(s); 0 external conflict(s) and 1 unavailable clean file(s) remain save-blocked. The prior workspace is unavailable; document recovery remains active."
+            )))
+        );
+        assert!(app.activate_document_tab(1)?.document_changed);
+        assert_eq!(app.buffer().snapshot().text(), "local beta\n");
+        assert!(app.document.is_dirty());
+
+        let mut clean = StudioApp::new(tests::TestTextSystem)?;
+        clean
+            .record_recovered_status(0, None)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(clean.local_status, None);
+
+        fs::remove_dir_all(root)?;
+        Ok(())
     }
 }

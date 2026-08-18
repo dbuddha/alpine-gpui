@@ -9,7 +9,6 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 use alpine_text::{ByteOffset, Selection};
 
 use crate::documents::DocumentViewState;
@@ -119,7 +118,6 @@ impl fmt::Display for SessionInvalid {
     }
 }
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SessionCorrupt {
     Header,
@@ -448,12 +446,10 @@ fn ensure_encoded_size(length: usize) -> Result<(), SessionError> {
     }
 }
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn header_is_truncated(length: usize) -> bool {
     length < HEADER_BYTES
 }
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn decode_axis(tag: u8) -> Result<SessionAxis, SessionCorrupt> {
     match tag {
         0 => Ok(SessionAxis::Columns),
@@ -462,7 +458,10 @@ fn decode_axis(tag: u8) -> Result<SessionAxis, SessionCorrupt> {
     }
 }
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+pub(crate) fn encode_for_recovery(state: &SessionState) -> Result<Vec<u8>, SessionError> {
+    encode(state)
+}
+
 fn decode(bytes: &[u8]) -> Result<SessionState, SessionCorrupt> {
     if header_is_truncated(bytes.len()) || bytes.get(..8) != Some(MAGIC) {
         return Err(SessionCorrupt::Header);
@@ -537,6 +536,10 @@ fn decode(bytes: &[u8]) -> Result<SessionState, SessionCorrupt> {
     Ok(state)
 }
 
+pub(crate) fn decode_for_recovery(bytes: &[u8]) -> Result<SessionState, SessionCorrupt> {
+    decode(bytes)
+}
+
 fn put_path(bytes: &mut Vec<u8>, path: Option<&Path>) -> Result<(), SessionError> {
     let Some(path) = path else {
         put_u8(bytes, 0);
@@ -566,13 +569,11 @@ fn put_u8(bytes: &mut Vec<u8>, value: u8) {
     bytes.push(value);
 }
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 struct Reader<'a> {
     bytes: &'a [u8],
     cursor: usize,
 }
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 impl<'a> Reader<'a> {
     const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, cursor: 0 }
@@ -772,16 +773,13 @@ fn os_bytes(value: &OsStr) -> &[u8] {
     value.as_encoded_bytes()
 }
 
-#[cfg(all(unix, any(test, all(target_os = "macos", target_arch = "aarch64"))))]
+#[cfg(unix)]
 fn os_string(value: &[u8]) -> OsString {
     use std::os::unix::ffi::OsStringExt;
     OsString::from_vec(value.to_vec())
 }
 
-#[cfg(all(
-    not(unix),
-    any(test, all(target_os = "macos", target_arch = "aarch64"))
-))]
+#[cfg(not(unix))]
 #[cfg_attr(test, mutants::skip)] // The disabled adapter is qualified by Windows CI.
 fn os_string(value: &[u8]) -> OsString {
     String::from_utf8_lossy(value).into_owned().into()
