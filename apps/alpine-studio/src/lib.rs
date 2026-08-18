@@ -14,6 +14,14 @@ mod find;
     not(test),
     expect(
         dead_code,
+        reason = "Task #205 stages bounded LSP composition before runtime command wiring"
+    )
+)]
+mod lsp_client;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
         reason = "Task #128 stages bounded LSP framing before JSON-RPC decoding"
     )
 )]
