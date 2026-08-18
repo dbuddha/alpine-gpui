@@ -2,8 +2,8 @@
 
 - Status: accepted 2026-08-15
 - Capability: [#28](https://github.com/dbuddha/alpine-gpui/issues/28)
-- Requirements: [#37](https://github.com/dbuddha/alpine-gpui/issues/37), [#32](https://github.com/dbuddha/alpine-gpui/issues/32)
-- Task: [#124](https://github.com/dbuddha/alpine-gpui/issues/124)
+- Requirements: [#37](https://github.com/dbuddha/alpine-gpui/issues/37), [#32](https://github.com/dbuddha/alpine-gpui/issues/32), [#34](https://github.com/dbuddha/alpine-gpui/issues/34)
+- Tasks: [#124](https://github.com/dbuddha/alpine-gpui/issues/124), [#211](https://github.com/dbuddha/alpine-gpui/issues/211), [#215](https://github.com/dbuddha/alpine-gpui/issues/215)
 - Decision: [#137](https://github.com/dbuddha/alpine-gpui/issues/137)
 - Research: [#118](https://github.com/dbuddha/alpine-gpui/issues/118)
 
@@ -21,11 +21,14 @@ windows.
 - **AEP-0137-C01:** One `Application` owns one foreground delegate and a fixed
   number of standard worker threads. Request and result channels are bounded;
   foreground submission never waits for capacity; saturation and omitted
-  results are counted.
-- **AEP-0137-C02:** Every background request and result carries workspace,
-  document, and process-local sequence identity. Only results matching both
-  current revisions reach application state; stale results are counted and
-  discarded before delegate mutation.
+  results are counted. Independent local producers use a separate fixed result
+  queue with item, retained-byte, wake, rejection, and drain accounting.
+- **AEP-0137-C02:** Standard worker requests and results carry workspace,
+  document, and process-local sequence identity; only results matching both
+  current revisions reach application state. Independent producer payloads
+  carry application-owned identity and cross the same main-thread delegate
+  boundary without submit-time revision rejection, so the delegate can admit
+  the exact current payload before mutation.
 - **AEP-0137-C03:** Event mutation is synchronous on the main thread. A clean
   application builds no scene. A dirty application builds at most one immutable
   scene with the exact runtime-issued revision and current viewport.
@@ -43,14 +46,18 @@ windows.
 Workspace and document revisions advance monotonically. Worker panic is caught
 at the thread boundary and never unwinds through application or native code.
 Result-channel saturation drops the result with evidence rather than blocking a
-worker indefinitely. Returned scenes with the wrong revision or viewport are
-rejected while dirty state remains pending.
+worker indefinitely. External result admission serializes only the nonblocking
+channel operation, rejects capacity or shutdown structurally, and never exposes
+native handles. Returned scenes with the wrong revision or viewport are rejected
+while dirty state remains pending.
 
 The runtime owns no native handles. `AppContext` exposes invalidation, revision
-advance, and nonblocking job submission. `WindowContext` exposes only the exact
-scene revision and validated logical viewport. Worker completion wake is an
-explicit replaceable callback; no timer, polling loop, or idle redraw is
-introduced.
+advance, nonblocking job submission, and a cloneable `ExternalProducer` whose
+owned payload type is the delegate's existing worker-output type. `WindowContext`
+exposes only the exact scene revision and validated logical viewport. Worker and
+external completion wake use one explicit replaceable callback; empty-to-nonempty
+external admission coalesces wake requests, and no timer, polling loop, or idle
+redraw is introduced.
 
 ## Formal model and implementation mapping
 
@@ -79,17 +86,21 @@ host-testable through the safe unsupported-platform facade.
 
 No latency superiority claim is introduced. Foreground submission and event
 mutation contain no capacity wait, clean state creates no scene, and every
-queue has fixed capacity plus current and peak accounting. Process footprint,
-native wake latency, and sustained editor residency remain later qualification
-work.
+queue has fixed capacity plus current and peak accounting. Independent payloads
+are capped at 16 queued items and 8 MiB of attributed retained bytes. Process
+footprint, native wake latency, and sustained editor residency remain later
+qualification work.
 
 ## Evidence and remaining risk
 
-Unit controls cover saturation, stale-result rejection, worker panic, invalid
-scene rejection, and clean-idle frame behavior. TLA+ covers the finite handoff
-and shutdown abstraction. Native validation proves the complete event value
-vocabulary crosses the retained delegate seam and that owner teardown remains
-balanced. Hosted mutation, Miri, coverage, and `ci-pass` remain merge gates.
+Unit controls cover worker and external saturation, external wake coalescing,
+cross-revision external delivery, stale worker rejection, retained-byte release,
+shutdown revocation, worker panic, invalid scene rejection, and clean-idle frame
+behavior. TLA+ covers the original revision-stamped worker handoff and shutdown
+abstraction; it does not claim the later independent producer extension. Native
+validation proves the complete event value vocabulary crosses the retained
+delegate seam and that owner teardown remains balanced. Hosted mutation, Miri,
+coverage, and `ci-pass` remain merge gates.
 
 Real keyboard, pointer, scroll, clipboard, and IME conversion is deliberately
 not inferred from replay evidence. Task #130 owns those callbacks, semantic
