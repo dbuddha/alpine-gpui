@@ -1243,23 +1243,26 @@ mod tests {
         ));
         let sequence = process.send(b"Content-Length: 2\r\n\r\n{}")?;
         assert_eq!(sequence.get(), 1);
-        let written = wait_for(&mut process, |event| {
-            matches!(event, ProcessEvent::InputWritten { .. })
-        })?;
-        assert!(matches!(
-            written,
-            ProcessEvent::InputWritten {
-                sequence: InputSequence(1),
-                bytes: 23,
-                ..
+        let mut written = false;
+        let mut echoed = false;
+        while !written || !echoed {
+            let event = wait_for(&mut process, |_| true)?;
+            match event {
+                ProcessEvent::InputWritten {
+                    sequence: InputSequence(1),
+                    bytes: 23,
+                    ..
+                } => written = true,
+                output @ ProcessEvent::Output { .. } => {
+                    assert_eq!(
+                        output.output(),
+                        Some((ProcessStream::Stdout, &b"Content-Length: 2\r\n\r\n{}"[..]))
+                    );
+                    echoed = true;
+                }
+                unexpected => return Err(format!("unexpected echo event: {unexpected:?}").into()),
             }
-        ));
-        let output = wait_for(&mut process, |event| event.output().is_some())?;
-        assert_eq!(
-            output.output(),
-            Some((ProcessStream::Stdout, &b"Content-Length: 2\r\n\r\n{}"[..]))
-        );
-        drop(output);
+        }
         assert_eq!(process.restart(identity(2))?.get(), 2);
         assert_eq!(process.restart(identity(2)), Err(SubmitError::StaleRestart));
         let _ = wait_for(
