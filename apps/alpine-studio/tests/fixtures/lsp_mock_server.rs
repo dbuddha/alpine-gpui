@@ -65,6 +65,12 @@ fn run() -> io::Result<()> {
                         r#"{"jsonrpc":"2.0","id":0,"method":"workspace/diagnostic/refresh"}"#,
                     )?;
                 }
+                Some("test/notification") if initialized => {
+                    write_frame(
+                        &mut output,
+                        r#"{"jsonrpc":"2.0","method":"test/unrelated-notification"}"#,
+                    )?;
+                }
                 Some("test/slow") if initialized => {}
                 Some("$/cancelRequest") if initialized => {
                     let id = json_id(message)?;

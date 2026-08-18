@@ -444,7 +444,8 @@ mod tests {
         F: FnMut(PeerEvent<'_>) -> bool,
     {
         let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
+        loop {
+            assert!(Instant::now() < deadline, "{message}");
             let mut matched = false;
             let _ = client.poll(current, |event| matched |= predicate(event))?;
             if matched {
@@ -452,7 +453,6 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(2));
         }
-        Err(message.into())
     }
 
     fn initialize_client(
@@ -478,11 +478,7 @@ mod tests {
         let _ = wait_poll(&mut client, None, |poll| {
             matches!(poll, LspClientPoll::Started { .. })
         })?;
-        initialize_client(
-            &mut client,
-            None,
-            "timed out waiting for initialize response",
-        )?;
+        initialize_client(&mut client, None, "initialize response timed out")?;
         Ok(client)
     }
 
@@ -492,23 +488,19 @@ mod tests {
     ) -> Result<(), Box<dyn Error>> {
         let echo_params = serde_json::from_str::<Box<RawValue>>(r#"{"value":1}"#)?;
         let echo = client.begin_request("test/echo", Some(&echo_params), current)?;
-        wait_peer_event(
-            client,
-            Some(current),
-            WAIT,
-            "mock echo timed out",
-            |event| {
-                matches!(
-                    event,
-                    PeerEvent::Response {
-                        id,
-                        value: ResponseValue::Result(value),
-                        ..
-                    } if id == echo.request_id && value.get() == r#"{"ok":true}"#
-                )
-            },
-        )?;
+        let echo_matches = |event: PeerEvent<'_>| {
+            matches!(
+                event,
+                PeerEvent::Response {
+                    id,
+                    value: ResponseValue::Result(value),
+                    ..
+                } if id == echo.request_id && value.get() == r#"{"ok":true}"#
+            )
+        };
+        wait_peer_event(client, Some(current), WAIT, "echo timed out", echo_matches)?;
 
+        client.notify("test/notification", None)?;
         let request = client.begin_request("test/server-request", None, current)?;
         let deadline = Instant::now() + WAIT;
         let mut completed = false;
@@ -541,16 +533,21 @@ mod tests {
         let slow = client.begin_request("test/slow", None, current)?;
         client.cancel(slow.request_id)?;
         let deadline = Instant::now() + WAIT;
-        while Instant::now() < deadline {
-            match client.poll(Some(current), |_| {}) {
-                Err(LspClientError::Protocol(ProtocolError::UnknownResponseId)) => {
-                    return Ok(slow.request_id);
-                }
-                Ok(_) => thread::sleep(Duration::from_millis(2)),
-                Err(error) => return Err(error.into()),
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "mock late response was not rejected"
+            );
+            let poll = client.poll(Some(current), |_| {});
+            if matches!(
+                poll,
+                Err(LspClientError::Protocol(ProtocolError::UnknownResponseId))
+            ) {
+                return Ok(slow.request_id);
             }
+            assert!(poll.is_ok(), "unexpected cancellation poll: {poll:?}");
+            thread::sleep(Duration::from_millis(2));
         }
-        Err("mock late response was not rejected".into())
     }
 
     fn restart_and_shutdown_mock(
@@ -577,24 +574,40 @@ mod tests {
             }
         );
         assert_eq!(client.restart(identity(2))?.get(), 2);
-        let started = wait_poll(
-            client,
-            None,
-            |poll| matches!(poll, LspClientPoll::Started { epoch, .. } if epoch.get() == 2),
-        )?;
+        let epoch_two = |poll: &LspClientPoll| matches!(poll, LspClientPoll::Started { epoch, .. } if epoch.get() == 2);
+        let started = wait_poll(client, None, epoch_two)?;
         assert!(matches!(started, LspClientPoll::Started { epoch, .. } if epoch.get() == 2));
         initialize_client(client, None, "mock restart did not initialize")?;
         client.begin_shutdown()?;
-        wait_peer_event(
-            client,
-            None,
-            WAIT,
-            "mock shutdown was not acknowledged",
-            |event| matches!(event, PeerEvent::ShutdownAcknowledged),
-        )?;
+        wait_peer_event(client, None, WAIT, "mock shutdown timed out", |event| {
+            matches!(event, PeerEvent::ShutdownAcknowledged)
+        })?;
         let _ = wait_poll(client, None, |poll| {
             matches!(poll, LspClientPoll::Exited { success: true, .. })
         })?;
+        Ok(())
+    }
+
+    #[test]
+    fn parameterized_initialize_uses_the_production_submission_path() -> Result<(), Box<dyn Error>>
+    {
+        let executable = mock_executable();
+        let mut client = LspClient::start(mock_spec(&executable.path)?, identity(1))?;
+        let _ = wait_poll(&mut client, None, |poll| {
+            matches!(poll, LspClientPoll::Started { .. })
+        })?;
+        let params = serde_json::from_str::<Box<RawValue>>(r#"{"processId":null}"#)?;
+        initialize_client(&mut client, Some(&params), "initialize timed out")?;
+        client.begin_shutdown()?;
+        wait_peer_event(&mut client, None, WAIT, "shutdown timed out", |event| {
+            matches!(event, PeerEvent::ShutdownAcknowledged)
+        })?;
+        let _ = wait_poll(&mut client, None, |poll| {
+            matches!(poll, LspClientPoll::Exited { success: true, .. })
+        })?;
+        let snapshot = client.shutdown();
+        assert_eq!(snapshot.process.retained_bytes, 0);
+        assert_eq!(snapshot.peer.pending_requests(), 0);
         Ok(())
     }
 

@@ -290,16 +290,14 @@ fn parse_range(value: &Value) -> Result<DiagnosticRange, LanguageProtocolError> 
     let object = value
         .as_object()
         .ok_or(LanguageProtocolError::MalformedDiagnostics)?;
-    let start = parse_position(
-        object
-            .get("start")
-            .ok_or(LanguageProtocolError::MalformedDiagnostics)?,
-    )?;
-    let end = parse_position(
-        object
-            .get("end")
-            .ok_or(LanguageProtocolError::MalformedDiagnostics)?,
-    )?;
+    let start_value = object
+        .get("start")
+        .ok_or(LanguageProtocolError::MalformedDiagnostics)?;
+    let start = parse_position(start_value)?;
+    let end_value = object
+        .get("end")
+        .ok_or(LanguageProtocolError::MalformedDiagnostics)?;
+    let end = parse_position(end_value)?;
     if (end.line, end.utf16_character) < (start.line, start.utf16_character) {
         return Err(LanguageProtocolError::InvalidRange);
     }
@@ -475,3 +473,7 @@ mod tests {
         assert!(!pinned_server_version().is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "lsp_language_coverage_tests.rs"]
+mod coverage_tests;
