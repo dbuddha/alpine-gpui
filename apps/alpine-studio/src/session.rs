@@ -432,7 +432,6 @@ fn encode(state: &SessionState) -> Result<Vec<u8>, SessionError> {
     Ok(bytes)
 }
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn encoded_size_exceeds_limit(length: usize) -> bool {
     length > MAX_SESSION_BYTES
 }
