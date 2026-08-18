@@ -13,6 +13,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         native_validation,
     };
 
+    let revoked_descriptor = SurfaceDescriptor::new("Alpine revoked worker wake", 96.0, 64.0, 1.0)?;
+    let revoked_surface = native_validation::new_surface(&revoked_descriptor)?;
+    let revoked_observer = revoked_surface.observer();
+    let revoked_waker = revoked_surface.waker();
+    native_validation::revoke_surface_waker(&revoked_surface);
+    assert_eq!(revoked_observer.lifecycle(), SurfaceLifecycle::Live);
+    assert_eq!(revoked_waker.wake(), SurfaceWakeAdmission::Closed);
+    let revoked_owners = native_validation::close_with_owner_evidence(revoked_surface)?;
+    assert_eq!(revoked_owners.active(), [0; 9]);
+    assert_eq!(revoked_owners.release_order_violations(), 0);
+
     let descriptor = SurfaceDescriptor::new("Alpine worker wake", 96.0, 64.0, 1.0)?;
     let surface = native_validation::new_surface(&descriptor)?;
     surface.show()?;
@@ -37,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let admissions = Arc::new(Mutex::new(None));
     let callback_admissions = Arc::clone(&admissions);
     let mut ready_sender = Some(ready_sender);
-    native_validation::arm_window_close(&surface, Duration::from_millis(50));
+    native_validation::arm_window_close(&surface, Duration::from_millis(500));
     surface.run_with_event_handler(move |event| {
         if let SurfaceEvent::Wake { timestamp } = event
             && let Ok(mut received) = callback_received.lock()

@@ -3191,6 +3191,11 @@ impl NativeSurface {
         schedule_validation_window_close(&self.window, delay);
     }
 
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn revoke_waker_for_validation(&self) {
+        self.wake_bridge.revoke();
+    }
+
     pub(crate) fn snapshot(&self) -> SurfaceSnapshot {
         let driver = self.driver.try_borrow();
         let (surface_epoch, sized, presentation_visible) =

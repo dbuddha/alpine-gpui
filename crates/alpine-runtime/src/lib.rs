@@ -1567,7 +1567,33 @@ mod tests {
                 wake_counter.fetch_add(1, Ordering::Relaxed);
             })))),
         };
-        for sequence in 1..=9 {
+        for sequence in 1..=8 {
+            assert!(
+                result_sender
+                    .send(WorkerCompletion {
+                        token: WorkToken {
+                            sequence,
+                            workspace_revision: WorkspaceRevision::default(),
+                            document_revision: DocumentRevision::default(),
+                        },
+                        outcome: WorkerOutcome::Completed(sequence),
+                    })
+                    .is_ok()
+            );
+        }
+        counters.queued_results.store(8, Ordering::Release);
+        counters.peak_queued_results.store(8, Ordering::Release);
+        let _ = application.frame_if_dirty();
+
+        let exact_budget = application.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(10),
+        });
+        assert!(exact_budget.is_some());
+        assert_eq!(application.delegate.results.len(), 8);
+        assert_eq!(application.snapshot().worker().queued_results(), 0);
+        assert_eq!(wakes.load(Ordering::Acquire), 0);
+
+        for sequence in 9..=17 {
             assert!(
                 result_sender
                     .send(WorkerCompletion {
@@ -1583,21 +1609,20 @@ mod tests {
         }
         counters.queued_results.store(9, Ordering::Release);
         counters.peak_queued_results.store(9, Ordering::Release);
-        let _ = application.frame_if_dirty();
 
-        let first = application.dispatch(&SurfaceEvent::Wake {
-            timestamp: EventTimestamp::new(10),
+        let over_budget = application.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(11),
         });
-        assert!(first.is_some());
-        assert_eq!(application.delegate.results.len(), 8);
+        assert!(over_budget.is_some());
+        assert_eq!(application.delegate.results.len(), 16);
         assert_eq!(application.snapshot().worker().queued_results(), 1);
         assert_eq!(wakes.load(Ordering::Acquire), 1);
 
-        let second = application.dispatch(&SurfaceEvent::Wake {
-            timestamp: EventTimestamp::new(11),
+        let remainder = application.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(12),
         });
-        assert!(second.is_some());
-        assert_eq!(application.delegate.results.len(), 9);
+        assert!(remainder.is_some());
+        assert_eq!(application.delegate.results.len(), 17);
         assert_eq!(application.snapshot().worker().queued_results(), 0);
         assert_eq!(wakes.load(Ordering::Acquire), 1);
         Ok(())

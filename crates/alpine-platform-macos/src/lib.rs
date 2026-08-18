@@ -707,6 +707,14 @@ pub mod native_validation {
         surface.implementation.arm_window_close(delay);
     }
 
+    /// Revokes only the private wake pointer while lifecycle remains live.
+    ///
+    /// This validation fault proves pointer revocation independently rejects
+    /// producer admission before any native owner is released.
+    pub fn revoke_surface_waker(surface: &NativeSurface) {
+        surface.implementation.revoke_waker_for_validation();
+    }
+
     /// Installs one deterministic asynchronous driver failure for contract tests.
     pub fn inject_driver_error(surface: &NativeSurface, error: SurfaceError) {
         surface.implementation.inject_driver_error(error);
@@ -1859,7 +1867,7 @@ impl SurfaceWaker {
         }
     }
 
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[cfg(any(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
     pub(crate) fn closed() -> Self {
         let counters = Arc::new(SurfaceWakeCounters::new());
         Self::new(
@@ -2048,21 +2056,25 @@ mod surface_waker_tests {
 
         assert_eq!(waker.wake(), SurfaceWakeAdmission::Scheduled);
         assert_eq!(waker.clone().wake(), SurfaceWakeAdmission::Scheduled);
-        assert_eq!(
-            waker.snapshot(),
-            SurfaceWakeSnapshot {
-                requests: 2,
-                scheduled: 2,
-                coalesced: 0,
-                dispatched: 0,
-                rejected: 0,
-            }
-        );
+        for _ in 0..3 {
+            counters.coalesced();
+        }
+        for _ in 0..4 {
+            counters.dispatched();
+        }
+        for _ in 0..5 {
+            counters.rejected();
+        }
+        let evidence = waker.snapshot();
+        assert_eq!(evidence.requests(), 2);
+        assert_eq!(evidence.scheduled(), 2);
+        assert_eq!(evidence.coalesced(), 3);
+        assert_eq!(evidence.dispatched(), 4);
+        assert_eq!(evidence.rejected(), 5);
     }
 
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     #[test]
-    fn unsupported_waker_rejects_without_native_handles() {
+    fn closed_waker_rejects_without_native_handles() {
         let waker = SurfaceWaker::closed();
         assert_eq!(waker.wake(), SurfaceWakeAdmission::Closed);
         assert_eq!(waker.snapshot().requests(), 1);
@@ -2317,6 +2329,8 @@ mod tests {
     #[test]
     fn public_event_loop_wrapper_preserves_unsupported_error() {
         let surface = NativeSurface::from_implementation(implementation::NativeSurface);
+        let waker = surface.waker();
+        assert_eq!(waker.wake(), SurfaceWakeAdmission::Closed);
         assert_eq!(
             surface.run_with_event_handler(|_| SurfaceResponse::default()),
             Err(SurfaceError::UnsupportedPlatform)
