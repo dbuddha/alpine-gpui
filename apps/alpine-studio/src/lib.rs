@@ -272,7 +272,11 @@ pub fn run() -> Result<(), RuntimeError> {
 pub fn run_file(path: impl AsRef<Path>) -> Result<(), StudioError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        run_native(with_default_session(native_file_app(path.as_ref())?)).map_err(StudioError::from)
+        run_native(with_session_path(
+            native_file_app(path.as_ref())?,
+            session::default_path(),
+        ))
+        .map_err(StudioError::from)
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -306,7 +310,11 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
         let metadata = std::fs::metadata(path)
             .map_err(|source| WorkspaceError::io("read launch metadata", path, source))?;
         if metadata.is_file() {
-            run_native(with_default_session(native_file_app(path)?)).map_err(StudioError::from)
+            run_native(with_session_path(
+                native_file_app(path)?,
+                session::default_path(),
+            ))
+            .map_err(StudioError::from)
         } else if metadata.is_dir() {
             let workspace = Workspace::open_root(path)?;
             let mut text_system = alpine_text_layout::CoreTextSystem::new();
@@ -314,7 +322,7 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
                 .register_font(FONT_FAMILY, "Menlo-Regular")
                 .map_err(|_| SurfaceError::DriverUnavailable)?;
             let app = StudioApp::from_workspace(text_system, workspace)?;
-            run_native(with_default_session(app)).map_err(StudioError::from)
+            run_native(with_session_path(app, session::default_path())).map_err(StudioError::from)
         } else {
             Err(WorkspaceError::UnsupportedTarget(path.to_path_buf()).into())
         }
@@ -350,8 +358,11 @@ fn native_app() -> Result<StudioApp, SurfaceError> {
 }
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
-fn with_default_session(mut app: StudioApp) -> StudioApp {
-    app.session_path = session::default_path().ok();
+fn with_session_path(
+    mut app: StudioApp,
+    session_path: Result<PathBuf, session::SessionError>,
+) -> StudioApp {
+    app.session_path = session_path.ok();
     app
 }
 
@@ -4977,8 +4988,9 @@ mod session_integration_tests {
         drop(dirty);
         assert!(!dirty_path.exists());
 
-        let expected = session::default_path()?;
-        let mut defaulted = with_default_session(StudioApp::new(tests::TestTextSystem)?);
+        let expected = root.join("state").join("injected-session.bin");
+        let mut defaulted =
+            with_session_path(StudioApp::new(tests::TestTextSystem)?, Ok(expected.clone()));
         assert_eq!(defaulted.session_path.as_deref(), Some(expected.as_path()));
         defaulted.session_path = None;
 
