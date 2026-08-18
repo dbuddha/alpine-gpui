@@ -470,32 +470,29 @@ fn highlight_line(language: SyntaxLanguage, text: &str) -> Result<SyntaxLine, Sy
 fn highlight_rust(text: &str, emitter: &mut Emitter<'_>) -> Result<(), SyntaxError> {
     let bytes = text.as_bytes();
     let mut index = 0_usize;
-    while index < bytes.len() {
+    for _ in 0..bytes.len() {
+        if index == bytes.len() {
+            return Ok(());
+        }
         if bytes[index..].starts_with(b"//") {
             emitter.push(index, bytes.len(), SyntaxClass::Comment)?;
-            break;
+            return Ok(());
         }
-        if bytes[index..].starts_with(b"/*") {
+        let next = if bytes[index..].starts_with(b"/*") {
             let end = find_pair(bytes, index + 2, *b"*/").unwrap_or(bytes.len());
             emitter.push(index, end, SyntaxClass::Comment)?;
-            index = end;
-            continue;
-        }
-        if matches!(bytes[index], b'"' | b'\'') {
+            end
+        } else if matches!(bytes[index], b'"' | b'\'') {
             let end = quoted_end(bytes, index, bytes[index]);
             emitter.push(index, end, SyntaxClass::String)?;
-            index = end;
-            continue;
-        }
-        if bytes[index].is_ascii_digit() {
+            end
+        } else if bytes[index].is_ascii_digit() {
             let end = take_while(bytes, next_index(index)?, |byte| {
                 byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.')
             });
             emitter.push(index, end, SyntaxClass::Number)?;
-            index = end;
-            continue;
-        }
-        if is_identifier_start(bytes[index]) {
+            end
+        } else if is_identifier_start(bytes[index]) {
             let end = take_while(bytes, next_index(index)?, is_identifier_continue);
             let word = &text[index..end];
             if rust_keyword(word) {
@@ -503,12 +500,13 @@ fn highlight_rust(text: &str, emitter: &mut Emitter<'_>) -> Result<(), SyntaxErr
             } else if bytes[index].is_ascii_uppercase() {
                 emitter.push(index, end, SyntaxClass::Type)?;
             }
-            index = end;
-            continue;
-        }
-        index = next_boundary(text, index);
+            end
+        } else {
+            next_boundary(text, index)
+        };
+        index = require_forward(index, next, bytes.len())?;
     }
-    Ok(())
+    require_scan_complete(index, bytes.len())
 }
 
 fn highlight_markdown(text: &str, emitter: &mut Emitter<'_>) -> Result<(), SyntaxError> {
@@ -523,19 +521,23 @@ fn highlight_markdown(text: &str, emitter: &mut Emitter<'_>) -> Result<(), Synta
     }
     let bytes = text.as_bytes();
     let mut index = 0_usize;
-    while index < bytes.len() {
-        if bytes[index] == b'`' {
+    for _ in 0..bytes.len() {
+        if index == bytes.len() {
+            return Ok(());
+        }
+        let next = if bytes[index] == b'`' {
             let end = bytes[index + 1..]
                 .iter()
                 .position(|byte| *byte == b'`')
                 .map_or(bytes.len(), |offset| index + offset + 2);
             emitter.push(index, end, SyntaxClass::Code)?;
-            index = end;
+            end
         } else {
-            index = next_boundary(text, index);
-        }
+            next_boundary(text, index)
+        };
+        index = require_forward(index, next, bytes.len())?;
     }
-    Ok(())
+    require_scan_complete(index, bytes.len())
 }
 
 fn highlight_toml(text: &str, emitter: &mut Emitter<'_>) -> Result<(), SyntaxError> {
@@ -567,60 +569,59 @@ fn highlight_data_values(
 ) -> Result<(), SyntaxError> {
     let bytes = text.as_bytes();
     let mut index = start;
-    while index < bytes.len() {
+    for _ in 0..bytes.len() {
+        if index == bytes.len() {
+            return Ok(());
+        }
         if comments && bytes[index] == b'#' {
             emitter.push(index, bytes.len(), SyntaxClass::Comment)?;
-            break;
+            return Ok(());
         }
-        if matches!(bytes[index], b'"' | b'\'') {
+        let next = if matches!(bytes[index], b'"' | b'\'') {
             let end = quoted_end(bytes, index, bytes[index]);
-            let mut next = end;
-            while bytes.get(next).is_some_and(u8::is_ascii_whitespace) {
-                next += 1;
-            }
-            let class = if !comments && bytes.get(next) == Some(&b':') {
+            let next_non_space = bytes.get(end..).map_or(bytes.len(), |remaining| {
+                remaining
+                    .iter()
+                    .position(|byte| !byte.is_ascii_whitespace())
+                    .map_or(bytes.len(), |offset| end + offset)
+            });
+            let class = if !comments && bytes.get(next_non_space) == Some(&b':') {
                 SyntaxClass::Property
             } else {
                 SyntaxClass::String
             };
             emitter.push(index, end, class)?;
-            index = end;
-            continue;
-        }
-        if bytes[index].is_ascii_digit() || bytes[index] == b'-' {
+            end
+        } else if bytes[index].is_ascii_digit() || bytes[index] == b'-' {
             let end = take_while(bytes, next_index(index)?, |byte| {
                 byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'+' | b'-' | b':')
             });
             emitter.push(index, end, SyntaxClass::Number)?;
-            index = end;
-            continue;
-        }
-        if is_identifier_start(bytes[index]) {
+            end
+        } else if is_identifier_start(bytes[index]) {
             let end = take_while(bytes, next_index(index)?, is_identifier_continue);
             if matches!(&text[index..end], "true" | "false" | "null") {
                 emitter.push(index, end, SyntaxClass::Keyword)?;
             }
-            index = end;
-            continue;
-        }
-        index = next_boundary(text, index);
+            end
+        } else {
+            next_boundary(text, index)
+        };
+        index = require_forward(index, next, bytes.len())?;
     }
-    Ok(())
+    require_scan_complete(index, bytes.len())
 }
 
 fn quoted_end(bytes: &[u8], start: usize, quote: u8) -> usize {
-    let mut index = start + 1;
     let mut escaped = false;
-    while index < bytes.len() {
-        let byte = bytes[index];
+    for (offset, byte) in bytes[start + 1..].iter().copied().enumerate() {
         if escaped {
             escaped = false;
         } else if byte == b'\\' && quote == b'"' {
             escaped = true;
         } else if byte == quote {
-            return index + 1;
+            return start + offset + 2;
         }
-        index += 1;
     }
     bytes.len()
 }
@@ -651,11 +652,13 @@ fn find_unquoted(bytes: &[u8], needle: u8) -> Option<usize> {
     None
 }
 
-fn take_while(bytes: &[u8], mut index: usize, predicate: impl Fn(u8) -> bool) -> usize {
-    while bytes.get(index).copied().is_some_and(&predicate) {
-        index += 1;
-    }
-    index
+fn take_while(bytes: &[u8], index: usize, predicate: impl Fn(u8) -> bool) -> usize {
+    bytes.get(index..).map_or(bytes.len(), |remaining| {
+        remaining
+            .iter()
+            .position(|byte| !predicate(*byte))
+            .map_or(bytes.len(), |offset| index + offset)
+    })
 }
 
 fn next_boundary(text: &str, index: usize) -> usize {
@@ -667,6 +670,21 @@ fn next_boundary(text: &str, index: usize) -> usize {
 
 fn next_index(index: usize) -> Result<usize, SyntaxError> {
     index.checked_add(1).ok_or(SyntaxError::InvalidSpan)
+}
+
+fn require_forward(current: usize, next: usize, len: usize) -> Result<usize, SyntaxError> {
+    if next <= current || next > len {
+        return Err(SyntaxError::InvalidSpan);
+    }
+    Ok(next)
+}
+
+fn require_scan_complete(index: usize, len: usize) -> Result<(), SyntaxError> {
+    if index == len {
+        Ok(())
+    } else {
+        Err(SyntaxError::InvalidSpan)
+    }
 }
 
 const fn is_identifier_start(byte: u8) -> bool {
@@ -1079,6 +1097,29 @@ mod tests {
         utf16 = u32::MAX;
         assert!(matches!(
             advance_utf16("a", &mut byte, &mut utf16, 1),
+            Err(SyntaxError::InvalidSpan)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn scanner_progress_is_strict_bounded_and_complete() -> Result<(), SyntaxError> {
+        assert_eq!(require_forward(0, 1, 2)?, 1);
+        assert!(matches!(
+            require_forward(1, 1, 2),
+            Err(SyntaxError::InvalidSpan)
+        ));
+        assert!(matches!(
+            require_forward(1, 0, 2),
+            Err(SyntaxError::InvalidSpan)
+        ));
+        assert!(matches!(
+            require_forward(1, 3, 2),
+            Err(SyntaxError::InvalidSpan)
+        ));
+        require_scan_complete(2, 2)?;
+        assert!(matches!(
+            require_scan_complete(1, 2),
             Err(SyntaxError::InvalidSpan)
         ));
         Ok(())
