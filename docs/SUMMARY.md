@@ -6,6 +6,7 @@
   - [Desktop application foundation](use-cases/desktop-application.md)
   - [Alpine Studio daily-driver path](use-cases/alpine-studio-highfidelity.md)
 - [Knowledge and requirements](concepts/traceability.md)
+- [GitHub agent operations](operations/github-agent-skills.md)
 - [Research catalog](research/index.md)
   - [Alpine Studio adversarial review](research/alpine-studio-adversarial-review.md)
   - [GitHub Wiki mirror policy](wiki/README.md)
