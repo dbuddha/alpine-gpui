@@ -1674,6 +1674,18 @@ mod tests {
             snapshot.byte_of_lsp_position(LspPosition::new(0, 3))?,
             ByteOffset::new(5)
         );
+        assert!(matches!(
+            snapshot.byte_of_lsp_position(LspPosition::new(0, 2)),
+            Err(TextError::InvalidUtf16Boundary { offset: 2 })
+        ));
+        assert_eq!(
+            snapshot.byte_of_lsp_position(LspPosition::new(0, 5))?,
+            ByteOffset::new(8)
+        );
+        assert!(matches!(
+            snapshot.byte_of_lsp_position(LspPosition::new(0, 6)),
+            Err(TextError::InvalidUtf16Boundary { offset: 6 })
+        ));
         assert_eq!(snapshot.grapheme_index_of_byte(ByteOffset::new(1))?, 1);
         assert!(matches!(
             snapshot.grapheme_index_of_byte(ByteOffset::new(6)),
