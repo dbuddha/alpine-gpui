@@ -4409,12 +4409,13 @@ fn workspace_root_and_eager_directory_selection_reject_non_files()
 }
 
 #[test]
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn folder_launch_primes_lazy_tree_without_stealing_editor_focus()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = TestWorkspace::new()?;
     root.write("main.rs", "fn main() {}\n")?;
-    let mut app = native_workspace_app(root.path())?;
+    let workspace = Workspace::open_root(root.path())?;
+    let mut app = StudioApp::from_workspace(TestTextSystem, workspace)?;
+    app.prime_workspace_launch()?;
 
     assert!(app.file_tree.is_visible());
     assert!(app.file_tree.is_active());
