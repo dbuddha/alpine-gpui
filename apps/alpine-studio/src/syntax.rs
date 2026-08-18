@@ -800,11 +800,12 @@ mod tests {
                 SyntaxClass::Comment
             ]
         );
+        let json = classes(
+            SyntaxLanguage::Json,
+            r#"{"name": "alpine", "ok": true, "n": -2}"#,
+        )?;
         assert_eq!(
-            classes(
-                SyntaxLanguage::Json,
-                r#"{"name": "alpine", "ok": true, "n": -2}"#
-            )?,
+            json,
             [
                 SyntaxClass::Property,
                 SyntaxClass::String,
@@ -965,6 +966,23 @@ mod tests {
                 if matches!(&error, SyntaxError::Text(_))
                     && error.to_string().starts_with("syntax text access failed:")
         ));
+
+        let mut current_comparison = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)?;
+        let _ = current_comparison.line(&snapshot, 0, SyntaxLanguage::Rust)?;
+        current_comparison.current[0].range = 0..usize::MAX;
+        assert!(matches!(
+            current_comparison.line(&snapshot, 0, SyntaxLanguage::Rust),
+            Err(SyntaxError::Text(_))
+        ));
+
+        let mut previous_comparison = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)?;
+        let _ = previous_comparison.line(&snapshot, 0, SyntaxLanguage::Rust)?;
+        previous_comparison.begin_frame();
+        previous_comparison.previous[0].range = 0..usize::MAX;
+        assert!(matches!(
+            previous_comparison.line(&snapshot, 0, SyntaxLanguage::Rust),
+            Err(SyntaxError::Text(_))
+        ));
         Ok(())
     }
 
@@ -1011,6 +1029,13 @@ mod tests {
 
     #[test]
     fn every_compiled_lexer_fallback_is_explicit() -> Result<(), SyntaxError> {
+        let mut crlf = String::from("value\r\n");
+        trim_line_ending(&mut crlf);
+        assert_eq!(crlf, "value");
+        let mut cr = String::from("value\r");
+        trim_line_ending(&mut cr);
+        assert_eq!(cr, "value");
+
         assert!(classes(SyntaxLanguage::PlainText, "plain")?.is_empty());
         assert!(
             highlight_line(SyntaxLanguage::Rust, &"x".repeat(MAX_SYNTAX_LINE_BYTES + 1))?.omitted()
@@ -1024,15 +1049,22 @@ mod tests {
             [SyntaxClass::Heading]
         );
         assert!(classes(SyntaxLanguage::Toml, "bare value")?.is_empty());
+        let mut overlapping_toml = Emitter::new("name = 1");
+        overlapping_toml.push(0, 1, SyntaxClass::Code)?;
+        assert!(matches!(
+            highlight_toml("name = 1", &mut overlapping_toml),
+            Err(SyntaxError::InvalidSpan)
+        ));
         assert_eq!(
             classes(SyntaxLanguage::Markdown, "####### not-a-heading `open")?,
             [SyntaxClass::Code]
         );
+        let escaped_json = classes(
+            SyntaxLanguage::Json,
+            r#"{"escaped": "a\\\"b", "false": false, "none": null}"#,
+        )?;
         assert_eq!(
-            classes(
-                SyntaxLanguage::Json,
-                r#"{"escaped": "a\\\"b", "false": false, "none": null}"#
-            )?,
+            escaped_json,
             [
                 SyntaxClass::Property,
                 SyntaxClass::String,
