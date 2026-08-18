@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Project Operator"
+  short_description: "Operate evidence-first GitHub delivery systems"
+  default_prompt: "Use $github-project-operator to reconcile this repository project, critical path, milestones, blockers, and progress evidence."
