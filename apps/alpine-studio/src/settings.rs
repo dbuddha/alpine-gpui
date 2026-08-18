@@ -144,21 +144,9 @@ impl StudioTheme {
             find_background: color("find background", 0.08, 0.09, 0.10, 0.98)?,
             quick_open_background: color("quick open background", 0.045, 0.052, 0.058, 0.99)?,
             quick_open_selected: color("quick open selected", 0.12, 0.25, 0.31, 1.0)?,
-            project_search_background: color(
-                "project search background",
-                0.04,
-                0.06,
-                0.055,
-                0.995,
-            )?,
+            project_search_background: project_search_background()?,
             project_search_selected: color("project search selected", 0.10, 0.30, 0.22, 1.0)?,
-            command_palette_background: color(
-                "command palette background",
-                0.055,
-                0.062,
-                0.067,
-                0.995,
-            )?,
+            command_palette_background: command_palette_background()?,
             command_palette_selected: color("command palette selected", 0.34, 0.22, 0.075, 1.0)?,
             syntax: SyntaxTheme {
                 comment: color("syntax comment", 0.48, 0.60, 0.53, 1.0)?,
@@ -381,6 +369,14 @@ fn color(
     alpha: f32,
 ) -> Result<LinearRgba, SettingsError> {
     LinearRgba::new(red, green, blue, alpha).ok_or(SettingsError::InvalidColor(name))
+}
+
+fn project_search_background() -> Result<LinearRgba, SettingsError> {
+    color("project search background", 0.04, 0.06, 0.055, 0.995)
+}
+
+fn command_palette_background() -> Result<LinearRgba, SettingsError> {
+    color("command palette background", 0.055, 0.062, 0.067, 0.995)
 }
 
 fn validate_bindings(bindings: &[KeyBinding]) -> Result<(), SettingsError> {
