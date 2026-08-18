@@ -1082,20 +1082,18 @@ mod tests {
         };
         let mut panes = PaneGrid::new(alpha, alpha_view);
         let bounds = bounds(1_200.0, 900.0)?;
-        panes.split(SplitAxis::Columns, 11.0, bounds)?;
+        panes.split(SplitAxis::Rows, 11.0, bounds)?;
         panes.sync_active_document(beta, beta_view)?;
 
-        let state = panes.session_state(|tab| match tab {
-            value if value == alpha => Some(0),
-            value if value == beta => Some(1),
-            _ => None,
-        })?;
+        let tabs = [alpha, beta];
+        let state =
+            panes.session_state(|tab| tabs.iter().position(|candidate| *candidate == tab))?;
         assert_eq!(state.active_pane, 1);
         assert_eq!(
             state.nodes,
             [
                 SessionNode::Split {
-                    axis: SessionAxis::Columns,
+                    axis: SessionAxis::Rows,
                     first: 1,
                     second: 2,
                 },

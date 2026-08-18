@@ -1027,13 +1027,14 @@ impl StudioApp {
         let length = snapshot.len_bytes();
         let clamp = |offset: ByteOffset| {
             let mut value = offset.get().min(length);
-            for _ in 0..4 {
+            for _ in 0..3 {
                 if snapshot.slice(value..value).is_ok() {
                     return ByteOffset::new(value);
                 }
                 value = value.saturating_sub(1);
             }
-            ByteOffset::new(0)
+            debug_assert!(snapshot.slice(value..value).is_ok());
+            ByteOffset::new(value)
         };
         DocumentViewState {
             selection: Selection::new(clamp(view.selection.anchor()), clamp(view.selection.head())),
@@ -4896,9 +4897,22 @@ mod session_integration_tests {
             state
         );
 
-        fs::write(root.join("unicode.rs"), "é\n")?;
+        let mut switched_state = state.clone();
+        switched_state.active_tab = 0;
+        switched_state.panes.active_pane = 0;
+        let mut switched = StudioApp::from_session(tests::TestTextSystem, switched_state.clone())
+            .map_err(|error| error.to_string())?;
+        switched.session_path = None;
+        assert_eq!(
+            switched
+                .capture_session()
+                .map_err(|error| format!("{error:?}"))?,
+            switched_state
+        );
+
+        fs::write(root.join("unicode.rs"), "🦀\n")?;
         let invalid_boundary = DocumentViewState {
-            selection: Selection::caret(ByteOffset::new(1)),
+            selection: Selection::caret(ByteOffset::new(3)),
             scroll_y: f32::MAX,
         };
         let clamped_state = session::SessionState {
@@ -4945,6 +4959,31 @@ mod session_integration_tests {
         );
         assert_eq!(clamped.panes.len(), 1);
         clamped.session_path = None;
+
+        let dirty_path = root.join("state").join("dirty-session.bin");
+        let mut dirty = StudioApp::new(tests::TestTextSystem)?;
+        if let StudioDocument::Scratch {
+            buffer,
+            clean_revision,
+        } = &mut dirty.document
+        {
+            *clean_revision = buffer.revision().get().saturating_add(1);
+        }
+        assert_eq!(
+            dirty.capture_session(),
+            Err(SessionCaptureError::DirtyDocument)
+        );
+        dirty.session_path = Some(dirty_path.clone());
+        drop(dirty);
+        assert!(!dirty_path.exists());
+
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let expected = session::default_path()?;
+            let mut defaulted = with_default_session(StudioApp::new(tests::TestTextSystem)?);
+            assert_eq!(defaulted.session_path.as_deref(), Some(expected.as_path()));
+            defaulted.session_path = None;
+        }
 
         fs::remove_file(root.join("alpha.rs"))?;
         assert!(matches!(

@@ -221,15 +221,21 @@ pub(crate) fn load(path: &Path) -> Result<SessionState, SessionError> {
     }
     let encoded_bytes = usize::try_from(encoded_bytes)
         .map_err(|_| SessionError::Corrupt(SessionCorrupt::Length))?;
+    let bytes = read_bounded(file, encoded_bytes)?;
+    decode(&bytes).map_err(SessionError::Corrupt)
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn read_bounded(reader: impl Read, encoded_bytes: usize) -> Result<Vec<u8>, SessionError> {
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(encoded_bytes)
         .map_err(|_| SessionError::AllocationFailed)?;
-    map_io(file.take(MAX_READ_BYTES).read_to_end(&mut bytes), "read")?;
+    map_io(reader.take(MAX_READ_BYTES).read_to_end(&mut bytes), "read")?;
     if bytes.len() > MAX_SESSION_BYTES {
         return Err(SessionError::Corrupt(SessionCorrupt::Length));
     }
-    decode(&bytes).map_err(SessionError::Corrupt)
+    Ok(bytes)
 }
 
 pub(crate) fn validate(state: &SessionState) -> Result<(), SessionInvalid> {
@@ -416,9 +422,7 @@ fn encode(state: &SessionState) -> Result<Vec<u8>, SessionError> {
         }
     }
     put_u8(&mut bytes, state.panes.active_pane);
-    if encoded_size_exceeds_limit(bytes.len()) {
-        return Err(SessionError::Invalid(SessionInvalid::PathBudget));
-    }
+    ensure_encoded_size(bytes.len())?;
     let payload_len = bytes
         .len()
         .checked_sub(HEADER_BYTES)
@@ -434,6 +438,14 @@ fn encode(state: &SessionState) -> Result<Vec<u8>, SessionError> {
 
 fn encoded_size_exceeds_limit(length: usize) -> bool {
     length > MAX_SESSION_BYTES
+}
+
+fn ensure_encoded_size(length: usize) -> Result<(), SessionError> {
+    if encoded_size_exceeds_limit(length) {
+        Err(SessionError::Invalid(SessionInvalid::PathBudget))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
@@ -783,8 +795,27 @@ mod mutation_boundary_tests {
     fn encoded_size_and_header_boundaries_are_exact() {
         assert!(!encoded_size_exceeds_limit(MAX_SESSION_BYTES));
         assert!(encoded_size_exceeds_limit(MAX_SESSION_BYTES + 1));
+        assert_eq!(ensure_encoded_size(MAX_SESSION_BYTES), Ok(()));
+        assert_eq!(
+            ensure_encoded_size(MAX_SESSION_BYTES + 1),
+            Err(SessionError::Invalid(SessionInvalid::PathBudget))
+        );
         assert!(header_is_truncated(HEADER_BYTES - 1));
         assert!(!header_is_truncated(HEADER_BYTES));
+    }
+
+    #[test]
+    fn bounded_reader_accepts_the_limit_and_rejects_one_extra_byte() {
+        let accepted = vec![0_u8; MAX_SESSION_BYTES];
+        assert_eq!(
+            read_bounded(accepted.as_slice(), MAX_SESSION_BYTES),
+            Ok(accepted)
+        );
+        let oversized = vec![0_u8; MAX_SESSION_BYTES + 1];
+        assert_eq!(
+            read_bounded(oversized.as_slice(), MAX_SESSION_BYTES),
+            Err(SessionError::Corrupt(SessionCorrupt::Length))
+        );
     }
 
     #[test]
@@ -897,6 +928,14 @@ mod tests {
         assert_eq!(checksum, crc32(&encoded[HEADER_BYTES..]));
         assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
         assert_eq!(decode(&encoded)?, state);
+
+        let mut rows = state.clone();
+        rows.panes.nodes[0] = SessionNode::Split {
+            axis: SessionAxis::Rows,
+            first: 1,
+            second: 2,
+        };
+        assert_eq!(decode(&encode(&rows)?)?, rows);
         Ok(())
     }
 
@@ -1201,6 +1240,13 @@ mod tests {
         let _ = reader.u8()?;
         let first_node = HEADER_BYTES + reader.cursor;
         corrupt[first_node] = u8::MAX;
+        let checksum = crc32(&corrupt[HEADER_BYTES..]);
+        corrupt[14..18].copy_from_slice(&checksum.to_le_bytes());
+        assert_eq!(decode(&corrupt), Err(SessionCorrupt::Tag));
+
+        let mut corrupt = encoded.clone();
+        let first_pane = first_node + 12;
+        corrupt[first_pane] = u8::MAX;
         let checksum = crc32(&corrupt[HEADER_BYTES..]);
         corrupt[14..18].copy_from_slice(&checksum.to_le_bytes());
         assert_eq!(decode(&corrupt), Err(SessionCorrupt::Tag));
