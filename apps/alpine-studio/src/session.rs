@@ -3,10 +3,13 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+use std::io::Read;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 use alpine_text::{ByteOffset, Selection};
 
 use crate::documents::DocumentViewState;
@@ -15,8 +18,9 @@ pub(crate) const SESSION_NODE_CAPACITY: usize = 7;
 pub(crate) const SESSION_PANE_CAPACITY: usize = 4;
 const SESSION_TAB_CAPACITY: usize = 32;
 const MAX_PATH_BYTES: usize = 4_096;
-const MAX_RETAINED_PATH_BYTES: usize = 64 * 1_024;
-const MAX_SESSION_BYTES: usize = 128 * 1_024;
+const MAX_RETAINED_PATH_BYTES: usize = 65_536;
+const MAX_SESSION_BYTES: usize = 131_072;
+const MAX_READ_BYTES: u64 = 131_073;
 const HEADER_BYTES: usize = 18;
 const MAGIC: &[u8; 8] = b"ALPNSESS";
 const VERSION: u16 = 1;
@@ -115,6 +119,7 @@ impl fmt::Display for SessionInvalid {
     }
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SessionCorrupt {
     Header,
@@ -127,6 +132,7 @@ pub(crate) enum SessionCorrupt {
     Invalid(SessionInvalid),
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 impl fmt::Display for SessionCorrupt {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -142,13 +148,16 @@ impl fmt::Display for SessionCorrupt {
     }
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 impl std::error::Error for SessionCorrupt {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SessionError {
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     MissingHome,
     AllocationFailed,
     Invalid(SessionInvalid),
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     Corrupt(SessionCorrupt),
     Io {
         operation: &'static str,
@@ -159,9 +168,11 @@ pub(crate) enum SessionError {
 impl fmt::Display for SessionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
             Self::MissingHome => formatter.write_str("session home directory is unavailable"),
             Self::AllocationFailed => formatter.write_str("session allocation failed"),
             Self::Invalid(error) => write!(formatter, "cannot save invalid session: {error}"),
+            #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
             Self::Corrupt(error) => write!(formatter, "cannot restore corrupt session: {error}"),
             Self::Io { operation, kind } => {
                 write!(formatter, "session {operation} failed with {kind:?}")
@@ -172,8 +183,14 @@ impl fmt::Display for SessionError {
 
 impl std::error::Error for SessionError {}
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) fn default_path() -> Result<PathBuf, SessionError> {
-    let home = std::env::var_os("HOME").filter(|value| !value.is_empty());
+    default_path_from_home(std::env::var_os("HOME"))
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn default_path_from_home(home: Option<OsString>) -> Result<PathBuf, SessionError> {
+    let home = home.filter(|value| !value.is_empty());
     home.map(PathBuf::from)
         .map(|path| {
             path.join("Library")
@@ -195,6 +212,7 @@ pub(crate) fn save(path: &Path, state: &SessionState) -> Result<(), SessionError
     atomic_replace(path, &encoded)
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) fn load(path: &Path) -> Result<SessionState, SessionError> {
     let file = map_io(File::open(path), "open")?;
     let encoded_bytes = map_io(file.metadata(), "metadata")?.len();
@@ -203,19 +221,21 @@ pub(crate) fn load(path: &Path) -> Result<SessionState, SessionError> {
     }
     let encoded_bytes = usize::try_from(encoded_bytes)
         .map_err(|_| SessionError::Corrupt(SessionCorrupt::Length))?;
+    let bytes = read_bounded(file, encoded_bytes)?;
+    decode(&bytes).map_err(SessionError::Corrupt)
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn read_bounded(reader: impl Read, encoded_bytes: usize) -> Result<Vec<u8>, SessionError> {
     let mut bytes = Vec::new();
     bytes
-        .try_reserve_exact(encoded_bytes.saturating_add(1))
+        .try_reserve_exact(encoded_bytes)
         .map_err(|_| SessionError::AllocationFailed)?;
-    map_io(
-        file.take(u64::try_from(MAX_SESSION_BYTES + 1).unwrap_or(u64::MAX))
-            .read_to_end(&mut bytes),
-        "read",
-    )?;
+    map_io(reader.take(MAX_READ_BYTES).read_to_end(&mut bytes), "read")?;
     if bytes.len() > MAX_SESSION_BYTES {
         return Err(SessionError::Corrupt(SessionCorrupt::Length));
     }
-    decode(&bytes).map_err(SessionError::Corrupt)
+    Ok(bytes)
 }
 
 pub(crate) fn validate(state: &SessionState) -> Result<(), SessionInvalid> {
@@ -229,13 +249,9 @@ pub(crate) fn validate(state: &SessionState) -> Result<(), SessionInvalid> {
         return Err(SessionInvalid::ActiveTab);
     }
     let mut retained_path_bytes = validate_optional_path(state.workspace.as_deref())?;
-    let mut scratch_count = 0_usize;
     for (index, tab) in state.tabs.iter().enumerate() {
-        if tab.path.is_none() {
-            scratch_count += 1;
-            if index != 0 || scratch_count > 1 {
-                return Err(SessionInvalid::ScratchPosition);
-            }
+        if tab.path.is_none() && index != 0 {
+            return Err(SessionInvalid::ScratchPosition);
         }
         if let Some(path) = tab.path.as_deref() {
             if !path.is_absolute() {
@@ -355,75 +371,100 @@ fn visit_node(
 }
 
 fn encode(state: &SessionState) -> Result<Vec<u8>, SessionError> {
-    let mut payload = Vec::new();
-    payload
-        .try_reserve_exact(MAX_RETAINED_PATH_BYTES + 256)
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(MAX_SESSION_BYTES)
         .map_err(|_| SessionError::AllocationFailed)?;
-    put_path(&mut payload, state.workspace.as_deref())?;
+    bytes.resize(HEADER_BYTES, 0);
+    put_path(&mut bytes, state.workspace.as_deref())?;
     put_u8(
-        &mut payload,
+        &mut bytes,
         u8::try_from(state.tabs.len())
             .map_err(|_| SessionError::Invalid(SessionInvalid::TooManyTabs))?,
     );
     for tab in &state.tabs {
-        put_path(&mut payload, tab.path.as_deref())?;
-        put_view(&mut payload, tab.view)?;
+        put_path(&mut bytes, tab.path.as_deref())?;
+        put_view(&mut bytes, tab.view)?;
     }
-    put_u8(&mut payload, state.active_tab);
+    put_u8(&mut bytes, state.active_tab);
     for node in state.panes.nodes {
         match node {
-            SessionNode::Empty => put_u8(&mut payload, 0),
+            SessionNode::Empty => put_u8(&mut bytes, 0),
             SessionNode::Leaf { pane } => {
-                put_u8(&mut payload, 1);
-                put_u8(&mut payload, pane);
+                put_u8(&mut bytes, 1);
+                put_u8(&mut bytes, pane);
             }
             SessionNode::Split {
                 axis,
                 first,
                 second,
             } => {
-                put_u8(&mut payload, 2);
+                put_u8(&mut bytes, 2);
                 put_u8(
-                    &mut payload,
+                    &mut bytes,
                     match axis {
                         SessionAxis::Columns => 0,
                         SessionAxis::Rows => 1,
                     },
                 );
-                put_u8(&mut payload, first);
-                put_u8(&mut payload, second);
+                put_u8(&mut bytes, first);
+                put_u8(&mut bytes, second);
             }
         }
     }
     for pane in state.panes.panes {
         if let Some(pane) = pane {
-            put_u8(&mut payload, 1);
-            put_u8(&mut payload, pane.tab);
-            put_view(&mut payload, pane.view)?;
+            put_u8(&mut bytes, 1);
+            put_u8(&mut bytes, pane.tab);
+            put_view(&mut bytes, pane.view)?;
         } else {
-            put_u8(&mut payload, 0);
+            put_u8(&mut bytes, 0);
         }
     }
-    put_u8(&mut payload, state.panes.active_pane);
-    if payload.len() + HEADER_BYTES > MAX_SESSION_BYTES {
-        return Err(SessionError::Invalid(SessionInvalid::PathBudget));
-    }
-    let payload_len = u32::try_from(payload.len())
-        .map_err(|_| SessionError::Invalid(SessionInvalid::PathBudget))?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(HEADER_BYTES + payload.len())
-        .map_err(|_| SessionError::AllocationFailed)?;
-    bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&VERSION.to_le_bytes());
-    bytes.extend_from_slice(&payload_len.to_le_bytes());
-    bytes.extend_from_slice(&crc32(&payload).to_le_bytes());
-    bytes.extend_from_slice(&payload);
+    put_u8(&mut bytes, state.panes.active_pane);
+    ensure_encoded_size(bytes.len())?;
+    let payload_len = bytes
+        .len()
+        .checked_sub(HEADER_BYTES)
+        .and_then(|length| u32::try_from(length).ok())
+        .ok_or(SessionError::Invalid(SessionInvalid::PathBudget))?;
+    let checksum = crc32(&bytes[HEADER_BYTES..]);
+    bytes[..8].copy_from_slice(MAGIC);
+    bytes[8..10].copy_from_slice(&VERSION.to_le_bytes());
+    bytes[10..14].copy_from_slice(&payload_len.to_le_bytes());
+    bytes[14..18].copy_from_slice(&checksum.to_le_bytes());
     Ok(bytes)
 }
 
+fn encoded_size_exceeds_limit(length: usize) -> bool {
+    length > MAX_SESSION_BYTES
+}
+
+fn ensure_encoded_size(length: usize) -> Result<(), SessionError> {
+    if encoded_size_exceeds_limit(length) {
+        Err(SessionError::Invalid(SessionInvalid::PathBudget))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn header_is_truncated(length: usize) -> bool {
+    length < HEADER_BYTES
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn decode_axis(tag: u8) -> Result<SessionAxis, SessionCorrupt> {
+    match tag {
+        0 => Ok(SessionAxis::Columns),
+        1 => Ok(SessionAxis::Rows),
+        _ => Err(SessionCorrupt::Tag),
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn decode(bytes: &[u8]) -> Result<SessionState, SessionCorrupt> {
-    if bytes.len() < HEADER_BYTES || bytes.get(..8) != Some(MAGIC) {
+    if header_is_truncated(bytes.len()) || bytes.get(..8) != Some(MAGIC) {
         return Err(SessionCorrupt::Header);
     }
     let version = u16::from_le_bytes([bytes[8], bytes[9]]);
@@ -458,11 +499,7 @@ fn decode(bytes: &[u8]) -> Result<SessionState, SessionCorrupt> {
             0 => SessionNode::Empty,
             1 => SessionNode::Leaf { pane: reader.u8()? },
             2 => {
-                let axis = match reader.u8()? {
-                    0 => SessionAxis::Columns,
-                    1 => SessionAxis::Rows,
-                    _ => return Err(SessionCorrupt::Tag),
-                };
+                let axis = decode_axis(reader.u8()?)?;
                 SessionNode::Split {
                     axis,
                     first: reader.u8()?,
@@ -529,11 +566,13 @@ fn put_u8(bytes: &mut Vec<u8>, value: u8) {
     bytes.push(value);
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 struct Reader<'a> {
     bytes: &'a [u8],
     cursor: usize,
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 impl<'a> Reader<'a> {
     const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, cursor: 0 }
@@ -623,6 +662,18 @@ fn atomic_replace_with(
     bytes: &[u8],
     write: &mut SessionWriter<'_>,
 ) -> Result<(), SessionError> {
+    let mut next_sequence = || TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    atomic_replace_with_sequence(path, bytes, write, &mut next_sequence)
+}
+
+type SequenceSource<'a> = dyn FnMut() -> u64 + 'a;
+
+fn atomic_replace_with_sequence(
+    path: &Path,
+    bytes: &[u8],
+    write: &mut SessionWriter<'_>,
+    next_sequence: &mut SequenceSource<'_>,
+) -> Result<(), SessionError> {
     let file_name = path.file_name().ok_or(SessionError::Io {
         operation: "temporary-name",
         kind: io::ErrorKind::InvalidInput,
@@ -633,11 +684,7 @@ fn atomic_replace_with(
     })?;
     let mut created = None;
     for _ in 0..TEMPORARY_ATTEMPTS {
-        let sequence = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let mut name = OsString::from(".");
-        name.push(file_name);
-        name.push(format!(".alpine-session-{}-{sequence}", std::process::id()));
-        let temporary = parent.join(name);
+        let temporary = temporary_path(parent, file_name, next_sequence());
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -664,13 +711,30 @@ fn atomic_replace_with(
         map_io(file.sync_all(), "sync-file")?;
         drop(file);
         map_io(fs::rename(&temporary, path), "replace")?;
-        let directory = map_io(File::open(parent), "open-directory")?;
-        map_io(directory.sync_all(), "sync-directory")
+        sync_parent_directory(parent)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+fn temporary_path(parent: &Path, file_name: &OsStr, sequence: u64) -> PathBuf {
+    let mut name = OsString::from(".");
+    name.push(file_name);
+    name.push(format!(".alpine-session-{}-{sequence}", std::process::id()));
+    parent.join(name)
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> Result<(), SessionError> {
+    let directory = map_io(File::open(parent), "open-directory")?;
+    map_io(directory.sync_all(), "sync-directory")
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> Result<(), SessionError> {
+    Ok(())
 }
 
 fn crc32(bytes: &[u8]) -> u32 {
@@ -703,19 +767,89 @@ fn os_bytes(value: &OsStr) -> &[u8] {
 }
 
 #[cfg(not(unix))]
+#[cfg_attr(test, mutants::skip)] // The disabled adapter is qualified by Windows CI.
 fn os_bytes(value: &OsStr) -> &[u8] {
     value.as_encoded_bytes()
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, any(test, all(target_os = "macos", target_arch = "aarch64"))))]
 fn os_string(value: &[u8]) -> OsString {
     use std::os::unix::ffi::OsStringExt;
     OsString::from_vec(value.to_vec())
 }
 
-#[cfg(not(unix))]
+#[cfg(all(
+    not(unix),
+    any(test, all(target_os = "macos", target_arch = "aarch64"))
+))]
+#[cfg_attr(test, mutants::skip)] // The disabled adapter is qualified by Windows CI.
 fn os_string(value: &[u8]) -> OsString {
     String::from_utf8_lossy(value).into_owned().into()
+}
+
+#[cfg(test)]
+mod mutation_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn encoded_size_and_header_boundaries_are_exact() {
+        assert!(!encoded_size_exceeds_limit(MAX_SESSION_BYTES));
+        assert!(encoded_size_exceeds_limit(MAX_SESSION_BYTES + 1));
+        assert_eq!(ensure_encoded_size(MAX_SESSION_BYTES), Ok(()));
+        assert_eq!(
+            ensure_encoded_size(MAX_SESSION_BYTES + 1),
+            Err(SessionError::Invalid(SessionInvalid::PathBudget))
+        );
+        assert!(header_is_truncated(HEADER_BYTES - 1));
+        assert!(!header_is_truncated(HEADER_BYTES));
+    }
+
+    #[test]
+    fn bounded_reader_accepts_the_limit_and_rejects_one_extra_byte() {
+        let accepted = vec![0_u8; MAX_SESSION_BYTES];
+        assert_eq!(
+            read_bounded(accepted.as_slice(), MAX_SESSION_BYTES),
+            Ok(accepted)
+        );
+        let oversized = vec![0_u8; MAX_SESSION_BYTES + 1];
+        assert_eq!(
+            read_bounded(oversized.as_slice(), MAX_SESSION_BYTES),
+            Err(SessionError::Corrupt(SessionCorrupt::Length))
+        );
+    }
+
+    #[test]
+    fn every_axis_tag_has_an_independent_contract() {
+        assert!(matches!(decode_axis(0), Ok(SessionAxis::Columns)));
+        assert!(matches!(decode_axis(1), Ok(SessionAxis::Rows)));
+        assert!(matches!(decode_axis(2), Err(SessionCorrupt::Tag)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_sync_reports_an_unopenable_parent() {
+        let missing = std::env::temp_dir().join(format!(
+            "alpine-missing-session-parent-{}",
+            std::process::id()
+        ));
+        assert!(sync_parent_directory(&missing).is_err());
+    }
+
+    #[test]
+    fn os_string_codec_preserves_independent_known_bytes() {
+        let value = OsString::from("alpine-session");
+        assert_eq!(os_bytes(&value), b"alpine-session");
+        assert_eq!(os_string(b"alpine-session"), value);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn os_string_codec_preserves_non_utf8_bytes() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let value = OsString::from_vec(vec![b'a', 0x80, b'z']);
+        assert_eq!(os_string(os_bytes(&value)), value);
+    }
 }
 
 #[cfg(test)]
@@ -730,16 +864,23 @@ mod tests {
         }
     }
 
+    fn absolute_root() -> PathBuf {
+        let root = std::env::temp_dir().join("alpine-session-model");
+        assert!(root.is_absolute());
+        root
+    }
+
     fn state() -> SessionState {
+        let root = absolute_root();
         SessionState {
-            workspace: Some(PathBuf::from("/tmp/alpine")),
+            workspace: Some(root.clone()),
             tabs: vec![
                 SessionTab {
                     path: None,
                     view: view(0, 0.0),
                 },
                 SessionTab {
-                    path: Some(PathBuf::from("/tmp/alpine/src/main.rs")),
+                    path: Some(root.join("src").join("main.rs")),
                     view: view(12, 24.0),
                 },
             ],
@@ -779,8 +920,293 @@ mod tests {
     fn codec_round_trips_exact_paths_tabs_panes_and_views() -> Result<(), Box<dyn Error>> {
         let state = state();
         let encoded = encode(&state)?;
+        assert_eq!(&encoded[..8], MAGIC);
+        assert_eq!(u16::from_le_bytes([encoded[8], encoded[9]]), VERSION);
+        let payload_len = u32::from_le_bytes([encoded[10], encoded[11], encoded[12], encoded[13]]);
+        assert_eq!(usize::try_from(payload_len)? + HEADER_BYTES, encoded.len());
+        let checksum = u32::from_le_bytes([encoded[14], encoded[15], encoded[16], encoded[17]]);
+        assert_eq!(checksum, crc32(&encoded[HEADER_BYTES..]));
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
         assert_eq!(decode(&encoded)?, state);
+
+        let mut rows = state.clone();
+        rows.panes.nodes[0] = SessionNode::Split {
+            axis: SessionAxis::Rows,
+            first: 1,
+            second: 2,
+        };
+        assert_eq!(decode(&encode(&rows)?)?, rows);
         Ok(())
+    }
+
+    #[test]
+    fn constants_default_path_and_error_contracts_are_exact() -> Result<(), Box<dyn Error>> {
+        assert_eq!(SESSION_NODE_CAPACITY, 7);
+        assert_eq!(SESSION_PANE_CAPACITY, 4);
+        assert_eq!(SESSION_TAB_CAPACITY, 32);
+        assert_eq!(MAX_PATH_BYTES, 4_096);
+        assert_eq!(MAX_RETAINED_PATH_BYTES, 65_536);
+        assert_eq!(MAX_SESSION_BYTES, 131_072);
+        assert_eq!(MAX_READ_BYTES, 131_073);
+        assert_eq!(HEADER_BYTES, 18);
+
+        assert_eq!(default_path_from_home(None), Err(SessionError::MissingHome));
+        assert_eq!(
+            default_path_from_home(Some(OsString::new())),
+            Err(SessionError::MissingHome)
+        );
+        let home = absolute_root();
+        assert_eq!(
+            default_path_from_home(Some(home.clone().into_os_string()))?,
+            home.join("Library")
+                .join("Application Support")
+                .join("Alpine Studio")
+                .join("session-v1.bin")
+        );
+        assert_eq!(
+            default_path(),
+            default_path_from_home(std::env::var_os("HOME"))
+        );
+
+        for error in [
+            SessionInvalid::NoTabs,
+            SessionInvalid::TooManyTabs,
+            SessionInvalid::ActiveTab,
+            SessionInvalid::ScratchPosition,
+            SessionInvalid::DuplicatePath,
+            SessionInvalid::RelativePath,
+            SessionInvalid::PathTooLong,
+            SessionInvalid::PathBudget,
+            SessionInvalid::InvalidView,
+            SessionInvalid::EmptyRoot,
+            SessionInvalid::NodeReference,
+            SessionInvalid::NodeCycle,
+            SessionInvalid::UnreachableNode,
+            SessionInvalid::PaneReference,
+            SessionInvalid::DuplicatePane,
+            SessionInvalid::MissingPane,
+            SessionInvalid::ActivePane,
+        ] {
+            assert!(!error.to_string().is_empty());
+        }
+        for error in [
+            SessionCorrupt::Header,
+            SessionCorrupt::Version(7),
+            SessionCorrupt::Length,
+            SessionCorrupt::Checksum,
+            SessionCorrupt::Truncated,
+            SessionCorrupt::Tag,
+            SessionCorrupt::TrailingBytes,
+            SessionCorrupt::Invalid(SessionInvalid::NoTabs),
+        ] {
+            assert!(!error.to_string().is_empty());
+            assert!(Error::source(&error).is_none());
+        }
+        for error in [
+            SessionError::MissingHome,
+            SessionError::AllocationFailed,
+            SessionError::Invalid(SessionInvalid::NoTabs),
+            SessionError::Corrupt(SessionCorrupt::Header),
+            SessionError::Io {
+                operation: "read",
+                kind: io::ErrorKind::NotFound,
+            },
+        ] {
+            assert!(!error.to_string().is_empty());
+            assert!(Error::source(&error).is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "independent tab, path, view, and graph guards share one canonical fixture"
+    )]
+    fn tab_path_view_and_graph_validation_boundaries_are_independent() {
+        let mut invalid = state();
+        invalid.tabs.clear();
+        assert_eq!(validate(&invalid), Err(SessionInvalid::NoTabs));
+
+        let mut maximum = state();
+        maximum.tabs = (0_u8..32)
+            .map(|index| SessionTab {
+                path: Some(absolute_root().join(format!("{index}.rs"))),
+                view: view(usize::from(index), f32::from(index)),
+            })
+            .collect();
+        maximum.active_tab = 0;
+        maximum.panes.panes[0] = Some(SessionPane {
+            tab: 0,
+            view: view(0, 0.0),
+        });
+        maximum.panes.nodes = [
+            SessionNode::Leaf { pane: 0 },
+            SessionNode::Empty,
+            SessionNode::Empty,
+            SessionNode::Empty,
+            SessionNode::Empty,
+            SessionNode::Empty,
+            SessionNode::Empty,
+        ];
+        maximum.panes.panes[1] = None;
+        maximum.panes.active_pane = 0;
+        assert_eq!(validate(&maximum), Ok(()));
+        maximum.tabs.push(SessionTab {
+            path: Some(absolute_root().join("overflow.rs")),
+            view: view(0, 0.0),
+        });
+        assert_eq!(validate(&maximum), Err(SessionInvalid::TooManyTabs));
+
+        let mut invalid = state();
+        invalid.active_tab = 2;
+        assert_eq!(validate(&invalid), Err(SessionInvalid::ActiveTab));
+
+        let mut invalid = state();
+        invalid.tabs[1].path = None;
+        assert_eq!(validate(&invalid), Err(SessionInvalid::ScratchPosition));
+        let mut invalid = state();
+        invalid.tabs.insert(
+            0,
+            SessionTab {
+                path: None,
+                view: view(0, 0.0),
+            },
+        );
+        assert_eq!(validate(&invalid), Err(SessionInvalid::ScratchPosition));
+
+        let mut invalid = state();
+        invalid.workspace = Some(PathBuf::from("relative"));
+        assert_eq!(validate(&invalid), Err(SessionInvalid::RelativePath));
+        let mut invalid = state();
+        invalid.tabs[1].path = Some(PathBuf::from("relative.rs"));
+        assert_eq!(validate(&invalid), Err(SessionInvalid::RelativePath));
+        let mut invalid = state();
+        invalid.tabs.push(invalid.tabs[1].clone());
+        assert_eq!(validate(&invalid), Err(SessionInvalid::DuplicatePath));
+
+        let mut invalid = state();
+        invalid.tabs[0].view.scroll_y = -1.0;
+        assert_eq!(validate(&invalid), Err(SessionInvalid::InvalidView));
+        let mut invalid = state();
+        invalid.panes.panes[0] = Some(SessionPane {
+            tab: 0,
+            view: view(0, f32::INFINITY),
+        });
+        assert_eq!(validate(&invalid), Err(SessionInvalid::InvalidView));
+
+        let mut invalid = state();
+        invalid.panes.nodes[0] = SessionNode::Empty;
+        assert_eq!(validate(&invalid), Err(SessionInvalid::EmptyRoot));
+        let mut invalid = state();
+        invalid.panes.active_pane = 4;
+        assert_eq!(validate(&invalid), Err(SessionInvalid::ActivePane));
+        let mut invalid = state();
+        invalid.panes.active_pane = 2;
+        assert_eq!(validate(&invalid), Err(SessionInvalid::ActivePane));
+        let mut invalid = state();
+        invalid.panes.panes[0] = Some(SessionPane {
+            tab: 2,
+            view: view(0, 5.0),
+        });
+        assert_eq!(validate(&invalid), Err(SessionInvalid::PaneReference));
+        let mut invalid = state();
+        invalid.panes.nodes[0] = SessionNode::Split {
+            axis: SessionAxis::Rows,
+            first: 7,
+            second: 2,
+        };
+        assert_eq!(validate(&invalid), Err(SessionInvalid::NodeReference));
+        let mut invalid = state();
+        invalid.panes.nodes[0] = SessionNode::Split {
+            axis: SessionAxis::Rows,
+            first: 3,
+            second: 2,
+        };
+        assert_eq!(validate(&invalid), Err(SessionInvalid::NodeReference));
+        let mut invalid = state();
+        invalid.panes.nodes[0] = SessionNode::Split {
+            axis: SessionAxis::Rows,
+            first: 1,
+            second: 1,
+        };
+        assert_eq!(validate(&invalid), Err(SessionInvalid::NodeReference));
+        let mut invalid = state();
+        invalid.panes.nodes[1] = SessionNode::Leaf { pane: 4 };
+        assert_eq!(validate(&invalid), Err(SessionInvalid::PaneReference));
+        let mut invalid = state();
+        invalid.panes.panes[0] = None;
+        assert_eq!(validate(&invalid), Err(SessionInvalid::PaneReference));
+        let mut invalid = state();
+        invalid.panes.panes[2] = Some(SessionPane {
+            tab: 0,
+            view: view(0, 0.0),
+        });
+        assert_eq!(validate(&invalid), Err(SessionInvalid::MissingPane));
+        let mut invalid = state();
+        invalid.panes.panes[1] = Some(SessionPane {
+            tab: 0,
+            view: view(12, 24.0),
+        });
+        assert_eq!(validate(&invalid), Err(SessionInvalid::ActivePane));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_and_aggregate_byte_limits_are_exact() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = |length: usize, suffix: u8| {
+            let mut bytes = vec![b'a'; length];
+            bytes[0] = b'/';
+            bytes[length - 1] = suffix;
+            PathBuf::from(OsString::from_vec(bytes))
+        };
+        assert_eq!(
+            validate_optional_path(Some(&path(MAX_PATH_BYTES, b'z'))),
+            Ok(MAX_PATH_BYTES)
+        );
+        assert_eq!(
+            validate_optional_path(Some(&path(MAX_PATH_BYTES + 1, b'z'))),
+            Err(SessionInvalid::PathTooLong)
+        );
+
+        let mut maximum = state();
+        maximum.workspace = Some(path(MAX_PATH_BYTES, b'A'));
+        maximum.tabs = (0_u8..15)
+            .map(|index| SessionTab {
+                path: Some(path(MAX_PATH_BYTES, b'B' + index)),
+                view: view(0, 0.0),
+            })
+            .collect();
+        maximum.active_tab = 0;
+        maximum.panes = SessionPanes {
+            nodes: [
+                SessionNode::Leaf { pane: 0 },
+                SessionNode::Empty,
+                SessionNode::Empty,
+                SessionNode::Empty,
+                SessionNode::Empty,
+                SessionNode::Empty,
+                SessionNode::Empty,
+            ],
+            panes: [
+                Some(SessionPane {
+                    tab: 0,
+                    view: view(0, 0.0),
+                }),
+                None,
+                None,
+                None,
+            ],
+            active_pane: 0,
+        };
+        assert_eq!(validate(&maximum), Ok(()));
+        maximum.tabs.push(SessionTab {
+            path: Some(path(MAX_PATH_BYTES, b'Q')),
+            view: view(0, 0.0),
+        });
+        assert_eq!(validate(&maximum), Err(SessionInvalid::PathBudget));
     }
 
     #[test]
@@ -817,6 +1243,74 @@ mod tests {
         let checksum = crc32(&corrupt[HEADER_BYTES..]);
         corrupt[14..18].copy_from_slice(&checksum.to_le_bytes());
         assert_eq!(decode(&corrupt), Err(SessionCorrupt::Tag));
+
+        let mut corrupt = encoded.clone();
+        let first_pane = first_node + 12;
+        corrupt[first_pane] = u8::MAX;
+        let checksum = crc32(&corrupt[HEADER_BYTES..]);
+        corrupt[14..18].copy_from_slice(&checksum.to_le_bytes());
+        assert_eq!(decode(&corrupt), Err(SessionCorrupt::Tag));
+
+        let mut corrupt = encoded.clone();
+        corrupt.push(0);
+        let payload_len = u32::try_from(corrupt.len() - HEADER_BYTES)?;
+        corrupt[10..14].copy_from_slice(&payload_len.to_le_bytes());
+        let checksum = crc32(&corrupt[HEADER_BYTES..]);
+        corrupt[14..18].copy_from_slice(&checksum.to_le_bytes());
+        assert_eq!(decode(&corrupt), Err(SessionCorrupt::TrailingBytes));
+
+        let mut corrupt = encoded.clone();
+        corrupt[first_node + 1] = u8::MAX;
+        let checksum = crc32(&corrupt[HEADER_BYTES..]);
+        corrupt[14..18].copy_from_slice(&checksum.to_le_bytes());
+        assert_eq!(decode(&corrupt), Err(SessionCorrupt::Tag));
+
+        for length in 0..HEADER_BYTES {
+            assert_eq!(decode(&encoded[..length]), Err(SessionCorrupt::Header));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reader_rejects_each_tag_length_truncation_and_view_boundary() -> Result<(), Box<dyn Error>> {
+        let mut reader = Reader::new(&[2]);
+        assert_eq!(reader.path(), Err(SessionCorrupt::Tag));
+
+        let mut reader = Reader::new(&[1, 0, 0]);
+        assert_eq!(
+            reader.path(),
+            Err(SessionCorrupt::Invalid(SessionInvalid::PathTooLong))
+        );
+        let oversized = u16::try_from(MAX_PATH_BYTES + 1)?.to_le_bytes();
+        let mut bytes = vec![1, oversized[0], oversized[1]];
+        let mut reader = Reader::new(&bytes);
+        assert_eq!(
+            reader.path(),
+            Err(SessionCorrupt::Invalid(SessionInvalid::PathTooLong))
+        );
+
+        let maximum = u16::try_from(MAX_PATH_BYTES)?.to_le_bytes();
+        bytes.clear();
+        bytes.extend([1, maximum[0], maximum[1]]);
+        bytes.resize(3 + MAX_PATH_BYTES, b'a');
+        let mut reader = Reader::new(&bytes);
+        assert!(reader.path()?.is_some());
+        assert!(reader.is_empty());
+        assert_eq!(reader.u8(), Err(SessionCorrupt::Truncated));
+
+        let mut view_bytes = Vec::new();
+        view_bytes.extend_from_slice(&0_u64.to_le_bytes());
+        view_bytes.extend_from_slice(&0_u64.to_le_bytes());
+        view_bytes.extend_from_slice(&f32::NAN.to_bits().to_le_bytes());
+        let mut reader = Reader::new(&view_bytes);
+        assert_eq!(
+            reader.view(),
+            Err(SessionCorrupt::Invalid(SessionInvalid::InvalidView))
+        );
+
+        let mut reader = Reader::new(&[1, 2, 3]);
+        assert_eq!(reader.take(usize::MAX), Err(SessionCorrupt::Truncated));
+        assert!(!reader.is_empty());
         Ok(())
     }
 
@@ -894,6 +1388,75 @@ mod tests {
         ));
         assert_eq!(load(&path)?, accepted);
         assert_eq!(fs::read_dir(&root)?.count(), 1);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    #[test]
+    fn load_size_and_temporary_collision_boundaries_are_exact() -> Result<(), Box<dyn Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "alpine-session-boundaries-{}-{}",
+            std::process::id(),
+            TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root)?;
+        let oversized = root.join("oversized.bin");
+        let file = File::create(&oversized)?;
+        file.set_len(MAX_READ_BYTES)?;
+        assert_eq!(
+            load(&oversized),
+            Err(SessionError::Corrupt(SessionCorrupt::Length))
+        );
+        file.set_len(u64::try_from(MAX_SESSION_BYTES)?)?;
+        assert_eq!(
+            load(&oversized),
+            Err(SessionError::Corrupt(SessionCorrupt::Header))
+        );
+
+        let target = root.join("collision.bin");
+        let file_name = target.file_name().ok_or("file name")?;
+        let first = 70_001_u64;
+        fs::write(temporary_path(&root, file_name, first), b"occupied")?;
+        let sequences = [first, first + 1];
+        let mut sequence_index = 0;
+        let mut next = || {
+            let value = sequences[sequence_index];
+            sequence_index += 1;
+            value
+        };
+        let mut writer = |file: &mut File, bytes: &[u8]| file.write_all(bytes);
+        atomic_replace_with_sequence(&target, b"accepted", &mut writer, &mut next)?;
+        assert_eq!(fs::read(&target)?, b"accepted");
+
+        let start = 80_001_u64;
+        for sequence in start..start + u64::try_from(TEMPORARY_ATTEMPTS)? {
+            fs::write(temporary_path(&root, file_name, sequence), b"occupied")?;
+        }
+        let mut sequence = start;
+        let mut next = || {
+            let current = sequence;
+            sequence += 1;
+            current
+        };
+        assert_eq!(
+            atomic_replace_with_sequence(&target, b"rejected", &mut writer, &mut next),
+            Err(SessionError::Io {
+                operation: "create-temporary",
+                kind: io::ErrorKind::AlreadyExists,
+            })
+        );
+        assert_eq!(fs::read(&target)?, b"accepted");
+
+        let missing = root.join("missing").join("state.bin");
+        let mut next = || 90_001;
+        assert_eq!(
+            atomic_replace_with_sequence(&missing, b"rejected", &mut writer, &mut next),
+            Err(SessionError::Io {
+                operation: "create-temporary",
+                kind: io::ErrorKind::NotFound,
+            })
+        );
         fs::remove_dir_all(root)?;
         Ok(())
     }
