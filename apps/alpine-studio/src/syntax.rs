@@ -833,6 +833,14 @@ mod tests {
             [SyntaxClass::Heading]
         );
         assert_eq!(
+            highlight_line(SyntaxLanguage::Markdown, "## Alpine Studio")?.spans(),
+            &[SyntaxSpan {
+                start_utf16: 0,
+                end_utf16: 16,
+                class: SyntaxClass::Heading
+            }]
+        );
+        assert_eq!(
             classes(SyntaxLanguage::Markdown, "Use `cargo run` now")?,
             [SyntaxClass::Code]
         );
