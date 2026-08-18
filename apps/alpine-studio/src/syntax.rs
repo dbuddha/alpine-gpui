@@ -800,10 +800,8 @@ mod tests {
                 SyntaxClass::Comment
             ]
         );
-        let json = classes(
-            SyntaxLanguage::Json,
-            r#"{"name": "alpine", "ok": true, "n": -2}"#,
-        )?;
+        let json_source = r#"{"name": "alpine", "ok": true, "n": -2}"#;
+        let json = classes(SyntaxLanguage::Json, json_source)?;
         assert_eq!(
             json,
             [
@@ -1049,6 +1047,10 @@ mod tests {
             [SyntaxClass::Heading]
         );
         assert!(classes(SyntaxLanguage::Toml, "bare value")?.is_empty());
+        assert_eq!(
+            classes(SyntaxLanguage::Toml, " = 1")?,
+            [SyntaxClass::Number]
+        );
         let mut overlapping_toml = Emitter::new("name = 1");
         overlapping_toml.push(0, 1, SyntaxClass::Code)?;
         assert!(matches!(
@@ -1059,10 +1061,8 @@ mod tests {
             classes(SyntaxLanguage::Markdown, "####### not-a-heading `open")?,
             [SyntaxClass::Code]
         );
-        let escaped_json = classes(
-            SyntaxLanguage::Json,
-            r#"{"escaped": "a\\\"b", "false": false, "none": null}"#,
-        )?;
+        let escaped_source = r#"{"escaped": "a\\\"b", "false": false, "none": null}"#;
+        let escaped_json = classes(SyntaxLanguage::Json, escaped_source)?;
         assert_eq!(
             escaped_json,
             [
