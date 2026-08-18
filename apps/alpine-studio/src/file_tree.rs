@@ -1732,18 +1732,47 @@ mod tests {
     }
 
     #[test]
+    fn restored_directory_count_at_cache_ceiling_is_rejected_atomically()
+    -> Result<(), Box<dyn Error>> {
+        let limits = FileTreeLimits::new(8, 8, 64, 2, 8, 64, 16, 4, 8);
+        let mut state = FileTreeState::with_test_limits(limits);
+        state.restore_session(
+            5,
+            &crate::session::SessionFileTree {
+                expanded: vec![PathBuf::from("src")],
+                selected: Some(PathBuf::from("src/main.rs")),
+            },
+        )?;
+        let accepted = state.session_state()?;
+
+        assert!(matches!(
+            state.restore_session(
+                6,
+                &crate::session::SessionFileTree {
+                    expanded: vec![PathBuf::from("src"), PathBuf::from("tests")],
+                    selected: None,
+                },
+            ),
+            Err(FileTreeError::CacheLimitExceeded {
+                resource: "directory count",
+                limit: 2,
+            })
+        ));
+        assert_eq!(state.session_state()?, accepted);
+        Ok(())
+    }
+
+    #[test]
     fn missing_restored_directory_fails_without_retargeting_selection() -> Result<(), Box<dyn Error>>
     {
         let root = TestRoot::new()?;
         root.write("top.rs")?;
         let mut state = FileTreeState::default();
-        state.restore_session(
-            3,
-            &crate::session::SessionFileTree {
-                expanded: vec![PathBuf::from("missing")],
-                selected: Some(PathBuf::from("missing/file.rs")),
-            },
-        )?;
+        let session = crate::session::SessionFileTree {
+            expanded: vec![PathBuf::from("missing")],
+            selected: Some(PathBuf::from("missing/file.rs")),
+        };
+        state.restore_session(3, &session)?;
         state.activate(3)?;
         assert_eq!(
             admit_next(&mut state, &root.0)?,
