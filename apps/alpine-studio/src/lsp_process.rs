@@ -18,6 +18,7 @@ use std::{
 
 const CONTROL_CAPACITY: usize = 8;
 const EVENT_CAPACITY: usize = 16;
+const TERMINAL_EVENT_RESERVE: usize = 2;
 const INPUT_CAPACITY: usize = 4;
 const OUTPUT_CAPACITY: usize = 8;
 const WRITE_RESULT_CAPACITY: usize = 8;
@@ -900,7 +901,7 @@ fn start_running(
             }
         }
         Err(failure) => {
-            let _ = emit(
+            let _ = emit_terminal(
                 events,
                 ProcessEvent::Failed {
                     identity,
@@ -1040,12 +1041,12 @@ fn handle_wait(
     match classify_wait(identity, epoch, result) {
         Ok(Some(event)) => {
             counters.exits.fetch_add(1, Ordering::Relaxed);
-            let _ = emit(events, event, counters);
+            let _ = emit_terminal(events, event, counters);
             WaitDecision::Exited
         }
         Ok(None) => WaitDecision::Running,
         Err(failure) => {
-            let _ = emit(
+            let _ = emit_terminal(
                 events,
                 ProcessEvent::Failed {
                     identity,
@@ -1071,7 +1072,7 @@ fn stop_for_reason(
     let identity = process.identity;
     let epoch = process.epoch;
     let _ = stop_running(&mut process, true);
-    let _ = emit(
+    let _ = emit_terminal(
         events,
         ProcessEvent::Stopped {
             identity,
@@ -1087,7 +1088,7 @@ fn stop_for_restart(mut process: Running, events: &SyncSender<ProcessEvent>, cou
     let identity = process.identity;
     let epoch = process.epoch;
     let panicked = stop_running(&mut process, true);
-    let _ = emit(
+    let _ = emit_terminal(
         events,
         ProcessEvent::Stopped {
             identity,
@@ -1097,7 +1098,7 @@ fn stop_for_restart(mut process: Running, events: &SyncSender<ProcessEvent>, cou
         counters,
     );
     if panicked {
-        let _ = emit(
+        let _ = emit_terminal(
             events,
             ProcessEvent::Failed {
                 identity,
@@ -1110,6 +1111,26 @@ fn stop_for_restart(mut process: Running, events: &SyncSender<ProcessEvent>, cou
 }
 
 fn emit(events: &SyncSender<ProcessEvent>, event: ProcessEvent, counters: &Counters) -> bool {
+    if counters.queued_events.load(Ordering::Acquire) >= EVENT_CAPACITY - TERMINAL_EVENT_RESERVE {
+        counters.event_saturations.fetch_add(1, Ordering::Relaxed);
+        return false;
+    }
+    emit_unreserved(events, event, counters)
+}
+
+fn emit_terminal(
+    events: &SyncSender<ProcessEvent>,
+    event: ProcessEvent,
+    counters: &Counters,
+) -> bool {
+    emit_unreserved(events, event, counters)
+}
+
+fn emit_unreserved(
+    events: &SyncSender<ProcessEvent>,
+    event: ProcessEvent,
+    counters: &Counters,
+) -> bool {
     let queued = counters.queued_events.fetch_add(1, Ordering::AcqRel) + 1;
     counters
         .peak_queued_events

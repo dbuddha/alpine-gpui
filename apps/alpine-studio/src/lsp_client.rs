@@ -670,9 +670,15 @@ mod tests {
         let mut overflowing = start_initialized(executable, 2)?;
         overflowing.begin_request("test/flood-stderr", None, current)?;
         let stopped = wait_poll(&mut overflowing, Some(current), |poll| {
-            matches!(poll, LspClientPoll::Stopped(StopReason::OutputOverflow))
+            matches!(
+                poll,
+                LspClientPoll::Stopped(StopReason::OutputOverflow | StopReason::EventOverflow)
+            )
         })?;
-        assert_eq!(stopped, LspClientPoll::Stopped(StopReason::OutputOverflow));
+        assert!(matches!(
+            stopped,
+            LspClientPoll::Stopped(StopReason::OutputOverflow | StopReason::EventOverflow)
+        ));
         overflowing.shutdown();
 
         let invalid = executable.directory.join(format!(
