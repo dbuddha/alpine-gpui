@@ -56,9 +56,13 @@ samples the scene-owned A8 atlas without exposing native handles.
 `alpine-platform-macos` facade. It owns one foreground application delegate,
 monotonic workspace and document revisions, dirty-only scene construction, and
 fixed standard worker threads connected by bounded request and result channels.
-Every result carries workspace, document, and process-local sequence identity;
-stale results are rejected before delegate mutation. The runtime exposes no
-native handle and adds no general async executor or reactive graph.
+Worker results carry workspace, document, and process-local sequence identity;
+stale worker results are rejected before delegate mutation. Independent local
+sources use a separate fixed-capacity, byte-accounted producer queue and carry
+application-owned identity for exact delegate admission across revisions. Both
+sources share bounded fair foreground draining and coalesced run-loop wake, while
+only the delegate can invalidate a frame. The runtime exposes no native handle
+and adds no general async executor, timer poller, or reactive graph.
 `alpine-studio` privately depends on exact-version, default-feature-disabled
 `ignore` 0.4.33 for project-local recursive traversal. It uses only the serial
 walker, disables global and parent ignore state, includes hidden paths except

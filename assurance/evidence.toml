@@ -2733,6 +2733,35 @@ assertion = "The real native delegate owner replays every handle-free event vari
 scope = "One Apple Silicon macOS AppKit owner and validation event replay seam."
 assumptions = ["Task #130 separately qualifies conversion from real keyboard, pointer, clipboard, and IME callbacks"]
 exclusions = ["accessibility", "real text input conversion", "multiple windows"]
+
+[[evidence]]
+id = "EV-0137-UNIT01B"
+claim = "AEP-0137-C01"
+kind = "unit"
+artifact = "crates/alpine-runtime/src/lib.rs#external_queue_coalesces_saturates_and_continues_under_one_drain_budget"
+assertion = "The independent producer admits exactly the fixed queue capacity, coalesces queued wakes, rejects the next item, and drains under the shared eight-result foreground budget with one continuation."
+scope = "One portable application, one independent producer, sixteen one-byte results, and no native handle."
+exclusions = ["native run-loop dispatch", "language-server payload semantics", "elapsed wake latency"]
+
+[[evidence]]
+id = "EV-0137-UNIT02B"
+claim = "AEP-0137-C02"
+kind = "unit"
+artifact = "crates/alpine-runtime/src/lib.rs#external_results_cross_runtime_revisions_and_keep_exact_accounting"
+assertion = "An independent owned result crosses a foreground document-revision advance without entering the stale worker path, reaches the delegate with current runtime identity, and releases every attributed byte after drain."
+scope = "One portable application revision advance and one thirteen-byte independent result."
+assumptions = ["The application payload carries and validates its own exact domain identity before visible mutation."]
+exclusions = ["Studio diagnostic admission", "language-server process I/O", "native run-loop dispatch"]
+
+[[evidence]]
+id = "EV-0137-UNIT03B"
+claim = "AEP-0137-C03"
+kind = "unit"
+artifact = "crates/alpine-runtime/src/lib.rs#external_result_without_delegate_invalidation_requests_no_frame"
+assertion = "Draining one independent result through a delegate that does not invalidate leaves the application clean and produces no frame."
+scope = "One portable application, one zero-byte independent result, and an empty immutable scene."
+exclusions = ["native presentation", "external payload semantics", "input-to-display latency"]
+
 [[claims]]
 id = "AEP-0137-C01"
 mission = "MP-04"
