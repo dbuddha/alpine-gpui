@@ -4,6 +4,8 @@ This review records the accepted 2026-08 implementation verdict for Alpine
 GPUI and Alpine Studio. It evaluates correctness first, then performance,
 resource efficiency, and delivery speed. Research history and future updates
 belong to [Research #118](https://github.com/dbuddha/alpine-gpui/issues/118).
+The current-state correction is tracked by
+[Task #202](https://github.com/dbuddha/alpine-gpui/issues/202).
 
 ## Executive verdict
 
@@ -12,11 +14,14 @@ validated values, immutable scenes, structured failures, demand-driven pacing,
 direct Metal presentation, exact resource accounting, semantic and CPU oracles,
 and lifecycle qualification. Those foundations should remain narrow.
 
-Its central weakness is product depth. The accepted baseline has one shipping
-window and solid-quad scenes, but not yet a text model, input dispatch, shaping,
-layout, accessibility, workspace state, search, or language intelligence. The
-fastest uncompromised path is therefore vertical slices that make one real file
-editable before adding broad framework abstractions.
+Since the original review, Alpine has crossed the renderer-only boundary. The
+accepted main line now includes bounded asynchronous presentation, runtime and
+input events, a local text model, CoreText shaping and glyph rendering, one-file
+editing, clipboard and IME behavior, atomic save, a folder workspace, lazy file
+tree, tabs, splits, search, command discovery, and crash-safe restoration. The
+central weakness is now daily-driver completion and qualification: compiled
+syntax, Rust intelligence, settings and keymap completion, native accessibility,
+sustained dogfood, packaging, and defensible fixed-hardware evidence remain open.
 
 ## Keep, change, and defer
 
@@ -25,9 +30,9 @@ editable before adding broad framework abstractions.
 | Core contracts | Validated values, immutable revisions, structured errors, safe public boundaries | Add abstractions only when consumed by a Studio slice | General component or reactive framework | Correctness, delivery |
 | Native lifecycle | One AppKit surface, CAMetalDisplayLink, visibility gating, latest-wins invalidation, deterministic close | Exercise only production paths and preserve bounded watchdog evidence | Multi-window runtime | Correctness |
 | Presentation | Direct drawable presentation, three-drawable ceiling, zero idle work | Remove callback GPU waits using three completion-owned slots | Background rendering and deep queues | Performance, responsiveness |
-| Scene | Deterministic solid-quad oracle and Direct Metal specialization | Add clips, glyph instances, and ordered operations using separate primitive arrays | Rich images, shadows, arbitrary paths, animation | Correctness, memory |
-| Product state | Direct ownership and explicit revisions | Add StudioApp to Workspace to Editor to Buffer ownership | GPUI entity compatibility and distributed state | Correctness, delivery |
-| Text | Independent oracle discipline | Add local copy-on-write snapshots, Unicode mappings, compact undo, visible-range shaping, and bounded caches | Collaboration clocks and custom rope before dogfooding | Correctness, memory |
+| Scene | Deterministic semantic and CPU oracles, clips, glyph instances, ordered operations, and Direct Metal specialization | Stabilize realistic code-viewport traces and qualification workloads | Rich images, shadows, arbitrary paths, animation | Correctness, memory |
+| Product state | Direct StudioApp to Workspace to Editor to Buffer ownership and explicit revisions | Finish language, settings, accessibility, and dogfood slices without a general component graph | GPUI entity compatibility and distributed state | Correctness, delivery |
+| Text | Local snapshots, Unicode mappings, bounded undo, visible-range CoreText shaping, and byte-accounted caches | Qualify large files, IME, external changes, and sustained editing | Collaboration clocks and a custom rope | Correctness, memory |
 | Product scope | Local-only editor-first boundary | Enforce excluded subsystems through binary and process audits | AI, collaboration, cloud, telemetry, plugins, remote, debugger, terminal, tasks, Git UI | Efficiency, delivery |
 | Qualification | Exact trace identity and semantic admission | Separate adaptation, renderer stages, product journeys, memory, and exclusions | Headline averages and universal fastest-framework claims | Claim validity |
 
@@ -72,17 +77,21 @@ an Alpine implementation choice.
 
 ## Execution order and hard gates
 
-1. Preserve one production AppKit run boundary and deterministic close evidence.
-2. Make native presentation asynchronous and bounded before text-heavy scenes.
-3. Deliver one correct real-file editor with native events, text, IME, save,
-   undo, and visible rendering.
-4. Add the local workspace shell and bounded background indexing.
-5. Add the compiled language cohort, local Rust intelligence, typed settings,
-   restoration, and accessibility.
-6. Dogfood the Alpine repositories with no known data-loss, lifecycle,
+1. Preserve the completed production AppKit and deterministic close boundary.
+2. Preserve the completed asynchronous, three-slot presentation contract.
+3. Preserve and dogfood the implemented real-file editor and native input path.
+4. Preserve and dogfood the implemented local workspace shell and restoration.
+5. Reconcile the open compiled-language, LSP, settings, no-bloat, and
+   accessibility PR stack onto current `main` in dependency order.
+6. Complete local Rust intelligence, typed settings, restoration, and accessibility.
+7. Dogfood the Alpine repositories with no known data-loss, lifecycle,
    unbounded-memory, idle-submission, IME, or accessibility defects.
-7. Qualify only named renderer and product claims through the
+8. Qualify only named renderer and product claims through the
    [comparator protocol](../quality/comparator-protocol.md).
+
+The exact gate status and open PR order are retained in the
+[daily-driver path](../use-cases/alpine-studio-highfidelity.md). M5 in the
+current GitHub milestone scheme is not, by itself, the Studio daily-driver exit.
 
 Correctness failure blocks timing. Performance regression blocks efficiency
 claims. Memory optimization cannot omit behavior. Delivery shortcuts cannot
@@ -120,6 +129,9 @@ that Alpine is the fastest general UI framework.
   dependencies require separate measured approval before admission.
 - Fixed-hardware superiority evidence does not exist until the accepted
   workload and environment windows are collected.
+- The open Gate 5 PRs are stacked on pre-workspace branches and must be
+  reconciled to current `main`; merging the stale stack directly risks dropping
+  accepted workspace behavior.
 
 These are sequencing constraints, not reasons to broaden the framework or add
 speculative infrastructure.
