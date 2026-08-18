@@ -168,6 +168,8 @@ jobs:
     if: needs.classify.outputs.coverage == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      RUST_TEST_THREADS: 1
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
