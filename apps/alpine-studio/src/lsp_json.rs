@@ -420,6 +420,16 @@ pub(crate) struct PeerSnapshot {
     stale_responses: u64,
 }
 
+impl PeerSnapshot {
+    pub(crate) const fn lifecycle(self) -> PeerLifecycle {
+        self.lifecycle
+    }
+
+    pub(crate) const fn pending_requests(self) -> usize {
+        self.pending_requests
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct OutboundMessage {
     bytes: Box<[u8]>,
@@ -618,6 +628,22 @@ impl LspPeer {
                 })
             }
         }
+    }
+
+    pub(crate) fn rollback_unsent(&mut self, id: u32) -> Result<(), ProtocolError> {
+        let id = RequestId(id);
+        let index = self
+            .pending
+            .iter()
+            .position(|pending| pending.id == id)
+            .ok_or(ProtocolError::UnknownResponseId)?;
+        let pending = self.pending.swap_remove(index);
+        match pending.kind {
+            PendingKind::Initialize => self.lifecycle = PeerLifecycle::Created,
+            PendingKind::Shutdown => self.lifecycle = PeerLifecycle::Running,
+            PendingKind::Request => {}
+        }
+        Ok(())
     }
 
     fn begin_pending(
@@ -933,6 +959,61 @@ mod tests {
             peer.receive(response.as_bytes(), Some(stamp(7))),
             Err(ProtocolError::UnknownResponseId)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn unsent_rollback_removes_the_exact_request_and_restores_lifecycle()
+    -> Result<(), ProtocolError> {
+        let mut initializing = LspPeer::new();
+        let initialize_message = initializing.begin_initialize()?;
+        let initialize_id = initialize_message
+            .request_id()
+            .ok_or(ProtocolError::InvalidEnvelope)?;
+        assert_eq!(initializing.snapshot().pending_requests(), 1);
+        initializing.rollback_unsent(initialize_id)?;
+        assert_eq!(initializing.snapshot().pending_requests(), 0);
+        assert_eq!(initializing.snapshot().lifecycle(), PeerLifecycle::Created);
+
+        let mut peer = LspPeer::new();
+        initialize(&mut peer);
+        let first = peer.begin_request("textDocument/hover", None, stamp(1))?;
+        let second = peer.begin_request("textDocument/definition", None, stamp(2))?;
+        let first_id = first.request_id().ok_or(ProtocolError::InvalidEnvelope)?;
+        let second_id = second.request_id().ok_or(ProtocolError::InvalidEnvelope)?;
+        assert_eq!(peer.snapshot().pending_requests(), 2);
+
+        peer.rollback_unsent(first_id)?;
+        assert_eq!(peer.snapshot().pending_requests(), 1);
+        let second_response = format!(r#"{{"jsonrpc":"2.0","id":{second_id},"result":null}}"#);
+        assert!(matches!(
+            peer.receive(second_response.as_bytes(), Some(stamp(2)))?,
+            PeerEvent::Response {
+                id,
+                method,
+                stamp: response_stamp,
+                ..
+            } if id == second_id
+                && &*method == "textDocument/definition"
+                && response_stamp == stamp(2)
+        ));
+        let first_response = format!(r#"{{"jsonrpc":"2.0","id":{first_id},"result":null}}"#);
+        assert!(matches!(
+            peer.receive(first_response.as_bytes(), Some(stamp(1))),
+            Err(ProtocolError::UnknownResponseId)
+        ));
+
+        let shutdown = peer.begin_shutdown()?;
+        let shutdown_id = shutdown
+            .request_id()
+            .ok_or(ProtocolError::InvalidEnvelope)?;
+        peer.rollback_unsent(shutdown_id)?;
+        assert_eq!(peer.snapshot().pending_requests(), 0);
+        assert_eq!(peer.snapshot().lifecycle(), PeerLifecycle::Running);
+        assert_eq!(
+            peer.rollback_unsent(shutdown_id),
+            Err(ProtocolError::UnknownResponseId)
+        );
         Ok(())
     }
 
