@@ -156,6 +156,9 @@ for required_path in \
     docs/concepts/traceability.md \
     docs/quality/assurance.md \
     assurance/evidence.toml \
+    assurance/alpine-studio-dependencies.txt \
+    scripts/check-product-boundary.sh \
+    scripts/test-product-boundary.sh \
     scripts/test-assurance.sh \
     scripts/test-metal-library.sh \
     scripts/verify-metal-library.sh \

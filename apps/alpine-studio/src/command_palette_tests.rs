@@ -445,6 +445,27 @@ fn command_dispatch_preserves_bounded_workspace_errors() -> Result<(), Box<dyn s
     Ok(())
 }
 
+fn glyph_count_at(scene: &Scene, x: f32, y: f32) -> usize {
+    scene
+        .glyphs()
+        .iter()
+        .filter(|glyph| {
+            glyph.bounds().origin().x().to_bits() == x.to_bits()
+                && glyph.bounds().origin().y().to_bits() == y.to_bits()
+        })
+        .count()
+}
+
+fn glyph_count_left_of(scene: &Scene, x: f32, y: f32) -> usize {
+    scene
+        .glyphs()
+        .iter()
+        .filter(|glyph| {
+            glyph.bounds().origin().x() < x && glyph.bounds().origin().y().to_bits() == y.to_bits()
+        })
+        .count()
+}
+
 #[test]
 fn command_palette_scene_geometry_is_exact_at_a_narrow_viewport()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -456,6 +477,20 @@ fn command_palette_scene_geometry_is_exact_at_a_narrow_viewport()
     app.open_workspace_path(&second, None)?;
     assert!(app.open_command_palette().visual_changed);
     assert_eq!(app.command_palette.visible_commands()?.len(), 9);
+    let shortcut_rows = app
+        .command_palette
+        .visible_commands()?
+        .into_iter()
+        .enumerate()
+        .filter_map(|(row_index, row)| {
+            app.settings
+                .active()
+                .keymap
+                .shortcut_for(row.command)
+                .map(|shortcut| (row_index, shortcut.chars().count()))
+        })
+        .collect::<Vec<_>>();
+    assert!(!shortcut_rows.is_empty());
 
     let viewport = Size::new(300.0, 400.0).ok_or("viewport")?;
     let scene = app.try_scene(SceneRevision::new(906), viewport)?;
@@ -488,6 +523,26 @@ fn command_palette_scene_geometry_is_exact_at_a_narrow_viewport()
             .reduce(f32::min)
             .ok_or("command row glyph")?;
         assert_eq!(first_x.to_bits(), f32::to_bits(x));
+    }
+    for &(row_index, shortcut_columns) in &shortcut_rows {
+        let row_y = 98.0 + usize_as_f32(row_index) * COMMAND_PALETTE_ROW_HEIGHT;
+        let shortcut_left = 268.0 - usize_as_f32(shortcut_columns) * 8.0;
+        assert_eq!(glyph_count_at(&scene, shortcut_left, row_y), 1);
+        assert_eq!(glyph_count_at(&scene, 260.0, row_y), 1);
+    }
+
+    let narrow_width = 80.0;
+    let narrow_scene = app.try_scene(
+        SceneRevision::new(907),
+        Size::new(narrow_width, 400.0).ok_or("narrow viewport")?,
+    )?;
+    let overlay_width = COMMAND_PALETTE_WIDTH.min((narrow_width - CONTENT_INSET * 2.0).max(1.0));
+    let overlay_left = ((narrow_width - overlay_width) * 0.5).max(0.0);
+    let shortcut_floor = overlay_left + FIND_BAR_INSET;
+    for &(row_index, _) in &shortcut_rows {
+        let row_y = 98.0 + usize_as_f32(row_index) * COMMAND_PALETTE_ROW_HEIGHT;
+        assert_eq!(glyph_count_at(&narrow_scene, shortcut_floor, row_y), 2);
+        assert_eq!(glyph_count_left_of(&narrow_scene, shortcut_floor, row_y), 0);
     }
     Ok(())
 }

@@ -578,7 +578,14 @@ impl BufferSnapshot {
     /// Rejects invalid byte offsets.
     pub fn appkit_utf16_of_byte(&self, offset: ByteOffset) -> Result<usize, TextError> {
         self.validate_offset(offset.0)?;
-        Ok(self.text()[..offset.0].encode_utf16().count())
+        self.rope
+            .byte_slice(..offset.0)
+            .chars()
+            .try_fold(0_usize, |units, character| {
+                units
+                    .checked_add(character.len_utf16())
+                    .ok_or(TextError::InvalidUtf16Boundary { offset: units })
+            })
     }
 
     /// Converts a global `AppKit` UTF-16 code-unit offset to bytes.
@@ -587,7 +594,28 @@ impl BufferSnapshot {
     ///
     /// Rejects offsets beyond the snapshot and offsets inside surrogate pairs.
     pub fn byte_of_appkit_utf16(&self, utf16_offset: usize) -> Result<ByteOffset, TextError> {
-        byte_of_utf16(&self.text(), utf16_offset).map(ByteOffset)
+        let mut units = 0_usize;
+        let mut bytes = 0_usize;
+        for character in self.rope.chars() {
+            if utf16_offset == units {
+                return Ok(ByteOffset(bytes));
+            }
+            let next_units = units + character.len_utf16();
+            if utf16_offset < next_units {
+                return Err(TextError::InvalidUtf16Boundary {
+                    offset: utf16_offset,
+                });
+            }
+            units = next_units;
+            bytes += character.len_utf8();
+        }
+        if utf16_offset == units {
+            Ok(ByteOffset(bytes))
+        } else {
+            Err(TextError::InvalidUtf16Boundary {
+                offset: utf16_offset,
+            })
+        }
     }
 
     /// Converts a byte offset to an LSP line and UTF-16 column.
@@ -1637,6 +1665,18 @@ mod tests {
             snapshot.byte_of_lsp_position(LspPosition::new(0, 3))?,
             ByteOffset::new(5)
         );
+        assert!(matches!(
+            snapshot.byte_of_lsp_position(LspPosition::new(0, 2)),
+            Err(TextError::InvalidUtf16Boundary { offset: 2 })
+        ));
+        assert_eq!(
+            snapshot.byte_of_lsp_position(LspPosition::new(0, 5))?,
+            ByteOffset::new(8)
+        );
+        assert!(matches!(
+            snapshot.byte_of_lsp_position(LspPosition::new(0, 6)),
+            Err(TextError::InvalidUtf16Boundary { offset: 6 })
+        ));
         assert_eq!(snapshot.grapheme_index_of_byte(ByteOffset::new(1))?, 1);
         assert!(matches!(
             snapshot.grapheme_index_of_byte(ByteOffset::new(6)),
