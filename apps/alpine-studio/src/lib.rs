@@ -69,6 +69,8 @@ use project_search::{
 use quick_open::{
     QuickOpenAdmission, QuickOpenError, QuickOpenRequest, QuickOpenState, QuickOpenWorkerOutput,
 };
+#[cfg(all(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
+use settings::FONT_FAMILY;
 #[cfg(all(
     test,
     alpine_native_validation,
@@ -76,11 +78,8 @@ use quick_open::{
     target_arch = "aarch64"
 ))]
 use settings::FONT_SCALE as DEFAULT_SCALE;
-use settings::{
-    FONT_FAMILY, FONT_NAME, KEY_DELETE_BACKWARD, KEY_DELETE_FORWARD, KEY_DOWN, KEY_END, KEY_ESCAPE,
-    KEY_HOME, KEY_LEFT, KEY_RETURN, KEY_RIGHT, KEY_TAB, KEY_UP, KeyAction, LINE_HEIGHT,
-    StudioSettings,
-};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use settings::{FONT_FAMILY, FONT_NAME};
 #[cfg(all(
     alpine_native_validation,
     target_os = "macos",
@@ -91,6 +90,10 @@ use settings::{FONT_SCALE as DEFAULT_SCALE, KEY_A, KEY_E, KEY_F, KEY_P, KEY_S};
 #[cfg(test)]
 use settings::{
     KEY_A, KEY_E, KEY_F, KEY_LEFT_BRACKET, KEY_P, KEY_RIGHT_BRACKET, KEY_S, KEY_W, KEY_Z,
+};
+use settings::{
+    KEY_DELETE_BACKWARD, KEY_DELETE_FORWARD, KEY_DOWN, KEY_END, KEY_ESCAPE, KEY_HOME, KEY_LEFT,
+    KEY_RETURN, KEY_RIGHT, KEY_TAB, KEY_UP, KeyAction, LINE_HEIGHT, StudioSettings,
 };
 #[cfg(test)]
 use syntax::SyntaxClass;
@@ -301,6 +304,7 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg_attr(test, mutants::skip)] // Entering AppKit is qualified by native process E2E.
 fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
     let clear = app.settings.theme.clear;
     let descriptor = SurfaceDescriptor::new(
@@ -314,6 +318,7 @@ fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg_attr(test, mutants::skip)] // Native construction is qualified by native process E2E.
 fn native_app() -> Result<StudioApp, SurfaceError> {
     let mut text_system = alpine_text_layout::CoreTextSystem::new();
     text_system
