@@ -5,6 +5,7 @@
 
 //! Local-only Alpine Studio editor boundary.
 
+mod accessibility;
 mod commands;
 mod documents;
 mod file_tree;
@@ -38,6 +39,9 @@ use std::{
     sync::Arc,
 };
 
+use accessibility::{AccessibilityAction, AccessibilityError, AccessibilitySnapshot};
+#[cfg(test)]
+use accessibility::{AccessibilityRole, AccessibilityTextRange};
 use alpine_core::{LinearRgba, Point, Rect, Size};
 use alpine_platform_macos::{
     ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite, ImeEvent,
@@ -1605,6 +1609,31 @@ impl StudioApp {
 
     const fn buffer_mut(&mut self) -> &mut Buffer {
         self.document.buffer_mut()
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reviewed native adapter will call this demand-driven boundary in the next Task #130 slice"
+        )
+    )]
+    fn accessibility_snapshot(&self) -> Result<AccessibilitySnapshot, AccessibilityError> {
+        accessibility::snapshot(self)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the reviewed native adapter will call this revision-checked boundary in the next Task #130 slice"
+        )
+    )]
+    fn handle_accessibility_action(
+        &mut self,
+        action: AccessibilityAction,
+    ) -> Result<EventEffect, AccessibilityError> {
+        accessibility::apply_action(self, action)
     }
 
     fn font_from_settings(editor: &settings::EditorSettings) -> Result<FontKey, StudioRenderError> {
