@@ -339,13 +339,17 @@ pub(crate) struct StudioSettings {
 
 impl StudioSettings {
     pub(crate) fn compiled() -> Result<Self, SettingsError> {
+        Self::compiled_with_retained().map(|(settings, _)| settings)
+    }
+
+    fn compiled_with_retained() -> Result<(Self, usize), SettingsError> {
         let settings = Self {
             editor: EditorSettings::COMPILED,
             theme: StudioTheme::compiled()?,
             keymap: Keymap::compiled()?,
         };
-        settings.validate()?;
-        Ok(settings)
+        let retained = settings.validate()?;
+        Ok((settings, retained))
     }
 
     fn validate(&self) -> Result<usize, SettingsError> {
@@ -575,23 +579,19 @@ fn resolve_layers(
     global: Option<&SettingsLayer>,
     project: Option<&SettingsLayer>,
 ) -> Result<ResolvedSettings, SettingsFailure> {
-    resolve_layers_from(StudioSettings::compiled(), global, project)
+    resolve_layers_from(StudioSettings::compiled_with_retained(), global, project)
 }
 
 fn resolve_layers_from(
-    compiled: Result<StudioSettings, SettingsError>,
+    compiled: Result<(StudioSettings, usize), SettingsError>,
     global: Option<&SettingsLayer>,
     project: Option<&SettingsLayer>,
 ) -> Result<ResolvedSettings, SettingsFailure> {
-    let mut settings = compiled.map_err(|error| SettingsFailure {
+    let (mut settings, mut retained_bytes) = compiled.map_err(|error| SettingsFailure {
         source: SettingsSource::Compiled,
         error,
     })?;
     let mut provenance = SettingsProvenance::COMPILED;
-    let mut retained_bytes = settings.validate().map_err(|error| SettingsFailure {
-        source: SettingsSource::Compiled,
-        error,
-    })?;
     if let Some(global) = global {
         retained_bytes = apply_layer(
             &mut settings,
