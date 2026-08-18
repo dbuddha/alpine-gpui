@@ -14,6 +14,7 @@ mod project_search;
 mod quick_open;
 mod recovery;
 mod session;
+mod syntax;
 
 use std::path::PathBuf;
 mod workspace;
@@ -66,6 +67,9 @@ use project_search::{
 };
 use quick_open::{
     QuickOpenAdmission, QuickOpenError, QuickOpenRequest, QuickOpenState, QuickOpenWorkerOutput,
+};
+use syntax::{
+    DEFAULT_SYNTAX_BUDGET_BYTES, SyntaxCache, SyntaxClass, SyntaxError, SyntaxLanguage, SyntaxLine,
 };
 use workspace::Workspace;
 
@@ -442,6 +446,48 @@ struct PendingGlyph {
     bounds: Rect,
     atlas_bounds: AtlasBounds,
     clip: alpine_scene::ClipId,
+    source_utf16: u32,
+    color: Option<LinearRgba>,
+}
+
+#[derive(Clone, Copy)]
+struct SyntaxPalette {
+    comment: LinearRgba,
+    keyword: LinearRgba,
+    string: LinearRgba,
+    number: LinearRgba,
+    type_name: LinearRgba,
+    property: LinearRgba,
+    heading: LinearRgba,
+    code: LinearRgba,
+}
+
+impl SyntaxPalette {
+    fn new() -> Option<Self> {
+        Some(Self {
+            comment: LinearRgba::new(0.48, 0.60, 0.53, 1.0)?,
+            keyword: LinearRgba::new(0.96, 0.48, 0.39, 1.0)?,
+            string: LinearRgba::new(0.55, 0.78, 0.49, 1.0)?,
+            number: LinearRgba::new(0.42, 0.67, 0.94, 1.0)?,
+            type_name: LinearRgba::new(0.94, 0.70, 0.32, 1.0)?,
+            property: LinearRgba::new(0.35, 0.76, 0.79, 1.0)?,
+            heading: LinearRgba::new(0.96, 0.75, 0.34, 1.0)?,
+            code: LinearRgba::new(0.62, 0.76, 0.55, 1.0)?,
+        })
+    }
+
+    const fn color(self, class: SyntaxClass) -> LinearRgba {
+        match class {
+            SyntaxClass::Comment => self.comment,
+            SyntaxClass::Keyword => self.keyword,
+            SyntaxClass::String => self.string,
+            SyntaxClass::Number => self.number,
+            SyntaxClass::Type => self.type_name,
+            SyntaxClass::Property => self.property,
+            SyntaxClass::Heading => self.heading,
+            SyntaxClass::Code => self.code,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -534,6 +580,7 @@ enum StudioRenderError {
     Find(FindError),
     QuickOpen(QuickOpenError),
     ProjectSearch(ProjectSearchError),
+    Syntax(SyntaxError),
     Text(TextError),
     Layout(LayoutError),
     Scene(SceneError),
@@ -575,6 +622,12 @@ impl From<ProjectSearchError> for StudioRenderError {
     }
 }
 
+impl From<SyntaxError> for StudioRenderError {
+    fn from(error: SyntaxError) -> Self {
+        Self::Syntax(error)
+    }
+}
+
 impl From<LayoutError> for StudioRenderError {
     fn from(error: LayoutError) -> Self {
         Self::Layout(error)
@@ -600,6 +653,7 @@ impl fmt::Display for StudioRenderError {
             Self::ProjectSearch(error) => {
                 write!(formatter, "project-search rendering failed: {error}")
             }
+            Self::Syntax(error) => write!(formatter, "syntax rendering failed: {error}"),
             Self::Text(error) => write!(formatter, "text layout input failed: {error}"),
             Self::Layout(error) => write!(formatter, "visible layout failed: {error}"),
             Self::Scene(error) => write!(formatter, "scene construction failed: {error}"),
@@ -917,6 +971,7 @@ struct StudioApp {
     last_viewport: Size,
     rendered_lines: Vec<RenderedLine>,
     layout_cache: LineLayoutCache,
+    syntax_cache: SyntaxCache,
     glyph_atlas: GlyphAtlas,
     published_atlas: Option<GlyphAtlasImage>,
     atlas_revision: u64,
@@ -1123,6 +1178,8 @@ impl StudioApp {
             .ok_or(SurfaceError::DriverUnavailable)?;
         let atlas_budget =
             NonZeroUsize::new(DEFAULT_ATLAS_BUDGET_BYTES).ok_or(SurfaceError::DriverUnavailable)?;
+        let syntax_cache = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
         let runtime_document_revision = document.buffer().revision().get();
         let tabs = DocumentTabs::new(path, None, DocumentTabLimits::default())
             .map_err(|_| SurfaceError::DriverUnavailable)?;
@@ -1147,6 +1204,7 @@ impl StudioApp {
             last_viewport,
             rendered_lines: Vec::new(),
             layout_cache: LineLayoutCache::new(layout_budget),
+            syntax_cache,
             glyph_atlas: GlyphAtlas::new(atlas_budget),
             published_atlas: None,
             atlas_revision: 0,
@@ -1621,6 +1679,7 @@ impl StudioApp {
         self.last_viewport = viewport;
         self.clamp_scroll();
         self.layout_cache.begin_frame()?;
+        self.syntax_cache.begin_frame();
 
         let origin = Point::new(0.0, 0.0).ok_or(StudioRenderError::Domain)?;
         let sidebar_width = self.sidebar_width(viewport);
@@ -1652,6 +1711,7 @@ impl StudioApp {
         let selection_color =
             LinearRgba::new(0.18, 0.48, 0.72, SELECTION_ALPHA).ok_or(StudioRenderError::Domain)?;
         let text_color = LinearRgba::new(0.86, 0.88, 0.9, 1.0).ok_or(StudioRenderError::Domain)?;
+        let syntax_palette = SyntaxPalette::new().ok_or(StudioRenderError::Domain)?;
         let caret_color =
             LinearRgba::new(0.94, 0.72, 0.25, 1.0).ok_or(StudioRenderError::Domain)?;
         let status_background_color =
@@ -1769,6 +1829,11 @@ impl StudioApp {
                 .map_err(|_| StudioRenderError::Domain)?
                 .buffer()
                 .snapshot();
+            let pane_tab_index = self
+                .tabs
+                .index_for_id(pane_tab)
+                .ok_or(StudioRenderError::Domain)?;
+            let syntax_language = SyntaxLanguage::from_path(self.tabs.path_at(pane_tab_index));
             let pane_scroll = pane_view.scroll_y;
             let viewport_height = PositiveFinite::new(pane.bounds.size().height())
                 .ok_or(StudioRenderError::Domain)?;
@@ -1794,6 +1859,9 @@ impl StudioApp {
                 let top = pane.bounds.origin().y() + usize_as_f32(line) * LINE_HEIGHT - pane_scroll;
                 let baseline = top + layout.ascent();
                 let line_range = pane_snapshot.line_byte_range(line)?;
+                let syntax_line = self
+                    .syntax_cache
+                    .line(&pane_snapshot, line, syntax_language)?;
                 if pane.active {
                     for found in self.find.visible_ranges(
                         self.runtime_document_revision,
@@ -1827,12 +1895,14 @@ impl StudioApp {
                     );
                     selection_result?;
                 }
-                pending_glyphs.extend(self.collect_glyphs(
+                pending_glyphs.extend(self.collect_syntax_glyphs(
                     &layout,
                     font,
                     pane_origin_x,
                     baseline,
                     pane_clip,
+                    &syntax_line,
+                    syntax_palette,
                 )?);
                 if pane.active {
                     rendered_lines.push(RenderedLine {
@@ -2106,8 +2176,12 @@ impl StudioApp {
                 .ok_or(StudioRenderError::Domain)?;
             builder.set_glyph_atlas(atlas)?;
             for pending in pending_glyphs {
-                let glyph = Glyph::new(pending.bounds, pending.atlas_bounds, text_color)
-                    .clipped(pending.clip);
+                let glyph = Glyph::new(
+                    pending.bounds,
+                    pending.atlas_bounds,
+                    pending.color.unwrap_or(text_color),
+                )
+                .clipped(pending.clip);
                 builder.push_glyph(glyph)?;
             }
         }
@@ -2215,7 +2289,32 @@ impl StudioApp {
                 bounds: Rect::new(origin, size),
                 atlas_bounds: AtlasBounds::new(rect.x(), rect.y(), rect.width(), rect.height()),
                 clip,
+                source_utf16: glyph.source_utf16(),
+                color: None,
             });
+        }
+        Ok(pending)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "syntax projection keeps all scene-local values explicit"
+    )]
+    fn collect_syntax_glyphs(
+        &mut self,
+        layout: &LineLayout,
+        requested_font: FontKey,
+        origin_x: f32,
+        baseline: f32,
+        clip: alpine_scene::ClipId,
+        syntax: &SyntaxLine,
+        palette: SyntaxPalette,
+    ) -> Result<Vec<PendingGlyph>, StudioRenderError> {
+        let mut pending = self.collect_glyphs(layout, requested_font, origin_x, baseline, clip)?;
+        for glyph in &mut pending {
+            glyph.color = syntax
+                .class_at(glyph.source_utf16)
+                .map(|class| palette.color(class));
         }
         Ok(pending)
     }

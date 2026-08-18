@@ -415,6 +415,38 @@ fn editor_scene_contains_clipped_glyphs_atlas_and_caret() -> Result<(), StudioRe
 }
 
 #[test]
+fn editor_scene_projects_compiled_rust_syntax_onto_visible_glyphs() -> Result<(), StudioRenderError>
+{
+    let document = StudioDocument::scratch("pub fn Main() { let count = 42; // local\n}");
+    let mut app = StudioApp::from_document(TestTextSystem, document, Some(Path::new("main.rs")))
+        .map_err(|_| StudioRenderError::Domain)?;
+    let scene = app.try_scene(
+        SceneRevision::new(1),
+        viewport().map_err(|_| StudioRenderError::Domain)?,
+    )?;
+    let mut colors = Vec::new();
+    for glyph in scene.glyphs() {
+        if !colors.contains(&glyph.color()) {
+            colors.push(glyph.color());
+        }
+    }
+    assert!(
+        colors.len() >= 5,
+        "expected plain text plus four syntax classes"
+    );
+    let first_cache = app.syntax_cache.snapshot();
+    assert!(first_cache.misses() > 0);
+    let _second = app.try_scene(
+        SceneRevision::new(2),
+        viewport().map_err(|_| StudioRenderError::Domain)?,
+    )?;
+    let second_cache = app.syntax_cache.snapshot();
+    assert!(second_cache.hits() > first_cache.hits());
+    assert!(second_cache.current_bytes() <= second_cache.budget_bytes());
+    Ok(())
+}
+
+#[test]
 fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeError> {
     let viewport = viewport()?;
     let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
