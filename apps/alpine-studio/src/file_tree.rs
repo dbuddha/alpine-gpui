@@ -1736,13 +1736,11 @@ mod tests {
     -> Result<(), Box<dyn Error>> {
         let limits = FileTreeLimits::new(8, 8, 64, 2, 8, 64, 16, 4, 8);
         let mut state = FileTreeState::with_test_limits(limits);
-        state.restore_session(
-            5,
-            &crate::session::SessionFileTree {
-                expanded: vec![PathBuf::from("src")],
-                selected: Some(PathBuf::from("src/main.rs")),
-            },
-        )?;
+        let accepted_session = crate::session::SessionFileTree {
+            expanded: vec![PathBuf::from("src")],
+            selected: Some(PathBuf::from("src/main.rs")),
+        };
+        state.restore_session(5, &accepted_session)?;
         let accepted = state.session_state()?;
 
         assert!(matches!(
