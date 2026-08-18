@@ -484,6 +484,7 @@ fn command_palette_scene_geometry_is_exact_at_a_narrow_viewport()
         .enumerate()
         .filter_map(|(row_index, row)| {
             app.settings
+                .active()
                 .keymap
                 .shortcut_for(row.command)
                 .map(|shortcut| (row_index, shortcut.chars().count()))
