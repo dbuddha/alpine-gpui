@@ -6,7 +6,7 @@ use std::fs::{self, File, OpenOptions};
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 use std::io::Read;
 use std::io::{self, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use alpine_text::{ByteOffset, Selection};
@@ -336,27 +336,17 @@ fn validate_file_tree(
 
 fn validate_tree_path(path: &Path) -> Result<usize, SessionInvalid> {
     let bytes = os_bytes(path.as_os_str());
-    if path.is_absolute()
-        || bytes.is_empty()
-        || bytes.len() > MAX_PATH_BYTES
-        || path.to_str().is_none()
-        || bytes.contains(&0)
-    {
-        return Err(SessionInvalid::InvalidTreePath);
-    }
+    let relative = path.to_str().ok_or(SessionInvalid::InvalidTreePath)?;
     let mut depth = 0_usize;
-    for component in path.components() {
-        if !matches!(component, Component::Normal(_)) {
-            return Err(SessionInvalid::InvalidTreePath);
-        }
-        depth = depth
-            .checked_add(1)
-            .ok_or(SessionInvalid::InvalidTreePath)?;
-        if depth > MAX_TREE_DEPTH {
-            return Err(SessionInvalid::InvalidTreePath);
-        }
-    }
-    if depth == 0 {
+    if path.is_absolute()
+        || bytes.len() > MAX_PATH_BYTES
+        || bytes.contains(&0)
+        || relative.split('/').any(|part| {
+            depth = depth.saturating_add(1);
+            part.is_empty() || part == "." || part == ".."
+        })
+        || depth > MAX_TREE_DEPTH
+    {
         return Err(SessionInvalid::InvalidTreePath);
     }
     Ok(bytes.len())
@@ -1362,8 +1352,20 @@ mod tests {
 
     #[test]
     fn file_tree_paths_are_workspace_bound_ordered_relative_and_capped() {
-        let mut invalid = state();
-        invalid.workspace = None;
+        let mut valid = state();
+        valid.workspace = None;
+        valid.file_tree = SessionFileTree::default();
+        assert_eq!(validate(&valid), Ok(()));
+
+        let mut invalid = valid.clone();
+        invalid.file_tree.expanded = vec![PathBuf::from("src")];
+        assert_eq!(
+            validate(&invalid),
+            Err(SessionInvalid::TreeWithoutWorkspace)
+        );
+
+        let mut invalid = valid;
+        invalid.file_tree.selected = Some(PathBuf::from("src/main.rs"));
         assert_eq!(
             validate(&invalid),
             Err(SessionInvalid::TreeWithoutWorkspace)
@@ -1382,14 +1384,70 @@ mod tests {
         invalid.file_tree.expanded[0] = PathBuf::from("../escape");
         assert_eq!(validate(&invalid), Err(SessionInvalid::InvalidTreePath));
 
-        let mut invalid = state();
-        invalid.file_tree.expanded = (0..=SESSION_EXPANDED_DIRECTORY_CAPACITY)
+        let mut maximum = state();
+        maximum.file_tree.expanded = (0..SESSION_EXPANDED_DIRECTORY_CAPACITY)
             .map(|index| PathBuf::from(format!("directory-{index:03}")))
             .collect();
+        maximum.file_tree.selected = None;
+        assert_eq!(validate(&maximum), Ok(()));
+        maximum
+            .file_tree
+            .expanded
+            .push(PathBuf::from("directory-overflow"));
         assert_eq!(
-            validate(&invalid),
+            validate(&maximum),
             Err(SessionInvalid::TooManyExpandedDirectories)
         );
+    }
+
+    #[test]
+    fn file_tree_path_length_depth_and_encoding_boundaries_are_independent()
+    -> Result<(), Box<dyn Error>> {
+        let exact_path = PathBuf::from("a".repeat(MAX_PATH_BYTES));
+        assert_eq!(validate_tree_path(&exact_path), Ok(MAX_PATH_BYTES));
+        assert_eq!(
+            validate_tree_path(Path::new(&"a".repeat(MAX_PATH_BYTES + 1))),
+            Err(SessionInvalid::InvalidTreePath)
+        );
+
+        let exact_depth = (0..MAX_TREE_DEPTH)
+            .map(|_| "a")
+            .collect::<Vec<_>>()
+            .join("/");
+        assert_eq!(
+            validate_tree_path(Path::new(&exact_depth)),
+            Ok(exact_depth.len())
+        );
+        assert_eq!(
+            validate_tree_path(Path::new(&format!("{exact_depth}/a"))),
+            Err(SessionInvalid::InvalidTreePath)
+        );
+
+        for invalid in [
+            PathBuf::new(),
+            std::env::current_dir()?.join("absolute"),
+            PathBuf::from("a\0b"),
+            PathBuf::from("a//b"),
+            PathBuf::from("a/./b"),
+            PathBuf::from("a/../b"),
+        ] {
+            assert_eq!(
+                validate_tree_path(&invalid),
+                Err(SessionInvalid::InvalidTreePath)
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+
+            let non_utf8 = PathBuf::from(OsString::from_vec(vec![0xff]));
+            assert_eq!(
+                validate_tree_path(&non_utf8),
+                Err(SessionInvalid::InvalidTreePath)
+            );
+        }
+        Ok(())
     }
 
     #[test]
