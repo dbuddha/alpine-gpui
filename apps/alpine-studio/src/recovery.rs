@@ -791,8 +791,12 @@ mod tests {
         payload.extend_from_slice(local);
     }
 
-    fn wait_for_generation(coordinator: &RecoveryCoordinator, generation: u64) -> RecoveryStatus {
-        let deadline = Instant::now() + Duration::from_secs(2);
+    fn wait_for_generation(
+        coordinator: &RecoveryCoordinator,
+        generation: u64,
+        timeout: Duration,
+    ) -> RecoveryStatus {
+        let deadline = Instant::now() + timeout;
         loop {
             let status = coordinator.status();
             if status.completed_generation >= generation || Instant::now() >= deadline {
@@ -845,6 +849,7 @@ mod tests {
         assert_eq!(checked_text_total(0, 0, MAX_DOCUMENT_TEXT_BYTES + 1), None);
         assert_eq!(checked_text_total(MAX_RECOVERY_TEXT_BYTES, 1, 0), None);
         assert_eq!(checked_text_total(usize::MAX, 1, 0), None);
+        assert_eq!(checked_text_total(usize::MAX - 1, 1, 1), None);
     }
 
     #[test]
@@ -1090,6 +1095,14 @@ mod tests {
     fn path_load_and_replaceability_preserve_specific_failures()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = test_root("load")?;
+        #[cfg(unix)]
+        assert!(matches!(
+            load(&root),
+            Err(RecoveryError::Io {
+                operation: "read",
+                ..
+            })
+        ));
         let session_path = root.join("state").join("session-v1.bin");
         assert_eq!(
             path_for_session(&session_path),
@@ -1171,7 +1184,7 @@ mod tests {
         fs::write(&blocked_parent, b"file")?;
         let mut coordinator = RecoveryCoordinator::new(blocked_parent.join("recovery.bin"))?;
         let first = coordinator.publish(request("dirty", 1))?;
-        let status = wait_for_generation(&coordinator, first);
+        let status = wait_for_generation(&coordinator, first, Duration::from_secs(2));
         assert_eq!(status.completed_generation, first);
         assert!(matches!(
             status.last_error,
@@ -1187,6 +1200,52 @@ mod tests {
         assert!(status.last_error.is_some());
         fs::remove_dir_all(root)?;
         Ok(())
+    }
+
+    #[test]
+    fn disconnected_signal_panicked_worker_and_wait_timeout_are_structured() {
+        let new_shared = || {
+            Arc::new(Shared {
+                latest: Mutex::new(None),
+                identity: Mutex::new(None),
+                last_error: Mutex::new(None),
+                published_generation: AtomicU64::new(0),
+                completed_generation: AtomicU64::new(0),
+            })
+        };
+        let (signal, receiver) = mpsc::sync_channel(1);
+        drop(receiver);
+        let disconnected = RecoveryCoordinator {
+            shared: new_shared(),
+            signal: Some(signal),
+            worker: None,
+        };
+        assert_eq!(
+            disconnected.publish(request("dirty", 1)),
+            Err(RecoveryError::Disconnected)
+        );
+
+        let waiting = RecoveryCoordinator {
+            shared: new_shared(),
+            signal: None,
+            worker: None,
+        };
+        assert_eq!(
+            wait_for_generation(&waiting, 1, Duration::from_millis(1)),
+            RecoveryStatus {
+                published_generation: 0,
+                completed_generation: 0,
+                last_error: None,
+            }
+        );
+
+        let worker = thread::spawn(|| std::panic::resume_unwind(Box::new(())));
+        let mut panicked = RecoveryCoordinator {
+            shared: new_shared(),
+            signal: None,
+            worker: Some(worker),
+        };
+        assert_eq!(panicked.shutdown(), Err(RecoveryError::WorkerPanicked));
     }
 
     #[test]

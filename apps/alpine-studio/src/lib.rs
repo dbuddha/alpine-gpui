@@ -739,8 +739,12 @@ impl StudioDocument {
         let recovery_base = Buffer::new(&recovered.base).snapshot();
         let recovered_buffer = || Buffer::new(&recovered.local);
         let Some(path) = path else {
+            let mut buffer = Buffer::new(&recovered.base);
+            let mut transaction = Transaction::new(buffer.revision());
+            transaction.replace(0..buffer.snapshot().len_bytes(), recovered.local.as_ref())?;
+            buffer.apply(transaction)?;
             return Ok(Self::Scratch {
-                buffer: recovered_buffer(),
+                buffer,
                 clean_revision: 0,
                 recovery_base,
             });
@@ -5277,6 +5281,8 @@ mod session_integration_tests {
     use super::*;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     static SESSION_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -5387,6 +5393,10 @@ mod session_integration_tests {
         assert_eq!(app.navigate_document_history(true), EventEffect::default());
         assert_eq!(app.tabs.active_index(), 1);
         assert_eq!(app.tabs.is_deferred(0), Ok(false));
+        let recovery_request = app
+            .capture_recovery_request()
+            .map_err(|error| format!("{error:?}"))?;
+        assert!(recovery_request.documents.is_empty());
         assert_eq!(
             app.capture_session()
                 .map_err(|error| format!("{error:?}"))?,
@@ -5589,6 +5599,102 @@ mod session_integration_tests {
     }
 
     #[test]
+    fn recovery_variants_indexing_and_persistence_failures_are_explicit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "alpine-studio-recovery-branches-{}-{}",
+            std::process::id(),
+            SESSION_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        let recovered = recovery::RecoveredDocument {
+            tab: 0,
+            base: Box::from("base"),
+            local: Box::from("local"),
+        };
+
+        let mut scratch = StudioDocument::recover(None, &recovered)?;
+        assert_eq!(scratch.buffer().snapshot().text(), "local");
+        assert!(scratch.is_dirty());
+        assert!(!scratch.is_file());
+        assert_eq!(scratch.recovery_base().text(), "base");
+        assert_eq!(scratch.buffer_mut().snapshot().text(), "local");
+
+        let invalid = root.join("invalid.rs");
+        fs::write(&invalid, [0xff])?;
+        let mut conflicted = StudioDocument::recover(Some(&invalid), &recovered)?;
+        assert!(conflicted.has_recovery_conflict());
+        assert!(conflicted.is_dirty());
+        assert_eq!(conflicted.recovery_base().text(), "base");
+        assert_eq!(conflicted.buffer_mut().snapshot().text(), "local");
+        assert_eq!(
+            conflicted.save(),
+            Err(FileError::Conflict(ExternalChange::Modified))
+        );
+
+        let mut unavailable =
+            StudioDocument::open_for_restore(&invalid, RestoreAvailability::AllowPlaceholder)?;
+        assert!(unavailable.is_unavailable());
+        assert_eq!(
+            unavailable.save(),
+            Err(FileError::Conflict(ExternalChange::Modified))
+        );
+
+        assert_eq!(
+            StudioApp::index_recoveries(1, vec![recovered.clone(), recovered]),
+            Err(SessionRestoreError::Invalid)
+        );
+
+        let capture_path = root.join("capture").join("session.bin");
+        let mut capture = StudioApp::new(tests::TestTextSystem)?;
+        capture
+            .configure_persistence(capture_path)
+            .map_err(|error| error.to_string())?;
+        capture.tabs.inject_active_index_fault();
+        capture.publish_recovery();
+        assert_eq!(
+            capture.local_status,
+            Some(LocalStatus::Workspace(Arc::from(
+                "Recovery capture failed: Panes"
+            )))
+        );
+        drop(capture);
+
+        let blocked = root.join("not-a-directory");
+        fs::write(&blocked, b"file")?;
+        let mut degraded = StudioApp::new(tests::TestTextSystem)?;
+        degraded
+            .configure_persistence(blocked.join("recovery.bin"))
+            .map_err(|error| error.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let status = degraded
+                .recovery
+                .as_ref()
+                .ok_or("recovery coordinator")?
+                .status();
+            if status.completed_generation >= status.published_generation
+                || Instant::now() >= deadline
+            {
+                break;
+            }
+            thread::yield_now();
+        }
+        degraded.publish_recovery();
+        assert!(degraded.last_recovery_error.is_some());
+        assert!(matches!(
+            degraded.local_status,
+            Some(LocalStatus::Workspace(ref message))
+                if message.starts_with("Dirty-buffer recovery degraded:")
+        ));
+        drop(degraded);
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn dirty_recovery_preserves_local_text_and_never_overwrites_external_bytes()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = std::env::temp_dir().join(format!(
@@ -5645,8 +5751,19 @@ mod session_integration_tests {
         assert!(unchanged.document.is_dirty());
         assert!(!unchanged.document.has_recovery_conflict());
         assert!(!unchanged.document.is_unavailable());
-        assert!(unchanged.document.save()?.is_some());
-        assert_eq!(fs::read_to_string(&document_path)?, "local");
+        #[cfg(not(target_family = "windows"))]
+        {
+            assert!(unchanged.document.save()?.is_some());
+            assert_eq!(fs::read_to_string(&document_path)?, "local");
+        }
+        #[cfg(target_family = "windows")]
+        {
+            assert_eq!(
+                unchanged.document.save(),
+                Err(FileError::UnsupportedAtomicReplace)
+            );
+            assert_eq!(fs::read_to_string(&document_path)?, "base");
+        }
 
         fs::write(&document_path, "external")?;
         let mut modified = StudioApp::from_recovery(tests::TestTextSystem, recovered.clone())
