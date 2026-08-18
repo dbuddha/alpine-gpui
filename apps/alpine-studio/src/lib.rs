@@ -756,6 +756,8 @@ struct StudioApp {
     force_file_tree_submission_failure: Option<()>,
     #[cfg(test)]
     force_command_clip_failure: Option<()>,
+    #[cfg(test)]
+    force_empty_navigation_result: Option<()>,
 }
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
@@ -785,6 +787,20 @@ impl fmt::Display for SessionRestoreError {
             Self::Allocation => "session restoration allocation failed",
         };
         formatter.write_str(message)
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn classify_session_document_error(error: &WorkspaceSelectionError) -> SessionRestoreError {
+    match error {
+        WorkspaceSelectionError::File(_) => SessionRestoreError::File,
+        WorkspaceSelectionError::Tabs(_) => SessionRestoreError::Tabs,
+        WorkspaceSelectionError::NoWorkspace
+        | WorkspaceSelectionError::DirtyDocument
+        | WorkspaceSelectionError::RevisionExhausted
+        | WorkspaceSelectionError::Workspace(_)
+        | WorkspaceSelectionError::QuickOpen(_)
+        | WorkspaceSelectionError::ProjectSearch(_) => SessionRestoreError::Invalid,
     }
 }
 
@@ -951,6 +967,8 @@ impl StudioApp {
             force_file_tree_submission_failure: None,
             #[cfg(test)]
             force_command_clip_failure: None,
+            #[cfg(test)]
+            force_empty_navigation_result: None,
         })
     }
 
@@ -1001,16 +1019,7 @@ impl StudioApp {
         for pane in panes.panes.iter_mut().flatten() {
             let index = usize::from(pane.tab);
             app.ensure_document_tab_loaded(index)
-                .map_err(|error| match error {
-                    WorkspaceSelectionError::File(_) => SessionRestoreError::File,
-                    WorkspaceSelectionError::Tabs(_) => SessionRestoreError::Tabs,
-                    WorkspaceSelectionError::NoWorkspace
-                    | WorkspaceSelectionError::DirtyDocument
-                    | WorkspaceSelectionError::RevisionExhausted
-                    | WorkspaceSelectionError::Workspace(_)
-                    | WorkspaceSelectionError::QuickOpen(_)
-                    | WorkspaceSelectionError::ProjectSearch(_) => SessionRestoreError::Invalid,
-                })?;
+                .map_err(|error| classify_session_document_error(&error))?;
             pane.view = app
                 .clamp_tab_view(index, pane.view)
                 .map_err(|_| SessionRestoreError::Tabs)?;
@@ -3550,6 +3559,10 @@ impl StudioApp {
             return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
         };
         let current_view = self.active_document_view();
+        #[cfg(test)]
+        if self.force_empty_navigation_result.take().is_some() {
+            self.tabs.clear_history_for_test();
+        }
         let result = if forward {
             self.tabs.navigate_forward(&mut self.document, current_view)
         } else {
@@ -4904,8 +4917,8 @@ mod session_integration_tests {
             workspace: Some(root.clone()),
             tabs: vec![
                 session::SessionTab {
-                    path: Some(root.join("alpha.rs")),
-                    view: alpha_view,
+                    path: None,
+                    view: DocumentViewState::default(),
                 },
                 session::SessionTab {
                     path: Some(root.join("beta.rs")),
@@ -4917,6 +4930,10 @@ mod session_integration_tests {
                         selection: Selection::caret(ByteOffset::new(0)),
                         scroll_y: 0.0,
                     },
+                },
+                session::SessionTab {
+                    path: Some(root.join("alpha.rs")),
+                    view: alpha_view,
                 },
             ],
             active_tab: 1,
@@ -4937,7 +4954,7 @@ mod session_integration_tests {
                 panes: [
                     Some(session::SessionPane {
                         tab: 0,
-                        view: alpha_view,
+                        view: DocumentViewState::default(),
                     }),
                     Some(session::SessionPane {
                         tab: 1,
@@ -4960,6 +4977,20 @@ mod session_integration_tests {
         ));
         assert_eq!(app.tabs.active_index(), 1);
         assert_eq!(app.tabs.is_deferred(2), Ok(true));
+        let missing_id = app.tabs.id_at(2).ok_or("missing tab identity")?;
+        app.tabs.inject_forward_history_target_for_test(missing_id);
+        let failures = app.workspace_failures;
+        assert!(app.navigate_document_history(true).visual_changed);
+        assert_eq!(app.workspace_failures, failures + 1);
+        assert_eq!(app.tabs.active_index(), 1);
+        assert_eq!(app.tabs.is_deferred(2), Ok(true));
+
+        let scratch_id = app.tabs.id_at(0).ok_or("scratch tab identity")?;
+        app.tabs.inject_forward_history_target_for_test(scratch_id);
+        app.force_empty_navigation_result = Some(());
+        assert_eq!(app.navigate_document_history(true), EventEffect::default());
+        assert_eq!(app.tabs.active_index(), 1);
+        assert_eq!(app.tabs.is_deferred(0), Ok(false));
         assert_eq!(
             app.capture_session()
                 .map_err(|error| format!("{error:?}"))?,
@@ -4981,8 +5012,12 @@ mod session_integration_tests {
         );
 
         let mut switched_state = state.clone();
-        switched_state.active_tab = 0;
+        switched_state.active_tab = 3;
         switched_state.panes.active_pane = 0;
+        switched_state.panes.panes[0] = Some(session::SessionPane {
+            tab: 3,
+            view: alpha_view,
+        });
         let mut switched = StudioApp::from_session(tests::TestTextSystem, switched_state.clone())
             .map_err(|error| error.to_string())?;
         switched.session_path = None;
@@ -5080,8 +5115,15 @@ mod session_integration_tests {
         defaulted.session_path = None;
 
         fs::remove_file(root.join("alpha.rs"))?;
+        let mut missing_visible_state = state;
+        missing_visible_state.active_tab = 1;
+        missing_visible_state.panes.active_pane = 1;
+        missing_visible_state.panes.panes[0] = Some(session::SessionPane {
+            tab: 2,
+            view: DocumentViewState::default(),
+        });
         assert!(matches!(
-            StudioApp::from_session(tests::TestTextSystem, state),
+            StudioApp::from_session(tests::TestTextSystem, missing_visible_state),
             Err(SessionRestoreError::File)
         ));
         fs::remove_dir_all(root)?;
@@ -5090,6 +5132,23 @@ mod session_integration_tests {
 
     #[test]
     fn session_restore_error_messages_and_rejections_are_structured() {
+        assert_eq!(
+            classify_session_document_error(&WorkspaceSelectionError::Tabs(
+                DocumentTabError::LastTab
+            )),
+            SessionRestoreError::Tabs
+        );
+        assert_eq!(
+            classify_session_document_error(&WorkspaceSelectionError::File(FileError::Io {
+                operation: "restore-test",
+                kind: std::io::ErrorKind::NotFound,
+            })),
+            SessionRestoreError::File
+        );
+        assert_eq!(
+            classify_session_document_error(&WorkspaceSelectionError::NoWorkspace),
+            SessionRestoreError::Invalid
+        );
         for error in [
             SessionRestoreError::Session("codec".into()),
             SessionRestoreError::Invalid,

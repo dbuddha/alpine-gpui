@@ -208,14 +208,14 @@ impl<T> DocumentTabs<T> {
                 return Err(DocumentTabError::DuplicatePath(path.to_path_buf()));
             }
             let (label, path_bytes) = tab_metadata(restored.path.as_deref())?;
-            retained_path_bytes = retained_path_bytes.checked_add(path_bytes).ok_or(
-                DocumentTabError::PathBudgetExceeded(limits.path_byte_budget),
-            )?;
-            if retained_path_bytes > limits.path_byte_budget {
+            let (next_path_bytes, path_bytes_overflowed) =
+                retained_path_sum(retained_path_bytes, path_bytes);
+            if path_bytes_overflowed || next_path_bytes > limits.path_byte_budget {
                 return Err(DocumentTabError::PathBudgetExceeded(
                     limits.path_byte_budget,
                 ));
             }
+            retained_path_bytes = next_path_bytes;
             let id_value = u64::try_from(index)
                 .ok()
                 .and_then(|value| value.checked_add(1))
@@ -633,6 +633,20 @@ impl<T> DocumentTabs<T> {
         self.tabs[self.active].document = Some(payload);
     }
 
+    #[cfg(test)]
+    pub(crate) fn inject_forward_history_target_for_test(&mut self, target: DocumentTabId) {
+        let active = self.tabs[self.active].id;
+        self.history.clear();
+        self.history.extend([active, target]);
+        self.history_cursor = 0;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_history_for_test(&mut self) {
+        self.history.clear();
+        self.history_cursor = 0;
+    }
+
     fn switch_to(
         &mut self,
         index: usize,
@@ -681,6 +695,10 @@ impl<T> DocumentTabs<T> {
     }
 }
 
+const fn retained_path_sum(current: usize, added: usize) -> (usize, bool) {
+    current.overflowing_add(added)
+}
+
 fn tab_metadata(path: Option<&Path>) -> Result<(Arc<str>, usize), DocumentTabError> {
     let Some(path) = path else {
         return Ok((Arc::from("Untitled"), 0));
@@ -713,6 +731,7 @@ mod tests {
     fn tabs_preserve_payload_view_identity_and_duplicate_lookup()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut tabs = DocumentTabs::new(None, None, DocumentTabLimits::new(4, 1_024, 4))?;
+        assert_eq!(tabs.close_target(), Err(DocumentTabError::LastTab));
         let mut active = String::from("scratch");
         let first_insertion = tabs.insert_and_activate(
             Path::new("/root/a.rs"),
@@ -993,6 +1012,10 @@ mod tests {
         assert_eq!(tabs.navigation_target(true), None);
         assert_eq!(tabs.close_target(), Ok(2));
         assert!(matches!(
+            tabs.activate(0, &mut active, view(0, 0.0)),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        assert!(matches!(
             tabs.document_at(0, &active),
             Err(DocumentTabError::InvalidPayloadState)
         ));
@@ -1012,6 +1035,19 @@ mod tests {
         assert!(tabs.activate(2, &mut active, view(5, 5.0))?.is_some());
         assert_eq!(active, "gamma");
         assert_eq!(tabs.close_target(), Ok(1));
+
+        tabs.tabs[0].document = None;
+        tabs.tabs[0].deferred = false;
+        assert!(matches!(
+            tabs.materialize(0, String::from("missing deferred marker")),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        tabs.tabs[0].document = Some(String::from("duplicate payload"));
+        tabs.tabs[0].deferred = true;
+        assert!(matches!(
+            tabs.materialize(0, String::from("duplicate materialization")),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
         Ok(())
     }
 
@@ -1054,12 +1090,32 @@ mod tests {
             ),
             Err(DocumentTabError::InvalidPayloadState)
         ));
+        assert!(matches!(
+            DocumentTabs::<String>::from_restored(
+                vec![
+                    RestoredDocumentTab {
+                        path: Some(PathBuf::from("a")),
+                        view: view(0, 0.0),
+                    },
+                    RestoredDocumentTab {
+                        path: Some(PathBuf::from("a")),
+                        view: view(0, 0.0),
+                    },
+                ],
+                0,
+                DocumentTabLimits::new(2, 4, 2)
+            ),
+            Err(DocumentTabError::DuplicatePath(path)) if path == Path::new("a")
+        ));
         let (_, exact_path_bytes) = tab_metadata(Some(Path::new("a")))?;
-        DocumentTabs::<String>::from_restored(
-            restored("a"),
-            0,
-            DocumentTabLimits::new(1, exact_path_bytes, 1),
-        )?;
+        assert!(
+            DocumentTabs::<String>::from_restored(
+                restored("a"),
+                0,
+                DocumentTabLimits::new(1, exact_path_bytes, 1)
+            )
+            .is_ok()
+        );
         assert!(matches!(
             DocumentTabs::<String>::from_restored(
                 restored("a"),
@@ -1068,40 +1124,7 @@ mod tests {
             ),
             Err(DocumentTabError::PathBudgetExceeded(limit)) if limit == exact_path_bytes - 1
         ));
-
-        let restored_pair = || {
-            vec![
-                RestoredDocumentTab {
-                    path: Some(PathBuf::from("a")),
-                    view: view(0, 0.0),
-                },
-                RestoredDocumentTab {
-                    path: Some(PathBuf::from("b")),
-                    view: view(0, 0.0),
-                },
-            ]
-        };
-        let mut missing_deferred = DocumentTabs::from_restored(
-            restored_pair(),
-            1,
-            DocumentTabLimits::new(2, exact_path_bytes * 2, 2),
-        )?;
-        missing_deferred.tabs[0].deferred = false;
-        assert!(matches!(
-            missing_deferred.materialize(0, String::from("a")),
-            Err(DocumentTabError::InvalidPayloadState)
-        ));
-
-        let mut duplicate_payload = DocumentTabs::from_restored(
-            restored_pair(),
-            1,
-            DocumentTabLimits::new(2, exact_path_bytes * 2, 2),
-        )?;
-        duplicate_payload.tabs[0].document = Some(String::from("a"));
-        assert!(matches!(
-            duplicate_payload.materialize(0, String::from("duplicate")),
-            Err(DocumentTabError::InvalidPayloadState)
-        ));
+        assert_eq!(retained_path_sum(usize::MAX, 1), (0, true));
         Ok(())
     }
 
