@@ -6,7 +6,7 @@ use std::{
     fmt, fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, ExitStatus, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -21,14 +21,42 @@ const EVENT_CAPACITY: usize = 16;
 const INPUT_CAPACITY: usize = 4;
 const OUTPUT_CAPACITY: usize = 8;
 const WRITE_RESULT_CAPACITY: usize = 8;
-const OUTPUT_CHUNK_BYTES: usize = 64 * 1_024;
-const MAX_MESSAGE_BYTES: usize = 16 * 1_024 * 1_024;
-const MAX_RETAINED_PAYLOAD_BYTES: usize = 16 * 1_024 * 1_024;
-const MAX_PATH_BYTES: usize = 4 * 1_024;
+const OUTPUT_CHUNK_BYTES: usize = 65_536;
+const MAX_MESSAGE_BYTES: usize = 16_777_216;
+const MAX_RETAINED_PAYLOAD_BYTES: usize = 16_777_216;
+const MAX_PATH_BYTES: usize = 4_096;
 const MAX_ARGUMENTS: usize = 64;
-const MAX_ARGUMENT_BYTES: usize = 4 * 1_024;
-const MAX_CONFIGURATION_BYTES: usize = 64 * 1_024;
+const MAX_ARGUMENT_BYTES: usize = 4_096;
+const MAX_CONFIGURATION_BYTES: usize = 65_536;
 const SUPERVISOR_POLL: Duration = Duration::from_millis(2);
+const SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+
+trait ThreadSpawner {
+    fn spawn<F>(
+        &self,
+        stage: ProcessStage,
+        name: &'static str,
+        job: F,
+    ) -> io::Result<JoinHandle<()>>
+    where
+        F: FnOnce() + Send + 'static;
+}
+
+struct SystemThreadSpawner;
+
+impl ThreadSpawner for SystemThreadSpawner {
+    fn spawn<F>(
+        &self,
+        _stage: ProcessStage,
+        name: &'static str,
+        job: F,
+    ) -> io::Result<JoinHandle<()>>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        thread::Builder::new().name(name.to_owned()).spawn(job)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessIdentity {
@@ -295,6 +323,7 @@ struct Counters {
     starts: AtomicU64,
     restarts: AtomicU64,
     exits: AtomicU64,
+    shutdown_timeouts: AtomicU64,
 }
 
 pub(crate) struct Payload {
@@ -308,30 +337,22 @@ impl Payload {
         counters: &Arc<Counters>,
         stage: ProcessStage,
     ) -> Result<Self, ProcessFailure> {
-        let mut current = counters.retained_bytes.load(Ordering::Acquire);
-        loop {
-            let next = current
-                .checked_add(bytes.len())
-                .filter(|next| *next <= MAX_RETAINED_PAYLOAD_BYTES)
-                .ok_or_else(|| ProcessFailure::retained(stage))?;
-            match counters.retained_bytes.compare_exchange_weak(
-                current,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    counters
-                        .peak_retained_bytes
-                        .fetch_max(next, Ordering::Relaxed);
-                    return Ok(Self {
-                        bytes: Box::from(bytes),
-                        counters: Arc::clone(counters),
-                    });
-                }
-                Err(observed) => current = observed,
-            }
-        }
+        let previous = counters
+            .retained_bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current
+                    .checked_add(bytes.len())
+                    .filter(|next| *next <= MAX_RETAINED_PAYLOAD_BYTES)
+            })
+            .map_err(|_| ProcessFailure::retained(stage))?;
+        let next = previous + bytes.len();
+        counters
+            .peak_retained_bytes
+            .fetch_max(next, Ordering::Relaxed);
+        Ok(Self {
+            bytes: Box::from(bytes),
+            counters: Arc::clone(counters),
+        })
     }
 }
 
@@ -511,6 +532,7 @@ pub(crate) struct ProcessSnapshot {
     pub(crate) starts: u64,
     pub(crate) restarts: u64,
     pub(crate) exits: u64,
+    pub(crate) shutdown_timeouts: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -547,6 +569,7 @@ pub(crate) struct LanguageServerProcess {
     control: Option<SyncSender<Control>>,
     events: Receiver<ProcessEvent>,
     supervisor: Option<JoinHandle<()>>,
+    supervisor_complete: Receiver<()>,
     shutdown: Arc<AtomicBool>,
     counters: Arc<Counters>,
     configuration_bytes: usize,
@@ -560,32 +583,46 @@ impl LanguageServerProcess {
         spec: ProcessSpec,
         identity: ProcessIdentity,
     ) -> Result<Self, ProcessFailure> {
+        Self::start_with_spawner(spec, identity, &SystemThreadSpawner)
+    }
+
+    fn start_with_spawner<S: ThreadSpawner>(
+        spec: ProcessSpec,
+        identity: ProcessIdentity,
+        spawner: &S,
+    ) -> Result<Self, ProcessFailure> {
         let configuration_bytes = spec.retained_bytes;
         let counters = Arc::new(Counters::default());
         let shutdown = Arc::new(AtomicBool::new(false));
         let (control_sender, control_receiver) = sync_channel(CONTROL_CAPACITY);
         let (event_sender, event_receiver) = sync_channel(EVENT_CAPACITY);
+        let (completion_sender, completion_receiver) = sync_channel(1);
         let worker_counters = Arc::clone(&counters);
         let worker_shutdown = Arc::clone(&shutdown);
         let epoch = ProcessEpoch(1);
-        let supervisor = thread::Builder::new()
-            .name("alpine-lsp-supervisor".to_owned())
-            .spawn(move || {
-                supervise(
-                    spec,
-                    identity,
-                    epoch,
-                    control_receiver,
-                    event_sender,
-                    worker_shutdown,
-                    worker_counters,
-                );
-            })
+        let supervisor = spawner
+            .spawn(
+                ProcessStage::SpawnChild,
+                "alpine-lsp-supervisor",
+                move || {
+                    supervise(
+                        spec,
+                        identity,
+                        epoch,
+                        control_receiver,
+                        event_sender,
+                        worker_shutdown,
+                        worker_counters,
+                    );
+                    let _ = completion_sender.try_send(());
+                },
+            )
             .map_err(|error| ProcessFailure::io(ProcessStage::SpawnChild, &error))?;
         Ok(Self {
             control: Some(control_sender),
             events: event_receiver,
             supervisor: Some(supervisor),
+            supervisor_complete: completion_receiver,
             shutdown,
             counters,
             configuration_bytes,
@@ -692,6 +729,7 @@ impl LanguageServerProcess {
             starts: self.counters.starts.load(Ordering::Acquire),
             restarts: self.counters.restarts.load(Ordering::Acquire),
             exits: self.counters.exits.load(Ordering::Acquire),
+            shutdown_timeouts: self.counters.shutdown_timeouts.load(Ordering::Acquire),
         }
     }
 
@@ -699,12 +737,34 @@ impl LanguageServerProcess {
         self.control.take();
         self.shutdown.store(true, Ordering::Release);
         if let Some(supervisor) = self.supervisor.take() {
-            let _ = supervisor.join();
+            join_supervisor(
+                supervisor,
+                &self.supervisor_complete,
+                SUPERVISOR_SHUTDOWN_TIMEOUT,
+                &self.counters,
+            );
         }
         while self.events.try_recv().is_ok() {
             self.counters.queued_events.fetch_sub(1, Ordering::AcqRel);
         }
         self.snapshot()
+    }
+}
+
+fn join_supervisor(
+    supervisor: JoinHandle<()>,
+    completion: &Receiver<()>,
+    timeout: Duration,
+    counters: &Counters,
+) {
+    match completion.recv_timeout(timeout) {
+        Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+            let _ = supervisor.join();
+        }
+        Err(RecvTimeoutError::Timeout) => {
+            counters.shutdown_timeouts.fetch_add(1, Ordering::Relaxed);
+            drop(supervisor);
+        }
     }
 }
 
@@ -715,7 +775,6 @@ impl Drop for LanguageServerProcess {
 }
 
 #[expect(
-    clippy::too_many_lines,
     clippy::needless_pass_by_value,
     reason = "the supervisor owns its specification, channels, shutdown signal, and counters for one complete child lifecycle"
 )]
@@ -729,7 +788,8 @@ fn supervise(
     counters: Arc<Counters>,
 ) {
     let mut running = start_running(&spec, first_identity, first_epoch, &events, &counters);
-    while !shutdown.load(Ordering::Acquire) {
+    let mut continue_supervising = true;
+    while continue_supervising && !shutdown.load(Ordering::Acquire) {
         match controls.recv_timeout(SUPERVISOR_POLL) {
             Ok(Control::Input {
                 identity,
@@ -737,75 +797,12 @@ fn supervise(
                 sequence,
                 payload,
             }) => {
-                let Some(process) = running
-                    .as_mut()
-                    .filter(|process| process.identity == identity && process.epoch == epoch)
-                else {
-                    let _ = emit(
-                        &events,
-                        ProcessEvent::InputRejected {
-                            identity,
-                            epoch,
-                            sequence,
-                            failure: broken_pipe(ProcessStage::Input),
-                        },
-                        &counters,
-                    );
-                    continue;
-                };
                 let request = WriteRequest { sequence, payload };
-                let result = match process.input.as_ref() {
-                    Some(sender) => sender.try_send(request),
-                    None => Err(TrySendError::Disconnected(request)),
-                };
-                if let Err(error) = result {
-                    counters.input_saturations.fetch_add(1, Ordering::Relaxed);
-                    let (sequence, failure) = match error {
-                        TrySendError::Full(request) => (
-                            request.sequence,
-                            ProcessFailure::saturated(ProcessStage::Input),
-                        ),
-                        TrySendError::Disconnected(request) => {
-                            (request.sequence, broken_pipe(ProcessStage::Input))
-                        }
-                    };
-                    let _ = emit(
-                        &events,
-                        ProcessEvent::InputRejected {
-                            identity,
-                            epoch,
-                            sequence,
-                            failure,
-                        },
-                        &counters,
-                    );
-                }
+                handle_input_control(&mut running, identity, epoch, request, &events, &counters);
             }
             Ok(Control::Restart { identity, epoch }) => {
-                if let Some(mut old) = running.take() {
-                    let old_identity = old.identity;
-                    let old_epoch = old.epoch;
-                    let panicked = stop_running(&mut old, true);
-                    let _ = emit(
-                        &events,
-                        ProcessEvent::Stopped {
-                            identity: old_identity,
-                            epoch: old_epoch,
-                            reason: StopReason::Restart,
-                        },
-                        &counters,
-                    );
-                    if panicked {
-                        let _ = emit(
-                            &events,
-                            ProcessEvent::Failed {
-                                identity: old_identity,
-                                epoch: old_epoch,
-                                failure: ProcessFailure::panicked(),
-                            },
-                            &counters,
-                        );
-                    }
+                if let Some(old) = running.take() {
+                    stop_for_restart(old, &events, &counters);
                 }
                 running = start_running(&spec, identity, epoch, &events, &counters);
             }
@@ -819,94 +816,60 @@ fn supervise(
                 counters.output_saturations.fetch_add(1, Ordering::Relaxed);
                 terminate = Some(StopReason::OutputOverflow);
             }
-            while let Ok(packet) = process.output.try_recv() {
-                if !emit(
+            terminate = merge_stop_reason(
+                terminate,
+                forward_outputs(
+                    &process.output,
+                    process.identity,
+                    process.epoch,
                     &events,
-                    ProcessEvent::Output {
-                        identity: process.identity,
-                        epoch: process.epoch,
-                        stream: packet.stream,
-                        payload: packet.payload,
-                    },
                     &counters,
-                ) {
-                    terminate = Some(StopReason::EventOverflow);
-                    break;
-                }
-            }
-            while let Ok(result) = process.writes.try_recv() {
-                let event = match result.result {
-                    Ok(()) => {
-                        counters.written_inputs.fetch_add(1, Ordering::Relaxed);
-                        ProcessEvent::InputWritten {
-                            identity: process.identity,
-                            epoch: process.epoch,
-                            sequence: result.sequence,
-                            bytes: result.bytes,
-                        }
-                    }
-                    Err(failure) => ProcessEvent::InputRejected {
-                        identity: process.identity,
-                        epoch: process.epoch,
-                        sequence: result.sequence,
-                        failure,
-                    },
-                };
-                if !emit(&events, event, &counters) {
-                    terminate = Some(StopReason::EventOverflow);
-                    break;
-                }
-            }
-            match process.child.try_wait() {
-                Ok(Some(status)) => {
-                    counters.exits.fetch_add(1, Ordering::Relaxed);
-                    let _ = emit(
-                        &events,
-                        exited(process.identity, process.epoch, status),
-                        &counters,
-                    );
-                    let Some(mut stopped) = running.take() else {
-                        continue;
-                    };
-                    let _ = stop_running(&mut stopped, false);
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    let _ = emit(
-                        &events,
-                        ProcessEvent::Failed {
-                            identity: process.identity,
-                            epoch: process.epoch,
-                            failure: ProcessFailure::io(ProcessStage::Wait, &error),
-                        },
-                        &counters,
-                    );
-                    terminate = Some(StopReason::OutputOverflow);
-                }
-            }
-        }
-        if let Some(reason) = terminate
-            && let Some(mut process) = running.take()
-        {
-            let identity = process.identity;
-            let epoch = process.epoch;
-            let _ = stop_running(&mut process, true);
-            let _ = emit(
-                &events,
-                ProcessEvent::Stopped {
-                    identity,
-                    epoch,
-                    reason,
-                },
-                &counters,
+                ),
             );
-            if reason == StopReason::EventOverflow {
-                break;
+            terminate = merge_stop_reason(
+                terminate,
+                forward_writes(
+                    &process.writes,
+                    process.identity,
+                    process.epoch,
+                    &events,
+                    &counters,
+                ),
+            );
+            let (exited, wait_reason) = interpret_wait(handle_wait(
+                process.identity,
+                process.epoch,
+                process.child.try_wait(),
+                &events,
+                &counters,
+            ));
+            if exited && let Some(mut stopped) = running.take() {
+                let _ = stop_running(&mut stopped, false);
             }
+            terminate = merge_stop_reason(terminate, wait_reason);
+        }
+        if let Some(reason) = terminate {
+            let _ = stop_for_reason(&mut running, reason, &events, &counters);
+            continue_supervising = false;
         }
     }
     if let Some(mut process) = running {
         let _ = stop_running(&mut process, true);
+    }
+}
+
+fn merge_stop_reason(
+    current: Option<StopReason>,
+    latest: Option<StopReason>,
+) -> Option<StopReason> {
+    latest.or(current)
+}
+
+fn interpret_wait(decision: WaitDecision) -> (bool, Option<StopReason>) {
+    match decision {
+        WaitDecision::Running => (false, None),
+        WaitDecision::Exited => (true, None),
+        WaitDecision::Terminate => (false, Some(StopReason::OutputOverflow)),
     }
 }
 
@@ -951,6 +914,201 @@ fn start_running(
     }
 }
 
+fn admit_input(
+    running: &mut Option<Running>,
+    identity: ProcessIdentity,
+    epoch: ProcessEpoch,
+    request: WriteRequest,
+) -> Result<(), (InputSequence, ProcessFailure, bool)> {
+    let Some(process) = running
+        .as_mut()
+        .filter(|process| process.identity == identity && process.epoch == epoch)
+    else {
+        return Err((request.sequence, broken_pipe(ProcessStage::Input), false));
+    };
+    let result = match process.input.as_ref() {
+        Some(sender) => sender.try_send(request),
+        None => Err(TrySendError::Disconnected(request)),
+    };
+    result.map_err(|error| match error {
+        TrySendError::Full(request) => (
+            request.sequence,
+            ProcessFailure::saturated(ProcessStage::Input),
+            true,
+        ),
+        TrySendError::Disconnected(request) => {
+            (request.sequence, broken_pipe(ProcessStage::Input), true)
+        }
+    })
+}
+
+fn handle_input_control(
+    running: &mut Option<Running>,
+    identity: ProcessIdentity,
+    epoch: ProcessEpoch,
+    request: WriteRequest,
+    events: &SyncSender<ProcessEvent>,
+    counters: &Counters,
+) {
+    if let Err((sequence, failure, saturated)) = admit_input(running, identity, epoch, request) {
+        if saturated {
+            counters.input_saturations.fetch_add(1, Ordering::Relaxed);
+        }
+        let _ = emit(
+            events,
+            ProcessEvent::InputRejected {
+                identity,
+                epoch,
+                sequence,
+                failure,
+            },
+            counters,
+        );
+    }
+}
+
+fn forward_outputs(
+    outputs: &Receiver<OutputPacket>,
+    identity: ProcessIdentity,
+    epoch: ProcessEpoch,
+    events: &SyncSender<ProcessEvent>,
+    counters: &Counters,
+) -> Option<StopReason> {
+    while let Ok(packet) = outputs.try_recv() {
+        if !emit(
+            events,
+            ProcessEvent::Output {
+                identity,
+                epoch,
+                stream: packet.stream,
+                payload: packet.payload,
+            },
+            counters,
+        ) {
+            return Some(StopReason::EventOverflow);
+        }
+    }
+    None
+}
+
+fn forward_writes(
+    writes: &Receiver<WriteResult>,
+    identity: ProcessIdentity,
+    epoch: ProcessEpoch,
+    events: &SyncSender<ProcessEvent>,
+    counters: &Counters,
+) -> Option<StopReason> {
+    while let Ok(result) = writes.try_recv() {
+        let event = match result.result {
+            Ok(()) => {
+                counters.written_inputs.fetch_add(1, Ordering::Relaxed);
+                ProcessEvent::InputWritten {
+                    identity,
+                    epoch,
+                    sequence: result.sequence,
+                    bytes: result.bytes,
+                }
+            }
+            Err(failure) => ProcessEvent::InputRejected {
+                identity,
+                epoch,
+                sequence: result.sequence,
+                failure,
+            },
+        };
+        if !emit(events, event, counters) {
+            return Some(StopReason::EventOverflow);
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WaitDecision {
+    Running,
+    Exited,
+    Terminate,
+}
+
+fn handle_wait(
+    identity: ProcessIdentity,
+    epoch: ProcessEpoch,
+    result: io::Result<Option<ExitStatus>>,
+    events: &SyncSender<ProcessEvent>,
+    counters: &Counters,
+) -> WaitDecision {
+    match classify_wait(identity, epoch, result) {
+        Ok(Some(event)) => {
+            counters.exits.fetch_add(1, Ordering::Relaxed);
+            let _ = emit(events, event, counters);
+            WaitDecision::Exited
+        }
+        Ok(None) => WaitDecision::Running,
+        Err(failure) => {
+            let _ = emit(
+                events,
+                ProcessEvent::Failed {
+                    identity,
+                    epoch,
+                    failure,
+                },
+                counters,
+            );
+            WaitDecision::Terminate
+        }
+    }
+}
+
+fn stop_for_reason(
+    running: &mut Option<Running>,
+    reason: StopReason,
+    events: &SyncSender<ProcessEvent>,
+    counters: &Counters,
+) -> bool {
+    let Some(mut process) = running.take() else {
+        return false;
+    };
+    let identity = process.identity;
+    let epoch = process.epoch;
+    let _ = stop_running(&mut process, true);
+    let _ = emit(
+        events,
+        ProcessEvent::Stopped {
+            identity,
+            epoch,
+            reason,
+        },
+        counters,
+    );
+    reason == StopReason::EventOverflow
+}
+
+fn stop_for_restart(mut process: Running, events: &SyncSender<ProcessEvent>, counters: &Counters) {
+    let identity = process.identity;
+    let epoch = process.epoch;
+    let panicked = stop_running(&mut process, true);
+    let _ = emit(
+        events,
+        ProcessEvent::Stopped {
+            identity,
+            epoch,
+            reason: StopReason::Restart,
+        },
+        counters,
+    );
+    if panicked {
+        let _ = emit(
+            events,
+            ProcessEvent::Failed {
+                identity,
+                epoch,
+                failure: ProcessFailure::panicked(),
+            },
+            counters,
+        );
+    }
+}
+
 fn emit(events: &SyncSender<ProcessEvent>, event: ProcessEvent, counters: &Counters) -> bool {
     let queued = counters.queued_events.fetch_add(1, Ordering::AcqRel) + 1;
     counters
@@ -972,6 +1130,16 @@ fn spawn_process(
     epoch: ProcessEpoch,
     counters: &Arc<Counters>,
 ) -> Result<Running, ProcessFailure> {
+    spawn_process_with(spec, identity, epoch, counters, &SystemThreadSpawner)
+}
+
+fn spawn_process_with<S: ThreadSpawner>(
+    spec: &ProcessSpec,
+    identity: ProcessIdentity,
+    epoch: ProcessEpoch,
+    counters: &Arc<Counters>,
+    spawner: &S,
+) -> Result<Running, ProcessFailure> {
     let mut command = Command::new(&spec.executable);
     command
         .args(spec.arguments.iter())
@@ -984,28 +1152,18 @@ fn spawn_process(
     let mut child = command
         .spawn()
         .map_err(|error| ProcessFailure::io(ProcessStage::SpawnChild, &error))?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| broken_pipe(ProcessStage::SpawnInput))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| broken_pipe(ProcessStage::SpawnStdout))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| broken_pipe(ProcessStage::SpawnStderr))?;
+    let stdin = take_pipe(child.stdin.take(), ProcessStage::SpawnInput)?;
+    let stdout = take_pipe(child.stdout.take(), ProcessStage::SpawnStdout)?;
+    let stderr = take_pipe(child.stderr.take(), ProcessStage::SpawnStderr)?;
     let (input_sender, input_receiver) = sync_channel(INPUT_CAPACITY);
     let (output_sender, output_receiver) = sync_channel(OUTPUT_CAPACITY);
     let (write_sender, write_receiver) = sync_channel(WRITE_RESULT_CAPACITY);
     let overflowed = Arc::new(AtomicBool::new(false));
     let mut helpers = Vec::with_capacity(3);
 
-    match thread::Builder::new()
-        .name("alpine-lsp-input".to_owned())
-        .spawn(move || writer(stdin, input_receiver, &write_sender))
-    {
+    match spawner.spawn(ProcessStage::SpawnInput, "alpine-lsp-input", move || {
+        writer(stdin, input_receiver, &write_sender);
+    }) {
         Ok(handle) => helpers.push(handle),
         Err(error) => {
             let _ = child.kill();
@@ -1016,17 +1174,15 @@ fn spawn_process(
     let stdout_overflow = Arc::clone(&overflowed);
     let stdout_counters = Arc::clone(counters);
     let stdout_sender = output_sender.clone();
-    match thread::Builder::new()
-        .name("alpine-lsp-stdout".to_owned())
-        .spawn(move || {
-            reader(
-                stdout,
-                ProcessStream::Stdout,
-                &stdout_sender,
-                &stdout_overflow,
-                &stdout_counters,
-            );
-        }) {
+    match spawner.spawn(ProcessStage::SpawnStdout, "alpine-lsp-stdout", move || {
+        reader(
+            stdout,
+            ProcessStream::Stdout,
+            &stdout_sender,
+            &stdout_overflow,
+            &stdout_counters,
+        );
+    }) {
         Ok(handle) => helpers.push(handle),
         Err(error) => {
             cleanup_failed_spawn(&mut child, input_sender, helpers);
@@ -1035,17 +1191,15 @@ fn spawn_process(
     }
     let stderr_overflow = Arc::clone(&overflowed);
     let stderr_counters = Arc::clone(counters);
-    match thread::Builder::new()
-        .name("alpine-lsp-stderr".to_owned())
-        .spawn(move || {
-            reader(
-                stderr,
-                ProcessStream::Stderr,
-                &output_sender,
-                &stderr_overflow,
-                &stderr_counters,
-            );
-        }) {
+    match spawner.spawn(ProcessStage::SpawnStderr, "alpine-lsp-stderr", move || {
+        reader(
+            stderr,
+            ProcessStream::Stderr,
+            &output_sender,
+            &stderr_overflow,
+            &stderr_counters,
+        );
+    }) {
         Ok(handle) => helpers.push(handle),
         Err(error) => {
             cleanup_failed_spawn(&mut child, input_sender, helpers);
@@ -1081,8 +1235,8 @@ fn cleanup_failed_spawn(
     clippy::needless_pass_by_value,
     reason = "the dedicated writer thread owns its request receiver"
 )]
-fn writer(
-    mut stdin: ChildStdin,
+fn writer<W: Write>(
+    mut stdin: W,
     requests: Receiver<WriteRequest>,
     results: &SyncSender<WriteResult>,
 ) {
@@ -1138,11 +1292,25 @@ fn stop_running(process: &mut Running, kill: bool) -> bool {
         let _ = process.child.kill();
     }
     let _ = process.child.wait();
-    let mut panicked = false;
-    for helper in process.helpers.drain(..) {
-        panicked |= helper.join().is_err();
-    }
-    panicked
+    join_helpers(&mut process.helpers)
+}
+
+fn join_helpers(helpers: &mut Vec<JoinHandle<()>>) -> bool {
+    helpers.drain(..).any(|helper| helper.join().is_err())
+}
+
+fn take_pipe<T>(pipe: Option<T>, stage: ProcessStage) -> Result<T, ProcessFailure> {
+    pipe.ok_or_else(|| broken_pipe(stage))
+}
+
+fn classify_wait(
+    identity: ProcessIdentity,
+    epoch: ProcessEpoch,
+    result: io::Result<Option<ExitStatus>>,
+) -> Result<Option<ProcessEvent>, ProcessFailure> {
+    result
+        .map(|status| status.map(|status| exited(identity, epoch, status)))
+        .map_err(|error| ProcessFailure::io(ProcessStage::Wait, &error))
 }
 
 fn exited(identity: ProcessIdentity, epoch: ProcessEpoch, status: ExitStatus) -> ProcessEvent {
@@ -1162,224 +1330,5 @@ fn broken_pipe(stage: ProcessStage) -> ProcessFailure {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{env, thread, time::Instant};
-
-    use super::*;
-
-    const TIMEOUT: Duration = Duration::from_secs(3);
-
-    fn identity(generation: u64) -> ProcessIdentity {
-        ProcessIdentity {
-            workspace_revision: 1,
-            generation,
-        }
-    }
-
-    #[cfg(unix)]
-    fn shell(script: &str) -> Result<ProcessSpec, ConfigError> {
-        ProcessSpec::new("/bin/sh", ["-c", script], None)
-    }
-
-    fn wait_for(
-        process: &mut LanguageServerProcess,
-        predicate: impl Fn(&ProcessEvent) -> bool,
-    ) -> Result<ProcessEvent, Box<dyn Error>> {
-        let deadline = Instant::now() + TIMEOUT;
-        loop {
-            if let Some(event) = process.try_event()?
-                && predicate(&event)
-            {
-                return Ok(event);
-            }
-            if Instant::now() >= deadline {
-                return Err("timed out waiting for language-server event".into());
-            }
-            thread::sleep(Duration::from_millis(2));
-        }
-    }
-
-    #[test]
-    fn identities_and_configuration_fail_before_process_ownership() -> Result<(), Box<dyn Error>> {
-        assert_eq!(ProcessIdentity::new(0, 1), None);
-        assert_eq!(ProcessIdentity::new(1, 0), None);
-        assert!(matches!(
-            ProcessSpec::new("missing-alpine-language-server", ["x"], None),
-            Err(ConfigError::MissingExecutable)
-        ));
-        let executable = env::current_exe()?;
-        assert!(matches!(
-            ProcessSpec::new(&executable, vec!["x"; MAX_ARGUMENTS + 1], None),
-            Err(ConfigError::TooManyArguments)
-        ));
-        assert!(matches!(
-            ProcessSpec::new(&executable, ["x".repeat(MAX_ARGUMENT_BYTES + 1)], None),
-            Err(ConfigError::ArgumentTooLong)
-        ));
-        assert!(matches!(
-            ProcessSpec::new(&executable, [OsString::from("a\0b")], None),
-            Err(ConfigError::ContainsNul)
-        ));
-        assert!(matches!(
-            ProcessSpec::new(&executable, ["x"], Some(&executable)),
-            Err(ConfigError::WorkingDirectoryNotDirectory)
-        ));
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn echo_restart_and_stale_events_are_bounded() -> Result<(), Box<dyn Error>> {
-        let mut process = LanguageServerProcess::start(shell("cat")?, identity(1))?;
-        let started = wait_for(&mut process, |event| {
-            matches!(event, ProcessEvent::Started { .. })
-        })?;
-        assert!(matches!(
-            started,
-            ProcessEvent::Started {
-                process_id: 1..,
-                ..
-            }
-        ));
-        let sequence = process.send(b"Content-Length: 2\r\n\r\n{}")?;
-        assert_eq!(sequence.get(), 1);
-        let mut written = false;
-        let mut echoed = false;
-        while !written || !echoed {
-            let event = wait_for(&mut process, |_| true)?;
-            match event {
-                ProcessEvent::InputWritten {
-                    sequence: InputSequence(1),
-                    bytes: 23,
-                    ..
-                } => written = true,
-                output @ ProcessEvent::Output { .. } => {
-                    assert_eq!(
-                        output.output(),
-                        Some((ProcessStream::Stdout, &b"Content-Length: 2\r\n\r\n{}"[..]))
-                    );
-                    echoed = true;
-                }
-                unexpected => return Err(format!("unexpected echo event: {unexpected:?}").into()),
-            }
-        }
-        assert_eq!(process.restart(identity(2))?.get(), 2);
-        assert_eq!(process.restart(identity(2)), Err(SubmitError::StaleRestart));
-        let _ = wait_for(
-            &mut process,
-            |event| matches!(event, ProcessEvent::Started { epoch, .. } if epoch.get() == 2),
-        )?;
-        assert!(process.snapshot().stale_events >= 1);
-        let snapshot = process.shutdown();
-        assert_eq!(snapshot.starts, 2);
-        assert_eq!(snapshot.restarts, 1);
-        assert_eq!(snapshot.written_inputs, 1);
-        assert_eq!(snapshot.retained_bytes, 0);
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn crash_is_structured_and_restart_recovers() -> Result<(), Box<dyn Error>> {
-        let mut process = LanguageServerProcess::start(shell("exit 7")?, identity(1))?;
-        let exited = wait_for(&mut process, |event| {
-            matches!(event, ProcessEvent::Exited { .. })
-        })?;
-        assert!(matches!(
-            exited,
-            ProcessEvent::Exited {
-                success: false,
-                code: Some(7),
-                ..
-            }
-        ));
-        process.restart(identity(2))?;
-        let _ = wait_for(
-            &mut process,
-            |event| matches!(event, ProcessEvent::Started { epoch, .. } if epoch.get() == 2),
-        )?;
-        let snapshot = process.shutdown();
-        assert_eq!(snapshot.exits, 1);
-        assert_eq!(snapshot.starts, 2);
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn output_flood_terminates_without_unbounded_retention() -> Result<(), Box<dyn Error>> {
-        let mut process = LanguageServerProcess::start(
-            shell("head -c 4194304 /dev/zero; exec sleep 30")?,
-            identity(1),
-        )?;
-        let deadline = Instant::now() + TIMEOUT;
-        while Instant::now() < deadline {
-            if process.try_event().is_err() {
-                break;
-            }
-            if process.snapshot().output_saturations > 0 || process.snapshot().event_saturations > 0
-            {
-                break;
-            }
-            thread::sleep(Duration::from_millis(2));
-        }
-        let snapshot = process.shutdown();
-        assert!(snapshot.output_saturations > 0 || snapshot.event_saturations > 0);
-        assert!(snapshot.peak_retained_bytes <= MAX_RETAINED_PAYLOAD_BYTES);
-        assert!(snapshot.peak_queued_events <= EVENT_CAPACITY + 1);
-        assert_eq!(snapshot.retained_bytes, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn event_observers_preserve_rejection_stop_and_failure_details() {
-        let identity = identity(1);
-        let epoch = ProcessEpoch(1);
-        let rejection = ProcessFailure::saturated(ProcessStage::Input);
-        let rejected = ProcessEvent::InputRejected {
-            identity,
-            epoch,
-            sequence: InputSequence(7),
-            failure: rejection,
-        };
-        assert_eq!(rejected.rejection(), Some((InputSequence(7), rejection)));
-        let stopped = ProcessEvent::Stopped {
-            identity,
-            epoch,
-            reason: StopReason::Restart,
-        };
-        assert_eq!(stopped.stop_reason(), Some(StopReason::Restart));
-        let failure = ProcessFailure::panicked();
-        let failed = ProcessEvent::Failed {
-            identity,
-            epoch,
-            failure,
-        };
-        assert_eq!(failed.failure(), Some(failure));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn blocked_input_is_nonblocking_and_shutdown_releases_payloads() -> Result<(), Box<dyn Error>> {
-        let mut process = LanguageServerProcess::start(shell("sleep 30")?, identity(1))?;
-        let _ = wait_for(&mut process, |event| {
-            matches!(event, ProcessEvent::Started { .. })
-        })?;
-        let payload = vec![b'x'; MAX_MESSAGE_BYTES / 2];
-        let start = Instant::now();
-        let mut admitted = 0;
-        let mut rejected = 0;
-        for _ in 0..16 {
-            match process.send(&payload) {
-                Ok(_) => admitted += 1,
-                Err(SubmitError::RetainedBudget | SubmitError::Saturated) => rejected += 1,
-                Err(error) => return Err(error.into()),
-            }
-        }
-        assert!(start.elapsed() < Duration::from_secs(1));
-        assert!(admitted > 0 && rejected > 0);
-        let snapshot = process.shutdown();
-        assert!(snapshot.peak_retained_bytes <= MAX_RETAINED_PAYLOAD_BYTES);
-        assert_eq!(snapshot.retained_bytes, 0);
-        Ok(())
-    }
-}
+#[path = "lsp_process_coverage_tests.rs"]
+mod tests;
