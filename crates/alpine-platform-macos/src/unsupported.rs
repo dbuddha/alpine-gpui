@@ -1,6 +1,7 @@
 use crate::{
     SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceObserver, SurfaceResponse,
-    SurfaceSnapshot, begin_close_observer_state, finish_close_observer_state, new_observer_state,
+    SurfaceSnapshot, SurfaceWaker, begin_close_observer_state, finish_close_observer_state,
+    new_observer_state,
 };
 use alpine_core::LinearRgba;
 use alpine_platform::PresentationRevision;
@@ -38,6 +39,14 @@ impl NativeSurface {
         F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         Err(SurfaceError::UnsupportedPlatform)
+    }
+
+    #[allow(
+        clippy::unused_self,
+        reason = "the unsupported implementation mirrors the native owner contract"
+    )]
+    pub(crate) fn waker(&self) -> SurfaceWaker {
+        SurfaceWaker::closed()
     }
 
     #[allow(

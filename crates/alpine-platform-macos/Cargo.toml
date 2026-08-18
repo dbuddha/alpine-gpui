@@ -15,6 +15,7 @@ alpine-scene = { path = "../alpine-scene", version = "=0.0.0" }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 block2 = { version = "=0.6.2", default-features = false }
+dispatch2 = { version = "=0.3.0", default-features = false, features = ["std"] }
 objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSAttributedString", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSScreen", "NSTextInputClient", "NSView", "NSWindow", "objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core"] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["CGColorSpace", "CGEvent", "CGEventTypes"] }
@@ -71,4 +72,8 @@ harness = false
 
 [[test]]
 name = "native_input"
+harness = false
+
+[[test]]
+name = "native_wake"
 harness = false

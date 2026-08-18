@@ -152,8 +152,8 @@ jobs:
             cargo mutants --no-config --file crates/alpine-metal/src/native.rs --features platform-spi --no-shuffle --output target/native-mutants.out -- --locked
             cargo mutants --no-config --file crates/alpine-metal/src/platform_spi.rs --features platform-spi --no-shuffle --output target/native-platform-spi-mutants.out -- --locked
             cargo mutants --no-config --file crates/alpine-metal/src/submission.rs --features platform-spi --re 'MetalBackend::render_callback_drawable|record_drawable_attempt|verify_drawable_attempt_lifecycle|complete_drawable_attempt' --no-shuffle --output target/native-submission-mutants.out -- --locked
-            cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re validate_initialization_rollback --no-shuffle --output target/native-platform-contract-mutants.out -- --locked
-            cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop' --no-shuffle --output target/native-platform-mutants.out -- --locked
+            cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re 'validate_initialization_rollback|native_validation::arm_window_close' --no-shuffle --output target/native-platform-contract-mutants.out -- --locked
+            cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|NativeSurface::arm_window_close' --no-shuffle --output target/native-platform-mutants.out -- --locked
             cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app' --no-shuffle --output target/native-studio-mutants.out -- --locked
           else
             echo "Native mutation activates when alpine-metal is implemented."

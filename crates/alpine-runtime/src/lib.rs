@@ -32,6 +32,8 @@ type WorkerSpawner<T> = dyn FnMut(
     Arc<Mutex<Option<WorkerWake>>>,
 ) -> std::io::Result<JoinHandle<()>>;
 
+const MAX_WORKER_RESULTS_PER_TURN: usize = 8;
+
 /// Monotonic identity of the active local workspace state.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct WorkspaceRevision(u64);
@@ -351,6 +353,14 @@ impl<T: Send + 'static> WorkerPool<T> {
     fn set_waker(&mut self, wake: WorkerWake) {
         if let Ok(mut installed) = self.wake.lock() {
             *installed = Some(wake);
+        }
+    }
+
+    fn wake(&self) {
+        if let Ok(installed) = self.wake.lock()
+            && let Some(wake) = installed.as_ref()
+        {
+            wake();
         }
     }
 
@@ -826,6 +836,10 @@ impl<D: AppDelegate + 'static> Application<D> {
         {
             let mut application = self;
             let surface = NativeSurface::new(descriptor)?;
+            let surface_waker = surface.waker();
+            application.set_worker_waker(move || {
+                let _ = surface_waker.wake();
+            });
             if let Some(frame) = application.frame_if_dirty() {
                 let (scene, clear) = frame.into_parts();
                 let _revision = surface.request_frame(scene, clear)?;
@@ -856,7 +870,10 @@ impl<D: AppDelegate + 'static> Application<D> {
     }
 
     fn drain_worker_results(&mut self) {
-        while let Some(completion) = self.workers.try_completion() {
+        for _ in 0..MAX_WORKER_RESULTS_PER_TURN {
+            let Some(completion) = self.workers.try_completion() else {
+                return;
+            };
             if completion.token.workspace_revision != self.workspace_revision
                 || completion.token.document_revision != self.document_revision
             {
@@ -876,6 +893,9 @@ impl<D: AppDelegate + 'static> Application<D> {
             };
             self.delegate
                 .worker_result(completion.token, result, &mut context);
+        }
+        if self.workers.snapshot().queued_results() > 0 {
+            self.workers.wake();
         }
     }
 }
@@ -1526,6 +1546,85 @@ mod tests {
             timestamp: EventTimestamp::new(3),
         });
         assert!(application.delegate.results.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn foreground_drain_is_bounded_and_reschedules_remaining_results() -> Result<(), RuntimeError> {
+        let mut application = runtime(TestDelegate::default())?;
+        let (request_sender, _request_receiver) = sync_channel(1);
+        let (result_sender, result_receiver) = sync_channel(16);
+        let counters = Arc::new(WorkerCounters::default());
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let wake_counter = Arc::clone(&wakes);
+        application.workers = WorkerPool {
+            request_sender: Some(request_sender),
+            result_receiver,
+            workers: Vec::new(),
+            counters: Arc::clone(&counters),
+            next_sequence: 0,
+            wake: Arc::new(Mutex::new(Some(Arc::new(move || {
+                wake_counter.fetch_add(1, Ordering::Relaxed);
+            })))),
+        };
+        for sequence in 1..=8 {
+            assert!(
+                result_sender
+                    .send(WorkerCompletion {
+                        token: WorkToken {
+                            sequence,
+                            workspace_revision: WorkspaceRevision::default(),
+                            document_revision: DocumentRevision::default(),
+                        },
+                        outcome: WorkerOutcome::Completed(sequence),
+                    })
+                    .is_ok()
+            );
+        }
+        counters.queued_results.store(8, Ordering::Release);
+        counters.peak_queued_results.store(8, Ordering::Release);
+        let _ = application.frame_if_dirty();
+
+        let exact_budget = application.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(10),
+        });
+        assert!(exact_budget.is_some());
+        assert_eq!(application.delegate.results.len(), 8);
+        assert_eq!(application.snapshot().worker().queued_results(), 0);
+        assert_eq!(wakes.load(Ordering::Acquire), 0);
+
+        for sequence in 9..=17 {
+            assert!(
+                result_sender
+                    .send(WorkerCompletion {
+                        token: WorkToken {
+                            sequence,
+                            workspace_revision: WorkspaceRevision::default(),
+                            document_revision: DocumentRevision::default(),
+                        },
+                        outcome: WorkerOutcome::Completed(sequence),
+                    })
+                    .is_ok()
+            );
+        }
+        counters.queued_results.store(9, Ordering::Release);
+        counters.peak_queued_results.store(9, Ordering::Release);
+
+        let over_budget = application.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(11),
+        });
+        assert!(over_budget.is_some());
+        assert_eq!(application.delegate.results.len(), 16);
+        assert_eq!(application.snapshot().worker().queued_results(), 1);
+        assert_eq!(wakes.load(Ordering::Acquire), 1);
+
+        let remainder = application.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(12),
+        });
+        assert!(remainder.is_some());
+        assert_eq!(application.delegate.results.len(), 17);
+        assert_eq!(application.snapshot().worker().queued_results(), 0);
+        assert_eq!(wakes.load(Ordering::Acquire), 1);
         Ok(())
     }
 }
