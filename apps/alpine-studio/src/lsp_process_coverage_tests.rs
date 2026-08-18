@@ -815,12 +815,20 @@ fn crash_is_structured_and_restart_recovers() -> Result<(), Box<dyn Error>> {
         }
     ));
     process.restart(identity(2))?;
-    let _ = wait_for(
+    let restarted_exit = wait_for(
         &mut process,
-        |event| matches!(event, ProcessEvent::Started { epoch, .. } if epoch.get() == 2),
+        |event| matches!(event, ProcessEvent::Exited { epoch, .. } if epoch.get() == 2),
     )?;
+    assert!(matches!(
+        restarted_exit,
+        ProcessEvent::Exited {
+            success: false,
+            code: Some(7),
+            ..
+        }
+    ));
     let snapshot = process.shutdown();
-    assert_eq!(snapshot.exits, 1);
+    assert_eq!(snapshot.exits, 2);
     assert_eq!(snapshot.starts, 2);
     Ok(())
 }
