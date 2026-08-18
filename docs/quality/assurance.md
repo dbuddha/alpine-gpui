@@ -39,3 +39,19 @@ threshold or assumption is never weakened merely to obtain a green result.
 Lean remains deferred. It becomes relevant only when Alpine has a mathematical
 specification and a credible, testable refinement path that TLA+, Kani, Loom,
 and native evidence cannot cover economically.
+
+## Alpine Studio product boundary
+
+The editor-first build has an exact, versioned Apple Silicon dependency closure
+in `assurance/alpine-studio-dependencies.txt`. The fast repository gate rejects
+any unreviewed direct or transitive package, network-capable shipping source,
+excluded Cargo feature, or excluded subsystem path. This is an allowlist, not a
+claim based only on searching for product names.
+
+The macOS ARM64 CI lane additionally builds the release executable and rejects
+network imports and embedded endpoint strings. It retains the binary SHA-256,
+byte size, and audit result as a per-revision artifact. These checks establish
+the static product boundary; native startup, idle, process, and connection
+observation remain separate journey evidence and cannot be inferred from the
+static audit alone. A reviewed local language-server dependency changes the
+allowlist explicitly but does not weaken the network prohibition.

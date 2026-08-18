@@ -360,19 +360,14 @@ pub(super) fn snapshot(app: &StudioApp) -> Result<AccessibilitySnapshot, Accessi
 }
 
 fn build_nodes(app: &StudioApp) -> Result<Vec<AccessibilityNode>, AccessibilityError> {
-    let overlay_count = usize::from(app.file_tree.is_visible())
-        + usize::from(app.find.is_open())
-        + usize::from(app.quick_open.is_open())
-        + usize::from(app.project_search.is_open())
-        + usize::from(app.command_palette.is_open());
-    let node_count = 3_usize
-        .checked_add(app.tabs.len())
-        .and_then(|count| count.checked_add(overlay_count))
-        .and_then(|count| count.checked_add(usize::from(app.local_status.is_some())))
-        .ok_or(AccessibilityError::ArithmeticOverflow)?;
-    if node_count > MAX_ACCESSIBILITY_NODES {
-        return Err(AccessibilityError::InvalidTree);
-    }
+    let overlays = [
+        app.file_tree.is_visible(),
+        app.find.is_open(),
+        app.quick_open.is_open(),
+        app.project_search.is_open(),
+        app.command_palette.is_open(),
+    ];
+    let node_count = required_node_count(app.tabs.len(), overlays, app.local_status.is_some())?;
 
     let focus_owner = focus_owner(app);
     let mut nodes = Vec::new();
@@ -423,14 +418,43 @@ fn build_nodes(app: &StudioApp) -> Result<Vec<AccessibilityNode>, AccessibilityE
             true,
         ));
     }
-    if nodes.len() != node_count {
-        return Err(AccessibilityError::InvalidTree);
-    }
     let focused_count = nodes.iter().filter(|node| node.is_focused()).count();
-    if focused_count != usize::from(app.focused) {
+    validate_tree_shape(nodes.len(), node_count, focused_count, app.focused)?;
+    Ok(nodes)
+}
+
+fn required_node_count(
+    tab_count: usize,
+    overlays: [bool; 5],
+    has_status: bool,
+) -> Result<usize, AccessibilityError> {
+    let overlay_count = overlays
+        .into_iter()
+        .try_fold(0_usize, |count, present| {
+            count.checked_add(usize::from(present))
+        })
+        .ok_or(AccessibilityError::ArithmeticOverflow)?;
+    let node_count = 3_usize
+        .checked_add(tab_count)
+        .and_then(|count| count.checked_add(overlay_count))
+        .and_then(|count| count.checked_add(usize::from(has_status)))
+        .ok_or(AccessibilityError::ArithmeticOverflow)?;
+    if node_count > MAX_ACCESSIBILITY_NODES {
         return Err(AccessibilityError::InvalidTree);
     }
-    Ok(nodes)
+    Ok(node_count)
+}
+
+fn validate_tree_shape(
+    actual_nodes: usize,
+    expected_nodes: usize,
+    focused_nodes: usize,
+    app_focused: bool,
+) -> Result<(), AccessibilityError> {
+    if actual_nodes != expected_nodes || focused_nodes != usize::from(app_focused) {
+        return Err(AccessibilityError::InvalidTree);
+    }
+    Ok(())
 }
 
 fn focus_owner(app: &StudioApp) -> Option<AccessibilityNodeId> {
@@ -588,5 +612,130 @@ fn push_conditional_node(
             false,
             false,
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observers_preserve_non_identity_values_and_exact_flags() {
+        let selected = node(
+            AccessibilityNodeId(42),
+            Some(WINDOW_NODE),
+            AccessibilityRole::Tab,
+            Arc::from("selected"),
+            false,
+            true,
+            false,
+        );
+        let announced = node(
+            AccessibilityNodeId(43),
+            Some(WINDOW_NODE),
+            AccessibilityRole::Status,
+            Arc::from("announced"),
+            false,
+            false,
+            true,
+        );
+        assert!(selected.is_selected());
+        assert!(!selected.announces());
+        assert!(!announced.is_selected());
+        assert!(announced.announces());
+
+        let revision = AccessibilityRevision::new(7, 11);
+        assert_eq!(revision.document(), 7);
+        assert_eq!(revision.buffer(), 11);
+        let selection = AccessibilitySelection {
+            anchor_utf16: 9,
+            head_utf16: 2,
+        };
+        assert_eq!(selection.anchor_utf16(), 9);
+        assert_eq!(selection.head_utf16(), 2);
+        assert_eq!(selection.range(), AccessibilityTextRange::new(2, 7));
+
+        let report = AccessibilityReport {
+            node_count: 5,
+            owned_node_bytes: 640,
+            referenced_name_bytes: 37,
+            max_nodes: 270,
+            max_text_request_bytes: 65_536,
+        };
+        assert_eq!(report.node_count(), 5);
+        assert_eq!(report.owned_node_bytes(), 640);
+        assert_eq!(report.referenced_name_bytes(), 37);
+    }
+
+    #[test]
+    fn node_count_and_tree_shape_boundaries_are_exact() {
+        assert_eq!(required_node_count(0, [false; 5], false), Ok(3));
+        for overlay in 0..5 {
+            let mut overlays = [false; 5];
+            overlays[overlay] = true;
+            assert_eq!(required_node_count(0, overlays, false), Ok(4));
+        }
+        assert_eq!(
+            required_node_count(261, [true; 5], true),
+            Ok(MAX_ACCESSIBILITY_NODES)
+        );
+        assert_eq!(
+            required_node_count(262, [true; 5], true),
+            Err(AccessibilityError::InvalidTree)
+        );
+        assert_eq!(
+            required_node_count(usize::MAX, [false; 5], false),
+            Err(AccessibilityError::ArithmeticOverflow)
+        );
+        assert_eq!(validate_tree_shape(4, 4, 1, true), Ok(()));
+        assert_eq!(
+            validate_tree_shape(3, 4, 1, true),
+            Err(AccessibilityError::InvalidTree)
+        );
+        assert_eq!(
+            validate_tree_shape(4, 4, 0, true),
+            Err(AccessibilityError::InvalidTree)
+        );
+    }
+
+    #[test]
+    fn diagnostics_and_error_sources_are_exact() {
+        let expected = AccessibilityRevision::new(3, 5);
+        let actual = AccessibilityRevision::new(7, 11);
+        let text = TextError::InvalidUtf16Boundary { offset: 2 };
+        let diagnostics = [
+            (
+                AccessibilityError::AllocationFailed,
+                "accessibility allocation failed".to_owned(),
+            ),
+            (
+                AccessibilityError::ArithmeticOverflow,
+                "accessibility arithmetic overflow".to_owned(),
+            ),
+            (
+                AccessibilityError::InvalidTree,
+                "accessibility tree is inconsistent".to_owned(),
+            ),
+            (
+                AccessibilityError::StaleRevision { expected, actual },
+                format!("stale accessibility revision {actual:?}; expected {expected:?}"),
+            ),
+            (
+                AccessibilityError::TextRequestTooLarge {
+                    actual: 65_537,
+                    limit: 65_536,
+                },
+                "accessibility text request 65537 bytes exceeds limit 65536".to_owned(),
+            ),
+            (
+                AccessibilityError::Text(text.clone()),
+                format!("accessibility text mapping failed: {text}"),
+            ),
+        ];
+        for (error, message) in diagnostics {
+            assert_eq!(error.to_string(), message);
+        }
+        assert!(AccessibilityError::Text(text).source().is_some());
+        assert!(AccessibilityError::InvalidTree.source().is_none());
     }
 }

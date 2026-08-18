@@ -598,6 +598,13 @@ mod tests {
 
     #[test]
     fn shortcut_labels_are_static_ascii_and_bounded() {
+        let boundary = [binding(
+            KEY_A,
+            Modifiers::COMMAND,
+            KeyAction::SelectAll,
+            "1234567890123456",
+        )];
+        assert_eq!(validate_bindings(&boundary), Ok(()));
         let invalid = [binding(KEY_A, Modifiers::COMMAND, KeyAction::SelectAll, "")];
         assert_eq!(
             validate_bindings(&invalid),
@@ -641,6 +648,10 @@ mod tests {
             (
                 SettingsError::InvalidColor("selection"),
                 "theme color selection is invalid".to_owned(),
+            ),
+            (
+                SettingsError::InvalidShortcutLabel,
+                "shortcut label must be 1 to 16 ASCII bytes".to_owned(),
             ),
             (
                 SettingsError::DuplicateBinding {
