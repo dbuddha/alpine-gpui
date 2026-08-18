@@ -208,14 +208,14 @@ impl<T> DocumentTabs<T> {
                 return Err(DocumentTabError::DuplicatePath(path.to_path_buf()));
             }
             let (label, path_bytes) = tab_metadata(restored.path.as_deref())?;
-            retained_path_bytes = retained_path_bytes.checked_add(path_bytes).ok_or(
-                DocumentTabError::PathBudgetExceeded(limits.path_byte_budget),
-            )?;
-            if retained_path_bytes > limits.path_byte_budget {
+            let (next_path_bytes, path_bytes_overflowed) =
+                retained_path_sum(retained_path_bytes, path_bytes);
+            if path_bytes_overflowed || next_path_bytes > limits.path_byte_budget {
                 return Err(DocumentTabError::PathBudgetExceeded(
                     limits.path_byte_budget,
                 ));
             }
+            retained_path_bytes = next_path_bytes;
             let id_value = u64::try_from(index)
                 .ok()
                 .and_then(|value| value.checked_add(1))
@@ -413,6 +413,11 @@ impl<T> DocumentTabs<T> {
         };
         tab.document = None;
         true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_active_index_fault(&mut self) {
+        self.active = self.tabs.len();
     }
 
     pub(crate) fn inactive_documents(&self) -> impl Iterator<Item = &T> {
@@ -628,6 +633,20 @@ impl<T> DocumentTabs<T> {
         self.tabs[self.active].document = Some(payload);
     }
 
+    #[cfg(test)]
+    pub(crate) fn inject_forward_history_target_for_test(&mut self, target: DocumentTabId) {
+        let active = self.tabs[self.active].id;
+        self.history.clear();
+        self.history.extend([active, target]);
+        self.history_cursor = 0;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_history_for_test(&mut self) {
+        self.history.clear();
+        self.history_cursor = 0;
+    }
+
     fn switch_to(
         &mut self,
         index: usize,
@@ -676,6 +695,10 @@ impl<T> DocumentTabs<T> {
     }
 }
 
+const fn retained_path_sum(current: usize, added: usize) -> (usize, bool) {
+    current.overflowing_add(added)
+}
+
 fn tab_metadata(path: Option<&Path>) -> Result<(Arc<str>, usize), DocumentTabError> {
     let Some(path) = path else {
         return Ok((Arc::from("Untitled"), 0));
@@ -708,6 +731,7 @@ mod tests {
     fn tabs_preserve_payload_view_identity_and_duplicate_lookup()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut tabs = DocumentTabs::new(None, None, DocumentTabLimits::new(4, 1_024, 4))?;
+        assert_eq!(tabs.close_target(), Err(DocumentTabError::LastTab));
         let mut active = String::from("scratch");
         let first_insertion = tabs.insert_and_activate(
             Path::new("/root/a.rs"),
@@ -886,6 +910,8 @@ mod tests {
 
         let active_id = tabs.tabs[tabs.active].id;
         let scratch_id = tabs.tabs[0].id;
+        assert_eq!(tabs.document_for_id(active_id, &active)?, "b");
+        assert_eq!(tabs.document_for_id(scratch_id, &active)?, "scratch");
         tabs.history.clear();
         tabs.history
             .extend([scratch_id, DocumentTabId(u64::MAX), active_id]);
@@ -982,6 +1008,13 @@ mod tests {
         assert_eq!(tabs.is_deferred(0), Ok(true));
         assert_eq!(tabs.is_deferred(1), Ok(false));
         assert_eq!(tabs.is_deferred(2), Ok(true));
+        assert_eq!(tabs.navigation_target(false), None);
+        assert_eq!(tabs.navigation_target(true), None);
+        assert_eq!(tabs.close_target(), Ok(2));
+        assert!(matches!(
+            tabs.activate(0, &mut active, view(0, 0.0)),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
         assert!(matches!(
             tabs.document_at(0, &active),
             Err(DocumentTabError::InvalidPayloadState)
@@ -998,6 +1031,100 @@ mod tests {
         ));
         assert_eq!(tabs.navigation_target(false), Some(1));
         assert_eq!(tabs.close_target(), Ok(1));
+        tabs.materialize(2, String::from("gamma"))?;
+        assert!(tabs.activate(2, &mut active, view(5, 5.0))?.is_some());
+        assert_eq!(active, "gamma");
+        assert_eq!(tabs.close_target(), Ok(1));
+
+        tabs.tabs[0].document = None;
+        tabs.tabs[0].deferred = false;
+        assert!(matches!(
+            tabs.materialize(0, String::from("missing deferred marker")),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        tabs.tabs[0].document = Some(String::from("duplicate payload"));
+        tabs.tabs[0].deferred = true;
+        assert!(matches!(
+            tabs.materialize(0, String::from("duplicate materialization")),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn restored_tab_admission_and_materialization_guards_are_independent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let restored = |path: &str| {
+            vec![RestoredDocumentTab {
+                path: Some(PathBuf::from(path)),
+                view: view(0, 0.0),
+            }]
+        };
+        for limits in [
+            DocumentTabLimits::new(0, 1, 1),
+            DocumentTabLimits::new(1, 0, 1),
+            DocumentTabLimits::new(1, 1, 0),
+        ] {
+            assert!(matches!(
+                DocumentTabs::<String>::from_restored(restored("a"), 0, limits),
+                Err(DocumentTabError::InvalidLimits)
+            ));
+        }
+        assert!(matches!(
+            DocumentTabs::<String>::from_restored(Vec::new(), 0, DocumentTabLimits::new(1, 1, 1)),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        assert!(matches!(
+            DocumentTabs::<String>::from_restored(
+                vec![restored("a").remove(0), restored("b").remove(0)],
+                0,
+                DocumentTabLimits::new(1, 2, 1)
+            ),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        assert!(matches!(
+            DocumentTabs::<String>::from_restored(
+                restored("a"),
+                1,
+                DocumentTabLimits::new(1, 1, 1)
+            ),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        assert!(matches!(
+            DocumentTabs::<String>::from_restored(
+                vec![
+                    RestoredDocumentTab {
+                        path: Some(PathBuf::from("a")),
+                        view: view(0, 0.0),
+                    },
+                    RestoredDocumentTab {
+                        path: Some(PathBuf::from("a")),
+                        view: view(0, 0.0),
+                    },
+                ],
+                0,
+                DocumentTabLimits::new(2, 4, 2)
+            ),
+            Err(DocumentTabError::DuplicatePath(path)) if path == Path::new("a")
+        ));
+        let (_, exact_path_bytes) = tab_metadata(Some(Path::new("a")))?;
+        assert!(
+            DocumentTabs::<String>::from_restored(
+                restored("a"),
+                0,
+                DocumentTabLimits::new(1, exact_path_bytes, 1)
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            DocumentTabs::<String>::from_restored(
+                restored("a"),
+                0,
+                DocumentTabLimits::new(1, exact_path_bytes - 1, 1)
+            ),
+            Err(DocumentTabError::PathBudgetExceeded(limit)) if limit == exact_path_bytes - 1
+        ));
+        assert_eq!(retained_path_sum(usize::MAX, 1), (0, true));
         Ok(())
     }
 

@@ -129,9 +129,14 @@ fi
 
 research_files=$(find docs/research -type f -print 2>/dev/null | sort || true)
 expected_research_files='docs/research/alpine-studio-adversarial-review.md
-docs/research/index.md'
+docs/research/index.md
+docs/research/wgpu/decisions.md
+docs/research/wgpu/experiments.md
+docs/research/wgpu/findings.md
+docs/research/wgpu/index.md
+docs/research/wgpu/source-map.md'
 if [ "$research_files" != "$expected_research_files" ]; then
-    fail 'docs/research may contain only the accepted catalog and adversarial review'
+    fail 'docs/research may contain only accepted catalog, review, and WGPU package artifacts'
     printf '%s\n' "$research_files" >&2
 fi
 
@@ -163,6 +168,11 @@ for required_path in \
     scripts/check-tla.sh \
     docs/research/index.md \
     docs/research/alpine-studio-adversarial-review.md \
+    docs/research/wgpu/index.md \
+    docs/research/wgpu/source-map.md \
+    docs/research/wgpu/findings.md \
+    docs/research/wgpu/experiments.md \
+    docs/research/wgpu/decisions.md \
     .cargo/mutants.toml
 do
     if [ ! -f "$required_path" ]; then
