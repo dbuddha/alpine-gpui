@@ -38,6 +38,14 @@ mod lsp_json;
     not(test),
     expect(
         dead_code,
+        reason = "Task #208 stages real rust-analyzer compatibility before editor command wiring"
+    )
+)]
+mod lsp_language;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
         reason = "Task #128 stages bounded local process ownership before JSON-RPC decoding"
     )
 )]

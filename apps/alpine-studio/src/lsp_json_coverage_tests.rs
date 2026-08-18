@@ -34,13 +34,27 @@ fn pending_request(id: u32, method: &str, stamp: Option<RequestStamp>) -> Pendin
 
 #[test]
 fn value_guards_and_error_contracts_cover_each_rejection_axis() {
-    for components in [[0, 1, 1, 1], [1, 0, 1, 1], [1, 1, 0, 1], [1, 1, 1, 0]] {
+    for components in [
+        [0, 1, 1, 1, 1, 1],
+        [1, 0, 1, 1, 1, 1],
+        [1, 1, 0, 1, 1, 1],
+        [1, 1, 1, 0, 1, 1],
+        [1, 1, 1, 1, 0, 1],
+        [1, 1, 1, 1, 1, 0],
+    ] {
         assert_eq!(
-            RequestStamp::new(components[0], components[1], components[2], components[3]),
+            RequestStamp::new(
+                components[0],
+                components[1],
+                components[2],
+                components[3],
+                components[4],
+                components[5],
+            ),
             None
         );
     }
-    assert!(RequestStamp::new(1, 2, 3, 4).is_some());
+    assert!(RequestStamp::new(1, 2, 3, 4, 5, 6).is_some());
     let error = ProtocolError::InvalidEnvelope;
     assert_eq!(
         error.to_string(),
@@ -53,7 +67,10 @@ fn value_guards_and_error_contracts_cover_each_rejection_axis() {
         Ok(RequestId(7))
     ));
     assert!(RequestIdVisitor.visit_i64::<ValueError>(-1).is_err());
-    assert!(RequestIdVisitor.visit_i64::<ValueError>(0).is_err());
+    assert!(matches!(
+        RequestIdVisitor.visit_i64::<ValueError>(0),
+        Ok(RequestId(0))
+    ));
 
     let request_id_error = serde_json::from_str::<RequestId>("true")
         .err()
@@ -61,7 +78,7 @@ fn value_guards_and_error_contracts_cover_each_rejection_axis() {
     assert!(
         request_id_error
             .to_string()
-            .contains("a nonzero 32-bit integer request ID")
+            .contains("a 32-bit unsigned integer request ID")
     );
     let envelope_error = serde_json::from_str::<WireEnvelope<'_>>("null")
         .err()
@@ -176,7 +193,7 @@ fn lifecycle_rejections_and_internal_admission_invariants_are_discriminating() {
         created.begin_request(
             "textDocument/hover",
             None,
-            RequestStamp::new(1, 1, 1, 1).unwrap_or_else(|| unreachable!())
+            RequestStamp::new(1, 1, 1, 1, 1, 1).unwrap_or_else(|| unreachable!())
         ),
         Err(ProtocolError::InvalidLifecycle)
     );
@@ -192,7 +209,7 @@ fn lifecycle_rejections_and_internal_admission_invariants_are_discriminating() {
     assert_eq!(created.exit(), Err(ProtocolError::InvalidLifecycle));
 
     let mut peer = running_peer();
-    let stamp = RequestStamp::new(1, 1, 1, 1).unwrap_or_else(|| unreachable!());
+    let stamp = RequestStamp::new(1, 1, 1, 1, 1, 1).unwrap_or_else(|| unreachable!());
     assert_eq!(
         peer.begin_request("initialize", None, stamp),
         Err(ProtocolError::InvalidLifecycle)
@@ -268,7 +285,7 @@ fn storage_and_outbound_limits_fail_before_growth() {
     let exact_capacity = 48 + serde_json::to_vec("method").map_or(0, |value| value.len()) + 2;
     assert!(build_call_with_limit("method", None, Some("{}"), exact_capacity).is_ok());
 
-    let stamp = RequestStamp::new(1, 1, 1, 1).unwrap_or_else(|| unreachable!());
+    let stamp = RequestStamp::new(1, 1, 1, 1, 1, 1).unwrap_or_else(|| unreachable!());
     let mut peer = running_peer();
     assert!(
         peer.begin_request("textDocument/hover", None, stamp)

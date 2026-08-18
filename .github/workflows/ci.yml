@@ -368,6 +368,36 @@ jobs:
           fi
           xcrun --sdk macosx --find metal
           xcrun --sdk macosx --find metallib
+      - name: Provision the pinned rust-analyzer compatibility binary
+        run: |
+          mkdir -p target/rust-analyzer-qualification
+          curl --fail --location --silent --show-error \
+            https://github.com/rust-lang/rust-analyzer/releases/download/2026-08-17.4/rust-analyzer-aarch64-apple-darwin.gz \
+            --output target/rust-analyzer-qualification/rust-analyzer.gz
+          echo "ece932daf2f077be87bf745d2eb0a62cbc550f4b1e2e31ca76dfafdd0cc599b3  target/rust-analyzer-qualification/rust-analyzer.gz" \
+            | shasum -a 256 --check
+          gzip -dc target/rust-analyzer-qualification/rust-analyzer.gz \
+            > target/rust-analyzer-qualification/rust-analyzer
+          chmod +x target/rust-analyzer-qualification/rust-analyzer
+          echo "ALPINE_RUST_ANALYZER=$PWD/target/rust-analyzer-qualification/rust-analyzer" >> "$GITHUB_ENV"
+          find apps/alpine-studio/tests/fixtures/rust-analyzer-workspace -type f -print0 \
+            | sort -z \
+            | xargs -0 shasum -a 256 \
+            > target/rust-analyzer-qualification/workspace-files.sha256
+          {
+            echo "release=2026-08-17.4"
+            echo "asset=rust-analyzer-aarch64-apple-darwin.gz"
+            echo "asset_sha256=ece932daf2f077be87bf745d2eb0a62cbc550f4b1e2e31ca76dfafdd0cc599b3"
+            target/rust-analyzer-qualification/rust-analyzer --version
+            sw_vers
+            uname -m
+            shasum -a 256 target/rust-analyzer-qualification/workspace-files.sha256
+          } | tee target/rust-analyzer-qualification/environment.txt
+      - name: Qualify the real rust-analyzer document lifecycle
+        run: |
+          cargo test --locked -p alpine-studio \
+            lsp_client::tests::pinned_rust_analyzer_qualifies_real_document_lifecycle \
+            -- --ignored --exact --nocapture
       - name: Run Metal API and shader validation
         run: scripts/check-metal.sh
       - name: Require changed native Metal mutants to be killed
@@ -404,6 +434,16 @@ jobs:
           path: |
             target/metal/offscreen.metallib
             target/metal/offscreen.metallib.manifest.txt
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload rust-analyzer compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rust-analyzer-compatibility-${{ github.sha }}
+          path: |
+            target/rust-analyzer-qualification/environment.txt
+            target/rust-analyzer-qualification/workspace-files.sha256
           retention-days: 7
           if-no-files-found: error
 
