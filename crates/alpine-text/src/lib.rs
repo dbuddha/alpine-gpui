@@ -1503,6 +1503,7 @@ mod tests {
 
     static TEST_PATH_SEQUENCE: AtomicU64 = AtomicU64::new(1);
     static FILE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    const TEST_DIRECTORY_ATTEMPTS: usize = 64;
 
     fn transaction(buffer: &Buffer, range: Range<usize>, replacement: &str) -> Transaction {
         let mut transaction = Transaction::new(buffer.revision());
@@ -1516,17 +1517,60 @@ mod tests {
     }
 
     fn test_directory() -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let sequence = TEST_PATH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("alpine-text-{}-{sequence}", std::process::id()));
-        fs::create_dir(&path)?;
-        Ok(path)
+        let mut last_error = io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "test directory attempt budget exhausted",
+        );
+        for _ in 0..TEST_DIRECTORY_ATTEMPTS {
+            let sequence = TEST_PATH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("alpine-text-{}-{sequence}", std::process::id()));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(path),
+                Err(error) => last_error = error,
+            }
+        }
+        Err(last_error.into())
     }
 
     fn lock_file_tests() -> std::sync::MutexGuard<'static, ()> {
         FILE_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn test_directories_skip_collisions_and_fail_after_the_bound()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _file_test = lock_file_tests();
+        let occupied = test_directory()?;
+        let occupied_sequence = TEST_PATH_SEQUENCE.load(Ordering::Relaxed) - 1;
+        TEST_PATH_SEQUENCE.store(occupied_sequence, Ordering::Relaxed);
+        let recovered = test_directory()?;
+        assert_ne!(recovered, occupied);
+        fs::remove_dir(occupied)?;
+        fs::remove_dir(recovered)?;
+
+        let start = TEST_PATH_SEQUENCE.load(Ordering::Relaxed);
+        let mut created = Vec::with_capacity(TEST_DIRECTORY_ATTEMPTS);
+        for offset in 0..TEST_DIRECTORY_ATTEMPTS {
+            let sequence = start + u64::try_from(offset)?;
+            let path =
+                std::env::temp_dir().join(format!("alpine-text-{}-{sequence}", std::process::id()));
+            fs::create_dir_all(&path)?;
+            created.push(path);
+        }
+        TEST_PATH_SEQUENCE.store(start, Ordering::Relaxed);
+        assert!(matches!(
+            test_directory(),
+            Err(error)
+                if error.downcast_ref::<io::Error>().map(io::Error::kind)
+                    == Some(io::ErrorKind::AlreadyExists)
+        ));
+        for path in created {
+            fs::remove_dir_all(path)?;
+        }
+        Ok(())
     }
 
     fn write_nothing(file: &mut File) -> io::Result<()> {

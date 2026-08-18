@@ -8,7 +8,8 @@ implementation decisions, and qualification claims.
 
 - [Zed and GPUI](Zed): reusable rendering, invalidation, text, and cache lessons.
 - [Sublime Text](Sublime-Text): publicly supportable local-speed principles.
-- [WGPU](WGPU): explicit oracle, research, and portability boundary.
+- [WGPU](WGPU): pinned source map, detailed findings, experiments, decisions,
+  and explicit non-shipping boundary.
 - [Comparator qualification](Comparator-Qualification): fair workloads,
   environment identity, statistics, and invalidation rules.
 
