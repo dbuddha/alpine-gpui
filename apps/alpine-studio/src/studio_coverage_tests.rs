@@ -4540,7 +4540,11 @@ fn assert_initial_accessibility_snapshot(
     assert_eq!(report.owned_node_bytes() % node_bytes, 0);
     assert_eq!(
         report.referenced_name_bytes(),
-        snapshot.nodes().iter().map(|node| node.name().len()).sum()
+        snapshot
+            .nodes()
+            .iter()
+            .map(|node| node.name().len())
+            .sum::<usize>()
     );
     assert_eq!(report.max_nodes(), accessibility::MAX_ACCESSIBILITY_NODES);
     assert_eq!(
