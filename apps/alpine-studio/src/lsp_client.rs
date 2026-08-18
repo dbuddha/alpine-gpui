@@ -9,8 +9,8 @@ use crate::{
     lsp_json::{LspPeer, OutboundMessage, PeerEvent, PeerSnapshot, ProtocolError, RequestStamp},
     lsp_process::{
         InputSequence, LanguageServerProcess, ProcessEpoch, ProcessEvent, ProcessFailure,
-        ProcessIdentity, ProcessSnapshot, ProcessSpec, ProcessStream, StopReason, SubmitError,
-        SupervisorStopped,
+        ProcessIdentity, ProcessSnapshot, ProcessSpec, ProcessStream, ProcessWake, StopReason,
+        SubmitError, SupervisorStopped,
     },
 };
 
@@ -114,6 +114,21 @@ impl LspClient {
     ) -> Result<Self, LspClientError> {
         let process =
             LanguageServerProcess::start(spec, identity).map_err(LspClientError::Process)?;
+        Ok(Self {
+            process,
+            framer: LspFramer::new(LspFrameLimits::default()),
+            peer: LspPeer::new(),
+            started: false,
+        })
+    }
+
+    pub(crate) fn start_with_waker(
+        spec: ProcessSpec,
+        identity: ProcessIdentity,
+        wake: ProcessWake,
+    ) -> Result<Self, LspClientError> {
+        let process = LanguageServerProcess::start_with_waker(spec, identity, wake)
+            .map_err(LspClientError::Process)?;
         Ok(Self {
             process,
             framer: LspFramer::new(LspFrameLimits::default()),

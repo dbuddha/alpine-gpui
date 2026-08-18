@@ -54,6 +54,7 @@ mod panes;
 mod project_search;
 mod quick_open;
 mod recovery;
+mod rust_diagnostics;
 mod session;
 #[cfg_attr(
     not(test),
@@ -119,6 +120,10 @@ use project_search::{
 };
 use quick_open::{
     QuickOpenAdmission, QuickOpenError, QuickOpenRequest, QuickOpenState, QuickOpenWorkerOutput,
+};
+use rust_diagnostics::{
+    LanguageEffect, LanguageIdentity, LanguageWake, LanguageWakeLatch,
+    MAX_VISIBLE_DIAGNOSTIC_MARKERS, RustDiagnostics, RustDocumentInput,
 };
 #[cfg(all(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
 use settings::FONT_FAMILY;
@@ -978,6 +983,8 @@ struct StudioApp {
     tab_scroll_x: f32,
     last_pointer_position: Option<Point>,
     runtime_document_revision: u64,
+    runtime_workspace_revision: u64,
+    selection_revision: u64,
     selection: Selection,
     composition: Option<Composition>,
     scroll_y: f32,
@@ -991,6 +998,8 @@ struct StudioApp {
     published_atlas: Option<GlyphAtlasImage>,
     atlas_revision: u64,
     text_system: Box<dyn StudioTextSystem>,
+    rust_diagnostics: RustDiagnostics,
+    language_wake_latch: LanguageWakeLatch,
     input_failures: u64,
     render_failures: u64,
     save_failures: u64,
@@ -1081,6 +1090,7 @@ enum SessionCaptureError {
 
 impl Drop for StudioApp {
     fn drop(&mut self) {
+        let _ = self.rust_diagnostics.shutdown();
         if self.recovery.is_some()
             && let Ok(request) = self.capture_recovery_request()
             && let Some(recovery) = self.recovery.as_ref()
@@ -1213,6 +1223,8 @@ impl StudioApp {
             tab_scroll_x: 0.0,
             last_pointer_position: None,
             runtime_document_revision,
+            runtime_workspace_revision: 1,
+            selection_revision: 1,
             selection: Selection::caret(ByteOffset::new(0)),
             composition: None,
             scroll_y: 0.0,
@@ -1226,6 +1238,8 @@ impl StudioApp {
             published_atlas: None,
             atlas_revision: 0,
             text_system: Box::new(text_system),
+            rust_diagnostics: RustDiagnostics::default(),
+            language_wake_latch: LanguageWakeLatch::default(),
             input_failures: 0,
             render_failures: 0,
             save_failures: 0,
@@ -1790,6 +1804,8 @@ impl StudioApp {
 
         let mut rendered_lines = Vec::new();
         let mut pending_glyphs = Vec::new();
+        let language_identity = self.language_identity();
+        let mut diagnostic_markers = 0_usize;
         if self.workspace.is_some() && self.file_tree.is_visible() {
             let sidebar_size = Size::new(sidebar_width.max(1.0), viewport.height())
                 .ok_or(StudioRenderError::Domain)?;
@@ -1927,6 +1943,32 @@ impl StudioApp {
                     );
                     selection_result?;
                 }
+                if pane.active && diagnostic_markers < MAX_VISIBLE_DIAGNOSTIC_MARKERS {
+                    let remaining = MAX_VISIBLE_DIAGNOSTIC_MARKERS - diagnostic_markers;
+                    let added = self.rust_diagnostics.for_each_marker(
+                        language_identity,
+                        line,
+                        remaining,
+                        |marker| {
+                            let start_x = pane_origin_x + x_for_utf16(&layout, marker.start_utf16);
+                            let end_x = marker.end_utf16.map_or_else(
+                                || pane_origin_x + layout.width(),
+                                |end| pane_origin_x + x_for_utf16(&layout, end),
+                            );
+                            let underline_origin =
+                                Point::new(start_x, baseline + layout.descent() + 1.0)
+                                    .ok_or(StudioRenderError::Domain)?;
+                            let underline_size = Size::new((end_x - start_x).max(1.0), 1.0)
+                                .ok_or(StudioRenderError::Domain)?;
+                            builder.push_quad(
+                                Quad::new(Rect::new(underline_origin, underline_size), caret_color)
+                                    .clipped(pane_clip),
+                            )?;
+                            Ok::<(), StudioRenderError>(())
+                        },
+                    )?;
+                    diagnostic_markers += added;
+                }
                 pending_glyphs.extend(self.collect_syntax_glyphs(
                     &layout,
                     font,
@@ -1977,8 +2019,14 @@ impl StudioApp {
             composition_underline = Some(Rect::new(underline_origin, underline_size));
         }
 
-        let status_background = if let Some(status) = self.local_status.clone() {
-            let layout = self.text_system.shape(status.message(), font)?;
+        let language_status = self.rust_diagnostics.status_message();
+        let status = self
+            .local_status
+            .as_ref()
+            .map(LocalStatus::message)
+            .or(language_status.as_deref());
+        let status_background = if let Some(status) = status {
+            let layout = self.text_system.shape(status, font)?;
             let top = (active_pane.bounds.origin().y() + content_size.height() - LINE_HEIGHT)
                 .max(active_pane.bounds.origin().y());
             let baseline = top + layout.ascent();
@@ -4238,6 +4286,80 @@ impl StudioApp {
             .input_failures
             .saturating_add(u64::from(next == current));
     }
+
+    fn language_identity(&self) -> LanguageIdentity {
+        LanguageIdentity {
+            workspace_revision: self.runtime_workspace_revision,
+            document_revision: self.runtime_document_revision,
+            buffer_revision: self.buffer().revision().get(),
+            selection_revision: self.selection_revision,
+        }
+    }
+
+    fn active_rust_document(&self) -> Option<RustDocumentInput> {
+        if !matches!(self.document, StudioDocument::File { .. }) {
+            return None;
+        }
+        let path = self.tabs.path_at(self.tabs.active_index())?;
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            return None;
+        }
+        let workspace_root = self
+            .workspace
+            .as_ref()
+            .map(Workspace::root)
+            .or_else(|| path.parent())?;
+        Some(RustDocumentInput::new(
+            path,
+            workspace_root,
+            self.language_identity(),
+            self.buffer().snapshot(),
+        ))
+    }
+
+    fn sync_rust_diagnostics(
+        &mut self,
+        context: &AppContext<'_, StudioWorkerOutput>,
+    ) -> LanguageEffect {
+        let input = self.active_rust_document();
+        let producer = context.external_producer();
+        let latch = self.language_wake_latch.clone();
+        self.rust_diagnostics.sync(input, move |wake| {
+            let producer = producer.clone();
+            let latch = latch.clone();
+            Arc::new(move || {
+                latch.publish(wake);
+                let _ = producer.submit(StudioWorkerOutput::Language(wake), 0);
+            })
+        })
+    }
+
+    fn apply_language_wake(
+        &mut self,
+        wake: LanguageWake,
+        context: &AppContext<'_, StudioWorkerOutput>,
+    ) -> LanguageEffect {
+        self.language_wake_latch.clear(wake);
+        let effect = self.rust_diagnostics.poll(wake);
+        if let Some(continuation) = effect.continuation {
+            self.language_wake_latch.publish(continuation);
+            let _ = context
+                .external_producer()
+                .submit(StudioWorkerOutput::Language(continuation), 0);
+        }
+        effect
+    }
+
+    fn apply_latched_language_wake(
+        &mut self,
+        context: &AppContext<'_, StudioWorkerOutput>,
+    ) -> LanguageEffect {
+        self.language_wake_latch
+            .take()
+            .map_or_else(LanguageEffect::default, |wake| {
+                self.apply_language_wake(wake, context)
+            })
+    }
 }
 
 enum StudioWorkerOutput {
@@ -4245,12 +4367,14 @@ enum StudioWorkerOutput {
     QuickOpen(QuickOpenWorkerOutput),
     ProjectSearch(ProjectSearchWorkerOutput),
     FileTree(FileTreeWorkerOutput),
+    Language(LanguageWake),
 }
 
 impl AppDelegate for StudioApp {
     type WorkerOutput = StudioWorkerOutput;
 
     fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, StudioWorkerOutput>) {
+        let selection_before = self.selection;
         let StudioTransition {
             mut effect,
             clipboard_write,
@@ -4277,6 +4401,17 @@ impl AppDelegate for StudioApp {
             let rejected = !context.advance_document(revision);
             self.input_failures = self.input_failures.saturating_add(u64::from(rejected));
         }
+        if self.selection != selection_before {
+            let previous = self.selection_revision;
+            self.selection_revision = self.selection_revision.saturating_add(1);
+            self.input_failures = self
+                .input_failures
+                .saturating_add(u64::from(self.selection_revision == previous));
+        }
+        let language = self.sync_rust_diagnostics(context);
+        effect.visual_changed |= language.visual_changed;
+        let pending_language = self.apply_latched_language_wake(context);
+        effect.visual_changed |= pending_language.visual_changed;
         if effect.visual_changed {
             context.invalidate();
         }
@@ -4309,12 +4444,25 @@ impl AppDelegate for StudioApp {
         result: StudioWorkerOutput,
         context: &mut AppContext<'_, StudioWorkerOutput>,
     ) {
-        let effect = match result {
+        let language_result = matches!(&result, StudioWorkerOutput::Language(_));
+        let mut effect = match result {
             StudioWorkerOutput::Find(result) => self.apply_find_output(result),
             StudioWorkerOutput::QuickOpen(result) => self.apply_quick_open_output(result),
             StudioWorkerOutput::ProjectSearch(result) => self.apply_project_search_output(result),
             StudioWorkerOutput::FileTree(result) => self.apply_file_tree_output(result),
+            StudioWorkerOutput::Language(wake) => {
+                let language = self.apply_language_wake(wake, context);
+                EventEffect {
+                    visual_changed: language.visual_changed,
+                    document_changed: false,
+                    document_identity_advanced: false,
+                }
+            }
         };
+        if !language_result {
+            let language = self.apply_latched_language_wake(context);
+            effect.visual_changed |= language.visual_changed;
+        }
         if effect.visual_changed {
             context.invalidate();
         }
@@ -5444,6 +5592,10 @@ mod project_search_tests;
 #[cfg(test)]
 #[path = "studio_coverage_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "rust_diagnostics_scene_tests.rs"]
+mod rust_diagnostics_scene_tests;
 
 #[cfg(test)]
 mod session_integration_tests {
