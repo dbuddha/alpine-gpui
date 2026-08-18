@@ -78,6 +78,8 @@ use settings::{
 use settings::{
     KEY_A, KEY_E, KEY_F, KEY_LEFT_BRACKET, KEY_P, KEY_RIGHT_BRACKET, KEY_S, KEY_W, KEY_Z,
 };
+#[cfg(test)]
+use syntax::SyntaxClass;
 use syntax::{DEFAULT_SYNTAX_BUDGET_BYTES, SyntaxCache, SyntaxError, SyntaxLanguage, SyntaxLine};
 use workspace::Workspace;
 

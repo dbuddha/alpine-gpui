@@ -444,7 +444,7 @@ fn editor_scene_projects_compiled_rust_syntax_onto_visible_glyphs() -> Result<()
     assert!(second_cache.hits() > first_cache.hits());
     assert!(second_cache.current_bytes() <= second_cache.budget_bytes());
 
-    let palette = SyntaxPalette::new().ok_or(StudioRenderError::Domain)?;
+    let palette = app.settings.theme.syntax;
     let classes = [
         SyntaxClass::Comment,
         SyntaxClass::Keyword,
