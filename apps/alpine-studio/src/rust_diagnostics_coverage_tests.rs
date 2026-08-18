@@ -80,6 +80,7 @@ fn state_guards_and_admission_failures_are_discriminating() -> Result<(), Box<dy
 
     let mut empty = RustDiagnostics::with_server(Path::new(""));
     assert!(empty.sync(Some(input), |_| Arc::new(|| {})).visual_changed);
+    assert!(!empty.shutdown().active);
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -138,6 +139,7 @@ fn installed_state_covers_selection_markers_versions_and_admission() -> Result<(
         model.status_message().as_deref(),
         Some(message) if message.contains("VersionExhausted")
     ));
+    assert!(!model.shutdown().active);
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -212,6 +214,18 @@ fn lifecycle_failures_and_poll_classes_are_bounded() -> Result<(), Box<dyn Error
         },
         &mut visual,
     ));
+
+    for model in [
+        &mut begin,
+        &mut oversized_open,
+        &mut oversized_change,
+        &mut generation,
+        &mut identity,
+        &mut stopped,
+        &mut classes,
+    ] {
+        assert!(!model.shutdown().active);
+    }
 
     for directory in [
         root, root_two, root_three, root_four, root_five, root_six, root_seven,

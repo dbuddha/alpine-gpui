@@ -333,6 +333,7 @@ fn portable_mock_protocol_failure_restarts_the_active_document() -> Result<(), B
         }
     }
     assert_eq!(model.snapshot().restarts, 1);
+    assert!(!model.shutdown().active);
     fs::remove_dir_all(root)?;
     Ok(())
 }
