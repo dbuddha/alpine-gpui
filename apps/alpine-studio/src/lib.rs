@@ -349,7 +349,7 @@ fn native_app() -> Result<StudioApp, SurfaceError> {
     StudioApp::new(text_system)
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn with_default_session(mut app: StudioApp) -> StudioApp {
     app.session_path = session::default_path().ok();
     app
@@ -4977,13 +4977,10 @@ mod session_integration_tests {
         drop(dirty);
         assert!(!dirty_path.exists());
 
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        {
-            let expected = session::default_path()?;
-            let mut defaulted = with_default_session(StudioApp::new(tests::TestTextSystem)?);
-            assert_eq!(defaulted.session_path.as_deref(), Some(expected.as_path()));
-            defaulted.session_path = None;
-        }
+        let expected = session::default_path()?;
+        let mut defaulted = with_default_session(StudioApp::new(tests::TestTextSystem)?);
+        assert_eq!(defaulted.session_path.as_deref(), Some(expected.as_path()));
+        defaulted.session_path = None;
 
         fs::remove_file(root.join("alpha.rs"))?;
         assert!(matches!(
