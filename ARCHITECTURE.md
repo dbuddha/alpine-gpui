@@ -799,18 +799,22 @@ composition, results, visible rows, and diagnostics. There is no runtime
 registration, plugin hook, closure registry, worker, timer, or public framework
 API at this boundary. See AEP-0177.
 
-Studio also owns one immutable compiled settings value under Requirement #36
-and Task #129. It validates editor metrics, font identity, the complete default
-theme including syntax colors, and an ordered static keymap before application
-state is constructed. Direct shortcuts resolve to the existing closed command
-vocabulary or one of three local editing actions, and binding validation rejects
-duplicates, unreachable less-specific entries, and invalid labels. The same
-binding table supplies bounded static shortcut labels for visible command-palette
-rows, so dispatch and discovery cannot drift. This slice performs no file read,
-parsing, reload, migration, runtime registration, executable discovery, heap
-registry, plugin lookup, or network work during startup. Layered global and
-project configuration remains unimplemented pending a separate serialization
-dependency decision and bounded reload design.
+Studio also owns one immutable active settings value under Requirement #36 and
+Task #129. Compiled defaults use borrowed font and keymap storage and perform no
+heap registration. A settings state resolves one complete candidate in fixed
+compiled, global, then project order. Editor fields merge independently while
+themes and keymaps replace as closed typed values; every layer is validated with
+its source before mutation. Stale generations, invalid values, binding conflicts,
+retained-byte excess, and revision exhaustion preserve the prior active value.
+Accepted changes publish monotonic revision identity, source provenance, exact
+current and peak retained bytes under a 64 KiB ceiling, and separate typography,
+theme, and keymap effects. Direct shortcuts resolve to the existing closed
+command vocabulary or one of three local editing actions, and the same binding
+table supplies bounded shortcut labels for visible command-palette rows, so
+dispatch and discovery cannot drift. File parsing, watching, migration, and
+reload submission remain pending the separate serialization dependency decision;
+there is still no runtime registration, executable discovery, plugin lookup, or
+network work during startup.
 
 ### Bounded streaming local project search
 

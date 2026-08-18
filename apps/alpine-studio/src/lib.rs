@@ -15,6 +15,13 @@ mod project_search;
 mod quick_open;
 mod recovery;
 mod session;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Task #129 stages typed reload admission before the approved parser and watcher slice"
+    )
+)]
 mod settings;
 mod syntax;
 
@@ -97,7 +104,7 @@ use settings::{
 };
 use settings::{
     KEY_DELETE_BACKWARD, KEY_DELETE_FORWARD, KEY_DOWN, KEY_END, KEY_ESCAPE, KEY_HOME, KEY_LEFT,
-    KEY_RETURN, KEY_RIGHT, KEY_TAB, KEY_UP, KeyAction, LINE_HEIGHT, StudioSettings,
+    KEY_RETURN, KEY_RIGHT, KEY_TAB, KEY_UP, KeyAction, LINE_HEIGHT, SettingsState,
 };
 #[cfg(test)]
 use syntax::SyntaxClass;
@@ -310,7 +317,7 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[cfg_attr(test, mutants::skip)] // Entering AppKit is qualified by native process E2E.
 fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
-    let clear = app.settings.theme.clear;
+    let clear = app.settings.active().theme.clear;
     let descriptor = SurfaceDescriptor::new(
         "Alpine Studio",
         f64::from(WINDOW_WIDTH),
@@ -922,7 +929,7 @@ macro_rules! force_project_search_submission_failure {
 }
 
 struct StudioApp {
-    settings: StudioSettings,
+    settings: SettingsState,
     document: StudioDocument,
     tabs: DocumentTabs<StudioDocument>,
     workspace: Option<Workspace>,
@@ -1140,7 +1147,7 @@ impl StudioApp {
         path: Option<&Path>,
         workspace: Option<Workspace>,
     ) -> Result<Self, SurfaceError> {
-        let settings = StudioSettings::compiled().map_err(|_| SurfaceError::DriverUnavailable)?;
+        let settings = SettingsState::compiled().map_err(|_| SurfaceError::DriverUnavailable)?;
         let last_viewport =
             Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
         let layout_budget = NonZeroUsize::new(DEFAULT_LAYOUT_BUDGET_BYTES)
@@ -1629,7 +1636,7 @@ impl StudioApp {
         accessibility::apply_action(self, action)
     }
 
-    fn font_from_settings(editor: settings::EditorSettings) -> Result<FontKey, StudioRenderError> {
+    fn font_from_settings(editor: &settings::EditorSettings) -> Result<FontKey, StudioRenderError> {
         let size = PositiveFinite::new(editor.font_size).ok_or(StudioRenderError::Domain)?;
         let scale = PositiveFinite::new(editor.font_scale).ok_or(StudioRenderError::Domain)?;
         let tabs = NonZeroU32::new(editor.tab_columns).ok_or(StudioRenderError::Domain)?;
@@ -1637,12 +1644,12 @@ impl StudioApp {
     }
 
     fn resolved_font(&self) -> Result<FontKey, StudioRenderError> {
-        Self::font_from_settings(self.settings.editor)
+        Self::font_from_settings(&self.settings.active().editor)
     }
 
     #[cfg(test)]
     fn font() -> Result<FontKey, StudioRenderError> {
-        Self::font_from_settings(settings::EditorSettings::COMPILED)
+        Self::font_from_settings(&settings::EditorSettings::COMPILED)
     }
 
     fn scene(&mut self, revision: SceneRevision, viewport: Size) -> Scene {
@@ -1662,7 +1669,7 @@ impl StudioApp {
         if let Some(origin) = Point::new(0.0, 0.0) {
             builder.push(Primitive::Quad {
                 bounds: Rect::new(origin, viewport),
-                color: self.settings.theme.background,
+                color: self.settings.active().theme.background,
             });
         }
         builder.finish()
@@ -1705,7 +1712,7 @@ impl StudioApp {
         let line_height = PositiveFinite::new(LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
         let font = self.resolved_font()?;
         let snapshot = self.buffer().snapshot();
-        let theme = self.settings.theme;
+        let theme = self.settings.active().theme;
         let background = theme.background;
         let editor_background = theme.editor_background;
         let selection_color = theme.selection;
@@ -2136,7 +2143,7 @@ impl StudioApp {
                     baseline,
                     overlay_clip,
                 )?);
-                if let Some(shortcut) = self.settings.keymap.shortcut_for(row.command) {
+                if let Some(shortcut) = self.settings.active().keymap.shortcut_for(row.command) {
                     let shortcut_layout = self.text_system.shape(shortcut, font)?;
                     let shortcut_left = (left + width - FIND_BAR_INSET - shortcut_layout.width())
                         .max(left + FIND_BAR_INSET);
@@ -2596,7 +2603,11 @@ impl StudioApp {
         let command = modifiers.contains(Modifiers::COMMAND);
         let shift = modifiers.contains(Modifiers::SHIFT);
         let option = modifiers.contains(Modifiers::OPTION);
-        let action = self.settings.keymap.resolve(physical_key, modifiers);
+        let action = self
+            .settings
+            .active()
+            .keymap
+            .resolve(physical_key, modifiers);
         if action == Some(KeyAction::CommandPalette) {
             return self.open_command_palette();
         }

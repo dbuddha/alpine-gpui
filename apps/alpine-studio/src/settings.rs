@@ -1,6 +1,6 @@
 //! Compiled, validated Studio settings without runtime registration.
 
-use std::{error::Error, fmt};
+use std::{borrow::Cow, error::Error, fmt, mem::size_of};
 
 use alpine_core::LinearRgba;
 use alpine_platform_macos::Modifiers;
@@ -34,14 +34,27 @@ pub(crate) const FONT_SIZE: f32 = 15.0;
 pub(crate) const FONT_SCALE: f32 = 2.0;
 pub(crate) const LINE_HEIGHT: f32 = 22.0;
 pub(crate) const TAB_COLUMNS: u32 = 4;
+pub(crate) const MAX_FONT_NAME_BYTES: usize = 256;
+pub(crate) const MAX_KEY_BINDINGS: usize = 64;
+pub(crate) const SETTINGS_RETAINED_BUDGET_BYTES: usize = 64 * 1_024;
+
+fn checked_retained_add(left: usize, right: usize) -> Result<usize, SettingsError> {
+    left.checked_add(right)
+        .ok_or(SettingsError::RetainedSizeOverflow)
+}
+
+fn checked_retained_mul(left: usize, right: usize) -> Result<usize, SettingsError> {
+    left.checked_mul(right)
+        .ok_or(SettingsError::RetainedSizeOverflow)
+}
 
 const COMMAND_SHIFT: u8 = Modifiers::COMMAND.saturating_add(Modifiers::SHIFT);
 const COMMAND_OPTION: u8 = Modifiers::COMMAND.saturating_add(Modifiers::OPTION);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct EditorSettings {
     pub(crate) font_family: u64,
-    pub(crate) font_name: &'static str,
+    pub(crate) font_name: Cow<'static, str>,
     pub(crate) font_size: f32,
     pub(crate) font_scale: f32,
     pub(crate) line_height: f32,
@@ -51,7 +64,7 @@ pub(crate) struct EditorSettings {
 impl EditorSettings {
     pub(crate) const COMPILED: Self = Self {
         font_family: FONT_FAMILY,
-        font_name: FONT_NAME,
+        font_name: Cow::Borrowed(FONT_NAME),
         font_size: FONT_SIZE,
         font_scale: FONT_SCALE,
         line_height: LINE_HEIGHT,
@@ -67,6 +80,12 @@ impl EditorSettings {
         }
         if self.font_name.is_empty() {
             return Err(SettingsError::EmptyFontName);
+        }
+        if self.font_name.len() > MAX_FONT_NAME_BYTES {
+            return Err(SettingsError::FontNameTooLong);
+        }
+        if self.font_name.chars().any(char::is_control) {
+            return Err(SettingsError::InvalidFontName);
         }
         if self.tab_columns == 0 {
             return Err(SettingsError::InvalidTabColumns);
@@ -171,15 +190,15 @@ pub(crate) enum KeyAction {
     Redo,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct KeyBinding {
     physical_key: u16,
     required_modifiers: u8,
     action: KeyAction,
-    label: &'static str,
+    label: Cow<'static, str>,
 }
 
-const DEFAULT_BINDINGS: [KeyBinding; 13] = [
+static DEFAULT_BINDINGS: [KeyBinding; 13] = [
     binding(
         KEY_P,
         COMMAND_SHIFT,
@@ -255,24 +274,31 @@ const fn binding(
         physical_key,
         required_modifiers,
         action,
-        label,
+        label: Cow::Borrowed(label),
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Keymap {
-    bindings: &'static [KeyBinding],
+    bindings: Cow<'static, [KeyBinding]>,
 }
 
 impl Keymap {
     fn compiled() -> Result<Self, SettingsError> {
         validate_bindings(&DEFAULT_BINDINGS)?;
         Ok(Self {
-            bindings: &DEFAULT_BINDINGS,
+            bindings: Cow::Borrowed(&DEFAULT_BINDINGS),
         })
     }
 
-    pub(crate) fn resolve(self, physical_key: u16, modifiers: Modifiers) -> Option<KeyAction> {
+    fn validate(&self) -> Result<(), SettingsError> {
+        if self.bindings.len() > MAX_KEY_BINDINGS {
+            return Err(SettingsError::TooManyBindings);
+        }
+        validate_bindings(&self.bindings)
+    }
+
+    pub(crate) fn resolve(&self, physical_key: u16, modifiers: Modifiers) -> Option<KeyAction> {
         self.bindings
             .iter()
             .find(|binding| {
@@ -282,14 +308,29 @@ impl Keymap {
             .map(|binding| binding.action)
     }
 
-    pub(crate) fn shortcut_for(self, command: StudioCommand) -> Option<&'static str> {
+    pub(crate) fn shortcut_for(&self, command: StudioCommand) -> Option<&str> {
         self.bindings.iter().find_map(|binding| {
-            (binding.action == KeyAction::Command(command)).then_some(binding.label)
+            (binding.action == KeyAction::Command(command)).then_some(binding.label.as_ref())
         })
+    }
+
+    fn retained_bytes(&self) -> Result<usize, SettingsError> {
+        let mut retained = match &self.bindings {
+            Cow::Borrowed(_) => 0,
+            Cow::Owned(bindings) => {
+                checked_retained_mul(bindings.capacity(), size_of::<KeyBinding>())?
+            }
+        };
+        for binding in self.bindings.iter() {
+            if let Cow::Owned(label) = &binding.label {
+                retained = checked_retained_add(retained, label.capacity())?;
+            }
+        }
+        Ok(retained)
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StudioSettings {
     pub(crate) editor: EditorSettings,
     pub(crate) theme: StudioTheme,
@@ -298,14 +339,303 @@ pub(crate) struct StudioSettings {
 
 impl StudioSettings {
     pub(crate) fn compiled() -> Result<Self, SettingsError> {
-        let editor = EditorSettings::COMPILED;
-        editor.validate()?;
-        Ok(Self {
-            editor,
+        Self::compiled_with_retained().map(|(settings, _)| settings)
+    }
+
+    fn compiled_with_retained() -> Result<(Self, usize), SettingsError> {
+        let settings = Self {
+            editor: EditorSettings::COMPILED,
             theme: StudioTheme::compiled()?,
             keymap: Keymap::compiled()?,
+        };
+        let retained = settings.validate()?;
+        Ok((settings, retained))
+    }
+
+    fn validate(&self) -> Result<usize, SettingsError> {
+        self.editor.clone().validate()?;
+        self.keymap.validate()?;
+        let retained = self.retained_bytes()?;
+        if retained > SETTINGS_RETAINED_BUDGET_BYTES {
+            return Err(SettingsError::RetainedBudgetExceeded {
+                retained,
+                limit: SETTINGS_RETAINED_BUDGET_BYTES,
+            });
+        }
+        Ok(retained)
+    }
+
+    fn retained_bytes(&self) -> Result<usize, SettingsError> {
+        let font = match &self.editor.font_name {
+            Cow::Borrowed(_) => 0,
+            Cow::Owned(name) => name.capacity(),
+        };
+        checked_retained_add(font, self.keymap.retained_bytes()?)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct EditorSettingsPatch {
+    pub(crate) font_family: Option<u64>,
+    pub(crate) font_name: Option<Cow<'static, str>>,
+    pub(crate) font_size: Option<f32>,
+    pub(crate) font_scale: Option<f32>,
+    pub(crate) line_height: Option<f32>,
+    pub(crate) tab_columns: Option<u32>,
+}
+
+impl EditorSettingsPatch {
+    fn apply(&self, editor: &mut EditorSettings) {
+        if let Some(font_family) = self.font_family {
+            editor.font_family = font_family;
+        }
+        if let Some(font_name) = &self.font_name {
+            editor.font_name.clone_from(font_name);
+        }
+        if let Some(font_size) = self.font_size {
+            editor.font_size = font_size;
+        }
+        if let Some(font_scale) = self.font_scale {
+            editor.font_scale = font_scale;
+        }
+        if let Some(line_height) = self.line_height {
+            editor.line_height = line_height;
+        }
+        if let Some(tab_columns) = self.tab_columns {
+            editor.tab_columns = tab_columns;
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct SettingsLayer {
+    pub(crate) editor: EditorSettingsPatch,
+    pub(crate) theme: Option<StudioTheme>,
+    pub(crate) keymap: Option<Keymap>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SettingsUpdate {
+    pub(crate) generation: u64,
+    pub(crate) global: Option<SettingsLayer>,
+    pub(crate) project: Option<SettingsLayer>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SettingsSource {
+    Compiled,
+    Global,
+    Project,
+    Runtime,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SettingsFailure {
+    pub(crate) source: SettingsSource,
+    pub(crate) error: SettingsError,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SettingsProvenance {
+    pub(crate) editor: SettingsSource,
+    pub(crate) theme: SettingsSource,
+    pub(crate) keymap: SettingsSource,
+}
+
+impl SettingsProvenance {
+    const COMPILED: Self = Self {
+        editor: SettingsSource::Compiled,
+        theme: SettingsSource::Compiled,
+        keymap: SettingsSource::Compiled,
+    };
+}
+
+struct ResolvedSettings {
+    settings: StudioSettings,
+    provenance: SettingsProvenance,
+    retained_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SettingsEffect {
+    pub(crate) typography: bool,
+    pub(crate) theme: bool,
+    pub(crate) keymap: bool,
+}
+
+impl SettingsEffect {
+    fn between(current: &StudioSettings, candidate: &StudioSettings) -> Self {
+        Self {
+            typography: current.editor != candidate.editor,
+            theme: current.theme != candidate.theme,
+            keymap: current.keymap != candidate.keymap,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SettingsAdmission {
+    Applied {
+        revision: u64,
+        effect: SettingsEffect,
+    },
+    Unchanged {
+        revision: u64,
+    },
+    Stale {
+        current_generation: u64,
+    },
+    Rejected(SettingsFailure),
+}
+
+pub(crate) struct SettingsState {
+    active: StudioSettings,
+    provenance: SettingsProvenance,
+    revision: u64,
+    generation: u64,
+    current_retained_bytes: usize,
+    peak_retained_bytes: usize,
+}
+
+impl SettingsState {
+    pub(crate) fn compiled() -> Result<Self, SettingsError> {
+        let active = StudioSettings::compiled()?;
+        let retained = active.retained_bytes()?;
+        Ok(Self {
+            active,
+            provenance: SettingsProvenance::COMPILED,
+            revision: 1,
+            generation: 0,
+            current_retained_bytes: retained,
+            peak_retained_bytes: retained,
         })
     }
+
+    pub(crate) const fn active(&self) -> &StudioSettings {
+        &self.active
+    }
+
+    pub(crate) fn admit(&mut self, update: &SettingsUpdate) -> SettingsAdmission {
+        if update.generation <= self.generation {
+            return SettingsAdmission::Stale {
+                current_generation: self.generation,
+            };
+        }
+        let resolved = match resolve_layers(update.global.as_ref(), update.project.as_ref()) {
+            Ok(resolved) => resolved,
+            Err(failure) => return SettingsAdmission::Rejected(failure),
+        };
+        let retained = resolved.retained_bytes;
+        if resolved.settings == self.active {
+            self.generation = update.generation;
+            self.provenance = resolved.provenance;
+            return SettingsAdmission::Unchanged {
+                revision: self.revision,
+            };
+        }
+        let Some(revision) = self.revision.checked_add(1) else {
+            return SettingsAdmission::Rejected(SettingsFailure {
+                source: SettingsSource::Runtime,
+                error: SettingsError::RevisionExhausted,
+            });
+        };
+        let effect = SettingsEffect::between(&self.active, &resolved.settings);
+        self.active = resolved.settings;
+        self.provenance = resolved.provenance;
+        self.revision = revision;
+        self.generation = update.generation;
+        self.current_retained_bytes = retained;
+        self.peak_retained_bytes = self.peak_retained_bytes.max(retained);
+        SettingsAdmission::Applied { revision, effect }
+    }
+
+    #[cfg(test)]
+    const fn snapshot(&self) -> SettingsSnapshot {
+        SettingsSnapshot {
+            revision: self.revision,
+            generation: self.generation,
+            provenance: self.provenance,
+            current_retained_bytes: self.current_retained_bytes,
+            peak_retained_bytes: self.peak_retained_bytes,
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SettingsSnapshot {
+    revision: u64,
+    generation: u64,
+    provenance: SettingsProvenance,
+    current_retained_bytes: usize,
+    peak_retained_bytes: usize,
+}
+
+fn resolve_layers(
+    global: Option<&SettingsLayer>,
+    project: Option<&SettingsLayer>,
+) -> Result<ResolvedSettings, SettingsFailure> {
+    resolve_layers_from(StudioSettings::compiled_with_retained(), global, project)
+}
+
+fn resolve_layers_from(
+    compiled: Result<(StudioSettings, usize), SettingsError>,
+    global: Option<&SettingsLayer>,
+    project: Option<&SettingsLayer>,
+) -> Result<ResolvedSettings, SettingsFailure> {
+    let (mut settings, mut retained_bytes) = compiled.map_err(|error| SettingsFailure {
+        source: SettingsSource::Compiled,
+        error,
+    })?;
+    let mut provenance = SettingsProvenance::COMPILED;
+    if let Some(global) = global {
+        retained_bytes = apply_layer(
+            &mut settings,
+            &mut provenance,
+            global,
+            SettingsSource::Global,
+        )?;
+    }
+    if let Some(project) = project {
+        retained_bytes = apply_layer(
+            &mut settings,
+            &mut provenance,
+            project,
+            SettingsSource::Project,
+        )?;
+    }
+    Ok(ResolvedSettings {
+        settings,
+        provenance,
+        retained_bytes,
+    })
+}
+
+fn apply_layer(
+    settings: &mut StudioSettings,
+    provenance: &mut SettingsProvenance,
+    layer: &SettingsLayer,
+    source: SettingsSource,
+) -> Result<usize, SettingsFailure> {
+    if !layer.editor.is_empty() {
+        layer.editor.apply(&mut settings.editor);
+        provenance.editor = source;
+    }
+    if let Some(theme) = layer.theme {
+        settings.theme = theme;
+        provenance.theme = source;
+    }
+    if let Some(keymap) = &layer.keymap {
+        settings.keymap = keymap.clone();
+        provenance.keymap = source;
+    }
+    settings
+        .validate()
+        .map_err(|error| SettingsFailure { source, error })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -313,9 +643,15 @@ pub(crate) enum SettingsError {
     InvalidMetric(&'static str),
     InvalidFontFamily,
     EmptyFontName,
+    FontNameTooLong,
+    InvalidFontName,
     InvalidTabColumns,
     InvalidColor(&'static str),
     InvalidShortcutLabel,
+    TooManyBindings,
+    RetainedSizeOverflow,
+    RetainedBudgetExceeded { retained: usize, limit: usize },
+    RevisionExhausted,
     DuplicateBinding { physical_key: u16, modifiers: u8 },
     ShadowedBinding { physical_key: u16, modifiers: u8 },
 }
@@ -328,11 +664,28 @@ impl fmt::Display for SettingsError {
             }
             Self::InvalidFontFamily => formatter.write_str("font family identity must be nonzero"),
             Self::EmptyFontName => formatter.write_str("font name must not be empty"),
+            Self::FontNameTooLong => write!(
+                formatter,
+                "font name exceeds its {MAX_FONT_NAME_BYTES}-byte limit"
+            ),
+            Self::InvalidFontName => formatter.write_str("font name contains a control character"),
             Self::InvalidTabColumns => formatter.write_str("tab columns must be nonzero"),
             Self::InvalidColor(name) => write!(formatter, "theme color {name} is invalid"),
             Self::InvalidShortcutLabel => {
                 formatter.write_str("shortcut label must be 1 to 16 ASCII bytes")
             }
+            Self::TooManyBindings => write!(
+                formatter,
+                "keymap exceeds its {MAX_KEY_BINDINGS}-binding limit"
+            ),
+            Self::RetainedSizeOverflow => {
+                formatter.write_str("settings retained-byte accounting overflowed")
+            }
+            Self::RetainedBudgetExceeded { retained, limit } => write!(
+                formatter,
+                "settings retain {retained} bytes above their {limit}-byte limit"
+            ),
+            Self::RevisionExhausted => formatter.write_str("settings revision exhausted"),
             Self::DuplicateBinding {
                 physical_key,
                 modifiers,
@@ -414,7 +767,7 @@ mod tests {
     #[test]
     fn compiled_settings_are_valid_static_and_bounded() -> Result<(), SettingsError> {
         let settings = StudioSettings::compiled()?;
-        assert_eq!(settings.editor.font_name, "Menlo-Regular");
+        assert_eq!(settings.editor.font_name.as_ref(), "Menlo-Regular");
         assert_eq!(settings.editor.tab_columns, 4);
         assert_eq!(settings.keymap.bindings.len(), 13);
         assert!(std::mem::size_of::<StudioSettings>() <= 512);
@@ -589,7 +942,7 @@ mod tests {
         settings.font_family = 0;
         assert_eq!(settings.validate(), Err(SettingsError::InvalidFontFamily));
         settings = EditorSettings::COMPILED;
-        settings.font_name = "";
+        settings.font_name = Cow::Borrowed("");
         assert_eq!(settings.validate(), Err(SettingsError::EmptyFontName));
         settings = EditorSettings::COMPILED;
         settings.tab_columns = 0;
@@ -620,6 +973,302 @@ mod tests {
             validate_bindings(&oversized),
             Err(SettingsError::InvalidShortcutLabel)
         );
+    }
+
+    fn update(
+        generation: u64,
+        global: Option<SettingsLayer>,
+        project: Option<SettingsLayer>,
+    ) -> SettingsUpdate {
+        SettingsUpdate {
+            generation,
+            global,
+            project,
+        }
+    }
+
+    #[test]
+    fn global_then_project_precedence_is_deterministic_and_source_aware()
+    -> Result<(), SettingsError> {
+        let mut state = SettingsState::compiled()?;
+        let mut project_theme = StudioTheme::compiled()?;
+        project_theme.caret = color("project caret", 0.2, 0.9, 0.4, 1.0)?;
+        let global = SettingsLayer {
+            editor: EditorSettingsPatch {
+                font_name: Some(Cow::Owned("Global Mono".to_owned())),
+                font_size: Some(16.0),
+                ..EditorSettingsPatch::default()
+            },
+            ..SettingsLayer::default()
+        };
+        let project = SettingsLayer {
+            editor: EditorSettingsPatch {
+                font_size: Some(17.0),
+                tab_columns: Some(2),
+                ..EditorSettingsPatch::default()
+            },
+            theme: Some(project_theme),
+            keymap: Some(Keymap {
+                bindings: Cow::Owned(vec![binding(
+                    KEY_S,
+                    Modifiers::COMMAND,
+                    KeyAction::Command(StudioCommand::SaveFile),
+                    "Cmd+S",
+                )]),
+            }),
+        };
+        let admission = state.admit(&update(1, Some(global), Some(project)));
+        assert_eq!(
+            admission,
+            SettingsAdmission::Applied {
+                revision: 2,
+                effect: SettingsEffect {
+                    typography: true,
+                    theme: true,
+                    keymap: true
+                }
+            }
+        );
+        assert_eq!(state.active().editor.font_name.as_ref(), "Global Mono");
+        assert!((state.active().editor.font_size - 17.0).abs() < f32::EPSILON);
+        assert_eq!(state.active().editor.tab_columns, 2);
+        assert_eq!(
+            state.active().keymap.resolve(
+                KEY_S,
+                Modifiers::from_bits(Modifiers::COMMAND | Modifiers::CONTROL)
+            ),
+            Some(KeyAction::Command(StudioCommand::SaveFile))
+        );
+        assert_eq!(
+            state.snapshot().provenance,
+            SettingsProvenance {
+                editor: SettingsSource::Project,
+                theme: SettingsSource::Project,
+                keymap: SettingsSource::Project
+            }
+        );
+        assert!(state.snapshot().current_retained_bytes > 0);
+        assert!(state.snapshot().peak_retained_bytes >= state.snapshot().current_retained_bytes);
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_stale_unchanged_and_exhausted_updates_never_partially_apply()
+    -> Result<(), SettingsError> {
+        let mut state = SettingsState::compiled()?;
+        let compiled = state.active().clone();
+        let invalid = SettingsLayer {
+            editor: EditorSettingsPatch {
+                font_size: Some(f32::NAN),
+                ..EditorSettingsPatch::default()
+            },
+            ..SettingsLayer::default()
+        };
+        assert_eq!(
+            state.admit(&update(1, Some(invalid), None)),
+            SettingsAdmission::Rejected(SettingsFailure {
+                source: SettingsSource::Global,
+                error: SettingsError::InvalidMetric("font size")
+            })
+        );
+        assert_eq!(state.active(), &compiled);
+        assert_eq!(state.snapshot().generation, 0);
+        assert_eq!(state.snapshot().revision, 1);
+
+        assert_eq!(
+            state.admit(&update(2, None, None)),
+            SettingsAdmission::Unchanged { revision: 1 }
+        );
+        assert_eq!(
+            state.admit(&update(1, None, None)),
+            SettingsAdmission::Stale {
+                current_generation: 2
+            }
+        );
+
+        state.revision = u64::MAX;
+        let changed = SettingsLayer {
+            editor: EditorSettingsPatch {
+                font_size: Some(18.0),
+                ..EditorSettingsPatch::default()
+            },
+            ..SettingsLayer::default()
+        };
+        assert_eq!(
+            state.admit(&update(3, Some(changed), None)),
+            SettingsAdmission::Rejected(SettingsFailure {
+                source: SettingsSource::Runtime,
+                error: SettingsError::RevisionExhausted
+            })
+        );
+        assert_eq!(state.active(), &compiled);
+        assert_eq!(state.snapshot().generation, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn owned_font_and_keymap_limits_reject_before_state_mutation() -> Result<(), SettingsError> {
+        let mut state = SettingsState::compiled()?;
+        let oversized_name = SettingsLayer {
+            editor: EditorSettingsPatch {
+                font_name: Some(Cow::Owned("x".repeat(MAX_FONT_NAME_BYTES + 1))),
+                ..EditorSettingsPatch::default()
+            },
+            ..SettingsLayer::default()
+        };
+        assert_eq!(
+            state.admit(&update(1, Some(oversized_name), None)),
+            SettingsAdmission::Rejected(SettingsFailure {
+                source: SettingsSource::Global,
+                error: SettingsError::FontNameTooLong
+            })
+        );
+
+        let bindings = vec![
+            binding(KEY_A, Modifiers::COMMAND, KeyAction::SelectAll, "Cmd+A");
+            MAX_KEY_BINDINGS + 1
+        ];
+        let oversized_keymap = SettingsLayer {
+            keymap: Some(Keymap {
+                bindings: Cow::Owned(bindings),
+            }),
+            ..SettingsLayer::default()
+        };
+        assert_eq!(
+            state.admit(&update(2, None, Some(oversized_keymap))),
+            SettingsAdmission::Rejected(SettingsFailure {
+                source: SettingsSource::Project,
+                error: SettingsError::TooManyBindings
+            })
+        );
+        assert_eq!(state.snapshot().generation, 0);
+        assert_eq!(state.active().editor.font_name.as_ref(), FONT_NAME);
+        Ok(())
+    }
+
+    #[test]
+    fn layering_limits_and_retained_accounting_are_exact() -> Result<(), SettingsError> {
+        assert_eq!(SETTINGS_RETAINED_BUDGET_BYTES, 65_536);
+        assert_eq!(
+            checked_retained_add(usize::MAX, 1),
+            Err(SettingsError::RetainedSizeOverflow)
+        );
+        assert_eq!(
+            checked_retained_mul(usize::MAX, 2),
+            Err(SettingsError::RetainedSizeOverflow)
+        );
+
+        let mut editor = EditorSettings::COMPILED;
+        editor.font_name = Cow::Owned("x".repeat(MAX_FONT_NAME_BYTES));
+        assert_eq!(editor.clone().validate(), Ok(()));
+        editor.font_name = Cow::Borrowed("bad\nfont");
+        assert_eq!(
+            editor.clone().validate(),
+            Err(SettingsError::InvalidFontName)
+        );
+
+        let patch = EditorSettingsPatch {
+            font_family: Some(9),
+            font_scale: Some(1.5),
+            line_height: Some(24.0),
+            ..EditorSettingsPatch::default()
+        };
+        assert!(EditorSettingsPatch::default().is_empty());
+        assert!(!patch.is_empty());
+        patch.apply(&mut editor);
+        assert_eq!(editor.font_family, 9);
+        assert!((editor.font_scale - 1.5).abs() < f32::EPSILON);
+        assert!((editor.line_height - 24.0).abs() < f32::EPSILON);
+
+        let mut bindings = Vec::with_capacity(MAX_KEY_BINDINGS);
+        let mut expected_label_bytes = 0;
+        for physical_key in 0_u16..64 {
+            let label = format!("K{physical_key}");
+            expected_label_bytes += label.capacity();
+            bindings.push(KeyBinding {
+                physical_key,
+                required_modifiers: Modifiers::COMMAND,
+                action: KeyAction::SelectAll,
+                label: Cow::Owned(label),
+            });
+        }
+        assert_eq!(bindings.len(), MAX_KEY_BINDINGS);
+        let expected_keymap_bytes =
+            bindings.capacity() * size_of::<KeyBinding>() + expected_label_bytes;
+        let keymap = Keymap {
+            bindings: Cow::Owned(bindings),
+        };
+        assert_eq!(keymap.validate(), Ok(()));
+        assert_eq!(keymap.retained_bytes()?, expected_keymap_bytes);
+
+        let mut exact_budget = StudioSettings::compiled()?;
+        let mut exact_name = String::with_capacity(SETTINGS_RETAINED_BUDGET_BYTES);
+        exact_name.push('x');
+        assert_eq!(exact_name.capacity(), SETTINGS_RETAINED_BUDGET_BYTES);
+        exact_budget.editor.font_name = Cow::Owned(exact_name);
+        assert_eq!(
+            exact_budget.retained_bytes()?,
+            SETTINGS_RETAINED_BUDGET_BYTES
+        );
+        assert_eq!(exact_budget.validate(), Ok(SETTINGS_RETAINED_BUDGET_BYTES));
+
+        let mut over_budget = StudioSettings::compiled()?;
+        let mut over_name = String::with_capacity(SETTINGS_RETAINED_BUDGET_BYTES + 1);
+        over_name.push('x');
+        let retained = over_name.capacity();
+        assert!(retained > SETTINGS_RETAINED_BUDGET_BYTES);
+        over_budget.editor.font_name = Cow::Owned(over_name);
+        assert_eq!(
+            over_budget.validate(),
+            Err(SettingsError::RetainedBudgetExceeded {
+                retained,
+                limit: SETTINGS_RETAINED_BUDGET_BYTES,
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn layering_failure_sources_and_diagnostics_are_exact() {
+        assert_eq!(
+            resolve_layers_from(Err(SettingsError::EmptyFontName), None, None).err(),
+            Some(SettingsFailure {
+                source: SettingsSource::Compiled,
+                error: SettingsError::EmptyFontName,
+            })
+        );
+        let diagnostics = [
+            (
+                SettingsError::FontNameTooLong,
+                "font name exceeds its 256-byte limit".to_owned(),
+            ),
+            (
+                SettingsError::InvalidFontName,
+                "font name contains a control character".to_owned(),
+            ),
+            (
+                SettingsError::TooManyBindings,
+                "keymap exceeds its 64-binding limit".to_owned(),
+            ),
+            (
+                SettingsError::RetainedSizeOverflow,
+                "settings retained-byte accounting overflowed".to_owned(),
+            ),
+            (
+                SettingsError::RetainedBudgetExceeded {
+                    retained: 65_537,
+                    limit: 65_536,
+                },
+                "settings retain 65537 bytes above their 65536-byte limit".to_owned(),
+            ),
+            (
+                SettingsError::RevisionExhausted,
+                "settings revision exhausted".to_owned(),
+            ),
+        ];
+        for (error, expected) in diagnostics {
+            assert_eq!(error.to_string(), expected);
+        }
     }
 
     #[test]
