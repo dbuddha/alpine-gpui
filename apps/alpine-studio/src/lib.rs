@@ -22,6 +22,14 @@ mod lsp_framing;
     not(test),
     expect(
         dead_code,
+        reason = "Task #205 stages the bounded JSON-RPC peer before process-loop admission"
+    )
+)]
+mod lsp_json;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
         reason = "Task #128 stages bounded local process ownership before JSON-RPC decoding"
     )
 )]

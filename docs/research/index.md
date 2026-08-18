@@ -13,6 +13,7 @@ measurement rules so implementation does not depend on chat history.
 | [Alpine Studio daily-driver path](../use-cases/alpine-studio-highfidelity.md) | Accepted product boundary and gate sequence | [Capability #28](https://github.com/dbuddha/alpine-gpui/issues/28) |
 | [Comparator protocol v1](../quality/comparator-protocol.md) | Correctness admission, stage separation, identities, sampling, memory, and claim grammar | [Research #115](https://github.com/dbuddha/alpine-gpui/issues/115) |
 | Research retention requirement | Queryable evidence and deterministic CI audit | [Requirement #132](https://github.com/dbuddha/alpine-gpui/issues/132) |
+| Local LSP and rust-analyzer boundary | Normative JSON-RPC/LSP constraints, pinned Zed mechanisms, bounded Alpine decisions, and explicit exclusions | [Research #204](https://github.com/dbuddha/alpine-gpui/issues/204), [Task #205](https://github.com/dbuddha/alpine-gpui/issues/205) |
 | [GitHub Wiki mirror policy](../wiki/README.md) | Revision-pinned, one-way retrieval mirror with mdBook as canonical authority | [Decision #174](https://github.com/dbuddha/alpine-gpui/issues/174), [Task #175](https://github.com/dbuddha/alpine-gpui/issues/175) |
 
 ## Comparative case studies

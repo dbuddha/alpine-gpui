@@ -114,6 +114,19 @@ and monotonic frame identity while current and peak buffer accounting remains
 observable. This slice decodes no JSON and creates no language-service state
 before the separately approved parser and revision-admission slices consume it.
 
+Studio now also owns the first private JSON-RPC peer core under Task #205 and
+Research #204. An Alpine envelope visitor rejects duplicate critical fields,
+unsupported IDs, batches, invalid response shapes, wrong protocol versions,
+excess depth, excess structural items, and excess raw string bytes before any
+message can reach application state. One peer admits at most 64 monotonically
+identified pending requests and accounts its exact retained vector and method
+storage. Initialize, initialized, cancellation, shutdown, and exit are explicit
+states; cancellation removes local admission, and a complete workspace and
+document revision stamp is compared before a response is exposed. Outbound
+messages are framed directly for the existing bounded process owner. This slice
+does not yet drive that owner from Studio or qualify a real rust-analyzer; the
+production child-process mock journey remains the next Task #205 increment.
+
 Production typography uses the safe
 CoreText service; deterministic test typography proves portable editor behavior
 without claiming native validation. It runs through one `Application` until the
