@@ -3,8 +3,8 @@
 use core::{error::Error, fmt, num::NonZeroUsize};
 use std::{
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, TryLockError,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel},
     },
     thread::{self, JoinHandle},
@@ -33,6 +33,9 @@ type WorkerSpawner<T> = dyn FnMut(
 ) -> std::io::Result<JoinHandle<()>>;
 
 const MAX_WORKER_RESULTS_PER_TURN: usize = 8;
+const EXTERNAL_RESULT_CAPACITY: usize = 16;
+const MAX_EXTERNAL_RETAINED_BYTES: usize = 8 * 1024 * 1024;
+const FIRST_EXTERNAL_SEQUENCE: u64 = 1 << 63;
 
 /// Monotonic identity of the active local workspace state.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -171,6 +174,266 @@ impl fmt::Display for SubmitError {
 
 impl Error for SubmitError {}
 
+/// Result of one nonblocking independent-source result submission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalAdmission {
+    /// The owned result entered the fixed queue.
+    Admitted,
+    /// The fixed item queue or retained-byte budget is full.
+    Full,
+    /// The runtime queue is no longer connected.
+    Disconnected,
+    /// Application shutdown has revoked new independent results.
+    ShuttingDown,
+    /// The process-local independent-result sequence cannot advance.
+    SequenceExhausted,
+}
+
+#[derive(Default)]
+struct ExternalCounters {
+    current_items: AtomicUsize,
+    peak_items: AtomicUsize,
+    current_bytes: AtomicUsize,
+    peak_bytes: AtomicUsize,
+    admitted: AtomicUsize,
+    full: AtomicUsize,
+    disconnected: AtomicUsize,
+    shutting_down: AtomicUsize,
+    sequence_exhausted: AtomicUsize,
+    wake_requests: AtomicUsize,
+    wake_coalesces: AtomicUsize,
+    drained: AtomicUsize,
+}
+
+/// Handle-free current and peak evidence for independent-source results.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ExternalSnapshot {
+    current_items: usize,
+    peak_items: usize,
+    current_bytes: usize,
+    peak_bytes: usize,
+    admitted: usize,
+    full: usize,
+    disconnected: usize,
+    shutting_down: usize,
+    sequence_exhausted: usize,
+    wake_requests: usize,
+    wake_coalesces: usize,
+    drained: usize,
+}
+
+impl ExternalSnapshot {
+    /// Returns independent results waiting for the foreground.
+    #[must_use]
+    pub const fn current_items(self) -> usize {
+        self.current_items
+    }
+
+    /// Returns the greatest queued independent-result count.
+    #[must_use]
+    pub const fn peak_items(self) -> usize {
+        self.peak_items
+    }
+
+    /// Returns bytes attributed to queued independent results.
+    #[must_use]
+    pub const fn current_bytes(self) -> usize {
+        self.current_bytes
+    }
+
+    /// Returns the greatest attributed queued byte count.
+    #[must_use]
+    pub const fn peak_bytes(self) -> usize {
+        self.peak_bytes
+    }
+
+    /// Returns accepted independent results.
+    #[must_use]
+    pub const fn admitted(self) -> usize {
+        self.admitted
+    }
+
+    /// Returns submissions rejected by item or byte capacity.
+    #[must_use]
+    pub const fn full(self) -> usize {
+        self.full
+    }
+
+    /// Returns submissions rejected after queue disconnection.
+    #[must_use]
+    pub const fn disconnected(self) -> usize {
+        self.disconnected
+    }
+
+    /// Returns submissions rejected by application shutdown.
+    #[must_use]
+    pub const fn shutting_down(self) -> usize {
+        self.shutting_down
+    }
+
+    /// Returns submissions rejected by sequence exhaustion.
+    #[must_use]
+    pub const fn sequence_exhausted(self) -> usize {
+        self.sequence_exhausted
+    }
+
+    /// Returns run-loop wake requests for empty-to-nonempty transitions.
+    #[must_use]
+    pub const fn wake_requests(self) -> usize {
+        self.wake_requests
+    }
+
+    /// Returns accepted results coalesced behind an existing wake.
+    #[must_use]
+    pub const fn wake_coalesces(self) -> usize {
+        self.wake_coalesces
+    }
+
+    /// Returns independent results removed by foreground draining.
+    #[must_use]
+    pub const fn drained(self) -> usize {
+        self.drained
+    }
+}
+
+struct ExternalEnvelope<T> {
+    sequence: u64,
+    retained_bytes: usize,
+    value: T,
+}
+
+struct ExternalShared<T> {
+    sender: Mutex<Option<SyncSender<ExternalEnvelope<T>>>>,
+    shutting_down: AtomicBool,
+    next_sequence: AtomicU64,
+    counters: ExternalCounters,
+    wake: Arc<Mutex<Option<WorkerWake>>>,
+}
+
+/// Cloneable handle for one bounded independent local result source.
+pub struct ExternalProducer<T> {
+    shared: Arc<ExternalShared<T>>,
+}
+
+impl<T> Clone for ExternalProducer<T> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+}
+
+impl<T> ExternalProducer<T> {
+    /// Attempts to enqueue one owned result without waiting for capacity.
+    ///
+    /// `retained_bytes` is the producer's exact owned-payload attribution. It
+    /// does not include channel or runtime bookkeeping.
+    #[must_use]
+    pub fn submit(&self, value: T, retained_bytes: usize) -> ExternalAdmission {
+        if self.shared.shutting_down.load(Ordering::Acquire) {
+            return self.reject(ExternalAdmission::ShuttingDown);
+        }
+        let sender_guard = match self.shared.sender.try_lock() {
+            Ok(sender) => sender,
+            Err(TryLockError::WouldBlock) => return self.reject(ExternalAdmission::Full),
+            Err(TryLockError::Poisoned(_)) => {
+                return self.reject(ExternalAdmission::Disconnected);
+            }
+        };
+        if self.shared.shutting_down.load(Ordering::Acquire) {
+            return self.reject(ExternalAdmission::ShuttingDown);
+        }
+        let Some(sender) = sender_guard.as_ref() else {
+            return self.reject(ExternalAdmission::Disconnected);
+        };
+        let Ok(sequence) = self.shared.next_sequence.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |current| current.checked_add(1),
+        ) else {
+            return self.reject(ExternalAdmission::SequenceExhausted);
+        };
+        let Ok(previous_bytes) = self.shared.counters.current_bytes.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |current| {
+                current
+                    .checked_add(retained_bytes)
+                    .filter(|next| *next <= MAX_EXTERNAL_RETAINED_BYTES)
+            },
+        ) else {
+            return self.reject(ExternalAdmission::Full);
+        };
+        let queued = self
+            .shared
+            .counters
+            .current_items
+            .fetch_add(1, Ordering::AcqRel)
+            + 1;
+        let send_result = sender
+            .try_send(ExternalEnvelope {
+                sequence,
+                retained_bytes,
+                value,
+            })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => ExternalAdmission::Full,
+                TrySendError::Disconnected(_) => ExternalAdmission::Disconnected,
+            });
+        if let Err(admission) = send_result {
+            self.shared
+                .counters
+                .current_items
+                .fetch_sub(1, Ordering::AcqRel);
+            self.shared
+                .counters
+                .current_bytes
+                .fetch_sub(retained_bytes, Ordering::AcqRel);
+            return self.reject(admission);
+        }
+        drop(sender_guard);
+        self.admit(queued, previous_bytes + retained_bytes)
+    }
+
+    fn reject(&self, admission: ExternalAdmission) -> ExternalAdmission {
+        let counter = match admission {
+            ExternalAdmission::Full => &self.shared.counters.full,
+            ExternalAdmission::Disconnected => &self.shared.counters.disconnected,
+            ExternalAdmission::ShuttingDown => &self.shared.counters.shutting_down,
+            ExternalAdmission::SequenceExhausted => &self.shared.counters.sequence_exhausted,
+            ExternalAdmission::Admitted => return admission,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+        admission
+    }
+
+    fn admit(&self, queued: usize, retained_bytes: usize) -> ExternalAdmission {
+        self.shared
+            .counters
+            .admitted
+            .fetch_add(1, Ordering::Relaxed);
+        update_peak(&self.shared.counters.peak_items, queued);
+        update_peak(&self.shared.counters.peak_bytes, retained_bytes);
+        if queued == 1 {
+            self.shared
+                .counters
+                .wake_requests
+                .fetch_add(1, Ordering::Relaxed);
+            if let Ok(installed) = self.shared.wake.lock()
+                && let Some(wake) = installed.as_ref()
+            {
+                wake();
+            }
+        } else {
+            self.shared
+                .counters
+                .wake_coalesces
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        ExternalAdmission::Admitted
+    }
+}
+
 /// Construction or native execution failure for one application.
 #[derive(Debug)]
 pub enum RuntimeError {
@@ -295,6 +558,86 @@ struct WorkerPool<T> {
     counters: Arc<WorkerCounters>,
     next_sequence: u64,
     wake: Arc<Mutex<Option<WorkerWake>>>,
+}
+
+struct ExternalQueue<T> {
+    receiver: Receiver<ExternalEnvelope<T>>,
+    shared: Arc<ExternalShared<T>>,
+}
+
+impl<T> ExternalQueue<T> {
+    fn new(wake: Arc<Mutex<Option<WorkerWake>>>) -> Self {
+        let (sender, receiver) = sync_channel(EXTERNAL_RESULT_CAPACITY);
+        Self {
+            receiver,
+            shared: Arc::new(ExternalShared {
+                sender: Mutex::new(Some(sender)),
+                shutting_down: AtomicBool::new(false),
+                next_sequence: AtomicU64::new(FIRST_EXTERNAL_SEQUENCE),
+                counters: ExternalCounters::default(),
+                wake,
+            }),
+        }
+    }
+
+    fn producer(&self) -> ExternalProducer<T> {
+        ExternalProducer {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
+    fn try_result(&self) -> Option<ExternalEnvelope<T>> {
+        match self.receiver.try_recv() {
+            Ok(result) => {
+                self.shared
+                    .counters
+                    .current_items
+                    .fetch_sub(1, Ordering::AcqRel);
+                self.shared
+                    .counters
+                    .current_bytes
+                    .fetch_sub(result.retained_bytes, Ordering::AcqRel);
+                self.shared.counters.drained.fetch_add(1, Ordering::Relaxed);
+                Some(result)
+            }
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) => None,
+        }
+    }
+
+    fn snapshot(&self) -> ExternalSnapshot {
+        let counters = &self.shared.counters;
+        ExternalSnapshot {
+            current_items: counters.current_items.load(Ordering::Acquire),
+            peak_items: counters.peak_items.load(Ordering::Acquire),
+            current_bytes: counters.current_bytes.load(Ordering::Acquire),
+            peak_bytes: counters.peak_bytes.load(Ordering::Acquire),
+            admitted: counters.admitted.load(Ordering::Acquire),
+            full: counters.full.load(Ordering::Acquire),
+            disconnected: counters.disconnected.load(Ordering::Acquire),
+            shutting_down: counters.shutting_down.load(Ordering::Acquire),
+            sequence_exhausted: counters.sequence_exhausted.load(Ordering::Acquire),
+            wake_requests: counters.wake_requests.load(Ordering::Acquire),
+            wake_coalesces: counters.wake_coalesces.load(Ordering::Acquire),
+            drained: counters.drained.load(Ordering::Acquire),
+        }
+    }
+
+    fn close(&self) {
+        let Ok(mut sender) = self.shared.sender.lock() else {
+            self.shared.shutting_down.store(true, Ordering::Release);
+            return;
+        };
+        self.shared.shutting_down.store(true, Ordering::Release);
+        sender.take();
+        drop(sender);
+        while self.try_result().is_some() {}
+    }
+}
+
+impl<T> Drop for ExternalQueue<T> {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 impl<T: Send + 'static> WorkerPool<T> {
@@ -505,6 +848,7 @@ pub struct AppContext<'a, T> {
     document_revision: &'a mut DocumentRevision,
     dirty: &'a mut bool,
     workers: &'a mut WorkerPool<T>,
+    external: &'a ExternalQueue<T>,
     clipboard_write: Option<&'a mut Option<ClipboardWrite>>,
     close_disposition: Option<&'a mut CloseDisposition>,
 }
@@ -587,6 +931,15 @@ impl<T: Send + 'static> AppContext<'_, T> {
         self.workers
             .submit(*self.workspace_revision, *self.document_revision, job)
     }
+
+    /// Returns a handle-free producer for independent local results.
+    ///
+    /// The delegate remains responsible for carrying and validating exact
+    /// application identity inside each submitted payload.
+    #[must_use]
+    pub fn external_producer(&self) -> ExternalProducer<T> {
+        self.external.producer()
+    }
 }
 
 /// Immutable values supplied for one dirty scene build.
@@ -642,6 +995,7 @@ pub struct ApplicationSnapshot {
     stale_results: usize,
     invalid_scenes: usize,
     worker: WorkerSnapshot,
+    external: ExternalSnapshot,
 }
 
 impl ApplicationSnapshot {
@@ -692,12 +1046,19 @@ impl ApplicationSnapshot {
     pub const fn worker(self) -> WorkerSnapshot {
         self.worker
     }
+
+    /// Returns bounded independent-source result accounting.
+    #[must_use]
+    pub const fn external(self) -> ExternalSnapshot {
+        self.external
+    }
 }
 
 /// One single-window foreground state graph and its bounded workers.
 pub struct Application<D: AppDelegate> {
     delegate: D,
     workers: WorkerPool<D::WorkerOutput>,
+    external: ExternalQueue<D::WorkerOutput>,
     workspace_revision: WorkspaceRevision,
     document_revision: DocumentRevision,
     scene_revision: u64,
@@ -707,6 +1068,7 @@ pub struct Application<D: AppDelegate> {
     shutting_down: bool,
     stale_results: usize,
     invalid_scenes: usize,
+    drain_external_next: bool,
 }
 
 impl<D: AppDelegate + 'static> Application<D> {
@@ -721,9 +1083,12 @@ impl<D: AppDelegate + 'static> Application<D> {
         clear: LinearRgba,
         worker_config: WorkerConfig,
     ) -> Result<Self, RuntimeError> {
+        let workers = WorkerPool::new(worker_config)?;
+        let external = ExternalQueue::new(Arc::clone(&workers.wake));
         Ok(Self {
             delegate,
-            workers: WorkerPool::new(worker_config)?,
+            workers,
+            external,
             workspace_revision: WorkspaceRevision::default(),
             document_revision: DocumentRevision::default(),
             scene_revision: 0,
@@ -733,6 +1098,7 @@ impl<D: AppDelegate + 'static> Application<D> {
             shutting_down: false,
             stale_results: 0,
             invalid_scenes: 0,
+            drain_external_next: true,
         })
     }
 
@@ -775,12 +1141,14 @@ impl<D: AppDelegate + 'static> Application<D> {
                 document_revision: &mut self.document_revision,
                 dirty: &mut self.dirty,
                 workers: &mut self.workers,
+                external: &self.external,
                 clipboard_write: Some(&mut clipboard_write),
                 close_disposition: Some(&mut close_disposition),
             };
             self.delegate.event(event, &mut context);
         }
         if close_disposition == CloseDisposition::Allow {
+            self.external.close();
             self.shutting_down = true;
             self.dirty = false;
             return SurfaceResponse::new(None, clipboard_write, close_disposition);
@@ -823,6 +1191,7 @@ impl<D: AppDelegate + 'static> Application<D> {
             stale_results: self.stale_results,
             invalid_scenes: self.invalid_scenes,
             worker: self.workers.snapshot(),
+            external: self.external.snapshot(),
         }
     }
 
@@ -837,6 +1206,7 @@ impl<D: AppDelegate + 'static> Application<D> {
             let mut application = self;
             let surface = NativeSurface::new(descriptor)?;
             let surface_waker = surface.waker();
+            let startup_waker = surface_waker.clone();
             application.set_worker_waker(move || {
                 let _ = surface_waker.wake();
             });
@@ -845,6 +1215,7 @@ impl<D: AppDelegate + 'static> Application<D> {
                 let _revision = surface.request_frame(scene, clear)?;
             }
             surface.show()?;
+            let _ = startup_waker.wake();
 
             let state = Rc::new(RefCell::new(application));
             let callback_state = Rc::clone(&state);
@@ -855,6 +1226,7 @@ impl<D: AppDelegate + 'static> Application<D> {
                 )
             });
             if let Ok(mut application) = state.try_borrow_mut() {
+                application.external.close();
                 application.shutting_down = true;
                 application.dirty = false;
                 application.workers.shutdown();
@@ -871,32 +1243,76 @@ impl<D: AppDelegate + 'static> Application<D> {
 
     fn drain_worker_results(&mut self) {
         for _ in 0..MAX_WORKER_RESULTS_PER_TURN {
-            let Some(completion) = self.workers.try_completion() else {
-                return;
-            };
-            if completion.token.workspace_revision != self.workspace_revision
-                || completion.token.document_revision != self.document_revision
-            {
-                self.stale_results = self.stale_results.saturating_add(1);
+            let external = self
+                .drain_external_next
+                .then(|| self.external.try_result())
+                .flatten();
+            if let Some(result) = external {
+                self.drain_external_next = false;
+                self.apply_result(
+                    WorkToken {
+                        sequence: result.sequence,
+                        workspace_revision: self.workspace_revision,
+                        document_revision: self.document_revision,
+                    },
+                    result.value,
+                );
                 continue;
             }
-            let WorkerOutcome::Completed(result) = completion.outcome else {
+            if let Some(completion) = self.workers.try_completion() {
+                self.drain_external_next = true;
+                if completion.token.workspace_revision != self.workspace_revision
+                    || completion.token.document_revision != self.document_revision
+                {
+                    self.stale_results = self.stale_results.saturating_add(1);
+                    continue;
+                }
+                let WorkerOutcome::Completed(result) = completion.outcome else {
+                    continue;
+                };
+                self.apply_result(completion.token, result);
                 continue;
-            };
-            let mut context = AppContext {
-                workspace_revision: &mut self.workspace_revision,
-                document_revision: &mut self.document_revision,
-                dirty: &mut self.dirty,
-                workers: &mut self.workers,
-                clipboard_write: None,
-                close_disposition: None,
-            };
-            self.delegate
-                .worker_result(completion.token, result, &mut context);
+            }
+            if !self.drain_external_next
+                && let Some(result) = self.external.try_result()
+            {
+                self.drain_external_next = false;
+                self.apply_result(
+                    WorkToken {
+                        sequence: result.sequence,
+                        workspace_revision: self.workspace_revision,
+                        document_revision: self.document_revision,
+                    },
+                    result.value,
+                );
+                continue;
+            }
+            return;
         }
-        if self.workers.snapshot().queued_results() > 0 {
+        if self.workers.snapshot().queued_results() > 0
+            || self.external.snapshot().current_items() > 0
+        {
             self.workers.wake();
         }
+    }
+
+    fn apply_result(&mut self, token: WorkToken, result: D::WorkerOutput) {
+        let mut context = AppContext {
+            workspace_revision: &mut self.workspace_revision,
+            document_revision: &mut self.document_revision,
+            dirty: &mut self.dirty,
+            workers: &mut self.workers,
+            external: &self.external,
+            clipboard_write: None,
+            close_disposition: None,
+        };
+        self.delegate.worker_result(token, result, &mut context);
+    }
+}
+
+impl<D: AppDelegate> Drop for Application<D> {
+    fn drop(&mut self) {
+        self.external.close();
     }
 }
 
@@ -1038,6 +1454,33 @@ mod tests {
         assert_eq!(snapshot.dropped_results(), 7);
         assert_eq!(snapshot.panicked_jobs(), 8);
 
+        let external = ExternalSnapshot {
+            current_items: 1,
+            peak_items: 2,
+            current_bytes: 3,
+            peak_bytes: 4,
+            admitted: 5,
+            full: 6,
+            disconnected: 7,
+            shutting_down: 8,
+            sequence_exhausted: 9,
+            wake_requests: 10,
+            wake_coalesces: 11,
+            drained: 12,
+        };
+        assert_eq!(external.current_items(), 1);
+        assert_eq!(external.peak_items(), 2);
+        assert_eq!(external.current_bytes(), 3);
+        assert_eq!(external.peak_bytes(), 4);
+        assert_eq!(external.admitted(), 5);
+        assert_eq!(external.full(), 6);
+        assert_eq!(external.disconnected(), 7);
+        assert_eq!(external.shutting_down(), 8);
+        assert_eq!(external.sequence_exhausted(), 9);
+        assert_eq!(external.wake_requests(), 10);
+        assert_eq!(external.wake_coalesces(), 11);
+        assert_eq!(external.drained(), 12);
+
         assert_eq!(
             SubmitError::Saturated.to_string(),
             "the bounded worker request queue is full"
@@ -1076,6 +1519,7 @@ mod tests {
             document_revision: &mut application.document_revision,
             dirty: &mut application.dirty,
             workers: &mut application.workers,
+            external: &application.external,
             clipboard_write: Some(&mut clipboard_write),
             close_disposition: Some(&mut close_disposition),
         };
@@ -1096,19 +1540,23 @@ mod tests {
         assert!(!context.cancel_close());
         assert_eq!(context.workspace_revision().get(), 2);
         assert_eq!(context.document_revision().get(), 3);
+        let external = context.external_producer();
         assert_eq!(clipboard_write.as_ref(), Some(&write));
         assert_eq!(close_disposition, CloseDisposition::Cancel);
+        assert_eq!(external.submit(17, 4), ExternalAdmission::Admitted);
         let mut no_response_context = AppContext {
             workspace_revision: &mut application.workspace_revision,
             document_revision: &mut application.document_revision,
             dirty: &mut application.dirty,
             workers: &mut application.workers,
+            external: &application.external,
             clipboard_write: None,
             close_disposition: None,
         };
         assert!(!no_response_context.write_clipboard(write));
         assert!(!no_response_context.cancel_close());
         assert!(application.dirty);
+        assert_eq!(application.snapshot().external().current_items(), 1);
         Ok(())
     }
 
@@ -1393,6 +1841,7 @@ mod tests {
             document_revision: &mut application.document_revision,
             dirty: &mut application.dirty,
             workers: &mut application.workers,
+            external: &application.external,
             clipboard_write: None,
             close_disposition: None,
         };
@@ -1460,6 +1909,7 @@ mod tests {
                 document_revision: &mut application.document_revision,
                 dirty: &mut application.dirty,
                 workers: &mut application.workers,
+                external: &application.external,
                 clipboard_write: None,
                 close_disposition: None,
             };
@@ -1625,6 +2075,172 @@ mod tests {
         assert_eq!(application.delegate.results.len(), 17);
         assert_eq!(application.snapshot().worker().queued_results(), 0);
         assert_eq!(wakes.load(Ordering::Acquire), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn external_results_cross_runtime_revisions_and_keep_exact_accounting()
+    -> Result<(), RuntimeError> {
+        let mut application = runtime(TestDelegate::default())?;
+        let _ = application.frame_if_dirty();
+        let (wake_sender, wake_receiver) = sync_channel(1);
+        application.set_worker_waker(move || {
+            let _ = wake_sender.try_send(());
+        });
+        let producer = application.external.producer();
+        application.document_revision = DocumentRevision::new(9);
+        assert_eq!(producer.submit(55, 13), ExternalAdmission::Admitted);
+        assert_eq!(wake_receiver.recv_timeout(Duration::from_secs(1)), Ok(()));
+        let queued = application.snapshot().external();
+        assert_eq!(queued.current_items(), 1);
+        assert_eq!(queued.current_bytes(), 13);
+        assert_eq!(queued.wake_requests(), 1);
+
+        assert!(
+            application
+                .dispatch(&SurfaceEvent::Wake {
+                    timestamp: EventTimestamp::new(20),
+                })
+                .is_some()
+        );
+        let (token, result) = application.delegate.results[0];
+        assert_eq!(result, 55);
+        assert_eq!(token.document_revision(), DocumentRevision::new(9));
+        assert!(token.sequence() >= FIRST_EXTERNAL_SEQUENCE);
+        assert_eq!(application.snapshot().stale_results(), 0);
+        let drained = application.snapshot().external();
+        assert_eq!(drained.current_items(), 0);
+        assert_eq!(drained.current_bytes(), 0);
+        assert_eq!(drained.peak_items(), 1);
+        assert_eq!(drained.peak_bytes(), 13);
+        assert_eq!(drained.admitted(), 1);
+        assert_eq!(drained.drained(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn external_queue_coalesces_saturates_and_continues_under_one_drain_budget()
+    -> Result<(), RuntimeError> {
+        let mut application = runtime(TestDelegate::default())?;
+        let _ = application.frame_if_dirty();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let wake_counter = Arc::clone(&wakes);
+        application.set_worker_waker(move || {
+            wake_counter.fetch_add(1, Ordering::Relaxed);
+        });
+        let producer = application.external.producer();
+        for value in 0..EXTERNAL_RESULT_CAPACITY {
+            assert_eq!(
+                producer.submit(value as u64, 1),
+                ExternalAdmission::Admitted
+            );
+        }
+        assert_eq!(producer.submit(99, 1), ExternalAdmission::Full);
+        let full = application.snapshot().external();
+        assert_eq!(full.current_items(), EXTERNAL_RESULT_CAPACITY);
+        assert_eq!(full.current_bytes(), EXTERNAL_RESULT_CAPACITY);
+        assert_eq!(full.peak_items(), EXTERNAL_RESULT_CAPACITY);
+        assert_eq!(full.wake_requests(), 1);
+        assert_eq!(full.wake_coalesces(), EXTERNAL_RESULT_CAPACITY - 1);
+        assert_eq!(full.full(), 1);
+        assert_eq!(wakes.load(Ordering::Acquire), 1);
+
+        assert!(
+            application
+                .dispatch(&SurfaceEvent::Wake {
+                    timestamp: EventTimestamp::new(21),
+                })
+                .is_some()
+        );
+        assert_eq!(
+            application.delegate.results.len(),
+            MAX_WORKER_RESULTS_PER_TURN
+        );
+        assert_eq!(application.snapshot().external().current_items(), 8);
+        assert_eq!(wakes.load(Ordering::Acquire), 2);
+        assert!(
+            application
+                .dispatch(&SurfaceEvent::Wake {
+                    timestamp: EventTimestamp::new(22),
+                })
+                .is_some()
+        );
+        assert_eq!(application.delegate.results.len(), EXTERNAL_RESULT_CAPACITY);
+        assert_eq!(application.snapshot().external().current_items(), 0);
+        assert_eq!(
+            application.snapshot().external().drained(),
+            EXTERNAL_RESULT_CAPACITY
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn external_result_without_delegate_invalidation_requests_no_frame() -> Result<(), RuntimeError>
+    {
+        let viewport =
+            Size::new(10.0, 10.0).ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0)
+            .ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        let mut application = Application::new(
+            DefaultResultDelegate,
+            viewport,
+            clear,
+            WorkerConfig::default(),
+        )?;
+        let _ = application.frame_if_dirty();
+        let producer = application.external.producer();
+        assert_eq!(producer.submit(1, 0), ExternalAdmission::Admitted);
+        assert!(
+            application
+                .dispatch(&SurfaceEvent::Wake {
+                    timestamp: EventTimestamp::new(23),
+                })
+                .is_none()
+        );
+        assert!(!application.snapshot().is_dirty());
+        Ok(())
+    }
+
+    #[test]
+    fn external_producer_rejects_budget_exhaustion_shutdown_and_poison() -> Result<(), RuntimeError>
+    {
+        let application = runtime(TestDelegate::default())?;
+        let producer = application.external.producer();
+        assert_eq!(
+            producer.submit(1, MAX_EXTERNAL_RETAINED_BYTES + 1),
+            ExternalAdmission::Full
+        );
+        assert_eq!(application.snapshot().external().current_items(), 0);
+        drop(application);
+        assert_eq!(producer.submit(2, 1), ExternalAdmission::ShuttingDown);
+
+        let poisoned_application = runtime(TestDelegate::default())?;
+        let poisoned = poisoned_application.external.producer();
+        let shared = Arc::clone(&poisoned.shared);
+        let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = shared
+                .sender
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::panic::resume_unwind(Box::new("poison external sender"));
+        }));
+        assert!(fault.is_err());
+        assert_eq!(poisoned.submit(3, 1), ExternalAdmission::Disconnected);
+        Ok(())
+    }
+
+    #[test]
+    fn external_sequence_exhaustion_fails_before_queue_mutation() -> Result<(), RuntimeError> {
+        let application = runtime(TestDelegate::default())?;
+        let producer = application.external.producer();
+        producer
+            .shared
+            .next_sequence
+            .store(u64::MAX, Ordering::Release);
+        assert_eq!(producer.submit(1, 1), ExternalAdmission::SequenceExhausted);
+        let snapshot = application.snapshot().external();
+        assert_eq!(snapshot.sequence_exhausted(), 1);
+        assert_eq!(snapshot.current_items(), 0);
         Ok(())
     }
 }
