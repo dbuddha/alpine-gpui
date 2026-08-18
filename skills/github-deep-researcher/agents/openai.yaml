@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Deep Researcher"
+  short_description: "Produce reproducible decision-grade research"
+  default_prompt: "Use $github-deep-researcher to produce a source-pinned, reproducible research package and connect its findings to GitHub decisions and tasks."

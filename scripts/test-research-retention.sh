@@ -75,4 +75,40 @@ if scripts/check-research-retention.sh "$fixture_dir/missing-wiki-anchor" \
 fi
 grep -Fq 'missing issue anchor #175' "$fixture_dir/missing-wiki-anchor.log"
 
+copy_fixture "$fixture_dir/missing-wgpu-package"
+rm "$fixture_dir/missing-wgpu-package/docs/research/wgpu/source-map.md"
+if scripts/check-research-retention.sh "$fixture_dir/missing-wgpu-package" \
+    > "$fixture_dir/missing-wgpu-package.log" 2>&1; then
+    printf 'research retention test error: missing WGPU source map unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'required research artifact is missing' "$fixture_dir/missing-wgpu-package.log"
+
+copy_fixture "$fixture_dir/missing-wgpu-pin"
+sed 's/8ee190c6f151c731a4f8cfd9a102d6ee5903460a/review-pin-removed/g' \
+    "$fixture_dir/missing-wgpu-pin/docs/research/wgpu/index.md" \
+    > "$fixture_dir/missing-wgpu-pin/wgpu-index.md"
+mv "$fixture_dir/missing-wgpu-pin/wgpu-index.md" \
+    "$fixture_dir/missing-wgpu-pin/docs/research/wgpu/index.md"
+if scripts/check-research-retention.sh "$fixture_dir/missing-wgpu-pin" \
+    > "$fixture_dir/missing-wgpu-pin.log" 2>&1; then
+    printf 'research retention test error: missing WGPU pin unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'WGPU research is missing retained revision pin' "$fixture_dir/missing-wgpu-pin.log"
+
+copy_fixture "$fixture_dir/missing-wgpu-classification"
+sed 's/## Unverified hypotheses/## Open questions/' \
+    "$fixture_dir/missing-wgpu-classification/docs/research/wgpu/findings.md" \
+    > "$fixture_dir/missing-wgpu-classification/findings.md"
+mv "$fixture_dir/missing-wgpu-classification/findings.md" \
+    "$fixture_dir/missing-wgpu-classification/docs/research/wgpu/findings.md"
+if scripts/check-research-retention.sh "$fixture_dir/missing-wgpu-classification" \
+    > "$fixture_dir/missing-wgpu-classification.log" 2>&1; then
+    printf 'research retention test error: missing WGPU evidence class unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'WGPU findings are missing evidence classification' \
+    "$fixture_dir/missing-wgpu-classification.log"
+
 printf 'research retention tests passed\n'
