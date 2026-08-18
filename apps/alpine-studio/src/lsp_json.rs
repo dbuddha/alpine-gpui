@@ -23,6 +23,8 @@ pub(crate) struct RequestStamp {
     workspace_revision: u64,
     document_id: u64,
     document_revision: u64,
+    buffer_revision: u64,
+    selection_revision: u64,
 }
 
 impl RequestStamp {
@@ -31,11 +33,15 @@ impl RequestStamp {
         workspace_revision: u64,
         document_id: u64,
         document_revision: u64,
+        buffer_revision: u64,
+        selection_revision: u64,
     ) -> Option<Self> {
         if workspace_id == 0
             || workspace_revision == 0
             || document_id == 0
             || document_revision == 0
+            || buffer_revision == 0
+            || selection_revision == 0
         {
             return None;
         }
@@ -44,6 +50,8 @@ impl RequestStamp {
             workspace_revision,
             document_id,
             document_revision,
+            buffer_revision,
+            selection_revision,
         })
     }
 }
@@ -112,13 +120,12 @@ impl Visitor<'_> for RequestIdVisitor {
     type Value = RequestId;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a nonzero 32-bit integer request ID")
+        formatter.write_str("a 32-bit unsigned integer request ID")
     }
 
     fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
         u32::try_from(value)
             .ok()
-            .filter(|value| *value != 0)
             .map(RequestId)
             .ok_or_else(|| E::custom("unsupported request ID"))
     }
@@ -126,7 +133,6 @@ impl Visitor<'_> for RequestIdVisitor {
     fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
         u32::try_from(value)
             .ok()
-            .filter(|value| *value != 0)
             .map(RequestId)
             .ok_or_else(|| E::custom("unsupported request ID"))
     }
@@ -428,6 +434,22 @@ impl PeerSnapshot {
     pub(crate) const fn pending_requests(self) -> usize {
         self.pending_requests
     }
+
+    pub(crate) const fn retained_bytes(self) -> usize {
+        self.retained_bytes
+    }
+
+    pub(crate) const fn peak_retained_bytes(self) -> usize {
+        self.peak_retained_bytes
+    }
+
+    pub(crate) const fn cancelled_requests(self) -> u64 {
+        self.cancelled_requests
+    }
+
+    pub(crate) const fn stale_responses(self) -> u64 {
+        self.stale_responses
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -497,10 +519,18 @@ impl LspPeer {
     }
 
     pub(crate) fn begin_initialize(&mut self) -> Result<OutboundMessage, ProtocolError> {
+        self.begin_initialize_with(None)
+    }
+
+    pub(crate) fn begin_initialize_with(
+        &mut self,
+        params: Option<&RawValue>,
+    ) -> Result<OutboundMessage, ProtocolError> {
         if self.lifecycle != PeerLifecycle::Created {
             return Err(ProtocolError::InvalidLifecycle);
         }
-        let params = r#"{"processId":null,"clientInfo":{"name":"Alpine Studio","version":"0.0.0"},"capabilities":{}}"#;
+        let default_params = r#"{"processId":null,"clientInfo":{"name":"Alpine Studio","version":"0.0.0"},"capabilities":{}}"#;
+        let params = params.map_or(default_params, RawValue::get);
         let message =
             self.begin_pending("initialize", Some(params), None, PendingKind::Initialize)?;
         self.lifecycle = PeerLifecycle::Initializing;
@@ -522,6 +552,41 @@ impl LspPeer {
             Some(stamp),
             PendingKind::Request,
         )
+    }
+
+    pub(crate) fn notification(
+        &self,
+        method: &str,
+        params: Option<&RawValue>,
+    ) -> Result<OutboundMessage, ProtocolError> {
+        if self.lifecycle != PeerLifecycle::Running
+            || matches!(
+                method,
+                "initialize" | "initialized" | "shutdown" | "exit" | "$/cancelRequest"
+            )
+        {
+            return Err(ProtocolError::InvalidLifecycle);
+        }
+        build_call(method, None, params.map(RawValue::get))
+    }
+
+    pub(crate) fn respond_to_server_request(
+        &self,
+        id: u32,
+        method: &str,
+    ) -> Result<OutboundMessage, ProtocolError> {
+        if self.lifecycle != PeerLifecycle::Running {
+            return Err(ProtocolError::InvalidLifecycle);
+        }
+        if method == "workspace/diagnostic/refresh" {
+            build_response(RequestId(id), Some("null"), None)
+        } else {
+            build_response(
+                RequestId(id),
+                None,
+                Some(r#"{"code":-32601,"message":"Method not found"}"#),
+            )
+        }
     }
 
     pub(crate) fn cancel(&mut self, id: u32) -> Result<OutboundMessage, ProtocolError> {
@@ -558,6 +623,7 @@ impl LspPeer {
             return Err(ProtocolError::InvalidLifecycle);
         }
         let message = build_call("exit", None, None)?;
+        self.pending = Vec::new();
         self.lifecycle = PeerLifecycle::Exited;
         Ok(message)
     }
@@ -758,6 +824,21 @@ fn build_call_with_limit(
     frame_body(&body, id)
 }
 
+fn build_response(
+    id: RequestId,
+    result: Option<&str>,
+    error: Option<&str>,
+) -> Result<OutboundMessage, ProtocolError> {
+    if result.is_some() == error.is_some() {
+        return Err(ProtocolError::InvalidEnvelope);
+    }
+    let value = result.or(error).ok_or(ProtocolError::InvalidEnvelope)?;
+    scan_json(value.as_bytes(), JsonLimits::default())?;
+    let field = if result.is_some() { "result" } else { "error" };
+    let body = format!(r#"{{"jsonrpc":"2.0","id":{},"{field}":{value}}}"#, id.get());
+    frame_body(body.as_bytes(), None)
+}
+
 fn validate_method(method: &str) -> Result<(), ProtocolError> {
     if method.is_empty() || method.len() > MAX_METHOD_BYTES {
         return Err(ProtocolError::MethodTooLong);
@@ -796,7 +877,8 @@ mod tests {
     use crate::lsp_framing::{LspFrameLimits, LspFramer};
 
     fn stamp(revision: u64) -> RequestStamp {
-        RequestStamp::new(1, revision, 2, revision).unwrap_or_else(|| unreachable!())
+        RequestStamp::new(1, revision, 2, revision, revision, revision)
+            .unwrap_or_else(|| unreachable!())
     }
 
     fn protocol_ok<T>(result: Result<T, ProtocolError>) -> T {
@@ -824,6 +906,15 @@ mod tests {
 
     #[test]
     fn parser_classifies_all_json_rpc_envelopes() {
+        assert!(matches!(
+            protocol_ok(parse_message(
+                br#"{"jsonrpc":"2.0","id":0,"method":"workspace/diagnostic/refresh"}"#
+            )),
+            ParsedMessage::Request {
+                id: RequestId(0),
+                ..
+            }
+        ));
         assert!(matches!(
             protocol_ok(parse_message(
                 br#"{"jsonrpc":"2.0","id":7,"method":"workspace/configuration","params":{}}"#
@@ -866,7 +957,6 @@ mod tests {
         for body in [
             br"[]".as_slice(),
             br#"{"jsonrpc":"1.0","id":1,"result":null}"#,
-            br#"{"jsonrpc":"2.0","id":0,"result":null}"#,
             br#"{"jsonrpc":"2.0","id":"one","result":null}"#,
             br#"{"jsonrpc":"2.0","id":1,"result":null,"error":{"code":1,"message":"x"}}"#,
             br#"{"jsonrpc":"2.0","method":"x","result":null}"#,
@@ -875,6 +965,31 @@ mod tests {
         ] {
             assert!(parse_message(body).is_err());
         }
+    }
+
+    #[test]
+    fn server_requests_receive_bounded_success_or_method_not_found_responses()
+    -> Result<(), ProtocolError> {
+        let mut peer = LspPeer::new();
+        initialize(&mut peer);
+        let refresh = peer.respond_to_server_request(0, "workspace/diagnostic/refresh")?;
+        assert_eq!(refresh.body(), br#"{"jsonrpc":"2.0","id":0,"result":null}"#);
+        assert_eq!(refresh.request_id(), None);
+        let unsupported = peer.respond_to_server_request(9, "rust-analyzer/extension")?;
+        assert_eq!(
+            unsupported.body(),
+            br#"{"jsonrpc":"2.0","id":9,"error":{"code":-32601,"message":"Method not found"}}"#
+        );
+        peer.begin_shutdown()?;
+        assert_eq!(
+            peer.respond_to_server_request(1, "workspace/diagnostic/refresh"),
+            Err(ProtocolError::InvalidLifecycle)
+        );
+        assert_eq!(
+            build_response(RequestId(1), Some("null"), Some("null")),
+            Err(ProtocolError::InvalidEnvelope)
+        );
+        Ok(())
     }
 
     #[test]
@@ -906,9 +1021,25 @@ mod tests {
     #[test]
     fn lifecycle_is_initialize_then_running_then_shutdown_exit() -> Result<(), ProtocolError> {
         let mut peer = LspPeer::new();
+        assert_eq!(peer.snapshot().retained_bytes(), 0);
+        assert_eq!(peer.snapshot().peak_retained_bytes(), 0);
         assert_eq!(peer.begin_shutdown(), Err(ProtocolError::InvalidLifecycle));
+        assert_eq!(
+            peer.notification("textDocument/didOpen", None),
+            Err(ProtocolError::InvalidLifecycle)
+        );
         initialize(&mut peer);
-        assert_eq!(peer.snapshot().lifecycle, PeerLifecycle::Running);
+        let running = peer.snapshot();
+        assert_eq!(running.lifecycle, PeerLifecycle::Running);
+        assert_eq!(running.retained_bytes(), running.retained_bytes);
+        assert_eq!(running.peak_retained_bytes(), running.peak_retained_bytes);
+        assert!(running.retained_bytes() > 1);
+        assert!(running.peak_retained_bytes() > 1);
+        assert!(peer.notification("textDocument/didOpen", None).is_ok());
+        assert_eq!(
+            peer.notification("shutdown", None),
+            Err(ProtocolError::InvalidLifecycle)
+        );
         let shutdown = peer.begin_shutdown()?;
         assert_eq!(shutdown.request_id(), Some(2));
         assert!(matches!(
@@ -918,6 +1049,8 @@ mod tests {
         let exit = peer.exit()?;
         assert!(exit.body().windows(6).any(|window| window == b"\"exit\""));
         assert_eq!(peer.snapshot().lifecycle, PeerLifecycle::Exited);
+        assert_eq!(peer.snapshot().retained_bytes, 0);
+        assert!(peer.snapshot().peak_retained_bytes > 0);
         Ok(())
     }
 
@@ -925,6 +1058,7 @@ mod tests {
     fn response_requires_complete_current_revision_identity() -> Result<(), ProtocolError> {
         let mut peer = LspPeer::new();
         initialize(&mut peer);
+        assert_eq!(peer.snapshot().stale_responses(), 0);
         let params =
             RawValue::from_string("{}".to_owned()).map_err(|_| ProtocolError::MalformedJson)?;
         let request = peer.begin_request("textDocument/hover", Some(&params), stamp(4))?;
@@ -935,6 +1069,7 @@ mod tests {
             PeerEvent::StaleResponse { id: event_id } if event_id == id
         ));
         assert_eq!(peer.snapshot().stale_responses, 1);
+        assert_eq!(peer.snapshot().stale_responses(), 1);
         assert_eq!(peer.snapshot().pending_requests, 0);
         Ok(())
     }
@@ -944,6 +1079,7 @@ mod tests {
     {
         let mut peer = LspPeer::new();
         initialize(&mut peer);
+        assert_eq!(peer.snapshot().cancelled_requests(), 0);
         let request = peer.begin_request("textDocument/completion", None, stamp(7))?;
         let id = request.request_id().ok_or(ProtocolError::InvalidId)?;
         let cancel = peer.cancel(id)?;
@@ -954,6 +1090,7 @@ mod tests {
                 .any(|window| window == b"$/cancelRequest")
         );
         assert_eq!(peer.snapshot().cancelled_requests, 1);
+        assert_eq!(peer.snapshot().cancelled_requests(), 1);
         let response = format!(r#"{{"jsonrpc":"2.0","id":{id},"result":[]}}"#);
         assert!(matches!(
             peer.receive(response.as_bytes(), Some(stamp(7))),

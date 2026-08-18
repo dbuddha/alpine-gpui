@@ -54,6 +54,23 @@ fn run() -> io::Result<()> {
                         &format!(r#"{{"jsonrpc":"2.0","id":{id},"result":null}}"#),
                     )?;
                 }
+                Some("test/server-request") if initialized => {
+                    let id = json_id(message)?;
+                    write_frame(
+                        &mut output,
+                        &format!(r#"{{"jsonrpc":"2.0","id":{id},"result":null}}"#),
+                    )?;
+                    write_frame(
+                        &mut output,
+                        r#"{"jsonrpc":"2.0","id":0,"method":"workspace/diagnostic/refresh"}"#,
+                    )?;
+                }
+                Some("test/notification") if initialized => {
+                    write_frame(
+                        &mut output,
+                        r#"{"jsonrpc":"2.0","method":"test/unrelated-notification"}"#,
+                    )?;
+                }
                 Some("test/slow") if initialized => {}
                 Some("$/cancelRequest") if initialized => {
                     let id = json_id(message)?;
@@ -80,6 +97,16 @@ fn run() -> io::Result<()> {
                     )?;
                 }
                 Some("exit") if initialized => return Ok(()),
+                None
+                    if initialized
+                        && message
+                            == r#"{"jsonrpc":"2.0","id":0,"result":null}"# =>
+                {
+                    write_frame(
+                        &mut output,
+                        r#"{"jsonrpc":"2.0","method":"test/server-request-acknowledged"}"#,
+                    )?;
+                }
                 _ => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,

@@ -1176,3 +1176,60 @@ fn writer_stops_after_losing_the_result_queue() -> Result<(), Box<dyn Error>> {
     assert_eq!(counters.retained_bytes.load(Ordering::Relaxed), 0);
     Ok(())
 }
+
+#[test]
+fn ordinary_events_reserve_exact_capacity_for_terminal_classification() {
+    let (sender, receiver) = sync_channel(EVENT_CAPACITY);
+    let counters = Counters::default();
+    let started = |process_id| ProcessEvent::Started {
+        identity: identity(1),
+        epoch: ProcessEpoch(1),
+        process_id,
+    };
+
+    for _ in 0..EVENT_CAPACITY - TERMINAL_EVENT_RESERVE {
+        assert!(emit(&sender, started(1), &counters));
+    }
+    assert!(!emit(&sender, started(u32::MAX), &counters));
+    assert_eq!(
+        counters.queued_events.load(Ordering::Acquire),
+        EVENT_CAPACITY - TERMINAL_EVENT_RESERVE
+    );
+
+    for reason in [StopReason::OutputOverflow, StopReason::EventOverflow] {
+        assert!(emit_terminal(
+            &sender,
+            ProcessEvent::Stopped {
+                identity: identity(1),
+                epoch: ProcessEpoch(1),
+                reason,
+            },
+            &counters,
+        ));
+    }
+    assert!(!emit_terminal(
+        &sender,
+        ProcessEvent::Stopped {
+            identity: identity(1),
+            epoch: ProcessEpoch(1),
+            reason: StopReason::Restart,
+        },
+        &counters,
+    ));
+    assert_eq!(
+        counters.queued_events.load(Ordering::Acquire),
+        EVENT_CAPACITY
+    );
+    assert_eq!(counters.event_saturations.load(Ordering::Relaxed), 2);
+
+    let events = receiver.try_iter().collect::<Vec<_>>();
+    assert_eq!(events.len(), EVENT_CAPACITY);
+    assert_eq!(
+        events[EVENT_CAPACITY - 2].stop_reason(),
+        Some(StopReason::OutputOverflow)
+    );
+    assert_eq!(
+        events[EVENT_CAPACITY - 1].stop_reason(),
+        Some(StopReason::EventOverflow)
+    );
+}
