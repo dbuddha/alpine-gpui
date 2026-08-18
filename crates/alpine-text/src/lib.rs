@@ -1520,11 +1520,8 @@ mod tests {
             let sequence = start + u64::try_from(offset)?;
             let path =
                 std::env::temp_dir().join(format!("alpine-text-{}-{sequence}", std::process::id()));
-            match fs::create_dir(&path) {
-                Ok(()) => created.push(path),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error.into()),
-            }
+            fs::create_dir_all(&path)?;
+            created.push(path);
         }
         TEST_PATH_SEQUENCE.store(start, Ordering::Relaxed);
         assert!(matches!(
@@ -1534,7 +1531,7 @@ mod tests {
                     == Some(io::ErrorKind::AlreadyExists)
         ));
         for path in created {
-            fs::remove_dir(path)?;
+            fs::remove_dir_all(path)?;
         }
         Ok(())
     }
