@@ -348,7 +348,7 @@ impl StudioSettings {
         Ok(settings)
     }
 
-    fn validate(&self) -> Result<(), SettingsError> {
+    fn validate(&self) -> Result<usize, SettingsError> {
         self.editor.clone().validate()?;
         self.keymap.validate()?;
         let retained = self.retained_bytes()?;
@@ -358,7 +358,7 @@ impl StudioSettings {
                 limit: SETTINGS_RETAINED_BUDGET_BYTES,
             });
         }
-        Ok(())
+        Ok(retained)
     }
 
     fn retained_bytes(&self) -> Result<usize, SettingsError> {
@@ -588,8 +588,12 @@ fn resolve_layers_from(
         error,
     })?;
     let mut provenance = SettingsProvenance::COMPILED;
+    let mut retained_bytes = settings.validate().map_err(|error| SettingsFailure {
+        source: SettingsSource::Compiled,
+        error,
+    })?;
     if let Some(global) = global {
-        apply_layer(
+        retained_bytes = apply_layer(
             &mut settings,
             &mut provenance,
             global,
@@ -597,17 +601,13 @@ fn resolve_layers_from(
         )?;
     }
     if let Some(project) = project {
-        apply_layer(
+        retained_bytes = apply_layer(
             &mut settings,
             &mut provenance,
             project,
             SettingsSource::Project,
         )?;
     }
-    let retained_bytes = settings.retained_bytes().map_err(|error| SettingsFailure {
-        source: SettingsSource::Runtime,
-        error,
-    })?;
     Ok(ResolvedSettings {
         settings,
         provenance,
@@ -620,7 +620,7 @@ fn apply_layer(
     provenance: &mut SettingsProvenance,
     layer: &SettingsLayer,
     source: SettingsSource,
-) -> Result<(), SettingsFailure> {
+) -> Result<usize, SettingsFailure> {
     if !layer.editor.is_empty() {
         layer.editor.apply(&mut settings.editor);
         provenance.editor = source;
@@ -1181,34 +1181,24 @@ mod tests {
         assert!((editor.line_height - 24.0).abs() < f32::EPSILON);
 
         let mut bindings = Vec::with_capacity(MAX_KEY_BINDINGS);
-        for physical_key in 0..MAX_KEY_BINDINGS {
-            let Ok(physical_key) = u16::try_from(physical_key) else {
-                return Err(SettingsError::TooManyBindings);
-            };
+        let mut expected_label_bytes = 0;
+        for physical_key in 0_u16..64 {
+            let label = format!("K{physical_key}");
+            expected_label_bytes += label.capacity();
             bindings.push(KeyBinding {
                 physical_key,
                 required_modifiers: Modifiers::COMMAND,
                 action: KeyAction::SelectAll,
-                label: Cow::Owned(format!("K{physical_key}")),
+                label: Cow::Owned(label),
             });
         }
+        assert_eq!(bindings.len(), MAX_KEY_BINDINGS);
+        let expected_keymap_bytes =
+            bindings.capacity() * size_of::<KeyBinding>() + expected_label_bytes;
         let keymap = Keymap {
             bindings: Cow::Owned(bindings),
         };
         assert_eq!(keymap.validate(), Ok(()));
-        let expected_keymap_bytes = match &keymap.bindings {
-            Cow::Borrowed(_) => unreachable!("test keymap is owned"),
-            Cow::Owned(bindings) => {
-                bindings.capacity() * size_of::<KeyBinding>()
-                    + bindings
-                        .iter()
-                        .map(|binding| match &binding.label {
-                            Cow::Borrowed(_) => 0,
-                            Cow::Owned(label) => label.capacity(),
-                        })
-                        .sum::<usize>()
-            }
-        };
         assert_eq!(keymap.retained_bytes()?, expected_keymap_bytes);
 
         let mut exact_budget = StudioSettings::compiled()?;
@@ -1220,7 +1210,7 @@ mod tests {
             exact_budget.retained_bytes()?,
             SETTINGS_RETAINED_BUDGET_BYTES
         );
-        assert_eq!(exact_budget.validate(), Ok(()));
+        assert_eq!(exact_budget.validate(), Ok(SETTINGS_RETAINED_BUDGET_BYTES));
 
         let mut over_budget = StudioSettings::compiled()?;
         let mut over_name = String::with_capacity(SETTINGS_RETAINED_BUDGET_BYTES + 1);
