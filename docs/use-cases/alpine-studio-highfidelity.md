@@ -30,21 +30,85 @@ External terminal and Git tools are the first-release workflow.
 | [Zed application case study](../case-studies/zed-editor.md) | Daily-driver behavior and exclusions | Alpine implementation |
 | [Zed GPUI case study](../case-studies/zed-gpui.md) | Invalidation, scene, cache, Metal, and benchmark patterns | Universal framework dominance |
 | [Sublime case study](../case-studies/sublime-editor.md) | Public local-speed product principles | Proprietary internal architecture |
+| [WGPU case study](../case-studies/wgpu.md) and [research package](../research/wgpu/index.md) | Layered GPU validation, lifetime, staging, surface recovery, and test taxonomy | Alpine performance or a shipping backend decision |
 | [Research #113](https://github.com/dbuddha/alpine-gpui/issues/113) | Comparator baseline questions | Accepted benchmark evidence |
 | [Research #114](https://github.com/dbuddha/alpine-gpui/issues/114) | Sublime evidence questions | Private implementation facts |
 | [Research #115](https://github.com/dbuddha/alpine-gpui/issues/115) | Adaptation separation | Renderer qualification |
 | [Research #116](https://github.com/dbuddha/alpine-gpui/issues/116) | Fixed-hardware questions | Completed hardware windows |
 | [Comparator protocol v1](../quality/comparator-protocol.md) | Measurement and claim rules | Any result before raw evidence exists |
 
+## Current implementation status
+
+Snapshot: Alpine `main` at `d4bac7a8dd4fdec88103cc6534a5823399e30be7`,
+2026-08-18. This is an implementation inventory, not a release claim.
+
+| Gate | Status | Merged evidence | Remaining exit work |
+| --- | --- | --- | --- |
+| 0: authoritative line | Complete | Owner-approved Requirements #32 through #37, one current `main`, issue-first tracking | Restore GitHub Project views when `read:project` scope is available |
+| 1: production window | Complete | Production `NativeSurface::run`, real AppKit window, process close path, watchdog and zero-idle evidence | Continue native regression coverage as product behavior grows |
+| 2: bounded presentation | Complete | AEP 0120, three completion-owned slots, asynchronous commit and present, capacity accounting, close and reorder tests | Fixed-hardware latency and residency qualification remains later evidence |
+| 3: one-file editor | Functionally implemented, dogfood acceptance still open | Runtime and events, local rope text, snapshots, Unicode mappings, undo and redo, CoreText layout, glyph atlas, pointer and keyboard selection, clipboard, IME, atomic save, external-change protection | Sustained manual use, defect closure, and release-quality native journey evidence |
+| 4: workspace shell | Functionally implemented by closed Task #127 | Folder launch, bounded lazy tree, tabs, splits, history, find and replace, quick open, command palette, project search, clean and dirty restoration, lazy inactive tabs | Sustained repository-scale dogfood and large-workspace evidence |
+| 5: daily-driver profile | In progress | Approved task and PR stack exists for compiled syntax, settings, shortcuts, LSP framing and process, no-bloat enforcement, and accessibility | Reconcile the stale stack onto current `main`, finish Rust intelligence behavior, qualify accessibility, dogfood, package, and close release defects |
+
+Alpine Studio is therefore a real bounded editor foundation, not merely a solid
+quad demo. It is not yet the promised daily driver because Gate 5 and sustained
+qualification remain open.
+
+## Remaining critical path
+
+The open branches were stacked before the workspace-shell sequence completed
+and must be reconciled rather than merged as-is. The lowest-conflict order is:
+
+1. Reconcile [PR #193](https://github.com/dbuddha/alpine-gpui/pull/193)
+   for the compiled syntax foundation.
+2. Reconcile [PR #201](https://github.com/dbuddha/alpine-gpui/pull/201)
+   for bounded LSP message framing on that foundation.
+3. Reconcile [PR #194](https://github.com/dbuddha/alpine-gpui/pull/194),
+   [#195](https://github.com/dbuddha/alpine-gpui/pull/195), and
+   [#196](https://github.com/dbuddha/alpine-gpui/pull/196) for typed defaults,
+   shortcut discovery, and deterministic settings layering.
+4. Reconcile [PR #199](https://github.com/dbuddha/alpine-gpui/pull/199) and
+   [#200](https://github.com/dbuddha/alpine-gpui/pull/200) after their shared
+   shortcut/settings base is current.
+5. Reconcile [PR #197](https://github.com/dbuddha/alpine-gpui/pull/197) for the
+   bounded local language process, then connect the transport and process to
+   revision-tagged Rust editor features.
+6. Close remaining diagnostics, completion, hover, navigation, rename,
+   formatting, symbols, cancellation, restart, accessibility, settings, theme,
+   keymap, and dogfood gaps through thin approved tasks.
+7. Run sustained Alpine-repository dogfood before fixed-hardware performance and
+   memory qualification.
+
+No terminal, Git UI, plugin, AI, cloud, collaboration, telemetry, remote, or
+multi-window work may preempt this path.
+
+## How GitHub milestones map to readiness
+
+The existing framework milestones predate the vertical Studio slices, so issue
+counts alone do not describe product depth.
+
+| Milestone | Meaning for Studio | Daily-driver interpretation |
+| --- | --- | --- |
+| M0 | Governance and evidence system | Closed foundation, not product readiness |
+| M1 and M2 | Renderer and native presentation | Core behavior exists, but residual milestone issues still require explicit disposition |
+| M3 and M4 | Runtime, input, text, IME, accessibility | Much runtime and text work is merged; native accessibility is still open |
+| M5 | Components and dogfood applications | Not the Alpine Studio daily-driver exit gate as currently defined |
+| M6 | Linux and Windows backends | Explicitly after the Apple daily driver |
+| M7 | Version 1 stabilization and distribution | Release gate after daily-driver behavior and qualification |
+
+Passing M5 alone does not make Alpine Studio a daily driver. The authoritative
+daily-driver exit is Gate 5 in this document followed by the applicable M7
+stabilization, packaging, signing, and evidence requirements.
+
 ## Acceptance-gated execution
 
 ### Gate 0: authoritative execution line
 
-- Preserve stale and dirty worktrees unchanged.
-- Finish Task #107 through its current PR rather than porting a competing app
-  runtime.
-- Amend Requirements #32 through #37 to the product boundary below and obtain
-  `owner:approved` before implementation.
+- Keep `main` and the accepted issue hierarchy authoritative.
+- Preserve abandoned or dirty worktrees unless a bounded reconciliation task
+  proves which commits belong on current `main`.
+- Keep Requirements #32 through #37 within their owner-approved product scope.
 - Keep issue hierarchy authoritative until GitHub Project scope is available.
 
 ### Gate 1: first production Studio window
@@ -60,8 +124,8 @@ External terminal and Git tools are the first-release workflow.
 
 ### Gate 2: non-blocking bounded presentation
 
-- Replace callback `waitUntilCompleted` with a three-slot frame-resource ring
-  approved by a presentation AEP.
+- Preserve the AEP 0120 three-slot frame-resource ring and prohibit callback
+  `waitUntilCompleted` regressions.
 - Commit and directly present inside the display-link callback, then return.
 - Hold each slot until terminal completion; stale callbacks release ownership
   but cannot publish success.
