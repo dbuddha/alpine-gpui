@@ -78,7 +78,7 @@ impl Drop for TestWorkspace {
 }
 
 #[derive(Default)]
-struct TestTextSystem;
+pub(super) struct TestTextSystem;
 
 impl TextShaper for TestTextSystem {
     fn shape(&mut self, text: &str, _font: FontKey) -> Result<LineLayout, LayoutError> {
@@ -1471,6 +1471,7 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
 #[test]
 #[allow(
     clippy::float_cmp,
+    clippy::too_many_lines,
     reason = "exact split geometry and retained scroll distinguish pane ownership mutations"
 )]
 fn split_views_render_focus_and_close_with_bounded_independent_scroll()
@@ -1491,6 +1492,7 @@ fn split_views_render_focus_and_close_with_bounded_independent_scroll()
     assert_eq!(app.panes.len(), 2);
     assert!(app.command_context().can_close_pane);
     app.scroll_y = 44.0;
+    app.selection = Selection::new(ByteOffset::new(5), ByteOffset::new(9));
     let scene = app.try_scene(SceneRevision::new(70), viewport)?;
     let layout = app.panes.layout(region)?;
     let entries: Vec<_> = layout.iter().collect();
@@ -1507,12 +1509,45 @@ fn split_views_render_focus_and_close_with_bounded_independent_scroll()
         x >= entries[1].bounds.origin().x()
             && x < entries[1].bounds.origin().x() + entries[1].bounds.size().width()
     }));
+    let expected_tops = [
+        entries[0].bounds.origin().y() + LINE_HEIGHT,
+        entries[1].bounds.origin().y() + LINE_HEIGHT - 44.0,
+    ];
+    for (entry, expected_top) in entries.iter().zip(expected_tops) {
+        let expected_selection = Rect::new(
+            Point::new(entry.bounds.origin().x(), expected_top).ok_or("pane selection origin")?,
+            Size::new(32.0, LINE_HEIGHT).ok_or("pane selection size")?,
+        );
+        assert!(
+            scene
+                .quads()
+                .iter()
+                .any(|quad| quad.bounds() == expected_selection)
+        );
+        assert!(scene.glyphs().iter().any(|glyph| {
+            glyph.bounds().origin().x() >= entry.bounds.origin().x()
+                && glyph.bounds().origin().x()
+                    < entry.bounds.origin().x() + entry.bounds.size().width()
+                && glyph.bounds().origin().y().to_bits() == (expected_top + 12.0).to_bits()
+        }));
+    }
 
     let left_point = Point::new(
         entries[0].bounds.origin().x() + 4.0,
         entries[0].bounds.origin().y() + 4.0,
     )
     .ok_or("left pane point")?;
+    let active = app.panes.active_id();
+    assert_eq!(
+        app.handle_pointer(
+            PointerAction::Down,
+            left_point,
+            PointerButton::Secondary,
+            Modifiers::default(),
+        ),
+        EventEffect::default()
+    );
+    assert_eq!(app.panes.active_id(), active);
     assert!(
         app.handle_pointer(
             PointerAction::Down,
@@ -1557,6 +1592,283 @@ fn split_views_render_focus_and_close_with_bounded_independent_scroll()
             .visual_changed
     );
     assert_eq!(app.panes.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn pane_projection_uses_half_open_bounds_and_relative_lines()
+-> Result<(), Box<dyn std::error::Error>> {
+    let text = "zero\none\ntwo\n";
+    let viewport = viewport()?;
+    let mut app = StudioApp::from_document(TestTextSystem, StudioDocument::scratch(text), None)?;
+    app.last_viewport = viewport;
+    app.split_active_pane(SplitAxis::Columns);
+    app.try_scene(SceneRevision::new(72), viewport)?;
+    let active = app
+        .panes
+        .layout(app.editor_region(viewport)?)?
+        .active()
+        .ok_or("active pane")?;
+    let origin = active.bounds.origin();
+    let size = active.bounds.size();
+    let inside_x = origin.x() + 0.5;
+
+    assert_eq!(
+        app.offset_at_point(Point::new(origin.x() - 0.5, origin.y()).ok_or("left outside")?),
+        None
+    );
+    assert_eq!(
+        app.offset_at_point(Point::new(origin.x(), origin.y()).ok_or("top left")?),
+        Some(ByteOffset::new(0))
+    );
+    assert_eq!(
+        app.offset_at_point(Point::new(origin.x() + size.width(), origin.y()).ok_or("right edge")?),
+        None
+    );
+    assert!(
+        app.offset_at_point(
+            Point::new(origin.x() + size.width() - 0.5, origin.y()).ok_or("right inside")?
+        )
+        .is_some()
+    );
+    assert_eq!(
+        app.offset_at_point(Point::new(inside_x, origin.y() + size.height()).ok_or("bottom edge")?),
+        None
+    );
+    assert_eq!(
+        app.offset_at_point(Point::new(inside_x, origin.y() - 0.5).ok_or("top outside")?),
+        None
+    );
+    assert_eq!(
+        app.offset_at_point(
+            Point::new(inside_x, origin.y() + LINE_HEIGHT * 2.0 + 1.0).ok_or("third line")?
+        ),
+        Some(ByteOffset::new(9))
+    );
+
+    let mut single = StudioApp::from_document(TestTextSystem, StudioDocument::scratch(text), None)?;
+    single.last_viewport = viewport;
+    single.try_scene(SceneRevision::new(73), viewport)?;
+    let single_bounds = single.active_pane_bounds()?;
+    assert_eq!(
+        single.offset_at_point(
+            Point::new(
+                single_bounds.origin().x() + 0.5,
+                single_bounds.origin().y() - 0.5,
+            )
+            .ok_or("single pane overscroll")?
+        ),
+        Some(ByteOffset::new(0))
+    );
+    Ok(())
+}
+
+#[test]
+fn pane_command_pointer_and_projection_failures_are_structured()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app()?;
+    app.last_viewport = viewport()?;
+
+    assert!(!app.focus_next_pane().visual_changed);
+    let failures = app.workspace_failures;
+    assert!(app.close_active_pane().visual_changed);
+    assert_eq!(app.workspace_failures, failures + 1);
+
+    for _ in 0..MAX_PANES - 1 {
+        assert!(app.split_active_pane(SplitAxis::Columns).visual_changed);
+    }
+    let failures = app.workspace_failures;
+    app.split_active_pane(SplitAxis::Columns);
+    assert_eq!(app.workspace_failures, failures + 1);
+
+    app.scroll_y = f32::NAN;
+    let failures = app.workspace_failures;
+    app.focus_next_pane();
+    assert_eq!(app.workspace_failures, failures + 1);
+    let point = app.editor_region(app.last_viewport)?.origin();
+    app.handle_pointer(
+        PointerAction::Down,
+        point,
+        PointerButton::Primary,
+        Modifiers::default(),
+    );
+    assert_eq!(app.workspace_failures, failures + 2);
+
+    let mut projection = test_app()?;
+    let viewport = viewport()?;
+    projection.last_viewport = viewport;
+    projection.split_active_pane(SplitAxis::Columns);
+    let layout = projection
+        .panes
+        .layout(projection.editor_region(viewport)?)?;
+    let inactive = layout
+        .iter()
+        .find(|pane| !pane.active)
+        .ok_or("inactive pane")?;
+    projection
+        .panes
+        .inject_scroll_fault(inactive.id, f32::MAX)?;
+    assert!(
+        projection
+            .try_scene(SceneRevision::new(71), viewport)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each explicit pane and tab corruption boundary is proven independently"
+)]
+fn pane_document_failure_boundaries_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let mut split = test_app()?;
+    split.last_viewport = viewport()?;
+    split.scroll_y = f32::NAN;
+    let failures = split.workspace_failures;
+    split.split_active_pane(SplitAxis::Columns);
+    assert_eq!(split.workspace_failures, failures + 1);
+
+    let mut close = test_app()?;
+    close.scroll_y = f32::NAN;
+    let failures = close.workspace_failures;
+    close.close_active_pane();
+    assert_eq!(close.workspace_failures, failures + 1);
+
+    let mut focus = test_app()?;
+    focus.panes.inject_layout_fault();
+    let failures = focus.workspace_failures;
+    focus.focus_next_pane();
+    assert_eq!(focus.workspace_failures, failures + 1);
+
+    let mut missing_document = test_app()?;
+    missing_document.panes.inject_active_document_fault()?;
+    let failures = missing_document.workspace_failures;
+    missing_document.apply_focused_pane_document();
+    assert_eq!(missing_document.workspace_failures, failures + 1);
+
+    let mut invalid_active_tab = test_app()?;
+    invalid_active_tab.tabs.inject_active_index_fault();
+    let failures = invalid_active_tab.workspace_failures;
+    invalid_active_tab.apply_focused_pane_document();
+    assert_eq!(invalid_active_tab.workspace_failures, failures + 1);
+
+    let mut missing_tab = test_app()?;
+    missing_tab.panes.sync_active_document(
+        crate::documents::DocumentTabId(u64::MAX),
+        missing_tab.active_document_view(),
+    )?;
+    let failures = missing_tab.workspace_failures;
+    missing_tab.apply_focused_pane_document();
+    assert_eq!(missing_tab.workspace_failures, failures + 1);
+
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    root.write("beta.rs", "beta")?;
+    let mut invalid_switch = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let alpha = invalid_switch
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.index_named("alpha.rs"))
+        .ok_or("alpha entry")?;
+    let beta = invalid_switch
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.index_named("beta.rs"))
+        .ok_or("beta entry")?;
+    invalid_switch.open_workspace_entry(alpha)?;
+    let alpha_tab = invalid_switch.tabs.active_id()?;
+    invalid_switch.open_workspace_entry(beta)?;
+    invalid_switch
+        .panes
+        .sync_active_document(alpha_tab, invalid_switch.active_document_view())?;
+    invalid_switch
+        .tabs
+        .inject_active_payload_for_test(StudioDocument::scratch("duplicate active payload"));
+    let failures = invalid_switch.workspace_failures;
+    invalid_switch.apply_focused_pane_document();
+    assert_eq!(invalid_switch.workspace_failures, failures + 1);
+
+    let mut invalid_restored_view = test_app()?;
+    invalid_restored_view
+        .panes
+        .inject_scroll_fault(invalid_restored_view.panes.active_id(), f32::NAN)?;
+    let failures = invalid_restored_view.workspace_failures;
+    invalid_restored_view.apply_focused_pane_document();
+    assert_eq!(invalid_restored_view.workspace_failures, failures + 1);
+
+    let mut pointer = test_app()?;
+    pointer.last_viewport = viewport()?;
+    pointer.panes.inject_layout_fault();
+    let failures = pointer.workspace_failures;
+    let point = pointer.editor_region(pointer.last_viewport)?.origin();
+    pointer.focus_pane_for_pointer(PointerAction::Down, PointerButton::Primary, point);
+    assert_eq!(pointer.workspace_failures, failures + 1);
+    Ok(())
+}
+
+#[test]
+fn pane_focus_restores_exact_document_and_view_identity() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = TestWorkspace::new()?;
+    let alpha_text = "alpha\n".repeat(100);
+    let beta_text = "beta\n".repeat(100);
+    root.write("alpha.rs", &alpha_text)?;
+    root.write("beta.rs", &beta_text)?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let alpha = app
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.index_named("alpha.rs"))
+        .ok_or("alpha entry")?;
+    let beta = app
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.index_named("beta.rs"))
+        .ok_or("beta entry")?;
+    app.open_workspace_entry(alpha)?;
+    app.selection = Selection::caret(ByteOffset::new(2));
+    app.scroll_y = 11.0;
+    app.last_viewport = viewport()?;
+    assert!(app.split_active_pane(SplitAxis::Columns).visual_changed);
+
+    app.open_workspace_entry(beta)?;
+    app.selection = Selection::caret(ByteOffset::new(1));
+    app.scroll_y = 33.0;
+    app.sync_active_pane_document()?;
+    let layout = app.panes.layout(app.editor_region(app.last_viewport)?)?;
+    let inactive = layout
+        .iter()
+        .find(|pane| !pane.active)
+        .ok_or("inactive pane")?;
+    let active = app.panes.active_id();
+    let point = Point::new(
+        inactive.bounds.origin().x() + 1.0,
+        inactive.bounds.origin().y() + 1.0,
+    )
+    .ok_or("inactive pane point")?;
+    assert_eq!(
+        app.focus_pane_for_pointer(PointerAction::Down, PointerButton::Secondary, point),
+        EventEffect::default()
+    );
+    assert_eq!(app.panes.active_id(), active);
+
+    assert!(
+        app.handle_pointer(
+            PointerAction::Down,
+            point,
+            PointerButton::Primary,
+            Modifiers::default(),
+        )
+        .document_identity_advanced
+    );
+    assert!(app.buffer().snapshot().text().starts_with("alpha\n"));
+    assert_eq!(app.selection, Selection::caret(ByteOffset::new(2)));
+    assert_eq!(app.scroll_y.to_bits(), 11.0_f32.to_bits());
+    assert!(app.focus_next_pane().document_identity_advanced);
+    assert!(app.buffer().snapshot().text().starts_with("beta\n"));
+    assert_eq!(app.selection, Selection::caret(ByteOffset::new(1)));
+    assert_eq!(app.scroll_y.to_bits(), 33.0_f32.to_bits());
     Ok(())
 }
 

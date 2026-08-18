@@ -18,9 +18,10 @@ const MAGIC: &[u8; 8] = b"ALPNRCVR";
 const VERSION: u16 = 1;
 const HEADER_BYTES: usize = 18;
 const DOCUMENT_CAPACITY: usize = 32;
-const MAX_DOCUMENT_TEXT_BYTES: usize = 32 * 1_024 * 1_024;
-const MAX_RECOVERY_TEXT_BYTES: usize = 64 * 1_024 * 1_024;
-const MAX_RECOVERY_BYTES: usize = MAX_RECOVERY_TEXT_BYTES + 256 * 1_024;
+const MAX_DOCUMENT_TEXT_BYTES: usize = 33_554_432;
+const MAX_RECOVERY_TEXT_BYTES: usize = 67_108_864;
+const MAX_RECOVERY_BYTES: usize = 67_371_008;
+const MAX_RECOVERY_READ_BYTES: u64 = 67_371_009;
 const TEMPORARY_ATTEMPTS: usize = 16;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -285,9 +286,7 @@ pub(crate) fn path_for_session(session_path: &Path) -> PathBuf {
 pub(crate) fn load(path: &Path) -> Result<RecoveryState, RecoveryError> {
     let file = map_io(File::open(path), "open")?;
     let encoded_bytes = map_io(file.metadata(), "metadata")?.len();
-    if encoded_bytes > u64::try_from(MAX_RECOVERY_BYTES).unwrap_or(u64::MAX) {
-        return Err(RecoveryError::Corrupt(RecoveryCorrupt::Length));
-    }
+    validate_encoded_file_length(encoded_bytes)?;
     let encoded_bytes = usize::try_from(encoded_bytes)
         .map_err(|_| RecoveryError::Corrupt(RecoveryCorrupt::Length))?;
     let mut bytes = Vec::new();
@@ -295,13 +294,10 @@ pub(crate) fn load(path: &Path) -> Result<RecoveryState, RecoveryError> {
         .try_reserve_exact(encoded_bytes.saturating_add(1))
         .map_err(|_| RecoveryError::AllocationFailed)?;
     map_io(
-        file.take(u64::try_from(MAX_RECOVERY_BYTES + 1).unwrap_or(u64::MAX))
-            .read_to_end(&mut bytes),
+        file.take(MAX_RECOVERY_READ_BYTES).read_to_end(&mut bytes),
         "read",
     )?;
-    if bytes.len() > MAX_RECOVERY_BYTES {
-        return Err(RecoveryError::Corrupt(RecoveryCorrupt::Length));
-    }
+    validate_buffered_length(bytes.len())?;
     decode(&bytes).map_err(RecoveryError::Corrupt)
 }
 
@@ -369,9 +365,7 @@ fn session_structure_eq(left: &SessionState, right: &SessionState) -> bool {
 
 fn validate_request(request: &RecoveryRequest) -> Result<(), RecoveryError> {
     session::validate(&request.session).map_err(|_| RecoveryError::Invalid)?;
-    if request.documents.len() > DOCUMENT_CAPACITY {
-        return Err(RecoveryError::Invalid);
-    }
+    enforce_document_count(request.documents.len(), RecoveryError::Invalid)?;
     let mut seen = [false; DOCUMENT_CAPACITY];
     let mut total = 0_usize;
     for document in &request.documents {
@@ -380,18 +374,8 @@ fn validate_request(request: &RecoveryRequest) -> Result<(), RecoveryError> {
             return Err(RecoveryError::Invalid);
         }
         seen[tab] = true;
-        let base = document.base.len_bytes();
-        let local = document.local.len_bytes();
-        if base > MAX_DOCUMENT_TEXT_BYTES || local > MAX_DOCUMENT_TEXT_BYTES {
-            return Err(RecoveryError::Invalid);
-        }
-        total = total
-            .checked_add(base)
-            .and_then(|value| value.checked_add(local))
+        total = checked_text_total(total, document.base.len_bytes(), document.local.len_bytes())
             .ok_or(RecoveryError::Invalid)?;
-        if total > MAX_RECOVERY_TEXT_BYTES {
-            return Err(RecoveryError::Invalid);
-        }
     }
     Ok(())
 }
@@ -416,13 +400,11 @@ fn encode(request: &RecoveryRequest) -> Result<Vec<u8>, RecoveryError> {
         put_u32(&mut payload, local.len())?;
         payload.extend_from_slice(local.as_bytes());
     }
-    if payload.len().saturating_add(HEADER_BYTES) > MAX_RECOVERY_BYTES {
-        return Err(RecoveryError::Invalid);
-    }
+    let encoded_length = encoded_length(payload.len()).ok_or(RecoveryError::Invalid)?;
     let payload_length = u32::try_from(payload.len()).map_err(|_| RecoveryError::Invalid)?;
     let mut bytes = Vec::new();
     bytes
-        .try_reserve_exact(HEADER_BYTES + payload.len())
+        .try_reserve_exact(encoded_length)
         .map_err(|_| RecoveryError::AllocationFailed)?;
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&VERSION.to_le_bytes());
@@ -454,9 +436,7 @@ fn decode(bytes: &[u8]) -> Result<RecoveryState, RecoveryCorrupt> {
     let session = session::decode_for_recovery(reader.take(session_length)?)
         .map_err(|_| RecoveryCorrupt::Session)?;
     let count = usize::from(reader.u8()?);
-    if count > DOCUMENT_CAPACITY {
-        return Err(RecoveryCorrupt::Length);
-    }
+    enforce_document_count(count, RecoveryCorrupt::Length)?;
     let mut documents = Vec::new();
     documents
         .try_reserve_exact(count)
@@ -475,13 +455,8 @@ fn decode(bytes: &[u8]) -> Result<RecoveryState, RecoveryCorrupt> {
         seen[tab_index] = true;
         let base = reader.text()?;
         let local = reader.text()?;
-        total = total
-            .checked_add(base.len())
-            .and_then(|value| value.checked_add(local.len()))
-            .ok_or(RecoveryCorrupt::Length)?;
-        if total > MAX_RECOVERY_TEXT_BYTES {
-            return Err(RecoveryCorrupt::Length);
-        }
+        total =
+            checked_text_total(total, base.len(), local.len()).ok_or(RecoveryCorrupt::Length)?;
         documents.push(RecoveredDocument { tab, base, local });
     }
     if !reader.is_empty() {
@@ -516,9 +491,7 @@ impl<'a> Reader<'a> {
 
     fn text(&mut self) -> Result<Box<str>, RecoveryCorrupt> {
         let length = self.u32()?;
-        if length > MAX_DOCUMENT_TEXT_BYTES {
-            return Err(RecoveryCorrupt::Length);
-        }
+        enforce_document_text_length(length, RecoveryCorrupt::Length)?;
         let bytes = self.take(length)?;
         let text = std::str::from_utf8(bytes).map_err(|_| RecoveryCorrupt::Utf8)?;
         Ok(Box::from(text))
@@ -551,6 +524,60 @@ fn put_u32(bytes: &mut Vec<u8>, value: usize) -> Result<(), RecoveryError> {
     Ok(())
 }
 
+fn validate_encoded_file_length(length: u64) -> Result<(), RecoveryError> {
+    if length > MAX_RECOVERY_BYTES as u64 {
+        return Err(RecoveryError::Corrupt(RecoveryCorrupt::Length));
+    }
+    Ok(())
+}
+
+fn validate_buffered_length(length: usize) -> Result<(), RecoveryError> {
+    if length > MAX_RECOVERY_BYTES {
+        return Err(RecoveryError::Corrupt(RecoveryCorrupt::Length));
+    }
+    Ok(())
+}
+
+fn enforce_document_count<E>(count: usize, error: E) -> Result<(), E> {
+    if count > DOCUMENT_CAPACITY {
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn enforce_document_text_length<E>(length: usize, error: E) -> Result<(), E> {
+    if length > MAX_DOCUMENT_TEXT_BYTES {
+        return Err(error);
+    }
+    Ok(())
+}
+
+const fn encoded_length(payload_length: usize) -> Option<usize> {
+    let Some(length) = payload_length.checked_add(HEADER_BYTES) else {
+        return None;
+    };
+    if length > MAX_RECOVERY_BYTES {
+        return None;
+    }
+    Some(length)
+}
+
+const fn checked_text_total(total: usize, base: usize, local: usize) -> Option<usize> {
+    if base > MAX_DOCUMENT_TEXT_BYTES || local > MAX_DOCUMENT_TEXT_BYTES {
+        return None;
+    }
+    let Some(total) = total.checked_add(base) else {
+        return None;
+    };
+    let Some(total) = total.checked_add(local) else {
+        return None;
+    };
+    if total > MAX_RECOVERY_TEXT_BYTES {
+        return None;
+    }
+    Some(total)
+}
+
 fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), RecoveryError> {
     let mut write = |file: &mut File, value: &[u8]| file.write_all(value);
     atomic_replace_with(path, bytes, &mut write)
@@ -563,18 +590,22 @@ fn atomic_replace_with(
     bytes: &[u8],
     write: &mut RecoveryWriter<'_>,
 ) -> Result<(), RecoveryError> {
+    atomic_replace_with_sequence(path, bytes, write, &mut || {
+        TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    })
+}
+
+fn atomic_replace_with_sequence(
+    path: &Path,
+    bytes: &[u8],
+    write: &mut RecoveryWriter<'_>,
+    next_sequence: &mut dyn FnMut() -> u64,
+) -> Result<(), RecoveryError> {
     let file_name = path.file_name().ok_or(RecoveryError::Invalid)?;
     let parent = path.parent().ok_or(RecoveryError::Invalid)?;
     let mut created = None;
     for _ in 0..TEMPORARY_ATTEMPTS {
-        let sequence = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let mut name = OsString::from(".");
-        name.push(file_name);
-        name.push(format!(
-            ".alpine-recovery-{}-{sequence}",
-            std::process::id()
-        ));
-        let temporary = parent.join(name);
+        let temporary = temporary_path(parent, file_name, next_sequence());
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -601,13 +632,33 @@ fn atomic_replace_with(
         map_io(file.sync_all(), "sync-file")?;
         drop(file);
         map_io(fs::rename(&temporary, path), "replace")?;
-        let directory = map_io(File::open(parent), "open-directory")?;
-        map_io(directory.sync_all(), "sync-directory")
+        sync_parent_directory(parent)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+fn temporary_path(parent: &Path, file_name: &std::ffi::OsStr, sequence: u64) -> PathBuf {
+    let mut name = OsString::from(".");
+    name.push(file_name);
+    name.push(format!(
+        ".alpine-recovery-{}-{sequence}",
+        std::process::id()
+    ));
+    parent.join(name)
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> Result<(), RecoveryError> {
+    let directory = map_io(File::open(parent), "open-directory")?;
+    map_io(directory.sync_all(), "sync-directory")
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> Result<(), RecoveryError> {
+    Ok(())
 }
 
 fn crc32(bytes: &[u8]) -> u32 {
@@ -638,10 +689,11 @@ mod tests {
     use super::*;
     use crate::documents::DocumentViewState;
     use crate::session::{
-        SESSION_NODE_CAPACITY, SESSION_PANE_CAPACITY, SessionAxis, SessionFileTree, SessionNode,
-        SessionPane, SessionPanes, SessionTab,
+        SESSION_NODE_CAPACITY, SESSION_PANE_CAPACITY, SessionAxis, SessionNode, SessionPane,
+        SessionPanes, SessionTab,
     };
     use alpine_text::{Buffer, ByteOffset, Selection};
+    use std::time::{Duration, Instant};
 
     fn session_state() -> SessionState {
         let mut nodes = [SessionNode::Empty; SESSION_NODE_CAPACITY];
@@ -666,14 +718,14 @@ mod tests {
             view: view(1),
         });
         SessionState {
-            workspace: Some(PathBuf::from("/tmp/alpine")),
+            workspace: Some(std::env::temp_dir().join("alpine")),
             tabs: vec![
                 SessionTab {
                     path: None,
                     view: view(0),
                 },
                 SessionTab {
-                    path: Some(PathBuf::from("/tmp/alpine/main.rs")),
+                    path: Some(std::env::temp_dir().join("alpine").join("main.rs")),
                     view: view(1),
                 },
             ],
@@ -683,7 +735,6 @@ mod tests {
                 panes,
                 active_pane: 1,
             },
-            file_tree: SessionFileTree::default(),
         }
     }
 
@@ -697,6 +748,550 @@ mod tests {
             }],
             authority_revision,
         }
+    }
+
+    fn test_root(label: &str) -> Result<PathBuf, io::Error> {
+        let root = std::env::temp_dir().join(format!(
+            "alpine-recovery-{label}-{}-{}",
+            std::process::id(),
+            TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root)?;
+        Ok(root)
+    }
+
+    fn wrap_payload(payload: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(HEADER_BYTES + payload.len());
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&VERSION.to_le_bytes());
+        bytes.extend_from_slice(
+            &u32::try_from(payload.len())
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(&crc32(payload).to_le_bytes());
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    fn session_payload() -> Result<Vec<u8>, RecoveryError> {
+        let session =
+            session::encode_for_recovery(&session_state()).map_err(|_| RecoveryError::Invalid)?;
+        let mut payload = Vec::new();
+        put_u32(&mut payload, session.len())?;
+        payload.extend_from_slice(&session);
+        Ok(payload)
+    }
+
+    fn append_document(payload: &mut Vec<u8>, tab: u8, base: &[u8], local: &[u8]) {
+        payload.push(tab);
+        payload.extend_from_slice(&u32::try_from(base.len()).unwrap_or(u32::MAX).to_le_bytes());
+        payload.extend_from_slice(base);
+        payload.extend_from_slice(&u32::try_from(local.len()).unwrap_or(u32::MAX).to_le_bytes());
+        payload.extend_from_slice(local);
+    }
+
+    fn wait_for_generation(
+        coordinator: &RecoveryCoordinator,
+        generation: u64,
+        timeout: Duration,
+    ) -> RecoveryStatus {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let status = coordinator.status();
+            if status.completed_generation >= generation || Instant::now() >= deadline {
+                return status;
+            }
+            thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn limits_and_checked_totals_enforce_exact_boundaries_without_allocating() {
+        assert_eq!(MAX_DOCUMENT_TEXT_BYTES, 33_554_432);
+        assert_eq!(MAX_RECOVERY_TEXT_BYTES, 67_108_864);
+        assert_eq!(MAX_RECOVERY_BYTES, 67_371_008);
+        assert_eq!(MAX_RECOVERY_READ_BYTES, 67_371_009);
+        assert_eq!(
+            validate_encoded_file_length(MAX_RECOVERY_BYTES as u64),
+            Ok(())
+        );
+        assert_eq!(
+            validate_encoded_file_length(MAX_RECOVERY_BYTES as u64 + 1),
+            Err(RecoveryError::Corrupt(RecoveryCorrupt::Length))
+        );
+        assert_eq!(validate_buffered_length(MAX_RECOVERY_BYTES), Ok(()));
+        assert_eq!(
+            validate_buffered_length(MAX_RECOVERY_BYTES + 1),
+            Err(RecoveryError::Corrupt(RecoveryCorrupt::Length))
+        );
+        assert_eq!(enforce_document_count(DOCUMENT_CAPACITY, 7), Ok(()));
+        assert_eq!(enforce_document_count(DOCUMENT_CAPACITY + 1, 7), Err(7));
+        assert_eq!(
+            enforce_document_text_length(MAX_DOCUMENT_TEXT_BYTES, 7),
+            Ok(())
+        );
+        assert_eq!(
+            enforce_document_text_length(MAX_DOCUMENT_TEXT_BYTES + 1, 7),
+            Err(7)
+        );
+        assert_eq!(
+            encoded_length(MAX_RECOVERY_BYTES - HEADER_BYTES),
+            Some(MAX_RECOVERY_BYTES)
+        );
+        assert_eq!(encoded_length(MAX_RECOVERY_BYTES - HEADER_BYTES + 1), None);
+        assert_eq!(encoded_length(usize::MAX), None);
+        assert_eq!(
+            checked_text_total(0, MAX_DOCUMENT_TEXT_BYTES, MAX_DOCUMENT_TEXT_BYTES),
+            Some(MAX_RECOVERY_TEXT_BYTES)
+        );
+        assert_eq!(checked_text_total(0, MAX_DOCUMENT_TEXT_BYTES + 1, 0), None);
+        assert_eq!(checked_text_total(0, 0, MAX_DOCUMENT_TEXT_BYTES + 1), None);
+        assert_eq!(checked_text_total(MAX_RECOVERY_TEXT_BYTES, 1, 0), None);
+        assert_eq!(checked_text_total(usize::MAX, 1, 0), None);
+        assert_eq!(checked_text_total(usize::MAX - 1, 1, 1), None);
+    }
+
+    #[test]
+    fn errors_have_specific_human_readable_diagnostics() {
+        let corrupt = [
+            RecoveryCorrupt::Header,
+            RecoveryCorrupt::Version(7),
+            RecoveryCorrupt::Length,
+            RecoveryCorrupt::Checksum,
+            RecoveryCorrupt::Truncated,
+            RecoveryCorrupt::Utf8,
+            RecoveryCorrupt::DuplicateTab,
+            RecoveryCorrupt::InvalidTab,
+            RecoveryCorrupt::Session,
+            RecoveryCorrupt::TrailingBytes,
+        ];
+        for error in corrupt {
+            assert!(!error.to_string().is_empty());
+        }
+        let errors = [
+            RecoveryError::AllocationFailed,
+            RecoveryError::Corrupt(RecoveryCorrupt::Checksum),
+            RecoveryError::Invalid,
+            RecoveryError::PendingDirty,
+            RecoveryError::Disconnected,
+            RecoveryError::WorkerPanicked,
+            RecoveryError::Io {
+                operation: "read",
+                kind: io::ErrorKind::PermissionDenied,
+            },
+        ];
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+        }
+        assert!(RecoveryCorrupt::Version(7).to_string().contains('7'));
+        assert!(errors[6].to_string().contains("read"));
+    }
+
+    #[test]
+    fn structural_identity_ignores_view_motion_but_detects_every_durable_axis()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let state = session_state();
+        let mut view_only = state.clone();
+        view_only.tabs[0].view.scroll_y = 99.0;
+        view_only.tabs[0].view.selection = Selection::caret(ByteOffset::new(1));
+        view_only.panes.panes[0]
+            .as_mut()
+            .ok_or("pane")?
+            .view
+            .scroll_y = 42.0;
+        assert!(session_structure_eq(&state, &view_only));
+
+        let mut variants = Vec::new();
+        let mut changed = state.clone();
+        changed.workspace = None;
+        variants.push(changed);
+        let mut changed = state.clone();
+        changed.active_tab = 0;
+        variants.push(changed);
+        let mut changed = state.clone();
+        changed.tabs.pop();
+        variants.push(changed);
+        let mut changed = state.clone();
+        changed.tabs[1].path = None;
+        variants.push(changed);
+        let mut changed = state.clone();
+        changed.panes.nodes[0] = SessionNode::Empty;
+        variants.push(changed);
+        let mut changed = state.clone();
+        changed.panes.active_pane = 0;
+        variants.push(changed);
+        let mut changed = state.clone();
+        changed.panes.panes[1].as_mut().ok_or("pane")?.tab = 0;
+        variants.push(changed);
+        for changed in variants {
+            assert!(!session_structure_eq(&state, &changed));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_identity_covers_authority_and_each_buffer_revision() -> Result<(), RecoveryError> {
+        let baseline = request("local", 4);
+        let identity = RecoveryIdentity::from_request(&baseline)?;
+        assert!(identity.matches(&baseline));
+
+        let mut changed = request("local", 5);
+        assert!(!identity.matches(&changed));
+        changed.authority_revision = 4;
+        changed.documents.push(RecoverySnapshot {
+            tab: 0,
+            base: Buffer::new("").snapshot(),
+            local: Buffer::new("dirty").snapshot(),
+        });
+        assert!(!identity.matches(&changed));
+
+        let mut identity = RecoveryIdentity::from_request(&baseline)?;
+        identity.documents[0].0 = 0;
+        assert!(!identity.matches(&baseline));
+        identity.documents[0] = (1, 1, 0);
+        assert!(!identity.matches(&baseline));
+        identity.documents[0] = (1, 0, 1);
+        assert!(!identity.matches(&baseline));
+        Ok(())
+    }
+
+    #[test]
+    fn request_validation_rejects_invalid_session_capacity_tab_and_duplicate() {
+        let mut invalid = request("local", 1);
+        invalid.session.active_tab = 9;
+        assert_eq!(validate_request(&invalid), Err(RecoveryError::Invalid));
+
+        let mut over_capacity = request("local", 1);
+        over_capacity.documents = (0..=DOCUMENT_CAPACITY)
+            .map(|_| RecoverySnapshot {
+                tab: 0,
+                base: Buffer::new("").snapshot(),
+                local: Buffer::new("").snapshot(),
+            })
+            .collect();
+        assert_eq!(
+            validate_request(&over_capacity),
+            Err(RecoveryError::Invalid)
+        );
+
+        let mut invalid_tab = request("local", 1);
+        invalid_tab.documents[0].tab = 2;
+        assert_eq!(validate_request(&invalid_tab), Err(RecoveryError::Invalid));
+
+        let mut duplicate = request("local", 1);
+        duplicate.documents.push(RecoverySnapshot {
+            tab: 1,
+            base: Buffer::new("").snapshot(),
+            local: Buffer::new("other").snapshot(),
+        });
+        assert_eq!(validate_request(&duplicate), Err(RecoveryError::Invalid));
+        assert_eq!(validate_request(&request("local", 1)), Ok(()));
+    }
+
+    #[test]
+    fn malformed_envelopes_are_classified_before_payload_decode()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let valid = encode(&request("local", 1))?;
+        assert_eq!(decode(&[]), Err(RecoveryCorrupt::Header));
+        let mut wrong_magic = valid.clone();
+        wrong_magic[0] ^= 1;
+        assert_eq!(decode(&wrong_magic), Err(RecoveryCorrupt::Header));
+        let mut wrong_version = valid.clone();
+        wrong_version[8..10].copy_from_slice(&2_u16.to_le_bytes());
+        assert_eq!(decode(&wrong_version), Err(RecoveryCorrupt::Version(2)));
+        let mut wrong_length = valid.clone();
+        wrong_length[10..14].copy_from_slice(&0_u32.to_le_bytes());
+        assert_eq!(decode(&wrong_length), Err(RecoveryCorrupt::Length));
+        let mut wrong_checksum = valid;
+        wrong_checksum[14] ^= 1;
+        assert_eq!(decode(&wrong_checksum), Err(RecoveryCorrupt::Checksum));
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_payloads_report_session_tab_text_and_trailing_failures()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(decode(&wrap_payload(&[])), Err(RecoveryCorrupt::Truncated));
+
+        let mut invalid_session = session_payload()?;
+        invalid_session[4] ^= 1;
+        assert_eq!(
+            decode(&wrap_payload(&invalid_session)),
+            Err(RecoveryCorrupt::Session)
+        );
+
+        let mut too_many = session_payload()?;
+        too_many.push(u8::try_from(DOCUMENT_CAPACITY + 1).unwrap_or(u8::MAX));
+        assert_eq!(
+            decode(&wrap_payload(&too_many)),
+            Err(RecoveryCorrupt::Length)
+        );
+
+        let mut invalid_tab = session_payload()?;
+        invalid_tab.push(1);
+        append_document(&mut invalid_tab, 2, b"", b"");
+        assert_eq!(
+            decode(&wrap_payload(&invalid_tab)),
+            Err(RecoveryCorrupt::InvalidTab)
+        );
+
+        let mut duplicate = session_payload()?;
+        duplicate.push(2);
+        append_document(&mut duplicate, 1, b"", b"a");
+        append_document(&mut duplicate, 1, b"", b"b");
+        assert_eq!(
+            decode(&wrap_payload(&duplicate)),
+            Err(RecoveryCorrupt::DuplicateTab)
+        );
+
+        let mut invalid_utf8 = session_payload()?;
+        invalid_utf8.push(1);
+        append_document(&mut invalid_utf8, 1, &[0xff], b"");
+        assert_eq!(
+            decode(&wrap_payload(&invalid_utf8)),
+            Err(RecoveryCorrupt::Utf8)
+        );
+
+        let mut trailing = session_payload()?;
+        trailing.extend_from_slice(&[0, 7]);
+        assert_eq!(
+            decode(&wrap_payload(&trailing)),
+            Err(RecoveryCorrupt::TrailingBytes)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reader_and_integer_codec_reject_truncation_overflow_and_oversized_text() {
+        let mut reader = Reader::new(&[7, 1, 0, 0, 0, b'x']);
+        assert_eq!(reader.u8(), Ok(7));
+        assert_eq!(reader.u32(), Ok(1));
+        assert_eq!(reader.text(), Err(RecoveryCorrupt::Truncated));
+        assert!(!reader.is_empty());
+        assert_eq!(reader.u8(), Ok(b'x'));
+        assert!(reader.is_empty());
+
+        let oversized_length =
+            (u32::try_from(MAX_DOCUMENT_TEXT_BYTES).unwrap_or(u32::MAX) + 1).to_le_bytes();
+        let mut oversized = Reader::new(&oversized_length);
+        assert_eq!(oversized.text(), Err(RecoveryCorrupt::Length));
+        let mut truncated = Reader::new(&[1, 2, 3]);
+        assert_eq!(truncated.u32(), Err(RecoveryCorrupt::Truncated));
+        truncated.cursor = usize::MAX;
+        assert_eq!(truncated.take(1), Err(RecoveryCorrupt::Truncated));
+
+        let mut bytes = Vec::new();
+        assert_eq!(put_u32(&mut bytes, 513), Ok(()));
+        assert_eq!(bytes, 513_u32.to_le_bytes());
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            put_u32(&mut bytes, u32::MAX as usize + 1),
+            Err(RecoveryError::Invalid)
+        );
+    }
+
+    #[test]
+    fn path_load_and_replaceability_preserve_specific_failures()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = test_root("load")?;
+        #[cfg(unix)]
+        assert!(matches!(
+            load(&root),
+            Err(RecoveryError::Io {
+                operation: "read",
+                ..
+            })
+        ));
+        let session_path = root.join("state").join("session-v1.bin");
+        assert_eq!(
+            path_for_session(&session_path),
+            root.join("state").join("recovery-v1.bin")
+        );
+        let path = root.join("recovery.bin");
+        assert!(matches!(
+            load(&path),
+            Err(RecoveryError::Io {
+                operation: "open",
+                kind: io::ErrorKind::NotFound
+            })
+        ));
+        assert_eq!(ensure_replaceable(&path), Ok(()));
+        fs::write(&path, b"corrupt")?;
+        assert_eq!(
+            ensure_replaceable(&path),
+            Err(RecoveryError::Corrupt(RecoveryCorrupt::Header))
+        );
+        let oversized = root.join("oversized.bin");
+        File::create(&oversized)?.set_len(MAX_RECOVERY_BYTES as u64 + 1)?;
+        assert_eq!(
+            load(&oversized),
+            Err(RecoveryError::Corrupt(RecoveryCorrupt::Length))
+        );
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn atomic_replace_retries_collisions_and_reports_exhaustion()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = test_root("collision")?;
+        let path = root.join("recovery.bin");
+        let collision = temporary_path(&root, path.file_name().ok_or("file name")?, 7);
+        fs::write(&collision, b"occupied")?;
+        let mut sequences = [7_u64, 8].into_iter();
+        let mut next = || sequences.next().unwrap_or(8);
+        let mut write = |file: &mut File, bytes: &[u8]| file.write_all(bytes);
+        atomic_replace_with_sequence(&path, b"new", &mut write, &mut next)?;
+        assert_eq!(fs::read(&path)?, b"new");
+        assert_eq!(fs::read(&collision)?, b"occupied");
+
+        let exhausted = root.join("exhausted.bin");
+        let occupied = temporary_path(&root, exhausted.file_name().ok_or("file name")?, 9);
+        fs::write(&occupied, b"occupied")?;
+        let mut same = || 9;
+        assert_eq!(
+            atomic_replace_with_sequence(&exhausted, b"new", &mut write, &mut same),
+            Err(RecoveryError::Io {
+                operation: "create-temporary",
+                kind: io::ErrorKind::AlreadyExists,
+            })
+        );
+        assert!(!exhausted.exists());
+
+        let missing_parent = root.join("missing").join("recovery.bin");
+        let mut next = || 10;
+        assert!(matches!(
+            atomic_replace_with_sequence(&missing_parent, b"new", &mut write, &mut next),
+            Err(RecoveryError::Io {
+                operation: "create-temporary",
+                kind: io::ErrorKind::NotFound
+            })
+        ));
+        assert_eq!(
+            atomic_replace(Path::new("/"), b"new"),
+            Err(RecoveryError::Invalid)
+        );
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn coordinator_retries_identical_state_after_worker_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = test_root("worker-failure")?;
+        let blocked_parent = root.join("not-a-directory");
+        fs::write(&blocked_parent, b"file")?;
+        let mut coordinator = RecoveryCoordinator::new(blocked_parent.join("recovery.bin"))?;
+        let first = coordinator.publish(request("dirty", 1))?;
+        let status = wait_for_generation(&coordinator, first, Duration::from_secs(2));
+        assert_eq!(status.completed_generation, first);
+        assert!(matches!(
+            status.last_error,
+            Some(RecoveryError::Io {
+                operation: "create-directory",
+                kind: io::ErrorKind::AlreadyExists
+            })
+        ));
+        let second = coordinator.publish(request("dirty", 1))?;
+        assert!(second > first);
+        let status = coordinator.shutdown()?;
+        assert_eq!(status.completed_generation, second);
+        assert!(status.last_error.is_some());
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn disconnected_signal_panicked_worker_and_wait_timeout_are_structured() {
+        let new_shared = || {
+            Arc::new(Shared {
+                latest: Mutex::new(None),
+                identity: Mutex::new(None),
+                last_error: Mutex::new(None),
+                published_generation: AtomicU64::new(0),
+                completed_generation: AtomicU64::new(0),
+            })
+        };
+        let (signal, receiver) = mpsc::sync_channel(1);
+        drop(receiver);
+        let disconnected = RecoveryCoordinator {
+            shared: new_shared(),
+            signal: Some(signal),
+            worker: None,
+        };
+        assert_eq!(
+            disconnected.publish(request("dirty", 1)),
+            Err(RecoveryError::Disconnected)
+        );
+
+        let waiting = RecoveryCoordinator {
+            shared: new_shared(),
+            signal: None,
+            worker: None,
+        };
+        assert_eq!(
+            wait_for_generation(&waiting, 1, Duration::from_millis(1)),
+            RecoveryStatus {
+                published_generation: 0,
+                completed_generation: 0,
+                last_error: None,
+            }
+        );
+
+        let worker = thread::spawn(|| std::panic::resume_unwind(Box::new(())));
+        let mut panicked = RecoveryCoordinator {
+            shared: new_shared(),
+            signal: None,
+            worker: Some(worker),
+        };
+        assert_eq!(panicked.shutdown(), Err(RecoveryError::WorkerPanicked));
+    }
+
+    #[test]
+    fn coordinator_drop_drains_the_last_published_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = test_root("drop")?;
+        let path = root.join("recovery.bin");
+        {
+            let coordinator = RecoveryCoordinator::new(path.clone())?;
+            assert_eq!(coordinator.publish(request("latest", 1))?, 1);
+        }
+        assert_eq!(&*load(&path)?.documents[0].local, "latest");
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn crc_and_io_mapping_have_stable_external_evidence() {
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
+        let mapped = map_io::<()>(
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "injected")),
+            "read",
+        );
+        assert_eq!(
+            mapped,
+            Err(RecoveryError::Io {
+                operation: "read",
+                kind: io::ErrorKind::BrokenPipe,
+            })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_sync_reports_a_missing_parent() -> Result<(), Box<dyn std::error::Error>> {
+        let root = test_root("directory-sync")?;
+        let missing = root.join("missing");
+        assert_eq!(
+            sync_parent_directory(&missing),
+            Err(RecoveryError::Io {
+                operation: "open-directory",
+                kind: io::ErrorKind::NotFound,
+            })
+        );
+        fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[test]
