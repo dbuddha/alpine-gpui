@@ -23,6 +23,12 @@ pub(crate) struct DocumentViewState {
     pub(crate) scroll_y: f32,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RestoredDocumentTab {
+    pub(crate) path: Option<PathBuf>,
+    pub(crate) view: DocumentViewState,
+}
+
 impl Default for DocumentViewState {
     fn default() -> Self {
         Self {
@@ -117,6 +123,7 @@ struct DocumentTab<T> {
     retained_path_bytes: usize,
     workspace_entry: Option<usize>,
     document: Option<T>,
+    deferred: bool,
     view: DocumentViewState,
 }
 
@@ -156,6 +163,7 @@ impl<T> DocumentTabs<T> {
             retained_path_bytes,
             workspace_entry,
             document: None,
+            deferred: false,
             view: DocumentViewState::default(),
         });
         let mut history = Vec::new();
@@ -167,6 +175,79 @@ impl<T> DocumentTabs<T> {
             tabs,
             active: 0,
             next_id: 2,
+            retained_path_bytes,
+            history,
+            history_cursor: 0,
+            limits,
+        })
+    }
+
+    pub(crate) fn from_restored(
+        restored: Vec<RestoredDocumentTab>,
+        active: usize,
+        limits: DocumentTabLimits,
+    ) -> Result<Self, DocumentTabError> {
+        if limits.tab_capacity == 0 || limits.path_byte_budget == 0 || limits.history_capacity == 0
+        {
+            return Err(DocumentTabError::InvalidLimits);
+        }
+        if restored.is_empty() || restored.len() > limits.tab_capacity || active >= restored.len() {
+            return Err(DocumentTabError::InvalidPayloadState);
+        }
+        let restored_len = restored.len();
+        let mut tabs = Vec::new();
+        tabs.try_reserve_exact(restored_len)
+            .map_err(|_| DocumentTabError::AllocationFailed)?;
+        let mut retained_path_bytes = 0_usize;
+        for (index, restored) in restored.into_iter().enumerate() {
+            if let Some(path) = restored.path.as_deref()
+                && tabs
+                    .iter()
+                    .any(|tab: &DocumentTab<T>| tab.path.as_deref() == Some(path))
+            {
+                return Err(DocumentTabError::DuplicatePath(path.to_path_buf()));
+            }
+            let (label, path_bytes) = tab_metadata(restored.path.as_deref())?;
+            let (next_path_bytes, path_bytes_overflowed) =
+                retained_path_sum(retained_path_bytes, path_bytes);
+            if path_bytes_overflowed || next_path_bytes > limits.path_byte_budget {
+                return Err(DocumentTabError::PathBudgetExceeded(
+                    limits.path_byte_budget,
+                ));
+            }
+            retained_path_bytes = next_path_bytes;
+            let id_value = u64::try_from(index)
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or(DocumentTabError::IdentityExhausted)?;
+            tabs.push(DocumentTab {
+                id: DocumentTabId(id_value),
+                path: restored.path,
+                label,
+                retained_path_bytes: path_bytes,
+                workspace_entry: None,
+                document: None,
+                deferred: index != active,
+                view: restored.view,
+            });
+        }
+        let next_id = u64::try_from(restored_len)
+            .ok()
+            .and_then(|value| value.checked_add(1))
+            .ok_or(DocumentTabError::IdentityExhausted)?;
+        let active_id = tabs
+            .get(active)
+            .map(|tab| tab.id)
+            .ok_or(DocumentTabError::InvalidPayloadState)?;
+        let mut history = Vec::new();
+        history
+            .try_reserve_exact(limits.history_capacity)
+            .map_err(|_| DocumentTabError::AllocationFailed)?;
+        history.push(active_id);
+        Ok(Self {
+            tabs,
+            active,
+            next_id,
             retained_path_bytes,
             history,
             history_cursor: 0,
@@ -216,6 +297,59 @@ impl<T> DocumentTabs<T> {
 
     pub(crate) fn path_at(&self, index: usize) -> Option<&Path> {
         self.tabs.get(index).and_then(|tab| tab.path.as_deref())
+    }
+
+    pub(crate) fn is_deferred(&self, index: usize) -> Result<bool, DocumentTabError> {
+        self.tabs
+            .get(index)
+            .map(|tab| tab.deferred)
+            .ok_or(DocumentTabError::MissingTab(index))
+    }
+
+    pub(crate) fn materialize(
+        &mut self,
+        index: usize,
+        document: T,
+    ) -> Result<(), DocumentTabError> {
+        if index == self.active {
+            return Err(DocumentTabError::InvalidPayloadState);
+        }
+        let tab = self
+            .tabs
+            .get_mut(index)
+            .ok_or(DocumentTabError::MissingTab(index))?;
+        if !tab.deferred || tab.document.is_some() {
+            return Err(DocumentTabError::InvalidPayloadState);
+        }
+        tab.document = Some(document);
+        tab.deferred = false;
+        Ok(())
+    }
+
+    pub(crate) fn navigation_target(&self, forward: bool) -> Option<usize> {
+        if forward {
+            self.history
+                .get(self.history_cursor.saturating_add(1)..)?
+                .iter()
+                .find_map(|id| self.index_for_id(*id).filter(|index| *index != self.active))
+        } else {
+            self.history
+                .get(..self.history_cursor)?
+                .iter()
+                .rev()
+                .find_map(|id| self.index_for_id(*id).filter(|index| *index != self.active))
+        }
+    }
+
+    pub(crate) fn close_target(&self) -> Result<usize, DocumentTabError> {
+        if self.tabs.len() == 1 {
+            return Err(DocumentTabError::LastTab);
+        }
+        Ok(if self.active + 1 < self.tabs.len() {
+            self.active + 1
+        } else {
+            self.active - 1
+        })
     }
 
     pub(crate) fn view_at(
@@ -370,6 +504,7 @@ impl<T> DocumentTabs<T> {
         let previous = mem::replace(active_document, new_document);
         let active_tab = &mut self.tabs[self.active];
         active_tab.document = Some(previous);
+        active_tab.deferred = false;
         active_tab.view = active_view;
         let id = DocumentTabId(self.next_id);
         self.tabs.push(DocumentTab {
@@ -379,6 +514,7 @@ impl<T> DocumentTabs<T> {
             retained_path_bytes,
             workspace_entry,
             document: None,
+            deferred: false,
             view: DocumentViewState::default(),
         });
         self.active = self.tabs.len() - 1;
@@ -497,6 +633,20 @@ impl<T> DocumentTabs<T> {
         self.tabs[self.active].document = Some(payload);
     }
 
+    #[cfg(test)]
+    pub(crate) fn inject_forward_history_target_for_test(&mut self, target: DocumentTabId) {
+        let active = self.tabs[self.active].id;
+        self.history.clear();
+        self.history.extend([active, target]);
+        self.history_cursor = 0;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_history_for_test(&mut self) {
+        self.history.clear();
+        self.history_cursor = 0;
+    }
+
     fn switch_to(
         &mut self,
         index: usize,
@@ -506,7 +656,7 @@ impl<T> DocumentTabs<T> {
         if self
             .tabs
             .get(self.active)
-            .is_none_or(|tab| tab.document.is_some())
+            .is_none_or(|tab| tab.document.is_some() || tab.deferred)
         {
             return Err(DocumentTabError::InvalidPayloadState);
         }
@@ -514,6 +664,9 @@ impl<T> DocumentTabs<T> {
             .tabs
             .get_mut(index)
             .ok_or(DocumentTabError::MissingTab(index))?;
+        if target.deferred {
+            return Err(DocumentTabError::InvalidPayloadState);
+        }
         let target_document = target
             .document
             .take()
@@ -522,6 +675,7 @@ impl<T> DocumentTabs<T> {
         let previous = mem::replace(active_document, target_document);
         let active = &mut self.tabs[self.active];
         active.document = Some(previous);
+        active.deferred = false;
         active.view = active_view;
         self.active = index;
         Ok(target_view)
@@ -539,6 +693,10 @@ impl<T> DocumentTabs<T> {
         self.history.push(id);
         self.history_cursor = self.history.len().saturating_sub(1);
     }
+}
+
+const fn retained_path_sum(current: usize, added: usize) -> (usize, bool) {
+    current.overflowing_add(added)
 }
 
 fn tab_metadata(path: Option<&Path>) -> Result<(Arc<str>, usize), DocumentTabError> {
@@ -573,6 +731,7 @@ mod tests {
     fn tabs_preserve_payload_view_identity_and_duplicate_lookup()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut tabs = DocumentTabs::new(None, None, DocumentTabLimits::new(4, 1_024, 4))?;
+        assert_eq!(tabs.close_target(), Err(DocumentTabError::LastTab));
         let mut active = String::from("scratch");
         let first_insertion = tabs.insert_and_activate(
             Path::new("/root/a.rs"),
@@ -821,6 +980,151 @@ mod tests {
             Err(DocumentTabError::InvalidPayloadState)
         ));
         assert_eq!(active, before);
+        Ok(())
+    }
+
+    #[test]
+    fn restored_tabs_defer_payloads_until_checked_materialization()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let restored = vec![
+            RestoredDocumentTab {
+                path: Some(PathBuf::from("/alpha")),
+                view: view(1, 1.0),
+            },
+            RestoredDocumentTab {
+                path: Some(PathBuf::from("/beta")),
+                view: view(2, 2.0),
+            },
+            RestoredDocumentTab {
+                path: Some(PathBuf::from("/gamma")),
+                view: view(3, 3.0),
+            },
+        ];
+        let mut tabs =
+            DocumentTabs::from_restored(restored, 1, DocumentTabLimits::new(3, 1_024, 3))?;
+        let mut active = String::from("beta");
+
+        assert_eq!(tabs.active_index(), 1);
+        assert_eq!(tabs.is_deferred(0), Ok(true));
+        assert_eq!(tabs.is_deferred(1), Ok(false));
+        assert_eq!(tabs.is_deferred(2), Ok(true));
+        assert_eq!(tabs.navigation_target(false), None);
+        assert_eq!(tabs.navigation_target(true), None);
+        assert_eq!(tabs.close_target(), Ok(2));
+        assert!(matches!(
+            tabs.activate(0, &mut active, view(0, 0.0)),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        assert!(matches!(
+            tabs.document_at(0, &active),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+
+        tabs.materialize(0, String::from("alpha"))?;
+        assert_eq!(tabs.is_deferred(0), Ok(false));
+        assert!(tabs.activate(0, &mut active, view(4, 4.0))?.is_some());
+        assert_eq!(active, "alpha");
+        assert_eq!(tabs.document_at(1, &active)?, "beta");
+        assert!(matches!(
+            tabs.materialize(0, String::from("duplicate")),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        assert_eq!(tabs.navigation_target(false), Some(1));
+        assert_eq!(tabs.close_target(), Ok(1));
+        tabs.materialize(2, String::from("gamma"))?;
+        assert!(tabs.activate(2, &mut active, view(5, 5.0))?.is_some());
+        assert_eq!(active, "gamma");
+        assert_eq!(tabs.close_target(), Ok(1));
+
+        tabs.tabs[0].document = None;
+        tabs.tabs[0].deferred = false;
+        assert!(matches!(
+            tabs.materialize(0, String::from("missing deferred marker")),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        tabs.tabs[0].document = Some(String::from("duplicate payload"));
+        tabs.tabs[0].deferred = true;
+        assert!(matches!(
+            tabs.materialize(0, String::from("duplicate materialization")),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn restored_tab_admission_and_materialization_guards_are_independent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let restored = |path: &str| {
+            vec![RestoredDocumentTab {
+                path: Some(PathBuf::from(path)),
+                view: view(0, 0.0),
+            }]
+        };
+        for limits in [
+            DocumentTabLimits::new(0, 1, 1),
+            DocumentTabLimits::new(1, 0, 1),
+            DocumentTabLimits::new(1, 1, 0),
+        ] {
+            assert!(matches!(
+                DocumentTabs::<String>::from_restored(restored("a"), 0, limits),
+                Err(DocumentTabError::InvalidLimits)
+            ));
+        }
+        assert!(matches!(
+            DocumentTabs::<String>::from_restored(Vec::new(), 0, DocumentTabLimits::new(1, 1, 1)),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        assert!(matches!(
+            DocumentTabs::<String>::from_restored(
+                vec![restored("a").remove(0), restored("b").remove(0)],
+                0,
+                DocumentTabLimits::new(1, 2, 1)
+            ),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        assert!(matches!(
+            DocumentTabs::<String>::from_restored(
+                restored("a"),
+                1,
+                DocumentTabLimits::new(1, 1, 1)
+            ),
+            Err(DocumentTabError::InvalidPayloadState)
+        ));
+        assert!(matches!(
+            DocumentTabs::<String>::from_restored(
+                vec![
+                    RestoredDocumentTab {
+                        path: Some(PathBuf::from("a")),
+                        view: view(0, 0.0),
+                    },
+                    RestoredDocumentTab {
+                        path: Some(PathBuf::from("a")),
+                        view: view(0, 0.0),
+                    },
+                ],
+                0,
+                DocumentTabLimits::new(2, 4, 2)
+            ),
+            Err(DocumentTabError::DuplicatePath(path)) if path == Path::new("a")
+        ));
+        let (_, exact_path_bytes) = tab_metadata(Some(Path::new("a")))?;
+        assert!(
+            DocumentTabs::<String>::from_restored(
+                restored("a"),
+                0,
+                DocumentTabLimits::new(1, exact_path_bytes, 1)
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            DocumentTabs::<String>::from_restored(
+                restored("a"),
+                0,
+                DocumentTabLimits::new(1, exact_path_bytes - 1, 1)
+            ),
+            Err(DocumentTabError::PathBudgetExceeded(limit)) if limit == exact_path_bytes - 1
+        ));
+        assert_eq!(retained_path_sum(usize::MAX, 1), (0, true));
         Ok(())
     }
 

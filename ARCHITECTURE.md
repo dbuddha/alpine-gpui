@@ -135,8 +135,10 @@ accepts pointer selection, caret, and IME composition; pointer focus restores
 that leaf's retained scroll before hit testing. The command palette provides
 static split-right, split-down, focus-next, and close-pane commands. This slice
 does not duplicate a buffer, create another document authority, add a layout
-framework, or allocate work on startup. Independent tab groups and crash-safe
-dirty-buffer recovery journaling and file-tree expansion restoration remain unimplemented parts of Task #127.
+framework, or allocate work on startup. Independent pane tab groups are now
+retained in the bounded session graph. Crash-safe dirty-buffer recovery
+journaling and file-tree expansion restoration remain unimplemented parts of
+Task #127.
 
 The native event handler returns one bounded `SurfaceResponse`. AppKit
 Command-C and Command-X writes complete through a typed later event, allowing
@@ -836,6 +838,6 @@ The top-level tab strip controls the focused pane in this slice. Pane-local tab 
 
 Studio owns one private version-1 binary session manifest under the user's macOS application-support directory. The manifest is capped at 128 KiB and retains at most 32 tabs, four panes, seven split-tree nodes, 4 KiB per path, and 64 KiB of aggregate path bytes. Runtime tab and pane identities are never serialized. Stable tab indices, fixed split nodes, active focus, directional selections, and pane-local scroll are validated as one graph before publication.
 
-The payload carries a CRC-32 corruption check and is written through a unique mode-0600 temporary file, flush, file synchronization, atomic rename, and parent-directory synchronization. Restore occurs before native surface creation. Missing, incompatible, corrupt, stale, or structurally invalid state cannot mutate files and falls back to a clean application with a bounded local diagnostic. Session capture occurs only after the event loop releases `StudioApp`, so persistence performs no typing, rendering, or startup-enrichment work.
+The payload carries a CRC-32 corruption check and is written through a unique mode-0600 temporary file, flush, file synchronization, atomic rename, and parent-directory synchronization. Restore occurs before native surface creation. Only the active tab and tabs visible in restored panes are opened before the first scene, with at most four unique visible documents under the fixed pane bound. Inactive non-visible tabs retain only validated path and view metadata until checked activation. A failed deferred load leaves the active document and tab identity unchanged and the target deferred. These bounded active and visible file reads are still synchronous before surface creation; background restoration enrichment is not claimed by this slice. Missing, incompatible, corrupt, stale, or structurally invalid state cannot mutate files and falls back to a clean application with a bounded local diagnostic. Session capture occurs only after the event loop releases `StudioApp`, so persistence performs no typing or rendering work.
 
 Only clean document state is currently persisted. If any tab is dirty, shutdown leaves the previous known-good manifest untouched rather than serializing text without a conflict identity or risking overwrite of an externally changed file. Dirty-buffer recovery journaling is a separate required Task #127 slice and must preserve both local edits and external file bytes before this implementation can support hot-exit or crash recovery claims.
