@@ -41,6 +41,10 @@ impl NativeSurface {
         Err(SurfaceError::UnsupportedPlatform)
     }
 
+    #[allow(
+        clippy::unused_self,
+        reason = "the unsupported implementation mirrors the native owner contract"
+    )]
     pub(crate) fn waker(&self) -> SurfaceWaker {
         SurfaceWaker::closed()
     }

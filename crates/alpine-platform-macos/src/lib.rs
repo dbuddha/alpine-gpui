@@ -1832,14 +1832,17 @@ impl SurfaceWakeCounters {
         self.requests.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) fn scheduled(&self) {
         self.scheduled.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) fn coalesced(&self) {
         self.coalesced.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) fn dispatched(&self) {
         self.dispatched.fetch_add(1, Ordering::Relaxed);
     }

@@ -2219,6 +2219,8 @@ pub(crate) mod tests {
         ]
     }
 
+    const RSS_SAMPLE_COUNT: usize = 65;
+
     fn resident_bytes() -> Result<u64, Box<dyn Error>> {
         let pid = std::process::id().to_string();
         let output = Command::new("/bin/ps")
@@ -2245,13 +2247,12 @@ pub(crate) mod tests {
         samples: &[(u16, u64)],
         page_bytes: u64,
     ) -> Result<(), Box<dyn Error>> {
-        const EXPECTED_SAMPLES: usize = 65;
         const PLATEAU_SAMPLES: usize = 9;
         const OBSERVATION_PAGE_BUDGET: u64 = 16;
 
-        if samples.len() != EXPECTED_SAMPLES {
+        if samples.len() != RSS_SAMPLE_COUNT {
             return Err(format!(
-                "resident qualification requires {EXPECTED_SAMPLES} samples, received {}",
+                "resident qualification requires {RSS_SAMPLE_COUNT} samples, received {}",
                 samples.len()
             )
             .into());
@@ -2280,7 +2281,7 @@ pub(crate) mod tests {
             .into());
         }
 
-        let plateau = &samples[EXPECTED_SAMPLES - PLATEAU_SAMPLES..];
+        let plateau = &samples[RSS_SAMPLE_COUNT - PLATEAU_SAMPLES..];
         let plateau_minimum = plateau
             .iter()
             .map(|sample| sample.1)
@@ -3306,7 +3307,9 @@ pub(crate) mod tests {
         let mut retained = None;
         let capture_resident_distribution = std::env::var_os("ALPINE_CAPTURE_RSS").is_some();
         if capture_resident_distribution {
-            let _ = resident_bytes()?;
+            for _ in 0..RSS_SAMPLE_COUNT {
+                let _ = resident_bytes()?;
+            }
         }
         let warmup_frames = if capture_resident_distribution {
             RSS_WARMUP_FRAMES
@@ -3319,7 +3322,7 @@ pub(crate) mod tests {
             VALIDATION_MEASURED_FRAMES
         };
         let total_frames = warmup_frames + measured_frames;
-        let mut resident_samples = Vec::with_capacity(65);
+        let mut resident_samples = Vec::with_capacity(RSS_SAMPLE_COUNT);
         for frame_index in 1_u16..=total_frames {
             let completed = backend.render_offscreen(&scene, descriptor)?;
             let report = completed.report();
@@ -3360,7 +3363,7 @@ pub(crate) mod tests {
         );
         assert!(accounting.invariants_hold());
         if capture_resident_distribution {
-            assert_eq!(resident_samples.len(), 65);
+            assert_eq!(resident_samples.len(), RSS_SAMPLE_COUNT);
             for (frame, bytes) in &resident_samples {
                 assert!(*bytes > 0);
                 println!("alpine-memory-sample frame={frame} resident_bytes={bytes}");
