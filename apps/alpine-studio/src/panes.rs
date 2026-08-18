@@ -5,6 +5,9 @@ use std::{error::Error, fmt};
 use alpine_core::{Point, Rect, Size};
 
 use crate::documents::{DocumentTabId, DocumentViewState};
+use crate::session::{
+    self, SESSION_PANE_CAPACITY, SessionAxis, SessionNode, SessionPane, SessionPanes,
+};
 
 pub(crate) const MAX_PANES: usize = 4;
 const MAX_NODES: usize = MAX_PANES * 2 - 1;
@@ -259,6 +262,113 @@ impl PaneGrid {
                 state.view = Some(replacement_view);
             }
         }
+    }
+
+    pub(crate) fn session_state(
+        &self,
+        tab_index: impl Fn(DocumentTabId) -> Option<usize>,
+    ) -> Result<SessionPanes, PaneError> {
+        let nodes = self.nodes.map(|node| match node {
+            Node::Empty => SessionNode::Empty,
+            Node::Leaf { state } => SessionNode::Leaf { pane: state },
+            Node::Split {
+                axis,
+                first,
+                second,
+            } => SessionNode::Split {
+                axis: match axis {
+                    SplitAxis::Columns => SessionAxis::Columns,
+                    SplitAxis::Rows => SessionAxis::Rows,
+                },
+                first,
+                second,
+            },
+        });
+        let mut panes = [None; SESSION_PANE_CAPACITY];
+        let mut active_pane = None;
+        for (index, state) in self.states.iter().enumerate() {
+            if !state.occupied {
+                continue;
+            }
+            let tab = state.tab.ok_or(PaneError::InconsistentState)?;
+            let tab = tab_index(tab).ok_or(PaneError::InconsistentState)?;
+            panes[index] = Some(SessionPane {
+                tab: u8::try_from(tab).map_err(|_| PaneError::InconsistentState)?,
+                view: state.view.ok_or(PaneError::InconsistentState)?,
+            });
+            if state.id == self.active {
+                active_pane = Some(u8::try_from(index).map_err(|_| PaneError::InconsistentState)?);
+            }
+        }
+        let session = SessionPanes {
+            nodes,
+            panes,
+            active_pane: active_pane.ok_or(PaneError::InconsistentState)?,
+        };
+        session::validate_panes(&session, usize::MAX).map_err(|_| PaneError::InconsistentState)?;
+        Ok(session)
+    }
+
+    pub(crate) fn from_session(
+        session: &SessionPanes,
+        tabs: &[DocumentTabId],
+    ) -> Result<Self, PaneError> {
+        session::validate_panes(session, tabs.len()).map_err(|_| PaneError::InconsistentState)?;
+        let nodes = session.nodes.map(|node| match node {
+            SessionNode::Empty => Node::Empty,
+            SessionNode::Leaf { pane } => Node::Leaf { state: pane },
+            SessionNode::Split {
+                axis,
+                first,
+                second,
+            } => Node::Split {
+                axis: match axis {
+                    SessionAxis::Columns => SplitAxis::Columns,
+                    SessionAxis::Rows => SplitAxis::Rows,
+                },
+                first,
+                second,
+            },
+        });
+        let mut states = [PaneState::EMPTY; SESSION_PANE_CAPACITY];
+        let mut pane_count = 0_usize;
+        for (index, pane) in session.panes.iter().enumerate() {
+            let Some(pane) = pane else {
+                continue;
+            };
+            let id_value = u64::try_from(index)
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or(PaneError::IdentityExhausted)?;
+            states[index] = PaneState {
+                id: PaneId(id_value),
+                tab: Some(
+                    *tabs
+                        .get(usize::from(pane.tab))
+                        .ok_or(PaneError::InconsistentState)?,
+                ),
+                view: Some(pane.view),
+                occupied: true,
+            };
+            pane_count += 1;
+        }
+        let active_index = usize::from(session.active_pane);
+        let active = states
+            .get(active_index)
+            .filter(|state| state.occupied)
+            .map(|state| state.id)
+            .ok_or(PaneError::InconsistentState)?;
+        let next_id = u64::try_from(SESSION_PANE_CAPACITY)
+            .ok()
+            .and_then(|value| value.checked_add(1))
+            .ok_or(PaneError::IdentityExhausted)?;
+        Ok(Self {
+            nodes,
+            states,
+            active,
+            next_id,
+            pane_count,
+        })
     }
 
     #[cfg(test)]
@@ -955,6 +1065,74 @@ mod tests {
         panes.split(SplitAxis::Rows, 5.0, large)?;
         assert!(!panes.can_split(SplitAxis::Columns, large));
         assert!(!panes.can_split(SplitAxis::Rows, large));
+        Ok(())
+    }
+
+    #[test]
+    fn session_projection_round_trips_exact_pane_and_tab_ownership() -> Result<(), Box<dyn Error>> {
+        let alpha = DocumentTabId(1);
+        let beta = DocumentTabId(2);
+        let alpha_view = DocumentViewState {
+            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(1)),
+            scroll_y: 11.0,
+        };
+        let beta_view = DocumentViewState {
+            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(2)),
+            scroll_y: 22.0,
+        };
+        let mut panes = PaneGrid::new(alpha, alpha_view);
+        let bounds = bounds(1_200.0, 900.0)?;
+        panes.split(SplitAxis::Rows, 11.0, bounds)?;
+        panes.sync_active_document(beta, beta_view)?;
+
+        let tabs = [alpha, beta];
+        let state =
+            panes.session_state(|tab| tabs.iter().position(|candidate| *candidate == tab))?;
+        assert_eq!(state.active_pane, 1);
+        assert_eq!(
+            state.nodes,
+            [
+                SessionNode::Split {
+                    axis: SessionAxis::Rows,
+                    first: 1,
+                    second: 2,
+                },
+                SessionNode::Leaf { pane: 0 },
+                SessionNode::Leaf { pane: 1 },
+                SessionNode::Empty,
+                SessionNode::Empty,
+                SessionNode::Empty,
+                SessionNode::Empty,
+            ]
+        );
+        assert_eq!(
+            state.panes,
+            [
+                Some(SessionPane {
+                    tab: 0,
+                    view: alpha_view,
+                }),
+                Some(SessionPane {
+                    tab: 1,
+                    view: beta_view,
+                }),
+                None,
+                None,
+            ]
+        );
+
+        let restored = PaneGrid::from_session(&state, &[alpha, beta])?;
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored.active_document(), Ok((beta, beta_view)));
+        assert_eq!(restored.layout(bounds)?.iter().count(), 2);
+        assert_eq!(
+            panes.session_state(|_| None),
+            Err(PaneError::InconsistentState)
+        );
+        assert!(matches!(
+            PaneGrid::from_session(&state, &[alpha]),
+            Err(PaneError::InconsistentState)
+        ));
         Ok(())
     }
 }

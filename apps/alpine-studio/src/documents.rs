@@ -210,6 +210,41 @@ impl<T> DocumentTabs<T> {
             .ok_or(DocumentTabError::InvalidPayloadState)
     }
 
+    pub(crate) fn id_at(&self, index: usize) -> Option<DocumentTabId> {
+        self.tabs.get(index).map(|tab| tab.id)
+    }
+
+    pub(crate) fn path_at(&self, index: usize) -> Option<&Path> {
+        self.tabs.get(index).and_then(|tab| tab.path.as_deref())
+    }
+
+    pub(crate) fn view_at(
+        &self,
+        index: usize,
+        active_view: DocumentViewState,
+    ) -> Result<DocumentViewState, DocumentTabError> {
+        let tab = self
+            .tabs
+            .get(index)
+            .ok_or(DocumentTabError::InvalidPayloadState)?;
+        Ok(if index == self.active {
+            active_view
+        } else {
+            tab.view
+        })
+    }
+
+    pub(crate) fn document_at<'a>(
+        &'a self,
+        index: usize,
+        active_document: &'a T,
+    ) -> Result<&'a T, DocumentTabError> {
+        let id = self
+            .id_at(index)
+            .ok_or(DocumentTabError::InvalidPayloadState)?;
+        self.document_for_id(id, active_document)
+    }
+
     pub(crate) fn active_workspace_entry(&self) -> Option<usize> {
         self.tabs
             .get(self.active)

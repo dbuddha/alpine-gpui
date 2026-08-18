@@ -78,7 +78,7 @@ impl Drop for TestWorkspace {
 }
 
 #[derive(Default)]
-struct TestTextSystem;
+pub(super) struct TestTextSystem;
 
 impl TextShaper for TestTextSystem {
     fn shape(&mut self, text: &str, _font: FontKey) -> Result<LineLayout, LayoutError> {
