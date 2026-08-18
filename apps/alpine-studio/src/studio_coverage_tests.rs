@@ -443,6 +443,31 @@ fn editor_scene_projects_compiled_rust_syntax_onto_visible_glyphs() -> Result<()
     let second_cache = app.syntax_cache.snapshot();
     assert!(second_cache.hits() > first_cache.hits());
     assert!(second_cache.current_bytes() <= second_cache.budget_bytes());
+
+    let palette = SyntaxPalette::new().ok_or(StudioRenderError::Domain)?;
+    let classes = [
+        SyntaxClass::Comment,
+        SyntaxClass::Keyword,
+        SyntaxClass::String,
+        SyntaxClass::Number,
+        SyntaxClass::Type,
+        SyntaxClass::Property,
+        SyntaxClass::Heading,
+        SyntaxClass::Code,
+    ];
+    let palette_colors = classes.map(|class| palette.color(class));
+    assert!(
+        palette_colors
+            .iter()
+            .enumerate()
+            .all(|(index, color)| !palette_colors[..index].contains(color))
+    );
+
+    let render_error = StudioRenderError::from(SyntaxError::InvalidBudget);
+    assert_eq!(
+        render_error.to_string(),
+        "syntax rendering failed: syntax cache budget must be nonzero"
+    );
     Ok(())
 }
 
