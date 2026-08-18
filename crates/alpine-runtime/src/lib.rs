@@ -189,6 +189,14 @@ pub enum ExternalAdmission {
     SequenceExhausted,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExternalRejection {
+    Full,
+    Disconnected,
+    ShuttingDown,
+    SequenceExhausted,
+}
+
 #[derive(Default)]
 struct ExternalCounters {
     current_items: AtomicUsize,
@@ -330,28 +338,25 @@ impl<T> ExternalProducer<T> {
     /// does not include channel or runtime bookkeeping.
     #[must_use]
     pub fn submit(&self, value: T, retained_bytes: usize) -> ExternalAdmission {
-        if self.shared.shutting_down.load(Ordering::Acquire) {
-            return self.reject(ExternalAdmission::ShuttingDown);
-        }
         let sender_guard = match self.shared.sender.try_lock() {
             Ok(sender) => sender,
-            Err(TryLockError::WouldBlock) => return self.reject(ExternalAdmission::Full),
+            Err(TryLockError::WouldBlock) => return self.reject(ExternalRejection::Full),
             Err(TryLockError::Poisoned(_)) => {
-                return self.reject(ExternalAdmission::Disconnected);
+                return self.reject(ExternalRejection::Disconnected);
             }
         };
         if self.shared.shutting_down.load(Ordering::Acquire) {
-            return self.reject(ExternalAdmission::ShuttingDown);
+            return self.reject(ExternalRejection::ShuttingDown);
         }
         let Some(sender) = sender_guard.as_ref() else {
-            return self.reject(ExternalAdmission::Disconnected);
+            return self.reject(ExternalRejection::Disconnected);
         };
         let Ok(sequence) = self.shared.next_sequence.fetch_update(
             Ordering::AcqRel,
             Ordering::Acquire,
             |current| current.checked_add(1),
         ) else {
-            return self.reject(ExternalAdmission::SequenceExhausted);
+            return self.reject(ExternalRejection::SequenceExhausted);
         };
         let Ok(previous_bytes) = self.shared.counters.current_bytes.fetch_update(
             Ordering::AcqRel,
@@ -362,7 +367,7 @@ impl<T> ExternalProducer<T> {
                     .filter(|next| *next <= MAX_EXTERNAL_RETAINED_BYTES)
             },
         ) else {
-            return self.reject(ExternalAdmission::Full);
+            return self.reject(ExternalRejection::Full);
         };
         let queued = self
             .shared
@@ -377,8 +382,8 @@ impl<T> ExternalProducer<T> {
                 value,
             })
             .map_err(|error| match error {
-                TrySendError::Full(_) => ExternalAdmission::Full,
-                TrySendError::Disconnected(_) => ExternalAdmission::Disconnected,
+                TrySendError::Full(_) => ExternalRejection::Full,
+                TrySendError::Disconnected(_) => ExternalRejection::Disconnected,
             });
         if let Err(admission) = send_result {
             self.shared
@@ -395,13 +400,21 @@ impl<T> ExternalProducer<T> {
         self.admit(queued, previous_bytes + retained_bytes)
     }
 
-    fn reject(&self, admission: ExternalAdmission) -> ExternalAdmission {
-        let counter = match admission {
-            ExternalAdmission::Full => &self.shared.counters.full,
-            ExternalAdmission::Disconnected => &self.shared.counters.disconnected,
-            ExternalAdmission::ShuttingDown => &self.shared.counters.shutting_down,
-            ExternalAdmission::SequenceExhausted => &self.shared.counters.sequence_exhausted,
-            ExternalAdmission::Admitted => return admission,
+    fn reject(&self, rejection: ExternalRejection) -> ExternalAdmission {
+        let (counter, admission) = match rejection {
+            ExternalRejection::Full => (&self.shared.counters.full, ExternalAdmission::Full),
+            ExternalRejection::Disconnected => (
+                &self.shared.counters.disconnected,
+                ExternalAdmission::Disconnected,
+            ),
+            ExternalRejection::ShuttingDown => (
+                &self.shared.counters.shutting_down,
+                ExternalAdmission::ShuttingDown,
+            ),
+            ExternalRejection::SequenceExhausted => (
+                &self.shared.counters.sequence_exhausted,
+                ExternalAdmission::SequenceExhausted,
+            ),
         };
         counter.fetch_add(1, Ordering::Relaxed);
         admission
@@ -1399,7 +1412,10 @@ mod tests {
         }
     }
 
-    fn runtime(delegate: TestDelegate) -> Result<Application<TestDelegate>, RuntimeError> {
+    fn runtime<D>(delegate: D) -> Result<Application<D>, RuntimeError>
+    where
+        D: AppDelegate<WorkerOutput = u64> + 'static,
+    {
         let viewport =
             Size::new(96.0, 64.0).ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
         let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0)
@@ -2087,7 +2103,7 @@ mod tests {
         application.set_worker_waker(move || {
             let _ = wake_sender.try_send(());
         });
-        let producer = application.external.producer();
+        let producer = application.external.producer().clone();
         application.document_revision = DocumentRevision::new(9);
         assert_eq!(producer.submit(55, 13), ExternalAdmission::Admitted);
         assert_eq!(wake_receiver.recv_timeout(Duration::from_secs(1)), Ok(()));
@@ -2177,16 +2193,7 @@ mod tests {
     #[test]
     fn external_result_without_delegate_invalidation_requests_no_frame() -> Result<(), RuntimeError>
     {
-        let viewport =
-            Size::new(10.0, 10.0).ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
-        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0)
-            .ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
-        let mut application = Application::new(
-            DefaultResultDelegate,
-            viewport,
-            clear,
-            WorkerConfig::default(),
-        )?;
+        let mut application = runtime(DefaultResultDelegate)?;
         let _ = application.frame_if_dirty();
         let producer = application.external.producer();
         assert_eq!(producer.submit(1, 0), ExternalAdmission::Admitted);
@@ -2226,6 +2233,56 @@ mod tests {
         }));
         assert!(fault.is_err());
         assert_eq!(poisoned.submit(3, 1), ExternalAdmission::Disconnected);
+
+        let contended_application = runtime(TestDelegate::default())?;
+        let contended = contended_application.external.producer();
+        let contended_shared = Arc::clone(&contended.shared);
+        let contended_guard = contended_shared
+            .sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(contended.submit(4, 1), ExternalAdmission::Full);
+        drop(contended_guard);
+
+        let missing_application = runtime(TestDelegate::default())?;
+        let missing = missing_application.external.producer();
+        let removed_sender = missing
+            .shared
+            .sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        assert!(removed_sender.is_some());
+        assert_eq!(missing.submit(5, 1), ExternalAdmission::Disconnected);
+
+        let (disconnected_sender, disconnected_receiver) = sync_channel(1);
+        drop(disconnected_receiver);
+        let disconnected = ExternalProducer {
+            shared: Arc::new(ExternalShared {
+                sender: Mutex::new(Some(disconnected_sender)),
+                shutting_down: AtomicBool::new(false),
+                next_sequence: AtomicU64::new(FIRST_EXTERNAL_SEQUENCE),
+                counters: ExternalCounters::default(),
+                wake: Arc::new(Mutex::new(None)),
+            }),
+        };
+        assert_eq!(disconnected.submit(6, 1), ExternalAdmission::Disconnected);
+        assert_eq!(
+            disconnected
+                .shared
+                .counters
+                .current_items
+                .load(Ordering::Acquire),
+            0
+        );
+        assert_eq!(
+            disconnected
+                .shared
+                .counters
+                .current_bytes
+                .load(Ordering::Acquire),
+            0
+        );
         Ok(())
     }
 
