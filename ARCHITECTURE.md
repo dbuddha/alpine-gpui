@@ -799,6 +799,17 @@ composition, results, visible rows, and diagnostics. There is no runtime
 registration, plugin hook, closure registry, worker, timer, or public framework
 API at this boundary. See AEP-0177.
 
+Studio also owns one immutable compiled settings value under Requirement #36
+and Task #129. It validates editor metrics, font identity, the complete default
+theme including syntax colors, and an ordered static keymap before application
+state is constructed. Direct shortcuts resolve to the existing closed command
+vocabulary or one of three local editing actions, and binding validation rejects
+duplicates and unreachable less-specific entries. This slice performs no file
+read, parsing, reload, migration, runtime registration, executable discovery,
+heap registry, plugin lookup, or network work during startup. Layered global and
+project configuration remains unimplemented pending a separate serialization
+dependency decision and bounded reload design.
+
 ### Bounded streaming local project search
 
 Alpine Studio privately owns a lazy local project-search state machine. One

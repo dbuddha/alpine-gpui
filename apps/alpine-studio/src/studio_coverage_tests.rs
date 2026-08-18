@@ -444,7 +444,7 @@ fn editor_scene_projects_compiled_rust_syntax_onto_visible_glyphs() -> Result<()
     assert!(second_cache.hits() > first_cache.hits());
     assert!(second_cache.current_bytes() <= second_cache.budget_bytes());
 
-    let palette = SyntaxPalette::new().ok_or(StudioRenderError::Domain)?;
+    let palette = app.settings.theme.syntax;
     let classes = [
         SyntaxClass::Comment,
         SyntaxClass::Keyword,
@@ -2687,6 +2687,17 @@ fn keyboard_commands_cover_selection_navigation_and_history() -> Result<(), Surf
     assert!(app.undo().document_changed);
     assert!(app.redo().document_changed);
     assert!(!app.redo().visual_changed);
+    assert!(
+        app.handle_event(&key(KEY_Z, Modifiers::from_bits(Modifiers::COMMAND)))
+            .document_changed
+    );
+    assert!(
+        app.handle_event(&key(
+            KEY_Z,
+            Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT),
+        ))
+        .document_changed
+    );
 
     app.composition = Some(Composition {
         replacement: app.selection.range(),
