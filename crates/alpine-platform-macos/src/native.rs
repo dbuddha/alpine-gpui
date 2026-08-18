@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -52,18 +52,87 @@ use alpine_platform::{
 };
 use alpine_scene::Scene;
 use block2::RcBlock;
+use dispatch2::DispatchQueue;
 
 use crate::{
     ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite,
     CloseDisposition, EventTimestamp, FrameTerminalEvidence, ImeEvent, KeyState, Modifiers,
     PointerAction, PointerButton, SURFACE_CLOSING, SURFACE_LIVE, ScrollPhase, SdrColorContract,
     SurfaceConfiguration, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceLifecycle,
-    SurfaceObserver, SurfaceResponse, SurfaceSnapshot, SurfaceStage, begin_close_observer_state,
-    finish_close_observer_state, new_observer_state, presentation_visible,
+    SurfaceObserver, SurfaceResponse, SurfaceSnapshot, SurfaceStage, SurfaceWakeAdmission,
+    SurfaceWakeCounters, SurfaceWaker, begin_close_observer_state, finish_close_observer_state,
+    new_observer_state, presentation_visible,
 };
 
 type Device = Retained<ProtocolObject<dyn MTLDevice>>;
 type SurfaceEventHandler = Box<dyn FnMut(SurfaceEvent) -> SurfaceResponse + 'static>;
+
+struct NativeWakeBridge {
+    delegate: AtomicPtr<DisplayLinkDelegate>,
+    lifecycle: Arc<AtomicU8>,
+    pending: AtomicBool,
+    counters: Arc<SurfaceWakeCounters>,
+}
+
+impl NativeWakeBridge {
+    fn new(delegate: &DisplayLinkDelegate, lifecycle: Arc<AtomicU8>) -> Arc<Self> {
+        Arc::new(Self {
+            delegate: AtomicPtr::new(core::ptr::from_ref(delegate).cast_mut()),
+            lifecycle,
+            pending: AtomicBool::new(false),
+            counters: Arc::new(SurfaceWakeCounters::new()),
+        })
+    }
+
+    fn request(self: &Arc<Self>) -> SurfaceWakeAdmission {
+        self.counters.request();
+        if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE
+            || self.delegate.load(Ordering::Acquire).is_null()
+        {
+            self.counters.rejected();
+            return SurfaceWakeAdmission::Closed;
+        }
+        if self.pending.swap(true, Ordering::AcqRel) {
+            self.counters.coalesced();
+            return SurfaceWakeAdmission::Coalesced;
+        }
+        let bridge = Arc::clone(self);
+        DispatchQueue::main().exec_async(move || bridge.dispatch());
+        self.counters.scheduled();
+        SurfaceWakeAdmission::Scheduled
+    }
+
+    fn dispatch(&self) {
+        self.pending.store(false, Ordering::Release);
+        if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+            self.counters.rejected();
+            return;
+        }
+        let delegate = self.delegate.load(Ordering::Acquire);
+        let Some(delegate) = NonNull::new(delegate) else {
+            self.counters.rejected();
+            return;
+        };
+        // SAFETY: dispatch2 executes this closure on the process main queue.
+        // The surface revokes the pointer on that same thread before releasing
+        // its retained delegate.
+        let delegate = unsafe { delegate.as_ref() };
+        self.counters.dispatched();
+        let _ = delegate.dispatch_surface_event(SurfaceEvent::Wake {
+            timestamp: delegate.next_event_timestamp(),
+        });
+    }
+
+    fn revoke(&self) {
+        self.delegate
+            .store(core::ptr::null_mut(), Ordering::Release);
+    }
+
+    fn waker(self: &Arc<Self>) -> SurfaceWaker {
+        let bridge = Arc::clone(self);
+        SurfaceWaker::new(move || bridge.request(), Arc::clone(&self.counters))
+    }
+}
 
 #[cfg(alpine_native_validation)]
 const NATIVE_OWNER_KINDS: usize = 9;
@@ -1902,7 +1971,7 @@ define_class!(
                     && !self.ivars().window_close_started.load(Ordering::Acquire)
                     && let Some(window) = &self.ivars().window
                 {
-                    schedule_validation_window_close(window);
+                    schedule_validation_window_close(window, Duration::ZERO);
                 }
             }
         }
@@ -2429,7 +2498,7 @@ fn apply_display_link_directive(link: &CAMetalDisplayLink, directive: DisplayLin
 }
 
 #[cfg(alpine_native_validation)]
-fn schedule_validation_window_close(window: &Retained<NSWindow>) {
+fn schedule_validation_window_close(window: &Retained<NSWindow>, delay: Duration) {
     let window = window.clone();
     let close_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
         RcBlock::new(move |timer: NonNull<NSTimer>| {
@@ -2441,8 +2510,13 @@ fn schedule_validation_window_close(window: &Retained<NSWindow>) {
     // SAFETY: The block and retained window remain main-thread-only,
     // Foundation copies the block for the scheduled timer lifetime, and the
     // callback receives a valid NSTimer after the display-link callback exits.
-    let _timer =
-        unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.0, false, &close_block) };
+    let _timer = unsafe {
+        NSTimer::scheduledTimerWithTimeInterval_repeats_block(
+            delay.as_secs_f64(),
+            false,
+            &close_block,
+        )
+    };
 }
 
 pub(crate) struct NativeSurface {
@@ -2458,6 +2532,7 @@ pub(crate) struct NativeSurface {
         reason = "AppKit and CAMetalDisplayLink retain delegates weakly, so Alpine must retain it"
     )]
     delegate: Retained<DisplayLinkDelegate>,
+    wake_bridge: Arc<NativeWakeBridge>,
     layer: Retained<CAMetalLayer>,
     #[allow(
         dead_code,
@@ -2791,9 +2866,14 @@ impl NativeSurface {
             timestamp: self.delegate.next_event_timestamp(),
         });
         let run_result = wake_result.and_then(|_| self.run());
+        self.wake_bridge.revoke();
         self.view.clear_input_handler();
         self.delegate.clear_event_handler();
         resolve_input_dispatch(run_result, self.view.take_input_dispatch_failure())
+    }
+
+    pub(crate) fn waker(&self) -> SurfaceWaker {
+        self.wake_bridge.waker()
     }
 
     #[cfg(alpine_native_validation)]
@@ -3106,6 +3186,11 @@ impl NativeSurface {
         };
     }
 
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn arm_window_close(&self, delay: Duration) {
+        schedule_validation_window_close(&self.window, delay);
+    }
+
     pub(crate) fn snapshot(&self) -> SurfaceSnapshot {
         let driver = self.driver.try_borrow();
         let (surface_epoch, sized, presentation_visible) =
@@ -3364,6 +3449,7 @@ fn require_device(device: Option<Device>) -> Result<Device, SurfaceError> {
 
 impl Drop for NativeSurface {
     fn drop(&mut self) {
+        self.wake_bridge.revoke();
         let native_close_started = self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE;
         let must_close_window = !self.window_close_started.load(Ordering::Acquire);
         if !native_close_started {
@@ -3482,6 +3568,8 @@ impl NativeSurfaceBuilder {
     }
 
     fn finish(mut self) -> Result<NativeSurface, SurfaceError> {
+        let delegate = take_owner(&mut self.delegate, SurfaceStage::DisplayLink)?;
+        let wake_bridge = NativeWakeBridge::new(&delegate, Arc::clone(&self.lifecycle));
         let surface = NativeSurface {
             callback_count: Arc::clone(&self.callback_count),
             rejected_callback_count: Arc::clone(&self.rejected_callback_count),
@@ -3490,7 +3578,8 @@ impl NativeSurfaceBuilder {
             lifecycle: Arc::clone(&self.lifecycle),
             window_close_started: Arc::clone(&self.window_close_started),
             display_link: take_owner(&mut self.display_link, SurfaceStage::DisplayLink)?,
-            delegate: take_owner(&mut self.delegate, SurfaceStage::DisplayLink)?,
+            delegate,
+            wake_bridge,
             layer: take_owner(&mut self.layer, SurfaceStage::Layer)?,
             color_space: take_owner(&mut self.color_space, SurfaceStage::ColorSpace)?,
             view: take_owner(&mut self.view, SurfaceStage::View)?,

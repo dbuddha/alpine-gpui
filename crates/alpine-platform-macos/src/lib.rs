@@ -702,6 +702,11 @@ pub mod native_validation {
         RunTimeoutEvidence { expired, cancelled }
     }
 
+    /// Schedules a production close request after a bounded validation delay.
+    pub fn arm_window_close(surface: &NativeSurface, delay: Duration) {
+        surface.implementation.arm_window_close(delay);
+    }
+
     /// Installs one deterministic asynchronous driver failure for contract tests.
     pub fn inject_driver_error(surface: &NativeSurface, error: SurfaceError) {
         surface.implementation.inject_driver_error(error);
@@ -1733,6 +1738,156 @@ pub struct SurfaceObserver {
     rejected_callback_count: Arc<AtomicU64>,
 }
 
+/// Outcome of one nonblocking main-loop wake request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceWakeAdmission {
+    /// A main-thread callback was scheduled.
+    Scheduled,
+    /// A callback was already pending, so this request was coalesced.
+    Coalesced,
+    /// The corresponding surface no longer admits callbacks.
+    Closed,
+}
+
+/// Handle-free current evidence for one coalesced surface waker.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SurfaceWakeSnapshot {
+    requests: u64,
+    scheduled: u64,
+    coalesced: u64,
+    dispatched: u64,
+    rejected: u64,
+}
+
+impl SurfaceWakeSnapshot {
+    /// Returns all attempted wake requests.
+    #[must_use]
+    pub const fn requests(self) -> u64 {
+        self.requests
+    }
+
+    /// Returns requests that scheduled a main-thread callback.
+    #[must_use]
+    pub const fn scheduled(self) -> u64 {
+        self.scheduled
+    }
+
+    /// Returns requests merged into an already-pending callback.
+    #[must_use]
+    pub const fn coalesced(self) -> u64 {
+        self.coalesced
+    }
+
+    /// Returns callbacks dispatched while the surface was live.
+    #[must_use]
+    pub const fn dispatched(self) -> u64 {
+        self.dispatched
+    }
+
+    /// Returns requests or callbacks rejected after revocation.
+    #[must_use]
+    pub const fn rejected(self) -> u64 {
+        self.rejected
+    }
+}
+
+pub(crate) struct SurfaceWakeCounters {
+    requests: AtomicU64,
+    scheduled: AtomicU64,
+    coalesced: AtomicU64,
+    dispatched: AtomicU64,
+    rejected: AtomicU64,
+}
+
+impl SurfaceWakeCounters {
+    pub(crate) const fn new() -> Self {
+        Self {
+            requests: AtomicU64::new(0),
+            scheduled: AtomicU64::new(0),
+            coalesced: AtomicU64::new(0),
+            dispatched: AtomicU64::new(0),
+            rejected: AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> SurfaceWakeSnapshot {
+        SurfaceWakeSnapshot {
+            requests: self.requests.load(Ordering::Acquire),
+            scheduled: self.scheduled.load(Ordering::Acquire),
+            coalesced: self.coalesced.load(Ordering::Acquire),
+            dispatched: self.dispatched.load(Ordering::Acquire),
+            rejected: self.rejected.load(Ordering::Acquire),
+        }
+    }
+
+    pub(crate) fn request(&self) {
+        self.requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn scheduled(&self) {
+        self.scheduled.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn coalesced(&self) {
+        self.coalesced.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn dispatched(&self) {
+        self.dispatched.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn rejected(&self) {
+        self.rejected.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Cloneable, handle-free admission token for waking the owned main loop.
+#[derive(Clone)]
+pub struct SurfaceWaker {
+    request: Arc<dyn Fn() -> SurfaceWakeAdmission + Send + Sync + 'static>,
+    counters: Arc<SurfaceWakeCounters>,
+}
+
+impl SurfaceWaker {
+    pub(crate) fn new(
+        request: impl Fn() -> SurfaceWakeAdmission + Send + Sync + 'static,
+        counters: Arc<SurfaceWakeCounters>,
+    ) -> Self {
+        Self {
+            request: Arc::new(request),
+            counters,
+        }
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn closed() -> Self {
+        let counters = Arc::new(SurfaceWakeCounters::new());
+        Self::new(
+            {
+                let counters = Arc::clone(&counters);
+                move || {
+                    counters.request();
+                    counters.rejected();
+                    SurfaceWakeAdmission::Closed
+                }
+            },
+            counters,
+        )
+    }
+
+    /// Requests one coalesced main-loop callback without requesting a frame.
+    #[must_use]
+    pub fn wake(&self) -> SurfaceWakeAdmission {
+        (self.request)()
+    }
+
+    /// Returns handle-free wake admission evidence.
+    #[must_use]
+    pub fn snapshot(&self) -> SurfaceWakeSnapshot {
+        self.counters.snapshot()
+    }
+}
+
 impl SurfaceObserver {
     pub(crate) fn new(
         lifecycle: Arc<AtomicU8>,
@@ -1828,6 +1983,12 @@ impl NativeSurface {
         self.implementation.run_with_event_handler(handler)
     }
 
+    /// Returns a thread-safe token that wakes this surface's main loop.
+    #[must_use]
+    pub fn waker(&self) -> SurfaceWaker {
+        self.implementation.waker()
+    }
+
     /// Replaces pending immutable work and wakes pacing only when eligible.
     ///
     /// # Errors
@@ -1866,6 +2027,47 @@ impl NativeSurface {
 
     /// Consumes and deterministically tears down the native surface.
     pub fn close(self) {}
+}
+
+#[cfg(test)]
+mod surface_waker_tests {
+    use super::*;
+
+    #[test]
+    fn handle_free_waker_reports_exact_admission_evidence() {
+        let counters = Arc::new(SurfaceWakeCounters::new());
+        let callback_counters = Arc::clone(&counters);
+        let waker = SurfaceWaker::new(
+            move || {
+                callback_counters.request();
+                callback_counters.scheduled();
+                SurfaceWakeAdmission::Scheduled
+            },
+            Arc::clone(&counters),
+        );
+
+        assert_eq!(waker.wake(), SurfaceWakeAdmission::Scheduled);
+        assert_eq!(waker.clone().wake(), SurfaceWakeAdmission::Scheduled);
+        assert_eq!(
+            waker.snapshot(),
+            SurfaceWakeSnapshot {
+                requests: 2,
+                scheduled: 2,
+                coalesced: 0,
+                dispatched: 0,
+                rejected: 0,
+            }
+        );
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[test]
+    fn unsupported_waker_rejects_without_native_handles() {
+        let waker = SurfaceWaker::closed();
+        assert_eq!(waker.wake(), SurfaceWakeAdmission::Closed);
+        assert_eq!(waker.snapshot().requests(), 1);
+        assert_eq!(waker.snapshot().rejected(), 1);
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

@@ -52,6 +52,7 @@ dependencies = [
  "alpine-platform",
  "alpine-scene",
  "block2",
+ "dispatch2",
  "objc2",
  "objc2-app-kit",
  "objc2-core-graphics",
