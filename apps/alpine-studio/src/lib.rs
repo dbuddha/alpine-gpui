@@ -2107,6 +2107,18 @@ impl StudioApp {
                     baseline,
                     overlay_clip,
                 )?);
+                if let Some(shortcut) = self.settings.keymap.shortcut_for(row.command) {
+                    let shortcut_layout = self.text_system.shape(shortcut, font)?;
+                    let shortcut_left = (left + width - FIND_BAR_INSET - shortcut_layout.width())
+                        .max(left + FIND_BAR_INSET);
+                    pending_glyphs.extend(self.collect_glyphs(
+                        &shortcut_layout,
+                        font,
+                        shortcut_left,
+                        baseline,
+                        overlay_clip,
+                    )?);
+                }
             }
         }
         builder.push_quad(Quad::new(tab_bounds, tab_background).clipped(tab_clip))?;

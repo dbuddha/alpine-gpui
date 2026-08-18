@@ -804,9 +804,11 @@ and Task #129. It validates editor metrics, font identity, the complete default
 theme including syntax colors, and an ordered static keymap before application
 state is constructed. Direct shortcuts resolve to the existing closed command
 vocabulary or one of three local editing actions, and binding validation rejects
-duplicates and unreachable less-specific entries. This slice performs no file
-read, parsing, reload, migration, runtime registration, executable discovery,
-heap registry, plugin lookup, or network work during startup. Layered global and
+duplicates, unreachable less-specific entries, and invalid labels. The same
+binding table supplies bounded static shortcut labels for visible command-palette
+rows, so dispatch and discovery cannot drift. This slice performs no file read,
+parsing, reload, migration, runtime registration, executable discovery, heap
+registry, plugin lookup, or network work during startup. Layered global and
 project configuration remains unimplemented pending a separate serialization
 dependency decision and bounded reload design.
 

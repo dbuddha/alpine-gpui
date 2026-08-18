@@ -176,65 +176,86 @@ struct KeyBinding {
     physical_key: u16,
     required_modifiers: u8,
     action: KeyAction,
+    label: &'static str,
 }
 
 const DEFAULT_BINDINGS: [KeyBinding; 13] = [
-    binding(KEY_P, COMMAND_SHIFT, KeyAction::CommandPalette),
+    binding(
+        KEY_P,
+        COMMAND_SHIFT,
+        KeyAction::CommandPalette,
+        "Cmd+Shift+P",
+    ),
     binding(
         KEY_F,
         COMMAND_SHIFT,
         KeyAction::Command(StudioCommand::OpenProjectSearch),
+        "Cmd+Shift+F",
     ),
     binding(
         KEY_E,
         COMMAND_SHIFT,
         KeyAction::Command(StudioCommand::ToggleFileTree),
+        "Cmd+Shift+E",
     ),
     binding(
         KEY_F,
         COMMAND_OPTION,
         KeyAction::Command(StudioCommand::OpenReplace),
+        "Cmd+Opt+F",
     ),
     binding(
         KEY_P,
         Modifiers::COMMAND,
         KeyAction::Command(StudioCommand::OpenQuickOpen),
+        "Cmd+P",
     ),
     binding(
         KEY_F,
         Modifiers::COMMAND,
         KeyAction::Command(StudioCommand::OpenFind),
+        "Cmd+F",
     ),
-    binding(KEY_A, Modifiers::COMMAND, KeyAction::SelectAll),
+    binding(KEY_A, Modifiers::COMMAND, KeyAction::SelectAll, "Cmd+A"),
     binding(
         KEY_S,
         Modifiers::COMMAND,
         KeyAction::Command(StudioCommand::SaveFile),
+        "Cmd+S",
     ),
-    binding(KEY_Z, COMMAND_SHIFT, KeyAction::Redo),
-    binding(KEY_Z, Modifiers::COMMAND, KeyAction::Undo),
+    binding(KEY_Z, COMMAND_SHIFT, KeyAction::Redo, "Cmd+Shift+Z"),
+    binding(KEY_Z, Modifiers::COMMAND, KeyAction::Undo, "Cmd+Z"),
     binding(
         KEY_W,
         Modifiers::COMMAND,
         KeyAction::Command(StudioCommand::CloseTab),
+        "Cmd+W",
     ),
     binding(
         KEY_LEFT_BRACKET,
         Modifiers::COMMAND,
         KeyAction::Command(StudioCommand::NavigateBack),
+        "Cmd+[",
     ),
     binding(
         KEY_RIGHT_BRACKET,
         Modifiers::COMMAND,
         KeyAction::Command(StudioCommand::NavigateForward),
+        "Cmd+]",
     ),
 ];
 
-const fn binding(physical_key: u16, required_modifiers: u8, action: KeyAction) -> KeyBinding {
+const fn binding(
+    physical_key: u16,
+    required_modifiers: u8,
+    action: KeyAction,
+    label: &'static str,
+) -> KeyBinding {
     KeyBinding {
         physical_key,
         required_modifiers,
         action,
+        label,
     }
 }
 
@@ -259,6 +280,12 @@ impl Keymap {
                     && modifiers.contains(binding.required_modifiers)
             })
             .map(|binding| binding.action)
+    }
+
+    pub(crate) fn shortcut_for(self, command: StudioCommand) -> Option<&'static str> {
+        self.bindings.iter().find_map(|binding| {
+            (binding.action == KeyAction::Command(command)).then_some(binding.label)
+        })
     }
 }
 
@@ -288,6 +315,7 @@ pub(crate) enum SettingsError {
     EmptyFontName,
     InvalidTabColumns,
     InvalidColor(&'static str),
+    InvalidShortcutLabel,
     DuplicateBinding { physical_key: u16, modifiers: u8 },
     ShadowedBinding { physical_key: u16, modifiers: u8 },
 }
@@ -302,6 +330,9 @@ impl fmt::Display for SettingsError {
             Self::EmptyFontName => formatter.write_str("font name must not be empty"),
             Self::InvalidTabColumns => formatter.write_str("tab columns must be nonzero"),
             Self::InvalidColor(name) => write!(formatter, "theme color {name} is invalid"),
+            Self::InvalidShortcutLabel => {
+                formatter.write_str("shortcut label must be 1 to 16 ASCII bytes")
+            }
             Self::DuplicateBinding {
                 physical_key,
                 modifiers,
@@ -350,6 +381,9 @@ fn command_palette_background() -> Result<LinearRgba, SettingsError> {
 
 fn validate_bindings(bindings: &[KeyBinding]) -> Result<(), SettingsError> {
     for (index, binding) in bindings.iter().enumerate() {
+        if binding.label.is_empty() || binding.label.len() > 16 || !binding.label.is_ascii() {
+            return Err(SettingsError::InvalidShortcutLabel);
+        }
         for previous in &bindings[..index] {
             if previous.physical_key != binding.physical_key {
                 continue;
@@ -407,6 +441,14 @@ mod tests {
         assert_eq!(
             classes.map(|class| settings.theme.syntax.color(class)),
             expected
+        );
+        assert_eq!(
+            settings.keymap.shortcut_for(StudioCommand::OpenFind),
+            Some("Cmd+F")
+        );
+        assert_eq!(
+            settings.keymap.shortcut_for(StudioCommand::SplitRight),
+            None
         );
         assert_eq!(COMMAND_SHIFT, Modifiers::COMMAND | Modifiers::SHIFT);
         assert_eq!(COMMAND_OPTION, Modifiers::COMMAND | Modifiers::OPTION);
@@ -495,8 +537,8 @@ mod tests {
     #[test]
     fn duplicate_and_shadowed_bindings_fail_with_exact_identity() {
         let duplicate = [
-            binding(KEY_A, Modifiers::COMMAND, KeyAction::SelectAll),
-            binding(KEY_A, Modifiers::COMMAND, KeyAction::Undo),
+            binding(KEY_A, Modifiers::COMMAND, KeyAction::SelectAll, "Cmd+A"),
+            binding(KEY_A, Modifiers::COMMAND, KeyAction::Undo, "Cmd+A"),
         ];
         assert_eq!(
             validate_bindings(&duplicate),
@@ -506,11 +548,12 @@ mod tests {
             })
         );
         let shadowed = [
-            binding(KEY_F, Modifiers::COMMAND, KeyAction::Undo),
+            binding(KEY_F, Modifiers::COMMAND, KeyAction::Undo, "Cmd+F"),
             binding(
                 KEY_F,
                 Modifiers::COMMAND | Modifiers::SHIFT,
                 KeyAction::Redo,
+                "Cmd+Shift+F",
             ),
         ];
         assert_eq!(
@@ -554,6 +597,32 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_labels_are_static_ascii_and_bounded() {
+        let boundary = [binding(
+            KEY_A,
+            Modifiers::COMMAND,
+            KeyAction::SelectAll,
+            "1234567890123456",
+        )];
+        assert_eq!(validate_bindings(&boundary), Ok(()));
+        let invalid = [binding(KEY_A, Modifiers::COMMAND, KeyAction::SelectAll, "")];
+        assert_eq!(
+            validate_bindings(&invalid),
+            Err(SettingsError::InvalidShortcutLabel)
+        );
+        let oversized = [binding(
+            KEY_A,
+            Modifiers::COMMAND,
+            KeyAction::SelectAll,
+            "Command+Control+A",
+        )];
+        assert_eq!(
+            validate_bindings(&oversized),
+            Err(SettingsError::InvalidShortcutLabel)
+        );
+    }
+
+    #[test]
     fn invalid_color_and_every_diagnostic_are_exact() {
         assert_eq!(
             color("broken", f32::NAN, 0.0, 0.0, 1.0),
@@ -579,6 +648,10 @@ mod tests {
             (
                 SettingsError::InvalidColor("selection"),
                 "theme color selection is invalid".to_owned(),
+            ),
+            (
+                SettingsError::InvalidShortcutLabel,
+                "shortcut label must be 1 to 16 ASCII bytes".to_owned(),
             ),
             (
                 SettingsError::DuplicateBinding {
