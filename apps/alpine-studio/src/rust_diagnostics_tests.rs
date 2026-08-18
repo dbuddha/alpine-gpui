@@ -1,11 +1,55 @@
-use std::{fs, sync::Arc};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::{self, Command},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use serde_json::value::RawValue;
 
 use super::*;
 
-fn fixture() -> (PathBuf, PathBuf, BufferSnapshot, LanguageIdentity) {
-    let root = std::env::temp_dir().join(format!("alpine-rust-diagnostics-{}", std::process::id()));
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
+static MOCK_EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
+
+pub(crate) fn mock_executable() -> &'static Path {
+    MOCK_EXECUTABLE
+        .get_or_init(|| {
+            let current = env::current_exe().unwrap_or_else(|_| unreachable!());
+            let directory = current.parent().unwrap_or_else(|| unreachable!());
+            let path = directory.join(format!(
+                "alpine-rust-diagnostics-mock-{}{}",
+                process::id(),
+                env::consts::EXE_SUFFIX
+            ));
+            let source =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lsp_mock_server.rs");
+            let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+            let output = Command::new(rustc)
+                .args(["--edition=2024", "-o"])
+                .arg(&path)
+                .arg(source)
+                .output()
+                .unwrap_or_else(|_| unreachable!());
+            assert!(
+                output.status.success(),
+                "failed to compile Rust diagnostics mock: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            path
+        })
+        .as_path()
+}
+
+pub(crate) fn fixture() -> (PathBuf, PathBuf, BufferSnapshot, LanguageIdentity) {
+    let root = env::temp_dir().join(format!(
+        "alpine-rust-diagnostics-{}-{}",
+        process::id(),
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+    ));
     fs::create_dir_all(&root).unwrap_or_else(|_| unreachable!());
     let root = fs::canonicalize(root).unwrap_or_else(|_| unreachable!());
     let path = root.join("main.rs");
@@ -20,7 +64,7 @@ fn fixture() -> (PathBuf, PathBuf, BufferSnapshot, LanguageIdentity) {
     (root, path, snapshot, identity)
 }
 
-fn diagnostics(path: &Path, version: i32) -> Box<RawValue> {
+pub(crate) fn diagnostics(path: &Path, version: i32) -> Box<RawValue> {
     let document =
         LspDocument::from_file_path(path, "rust", version).unwrap_or_else(|_| unreachable!());
     let open = document
@@ -43,7 +87,7 @@ fn marker_admission_is_identity_epoch_visible_and_bounded() {
     let input = RustDocumentInput::new(&path, &root, identity, snapshot);
     let mut model = RustDiagnostics::default();
     model
-        .install_for_test(input, &diagnostics(&path, 1))
+        .install_for_test(input, &diagnostics(&path, 1), mock_executable())
         .unwrap_or_else(|_| unreachable!());
     let mut markers = Vec::new();
     assert_eq!(
@@ -144,7 +188,6 @@ fn wake_latch_preserves_the_latest_generation_until_foreground_admission() {
     assert_eq!(latch.take(), None);
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn wait_for_product_diagnostics(
     model: &mut RustDiagnostics,
     latch: &LanguageWakeLatch,
@@ -182,6 +225,116 @@ fn wait_for_product_diagnostics(
         model.status_message()
     )
     .into())
+}
+
+#[test]
+fn portable_mock_drives_open_change_clear_and_shutdown() -> Result<(), Box<dyn Error>> {
+    let (root, path, _, mut identity) = fixture();
+    let mut buffer = alpine_text::Buffer::new("fn broken( {\n");
+    identity.buffer_revision = buffer.revision().get();
+    let latch = LanguageWakeLatch::default();
+    let mut model = RustDiagnostics::with_server(mock_executable());
+    let input = RustDocumentInput::new(&path, &root, identity, buffer.snapshot());
+    let wake_latch = latch.clone();
+    assert!(
+        model
+            .sync(Some(input), move |wake| {
+                let wake_latch = wake_latch.clone();
+                Arc::new(move || wake_latch.publish(wake))
+            })
+            .visual_changed
+    );
+    let opened = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
+    assert_eq!(opened.diagnostic_version, Some(1));
+    assert_eq!(model.status_message().as_deref(), Some("Rust: mock broken"));
+
+    let mut transaction = alpine_text::Transaction::new(buffer.revision());
+    transaction.replace(0..buffer.snapshot().len_bytes(), "fn still_broken( {\n")?;
+    buffer.apply(transaction)?;
+    identity.document_revision += 1;
+    identity.buffer_revision = buffer.revision().get();
+    identity.selection_revision += 1;
+    let changed = RustDocumentInput::new(&path, &root, identity, buffer.snapshot());
+    let effect = model.sync(Some(changed), |_| Arc::new(|| {}));
+    assert!(effect.visual_changed);
+    let changed = wait_for_product_diagnostics(
+        &mut model,
+        &latch,
+        opened.diagnostic_publications + 1,
+        2,
+        false,
+        true,
+    )?;
+    assert_eq!(changed.diagnostic_version, Some(2));
+
+    let mut transaction = alpine_text::Transaction::new(buffer.revision());
+    transaction.replace(0..buffer.snapshot().len_bytes(), "let ok = 1;\n")?;
+    buffer.apply(transaction)?;
+    identity.document_revision += 1;
+    identity.buffer_revision = buffer.revision().get();
+    let valid = RustDocumentInput::new(&path, &root, identity, buffer.snapshot());
+    assert!(model.sync(Some(valid), |_| Arc::new(|| {})).visual_changed);
+    let cleared = wait_for_product_diagnostics(
+        &mut model,
+        &latch,
+        changed.diagnostic_publications + 1,
+        3,
+        false,
+        false,
+    )?;
+    assert_eq!(cleared.diagnostic_items, 0);
+    assert!(model.status_message().is_none());
+    assert!(model.sync(None, |_| Arc::new(|| {})).visual_changed);
+    assert!(!model.snapshot().active);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn portable_mock_protocol_failure_restarts_the_active_document() -> Result<(), Box<dyn Error>> {
+    let (root, path, _, mut identity) = fixture();
+    let mut buffer = alpine_text::Buffer::new("fn broken( {\n");
+    identity.buffer_revision = buffer.revision().get();
+    let latch = LanguageWakeLatch::default();
+    let mut model = RustDiagnostics::with_server(mock_executable());
+    let input = RustDocumentInput::new(&path, &root, identity, buffer.snapshot());
+    let wake_latch = latch.clone();
+    assert!(
+        model
+            .sync(Some(input), move |wake| {
+                let wake_latch = wake_latch.clone();
+                Arc::new(move || wake_latch.publish(wake))
+            })
+            .visual_changed
+    );
+    let _ = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
+
+    let mut transaction = alpine_text::Transaction::new(buffer.revision());
+    transaction.replace(0..buffer.snapshot().len_bytes(), "ALPINE_PROTOCOL_ERROR\n")?;
+    buffer.apply(transaction)?;
+    identity.document_revision += 1;
+    identity.buffer_revision = buffer.revision().get();
+    let changed = RustDocumentInput::new(&path, &root, identity, buffer.snapshot());
+    assert!(
+        model
+            .sync(Some(changed), |_| Arc::new(|| {}))
+            .visual_changed
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while model.snapshot().restarts == 0 {
+        if let Some(wake) = latch.take() {
+            let _ = model.poll(wake);
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("mock protocol failure did not restart rust-analyzer".into());
+        }
+    }
+    assert_eq!(model.snapshot().restarts, 1);
+    fs::remove_dir_all(root)?;
+    Ok(())
 }
 
 #[test]

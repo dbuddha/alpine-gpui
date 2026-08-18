@@ -184,8 +184,8 @@ impl fmt::Display for RustDiagnosticsError {
 
 impl Error for RustDiagnosticsError {}
 
-#[derive(Default)]
 pub(crate) struct RustDiagnostics {
+    server_path: Option<PathBuf>,
     target: Option<Target>,
     session: Option<RustSession>,
     next_generation: u64,
@@ -197,6 +197,29 @@ pub(crate) struct RustDiagnostics {
     stale_wakes: u64,
     stale_diagnostics: u64,
     restarts: u64,
+    #[cfg(test)]
+    force_continuation_once: bool,
+}
+
+impl Default for RustDiagnostics {
+    fn default() -> Self {
+        Self {
+            server_path: env::var_os("ALPINE_RUST_ANALYZER").map(PathBuf::from),
+            target: None,
+            session: None,
+            next_generation: 0,
+            status: None,
+            peak_diagnostic_items: 0,
+            peak_diagnostic_bytes: 0,
+            diagnostic_publications: 0,
+            polls: 0,
+            stale_wakes: 0,
+            stale_diagnostics: 0,
+            restarts: 0,
+            #[cfg(test)]
+            force_continuation_once: false,
+        }
+    }
 }
 
 impl RustDiagnostics {
@@ -237,9 +260,7 @@ impl RustDiagnostics {
             let Some(version) = session.lsp_version.checked_add(1) else {
                 return self.fail(RustDiagnosticsError::VersionExhausted);
             };
-            if let Err(error) = session.document.set_version(version) {
-                return self.fail(RustDiagnosticsError::Language(error));
-            }
+            session.document.set_version(version);
             session.lsp_version = version;
             session.snapshot = input.snapshot;
             session.pending_change = session.state == SessionState::Open;
@@ -299,40 +320,25 @@ impl RustDiagnostics {
             if let Some(candidate) = candidate {
                 visual_changed |= self.admit(candidate);
             }
-            match poll {
-                LspClientPoll::Idle => break,
-                LspClientPoll::Started { epoch, .. } => {
-                    visual_changed |= self.begin_initialize(epoch.get());
-                }
-                LspClientPoll::Stopped(StopReason::Restart)
-                | LspClientPoll::Protocol { .. }
-                | LspClientPoll::Stderr { .. }
-                | LspClientPoll::InputWritten { .. } => {}
-                LspClientPoll::Exited { .. }
-                | LspClientPoll::Failed(_)
-                | LspClientPoll::Stopped(_) => {
-                    visual_changed |= self.restart_or_fail(RustDiagnosticsError::Client(
-                        LspClientError::ProcessNotStarted,
-                    ));
-                    break;
-                }
-                LspClientPoll::InputRejected { .. } => {
-                    if let Some(session) = self.session.as_mut() {
-                        session.pending_change = session.state == SessionState::Open;
-                    }
-                    visual_changed |= replace_status(
-                        &mut self.status,
-                        Some(Arc::from("Rust diagnostics input queue is saturated.")),
-                    );
-                }
+            if self.apply_poll(poll, &mut visual_changed) {
+                break;
             }
         }
         visual_changed |= self.flush_change();
-        let continuation = self.session.as_ref().and_then(|session| {
+        #[allow(
+            unused_mut,
+            reason = "test pressure injection replaces an empty process queue"
+        )]
+        let mut continuation = self.session.as_ref().and_then(|session| {
             (session.client.snapshot().process.queued_events > 0).then_some(LanguageWake {
                 generation: session.generation,
             })
         });
+        #[cfg(test)]
+        if self.force_continuation_once {
+            self.force_continuation_once = false;
+            continuation = Some(wake);
+        }
         LanguageEffect {
             visual_changed,
             continuation,
@@ -341,6 +347,36 @@ impl RustDiagnostics {
 
     pub(crate) fn status_message(&self) -> Option<Arc<str>> {
         self.status.clone()
+    }
+
+    fn apply_poll(&mut self, poll: LspClientPoll, visual_changed: &mut bool) -> bool {
+        match poll {
+            LspClientPoll::Idle => true,
+            LspClientPoll::Started { epoch, .. } => {
+                *visual_changed |= self.begin_initialize(epoch.get());
+                false
+            }
+            LspClientPoll::Stopped(StopReason::Restart)
+            | LspClientPoll::Protocol { .. }
+            | LspClientPoll::Stderr { .. }
+            | LspClientPoll::InputWritten { .. } => false,
+            LspClientPoll::Exited { .. } | LspClientPoll::Failed(_) | LspClientPoll::Stopped(_) => {
+                *visual_changed |= self.restart_or_fail(RustDiagnosticsError::Client(
+                    LspClientError::ProcessNotStarted,
+                ));
+                true
+            }
+            LspClientPoll::InputRejected { .. } => {
+                if let Some(session) = self.session.as_mut() {
+                    session.pending_change = session.state == SessionState::Open;
+                }
+                *visual_changed |= replace_status(
+                    &mut self.status,
+                    Some(Arc::from("Rust diagnostics input queue is saturated.")),
+                );
+                false
+            }
+        }
     }
 
     pub(crate) fn for_each_marker<E, F>(
@@ -458,8 +494,10 @@ impl RustDiagnostics {
     where
         F: FnOnce(LanguageWake) -> ProcessWake,
     {
-        let executable =
-            env::var_os("ALPINE_RUST_ANALYZER").ok_or(RustDiagnosticsError::MissingServer)?;
+        let executable = self
+            .server_path
+            .clone()
+            .ok_or(RustDiagnosticsError::MissingServer)?;
         let generation = self
             .next_generation
             .checked_add(1)
@@ -467,7 +505,7 @@ impl RustDiagnostics {
         let process_identity = ProcessIdentity::new(input.identity.workspace_revision, generation)
             .ok_or(RustDiagnosticsError::InvalidIdentity)?;
         let spec = ProcessSpec::new(
-            PathBuf::from(executable),
+            executable,
             std::iter::empty::<&str>(),
             Some(&input.workspace_root),
         )
@@ -669,10 +707,30 @@ impl RustDiagnostics {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_server(server_path: &Path) -> Self {
+        let mut diagnostics = Self::default();
+        diagnostics.server_path = Some(server_path.to_path_buf());
+        diagnostics
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_continuation_once_for_test(&mut self) {
+        self.force_continuation_once = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_wake_for_test(&self) -> Option<LanguageWake> {
+        self.session.as_ref().map(|session| LanguageWake {
+            generation: session.generation,
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn install_for_test(
         &mut self,
         input: RustDocumentInput,
         params: &serde_json::value::RawValue,
+        executable: &Path,
     ) -> Result<(), RustDiagnosticsError> {
         let document = LspDocument::from_file_path(&input.path, "rust", 1)
             .map_err(RustDiagnosticsError::Language)?;
@@ -685,7 +743,7 @@ impl RustDiagnostics {
         self.status = batch.primary_message().map(Arc::<str>::from);
         self.peak_diagnostic_items = batch.diagnostics().len();
         self.peak_diagnostic_bytes = batch.retained_bytes();
-        self.session = Some(test_session(input, document, batch));
+        self.session = Some(test_session(input, document, batch, executable));
         Ok(())
     }
 }
@@ -716,25 +774,13 @@ fn document_end(snapshot: &BufferSnapshot) -> Result<LspPosition, LanguageProtoc
     let text = snapshot
         .slice(range)
         .map_err(|_| LanguageProtocolError::InvalidRange)?;
-    let has_terminator = text.ends_with("\r\n") || text.ends_with('\n') || text.ends_with('\r');
-    let line = if has_terminator {
-        last_line
-            .checked_add(1)
-            .ok_or(LanguageProtocolError::InvalidPosition)?
-    } else {
-        last_line
-    };
-    let utf16_character = if has_terminator {
-        0
-    } else {
-        text.chars().try_fold(0_usize, |units, character| {
-            units
-                .checked_add(character.len_utf16())
-                .ok_or(LanguageProtocolError::InvalidPosition)
-        })?
-    };
+    let utf16_character = text.chars().try_fold(0_usize, |units, character| {
+        units
+            .checked_add(character.len_utf16())
+            .ok_or(LanguageProtocolError::InvalidPosition)
+    })?;
     LspPosition::new(
-        u32::try_from(line).map_err(|_| LanguageProtocolError::InvalidPosition)?,
+        u32::try_from(last_line).map_err(|_| LanguageProtocolError::InvalidPosition)?,
         u32::try_from(utf16_character).map_err(|_| LanguageProtocolError::InvalidPosition)?,
     )
 }
@@ -744,12 +790,13 @@ fn test_session(
     input: RustDocumentInput,
     document: LspDocument,
     batch: DiagnosticBatch,
+    executable: &Path,
 ) -> RustSession {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static TEST_SEQUENCE: AtomicUsize = AtomicUsize::new(1);
     let spec = ProcessSpec::new(
-        "/bin/cat",
+        executable,
         std::iter::empty::<&str>(),
         Some(&input.workspace_root),
     )
@@ -787,4 +834,8 @@ fn test_session(
 
 #[cfg(test)]
 #[path = "rust_diagnostics_tests.rs"]
-mod tests;
+pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "rust_diagnostics_coverage_tests.rs"]
+mod coverage_tests;

@@ -1000,6 +1000,8 @@ struct StudioApp {
     text_system: Box<dyn StudioTextSystem>,
     rust_diagnostics: RustDiagnostics,
     language_wake_latch: LanguageWakeLatch,
+    #[cfg(test)]
+    diagnostic_clip_override: Option<alpine_scene::ClipId>,
     input_failures: u64,
     render_failures: u64,
     save_failures: u64,
@@ -1240,6 +1242,8 @@ impl StudioApp {
             text_system: Box::new(text_system),
             rust_diagnostics: RustDiagnostics::default(),
             language_wake_latch: LanguageWakeLatch::default(),
+            #[cfg(test)]
+            diagnostic_clip_override: None,
             input_failures: 0,
             render_failures: 0,
             save_failures: 0,
@@ -1945,6 +1949,15 @@ impl StudioApp {
                 }
                 if pane.active && diagnostic_markers < MAX_VISIBLE_DIAGNOSTIC_MARKERS {
                     let remaining = MAX_VISIBLE_DIAGNOSTIC_MARKERS - diagnostic_markers;
+                    #[allow(
+                        unused_mut,
+                        reason = "test fault injection replaces this scene-local clip"
+                    )]
+                    let mut diagnostic_clip = pane_clip;
+                    #[cfg(test)]
+                    if let Some(override_clip) = self.diagnostic_clip_override {
+                        diagnostic_clip = override_clip;
+                    }
                     let added = self.rust_diagnostics.for_each_marker(
                         language_identity,
                         line,
@@ -1962,7 +1975,7 @@ impl StudioApp {
                                 .ok_or(StudioRenderError::Domain)?;
                             builder.push_quad(
                                 Quad::new(Rect::new(underline_origin, underline_size), caret_color)
-                                    .clipped(pane_clip),
+                                    .clipped(diagnostic_clip),
                             )?;
                             Ok::<(), StudioRenderError>(())
                         },

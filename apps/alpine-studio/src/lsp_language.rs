@@ -140,12 +140,8 @@ impl LspDocument {
         }))
     }
 
-    pub(crate) fn set_version(&mut self, version: i32) -> Result<(), LanguageProtocolError> {
-        if version < 0 {
-            return Err(LanguageProtocolError::InvalidVersion);
-        }
+    pub(crate) fn set_version(&mut self, version: i32) {
         self.version = version;
-        Ok(())
     }
 
     pub(crate) const fn version(&self) -> i32 {
@@ -442,11 +438,16 @@ mod tests {
         assert!(change.get().contains(r#""start":{"character":0,"line":0}"#));
         assert!(change.get().contains(r#""end":{"character":11,"line":3}"#));
         let mut versioned = document.clone();
-        versioned.set_version(8)?;
+        versioned.set_version(8);
         assert_eq!(versioned.version(), 8);
         assert_eq!(
-            versioned.set_version(-1),
-            Err(LanguageProtocolError::InvalidVersion)
+            document
+                .did_change_params(
+                    &"x".repeat(MAX_DOCUMENT_TEXT_BYTES + 1),
+                    LspPosition::new(0, 0)?
+                )
+                .err(),
+            Some(LanguageProtocolError::DocumentTooLarge)
         );
         let positioned = document.position_params(LspPosition::new(3, 11)?)?;
         assert!(positioned.get().contains(r#""character":11"#));

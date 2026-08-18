@@ -4751,3 +4751,74 @@ fn folder_launch_primes_lazy_tree_without_stealing_editor_focus()
     assert!(!app.file_tree.is_focused());
     Ok(())
 }
+
+#[test]
+fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn broken( {\n")?;
+    root.write("notes.txt", "plain text\n")?;
+    let rust_path = root.path().join("main.rs");
+    let text_path = root.path().join("notes.txt");
+    let text_app = StudioApp::open_file(TestTextSystem, &text_path)?;
+    assert!(text_app.active_rust_document().is_none());
+
+    let mut app = StudioApp::open_file(TestTextSystem, &rust_path)?;
+    assert!(app.active_rust_document().is_some());
+    app.rust_diagnostics = RustDiagnostics::with_server(rust_diagnostics::tests::mock_executable());
+    app.rust_diagnostics.force_continuation_once_for_test();
+    let viewport = viewport()?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let baseline_quads = runtime
+        .frame_if_dirty()
+        .ok_or("initial rust frame")?
+        .scene()
+        .quads()
+        .len();
+
+    let _ = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(3_000),
+    });
+    let mut rendered = false;
+    for timestamp in 3_001..3_513 {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(timestamp),
+        }) && frame.scene().quads().len() >= baseline_quads + 2
+        {
+            rendered = true;
+            break;
+        }
+    }
+    assert!(rendered);
+    assert!(
+        runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(3_514),
+            })
+            .is_none()
+    );
+
+    let mut latched_app = StudioApp::open_file(TestTextSystem, &rust_path)?;
+    let input = latched_app
+        .active_rust_document()
+        .ok_or("latched Rust document")?;
+    let params = rust_diagnostics::tests::diagnostics(&rust_path, 1);
+    latched_app.rust_diagnostics.install_for_test(
+        input,
+        &params,
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    let wake = latched_app
+        .rust_diagnostics
+        .current_wake_for_test()
+        .ok_or("latched language wake")?;
+    latched_app.language_wake_latch.publish(wake);
+    let mut latched_runtime =
+        Application::new(latched_app, viewport, clear, WorkerConfig::default())?;
+    let _ = latched_runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(3_515),
+    });
+    Ok(())
+}

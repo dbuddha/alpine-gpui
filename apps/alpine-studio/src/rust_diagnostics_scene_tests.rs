@@ -33,7 +33,11 @@ fn diagnostic_scene_adds_clipped_marker_and_bounded_message_then_clears()
     let params: Box<RawValue> = serde_json::from_str(&format!(
         r#"{{"uri":"{uri}","version":1,"diagnostics":[{{"range":{{"start":{{"line":0,"character":3}},"end":{{"line":0,"character":9}}}},"severity":1,"message":"broken"}}]}}"#
     ))?;
-    app.rust_diagnostics.install_for_test(input, &params)?;
+    app.rust_diagnostics.install_for_test(
+        input,
+        &params,
+        rust_diagnostics::tests::mock_executable(),
+    )?;
     let diagnosed = app.scene(SceneRevision::new(2), viewport);
     assert_eq!(diagnosed.quads().len(), baseline.quads().len() + 2);
     let underline = diagnosed.quads().iter().find(|quad| {
@@ -41,9 +45,23 @@ fn diagnostic_scene_adds_clipped_marker_and_bounded_message_then_clears()
     });
     assert!(underline.is_some());
     assert!(underline.and_then(|quad| quad.clip()).is_some());
+
+    let clip_bounds = Rect::new(Point::new(0.0, 0.0).ok_or("clip origin")?, viewport);
+    let mut foreign_builder = SceneBuilder::new(SceneRevision::new(99), viewport);
+    let mut foreign_clip = foreign_builder.push_clip(Clip::new(clip_bounds));
+    for _ in 0..1_024 {
+        foreign_clip = foreign_builder.push_clip(Clip::new(clip_bounds));
+    }
+    app.diagnostic_clip_override = Some(foreign_clip);
+    assert!(matches!(
+        app.try_scene(SceneRevision::new(3), viewport),
+        Err(StudioRenderError::Scene(SceneError::InvalidClip { .. }))
+    ));
+    app.diagnostic_clip_override = None;
+
     let drained = app.rust_diagnostics.shutdown();
     assert!(!drained.active);
-    let cleared = app.scene(SceneRevision::new(3), viewport);
+    let cleared = app.scene(SceneRevision::new(4), viewport);
     assert_eq!(cleared.quads().len(), baseline.quads().len());
     fs::remove_dir_all(root)?;
     Ok(())
