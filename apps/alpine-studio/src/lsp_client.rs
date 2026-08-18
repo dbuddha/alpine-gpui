@@ -1,6 +1,6 @@
 //! Bounded composition of one local process, LSP framer, and JSON-RPC peer.
 
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, num::NonZeroUsize};
 
 use serde_json::value::RawValue;
 
@@ -180,15 +180,15 @@ impl LspClient {
                 self.started = true;
                 Ok(LspClientPoll::Started { epoch, process_id })
             }
-            event @ ProcessEvent::Output { .. } => match event.output() {
-                Some((ProcessStream::Stdout, bytes)) => {
-                    self.ingest_stdout(bytes, current, &mut visitor)
+            event @ ProcessEvent::Output { .. } => {
+                let (stream, bytes) = event
+                    .output()
+                    .ok_or(LspClientError::Frame(LspFrameError::InvalidState))?;
+                match stream {
+                    ProcessStream::Stdout => self.ingest_stdout(bytes, current, &mut visitor),
+                    ProcessStream::Stderr => Ok(LspClientPoll::Stderr { bytes: bytes.len() }),
                 }
-                Some((ProcessStream::Stderr, bytes)) => {
-                    Ok(LspClientPoll::Stderr { bytes: bytes.len() })
-                }
-                None => Ok(LspClientPoll::Idle),
-            },
+            }
             ProcessEvent::InputWritten {
                 sequence, bytes, ..
             } => Ok(LspClientPoll::InputWritten { sequence, bytes }),
@@ -271,10 +271,10 @@ impl LspClient {
         let mut body_bytes = 0_usize;
         while consumed < bytes.len() {
             let batch = self.framer.ingest(&bytes[consumed..])?;
-            if batch.consumed() == 0 {
-                return Err(LspClientError::Frame(LspFrameError::InvalidState));
-            }
-            consumed += batch.consumed();
+            let batch_consumed = NonZeroUsize::new(batch.consumed())
+                .ok_or(LspClientError::Frame(LspFrameError::InvalidState))?
+                .get();
+            consumed += batch_consumed;
             frames = frames
                 .checked_add(batch.frames().len())
                 .ok_or(LspClientError::Frame(LspFrameError::CounterOverflow))?;
@@ -319,7 +319,7 @@ mod tests {
         env, fs,
         path::{Path, PathBuf},
         process::{self, Command},
-        sync::atomic::{AtomicU64, Ordering},
+        sync::OnceLock,
         thread,
         time::{Duration, Instant},
     };
@@ -332,17 +332,11 @@ mod tests {
 
     const WAIT: Duration = Duration::from_secs(5);
     const MOCK_STEM: &str = "alpine-lsp-mock";
-    static MOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    static MOCK_EXECUTABLE: OnceLock<MockExecutable> = OnceLock::new();
 
     struct MockExecutable {
         directory: PathBuf,
         path: PathBuf,
-    }
-
-    impl Drop for MockExecutable {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.directory);
-        }
     }
 
     fn identity(generation: u64) -> ProcessIdentity {
@@ -353,12 +347,21 @@ mod tests {
         RequestStamp::new(revision, revision, revision, revision).unwrap_or_else(|| unreachable!())
     }
 
-    fn mock_executable() -> Result<MockExecutable, Box<dyn Error>> {
-        let sequence = MOCK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let directory = env::temp_dir().join(format!("{MOCK_STEM}-{}-{sequence}", process::id()));
-        fs::create_dir(&directory)?;
+    fn mock_executable() -> &'static MockExecutable {
+        MOCK_EXECUTABLE.get_or_init(|| {
+            compile_mock_executable()
+                .unwrap_or_else(|error| unreachable!("failed to prepare mock server: {error}"))
+        })
+    }
+
+    fn compile_mock_executable() -> Result<MockExecutable, Box<dyn Error>> {
+        let current = env::current_exe()?;
+        let directory = current
+            .parent()
+            .ok_or("test executable has no parent directory")?
+            .to_path_buf();
         let suffix = env::consts::EXE_SUFFIX;
-        let path = directory.join(format!("{MOCK_STEM}{suffix}"));
+        let path = directory.join(format!("{MOCK_STEM}-{}{suffix}", process::id()));
         let source =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lsp_mock_server.rs");
         let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
@@ -367,13 +370,11 @@ mod tests {
             .arg(&path)
             .arg(source)
             .output()?;
-        if !output.status.success() {
-            return Err(format!(
-                "failed to compile mock language server: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
-        }
+        let compiler_stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "failed to compile mock language server: {compiler_stderr}"
+        );
         Ok(MockExecutable { directory, path })
     }
 
@@ -390,14 +391,17 @@ mod tests {
         F: FnMut(&LspClientPoll) -> bool,
     {
         let deadline = Instant::now() + WAIT;
-        while Instant::now() < deadline {
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for local LSP event"
+            );
             let poll = client.poll(current, |_| {})?;
             if predicate(&poll) {
                 return Ok(poll);
             }
             thread::sleep(Duration::from_millis(2));
         }
-        Err("timed out waiting for local LSP event".into())
     }
 
     fn start_initialized(
@@ -419,18 +423,113 @@ mod tests {
             })?;
             thread::sleep(Duration::from_millis(2));
         }
-        if !initialized {
-            return Err("timed out waiting for initialize response".into());
-        }
+        assert!(initialized, "timed out waiting for initialize response");
         Ok(client)
+    }
+
+    #[test]
+    fn requests_fail_closed_until_the_started_event_is_observed() -> Result<(), Box<dyn Error>> {
+        let executable = mock_executable();
+        let mut client = LspClient::start(mock_spec(&executable.path)?, identity(1))?;
+        assert_eq!(
+            client.begin_initialize(),
+            Err(LspClientError::ProcessNotStarted)
+        );
+        assert_eq!(
+            client.begin_request("test/echo", None, stamp(1)),
+            Err(LspClientError::ProcessNotStarted)
+        );
+        assert_eq!(client.cancel(1), Err(LspClientError::ProcessNotStarted));
+        assert_eq!(
+            client.begin_shutdown(),
+            Err(LspClientError::ProcessNotStarted)
+        );
+        let snapshot = client.shutdown();
+        assert_eq!(snapshot.peer.pending_requests(), 0);
+        assert_eq!(snapshot.peer.lifecycle(), PeerLifecycle::Created);
+        Ok(())
+    }
+
+    #[test]
+    fn poll_classifies_diagnostics_rejection_stop_and_spawn_failure() -> Result<(), Box<dyn Error>>
+    {
+        let executable = mock_executable();
+        let current = stamp(1);
+        let mut client = start_initialized(executable, 1)?;
+
+        let diagnostic = client.begin_request("test/stderr", None, current)?;
+        let deadline = Instant::now() + WAIT;
+        let mut saw_stderr = false;
+        let mut saw_response = false;
+        while !saw_stderr || !saw_response {
+            assert!(Instant::now() < deadline, "timed out waiting for stderr");
+            let poll = client.poll(Some(current), |event| {
+                saw_response |= matches!(
+                    event,
+                    PeerEvent::Response { id, .. } if id == diagnostic.request_id
+                );
+            })?;
+            saw_stderr |= matches!(poll, LspClientPoll::Stderr { bytes } if bytes > 0);
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        client.begin_request("test/block", None, current)?;
+        thread::sleep(Duration::from_millis(20));
+        let queued_params = format!(r#"{{"value":"{}"}}"#, "q".repeat(262_144));
+        let queued_params = serde_json::from_str::<Box<RawValue>>(&queued_params)?;
+        for _ in 0..16 {
+            let _ = client.begin_request("test/queued", Some(&queued_params), current);
+        }
+        let rejected = wait_poll(&mut client, Some(current), |poll| {
+            matches!(poll, LspClientPoll::InputRejected { .. })
+        })?;
+        assert!(matches!(
+            rejected,
+            LspClientPoll::InputRejected {
+                failure: ProcessFailure {
+                    stage: ProcessStage::Input,
+                    kind: FailureKind::QueueSaturated,
+                    ..
+                },
+                ..
+            }
+        ));
+        client.shutdown();
+
+        let mut overflowing = start_initialized(executable, 2)?;
+        overflowing.begin_request("test/flood-stderr", None, current)?;
+        let stopped = wait_poll(&mut overflowing, Some(current), |poll| {
+            matches!(poll, LspClientPoll::Stopped(StopReason::OutputOverflow))
+        })?;
+        assert_eq!(stopped, LspClientPoll::Stopped(StopReason::OutputOverflow));
+        overflowing.shutdown();
+
+        let invalid = executable.directory.join(format!(
+            "invalid-language-server{}",
+            env::consts::EXE_SUFFIX
+        ));
+        fs::write(&invalid, b"not an executable")?;
+        let mut failed = LspClient::start(mock_spec(&invalid)?, identity(3))?;
+        let failure = wait_poll(&mut failed, None, |poll| {
+            matches!(poll, LspClientPoll::Failed(_))
+        })?;
+        assert!(matches!(
+            failure,
+            LspClientPoll::Failed(ProcessFailure {
+                stage: ProcessStage::SpawnChild,
+                ..
+            })
+        ));
+        failed.shutdown();
+        Ok(())
     }
 
     #[test]
     fn production_process_framer_and_peer_complete_lifecycle_and_restart()
     -> Result<(), Box<dyn Error>> {
-        let executable = mock_executable()?;
+        let executable = mock_executable();
         let current = stamp(1);
-        let mut client = start_initialized(&executable, 1)?;
+        let mut client = start_initialized(executable, 1)?;
 
         let echo_params = serde_json::from_str::<Box<RawValue>>(r#"{"value":1}"#)?;
         let echo = client.begin_request("test/echo", Some(&echo_params), current)?;
@@ -458,12 +557,15 @@ mod tests {
         let deadline = Instant::now() + WAIT;
         let mut rejected_late = false;
         while Instant::now() < deadline && !rejected_late {
-            match client.poll(Some(current), |_| {}) {
-                Err(LspClientError::Protocol(ProtocolError::UnknownResponseId)) => {
-                    rejected_late = true;
-                }
-                Ok(_) => thread::sleep(Duration::from_millis(2)),
-                Err(error) => return Err(error.into()),
+            let poll = client.poll(Some(current), |_| {});
+            if matches!(
+                poll,
+                Err(LspClientError::Protocol(ProtocolError::UnknownResponseId))
+            ) {
+                rejected_late = true;
+            } else {
+                assert!(poll.is_ok(), "unexpected poll failure: {poll:?}");
+                thread::sleep(Duration::from_millis(2));
             }
         }
         assert!(rejected_late);
@@ -488,11 +590,13 @@ mod tests {
         );
 
         assert_eq!(client.restart(identity(2))?.get(), 2);
-        let _ = wait_poll(
-            &mut client,
-            None,
-            |poll| matches!(poll, LspClientPoll::Started { epoch, .. } if epoch.get() == 2),
-        )?;
+        assert!(matches!(
+            wait_poll(&mut client, None, |poll| matches!(
+                poll,
+                LspClientPoll::Started { epoch, .. } if epoch.get() == 2
+            )),
+            Ok(LspClientPoll::Started { epoch, .. }) if epoch.get() == 2
+        ));
         assert_eq!(client.begin_initialize()?.request_id, 1);
         let deadline = Instant::now() + WAIT;
         let mut initialized = false;
@@ -531,9 +635,9 @@ mod tests {
     #[test]
     fn saturated_submission_rolls_back_peer_admission_without_blocking()
     -> Result<(), Box<dyn Error>> {
-        let executable = mock_executable()?;
+        let executable = mock_executable();
         let current = stamp(1);
-        let mut client = start_initialized(&executable, 1)?;
+        let mut client = start_initialized(executable, 1)?;
         client.begin_request("test/block", None, current)?;
         thread::sleep(Duration::from_millis(20));
 
@@ -553,35 +657,47 @@ mod tests {
         let mut rejection = None;
         for _ in 0..4 {
             let before = client.snapshot().peer.pending_requests();
-            match client.begin_request("test/large", Some(&params), current) {
-                Ok(_) => {}
-                Err(LspClientError::Submit(
-                    error @ (SubmitError::Saturated | SubmitError::RetainedBudget),
-                )) => {
-                    assert_eq!(client.snapshot().peer.pending_requests(), before);
-                    rejection = Some(error);
-                    break;
-                }
-                Err(error) => return Err(error.into()),
+            let submission = client.begin_request("test/large", Some(&params), current);
+            if let Err(LspClientError::Submit(
+                error @ (SubmitError::Saturated | SubmitError::RetainedBudget),
+            )) = &submission
+            {
+                assert_eq!(client.snapshot().peer.pending_requests(), before);
+                rejection = Some(*error);
+                break;
             }
+            assert!(submission.is_ok(), "unexpected submission: {submission:?}");
         }
         assert!(rejection.is_some());
         assert!(started.elapsed() < Duration::from_secs(1));
         let snapshot = client.shutdown();
         assert_eq!(snapshot.process.retained_bytes, 0);
         assert!(snapshot.process.peak_retained_bytes <= 16_777_216);
-        match rejection {
-            Some(SubmitError::Saturated) => assert!(snapshot.process.input_saturations > 0),
-            Some(SubmitError::RetainedBudget) => {
-                assert!(snapshot.process.peak_retained_bytes >= 12_000_000);
-            }
-            _ => unreachable!(),
-        }
+        assert!(
+            snapshot.process.input_saturations > 0
+                || snapshot.process.peak_retained_bytes >= 12_000_000
+        );
         Ok(())
     }
 
     #[test]
     fn client_errors_preserve_structured_process_and_protocol_boundaries() {
+        assert_eq!(
+            LspClientError::from(SubmitError::Closed),
+            LspClientError::Submit(SubmitError::Closed)
+        );
+        assert_eq!(
+            LspClientError::from(SupervisorStopped),
+            LspClientError::SupervisorStopped
+        );
+        assert_eq!(
+            LspClientError::from(LspFrameError::Poisoned),
+            LspClientError::Frame(LspFrameError::Poisoned)
+        );
+        assert_eq!(
+            LspClientError::from(ProtocolError::InvalidEnvelope),
+            LspClientError::Protocol(ProtocolError::InvalidEnvelope)
+        );
         let errors = [
             LspClientError::ProcessNotStarted,
             LspClientError::Process(ProcessFailure {

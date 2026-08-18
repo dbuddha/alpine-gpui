@@ -46,6 +46,14 @@ fn run() -> io::Result<()> {
                         &format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{"ok":true}}}}"#),
                     )?;
                 }
+                Some("test/stderr") if initialized => {
+                    let id = json_id(message)?;
+                    writeln!(io::stderr().lock(), "mock diagnostic")?;
+                    write_frame(
+                        &mut output,
+                        &format!(r#"{{"jsonrpc":"2.0","id":{id},"result":null}}"#),
+                    )?;
+                }
                 Some("test/slow") if initialized => {}
                 Some("$/cancelRequest") if initialized => {
                     let id = json_id(message)?;
@@ -56,6 +64,14 @@ fn run() -> io::Result<()> {
                 }
                 Some("test/crash") if initialized => process::exit(7),
                 Some("test/block") if initialized => thread::sleep(Duration::from_secs(30)),
+                Some("test/flood-stderr") if initialized => {
+                    let mut stderr = io::stderr().lock();
+                    let bytes = [b'x'; 16_384];
+                    while stderr.write_all(&bytes).is_ok() {}
+                    loop {
+                        thread::sleep(Duration::from_secs(30));
+                    }
+                }
                 Some("shutdown") if initialized => {
                     let id = json_id(message)?;
                     write_frame(
