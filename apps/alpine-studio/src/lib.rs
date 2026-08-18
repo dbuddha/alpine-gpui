@@ -48,9 +48,9 @@ use alpine_text_layout::{
     PositiveFinite, TextShaper, VisibleLines,
 };
 use commands::{CommandContext, CommandPalette, CommandPaletteError, StudioCommand};
-use documents::{
-    DocumentTabError, DocumentTabLimits, DocumentTabs, DocumentViewState, RestoredDocumentTab,
-};
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+use documents::RestoredDocumentTab;
+use documents::{DocumentTabError, DocumentTabLimits, DocumentTabs, DocumentViewState};
 use file_tree::{
     FileTreeAction, FileTreeAdmission, FileTreeError, FileTreeRequest, FileTreeState,
     FileTreeWorkerOutput,
