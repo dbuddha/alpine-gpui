@@ -278,13 +278,8 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
         if metadata.is_file() {
             run_native(with_default_session(native_file_app(path)?)?).map_err(StudioError::from)
         } else if metadata.is_dir() {
-            let workspace = Workspace::open_root(path)?;
-            let mut text_system = alpine_text_layout::CoreTextSystem::new();
-            text_system
-                .register_font(FONT_FAMILY, "Menlo-Regular")
-                .map_err(|_| SurfaceError::DriverUnavailable)?;
-            let app = StudioApp::from_workspace(text_system, workspace)?;
-            run_native(with_default_session(app)?).map_err(StudioError::from)
+            run_native(with_default_session(native_workspace_app(path)?)?)
+                .map_err(StudioError::from)
         } else {
             Err(WorkspaceError::UnsupportedTarget(path.to_path_buf()).into())
         }
@@ -415,6 +410,21 @@ fn native_file_app(path: &Path) -> Result<StudioApp, StudioError> {
         .register_font(FONT_FAMILY, "Menlo-Regular")
         .map_err(|_| SurfaceError::DriverUnavailable)?;
     StudioApp::from_document(text_system, document, Some(path)).map_err(StudioError::from)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn native_workspace_app(path: &Path) -> Result<StudioApp, StudioError> {
+    let workspace = Workspace::open_root(path)?;
+    let mut text_system = alpine_text_layout::CoreTextSystem::new();
+    text_system
+        .register_font(FONT_FAMILY, "Menlo-Regular")
+        .map_err(|_| SurfaceError::DriverUnavailable)?;
+    let mut app = StudioApp::from_workspace(text_system, workspace)?;
+    app.file_tree
+        .activate(1)
+        .map_err(|_| SurfaceError::DriverUnavailable)?;
+    app.file_tree.unfocus();
+    Ok(app)
 }
 
 trait StudioTextSystem: TextShaper + GlyphRasterizer {}
