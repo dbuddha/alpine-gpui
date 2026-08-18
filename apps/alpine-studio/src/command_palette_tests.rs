@@ -196,26 +196,6 @@ fn command_palette_focus_cancel_and_scene_are_bounded() -> Result<(), Box<dyn st
 }
 
 #[test]
-fn command_palette_shapes_shortcuts_from_the_authoritative_keymap()
--> Result<(), Box<dyn std::error::Error>> {
-    let mut app = StudioApp::new(PaletteTextSystem {
-        rejected_glyph: Some(u32::from('+')),
-    })?;
-    assert!(
-        app.handle_event(&key(KEY_P, command_shift()))
-            .visual_changed
-    );
-    assert!(matches!(
-        app.try_scene(
-            SceneRevision::new(902),
-            Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?,
-        ),
-        Err(StudioRenderError::Layout(LayoutError::InvalidShaperOutput))
-    ));
-    Ok(())
-}
-
-#[test]
 #[cfg(not(target_os = "windows"))]
 fn command_availability_refresh_prevents_stale_execution() -> Result<(), Box<dyn std::error::Error>>
 {

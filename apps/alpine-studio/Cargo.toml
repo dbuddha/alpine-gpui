@@ -16,6 +16,9 @@ alpine-text = { path = "../../crates/alpine-text", version = "=0.0.0" }
 alpine-text-layout = { path = "../../crates/alpine-text-layout", version = "=0.0.0" }
 ignore = { version = "=0.4.33", default-features = false }
 
+[dev-dependencies]
+mutants = "=0.0.3"
+
 [lints.rust]
 missing_docs = "deny"
 unsafe_code = "deny"

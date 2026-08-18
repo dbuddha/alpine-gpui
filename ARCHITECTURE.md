@@ -74,19 +74,7 @@ an existing UTF-8 file before native construction. Command-S reuses the
 editor's conflict-aware atomic replacement and records structured save evidence
 without changing document revision; scratch save is a deterministic no-op. Its
 `AppDelegate` maps native events to checked local edits and builds only visible
-text plus bounded overscan when dirty.
-
-Studio privately compiles line-local syntax presentation for Rust, Markdown,
-TOML, and JSON with plain text as the deterministic fallback. Syntax work is
-admitted only for lines already selected by visible-range layout, stores ordered
-UTF-16 spans for direct projection onto shaped glyph source positions, and
-reuses exact current-frame or previous-frame content after fingerprint
-confirmation. The cache has a 4 MiB logical metadata and span ceiling, each
-line scans at most 64 KiB and retains at most 1,024 spans, and oversized or
-over-complex lines degrade to unstyled text. This initial compiled lexer adds no
-runtime grammar loading, plugin boundary, background work, dependency, native
-handle, or syntax authority outside Alpine Studio.
-Production typography uses the safe
+text plus bounded overscan when dirty. Production typography uses the safe
 CoreText service; deterministic test typography proves portable editor behavior
 without claiming native validation. It runs through one `Application` until the
 owned AppKit window closes and has no native handles, collaboration state,
@@ -798,19 +786,6 @@ transition. Matching is deterministic and allocation ceilings cover query,
 composition, results, visible rows, and diagnostics. There is no runtime
 registration, plugin hook, closure registry, worker, timer, or public framework
 API at this boundary. See AEP-0177.
-
-Studio also owns one immutable compiled settings value under Requirement #36
-and Task #129. It validates editor metrics, font identity, the complete default
-theme including syntax colors, and an ordered static keymap before application
-state is constructed. Direct shortcuts resolve to the existing closed command
-vocabulary or one of three local editing actions, and binding validation rejects
-duplicates, unreachable less-specific entries, and invalid labels. The same
-binding table supplies bounded static shortcut labels for visible command-palette
-rows, so dispatch and discovery cannot drift. This slice performs no file read,
-parsing, reload, migration, runtime registration, executable discovery, heap
-registry, plugin lookup, or network work during startup. Layered global and
-project configuration remains unimplemented pending a separate serialization
-dependency decision and bounded reload design.
 
 ### Bounded streaming local project search
 

@@ -14,8 +14,6 @@ mod project_search;
 mod quick_open;
 mod recovery;
 mod session;
-mod settings;
-mod syntax;
 
 use std::path::PathBuf;
 mod workspace;
@@ -51,9 +49,8 @@ use alpine_text_layout::{
     PositiveFinite, TextShaper, VisibleLines,
 };
 use commands::{CommandContext, CommandPalette, CommandPaletteError, StudioCommand};
-use documents::{
-    DocumentTabError, DocumentTabLimits, DocumentTabs, DocumentViewState, RestoredDocumentTab,
-};
+use documents::RestoredDocumentTab;
+use documents::{DocumentTabError, DocumentTabLimits, DocumentTabs, DocumentViewState};
 use file_tree::{
     FileTreeAction, FileTreeAdmission, FileTreeError, FileTreeRequest, FileTreeState,
     FileTreeWorkerOutput,
@@ -70,16 +67,6 @@ use project_search::{
 use quick_open::{
     QuickOpenAdmission, QuickOpenError, QuickOpenRequest, QuickOpenState, QuickOpenWorkerOutput,
 };
-use settings::{
-    FONT_FAMILY, FONT_NAME, KEY_DELETE_BACKWARD, KEY_DELETE_FORWARD, KEY_DOWN, KEY_END, KEY_ESCAPE,
-    KEY_HOME, KEY_LEFT, KEY_RETURN, KEY_RIGHT, KEY_TAB, KEY_UP, KeyAction, LINE_HEIGHT,
-    StudioSettings,
-};
-#[cfg(test)]
-use settings::{
-    KEY_A, KEY_E, KEY_F, KEY_LEFT_BRACKET, KEY_P, KEY_RIGHT_BRACKET, KEY_S, KEY_W, KEY_Z,
-};
-use syntax::{DEFAULT_SYNTAX_BUDGET_BYTES, SyntaxCache, SyntaxError, SyntaxLanguage, SyntaxLine};
 use workspace::Workspace;
 
 #[cfg(test)]
@@ -93,7 +80,12 @@ use alpine_runtime::{Application, WorkerConfig};
 const WINDOW_WIDTH: f32 = 960.0;
 const WINDOW_HEIGHT: f32 = 540.0;
 const CONTENT_INSET: f32 = 24.0;
+const LINE_HEIGHT: f32 = 22.0;
+const FONT_SIZE: f32 = 15.0;
+const DEFAULT_SCALE: f32 = 2.0;
+const FONT_FAMILY: u64 = 1;
 const CARET_WIDTH: f32 = 1.5;
+const SELECTION_ALPHA: f32 = 0.42;
 const SIDEBAR_WIDTH: f32 = 236.0;
 const TREE_ROW_HEIGHT: f32 = 22.0;
 const TREE_OVERSCAN_ROWS: usize = 3;
@@ -117,6 +109,27 @@ const COMMAND_PALETTE_WIDTH: f32 = 620.0;
 const COMMAND_PALETTE_QUERY_HEIGHT: f32 = 34.0;
 const COMMAND_PALETTE_ROW_HEIGHT: f32 = 24.0;
 const INITIAL_TEXT: &str = "fn main() {\n    println!(\"Alpine Studio\");\n}\n\n// Local, direct, and deliberately small.\n";
+
+const KEY_A: u16 = 0;
+const KEY_S: u16 = 1;
+const KEY_E: u16 = 14;
+const KEY_F: u16 = 3;
+const KEY_P: u16 = 35;
+const KEY_Z: u16 = 6;
+const KEY_W: u16 = 13;
+const KEY_RIGHT_BRACKET: u16 = 30;
+const KEY_LEFT_BRACKET: u16 = 33;
+const KEY_RETURN: u16 = 36;
+const KEY_TAB: u16 = 48;
+const KEY_DELETE_BACKWARD: u16 = 51;
+const KEY_ESCAPE: u16 = 53;
+const KEY_HOME: u16 = 115;
+const KEY_DELETE_FORWARD: u16 = 117;
+const KEY_END: u16 = 119;
+const KEY_LEFT: u16 = 123;
+const KEY_RIGHT: u16 = 124;
+const KEY_DOWN: u16 = 125;
+const KEY_UP: u16 = 126;
 
 /// A structured Alpine Studio launch failure.
 #[derive(Debug)]
@@ -205,6 +218,7 @@ pub fn initial_scene() -> Result<Scene, SurfaceError> {
 ///
 /// Returns the structured surface error from scene construction, native
 /// initialization, frame admission, or the application run loop.
+#[cfg_attr(test, mutants::skip)] // Entering AppKit is qualified by native process E2E.
 pub fn run() -> Result<(), RuntimeError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
@@ -223,6 +237,7 @@ pub fn run() -> Result<(), RuntimeError> {
 ///
 /// Returns a structured file error before native construction, or the
 /// structured runtime error from native construction and execution.
+#[cfg_attr(test, mutants::skip)] // Entering AppKit is qualified by native process E2E.
 pub fn run_file(path: impl AsRef<Path>) -> Result<(), StudioError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
@@ -234,6 +249,18 @@ pub fn run_file(path: impl AsRef<Path>) -> Result<(), StudioError> {
     {
         let _ = path;
         Err(SurfaceError::UnsupportedPlatform.into())
+    }
+}
+
+#[cfg(all(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
+mod entry_point_contract_tests {
+    use super::{run, run_file};
+    use std::path::Path;
+
+    #[test]
+    fn unsupported_platform_entry_points_return_structured_errors() {
+        assert!(run().is_err());
+        assert!(run_file(Path::new("alpine-entry-point-probe")).is_err());
     }
 }
 
@@ -251,8 +278,13 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
         if metadata.is_file() {
             run_native(with_default_session(native_file_app(path)?)?).map_err(StudioError::from)
         } else if metadata.is_dir() {
-            run_native(with_default_session(native_workspace_app(path)?)?)
-                .map_err(StudioError::from)
+            let workspace = Workspace::open_root(path)?;
+            let mut text_system = alpine_text_layout::CoreTextSystem::new();
+            text_system
+                .register_font(FONT_FAMILY, "Menlo-Regular")
+                .map_err(|_| SurfaceError::DriverUnavailable)?;
+            let app = StudioApp::from_workspace(text_system, workspace)?;
+            run_native(with_default_session(app)?).map_err(StudioError::from)
         } else {
             Err(WorkspaceError::UnsupportedTarget(path.to_path_buf()).into())
         }
@@ -267,7 +299,7 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
-    let clear = app.settings.theme.clear;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
     let descriptor = SurfaceDescriptor::new(
         "Alpine Studio",
         f64::from(WINDOW_WIDTH),
@@ -282,32 +314,46 @@ fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
 fn native_app() -> Result<StudioApp, SurfaceError> {
     let mut text_system = alpine_text_layout::CoreTextSystem::new();
     text_system
-        .register_font(FONT_FAMILY, FONT_NAME)
+        .register_font(FONT_FAMILY, "Menlo-Regular")
         .map_err(|_| SurfaceError::DriverUnavailable)?;
     StudioApp::new(text_system)
 }
 
+#[cfg(test)]
+fn with_session_path(
+    mut app: StudioApp,
+    session_path: Result<PathBuf, session::SessionError>,
+) -> StudioApp {
+    app.session_path = session_path.ok();
+    app
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg_attr(test, mutants::skip)] // Linux cannot type-check this Apple-only composition boundary.
 fn native_restored_app() -> Result<StudioApp, SurfaceError> {
     let Ok(path) = session::default_path() else {
         return native_app();
     };
     let recovery_warning = match recovery::load(&recovery::path_for_session(&path)) {
         Ok(state) => {
-            let has_dirty_recovery = !state.documents.is_empty();
+            let availability = RestoreAvailability::for_recovery(state.documents.len());
             let mut text_system = alpine_text_layout::CoreTextSystem::new();
             text_system
-                .register_font(FONT_FAMILY, FONT_NAME)
+                .register_font(FONT_FAMILY, "Menlo-Regular")
                 .map_err(|_| SurfaceError::DriverUnavailable)?;
             match StudioApp::from_recovery(text_system, state) {
                 Ok(mut app) => {
                     app.configure_persistence(path)?;
                     return Ok(app);
                 }
-                Err(_error) if has_dirty_recovery => {
-                    return Err(SurfaceError::DriverUnavailable);
-                }
-                Err(error) => Some(format!("Recovery restore skipped: {error}")),
+                Err(error) => match availability {
+                    RestoreAvailability::AllowPlaceholder => {
+                        return Err(SurfaceError::DriverUnavailable);
+                    }
+                    RestoreAvailability::Strict => {
+                        Some(format!("Recovery restore skipped: {error}"))
+                    }
+                },
             }
         }
         Err(recovery::RecoveryError::Io {
@@ -320,7 +366,7 @@ fn native_restored_app() -> Result<StudioApp, SurfaceError> {
         Ok(state) => {
             let mut text_system = alpine_text_layout::CoreTextSystem::new();
             text_system
-                .register_font(FONT_FAMILY, FONT_NAME)
+                .register_font(FONT_FAMILY, "Menlo-Regular")
                 .map_err(|_| SurfaceError::DriverUnavailable)?;
             match StudioApp::from_session(text_system, state) {
                 Ok(app) => app,
@@ -341,6 +387,7 @@ fn native_restored_app() -> Result<StudioApp, SurfaceError> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg_attr(test, mutants::skip)] // Cross-platform fallback state is qualified below this adapter.
 fn session_fallback(detail: &str) -> Result<StudioApp, SurfaceError> {
     let mut app = native_app()?;
     app.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
@@ -349,6 +396,8 @@ fn session_fallback(detail: &str) -> Result<StudioApp, SurfaceError> {
     Ok(app)
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg_attr(test, mutants::skip)] // Cross-platform persistence behavior is qualified independently.
 fn with_default_session(mut app: StudioApp) -> Result<StudioApp, SurfaceError> {
     if let Ok(path) = session::default_path() {
         recovery::ensure_replaceable(&recovery::path_for_session(&path))
@@ -363,24 +412,9 @@ fn native_file_app(path: &Path) -> Result<StudioApp, StudioError> {
     let document = StudioDocument::open(path)?;
     let mut text_system = alpine_text_layout::CoreTextSystem::new();
     text_system
-        .register_font(FONT_FAMILY, FONT_NAME)
+        .register_font(FONT_FAMILY, "Menlo-Regular")
         .map_err(|_| SurfaceError::DriverUnavailable)?;
     StudioApp::from_document(text_system, document, Some(path)).map_err(StudioError::from)
-}
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn native_workspace_app(path: &Path) -> Result<StudioApp, StudioError> {
-    let workspace = Workspace::open_root(path)?;
-    let mut text_system = alpine_text_layout::CoreTextSystem::new();
-    text_system
-        .register_font(FONT_FAMILY, FONT_NAME)
-        .map_err(|_| SurfaceError::DriverUnavailable)?;
-    let mut app = StudioApp::from_workspace(text_system, workspace)?;
-    app.file_tree
-        .activate(1)
-        .map_err(|_| SurfaceError::DriverUnavailable)?;
-    app.file_tree.unfocus();
-    Ok(app)
 }
 
 trait StudioTextSystem: TextShaper + GlyphRasterizer {}
@@ -407,8 +441,6 @@ struct PendingGlyph {
     bounds: Rect,
     atlas_bounds: AtlasBounds,
     clip: alpine_scene::ClipId,
-    source_utf16: u32,
-    color: Option<LinearRgba>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -501,7 +533,6 @@ enum StudioRenderError {
     Find(FindError),
     QuickOpen(QuickOpenError),
     ProjectSearch(ProjectSearchError),
-    Syntax(SyntaxError),
     Text(TextError),
     Layout(LayoutError),
     Scene(SceneError),
@@ -543,12 +574,6 @@ impl From<ProjectSearchError> for StudioRenderError {
     }
 }
 
-impl From<SyntaxError> for StudioRenderError {
-    fn from(error: SyntaxError) -> Self {
-        Self::Syntax(error)
-    }
-}
-
 impl From<LayoutError> for StudioRenderError {
     fn from(error: LayoutError) -> Self {
         Self::Layout(error)
@@ -574,7 +599,6 @@ impl fmt::Display for StudioRenderError {
             Self::ProjectSearch(error) => {
                 write!(formatter, "project-search rendering failed: {error}")
             }
-            Self::Syntax(error) => write!(formatter, "syntax rendering failed: {error}"),
             Self::Text(error) => write!(formatter, "text layout input failed: {error}"),
             Self::Layout(error) => write!(formatter, "visible layout failed: {error}"),
             Self::Scene(error) => write!(formatter, "scene construction failed: {error}"),
@@ -718,8 +742,12 @@ impl StudioDocument {
         let recovery_base = Buffer::new(&recovered.base).snapshot();
         let recovered_buffer = || Buffer::new(&recovered.local);
         let Some(path) = path else {
+            let mut buffer = Buffer::new(&recovered.base);
+            let mut transaction = Transaction::new(buffer.revision());
+            transaction.replace(0..buffer.snapshot().len_bytes(), recovered.local.as_ref())?;
+            buffer.apply(transaction)?;
             return Ok(Self::Scratch {
-                buffer: recovered_buffer(),
+                buffer,
                 clean_revision: 0,
                 recovery_base,
             });
@@ -872,7 +900,6 @@ macro_rules! force_project_search_submission_failure {
 }
 
 struct StudioApp {
-    settings: StudioSettings,
     document: StudioDocument,
     tabs: DocumentTabs<StudioDocument>,
     workspace: Option<Workspace>,
@@ -889,7 +916,6 @@ struct StudioApp {
     last_viewport: Size,
     rendered_lines: Vec<RenderedLine>,
     layout_cache: LineLayoutCache,
-    syntax_cache: SyntaxCache,
     glyph_atlas: GlyphAtlas,
     published_atlas: Option<GlyphAtlasImage>,
     atlas_revision: u64,
@@ -927,9 +953,11 @@ struct StudioApp {
     force_file_tree_submission_failure: Option<()>,
     #[cfg(test)]
     force_command_clip_failure: Option<()>,
+    #[cfg(test)]
+    force_empty_navigation_result: Option<()>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum SessionRestoreError {
     Invalid,
     Workspace,
@@ -954,6 +982,19 @@ impl fmt::Display for SessionRestoreError {
             Self::Allocation => "session restoration allocation failed",
         };
         formatter.write_str(message)
+    }
+}
+
+fn classify_session_document_error(error: &WorkspaceSelectionError) -> SessionRestoreError {
+    match error {
+        WorkspaceSelectionError::File(_) => SessionRestoreError::File,
+        WorkspaceSelectionError::Tabs(_) => SessionRestoreError::Tabs,
+        WorkspaceSelectionError::NoWorkspace
+        | WorkspaceSelectionError::DirtyDocument
+        | WorkspaceSelectionError::RevisionExhausted
+        | WorkspaceSelectionError::Workspace(_)
+        | WorkspaceSelectionError::QuickOpen(_)
+        | WorkspaceSelectionError::ProjectSearch(_) => SessionRestoreError::Invalid,
     }
 }
 
@@ -1067,15 +1108,12 @@ impl StudioApp {
         path: Option<&Path>,
         workspace: Option<Workspace>,
     ) -> Result<Self, SurfaceError> {
-        let settings = StudioSettings::compiled().map_err(|_| SurfaceError::DriverUnavailable)?;
         let last_viewport =
             Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
         let layout_budget = NonZeroUsize::new(DEFAULT_LAYOUT_BUDGET_BYTES)
             .ok_or(SurfaceError::DriverUnavailable)?;
         let atlas_budget =
             NonZeroUsize::new(DEFAULT_ATLAS_BUDGET_BYTES).ok_or(SurfaceError::DriverUnavailable)?;
-        let syntax_cache = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
         let runtime_document_revision = document.buffer().revision().get();
         let tabs = DocumentTabs::new(path, None, DocumentTabLimits::default())
             .map_err(|_| SurfaceError::DriverUnavailable)?;
@@ -1084,7 +1122,6 @@ impl StudioApp {
             .map_err(|_| SurfaceError::DriverUnavailable)?;
         let panes = PaneGrid::new(active_tab, DocumentViewState::default());
         Ok(Self {
-            settings,
             document,
             tabs,
             workspace,
@@ -1101,7 +1138,6 @@ impl StudioApp {
             last_viewport,
             rendered_lines: Vec::new(),
             layout_cache: LineLayoutCache::new(layout_budget),
-            syntax_cache,
             glyph_atlas: GlyphAtlas::new(atlas_budget),
             published_atlas: None,
             atlas_revision: 0,
@@ -1139,6 +1175,8 @@ impl StudioApp {
             force_file_tree_submission_failure: None,
             #[cfg(test)]
             force_command_clip_failure: None,
+            #[cfg(test)]
+            force_empty_navigation_result: None,
         })
     }
 
@@ -1254,16 +1292,7 @@ impl StudioApp {
         for pane in panes.panes.iter_mut().flatten() {
             let index = usize::from(pane.tab);
             app.ensure_document_tab_loaded(index)
-                .map_err(|error| match error {
-                    WorkspaceSelectionError::File(_) => SessionRestoreError::File,
-                    WorkspaceSelectionError::Tabs(_) => SessionRestoreError::Tabs,
-                    WorkspaceSelectionError::NoWorkspace
-                    | WorkspaceSelectionError::DirtyDocument
-                    | WorkspaceSelectionError::RevisionExhausted
-                    | WorkspaceSelectionError::Workspace(_)
-                    | WorkspaceSelectionError::QuickOpen(_)
-                    | WorkspaceSelectionError::ProjectSearch(_) => SessionRestoreError::Invalid,
-                })?;
+                .map_err(|error| classify_session_document_error(&error))?;
             pane.view = app
                 .clamp_tab_view(index, pane.view)
                 .map_err(|_| SessionRestoreError::Tabs)?;
@@ -1298,6 +1327,13 @@ impl StudioApp {
             let mut conflicted_count = 0_usize;
             let mut unavailable_count = 0_usize;
             for index in 0..self.tabs.len() {
+                if self
+                    .tabs
+                    .is_deferred(index)
+                    .map_err(|_| SessionRestoreError::Tabs)?
+                {
+                    continue;
+                }
                 let document = self
                     .tabs
                     .document_at(index, &self.document)
@@ -1361,9 +1397,13 @@ impl StudioApp {
         let length = snapshot.len_bytes();
         let clamp = |offset: ByteOffset| {
             let mut value = offset.get().min(length);
-            while value > 0 && snapshot.slice(value..value).is_err() {
-                value -= 1;
+            for _ in 0..3 {
+                if snapshot.slice(value..value).is_ok() {
+                    return ByteOffset::new(value);
+                }
+                value = value.saturating_sub(1);
             }
+            debug_assert!(snapshot.slice(value..value).is_ok());
             ByteOffset::new(value)
         };
         DocumentViewState {
@@ -1527,20 +1567,11 @@ impl StudioApp {
         self.document.buffer_mut()
     }
 
-    fn font_from_settings(editor: settings::EditorSettings) -> Result<FontKey, StudioRenderError> {
-        let size = PositiveFinite::new(editor.font_size).ok_or(StudioRenderError::Domain)?;
-        let scale = PositiveFinite::new(editor.font_scale).ok_or(StudioRenderError::Domain)?;
-        let tabs = NonZeroU32::new(editor.tab_columns).ok_or(StudioRenderError::Domain)?;
-        Ok(FontKey::new(editor.font_family, size, scale, tabs))
-    }
-
-    fn resolved_font(&self) -> Result<FontKey, StudioRenderError> {
-        Self::font_from_settings(self.settings.editor)
-    }
-
-    #[cfg(test)]
     fn font() -> Result<FontKey, StudioRenderError> {
-        Self::font_from_settings(settings::EditorSettings::COMPILED)
+        let size = PositiveFinite::new(FONT_SIZE).ok_or(StudioRenderError::Domain)?;
+        let scale = PositiveFinite::new(DEFAULT_SCALE).ok_or(StudioRenderError::Domain)?;
+        let tabs = NonZeroU32::new(4).ok_or(StudioRenderError::Domain)?;
+        Ok(FontKey::new(FONT_FAMILY, size, scale, tabs))
     }
 
     fn scene(&mut self, revision: SceneRevision, viewport: Size) -> Scene {
@@ -1550,17 +1581,20 @@ impl StudioApp {
                 let _error_message = error.to_string();
                 self.render_failures = self.render_failures.saturating_add(1);
                 self.rendered_lines.clear();
-                self.fallback_scene(revision, viewport)
+                Self::fallback_scene(revision, viewport)
             }
         }
     }
 
-    fn fallback_scene(&self, revision: SceneRevision, viewport: Size) -> Scene {
+    fn fallback_scene(revision: SceneRevision, viewport: Size) -> Scene {
         let mut builder = SceneBuilder::new(revision, viewport);
-        if let Some(origin) = Point::new(0.0, 0.0) {
+        if let (Some(origin), Some(color)) = (
+            Point::new(0.0, 0.0),
+            LinearRgba::new(0.035, 0.04, 0.045, 1.0),
+        ) {
             builder.push(Primitive::Quad {
                 bounds: Rect::new(origin, viewport),
-                color: self.settings.theme.background,
+                color,
             });
         }
         builder.finish()
@@ -1578,7 +1612,6 @@ impl StudioApp {
         self.last_viewport = viewport;
         self.clamp_scroll();
         self.layout_cache.begin_frame()?;
-        self.syntax_cache.begin_frame();
 
         let origin = Point::new(0.0, 0.0).ok_or(StudioRenderError::Domain)?;
         let sidebar_width = self.sidebar_width(viewport);
@@ -1601,28 +1634,43 @@ impl StudioApp {
         let editor_origin_x = active_pane.bounds.origin().x();
         let content_size = active_pane.bounds.size();
         let line_height = PositiveFinite::new(LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
-        let font = self.resolved_font()?;
+        let font = Self::font()?;
         let snapshot = self.buffer().snapshot();
-        let theme = self.settings.theme;
-        let background = theme.background;
-        let editor_background = theme.editor_background;
-        let selection_color = theme.selection;
-        let text_color = theme.text;
-        let syntax_palette = theme.syntax;
-        let caret_color = theme.caret;
-        let status_background_color = theme.status_background;
-        let sidebar_background = theme.sidebar_background;
-        let active_row_color = theme.active_row;
-        let tab_background = theme.tab_background;
-        let active_tab_color = theme.active_tab;
-        let find_match_color = theme.find_match;
-        let find_background_color = theme.find_background;
-        let quick_open_background = theme.quick_open_background;
-        let quick_open_selected = theme.quick_open_selected;
-        let project_search_background = theme.project_search_background;
-        let project_search_selected = theme.project_search_selected;
-        let command_palette_background = theme.command_palette_background;
-        let command_palette_selected = theme.command_palette_selected;
+        let background =
+            LinearRgba::new(0.035, 0.04, 0.045, 1.0).ok_or(StudioRenderError::Domain)?;
+        let editor_background =
+            LinearRgba::new(0.055, 0.06, 0.067, 1.0).ok_or(StudioRenderError::Domain)?;
+        let selection_color =
+            LinearRgba::new(0.18, 0.48, 0.72, SELECTION_ALPHA).ok_or(StudioRenderError::Domain)?;
+        let text_color = LinearRgba::new(0.86, 0.88, 0.9, 1.0).ok_or(StudioRenderError::Domain)?;
+        let caret_color =
+            LinearRgba::new(0.94, 0.72, 0.25, 1.0).ok_or(StudioRenderError::Domain)?;
+        let status_background_color =
+            LinearRgba::new(0.34, 0.075, 0.065, 0.96).ok_or(StudioRenderError::Domain)?;
+        let sidebar_background =
+            LinearRgba::new(0.027, 0.031, 0.035, 1.0).ok_or(StudioRenderError::Domain)?;
+        let active_row_color =
+            LinearRgba::new(0.12, 0.16, 0.19, 1.0).ok_or(StudioRenderError::Domain)?;
+        let tab_background =
+            LinearRgba::new(0.025, 0.028, 0.032, 1.0).ok_or(StudioRenderError::Domain)?;
+        let active_tab_color =
+            LinearRgba::new(0.095, 0.105, 0.115, 1.0).ok_or(StudioRenderError::Domain)?;
+        let find_match_color =
+            LinearRgba::new(0.62, 0.45, 0.08, 0.38).ok_or(StudioRenderError::Domain)?;
+        let find_background_color =
+            LinearRgba::new(0.08, 0.09, 0.10, 0.98).ok_or(StudioRenderError::Domain)?;
+        let quick_open_background =
+            LinearRgba::new(0.045, 0.052, 0.058, 0.99).ok_or(StudioRenderError::Domain)?;
+        let quick_open_selected =
+            LinearRgba::new(0.12, 0.25, 0.31, 1.0).ok_or(StudioRenderError::Domain)?;
+        let project_search_background =
+            LinearRgba::new(0.04, 0.06, 0.055, 0.995).ok_or(StudioRenderError::Domain)?;
+        let project_search_selected =
+            LinearRgba::new(0.10, 0.30, 0.22, 1.0).ok_or(StudioRenderError::Domain)?;
+        let command_palette_background =
+            LinearRgba::new(0.055, 0.062, 0.067, 0.995).ok_or(StudioRenderError::Domain)?;
+        let command_palette_selected =
+            LinearRgba::new(0.34, 0.22, 0.075, 1.0).ok_or(StudioRenderError::Domain)?;
 
         let mut builder = SceneBuilder::new(revision, viewport);
         builder.push_quad(Quad::new(Rect::new(origin, viewport), background))?;
@@ -1712,11 +1760,6 @@ impl StudioApp {
                 .map_err(|_| StudioRenderError::Domain)?
                 .buffer()
                 .snapshot();
-            let pane_tab_index = self
-                .tabs
-                .index_for_id(pane_tab)
-                .ok_or(StudioRenderError::Domain)?;
-            let syntax_language = SyntaxLanguage::from_path(self.tabs.path_at(pane_tab_index));
             let pane_scroll = pane_view.scroll_y;
             let viewport_height = PositiveFinite::new(pane.bounds.size().height())
                 .ok_or(StudioRenderError::Domain)?;
@@ -1742,9 +1785,6 @@ impl StudioApp {
                 let top = pane.bounds.origin().y() + usize_as_f32(line) * LINE_HEIGHT - pane_scroll;
                 let baseline = top + layout.ascent();
                 let line_range = pane_snapshot.line_byte_range(line)?;
-                let syntax_line = self
-                    .syntax_cache
-                    .line(&pane_snapshot, line, syntax_language)?;
                 if pane.active {
                     for found in self.find.visible_ranges(
                         self.runtime_document_revision,
@@ -1765,7 +1805,7 @@ impl StudioApp {
                     }
                 }
                 if !pane_selection.is_empty() {
-                    Self::paint_selection(
+                    let selection_result = Self::paint_selection(
                         &mut builder,
                         pane_clip,
                         &pane_snapshot,
@@ -1775,16 +1815,15 @@ impl StudioApp {
                         pane_selection.clone(),
                         selection_color,
                         pane_origin_x,
-                    )?;
+                    );
+                    selection_result?;
                 }
-                pending_glyphs.extend(self.collect_syntax_glyphs(
+                pending_glyphs.extend(self.collect_glyphs(
                     &layout,
                     font,
                     pane_origin_x,
                     baseline,
                     pane_clip,
-                    &syntax_line,
-                    syntax_palette,
                 )?);
                 if pane.active {
                     rendered_lines.push(RenderedLine {
@@ -2033,18 +2072,6 @@ impl StudioApp {
                     baseline,
                     overlay_clip,
                 )?);
-                if let Some(shortcut) = self.settings.keymap.shortcut_for(row.command) {
-                    let shortcut_layout = self.text_system.shape(shortcut, font)?;
-                    let shortcut_left = (left + width - FIND_BAR_INSET - shortcut_layout.width())
-                        .max(left + FIND_BAR_INSET);
-                    pending_glyphs.extend(self.collect_glyphs(
-                        &shortcut_layout,
-                        font,
-                        shortcut_left,
-                        baseline,
-                        overlay_clip,
-                    )?);
-                }
             }
         }
         builder.push_quad(Quad::new(tab_bounds, tab_background).clipped(tab_clip))?;
@@ -2070,12 +2097,8 @@ impl StudioApp {
                 .ok_or(StudioRenderError::Domain)?;
             builder.set_glyph_atlas(atlas)?;
             for pending in pending_glyphs {
-                let glyph = Glyph::new(
-                    pending.bounds,
-                    pending.atlas_bounds,
-                    pending.color.unwrap_or(text_color),
-                )
-                .clipped(pending.clip);
+                let glyph = Glyph::new(pending.bounds, pending.atlas_bounds, text_color)
+                    .clipped(pending.clip);
                 builder.push_glyph(glyph)?;
             }
         }
@@ -2183,32 +2206,7 @@ impl StudioApp {
                 bounds: Rect::new(origin, size),
                 atlas_bounds: AtlasBounds::new(rect.x(), rect.y(), rect.width(), rect.height()),
                 clip,
-                source_utf16: glyph.source_utf16(),
-                color: None,
             });
-        }
-        Ok(pending)
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "syntax projection keeps all scene-local values explicit"
-    )]
-    fn collect_syntax_glyphs(
-        &mut self,
-        layout: &LineLayout,
-        requested_font: FontKey,
-        origin_x: f32,
-        baseline: f32,
-        clip: alpine_scene::ClipId,
-        syntax: &SyntaxLine,
-        palette: settings::SyntaxTheme,
-    ) -> Result<Vec<PendingGlyph>, StudioRenderError> {
-        let mut pending = self.collect_glyphs(layout, requested_font, origin_x, baseline, clip)?;
-        for glyph in &mut pending {
-            glyph.color = syntax
-                .class_at(glyph.source_utf16)
-                .map(|class| palette.color(class));
         }
         Ok(pending)
     }
@@ -2493,20 +2491,19 @@ impl StudioApp {
         let command = modifiers.contains(Modifiers::COMMAND);
         let shift = modifiers.contains(Modifiers::SHIFT);
         let option = modifiers.contains(Modifiers::OPTION);
-        let action = self.settings.keymap.resolve(physical_key, modifiers);
-        if action == Some(KeyAction::CommandPalette) {
+        if command && shift && physical_key == KEY_P {
             return self.open_command_palette();
         }
         if self.command_palette.is_open() {
             return self.handle_command_palette_key(physical_key, command);
         }
-        if action == Some(KeyAction::Command(StudioCommand::OpenProjectSearch)) {
+        if command && shift && physical_key == KEY_F {
             return self.open_project_search();
         }
         if self.project_search.is_open() {
             return self.handle_project_search_key(physical_key, command);
         }
-        if action == Some(KeyAction::Command(StudioCommand::ToggleFileTree)) {
+        if command && shift && physical_key == KEY_E {
             self.find.close();
             self.find_needs_search = false;
             self.quick_open.close();
@@ -2526,7 +2523,7 @@ impl StudioApp {
                 Err(error) => self.record_file_tree_error(&error),
             };
         }
-        if action == Some(KeyAction::Command(StudioCommand::OpenQuickOpen)) {
+        if command && physical_key == KEY_P {
             if self.workspace.is_none() {
                 return self.record_quick_open_error(&QuickOpenError::NoWorkspace);
             }
@@ -2541,11 +2538,10 @@ impl StudioApp {
         if self.quick_open.is_open() {
             return self.handle_quick_open_key(physical_key, command);
         }
-        if let Some(KeyAction::Command(
-            command @ (StudioCommand::OpenFind | StudioCommand::OpenReplace),
-        )) = action
-        {
-            return self.dispatch_command(command);
+        if command && physical_key == KEY_F {
+            let changed = self.find.open(option);
+            self.find_needs_search |= !self.find.query().is_empty();
+            return changed.then(EventEffect::visual).unwrap_or_default();
         }
         if self.find.is_open() {
             return self.handle_find_key(physical_key, command, option, shift);
@@ -2553,20 +2549,26 @@ impl StudioApp {
         if self.file_tree.is_focused() {
             return self.handle_file_tree_key(physical_key, command);
         }
-        if action == Some(KeyAction::SelectAll) {
+        if command && physical_key == KEY_A {
             return self.set_selection(Selection::new(
                 ByteOffset::new(0),
                 ByteOffset::new(self.buffer().snapshot().len_bytes()),
             ));
         }
-        if action == Some(KeyAction::Undo) {
-            return self.undo();
+        if command && physical_key == KEY_S {
+            return self.save_document();
         }
-        if action == Some(KeyAction::Redo) {
-            return self.redo();
+        if command && physical_key == KEY_Z {
+            return if shift { self.redo() } else { self.undo() };
         }
-        if let Some(KeyAction::Command(command)) = action {
-            return self.dispatch_command(command);
+        if command && physical_key == KEY_W {
+            return self.close_active_tab_or_record();
+        }
+        if command && physical_key == KEY_LEFT_BRACKET {
+            return self.navigate_document_history(false);
+        }
+        if command && physical_key == KEY_RIGHT_BRACKET {
+            return self.navigate_document_history(true);
         }
         match physical_key {
             KEY_DELETE_BACKWARD => self.delete_backward(),
@@ -3968,6 +3970,10 @@ impl StudioApp {
             return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
         };
         let current_view = self.active_document_view();
+        #[cfg(test)]
+        if self.force_empty_navigation_result.take().is_some() {
+            self.tabs.clear_history_for_test();
+        }
         let result = if forward {
             self.tabs.navigate_forward(&mut self.document, current_view)
         } else {
@@ -5287,36 +5293,46 @@ mod project_search_tests;
 #[path = "studio_coverage_tests.rs"]
 mod tests;
 
-#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+#[cfg(test)]
 mod session_integration_tests {
     use super::*;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     static SESSION_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-    fn view(offset: usize) -> DocumentViewState {
-        DocumentViewState {
-            selection: Selection::caret(ByteOffset::new(offset)),
-            scroll_y: 0.0,
-        }
-    }
-
     fn test_state(root: &Path) -> session::SessionState {
+        let alpha_view = DocumentViewState {
+            selection: Selection::caret(ByteOffset::new(2)),
+            scroll_y: 0.0,
+        };
+        let beta_view = DocumentViewState {
+            selection: Selection::caret(ByteOffset::new(1)),
+            scroll_y: 0.0,
+        };
         session::SessionState {
             workspace: Some(root.to_path_buf()),
             tabs: vec![
                 session::SessionTab {
-                    path: Some(root.join("alpha.rs")),
-                    view: view(2),
+                    path: None,
+                    view: DocumentViewState::default(),
                 },
                 session::SessionTab {
                     path: Some(root.join("beta.rs")),
-                    view: view(1),
+                    view: beta_view,
                 },
                 session::SessionTab {
                     path: Some(root.join("missing.rs")),
-                    view: view(0),
+                    view: DocumentViewState {
+                        selection: Selection::caret(ByteOffset::new(0)),
+                        scroll_y: 0.0,
+                    },
+                },
+                session::SessionTab {
+                    path: Some(root.join("alpha.rs")),
+                    view: alpha_view,
                 },
             ],
             active_tab: 1,
@@ -5337,11 +5353,11 @@ mod session_integration_tests {
                 panes: [
                     Some(session::SessionPane {
                         tab: 0,
-                        view: view(2),
+                        view: DocumentViewState::default(),
                     }),
                     Some(session::SessionPane {
                         tab: 1,
-                        view: view(1),
+                        view: beta_view,
                     }),
                     None,
                     None,
@@ -5357,6 +5373,10 @@ mod session_integration_tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "drop, codec, restore, clamp, and missing-file controls form one durability journey"
+    )]
     fn clean_session_drop_and_restore_preserve_exact_tabs_and_split()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = std::env::temp_dir().join(format!(
@@ -5371,9 +5391,8 @@ mod session_integration_tests {
         let state = test_state(&root);
         let path = root.join("state").join("session.bin");
 
-        let mut app =
-            StudioApp::from_session(alpine_text_layout::CoreTextSystem::new(), state.clone())
-                .map_err(|error| error.to_string())?;
+        let mut app = StudioApp::from_session(tests::TestTextSystem, state.clone())
+            .map_err(|error| error.to_string())?;
         assert_eq!(app.tabs.is_deferred(2), Ok(true));
         assert!(matches!(
             app.activate_document_tab(2),
@@ -5381,6 +5400,24 @@ mod session_integration_tests {
         ));
         assert_eq!(app.tabs.active_index(), 1);
         assert_eq!(app.tabs.is_deferred(2), Ok(true));
+        let missing_id = app.tabs.id_at(2).ok_or("missing tab identity")?;
+        app.tabs.inject_forward_history_target_for_test(missing_id);
+        let failures = app.workspace_failures;
+        assert!(app.navigate_document_history(true).visual_changed);
+        assert_eq!(app.workspace_failures, failures + 1);
+        assert_eq!(app.tabs.active_index(), 1);
+        assert_eq!(app.tabs.is_deferred(2), Ok(true));
+
+        let scratch_id = app.tabs.id_at(0).ok_or("scratch tab identity")?;
+        app.tabs.inject_forward_history_target_for_test(scratch_id);
+        app.force_empty_navigation_result = Some(());
+        assert_eq!(app.navigate_document_history(true), EventEffect::default());
+        assert_eq!(app.tabs.active_index(), 1);
+        assert_eq!(app.tabs.is_deferred(0), Ok(false));
+        let recovery_request = app
+            .capture_recovery_request()
+            .map_err(|error| format!("{error:?}"))?;
+        assert!(recovery_request.documents.is_empty());
         assert_eq!(
             app.capture_session()
                 .map_err(|error| format!("{error:?}"))?,
@@ -5391,9 +5428,8 @@ mod session_integration_tests {
 
         let persisted = session::load(&path)?;
         assert_eq!(persisted, state);
-        let mut restored =
-            StudioApp::from_session(alpine_text_layout::CoreTextSystem::new(), persisted)
-                .map_err(|error| error.to_string())?;
+        let mut restored = StudioApp::from_session(tests::TestTextSystem, persisted)
+            .map_err(|error| error.to_string())?;
         restored.session_path = None;
         assert_eq!(
             restored
@@ -5402,11 +5438,282 @@ mod session_integration_tests {
             state
         );
 
+        let mut switched_state = state.clone();
+        switched_state.active_tab = 3;
+        switched_state.panes.active_pane = 0;
+        switched_state.panes.panes[0] = Some(session::SessionPane {
+            tab: 3,
+            view: state.tabs[3].view,
+        });
+        let mut switched = StudioApp::from_session(tests::TestTextSystem, switched_state.clone())
+            .map_err(|error| error.to_string())?;
+        switched.session_path = None;
+        assert_eq!(
+            switched
+                .capture_session()
+                .map_err(|error| format!("{error:?}"))?,
+            switched_state
+        );
+
+        fs::write(root.join("unicode.rs"), "🦀\n")?;
+        let invalid_boundary = DocumentViewState {
+            selection: Selection::caret(ByteOffset::new(3)),
+            scroll_y: f32::MAX,
+        };
+        let clamped_state = session::SessionState {
+            workspace: Some(root.clone()),
+            tabs: vec![session::SessionTab {
+                path: Some(root.join("unicode.rs")),
+                view: invalid_boundary,
+            }],
+            active_tab: 0,
+            panes: session::SessionPanes {
+                nodes: [
+                    session::SessionNode::Leaf { pane: 0 },
+                    session::SessionNode::Empty,
+                    session::SessionNode::Empty,
+                    session::SessionNode::Empty,
+                    session::SessionNode::Empty,
+                    session::SessionNode::Empty,
+                    session::SessionNode::Empty,
+                ],
+                panes: [
+                    Some(session::SessionPane {
+                        tab: 0,
+                        view: invalid_boundary,
+                    }),
+                    None,
+                    None,
+                    None,
+                ],
+                active_pane: 0,
+            },
+            file_tree: session::SessionFileTree::default(),
+        };
+        let mut clamped = StudioApp::from_session(tests::TestTextSystem, clamped_state)
+            .map_err(|error| error.to_string())?;
+        let clamped_capture = clamped
+            .capture_session()
+            .map_err(|error| format!("{error:?}"))?;
+        assert_eq!(
+            clamped_capture.tabs[0].view.selection,
+            Selection::caret(ByteOffset::new(0))
+        );
+        assert_eq!(
+            clamped_capture.tabs[0].view.scroll_y.to_bits(),
+            0.0_f32.to_bits()
+        );
+        assert_eq!(clamped.panes.len(), 1);
+        clamped.session_path = None;
+
+        let bounded_view = StudioApp::clamp_view_to_document(
+            &StudioDocument::scratch("🦀abcd\nx\ny\nz"),
+            DocumentViewState {
+                selection: Selection::new(ByteOffset::new(3), ByteOffset::new(6)),
+                scroll_y: f32::MAX,
+            },
+        );
+        assert_eq!(
+            bounded_view.selection,
+            Selection::new(ByteOffset::new(0), ByteOffset::new(6))
+        );
+        assert_eq!(bounded_view.scroll_y.to_bits(), 88.0_f32.to_bits());
+
+        let dirty_path = root.join("state").join("dirty-session.bin");
+        let mut dirty = StudioApp::new(tests::TestTextSystem)?;
+        if let StudioDocument::Scratch {
+            buffer,
+            clean_revision,
+            ..
+        } = &mut dirty.document
+        {
+            *clean_revision = buffer.revision().get().saturating_add(1);
+        }
+        assert_eq!(
+            dirty.capture_session(),
+            Err(SessionCaptureError::DirtyDocument)
+        );
+        dirty.session_path = Some(dirty_path.clone());
+        drop(dirty);
+        assert!(!dirty_path.exists());
+
+        let expected = root.join("state").join("injected-session.bin");
+        let mut defaulted =
+            with_session_path(StudioApp::new(tests::TestTextSystem)?, Ok(expected.clone()));
+        assert_eq!(defaulted.session_path.as_deref(), Some(expected.as_path()));
+        defaulted.session_path = None;
+
         fs::remove_file(root.join("alpha.rs"))?;
+        let mut missing_visible_state = state;
+        missing_visible_state.active_tab = 1;
+        missing_visible_state.panes.active_pane = 1;
+        missing_visible_state.panes.panes[0] = Some(session::SessionPane {
+            tab: 2,
+            view: DocumentViewState::default(),
+        });
         assert!(matches!(
-            StudioApp::from_session(alpine_text_layout::CoreTextSystem::new(), state),
+            StudioApp::from_session(tests::TestTextSystem, missing_visible_state),
             Err(SessionRestoreError::File)
         ));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn session_restore_error_messages_and_rejections_are_structured() {
+        assert_eq!(
+            RestoreAvailability::for_recovery(0),
+            RestoreAvailability::Strict
+        );
+        assert_eq!(
+            RestoreAvailability::for_recovery(1),
+            RestoreAvailability::AllowPlaceholder
+        );
+        assert_eq!(
+            RestoreAvailability::for_recovery(usize::MAX),
+            RestoreAvailability::AllowPlaceholder
+        );
+        assert!(!RestoreAvailability::Strict.allows_placeholder());
+        assert!(RestoreAvailability::AllowPlaceholder.allows_placeholder());
+        assert_eq!(
+            classify_session_document_error(&WorkspaceSelectionError::Tabs(
+                DocumentTabError::LastTab
+            )),
+            SessionRestoreError::Tabs
+        );
+        assert_eq!(
+            classify_session_document_error(&WorkspaceSelectionError::File(FileError::Io {
+                operation: "restore-test",
+                kind: std::io::ErrorKind::NotFound,
+            })),
+            SessionRestoreError::File
+        );
+        assert_eq!(
+            classify_session_document_error(&WorkspaceSelectionError::NoWorkspace),
+            SessionRestoreError::Invalid
+        );
+        for error in [
+            SessionRestoreError::Invalid,
+            SessionRestoreError::Workspace,
+            SessionRestoreError::File,
+            SessionRestoreError::Surface,
+            SessionRestoreError::Tabs,
+            SessionRestoreError::Panes,
+            SessionRestoreError::FileTree,
+            SessionRestoreError::Allocation,
+        ] {
+            assert!(!error.to_string().is_empty());
+        }
+
+        let invalid = session::SessionState {
+            workspace: None,
+            tabs: Vec::new(),
+            active_tab: 0,
+            panes: session::SessionPanes {
+                nodes: [session::SessionNode::Empty; session::SESSION_NODE_CAPACITY],
+                panes: [None; session::SESSION_PANE_CAPACITY],
+                active_pane: 0,
+            },
+            file_tree: session::SessionFileTree::default(),
+        };
+        assert!(matches!(
+            StudioApp::from_session(tests::TestTextSystem, invalid),
+            Err(SessionRestoreError::Invalid)
+        ));
+    }
+
+    #[test]
+    fn recovery_variants_indexing_and_persistence_failures_are_explicit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "alpine-studio-recovery-branches-{}-{}",
+            std::process::id(),
+            SESSION_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        let recovered = recovery::RecoveredDocument {
+            tab: 0,
+            base: Box::from("base"),
+            local: Box::from("local"),
+        };
+
+        let mut scratch = StudioDocument::recover(None, &recovered)?;
+        assert_eq!(scratch.buffer().snapshot().text(), "local");
+        assert!(scratch.is_dirty());
+        assert!(!scratch.is_file());
+        assert_eq!(scratch.recovery_base().text(), "base");
+        assert_eq!(scratch.buffer_mut().snapshot().text(), "local");
+
+        let invalid = root.join("invalid.rs");
+        fs::write(&invalid, [0xff])?;
+        let mut conflicted = StudioDocument::recover(Some(&invalid), &recovered)?;
+        assert!(conflicted.has_recovery_conflict());
+        assert!(conflicted.is_dirty());
+        assert_eq!(conflicted.recovery_base().text(), "base");
+        assert_eq!(conflicted.buffer_mut().snapshot().text(), "local");
+        assert_eq!(
+            conflicted.save(),
+            Err(FileError::Conflict(ExternalChange::Modified))
+        );
+
+        let mut unavailable =
+            StudioDocument::open_for_restore(&invalid, RestoreAvailability::AllowPlaceholder)?;
+        assert!(unavailable.is_unavailable());
+        assert_eq!(
+            unavailable.save(),
+            Err(FileError::Conflict(ExternalChange::Modified))
+        );
+
+        assert_eq!(
+            StudioApp::index_recoveries(1, vec![recovered.clone(), recovered]),
+            Err(SessionRestoreError::Invalid)
+        );
+
+        let capture_path = root.join("capture").join("session.bin");
+        let mut capture = StudioApp::new(tests::TestTextSystem)?;
+        capture
+            .configure_persistence(capture_path)
+            .map_err(|error| error.to_string())?;
+        capture.tabs.inject_active_index_fault();
+        capture.publish_recovery();
+        assert_eq!(
+            capture.local_status,
+            Some(LocalStatus::Workspace(Arc::from(
+                "Recovery capture failed: Panes"
+            )))
+        );
+        drop(capture);
+
+        let blocked = root.join("not-a-directory");
+        fs::write(&blocked, b"file")?;
+        let mut degraded = StudioApp::new(tests::TestTextSystem)?;
+        degraded
+            .configure_persistence(blocked.join("recovery.bin"))
+            .map_err(|error| error.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let status = degraded
+                .recovery
+                .as_ref()
+                .ok_or("recovery coordinator")?
+                .status();
+            if status.completed_generation >= status.published_generation
+                || Instant::now() >= deadline
+            {
+                break;
+            }
+            thread::yield_now();
+        }
+        degraded.publish_recovery();
+        assert!(degraded.last_recovery_error.is_some());
+        assert!(matches!(
+            degraded.local_status,
+            Some(LocalStatus::Workspace(ref message))
+                if message.starts_with("Dirty-buffer recovery degraded:")
+        ));
+        drop(degraded);
+
         fs::remove_dir_all(root)?;
         Ok(())
     }
@@ -5425,12 +5732,28 @@ mod session_integration_tests {
         let session_path = root.join("state").join("session.bin");
         fs::write(&document_path, "base")?;
 
-        let mut app =
-            StudioApp::open_file(alpine_text_layout::CoreTextSystem::new(), &document_path)?;
+        let mut app = StudioApp::open_file(tests::TestTextSystem, &document_path)?;
         app.configure_persistence(session_path.clone())
             .map_err(|error| error.to_string())?;
+        let initial_generation = app
+            .recovery
+            .as_ref()
+            .ok_or("recovery coordinator")?
+            .status()
+            .published_generation;
+        assert!(initial_generation > 0);
         assert!(app.replace_range(0..4, "local").document_changed);
         app.publish_recovery();
+        let dirty_generation = app
+            .recovery
+            .as_ref()
+            .ok_or("recovery coordinator")?
+            .status()
+            .published_generation;
+        assert!(dirty_generation > initial_generation);
+        app.last_recovery_error = Some(recovery::RecoveryError::Disconnected);
+        app.publish_recovery();
+        assert_eq!(app.last_recovery_error, None);
         drop(app);
 
         let recovery_path = recovery::path_for_session(&session_path);
@@ -5441,27 +5764,43 @@ mod session_integration_tests {
 
         let mut equal_text = recovered.clone();
         equal_text.documents[0].local = equal_text.documents[0].base.clone();
-        let equal_text =
-            StudioApp::from_recovery(alpine_text_layout::CoreTextSystem::new(), equal_text)
-                .map_err(|error| error.to_string())?;
+        let equal_text = StudioApp::from_recovery(tests::TestTextSystem, equal_text)
+            .map_err(|error| error.to_string())?;
         assert_eq!(equal_text.buffer().snapshot().text(), "base");
         assert!(equal_text.document.is_dirty());
 
-        let mut unchanged =
-            StudioApp::from_recovery(alpine_text_layout::CoreTextSystem::new(), recovered.clone())
-                .map_err(|error| error.to_string())?;
+        let mut unchanged = StudioApp::from_recovery(tests::TestTextSystem, recovered.clone())
+            .map_err(|error| error.to_string())?;
         assert_eq!(unchanged.buffer().snapshot().text(), "local");
         assert!(unchanged.document.is_dirty());
         assert!(!unchanged.document.has_recovery_conflict());
-        assert!(unchanged.document.save()?.is_some());
-        assert_eq!(fs::read_to_string(&document_path)?, "local");
+        assert!(!unchanged.document.is_unavailable());
+        #[cfg(not(target_family = "windows"))]
+        {
+            assert!(unchanged.document.save()?.is_some());
+            assert_eq!(fs::read_to_string(&document_path)?, "local");
+        }
+        #[cfg(target_family = "windows")]
+        {
+            assert_eq!(
+                unchanged.document.save(),
+                Err(FileError::UnsupportedAtomicReplace)
+            );
+            assert_eq!(fs::read_to_string(&document_path)?, "base");
+        }
 
         fs::write(&document_path, "external")?;
-        let mut modified =
-            StudioApp::from_recovery(alpine_text_layout::CoreTextSystem::new(), recovered.clone())
-                .map_err(|error| error.to_string())?;
+        let mut modified = StudioApp::from_recovery(tests::TestTextSystem, recovered.clone())
+            .map_err(|error| error.to_string())?;
         assert_eq!(modified.buffer().snapshot().text(), "local");
         assert!(modified.document.has_recovery_conflict());
+        assert!(!modified.document.is_unavailable());
+        assert_eq!(
+            modified.local_status,
+            Some(LocalStatus::Workspace(Arc::from(
+                "Recovered 1 dirty buffer(s); 1 external conflict(s) and 0 unavailable clean file(s) remain save-blocked."
+            )))
+        );
         assert_eq!(
             modified.document.save(),
             Err(FileError::Conflict(ExternalChange::Modified))
@@ -5469,9 +5808,8 @@ mod session_integration_tests {
         assert_eq!(fs::read_to_string(&document_path)?, "external");
 
         fs::remove_file(&document_path)?;
-        let mut deleted =
-            StudioApp::from_recovery(alpine_text_layout::CoreTextSystem::new(), recovered)
-                .map_err(|error| error.to_string())?;
+        let mut deleted = StudioApp::from_recovery(tests::TestTextSystem, recovered)
+            .map_err(|error| error.to_string())?;
         assert_eq!(deleted.buffer().snapshot().text(), "local");
         assert!(deleted.document.has_recovery_conflict());
         assert_eq!(
@@ -5505,6 +5843,10 @@ mod session_integration_tests {
             .ok_or("active pane")?
             .tab = 2;
         session::validate(&state).map_err(|error| error.to_string())?;
+        assert!(matches!(
+            StudioApp::from_session(tests::TestTextSystem, state.clone()),
+            Err(SessionRestoreError::Workspace)
+        ));
         let recovery = recovery::RecoveryState {
             session: state,
             documents: vec![recovery::RecoveredDocument {
@@ -5514,14 +5856,26 @@ mod session_integration_tests {
             }],
         };
 
-        let mut app = StudioApp::from_recovery(alpine_text_layout::CoreTextSystem::new(), recovery)
+        let mut app = StudioApp::from_recovery(tests::TestTextSystem, recovery)
             .map_err(|error| error.to_string())?;
         assert!(app.workspace.is_none());
         assert!(app.document.is_unavailable());
         assert!(!app.document.is_dirty());
+        assert_eq!(
+            app.local_status,
+            Some(LocalStatus::Workspace(Arc::from(
+                "Recovered 1 dirty buffer(s); 0 external conflict(s) and 1 unavailable clean file(s) remain save-blocked. The prior workspace is unavailable; document recovery remains active."
+            )))
+        );
         assert!(app.activate_document_tab(1)?.document_changed);
         assert_eq!(app.buffer().snapshot().text(), "local beta\n");
         assert!(app.document.is_dirty());
+
+        let mut clean = StudioApp::new(tests::TestTextSystem)?;
+        clean
+            .record_recovered_status(0, None)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(clean.local_status, None);
 
         fs::remove_dir_all(root)?;
         Ok(())

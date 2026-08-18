@@ -492,7 +492,7 @@ impl FileTreeState {
             .map_err(|_| FileTreeError::AllocationFailed)?;
         for path in &state.expanded {
             let path = restored_identity(path, self.limits)?;
-            if path.is_empty() || self.node_index(&path).is_some() {
+            if self.node_index(&path).is_some() {
                 return Err(FileTreeError::InvalidRelativePath(PathBuf::from(
                     path.as_ref(),
                 )));
@@ -523,21 +523,15 @@ impl FileTreeState {
         if self.workspace.is_none() {
             return Ok(crate::session::SessionFileTree::default());
         }
-        let count = self
-            .nodes
-            .iter()
-            .filter(|node| node.expanded && !node.path.is_empty())
-            .count();
         let mut expanded = Vec::new();
-        expanded
-            .try_reserve_exact(count)
-            .map_err(|_| FileTreeError::AllocationFailed)?;
-        expanded.extend(
-            self.nodes
-                .iter()
-                .filter(|node| node.expanded && !node.path.is_empty())
-                .map(|node| PathBuf::from(node.path.as_ref())),
-        );
+        for node in &self.nodes {
+            if node.expanded && !node.path.is_empty() {
+                expanded
+                    .try_reserve(1)
+                    .map_err(|_| FileTreeError::AllocationFailed)?;
+                expanded.push(PathBuf::from(node.path.as_ref()));
+            }
+        }
         Ok(crate::session::SessionFileTree {
             expanded,
             selected: self.selected_path.as_deref().map(PathBuf::from),
@@ -1031,7 +1025,6 @@ fn restored_identity(path: &Path, limits: FileTreeLimits) -> Result<Arc<str>, Fi
         .to_str()
         .ok_or_else(|| FileTreeError::InvalidRelativePath(path.to_path_buf()))?;
     if path.is_absolute()
-        || relative.is_empty()
         || relative.len() > limits.path_bytes
         || relative.as_bytes().contains(&0)
         || relative
@@ -1641,18 +1634,143 @@ mod tests {
     }
 
     #[test]
+    fn restored_identity_and_duplicate_boundaries_are_independent() -> Result<(), Box<dyn Error>> {
+        let limits = FileTreeLimits::default();
+        let exact_path = PathBuf::from("a".repeat(limits.path_bytes));
+        assert_eq!(
+            restored_identity(&exact_path, limits)?.len(),
+            limits.path_bytes
+        );
+        assert!(matches!(
+            restored_identity(&PathBuf::from("a".repeat(limits.path_bytes + 1)), limits),
+            Err(FileTreeError::InvalidRelativePath(_))
+        ));
+
+        let exact_depth = (0..limits.depth).map(|_| "a").collect::<Vec<_>>().join("/");
+        assert_eq!(
+            restored_identity(Path::new(&exact_depth), limits)?
+                .split('/')
+                .count(),
+            limits.depth
+        );
+        let excessive_depth = format!("{exact_depth}/a");
+        for invalid in [
+            PathBuf::new(),
+            std::env::current_dir()?.join("absolute"),
+            PathBuf::from("a\0b"),
+            PathBuf::from("a//b"),
+            PathBuf::from("a/./b"),
+            PathBuf::from("a/../b"),
+            PathBuf::from(excessive_depth),
+        ] {
+            assert!(matches!(
+                restored_identity(&invalid, limits),
+                Err(FileTreeError::InvalidRelativePath(_))
+            ));
+        }
+
+        let mut state = FileTreeState::default();
+        assert!(matches!(
+            state.restore_session(
+                1,
+                &crate::session::SessionFileTree {
+                    expanded: vec![PathBuf::from("src"), PathBuf::from("src")],
+                    selected: None,
+                }
+            ),
+            Err(FileTreeError::InvalidRelativePath(_))
+        ));
+        assert_eq!(state.snapshot(), (0, 0, 0, None));
+        Ok(())
+    }
+
+    #[test]
+    fn visible_path_recursion_distinguishes_ready_expanded_nodes() -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        root.write("src/main.rs")?;
+        root.write("top.rs")?;
+        let mut state = FileTreeState::default();
+        state.activate(1)?;
+        assert_eq!(
+            admit_next(&mut state, &root.0)?,
+            FileTreeAdmission::Directory
+        );
+        assert!(matches!(state.activate_row(0)?, FileTreeAction::Changed));
+        assert_eq!(
+            admit_next(&mut state, &root.0)?,
+            FileTreeAdmission::Directory
+        );
+
+        assert_eq!(state.visible_path_at(0).as_deref(), Some("src"));
+        assert_eq!(state.visible_path_at(1).as_deref(), Some("src/main.rs"));
+        assert_eq!(state.visible_path_at(2).as_deref(), Some("top.rs"));
+        assert_eq!(state.visible_path_at(3), None);
+        assert_eq!(state.visible_index_of("src"), Some(0));
+        assert_eq!(state.visible_index_of("src/main.rs"), Some(1));
+        assert_eq!(state.visible_index_of("top.rs"), Some(2));
+        assert_eq!(state.visible_index_of("missing"), None);
+
+        let src = state.node_index("src").ok_or("src node")?;
+        state.nodes[src].expanded = false;
+        let mut current = 0;
+        assert_eq!(state.visible_path_at_from("src", 0, &mut current), None);
+        let mut current = 0;
+        assert_eq!(
+            state.visible_index_of_from("src", "src/main.rs", &mut current),
+            None
+        );
+        state.nodes[src].expanded = true;
+        state.nodes[src].load = DirectoryLoad::Dormant;
+        let mut current = 0;
+        assert_eq!(state.visible_path_at_from("src", 0, &mut current), None);
+        let mut current = 0;
+        assert_eq!(
+            state.visible_index_of_from("src", "src/main.rs", &mut current),
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn restored_directory_count_at_cache_ceiling_is_rejected_atomically()
+    -> Result<(), Box<dyn Error>> {
+        let limits = FileTreeLimits::new(8, 8, 64, 2, 8, 64, 16, 4, 8);
+        let mut state = FileTreeState::with_test_limits(limits);
+        let accepted_session = crate::session::SessionFileTree {
+            expanded: vec![PathBuf::from("src")],
+            selected: Some(PathBuf::from("src/main.rs")),
+        };
+        state.restore_session(5, &accepted_session)?;
+        let accepted = state.session_state()?;
+
+        assert!(matches!(
+            state.restore_session(
+                6,
+                &crate::session::SessionFileTree {
+                    expanded: vec![PathBuf::from("src"), PathBuf::from("tests")],
+                    selected: None,
+                },
+            ),
+            Err(FileTreeError::CacheLimitExceeded {
+                resource: "directory count",
+                limit: 2,
+            })
+        ));
+        assert_eq!(state.session_state()?, accepted);
+        Ok(())
+    }
+
+    #[test]
     fn missing_restored_directory_fails_without_retargeting_selection() -> Result<(), Box<dyn Error>>
     {
         let root = TestRoot::new()?;
         root.write("top.rs")?;
         let mut state = FileTreeState::default();
-        state.restore_session(
-            3,
-            &crate::session::SessionFileTree {
-                expanded: vec![PathBuf::from("missing")],
-                selected: Some(PathBuf::from("missing/file.rs")),
-            },
-        )?;
+        let session = crate::session::SessionFileTree {
+            expanded: vec![PathBuf::from("missing")],
+            selected: Some(PathBuf::from("missing/file.rs")),
+        };
+        state.restore_session(3, &session)?;
         state.activate(3)?;
         assert_eq!(
             admit_next(&mut state, &root.0)?,
