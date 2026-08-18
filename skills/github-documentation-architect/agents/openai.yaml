@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Documentation Architect"
+  short_description: "Architect canonical enterprise GitHub docs"
+  default_prompt: "Use $github-documentation-architect to design or reconcile this repository documentation, Wiki, and release information architecture."
