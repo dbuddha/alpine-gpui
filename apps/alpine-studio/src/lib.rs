@@ -283,7 +283,8 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
             text_system
                 .register_font(FONT_FAMILY, "Menlo-Regular")
                 .map_err(|_| SurfaceError::DriverUnavailable)?;
-            let app = StudioApp::from_workspace(text_system, workspace)?;
+            let mut app = StudioApp::from_workspace(text_system, workspace)?;
+            app.prime_workspace_launch()?;
             run_native(with_default_session(app)?).map_err(StudioError::from)
         } else {
             Err(WorkspaceError::UnsupportedTarget(path.to_path_buf()).into())
@@ -1100,6 +1101,14 @@ impl StudioApp {
             ))));
         }
         Ok(app)
+    }
+
+    fn prime_workspace_launch(&mut self) -> Result<(), StudioError> {
+        self.file_tree
+            .activate(1)
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        self.file_tree.unfocus();
+        Ok(())
     }
 
     fn from_parts(
