@@ -14,6 +14,14 @@ mod find;
     not(test),
     expect(
         dead_code,
+        reason = "Task #128 stages bounded LSP framing before JSON-RPC decoding"
+    )
+)]
+mod lsp_framing;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
         reason = "Task #128 stages bounded local process ownership before JSON-RPC decoding"
     )
 )]

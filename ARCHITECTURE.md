@@ -103,6 +103,17 @@ closes its pipes, joins every helper, and releases queued payloads. This slice
 does not decode JSON-RPC, launch during startup, mutate Studio state, expose a
 public API, or add a dependency, network client, plugin host, or async runtime.
 
+Studio also owns the dependency-free byte-framing boundary for that local
+Language Server Protocol path. It incrementally accepts ASCII headers and
+byte-counted bodies, requires exactly one bounded `Content-Length`, accepts only
+the specified UTF-8 JSON-RPC content type, and poisons the stream after malformed,
+unsupported, oversized, allocation-failed, or truncated input. One header retains
+at most 8 KiB, one message at most 16 MiB, and one admission returns at most 32
+frames and 16 MiB of bodies. Fragmented and pipelined reads preserve exact bytes
+and monotonic frame identity while current and peak buffer accounting remains
+observable. This slice decodes no JSON and creates no language-service state
+before the separately approved parser and revision-admission slices consume it.
+
 Production typography uses the safe
 CoreText service; deterministic test typography proves portable editor behavior
 without claiming native validation. It runs through one `Application` until the
