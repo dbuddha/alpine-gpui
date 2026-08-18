@@ -600,23 +600,14 @@ impl BufferSnapshot {
             if utf16_offset == units {
                 return Ok(ByteOffset(bytes));
             }
-            let next_units = units.checked_add(character.len_utf16()).ok_or(
-                TextError::InvalidUtf16Boundary {
-                    offset: utf16_offset,
-                },
-            )?;
+            let next_units = units + character.len_utf16();
             if utf16_offset < next_units {
                 return Err(TextError::InvalidUtf16Boundary {
                     offset: utf16_offset,
                 });
             }
             units = next_units;
-            bytes =
-                bytes
-                    .checked_add(character.len_utf8())
-                    .ok_or(TextError::InvalidUtf16Boundary {
-                        offset: utf16_offset,
-                    })?;
+            bytes += character.len_utf8();
         }
         if utf16_offset == units {
             Ok(ByteOffset(bytes))
