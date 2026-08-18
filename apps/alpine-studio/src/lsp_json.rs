@@ -627,9 +627,7 @@ impl LspPeer {
         stamp: Option<RequestStamp>,
         kind: PendingKind,
     ) -> Result<OutboundMessage, ProtocolError> {
-        if method.is_empty() || method.len() > MAX_METHOD_BYTES {
-            return Err(ProtocolError::MethodTooLong);
-        }
+        validate_method(method)?;
         if self.pending.len() == MAX_PENDING_REQUESTS {
             return Err(ProtocolError::PendingCapacity);
         }
@@ -676,7 +674,7 @@ fn reserve_pending(pending: &mut Vec<PendingRequest>) -> Result<(), ProtocolErro
     if pending.capacity() > MAX_PENDING_REQUESTS {
         return Err(ProtocolError::AllocationFailed);
     }
-    if pending.len() < pending.capacity() {
+    if pending.len() != pending.capacity() {
         return Ok(());
     }
     let target = pending
@@ -704,9 +702,7 @@ fn build_call_with_limit(
     params: Option<&str>,
     max_bytes: usize,
 ) -> Result<OutboundMessage, ProtocolError> {
-    if method.is_empty() || method.len() > MAX_METHOD_BYTES {
-        return Err(ProtocolError::MethodTooLong);
-    }
+    validate_method(method)?;
     let method = serde_json::to_vec(method).map_err(|_| ProtocolError::MalformedJson)?;
     let id_bytes = id.map(|id| id.get().to_string());
     let mut body = Vec::new();
@@ -734,6 +730,13 @@ fn build_call_with_limit(
     }
     body.push(b'}');
     frame_body(&body, id)
+}
+
+fn validate_method(method: &str) -> Result<(), ProtocolError> {
+    if method.is_empty() || method.len() > MAX_METHOD_BYTES {
+        return Err(ProtocolError::MethodTooLong);
+    }
+    Ok(())
 }
 
 fn frame_body(body: &[u8], id: Option<RequestId>) -> Result<OutboundMessage, ProtocolError> {
