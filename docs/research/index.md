@@ -22,7 +22,7 @@ measurement rules so implementation does not depend on chat history.
 | [Zed stable application](../case-studies/zed-editor.md) | Product architecture, editor behavior, useful patterns, and excluded collaborative weight | [Research #113](https://github.com/dbuddha/alpine-gpui/issues/113) |
 | [Zed GPUI and macOS renderer](../case-studies/zed-gpui.md) | Invalidation, render phases, scene organization, batching, caches, atlas ownership, and Metal scheduling | [Research #113](https://github.com/dbuddha/alpine-gpui/issues/113) |
 | [Sublime Text local-speed model](../case-studies/sublime-editor.md) | Official public facts, Alpine inferences, and explicitly unknown proprietary internals | [Research #114](https://github.com/dbuddha/alpine-gpui/issues/114) |
-| [WGPU](../case-studies/wgpu.md) | Portable GPU lessons, differential-oracle opportunity, and explicit non-shipping v1 boundary | [Capability #28](https://github.com/dbuddha/alpine-gpui/issues/28) |
+| [WGPU case study](../case-studies/wgpu.md) and [deep research package](wgpu/index.md) | Pinned architecture, lifecycle, validation, test, memory, experiment, and non-shipping decisions | [Research #23](https://github.com/dbuddha/alpine-gpui/issues/23), [re-evaluation #99](https://github.com/dbuddha/alpine-gpui/issues/99), [Task #202](https://github.com/dbuddha/alpine-gpui/issues/202) |
 
 ## Qualification records
 
@@ -45,6 +45,9 @@ measurement rules so implementation does not depend on chat history.
 - Treat repository docs and mdBook as authoritative. Wiki pages are generated
   retrieval mirrors and may not contain unique evidence or decisions.
 - Treat immutable revision links and official product sources as evidence.
+- For substantial research, keep a decision-facing case study plus a package
+  containing the pinned source map, detailed findings, experiments, and decision
+  ledger. Summary prose without that chain is not deep research.
 - Treat Alpine design conclusions as inferences unless implementation evidence
   proves them.
 - Never infer private Sublime internals from external timing or memory results.

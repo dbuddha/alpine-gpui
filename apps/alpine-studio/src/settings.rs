@@ -38,6 +38,9 @@ pub(crate) const MAX_FONT_NAME_BYTES: usize = 256;
 pub(crate) const MAX_KEY_BINDINGS: usize = 64;
 pub(crate) const SETTINGS_RETAINED_BUDGET_BYTES: usize = 64 * 1_024;
 
+const COMMAND_SHIFT: u8 = Modifiers::COMMAND.saturating_add(Modifiers::SHIFT);
+const COMMAND_OPTION: u8 = Modifiers::COMMAND.saturating_add(Modifiers::OPTION);
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct EditorSettings {
     pub(crate) font_family: u64,
@@ -150,21 +153,9 @@ impl StudioTheme {
             find_background: color("find background", 0.08, 0.09, 0.10, 0.98)?,
             quick_open_background: color("quick open background", 0.045, 0.052, 0.058, 0.99)?,
             quick_open_selected: color("quick open selected", 0.12, 0.25, 0.31, 1.0)?,
-            project_search_background: color(
-                "project search background",
-                0.04,
-                0.06,
-                0.055,
-                0.995,
-            )?,
+            project_search_background: project_search_background()?,
             project_search_selected: color("project search selected", 0.10, 0.30, 0.22, 1.0)?,
-            command_palette_background: color(
-                "command palette background",
-                0.055,
-                0.062,
-                0.067,
-                0.995,
-            )?,
+            command_palette_background: command_palette_background()?,
             command_palette_selected: color("command palette selected", 0.34, 0.22, 0.075, 1.0)?,
             syntax: SyntaxTheme {
                 comment: color("syntax comment", 0.48, 0.60, 0.53, 1.0)?,
@@ -200,25 +191,25 @@ struct KeyBinding {
 static DEFAULT_BINDINGS: [KeyBinding; 13] = [
     binding(
         KEY_P,
-        Modifiers::COMMAND | Modifiers::SHIFT,
+        COMMAND_SHIFT,
         KeyAction::CommandPalette,
         "Cmd+Shift+P",
     ),
     binding(
         KEY_F,
-        Modifiers::COMMAND | Modifiers::SHIFT,
+        COMMAND_SHIFT,
         KeyAction::Command(StudioCommand::OpenProjectSearch),
         "Cmd+Shift+F",
     ),
     binding(
         KEY_E,
-        Modifiers::COMMAND | Modifiers::SHIFT,
+        COMMAND_SHIFT,
         KeyAction::Command(StudioCommand::ToggleFileTree),
         "Cmd+Shift+E",
     ),
     binding(
         KEY_F,
-        Modifiers::COMMAND | Modifiers::OPTION,
+        COMMAND_OPTION,
         KeyAction::Command(StudioCommand::OpenReplace),
         "Cmd+Opt+F",
     ),
@@ -241,12 +232,7 @@ static DEFAULT_BINDINGS: [KeyBinding; 13] = [
         KeyAction::Command(StudioCommand::SaveFile),
         "Cmd+S",
     ),
-    binding(
-        KEY_Z,
-        Modifiers::COMMAND | Modifiers::SHIFT,
-        KeyAction::Redo,
-        "Cmd+Shift+Z",
-    ),
+    binding(KEY_Z, COMMAND_SHIFT, KeyAction::Redo, "Cmd+Shift+Z"),
     binding(KEY_Z, Modifiers::COMMAND, KeyAction::Undo, "Cmd+Z"),
     binding(
         KEY_W,
@@ -726,6 +712,14 @@ fn color(
     LinearRgba::new(red, green, blue, alpha).ok_or(SettingsError::InvalidColor(name))
 }
 
+fn project_search_background() -> Result<LinearRgba, SettingsError> {
+    color("project search background", 0.04, 0.06, 0.055, 0.995)
+}
+
+fn command_palette_background() -> Result<LinearRgba, SettingsError> {
+    color("command palette background", 0.055, 0.062, 0.067, 0.995)
+}
+
 fn validate_bindings(bindings: &[KeyBinding]) -> Result<(), SettingsError> {
     for (index, binding) in bindings.iter().enumerate() {
         if binding.label.is_empty() || binding.label.len() > 16 || !binding.label.is_ascii() {
@@ -765,9 +759,29 @@ mod tests {
         assert_eq!(settings.editor.tab_columns, 4);
         assert_eq!(settings.keymap.bindings.len(), 13);
         assert!(std::mem::size_of::<StudioSettings>() <= 512);
+        let classes = [
+            SyntaxClass::Comment,
+            SyntaxClass::Keyword,
+            SyntaxClass::String,
+            SyntaxClass::Number,
+            SyntaxClass::Type,
+            SyntaxClass::Property,
+            SyntaxClass::Heading,
+            SyntaxClass::Code,
+        ];
+        let expected = [
+            color("expected comment", 0.48, 0.60, 0.53, 1.0)?,
+            color("expected keyword", 0.96, 0.48, 0.39, 1.0)?,
+            color("expected string", 0.55, 0.78, 0.49, 1.0)?,
+            color("expected number", 0.42, 0.67, 0.94, 1.0)?,
+            color("expected type", 0.94, 0.70, 0.32, 1.0)?,
+            color("expected property", 0.35, 0.76, 0.79, 1.0)?,
+            color("expected heading", 0.96, 0.75, 0.34, 1.0)?,
+            color("expected code", 0.62, 0.76, 0.55, 1.0)?,
+        ];
         assert_eq!(
-            settings.theme.syntax.color(SyntaxClass::Keyword),
-            color("expected", 0.96, 0.48, 0.39, 1.0)?
+            classes.map(|class| settings.theme.syntax.color(class)),
+            expected
         );
         assert_eq!(
             settings.keymap.shortcut_for(StudioCommand::OpenFind),
@@ -777,6 +791,8 @@ mod tests {
             settings.keymap.shortcut_for(StudioCommand::SplitRight),
             None
         );
+        assert_eq!(COMMAND_SHIFT, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert_eq!(COMMAND_OPTION, Modifiers::COMMAND | Modifiers::OPTION);
         Ok(())
     }
 
@@ -784,20 +800,63 @@ mod tests {
     fn keymap_preserves_specificity_and_ignores_unrelated_extra_modifiers()
     -> Result<(), SettingsError> {
         let keymap = Keymap::compiled()?;
-        assert_eq!(
-            keymap.resolve(
-                KEY_P,
-                Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT)
-            ),
-            Some(KeyAction::CommandPalette)
-        );
-        assert_eq!(
-            keymap.resolve(
+        let bindings = [
+            (KEY_P, COMMAND_SHIFT, KeyAction::CommandPalette),
+            (
                 KEY_F,
-                Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION)
+                COMMAND_SHIFT,
+                KeyAction::Command(StudioCommand::OpenProjectSearch),
             ),
-            Some(KeyAction::Command(StudioCommand::OpenReplace))
-        );
+            (
+                KEY_E,
+                COMMAND_SHIFT,
+                KeyAction::Command(StudioCommand::ToggleFileTree),
+            ),
+            (
+                KEY_F,
+                COMMAND_OPTION,
+                KeyAction::Command(StudioCommand::OpenReplace),
+            ),
+            (
+                KEY_P,
+                Modifiers::COMMAND,
+                KeyAction::Command(StudioCommand::OpenQuickOpen),
+            ),
+            (
+                KEY_F,
+                Modifiers::COMMAND,
+                KeyAction::Command(StudioCommand::OpenFind),
+            ),
+            (KEY_A, Modifiers::COMMAND, KeyAction::SelectAll),
+            (
+                KEY_S,
+                Modifiers::COMMAND,
+                KeyAction::Command(StudioCommand::SaveFile),
+            ),
+            (KEY_Z, COMMAND_SHIFT, KeyAction::Redo),
+            (KEY_Z, Modifiers::COMMAND, KeyAction::Undo),
+            (
+                KEY_W,
+                Modifiers::COMMAND,
+                KeyAction::Command(StudioCommand::CloseTab),
+            ),
+            (
+                KEY_LEFT_BRACKET,
+                Modifiers::COMMAND,
+                KeyAction::Command(StudioCommand::NavigateBack),
+            ),
+            (
+                KEY_RIGHT_BRACKET,
+                Modifiers::COMMAND,
+                KeyAction::Command(StudioCommand::NavigateForward),
+            ),
+        ];
+        for (key, modifiers, expected) in bindings {
+            assert_eq!(
+                keymap.resolve(key, Modifiers::from_bits(modifiers)),
+                Some(expected)
+            );
+        }
         assert_eq!(
             keymap.resolve(
                 KEY_F,
@@ -1066,5 +1125,54 @@ mod tests {
         assert_eq!(state.snapshot().generation, 0);
         assert_eq!(state.active().editor.font_name.as_ref(), FONT_NAME);
         Ok(())
+    }
+    #[test]
+    fn invalid_color_and_every_diagnostic_are_exact() {
+        assert_eq!(
+            color("broken", f32::NAN, 0.0, 0.0, 1.0),
+            Err(SettingsError::InvalidColor("broken"))
+        );
+        let errors = [
+            (
+                SettingsError::InvalidMetric("line height"),
+                "setting line height must be positive and finite".to_owned(),
+            ),
+            (
+                SettingsError::InvalidFontFamily,
+                "font family identity must be nonzero".to_owned(),
+            ),
+            (
+                SettingsError::EmptyFontName,
+                "font name must not be empty".to_owned(),
+            ),
+            (
+                SettingsError::InvalidTabColumns,
+                "tab columns must be nonzero".to_owned(),
+            ),
+            (
+                SettingsError::InvalidColor("selection"),
+                "theme color selection is invalid".to_owned(),
+            ),
+            (
+                SettingsError::DuplicateBinding {
+                    physical_key: KEY_A,
+                    modifiers: Modifiers::COMMAND,
+                },
+                format!(
+                    "key {KEY_A} with modifiers {:#04x} is duplicated",
+                    Modifiers::COMMAND
+                ),
+            ),
+            (
+                SettingsError::ShadowedBinding {
+                    physical_key: KEY_F,
+                    modifiers: COMMAND_SHIFT,
+                },
+                format!("key {KEY_F} with modifiers {COMMAND_SHIFT:#04x} is unreachable"),
+            ),
+        ];
+        for (error, expected) in errors {
+            assert_eq!(error.to_string(), expected);
+        }
     }
 }

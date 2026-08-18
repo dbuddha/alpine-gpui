@@ -10,6 +10,11 @@ zed_editor=$repo_root/docs/case-studies/zed-editor.md
 zed_gpui=$repo_root/docs/case-studies/zed-gpui.md
 sublime=$repo_root/docs/case-studies/sublime-editor.md
 wgpu=$repo_root/docs/case-studies/wgpu.md
+wgpu_index=$repo_root/docs/research/wgpu/index.md
+wgpu_sources=$repo_root/docs/research/wgpu/source-map.md
+wgpu_findings=$repo_root/docs/research/wgpu/findings.md
+wgpu_experiments=$repo_root/docs/research/wgpu/experiments.md
+wgpu_decisions=$repo_root/docs/research/wgpu/decisions.md
 wiki_policy=$repo_root/docs/wiki/README.md
 failures=0
 
@@ -27,6 +32,11 @@ for required in \
     "$zed_gpui" \
     "$sublime" \
     "$wgpu" \
+    "$wgpu_index" \
+    "$wgpu_sources" \
+    "$wgpu_findings" \
+    "$wgpu_experiments" \
+    "$wgpu_decisions" \
     "$wiki_policy"
 do
     if [ ! -f "$required" ]; then
@@ -44,6 +54,7 @@ for link in \
     '(../case-studies/zed-gpui.md)' \
     '(../case-studies/sublime-editor.md)' \
     '(../case-studies/wgpu.md)' \
+    '(wgpu/index.md)' \
     '(../quality/comparator-protocol.md)' \
     '(../wiki/README.md)' \
     '(../use-cases/alpine-studio-highfidelity.md)'
@@ -64,6 +75,11 @@ for source in \
     "$zed_gpui" \
     "$sublime" \
     "$wgpu" \
+    "$wgpu_index" \
+    "$wgpu_sources" \
+    "$wgpu_findings" \
+    "$wgpu_experiments" \
+    "$wgpu_decisions" \
     "$wiki_policy"
 do
     grep -Eo '\]\([^)]+\)' "$source" 2>/dev/null \
@@ -90,9 +106,28 @@ for requirement in 32 33 34 35 36 37; do
     fi
 done
 
-for issue in 113 114 115 116 118 132 174 175; do
+for issue in 23 99 113 114 115 116 118 132 174 175 202; do
     if ! grep -Fq "https://github.com/dbuddha/alpine-gpui/issues/$issue" "$catalog"; then
         fail "research catalog is missing issue anchor #$issue"
+    fi
+done
+
+for pin in \
+    ee5cfb074fd0c4e318b5f8608df504678e4e17ac \
+    8ee190c6f151c731a4f8cfd9a102d6ee5903460a
+do
+    if ! grep -Fq "$pin" "$wgpu_index" || ! grep -Fq "$pin" "$wgpu"; then
+        fail "WGPU research is missing retained revision pin $pin"
+    fi
+done
+
+for heading in \
+    '## Primary-source findings' \
+    '## Alpine inferences' \
+    '## Unverified hypotheses'
+do
+    if ! grep -Fqx "$heading" "$wgpu_findings"; then
+        fail "WGPU findings are missing evidence classification: $heading"
     fi
 done
 

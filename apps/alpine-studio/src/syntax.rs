@@ -96,10 +96,8 @@ impl SyntaxLine {
         let index = self
             .spans
             .partition_point(|span| span.end_utf16 <= source_utf16);
-        self.spans.get(index).and_then(|span| {
-            (span.start_utf16 <= source_utf16 && source_utf16 < span.end_utf16)
-                .then_some(span.class)
-        })
+        let span = self.spans.get(index)?;
+        (span.start_utf16 <= source_utf16).then_some(span.class)
     }
 
     #[cfg(test)]
@@ -317,6 +315,8 @@ impl SyntaxCache {
             } else if !self.current.is_empty() {
                 self.current.remove(0);
             } else {
+                self.current.shrink_to_fit();
+                self.previous.shrink_to_fit();
                 break;
             }
             self.current.shrink_to_fit();
@@ -389,18 +389,14 @@ impl<'a> Emitter<'a> {
         {
             return Err(SyntaxError::InvalidSpan);
         }
-        self.spans
-            .try_reserve(1)
-            .map_err(|_| SyntaxError::AllocationFailed)?;
+        reserve(&mut self.spans, 1)?;
         self.spans.push(ByteSpan { start, end, class });
         Ok(())
     }
 
     fn finish(self) -> Result<SyntaxLine, SyntaxError> {
         let mut spans = Vec::new();
-        spans
-            .try_reserve_exact(self.spans.len())
-            .map_err(|_| SyntaxError::AllocationFailed)?;
+        reserve_exact(&mut spans, self.spans.len())?;
         let mut byte = 0_usize;
         let mut utf16 = 0_u32;
         for span in self.spans {
@@ -427,22 +423,33 @@ fn advance_utf16(
     utf16: &mut u32,
     target: usize,
 ) -> Result<(), SyntaxError> {
-    if target > text.len() || !text.is_char_boundary(target) || *byte > target {
+    if target > text.len()
+        || !text.is_char_boundary(target)
+        || *byte > target
+        || !text.is_char_boundary(*byte)
+    {
         return Err(SyntaxError::InvalidSpan);
     }
-    while *byte < target {
-        let character = text[*byte..]
-            .chars()
-            .next()
-            .ok_or(SyntaxError::InvalidSpan)?;
-        *byte += character.len_utf8();
+    for character in text[*byte..target].chars() {
+        let utf16_units = if character.len_utf16() == 1 { 1 } else { 2 };
         *utf16 = utf16
-            .checked_add(
-                u32::try_from(character.len_utf16()).map_err(|_| SyntaxError::InvalidSpan)?,
-            )
+            .checked_add(utf16_units)
             .ok_or(SyntaxError::InvalidSpan)?;
     }
+    *byte = target;
     Ok(())
+}
+
+fn reserve<T>(values: &mut Vec<T>, additional: usize) -> Result<(), SyntaxError> {
+    values
+        .try_reserve(additional)
+        .map_err(|_| SyntaxError::AllocationFailed)
+}
+
+fn reserve_exact<T>(values: &mut Vec<T>, additional: usize) -> Result<(), SyntaxError> {
+    values
+        .try_reserve_exact(additional)
+        .map_err(|_| SyntaxError::AllocationFailed)
 }
 
 fn highlight_line(language: SyntaxLanguage, text: &str) -> Result<SyntaxLine, SyntaxError> {
@@ -481,7 +488,7 @@ fn highlight_rust(text: &str, emitter: &mut Emitter<'_>) -> Result<(), SyntaxErr
             continue;
         }
         if bytes[index].is_ascii_digit() {
-            let end = take_while(bytes, index + 1, |byte| {
+            let end = take_while(bytes, next_index(index)?, |byte| {
                 byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.')
             });
             emitter.push(index, end, SyntaxClass::Number)?;
@@ -489,7 +496,7 @@ fn highlight_rust(text: &str, emitter: &mut Emitter<'_>) -> Result<(), SyntaxErr
             continue;
         }
         if is_identifier_start(bytes[index]) {
-            let end = take_while(bytes, index + 1, is_identifier_continue);
+            let end = take_while(bytes, next_index(index)?, is_identifier_continue);
             let word = &text[index..end];
             if rust_keyword(word) {
                 emitter.push(index, end, SyntaxClass::Keyword)?;
@@ -540,10 +547,8 @@ fn highlight_toml(text: &str, emitter: &mut Emitter<'_>) -> Result<(), SyntaxErr
     }
     let value_start = if let Some(equal) = find_unquoted(text.as_bytes(), b'=') {
         let key_end = text[..equal].trim_end().len();
-        if key_end > leading {
-            emitter.push(leading, key_end, SyntaxClass::Property)?;
-        }
-        equal + 1
+        emitter.push(leading, key_end, SyntaxClass::Property)?;
+        next_index(equal)?
     } else {
         0
     };
@@ -583,7 +588,7 @@ fn highlight_data_values(
             continue;
         }
         if bytes[index].is_ascii_digit() || bytes[index] == b'-' {
-            let end = take_while(bytes, index + 1, |byte| {
+            let end = take_while(bytes, next_index(index)?, |byte| {
                 byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'+' | b'-' | b':')
             });
             emitter.push(index, end, SyntaxClass::Number)?;
@@ -591,7 +596,7 @@ fn highlight_data_values(
             continue;
         }
         if is_identifier_start(bytes[index]) {
-            let end = take_while(bytes, index + 1, is_identifier_continue);
+            let end = take_while(bytes, next_index(index)?, is_identifier_continue);
             if matches!(&text[index..end], "true" | "false" | "null") {
                 emitter.push(index, end, SyntaxClass::Keyword)?;
             }
@@ -658,6 +663,10 @@ fn next_boundary(text: &str, index: usize) -> usize {
         .chars()
         .next()
         .map_or(text.len(), |character| index + character.len_utf8())
+}
+
+fn next_index(index: usize) -> Result<usize, SyntaxError> {
+    index.checked_add(1).ok_or(SyntaxError::InvalidSpan)
 }
 
 const fn is_identifier_start(byte: u8) -> bool {
@@ -756,6 +765,9 @@ mod tests {
 
     #[test]
     fn language_identity_is_compiled_and_path_bounded() {
+        assert_eq!(DEFAULT_SYNTAX_BUDGET_BYTES, 4_194_304);
+        assert_eq!(MAX_SYNTAX_LINE_BYTES, 65_536);
+        assert_eq!(MAX_SYNTAX_SPANS_PER_LINE, 1_024);
         assert_eq!(
             SyntaxLanguage::from_path(Some(Path::new("main.rs"))),
             SyntaxLanguage::Rust
@@ -766,6 +778,10 @@ mod tests {
         );
         assert_eq!(
             SyntaxLanguage::from_path(Some(Path::new("Cargo.lock"))),
+            SyntaxLanguage::Toml
+        );
+        assert_eq!(
+            SyntaxLanguage::from_path(Some(Path::new("settings.toml"))),
             SyntaxLanguage::Toml
         );
         assert_eq!(
@@ -791,11 +807,10 @@ mod tests {
                 SyntaxClass::Comment
             ]
         );
+        let json_source = r#"{"name": "alpine", "ok": true, "n": -2}"#;
+        let json = classes(SyntaxLanguage::Json, json_source)?;
         assert_eq!(
-            classes(
-                SyntaxLanguage::Json,
-                r#"{"name": "alpine", "ok": true, "n": -2}"#
-            )?,
+            json,
             [
                 SyntaxClass::Property,
                 SyntaxClass::String,
@@ -833,6 +848,20 @@ mod tests {
         for pair in line.spans().windows(2) {
             assert!(pair[0].end_utf16() <= pair[1].start_utf16());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn class_lookup_is_half_open_and_gap_aware() -> Result<(), SyntaxError> {
+        let line = highlight_line(SyntaxLanguage::Rust, "x let gap Value")?;
+        assert_eq!(line.class_at(0), None);
+        assert_eq!(line.class_at(2), Some(SyntaxClass::Keyword));
+        assert_eq!(line.class_at(4), Some(SyntaxClass::Keyword));
+        assert_eq!(line.class_at(5), None);
+        assert_eq!(line.class_at(9), None);
+        assert_eq!(line.class_at(10), Some(SyntaxClass::Type));
+        assert_eq!(line.class_at(14), Some(SyntaxClass::Type));
+        assert_eq!(line.class_at(15), None);
         Ok(())
     }
 
@@ -905,5 +934,253 @@ mod tests {
         assert!(evidence.current_bytes() <= evidence.budget_bytes());
         assert!(evidence.peak_bytes() <= evidence.budget_bytes());
         Ok(())
+    }
+
+    #[test]
+    fn cache_language_line_and_budget_boundaries_are_exact() -> Result<(), SyntaxError> {
+        let snapshot = Buffer::new("true\n").snapshot();
+        let mut cache = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)?;
+        let rust = cache.line(&snapshot, 0, SyntaxLanguage::Rust)?;
+        let json = cache.line(&snapshot, 0, SyntaxLanguage::Json)?;
+        assert!(!Arc::ptr_eq(&rust, &json));
+        assert_eq!(cache.snapshot().misses(), 2);
+
+        let exact = Buffer::new(&"A".repeat(MAX_SYNTAX_LINE_BYTES)).snapshot();
+        let exact_line = cache.line(&exact, 0, SyntaxLanguage::Rust)?;
+        assert!(!exact_line.omitted());
+        assert_eq!(exact_line.scanned_bytes(), MAX_SYNTAX_LINE_BYTES);
+        assert_eq!(
+            exact_line.retained_bytes(),
+            std::mem::size_of_val(exact_line.spans())
+        );
+
+        let retained_entries = cache.current.len();
+        cache.budget_bytes = cache.current_bytes();
+        cache.enforce_budget();
+        assert_eq!(cache.current.len(), retained_entries);
+        Ok(())
+    }
+
+    #[test]
+    fn defensive_errors_and_sequence_limits_are_structured() -> Result<(), SyntaxError> {
+        assert!(matches!(
+            SyntaxCache::new(0),
+            Err(SyntaxError::InvalidBudget)
+        ));
+
+        let snapshot = Buffer::new("let value = 1;\n").snapshot();
+        let mut current_hit = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)?;
+        let initial = current_hit.line(&snapshot, 0, SyntaxLanguage::Rust)?;
+        let repeated = current_hit.line(&snapshot, 0, SyntaxLanguage::Rust)?;
+        assert!(Arc::ptr_eq(&initial, &repeated));
+        current_hit.hits = u64::MAX;
+        assert!(matches!(
+            current_hit.line(&snapshot, 0, SyntaxLanguage::Rust),
+            Err(SyntaxError::SequenceExhausted)
+        ));
+
+        let mut previous_hit = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)?;
+        let _ = previous_hit.line(&snapshot, 0, SyntaxLanguage::Rust)?;
+        previous_hit.begin_frame();
+        previous_hit.hits = u64::MAX;
+        assert!(matches!(
+            previous_hit.line(&snapshot, 0, SyntaxLanguage::Rust),
+            Err(SyntaxError::SequenceExhausted)
+        ));
+
+        let mut miss = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)?;
+        miss.misses = u64::MAX;
+        assert!(matches!(
+            miss.line(&snapshot, 0, SyntaxLanguage::Rust),
+            Err(SyntaxError::SequenceExhausted)
+        ));
+
+        let oversized = Buffer::new(&"x".repeat(MAX_SYNTAX_LINE_BYTES + 1)).snapshot();
+        let mut omission = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)?;
+        omission.omitted_lines = u64::MAX;
+        assert!(matches!(
+            omission.line(&oversized, 0, SyntaxLanguage::Rust),
+            Err(SyntaxError::SequenceExhausted)
+        ));
+
+        let mut text_error = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)?;
+        assert!(matches!(
+            text_error.line(&snapshot, 2, SyntaxLanguage::Rust),
+            Err(error)
+                if matches!(&error, SyntaxError::Text(_))
+                    && error.to_string().starts_with("syntax text access failed:")
+        ));
+
+        let mut current_comparison = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)?;
+        let _ = current_comparison.line(&snapshot, 0, SyntaxLanguage::Rust)?;
+        current_comparison.current[0].range = 0..usize::MAX;
+        assert!(matches!(
+            current_comparison.line(&snapshot, 0, SyntaxLanguage::Rust),
+            Err(SyntaxError::Text(_))
+        ));
+
+        let mut previous_comparison = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)?;
+        let _ = previous_comparison.line(&snapshot, 0, SyntaxLanguage::Rust)?;
+        previous_comparison.begin_frame();
+        previous_comparison.previous[0].range = 0..usize::MAX;
+        assert!(matches!(
+            previous_comparison.line(&snapshot, 0, SyntaxLanguage::Rust),
+            Err(SyntaxError::Text(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn allocation_span_and_utf16_failures_are_discriminating() -> Result<(), SyntaxError> {
+        let mut values = Vec::<u8>::new();
+        assert!(matches!(
+            reserve(&mut values, usize::MAX),
+            Err(SyntaxError::AllocationFailed)
+        ));
+        assert!(matches!(
+            reserve_exact(&mut values, usize::MAX),
+            Err(SyntaxError::AllocationFailed)
+        ));
+
+        let mut emitter = Emitter::new("abc");
+        emitter.push(0, 0, SyntaxClass::Code)?;
+        emitter.push(0, 4, SyntaxClass::Code)?;
+        emitter.push(0, 2, SyntaxClass::Code)?;
+        assert!(matches!(
+            emitter.push(1, 3, SyntaxClass::String),
+            Err(SyntaxError::InvalidSpan)
+        ));
+
+        let mut touching = Emitter::new("ab");
+        touching.push(0, 1, SyntaxClass::Code)?;
+        touching.push(1, 2, SyntaxClass::String)?;
+        assert_eq!(touching.finish()?.spans().len(), 2);
+
+        let mut byte = 0;
+        let mut utf16 = 0;
+        assert!(matches!(
+            advance_utf16("é", &mut byte, &mut utf16, 1),
+            Err(SyntaxError::InvalidSpan)
+        ));
+        byte = 1;
+        assert!(matches!(
+            advance_utf16("é", &mut byte, &mut utf16, 2),
+            Err(SyntaxError::InvalidSpan)
+        ));
+        byte = 0;
+        utf16 = u32::MAX;
+        assert!(matches!(
+            advance_utf16("a", &mut byte, &mut utf16, 1),
+            Err(SyntaxError::InvalidSpan)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn every_compiled_lexer_fallback_is_explicit() -> Result<(), SyntaxError> {
+        let mut crlf = String::from("value\r\n");
+        trim_line_ending(&mut crlf);
+        assert_eq!(crlf, "value");
+        let mut cr = String::from("value\r");
+        trim_line_ending(&mut cr);
+        assert_eq!(cr, "value");
+
+        assert!(classes(SyntaxLanguage::PlainText, "plain")?.is_empty());
+        assert!(
+            highlight_line(SyntaxLanguage::Rust, &"x".repeat(MAX_SYNTAX_LINE_BYTES + 1))?.omitted()
+        );
+        assert_eq!(
+            classes(SyntaxLanguage::Rust, "/* closed */ /* open")?,
+            [SyntaxClass::Comment, SyntaxClass::Comment]
+        );
+        assert_eq!(
+            classes(SyntaxLanguage::Toml, "[package]")?,
+            [SyntaxClass::Heading]
+        );
+        assert!(classes(SyntaxLanguage::Toml, "[package")?.is_empty());
+        assert!(classes(SyntaxLanguage::Toml, "package]")?.is_empty());
+        assert!(classes(SyntaxLanguage::Toml, "bare value")?.is_empty());
+        assert_eq!(
+            classes(SyntaxLanguage::Toml, " = 1")?,
+            [SyntaxClass::Number]
+        );
+        let mut overlapping_toml = Emitter::new("name = 1");
+        overlapping_toml.push(0, 1, SyntaxClass::Code)?;
+        assert!(matches!(
+            highlight_toml("name = 1", &mut overlapping_toml),
+            Err(SyntaxError::InvalidSpan)
+        ));
+        assert_eq!(
+            classes(SyntaxLanguage::Markdown, "####### not-a-heading `open")?,
+            [SyntaxClass::Code]
+        );
+        let escaped_source = r#"{"escaped": "a\\\"b", "false": false, "none": null}"#;
+        let escaped_json = classes(SyntaxLanguage::Json, escaped_source)?;
+        assert_eq!(
+            escaped_json,
+            [
+                SyntaxClass::Property,
+                SyntaxClass::String,
+                SyntaxClass::Property,
+                SyntaxClass::Keyword,
+                SyntaxClass::Property,
+                SyntaxClass::Keyword
+            ]
+        );
+        assert_eq!(
+            classes(SyntaxLanguage::Toml, r#""a\\\"=b" = "unterminated"#)?,
+            [SyntaxClass::Property, SyntaxClass::String]
+        );
+        assert_eq!(
+            classes(SyntaxLanguage::Json, r#"{"name"  : "alpine"}"#)?,
+            [SyntaxClass::Property, SyntaxClass::String]
+        );
+        assert_eq!(find_pair(b"ab*/cd", 1, *b"*/"), Some(4));
+        assert_eq!(find_pair(b"abcdef", 1, *b"*/"), None);
+        assert_eq!(find_unquoted(br#""a\"=b" = 1"#, b'='), Some(8));
+        Ok(())
+    }
+
+    #[test]
+    fn previous_and_empty_capacity_eviction_release_every_accounted_byte() -> Result<(), SyntaxError>
+    {
+        let snapshot = Buffer::new("pub fn main() {}\n").snapshot();
+        let mut previous = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)?;
+        let _ = previous.line(&snapshot, 0, SyntaxLanguage::Rust)?;
+        previous.begin_frame();
+        previous.budget_bytes = 1;
+        previous.enforce_budget();
+        assert!(previous.previous.is_empty());
+        assert!(previous.current_bytes() <= previous.budget_bytes);
+
+        let mut empty_capacity = SyntaxCache::new(1)?;
+        empty_capacity
+            .current
+            .try_reserve(8)
+            .map_err(|_| SyntaxError::AllocationFailed)?;
+        empty_capacity.enforce_budget();
+        assert!(empty_capacity.current.is_empty());
+        assert!(empty_capacity.current_bytes() <= empty_capacity.budget_bytes);
+        Ok(())
+    }
+
+    #[test]
+    fn syntax_error_messages_are_stable() {
+        assert_eq!(
+            SyntaxError::InvalidBudget.to_string(),
+            "syntax cache budget must be nonzero"
+        );
+        assert_eq!(
+            SyntaxError::AllocationFailed.to_string(),
+            "syntax allocation failed"
+        );
+        assert_eq!(
+            SyntaxError::SequenceExhausted.to_string(),
+            "syntax evidence sequence exhausted"
+        );
+        assert_eq!(
+            SyntaxError::InvalidSpan.to_string(),
+            "syntax span is invalid"
+        );
     }
 }
