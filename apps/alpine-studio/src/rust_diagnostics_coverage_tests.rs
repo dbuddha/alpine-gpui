@@ -169,7 +169,7 @@ fn lifecycle_failures_and_poll_classes_are_bounded() -> Result<(), Box<dyn Error
 
     let (mut stopped, _, root_six) = installed_model()?;
     let _ = stopped.session.as_mut().ok_or("session")?.client.shutdown();
-    assert!(stopped.restart_or_fail(RustDiagnosticsError::MissingServer));
+    assert!(stopped.begin_initialize(1));
 
     let (mut classes, _, root_seven) = installed_model()?;
     let mut visual = false;
