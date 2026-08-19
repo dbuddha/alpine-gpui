@@ -538,6 +538,7 @@ fn reader_bounds_success_io_queue_and_retained_budget_paths() -> Result<(), Box<
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn supervisor_and_helper_spawn_failures_are_injected_without_bypasses() -> Result<(), Box<dyn Error>>
 {
     let failure = LanguageServerProcess::start_with_spawner(
@@ -574,6 +575,7 @@ fn supervisor_and_helper_spawn_failures_are_injected_without_bypasses() -> Resul
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn failed_child_start_rejects_queued_input_and_releases_payload() -> Result<(), Box<dyn Error>> {
     let mut spec = ProcessSpec::new(env::current_exe()?, std::iter::empty::<&str>(), None)?;
     spec.executable = PathBuf::from("/missing/alpine-language-server");
@@ -621,6 +623,7 @@ fn failed_child_start_rejects_queued_input_and_releases_payload() -> Result<(), 
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn input_admission_distinguishes_identity_full_disconnected_and_missing_sender()
 -> Result<(), Box<dyn Error>> {
     let counters = Arc::new(Counters::default());
@@ -688,6 +691,7 @@ fn input_admission_distinguishes_identity_full_disconnected_and_missing_sender()
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn restart_reports_panicked_helper_and_started_event_overflow() -> Result<(), Box<dyn Error>> {
     let counters = Arc::new(Counters::default());
     let mut process = spawn_process(
@@ -748,6 +752,7 @@ fn restart_reports_panicked_helper_and_started_event_overflow() -> Result<(), Bo
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn echo_restart_and_stale_events_are_bounded() -> Result<(), Box<dyn Error>> {
     let mut process = LanguageServerProcess::start(
         ProcessSpec::new("/bin/cat", std::iter::empty::<&str>(), None)?,
@@ -802,6 +807,7 @@ fn echo_restart_and_stale_events_are_bounded() -> Result<(), Box<dyn Error>> {
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn crash_is_structured_and_restart_recovers() -> Result<(), Box<dyn Error>> {
     let mut process = LanguageServerProcess::start(shell("exit 7")?, identity(1))?;
     let exited = wait_for(&mut process, |event| {
@@ -836,6 +842,7 @@ fn crash_is_structured_and_restart_recovers() -> Result<(), Box<dyn Error>> {
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn output_flood_terminates_without_unbounded_retention() -> Result<(), Box<dyn Error>> {
     let mut process =
         LanguageServerProcess::start(ProcessSpec::new("/usr/bin/yes", ["x"], None)?, identity(1))?;
@@ -926,6 +933,7 @@ fn event_observers_preserve_rejection_stop_and_failure_details() -> Result<(), B
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn blocked_input_is_nonblocking_and_shutdown_releases_payloads() -> Result<(), Box<dyn Error>> {
     let mut process =
         LanguageServerProcess::start(ProcessSpec::new("/bin/sleep", ["30"], None)?, identity(1))?;
@@ -1090,6 +1098,7 @@ fn bounded_supervisor_join_reports_an_unfinished_worker() {
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn supervisor_exits_after_terminal_event_overflow() -> Result<(), Box<dyn Error>> {
     let spec = ProcessSpec::new("/usr/bin/yes", ["x"], None)?;
     let (control_sender, control_receiver) = sync_channel(1);
@@ -1128,6 +1137,7 @@ fn supervisor_exits_after_terminal_event_overflow() -> Result<(), Box<dyn Error>
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn failed_spawn_cleanup_reaps_the_owned_child() -> Result<(), Box<dyn Error>> {
     let mut child = Command::new("sh").args(["-c", "sleep 30"]).spawn()?;
     let (input, input_receiver) = sync_channel::<WriteRequest>(1);

@@ -49,6 +49,15 @@ assert_every_gate "$classifier"
 classifier_tests=$(run_fixture scripts/test-classifier.sh)
 assert_every_gate "$classifier_tests"
 
+miri_manifest=$(run_fixture assurance/miri-studio-partitions.tsv)
+assert_every_gate "$miri_manifest"
+
+miri_runner=$(run_fixture scripts/run-miri-partition.sh)
+assert_every_gate "$miri_runner"
+
+miri_tests=$(run_fixture scripts/test-miri-partitions.sh)
+assert_every_gate "$miri_tests"
+
 core=$(run_fixture crates/alpine-core/src/lib.rs)
 assert_output "$core" coverage=true
 assert_output "$core" mutation=true
