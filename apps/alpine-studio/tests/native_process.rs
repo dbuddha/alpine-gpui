@@ -28,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
     use std::{
+        ffi::OsStr,
         io::Read as _,
         process::{Command, Stdio},
         thread,
@@ -43,6 +44,13 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
     let path = root.join("document.rs");
     std::fs::create_dir_all(&home)?;
     std::fs::write(&path, "fn main() {}\n")?;
+    let expected_evidence = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
+        None => "physical",
+        Some(mode) if mode == OsStr::new("hosted-direct") => "hosted-direct",
+        Some(mode) => {
+            return Err(format!("unsupported presentation evidence mode: {mode:?}").into());
+        }
+    };
 
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_alpine-studio"))
@@ -87,7 +95,7 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
             .into());
         }
         let fields = stdout.split_whitespace().collect::<Vec<_>>();
-        assert_eq!(fields.len(), 9);
+        assert_eq!(fields.len(), 10);
         assert_eq!(fields[0], "alpine-native-journey");
         let submissions = fields[1]
             .strip_prefix("submissions=")
@@ -119,6 +127,7 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
         assert!(qualified >= 1);
         assert_eq!(fields[7], "shutdown=true");
         assert_eq!(fields[8], "owners=9");
+        assert_eq!(fields[9], format!("evidence={expected_evidence}"));
         assert!(stderr.lines().all(|line| {
             line.ends_with("Metal API Validation Enabled")
                 || line.ends_with("Metal GPU Validation Enabled")

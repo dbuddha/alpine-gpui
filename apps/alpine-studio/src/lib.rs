@@ -4866,6 +4866,7 @@ fn floor_f32_to_usize(value: f32) -> Option<usize> {
 pub mod native_validation {
     use std::{
         cell::RefCell,
+        ffi::OsStr,
         fmt,
         fmt::Write as _,
         fs,
@@ -4903,6 +4904,16 @@ pub mod native_validation {
         application: Application<StudioApp>,
         descriptor: &SurfaceDescriptor,
     ) -> Result<(), alpine_runtime::RuntimeError> {
+        let hosted_direct = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
+            None => false,
+            Some(mode) if mode == OsStr::new("hosted-direct") => true,
+            Some(mode) => panic!("unsupported presentation evidence mode: {mode:?}"),
+        };
+        let evidence_source = if hosted_direct {
+            "hosted-direct"
+        } else {
+            "physical"
+        };
         let surface = platform_validation::new_surface(descriptor)?;
         let observer = surface.observer();
         let waker = surface.waker();
@@ -4918,6 +4929,12 @@ pub mod native_validation {
                         0,
                         true,
                     )?;
+                }
+                if hosted_direct {
+                    // Hosted macOS runners have no qualifying physical display.
+                    // This deterministic post-commit control proves lifecycle
+                    // composition only and cannot support presentation claims.
+                    platform_validation::inject_post_commit_observation(surface, None, 1.0)?;
                 }
                 platform_validation::arm_user_window_close(surface, Duration::from_millis(500));
                 Ok(())
@@ -4976,7 +4993,7 @@ pub mod native_validation {
         assert_eq!(owners.release_order_violations(), 0);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closed);
         println!(
-            "alpine-native-journey submissions={submissions} presented={} qualified={} superseded={} skipped={} cancelled={} shutdown=true owners=9",
+            "alpine-native-journey submissions={submissions} presented={} qualified={} superseded={} skipped={} cancelled={} shutdown=true owners=9 evidence={evidence_source}",
             frame.presented_count(),
             frame.qualified_presented_count(),
             frame.superseded_count(),
