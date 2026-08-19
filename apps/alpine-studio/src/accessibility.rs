@@ -11,7 +11,7 @@ use alpine_text::{BufferSnapshot, ByteOffset, Selection, TextError};
 
 use super::{EventEffect, StudioApp};
 
-pub(crate) const MAX_ACCESSIBILITY_NODES: usize = 270;
+pub(crate) const MAX_ACCESSIBILITY_NODES: usize = 271;
 pub(crate) const MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES: usize = 65_536;
 
 const WINDOW_NODE: AccessibilityNodeId = AccessibilityNodeId(1);
@@ -23,6 +23,7 @@ const QUICK_OPEN_NODE: AccessibilityNodeId = AccessibilityNodeId(6);
 const PROJECT_SEARCH_NODE: AccessibilityNodeId = AccessibilityNodeId(7);
 const COMMAND_PALETTE_NODE: AccessibilityNodeId = AccessibilityNodeId(8);
 const STATUS_NODE: AccessibilityNodeId = AccessibilityNodeId(9);
+const COMPLETION_NODE: AccessibilityNodeId = AccessibilityNodeId(10);
 const TAB_NODE_BASE: u64 = 1_024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -366,6 +367,8 @@ fn build_nodes(app: &StudioApp) -> Result<Vec<AccessibilityNode>, AccessibilityE
         app.quick_open.is_open(),
         app.project_search.is_open(),
         app.command_palette.is_open(),
+        app.rust_diagnostics
+            .completion_is_open(app.language_identity()),
     ];
     let node_count = required_node_count(app.tabs.len(), overlays, app.local_status.is_some())?;
 
@@ -425,7 +428,7 @@ fn build_nodes(app: &StudioApp) -> Result<Vec<AccessibilityNode>, AccessibilityE
 
 fn required_node_count(
     tab_count: usize,
-    overlays: [bool; 5],
+    overlays: [bool; 6],
     has_status: bool,
 ) -> Result<usize, AccessibilityError> {
     let overlay_count = overlays
@@ -463,6 +466,11 @@ fn focus_owner(app: &StudioApp) -> Option<AccessibilityNodeId> {
     }
     if app.command_palette.is_open() {
         Some(COMMAND_PALETTE_NODE)
+    } else if app
+        .rust_diagnostics
+        .completion_is_open(app.language_identity())
+    {
+        Some(COMPLETION_NODE)
     } else if app.project_search.is_open() {
         Some(PROJECT_SEARCH_NODE)
     } else if app.quick_open.is_open() {
@@ -550,6 +558,20 @@ fn push_overlays(
         "Command palette",
         focus_owner == Some(COMMAND_PALETTE_NODE),
     );
+    if let Some(label) = app
+        .rust_diagnostics
+        .completion_accessibility_label(app.language_identity())
+    {
+        nodes.push(node(
+            COMPLETION_NODE,
+            Some(WINDOW_NODE),
+            AccessibilityRole::Dialog,
+            label,
+            focus_owner == Some(COMPLETION_NODE),
+            true,
+            true,
+        ));
+    }
 }
 
 pub(super) fn apply_action(
@@ -669,22 +691,22 @@ mod tests {
 
     #[test]
     fn node_count_and_tree_shape_boundaries_are_exact() {
-        assert_eq!(required_node_count(0, [false; 5], false), Ok(3));
-        for overlay in 0..5 {
-            let mut overlays = [false; 5];
+        assert_eq!(required_node_count(0, [false; 6], false), Ok(3));
+        for overlay in 0..6 {
+            let mut overlays = [false; 6];
             overlays[overlay] = true;
             assert_eq!(required_node_count(0, overlays, false), Ok(4));
         }
         assert_eq!(
-            required_node_count(261, [true; 5], true),
+            required_node_count(261, [true; 6], true),
             Ok(MAX_ACCESSIBILITY_NODES)
         );
         assert_eq!(
-            required_node_count(262, [true; 5], true),
+            required_node_count(262, [true; 6], true),
             Err(AccessibilityError::InvalidTree)
         );
         assert_eq!(
-            required_node_count(usize::MAX, [false; 5], false),
+            required_node_count(usize::MAX, [false; 6], false),
             Err(AccessibilityError::ArithmeticOverflow)
         );
         assert_eq!(validate_tree_shape(4, 4, 1, true), Ok(()));

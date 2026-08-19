@@ -338,6 +338,8 @@ jobs:
             miri_flags: -Zmiri-disable-isolation
           - partition: studio-language-transport
             miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-completion
+            miri_flags: ""
           - partition: studio-language-diagnostics
             miri_flags: -Zmiri-disable-isolation
           - partition: studio-language-protocol-01

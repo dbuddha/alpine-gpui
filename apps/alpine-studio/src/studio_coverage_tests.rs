@@ -4632,6 +4632,368 @@ fn accessibility_snapshot_preserves_unicode_revision_focus_and_bounded_text()
     Ok(())
 }
 
+fn assert_completion_shutdown_and_idle_are_bounded(
+    path: &std::path::Path,
+    diagnostics: &serde_json::value::RawValue,
+    completion: &serde_json::value::RawValue,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = StudioApp::open_file(TestTextSystem, path)?;
+    let input = app.active_rust_document().ok_or("Rust document")?;
+    app.rust_diagnostics.install_for_test(
+        input,
+        diagnostics,
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    app.rust_diagnostics
+        .install_completion_for_test(5, app.language_identity(), completion)?;
+    assert!(
+        app.rust_diagnostics
+            .completion_is_open(app.language_identity())
+    );
+    let shutdown = app.rust_diagnostics.shutdown();
+    assert!(!shutdown.active);
+    assert!(!shutdown.completion_pending);
+    assert_eq!(shutdown.completion_items, 0);
+    assert_eq!(shutdown.completion_bytes, 0);
+
+    let mut idle_app = StudioApp::open_file(TestTextSystem, path)?;
+    let idle_input = idle_app.active_rust_document().ok_or("Rust document")?;
+    idle_app.rust_diagnostics.install_for_test(
+        idle_input,
+        diagnostics,
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    idle_app.rust_diagnostics.install_completion_for_test(
+        6,
+        idle_app.language_identity(),
+        completion,
+    )?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(idle_app, viewport()?, clear, WorkerConfig::default())?;
+    assert!(runtime.frame_if_dirty().is_some());
+    assert!(runtime.frame_if_dirty().is_none());
+    Ok(())
+}
+
+fn assert_completion_trigger_guards(app: &mut StudioApp) {
+    app.composition = Some(Composition {
+        replacement: app.selection.range(),
+        text: Box::default(),
+        selected_start_utf16: 0,
+        selected_length_utf16: 0,
+    });
+    assert_eq!(app.trigger_rust_completion(), EventEffect::default());
+    app.composition = None;
+
+    assert!(
+        app.dispatch_command(StudioCommand::TriggerCompletion)
+            .visual_changed
+    );
+    assert!(!app.rust_diagnostics.snapshot().completion_pending);
+    assert!(!app.rust_diagnostics.cancel_completion());
+
+    let original_selection = app.selection;
+    app.selection = Selection::caret(ByteOffset::new(app.buffer().snapshot().len_bytes() + 1));
+    let failures = app.input_failures;
+    assert_eq!(app.trigger_rust_completion(), EventEffect::default());
+    assert_eq!(app.input_failures, failures + 1);
+    app.selection = original_selection;
+    assert_eq!(app.apply_selected_completion(), EventEffect::default());
+    assert_eq!(app.handle_completion_key(0, false), None);
+}
+
+fn assert_completion_application_failures(
+    app: &mut StudioApp,
+    completion: &serde_json::value::RawValue,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let invalid_range = serde_json::value::RawValue::from_string(
+        r#"[{"label":"outside","textEdit":{"range":{"start":{"line":99,"character":0},"end":{"line":99,"character":1}},"newText":"outside"}}]"#.to_owned(),
+    )?;
+    app.runtime_document_revision -= 1;
+    app.rust_diagnostics.install_completion_for_test(
+        31,
+        app.language_identity(),
+        &invalid_range,
+    )?;
+    let failures = app.input_failures;
+    assert!(app.apply_selected_completion().visual_changed);
+    assert_eq!(app.input_failures, failures + 1);
+
+    app.rust_diagnostics
+        .install_completion_for_test(32, app.language_identity(), completion)?;
+    assert!(
+        app.handle_completion_key(KEY_ESCAPE, false)
+            .is_some_and(|effect| effect.visual_changed)
+    );
+    Ok(())
+}
+
+#[test]
+fn completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn broken( {\n")?;
+    let path = root.path().join("main.rs");
+    let mut app = StudioApp::open_file(TestTextSystem, &path)?;
+    let input = app.active_rust_document().ok_or("Rust document")?;
+    let diagnostics = rust_diagnostics::tests::diagnostics(&path, 1);
+    app.rust_diagnostics.install_for_test(
+        input,
+        &diagnostics,
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    assert_completion_trigger_guards(&mut app);
+
+    let baseline = app.try_scene(SceneRevision::new(310), viewport()?)?;
+    let completion = serde_json::value::RawValue::from_string(
+        r#"[{"label":"println!","textEdit":{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":2}},"newText":"println!"}},{"label":"print!","insertText":"print!"}]"#.to_owned(),
+    )?;
+    app.rust_diagnostics
+        .install_completion_for_test(2, app.language_identity(), &completion)?;
+    assert_eq!(
+        app.handle_completion_key(KEY_UP, false),
+        Some(EventEffect::default())
+    );
+    assert_eq!(app.handle_completion_key(KEY_DOWN, true), None);
+
+    let scene = app.try_scene(SceneRevision::new(311), viewport()?)?;
+    assert_eq!(scene.clips().len(), baseline.clips().len() + 1);
+    assert_eq!(scene.quads().len(), baseline.quads().len() + 2);
+    assert!(scene.glyphs().len() > baseline.glyphs().len());
+    let first = app.accessibility_snapshot()?;
+    assert_single_accessibility_focus(&first);
+    assert!(first.nodes().iter().any(|node| {
+        node.role() == AccessibilityRole::Dialog
+            && node.name() == "Code completion: println!"
+            && node.is_focused()
+            && node.announces()
+    }));
+
+    assert!(
+        app.handle_event(&key(KEY_DOWN, Modifiers::default()))
+            .visual_changed
+    );
+    let second = app.accessibility_snapshot()?;
+    assert!(
+        second
+            .nodes()
+            .iter()
+            .any(|node| { node.name() == "Code completion: print!" && node.is_focused() })
+    );
+    let original = app.buffer().snapshot().text();
+    let applied = app.handle_event(&key(KEY_RETURN, Modifiers::default()));
+    assert!(applied.document_changed);
+    assert!(app.buffer().snapshot().text().starts_with("print!"));
+    assert!(
+        !app.rust_diagnostics
+            .completion_is_open(app.language_identity())
+    );
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    assert!(app.handle_event(&key(KEY_Z, command)).document_changed);
+    assert_eq!(app.buffer().snapshot().text(), original);
+
+    app.rust_diagnostics
+        .install_completion_for_test(3, app.language_identity(), &completion)?;
+    app.runtime_document_revision += 1;
+    let stale = app.accessibility_snapshot()?;
+    assert!(
+        !stale
+            .nodes()
+            .iter()
+            .any(|node| { node.name().starts_with("Code completion:") })
+    );
+    assert!(
+        stale
+            .nodes()
+            .iter()
+            .any(|node| { node.role() == AccessibilityRole::CodeEditor && node.is_focused() })
+    );
+
+    assert_completion_application_failures(&mut app, &completion)?;
+
+    app.rust_diagnostics
+        .install_completion_for_test(4, app.language_identity(), &completion)?;
+    assert!(
+        app.handle_event(&SurfaceEvent::Focus {
+            focused: false,
+            timestamp: EventTimestamp::new(312),
+        })
+        .visual_changed
+    );
+    assert!(
+        !app.rust_diagnostics
+            .completion_is_open(app.language_identity())
+    );
+    assert_completion_shutdown_and_idle_are_bounded(&path, &diagnostics, &completion)?;
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the exact anchored, clamped, narrow, and fallback geometry controls stay in one scene journey"
+)]
+fn completion_overlay_geometry_is_exact_at_anchor_clamp_and_narrow_edges()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "zero\none\ntwo\n")?;
+    let path = root.path().join("main.rs");
+    let mut app = StudioApp::open_file(TestTextSystem, &path)?;
+    let input = app.active_rust_document().ok_or("Rust document")?;
+    app.rust_diagnostics.install_for_test(
+        input,
+        &rust_diagnostics::tests::diagnostics(&path, 1),
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    app.selection = Selection::caret(ByteOffset::new(5));
+
+    let three = serde_json::value::RawValue::from_string(
+        r#"[{"label":"alpha"},{"label":"beta"},{"label":"gamma"}]"#.to_owned(),
+    )?;
+    app.rust_diagnostics
+        .install_completion_for_test(40, app.language_identity(), &three)?;
+    let wide = app.try_scene(SceneRevision::new(320), viewport()?)?;
+    let completion_clip = wide.clips().len().checked_sub(1).ok_or("completion clip")?;
+    let expected_wide = Rect::new(
+        Point::new(48.0, 68.0).ok_or("wide completion origin")?,
+        Size::new(420.0, 66.0).ok_or("wide completion size")?,
+    );
+    assert_eq!(wide.clips()[completion_clip].bounds(), expected_wide);
+    assert!(wide.quads().iter().any(|quad| {
+        quad.clip()
+            .is_some_and(|clip| clip.index() == completion_clip)
+            && quad.bounds()
+                == Rect::new(
+                    Point::new(48.0, 68.0).unwrap_or_else(|| unreachable!()),
+                    Size::new(420.0, LINE_HEIGHT).unwrap_or_else(|| unreachable!()),
+                )
+    }));
+    let completion_glyphs = wide
+        .glyphs()
+        .iter()
+        .filter(|glyph| {
+            glyph
+                .clip()
+                .is_some_and(|clip| clip.index() == completion_clip)
+        })
+        .collect::<Vec<_>>();
+    assert!(!completion_glyphs.is_empty());
+    assert_eq!(
+        completion_glyphs[0].bounds().origin().x().to_bits(),
+        56.0_f32.to_bits()
+    );
+    assert_eq!(
+        completion_glyphs[0].bounds().origin().y().to_bits(),
+        83.0_f32.to_bits()
+    );
+    let mut row_origins = completion_glyphs
+        .iter()
+        .map(|glyph| glyph.bounds().origin().y())
+        .collect::<Vec<_>>();
+    row_origins.sort_by(f32::total_cmp);
+    row_origins.dedup_by(|left, right| left.to_bits() == right.to_bits());
+    assert_eq!(row_origins, [83.0, 105.0, 127.0]);
+
+    let many = (0..10)
+        .map(|index| format!(r#"{{"label":"item-{index}"}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    let many = serde_json::value::RawValue::from_string(format!("[{many}]"))?;
+    app.rust_diagnostics
+        .install_completion_for_test(41, app.language_identity(), &many)?;
+    let constrained_viewport = Size::new(260.0, 200.0).ok_or("constrained viewport")?;
+    let constrained = app.try_scene(SceneRevision::new(321), constrained_viewport)?;
+    assert_eq!(
+        constrained
+            .clips()
+            .last()
+            .ok_or("constrained clip")?
+            .bounds(),
+        Rect::new(
+            Point::new(48.0, 24.0).ok_or("constrained origin")?,
+            Size::new(164.0, 176.0).ok_or("constrained size")?,
+        )
+    );
+
+    let narrow_viewport = Size::new(60.0, 200.0).ok_or("narrow viewport")?;
+    let narrow = app.try_scene(SceneRevision::new(322), narrow_viewport)?;
+    assert_eq!(
+        narrow.clips().last().ok_or("narrow clip")?.bounds(),
+        Rect::new(
+            Point::new(35.0, 24.0).ok_or("narrow origin")?,
+            Size::new(1.0, 176.0).ok_or("narrow size")?,
+        )
+    );
+
+    root.write("deep.rs", "line\n".repeat(100))?;
+    let deep_path = root.path().join("deep.rs");
+    let mut fallback_app = StudioApp::open_file(TestTextSystem, &deep_path)?;
+    let fallback_input = fallback_app
+        .active_rust_document()
+        .ok_or("deep Rust document")?;
+    fallback_app.rust_diagnostics.install_for_test(
+        fallback_input,
+        &rust_diagnostics::tests::diagnostics(&deep_path, 1),
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    fallback_app.selection = Selection::caret(ByteOffset::new(400));
+    fallback_app.rust_diagnostics.install_completion_for_test(
+        42,
+        fallback_app.language_identity(),
+        &many,
+    )?;
+    let fallback = fallback_app.try_scene(SceneRevision::new(323), viewport()?)?;
+    assert_eq!(
+        fallback.clips().last().ok_or("fallback clip")?.bounds(),
+        Rect::new(
+            Point::new(48.0, 48.0).ok_or("fallback origin")?,
+            Size::new(420.0, 176.0).ok_or("fallback size")?,
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn completion_command_modifiers_and_context_axes_are_independent()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn main() {}\n")?;
+    let path = root.path().join("main.rs");
+    let mut app = StudioApp::open_file(TestTextSystem, &path)?;
+    let input = app.active_rust_document().ok_or("Rust document")?;
+    app.rust_diagnostics.install_for_test(
+        input,
+        &rust_diagnostics::tests::diagnostics(&path, 1),
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    let completion = serde_json::value::RawValue::from_string(
+        r#"[{"label":"first"},{"label":"second"}]"#.to_owned(),
+    )?;
+    app.rust_diagnostics
+        .install_completion_for_test(42, app.language_identity(), &completion)?;
+    for physical_key in [KEY_UP, KEY_DOWN, KEY_RETURN, KEY_TAB] {
+        assert_eq!(app.handle_completion_key(physical_key, true), None);
+        assert!(
+            app.rust_diagnostics
+                .completion_is_open(app.language_identity())
+        );
+    }
+
+    assert!(app.command_context().can_complete);
+    app.composition = Some(Composition {
+        replacement: app.selection.range(),
+        text: Box::default(),
+        selected_start_utf16: 0,
+        selected_length_utf16: 0,
+    });
+    assert!(!app.command_context().can_complete);
+
+    let plain = StudioDocument::scratch("plain text");
+    let plain = StudioApp::from_document(TestTextSystem, plain, Some(Path::new("notes.txt")))?;
+    assert!(!plain.command_context().can_complete);
+    Ok(())
+}
+
 #[test]
 fn accessibility_non_identity_state_and_every_focus_owner_are_exact()
 -> Result<(), Box<dyn std::error::Error>> {

@@ -4,6 +4,7 @@ use std::{
     env,
     error::Error,
     fmt,
+    ops::Range,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -15,11 +16,12 @@ use alpine_text::BufferSnapshot;
 
 use crate::{
     lsp_client::{LspClient, LspClientError, LspClientPoll},
-    lsp_json::PeerEvent,
+    lsp_json::{PeerEvent, RequestStamp, ResponseValue},
     lsp_language::{
         DiagnosticBatch, LanguageProtocolError, LspDocument, LspPosition, initialize_params,
     },
     lsp_process::{ConfigError, ProcessIdentity, ProcessSpec, ProcessWake, StopReason},
+    rust_completion::{CompletionBatch, CompletionError, CompletionItem},
 };
 
 const MAX_POLLS_PER_TURN: usize = 8;
@@ -32,10 +34,25 @@ pub(crate) const MAX_VISIBLE_DIAGNOSTIC_MARKERS: usize = 256;
     reason = "the revision suffix names four independent admission authorities"
 )]
 pub(crate) struct LanguageIdentity {
+    pub(crate) workspace_id: u64,
     pub(crate) workspace_revision: u64,
+    pub(crate) document_id: u64,
     pub(crate) document_revision: u64,
     pub(crate) buffer_revision: u64,
     pub(crate) selection_revision: u64,
+}
+
+impl LanguageIdentity {
+    fn request_stamp(self) -> Option<RequestStamp> {
+        RequestStamp::new(
+            self.workspace_id,
+            self.workspace_revision,
+            self.document_id,
+            self.document_revision,
+            self.buffer_revision,
+            self.selection_revision,
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -114,6 +131,18 @@ pub(crate) struct DiagnosticMarker {
     pub(crate) severity: Option<u8>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CompletionApplication {
+    pub(crate) range: Range<usize>,
+    pub(crate) text: Box<str>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CompletionRow<'a> {
+    pub(crate) label: &'a str,
+    pub(crate) selected: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) active: bool,
@@ -126,6 +155,15 @@ pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) diagnostic_bytes: usize,
     pub(crate) peak_diagnostic_items: usize,
     pub(crate) peak_diagnostic_bytes: usize,
+    pub(crate) completion_pending: bool,
+    pub(crate) completion_items: usize,
+    pub(crate) completion_bytes: usize,
+    pub(crate) peak_completion_items: usize,
+    pub(crate) peak_completion_bytes: usize,
+    pub(crate) completion_requests: u64,
+    pub(crate) completion_cancellations: u64,
+    pub(crate) stale_completions: u64,
+    pub(crate) completion_truncations: u64,
     pub(crate) process_retained_bytes: usize,
     pub(crate) process_queued_events: usize,
     pub(crate) process_submitted_inputs: u64,
@@ -157,6 +195,49 @@ struct AdmittedDiagnostics {
     batch: DiagnosticBatch,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingCompletion {
+    request_id: u32,
+    stamp: RequestStamp,
+    identity: LanguageIdentity,
+    process_epoch: u64,
+    lsp_version: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AdmittedCompletion {
+    request_id: u32,
+    identity: LanguageIdentity,
+    process_epoch: u64,
+    lsp_version: i32,
+    batch: CompletionBatch,
+    selected: usize,
+    first_visible: usize,
+}
+
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+thread_local! {
+    static LAST_COMPLETION_RESPONSE: std::cell::RefCell<Option<Box<str>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+fn completion_batch_from_response(
+    value: ResponseValue<'_>,
+) -> Result<CompletionBatch, CompletionError> {
+    #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+    LAST_COMPLETION_RESPONSE.with(|response| {
+        response.replace(Some(match value {
+            ResponseValue::Result(result) => Box::from(result.get()),
+            ResponseValue::Error(_) => Box::from("error"),
+        }));
+    });
+    match value {
+        ResponseValue::Result(result) => CompletionBatch::admit(result),
+        ResponseValue::Error(_) => Err(CompletionError::Malformed),
+    }
+}
+
 struct RustSession {
     target: Target,
     identity: LanguageIdentity,
@@ -171,6 +252,8 @@ struct RustSession {
     restart_count: u8,
     document: LspDocument,
     diagnostics: Option<AdmittedDiagnostics>,
+    pending_completion: Option<PendingCompletion>,
+    completion: Option<AdmittedCompletion>,
     client: LspClient,
 }
 
@@ -183,6 +266,7 @@ pub(crate) enum RustDiagnosticsError {
     Configuration(ConfigError),
     Language(LanguageProtocolError),
     Client(LspClientError),
+    Completion(CompletionError),
 }
 
 impl fmt::Display for RustDiagnosticsError {
@@ -202,6 +286,12 @@ pub(crate) struct RustDiagnostics {
     peak_diagnostic_items: usize,
     peak_diagnostic_bytes: usize,
     diagnostic_publications: u64,
+    peak_completion_items: usize,
+    peak_completion_bytes: usize,
+    completion_requests: u64,
+    completion_cancellations: u64,
+    stale_completions: u64,
+    completion_truncations: u64,
     polls: u64,
     stale_wakes: u64,
     stale_diagnostics: u64,
@@ -221,6 +311,12 @@ impl Default for RustDiagnostics {
             peak_diagnostic_items: 0,
             peak_diagnostic_bytes: 0,
             diagnostic_publications: 0,
+            peak_completion_items: 0,
+            peak_completion_bytes: 0,
+            completion_requests: 0,
+            completion_cancellations: 0,
+            stale_completions: 0,
+            completion_truncations: 0,
             polls: 0,
             stale_wakes: 0,
             stale_diagnostics: 0,
@@ -265,6 +361,13 @@ impl RustDiagnostics {
             return LanguageEffect::default();
         };
         let mut visual_changed = false;
+        if input.identity != session.identity {
+            merge_visual_changed(&mut visual_changed, session.completion.take().is_some());
+            if let Some(pending) = session.pending_completion.take() {
+                let _ = session.client.cancel(pending.request_id);
+                self.completion_cancellations = self.completion_cancellations.saturating_add(1);
+            }
+        }
         if input.identity.buffer_revision != session.identity.buffer_revision {
             let Some(version) = session.lsp_version.checked_add(1) else {
                 return self.fail(RustDiagnosticsError::VersionExhausted);
@@ -304,15 +407,28 @@ impl RustDiagnostics {
             self.polls = self.polls.saturating_add(1);
             let mut initialized = false;
             let mut candidate = None;
+            let mut completion_candidate = None;
+            let mut stale_completion = None;
             let poll = {
                 let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
                 let expected = &session.document;
-                session.client.poll(None, |event| match event {
+                let current = session.pending_completion.map(|pending| pending.stamp);
+                session.client.poll(current, |event| match event {
                     PeerEvent::Initialized(_) => initialized = true,
                     PeerEvent::InboundNotification {
                         method: "textDocument/publishDiagnostics",
                         params: Some(params),
                     } => candidate = Some(DiagnosticBatch::admit(params, expected)),
+                    PeerEvent::Response {
+                        id,
+                        method,
+                        stamp,
+                        value,
+                    } if method.as_ref() == "textDocument/completion" => {
+                        let batch = completion_batch_from_response(value);
+                        completion_candidate = Some((id, stamp, batch));
+                    }
+                    PeerEvent::StaleResponse { id } => stale_completion = Some(id),
                     _ => {}
                 })
             };
@@ -331,6 +447,12 @@ impl RustDiagnostics {
             if let Some(candidate) = candidate {
                 let admitted = self.admit(candidate);
                 merge_visual_changed(&mut visual_changed, admitted);
+            }
+            if let Some(id) = stale_completion {
+                merge_visual_changed(&mut visual_changed, self.reject_stale_completion(id));
+            }
+            if let Some((id, stamp, batch)) = completion_candidate {
+                merge_visual_changed(&mut visual_changed, self.admit_completion(id, stamp, batch));
             }
             if self.apply_poll(poll, &mut visual_changed) {
                 break;
@@ -361,6 +483,206 @@ impl RustDiagnostics {
 
     pub(crate) fn status_message(&self) -> Option<Arc<str>> {
         self.status.clone()
+    }
+
+    pub(crate) fn request_completion(&mut self, position: LspPosition) -> LanguageEffect {
+        let mut visual_changed = self.cancel_completion();
+        let Some(session) = self.session.as_mut() else {
+            return LanguageEffect {
+                visual_changed: replace_status(
+                    &mut self.status,
+                    Some(Arc::from("Rust analysis is not ready for completion.")),
+                ) || visual_changed,
+                continuation: None,
+            };
+        };
+        if session.state != SessionState::Open {
+            return LanguageEffect {
+                visual_changed: replace_status(
+                    &mut self.status,
+                    Some(Arc::from("Rust analysis is not ready for completion.")),
+                ) || visual_changed,
+                continuation: None,
+            };
+        }
+        let Some(stamp) = session.identity.request_stamp() else {
+            return self.fail(RustDiagnosticsError::InvalidIdentity);
+        };
+        let result = session
+            .document
+            .completion_params(position)
+            .map_err(RustDiagnosticsError::Language)
+            .and_then(|params| {
+                session
+                    .client
+                    .begin_request("textDocument/completion", Some(&params), stamp)
+                    .map_err(RustDiagnosticsError::Client)
+            });
+        match result {
+            Ok(request) => {
+                session.pending_completion = Some(PendingCompletion {
+                    request_id: request.request_id,
+                    stamp,
+                    identity: session.identity,
+                    process_epoch: session.process_epoch,
+                    lsp_version: session.lsp_version,
+                });
+                self.completion_requests = self.completion_requests.saturating_add(1);
+                visual_changed |= replace_status(&mut self.status, None);
+                LanguageEffect {
+                    visual_changed,
+                    continuation: None,
+                }
+            }
+            Err(error) => self.fail(error),
+        }
+    }
+
+    pub(crate) fn completion_is_open(&self, identity: LanguageIdentity) -> bool {
+        self.session.as_ref().is_some_and(|session| {
+            session.completion.as_ref().is_some_and(|completion| {
+                completion.identity == identity
+                    && completion.process_epoch == session.process_epoch
+                    && completion.lsp_version == session.lsp_version
+            })
+        })
+    }
+
+    pub(crate) fn cancel_completion(&mut self) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let mut changed = session.completion.take().is_some();
+        if let Some(pending) = session.pending_completion.take() {
+            match session.client.cancel(pending.request_id) {
+                Ok(_) => {
+                    self.completion_cancellations = self.completion_cancellations.saturating_add(1);
+                }
+                Err(error) => {
+                    changed |= replace_status(
+                        &mut self.status,
+                        Some(Arc::from(RustDiagnosticsError::Client(error).to_string())),
+                    );
+                }
+            }
+        }
+        changed
+    }
+
+    pub(crate) fn navigate_completion(&mut self, delta: isize) -> bool {
+        let Some(completion) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.completion.as_mut())
+        else {
+            return false;
+        };
+        let count = completion.batch.items().len();
+        let previous = completion.selected;
+        completion.selected = completion
+            .selected
+            .saturating_add_signed(delta)
+            .min(count.saturating_sub(1));
+        if matches!(
+            completion.selected.cmp(&completion.first_visible),
+            std::cmp::Ordering::Less
+        ) {
+            completion.first_visible = completion.selected;
+        } else if completion.selected
+            >= completion
+                .first_visible
+                .saturating_add(crate::rust_completion::MAX_VISIBLE_COMPLETION_ROWS)
+        {
+            completion.first_visible = completion
+                .selected
+                .saturating_add(1)
+                .saturating_sub(crate::rust_completion::MAX_VISIBLE_COMPLETION_ROWS);
+        }
+        previous != completion.selected
+    }
+
+    pub(crate) fn completion_visible_range(
+        &self,
+        identity: LanguageIdentity,
+    ) -> Option<Range<usize>> {
+        let session = self.session.as_ref()?;
+        let completion = session.completion.as_ref()?;
+        if completion.identity != identity
+            || completion.process_epoch != session.process_epoch
+            || completion.lsp_version != session.lsp_version
+        {
+            return None;
+        }
+        let end = completion
+            .first_visible
+            .saturating_add(crate::rust_completion::MAX_VISIBLE_COMPLETION_ROWS)
+            .min(completion.batch.items().len());
+        Some(completion.first_visible..end)
+    }
+
+    pub(crate) fn completion_row(
+        &self,
+        identity: LanguageIdentity,
+        index: usize,
+    ) -> Option<CompletionRow<'_>> {
+        let session = self.session.as_ref()?;
+        let completion = session.completion.as_ref()?;
+        if completion.identity != identity
+            || completion.process_epoch != session.process_epoch
+            || completion.lsp_version != session.lsp_version
+        {
+            return None;
+        }
+        let item = completion.batch.items().get(index)?;
+        Some(CompletionRow {
+            label: item.label(),
+            selected: completion.selected == index,
+        })
+    }
+
+    pub(crate) fn completion_accessibility_label(
+        &self,
+        identity: LanguageIdentity,
+    ) -> Option<Arc<str>> {
+        let session = self.session.as_ref()?;
+        let completion = session.completion.as_ref()?;
+        if completion.identity != identity
+            || completion.process_epoch != session.process_epoch
+            || completion.lsp_version != session.lsp_version
+        {
+            return None;
+        }
+        let item = completion.batch.items().get(completion.selected)?;
+        Some(Arc::from(format!("Code completion: {}", item.label())))
+    }
+
+    pub(crate) fn take_selected_completion(
+        &mut self,
+        identity: LanguageIdentity,
+        snapshot: &BufferSnapshot,
+        fallback: Range<usize>,
+    ) -> Result<Option<CompletionApplication>, CompletionError> {
+        let Some(session) = self.session.as_mut() else {
+            return Ok(None);
+        };
+        let Some(completion) = session.completion.take() else {
+            return Ok(None);
+        };
+        if completion.identity != identity
+            || completion.process_epoch != session.process_epoch
+            || completion.lsp_version != session.lsp_version
+        {
+            self.stale_completions = self.stale_completions.saturating_add(1);
+            return Ok(None);
+        }
+        let item: &CompletionItem = completion
+            .batch
+            .items()
+            .get(completion.selected)
+            .ok_or(CompletionError::Malformed)?;
+        let (range, text) = item.replacement(snapshot, fallback)?;
+        let _ = replace_status(&mut self.status, None);
+        Ok(Some(CompletionApplication { range, text }))
     }
 
     fn apply_poll(&mut self, poll: LspClientPoll, visual_changed: &mut bool) -> bool {
@@ -450,11 +772,15 @@ impl RustDiagnostics {
             diagnostic_version,
             diagnostic_items,
             diagnostic_bytes,
+            completion_pending,
+            completion_items,
+            completion_bytes,
         ) = self
             .session
             .as_ref()
-            .map_or((0, 0, 0, None, 0, 0), |session| {
+            .map_or((0, 0, 0, None, 0, 0, false, 0, 0), |session| {
                 let diagnostics = session.diagnostics.as_ref();
+                let completion = session.completion.as_ref();
                 (
                     session.generation,
                     session.process_epoch,
@@ -462,6 +788,9 @@ impl RustDiagnostics {
                     diagnostics.and_then(|value| value.batch.document_version()),
                     diagnostics.map_or(0, |value| value.batch.diagnostics().len()),
                     diagnostics.map_or(0, |value| value.batch.retained_bytes()),
+                    session.pending_completion.is_some(),
+                    completion.map_or(0, |value| value.batch.items().len()),
+                    completion.map_or(0, |value| value.batch.retained_bytes()),
                 )
             });
         let process = self
@@ -480,6 +809,15 @@ impl RustDiagnostics {
             diagnostic_bytes,
             peak_diagnostic_items: self.peak_diagnostic_items,
             peak_diagnostic_bytes: self.peak_diagnostic_bytes,
+            completion_pending,
+            completion_items,
+            completion_bytes,
+            peak_completion_items: self.peak_completion_items,
+            peak_completion_bytes: self.peak_completion_bytes,
+            completion_requests: self.completion_requests,
+            completion_cancellations: self.completion_cancellations,
+            stale_completions: self.stale_completions,
+            completion_truncations: self.completion_truncations,
             process_retained_bytes: process.retained_bytes,
             process_queued_events: process.queued_events,
             process_submitted_inputs: process.submitted_inputs,
@@ -548,6 +886,8 @@ impl RustDiagnostics {
             restart_count: 0,
             document,
             diagnostics: None,
+            pending_completion: None,
+            completion: None,
             client,
         });
         Ok(())
@@ -663,12 +1003,90 @@ impl RustDiagnostics {
         true
     }
 
+    fn admit_completion(
+        &mut self,
+        id: u32,
+        stamp: RequestStamp,
+        candidate: Result<CompletionBatch, CompletionError>,
+    ) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let Some(pending) = session.pending_completion.take() else {
+            self.stale_completions = self.stale_completions.saturating_add(1);
+            return false;
+        };
+        if pending.request_id != id
+            || pending.stamp != stamp
+            || pending.identity != session.identity
+            || pending.process_epoch != session.process_epoch
+            || pending.lsp_version != session.lsp_version
+        {
+            self.stale_completions = self.stale_completions.saturating_add(1);
+            return false;
+        }
+        let batch = match candidate {
+            Ok(batch) => batch,
+            Err(error) => {
+                return replace_status(
+                    &mut self.status,
+                    Some(Arc::from(
+                        RustDiagnosticsError::Completion(error).to_string(),
+                    )),
+                );
+            }
+        };
+        if batch.items().is_empty() {
+            session.completion = None;
+            return replace_status(&mut self.status, Some(Arc::from("No Rust completions.")));
+        }
+        self.peak_completion_items = self.peak_completion_items.max(batch.items().len());
+        self.peak_completion_bytes = self.peak_completion_bytes.max(batch.retained_bytes());
+        self.completion_truncations = self
+            .completion_truncations
+            .saturating_add(u64::from(batch.was_truncated()));
+        session.completion = Some(AdmittedCompletion {
+            request_id: id,
+            identity: pending.identity,
+            process_epoch: pending.process_epoch,
+            lsp_version: pending.lsp_version,
+            batch,
+            selected: 0,
+            first_visible: 0,
+        });
+        let _ = replace_status(&mut self.status, None);
+        true
+    }
+
+    fn reject_stale_completion(&mut self, id: u32) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let pending_matches = session
+            .pending_completion
+            .is_some_and(|pending| pending.request_id == id);
+        if pending_matches {
+            session.pending_completion = None;
+        }
+        let admitted_matches = session
+            .completion
+            .as_ref()
+            .is_some_and(|completion| completion.request_id == id);
+        if admitted_matches {
+            session.completion = None;
+        }
+        self.stale_completions = self.stale_completions.saturating_add(1);
+        admitted_matches
+    }
+
     fn restart_or_fail(&mut self, error: RustDiagnosticsError) -> bool {
         let Some(session) = self.session.as_mut() else {
             return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
         };
         if session.restart_count == MAX_RESTARTS_PER_DOCUMENT {
             session.diagnostics = None;
+            session.pending_completion = None;
+            session.completion = None;
             return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
         }
         let Some(generation) = session.process_generation.checked_add(1) else {
@@ -695,6 +1113,8 @@ impl RustDiagnostics {
         session.state = SessionState::Starting;
         session.pending_change = false;
         session.diagnostics = None;
+        session.pending_completion = None;
+        session.completion = None;
         self.restarts = self.restarts.saturating_add(1);
         replace_status(
             &mut self.status,
@@ -705,6 +1125,8 @@ impl RustDiagnostics {
     fn fail(&mut self, error: RustDiagnosticsError) -> LanguageEffect {
         if let Some(session) = self.session.as_mut() {
             session.diagnostics = None;
+            session.pending_completion = None;
+            session.completion = None;
         }
         LanguageEffect {
             visual_changed: replace_status(&mut self.status, Some(Arc::from(error.to_string()))),
@@ -762,6 +1184,38 @@ impl RustDiagnostics {
         self.peak_diagnostic_items = batch.diagnostics().len();
         self.peak_diagnostic_bytes = batch.retained_bytes();
         self.session = Some(test_session(input, document, batch, executable));
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_completion_for_test(
+        &mut self,
+        request_id: u32,
+        identity: LanguageIdentity,
+        result: &serde_json::value::RawValue,
+    ) -> Result<(), RustDiagnosticsError> {
+        let batch = CompletionBatch::admit(result).map_err(RustDiagnosticsError::Completion)?;
+        if batch.items().is_empty() {
+            return Err(RustDiagnosticsError::Completion(CompletionError::Malformed));
+        }
+        let session = self
+            .session
+            .as_mut()
+            .ok_or(RustDiagnosticsError::InvalidIdentity)?;
+        self.peak_completion_items = self.peak_completion_items.max(batch.items().len());
+        self.peak_completion_bytes = self.peak_completion_bytes.max(batch.retained_bytes());
+        self.completion_truncations = self
+            .completion_truncations
+            .saturating_add(u64::from(batch.was_truncated()));
+        session.completion = Some(AdmittedCompletion {
+            request_id,
+            identity,
+            process_epoch: session.process_epoch,
+            lsp_version: session.lsp_version,
+            batch,
+            selected: 0,
+            first_visible: 0,
+        });
         Ok(())
     }
 }
@@ -842,6 +1296,8 @@ fn test_session(
             process_epoch: 1,
             batch,
         }),
+        pending_completion: None,
+        completion: None,
         client,
     }
 }

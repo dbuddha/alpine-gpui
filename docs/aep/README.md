@@ -31,6 +31,8 @@ Accepted AEPs:
 - [AEP 0168: Bounded lazy workspace inventory and quick open](0168-bounded-lazy-workspace-inventory.md)
 - [AEP 0171: Lazy bounded workspace file tree](0171-lazy-bounded-workspace-file-tree.md)
 - [AEP 0177: Bounded static command palette](0177-bounded-static-command-palette.md)
+- [AEP 0180: Bounded streaming local project search](0180-bounded-streaming-project-search.md)
+- [AEP 0218: Bounded revision-safe Rust completion](0218-bounded-rust-completion.md)
 
 Proposed AEPs:
 

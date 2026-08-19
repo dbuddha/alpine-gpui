@@ -39,7 +39,6 @@ fn value_guards_and_error_contracts_cover_each_rejection_axis() {
         [1, 0, 1, 1, 1, 1],
         [1, 1, 0, 1, 1, 1],
         [1, 1, 1, 0, 1, 1],
-        [1, 1, 1, 1, 0, 1],
         [1, 1, 1, 1, 1, 0],
     ] {
         assert_eq!(
@@ -54,6 +53,7 @@ fn value_guards_and_error_contracts_cover_each_rejection_axis() {
             None
         );
     }
+    assert!(RequestStamp::new(1, 1, 1, 1, 0, 1).is_some());
     assert!(RequestStamp::new(1, 2, 3, 4, 5, 6).is_some());
     let error = ProtocolError::InvalidEnvelope;
     assert_eq!(
@@ -311,4 +311,38 @@ fn storage_and_outbound_limits_fail_before_growth() {
     let full_capacity = full.capacity();
     assert!(reserve_pending(&mut full).is_ok());
     assert!(full.capacity() > full_capacity);
+
+    let mut cancellation_full = running_peer();
+    let request = protocol_ok(cancellation_full.begin_request("textDocument/hover", None, stamp));
+    cancellation_full.cancelled = (1..=MAX_PENDING_REQUESTS)
+        .map(|id| RequestId(u32::try_from(id).unwrap_or_else(|_| unreachable!())))
+        .collect();
+    assert_eq!(
+        cancellation_full.cancel(request.request_id().unwrap_or_else(|| unreachable!())),
+        Err(ProtocolError::PendingCapacity)
+    );
+}
+
+#[test]
+fn retained_bytes_add_each_storage_class_with_capacity_not_length() {
+    let stamp = RequestStamp::new(1, 2, 3, 4, 5, 6).unwrap_or_else(|| unreachable!());
+    let mut peer = LspPeer::new();
+    peer.pending = Vec::with_capacity(3);
+    peer.pending.push(pending_request(1, "abc", Some(stamp)));
+    peer.pending
+        .push(pending_request(2, "completion/method", Some(stamp)));
+    peer.cancelled = Vec::with_capacity(5);
+    peer.cancelled.push(RequestId(7));
+    let expected = peer.pending.capacity() * size_of::<PendingRequest>()
+        + "abc".len()
+        + "completion/method".len()
+        + peer.cancelled.capacity() * size_of::<RequestId>();
+    assert_eq!(peer.retained_bytes(), expected);
+    assert_ne!(
+        peer.retained_bytes(),
+        peer.pending.capacity() * size_of::<PendingRequest>()
+            + "abc".len()
+            + "completion/method".len()
+            - peer.cancelled.capacity() * size_of::<RequestId>()
+    );
 }

@@ -54,6 +54,7 @@ mod panes;
 mod project_search;
 mod quick_open;
 mod recovery;
+mod rust_completion;
 mod rust_diagnostics;
 mod session;
 #[cfg_attr(
@@ -121,8 +122,9 @@ use project_search::{
 use quick_open::{
     QuickOpenAdmission, QuickOpenError, QuickOpenRequest, QuickOpenState, QuickOpenWorkerOutput,
 };
+use rust_completion::{MAX_VISIBLE_COMPLETION_ROWS, position_for_byte};
 use rust_diagnostics::{
-    LanguageEffect, LanguageIdentity, LanguageWake, LanguageWakeLatch,
+    CompletionApplication, LanguageEffect, LanguageIdentity, LanguageWake, LanguageWakeLatch,
     MAX_VISIBLE_DIAGNOSTIC_MARKERS, RustDiagnostics, RustDocumentInput,
 };
 #[cfg(all(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
@@ -2065,6 +2067,63 @@ impl StudioApp {
         if let Some(bounds) = status_background {
             builder.push_quad(Quad::new(bounds, status_background_color).clipped(active_clip))?;
         }
+        if let Some(rows) = self
+            .rust_diagnostics
+            .completion_visible_range(language_identity)
+        {
+            let row_count = rows.len();
+            let width = 420.0_f32.min((content_size.width() - CONTENT_INSET * 2.0).max(1.0));
+            let caret_top = Self::line_for_offset(&snapshot, self.selection.head().get())?
+                .and_then(|line| rendered_lines.iter().find(|rendered| rendered.line == line))
+                .map_or(
+                    active_pane.bounds.origin().y() + TAB_BAR_HEIGHT,
+                    |rendered| rendered.top + LINE_HEIGHT,
+                );
+            let height = usize_as_f32(rows.len()) * LINE_HEIGHT;
+            let maximum_top = (active_pane.bounds.origin().y() + content_size.height() - height)
+                .max(active_pane.bounds.origin().y());
+            let top = caret_top.min(maximum_top);
+            let left = (editor_origin_x + CONTENT_INSET)
+                .min((editor_origin_x + content_size.width() - width).max(editor_origin_x));
+            let overlay_origin = Point::new(left, top).ok_or(StudioRenderError::Domain)?;
+            let overlay_size =
+                Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
+            let overlay_bounds = Rect::new(overlay_origin, overlay_size);
+            let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
+            let background =
+                Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.push_quad(background)?;
+            for (visible_row, index) in rows.enumerate() {
+                let row = self
+                    .rust_diagnostics
+                    .completion_row(language_identity, index)
+                    .ok_or(StudioRenderError::Domain)?;
+                let selected = row.selected;
+                let layout = self.text_system.shape(row.label, font)?;
+                let row_top = top + usize_as_f32(visible_row) * LINE_HEIGHT;
+                if selected {
+                    let row_origin = Point::new(left, row_top).ok_or(StudioRenderError::Domain)?;
+                    let row_size =
+                        Size::new(width, LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
+                    let highlight =
+                        Quad::new(Rect::new(row_origin, row_size), command_palette_selected)
+                            .clipped(overlay_clip);
+                    builder.push_quad(highlight)?;
+                }
+                let glyph_origin_x = left + FIND_BAR_INSET;
+                let glyph_origin_y = row_top + layout.ascent() + 3.0;
+                let glyphs = self.collect_glyphs(
+                    &layout,
+                    font,
+                    glyph_origin_x,
+                    glyph_origin_y,
+                    overlay_clip,
+                );
+                let glyphs = glyphs?;
+                pending_glyphs.extend(glyphs);
+            }
+            debug_assert!(row_count <= MAX_VISIBLE_COMPLETION_ROWS);
+        }
         if self.find.is_open() {
             let width = FIND_BAR_WIDTH.min(content_size.width());
             let left = (active_pane.bounds.origin().x() + content_size.width() - width)
@@ -2529,7 +2588,13 @@ impl StudioApp {
             SurfaceEvent::Focus { focused, .. } => {
                 let changed = self.focused != *focused;
                 self.focused = *focused;
-                changed.then(EventEffect::visual).unwrap_or_default()
+                let completion = (!*focused && self.rust_diagnostics.cancel_completion())
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+                changed
+                    .then(EventEffect::visual)
+                    .unwrap_or_default()
+                    .merge(completion)
             }
             SurfaceEvent::Ime { event, .. } => self.handle_ime(event),
             SurfaceEvent::Clipboard { event, .. } => {
@@ -2709,6 +2774,37 @@ impl StudioApp {
         }
     }
 
+    fn handle_completion_key(&mut self, physical_key: u16, command: bool) -> Option<EventEffect> {
+        if !self
+            .rust_diagnostics
+            .completion_is_open(self.language_identity())
+        {
+            return None;
+        }
+        match physical_key {
+            KEY_ESCAPE => Some(
+                self.rust_diagnostics
+                    .cancel_completion()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default(),
+            ),
+            KEY_UP if !command => Some(
+                self.rust_diagnostics
+                    .navigate_completion(-1)
+                    .then(EventEffect::visual)
+                    .unwrap_or_default(),
+            ),
+            KEY_DOWN if !command => Some(
+                self.rust_diagnostics
+                    .navigate_completion(1)
+                    .then(EventEffect::visual)
+                    .unwrap_or_default(),
+            ),
+            KEY_RETURN | KEY_TAB if !command => Some(self.apply_selected_completion()),
+            _ => None,
+        }
+    }
+
     fn handle_key(&mut self, physical_key: u16, modifiers: Modifiers) -> EventEffect {
         let command = modifiers.contains(Modifiers::COMMAND);
         let shift = modifiers.contains(Modifiers::SHIFT);
@@ -2718,6 +2814,9 @@ impl StudioApp {
             .active()
             .keymap
             .resolve(physical_key, modifiers);
+        if let Some(effect) = self.handle_completion_key(physical_key, command) {
+            return effect;
+        }
         if action == Some(KeyAction::CommandPalette) {
             return self.open_command_palette();
         }
@@ -3042,6 +3141,7 @@ impl StudioApp {
             can_split_down: editor_bounds
                 .is_some_and(|bounds| self.panes.can_split(SplitAxis::Rows, bounds)),
             can_close_pane: self.panes.len() > 1,
+            can_complete: self.active_rust_document().is_some() && self.composition.is_none(),
         }
     }
 
@@ -3061,6 +3161,7 @@ impl StudioApp {
                 self.find_needs_search |= !self.find.query().is_empty();
                 changed.then(EventEffect::visual).unwrap_or_default()
             }
+            StudioCommand::TriggerCompletion => self.trigger_rust_completion(),
             StudioCommand::OpenQuickOpen if self.workspace.is_none() => {
                 self.record_quick_open_error(&QuickOpenError::NoWorkspace)
             }
@@ -4311,10 +4412,45 @@ impl StudioApp {
 
     fn language_identity(&self) -> LanguageIdentity {
         LanguageIdentity {
+            workspace_id: 1,
             workspace_revision: self.runtime_workspace_revision,
+            document_id: self.tabs.active_id().map_or(1, |id| id.0),
             document_revision: self.runtime_document_revision,
             buffer_revision: self.buffer().revision().get(),
             selection_revision: self.selection_revision,
+        }
+    }
+
+    fn trigger_rust_completion(&mut self) -> EventEffect {
+        if self.composition.is_some() {
+            return EventEffect::default();
+        }
+        let snapshot = self.buffer().snapshot();
+        let Ok(position) = position_for_byte(&snapshot, self.selection.head()) else {
+            self.input_failures = self.input_failures.saturating_add(1);
+            return EventEffect::default();
+        };
+        let effect = self.rust_diagnostics.request_completion(position);
+        effect
+            .visual_changed
+            .then(EventEffect::visual)
+            .unwrap_or_default()
+    }
+
+    fn apply_selected_completion(&mut self) -> EventEffect {
+        let snapshot = self.buffer().snapshot();
+        let identity = self.language_identity();
+        let fallback = self.selection.range();
+        let result = self
+            .rust_diagnostics
+            .take_selected_completion(identity, &snapshot, fallback);
+        match result {
+            Ok(Some(CompletionApplication { range, text })) => self.replace_range(range, &text),
+            Ok(None) => EventEffect::default(),
+            Err(_) => {
+                self.input_failures = self.input_failures.saturating_add(1);
+                EventEffect::visual()
+            }
         }
     }
 

@@ -563,11 +563,12 @@ mod tests {
                 Instant::now() < deadline,
                 "mock late response was not rejected"
             );
-            let poll = client.poll(Some(current), |_| {});
-            if matches!(
-                poll,
-                Err(LspClientError::Protocol(ProtocolError::UnknownResponseId))
-            ) {
+            let mut rejected = false;
+            let poll = client.poll(Some(current), |event| {
+                rejected |=
+                    matches!(event, PeerEvent::StaleResponse { id } if id == slow.request_id);
+            });
+            if rejected {
                 return Ok(slow.request_id);
             }
             assert!(poll.is_ok(), "unexpected cancellation poll: {poll:?}");
@@ -882,6 +883,7 @@ mod tests {
         client: &mut LspClient,
         document: &LspDocument,
     ) -> Result<(), Box<dyn Error>> {
+        let before = client.snapshot().peer;
         let hover_params = document.position_params(LspPosition::new(0, 7)?)?;
         let cancelled =
             client.begin_request("textDocument/hover", Some(&hover_params), stamp(1))?;
@@ -893,22 +895,34 @@ mod tests {
             stamp(1),
         )?;
         let deadline = Instant::now() + WAIT;
+        let mut cancelled_rejected = false;
         let mut stale_rejected = false;
-        while Instant::now() < deadline && !stale_rejected {
+        while Instant::now() < deadline && !(cancelled_rejected && stale_rejected) {
             match client.poll(Some(stamp(2)), |event| {
-                stale_rejected |= matches!(
-                    event,
-                    PeerEvent::StaleResponse { id } if id == stale.request_id
-                );
+                if let PeerEvent::StaleResponse { id } = event {
+                    cancelled_rejected |= id == cancelled.request_id;
+                    stale_rejected |= id == stale.request_id;
+                }
             }) {
                 Ok(_) | Err(LspClientError::Protocol(ProtocolError::UnknownResponseId)) => {}
                 Err(error) => return Err(error.into()),
             }
             thread::sleep(Duration::from_millis(2));
         }
+        assert!(
+            cancelled_rejected,
+            "real cancelled result was not rejected as stale"
+        );
         assert!(stale_rejected, "real result was not rejected as stale");
-        assert_eq!(client.snapshot().peer.cancelled_requests(), 1);
-        assert_eq!(client.snapshot().peer.stale_responses(), 1);
+        let after = client.snapshot().peer;
+        let Some(expected_cancelled) = before.cancelled_requests().checked_add(1) else {
+            return Err("real cancellation counter overflowed".into());
+        };
+        let Some(expected_stale) = before.stale_responses().checked_add(2) else {
+            return Err("real stale-response counter overflowed".into());
+        };
+        assert_eq!(after.cancelled_requests(), expected_cancelled);
+        assert_eq!(after.stale_responses(), expected_stale);
         Ok(())
     }
 

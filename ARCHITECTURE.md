@@ -148,6 +148,20 @@ recovers polling without a timer, blocking wait, idle redraw, or duplicate
 document owner. Missing or failed servers leave editing and saving available and
 surface only bounded local status.
 
+Task #218 adds one private completion owner to that same active Rust session.
+An explicit request captures workspace, document, buffer, selection, process,
+request, URI, and LSP-version identity. Supersession cancels and locally revokes
+the prior request; a bounded cancelled-ID tombstone classifies late responses
+without allowing them to clear a newer admitted list. One response retains at
+most 64 items and 256 KiB across labels, documentation, and edits, while frames
+project at most eight rows. Plain and insert-replace edits map through checked
+line-local UTF-16 coordinates and apply as one revision-bound undoable
+transaction. Snippets, nonempty additional edits, ambiguous ranges, malformed
+or oversized results, and queue saturation fail visibly without mutating the
+document. Focus loss, editor change, restart, and shutdown release pending and
+admitted completion state. The keyboard and accessibility dialog reuse the
+dirty-only frame path, so one admitted result creates no subsequent idle frame.
+
 Production typography uses the safe
 CoreText service; deterministic test typography proves portable editor behavior
 without claiming native validation. It runs through one `Application` until the

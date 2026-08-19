@@ -161,20 +161,44 @@ impl LspDocument {
         }))
     }
 
+    pub(crate) fn completion_params(
+        &self,
+        position: LspPosition,
+    ) -> Result<Box<RawValue>, LanguageProtocolError> {
+        raw_value(&serde_json::json!({
+            "textDocument": { "uri": self.uri },
+            "position": {
+                "line": position.line,
+                "character": position.utf16_character,
+            },
+            "context": { "triggerKind": 1 }
+        }))
+    }
+
     pub(crate) fn text_document_params(&self) -> Result<Box<RawValue>, LanguageProtocolError> {
         raw_value(&serde_json::json!({ "textDocument": { "uri": self.uri } }))
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct DiagnosticRange {
+pub(crate) struct LspRange {
     start: LspPosition,
     end: LspPosition,
 }
 
+impl LspRange {
+    pub(crate) const fn start(self) -> LspPosition {
+        self.start
+    }
+
+    pub(crate) const fn end(self) -> LspPosition {
+        self.end
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Diagnostic {
-    range: DiagnosticRange,
+    range: LspRange,
     severity: Option<u8>,
     message: Box<str>,
 }
@@ -343,7 +367,15 @@ pub(crate) fn initialize_params(workspace: &Path) -> Result<Box<RawValue>, Langu
         "rootUri": uri,
         "capabilities": {
             "general": { "positionEncodings": ["utf-16"] },
-            "textDocument": { "publishDiagnostics": { "versionSupport": true } }
+            "textDocument": {
+                "publishDiagnostics": { "versionSupport": true },
+                "completion": {
+                    "completionItem": {
+                        "documentationFormat": ["plaintext", "markdown"],
+                        "insertReplaceSupport": true
+                    }
+                }
+            }
         },
         "workspaceFolders": [{ "uri": uri, "name": name }]
     }))
@@ -353,7 +385,7 @@ pub(crate) const fn pinned_server_version() -> &'static str {
     PINNED_SERVER_VERSION
 }
 
-fn parse_range(value: &Value) -> Result<DiagnosticRange, LanguageProtocolError> {
+pub(crate) fn parse_range(value: &Value) -> Result<LspRange, LanguageProtocolError> {
     let object = value
         .as_object()
         .ok_or(LanguageProtocolError::MalformedDiagnostics)?;
@@ -368,7 +400,7 @@ fn parse_range(value: &Value) -> Result<DiagnosticRange, LanguageProtocolError> 
     if (end.line, end.utf16_character) < (start.line, start.utf16_character) {
         return Err(LanguageProtocolError::InvalidRange);
     }
-    Ok(DiagnosticRange { start, end })
+    Ok(LspRange { start, end })
 }
 
 fn parse_position(value: &Value) -> Result<LspPosition, LanguageProtocolError> {

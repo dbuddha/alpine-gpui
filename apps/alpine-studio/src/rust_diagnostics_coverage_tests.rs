@@ -291,3 +291,433 @@ fn visual_accumulation_continuation_and_restart_counts_are_exact() -> Result<(),
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
+
+fn completion_result(text: &str) -> Result<Box<serde_json::value::RawValue>, Box<dyn Error>> {
+    Ok(serde_json::value::RawValue::from_string(text.to_owned())?)
+}
+
+fn install_pending_completion(
+    model: &mut RustDiagnostics,
+    request_id: u32,
+) -> Result<PendingCompletion, Box<dyn Error>> {
+    let session = model.session.as_mut().ok_or("session")?;
+    let pending = PendingCompletion {
+        request_id,
+        stamp: session.identity.request_stamp().ok_or("request stamp")?,
+        identity: session.identity,
+        process_epoch: session.process_epoch,
+        lsp_version: session.lsp_version,
+    };
+    session.pending_completion = Some(pending);
+    Ok(pending)
+}
+
+#[test]
+fn completion_guards_navigation_and_admission_are_discriminating() -> Result<(), Box<dyn Error>> {
+    let (root, _, snapshot, identity) = tests::fixture();
+    let position = LspPosition::new(0, 0)?;
+    let mut absent = RustDiagnostics::default();
+    assert!(absent.request_completion(position).visual_changed);
+    assert!(!absent.request_completion(position).visual_changed);
+    assert!(!absent.navigate_completion(1));
+    assert_eq!(absent.completion_visible_range(identity), None);
+    assert!(absent.completion_row(identity, 0).is_none());
+    assert_eq!(
+        absent.take_selected_completion(identity, &snapshot, 0..0)?,
+        None
+    );
+    let single = CompletionBatch::admit(&completion_result(
+        r#"[{"label":"one","insertText":"one"}]"#,
+    )?)?;
+    let stamp = identity.request_stamp().ok_or("request stamp")?;
+    assert!(!absent.admit_completion(1, stamp, Ok(single)));
+    assert!(!absent.reject_stale_completion(1));
+
+    let (mut model, input, root_two) = installed_model()?;
+    model.session.as_mut().ok_or("session")?.state = SessionState::Starting;
+    assert!(model.request_completion(position).visual_changed);
+    assert!(!model.request_completion(position).visual_changed);
+    model.session.as_mut().ok_or("session")?.state = SessionState::Open;
+    model
+        .session
+        .as_mut()
+        .ok_or("session")?
+        .identity
+        .document_revision = 0;
+    assert!(model.request_completion(position).visual_changed);
+    model.session.as_mut().ok_or("session")?.identity = input.identity;
+
+    let many = (0..10)
+        .map(|index| format!(r#"{{"label":"item-{index}"}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    model.install_completion_for_test(
+        7,
+        input.identity,
+        &completion_result(&format!("[{many}]"))?,
+    )?;
+    for _ in 1..10 {
+        assert!(model.navigate_completion(1));
+    }
+    assert!(!model.navigate_completion(1));
+    assert!(model.navigate_completion(-9));
+    let mut stale_identity = input.identity;
+    stale_identity.selection_revision += 1;
+    assert_eq!(model.completion_visible_range(stale_identity), None);
+    assert!(model.completion_row(stale_identity, 0).is_none());
+    assert_eq!(
+        model.take_selected_completion(stale_identity, &input.snapshot, 0..0)?,
+        None
+    );
+    assert_eq!(
+        model.take_selected_completion(input.identity, &input.snapshot, 0..0)?,
+        None
+    );
+
+    assert!(!model.shutdown().active);
+    std::fs::remove_dir_all(root)?;
+    std::fs::remove_dir_all(root_two)?;
+    Ok(())
+}
+
+#[test]
+fn completion_result_admission_rejects_every_stale_or_invalid_shape() -> Result<(), Box<dyn Error>>
+{
+    let (mut model, input, root) = installed_model()?;
+
+    assert!(matches!(
+        completion_batch_from_response(ResponseValue::error_for_test()),
+        Err(CompletionError::Malformed)
+    ));
+
+    let empty = completion_result("null")?;
+    let error = completion_result(r#"[{"label":"accepted"}]"#)?;
+    let pending = install_pending_completion(&mut model, 9)?;
+    assert!(model.admit_completion(
+        pending.request_id,
+        pending.stamp,
+        Ok(CompletionBatch::admit(&empty)?)
+    ));
+    assert!(matches!(
+        model.status_message().as_deref(),
+        Some("No Rust completions.")
+    ));
+
+    let pending = install_pending_completion(&mut model, 10)?;
+    assert!(model.admit_completion(
+        pending.request_id,
+        pending.stamp,
+        Err(CompletionError::Malformed)
+    ));
+
+    let pending = install_pending_completion(&mut model, 11)?;
+    assert!(!model.admit_completion(
+        pending.request_id + 1,
+        pending.stamp,
+        Ok(CompletionBatch::admit(&error)?)
+    ));
+    assert!(!model.admit_completion(
+        pending.request_id,
+        pending.stamp,
+        Ok(CompletionBatch::admit(&error)?)
+    ));
+
+    let pending = install_pending_completion(&mut model, 12)?;
+    assert!(!model.reject_stale_completion(pending.request_id));
+
+    assert_eq!(
+        model.install_completion_for_test(8, input.identity, &empty),
+        Err(RustDiagnosticsError::Completion(CompletionError::Malformed))
+    );
+    assert!(!model.shutdown().active);
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn completion_cancellation_and_request_failures_are_bounded() -> Result<(), Box<dyn Error>> {
+    let position = LspPosition::new(0, 0)?;
+    let (mut changed, input, root) = installed_model()?;
+    let _ = install_pending_completion(&mut changed, 21)?;
+    let mut newer = input.clone();
+    newer.identity.selection_revision += 1;
+    assert_eq!(changed.snapshot().completion_cancellations, 0);
+    let _ = changed.sync(Some(newer), |_| Arc::new(|| {}));
+    assert_eq!(changed.snapshot().completion_cancellations, 1);
+
+    let (mut cancellation_error, _, root_two) = installed_model()?;
+    let _ = install_pending_completion(&mut cancellation_error, u32::MAX)?;
+    assert!(cancellation_error.cancel_completion());
+    assert!(cancellation_error.status_message().is_some());
+    assert!(!cancellation_error.snapshot().completion_pending);
+
+    let (mut saturated, _, root_three) = installed_model()?;
+    assert!(saturated.request_completion(position).visual_changed);
+    assert!(saturated.status_message().is_some());
+    assert!(!saturated.snapshot().completion_pending);
+
+    for model in [&mut changed, &mut cancellation_error, &mut saturated] {
+        assert!(!model.shutdown().active);
+    }
+    for directory in [root, root_two, root_three] {
+        std::fs::remove_dir_all(directory)?;
+    }
+    Ok(())
+}
+
+fn wait_for_running_peer(model: &mut RustDiagnostics) -> Result<LanguageWake, Box<dyn Error>> {
+    let wake = model.current_wake_for_test().ok_or("language wake")?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let _ = model.poll(wake);
+        let running = model.session.as_ref().is_some_and(|session| {
+            let snapshot = session.client.snapshot();
+            snapshot.started && snapshot.peer.lifecycle() == crate::lsp_json::PeerLifecycle::Running
+        });
+        if running {
+            return Ok(wake);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    Err("timed out waiting for running language peer".into())
+}
+
+fn installed_process_model() -> Result<(RustDiagnostics, PathBuf), Box<dyn Error>> {
+    let (root, path, snapshot, identity) = tests::fixture();
+    let input = RustDocumentInput::new(&path, &root, identity, snapshot);
+    let mut model = RustDiagnostics::with_server(tests::mock_executable());
+    let effect = model.sync(Some(input), |_| Arc::new(|| {}));
+    if !effect.visual_changed {
+        return Err("production language session did not start".into());
+    }
+    Ok((model, root))
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn successful_completion_request_clears_status_and_reports_visual_change()
+-> Result<(), Box<dyn Error>> {
+    let (mut model, root) = installed_process_model()?;
+    let _wake = wait_for_running_peer(&mut model)?;
+    model.status = Some(Arc::from("old completion status"));
+    let effect = model.request_completion(LspPosition::new(0, 0)?);
+    assert!(effect.visual_changed);
+    assert_eq!(model.status_message(), None);
+    assert!(model.snapshot().completion_pending);
+    assert_eq!(model.snapshot().completion_requests, 1);
+    let _ = model.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn poll_ignores_non_completion_response_methods_even_with_matching_stamp()
+-> Result<(), Box<dyn Error>> {
+    let (mut model, root) = installed_process_model()?;
+    let wake = wait_for_running_peer(&mut model)?;
+    let mut diagnostics_observed = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let _ = model.poll(wake);
+        diagnostics_observed = model.snapshot().diagnostic_publications > 0;
+        if diagnostics_observed {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(diagnostics_observed);
+    let pending = {
+        let session = model.session.as_mut().ok_or("session")?;
+        let stamp = session.identity.request_stamp().ok_or("request stamp")?;
+        let submitted = session.client.begin_request("test/echo", None, stamp)?;
+        PendingCompletion {
+            request_id: submitted.request_id,
+            stamp,
+            identity: session.identity,
+            process_epoch: session.process_epoch,
+            lsp_version: session.lsp_version,
+        }
+    };
+    model.session.as_mut().ok_or("session")?.pending_completion = Some(pending);
+    let status = model.status_message();
+    let mut response_observed = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let _ = model.poll(wake);
+        response_observed = model
+            .session
+            .as_ref()
+            .is_some_and(|session| session.client.snapshot().peer.pending_requests() == 0);
+        if response_observed {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(response_observed);
+    assert_eq!(
+        model.session.as_ref().ok_or("session")?.pending_completion,
+        Some(pending)
+    );
+    assert_eq!(model.status_message(), status);
+    assert_eq!(model.snapshot().stale_completions, 0);
+    let _ = model.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn completion_admission_identity_axes_are_rejected_independently() -> Result<(), Box<dyn Error>> {
+    let (mut model, input, root) = installed_model()?;
+    let result = completion_result(r#"[{"label":"accepted"}]"#)?;
+
+    let pending = install_pending_completion(&mut model, 50)?;
+    let mut different_identity = pending.identity;
+    different_identity.selection_revision += 1;
+    let different_stamp = different_identity
+        .request_stamp()
+        .ok_or("different stamp")?;
+    assert!(!model.admit_completion(
+        pending.request_id,
+        different_stamp,
+        Ok(CompletionBatch::admit(&result)?)
+    ));
+
+    let mut pending = install_pending_completion(&mut model, 51)?;
+    pending.identity.selection_revision += 1;
+    model.session.as_mut().ok_or("session")?.pending_completion = Some(pending);
+    assert!(!model.admit_completion(
+        pending.request_id,
+        pending.stamp,
+        Ok(CompletionBatch::admit(&result)?)
+    ));
+
+    let mut pending = install_pending_completion(&mut model, 52)?;
+    pending.process_epoch += 1;
+    model.session.as_mut().ok_or("session")?.pending_completion = Some(pending);
+    assert!(!model.admit_completion(
+        pending.request_id,
+        pending.stamp,
+        Ok(CompletionBatch::admit(&result)?)
+    ));
+
+    let mut pending = install_pending_completion(&mut model, 53)?;
+    pending.lsp_version += 1;
+    model.session.as_mut().ok_or("session")?.pending_completion = Some(pending);
+    assert!(!model.admit_completion(
+        pending.request_id,
+        pending.stamp,
+        Ok(CompletionBatch::admit(&result)?)
+    ));
+    assert_eq!(model.snapshot().stale_completions, 4);
+    assert_eq!(model.completion_visible_range(input.identity), None);
+    let _ = model.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn completion_observers_reject_process_version_and_language_identity_axes()
+-> Result<(), Box<dyn Error>> {
+    let (mut model, input, root) = installed_model()?;
+    let result = completion_result(r#"[{"label":"accepted","insertText":"accepted"}]"#)?;
+
+    for axis in 0..3 {
+        model.install_completion_for_test(60 + axis, input.identity, &result)?;
+        match axis {
+            0 => {
+                model
+                    .session
+                    .as_mut()
+                    .ok_or("session")?
+                    .completion
+                    .as_mut()
+                    .ok_or("completion")?
+                    .process_epoch += 1;
+            }
+            1 => {
+                model
+                    .session
+                    .as_mut()
+                    .ok_or("session")?
+                    .completion
+                    .as_mut()
+                    .ok_or("completion")?
+                    .lsp_version += 1;
+            }
+            _ => {}
+        }
+        let mut observed_identity = input.identity;
+        if axis == 2 {
+            observed_identity.selection_revision += 1;
+        }
+        assert_eq!(model.completion_visible_range(observed_identity), None);
+        assert!(model.completion_row(observed_identity, 0).is_none());
+        assert_eq!(
+            model.completion_accessibility_label(observed_identity),
+            None
+        );
+        assert_eq!(
+            model.take_selected_completion(observed_identity, &input.snapshot, 0..0)?,
+            None
+        );
+    }
+    assert_eq!(model.snapshot().stale_completions, 3);
+    let _ = model.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn completion_navigation_window_edges_and_truncation_counts_are_exact() -> Result<(), Box<dyn Error>>
+{
+    let (mut model, input, root) = installed_model()?;
+    let ten = (0..10)
+        .map(|index| format!(r#"{{"label":"item-{index}"}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    model.install_completion_for_test(
+        70,
+        input.identity,
+        &completion_result(&format!("[{ten}]"))?,
+    )?;
+    assert_eq!(model.completion_visible_range(input.identity), Some(0..8));
+    for _ in 0..7 {
+        assert!(model.navigate_completion(1));
+    }
+    assert_eq!(model.completion_visible_range(input.identity), Some(0..8));
+    assert!(model.navigate_completion(1));
+    assert_eq!(model.completion_visible_range(input.identity), Some(1..9));
+    assert!(model.navigate_completion(1));
+    assert_eq!(model.completion_visible_range(input.identity), Some(2..10));
+    assert!(model.navigate_completion(-1));
+    assert_eq!(model.completion_visible_range(input.identity), Some(2..10));
+    assert!(model.navigate_completion(-8));
+    assert_eq!(model.completion_visible_range(input.identity), Some(0..8));
+
+    let omitted = (0..=crate::rust_completion::MAX_COMPLETION_ITEMS)
+        .map(|index| format!(r#"{{"label":"item-{index}"}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    let pending = install_pending_completion(&mut model, 71)?;
+    assert!(model.admit_completion(
+        pending.request_id,
+        pending.stamp,
+        Ok(CompletionBatch::admit(&completion_result(&format!(
+            "[{omitted}]"
+        ))?)?)
+    ));
+    assert_eq!(model.snapshot().completion_truncations, 1);
+    let pending = install_pending_completion(&mut model, 72)?;
+    assert!(model.admit_completion(
+        pending.request_id,
+        pending.stamp,
+        Ok(CompletionBatch::admit(&completion_result(
+            r#"[{"label":"not-truncated"}]"#
+        )?)?)
+    ));
+    assert_eq!(model.snapshot().completion_truncations, 1);
+    let _ = model.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}

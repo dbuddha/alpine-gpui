@@ -59,6 +59,18 @@ fn run() -> io::Result<()> {
                     }
                     write_diagnostics(&mut output, message, message.contains("let ok"))?;
                 }
+                Some("textDocument/completion") if initialized => {
+                    if message.contains(r#""character":99"#) {
+                        continue;
+                    }
+                    let id = json_id(message)?;
+                    write_frame(
+                        &mut output,
+                        &format!(
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"isIncomplete":false,"items":[{{"label":"println!","documentation":"Print a line","textEdit":{{"range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":2}}}},"newText":"println!"}}}},{{"label":"print!","insertText":"print!"}}]}}}}"#
+                        ),
+                    )?;
+                }
                 Some("test/echo") if initialized => {
                     let id = json_id(message)?;
                     write_frame(
