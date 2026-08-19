@@ -73,23 +73,28 @@ branches or broad parent tasks:
    [Task #221](https://github.com/dbuddha/alpine-gpui/issues/221).
 5. Finish typed configuration reload and migration through
    [Task #222](https://github.com/dbuddha/alpine-gpui/issues/222).
-6. Qualify native VoiceOver and lifecycle recovery through
+6. Complete onscreen SDR, lifecycle soak, production journey, and native idle
+   qualification through [Tasks #234 through #237](https://github.com/dbuddha/alpine-gpui/issues/72),
+   then qualify native VoiceOver and lifecycle recovery through
    [Task #223](https://github.com/dbuddha/alpine-gpui/issues/223).
 7. Restore bounded Miri assurance through
    [Defect #183](https://github.com/dbuddha/alpine-gpui/issues/183) and include
    Studio application lines in changed-line coverage diagnostics through
    [Defect #232](https://github.com/dbuddha/alpine-gpui/issues/232).
-8. Run sustained Alpine-repository dogfood and close blocking defects through
-   [Task #224](https://github.com/dbuddha/alpine-gpui/issues/224).
+8. Run revision-pinned capture, sustained Alpine-repository sessions,
+   interaction baselines, long-session residency, and final M5 acceptance
+   through [Tasks #238 through #242](https://github.com/dbuddha/alpine-gpui/issues/224)
+   under dogfood Task #224.
 
 No terminal, Git UI, plugin, AI, cloud, collaboration, telemetry, remote, or
 multi-window work may preempt this path.
 
 Tasks #218 through #221 form the Rust-intelligence dependency chain. Task #222
-is an independent accepted leaf. Task #223 remains blocked by Task #72. Task
-#224 is the convergence gate and cannot close while any linked assurance,
-data-loss, lifecycle, accessibility, idle-work, or unbounded-residency defect
-remains open.
+is an independent accepted leaf. Task #72 aggregates native leaves #234 through
+#237 and remains the blocker for Task #223. Task #224 aggregates dogfood leaves
+#238 through #242 and is the convergence gate; neither parent can close while a
+child or linked assurance, data-loss, lifecycle, accessibility, idle-work, or
+unbounded-residency defect remains open.
 
 ## How GitHub milestones map to readiness
 

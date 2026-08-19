@@ -12,7 +12,7 @@ Current status at the source revision:
 4. A local workspace shell with bounded indexing and restoration: functionally
    implemented, repository-scale dogfood remains open.
 5. Rust-first completion, navigation, configuration, native accessibility,
-   assurance closure, and dogfooding: active critical path.
+   assurance closure, and bounded dogfood leaves: active critical path.
 6. Scoped renderer and editor qualification: follows correctness and dogfood.
 
 Correctness precedes performance. Performance precedes memory and resource

@@ -88,10 +88,13 @@ an Alpine implementation choice.
 5. Complete bounded Rust completion, hover and navigation, rename and
    formatting, and symbols through Tasks #218 through #221.
 6. Complete configuration reload and migration through Task #222, then close
-   native surface, VoiceOver, and lifecycle evidence through Tasks #72 and
-   #223.
-7. Dogfood the Alpine repositories with no known data-loss, lifecycle,
-   unbounded-memory, idle-submission, IME, or accessibility defects.
+   the native compositor, lifecycle soak, production journey, and idle-energy
+   leaves #234 through #237 under Task #72 before Task #223 completes native
+   VoiceOver and lifecycle qualification.
+7. Execute dogfood capture, sustained sessions, interaction baselines,
+   residency, and final acceptance through leaves #238 through #242 under Task
+   #224, with no known data-loss, lifecycle, unbounded-memory, idle-submission,
+   IME, or accessibility defects.
 8. Qualify only named renderer and product claims through the
    [comparator protocol](../quality/comparator-protocol.md).
 
@@ -135,7 +138,8 @@ that Alpine is the fastest general UI framework.
   must distinguish server readiness, supported item admission, and stale
   revision rejection without retries or polling that create idle work.
 - Native VoiceOver and lifecycle qualification remains blocked by the residual
-  single-window surface evidence in Task #72.
+  single-window surface evidence decomposed as Tasks #234 through #237 under
+  Task #72.
 - Studio changed-line diagnostics do not yet cover `apps/` with the same
   actionable contract as `crates/`; Defect #232 must close before dogfood can
   rely on that gate.
@@ -143,8 +147,9 @@ that Alpine is the fastest general UI framework.
   pass authoritatively without unsupported process E2E or unbounded duration.
 - Fixed-hardware superiority evidence does not exist until the accepted
   workload and environment windows are collected.
-- Sustained repository dogfood has not yet established startup, input,
-  scrolling, language, cache-churn, residency, and post-close baselines.
+- Dogfood Tasks #238 through #242 have not yet established startup, input,
+  scrolling, language, cache-churn, residency, post-close, and final M5
+  acceptance evidence.
 
 These are sequencing constraints, not reasons to broaden the framework or add
 speculative infrastructure.
