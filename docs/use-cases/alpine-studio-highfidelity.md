@@ -39,8 +39,10 @@ External terminal and Git tools are the first-release workflow.
 
 ## Current implementation status
 
-Snapshot: Alpine `main` at `d4bac7a8dd4fdec88103cc6534a5823399e30be7`,
-2026-08-18. This is an implementation inventory, not a release claim.
+Snapshot: reviewed through the Rust diagnostics implementation in
+[PR #217](https://github.com/dbuddha/alpine-gpui/pull/217), 2026-08-18. This is
+an implementation inventory, not a release claim. GitHub issues remain the
+authority for live task and check status.
 
 | Gate | Status | Merged evidence | Remaining exit work |
 | --- | --- | --- | --- |
@@ -49,7 +51,7 @@ Snapshot: Alpine `main` at `d4bac7a8dd4fdec88103cc6534a5823399e30be7`,
 | 2: bounded presentation | Complete | AEP 0120, three completion-owned slots, asynchronous commit and present, capacity accounting, close and reorder tests | Fixed-hardware latency and residency qualification remains later evidence |
 | 3: one-file editor | Functionally implemented, dogfood acceptance still open | Runtime and events, local rope text, snapshots, Unicode mappings, undo and redo, CoreText layout, glyph atlas, pointer and keyboard selection, clipboard, IME, atomic save, external-change protection | Sustained manual use, defect closure, and release-quality native journey evidence |
 | 4: workspace shell | Functionally implemented by closed Task #127 | Folder launch, bounded lazy tree, tabs, splits, history, find and replace, quick open, command palette, project search, clean and dirty restoration, lazy inactive tabs | Sustained repository-scale dogfood and large-workspace evidence |
-| 5: daily-driver profile | In progress | Approved task and PR stack exists for compiled syntax, settings, shortcuts, LSP framing and process, no-bloat enforcement, and accessibility | Reconcile the stale stack onto current `main`, finish Rust intelligence behavior, qualify accessibility, dogfood, package, and close release defects |
+| 5: daily-driver profile | In progress | Compiled syntax, typed settings and shortcuts, no-bloat enforcement, revisioned accessibility semantics, bounded LSP framing, local process ownership, JSON-RPC, pinned rust-analyzer qualification, runtime wake admission, and visible Rust diagnostics | Finish completion, hover and navigation, rename and formatting, symbols, configuration reload, native accessibility and recovery, sustained dogfood, and blocking defect closure |
 
 Alpine Studio is therefore a real bounded editor foundation, not merely a solid
 quad demo. It is not yet the promised daily driver because Gate 5 and sustained
@@ -57,28 +59,24 @@ qualification remain open.
 
 ## Remaining critical path
 
-The open branches were stacked before the workspace-shell sequence completed
-and must be reconciled rather than merged as-is. The lowest-conflict order is:
+The stale implementation stack and revision-safe visible Rust diagnostics are
+merged. The remaining path is expressed as thin leaf issues rather than
+branches or broad parent tasks:
 
-1. Reconcile [PR #193](https://github.com/dbuddha/alpine-gpui/pull/193)
-   for the compiled syntax foundation.
-2. Reconcile [PR #201](https://github.com/dbuddha/alpine-gpui/pull/201)
-   for bounded LSP message framing on that foundation.
-3. Reconcile [PR #194](https://github.com/dbuddha/alpine-gpui/pull/194),
-   [#195](https://github.com/dbuddha/alpine-gpui/pull/195), and
-   [#196](https://github.com/dbuddha/alpine-gpui/pull/196) for typed defaults,
-   shortcut discovery, and deterministic settings layering.
-4. Reconcile [PR #199](https://github.com/dbuddha/alpine-gpui/pull/199) and
-   [#200](https://github.com/dbuddha/alpine-gpui/pull/200) after their shared
-   shortcut/settings base is current.
-5. Reconcile [PR #197](https://github.com/dbuddha/alpine-gpui/pull/197) for the
-   bounded local language process, then connect the transport and process to
-   revision-tagged Rust editor features.
-6. Close remaining diagnostics, completion, hover, navigation, rename,
-   formatting, symbols, cancellation, restart, accessibility, settings, theme,
-   keymap, and dogfood gaps through thin approved tasks.
-7. Run sustained Alpine-repository dogfood before fixed-hardware performance and
-   memory qualification.
+1. Add bounded completion through
+   [Task #218](https://github.com/dbuddha/alpine-gpui/issues/218).
+2. Add hover, definitions, references, and validated local navigation through
+   [Task #219](https://github.com/dbuddha/alpine-gpui/issues/219).
+3. Add bounded atomic rename and formatting through
+   [Task #220](https://github.com/dbuddha/alpine-gpui/issues/220).
+4. Add document and workspace symbols through
+   [Task #221](https://github.com/dbuddha/alpine-gpui/issues/221).
+5. Finish typed configuration reload and migration through
+   [Task #222](https://github.com/dbuddha/alpine-gpui/issues/222).
+6. Qualify native VoiceOver and lifecycle recovery through
+   [Task #223](https://github.com/dbuddha/alpine-gpui/issues/223).
+7. Run sustained Alpine-repository dogfood and close blocking defects through
+   [Task #224](https://github.com/dbuddha/alpine-gpui/issues/224).
 
 No terminal, Git UI, plugin, AI, cloud, collaboration, telemetry, remote, or
 multi-window work may preempt this path.
@@ -92,14 +90,17 @@ counts alone do not describe product depth.
 | --- | --- | --- |
 | M0 | Governance and evidence system | Closed foundation, not product readiness |
 | M1 and M2 | Renderer and native presentation | Core behavior exists, but residual milestone issues still require explicit disposition |
-| M3 and M4 | Runtime, input, text, IME, accessibility | Much runtime and text work is merged; native accessibility is still open |
-| M5 | Components and dogfood applications | Not the Alpine Studio daily-driver exit gate as currently defined |
+| M3 | Local workspace shell | Closed product slice, not complete daily-driver readiness |
+| M4 | Text, IME, accessibility, recovery | Text is complete; native accessibility and recovery remain open |
+| M5 | Rust-first Alpine Studio daily-driver profile | Daily-driver behavior and dogfood gate for Apple Silicon macOS |
 | M6 | Linux and Windows backends | Explicitly after the Apple daily driver |
 | M7 | Version 1 stabilization and distribution | Release gate after daily-driver behavior and qualification |
 
-Passing M5 alone does not make Alpine Studio a daily driver. The authoritative
-daily-driver exit is Gate 5 in this document followed by the applicable M7
-stabilization, packaging, signing, and evidence requirements.
+Passing M5 means the selected Apple Silicon macOS editor profile has met its
+daily-driver behavior and dogfood gate. It does not mean Alpine Studio is a
+supportable version 1 release. M7 separately owns fixed-hardware regression
+qualification, API stabilization, packaging, signing, notarization, update
+recovery, and release evidence. M6 is not on the macOS critical path.
 
 ## Acceptance-gated execution
 
@@ -152,9 +153,9 @@ asynchronous while avoiding stalls
 - Use standard threads and bounded channels, not a general async runtime.
 - Add local copy-on-write text, immutable snapshots, byte offsets, explicit
   grapheme and UTF-16 conversions, transactions, and compact undo and redo.
-- Admit `crop` only after approved dependency, license, unsafe, Unicode,
-  startup, binary-size, and transitive review. Use Ropey only if the accepted
-  corpus rejects `crop`; do not build a custom rope before dogfooding.
+- Preserve the Ropey boundary accepted by Decision #139 after Crop failed the
+  nested-slice and UTF-16 corpus. Do not build a custom rope before dogfooding
+  produces evidence that the accepted boundary is insufficient.
 - Add independent `String` differential models, random Unicode edits, selection
   transforms, line endings, undo, redo, and invalid-boundary rejection.
 - Add quads, clips, monochrome glyph instances, CoreText shaping, an A8 atlas,
@@ -201,7 +202,7 @@ main-thread p99 below the calibrated 120 Hz budget for selected typing and
 scrolling workloads. The frame budget is a workload gate, not a universal
 startup target.
 
-## Requirement revisions required before implementation
+## Accepted requirement scope
 
 | Requirement | Accepted v1 scope |
 | --- | --- |
