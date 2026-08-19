@@ -4920,7 +4920,7 @@ pub mod native_validation {
         let timeout = platform_validation::arm_run_timeout(&surface, Duration::from_secs(5));
         let snapshot = application
             .run_on_native_surface_for_validation(&surface, |surface| {
-                if !surface.snapshot().is_presentation_visible() {
+                if hosted_direct || !surface.snapshot().is_presentation_visible() {
                     platform_validation::inject_surface_configuration(
                         surface,
                         f64::from(WINDOW_WIDTH),
