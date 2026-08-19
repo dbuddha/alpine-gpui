@@ -5,7 +5,7 @@ GPUI and Alpine Studio. It evaluates correctness first, then performance,
 resource efficiency, and delivery speed. Research history and future updates
 belong to [Research #118](https://github.com/dbuddha/alpine-gpui/issues/118).
 The current-state correction is tracked by
-[Task #202](https://github.com/dbuddha/alpine-gpui/issues/202).
+[Task #225](https://github.com/dbuddha/alpine-gpui/issues/225).
 
 ## Executive verdict
 
@@ -19,9 +19,13 @@ accepted main line now includes bounded asynchronous presentation, runtime and
 input events, a local text model, CoreText shaping and glyph rendering, one-file
 editing, clipboard and IME behavior, atomic save, a folder workspace, lazy file
 tree, tabs, splits, search, command discovery, and crash-safe restoration. The
-central weakness is now daily-driver completion and qualification: compiled
-syntax, Rust intelligence, settings and keymap completion, native accessibility,
-sustained dogfood, packaging, and defensible fixed-hardware evidence remain open.
+central weakness is now daily-driver completion and qualification. Compiled
+syntax, typed settings, shortcuts, the no-bloat boundary, revisioned
+accessibility semantics, bounded local LSP transport, pinned rust-analyzer
+qualification, and visible Rust diagnostics are merged. Completion, richer
+Rust intelligence, configuration reload and migration, native VoiceOver and
+lifecycle qualification, sustained dogfood, packaging, and defensible
+fixed-hardware evidence remain open.
 
 ## Keep, change, and defer
 
@@ -29,7 +33,7 @@ sustained dogfood, packaging, and defensible fixed-hardware evidence remain open
 | --- | --- | --- | --- | --- |
 | Core contracts | Validated values, immutable revisions, structured errors, safe public boundaries | Add abstractions only when consumed by a Studio slice | General component or reactive framework | Correctness, delivery |
 | Native lifecycle | One AppKit surface, CAMetalDisplayLink, visibility gating, latest-wins invalidation, deterministic close | Exercise only production paths and preserve bounded watchdog evidence | Multi-window runtime | Correctness |
-| Presentation | Direct drawable presentation, three-drawable ceiling, zero idle work | Remove callback GPU waits using three completion-owned slots | Background rendering and deep queues | Performance, responsiveness |
+| Presentation | Direct drawable presentation, three completion-owned slots, zero idle work | Finish native close, compositor, idle, and lifecycle evidence without reintroducing callback waits | Background rendering and deep queues | Performance, responsiveness |
 | Scene | Deterministic semantic and CPU oracles, clips, glyph instances, ordered operations, and Direct Metal specialization | Stabilize realistic code-viewport traces and qualification workloads | Rich images, shadows, arbitrary paths, animation | Correctness, memory |
 | Product state | Direct StudioApp to Workspace to Editor to Buffer ownership and explicit revisions | Finish language, settings, accessibility, and dogfood slices without a general component graph | GPUI entity compatibility and distributed state | Correctness, delivery |
 | Text | Local snapshots, Unicode mappings, bounded undo, visible-range CoreText shaping, and byte-accounted caches | Qualify large files, IME, external changes, and sustained editing | Collaboration clocks and a custom rope | Correctness, memory |
@@ -81,17 +85,25 @@ an Alpine implementation choice.
 2. Preserve the completed asynchronous, three-slot presentation contract.
 3. Preserve and dogfood the implemented real-file editor and native input path.
 4. Preserve and dogfood the implemented local workspace shell and restoration.
-5. Reconcile the open compiled-language, LSP, settings, no-bloat, and
-   accessibility PR stack onto current `main` in dependency order.
-6. Complete local Rust intelligence, typed settings, restoration, and accessibility.
+5. Complete bounded Rust completion, hover and navigation, rename and
+   formatting, and symbols through Tasks #218 through #221.
+6. Complete configuration reload and migration through Task #222, then close
+   native surface, VoiceOver, and lifecycle evidence through Tasks #72 and
+   #223.
 7. Dogfood the Alpine repositories with no known data-loss, lifecycle,
    unbounded-memory, idle-submission, IME, or accessibility defects.
 8. Qualify only named renderer and product claims through the
    [comparator protocol](../quality/comparator-protocol.md).
 
 The exact gate status and open PR order are retained in the
-[daily-driver path](../use-cases/alpine-studio-highfidelity.md). M5 in the
-current GitHub milestone scheme is not, by itself, the Studio daily-driver exit.
+[daily-driver path](../use-cases/alpine-studio-highfidelity.md). M5 is the
+selected Apple Silicon macOS daily-driver behavior and dogfood gate. M7 is the
+separate supported, packaged, fixed-hardware-qualified version 1 gate.
+
+Milestone and Project item totals are not readiness percentages because they
+contain capabilities, requirements, research, defects, and leaf tasks. Only
+closed evidence-producing leaves count toward a scope-pinned burn-up; parent
+progress is derived from those leaves and their acceptance contracts.
 
 Correctness failure blocks timing. Performance regression blocks efficiency
 claims. Memory optimization cannot omit behavior. Delivery shortcuts cannot
@@ -119,19 +131,20 @@ that Alpine is the fastest general UI framework.
 
 ## Delivery risks that remain visible
 
-- Text correctness, Unicode coordinate conversion, IME, and data-loss handling
-  dominate the first editor risk.
-- Removing the GPU wait changes ownership timing and must land before text while
-  preserving close, completion reorder, device-loss, and memory-drain evidence.
-- CoreText and AppKit accessibility add native unsafe boundaries that require
-  narrow approved tasks and native tests.
-- Rope, Unicode, grammar, serialization, ignore, JSON-RPC, and accessibility
-  dependencies require separate measured approval before admission.
+- Completion currently depends on a pinned real rust-analyzer response and
+  must distinguish server readiness, supported item admission, and stale
+  revision rejection without retries or polling that create idle work.
+- Native VoiceOver and lifecycle qualification remains blocked by the residual
+  single-window surface evidence in Task #72.
+- Studio changed-line diagnostics do not yet cover `apps/` with the same
+  actionable contract as `crates/`; Defect #232 must close before dogfood can
+  rely on that gate.
+- Nightly Miri assurance remains open in Defect #183 until its bounded shards
+  pass authoritatively without unsupported process E2E or unbounded duration.
 - Fixed-hardware superiority evidence does not exist until the accepted
   workload and environment windows are collected.
-- The open Gate 5 PRs are stacked on pre-workspace branches and must be
-  reconciled to current `main`; merging the stale stack directly risks dropping
-  accepted workspace behavior.
+- Sustained repository dogfood has not yet established startup, input,
+  scrolling, language, cache-churn, residency, and post-close baselines.
 
 These are sequencing constraints, not reasons to broaden the framework or add
 speculative infrastructure.
