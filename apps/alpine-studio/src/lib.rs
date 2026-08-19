@@ -4920,12 +4920,7 @@ pub mod native_validation {
         let surface = platform_validation::new_surface(descriptor)?;
         let observer = surface.observer();
         let waker = surface.waker();
-        let run_timeout = if hosted_direct {
-            HOSTED_RUN_TIMEOUT
-        } else {
-            Duration::from_secs(5)
-        };
-        let timeout = platform_validation::arm_run_timeout(&surface, run_timeout);
+        let mut timeout = None;
         let snapshot = application
             .run_on_native_surface_for_validation(&surface, |surface| {
                 if hosted_direct || !surface.snapshot().is_presentation_visible() {
@@ -4962,6 +4957,12 @@ pub mod native_validation {
                     }
                     assert!(surface.snapshot().qualified_presented_count() >= 1);
                 }
+                let run_timeout = if hosted_direct {
+                    HOSTED_RUN_TIMEOUT
+                } else {
+                    Duration::from_secs(5)
+                };
+                timeout = Some(platform_validation::arm_run_timeout(surface, run_timeout));
                 if hosted_direct {
                     platform_validation::arm_programmatic_window_close(
                         surface,
@@ -4975,6 +4976,9 @@ pub mod native_validation {
             .ok_or(alpine_runtime::RuntimeError::Surface(
                 alpine_platform_macos::SurfaceError::DriverUnavailable,
             ))?;
+        let timeout = timeout.ok_or(alpine_runtime::RuntimeError::Surface(
+            alpine_platform_macos::SurfaceError::DriverUnavailable,
+        ))?;
         timeout.cancel();
         assert!(timeout.cancelled());
         assert!(!timeout.expired());
