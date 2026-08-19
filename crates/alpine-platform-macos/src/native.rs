@@ -2519,6 +2519,40 @@ fn schedule_validation_window_close(window: &Retained<NSWindow>, delay: Duration
     };
 }
 
+#[cfg(alpine_native_validation)]
+fn schedule_validation_user_window_close(
+    window: &Retained<NSWindow>,
+    lifecycle: &Arc<AtomicU8>,
+    delay: Duration,
+) {
+    let window = window.clone();
+    let lifecycle = Arc::clone(lifecycle);
+    let close_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
+        RcBlock::new(move |timer: NonNull<NSTimer>| {
+            // SAFETY: Foundation supplies a valid borrowed timer for the
+            // complete callback, and the reference does not escape.
+            let timer = unsafe { timer.as_ref() };
+            if lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+                timer.invalidate();
+                return;
+            }
+            window.performClose(None);
+            if lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+                timer.invalidate();
+            }
+        });
+    // SAFETY: The block and retained window remain main-thread-only,
+    // Foundation copies it for the scheduled timer lifetime, and the
+    // callback receives a valid NSTimer after the run loop starts.
+    let _timer = unsafe {
+        NSTimer::scheduledTimerWithTimeInterval_repeats_block(
+            delay.as_secs_f64(),
+            true,
+            &close_block,
+        )
+    };
+}
+
 pub(crate) struct NativeSurface {
     callback_count: Arc<AtomicU64>,
     rejected_callback_count: Arc<AtomicU64>,
@@ -3189,6 +3223,11 @@ impl NativeSurface {
     #[cfg(alpine_native_validation)]
     pub(crate) fn arm_window_close(&self, delay: Duration) {
         schedule_validation_window_close(&self.window, delay);
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn arm_user_window_close(&self, delay: Duration) {
+        schedule_validation_user_window_close(&self.window, &self.lifecycle, delay);
     }
 
     #[cfg(alpine_native_validation)]

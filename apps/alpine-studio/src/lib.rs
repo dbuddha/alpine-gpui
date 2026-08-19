@@ -372,7 +372,14 @@ fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
         2.0,
     )?;
     let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
-    Application::new(app, viewport, clear, WorkerConfig::default())?.run(&descriptor)
+    let application = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    #[cfg(alpine_native_validation)]
+    if std::env::var_os("ALPINE_STUDIO_NATIVE_PROCESS_SCENARIO").as_deref()
+        == Some(std::ffi::OsStr::new("production-single-window"))
+    {
+        return native_validation::qualify_production_window_application(application, &descriptor);
+    }
+    application.run(&descriptor)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -4874,6 +4881,90 @@ pub mod native_validation {
     const NATIVE_INPUT_FRAMES: usize = 5;
     const TREE_TOGGLE_MODIFIER_BITS: u8 = 0x09;
     const COMMAND_SHIFT_MODIFIERS: Modifiers = Modifiers::from_bits(TREE_TOGGLE_MODIFIER_BITS);
+
+    /// Runs the real Studio runtime through one presented frame and user close.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured runtime or native-surface failure. Contract
+    /// violations remain fatal to the isolated process so the parent watchdog
+    /// cannot mistake partial execution for successful qualification.
+    pub(super) fn qualify_production_window_application(
+        application: Application<StudioApp>,
+        descriptor: &SurfaceDescriptor,
+    ) -> Result<(), alpine_runtime::RuntimeError> {
+        let surface = platform_validation::new_surface(descriptor)?;
+        let observer = surface.observer();
+        let waker = surface.waker();
+        let timeout = platform_validation::arm_run_timeout(&surface, Duration::from_secs(5));
+        let snapshot = application.run_on_native_surface_for_validation(&surface, |surface| {
+            if !surface.snapshot().is_presentation_visible() {
+                platform_validation::inject_surface_configuration(
+                    surface,
+                    f64::from(WINDOW_WIDTH),
+                    f64::from(WINDOW_HEIGHT),
+                    f64::from(DEFAULT_SCALE),
+                    0,
+                    true,
+                )?;
+            }
+            platform_validation::arm_user_window_close(surface, Duration::from_millis(500));
+            Ok(())
+        })?;
+        timeout.cancel();
+        assert!(timeout.cancelled());
+        assert!(!timeout.expired());
+        assert!(snapshot.is_shutting_down());
+        assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
+
+        let frame = surface.snapshot();
+        let submissions = frame.submission_count();
+        assert!((1..=4).contains(&submissions));
+        assert_eq!(frame.direct_present_count(), submissions);
+        assert_eq!(frame.installed_presented_handler_count(), submissions);
+        assert_eq!(frame.presented_count() + frame.skipped_count(), submissions);
+        assert_eq!(
+            frame.qualified_presented_count() + frame.superseded_count(),
+            frame.presented_count()
+        );
+        assert!(frame.qualified_presented_count() >= 1);
+        assert_eq!(frame.cancelled_count(), 0);
+        assert_eq!(frame.pending_cancellation_count(), 0);
+        assert_eq!(frame.failed_count(), 0);
+        assert_eq!(frame.current_retained_bytes(), 0);
+        assert_eq!(frame.occupied_frame_slots(), 0);
+        assert_eq!(frame.submitted_frame_slots(), 0);
+        assert!(frame.display_link_paused());
+        assert_eq!(
+            waker.wake(),
+            alpine_platform_macos::SurfaceWakeAdmission::Closed
+        );
+
+        let admitted = observer.callback_count();
+        let rejected = observer.rejected_callback_count();
+        platform_validation::inject_late_callback(&surface);
+        assert_eq!(observer.callback_count(), admitted);
+        assert_eq!(observer.rejected_callback_count(), rejected + 1);
+
+        let owners = platform_validation::close_with_owner_evidence(surface)?;
+        assert_eq!(owners.acquired(), [1; 9]);
+        assert_eq!(owners.released(), [1; 9]);
+        assert_eq!(owners.active(), [0; 9]);
+        assert_eq!(owners.run_loop_registrations(), 1);
+        assert_eq!(owners.link_invalidations(), 1);
+        assert_eq!(owners.delegate_revocations(), 1);
+        assert_eq!(owners.window_closes(), 1);
+        assert_eq!(owners.release_order_violations(), 0);
+        assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closed);
+        println!(
+            "alpine-native-journey submissions={submissions} presented={} qualified={} superseded={} skipped={} shutdown=true owners=9",
+            frame.presented_count(),
+            frame.qualified_presented_count(),
+            frame.superseded_count(),
+            frame.skipped_count()
+        );
+        Ok(())
+    }
 
     /// Handle-free completion evidence returned across the process-test boundary.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]

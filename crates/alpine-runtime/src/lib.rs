@@ -1216,35 +1216,8 @@ impl<D: AppDelegate + 'static> Application<D> {
     pub fn run(self, descriptor: &SurfaceDescriptor) -> Result<(), RuntimeError> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let mut application = self;
             let surface = NativeSurface::new(descriptor)?;
-            let surface_waker = surface.waker();
-            let startup_waker = surface_waker.clone();
-            application.set_worker_waker(move || {
-                let _ = surface_waker.wake();
-            });
-            if let Some(frame) = application.frame_if_dirty() {
-                let (scene, clear) = frame.into_parts();
-                let _revision = surface.request_frame(scene, clear)?;
-            }
-            surface.show()?;
-            let _ = startup_waker.wake();
-
-            let state = Rc::new(RefCell::new(application));
-            let callback_state = Rc::clone(&state);
-            let run_result = surface.run_with_event_handler(move |event| {
-                callback_state.try_borrow_mut().map_or_else(
-                    |_| SurfaceResponse::default(),
-                    |mut application| application.dispatch_with_response(&event),
-                )
-            });
-            if let Ok(mut application) = state.try_borrow_mut() {
-                application.external.close();
-                application.shutting_down = true;
-                application.dirty = false;
-                application.workers.shutdown();
-            }
-            run_result.map_err(RuntimeError::Surface)
+            self.run_on_native_surface(&surface, |_| Ok(())).map(|_| ())
         }
 
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -1252,6 +1225,71 @@ impl<D: AppDelegate + 'static> Application<D> {
             let _ = descriptor;
             Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))
         }
+    }
+
+    /// Runs the production application composition against an instrumented surface.
+    ///
+    /// This is available only to Apple Silicon native-validation builds. The
+    /// callback runs after the production show boundary and immediately before
+    /// the startup wake and AppKit event loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same structured worker or surface failure as [`Self::run`],
+    /// including a callback setup failure.
+    #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+    #[doc(hidden)]
+    pub fn run_on_native_surface_for_validation<F>(
+        self,
+        surface: &NativeSurface,
+        before_run: F,
+    ) -> Result<ApplicationSnapshot, RuntimeError>
+    where
+        F: FnOnce(&NativeSurface) -> Result<(), SurfaceError>,
+    {
+        self.run_on_native_surface(surface, before_run)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn run_on_native_surface<F>(
+        self,
+        surface: &NativeSurface,
+        before_run: F,
+    ) -> Result<ApplicationSnapshot, RuntimeError>
+    where
+        F: FnOnce(&NativeSurface) -> Result<(), SurfaceError>,
+    {
+        let mut application = self;
+        let surface_waker = surface.waker();
+        let startup_waker = surface_waker.clone();
+        application.set_worker_waker(move || {
+            let _ = surface_waker.wake();
+        });
+        if let Some(frame) = application.frame_if_dirty() {
+            let (scene, clear) = frame.into_parts();
+            let _revision = surface.request_frame(scene, clear)?;
+        }
+        surface.show()?;
+        before_run(surface)?;
+        let _ = startup_waker.wake();
+
+        let state = Rc::new(RefCell::new(application));
+        let callback_state = Rc::clone(&state);
+        let run_result = surface.run_with_event_handler(move |event| {
+            callback_state.try_borrow_mut().map_or_else(
+                |_| SurfaceResponse::default(),
+                |mut application| application.dispatch_with_response(&event),
+            )
+        });
+        let snapshot = state.try_borrow_mut().ok().map(|mut application| {
+            application.external.close();
+            application.shutting_down = true;
+            application.dirty = false;
+            application.workers.shutdown();
+            application.snapshot()
+        });
+        run_result.map_err(RuntimeError::Surface)?;
+        snapshot.ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))
     }
 
     fn drain_worker_results(&mut self) {
