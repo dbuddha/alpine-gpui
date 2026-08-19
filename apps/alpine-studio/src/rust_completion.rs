@@ -257,16 +257,20 @@ pub(crate) fn position_for_byte(
     if offset.get() > snapshot.len_bytes() {
         return Err(CompletionError::InvalidTextRange);
     }
-    let mut selected_line = 0;
-    for line in 0..snapshot.line_count() {
+    let mut lower = 0;
+    let mut upper = snapshot.line_count();
+    while lower < upper {
+        let line = lower + (upper - lower) / 2;
         let range = snapshot
             .line_byte_range(line)
             .map_err(|_| CompletionError::InvalidTextRange)?;
-        selected_line = line;
         if offset.get() <= range.end {
-            break;
+            upper = line;
+        } else {
+            lower = line.saturating_add(1);
         }
     }
+    let selected_line = lower.min(snapshot.line_count().saturating_sub(1));
     let range = snapshot
         .line_byte_range(selected_line)
         .map_err(|_| CompletionError::InvalidTextRange)?;
@@ -530,12 +534,11 @@ mod tests {
             Err(CompletionError::InvalidTextRange)
         );
         assert_eq!(checked_u32(0), Ok(0));
-        if usize::BITS > u32::BITS {
-            assert_eq!(
-                checked_u32((u32::MAX as usize).saturating_add(1)),
-                Err(CompletionError::InvalidTextRange)
-            );
-        }
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            checked_u32((u32::MAX as usize).saturating_add(1)),
+            Err(CompletionError::InvalidTextRange)
+        );
         assert_eq!(
             byte_for_position(
                 &snapshot,
