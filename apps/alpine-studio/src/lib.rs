@@ -4896,6 +4896,90 @@ pub mod native_validation {
     const TREE_TOGGLE_MODIFIER_BITS: u8 = 0x09;
     const COMMAND_SHIFT_MODIFIERS: Modifiers = Modifiers::from_bits(TREE_TOGGLE_MODIFIER_BITS);
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PresentationEvidenceMode {
+        Physical,
+        HostedDirect,
+    }
+
+    impl PresentationEvidenceMode {
+        const fn source(self) -> &'static str {
+            match self {
+                Self::Physical => "physical",
+                Self::HostedDirect => "hosted-direct",
+            }
+        }
+
+        const fn requires_surface_configuration(self, presentation_visible: bool) -> bool {
+            match self {
+                Self::Physical => !presentation_visible,
+                Self::HostedDirect => true,
+            }
+        }
+    }
+
+    fn parse_presentation_evidence_mode(value: Option<&OsStr>) -> Option<PresentationEvidenceMode> {
+        match value {
+            None => Some(PresentationEvidenceMode::Physical),
+            Some(mode) if mode == OsStr::new("hosted-direct") => {
+                Some(PresentationEvidenceMode::HostedDirect)
+            }
+            Some(_) => None,
+        }
+    }
+
+    fn hosted_presented_time(retry: u8) -> f64 {
+        1.0 + f64::from(retry) / 10.0
+    }
+
+    const fn has_qualified_presentation(count: u64) -> bool {
+        count >= 1
+    }
+
+    #[cfg(test)]
+    mod presentation_evidence_policy_tests {
+        use super::{
+            PresentationEvidenceMode, has_qualified_presentation, hosted_presented_time,
+            parse_presentation_evidence_mode,
+        };
+        use std::ffi::OsStr;
+
+        #[test]
+        fn evidence_mode_parser_rejects_drift_and_preserves_source_identity() {
+            let physical = parse_presentation_evidence_mode(None);
+            let hosted = parse_presentation_evidence_mode(Some(OsStr::new("hosted-direct")));
+            assert_eq!(physical, Some(PresentationEvidenceMode::Physical));
+            assert_eq!(hosted, Some(PresentationEvidenceMode::HostedDirect));
+            assert_eq!(
+                parse_presentation_evidence_mode(Some(OsStr::new("hosted"))),
+                None
+            );
+            assert_eq!(PresentationEvidenceMode::Physical.source(), "physical");
+            assert_eq!(
+                PresentationEvidenceMode::HostedDirect.source(),
+                "hosted-direct"
+            );
+        }
+
+        #[test]
+        fn configuration_policy_distinguishes_mode_and_visibility() {
+            assert!(PresentationEvidenceMode::Physical.requires_surface_configuration(false));
+            assert!(!PresentationEvidenceMode::Physical.requires_surface_configuration(true));
+            assert!(PresentationEvidenceMode::HostedDirect.requires_surface_configuration(false));
+            assert!(PresentationEvidenceMode::HostedDirect.requires_surface_configuration(true));
+        }
+
+        #[test]
+        fn hosted_observation_sequence_and_qualification_boundary_are_exact() {
+            assert_eq!(hosted_presented_time(0), 1.0);
+            assert_eq!(hosted_presented_time(1), 1.1);
+            assert_eq!(hosted_presented_time(7), 1.7);
+            assert!(!has_qualified_presentation(0));
+            assert!(has_qualified_presentation(1));
+            assert!(has_qualified_presentation(u64::MAX));
+        }
+    }
+
     /// Runs the real Studio runtime through one presented frame and user close.
     ///
     /// # Errors
@@ -4907,23 +4991,21 @@ pub mod native_validation {
         application: Application<StudioApp>,
         descriptor: &SurfaceDescriptor,
     ) -> Result<(), alpine_runtime::RuntimeError> {
-        let hosted_direct = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
-            None => false,
-            Some(mode) if mode == OsStr::new("hosted-direct") => true,
-            Some(mode) => panic!("unsupported presentation evidence mode: {mode:?}"),
-        };
-        let evidence_source = if hosted_direct {
-            "hosted-direct"
-        } else {
-            "physical"
-        };
+        let evidence_value = std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE");
+        let evidence_mode = parse_presentation_evidence_mode(evidence_value.as_deref())
+            .unwrap_or_else(|| {
+                panic!("unsupported presentation evidence mode: {evidence_value:?}")
+            });
+        let evidence_source = evidence_mode.source();
         let surface = platform_validation::new_surface(descriptor)?;
         let observer = surface.observer();
         let waker = surface.waker();
         let mut timeout = None;
         let snapshot = application
             .run_on_native_surface_for_validation(&surface, |surface| {
-                if hosted_direct || !surface.snapshot().is_presentation_visible() {
+                if evidence_mode
+                    .requires_surface_configuration(surface.snapshot().is_presentation_visible())
+                {
                     platform_validation::inject_surface_configuration(
                         surface,
                         f64::from(WINDOW_WIDTH),
@@ -4933,12 +5015,12 @@ pub mod native_validation {
                         true,
                     )?;
                 }
-                if hosted_direct {
+                if let PresentationEvidenceMode::HostedDirect = evidence_mode {
                     // Hosted macOS runners have no qualifying physical display.
                     // This deterministic post-commit control proves lifecycle
                     // composition only and cannot support presentation claims.
                     for retry in 0_u8..HOSTED_PRESENTATION_ATTEMPTS {
-                        let presented_time = 1.0 + f64::from(retry) / 10.0;
+                        let presented_time = hosted_presented_time(retry);
                         platform_validation::inject_post_commit_observation(
                             surface,
                             None,
@@ -4951,30 +5033,39 @@ pub mod native_validation {
                         if let Some(error) = surface.take_error()? {
                             return Err(error);
                         }
-                        if surface.snapshot().qualified_presented_count() >= 1 {
+                        if has_qualified_presentation(
+                            surface.snapshot().qualified_presented_count(),
+                        ) {
                             break;
                         }
                     }
-                    assert!(surface.snapshot().qualified_presented_count() >= 1);
+                    assert!(has_qualified_presentation(
+                        surface.snapshot().qualified_presented_count()
+                    ));
                     // The production startup wake may admit one additional
                     // frame after its handler is installed. Give that frame a
                     // deterministic hosted terminal observation so close can
                     // wait for true driver quiescence instead of wall time.
                     platform_validation::inject_post_commit_observation(surface, None, 2.0)?;
                 }
-                let run_timeout = if hosted_direct {
-                    HOSTED_RUN_TIMEOUT
-                } else {
-                    Duration::from_secs(5)
+                let run_timeout = match evidence_mode {
+                    PresentationEvidenceMode::HostedDirect => HOSTED_RUN_TIMEOUT,
+                    PresentationEvidenceMode::Physical => Duration::from_secs(5),
                 };
                 timeout = Some(platform_validation::arm_run_timeout(surface, run_timeout));
-                if hosted_direct {
-                    // A headless AppKit host may decline `performClose` despite
-                    // a valid delegate. Exercise the production close-admission
-                    // and teardown delegates directly instead.
-                    platform_validation::arm_programmatic_window_close(surface, Duration::ZERO);
-                } else {
-                    platform_validation::arm_user_window_close(surface, Duration::from_millis(500));
+                match evidence_mode {
+                    PresentationEvidenceMode::HostedDirect => {
+                        // A headless AppKit host may decline `performClose` despite
+                        // a valid delegate. Exercise the production close-admission
+                        // and teardown delegates directly instead.
+                        platform_validation::arm_programmatic_window_close(surface, Duration::ZERO);
+                    }
+                    PresentationEvidenceMode::Physical => {
+                        platform_validation::arm_user_window_close(
+                            surface,
+                            Duration::from_millis(500),
+                        );
+                    }
                 }
                 Ok(())
             })?
@@ -4993,7 +5084,7 @@ pub mod native_validation {
         let frame = surface.snapshot();
         let submissions = frame.submission_count();
         assert!(submissions >= 1);
-        if !hosted_direct {
+        if let PresentationEvidenceMode::Physical = evidence_mode {
             assert!(submissions <= 4);
         }
         assert_eq!(frame.direct_present_count(), submissions);

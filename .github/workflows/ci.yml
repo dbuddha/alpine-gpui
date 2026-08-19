@@ -459,7 +459,7 @@ jobs:
             find target/native-runtime-mutants.out -name unviable.txt -type f -size +0c -exec cat {} \;
             exit 1
           fi
-          cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app' --no-shuffle --in-diff target/alpine.diff --output target/native-studio-mutants.out -- --locked
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app' --no-shuffle --in-diff target/alpine.diff --output target/native-studio-mutants.out -- --locked
       - name: Upload native mutation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
