@@ -604,6 +604,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
     fn parameterized_initialize_uses_the_production_submission_path() -> Result<(), Box<dyn Error>>
     {
         let executable = mock_executable();
@@ -627,6 +628,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
     fn requests_fail_closed_until_the_started_event_is_observed() -> Result<(), Box<dyn Error>> {
         let executable = mock_executable();
         let mut client = LspClient::start(mock_spec(&executable.path)?, identity(1))?;
@@ -650,6 +652,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
     fn poll_classifies_diagnostics_rejection_stop_and_spawn_failure() -> Result<(), Box<dyn Error>>
     {
         let executable = mock_executable();
@@ -730,6 +733,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
     fn production_process_framer_and_peer_complete_lifecycle_and_restart()
     -> Result<(), Box<dyn Error>> {
         let executable = mock_executable();
@@ -750,6 +754,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
     fn saturated_submission_rolls_back_peer_admission_without_blocking()
     -> Result<(), Box<dyn Error>> {
         let executable = mock_executable();
