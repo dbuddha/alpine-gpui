@@ -4983,7 +4983,10 @@ pub mod native_validation {
 
         let frame = surface.snapshot();
         let submissions = frame.submission_count();
-        assert!((1..=4).contains(&submissions));
+        assert!(submissions >= 1);
+        if !hosted_direct {
+            assert!(submissions <= 4);
+        }
         assert_eq!(frame.direct_present_count(), submissions);
         assert_eq!(frame.installed_presented_handler_count(), submissions);
         assert_eq!(

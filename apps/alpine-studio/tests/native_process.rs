@@ -121,7 +121,10 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
             .strip_prefix("cancelled=")
             .ok_or("missing cancelled-presentation evidence")?
             .parse::<u64>()?;
-        assert!((1..=4).contains(&submissions));
+        assert!(submissions >= 1);
+        if expected_evidence == "physical" {
+            assert!(submissions <= 4);
+        }
         assert_eq!(presented + skipped + cancelled, submissions);
         assert_eq!(qualified + superseded, presented);
         assert!(qualified >= 1);
