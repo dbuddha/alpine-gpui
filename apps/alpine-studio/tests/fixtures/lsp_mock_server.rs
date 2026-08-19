@@ -39,6 +39,26 @@ fn run() -> io::Result<()> {
                     )?;
                 }
                 Some("initialized") => initialized = true,
+                Some("textDocument/didOpen") if initialized => {
+                    write_diagnostics(&mut output, message, false)?;
+                    write_frame(
+                        &mut output,
+                        r#"{"jsonrpc":"2.0","method":"test/unrelated-notification"}"#,
+                    )?;
+                }
+                Some("textDocument/didChange") if initialized => {
+                    if message.contains("ALPINE_CRASH") {
+                        process::exit(7);
+                    }
+                    if message.contains("ALPINE_PROTOCOL_ERROR") {
+                        write_frame(
+                            &mut output,
+                            r#"{"jsonrpc":"2.0","id":4294967294,"result":null}"#,
+                        )?;
+                        continue;
+                    }
+                    write_diagnostics(&mut output, message, message.contains("let ok"))?;
+                }
                 Some("test/echo") if initialized => {
                     let id = json_id(message)?;
                     write_frame(
@@ -80,13 +100,13 @@ fn run() -> io::Result<()> {
                     )?;
                 }
                 Some("test/crash") if initialized => process::exit(7),
-                Some("test/block") if initialized => thread::sleep(Duration::from_secs(30)),
+                Some("test/block") if initialized => thread::sleep(Duration::from_secs(5)),
                 Some("test/flood-stderr") if initialized => {
                     let mut stderr = io::stderr().lock();
                     let bytes = [b'x'; 16_384];
                     while stderr.write_all(&bytes).is_ok() {}
                     loop {
-                        thread::sleep(Duration::from_secs(30));
+                        thread::sleep(Duration::from_secs(5));
                     }
                 }
                 Some("shutdown") if initialized => {
@@ -160,6 +180,39 @@ fn json_id(message: &str) -> io::Result<u64> {
     digits
         .parse()
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid request ID"))
+}
+
+fn json_number(message: &str, key: &str) -> io::Result<u64> {
+    let prefix = format!(r#""{key}":"#);
+    let value = message
+        .split_once(&prefix)
+        .map(|(_, value)| value)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing JSON number"))?;
+    let digits = value
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .map(char::from)
+        .collect::<String>();
+    digits
+        .parse()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid JSON number"))
+}
+
+fn write_diagnostics(output: &mut impl Write, message: &str, empty: bool) -> io::Result<()> {
+    let uri = json_string(message, "uri")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing document URI"))?;
+    let version = json_number(message, "version")?;
+    let diagnostics = if empty {
+        "[]"
+    } else {
+        r#"[{"range":{"start":{"line":0,"character":0},"end":{"line":1,"character":0}},"severity":1,"message":"mock broken"}]"#
+    };
+    write_frame(
+        output,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{{"uri":"{uri}","version":{version},"diagnostics":{diagnostics}}}}}"#
+        ),
+    )
 }
 
 fn write_frame(output: &mut impl Write, body: &str) -> io::Result<()> {

@@ -400,6 +400,9 @@ jobs:
           cargo test --locked -p alpine-studio \
             lsp_client::tests::pinned_rust_analyzer_qualifies_real_document_lifecycle \
             -- --ignored --exact --nocapture
+          cargo test --locked -p alpine-studio \
+            rust_diagnostics::tests::pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission \
+            -- --ignored --exact --nocapture
       - name: Run Metal API and shader validation
         run: scripts/check-metal.sh
       - name: Require changed native Metal mutants to be killed

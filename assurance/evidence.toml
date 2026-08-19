@@ -4115,3 +4115,40 @@ bounds = ["pull request: four generations", "nightly: eight generations"]
 assumptions = ["Filesystem and buffer revalidation return one typed admission outcome."]
 exclusions = ["path component semantics", "native input", "Rust refinement"]
 companion = "apps/alpine-studio/src/project_search_tests.rs#stale_selected_file_preserves_the_current_document_and_tab_identity"
+
+[[evidence]]
+id = "EV-0137-UNIT01C"
+claim = "AEP-0137-C01"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_diagnostics_tests.rs#wake_latch_preserves_the_latest_generation_until_foreground_admission"
+assertion = "The process callback's lock-free latch preserves the latest language generation across an omitted or delayed external-queue admission and clears only the exact foreground generation."
+scope = "Two bounded process generations and one latest-wake atomic slot."
+exclusions = ["native run-loop latency", "process scheduling", "unbounded generation exhaustion"]
+
+[[evidence]]
+id = "EV-0137-UNIT02C"
+claim = "AEP-0137-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_diagnostics_tests.rs#marker_admission_is_identity_epoch_visible_and_bounded"
+assertion = "Visible diagnostics publish only for the exact workspace, document, buffer, and selection revision, current process epoch, and requested line under the fixed marker ceiling."
+scope = "One active Rust document, two admitted diagnostics, four independent application identities, and one process epoch."
+exclusions = ["native rust-analyzer process", "GPU pixels", "unbounded documents"]
+
+[[evidence]]
+id = "EV-0137-UNIT03C"
+claim = "AEP-0137-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_diagnostics_tests.rs#status_replacement_and_stale_wakes_are_quiet"
+assertion = "Repeated status and stale language wakes report no visual change, so the Studio delegate has no language-driven reason to invalidate a clean frame."
+scope = "One inactive language model, one stale generation, and one repeated bounded status."
+exclusions = ["native presentation", "run-loop wake latency", "real server traffic"]
+
+[[evidence]]
+id = "EV-0137-NATIVE02C"
+claim = "AEP-0137-C02"
+kind = "native"
+artifact = "apps/alpine-studio/src/rust_diagnostics_tests.rs#pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission"
+assertion = "The checksum-provisioned Apple Silicon rust-analyzer drives the product model from exact didOpen diagnostics through a revision-two whole-document incremental didChange with a newer admitted diagnostic publication; a subsequent valid edit synchronously revokes stale diagnostics before shutdown drains active state."
+scope = "One deterministic local Rust workspace, one active document, three LSP document versions, and the pinned Task #208 server."
+assumptions = ["CI verifies the release asset SHA-256 and exact server version before this test"]
+exclusions = ["comparative latency", "network acquisition by Studio", "completion and navigation features"]

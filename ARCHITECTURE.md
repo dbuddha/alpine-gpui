@@ -118,8 +118,9 @@ and monotonic frame identity while current and peak buffer accounting remains
 observable. This slice decodes no JSON and creates no language-service state
 before the separately approved parser and revision-admission slices consume it.
 
-Studio now also owns the first private JSON-RPC peer core under Task #205 and
-Research #204. An Alpine envelope visitor rejects duplicate critical fields,
+Studio owns a private JSON-RPC peer core and pinned local-server compatibility
+path under Tasks #205 and #208 and Research #204. An Alpine envelope visitor
+rejects duplicate critical fields,
 unsupported IDs, batches, invalid response shapes, wrong protocol versions,
 excess depth, excess structural items, and excess raw string bytes before any
 message can reach application state. One peer admits at most 64 monotonically
@@ -127,9 +128,25 @@ identified pending requests and accounts its exact retained vector and method
 storage. Initialize, initialized, cancellation, shutdown, and exit are explicit
 states; cancellation removes local admission, and a complete workspace and
 document revision stamp is compared before a response is exposed. Outbound
-messages are framed directly for the existing bounded process owner. This slice
-does not yet drive that owner from Studio or qualify a real rust-analyzer; the
-production child-process mock journey remains the next Task #205 increment.
+messages are framed directly for the existing bounded process owner. A
+checksum-pinned Apple Silicon rust-analyzer fixture qualifies initialize,
+document open, bounded diagnostics, cancellation, stale rejection, restart, and
+shutdown without adding discovery, download, network, or startup work.
+
+Task #210 composes that path into one active Rust document. Studio sends a full
+document `didOpen` and revision-monotonic whole-document incremental `didChange`
+replacements matching rust-analyzer's declared synchronization capability, admits
+diagnostics only for the exact workspace, document, buffer, selection, process
+generation, process epoch, URI, and LSP document version, and clears prior
+diagnostics before a newer edit can paint. Each foreground turn polls at most
+eight process events, each frame projects at most 256 visible quad underlines,
+and diagnostic payloads retain at most the existing 256 KiB language boundary.
+Process callbacks publish one latest-generation wake through the runtime's
+bounded external producer. A lock-free foreground latch preserves that wake if
+shared result admission is temporarily saturated; unrelated current work then
+recovers polling without a timer, blocking wait, idle redraw, or duplicate
+document owner. Missing or failed servers leave editing and saving available and
+surface only bounded local status.
 
 Production typography uses the safe
 CoreText service; deterministic test typography proves portable editor behavior

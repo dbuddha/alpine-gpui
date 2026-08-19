@@ -3,7 +3,7 @@
 - Status: accepted 2026-08-15
 - Capability: [#28](https://github.com/dbuddha/alpine-gpui/issues/28)
 - Requirements: [#37](https://github.com/dbuddha/alpine-gpui/issues/37), [#32](https://github.com/dbuddha/alpine-gpui/issues/32), [#34](https://github.com/dbuddha/alpine-gpui/issues/34)
-- Tasks: [#124](https://github.com/dbuddha/alpine-gpui/issues/124), [#211](https://github.com/dbuddha/alpine-gpui/issues/211), [#215](https://github.com/dbuddha/alpine-gpui/issues/215)
+- Tasks: [#124](https://github.com/dbuddha/alpine-gpui/issues/124), [#210](https://github.com/dbuddha/alpine-gpui/issues/210), [#211](https://github.com/dbuddha/alpine-gpui/issues/211), [#215](https://github.com/dbuddha/alpine-gpui/issues/215)
 - Decision: [#137](https://github.com/dbuddha/alpine-gpui/issues/137)
 - Research: [#118](https://github.com/dbuddha/alpine-gpui/issues/118)
 
@@ -96,7 +96,11 @@ qualification work.
 Unit controls cover worker and external saturation, external wake coalescing,
 cross-revision external delivery, stale worker rejection, retained-byte release,
 shutdown revocation, worker panic, invalid scene rejection, and clean-idle frame
-behavior. TLA+ covers the original revision-stamped worker handoff and shutdown
+behavior. Studio's language composition additionally preserves one latest
+process-wake generation across temporary shared-queue saturation, admits
+diagnostics through exact application identity, and leaves stale or unchanged
+language output non-invalidating. TLA+ covers the original revision-stamped
+worker handoff and shutdown
 abstraction; it does not claim the later independent producer extension. Native
 validation proves the complete event value vocabulary crosses the retained
 delegate seam and that owner teardown remains balanced. Hosted mutation, Miri,

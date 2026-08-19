@@ -66,7 +66,7 @@ impl LspPosition {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LspDocument {
     uri: Box<str>,
     language_id: Box<str>,
@@ -117,6 +117,37 @@ impl LspDocument {
         }))
     }
 
+    pub(crate) fn did_change_params(
+        &self,
+        text: &str,
+        previous_end: LspPosition,
+    ) -> Result<Box<RawValue>, LanguageProtocolError> {
+        if text.len() > MAX_DOCUMENT_TEXT_BYTES {
+            return Err(LanguageProtocolError::DocumentTooLarge);
+        }
+        raw_value(&serde_json::json!({
+            "textDocument": { "uri": self.uri, "version": self.version },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": {
+                        "line": previous_end.line,
+                        "character": previous_end.utf16_character,
+                    }
+                },
+                "text": text
+            }]
+        }))
+    }
+
+    pub(crate) fn set_version(&mut self, version: i32) {
+        self.version = version;
+    }
+
+    pub(crate) const fn version(&self) -> i32 {
+        self.version
+    }
+
     pub(crate) fn position_params(
         &self,
         position: LspPosition,
@@ -141,14 +172,42 @@ struct DiagnosticRange {
     end: LspPosition,
 }
 
-#[derive(Debug)]
-struct Diagnostic {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Diagnostic {
     range: DiagnosticRange,
     severity: Option<u8>,
     message: Box<str>,
 }
 
-#[derive(Debug)]
+impl Diagnostic {
+    pub(crate) const fn start(&self) -> LspPosition {
+        self.range.start
+    }
+
+    pub(crate) const fn end(&self) -> LspPosition {
+        self.range.end
+    }
+
+    pub(crate) const fn severity(&self) -> Option<u8> {
+        self.severity
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl LspPosition {
+    pub(crate) const fn line(self) -> u32 {
+        self.line
+    }
+
+    pub(crate) const fn utf16_character(self) -> u32 {
+        self.utf16_character
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DiagnosticBatch {
     uri: Box<str>,
     document_version: Option<i32>,
@@ -262,6 +321,14 @@ impl DiagnosticBatch {
     pub(crate) const fn retained_bytes(&self) -> usize {
         self.retained_bytes
     }
+
+    pub(crate) fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+
+    pub(crate) fn primary_message(&self) -> Option<&str> {
+        self.diagnostics.first().map(Diagnostic::message)
+    }
 }
 
 pub(crate) fn initialize_params(workspace: &Path) -> Result<Box<RawValue>, LanguageProtocolError> {
@@ -365,6 +432,23 @@ mod tests {
         let open = document.did_open_params("fn main() {}")?;
         assert!(open.get().contains(r#""languageId":"rust""#));
         assert!(open.get().contains(r#""version":7"#));
+        let change = document.did_change_params("fn changed() {}", LspPosition::new(3, 11)?)?;
+        assert!(change.get().contains(r#""contentChanges""#));
+        assert!(change.get().contains(r#""version":7"#));
+        assert!(change.get().contains(r#""start":{"character":0,"line":0}"#));
+        assert!(change.get().contains(r#""end":{"character":11,"line":3}"#));
+        let mut versioned = document.clone();
+        versioned.set_version(8);
+        assert_eq!(versioned.version(), 8);
+        assert_eq!(
+            document
+                .did_change_params(
+                    &"x".repeat(MAX_DOCUMENT_TEXT_BYTES + 1),
+                    LspPosition::new(0, 0)?
+                )
+                .err(),
+            Some(LanguageProtocolError::DocumentTooLarge)
+        );
         let positioned = document.position_params(LspPosition::new(3, 11)?)?;
         assert!(positioned.get().contains(r#""character":11"#));
         assert_eq!(
@@ -404,6 +488,10 @@ mod tests {
         assert_eq!(batch.diagnostics.len(), 1);
         assert_eq!(batch.diagnostics[0].severity, Some(1));
         assert_eq!(batch.diagnostics[0].message.as_ref(), "broken");
+        assert_eq!(batch.diagnostics()[0].start().line(), 1);
+        assert_eq!(batch.diagnostics()[0].end().utf16_character(), 4);
+        assert_eq!(batch.diagnostics()[0].severity(), Some(1));
+        assert_eq!(batch.primary_message(), Some("broken"));
         assert_eq!(batch.diagnostics[0].range.start, LspPosition::new(1, 2)?);
         assert_eq!(
             batch.retained_bytes(),

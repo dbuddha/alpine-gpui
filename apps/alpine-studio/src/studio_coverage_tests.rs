@@ -4751,3 +4751,172 @@ fn folder_launch_primes_lazy_tree_without_stealing_editor_focus()
     assert!(!app.file_tree.is_focused());
     Ok(())
 }
+
+fn assert_event_continuation_is_queued(
+    mut app: StudioApp,
+    wake: LanguageWake,
+    viewport: Size,
+    clear: LinearRgba,
+) -> Result<(), Box<dyn std::error::Error>> {
+    app.rust_diagnostics.force_continuation_once_for_test();
+    app.language_wake_latch.publish(wake);
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let before = runtime.snapshot().external();
+    let _ = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(3_515),
+    });
+    let published = runtime.snapshot().external();
+    assert_eq!(published.admitted(), before.admitted() + 1);
+    assert_eq!(published.current_items(), 1);
+    let _ = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(3_516),
+    });
+    assert_eq!(runtime.snapshot().external().current_items(), 0);
+    Ok(())
+}
+
+fn assert_worker_continuation_is_drained(
+    rust_path: &Path,
+    viewport: Size,
+    clear: LinearRgba,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = StudioApp::open_file(TestTextSystem, rust_path)?;
+    let input = app.active_rust_document().ok_or("worker Rust document")?;
+    let params = rust_diagnostics::tests::diagnostics(rust_path, 1);
+    app.rust_diagnostics.install_for_test(
+        input,
+        &params,
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    let wake = app
+        .rust_diagnostics
+        .current_wake_for_test()
+        .ok_or("worker language wake")?;
+    let latch = app.language_wake_latch.clone();
+    app.rust_diagnostics.force_continuation_once_for_test();
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    runtime
+        .dispatch(&key(KEY_F, command))
+        .ok_or("worker find frame")?;
+    runtime
+        .dispatch(&ime(ImeEvent::Committed("fn".into())))
+        .ok_or("worker query frame")?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while runtime.snapshot().worker().queued_results() == 0 {
+        if std::time::Instant::now() >= deadline {
+            return Err("find worker did not publish a result".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    latch.publish(wake);
+    let before = runtime.snapshot().external();
+    let _ = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(3_517),
+    });
+    let after = runtime.snapshot().external();
+    assert_eq!(after.admitted(), before.admitted() + 1);
+    assert_eq!(after.drained(), before.drained() + 1);
+    assert_eq!(after.current_items(), 0);
+    Ok(())
+}
+
+#[test]
+fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn broken( {\n")?;
+    root.write("notes.txt", "plain text\n")?;
+    let rust_path = root.path().join("main.rs");
+    let text_path = root.path().join("notes.txt");
+    let text_app = StudioApp::open_file(TestTextSystem, &text_path)?;
+    assert!(text_app.active_rust_document().is_none());
+
+    let mut app = StudioApp::open_file(TestTextSystem, &rust_path)?;
+    assert!(app.active_rust_document().is_some());
+    app.rust_diagnostics = RustDiagnostics::with_server(rust_diagnostics::tests::mock_executable());
+    app.rust_diagnostics.force_continuation_once_for_test();
+    let viewport = viewport()?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let baseline_quads = runtime
+        .frame_if_dirty()
+        .ok_or("initial rust frame")?
+        .scene()
+        .quads()
+        .len();
+
+    let _ = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(3_000),
+    });
+    let mut rendered = false;
+    for timestamp in 3_001..3_513 {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(timestamp),
+        }) && frame.scene().quads().len() >= baseline_quads + 2
+        {
+            rendered = true;
+            break;
+        }
+    }
+    assert!(rendered);
+    assert!(
+        runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(3_514),
+            })
+            .is_none()
+    );
+
+    let mut latched_app = StudioApp::open_file(TestTextSystem, &rust_path)?;
+    let input = latched_app
+        .active_rust_document()
+        .ok_or("latched Rust document")?;
+    let params = rust_diagnostics::tests::diagnostics(&rust_path, 1);
+    latched_app.rust_diagnostics.install_for_test(
+        input,
+        &params,
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    let wake = latched_app
+        .rust_diagnostics
+        .current_wake_for_test()
+        .ok_or("latched language wake")?;
+    let stale_wake = wake.successor_for_test();
+    latched_app.language_wake_latch.publish(stale_wake);
+    assert_eq!(
+        latched_app.poll_latched_language_wake(),
+        LanguageEffect::default()
+    );
+    assert_eq!(latched_app.rust_diagnostics.snapshot().stale_wakes, 1);
+    assert_event_continuation_is_queued(latched_app, wake, viewport, clear)?;
+    assert_worker_continuation_is_drained(&rust_path, viewport, clear)?;
+    assert!(!should_poll_latched_after_worker(true));
+    assert!(should_poll_latched_after_worker(false));
+    Ok(())
+}
+
+#[test]
+fn selection_revision_advances_only_for_real_selection_changes() -> Result<(), Box<dyn Error>> {
+    let mut app = test_app()?;
+    let original = app.selection;
+    let revision = app.selection_revision;
+    let failures = app.input_failures;
+    app.advance_selection_revision(original);
+    assert_eq!(app.selection_revision, revision);
+    assert_eq!(app.input_failures, failures);
+
+    app.selection = Selection::caret(ByteOffset::new(1));
+    app.advance_selection_revision(original);
+    assert_eq!(app.selection_revision, revision + 1);
+    assert_eq!(app.input_failures, failures);
+
+    let previous = app.selection;
+    app.selection = Selection::caret(ByteOffset::new(2));
+    app.selection_revision = u64::MAX;
+    app.advance_selection_revision(previous);
+    assert_eq!(app.selection_revision, u64::MAX);
+    assert_eq!(app.input_failures, failures + 1);
+    Ok(())
+}

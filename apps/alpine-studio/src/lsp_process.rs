@@ -32,6 +32,8 @@ const MAX_CONFIGURATION_BYTES: usize = 65_536;
 const SUPERVISOR_POLL: Duration = Duration::from_millis(2);
 const SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+pub(crate) type ProcessWake = Arc<dyn Fn() + Send + Sync + 'static>;
+
 trait ThreadSpawner {
     fn spawn<F>(
         &self,
@@ -92,6 +94,11 @@ pub(crate) struct InputSequence(u64);
 impl InputSequence {
     pub(crate) const fn get(self) -> u64 {
         self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(value: u64) -> Self {
+        Self(value)
     }
 }
 
@@ -325,6 +332,7 @@ struct Counters {
     restarts: AtomicU64,
     exits: AtomicU64,
     shutdown_timeouts: AtomicU64,
+    wake: Option<ProcessWake>,
 }
 
 pub(crate) struct Payload {
@@ -584,16 +592,28 @@ impl LanguageServerProcess {
         spec: ProcessSpec,
         identity: ProcessIdentity,
     ) -> Result<Self, ProcessFailure> {
-        Self::start_with_spawner(spec, identity, &SystemThreadSpawner)
+        Self::start_with_spawner(spec, identity, None, &SystemThreadSpawner)
+    }
+
+    pub(crate) fn start_with_waker(
+        spec: ProcessSpec,
+        identity: ProcessIdentity,
+        wake: ProcessWake,
+    ) -> Result<Self, ProcessFailure> {
+        Self::start_with_spawner(spec, identity, Some(wake), &SystemThreadSpawner)
     }
 
     fn start_with_spawner<S: ThreadSpawner>(
         spec: ProcessSpec,
         identity: ProcessIdentity,
+        wake: Option<ProcessWake>,
         spawner: &S,
     ) -> Result<Self, ProcessFailure> {
         let configuration_bytes = spec.retained_bytes;
-        let counters = Arc::new(Counters::default());
+        let counters = Arc::new(Counters {
+            wake,
+            ..Counters::default()
+        });
         let shutdown = Arc::new(AtomicBool::new(false));
         let (control_sender, control_receiver) = sync_channel(CONTROL_CAPACITY);
         let (event_sender, event_receiver) = sync_channel(EVENT_CAPACITY);
@@ -1136,7 +1156,14 @@ fn emit_unreserved(
         .peak_queued_events
         .fetch_max(queued, Ordering::Relaxed);
     match events.try_send(event) {
-        Ok(()) => true,
+        Ok(()) => {
+            if queued == 1
+                && let Some(wake) = &counters.wake
+            {
+                wake();
+            }
+            true
+        }
         Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
             counters.queued_events.fetch_sub(1, Ordering::AcqRel);
             counters.event_saturations.fetch_add(1, Ordering::Relaxed);

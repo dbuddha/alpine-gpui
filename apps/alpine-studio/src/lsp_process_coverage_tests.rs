@@ -543,6 +543,7 @@ fn supervisor_and_helper_spawn_failures_are_injected_without_bypasses() -> Resul
     let failure = LanguageServerProcess::start_with_spawner(
         ProcessSpec::new("/bin/sleep", ["30"], None)?,
         identity(1),
+        None,
         &FaultSpawner(ProcessStage::SpawnChild),
     )
     .err()
