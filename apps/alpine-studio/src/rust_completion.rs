@@ -264,11 +264,9 @@ pub(crate) fn position_for_byte(
         let range = snapshot
             .line_byte_range(line)
             .map_err(|_| CompletionError::InvalidTextRange)?;
-        if offset.get() <= range.end {
-            upper = line;
-        } else {
-            lower = line.saturating_add(1);
-        }
+        let after_line = usize::from(offset.get() > range.end);
+        lower = [lower, line.saturating_add(1)][after_line];
+        upper = [line, upper][after_line];
     }
     let selected_line = lower.min(snapshot.line_count().saturating_sub(1));
     let range = snapshot
