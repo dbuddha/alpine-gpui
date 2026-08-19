@@ -1505,6 +1505,20 @@ mod tests {
         assert_eq!(config.result_capacity(), 4);
         assert_eq!(WorkerConfig::default().worker_count(), 1);
 
+        let application = ApplicationSnapshot::default();
+        assert_eq!(
+            application.workspace_revision(),
+            WorkspaceRevision::default()
+        );
+        assert_eq!(application.document_revision(), DocumentRevision::default());
+        assert_eq!(application.next_scene_revision(), 1);
+        assert!(!application.is_dirty());
+        assert!(!application.is_shutting_down());
+        assert_eq!(application.stale_results(), 0);
+        assert_eq!(application.invalid_scenes(), 0);
+        assert_eq!(application.worker(), WorkerSnapshot::default());
+        assert_eq!(application.external(), ExternalSnapshot::default());
+
         let work = token(13);
         assert_eq!(work.sequence(), 13);
         assert_eq!(work.workspace_revision().get(), 7);

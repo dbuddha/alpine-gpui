@@ -2523,10 +2523,12 @@ fn schedule_validation_window_close(window: &Retained<NSWindow>, delay: Duration
 fn schedule_validation_user_window_close(
     window: &Retained<NSWindow>,
     lifecycle: &Arc<AtomicU8>,
+    counters: &Arc<FrameCounters>,
     delay: Duration,
 ) {
     let window = window.clone();
     let lifecycle = Arc::clone(lifecycle);
+    let counters = Arc::clone(counters);
     let close_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
         RcBlock::new(move |timer: NonNull<NSTimer>| {
             // SAFETY: Foundation supplies a valid borrowed timer for the
@@ -2534,6 +2536,10 @@ fn schedule_validation_user_window_close(
             let timer = unsafe { timer.as_ref() };
             if lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
                 timer.invalidate();
+                return;
+            }
+            if counters.qualified_presented.load(Ordering::Acquire) == 0 {
+                timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(0.037));
                 return;
             }
             // SAFETY: `standardWindowButton:` is an AppKit selector on
@@ -3242,7 +3248,7 @@ impl NativeSurface {
 
     #[cfg(alpine_native_validation)]
     pub(crate) fn arm_user_window_close(&self, delay: Duration) {
-        schedule_validation_user_window_close(&self.window, &self.lifecycle, delay);
+        schedule_validation_user_window_close(&self.window, &self.lifecycle, &self.counters, delay);
     }
 
     #[cfg(alpine_native_validation)]
