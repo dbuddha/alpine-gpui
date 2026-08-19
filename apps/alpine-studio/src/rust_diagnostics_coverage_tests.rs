@@ -467,7 +467,7 @@ fn completion_cancellation_and_request_failures_are_bounded() -> Result<(), Box<
 
 fn wait_for_running_peer(model: &mut RustDiagnostics) -> Result<LanguageWake, Box<dyn Error>> {
     let wake = model.current_wake_for_test().ok_or("language wake")?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
         let _ = model.poll(wake);
         let running = model.session.as_ref().is_some_and(|session| {
@@ -517,7 +517,7 @@ fn poll_ignores_non_completion_response_methods_even_with_matching_stamp()
     let (mut model, root) = installed_process_model()?;
     let wake = wait_for_running_peer(&mut model)?;
     let mut diagnostics_observed = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
         let _ = model.poll(wake);
         diagnostics_observed = model.snapshot().diagnostic_publications > 0;
@@ -542,7 +542,7 @@ fn poll_ignores_non_completion_response_methods_even_with_matching_stamp()
     model.session.as_mut().ok_or("session")?.pending_completion = Some(pending);
     let status = model.status_message();
     let mut response_observed = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
         let _ = model.poll(wake);
         response_observed = model

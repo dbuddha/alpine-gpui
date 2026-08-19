@@ -205,10 +205,10 @@ fn parse_documentation(value: &Value) -> Result<(Box<str>, bool), CompletionErro
             .and_then(Value::as_str)
     });
     let text = text.ok_or(CompletionError::Malformed)?;
-    let mut retained = text.len().min(MAX_COMPLETION_DOCUMENTATION_BYTES);
-    while !text.is_char_boundary(retained) {
-        retained = retained.saturating_sub(1);
-    }
+    let retained = (0..=text.len().min(MAX_COMPLETION_DOCUMENTATION_BYTES))
+        .rev()
+        .find(|candidate| text.is_char_boundary(*candidate))
+        .ok_or(CompletionError::Malformed)?;
     Ok((text[..retained].into(), retained < text.len()))
 }
 
@@ -280,7 +280,12 @@ pub(crate) fn position_for_byte(
     }
     let mut lower = 0;
     let mut upper = snapshot.line_count();
-    while lower < upper {
+    for _ in 0..usize::BITS {
+        match lower.cmp(&upper) {
+            std::cmp::Ordering::Less => {}
+            std::cmp::Ordering::Equal => break,
+            std::cmp::Ordering::Greater => return Err(CompletionError::InvalidTextRange),
+        }
         let line = lower + (upper - lower) / 2;
         let range = snapshot
             .line_byte_range(line)
@@ -288,6 +293,12 @@ pub(crate) fn position_for_byte(
         let after_line = usize::from(offset.get() >= range.end);
         lower = [lower, line.saturating_add(1)][after_line];
         upper = [line, upper][after_line];
+    }
+    match lower.cmp(&upper) {
+        std::cmp::Ordering::Equal => {}
+        std::cmp::Ordering::Less | std::cmp::Ordering::Greater => {
+            return Err(CompletionError::InvalidTextRange);
+        }
     }
     let selected_line = lower.min(snapshot.line_count().saturating_sub(1));
     let range = snapshot
