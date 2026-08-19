@@ -5042,11 +5042,6 @@ pub mod native_validation {
                     assert!(has_qualified_presentation(
                         surface.snapshot().qualified_presented_count()
                     ));
-                    // The production startup wake may admit one additional
-                    // frame after its handler is installed. Give that frame a
-                    // deterministic hosted terminal observation so close can
-                    // wait for true driver quiescence instead of wall time.
-                    platform_validation::inject_post_commit_observation(surface, None, 2.0)?;
                 }
                 let run_timeout = match evidence_mode {
                     PresentationEvidenceMode::HostedDirect => HOSTED_RUN_TIMEOUT,

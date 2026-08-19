@@ -30,7 +30,7 @@ use objc2_app_kit::{
 use objc2_app_kit::{NSEventType, NSWindowButton};
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 #[cfg(alpine_native_validation)]
-use objc2_core_graphics::{CGEvent, CGScrollEventUnit};
+use objc2_core_graphics::{CGEvent, CGEventFlags, CGScrollEventUnit};
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotification, NSObject, NSObjectProtocol,
     NSPoint, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
@@ -2554,8 +2554,31 @@ fn schedule_validation_programmatic_window_close(
         ValidationCloseAction::Programmatic {
             delegate: delegate.clone(),
             driver: Rc::clone(driver),
+            observed_frames: Cell::new(0),
         },
     );
+}
+
+#[cfg(alpine_native_validation)]
+const VALIDATION_CLOSE_OBSERVATION_LIMIT: u8 = 8;
+
+#[cfg(alpine_native_validation)]
+const VALIDATION_CLOSE_PRESENTED_TIME: f64 = 2.0;
+
+#[cfg(alpine_native_validation)]
+const VALIDATION_CLOSE_RETRY_DELAY: Duration = Duration::from_millis(37);
+
+#[cfg(alpine_native_validation)]
+fn next_validation_close_observation(
+    observed_count: u8,
+    active_observed: Option<bool>,
+) -> Option<u8> {
+    match active_observed {
+        Some(false) => observed_count
+            .checked_add(1)
+            .filter(|next_count| *next_count <= VALIDATION_CLOSE_OBSERVATION_LIMIT),
+        None | Some(true) => None,
+    }
 }
 
 #[cfg(alpine_native_validation)]
@@ -2564,6 +2587,7 @@ enum ValidationCloseAction {
     Programmatic {
         delegate: Retained<DisplayLinkDelegate>,
         driver: Rc<RefCell<PresentationDriver>>,
+        observed_frames: Cell<u8>,
     },
 }
 
@@ -2588,18 +2612,41 @@ fn schedule_validation_qualified_window_close(
                 return;
             }
             if counters.qualified_presented.load(Ordering::Acquire) == 0 {
-                timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(0.037));
+                timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(
+                    VALIDATION_CLOSE_RETRY_DELAY.as_secs_f64(),
+                ));
                 return;
             }
-            if let ValidationCloseAction::Programmatic { driver, .. } = &action
-                && !driver.try_borrow().is_ok_and(|driver| {
+            if let ValidationCloseAction::Programmatic {
+                driver,
+                observed_frames,
+                ..
+            } = &action
+            {
+                let ready_to_close = driver.try_borrow_mut().is_ok_and(|mut driver| {
+                    let active_observed = driver
+                        .active
+                        .as_ref()
+                        .map(|active| active.observation.observed());
+                    if let Some(next_count) =
+                        next_validation_close_observation(observed_frames.get(), active_observed)
+                        && let Some(active) = driver.active.as_mut()
+                    {
+                        active
+                            .observation
+                            .inject(VALIDATION_CLOSE_PRESENTED_TIME.to_bits());
+                        observed_frames.set(next_count);
+                    }
                     driver.pending.is_none()
                         && driver.active.is_none()
                         && driver.frame_slots.snapshot().occupied_slots() == 0
-                })
-            {
-                timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(0.037));
-                return;
+                });
+                if !ready_to_close {
+                    timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(
+                        VALIDATION_CLOSE_RETRY_DELAY.as_secs_f64(),
+                    ));
+                    return;
+                }
             }
             match &action {
                 ValidationCloseAction::UserButton => {
@@ -2632,11 +2679,7 @@ fn schedule_validation_qualified_window_close(
                     }
                 }
             }
-            if lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
-                timer.invalidate();
-            } else {
-                timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(0.037));
-            }
+            timer.invalidate();
         });
     // SAFETY: The block and retained window remain main-thread-only,
     // Foundation copies it for the scheduled timer lifetime, and the
@@ -3116,6 +3159,7 @@ impl NativeSurface {
                 0,
             )
             .ok_or_else(|| native_unavailable(SurfaceStage::View))?;
+            CGEvent::set_flags(Some(&cg_scroll), CGEventFlags::empty());
             let scroll = NSEvent::eventWithCGEvent(&cg_scroll)
                 .ok_or_else(|| native_unavailable(SurfaceStage::View))?;
             self.view.scrollWheel(&scroll);
@@ -3987,6 +4031,26 @@ mod tests {
         injected.inject(23);
         assert!(injected.observed());
         assert_eq!(injected.presented_time_bits(), 23);
+    }
+
+    #[test]
+    #[cfg(alpine_native_validation)]
+    fn validation_close_observation_is_active_only_and_bounded() {
+        assert_eq!(next_validation_close_observation(0, None), None);
+        assert_eq!(next_validation_close_observation(0, Some(true)), None);
+        assert_eq!(next_validation_close_observation(0, Some(false)), Some(1));
+        assert_eq!(
+            next_validation_close_observation(VALIDATION_CLOSE_OBSERVATION_LIMIT - 1, Some(false),),
+            Some(VALIDATION_CLOSE_OBSERVATION_LIMIT)
+        );
+        assert_eq!(
+            next_validation_close_observation(VALIDATION_CLOSE_OBSERVATION_LIMIT, Some(false),),
+            None
+        );
+        assert_eq!(
+            next_validation_close_observation(u8::MAX, Some(false)),
+            None
+        );
     }
 
     #[test]
