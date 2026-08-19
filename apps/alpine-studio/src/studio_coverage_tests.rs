@@ -4829,6 +4829,10 @@ fn completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact()
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the exact anchored, clamped, narrow, and fallback geometry controls stay in one scene journey"
+)]
 fn completion_overlay_geometry_is_exact_at_anchor_clamp_and_narrow_edges()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = TestWorkspace::new()?;
@@ -4918,6 +4922,32 @@ fn completion_overlay_geometry_is_exact_at_anchor_clamp_and_narrow_edges()
         Rect::new(
             Point::new(35.0, 24.0).ok_or("narrow origin")?,
             Size::new(1.0, 176.0).ok_or("narrow size")?,
+        )
+    );
+
+    root.write("deep.rs", "line\n".repeat(100))?;
+    let deep_path = root.path().join("deep.rs");
+    let mut fallback_app = StudioApp::open_file(TestTextSystem, &deep_path)?;
+    let fallback_input = fallback_app
+        .active_rust_document()
+        .ok_or("deep Rust document")?;
+    fallback_app.rust_diagnostics.install_for_test(
+        fallback_input,
+        &rust_diagnostics::tests::diagnostics(&deep_path, 1),
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    fallback_app.selection = Selection::caret(ByteOffset::new(400));
+    fallback_app.rust_diagnostics.install_completion_for_test(
+        42,
+        fallback_app.language_identity(),
+        &many,
+    )?;
+    let fallback = fallback_app.try_scene(SceneRevision::new(323), viewport()?)?;
+    assert_eq!(
+        fallback.clips().last().ok_or("fallback clip")?.bounds(),
+        Rect::new(
+            Point::new(48.0, 48.0).ok_or("fallback origin")?,
+            Size::new(420.0, 176.0).ok_or("fallback size")?,
         )
     );
     Ok(())

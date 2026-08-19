@@ -238,11 +238,6 @@ fn completion_batch_from_response(
     }
 }
 
-#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
-pub(crate) fn take_completion_response_for_test() -> Option<Box<str>> {
-    LAST_COMPLETION_RESPONSE.with(std::cell::RefCell::take)
-}
-
 struct RustSession {
     target: Target,
     identity: LanguageIdentity,
@@ -588,7 +583,10 @@ impl RustDiagnostics {
             .selected
             .saturating_add_signed(delta)
             .min(count.saturating_sub(1));
-        if completion.selected < completion.first_visible {
+        if matches!(
+            completion.selected.cmp(&completion.first_visible),
+            std::cmp::Ordering::Less
+        ) {
             completion.first_visible = completion.selected;
         } else if completion.selected
             >= completion

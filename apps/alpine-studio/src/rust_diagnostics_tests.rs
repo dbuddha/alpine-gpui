@@ -615,7 +615,7 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
         {
             return Err(format!(
                 "pinned completion returned no items: snapshot={snapshot:?}, raw={:?}",
-                super::take_completion_response_for_test()
+                super::LAST_COMPLETION_RESPONSE.with(std::cell::RefCell::take)
             )
             .into());
         }

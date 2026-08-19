@@ -221,7 +221,11 @@ fn parse_text_edit(value: &Value) -> Result<CompletionEdit, CompletionError> {
     let has_range = object.contains_key("range");
     let has_insert = object.contains_key("insert");
     let has_replace = object.contains_key("replace");
-    if (has_range && (has_insert || has_replace)) || has_insert != has_replace {
+    if has_range {
+        if has_insert || has_replace {
+            return Err(CompletionError::InvalidTextRange);
+        }
+    } else if !has_insert || !has_replace {
         return Err(CompletionError::InvalidTextRange);
     }
     let range = if let Some(range) = object.get("range") {
@@ -422,6 +426,18 @@ mod tests {
             )),
             Err(CompletionError::InvalidTextRange)
         );
+        assert_eq!(
+            CompletionBatch::admit(&raw(
+                r#"[{"label":"x","textEdit":{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"insert":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"newText":"x"}}]"#
+            )),
+            Err(CompletionError::InvalidTextRange)
+        );
+        assert_eq!(
+            CompletionBatch::admit(&raw(
+                r#"[{"label":"x","textEdit":{"insert":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"newText":"x"}}]"#
+            )),
+            Err(CompletionError::InvalidTextRange)
+        );
     }
 
     #[test]
@@ -577,11 +593,14 @@ mod tests {
 
     #[test]
     fn inclusive_wire_field_and_retention_ceilings_are_admitted() {
-        let base = r#"[{"label":"x"}]"#;
-        let mut exact_wire = base.to_owned();
-        exact_wire.push_str(&" ".repeat(MAX_COMPLETION_WIRE_BYTES - base.len()));
+        let prefix = r#"[{"label":"x","padding":""#;
+        let suffix = r#""}]"#;
+        let padding = "w".repeat(MAX_COMPLETION_WIRE_BYTES - prefix.len() - suffix.len());
+        let exact_wire = format!("{prefix}{padding}{suffix}");
         assert_eq!(exact_wire.len(), MAX_COMPLETION_WIRE_BYTES);
-        assert!(CompletionBatch::admit(&raw(&exact_wire)).is_ok());
+        let exact_wire = raw(&exact_wire);
+        assert_eq!(exact_wire.get().len(), MAX_COMPLETION_WIRE_BYTES);
+        assert!(CompletionBatch::admit(&exact_wire).is_ok());
 
         let exact_label = "l".repeat(MAX_COMPLETION_LABEL_BYTES);
         assert!(
@@ -590,6 +609,13 @@ mod tests {
             )))
             .is_ok()
         );
+
+        let exact_documentation = "d".repeat(MAX_COMPLETION_DOCUMENTATION_BYTES);
+        let exact_documentation = CompletionBatch::admit(&raw(&format!(
+            r#"[{{"label":"x","documentation":"{exact_documentation}"}}]"#
+        )))
+        .unwrap_or_else(|_| unreachable!());
+        assert_eq!(exact_documentation.truncated_documentation, 0);
 
         let item_count = 4;
         let fixed = item_count * size_of::<CompletionItem>() + item_count;
