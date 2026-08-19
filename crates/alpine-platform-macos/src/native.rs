@@ -13,6 +13,8 @@ use alpine_core::Point;
 #[cfg(alpine_native_validation)]
 use std::time::{Duration, Instant};
 
+#[cfg(alpine_native_validation)]
+use objc2::runtime::Bool;
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::Retained,
@@ -2602,7 +2604,13 @@ fn schedule_validation_qualified_window_close(
                     };
                 }
                 ValidationCloseAction::Programmatic(delegate) => {
-                    if delegate.windowShouldClose(&window) {
+                    // SAFETY: The selector and return type exactly match the
+                    // production NSWindowDelegate method implemented above.
+                    // Both retained objects remain main-thread-only and are
+                    // borrowed only for this synchronous validation dispatch.
+                    let should_close: Bool =
+                        unsafe { msg_send![&**delegate, windowShouldClose: &**window] };
+                    if bool::from(should_close) {
                         window.close();
                     }
                 }
