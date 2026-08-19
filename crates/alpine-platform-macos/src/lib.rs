@@ -716,6 +716,15 @@ pub mod native_validation {
         surface.implementation.arm_user_window_close(delay);
     }
 
+    /// Schedules AppKit's programmatic close action after a bounded delay.
+    ///
+    /// This still enters the production `windowShouldClose` and
+    /// `windowWillClose` delegate boundaries, but does not require a standard
+    /// close button to be available on a headless validation host.
+    pub fn arm_programmatic_window_close(surface: &NativeSurface, delay: Duration) {
+        surface.implementation.arm_programmatic_window_close(delay);
+    }
+
     /// Revokes only the private wake pointer while lifecycle remains live.
     ///
     /// This validation fault proves pointer revocation independently rejects

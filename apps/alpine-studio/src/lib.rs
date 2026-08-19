@@ -4962,7 +4962,14 @@ pub mod native_validation {
                     }
                     assert!(surface.snapshot().qualified_presented_count() >= 1);
                 }
-                platform_validation::arm_user_window_close(surface, Duration::from_millis(500));
+                if hosted_direct {
+                    platform_validation::arm_programmatic_window_close(
+                        surface,
+                        Duration::from_millis(500),
+                    );
+                } else {
+                    platform_validation::arm_user_window_close(surface, Duration::from_millis(500));
+                }
                 Ok(())
             })?
             .ok_or(alpine_runtime::RuntimeError::Surface(

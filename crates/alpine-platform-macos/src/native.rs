@@ -2526,6 +2526,46 @@ fn schedule_validation_user_window_close(
     counters: &Arc<FrameCounters>,
     delay: Duration,
 ) {
+    schedule_validation_qualified_window_close(
+        window,
+        lifecycle,
+        counters,
+        delay,
+        ValidationCloseAction::UserButton,
+    );
+}
+
+#[cfg(alpine_native_validation)]
+fn schedule_validation_programmatic_window_close(
+    window: &Retained<NSWindow>,
+    lifecycle: &Arc<AtomicU8>,
+    counters: &Arc<FrameCounters>,
+    delay: Duration,
+) {
+    schedule_validation_qualified_window_close(
+        window,
+        lifecycle,
+        counters,
+        delay,
+        ValidationCloseAction::Programmatic,
+    );
+}
+
+#[cfg(alpine_native_validation)]
+#[derive(Clone, Copy)]
+enum ValidationCloseAction {
+    UserButton,
+    Programmatic,
+}
+
+#[cfg(alpine_native_validation)]
+fn schedule_validation_qualified_window_close(
+    window: &Retained<NSWindow>,
+    lifecycle: &Arc<AtomicU8>,
+    counters: &Arc<FrameCounters>,
+    delay: Duration,
+    action: ValidationCloseAction,
+) {
     let window = window.clone();
     let lifecycle = Arc::clone(lifecycle);
     let counters = Arc::clone(counters);
@@ -2542,20 +2582,27 @@ fn schedule_validation_user_window_close(
                 timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(0.037));
                 return;
             }
-            // SAFETY: `standardWindowButton:` is an AppKit selector on
-            // NSWindow. The returned button remains owned by the retained
-            // window for this immediate main-thread activation.
-            let close_button: *mut AnyObject =
-                unsafe { msg_send![&**window, standardWindowButton: NSWindowButton::CloseButton] };
-            let Some(close_button) = NonNull::new(close_button) else {
-                timer.invalidate();
-                return;
-            };
-            // SAFETY: The standard close button and captured window are
-            // main-thread-only. AppKit routes this user-equivalent activation
-            // through the installed production NSWindowDelegate.
-            let _: () =
-                unsafe { msg_send![close_button.as_ref(), performClick: None::<&AnyObject>] };
+            match action {
+                ValidationCloseAction::UserButton => {
+                    // SAFETY: `standardWindowButton:` is an AppKit selector on
+                    // NSWindow. The returned button remains owned by the retained
+                    // window for this immediate main-thread activation.
+                    let close_button: *mut AnyObject = unsafe {
+                        msg_send![&**window, standardWindowButton: NSWindowButton::CloseButton]
+                    };
+                    let Some(close_button) = NonNull::new(close_button) else {
+                        timer.invalidate();
+                        return;
+                    };
+                    // SAFETY: The standard close button and captured window are
+                    // main-thread-only. AppKit routes this user-equivalent activation
+                    // through the installed production NSWindowDelegate.
+                    let _: () = unsafe {
+                        msg_send![close_button.as_ref(), performClick: None::<&AnyObject>]
+                    };
+                }
+                ValidationCloseAction::Programmatic => window.performClose(None),
+            }
             if lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
                 timer.invalidate();
             } else {
@@ -3249,6 +3296,16 @@ impl NativeSurface {
     #[cfg(alpine_native_validation)]
     pub(crate) fn arm_user_window_close(&self, delay: Duration) {
         schedule_validation_user_window_close(&self.window, &self.lifecycle, &self.counters, delay);
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn arm_programmatic_window_close(&self, delay: Duration) {
+        schedule_validation_programmatic_window_close(
+            &self.window,
+            &self.lifecycle,
+            &self.counters,
+            delay,
+        );
     }
 
     #[cfg(alpine_native_validation)]
