@@ -1,1 +1,4 @@
 /assurance/calibration/**/*.csv text eol=lf
+/assurance/onscreen-sdr/**/*.scene -text
+/assurance/onscreen-sdr/**/*.capture -text
+/assurance/onscreen-sdr/**/*.icc -text
