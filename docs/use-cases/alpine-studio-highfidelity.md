@@ -46,7 +46,7 @@ authority for live task and check status.
 
 | Gate | Status | Merged evidence | Remaining exit work |
 | --- | --- | --- | --- |
-| 0: authoritative line | Complete | Owner-approved Requirements #32 through #37, one current `main`, issue-first tracking | Restore GitHub Project views when `read:project` scope is available |
+| 0: authoritative line | Complete | Owner-approved Requirements #32 through #37, one current `main`, issue-first tracking, and a leaf-execution Project projection | Keep issue hierarchy canonical and refuse inferred Project state when an operator lacks `read:project` |
 | 1: production window | Complete | Production `NativeSurface::run`, real AppKit window, process close path, watchdog and zero-idle evidence | Continue native regression coverage as product behavior grows |
 | 2: bounded presentation | Complete | AEP 0120, three completion-owned slots, asynchronous commit and present, capacity accounting, close and reorder tests | Fixed-hardware latency and residency qualification remains later evidence |
 | 3: one-file editor | Functionally implemented, dogfood acceptance still open | Runtime and events, local rope text, snapshots, Unicode mappings, undo and redo, CoreText layout, glyph atlas, pointer and keyboard selection, clipboard, IME, atomic save, external-change protection | Sustained manual use, defect closure, and release-quality native journey evidence |
@@ -73,13 +73,28 @@ branches or broad parent tasks:
    [Task #221](https://github.com/dbuddha/alpine-gpui/issues/221).
 5. Finish typed configuration reload and migration through
    [Task #222](https://github.com/dbuddha/alpine-gpui/issues/222).
-6. Qualify native VoiceOver and lifecycle recovery through
+6. Complete onscreen SDR, lifecycle soak, production journey, and native idle
+   qualification through [Tasks #234 through #237](https://github.com/dbuddha/alpine-gpui/issues/72),
+   then qualify native VoiceOver and lifecycle recovery through
    [Task #223](https://github.com/dbuddha/alpine-gpui/issues/223).
-7. Run sustained Alpine-repository dogfood and close blocking defects through
-   [Task #224](https://github.com/dbuddha/alpine-gpui/issues/224).
+7. Restore bounded Miri assurance through
+   [Defect #183](https://github.com/dbuddha/alpine-gpui/issues/183) and include
+   Studio application lines in changed-line coverage diagnostics through
+   [Defect #232](https://github.com/dbuddha/alpine-gpui/issues/232).
+8. Run revision-pinned capture, sustained Alpine-repository sessions,
+   interaction baselines, long-session residency, and final M5 acceptance
+   through [Tasks #238 through #242](https://github.com/dbuddha/alpine-gpui/issues/224)
+   under dogfood Task #224.
 
 No terminal, Git UI, plugin, AI, cloud, collaboration, telemetry, remote, or
 multi-window work may preempt this path.
+
+Tasks #218 through #221 form the Rust-intelligence dependency chain. Task #222
+is an independent accepted leaf. Task #72 aggregates native leaves #234 through
+#237 and remains the blocker for Task #223. Task #224 aggregates dogfood leaves
+#238 through #242 and is the convergence gate; neither parent can close while a
+child or linked assurance, data-loss, lifecycle, accessibility, idle-work, or
+unbounded-residency defect remains open.
 
 ## How GitHub milestones map to readiness
 
@@ -101,6 +116,13 @@ daily-driver behavior and dogfood gate. It does not mean Alpine Studio is a
 supportable version 1 release. M7 separately owns fixed-hardware regression
 qualification, API stabilization, packaging, signing, notarization, update
 recovery, and release evidence. M6 is not on the macOS critical path.
+
+Milestone issue counts and total Project item counts must never be presented as
+readiness percentages. They mix capabilities, requirements, research,
+decisions, defects, and implementation leaves. Historical progress is measured
+from a recorded leaf scope: closed evidence-producing leaves form the burn-up,
+scope additions are reported separately, and parent progress is derived rather
+than counted as another completed unit.
 
 ## Acceptance-gated execution
 
