@@ -4832,7 +4832,10 @@ fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
         timestamp: EventTimestamp::new(3_515),
     });
     let external_published = latched_runtime.snapshot().external();
-    assert_eq!(external_published.admitted(), external_before.admitted() + 1);
+    assert_eq!(
+        external_published.admitted(),
+        external_before.admitted() + 1
+    );
     assert_eq!(external_published.current_items(), 1);
     let _ = latched_runtime.dispatch(&SurfaceEvent::Wake {
         timestamp: EventTimestamp::new(3_516),
