@@ -4890,8 +4890,6 @@ pub mod native_validation {
     };
 
     const NATIVE_INPUT_FRAMES: usize = 5;
-    const HOSTED_PRESENTATION_ATTEMPTS: u8 = 8;
-    const HOSTED_PRESENTATION_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(500);
     const HOSTED_RUN_TIMEOUT: Duration = Duration::from_secs(6);
     const TREE_TOGGLE_MODIFIER_BITS: u8 = 0x09;
     const COMMAND_SHIFT_MODIFIERS: Modifiers = Modifiers::from_bits(TREE_TOGGLE_MODIFIER_BITS);
@@ -4928,20 +4926,9 @@ pub mod native_validation {
         }
     }
 
-    fn hosted_presented_time(retry: u8) -> f64 {
-        1.0 + f64::from(retry) / 10.0
-    }
-
-    const fn has_qualified_presentation(count: u64) -> bool {
-        count >= 1
-    }
-
     #[cfg(test)]
     mod presentation_evidence_policy_tests {
-        use super::{
-            PresentationEvidenceMode, has_qualified_presentation, hosted_presented_time,
-            parse_presentation_evidence_mode,
-        };
+        use super::{PresentationEvidenceMode, parse_presentation_evidence_mode};
         use std::ffi::OsStr;
 
         #[test]
@@ -4968,19 +4955,9 @@ pub mod native_validation {
             assert!(PresentationEvidenceMode::HostedDirect.requires_surface_configuration(false));
             assert!(PresentationEvidenceMode::HostedDirect.requires_surface_configuration(true));
         }
-
-        #[test]
-        fn hosted_observation_sequence_and_qualification_boundary_are_exact() {
-            assert_eq!(hosted_presented_time(0), 1.0);
-            assert_eq!(hosted_presented_time(1), 1.1);
-            assert_eq!(hosted_presented_time(7), 1.7);
-            assert!(!has_qualified_presentation(0));
-            assert!(has_qualified_presentation(1));
-            assert!(has_qualified_presentation(u64::MAX));
-        }
     }
 
-    /// Runs the real Studio runtime through one presented frame and user close.
+    /// Runs the real Studio runtime through one presented frame and close.
     ///
     /// # Errors
     ///
@@ -5014,34 +4991,6 @@ pub mod native_validation {
                         0,
                         true,
                     )?;
-                }
-                if let PresentationEvidenceMode::HostedDirect = evidence_mode {
-                    // Hosted macOS runners have no qualifying physical display.
-                    // This deterministic post-commit control proves lifecycle
-                    // composition only and cannot support presentation claims.
-                    for retry in 0_u8..HOSTED_PRESENTATION_ATTEMPTS {
-                        let presented_time = hosted_presented_time(retry);
-                        platform_validation::inject_post_commit_observation(
-                            surface,
-                            None,
-                            presented_time,
-                        )?;
-                        platform_validation::run_until_frame_terminal(
-                            surface,
-                            HOSTED_PRESENTATION_ATTEMPT_TIMEOUT,
-                        );
-                        if let Some(error) = surface.take_error()? {
-                            return Err(error);
-                        }
-                        if has_qualified_presentation(
-                            surface.snapshot().qualified_presented_count(),
-                        ) {
-                            break;
-                        }
-                    }
-                    assert!(has_qualified_presentation(
-                        surface.snapshot().qualified_presented_count()
-                    ));
                 }
                 let run_timeout = match evidence_mode {
                     PresentationEvidenceMode::HostedDirect => HOSTED_RUN_TIMEOUT,

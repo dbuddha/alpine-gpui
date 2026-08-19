@@ -2611,19 +2611,13 @@ fn schedule_validation_qualified_window_close(
                 timer.invalidate();
                 return;
             }
-            if counters.qualified_presented.load(Ordering::Acquire) == 0 {
-                timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(
-                    VALIDATION_CLOSE_RETRY_DELAY.as_secs_f64(),
-                ));
-                return;
-            }
-            if let ValidationCloseAction::Programmatic {
+            let ready_to_close = if let ValidationCloseAction::Programmatic {
                 driver,
                 observed_frames,
                 ..
             } = &action
             {
-                let ready_to_close = driver.try_borrow_mut().is_ok_and(|mut driver| {
+                driver.try_borrow_mut().is_ok_and(|mut driver| {
                     let active_observed = driver
                         .active
                         .as_ref()
@@ -2640,13 +2634,20 @@ fn schedule_validation_qualified_window_close(
                     driver.pending.is_none()
                         && driver.active.is_none()
                         && driver.frame_slots.snapshot().occupied_slots() == 0
-                });
-                if !ready_to_close {
-                    timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(
-                        VALIDATION_CLOSE_RETRY_DELAY.as_secs_f64(),
-                    ));
-                    return;
-                }
+                })
+            } else {
+                true
+            };
+            // Hosted runners do not provide qualifying physical presentation
+            // callbacks. Bootstrap the observation only after a real frame is
+            // active, then wait for its terminal accounting and full slot drain
+            // before exercising the production close delegates. This keeps the
+            // complete journey inside one NSApplication run-loop invocation.
+            if counters.qualified_presented.load(Ordering::Acquire) == 0 || !ready_to_close {
+                timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(
+                    VALIDATION_CLOSE_RETRY_DELAY.as_secs_f64(),
+                ));
+                return;
             }
             match &action {
                 ValidationCloseAction::UserButton => {
