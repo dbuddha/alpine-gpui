@@ -198,7 +198,7 @@ fn wait_for_product_diagnostics(
     allow_omitted_version: bool,
     expect_items: bool,
 ) -> Result<RustDiagnosticsSnapshot, Box<dyn std::error::Error>> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while std::time::Instant::now() < deadline {
         for _ in 0..32 {
             let Some(wake) = latch.take() else {
@@ -486,6 +486,10 @@ fn mock_completion_supersession_rejects_the_late_response_without_restart()
 #[test]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[ignore = "requires the checksum-verified Task #208 rust-analyzer binary"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the pinned product journey keeps its ordered lifecycle and evidence assertions together"
+)]
 fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
 -> Result<(), Box<dyn std::error::Error>> {
     let workspace = fs::canonicalize(
@@ -545,15 +549,16 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
     assert_eq!(corrected.lsp_version, 2);
     assert!(model.status_message().is_some());
 
-    let replacement = "pub fn deliberately_invalid() -> u32 { 7 }\n";
+    let replacement =
+        "pub fn deliberately_invalid() -> String {\n    let value = String::new();\n    val\n}\n";
     let mut transaction = alpine_text::Transaction::new(buffer.revision());
     transaction.replace(0..buffer.snapshot().len_bytes(), replacement)?;
     buffer.apply(transaction)?;
     identity.document_revision += 1;
     identity.buffer_revision = buffer.revision().get();
-    let corrected = RustDocumentInput::new(&path, &workspace, identity, buffer.snapshot());
+    let completion_input = RustDocumentInput::new(&path, &workspace, identity, buffer.snapshot());
     let wake_latch = latch.clone();
-    let effect = model.sync(Some(corrected), move |wake| {
+    let effect = model.sync(Some(completion_input), move |wake| {
         let wake_latch = wake_latch.clone();
         Arc::new(move || wake_latch.publish(wake))
     });
@@ -562,8 +567,26 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
     assert_eq!(model.snapshot().diagnostic_items, 0);
     assert_eq!(model.snapshot().lsp_version, 3);
     assert!(model.status_message().is_none());
+    let ready = wait_for_product_diagnostics(
+        &mut model,
+        &latch,
+        corrected.diagnostic_publications + 1,
+        3,
+        false,
+        true,
+    )?;
+    assert_eq!(ready.diagnostic_version, Some(3));
+    assert!(ready.diagnostic_items > 0);
 
-    let _ = model.request_completion(LspPosition::new(0, 4)?);
+    let completion_offset = replacement
+        .rfind("val\n")
+        .and_then(|offset| offset.checked_add("val".len()))
+        .ok_or("pinned completion context is missing")?;
+    let completion_position = crate::rust_completion::position_for_byte(
+        &buffer.snapshot(),
+        alpine_text::ByteOffset::new(completion_offset),
+    )?;
+    let _ = model.request_completion(completion_position);
     assert!(model.snapshot().completion_pending);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while model.snapshot().completion_items == 0 {
@@ -574,6 +597,17 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
             }
         } else {
             std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let snapshot = model.snapshot();
+        if snapshot.completion_items == 0
+            && snapshot.completion_requests > 0
+            && !snapshot.completion_pending
+        {
+            return Err(format!(
+                "pinned completion returned no items: snapshot={snapshot:?}, raw={:?}",
+                super::take_completion_response_for_test()
+            )
+            .into());
         }
         if std::time::Instant::now() >= deadline {
             return Err(format!("pinned completion timed out: {:?}", model.snapshot()).into());

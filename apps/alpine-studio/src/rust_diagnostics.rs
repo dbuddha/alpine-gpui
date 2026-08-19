@@ -215,13 +215,32 @@ struct AdmittedCompletion {
     first_visible: usize,
 }
 
+#[cfg(test)]
+thread_local! {
+    static LAST_COMPLETION_RESPONSE: std::cell::RefCell<Option<Box<str>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
 fn completion_batch_from_response(
     value: ResponseValue<'_>,
 ) -> Result<CompletionBatch, CompletionError> {
+    #[cfg(test)]
+    LAST_COMPLETION_RESPONSE.with(|response| {
+        response.replace(Some(match value {
+            ResponseValue::Result(result) => Box::from(result.get()),
+            ResponseValue::Error(_) => Box::from("error"),
+        }));
+    });
     match value {
         ResponseValue::Result(result) => CompletionBatch::admit(result),
         ResponseValue::Error(_) => Err(CompletionError::Malformed),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn take_completion_response_for_test() -> Option<Box<str>> {
+    LAST_COMPLETION_RESPONSE.with(std::cell::RefCell::take)
 }
 
 struct RustSession {
@@ -1027,7 +1046,7 @@ impl RustDiagnostics {
         self.peak_completion_bytes = self.peak_completion_bytes.max(batch.retained_bytes());
         self.completion_truncations = self
             .completion_truncations
-            .saturating_add(u64::from(batch.omitted_items() > 0));
+            .saturating_add(u64::from(batch.was_truncated()));
         session.completion = Some(AdmittedCompletion {
             request_id: id,
             identity: pending.identity,
@@ -1189,7 +1208,7 @@ impl RustDiagnostics {
         self.peak_completion_bytes = self.peak_completion_bytes.max(batch.retained_bytes());
         self.completion_truncations = self
             .completion_truncations
-            .saturating_add(u64::from(batch.omitted_items() > 0));
+            .saturating_add(u64::from(batch.was_truncated()));
         session.completion = Some(AdmittedCompletion {
             request_id,
             identity,

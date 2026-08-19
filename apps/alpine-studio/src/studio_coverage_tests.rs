@@ -4825,6 +4825,142 @@ fn completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact()
 }
 
 #[test]
+fn completion_overlay_geometry_is_exact_at_anchor_clamp_and_narrow_edges()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "zero\none\ntwo\n")?;
+    let path = root.path().join("main.rs");
+    let mut app = StudioApp::open_file(TestTextSystem, &path)?;
+    let input = app.active_rust_document().ok_or("Rust document")?;
+    app.rust_diagnostics.install_for_test(
+        input,
+        &rust_diagnostics::tests::diagnostics(&path, 1),
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    app.selection = Selection::caret(ByteOffset::new(5));
+
+    let three = serde_json::value::RawValue::from_string(
+        r#"[{"label":"alpha"},{"label":"beta"},{"label":"gamma"}]"#.to_owned(),
+    )?;
+    app.rust_diagnostics
+        .install_completion_for_test(40, app.language_identity(), &three)?;
+    let wide = app.try_scene(SceneRevision::new(320), viewport()?)?;
+    let completion_clip = wide.clips().len().checked_sub(1).ok_or("completion clip")?;
+    let expected_wide = Rect::new(
+        Point::new(48.0, 68.0).ok_or("wide completion origin")?,
+        Size::new(420.0, 66.0).ok_or("wide completion size")?,
+    );
+    assert_eq!(wide.clips()[completion_clip].bounds(), expected_wide);
+    assert!(wide.quads().iter().any(|quad| {
+        quad.clip()
+            .is_some_and(|clip| clip.index() == completion_clip)
+            && quad.bounds()
+                == Rect::new(
+                    Point::new(48.0, 68.0).unwrap_or_else(|| unreachable!()),
+                    Size::new(420.0, LINE_HEIGHT).unwrap_or_else(|| unreachable!()),
+                )
+    }));
+    let completion_glyphs = wide
+        .glyphs()
+        .iter()
+        .filter(|glyph| {
+            glyph
+                .clip()
+                .is_some_and(|clip| clip.index() == completion_clip)
+        })
+        .collect::<Vec<_>>();
+    assert!(!completion_glyphs.is_empty());
+    assert_eq!(
+        completion_glyphs[0].bounds().origin().x().to_bits(),
+        56.0_f32.to_bits()
+    );
+    assert_eq!(
+        completion_glyphs[0].bounds().origin().y().to_bits(),
+        83.0_f32.to_bits()
+    );
+    let mut row_origins = completion_glyphs
+        .iter()
+        .map(|glyph| glyph.bounds().origin().y())
+        .collect::<Vec<_>>();
+    row_origins.sort_by(f32::total_cmp);
+    row_origins.dedup_by(|left, right| left.to_bits() == right.to_bits());
+    assert_eq!(row_origins, [83.0, 105.0, 127.0]);
+
+    let many = (0..10)
+        .map(|index| format!(r#"{{"label":"item-{index}"}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    let many = serde_json::value::RawValue::from_string(format!("[{many}]"))?;
+    app.rust_diagnostics
+        .install_completion_for_test(41, app.language_identity(), &many)?;
+    let constrained_viewport = Size::new(260.0, 200.0).ok_or("constrained viewport")?;
+    let constrained = app.try_scene(SceneRevision::new(321), constrained_viewport)?;
+    assert_eq!(
+        constrained
+            .clips()
+            .last()
+            .ok_or("constrained clip")?
+            .bounds(),
+        Rect::new(
+            Point::new(48.0, 24.0).ok_or("constrained origin")?,
+            Size::new(164.0, 176.0).ok_or("constrained size")?,
+        )
+    );
+
+    let narrow_viewport = Size::new(60.0, 200.0).ok_or("narrow viewport")?;
+    let narrow = app.try_scene(SceneRevision::new(322), narrow_viewport)?;
+    assert_eq!(
+        narrow.clips().last().ok_or("narrow clip")?.bounds(),
+        Rect::new(
+            Point::new(35.0, 24.0).ok_or("narrow origin")?,
+            Size::new(1.0, 176.0).ok_or("narrow size")?,
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn completion_command_modifiers_and_context_axes_are_independent()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn main() {}\n")?;
+    let path = root.path().join("main.rs");
+    let mut app = StudioApp::open_file(TestTextSystem, &path)?;
+    let input = app.active_rust_document().ok_or("Rust document")?;
+    app.rust_diagnostics.install_for_test(
+        input,
+        &rust_diagnostics::tests::diagnostics(&path, 1),
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    let completion = serde_json::value::RawValue::from_string(
+        r#"[{"label":"first"},{"label":"second"}]"#.to_owned(),
+    )?;
+    app.rust_diagnostics
+        .install_completion_for_test(42, app.language_identity(), &completion)?;
+    for physical_key in [KEY_UP, KEY_DOWN, KEY_RETURN, KEY_TAB] {
+        assert_eq!(app.handle_completion_key(physical_key, true), None);
+        assert!(
+            app.rust_diagnostics
+                .completion_is_open(app.language_identity())
+        );
+    }
+
+    assert!(app.command_context().can_complete);
+    app.composition = Some(Composition {
+        replacement: app.selection.range(),
+        text: Box::default(),
+        selected_start_utf16: 0,
+        selected_length_utf16: 0,
+    });
+    assert!(!app.command_context().can_complete);
+
+    let plain = StudioDocument::scratch("plain text");
+    let plain = StudioApp::from_document(TestTextSystem, plain, Some(Path::new("notes.txt")))?;
+    assert!(!plain.command_context().can_complete);
+    Ok(())
+}
+
+#[test]
 fn accessibility_non_identity_state_and_every_focus_owner_are_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut changed =

@@ -322,3 +322,27 @@ fn storage_and_outbound_limits_fail_before_growth() {
         Err(ProtocolError::PendingCapacity)
     );
 }
+
+#[test]
+fn retained_bytes_add_each_storage_class_with_capacity_not_length() {
+    let stamp = RequestStamp::new(1, 2, 3, 4, 5, 6).unwrap_or_else(|| unreachable!());
+    let mut peer = LspPeer::new();
+    peer.pending = Vec::with_capacity(3);
+    peer.pending.push(pending_request(1, "abc", Some(stamp)));
+    peer.pending
+        .push(pending_request(2, "completion/method", Some(stamp)));
+    peer.cancelled = Vec::with_capacity(5);
+    peer.cancelled.push(RequestId(7));
+    let expected = peer.pending.capacity() * size_of::<PendingRequest>()
+        + "abc".len()
+        + "completion/method".len()
+        + peer.cancelled.capacity() * size_of::<RequestId>();
+    assert_eq!(peer.retained_bytes(), expected);
+    assert_ne!(
+        peer.retained_bytes(),
+        peer.pending.capacity() * size_of::<PendingRequest>()
+            + "abc".len()
+            + "completion/method".len()
+            - peer.cancelled.capacity() * size_of::<RequestId>()
+    );
+}

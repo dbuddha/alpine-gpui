@@ -20,7 +20,6 @@ pub(crate) enum CompletionError {
     WireTooLarge,
     Malformed,
     LabelTooLong,
-    DocumentationTooLong,
     EditTooLong,
     UnsupportedAdditionalEdits,
     UnsupportedSnippet,
@@ -78,6 +77,7 @@ pub(crate) struct CompletionBatch {
     items: Box<[CompletionItem]>,
     retained_bytes: usize,
     omitted_items: usize,
+    truncated_documentation: usize,
 }
 
 impl CompletionBatch {
@@ -102,27 +102,32 @@ impl CompletionBatch {
         items
             .try_reserve_exact(admitted)
             .map_err(|_| CompletionError::AllocationFailed)?;
-        let mut retained_bytes = admitted
-            .checked_mul(size_of::<CompletionItem>())
-            .ok_or(CompletionError::RetentionExceeded)?;
+        let mut retained_bytes = 0usize;
+        let mut truncated_documentation = 0usize;
         for value in source.iter().take(admitted) {
-            let item = parse_item(value)?;
-            retained_bytes = retained_bytes
-                .checked_add(item.label.len())
+            let (item, documentation_was_truncated) = parse_item(value)?;
+            let next_retained_bytes = retained_bytes
+                .checked_add(size_of::<CompletionItem>())
+                .and_then(|bytes| bytes.checked_add(item.label.len()))
                 .and_then(|bytes| bytes.checked_add(item.edit.new_text.len()))
                 .and_then(|bytes| {
                     bytes.checked_add(item.documentation.as_deref().map_or(0, str::len))
                 })
                 .ok_or(CompletionError::RetentionExceeded)?;
-            if retained_bytes > MAX_COMPLETION_RETAINED_BYTES {
-                return Err(CompletionError::RetentionExceeded);
+            if next_retained_bytes > MAX_COMPLETION_RETAINED_BYTES {
+                break;
             }
+            retained_bytes = next_retained_bytes;
+            truncated_documentation =
+                truncated_documentation.saturating_add(usize::from(documentation_was_truncated));
             items.push(item);
         }
+        let omitted_items = source.len().saturating_sub(items.len());
         Ok(Self {
             items: items.into_boxed_slice(),
             retained_bytes,
-            omitted_items: source.len().saturating_sub(admitted),
+            omitted_items,
+            truncated_documentation,
         })
     }
 
@@ -134,12 +139,17 @@ impl CompletionBatch {
         self.retained_bytes
     }
 
+    #[cfg(test)]
     pub(crate) const fn omitted_items(&self) -> usize {
         self.omitted_items
     }
+
+    pub(crate) const fn was_truncated(&self) -> bool {
+        self.omitted_items > 0 || self.truncated_documentation > 0
+    }
 }
 
-fn parse_item(value: &Value) -> Result<CompletionItem, CompletionError> {
+fn parse_item(value: &Value) -> Result<(CompletionItem, bool), CompletionError> {
     let object = value.as_object().ok_or(CompletionError::Malformed)?;
     let label = object
         .get("label")
@@ -161,10 +171,13 @@ fn parse_item(value: &Value) -> Result<CompletionItem, CompletionError> {
             _ => return Err(CompletionError::Malformed),
         }
     }
-    let documentation = object
-        .get("documentation")
-        .map(parse_documentation)
-        .transpose()?;
+    let (documentation, documentation_was_truncated) = match object.get("documentation") {
+        Some(value) => {
+            let (documentation, truncated) = parse_documentation(value)?;
+            (Some(documentation), truncated)
+        }
+        None => (None, false),
+    };
     let edit = if let Some(edit) = object.get("textEdit") {
         parse_text_edit(edit)?
     } else {
@@ -174,14 +187,17 @@ fn parse_item(value: &Value) -> Result<CompletionItem, CompletionError> {
             .unwrap_or(label);
         checked_edit(None, text)?
     };
-    Ok(CompletionItem {
-        label: label.into(),
-        documentation,
-        edit,
-    })
+    Ok((
+        CompletionItem {
+            label: label.into(),
+            documentation,
+            edit,
+        },
+        documentation_was_truncated,
+    ))
 }
 
-fn parse_documentation(value: &Value) -> Result<Box<str>, CompletionError> {
+fn parse_documentation(value: &Value) -> Result<(Box<str>, bool), CompletionError> {
     let text = value.as_str().or_else(|| {
         value
             .as_object()
@@ -189,10 +205,11 @@ fn parse_documentation(value: &Value) -> Result<Box<str>, CompletionError> {
             .and_then(Value::as_str)
     });
     let text = text.ok_or(CompletionError::Malformed)?;
-    if text.len() > MAX_COMPLETION_DOCUMENTATION_BYTES {
-        return Err(CompletionError::DocumentationTooLong);
+    let mut retained = text.len().min(MAX_COMPLETION_DOCUMENTATION_BYTES);
+    while !text.is_char_boundary(retained) {
+        retained = retained.saturating_sub(1);
     }
-    Ok(text.into())
+    Ok((text[..retained].into(), retained < text.len()))
 }
 
 fn parse_text_edit(value: &Value) -> Result<CompletionEdit, CompletionError> {
@@ -264,7 +281,7 @@ pub(crate) fn position_for_byte(
         let range = snapshot
             .line_byte_range(line)
             .map_err(|_| CompletionError::InvalidTextRange)?;
-        let after_line = usize::from(offset.get() > range.end);
+        let after_line = usize::from(offset.get() >= range.end);
         lower = [lower, line.saturating_add(1)][after_line];
         upper = [line, upper][after_line];
     }
@@ -453,13 +470,23 @@ mod tests {
             Err(CompletionError::Malformed)
         );
 
-        let documentation = "d".repeat(MAX_COMPLETION_DOCUMENTATION_BYTES + 1);
-        assert_eq!(
-            CompletionBatch::admit(&raw(&format!(
-                r#"[{{"label":"x","documentation":"{documentation}"}}]"#
-            ))),
-            Err(CompletionError::DocumentationTooLong)
+        let documentation = format!(
+            "{}€",
+            "d".repeat(MAX_COMPLETION_DOCUMENTATION_BYTES.saturating_sub(1))
         );
+        let truncated = CompletionBatch::admit(&raw(&format!(
+            r#"[{{"label":"x","documentation":"{documentation}"}}]"#
+        )))
+        .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            truncated.items()[0]
+                .documentation()
+                .unwrap_or_else(|| unreachable!())
+                .len(),
+            MAX_COMPLETION_DOCUMENTATION_BYTES.saturating_sub(1)
+        );
+        assert!(truncated.was_truncated());
+        assert_eq!(truncated.omitted_items(), 0);
         let edit = "e".repeat(MAX_COMPLETION_EDIT_BYTES + 1);
         assert_eq!(
             CompletionBatch::admit(&raw(&format!(r#"[{{"label":"x","insertText":"{edit}"}}]"#))),
@@ -471,12 +498,14 @@ mod tests {
         let retained_item = format!(
             r#"{{"label":"x","insertText":"{retained_edit}","documentation":"{retained_documentation}"}}"#
         );
-        assert_eq!(
-            CompletionBatch::admit(&raw(&format!(
-                "[{retained_item},{retained_item},{retained_item},{retained_item}]"
-            ))),
-            Err(CompletionError::RetentionExceeded)
-        );
+        let retained = CompletionBatch::admit(&raw(&format!(
+            "[{retained_item},{retained_item},{retained_item},{retained_item}]"
+        )))
+        .unwrap_or_else(|_| unreachable!());
+        assert_eq!(retained.items().len(), 3);
+        assert_eq!(retained.omitted_items(), 1);
+        assert!(retained.was_truncated());
+        assert!(retained.retained_bytes() <= MAX_COMPLETION_RETAINED_BYTES);
 
         let oversized_wire = "w".repeat(MAX_COMPLETION_WIRE_BYTES);
         assert_eq!(
@@ -543,6 +572,97 @@ mod tests {
                 LspPosition::new(0, 4).unwrap_or_else(|_| unreachable!())
             ),
             Ok(4)
+        );
+    }
+
+    #[test]
+    fn inclusive_wire_field_and_retention_ceilings_are_admitted() {
+        let base = r#"[{"label":"x"}]"#;
+        let mut exact_wire = base.to_owned();
+        exact_wire.push_str(&" ".repeat(MAX_COMPLETION_WIRE_BYTES - base.len()));
+        assert_eq!(exact_wire.len(), MAX_COMPLETION_WIRE_BYTES);
+        assert!(CompletionBatch::admit(&raw(&exact_wire)).is_ok());
+
+        let exact_label = "l".repeat(MAX_COMPLETION_LABEL_BYTES);
+        assert!(
+            CompletionBatch::admit(&raw(&format!(
+                r#"[{{"label":"{exact_label}","insertText":""}}]"#
+            )))
+            .is_ok()
+        );
+
+        let item_count = 4;
+        let fixed = item_count * size_of::<CompletionItem>() + item_count;
+        let mut remaining = MAX_COMPLETION_RETAINED_BYTES - fixed;
+        let mut values = Vec::with_capacity(item_count);
+        for _ in 0..item_count {
+            let edit_bytes = remaining.min(MAX_COMPLETION_EDIT_BYTES);
+            remaining -= edit_bytes;
+            let documentation_bytes = remaining.min(MAX_COMPLETION_DOCUMENTATION_BYTES);
+            remaining -= documentation_bytes;
+            values.push(serde_json::json!({
+                "label": "x",
+                "insertText": "e".repeat(edit_bytes),
+                "documentation": "d".repeat(documentation_bytes),
+            }));
+        }
+        assert_eq!(remaining, 0);
+        let exact_retention = serde_json::to_string(&values).unwrap_or_else(|_| unreachable!());
+        let batch =
+            CompletionBatch::admit(&raw(&exact_retention)).unwrap_or_else(|_| unreachable!());
+        assert_eq!(batch.retained_bytes(), MAX_COMPLETION_RETAINED_BYTES);
+        assert_ne!(batch.retained_bytes(), 1);
+    }
+
+    #[test]
+    fn text_edit_shape_guards_and_equal_insert_replace_ends_are_exact() {
+        let range = r#"{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}"#;
+        assert_eq!(
+            CompletionBatch::admit(&raw(&format!(
+                r#"[{{"label":"x","textEdit":{{"insert":{range},"newText":"x"}}}}]"#
+            ))),
+            Err(CompletionError::InvalidTextRange)
+        );
+        assert_eq!(
+            CompletionBatch::admit(&raw(&format!(
+                r#"[{{"label":"x","textEdit":{{"range":{range},"insert":{range},"replace":{range},"newText":"x"}}}}]"#
+            ))),
+            Err(CompletionError::InvalidTextRange)
+        );
+        let equal = CompletionBatch::admit(&raw(&format!(
+            r#"[{{"label":"x","textEdit":{{"insert":{range},"replace":{range},"newText":"x"}}}}]"#
+        )))
+        .unwrap_or_else(|_| unreachable!());
+        let snapshot = alpine_text::Buffer::new("ab\n").snapshot();
+        assert_eq!(
+            equal.items()[0].replacement(&snapshot, 0..0),
+            Ok((0..1, Box::<str>::from("x")))
+        );
+    }
+
+    #[test]
+    fn byte_to_lsp_binary_search_distinguishes_every_line_boundary() {
+        let snapshot = alpine_text::Buffer::new("a\nbb\nccc").snapshot();
+        let expected = [
+            (0, 0, 0),
+            (1, 0, 1),
+            (2, 1, 0),
+            (3, 1, 1),
+            (4, 1, 2),
+            (5, 2, 0),
+            (7, 2, 2),
+            (8, 2, 3),
+        ];
+        for (byte, line, utf16) in expected {
+            assert_eq!(
+                position_for_byte(&snapshot, ByteOffset::new(byte)),
+                Ok(LspPosition::new(line, utf16).unwrap_or_else(|_| unreachable!())),
+                "byte boundary {byte}"
+            );
+        }
+        assert_eq!(
+            position_for_byte(&snapshot, ByteOffset::new(snapshot.len_bytes())),
+            Ok(LspPosition::new(2, 3).unwrap_or_else(|_| unreachable!()))
         );
     }
 }
