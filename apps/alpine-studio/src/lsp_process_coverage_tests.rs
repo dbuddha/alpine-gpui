@@ -88,6 +88,8 @@ fn detached_process(
         identity: identity(1),
         epoch: ProcessEpoch(1),
         next_sequence: 0,
+        _inert_control: None,
+        _inert_events: None,
     }
 }
 
@@ -1067,6 +1069,8 @@ fn drop_signals_and_joins_the_owned_supervisor() {
         identity: identity(1),
         epoch: ProcessEpoch(1),
         next_sequence: 0,
+        _inert_control: None,
+        _inert_events: None,
     };
     drop(process);
     assert!(observed.load(Ordering::Acquire));

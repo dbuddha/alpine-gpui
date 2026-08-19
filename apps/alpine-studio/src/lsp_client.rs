@@ -137,6 +137,16 @@ impl LspClient {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn inert_for_test(identity: ProcessIdentity) -> Self {
+        Self {
+            process: LanguageServerProcess::inert_for_test(identity),
+            framer: LspFramer::new(LspFrameLimits::default()),
+            peer: LspPeer::new(),
+            started: true,
+        }
+    }
+
     pub(crate) fn begin_initialize(&mut self) -> Result<SubmittedRequest, LspClientError> {
         self.require_started()?;
         let outbound = self.peer.begin_initialize()?;

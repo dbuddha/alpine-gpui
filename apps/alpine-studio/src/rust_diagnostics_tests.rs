@@ -15,7 +15,6 @@ use super::*;
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
 #[cfg(not(miri))]
 static MOCK_EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
-
 #[cfg(miri)]
 pub(crate) fn mock_executable() -> &'static Path {
     Path::new("/alpine-miri-inert-rust-analyzer")
