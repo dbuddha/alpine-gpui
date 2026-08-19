@@ -4752,6 +4752,75 @@ fn folder_launch_primes_lazy_tree_without_stealing_editor_focus()
     Ok(())
 }
 
+fn assert_event_continuation_is_queued(
+    mut app: StudioApp,
+    wake: LanguageWake,
+    viewport: Size,
+    clear: LinearRgba,
+) -> Result<(), Box<dyn std::error::Error>> {
+    app.rust_diagnostics.force_continuation_once_for_test();
+    app.language_wake_latch.publish(wake);
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let before = runtime.snapshot().external();
+    let _ = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(3_515),
+    });
+    let published = runtime.snapshot().external();
+    assert_eq!(published.admitted(), before.admitted() + 1);
+    assert_eq!(published.current_items(), 1);
+    let _ = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(3_516),
+    });
+    assert_eq!(runtime.snapshot().external().current_items(), 0);
+    Ok(())
+}
+
+fn assert_worker_continuation_is_drained(
+    rust_path: &Path,
+    viewport: Size,
+    clear: LinearRgba,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = StudioApp::open_file(TestTextSystem, rust_path)?;
+    let input = app.active_rust_document().ok_or("worker Rust document")?;
+    let params = rust_diagnostics::tests::diagnostics(rust_path, 1);
+    app.rust_diagnostics.install_for_test(
+        input,
+        &params,
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    let wake = app
+        .rust_diagnostics
+        .current_wake_for_test()
+        .ok_or("worker language wake")?;
+    let latch = app.language_wake_latch.clone();
+    app.rust_diagnostics.force_continuation_once_for_test();
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    runtime
+        .dispatch(&key(KEY_F, command))
+        .ok_or("worker find frame")?;
+    runtime
+        .dispatch(&ime(ImeEvent::Committed("fn".into())))
+        .ok_or("worker query frame")?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while runtime.snapshot().worker().queued_results() == 0 {
+        if std::time::Instant::now() >= deadline {
+            return Err("find worker did not publish a result".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    latch.publish(wake);
+    let before = runtime.snapshot().external();
+    let _ = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(3_517),
+    });
+    let after = runtime.snapshot().external();
+    assert_eq!(after.admitted(), before.admitted() + 1);
+    assert_eq!(after.drained(), before.drained() + 1);
+    assert_eq!(after.current_items(), 0);
+    Ok(())
+}
+
 #[test]
 fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -4821,75 +4890,8 @@ fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
         LanguageEffect::default()
     );
     assert_eq!(latched_app.rust_diagnostics.snapshot().stale_wakes, 1);
-    latched_app
-        .rust_diagnostics
-        .force_continuation_once_for_test();
-    latched_app.language_wake_latch.publish(wake);
-    let mut latched_runtime =
-        Application::new(latched_app, viewport, clear, WorkerConfig::default())?;
-    let external_before = latched_runtime.snapshot().external();
-    let _ = latched_runtime.dispatch(&SurfaceEvent::Wake {
-        timestamp: EventTimestamp::new(3_515),
-    });
-    let external_published = latched_runtime.snapshot().external();
-    assert_eq!(
-        external_published.admitted(),
-        external_before.admitted() + 1
-    );
-    assert_eq!(external_published.current_items(), 1);
-    let _ = latched_runtime.dispatch(&SurfaceEvent::Wake {
-        timestamp: EventTimestamp::new(3_516),
-    });
-    assert_eq!(latched_runtime.snapshot().external().current_items(), 0);
-
-    let mut worker_app = StudioApp::open_file(TestTextSystem, &rust_path)?;
-    let worker_input = worker_app
-        .active_rust_document()
-        .ok_or("worker Rust document")?;
-    worker_app.rust_diagnostics.install_for_test(
-        worker_input,
-        &params,
-        rust_diagnostics::tests::mock_executable(),
-    )?;
-    let worker_wake = worker_app
-        .rust_diagnostics
-        .current_wake_for_test()
-        .ok_or("worker language wake")?;
-    let worker_latch = worker_app.language_wake_latch.clone();
-    worker_app
-        .rust_diagnostics
-        .force_continuation_once_for_test();
-    let mut worker_runtime =
-        Application::new(worker_app, viewport, clear, WorkerConfig::default())?;
-    let command = Modifiers::from_bits(Modifiers::COMMAND);
-    worker_runtime
-        .dispatch(&key(KEY_F, command))
-        .ok_or("worker find frame")?;
-    worker_runtime
-        .dispatch(&ime(ImeEvent::Committed("fn".into())))
-        .ok_or("worker query frame")?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while worker_runtime.snapshot().worker().queued_results() == 0 {
-        if std::time::Instant::now() >= deadline {
-            return Err("find worker did not publish a result".into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    worker_latch.publish(worker_wake);
-    let worker_external_before = worker_runtime.snapshot().external();
-    let _ = worker_runtime.dispatch(&SurfaceEvent::Wake {
-        timestamp: EventTimestamp::new(3_517),
-    });
-    let worker_external_after = worker_runtime.snapshot().external();
-    assert_eq!(
-        worker_external_after.admitted(),
-        worker_external_before.admitted() + 1
-    );
-    assert_eq!(
-        worker_external_after.drained(),
-        worker_external_before.drained() + 1
-    );
-    assert_eq!(worker_external_after.current_items(), 0);
+    assert_event_continuation_is_queued(latched_app, wake, viewport, clear)?;
+    assert_worker_continuation_is_drained(&rust_path, viewport, clear)?;
     assert!(!should_poll_latched_after_worker(true));
     assert!(should_poll_latched_after_worker(false));
     Ok(())
