@@ -349,6 +349,7 @@ fn portable_mock_protocol_failure_restarts_the_active_document() -> Result<(), B
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn portable_mock_completion_is_bounded_revision_safe_and_undoable() -> Result<(), Box<dyn Error>> {
     let (root, path, _, mut identity) = fixture();
     let mut buffer = alpine_text::Buffer::new("fn broken( {\n");
@@ -444,6 +445,7 @@ fn late_cancelled_response_cannot_clear_a_newer_completion() -> Result<(), Box<d
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn mock_completion_supersession_rejects_the_late_response_without_restart()
 -> Result<(), Box<dyn Error>> {
     let (root, path, snapshot, identity) = fixture();
