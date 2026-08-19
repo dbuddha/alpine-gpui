@@ -11,15 +11,17 @@ Current status at the source revision:
    acceptance remains open.
 4. A local workspace shell with bounded indexing and restoration: functionally
    implemented, repository-scale dogfood remains open.
-5. Rust-first daily-driver behavior, settings, accessibility, and dogfooding:
-   active critical path.
+5. Rust-first completion, navigation, configuration, native accessibility,
+   assurance closure, and bounded dogfood leaves: active critical path.
 6. Scoped renderer and editor qualification: follows correctness and dogfood.
 
 Correctness precedes performance. Performance precedes memory and resource
 tuning. Delivery speed is optimized inside those constraints.
 
-M5 in the current GitHub milestone scheme is a component and dogfood milestone.
-It is not, by itself, the Alpine Studio daily-driver exit gate. The canonical
-daily-driver document owns that gate, followed by applicable M7 release work.
+M5 is the selected Apple Silicon macOS daily-driver behavior and dogfood gate.
+M7 is the separate supported, packaged, fixed-hardware-qualified version 1
+gate. M6 is not on the macOS critical path. Milestone and Project item totals
+must not be interpreted as readiness percentages; the canonical daily-driver
+document defines leaf-only progress and exact exit evidence.
 
 Canonical sources: [daily-driver path](https://github.com/dbuddha/alpine-gpui/blob/{{ALPINE_MAIN_REVISION}}/docs/use-cases/alpine-studio-highfidelity.md) and [adversarial review](https://github.com/dbuddha/alpine-gpui/blob/{{ALPINE_MAIN_REVISION}}/docs/research/alpine-studio-adversarial-review.md)
