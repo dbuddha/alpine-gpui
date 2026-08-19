@@ -67,6 +67,15 @@ pub(crate) struct LanguageWake {
     generation: u64,
 }
 
+impl LanguageWake {
+    #[cfg(test)]
+    pub(crate) const fn successor_for_test(self) -> Self {
+        Self {
+            generation: self.generation.saturating_add(1),
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct LanguageWakeLatch {
     generation: Arc<AtomicU64>,
@@ -264,7 +273,7 @@ impl RustDiagnostics {
             session.lsp_version = version;
             session.snapshot = input.snapshot;
             session.pending_change = session.state == SessionState::Open;
-            visual_changed |= session.diagnostics.take().is_some();
+            merge_visual_changed(&mut visual_changed, session.diagnostics.take().is_some());
         }
         if session.identity.selection_revision != input.identity.selection_revision
             && let Some(diagnostics) = session.diagnostics.as_mut()
@@ -273,7 +282,7 @@ impl RustDiagnostics {
         }
         session.identity = input.identity;
         if session.pending_change {
-            visual_changed |= self.flush_change();
+            merge_visual_changed(&mut visual_changed, self.flush_change());
         }
         LanguageEffect {
             visual_changed,
@@ -310,29 +319,34 @@ impl RustDiagnostics {
             let poll = match poll {
                 Ok(poll) => poll,
                 Err(error) => {
-                    visual_changed |= self.restart_or_fail(RustDiagnosticsError::Client(error));
+                    let restarted = self.restart_or_fail(RustDiagnosticsError::Client(error));
+                    merge_visual_changed(&mut visual_changed, restarted);
                     break;
                 }
             };
             if initialized {
-                visual_changed |= self.open_document();
+                let opened = self.open_document();
+                merge_visual_changed(&mut visual_changed, opened);
             }
             if let Some(candidate) = candidate {
-                visual_changed |= self.admit(candidate);
+                let admitted = self.admit(candidate);
+                merge_visual_changed(&mut visual_changed, admitted);
             }
             if self.apply_poll(poll, &mut visual_changed) {
                 break;
             }
         }
-        visual_changed |= self.flush_change();
+        let flushed = self.flush_change();
+        merge_visual_changed(&mut visual_changed, flushed);
         #[allow(
             unused_mut,
             reason = "test pressure injection replaces an empty process queue"
         )]
         let mut continuation = self.session.as_ref().and_then(|session| {
-            (session.client.snapshot().process.queued_events > 0).then_some(LanguageWake {
-                generation: session.generation,
-            })
+            continuation_for_queued_events(
+                session.client.snapshot().process.queued_events,
+                session.generation,
+            )
         });
         #[cfg(test)]
         if self.force_continuation_once {
@@ -353,7 +367,8 @@ impl RustDiagnostics {
         match poll {
             LspClientPoll::Idle => true,
             LspClientPoll::Started { epoch, .. } => {
-                *visual_changed |= self.begin_initialize(epoch.get());
+                let initialized = self.begin_initialize(epoch.get());
+                merge_visual_changed(visual_changed, initialized);
                 false
             }
             LspClientPoll::Stopped(StopReason::Restart)
@@ -361,19 +376,21 @@ impl RustDiagnostics {
             | LspClientPoll::Stderr { .. }
             | LspClientPoll::InputWritten { .. } => false,
             LspClientPoll::Exited { .. } | LspClientPoll::Failed(_) | LspClientPoll::Stopped(_) => {
-                *visual_changed |= self.restart_or_fail(RustDiagnosticsError::Client(
+                let restarted = self.restart_or_fail(RustDiagnosticsError::Client(
                     LspClientError::ProcessNotStarted,
                 ));
+                merge_visual_changed(visual_changed, restarted);
                 true
             }
             LspClientPoll::InputRejected { .. } => {
                 if let Some(session) = self.session.as_mut() {
                     session.pending_change = session.state == SessionState::Open;
                 }
-                *visual_changed |= replace_status(
+                let status_changed = replace_status(
                     &mut self.status,
                     Some(Arc::from("Rust diagnostics input queue is saturated.")),
                 );
+                merge_visual_changed(visual_changed, status_changed);
                 false
             }
         }
@@ -708,9 +725,10 @@ impl RustDiagnostics {
 
     #[cfg(test)]
     pub(crate) fn with_server(server_path: &Path) -> Self {
-        let mut diagnostics = Self::default();
-        diagnostics.server_path = Some(server_path.to_path_buf());
-        diagnostics
+        Self {
+            server_path: Some(server_path.to_path_buf()),
+            ..Self::default()
+        }
     }
 
     #[cfg(test)]
@@ -748,10 +766,12 @@ impl RustDiagnostics {
     }
 }
 
-impl Drop for RustDiagnostics {
-    fn drop(&mut self) {
-        let _ = self.shutdown();
-    }
+fn merge_visual_changed(current: &mut bool, observed: bool) {
+    *current = *current || observed;
+}
+
+fn continuation_for_queued_events(queued_events: usize, generation: u64) -> Option<LanguageWake> {
+    (queued_events != 0).then_some(LanguageWake { generation })
 }
 
 fn replace_status(status: &mut Option<Arc<str>>, next: Option<Arc<str>>) -> bool {

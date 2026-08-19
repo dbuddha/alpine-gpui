@@ -1947,8 +1947,9 @@ impl StudioApp {
                     );
                     selection_result?;
                 }
-                if pane.active && diagnostic_markers < MAX_VISIBLE_DIAGNOSTIC_MARKERS {
-                    let remaining = MAX_VISIBLE_DIAGNOSTIC_MARKERS - diagnostic_markers;
+                if pane.active
+                    && let Some(remaining) = remaining_diagnostic_markers(diagnostic_markers)
+                {
                     #[allow(
                         unused_mut,
                         reason = "test fault injection replaces this scene-local clip"
@@ -1963,19 +1964,17 @@ impl StudioApp {
                         line,
                         remaining,
                         |marker| {
-                            let start_x = pane_origin_x + x_for_utf16(&layout, marker.start_utf16);
-                            let end_x = marker.end_utf16.map_or_else(
-                                || pane_origin_x + layout.width(),
-                                |end| pane_origin_x + x_for_utf16(&layout, end),
-                            );
-                            let underline_origin =
-                                Point::new(start_x, baseline + layout.descent() + 1.0)
-                                    .ok_or(StudioRenderError::Domain)?;
-                            let underline_size = Size::new((end_x - start_x).max(1.0), 1.0)
-                                .ok_or(StudioRenderError::Domain)?;
                             builder.push_quad(
-                                Quad::new(Rect::new(underline_origin, underline_size), caret_color)
-                                    .clipped(diagnostic_clip),
+                                Quad::new(
+                                    diagnostic_underline_bounds(
+                                        pane_origin_x,
+                                        baseline,
+                                        &layout,
+                                        marker,
+                                    )?,
+                                    caret_color,
+                                )
+                                .clipped(diagnostic_clip),
                             )?;
                             Ok::<(), StudioRenderError>(())
                         },
@@ -4347,6 +4346,19 @@ impl StudioApp {
         })
     }
 
+    fn publish_language_continuation(
+        &self,
+        effect: LanguageEffect,
+        context: &AppContext<'_, StudioWorkerOutput>,
+    ) {
+        if let Some(continuation) = effect.continuation {
+            self.language_wake_latch.publish(continuation);
+            let _ = context
+                .external_producer()
+                .submit(StudioWorkerOutput::Language(continuation), 0);
+        }
+    }
+
     fn apply_language_wake(
         &mut self,
         wake: LanguageWake,
@@ -4354,25 +4366,32 @@ impl StudioApp {
     ) -> LanguageEffect {
         self.language_wake_latch.clear(wake);
         let effect = self.rust_diagnostics.poll(wake);
-        if let Some(continuation) = effect.continuation {
-            self.language_wake_latch.publish(continuation);
-            let _ = context
-                .external_producer()
-                .submit(StudioWorkerOutput::Language(continuation), 0);
-        }
+        self.publish_language_continuation(effect, context);
         effect
     }
 
-    fn apply_latched_language_wake(
-        &mut self,
-        context: &AppContext<'_, StudioWorkerOutput>,
-    ) -> LanguageEffect {
+    fn poll_latched_language_wake(&mut self) -> LanguageEffect {
         self.language_wake_latch
             .take()
             .map_or_else(LanguageEffect::default, |wake| {
-                self.apply_language_wake(wake, context)
+                self.rust_diagnostics.poll(wake)
             })
     }
+
+    fn advance_selection_revision(&mut self, selection_before: Selection) {
+        if self.selection == selection_before {
+            return;
+        }
+        let previous = self.selection_revision;
+        self.selection_revision = self.selection_revision.saturating_add(1);
+        self.input_failures = self
+            .input_failures
+            .saturating_add(u64::from(self.selection_revision == previous));
+    }
+}
+
+const fn should_poll_latched_after_worker(language_result: bool) -> bool {
+    !language_result
 }
 
 enum StudioWorkerOutput {
@@ -4414,16 +4433,11 @@ impl AppDelegate for StudioApp {
             let rejected = !context.advance_document(revision);
             self.input_failures = self.input_failures.saturating_add(u64::from(rejected));
         }
-        if self.selection != selection_before {
-            let previous = self.selection_revision;
-            self.selection_revision = self.selection_revision.saturating_add(1);
-            self.input_failures = self
-                .input_failures
-                .saturating_add(u64::from(self.selection_revision == previous));
-        }
+        self.advance_selection_revision(selection_before);
         let language = self.sync_rust_diagnostics(context);
         effect.visual_changed |= language.visual_changed;
-        let pending_language = self.apply_latched_language_wake(context);
+        let pending_language = self.poll_latched_language_wake();
+        self.publish_language_continuation(pending_language, context);
         effect.visual_changed |= pending_language.visual_changed;
         if effect.visual_changed {
             context.invalidate();
@@ -4472,8 +4486,9 @@ impl AppDelegate for StudioApp {
                 }
             }
         };
-        if !language_result {
-            let language = self.apply_latched_language_wake(context);
+        if should_poll_latched_after_worker(language_result) {
+            let language = self.poll_latched_language_wake();
+            self.publish_language_continuation(language, context);
             effect.visual_changed |= language.visual_changed;
         }
         if effect.visual_changed {
@@ -4614,6 +4629,29 @@ fn x_for_utf16(layout: &LineLayout, target: u32) -> f32 {
         }
     }
     layout.width()
+}
+
+fn remaining_diagnostic_markers(current: usize) -> Option<usize> {
+    MAX_VISIBLE_DIAGNOSTIC_MARKERS
+        .checked_sub(current)
+        .filter(|remaining| *remaining != 0)
+}
+
+fn diagnostic_underline_bounds(
+    pane_origin_x: f32,
+    baseline: f32,
+    layout: &LineLayout,
+    marker: rust_diagnostics::DiagnosticMarker,
+) -> Result<Rect, StudioRenderError> {
+    let start_x = pane_origin_x + x_for_utf16(layout, marker.start_utf16);
+    let end_x = marker.end_utf16.map_or_else(
+        || pane_origin_x + layout.width(),
+        |end| pane_origin_x + x_for_utf16(layout, end),
+    );
+    let origin =
+        Point::new(start_x, baseline + layout.descent() + 1.0).ok_or(StudioRenderError::Domain)?;
+    let size = Size::new((end_x - start_x).max(1.0), 1.0).ok_or(StudioRenderError::Domain)?;
+    Ok(Rect::new(origin, size))
 }
 
 fn utf16_at_x(layout: &LineLayout, target: f32) -> u32 {

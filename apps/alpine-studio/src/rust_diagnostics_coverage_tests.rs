@@ -28,8 +28,10 @@ fn state_guards_and_admission_failures_are_discriminating() -> Result<(), Box<dy
         workspace_root: root.clone(),
     };
 
-    let mut target_only = RustDiagnostics::default();
-    target_only.target = Some(target);
+    let mut target_only = RustDiagnostics {
+        target: Some(target),
+        ..RustDiagnostics::default()
+    };
     assert_eq!(
         target_only.sync(Some(input.clone()), |_| Arc::new(|| {})),
         LanguageEffect::default()
@@ -50,7 +52,6 @@ fn state_guards_and_admission_failures_are_discriminating() -> Result<(), Box<dy
     );
 
     let mut missing = RustDiagnostics::default();
-    missing.server_path = None;
     assert!(
         missing
             .sync(Some(input.clone()), |_| Arc::new(|| {}))
@@ -195,6 +196,8 @@ fn lifecycle_failures_and_poll_classes_are_bounded() -> Result<(), Box<dyn Error
     ));
     assert!(!classes.apply_poll(LspClientPoll::Stderr { bytes: 1 }, &mut visual));
     assert!(!classes.apply_poll(LspClientPoll::Stopped(StopReason::Restart), &mut visual));
+    classes.session.as_mut().ok_or("session")?.state = SessionState::Starting;
+    classes.session.as_mut().ok_or("session")?.pending_change = true;
     assert!(!classes.apply_poll(
         LspClientPoll::InputRejected {
             sequence: InputSequence::for_test(1),
@@ -207,6 +210,20 @@ fn lifecycle_failures_and_poll_classes_are_bounded() -> Result<(), Box<dyn Error
         &mut visual,
     ));
     assert!(visual);
+    assert!(!classes.session.as_ref().ok_or("session")?.pending_change);
+    classes.session.as_mut().ok_or("session")?.state = SessionState::Open;
+    assert!(!classes.apply_poll(
+        LspClientPoll::InputRejected {
+            sequence: InputSequence::for_test(2),
+            failure: ProcessFailure {
+                stage: ProcessStage::Input,
+                kind: FailureKind::QueueSaturated,
+                raw_os_error: None,
+            },
+        },
+        &mut visual,
+    ));
+    assert!(classes.session.as_ref().ok_or("session")?.pending_change);
     assert!(classes.apply_poll(
         LspClientPoll::Exited {
             success: false,
@@ -232,5 +249,35 @@ fn lifecycle_failures_and_poll_classes_are_bounded() -> Result<(), Box<dyn Error
     ] {
         std::fs::remove_dir_all(directory)?;
     }
+    Ok(())
+}
+
+#[test]
+fn visual_accumulation_continuation_and_restart_counts_are_exact() -> Result<(), Box<dyn Error>> {
+    for (current, observed, expected) in [
+        (false, false, false),
+        (false, true, true),
+        (true, false, true),
+        (true, true, true),
+    ] {
+        let mut actual = current;
+        merge_visual_changed(&mut actual, observed);
+        assert_eq!(actual, expected);
+    }
+    assert_eq!(continuation_for_queued_events(0, 9), None);
+    assert_eq!(
+        continuation_for_queued_events(1, 9),
+        Some(LanguageWake { generation: 9 })
+    );
+
+    let (mut model, _, root) = installed_model()?;
+    assert!(model.restart_or_fail(RustDiagnosticsError::MissingServer));
+    assert_eq!(model.session.as_ref().ok_or("session")?.restart_count, 1);
+    assert_eq!(model.snapshot().restarts, 1);
+    assert!(!model.restart_or_fail(RustDiagnosticsError::MissingServer));
+    assert_eq!(model.session.as_ref().ok_or("session")?.restart_count, 2);
+    assert_eq!(model.snapshot().restarts, 2);
+    assert!(!model.shutdown().active);
+    std::fs::remove_dir_all(root)?;
     Ok(())
 }

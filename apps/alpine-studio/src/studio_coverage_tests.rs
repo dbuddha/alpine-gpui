@@ -4814,11 +4814,44 @@ fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
         .rust_diagnostics
         .current_wake_for_test()
         .ok_or("latched language wake")?;
+    let stale_wake = wake.successor_for_test();
+    latched_app.language_wake_latch.publish(stale_wake);
+    assert_eq!(
+        latched_app.poll_latched_language_wake(),
+        LanguageEffect::default()
+    );
+    assert_eq!(latched_app.rust_diagnostics.snapshot().stale_wakes, 1);
     latched_app.language_wake_latch.publish(wake);
     let mut latched_runtime =
         Application::new(latched_app, viewport, clear, WorkerConfig::default())?;
     let _ = latched_runtime.dispatch(&SurfaceEvent::Wake {
         timestamp: EventTimestamp::new(3_515),
     });
+    assert!(!should_poll_latched_after_worker(true));
+    assert!(should_poll_latched_after_worker(false));
+    Ok(())
+}
+
+#[test]
+fn selection_revision_advances_only_for_real_selection_changes() -> Result<(), Box<dyn Error>> {
+    let mut app = test_app()?;
+    let original = app.selection;
+    let revision = app.selection_revision;
+    let failures = app.input_failures;
+    app.advance_selection_revision(original);
+    assert_eq!(app.selection_revision, revision);
+    assert_eq!(app.input_failures, failures);
+
+    app.selection = Selection::caret(ByteOffset::new(1));
+    app.advance_selection_revision(original);
+    assert_eq!(app.selection_revision, revision + 1);
+    assert_eq!(app.input_failures, failures);
+
+    let previous = app.selection;
+    app.selection = Selection::caret(ByteOffset::new(2));
+    app.selection_revision = u64::MAX;
+    app.advance_selection_revision(previous);
+    assert_eq!(app.selection_revision, u64::MAX);
+    assert_eq!(app.input_failures, failures + 1);
     Ok(())
 }

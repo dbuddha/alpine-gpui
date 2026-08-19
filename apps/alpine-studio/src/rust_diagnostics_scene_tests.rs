@@ -9,6 +9,21 @@ use super::*;
 
 static NEXT_SCENE: AtomicU64 = AtomicU64::new(1);
 
+fn bounded_diagnostics(uri: &str) -> Result<Box<RawValue>, serde_json::Error> {
+    let mut diagnostic_items = vec![format!(
+        r#"{{"range":{{"start":{{"line":0,"character":3}},"end":{{"line":0,"character":9}}}},"severity":1,"message":"broken"}}"#
+    )];
+    diagnostic_items.extend((1..MAX_VISIBLE_DIAGNOSTIC_MARKERS).map(|index| {
+        format!(
+            r#"{{"range":{{"start":{{"line":0,"character":3}},"end":{{"line":1,"character":4}}}},"severity":2,"message":"span {index}"}}"#
+        )
+    }));
+    serde_json::from_str(&format!(
+        r#"{{"uri":"{uri}","version":1,"diagnostics":[{}]}}"#,
+        diagnostic_items.join(",")
+    ))
+}
+
 #[test]
 fn diagnostic_scene_adds_clipped_marker_and_bounded_message_then_clears()
 -> Result<(), Box<dyn Error>> {
@@ -19,7 +34,7 @@ fn diagnostic_scene_adds_clipped_marker_and_bounded_message_then_clears()
     ));
     fs::create_dir_all(&root)?;
     let path = root.join("main.rs");
-    fs::write(&path, "fn broken() {}\n")?;
+    fs::write(&path, "fn broken() {}\nsecond line\n")?;
     let path = fs::canonicalize(path)?;
     let root = fs::canonicalize(root)?;
     let mut app = StudioApp::open_file(tests::TestTextSystem, &path)?;
@@ -30,21 +45,69 @@ fn diagnostic_scene_adds_clipped_marker_and_bounded_message_then_clears()
     let open = document.did_open_params("")?;
     let value: serde_json::Value = serde_json::from_str(open.get())?;
     let uri = value["textDocument"]["uri"].as_str().ok_or("URI")?;
-    let params: Box<RawValue> = serde_json::from_str(&format!(
-        r#"{{"uri":"{uri}","version":1,"diagnostics":[{{"range":{{"start":{{"line":0,"character":3}},"end":{{"line":0,"character":9}}}},"severity":1,"message":"broken"}}]}}"#
-    ))?;
+    let params = bounded_diagnostics(uri)?;
     app.rust_diagnostics.install_for_test(
         input,
         &params,
         rust_diagnostics::tests::mock_executable(),
     )?;
     let diagnosed = app.scene(SceneRevision::new(2), viewport);
-    assert_eq!(diagnosed.quads().len(), baseline.quads().len() + 2);
-    let underline = diagnosed.quads().iter().find(|quad| {
-        quad.bounds().size().height().to_bits() == 1.0_f32.to_bits() && quad.clip().is_some()
-    });
-    assert!(underline.is_some());
-    assert!(underline.and_then(|quad| quad.clip()).is_some());
+    assert_eq!(
+        diagnosed.quads().len(),
+        baseline.quads().len() + MAX_VISIBLE_DIAGNOSTIC_MARKERS + 1
+    );
+    let underlines = diagnosed
+        .quads()
+        .iter()
+        .filter(|quad| {
+            quad.bounds().size().height().to_bits() == 1.0_f32.to_bits() && quad.clip().is_some()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(underlines.len(), MAX_VISIBLE_DIAGNOSTIC_MARKERS);
+    let pane = app
+        .panes
+        .layout(app.editor_region(viewport)?)?
+        .active()
+        .ok_or("active pane")?
+        .bounds;
+    let exact = Rect::new(
+        Point::new(pane.origin().x() + 24.0, pane.origin().y() + 20.0).ok_or("underline origin")?,
+        Size::new(48.0, 1.0).ok_or("underline size")?,
+    );
+    let to_line_end = Rect::new(
+        Point::new(pane.origin().x() + 24.0, pane.origin().y() + 20.0).ok_or("span origin")?,
+        Size::new(88.0, 1.0).ok_or("span size")?,
+    );
+    assert_eq!(
+        underlines
+            .iter()
+            .filter(|quad| quad.bounds() == exact)
+            .count(),
+        1
+    );
+    assert_eq!(
+        underlines
+            .iter()
+            .filter(|quad| quad.bounds() == to_line_end)
+            .count(),
+        MAX_VISIBLE_DIAGNOSTIC_MARKERS - 1
+    );
+    assert_eq!(
+        remaining_diagnostic_markers(0),
+        Some(MAX_VISIBLE_DIAGNOSTIC_MARKERS)
+    );
+    assert_eq!(
+        remaining_diagnostic_markers(MAX_VISIBLE_DIAGNOSTIC_MARKERS - 1),
+        Some(1)
+    );
+    assert_eq!(
+        remaining_diagnostic_markers(MAX_VISIBLE_DIAGNOSTIC_MARKERS),
+        None
+    );
+    assert_eq!(
+        remaining_diagnostic_markers(MAX_VISIBLE_DIAGNOSTIC_MARKERS + 1),
+        None
+    );
 
     let clip_bounds = Rect::new(Point::new(0.0, 0.0).ok_or("clip origin")?, viewport);
     let mut foreign_builder = SceneBuilder::new(SceneRevision::new(99), viewport);
