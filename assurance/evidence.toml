@@ -4152,3 +4152,181 @@ assertion = "The checksum-provisioned Apple Silicon rust-analyzer drives the pro
 scope = "One deterministic local Rust workspace, one active document, three LSP document versions, and the pinned Task #208 server."
 assumptions = ["CI verifies the release asset SHA-256 and exact server version before this test"]
 exclusions = ["comparative latency", "network acquisition by Studio", "completion and navigation features"]
+
+[[claims]]
+id = "AEP-0218-C01"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0218-bounded-rust-completion.md"
+requirement_issue = 34
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["PublishedIsCurrent", "ClosedOwnsNoCompletion"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "unit", "e2e", "native"]
+
+[[claims]]
+id = "AEP-0218-C02"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0218-bounded-rust-completion.md"
+requirement_issue = 34
+claim_type = "memory"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = ["ResultsAreBounded"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[claims]]
+id = "AEP-0218-C03"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0218-bounded-rust-completion.md"
+requirement_issue = 34
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["ApplyRequiresCurrent"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[claims]]
+id = "AEP-0218-C04"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0218-bounded-rust-completion.md"
+requirement_issue = 34
+claim_type = "accessibility"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[evidence]]
+id = "EV-0218-UNIT01A"
+claim = "AEP-0218-C01"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_diagnostics_tests.rs#late_cancelled_response_cannot_clear_a_newer_completion"
+assertion = "A late response for an older cancelled request increments stale evidence but cannot clear the newer admitted completion; only the exact owning request can revoke it."
+scope = "One active Rust document, two completion request IDs, and one admitted list."
+exclusions = ["process scheduling", "native event delivery", "unbounded request IDs"]
+
+[[evidence]]
+id = "EV-0218-E2E01"
+claim = "AEP-0218-C01"
+kind = "e2e"
+artifact = "apps/alpine-studio/src/rust_diagnostics_tests.rs#mock_completion_supersession_rejects_the_late_response_without_restart"
+assertion = "The production process, framing, JSON-RPC, cancellation, and completion path rejects a late cancelled response, admits the newer result, and does not restart the server."
+scope = "One portable mock process, one active document, two requests, one cancellation, and one late response."
+bounds = ["two completion items", "one stale response", "five-second hang ceiling"]
+exclusions = ["real rust-analyzer semantics", "AppKit input", "fixed-hardware latency"]
+
+[[evidence]]
+id = "EV-0218-NATIVE01"
+claim = "AEP-0218-C01"
+kind = "native"
+artifact = "apps/alpine-studio/src/rust_diagnostics_tests.rs#pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission"
+assertion = "The checksum-provisioned Apple Silicon rust-analyzer accepts one current completion request after document synchronization and returns a bounded visible list before shutdown drains the session."
+scope = "One deterministic local Rust workspace, one active document, and the pinned Task #208 server."
+bounds = ["64 admitted items", "256 KiB retained completion bytes", "ten-second hang ceiling"]
+assumptions = ["CI verifies the release asset SHA-256 and exact server version before this test"]
+exclusions = ["AppKit keyboard delivery", "comparative latency", "network acquisition by Studio"]
+
+[[evidence]]
+id = "EV-0218-UNIT02A"
+claim = "AEP-0218-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_completion.rs#item_truncation_and_retained_bytes_are_exactly_bounded"
+assertion = "A result beyond the item ceiling admits exactly 64 items, reports every omitted item, and remains within the completion-owned retained-byte budget."
+scope = "One in-memory completion response and Alpine-owned parsed values."
+bounds = ["64 admitted items", "256 KiB retained bytes"]
+exclusions = ["allocator physical footprint", "JSON-RPC framing", "scene construction"]
+
+[[evidence]]
+id = "EV-0218-UNIT02B"
+claim = "AEP-0218-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/lsp_client.rs#saturated_submission_rolls_back_peer_admission_without_blocking"
+assertion = "A saturated bounded process input queue rolls back every peer request admission, preserves fixed pending ownership, and returns without blocking."
+scope = "One production LSP client and its bounded local mock process queues."
+bounds = ["64 pending JSON-RPC requests", "existing process input queue ceiling"]
+exclusions = ["foreground status rendering", "native process scheduling", "fixed-hardware latency"]
+
+[[evidence]]
+id = "EV-0218-UNIT03A"
+claim = "AEP-0218-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_completion.rs#insert_replace_edit_uses_the_checked_replace_range"
+assertion = "An admitted insert-replace edit uses the checked replacement range and rejects a fallback selection that does not match the current buffer snapshot."
+scope = "One immutable Alpine buffer snapshot and one line-local LSP edit."
+exclusions = ["language-server intent", "multi-document edits", "filesystem mutation"]
+
+[[evidence]]
+id = "EV-0218-UNIT03B"
+claim = "AEP-0218-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_completion.rs#utf16_positions_reject_surrogate_and_line_overflow"
+assertion = "UTF-16 positions inside a surrogate pair or beyond line content are rejected before byte-range construction."
+scope = "One Unicode line and checked line-local LSP coordinate conversion."
+exclusions = ["AppKit UTF-16", "server process I/O", "unbounded text"]
+
+[[evidence]]
+id = "EV-0218-UNIT04"
+claim = "AEP-0218-C04"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact"
+assertion = "The production Studio composition projects a bounded focused accessibility dialog, navigates and applies one completion atomically, undoes exact bytes, hides stale identity, cancels on focus loss, drains open completion on shutdown, and returns to a clean frame after one overlay frame."
+scope = "One local Rust editor, two completion rows, keyboard input, accessibility projection, one atomic edit, one undo, focus loss, shutdown, and dirty-only runtime framing."
+bounds = ["two visible items", "one completion clip", "two row quads", "one admitted frame"]
+assumptions = ["Deterministic test typography stands in for native CoreText shaping only."]
+exclusions = ["native VoiceOver publication", "real display latency", "fixed-hardware memory"]
+
+[[evidence]]
+id = "EV-0218-TLA01A"
+claim = "AEP-0218-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0218/CompletionAdmission.tla#PublishedIsCurrent"
+assertion = "An admitted finite completion is empty or belongs to the exact current request and editor identity; the faulty cancelled-response publication violates the invariant."
+scope = "Finite open, trigger, supersession, identity change, response, focus, and close interleavings."
+bounds = ["pull request: four identities and four requests", "nightly: eight identities and eight requests"]
+assumptions = ["One foreground completion owner", "monotonic finite identities and request IDs"]
+exclusions = ["Rust refinement", "process scheduling", "UTF-16 conversion"]
+companion = "apps/alpine-studio/src/rust_diagnostics_tests.rs#late_cancelled_response_cannot_clear_a_newer_completion"
+
+[[evidence]]
+id = "EV-0218-TLA01B"
+claim = "AEP-0218-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0218/CompletionAdmission.tla#ClosedOwnsNoCompletion"
+assertion = "Closed finite state owns no pending, cancelled, admitted, or retained completion state."
+scope = "Finite active and closed completion ownership."
+bounds = ["pull request: four identities and four requests", "nightly: eight identities and eight requests"]
+assumptions = ["Close maps to the production language-session shutdown path."]
+exclusions = ["child-process join latency", "allocator behavior", "Rust refinement"]
+companion = "apps/alpine-studio/src/studio_coverage_tests.rs#completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact"
+
+[[evidence]]
+id = "EV-0218-TLA02"
+claim = "AEP-0218-C02"
+kind = "tla"
+artifact = "formal/tla/aep-0218/CompletionAdmission.tla#ResultsAreBounded"
+assertion = "Finite admitted item ownership never exceeds the configured model ceiling."
+scope = "Finite current response admission and release."
+bounds = ["pull request: eight items", "nightly: sixteen items"]
+assumptions = ["The parser returns an admitted count no greater than the implementation ceiling."]
+exclusions = ["byte accounting", "allocation", "JSON parsing"]
+companion = "apps/alpine-studio/src/rust_completion.rs#item_truncation_and_retained_bytes_are_exactly_bounded"
+
+[[evidence]]
+id = "EV-0218-TLA03"
+claim = "AEP-0218-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0218/CompletionAdmission.tla#ApplyRequiresCurrent"
+assertion = "A finite applied completion is empty or belongs to the exact current request and editor identity; the faulty stale application violates the invariant."
+scope = "Finite response, identity change, application, focus, and close interleavings."
+bounds = ["pull request: four identities and four requests", "nightly: eight identities and eight requests"]
+assumptions = ["Checked Rust coordinate conversion succeeds before the modeled apply action."]
+exclusions = ["transaction byte semantics", "undo implementation", "Rust refinement"]
+companion = "apps/alpine-studio/src/studio_coverage_tests.rs#completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact"

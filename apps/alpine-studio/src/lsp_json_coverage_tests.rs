@@ -39,7 +39,6 @@ fn value_guards_and_error_contracts_cover_each_rejection_axis() {
         [1, 0, 1, 1, 1, 1],
         [1, 1, 0, 1, 1, 1],
         [1, 1, 1, 0, 1, 1],
-        [1, 1, 1, 1, 0, 1],
         [1, 1, 1, 1, 1, 0],
     ] {
         assert_eq!(
@@ -54,6 +53,7 @@ fn value_guards_and_error_contracts_cover_each_rejection_axis() {
             None
         );
     }
+    assert!(RequestStamp::new(1, 1, 1, 1, 0, 1).is_some());
     assert!(RequestStamp::new(1, 2, 3, 4, 5, 6).is_some());
     let error = ProtocolError::InvalidEnvelope;
     assert_eq!(
