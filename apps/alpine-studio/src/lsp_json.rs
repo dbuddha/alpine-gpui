@@ -259,6 +259,17 @@ pub(crate) enum ResponseValue<'a> {
     Error(RemoteError<'a>),
 }
 
+#[cfg(test)]
+impl ResponseValue<'static> {
+    pub(crate) const fn error_for_test() -> Self {
+        Self::Error(RemoteError {
+            code: -32_000,
+            message: "test error",
+            data: None,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum ParsedMessage<'a> {
     Request {

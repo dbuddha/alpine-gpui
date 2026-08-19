@@ -215,6 +215,15 @@ struct AdmittedCompletion {
     first_visible: usize,
 }
 
+fn completion_batch_from_response(
+    value: ResponseValue<'_>,
+) -> Result<CompletionBatch, CompletionError> {
+    match value {
+        ResponseValue::Result(result) => CompletionBatch::admit(result),
+        ResponseValue::Error(_) => Err(CompletionError::Malformed),
+    }
+}
+
 struct RustSession {
     target: Target,
     identity: LanguageIdentity,
@@ -402,10 +411,7 @@ impl RustDiagnostics {
                         stamp,
                         value,
                     } if method.as_ref() == "textDocument/completion" => {
-                        let batch = match value {
-                            ResponseValue::Result(result) => CompletionBatch::admit(result),
-                            ResponseValue::Error(_) => Err(CompletionError::Malformed),
-                        };
+                        let batch = completion_batch_from_response(value);
                         completion_candidate = Some((id, stamp, batch));
                     }
                     PeerEvent::StaleResponse { id } => stale_completion = Some(id),
@@ -558,9 +564,6 @@ impl RustDiagnostics {
             return false;
         };
         let count = completion.batch.items().len();
-        if count == 0 {
-            return false;
-        }
         let previous = completion.selected;
         completion.selected = completion
             .selected

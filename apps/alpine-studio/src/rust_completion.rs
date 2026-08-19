@@ -257,22 +257,30 @@ pub(crate) fn position_for_byte(
     if offset.get() > snapshot.len_bytes() {
         return Err(CompletionError::InvalidTextRange);
     }
+    let mut selected_line = 0;
     for line in 0..snapshot.line_count() {
         let range = snapshot
             .line_byte_range(line)
             .map_err(|_| CompletionError::InvalidTextRange)?;
+        selected_line = line;
         if offset.get() <= range.end {
-            let prefix_end = offset.get().min(range.end);
-            let prefix = snapshot
-                .slice(range.start..prefix_end)
-                .map_err(|_| CompletionError::InvalidTextRange)?;
-            let utf16 = u32::try_from(prefix.trim_end_matches(['\r', '\n']).encode_utf16().count())
-                .map_err(|_| CompletionError::InvalidTextRange)?;
-            let line = u32::try_from(line).map_err(|_| CompletionError::InvalidTextRange)?;
-            return LspPosition::new(line, utf16).map_err(|_| CompletionError::InvalidTextRange);
+            break;
         }
     }
-    Err(CompletionError::InvalidTextRange)
+    let range = snapshot
+        .line_byte_range(selected_line)
+        .map_err(|_| CompletionError::InvalidTextRange)?;
+    let prefix_end = offset.get().min(range.end);
+    let prefix = snapshot
+        .slice(range.start..prefix_end)
+        .map_err(|_| CompletionError::InvalidTextRange)?;
+    let utf16 = checked_u32(prefix.trim_end_matches(['\r', '\n']).encode_utf16().count())?;
+    let line = checked_u32(selected_line)?;
+    LspPosition::new(line, utf16).map_err(|_| CompletionError::InvalidTextRange)
+}
+
+fn checked_u32(value: usize) -> Result<u32, CompletionError> {
+    u32::try_from(value).map_err(|_| CompletionError::InvalidTextRange)
 }
 
 fn byte_for_position(
@@ -370,6 +378,9 @@ mod tests {
         assert_eq!(
             CompletionBatch::admit(&raw(r#"[{"label":"x","additionalTextEdits":[{}]}]"#)),
             Err(CompletionError::UnsupportedAdditionalEdits)
+        );
+        assert!(
+            CompletionBatch::admit(&raw(r#"[{"label":"x","additionalTextEdits":[]}]"#)).is_ok()
         );
         let label = "x".repeat(MAX_COMPLETION_LABEL_BYTES + 1);
         assert_eq!(
@@ -518,6 +529,13 @@ mod tests {
             position_for_byte(&snapshot, ByteOffset::new(snapshot.len_bytes() + 1)),
             Err(CompletionError::InvalidTextRange)
         );
+        assert_eq!(checked_u32(0), Ok(0));
+        if usize::BITS > u32::BITS {
+            assert_eq!(
+                checked_u32((u32::MAX as usize).saturating_add(1)),
+                Err(CompletionError::InvalidTextRange)
+            );
+        }
         assert_eq!(
             byte_for_position(
                 &snapshot,
