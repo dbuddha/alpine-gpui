@@ -3,7 +3,11 @@ use std::path::{Path, PathBuf};
 use super::*;
 
 #[test]
-fn did_change_limit_and_diagnostic_severity_are_exact() -> Result<(), Box<dyn Error>> {
+#[cfg_attr(
+    miri,
+    ignore = "native coverage enforces the 8 MiB document boundary without interpreting 16 MiB of JSON construction"
+)]
+fn did_change_document_limit_is_exact() -> Result<(), Box<dyn Error>> {
     let path = absolute_path("main.rs");
     let mut document = LspDocument::from_file_path(&path, "rust", 7)?;
     document.set_version(8);
@@ -17,7 +21,14 @@ fn did_change_limit_and_diagnostic_severity_are_exact() -> Result<(), Box<dyn Er
         document.did_change_params(&"x".repeat(MAX_DOCUMENT_TEXT_BYTES + 1), end),
         Err(LanguageProtocolError::DocumentTooLarge)
     ));
+    Ok(())
+}
 
+#[test]
+fn diagnostic_severity_is_exact() -> Result<(), Box<dyn Error>> {
+    let path = absolute_path("main.rs");
+    let mut document = LspDocument::from_file_path(&path, "rust", 7)?;
+    document.set_version(8);
     let params = raw(&format!(
         r#"{{"uri":"{}","version":8,"diagnostics":[{{"range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":1}}}},"severity":2,"message":"warning"}},{{"range":{{"start":{{"line":1,"character":0}},"end":{{"line":1,"character":1}}}},"message":"unspecified"}}]}}"#,
         document.uri
@@ -81,12 +92,6 @@ fn errors_documents_and_initialization_preserve_exact_contracts()
     let path = absolute_path("a b.rs");
     let document = LspDocument::from_file_path(&path, "rust", 9)?;
     assert!(document.uri.contains("a%20b.rs"));
-    assert!(
-        document
-            .did_open_params(&"x".repeat(MAX_DOCUMENT_TEXT_BYTES))?
-            .get()
-            .contains(r#""version":9"#)
-    );
     assert_eq!(
         document.text_document_params()?.get(),
         format!(r#"{{"textDocument":{{"uri":"{}"}}}}"#, document.uri)
@@ -117,6 +122,23 @@ fn errors_documents_and_initialization_preserve_exact_contracts()
     assert_eq!(
         pinned_server_version(),
         "rust-analyzer 0.3.3016-standalone (bb3bbbd9e4 2026-08-16)"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "native coverage enforces the 8 MiB didOpen boundary without interpreting the full JSON payload"
+)]
+fn did_open_document_limit_is_exact() -> Result<(), LanguageProtocolError> {
+    let path = absolute_path("a b.rs");
+    let document = LspDocument::from_file_path(&path, "rust", 9)?;
+    assert!(
+        document
+            .did_open_params(&"x".repeat(MAX_DOCUMENT_TEXT_BYTES))?
+            .get()
+            .contains(r#""version":9"#)
     );
     Ok(())
 }

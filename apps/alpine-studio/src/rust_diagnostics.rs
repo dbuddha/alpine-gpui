@@ -1266,22 +1266,16 @@ fn test_session(
     input: RustDocumentInput,
     document: LspDocument,
     batch: DiagnosticBatch,
-    executable: &Path,
+    _executable: &Path,
 ) -> RustSession {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static TEST_SEQUENCE: AtomicUsize = AtomicUsize::new(1);
-    let spec = ProcessSpec::new(
-        executable,
-        std::iter::empty::<&str>(),
-        Some(&input.workspace_root),
-    )
-    .unwrap_or_else(|_| unreachable!());
     let generation = u64::try_from(TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed))
         .unwrap_or_else(|_| unreachable!());
     let identity = ProcessIdentity::new(input.identity.workspace_revision, generation)
         .unwrap_or_else(|| unreachable!());
-    let client = LspClient::start(spec, identity).unwrap_or_else(|_| unreachable!());
+    let client = LspClient::inert_for_test(identity);
     let synced_snapshot = input.snapshot.clone();
     RustSession {
         target: Target {

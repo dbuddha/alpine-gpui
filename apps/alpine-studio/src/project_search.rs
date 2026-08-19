@@ -2249,7 +2249,7 @@ mod tests {
             let invalid_name = std::ffi::OsString::from_vec(vec![0xff]);
             let invalid_path = project.0.join(invalid_name);
             assert!(portable_relative_path(&project.0, &invalid_path)?.is_none());
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", not(miri)))]
             {
                 fs::write(&invalid_path, b"invalid name")?;
                 let invalid_inventory = build_inventory(identity, &project.0, tiny_limits())?;
@@ -2446,23 +2446,20 @@ mod tests {
         assert!(end_adjusted.len() <= 7);
         let sanitized = excerpt_for("before\u{7}after".as_bytes(), 6, 64)?;
         assert!(!sanitized.contains('\u{7}'));
-        #[cfg(target_os = "linux")]
-        {
-            assert!(matches!(
-                read_search_file(Path::new("/proc/self/maps"), 0, 1, 1, None)?,
-                FileRead::Skipped {
-                    reason: SkipReason::Oversized,
-                    ..
-                }
-            ));
-            assert!(matches!(
-                read_search_file(Path::new("/proc/self/mem"), 1, 1, 1, None)?,
-                FileRead::Skipped {
-                    reason: SkipReason::Unreadable,
-                    ..
-                }
-            ));
-        }
+        assert!(matches!(
+            read_search_file(&project.0.join("b.txt"), 0, 1, 1, None)?,
+            FileRead::Skipped {
+                reason: SkipReason::Oversized,
+                ..
+            }
+        ));
+        assert!(matches!(
+            read_search_file(&project.0.join("missing-file"), 1, 1, 1, None)?,
+            FileRead::Skipped {
+                reason: SkipReason::Unreadable,
+                ..
+            }
+        ));
 
         let readable = project.0.join("nested/a.txt");
         for (fault, reason) in [

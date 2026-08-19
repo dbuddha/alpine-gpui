@@ -13,8 +13,14 @@ use serde_json::value::RawValue;
 use super::*;
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
+#[cfg(not(miri))]
 static MOCK_EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
+#[cfg(miri)]
+pub(crate) fn mock_executable() -> &'static Path {
+    Path::new("/alpine-miri-inert-rust-analyzer")
+}
 
+#[cfg(not(miri))]
 pub(crate) fn mock_executable() -> &'static Path {
     MOCK_EXECUTABLE
         .get_or_init(|| {
@@ -230,6 +236,7 @@ fn wait_for_product_diagnostics(
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn portable_mock_drives_open_change_clear_and_shutdown() -> Result<(), Box<dyn Error>> {
     let (root, path, _, mut identity) = fixture();
     let mut buffer = alpine_text::Buffer::new("fn broken( {\n");
@@ -293,6 +300,7 @@ fn portable_mock_drives_open_change_clear_and_shutdown() -> Result<(), Box<dyn E
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn portable_mock_protocol_failure_restarts_the_active_document() -> Result<(), Box<dyn Error>> {
     let (root, path, _, mut identity) = fixture();
     let mut buffer = alpine_text::Buffer::new("fn broken( {\n");

@@ -12,6 +12,7 @@ scripts/test-research-retention.sh
 scripts/check-wiki.sh
 scripts/test-wiki.sh
 scripts/test-classifier.sh
+scripts/test-miri-partitions.sh
 scripts/test-hierarchy.sh
 scripts/test-assurance.sh
 scripts/test-qualification.sh

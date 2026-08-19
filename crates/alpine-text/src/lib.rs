@@ -1531,6 +1531,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
     fn test_directories_skip_collisions_and_fail_after_the_bound()
     -> Result<(), Box<dyn std::error::Error>> {
         let _file_test = lock_file_tests();
