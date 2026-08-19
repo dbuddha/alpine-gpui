@@ -311,4 +311,14 @@ fn storage_and_outbound_limits_fail_before_growth() {
     let full_capacity = full.capacity();
     assert!(reserve_pending(&mut full).is_ok());
     assert!(full.capacity() > full_capacity);
+
+    let mut cancellation_full = running_peer();
+    let request = protocol_ok(cancellation_full.begin_request("textDocument/hover", None, stamp));
+    cancellation_full.cancelled = (1..=MAX_PENDING_REQUESTS)
+        .map(|id| RequestId(u32::try_from(id).unwrap_or_else(|_| unreachable!())))
+        .collect();
+    assert_eq!(
+        cancellation_full.cancel(request.request_id().unwrap_or_else(|| unreachable!())),
+        Err(ProtocolError::PendingCapacity)
+    );
 }

@@ -281,3 +281,169 @@ fn visual_accumulation_continuation_and_restart_counts_are_exact() -> Result<(),
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
+
+fn completion_result(text: &str) -> Result<Box<serde_json::value::RawValue>, Box<dyn Error>> {
+    Ok(serde_json::value::RawValue::from_string(text.to_owned())?)
+}
+
+fn install_pending_completion(
+    model: &mut RustDiagnostics,
+    request_id: u32,
+) -> Result<PendingCompletion, Box<dyn Error>> {
+    let session = model.session.as_mut().ok_or("session")?;
+    let pending = PendingCompletion {
+        request_id,
+        stamp: session.identity.request_stamp().ok_or("request stamp")?,
+        identity: session.identity,
+        process_epoch: session.process_epoch,
+        lsp_version: session.lsp_version,
+    };
+    session.pending_completion = Some(pending);
+    Ok(pending)
+}
+
+#[test]
+fn completion_guards_navigation_and_admission_are_discriminating() -> Result<(), Box<dyn Error>> {
+    let (root, _, snapshot, identity) = tests::fixture();
+    let position = LspPosition::new(0, 0)?;
+    let mut absent = RustDiagnostics::default();
+    assert!(absent.request_completion(position).visual_changed);
+    assert!(!absent.navigate_completion(1));
+    assert_eq!(absent.completion_visible_range(identity), None);
+    assert!(absent.completion_row(identity, 0).is_none());
+    assert_eq!(
+        absent.take_selected_completion(identity, &snapshot, 0..0)?,
+        None
+    );
+    let single = CompletionBatch::admit(&completion_result(
+        r#"[{"label":"one","insertText":"one"}]"#,
+    )?)?;
+    let stamp = identity.request_stamp().ok_or("request stamp")?;
+    assert!(!absent.admit_completion(1, stamp, Ok(single)));
+    assert!(!absent.reject_stale_completion(1));
+
+    let (mut model, input, root_two) = installed_model()?;
+    model.session.as_mut().ok_or("session")?.state = SessionState::Starting;
+    assert!(model.request_completion(position).visual_changed);
+    model.session.as_mut().ok_or("session")?.state = SessionState::Open;
+    model
+        .session
+        .as_mut()
+        .ok_or("session")?
+        .identity
+        .document_revision = 0;
+    assert!(model.request_completion(position).visual_changed);
+    model.session.as_mut().ok_or("session")?.identity = input.identity;
+
+    let many = (0..10)
+        .map(|index| format!(r#"{{"label":"item-{index}"}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    model.install_completion_for_test(
+        7,
+        input.identity,
+        &completion_result(&format!("[{many}]"))?,
+    )?;
+    for _ in 1..10 {
+        assert!(model.navigate_completion(1));
+    }
+    assert!(!model.navigate_completion(1));
+    assert!(model.navigate_completion(-9));
+    let mut stale_identity = input.identity;
+    stale_identity.selection_revision += 1;
+    assert_eq!(model.completion_visible_range(stale_identity), None);
+    assert!(model.completion_row(stale_identity, 0).is_none());
+    assert_eq!(
+        model.take_selected_completion(stale_identity, &input.snapshot, 0..0)?,
+        None
+    );
+    assert_eq!(
+        model.take_selected_completion(input.identity, &input.snapshot, 0..0)?,
+        None
+    );
+
+    assert!(!model.shutdown().active);
+    std::fs::remove_dir_all(root)?;
+    std::fs::remove_dir_all(root_two)?;
+    Ok(())
+}
+
+#[test]
+fn completion_result_admission_rejects_every_stale_or_invalid_shape() -> Result<(), Box<dyn Error>>
+{
+    let (mut model, input, root) = installed_model()?;
+
+    let empty = completion_result("null")?;
+    let error = completion_result(r#"[{"label":"accepted"}]"#)?;
+    let pending = install_pending_completion(&mut model, 9)?;
+    assert!(model.admit_completion(
+        pending.request_id,
+        pending.stamp,
+        Ok(CompletionBatch::admit(&empty)?)
+    ));
+    assert!(matches!(
+        model.status_message().as_deref(),
+        Some("No Rust completions.")
+    ));
+
+    let pending = install_pending_completion(&mut model, 10)?;
+    assert!(model.admit_completion(
+        pending.request_id,
+        pending.stamp,
+        Err(CompletionError::Malformed)
+    ));
+
+    let pending = install_pending_completion(&mut model, 11)?;
+    assert!(!model.admit_completion(
+        pending.request_id + 1,
+        pending.stamp,
+        Ok(CompletionBatch::admit(&error)?)
+    ));
+    assert!(!model.admit_completion(
+        pending.request_id,
+        pending.stamp,
+        Ok(CompletionBatch::admit(&error)?)
+    ));
+
+    let pending = install_pending_completion(&mut model, 12)?;
+    assert!(!model.reject_stale_completion(pending.request_id));
+
+    assert_eq!(
+        model.install_completion_for_test(8, input.identity, &empty),
+        Err(RustDiagnosticsError::Completion(CompletionError::Malformed))
+    );
+    assert!(!model.shutdown().active);
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn completion_cancellation_and_request_failures_are_bounded() -> Result<(), Box<dyn Error>> {
+    let position = LspPosition::new(0, 0)?;
+    let (mut changed, input, root) = installed_model()?;
+    let _ = install_pending_completion(&mut changed, 21)?;
+    let mut newer = input.clone();
+    newer.identity.selection_revision += 1;
+    assert_eq!(changed.snapshot().completion_cancellations, 0);
+    let _ = changed.sync(Some(newer), |_| Arc::new(|| {}));
+    assert_eq!(changed.snapshot().completion_cancellations, 1);
+
+    let (mut cancellation_error, _, root_two) = installed_model()?;
+    let _ = install_pending_completion(&mut cancellation_error, u32::MAX)?;
+    assert!(cancellation_error.cancel_completion());
+    assert!(cancellation_error.status_message().is_some());
+    assert!(!cancellation_error.snapshot().completion_pending);
+
+    let (mut saturated, _, root_three) = installed_model()?;
+    assert!(saturated.request_completion(position).visual_changed);
+    assert!(saturated.status_message().is_some());
+    assert!(!saturated.snapshot().completion_pending);
+
+    for model in [&mut changed, &mut cancellation_error, &mut saturated] {
+        assert!(!model.shutdown().active);
+    }
+    for directory in [root, root_two, root_three] {
+        std::fs::remove_dir_all(directory)?;
+    }
+    Ok(())
+}
