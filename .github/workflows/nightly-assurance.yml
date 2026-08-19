@@ -69,16 +69,71 @@ jobs:
           if-no-files-found: error
 
   miri:
-    name: miri-all
+    name: miri-all-${{ matrix.partition }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        include:
+          - partition: foundation
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-app-01
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-app-02
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-app-03
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-app-04
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-app-05
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-app-06
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-command
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-transport
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-diagnostics
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-01
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-02
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-03
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-04
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-05
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-06
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-07
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-08
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-09
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-model
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-persistence
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-workspace
+            miri_flags: -Zmiri-disable-isolation
+          - partition: text
+            miri_flags: ""
+          - partition: text-layout
+            miri_flags: ""
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install pinned Miri toolchain
         run: rustup toolchain install nightly-2026-08-01 --profile minimal --component miri
       - name: Check workspace memory behavior
-        run: cargo +nightly-2026-08-01 miri test --workspace --lib --locked
+        env:
+          MIRIFLAGS: ${{ matrix.miri_flags }}
+        run: scripts/run-miri-partition.sh "${{ matrix.partition }}"
 
   advisories:
     name: dependency-advisories

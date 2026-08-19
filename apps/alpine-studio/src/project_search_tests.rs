@@ -206,6 +206,7 @@ fn stale_selected_file_preserves_the_current_document_and_tab_identity()
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "wall-clock qualification is not meaningful under Miri")]
 fn project_search_stages_are_separate_bounded_and_diagnostic_only()
 -> Result<(), Box<dyn std::error::Error>> {
     let project = TempProject::new()?;

@@ -585,6 +585,10 @@ pub(crate) struct LanguageServerProcess {
     identity: ProcessIdentity,
     epoch: ProcessEpoch,
     next_sequence: u64,
+    #[cfg(test)]
+    _inert_control: Option<Receiver<Control>>,
+    #[cfg(test)]
+    _inert_events: Option<SyncSender<ProcessEvent>>,
 }
 
 impl LanguageServerProcess {
@@ -650,7 +654,34 @@ impl LanguageServerProcess {
             identity,
             epoch,
             next_sequence: 0,
+            #[cfg(test)]
+            _inert_control: None,
+            #[cfg(test)]
+            _inert_events: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inert_for_test(identity: ProcessIdentity) -> Self {
+        let counters = Arc::new(Counters::default());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (control_sender, control_receiver) = sync_channel(CONTROL_CAPACITY);
+        let (event_sender, event_receiver) = sync_channel(EVENT_CAPACITY);
+        let (_, completion_receiver) = sync_channel(1);
+        Self {
+            control: Some(control_sender),
+            events: event_receiver,
+            supervisor: None,
+            supervisor_complete: completion_receiver,
+            shutdown,
+            counters,
+            configuration_bytes: 0,
+            identity,
+            epoch: ProcessEpoch(1),
+            next_sequence: 0,
+            _inert_control: Some(control_receiver),
+            _inert_events: Some(event_sender),
+        }
     }
 
     pub(crate) fn send(&mut self, bytes: &[u8]) -> Result<InputSequence, SubmitError> {

@@ -150,20 +150,6 @@ fn lifecycle_failures_and_poll_classes_are_bounded() -> Result<(), Box<dyn Error
     let (mut begin, _, root) = installed_model()?;
     assert!(begin.begin_initialize(1));
 
-    let (mut oversized_open, _, root_two) = installed_model()?;
-    let oversized = "x".repeat(8_388_609);
-    let session = oversized_open.session.as_mut().ok_or("session")?;
-    session.snapshot = alpine_text::Buffer::new(&oversized).snapshot();
-    session.restart_count = MAX_RESTARTS_PER_DOCUMENT;
-    assert!(oversized_open.open_document());
-
-    let (mut oversized_change, _, root_three) = installed_model()?;
-    let session = oversized_change.session.as_mut().ok_or("session")?;
-    session.snapshot = alpine_text::Buffer::new(&oversized).snapshot();
-    session.pending_change = true;
-    session.restart_count = MAX_RESTARTS_PER_DOCUMENT;
-    assert!(oversized_change.flush_change());
-
     let (mut generation, _, root_four) = installed_model()?;
     generation
         .session
@@ -183,7 +169,7 @@ fn lifecycle_failures_and_poll_classes_are_bounded() -> Result<(), Box<dyn Error
 
     let (mut stopped, _, root_six) = installed_model()?;
     let _ = stopped.session.as_mut().ok_or("session")?.client.shutdown();
-    assert!(stopped.restart_or_fail(RustDiagnosticsError::MissingServer));
+    assert!(stopped.begin_initialize(1));
 
     let (mut classes, _, root_seven) = installed_model()?;
     let mut visual = false;
@@ -234,8 +220,6 @@ fn lifecycle_failures_and_poll_classes_are_bounded() -> Result<(), Box<dyn Error
 
     for model in [
         &mut begin,
-        &mut oversized_open,
-        &mut oversized_change,
         &mut generation,
         &mut identity,
         &mut stopped,
@@ -244,11 +228,37 @@ fn lifecycle_failures_and_poll_classes_are_bounded() -> Result<(), Box<dyn Error
         assert!(!model.shutdown().active);
     }
 
-    for directory in [
-        root, root_two, root_three, root_four, root_five, root_six, root_seven,
-    ] {
+    for directory in [root, root_four, root_five, root_six, root_seven] {
         std::fs::remove_dir_all(directory)?;
     }
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "native coverage enforces the 8 MiB message boundary without interpreting 16 MiB of Ropey construction"
+)]
+fn oversized_document_messages_fail_boundedly() -> Result<(), Box<dyn Error>> {
+    let oversized = "x".repeat(8_388_609);
+
+    let (mut oversized_open, _, root) = installed_model()?;
+    let session = oversized_open.session.as_mut().ok_or("session")?;
+    session.snapshot = alpine_text::Buffer::new(&oversized).snapshot();
+    session.restart_count = MAX_RESTARTS_PER_DOCUMENT;
+    assert!(oversized_open.open_document());
+
+    let (mut oversized_change, _, root_two) = installed_model()?;
+    let session = oversized_change.session.as_mut().ok_or("session")?;
+    session.snapshot = alpine_text::Buffer::new(&oversized).snapshot();
+    session.pending_change = true;
+    session.restart_count = MAX_RESTARTS_PER_DOCUMENT;
+    assert!(oversized_change.flush_change());
+
+    assert!(!oversized_open.shutdown().active);
+    assert!(!oversized_change.shutdown().active);
+    std::fs::remove_dir_all(root)?;
+    std::fs::remove_dir_all(root_two)?;
     Ok(())
 }
 

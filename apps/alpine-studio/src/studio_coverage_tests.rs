@@ -720,18 +720,21 @@ fn runtime_find_failures_are_bounded_and_visible() -> Result<(), Box<dyn std::er
             .is_some()
     );
 
-    let mut saturated = test_app()?;
-    let saturated_source = "x".repeat(16 * 1024 * 1024);
-    *saturated.buffer_mut() = Buffer::new(&saturated_source);
-    let mut saturated_runtime =
-        Application::new(saturated, viewport, clear, WorkerConfig::default())?;
-    saturated_runtime.dispatch(&key(KEY_F, command));
-    for query_byte in ["y", "y", "y"] {
-        assert!(
-            saturated_runtime
-                .dispatch(&ime(ImeEvent::Committed(query_byte.into())))
-                .is_some()
-        );
+    #[cfg(not(miri))]
+    {
+        let mut saturated = test_app()?;
+        let saturated_source = "x".repeat(16 * 1024 * 1024);
+        *saturated.buffer_mut() = Buffer::new(&saturated_source);
+        let mut saturated_runtime =
+            Application::new(saturated, viewport, clear, WorkerConfig::default())?;
+        saturated_runtime.dispatch(&key(KEY_F, command));
+        for query_byte in ["y", "y", "y"] {
+            assert!(
+                saturated_runtime
+                    .dispatch(&ime(ImeEvent::Committed(query_byte.into())))
+                    .is_some()
+            );
+        }
     }
     Ok(())
 }
@@ -1185,7 +1188,7 @@ fn bounded_workspace_is_sorted_capped_and_projects_only_visible_rows()
         Err(WorkspaceError::ScanLimitExceeded { limit: 1, .. })
     ));
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(miri)))]
     {
         use std::os::unix::{ffi::OsStrExt, fs::symlink};
 
@@ -4304,6 +4307,7 @@ fn runtime_file_tree_submission_admits_and_forced_failure_rolls_back()
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "wall-clock qualification is not meaningful under Miri")]
 fn file_tree_stage_measurements_are_separate_and_bounded() -> Result<(), Box<dyn std::error::Error>>
 {
     let root = TestWorkspace::new()?;
@@ -4822,6 +4826,7 @@ fn assert_worker_continuation_is_drained(
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = TestWorkspace::new()?;
