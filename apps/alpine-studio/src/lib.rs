@@ -1002,6 +1002,8 @@ struct StudioApp {
     language_wake_latch: LanguageWakeLatch,
     #[cfg(test)]
     diagnostic_clip_override: Option<alpine_scene::ClipId>,
+    #[cfg(test)]
+    diagnostic_origin_x_override: Option<f32>,
     input_failures: u64,
     render_failures: u64,
     save_failures: u64,
@@ -1244,6 +1246,8 @@ impl StudioApp {
             language_wake_latch: LanguageWakeLatch::default(),
             #[cfg(test)]
             diagnostic_clip_override: None,
+            #[cfg(test)]
+            diagnostic_origin_x_override: None,
             input_failures: 0,
             render_failures: 0,
             save_failures: 0,
@@ -1959,13 +1963,22 @@ impl StudioApp {
                     if let Some(override_clip) = self.diagnostic_clip_override {
                         diagnostic_clip = override_clip;
                     }
+                    #[allow(
+                        unused_mut,
+                        reason = "test fault injection replaces this validated pane origin"
+                    )]
+                    let mut diagnostic_origin_x = pane_origin_x;
+                    #[cfg(test)]
+                    if let Some(override_origin_x) = self.diagnostic_origin_x_override {
+                        diagnostic_origin_x = override_origin_x;
+                    }
                     let added = self.rust_diagnostics.for_each_marker(
                         language_identity,
                         line,
                         remaining,
                         |marker| {
                             let bounds = diagnostic_underline_bounds(
-                                pane_origin_x,
+                                diagnostic_origin_x,
                                 baseline,
                                 &layout,
                                 marker,

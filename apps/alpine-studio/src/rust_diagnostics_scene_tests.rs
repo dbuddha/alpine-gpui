@@ -24,6 +24,15 @@ fn bounded_diagnostics(uri: &str) -> Result<Box<RawValue>, serde_json::Error> {
     ))
 }
 
+fn assert_invalid_diagnostic_origin(app: &mut StudioApp, viewport: Size) {
+    app.diagnostic_origin_x_override = Some(f32::NAN);
+    assert!(matches!(
+        app.try_scene(SceneRevision::new(4), viewport),
+        Err(StudioRenderError::Domain)
+    ));
+    app.diagnostic_origin_x_override = None;
+}
+
 #[test]
 fn diagnostic_scene_adds_clipped_marker_and_bounded_message_then_clears()
 -> Result<(), Box<dyn Error>> {
@@ -122,9 +131,11 @@ fn diagnostic_scene_adds_clipped_marker_and_bounded_message_then_clears()
     ));
     app.diagnostic_clip_override = None;
 
+    assert_invalid_diagnostic_origin(&mut app, viewport);
+
     let drained = app.rust_diagnostics.shutdown();
     assert!(!drained.active);
-    let cleared = app.scene(SceneRevision::new(4), viewport);
+    let cleared = app.scene(SceneRevision::new(5), viewport);
     assert_eq!(cleared.quads().len(), baseline.quads().len());
     fs::remove_dir_all(root)?;
     Ok(())
