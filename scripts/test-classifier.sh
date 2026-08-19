@@ -21,11 +21,33 @@ assert_output() {
     fi
 }
 
+assert_every_gate() {
+    output=$1
+    assert_output "$output" coverage=true
+    assert_output "$output" mutation=true
+    assert_output "$output" kani=true
+    assert_output "$output" miri=true
+    assert_output "$output" metal=true
+    assert_output "$output" tla=true
+}
+
 docs=$(run_fixture README.md)
 assert_output "$docs" coverage=false
 assert_output "$docs" mutation=false
 assert_output "$docs" kani=false
 assert_output "$docs" tla=false
+
+ci_workflow=$(run_fixture .github/workflows/ci.yml)
+assert_every_gate "$ci_workflow"
+
+nightly_workflow=$(run_fixture .github/workflows/nightly-assurance.yml)
+assert_every_gate "$nightly_workflow"
+
+classifier=$(run_fixture scripts/classify-ci.sh)
+assert_every_gate "$classifier"
+
+classifier_tests=$(run_fixture scripts/test-classifier.sh)
+assert_every_gate "$classifier_tests"
 
 core=$(run_fixture crates/alpine-core/src/lib.rs)
 assert_output "$core" coverage=true

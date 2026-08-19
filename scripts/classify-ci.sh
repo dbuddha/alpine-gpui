@@ -30,6 +30,18 @@ miri=false
 metal=false
 tla=false
 
+# Changes to the CI control plane must exercise every gate it can select.
+# Classifying these paths selectively would allow the classifier or workflow
+# itself to suppress the evidence required to prove its own correction.
+if matches '^(\.github/workflows/(ci|nightly-assurance)\.yml$|scripts/(classify-ci|test-classifier)\.sh$)'; then
+    coverage=true
+    mutation=true
+    kani=true
+    miri=true
+    metal=true
+    tla=true
+fi
+
 # Shipping application Rust receives the same coverage contract as crate Rust.
 if matches '^(Cargo\.toml$|Cargo\.lock$|crates/.+\.rs$|crates/.+/Cargo\.toml$|apps/.+\.rs$|apps/.+/Cargo\.toml$|tools/alpine-trace/)'; then
     coverage=true
