@@ -4926,9 +4926,16 @@ pub mod native_validation {
         }
     }
 
+    const fn pending_cancellation_evidence_is_bounded(count: u64, has_last: bool) -> bool {
+        matches!((count, has_last), (0, false) | (1, true))
+    }
+
     #[cfg(test)]
     mod presentation_evidence_policy_tests {
-        use super::{PresentationEvidenceMode, parse_presentation_evidence_mode};
+        use super::{
+            PresentationEvidenceMode, parse_presentation_evidence_mode,
+            pending_cancellation_evidence_is_bounded,
+        };
         use std::ffi::OsStr;
 
         #[test]
@@ -4954,6 +4961,16 @@ pub mod native_validation {
             assert!(!PresentationEvidenceMode::Physical.requires_surface_configuration(true));
             assert!(PresentationEvidenceMode::HostedDirect.requires_surface_configuration(false));
             assert!(PresentationEvidenceMode::HostedDirect.requires_surface_configuration(true));
+        }
+
+        #[test]
+        fn pending_cancellation_requires_one_bounded_evidence_record() {
+            assert!(pending_cancellation_evidence_is_bounded(0, false));
+            assert!(pending_cancellation_evidence_is_bounded(1, true));
+            assert!(!pending_cancellation_evidence_is_bounded(0, true));
+            assert!(!pending_cancellation_evidence_is_bounded(1, false));
+            assert!(!pending_cancellation_evidence_is_bounded(2, true));
+            assert!(!pending_cancellation_evidence_is_bounded(u64::MAX, true));
         }
     }
 
@@ -5045,7 +5062,10 @@ pub mod native_validation {
             frame.presented_count()
         );
         assert!(frame.qualified_presented_count() >= 1);
-        assert_eq!(frame.pending_cancellation_count(), 0);
+        assert!(pending_cancellation_evidence_is_bounded(
+            frame.pending_cancellation_count(),
+            frame.last_pending_cancellation().is_some()
+        ));
         assert_eq!(frame.failed_count(), 0);
         assert_eq!(frame.current_retained_bytes(), 0);
         assert_eq!(frame.occupied_frame_slots(), 0);
