@@ -100,13 +100,13 @@ fn run() -> io::Result<()> {
                     )?;
                 }
                 Some("test/crash") if initialized => process::exit(7),
-                Some("test/block") if initialized => thread::sleep(Duration::from_secs(30)),
+                Some("test/block") if initialized => thread::sleep(Duration::from_secs(5)),
                 Some("test/flood-stderr") if initialized => {
                     let mut stderr = io::stderr().lock();
                     let bytes = [b'x'; 16_384];
                     while stderr.write_all(&bytes).is_ok() {}
                     loop {
-                        thread::sleep(Duration::from_secs(30));
+                        thread::sleep(Duration::from_secs(5));
                     }
                 }
                 Some("shutdown") if initialized => {

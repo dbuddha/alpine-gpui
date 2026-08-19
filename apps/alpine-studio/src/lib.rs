@@ -4356,30 +4356,6 @@ impl StudioApp {
         })
     }
 
-    fn publish_language_continuation(
-        &self,
-        effect: LanguageEffect,
-        context: &AppContext<'_, StudioWorkerOutput>,
-    ) {
-        if let Some(continuation) = effect.continuation {
-            self.language_wake_latch.publish(continuation);
-            let _ = context
-                .external_producer()
-                .submit(StudioWorkerOutput::Language(continuation), 0);
-        }
-    }
-
-    fn apply_language_wake(
-        &mut self,
-        wake: LanguageWake,
-        context: &AppContext<'_, StudioWorkerOutput>,
-    ) -> LanguageEffect {
-        self.language_wake_latch.clear(wake);
-        let effect = self.rust_diagnostics.poll(wake);
-        self.publish_language_continuation(effect, context);
-        effect
-    }
-
     fn poll_latched_language_wake(&mut self) -> LanguageEffect {
         self.language_wake_latch
             .take()
@@ -4447,7 +4423,12 @@ impl AppDelegate for StudioApp {
         let language = self.sync_rust_diagnostics(context);
         effect.visual_changed |= language.visual_changed;
         let pending_language = self.poll_latched_language_wake();
-        self.publish_language_continuation(pending_language, context);
+        if let Some(continuation) = pending_language.continuation {
+            self.language_wake_latch.publish(continuation);
+            let _ = context
+                .external_producer()
+                .submit(StudioWorkerOutput::Language(continuation), 0);
+        }
         effect.visual_changed |= pending_language.visual_changed;
         if effect.visual_changed {
             context.invalidate();
@@ -4488,7 +4469,14 @@ impl AppDelegate for StudioApp {
             StudioWorkerOutput::ProjectSearch(result) => self.apply_project_search_output(result),
             StudioWorkerOutput::FileTree(result) => self.apply_file_tree_output(result),
             StudioWorkerOutput::Language(wake) => {
-                let language = self.apply_language_wake(wake, context);
+                self.language_wake_latch.clear(wake);
+                let language = self.rust_diagnostics.poll(wake);
+                if let Some(continuation) = language.continuation {
+                    self.language_wake_latch.publish(continuation);
+                    let _ = context
+                        .external_producer()
+                        .submit(StudioWorkerOutput::Language(continuation), 0);
+                }
                 EventEffect {
                     visual_changed: language.visual_changed,
                     document_changed: false,
@@ -4498,7 +4486,12 @@ impl AppDelegate for StudioApp {
         };
         if should_poll_latched_after_worker(language_result) {
             let language = self.poll_latched_language_wake();
-            self.publish_language_continuation(language, context);
+            if let Some(continuation) = language.continuation {
+                self.language_wake_latch.publish(continuation);
+                let _ = context
+                    .external_producer()
+                    .submit(StudioWorkerOutput::Language(continuation), 0);
+            }
             effect.visual_changed |= language.visual_changed;
         }
         if effect.visual_changed {

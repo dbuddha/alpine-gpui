@@ -196,7 +196,7 @@ fn wait_for_product_diagnostics(
     allow_omitted_version: bool,
     expect_items: bool,
 ) -> Result<RustDiagnosticsSnapshot, Box<dyn std::error::Error>> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
         for _ in 0..32 {
             let Some(wake) = latch.take() else {
