@@ -49,6 +49,12 @@ assert_every_gate "$classifier"
 classifier_tests=$(run_fixture scripts/test-classifier.sh)
 assert_every_gate "$classifier_tests"
 
+coverage_checker=$(run_fixture scripts/check-coverage.sh)
+assert_every_gate "$coverage_checker"
+
+coverage_tests=$(run_fixture scripts/test-coverage.sh)
+assert_every_gate "$coverage_tests"
+
 miri_manifest=$(run_fixture assurance/miri-studio-partitions.tsv)
 assert_every_gate "$miri_manifest"
 
