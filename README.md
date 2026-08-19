@@ -30,34 +30,39 @@ owner approval and conditional provenance records.
 
 ## Current maturity
 
-Alpine is pre-release foundation software and is not ready for application
-development. The workspace currently provides:
+Alpine is pre-release and its public framework contracts are not version 1
+stable. Alpine Studio is a working local editor prototype on the path to the
+selected Apple Silicon macOS daily-driver profile, but it is not yet qualified
+or distributed as a daily driver.
 
-- `alpine-core`, with validated geometry and linear color values;
-- `alpine-scene`, with immutable scene snapshots and painter-ordered quads;
-- `alpine-renderer`, with a backend-generic renderer contract, capabilities,
-  and observable frame reports;
-- `alpine-metal`, with deterministic frame planning and a private Apple Silicon
-  Metal device, offline pipeline, one synchronous command submission, and
-  deterministic compact BGRA8 readback, cancellation, shutdown, device-loss
-  generations, and complete frame-resource accounting;
-- `alpine-platform`, with a portable demand-driven presentation transition
-  system, and `alpine-platform-macos`, with one native AppKit window,
-  callback-provided Direct Metal drawable submission, bounded compositor-drop
-  retry, direct presentation, nonzero presented-time correlation, synchronized
-  resize and display epochs, and an explicit standard-sRGB presentation path;
-- non-shipping `alpine-trace` and `alpine-assurance` tooling that fail closed on
-  malformed renderer workloads and can produce CPU-oracle or Direct Metal BGRA8
-  artifacts from the same versioned solid-quad trace;
-- a pinned Rust toolchain and locked dependency graph;
-- policy, formatting, lint, unit test, doctest, rustdoc, coverage, changed-code
-  mutation, selected Kani proofs, and three-platform CI;
-- risk-selected Miri and Metal validation plus scheduled exhaustive assurance.
+The workspace currently provides:
 
-There is no shipping event-loop runtime, onscreen color capture or display-profile
-qualification, resource cache, layout engine, input system, text stack, or
-component system yet. The exact implemented boundaries and binding invariants
-are documented in [Architecture](ARCHITECTURE.md).
+- an immutable scene protocol, deterministic Direct Metal renderer, CPU oracle,
+  native AppKit window, demand-driven display-link presentation, bounded
+  asynchronous frame slots, and explicit resource accounting;
+- a safe application runtime with synchronous native events, dirty-only scene
+  construction, bounded workers, external-source wake admission, and no general
+  async executor or reactive graph;
+- local copy-on-write text, Unicode and UTF-16 mappings, transactions, bounded
+  undo and redo, atomic save, CoreText shaping, visible-range layout, and
+  hard-budgeted glyph and line caches;
+- Alpine Studio file and folder launch, virtualized file tree, tabs, bounded
+  splits, find and replace, quick open, command discovery, project search,
+  restoration, compiled syntax, typed settings, keyboard, pointer, clipboard,
+  IME, and revisioned accessibility semantics;
+- a bounded local process, JSON-RPC, and LSP path qualified with a pinned
+  `rust-analyzer`, including revision-safe visible Rust diagnostics and no
+  network, extension, AI, collaboration, or telemetry subsystem;
+- fail-closed qualification tooling plus policy, formatting, lint, tests,
+  rustdoc, coverage, changed-code mutation, selected models and proofs,
+  three-platform CI, native Metal validation, and scheduled assurance.
+
+Remaining daily-driver work includes richer Rust intelligence, configuration
+reload and migration, native VoiceOver and lifecycle qualification, sustained
+repository dogfood, and defect closure. Fixed-hardware comparator evidence,
+API stabilization, signing, notarization, packaging, and release support remain
+later gates. The exact implemented boundaries and invariants are documented in
+[Architecture](ARCHITECTURE.md); GitHub issues own live delivery state.
 
 The [engineering guide](docs/SUMMARY.md) owns durable mission principles, user
 journeys, case-study conclusions, enhancement proposals, and the assurance
@@ -86,6 +91,10 @@ GitHub is the operational system for this project:
   concepts;
 - [evidence registry](assurance/evidence.toml) for machine-checked claim and
   evidence traceability.
+
+GitHub Project views are a planning projection, not a fallback source of truth.
+If the active token lacks `read:project`, operators use the issue hierarchy and
+must not infer Project fields, status, blockers, or charts.
 
 ## Ownership and license
 
