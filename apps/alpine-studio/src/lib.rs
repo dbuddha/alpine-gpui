@@ -4891,6 +4891,8 @@ pub mod native_validation {
 
     const NATIVE_INPUT_FRAMES: usize = 5;
     const HOSTED_PRESENTATION_ATTEMPTS: u8 = 8;
+    const HOSTED_PRESENTATION_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(500);
+    const HOSTED_RUN_TIMEOUT: Duration = Duration::from_secs(6);
     const TREE_TOGGLE_MODIFIER_BITS: u8 = 0x09;
     const COMMAND_SHIFT_MODIFIERS: Modifiers = Modifiers::from_bits(TREE_TOGGLE_MODIFIER_BITS);
 
@@ -4918,7 +4920,12 @@ pub mod native_validation {
         let surface = platform_validation::new_surface(descriptor)?;
         let observer = surface.observer();
         let waker = surface.waker();
-        let timeout = platform_validation::arm_run_timeout(&surface, Duration::from_secs(5));
+        let run_timeout = if hosted_direct {
+            HOSTED_RUN_TIMEOUT
+        } else {
+            Duration::from_secs(5)
+        };
+        let timeout = platform_validation::arm_run_timeout(&surface, run_timeout);
         let snapshot = application
             .run_on_native_surface_for_validation(&surface, |surface| {
                 if hosted_direct || !surface.snapshot().is_presentation_visible() {
@@ -4944,7 +4951,7 @@ pub mod native_validation {
                         )?;
                         platform_validation::run_until_frame_terminal(
                             surface,
-                            Duration::from_secs(2),
+                            HOSTED_PRESENTATION_ATTEMPT_TIMEOUT,
                         );
                         if let Some(error) = surface.take_error()? {
                             return Err(error);
