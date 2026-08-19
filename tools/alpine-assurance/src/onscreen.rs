@@ -28,7 +28,7 @@ impl EvidenceFlag {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CaptureEvidence {
     schema: String,
@@ -447,5 +447,192 @@ fn valid_hash(value: &str, length: usize) -> bool {
 fn require(condition: bool, message: impl Into<String>, errors: &mut Vec<String>) {
     if !condition {
         errors.push(message.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CaptureEvidence, load_capture, validate_artifact, validate_bundle, validate_capture,
+        validate_geometry_and_color, validate_transfer,
+    };
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    fn bundle_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("assurance/onscreen-sdr/v1/valid")
+    }
+
+    fn capture(stage: &str) -> Result<CaptureEvidence, String> {
+        load_capture(&bundle_root().join(format!("{stage}.toml")))
+    }
+
+    fn captures() -> Result<BTreeMap<&'static str, CaptureEvidence>, String> {
+        Ok(BTreeMap::from([
+            ("launch", capture("launch")?),
+            ("resize", capture("resize")?),
+            ("display-move", capture("display-move")?),
+            ("wrong-transfer", capture("wrong-transfer")?),
+        ]))
+    }
+
+    fn capture_mut<'a>(
+        captures: &'a mut BTreeMap<&'static str, CaptureEvidence>,
+        stage: &str,
+    ) -> Result<&'a mut CaptureEvidence, String> {
+        captures
+            .get_mut(stage)
+            .ok_or_else(|| format!("missing {stage} test capture"))
+    }
+
+    fn assert_error(errors: &[String], expected: &str) {
+        assert!(
+            errors.iter().any(|error| error.contains(expected)),
+            "expected {expected:?} in {errors:#?}"
+        );
+    }
+
+    fn geometry_errors(capture: &CaptureEvidence) -> Vec<String> {
+        let mut errors = Vec::new();
+        validate_geometry_and_color(capture, &mut errors);
+        errors
+    }
+
+    #[test]
+    fn capture_validation_enforces_identity_composition() -> Result<(), String> {
+        let mut evidence = capture("launch")?;
+        evidence.schema = "unapproved-schema".to_owned();
+        let mut errors = Vec::new();
+        validate_capture(&bundle_root(), "launch", "accepted", &evidence, &mut errors);
+        assert_error(&errors, "capture schema must be exact");
+        Ok(())
+    }
+
+    #[test]
+    fn geometry_rejects_each_nonpositive_and_nonfinite_boundary() -> Result<(), String> {
+        let original = capture("launch")?;
+
+        let mut evidence = original.clone();
+        evidence.backing_scale = 0.0;
+        assert_error(&geometry_errors(&evidence), "backing scale");
+        evidence.backing_scale = f64::INFINITY;
+        assert_error(&geometry_errors(&evidence), "backing scale");
+
+        let mut evidence = original.clone();
+        evidence.logical_width = 0.0;
+        assert_error(&geometry_errors(&evidence), "logical width");
+        evidence.logical_width = f64::INFINITY;
+        assert_error(&geometry_errors(&evidence), "logical width");
+
+        let mut evidence = original.clone();
+        evidence.logical_height = 0.0;
+        assert_error(&geometry_errors(&evidence), "logical height");
+        evidence.logical_height = f64::INFINITY;
+        assert_error(&geometry_errors(&evidence), "logical height");
+
+        let mut evidence = original.clone();
+        evidence.capture_width = 0;
+        assert_error(&geometry_errors(&evidence), "capture extent");
+
+        let mut evidence = original;
+        evidence.capture_height = 0;
+        assert_error(&geometry_errors(&evidence), "capture extent");
+        Ok(())
+    }
+
+    #[test]
+    fn transfer_validation_rejects_oracle_drift() -> Result<(), String> {
+        let mut evidence = capture("launch")?;
+        evidence.accepted_expected[1] ^= 1;
+        let mut errors = Vec::new();
+        validate_transfer("accepted", &evidence, &mut errors);
+        assert_error(&errors, "accepted oracle values drifted");
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_requires_each_consecutive_revision_edge() -> Result<(), String> {
+        let mut invalid_first_edge = captures()?;
+        capture_mut(&mut invalid_first_edge, "resize")?.scene_revision += 1;
+        capture_mut(&mut invalid_first_edge, "display-move")?.scene_revision += 1;
+        capture_mut(&mut invalid_first_edge, "wrong-transfer")?.scene_revision += 1;
+        let mut errors = Vec::new();
+        validate_bundle(&invalid_first_edge, &mut errors);
+        assert_error(&errors, "scene revisions must be consecutive");
+
+        let mut invalid_last_edge = captures()?;
+        capture_mut(&mut invalid_last_edge, "wrong-transfer")?.scene_revision += 1;
+        let mut errors = Vec::new();
+        validate_bundle(&invalid_last_edge, &mut errors);
+        assert_error(&errors, "scene revisions must be consecutive");
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_accepts_a_resize_in_either_single_dimension() -> Result<(), String> {
+        let launch = capture("launch")?;
+        let mut width_only = captures()?;
+        capture_mut(&mut width_only, "resize")?.logical_height = launch.logical_height;
+        let mut errors = Vec::new();
+        validate_bundle(&width_only, &mut errors);
+        assert!(
+            !errors
+                .iter()
+                .any(|error| error.contains("resize must change")),
+            "{errors:#?}"
+        );
+
+        let mut height_only = captures()?;
+        capture_mut(&mut height_only, "resize")?.logical_width = launch.logical_width;
+        let mut errors = Vec::new();
+        validate_bundle(&height_only, &mut errors);
+        assert!(
+            !errors
+                .iter()
+                .any(|error| error.contains("resize must change")),
+            "{errors:#?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_requires_each_accepted_scene_hash_edge() -> Result<(), String> {
+        let mut invalid_resize = captures()?;
+        capture_mut(&mut invalid_resize, "resize")?.scene_sha256 = "0".repeat(64);
+        let mut errors = Vec::new();
+        validate_bundle(&invalid_resize, &mut errors);
+        assert_error(&errors, "accepted stages must share");
+
+        let mut invalid_move = captures()?;
+        capture_mut(&mut invalid_move, "display-move")?.scene_sha256 = "0".repeat(64);
+        let mut errors = Vec::new();
+        validate_bundle(&invalid_move, &mut errors);
+        assert_error(&errors, "accepted stages must share");
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_validation_rejects_invalid_hash_mismatch_and_parent_escape() -> Result<(), String> {
+        let root = bundle_root();
+        let evidence = capture("launch")?;
+
+        let mut errors = Vec::new();
+        validate_artifact(&root, &evidence.scene_file, &"a".repeat(63), &mut errors);
+        assert_error(&errors, "invalid SHA-256");
+
+        let mut errors = Vec::new();
+        validate_artifact(&root, &evidence.scene_file, &"0".repeat(64), &mut errors);
+        assert_error(&errors, "hash mismatch");
+
+        let mut errors = Vec::new();
+        validate_artifact(
+            &root,
+            "../valid/launch.scene",
+            &evidence.scene_sha256,
+            &mut errors,
+        );
+        assert_error(&errors, "escapes the bundle");
+        Ok(())
     }
 }
