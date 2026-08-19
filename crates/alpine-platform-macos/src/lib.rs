@@ -707,6 +707,24 @@ pub mod native_validation {
         surface.implementation.arm_window_close(delay);
     }
 
+    /// Schedules the user-facing AppKit close action after a bounded delay.
+    ///
+    /// Unlike [`arm_window_close`], this enters `windowShouldClose` before the
+    /// production `windowWillClose` teardown boundary. It therefore proves
+    /// application close propagation rather than only native owner teardown.
+    pub fn arm_user_window_close(surface: &NativeSurface, delay: Duration) {
+        surface.implementation.arm_user_window_close(delay);
+    }
+
+    /// Schedules a deterministic delegate-mediated close after a bounded delay.
+    ///
+    /// This calls the production `windowShouldClose` delegate and, only when
+    /// allowed, asks `NSWindow` to close so `windowWillClose` performs normal
+    /// teardown. It does not depend on close-button state on a headless host.
+    pub fn arm_programmatic_window_close(surface: &NativeSurface, delay: Duration) {
+        surface.implementation.arm_programmatic_window_close(delay);
+    }
+
     /// Revokes only the private wake pointer while lifecycle remains live.
     ///
     /// This validation fault proves pointer revocation independently rejects

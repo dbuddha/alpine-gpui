@@ -13,22 +13,24 @@ use alpine_core::Point;
 #[cfg(alpine_native_validation)]
 use std::time::{Duration, Instant};
 
+#[cfg(alpine_native_validation)]
+use objc2::runtime::Bool;
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::Retained,
     runtime::{AnyObject, ProtocolObject, Sel},
 };
-#[cfg(alpine_native_validation)]
-use objc2_app_kit::NSEventType;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent,
     NSEventModifierFlags, NSEventPhase, NSPasteboard, NSPasteboardType, NSPasteboardTypeString,
     NSTextInputClient, NSView, NSWindow, NSWindowDelegate, NSWindowOcclusionState,
     NSWindowStyleMask,
 };
+#[cfg(alpine_native_validation)]
+use objc2_app_kit::{NSEventType, NSWindowButton};
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 #[cfg(alpine_native_validation)]
-use objc2_core_graphics::{CGEvent, CGScrollEventUnit};
+use objc2_core_graphics::{CGEvent, CGEventFlags, CGScrollEventUnit};
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotification, NSObject, NSObjectProtocol,
     NSPoint, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
@@ -2519,6 +2521,198 @@ fn schedule_validation_window_close(window: &Retained<NSWindow>, delay: Duration
     };
 }
 
+#[cfg(alpine_native_validation)]
+fn schedule_validation_user_window_close(
+    window: &Retained<NSWindow>,
+    lifecycle: &Arc<AtomicU8>,
+    counters: &Arc<FrameCounters>,
+    delay: Duration,
+) {
+    schedule_validation_qualified_window_close(
+        window,
+        lifecycle,
+        counters,
+        delay,
+        ValidationCloseAction::UserButton,
+    );
+}
+
+#[cfg(alpine_native_validation)]
+fn schedule_validation_programmatic_window_close(
+    window: &Retained<NSWindow>,
+    delegate: &Retained<DisplayLinkDelegate>,
+    driver: &Rc<RefCell<PresentationDriver>>,
+    lifecycle: &Arc<AtomicU8>,
+    counters: &Arc<FrameCounters>,
+    delay: Duration,
+) {
+    schedule_validation_qualified_window_close(
+        window,
+        lifecycle,
+        counters,
+        delay,
+        ValidationCloseAction::Programmatic {
+            delegate: delegate.clone(),
+            driver: Rc::clone(driver),
+            observed_frames: Cell::new(0),
+        },
+    );
+}
+
+#[cfg(alpine_native_validation)]
+const VALIDATION_CLOSE_OBSERVATION_LIMIT: u8 = 8;
+
+#[cfg(alpine_native_validation)]
+const VALIDATION_CLOSE_PRESENTED_TIME: f64 = 2.0;
+
+#[cfg(alpine_native_validation)]
+const VALIDATION_CLOSE_RETRY_DELAY: Duration = Duration::from_millis(37);
+
+#[cfg(alpine_native_validation)]
+fn next_validation_close_observation(
+    observed_count: u8,
+    active_observed: Option<bool>,
+) -> Option<u8> {
+    match active_observed {
+        Some(false) => observed_count
+            .checked_add(1)
+            .filter(|next_count| *next_count <= VALIDATION_CLOSE_OBSERVATION_LIMIT),
+        None | Some(true) => None,
+    }
+}
+
+#[cfg(alpine_native_validation)]
+const fn validation_close_resources_drained(
+    has_pending: bool,
+    has_active: bool,
+    occupied_slots: u8,
+) -> bool {
+    matches!((has_pending, has_active, occupied_slots), (false, false, 0))
+}
+
+#[cfg(alpine_native_validation)]
+const fn validation_close_should_retry(qualified_presented: u64, resources_drained: bool) -> bool {
+    qualified_presented == 0 || !resources_drained
+}
+
+#[cfg(alpine_native_validation)]
+enum ValidationCloseAction {
+    UserButton,
+    Programmatic {
+        delegate: Retained<DisplayLinkDelegate>,
+        driver: Rc<RefCell<PresentationDriver>>,
+        observed_frames: Cell<u8>,
+    },
+}
+
+#[cfg(alpine_native_validation)]
+fn schedule_validation_qualified_window_close(
+    window: &Retained<NSWindow>,
+    lifecycle: &Arc<AtomicU8>,
+    counters: &Arc<FrameCounters>,
+    delay: Duration,
+    action: ValidationCloseAction,
+) {
+    let window = window.clone();
+    let lifecycle = Arc::clone(lifecycle);
+    let counters = Arc::clone(counters);
+    let close_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
+        RcBlock::new(move |timer: NonNull<NSTimer>| {
+            // SAFETY: Foundation supplies a valid borrowed timer for the
+            // complete callback, and the reference does not escape.
+            let timer = unsafe { timer.as_ref() };
+            if lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+                timer.invalidate();
+                return;
+            }
+            let ready_to_close = if let ValidationCloseAction::Programmatic {
+                driver,
+                observed_frames,
+                ..
+            } = &action
+            {
+                driver.try_borrow_mut().is_ok_and(|mut driver| {
+                    let active_observed = driver
+                        .active
+                        .as_ref()
+                        .map(|active| active.observation.observed());
+                    if let Some(next_count) =
+                        next_validation_close_observation(observed_frames.get(), active_observed)
+                        && let Some(active) = driver.active.as_mut()
+                    {
+                        active
+                            .observation
+                            .inject(VALIDATION_CLOSE_PRESENTED_TIME.to_bits());
+                        observed_frames.set(next_count);
+                    }
+                    validation_close_resources_drained(
+                        driver.pending.is_some(),
+                        driver.active.is_some(),
+                        driver.frame_slots.snapshot().occupied_slots(),
+                    )
+                })
+            } else {
+                true
+            };
+            // Hosted runners do not provide qualifying physical presentation
+            // callbacks. Bootstrap the observation only after a real frame is
+            // active, then wait for its terminal accounting and full slot drain
+            // before exercising the production close delegates. This keeps the
+            // complete journey inside one NSApplication run-loop invocation.
+            if validation_close_should_retry(
+                counters.qualified_presented.load(Ordering::Acquire),
+                ready_to_close,
+            ) {
+                timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(
+                    VALIDATION_CLOSE_RETRY_DELAY.as_secs_f64(),
+                ));
+                return;
+            }
+            match &action {
+                ValidationCloseAction::UserButton => {
+                    // SAFETY: `standardWindowButton:` is an AppKit selector on
+                    // NSWindow. The returned button remains owned by the retained
+                    // window for this immediate main-thread activation.
+                    let close_button: *mut AnyObject = unsafe {
+                        msg_send![&**window, standardWindowButton: NSWindowButton::CloseButton]
+                    };
+                    let Some(close_button) = NonNull::new(close_button) else {
+                        timer.invalidate();
+                        return;
+                    };
+                    // SAFETY: The standard close button and captured window are
+                    // main-thread-only. AppKit routes this user-equivalent activation
+                    // through the installed production NSWindowDelegate.
+                    let _: () = unsafe {
+                        msg_send![close_button.as_ref(), performClick: None::<&AnyObject>]
+                    };
+                }
+                ValidationCloseAction::Programmatic { delegate, .. } => {
+                    // SAFETY: The selector and return type exactly match the
+                    // production NSWindowDelegate method implemented above.
+                    // Both retained objects remain main-thread-only and are
+                    // borrowed only for this synchronous validation dispatch.
+                    let should_close: Bool =
+                        unsafe { msg_send![&**delegate, windowShouldClose: &**window] };
+                    if bool::from(should_close) {
+                        window.close();
+                    }
+                }
+            }
+            timer.invalidate();
+        });
+    // SAFETY: The block and retained window remain main-thread-only,
+    // Foundation copies it for the scheduled timer lifetime, and the
+    // callback receives a valid NSTimer after the run loop starts.
+    let _timer = unsafe {
+        NSTimer::scheduledTimerWithTimeInterval_repeats_block(
+            delay.as_secs_f64(),
+            true,
+            &close_block,
+        )
+    };
+}
+
 pub(crate) struct NativeSurface {
     callback_count: Arc<AtomicU64>,
     rejected_callback_count: Arc<AtomicU64>,
@@ -2985,6 +3179,7 @@ impl NativeSurface {
                 0,
             )
             .ok_or_else(|| native_unavailable(SurfaceStage::View))?;
+            CGEvent::set_flags(Some(&cg_scroll), CGEventFlags::empty());
             let scroll = NSEvent::eventWithCGEvent(&cg_scroll)
                 .ok_or_else(|| native_unavailable(SurfaceStage::View))?;
             self.view.scrollWheel(&scroll);
@@ -3189,6 +3384,23 @@ impl NativeSurface {
     #[cfg(alpine_native_validation)]
     pub(crate) fn arm_window_close(&self, delay: Duration) {
         schedule_validation_window_close(&self.window, delay);
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn arm_user_window_close(&self, delay: Duration) {
+        schedule_validation_user_window_close(&self.window, &self.lifecycle, &self.counters, delay);
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn arm_programmatic_window_close(&self, delay: Duration) {
+        schedule_validation_programmatic_window_close(
+            &self.window,
+            &self.delegate,
+            &self.driver,
+            &self.lifecycle,
+            &self.counters,
+            delay,
+        );
     }
 
     #[cfg(alpine_native_validation)]
@@ -3839,6 +4051,44 @@ mod tests {
         injected.inject(23);
         assert!(injected.observed());
         assert_eq!(injected.presented_time_bits(), 23);
+    }
+
+    #[test]
+    #[cfg(alpine_native_validation)]
+    fn validation_close_observation_is_active_only_and_bounded() {
+        assert_eq!(next_validation_close_observation(0, None), None);
+        assert_eq!(next_validation_close_observation(0, Some(true)), None);
+        assert_eq!(next_validation_close_observation(0, Some(false)), Some(1));
+        assert_eq!(
+            next_validation_close_observation(VALIDATION_CLOSE_OBSERVATION_LIMIT - 1, Some(false),),
+            Some(VALIDATION_CLOSE_OBSERVATION_LIMIT)
+        );
+        assert_eq!(
+            next_validation_close_observation(VALIDATION_CLOSE_OBSERVATION_LIMIT, Some(false),),
+            None
+        );
+        assert_eq!(
+            next_validation_close_observation(u8::MAX, Some(false)),
+            None
+        );
+    }
+
+    #[test]
+    #[cfg(alpine_native_validation)]
+    fn validation_close_requires_qualified_presentation_and_complete_resource_drain() {
+        assert!(validation_close_resources_drained(false, false, 0));
+        assert!(!validation_close_resources_drained(true, false, 0));
+        assert!(!validation_close_resources_drained(false, true, 0));
+        assert!(!validation_close_resources_drained(true, true, 0));
+        assert!(!validation_close_resources_drained(false, false, 1));
+        assert!(!validation_close_resources_drained(false, false, 3));
+        assert!(!validation_close_resources_drained(false, false, u8::MAX));
+
+        assert!(validation_close_should_retry(0, false));
+        assert!(validation_close_should_retry(0, true));
+        assert!(validation_close_should_retry(1, false));
+        assert!(!validation_close_should_retry(1, true));
+        assert!(!validation_close_should_retry(u64::MAX, true));
     }
 
     #[test]

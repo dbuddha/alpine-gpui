@@ -27,6 +27,10 @@ mdbook build
 mdbook test
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+if [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
+    RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
+        cargo check --locked -p alpine-studio --test native_process
+fi
 cargo test --workspace --all-targets --all-features --locked
 cargo test --workspace --doc --all-features --locked
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked

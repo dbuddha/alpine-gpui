@@ -20,6 +20,8 @@ mod validation {
     type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
     const MAX_RETRY_ATTEMPTS: u8 = 4;
+    const LOGICAL_WIDTH: f64 = 96.0;
+    const LOGICAL_HEIGHT: f64 = 64.0;
 
     pub(super) fn run() -> TestResult {
         let hosted_direct = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
@@ -35,7 +37,7 @@ mod validation {
     fn validate_supersession(scene: Scene, clear: LinearRgba, hosted_direct: bool) -> TestResult {
         let descriptor = SurfaceDescriptor::new("Alpine supersession", 96.0, 64.0, 1.0)?;
         let surface = native_validation::new_surface(&descriptor)?;
-        prepare_visible_surface(&surface, hosted_direct)?;
+        let _backing_scale = prepare_visible_surface(&surface, hosted_direct)?;
         assert!(
             native_validation::inject_post_commit_observation(&surface, None, f64::NAN).is_err()
         );
@@ -159,7 +161,7 @@ mod validation {
     fn validate_device_loss(scene: Scene, clear: LinearRgba, hosted_direct: bool) -> TestResult {
         let descriptor = SurfaceDescriptor::new("Alpine device loss", 96.0, 64.0, 1.0)?;
         let surface = native_validation::new_surface_with_device_loss(&descriptor)?;
-        prepare_visible_surface(&surface, hosted_direct)?;
+        let backing_scale = prepare_visible_surface(&surface, hosted_direct)?;
         assert_eq!(surface.request_frame(scene.clone(), clear)?.get(), 1);
         native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
         let first_error = surface.take_error()?.ok_or("device-loss failure")?;
@@ -185,7 +187,14 @@ mod validation {
             terminal.recovery(),
             Some(RecoveryClassification::RecreateBackend)
         );
-        native_validation::inject_surface_configuration(&surface, 96.0, 64.0, 1.0, 0, true)?;
+        native_validation::inject_surface_configuration(
+            &surface,
+            LOGICAL_WIDTH,
+            LOGICAL_HEIGHT,
+            backing_scale,
+            0,
+            true,
+        )?;
         assert!(surface.snapshot().display_link_paused());
         assert_eq!(failed.submission_count(), 1);
         assert_eq!(failed.direct_present_count(), 1);
@@ -232,12 +241,28 @@ mod validation {
         Ok(())
     }
 
-    fn prepare_visible_surface(surface: &NativeSurface, hosted_direct: bool) -> TestResult {
+    fn prepare_visible_surface(surface: &NativeSurface, hosted_direct: bool) -> TestResult<f64> {
         surface.show()?;
-        if hosted_direct {
-            native_validation::inject_surface_configuration(surface, 96.0, 64.0, 1.0, 0, true)?;
+        let snapshot = surface.snapshot();
+        let width_scale = f64::from(snapshot.physical_width()) / LOGICAL_WIDTH;
+        let height_scale = f64::from(snapshot.physical_height()) / LOGICAL_HEIGHT;
+        if !width_scale.is_finite()
+            || width_scale <= 0.0
+            || width_scale.to_bits() != height_scale.to_bits()
+        {
+            return Err("native backing scale must be finite, positive, and uniform".into());
         }
-        Ok(())
+        if hosted_direct {
+            native_validation::inject_surface_configuration(
+                surface,
+                LOGICAL_WIDTH,
+                LOGICAL_HEIGHT,
+                width_scale,
+                0,
+                true,
+            )?;
+        }
+        Ok(width_scale)
     }
 
     fn validation_scene() -> TestResult<(Scene, LinearRgba)> {

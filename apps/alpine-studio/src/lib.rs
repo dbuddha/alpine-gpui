@@ -364,6 +364,18 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[cfg_attr(test, mutants::skip)] // Entering AppKit is qualified by native process E2E.
 fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
+    #[cfg(alpine_native_validation)]
+    let mut app = app;
+    #[cfg(not(alpine_native_validation))]
+    let app = app;
+    #[cfg(alpine_native_validation)]
+    let production_process_validation = std::env::var_os("ALPINE_STUDIO_NATIVE_PROCESS_SCENARIO")
+        .as_deref()
+        == Some(std::ffi::OsStr::new("production-single-window"));
+    #[cfg(alpine_native_validation)]
+    if production_process_validation {
+        app.session_path = None;
+    }
     let clear = app.settings.active().theme.clear;
     let descriptor = SurfaceDescriptor::new(
         "Alpine Studio",
@@ -372,7 +384,12 @@ fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
         2.0,
     )?;
     let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
-    Application::new(app, viewport, clear, WorkerConfig::default())?.run(&descriptor)
+    let application = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    #[cfg(alpine_native_validation)]
+    if production_process_validation {
+        return native_validation::qualify_production_window_application(application, &descriptor);
+    }
+    application.run(&descriptor)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -4849,6 +4866,7 @@ fn floor_f32_to_usize(value: f32) -> Option<usize> {
 pub mod native_validation {
     use std::{
         cell::RefCell,
+        ffi::OsStr,
         fmt,
         fmt::Write as _,
         fs,
@@ -4872,8 +4890,218 @@ pub mod native_validation {
     };
 
     const NATIVE_INPUT_FRAMES: usize = 5;
+    const HOSTED_RUN_TIMEOUT: Duration = Duration::from_secs(6);
     const TREE_TOGGLE_MODIFIER_BITS: u8 = 0x09;
     const COMMAND_SHIFT_MODIFIERS: Modifiers = Modifiers::from_bits(TREE_TOGGLE_MODIFIER_BITS);
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PresentationEvidenceMode {
+        Physical,
+        HostedDirect,
+    }
+
+    impl PresentationEvidenceMode {
+        const fn source(self) -> &'static str {
+            match self {
+                Self::Physical => "physical",
+                Self::HostedDirect => "hosted-direct",
+            }
+        }
+
+        const fn requires_surface_configuration(self, presentation_visible: bool) -> bool {
+            match self {
+                Self::Physical => !presentation_visible,
+                Self::HostedDirect => true,
+            }
+        }
+    }
+
+    fn parse_presentation_evidence_mode(value: Option<&OsStr>) -> Option<PresentationEvidenceMode> {
+        match value {
+            None => Some(PresentationEvidenceMode::Physical),
+            Some(mode) if mode == OsStr::new("hosted-direct") => {
+                Some(PresentationEvidenceMode::HostedDirect)
+            }
+            Some(_) => None,
+        }
+    }
+
+    const fn pending_cancellation_evidence_is_bounded(count: u64, has_last: bool) -> bool {
+        matches!((count, has_last), (0, false) | (1, true))
+    }
+
+    #[cfg(test)]
+    mod presentation_evidence_policy_tests {
+        use super::{
+            PresentationEvidenceMode, parse_presentation_evidence_mode,
+            pending_cancellation_evidence_is_bounded,
+        };
+        use std::ffi::OsStr;
+
+        #[test]
+        fn evidence_mode_parser_rejects_drift_and_preserves_source_identity() {
+            let physical = parse_presentation_evidence_mode(None);
+            let hosted = parse_presentation_evidence_mode(Some(OsStr::new("hosted-direct")));
+            assert_eq!(physical, Some(PresentationEvidenceMode::Physical));
+            assert_eq!(hosted, Some(PresentationEvidenceMode::HostedDirect));
+            assert_eq!(
+                parse_presentation_evidence_mode(Some(OsStr::new("hosted"))),
+                None
+            );
+            assert_eq!(PresentationEvidenceMode::Physical.source(), "physical");
+            assert_eq!(
+                PresentationEvidenceMode::HostedDirect.source(),
+                "hosted-direct"
+            );
+        }
+
+        #[test]
+        fn configuration_policy_distinguishes_mode_and_visibility() {
+            assert!(PresentationEvidenceMode::Physical.requires_surface_configuration(false));
+            assert!(!PresentationEvidenceMode::Physical.requires_surface_configuration(true));
+            assert!(PresentationEvidenceMode::HostedDirect.requires_surface_configuration(false));
+            assert!(PresentationEvidenceMode::HostedDirect.requires_surface_configuration(true));
+        }
+
+        #[test]
+        fn pending_cancellation_requires_one_bounded_evidence_record() {
+            assert!(pending_cancellation_evidence_is_bounded(0, false));
+            assert!(pending_cancellation_evidence_is_bounded(1, true));
+            assert!(!pending_cancellation_evidence_is_bounded(0, true));
+            assert!(!pending_cancellation_evidence_is_bounded(1, false));
+            assert!(!pending_cancellation_evidence_is_bounded(2, true));
+            assert!(!pending_cancellation_evidence_is_bounded(u64::MAX, true));
+        }
+    }
+
+    /// Runs the real Studio runtime through one presented frame and close.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured runtime or native-surface failure. Contract
+    /// violations remain fatal to the isolated process so the parent watchdog
+    /// cannot mistake partial execution for successful qualification.
+    pub(super) fn qualify_production_window_application(
+        application: Application<StudioApp>,
+        descriptor: &SurfaceDescriptor,
+    ) -> Result<(), alpine_runtime::RuntimeError> {
+        let evidence_value = std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE");
+        let evidence_mode = parse_presentation_evidence_mode(evidence_value.as_deref())
+            .unwrap_or_else(|| {
+                panic!("unsupported presentation evidence mode: {evidence_value:?}")
+            });
+        let evidence_source = evidence_mode.source();
+        let surface = platform_validation::new_surface(descriptor)?;
+        let observer = surface.observer();
+        let waker = surface.waker();
+        let mut timeout = None;
+        let snapshot = application
+            .run_on_native_surface_for_validation(&surface, |surface| {
+                if evidence_mode
+                    .requires_surface_configuration(surface.snapshot().is_presentation_visible())
+                {
+                    platform_validation::inject_surface_configuration(
+                        surface,
+                        f64::from(WINDOW_WIDTH),
+                        f64::from(WINDOW_HEIGHT),
+                        f64::from(DEFAULT_SCALE),
+                        0,
+                        true,
+                    )?;
+                }
+                let run_timeout = match evidence_mode {
+                    PresentationEvidenceMode::HostedDirect => HOSTED_RUN_TIMEOUT,
+                    PresentationEvidenceMode::Physical => Duration::from_secs(5),
+                };
+                timeout = Some(platform_validation::arm_run_timeout(surface, run_timeout));
+                match evidence_mode {
+                    PresentationEvidenceMode::HostedDirect => {
+                        // A headless AppKit host may decline `performClose` despite
+                        // a valid delegate. Exercise the production close-admission
+                        // and teardown delegates directly instead.
+                        platform_validation::arm_programmatic_window_close(surface, Duration::ZERO);
+                    }
+                    PresentationEvidenceMode::Physical => {
+                        platform_validation::arm_user_window_close(
+                            surface,
+                            Duration::from_millis(500),
+                        );
+                    }
+                }
+                Ok(())
+            })?
+            .ok_or(alpine_runtime::RuntimeError::Surface(
+                alpine_platform_macos::SurfaceError::DriverUnavailable,
+            ))?;
+        let timeout = timeout.ok_or(alpine_runtime::RuntimeError::Surface(
+            alpine_platform_macos::SurfaceError::DriverUnavailable,
+        ))?;
+        timeout.cancel();
+        assert!(timeout.cancelled());
+        assert!(!timeout.expired());
+        assert!(snapshot.is_shutting_down());
+        assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
+
+        let frame = surface.snapshot();
+        let submissions = frame.submission_count();
+        assert!(submissions >= 1);
+        if let PresentationEvidenceMode::Physical = evidence_mode {
+            assert!(submissions <= 4);
+        }
+        assert_eq!(frame.direct_present_count(), submissions);
+        assert_eq!(frame.installed_presented_handler_count(), submissions);
+        assert_eq!(
+            frame.presented_count()
+                + frame.skipped_count()
+                + frame.cancelled_count()
+                + frame.failed_count(),
+            submissions
+        );
+        assert_eq!(
+            frame.qualified_presented_count() + frame.superseded_count(),
+            frame.presented_count()
+        );
+        assert!(frame.qualified_presented_count() >= 1);
+        assert!(pending_cancellation_evidence_is_bounded(
+            frame.pending_cancellation_count(),
+            frame.last_pending_cancellation().is_some()
+        ));
+        assert_eq!(frame.failed_count(), 0);
+        assert_eq!(frame.current_retained_bytes(), 0);
+        assert_eq!(frame.occupied_frame_slots(), 0);
+        assert_eq!(frame.submitted_frame_slots(), 0);
+        assert!(frame.display_link_paused());
+        assert_eq!(
+            waker.wake(),
+            alpine_platform_macos::SurfaceWakeAdmission::Closed
+        );
+
+        let admitted = observer.callback_count();
+        let rejected = observer.rejected_callback_count();
+        platform_validation::inject_late_callback(&surface);
+        assert_eq!(observer.callback_count(), admitted);
+        assert_eq!(observer.rejected_callback_count(), rejected + 1);
+
+        let owners = platform_validation::close_with_owner_evidence(surface)?;
+        assert_eq!(owners.acquired(), [1; 9]);
+        assert_eq!(owners.released(), [1; 9]);
+        assert_eq!(owners.active(), [0; 9]);
+        assert_eq!(owners.run_loop_registrations(), 1);
+        assert_eq!(owners.link_invalidations(), 1);
+        assert_eq!(owners.delegate_revocations(), 1);
+        assert_eq!(owners.window_closes(), 1);
+        assert_eq!(owners.release_order_violations(), 0);
+        assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closed);
+        println!(
+            "alpine-native-journey submissions={submissions} presented={} qualified={} superseded={} skipped={} cancelled={} shutdown=true owners=9 evidence={evidence_source}",
+            frame.presented_count(),
+            frame.qualified_presented_count(),
+            frame.superseded_count(),
+            frame.skipped_count(),
+            frame.cancelled_count()
+        );
+        Ok(())
+    }
 
     /// Handle-free completion evidence returned across the process-test boundary.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
