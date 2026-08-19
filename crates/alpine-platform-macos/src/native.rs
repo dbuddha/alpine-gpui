@@ -27,7 +27,7 @@ use objc2_app_kit::{
     NSWindowStyleMask,
 };
 #[cfg(alpine_native_validation)]
-use objc2_app_kit::{NSEventType, NSWindowButton};
+use objc2_app_kit::{NSEventType, NSScreen, NSWindowButton};
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 #[cfg(alpine_native_validation)]
 use objc2_core_graphics::{CGEvent, CGEventFlags, CGScrollEventUnit};
@@ -2487,6 +2487,33 @@ fn recognizes_sdr_color_contract(
         && standard_srgb_color_space
 }
 
+#[cfg(any(test, alpine_native_validation))]
+fn centered_window_origin(window: NSRect, visible: NSRect) -> NSPoint {
+    let available_x = (visible.size.width - window.size.width).max(0.0);
+    let available_y = (visible.size.height - window.size.height).max(0.0);
+    NSPoint::new(
+        visible.origin.x + available_x / 2.0,
+        visible.origin.y + available_y / 2.0,
+    )
+}
+
+#[cfg(alpine_native_validation)]
+fn validation_screen_configuration(
+    index: usize,
+    screen: &NSScreen,
+) -> crate::native_validation::ValidationScreenConfiguration {
+    let visible = screen.visibleFrame();
+    crate::native_validation::ValidationScreenConfiguration::new(
+        index,
+        core::ptr::from_ref(screen) as usize,
+        screen.backingScaleFactor(),
+        visible.origin.x,
+        visible.origin.y,
+        visible.size.width,
+        visible.size.height,
+    )
+}
+
 fn apply_display_link_directive(link: &CAMetalDisplayLink, directive: DisplayLinkDirective) {
     match directive {
         DisplayLinkDirective::None => {}
@@ -3601,6 +3628,56 @@ impl NativeSurface {
     }
 
     #[cfg(alpine_native_validation)]
+    pub(crate) fn validation_screen_configurations(
+        &self,
+    ) -> Vec<crate::native_validation::ValidationScreenConfiguration> {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return Vec::new();
+        };
+        NSScreen::screens(mtm)
+            .iter()
+            .enumerate()
+            .map(|(index, screen)| validation_screen_configuration(index, &screen))
+            .collect()
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn move_window_to_screen(
+        &self,
+        index: usize,
+    ) -> Result<crate::native_validation::ValidationScreenConfiguration, SurfaceError> {
+        let mtm = MainThreadMarker::new().ok_or(SurfaceError::DriverUnavailable)?;
+        let screens = NSScreen::screens(mtm);
+        let screen = screens
+            .iter()
+            .nth(index)
+            .ok_or(SurfaceError::DriverUnavailable)?;
+        self.window.setFrameOrigin(centered_window_origin(
+            self.window.frame(),
+            screen.visibleFrame(),
+        ));
+        if !self
+            .delegate
+            .synchronize_native_configuration_from_callback()
+        {
+            return Err(SurfaceError::DriverUnavailable);
+        }
+        let current = self
+            .window
+            .screen()
+            .ok_or(SurfaceError::DriverUnavailable)?;
+        let current_identity = Retained::as_ptr(&current) as usize;
+        let current_index = screens
+            .iter()
+            .position(|candidate| Retained::as_ptr(&candidate) as usize == current_identity)
+            .ok_or(SurfaceError::DriverUnavailable)?;
+        if current_index != index {
+            return Err(SurfaceError::DriverUnavailable);
+        }
+        Ok(validation_screen_configuration(current_index, &current))
+    }
+
+    #[cfg(alpine_native_validation)]
     pub(crate) fn close_window(&self) {
         self.window.close();
     }
@@ -4089,6 +4166,22 @@ mod tests {
         assert!(validation_close_should_retry(1, false));
         assert!(!validation_close_should_retry(1, true));
         assert!(!validation_close_should_retry(u64::MAX, true));
+    }
+
+    #[test]
+    fn centered_window_origin_never_moves_before_the_visible_origin() {
+        let visible = NSRect::new(NSPoint::new(-100.0, 40.0), NSSize::new(800.0, 600.0));
+        let centered = centered_window_origin(
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 200.0)),
+            visible,
+        );
+        assert_eq!(centered, NSPoint::new(100.0, 240.0));
+
+        let oversized = centered_window_origin(
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(900.0, 700.0)),
+            visible,
+        );
+        assert_eq!(oversized, visible.origin);
     }
 
     #[test]

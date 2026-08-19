@@ -569,6 +569,73 @@ pub mod native_validation {
         Allow,
     }
 
+    /// Handle-free identity for one real AppKit screen used by physical validation.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct ValidationScreenConfiguration {
+        index: usize,
+        identity: usize,
+        backing_scale: f64,
+        visible_x: f64,
+        visible_y: f64,
+        visible_width: f64,
+        visible_height: f64,
+    }
+
+    impl ValidationScreenConfiguration {
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "physical screen evidence preserves each independent AppKit value"
+        )]
+        pub(crate) const fn new(
+            index: usize,
+            identity: usize,
+            backing_scale: f64,
+            visible_x: f64,
+            visible_y: f64,
+            visible_width: f64,
+            visible_height: f64,
+        ) -> Self {
+            Self {
+                index,
+                identity,
+                backing_scale,
+                visible_x,
+                visible_y,
+                visible_width,
+                visible_height,
+            }
+        }
+
+        /// Returns the stable index within the current AppKit screen list.
+        #[must_use]
+        pub const fn index(self) -> usize {
+            self.index
+        }
+
+        /// Returns the process-local AppKit screen object identity.
+        #[must_use]
+        pub const fn identity(self) -> usize {
+            self.identity
+        }
+
+        /// Returns backing pixels per logical screen unit.
+        #[must_use]
+        pub const fn backing_scale(self) -> f64 {
+            self.backing_scale
+        }
+
+        /// Returns the visible screen origin and extent.
+        #[must_use]
+        pub const fn visible_frame(self) -> (f64, f64, f64, f64) {
+            (
+                self.visible_x,
+                self.visible_y,
+                self.visible_width,
+                self.visible_height,
+            )
+        }
+    }
+
     /// Validation-only exact ownership and teardown counts for one surface.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct NativeOwnerEvidence {
@@ -801,6 +868,25 @@ pub mod native_validation {
         surface
             .implementation
             .resize_content(logical_width, logical_height);
+    }
+
+    /// Returns handle-free metadata for every real AppKit screen.
+    #[must_use]
+    pub fn screen_configurations(surface: &NativeSurface) -> Vec<ValidationScreenConfiguration> {
+        surface.implementation.validation_screen_configurations()
+    }
+
+    /// Centers the validation window on one real AppKit screen and synchronizes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a driver error when the index is absent or AppKit does not publish
+    /// the selected screen after moving the owned window.
+    pub fn move_window_to_screen(
+        surface: &NativeSurface,
+        index: usize,
+    ) -> Result<ValidationScreenConfiguration, SurfaceError> {
+        surface.implementation.move_window_to_screen(index)
     }
 
     /// Closes the real `AppKit` window through its delegate lifecycle.

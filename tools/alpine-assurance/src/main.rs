@@ -2,6 +2,7 @@
 
 mod calibration;
 mod lab;
+mod onscreen;
 mod qualification;
 
 use serde::Deserialize;
@@ -145,6 +146,12 @@ fn run() -> Result<String, Vec<String>> {
     }
     if matches!(
         command.as_str(),
+        "validate-onscreen-sdr" | "onscreen-sdr-report"
+    ) {
+        return run_onscreen_command(&command, &mut arguments);
+    }
+    if matches!(
+        command.as_str(),
         "validate-qualification"
             | "qualification-report"
             | "validate-aa-calibration"
@@ -217,9 +224,22 @@ fn run() -> Result<String, Vec<String>> {
         )),
         "report" => Ok(render_report(&registry)),
         other => Err(vec![format!(
-            "unknown command {other:?}; expected validate, report, validate-scene-trace, render-scene-reference, render-scene-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, or upstream-radar"
+            "unknown command {other:?}; expected validate, report, validate-scene-trace, render-scene-reference, render-scene-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, or upstream-radar"
         )]),
     }
+}
+
+fn run_onscreen_command(
+    command: &str,
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<String, Vec<String>> {
+    let Some(path) = arguments.next() else {
+        return Err(vec![format!("{command} requires an artifact bundle path")]);
+    };
+    if arguments.next().is_some() {
+        return Err(vec![format!("{command} accepts exactly one bundle path")]);
+    }
+    onscreen::run(command, Path::new(&path))
 }
 
 fn run_upstream_radar() -> Result<String, Vec<String>> {
