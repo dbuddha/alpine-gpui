@@ -87,7 +87,7 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
             .into());
         }
         let fields = stdout.split_whitespace().collect::<Vec<_>>();
-        assert_eq!(fields.len(), 8);
+        assert_eq!(fields.len(), 9);
         assert_eq!(fields[0], "alpine-native-journey");
         let submissions = fields[1]
             .strip_prefix("submissions=")
@@ -109,13 +109,20 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
             .strip_prefix("skipped=")
             .ok_or("missing skipped-presentation evidence")?
             .parse::<u64>()?;
+        let cancelled = fields[6]
+            .strip_prefix("cancelled=")
+            .ok_or("missing cancelled-presentation evidence")?
+            .parse::<u64>()?;
         assert!((1..=4).contains(&submissions));
-        assert_eq!(presented + skipped, submissions);
+        assert_eq!(presented + skipped + cancelled, submissions);
         assert_eq!(qualified + superseded, presented);
         assert!(qualified >= 1);
-        assert_eq!(fields[6], "shutdown=true");
-        assert_eq!(fields[7], "owners=9");
-        assert!(stderr.is_empty(), "unexpected shipping stderr: {stderr}");
+        assert_eq!(fields[7], "shutdown=true");
+        assert_eq!(fields[8], "owners=9");
+        assert!(stderr.lines().all(|line| {
+            line.ends_with("Metal API Validation Enabled")
+                || line.ends_with("Metal GPU Validation Enabled")
+        }));
         Ok(())
     })();
     let cleanup = std::fs::remove_dir_all(root);

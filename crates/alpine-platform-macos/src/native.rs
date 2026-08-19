@@ -18,14 +18,14 @@ use objc2::{
     rc::Retained,
     runtime::{AnyObject, ProtocolObject, Sel},
 };
-#[cfg(alpine_native_validation)]
-use objc2_app_kit::NSEventType;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent,
     NSEventModifierFlags, NSEventPhase, NSPasteboard, NSPasteboardType, NSPasteboardTypeString,
     NSTextInputClient, NSView, NSWindow, NSWindowDelegate, NSWindowOcclusionState,
     NSWindowStyleMask,
 };
+#[cfg(alpine_native_validation)]
+use objc2_app_kit::{NSEventType, NSWindowButton};
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 #[cfg(alpine_native_validation)]
 use objc2_core_graphics::{CGEvent, CGScrollEventUnit};
@@ -2536,9 +2536,24 @@ fn schedule_validation_user_window_close(
                 timer.invalidate();
                 return;
             }
-            window.performClose(None);
+            // SAFETY: `standardWindowButton:` is an AppKit selector on
+            // NSWindow. The returned button remains owned by the retained
+            // window for this immediate main-thread activation.
+            let close_button: *mut AnyObject =
+                unsafe { msg_send![&**window, standardWindowButton: NSWindowButton::CloseButton] };
+            let Some(close_button) = NonNull::new(close_button) else {
+                timer.invalidate();
+                return;
+            };
+            // SAFETY: The standard close button and captured window are
+            // main-thread-only. AppKit routes this user-equivalent activation
+            // through the installed production NSWindowDelegate.
+            let _: () =
+                unsafe { msg_send![close_button.as_ref(), performClick: None::<&AnyObject>] };
             if lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
                 timer.invalidate();
+            } else {
+                timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(0.037));
             }
         });
     // SAFETY: The block and retained window remain main-thread-only,

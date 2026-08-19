@@ -1011,6 +1011,22 @@ pub struct ApplicationSnapshot {
     external: ExternalSnapshot,
 }
 
+impl Default for ApplicationSnapshot {
+    fn default() -> Self {
+        Self {
+            workspace_revision: WorkspaceRevision::default(),
+            document_revision: DocumentRevision::default(),
+            next_scene_revision: 1,
+            dirty: false,
+            shutting_down: false,
+            stale_results: 0,
+            invalid_scenes: 0,
+            worker: WorkerSnapshot::default(),
+            external: ExternalSnapshot::default(),
+        }
+    }
+}
+
 impl ApplicationSnapshot {
     /// Returns the current workspace revision.
     #[must_use]
@@ -1217,7 +1233,9 @@ impl<D: AppDelegate + 'static> Application<D> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let surface = NativeSurface::new(descriptor)?;
-            self.run_on_native_surface(&surface, |_| Ok(())).map(|_| ())
+            self.run_on_native_surface(&surface, |_| Ok(()))?
+                .ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+            Ok(())
         }
 
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -1243,7 +1261,7 @@ impl<D: AppDelegate + 'static> Application<D> {
         self,
         surface: &NativeSurface,
         before_run: F,
-    ) -> Result<ApplicationSnapshot, RuntimeError>
+    ) -> Result<Option<ApplicationSnapshot>, RuntimeError>
     where
         F: FnOnce(&NativeSurface) -> Result<(), SurfaceError>,
     {
@@ -1255,7 +1273,7 @@ impl<D: AppDelegate + 'static> Application<D> {
         self,
         surface: &NativeSurface,
         before_run: F,
-    ) -> Result<ApplicationSnapshot, RuntimeError>
+    ) -> Result<Option<ApplicationSnapshot>, RuntimeError>
     where
         F: FnOnce(&NativeSurface) -> Result<(), SurfaceError>,
     {
@@ -1281,15 +1299,16 @@ impl<D: AppDelegate + 'static> Application<D> {
                 |mut application| application.dispatch_with_response(&event),
             )
         });
-        let snapshot = state.try_borrow_mut().ok().map(|mut application| {
+        let snapshot = state.try_borrow_mut().ok().and_then(|mut application| {
+            let close_observed = application.shutting_down;
             application.external.close();
             application.shutting_down = true;
             application.dirty = false;
             application.workers.shutdown();
-            application.snapshot()
+            close_observed.then(|| application.snapshot())
         });
         run_result.map_err(RuntimeError::Surface)?;
-        snapshot.ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))
+        Ok(snapshot)
     }
 
     fn drain_worker_results(&mut self) {

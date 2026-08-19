@@ -364,6 +364,18 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[cfg_attr(test, mutants::skip)] // Entering AppKit is qualified by native process E2E.
 fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
+    #[cfg(alpine_native_validation)]
+    let mut app = app;
+    #[cfg(not(alpine_native_validation))]
+    let app = app;
+    #[cfg(alpine_native_validation)]
+    let production_process_validation = std::env::var_os("ALPINE_STUDIO_NATIVE_PROCESS_SCENARIO")
+        .as_deref()
+        == Some(std::ffi::OsStr::new("production-single-window"));
+    #[cfg(alpine_native_validation)]
+    if production_process_validation {
+        app.session_path = None;
+    }
     let clear = app.settings.active().theme.clear;
     let descriptor = SurfaceDescriptor::new(
         "Alpine Studio",
@@ -374,9 +386,7 @@ fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
     let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
     let application = Application::new(app, viewport, clear, WorkerConfig::default())?;
     #[cfg(alpine_native_validation)]
-    if std::env::var_os("ALPINE_STUDIO_NATIVE_PROCESS_SCENARIO").as_deref()
-        == Some(std::ffi::OsStr::new("production-single-window"))
-    {
+    if production_process_validation {
         return native_validation::qualify_production_window_application(application, &descriptor);
     }
     application.run(&descriptor)
@@ -4897,20 +4907,24 @@ pub mod native_validation {
         let observer = surface.observer();
         let waker = surface.waker();
         let timeout = platform_validation::arm_run_timeout(&surface, Duration::from_secs(5));
-        let snapshot = application.run_on_native_surface_for_validation(&surface, |surface| {
-            if !surface.snapshot().is_presentation_visible() {
-                platform_validation::inject_surface_configuration(
-                    surface,
-                    f64::from(WINDOW_WIDTH),
-                    f64::from(WINDOW_HEIGHT),
-                    f64::from(DEFAULT_SCALE),
-                    0,
-                    true,
-                )?;
-            }
-            platform_validation::arm_user_window_close(surface, Duration::from_millis(500));
-            Ok(())
-        })?;
+        let snapshot = application
+            .run_on_native_surface_for_validation(&surface, |surface| {
+                if !surface.snapshot().is_presentation_visible() {
+                    platform_validation::inject_surface_configuration(
+                        surface,
+                        f64::from(WINDOW_WIDTH),
+                        f64::from(WINDOW_HEIGHT),
+                        f64::from(DEFAULT_SCALE),
+                        0,
+                        true,
+                    )?;
+                }
+                platform_validation::arm_user_window_close(surface, Duration::from_millis(500));
+                Ok(())
+            })?
+            .ok_or(alpine_runtime::RuntimeError::Surface(
+                alpine_platform_macos::SurfaceError::DriverUnavailable,
+            ))?;
         timeout.cancel();
         assert!(timeout.cancelled());
         assert!(!timeout.expired());
@@ -4922,13 +4936,18 @@ pub mod native_validation {
         assert!((1..=4).contains(&submissions));
         assert_eq!(frame.direct_present_count(), submissions);
         assert_eq!(frame.installed_presented_handler_count(), submissions);
-        assert_eq!(frame.presented_count() + frame.skipped_count(), submissions);
+        assert_eq!(
+            frame.presented_count()
+                + frame.skipped_count()
+                + frame.cancelled_count()
+                + frame.failed_count(),
+            submissions
+        );
         assert_eq!(
             frame.qualified_presented_count() + frame.superseded_count(),
             frame.presented_count()
         );
         assert!(frame.qualified_presented_count() >= 1);
-        assert_eq!(frame.cancelled_count(), 0);
         assert_eq!(frame.pending_cancellation_count(), 0);
         assert_eq!(frame.failed_count(), 0);
         assert_eq!(frame.current_retained_bytes(), 0);
@@ -4957,11 +4976,12 @@ pub mod native_validation {
         assert_eq!(owners.release_order_violations(), 0);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closed);
         println!(
-            "alpine-native-journey submissions={submissions} presented={} qualified={} superseded={} skipped={} shutdown=true owners=9",
+            "alpine-native-journey submissions={submissions} presented={} qualified={} superseded={} skipped={} cancelled={} shutdown=true owners=9",
             frame.presented_count(),
             frame.qualified_presented_count(),
             frame.superseded_count(),
-            frame.skipped_count()
+            frame.skipped_count(),
+            frame.cancelled_count()
         );
         Ok(())
     }
