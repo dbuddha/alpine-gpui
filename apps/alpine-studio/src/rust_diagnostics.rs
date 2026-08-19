@@ -215,7 +215,7 @@ struct AdmittedCompletion {
     first_visible: usize,
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 thread_local! {
     static LAST_COMPLETION_RESPONSE: std::cell::RefCell<Option<Box<str>>> = const {
         std::cell::RefCell::new(None)
@@ -225,7 +225,7 @@ thread_local! {
 fn completion_batch_from_response(
     value: ResponseValue<'_>,
 ) -> Result<CompletionBatch, CompletionError> {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
     LAST_COMPLETION_RESPONSE.with(|response| {
         response.replace(Some(match value {
             ResponseValue::Result(result) => Box::from(result.get()),
@@ -238,7 +238,7 @@ fn completion_batch_from_response(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn take_completion_response_for_test() -> Option<Box<str>> {
     LAST_COMPLETION_RESPONSE.with(std::cell::RefCell::take)
 }

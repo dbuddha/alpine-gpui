@@ -467,7 +467,8 @@ fn completion_cancellation_and_request_failures_are_bounded() -> Result<(), Box<
 
 fn wait_for_running_peer(model: &mut RustDiagnostics) -> Result<LanguageWake, Box<dyn Error>> {
     let wake = model.current_wake_for_test().ok_or("language wake")?;
-    for _ in 0..500 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
         let _ = model.poll(wake);
         let running = model.session.as_ref().is_some_and(|session| {
             let snapshot = session.client.snapshot();
@@ -481,10 +482,22 @@ fn wait_for_running_peer(model: &mut RustDiagnostics) -> Result<LanguageWake, Bo
     Err("timed out waiting for running language peer".into())
 }
 
+fn installed_process_model() -> Result<(RustDiagnostics, PathBuf), Box<dyn Error>> {
+    let (root, path, snapshot, identity) = tests::fixture();
+    let input = RustDocumentInput::new(&path, &root, identity, snapshot);
+    let mut model = RustDiagnostics::with_server(tests::mock_executable());
+    let effect = model.sync(Some(input), |_| Arc::new(|| {}));
+    if !effect.visual_changed {
+        return Err("production language session did not start".into());
+    }
+    Ok((model, root))
+}
+
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn successful_completion_request_clears_status_and_reports_visual_change()
 -> Result<(), Box<dyn Error>> {
-    let (mut model, _, root) = installed_model()?;
+    let (mut model, root) = installed_process_model()?;
     let _wake = wait_for_running_peer(&mut model)?;
     model.status = Some(Arc::from("old completion status"));
     let effect = model.request_completion(LspPosition::new(0, 0)?);
@@ -498,12 +511,14 @@ fn successful_completion_request_clears_status_and_reports_visual_change()
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn poll_ignores_non_completion_response_methods_even_with_matching_stamp()
 -> Result<(), Box<dyn Error>> {
-    let (mut model, _, root) = installed_model()?;
+    let (mut model, root) = installed_process_model()?;
     let wake = wait_for_running_peer(&mut model)?;
     let mut diagnostics_observed = false;
-    for _ in 0..500 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
         let _ = model.poll(wake);
         diagnostics_observed = model.snapshot().diagnostic_publications > 0;
         if diagnostics_observed {
@@ -527,7 +542,8 @@ fn poll_ignores_non_completion_response_methods_even_with_matching_stamp()
     model.session.as_mut().ok_or("session")?.pending_completion = Some(pending);
     let status = model.status_message();
     let mut response_observed = false;
-    for _ in 0..500 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
         let _ = model.poll(wake);
         response_observed = model
             .session

@@ -25,6 +25,7 @@ project_search::	studio-workspace
 project_search_tests::	studio-workspace
 quick_open::	studio-workspace
 recovery::	studio-persistence
+rust_completion::	studio-language-completion
 rust_diagnostics::	studio-language-diagnostics
 rust_diagnostics_scene_tests::	studio-language-diagnostics
 session::	studio-persistence
@@ -42,6 +43,9 @@ tests::clipboard_copy_cut_and_paste_preserve_revision_and_selection_identity	stu
 tests::clipboard_defensive_paths_preserve_document_state	studio-app-01
 tests::clipboard_failure_is_visible_and_paste_failure_is_atomic	studio-app-01
 tests::clipboard_policy_controls_distinguish_each_response_boundary	studio-app-01
+tests::completion_command_modifiers_and_context_axes_are_independent	studio-app-01
+tests::completion_overlay_geometry_is_exact_at_anchor_clamp_and_narrow_edges	studio-app-02
+tests::completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact	studio-app-03
 tests::coordinate_helpers_cover_clusters_bounds_and_binary_line_search	studio-app-01
 tests::current_and_all_replacement_are_atomic_and_undoable	studio-app-01
 tests::cut_completion_rejects_stale_selection_revision_and_native_failure	studio-app-02
