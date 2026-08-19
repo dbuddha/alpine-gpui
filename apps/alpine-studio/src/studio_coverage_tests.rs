@@ -4671,6 +4671,50 @@ fn assert_completion_shutdown_and_idle_are_bounded(
     Ok(())
 }
 
+fn assert_completion_trigger_guards(app: &mut StudioApp) {
+    assert!(
+        app.dispatch_command(StudioCommand::TriggerCompletion)
+            .visual_changed
+    );
+    assert!(!app.rust_diagnostics.snapshot().completion_pending);
+    assert!(!app.rust_diagnostics.cancel_completion());
+
+    let original_selection = app.selection;
+    app.selection = Selection::caret(ByteOffset::new(app.buffer().snapshot().len_bytes() + 1));
+    let failures = app.input_failures;
+    assert_eq!(app.trigger_rust_completion(), EventEffect::default());
+    assert_eq!(app.input_failures, failures + 1);
+    app.selection = original_selection;
+    assert_eq!(app.apply_selected_completion(), EventEffect::default());
+    assert_eq!(app.handle_completion_key(0, false), None);
+}
+
+fn assert_completion_application_failures(
+    app: &mut StudioApp,
+    completion: &serde_json::value::RawValue,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let invalid_range = serde_json::value::RawValue::from_string(
+        r#"[{"label":"outside","textEdit":{"range":{"start":{"line":99,"character":0},"end":{"line":99,"character":1}},"newText":"outside"}}]"#.to_owned(),
+    )?;
+    app.runtime_document_revision -= 1;
+    app.rust_diagnostics.install_completion_for_test(
+        31,
+        app.language_identity(),
+        &invalid_range,
+    )?;
+    let failures = app.input_failures;
+    assert!(app.apply_selected_completion().visual_changed);
+    assert_eq!(app.input_failures, failures + 1);
+
+    app.rust_diagnostics
+        .install_completion_for_test(32, app.language_identity(), completion)?;
+    assert!(
+        app.handle_completion_key(KEY_ESCAPE, false)
+            .is_some_and(|effect| effect.visual_changed)
+    );
+    Ok(())
+}
+
 #[test]
 fn completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -4685,12 +4729,19 @@ fn completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact()
         &diagnostics,
         rust_diagnostics::tests::mock_executable(),
     )?;
+    assert_completion_trigger_guards(&mut app);
+
     let baseline = app.try_scene(SceneRevision::new(310), viewport()?)?;
     let completion = serde_json::value::RawValue::from_string(
         r#"[{"label":"println!","textEdit":{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":2}},"newText":"println!"}},{"label":"print!","insertText":"print!"}]"#.to_owned(),
     )?;
     app.rust_diagnostics
         .install_completion_for_test(2, app.language_identity(), &completion)?;
+    assert_eq!(
+        app.handle_completion_key(KEY_UP, false),
+        Some(EventEffect::default())
+    );
+    assert_eq!(app.handle_completion_key(KEY_DOWN, true), None);
 
     let scene = app.try_scene(SceneRevision::new(311), viewport()?)?;
     assert_eq!(scene.clips().len(), baseline.clips().len() + 1);
@@ -4744,6 +4795,8 @@ fn completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact()
             .iter()
             .any(|node| { node.role() == AccessibilityRole::CodeEditor && node.is_focused() })
     );
+
+    assert_completion_application_failures(&mut app, &completion)?;
 
     app.rust_diagnostics
         .install_completion_for_test(4, app.language_identity(), &completion)?;

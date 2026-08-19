@@ -43,7 +43,9 @@ ChangeIdentity ==
     /\ admittedRequest' = 0
     /\ admittedIdentity' = 0
     /\ items' = 0
-    /\ UNCHANGED <<open, nextRequest, appliedRequest, appliedIdentity>>
+    /\ appliedRequest' = 0
+    /\ appliedIdentity' = 0
+    /\ UNCHANGED <<open, nextRequest>>
 
 Trigger ==
     /\ open
@@ -56,7 +58,9 @@ Trigger ==
     /\ admittedRequest' = 0
     /\ admittedIdentity' = 0
     /\ items' = 0
-    /\ UNCHANGED <<open, identity, appliedRequest, appliedIdentity>>
+    /\ appliedRequest' = 0
+    /\ appliedIdentity' = 0
+    /\ UNCHANGED <<open, identity>>
 
 CompleteCurrent ==
     /\ open
@@ -114,7 +118,9 @@ Close ==
     /\ admittedRequest' = 0
     /\ admittedIdentity' = 0
     /\ items' = 0
-    /\ UNCHANGED <<identity, nextRequest, appliedRequest, appliedIdentity>>
+    /\ appliedRequest' = 0
+    /\ appliedIdentity' = 0
+    /\ UNCHANGED <<identity, nextRequest>>
 
 Next == Open \/ ChangeIdentity \/ Trigger \/ CompleteCurrent
         \/ DropCancelled \/ ApplyCurrent \/ FocusLoss \/ Close

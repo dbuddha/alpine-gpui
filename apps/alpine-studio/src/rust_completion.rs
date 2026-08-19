@@ -247,9 +247,6 @@ fn validate_fallback(
 fn byte_range(snapshot: &BufferSnapshot, range: LspRange) -> Result<Range<usize>, CompletionError> {
     let start = byte_for_position(snapshot, range.start())?;
     let end = byte_for_position(snapshot, range.end())?;
-    if end < start {
-        return Err(CompletionError::InvalidTextRange);
-    }
     Ok(start..end)
 }
 
@@ -408,5 +405,125 @@ mod tests {
         assert_eq!(batch.items().len(), MAX_COMPLETION_ITEMS);
         assert_eq!(batch.omitted_items(), 1);
         assert!(batch.retained_bytes() <= MAX_COMPLETION_RETAINED_BYTES);
+    }
+
+    #[test]
+    fn remaining_shapes_formats_and_limits_fail_closed() {
+        assert_eq!(
+            CompletionError::Malformed.to_string(),
+            "Rust completion rejected input: Malformed"
+        );
+        assert!(
+            CompletionBatch::admit(&raw("null"))
+                .unwrap_or_else(|_| unreachable!())
+                .items()
+                .is_empty()
+        );
+        for malformed in ["true", "{}", "[1]", "[{}]"] {
+            assert_eq!(
+                CompletionBatch::admit(&raw(malformed)),
+                Err(CompletionError::Malformed)
+            );
+        }
+        assert!(
+            CompletionBatch::admit(&raw(
+                r#"[{"label":"plain","insertTextFormat":1,"documentation":"text"}]"#
+            ))
+            .is_ok()
+        );
+        assert_eq!(
+            CompletionBatch::admit(&raw(r#"[{"label":"x","insertTextFormat":3}]"#)),
+            Err(CompletionError::Malformed)
+        );
+        assert_eq!(
+            CompletionBatch::admit(&raw(r#"[{"label":"x","documentation":1}]"#)),
+            Err(CompletionError::Malformed)
+        );
+
+        let documentation = "d".repeat(MAX_COMPLETION_DOCUMENTATION_BYTES + 1);
+        assert_eq!(
+            CompletionBatch::admit(&raw(&format!(
+                r#"[{{"label":"x","documentation":"{documentation}"}}]"#
+            ))),
+            Err(CompletionError::DocumentationTooLong)
+        );
+        let edit = "e".repeat(MAX_COMPLETION_EDIT_BYTES + 1);
+        assert_eq!(
+            CompletionBatch::admit(&raw(&format!(r#"[{{"label":"x","insertText":"{edit}"}}]"#))),
+            Err(CompletionError::EditTooLong)
+        );
+
+        let retained_edit = "e".repeat(MAX_COMPLETION_EDIT_BYTES);
+        let retained_documentation = "d".repeat(MAX_COMPLETION_DOCUMENTATION_BYTES);
+        let retained_item = format!(
+            r#"{{"label":"x","insertText":"{retained_edit}","documentation":"{retained_documentation}"}}"#
+        );
+        assert_eq!(
+            CompletionBatch::admit(&raw(&format!(
+                "[{retained_item},{retained_item},{retained_item},{retained_item}]"
+            ))),
+            Err(CompletionError::RetentionExceeded)
+        );
+
+        let oversized_wire = "w".repeat(MAX_COMPLETION_WIRE_BYTES);
+        assert_eq!(
+            CompletionBatch::admit(&raw(&format!(
+                r#"[{{"label":"x","insertText":"{oversized_wire}"}}]"#
+            ))),
+            Err(CompletionError::WireTooLarge)
+        );
+    }
+
+    #[test]
+    fn every_text_edit_shape_and_range_is_checked() {
+        for malformed in [
+            r#"[{"label":"x","textEdit":1}]"#,
+            r#"[{"label":"x","textEdit":{}}]"#,
+            r#"[{"label":"x","textEdit":{"newText":"x","insert":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}}]"#,
+        ] {
+            assert!(CompletionBatch::admit(&raw(malformed)).is_err());
+        }
+        assert_eq!(
+            CompletionBatch::admit(&raw(
+                r#"[{"label":"x","textEdit":{"insert":{"start":{"line":0,"character":1},"end":{"line":0,"character":2}},"replace":{"start":{"line":0,"character":0},"end":{"line":0,"character":2}},"newText":"x"}}]"#
+            )),
+            Err(CompletionError::InvalidTextRange)
+        );
+        assert_eq!(
+            CompletionBatch::admit(&raw(
+                r#"[{"label":"x","textEdit":{"insert":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"replace":{"start":{"line":0,"character":0},"end":{"line":0,"character":2}},"newText":"x"}}]"#
+            )),
+            Err(CompletionError::InvalidTextRange)
+        );
+
+        let snapshot = alpine_text::Buffer::new("abcd\n").snapshot();
+        let fallback =
+            CompletionBatch::admit(&raw(r#"[{"label":"x"}]"#)).unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            fallback.items()[0].replacement(&snapshot, 1..3),
+            Ok((1..3, Box::<str>::from("x")))
+        );
+        assert_eq!(
+            fallback.items()[0].replacement(&snapshot, 1..usize::MAX),
+            Err(CompletionError::InvalidTextRange)
+        );
+
+        assert_eq!(
+            CompletionBatch::admit(&raw(
+                r#"[{"label":"x","textEdit":{"range":{"start":{"line":0,"character":3},"end":{"line":0,"character":1}},"newText":"x"}}]"#,
+            )),
+            Err(CompletionError::InvalidTextRange)
+        );
+        assert_eq!(
+            position_for_byte(&snapshot, ByteOffset::new(snapshot.len_bytes() + 1)),
+            Err(CompletionError::InvalidTextRange)
+        );
+        assert_eq!(
+            byte_for_position(
+                &snapshot,
+                LspPosition::new(0, 4).unwrap_or_else(|_| unreachable!())
+            ),
+            Ok(4)
+        );
     }
 }
