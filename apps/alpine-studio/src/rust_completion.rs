@@ -281,10 +281,8 @@ pub(crate) fn position_for_byte(
     let mut lower = 0;
     let mut upper = snapshot.line_count();
     for _ in 0..usize::BITS {
-        match lower.cmp(&upper) {
-            std::cmp::Ordering::Less => {}
-            std::cmp::Ordering::Equal => break,
-            std::cmp::Ordering::Greater => return Err(CompletionError::InvalidTextRange),
+        if lower == upper {
+            break;
         }
         let line = lower + (upper - lower) / 2;
         let range = snapshot
@@ -294,13 +292,7 @@ pub(crate) fn position_for_byte(
         lower = [lower, line.saturating_add(1)][after_line];
         upper = [line, upper][after_line];
     }
-    match lower.cmp(&upper) {
-        std::cmp::Ordering::Equal => {}
-        std::cmp::Ordering::Less | std::cmp::Ordering::Greater => {
-            return Err(CompletionError::InvalidTextRange);
-        }
-    }
-    let selected_line = lower.min(snapshot.line_count().saturating_sub(1));
+    let selected_line = converged_line(lower, upper)?.min(snapshot.line_count().saturating_sub(1));
     let range = snapshot
         .line_byte_range(selected_line)
         .map_err(|_| CompletionError::InvalidTextRange)?;
@@ -311,6 +303,12 @@ pub(crate) fn position_for_byte(
     let utf16 = checked_u32(prefix.trim_end_matches(['\r', '\n']).encode_utf16().count())?;
     let line = checked_u32(selected_line)?;
     LspPosition::new(line, utf16).map_err(|_| CompletionError::InvalidTextRange)
+}
+
+fn converged_line(lower: usize, upper: usize) -> Result<usize, CompletionError> {
+    (lower == upper)
+        .then_some(lower)
+        .ok_or(CompletionError::InvalidTextRange)
 }
 
 fn checked_u32(value: usize) -> Result<u32, CompletionError> {
@@ -701,5 +699,8 @@ mod tests {
             position_for_byte(&snapshot, ByteOffset::new(snapshot.len_bytes())),
             Ok(LspPosition::new(2, 3).unwrap_or_else(|_| unreachable!()))
         );
+        assert_eq!(converged_line(2, 2), Ok(2));
+        assert_eq!(converged_line(1, 2), Err(CompletionError::InvalidTextRange));
+        assert_eq!(converged_line(2, 1), Err(CompletionError::InvalidTextRange));
     }
 }
