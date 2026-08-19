@@ -79,7 +79,17 @@ jobs:
         include:
           - partition: foundation
             miri_flags: -Zmiri-disable-isolation
-          - partition: studio-app
+          - partition: studio-app-01
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-app-02
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-app-03
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-app-04
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-app-05
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-app-06
             miri_flags: -Zmiri-disable-isolation
           - partition: studio-command
             miri_flags: -Zmiri-disable-isolation
