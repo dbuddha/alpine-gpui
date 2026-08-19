@@ -24,6 +24,7 @@ pub(crate) enum StudioCommand {
     OpenProjectSearch,
     OpenFind,
     OpenReplace,
+    TriggerCompletion,
     ToggleFileTree,
     SplitRight,
     SplitDown,
@@ -45,6 +46,7 @@ pub(crate) struct CommandContext {
     pub(crate) can_split_right: bool,
     pub(crate) can_split_down: bool,
     pub(crate) can_close_pane: bool,
+    pub(crate) can_complete: bool,
 }
 
 impl CommandContext {
@@ -58,6 +60,7 @@ impl CommandContext {
             | StudioCommand::OpenProjectSearch
             | StudioCommand::ToggleFileTree => self.has_workspace,
             StudioCommand::OpenFind | StudioCommand::OpenReplace => true,
+            StudioCommand::TriggerCompletion => self.can_complete,
             StudioCommand::SplitRight => self.can_split_right,
             StudioCommand::SplitDown => self.can_split_down,
             StudioCommand::FocusNextPane | StudioCommand::ClosePane => self.can_close_pane,
@@ -72,7 +75,7 @@ struct CommandSpec {
     search_terms: &'static str,
 }
 
-const REGISTRY: [CommandSpec; 13] = [
+const REGISTRY: [CommandSpec; 14] = [
     CommandSpec {
         command: StudioCommand::SaveFile,
         title: "File: Save",
@@ -112,6 +115,11 @@ const REGISTRY: [CommandSpec; 13] = [
         command: StudioCommand::OpenReplace,
         title: "Editor: Find and Replace",
         search_terms: "search document change",
+    },
+    CommandSpec {
+        command: StudioCommand::TriggerCompletion,
+        title: "Editor: Trigger Rust Completion",
+        search_terms: "language rust analyzer suggest",
     },
     CommandSpec {
         command: StudioCommand::ToggleFileTree,
@@ -625,12 +633,13 @@ mod tests {
             can_split_right: true,
             can_split_down: true,
             can_close_pane: true,
+            can_complete: true,
         }
     }
 
     #[test]
     fn locked_registry_query_and_memory_limits_are_exact() -> Result<(), Box<dyn Error>> {
-        assert_eq!(REGISTRY.len(), 13);
+        assert_eq!(REGISTRY.len(), 14);
         assert!(REGISTRY.len() <= MAX_COMMANDS);
         let mut palette = CommandPalette::default();
         assert!(palette.open(all_available())?);
@@ -707,6 +716,7 @@ mod tests {
 
         let save_only = CommandContext {
             can_save: true,
+            can_complete: false,
             ..CommandContext::default()
         };
         palette.open(save_only)?;

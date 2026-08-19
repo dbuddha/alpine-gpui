@@ -56,7 +56,9 @@ pub(crate) fn fixture() -> (PathBuf, PathBuf, BufferSnapshot, LanguageIdentity) 
     fs::write(&path, "fn main() {}\n").unwrap_or_else(|_| unreachable!());
     let snapshot = alpine_text::Buffer::new("fn main() {}\n").snapshot();
     let identity = LanguageIdentity {
+        workspace_id: 1,
         workspace_revision: 1,
+        document_id: 1,
         document_revision: 2,
         buffer_revision: snapshot.revision().get(),
         selection_revision: 3,
@@ -339,6 +341,149 @@ fn portable_mock_protocol_failure_restarts_the_active_document() -> Result<(), B
 }
 
 #[test]
+fn portable_mock_completion_is_bounded_revision_safe_and_undoable() -> Result<(), Box<dyn Error>> {
+    let (root, path, _, mut identity) = fixture();
+    let mut buffer = alpine_text::Buffer::new("fn broken( {\n");
+    identity.buffer_revision = buffer.revision().get();
+    let latch = LanguageWakeLatch::default();
+    let mut model = RustDiagnostics::with_server(mock_executable());
+    let input = RustDocumentInput::new(&path, &root, identity, buffer.snapshot());
+    let wake_latch = latch.clone();
+    assert!(
+        model
+            .sync(Some(input), move |wake| {
+                let wake_latch = wake_latch.clone();
+                Arc::new(move || wake_latch.publish(wake))
+            })
+            .visual_changed
+    );
+    let _ = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
+    let position = LspPosition::new(0, 2)?;
+    let _ = model.request_completion(position);
+    assert!(
+        model.snapshot().completion_pending,
+        "completion request was rejected: status={:?}, snapshot={:?}",
+        model.status_message(),
+        model.snapshot()
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while model.snapshot().completion_items == 0 {
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("completion timed out: {:?}", model.snapshot()).into());
+        }
+    }
+    let snapshot = model.snapshot();
+    assert_eq!(snapshot.completion_items, 2);
+    assert!(snapshot.completion_bytes > 0);
+    assert_eq!(snapshot.completion_requests, 1);
+    assert_eq!(model.completion_visible_range(identity), Some(0..2));
+    assert_eq!(
+        model
+            .completion_row(identity, 0)
+            .map(|row| (row.label, row.selected)),
+        Some(("println!", true))
+    );
+    let application = model
+        .take_selected_completion(identity, &buffer.snapshot(), 2..2)?
+        .ok_or("completion selection missing")?;
+    assert_eq!(application.range, 0..2);
+    assert_eq!(application.text.as_ref(), "println!");
+    let before = buffer.snapshot().text();
+    let mut transaction = alpine_text::Transaction::new(buffer.revision());
+    transaction.replace(application.range, application.text.as_ref())?;
+    transaction.set_selections(alpine_text::SelectionSet::caret(
+        alpine_text::ByteOffset::new(application.text.len()),
+    ));
+    buffer.apply(transaction)?;
+    assert!(buffer.snapshot().text().starts_with("println!"));
+    assert!(buffer.undo()?);
+    assert_eq!(buffer.snapshot().text(), before);
+    assert_eq!(model.snapshot().completion_items, 0);
+    assert!(!model.shutdown().active);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn late_cancelled_response_cannot_clear_a_newer_completion() -> Result<(), Box<dyn Error>> {
+    let (root, path, snapshot, identity) = fixture();
+    let input = RustDocumentInput::new(&path, &root, identity, snapshot);
+    let params = diagnostics(&path, 1);
+    let completion =
+        RawValue::from_string(r#"[{"label":"newer","insertText":"newer"}]"#.to_owned())?;
+    let mut model = RustDiagnostics::default();
+    model.install_for_test(input, &params, mock_executable())?;
+    model.install_completion_for_test(2, identity, &completion)?;
+
+    assert!(!model.reject_stale_completion(1));
+    assert_eq!(model.snapshot().completion_items, 1);
+    assert_eq!(model.snapshot().stale_completions, 1);
+    assert!(model.reject_stale_completion(2));
+    assert_eq!(model.snapshot().completion_items, 0);
+    assert_eq!(model.snapshot().stale_completions, 2);
+
+    assert!(!model.shutdown().active);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn mock_completion_supersession_rejects_the_late_response_without_restart()
+-> Result<(), Box<dyn Error>> {
+    let (root, path, snapshot, identity) = fixture();
+    let latch = LanguageWakeLatch::default();
+    let mut model = RustDiagnostics::with_server(mock_executable());
+    let input = RustDocumentInput::new(&path, &root, identity, snapshot);
+    let wake_latch = latch.clone();
+    assert!(
+        model
+            .sync(Some(input), move |wake| {
+                let wake_latch = wake_latch.clone();
+                Arc::new(move || wake_latch.publish(wake))
+            })
+            .visual_changed
+    );
+    let _ = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
+
+    let _ = model.request_completion(LspPosition::new(0, 99)?);
+    assert!(model.snapshot().completion_pending);
+    let _ = model.request_completion(LspPosition::new(0, 2)?);
+    assert_eq!(model.snapshot().completion_cancellations, 1);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while model.snapshot().completion_items == 0 {
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                format!("completion supersession timed out: {:?}", model.snapshot()).into(),
+            );
+        }
+    }
+    let actual = model.snapshot();
+    assert_eq!(actual.completion_items, 2);
+    assert!(!actual.completion_pending);
+    assert_eq!(actual.stale_completions, 1);
+    assert_eq!(actual.restarts, 0);
+    assert!(!model.shutdown().active);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[ignore = "requires the checksum-verified Task #208 rust-analyzer binary"]
 fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
@@ -349,7 +494,9 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
     let path = fs::canonicalize(workspace.join("src/lib.rs"))?;
     let mut buffer = alpine_text::Buffer::new(&fs::read_to_string(&path)?);
     let mut identity = LanguageIdentity {
+        workspace_id: 1,
         workspace_revision: 1,
+        document_id: 1,
         document_revision: 1,
         buffer_revision: buffer.revision().get(),
         selection_revision: 1,
@@ -415,6 +562,29 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
     assert_eq!(model.snapshot().diagnostic_items, 0);
     assert_eq!(model.snapshot().lsp_version, 3);
     assert!(model.status_message().is_none());
+
+    let _ = model.request_completion(LspPosition::new(0, 4)?);
+    assert!(model.snapshot().completion_pending);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while model.snapshot().completion_items == 0 {
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("pinned completion timed out: {:?}", model.snapshot()).into());
+        }
+    }
+    let completion = model.snapshot();
+    assert!(completion.completion_items <= crate::rust_completion::MAX_COMPLETION_ITEMS);
+    assert!(completion.completion_bytes > 0);
+    assert!(completion.completion_bytes <= crate::rust_completion::MAX_COMPLETION_RETAINED_BYTES);
+    assert_eq!(completion.completion_requests, 1);
+    assert!(model.completion_visible_range(identity).is_some());
 
     let drained = model.shutdown();
     assert!(!drained.active);

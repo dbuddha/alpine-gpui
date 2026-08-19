@@ -18,6 +18,7 @@ pub(crate) const KEY_LEFT_BRACKET: u16 = 33;
 pub(crate) const KEY_P: u16 = 35;
 pub(crate) const KEY_RETURN: u16 = 36;
 pub(crate) const KEY_TAB: u16 = 48;
+pub(crate) const KEY_SPACE: u16 = 49;
 pub(crate) const KEY_DELETE_BACKWARD: u16 = 51;
 pub(crate) const KEY_ESCAPE: u16 = 53;
 pub(crate) const KEY_HOME: u16 = 115;
@@ -198,7 +199,7 @@ struct KeyBinding {
     label: Cow<'static, str>,
 }
 
-static DEFAULT_BINDINGS: [KeyBinding; 13] = [
+static DEFAULT_BINDINGS: [KeyBinding; 14] = [
     binding(
         KEY_P,
         COMMAND_SHIFT,
@@ -210,6 +211,12 @@ static DEFAULT_BINDINGS: [KeyBinding; 13] = [
         COMMAND_SHIFT,
         KeyAction::Command(StudioCommand::OpenProjectSearch),
         "Cmd+Shift+F",
+    ),
+    binding(
+        KEY_SPACE,
+        Modifiers::CONTROL,
+        KeyAction::Command(StudioCommand::TriggerCompletion),
+        "Ctrl+Space",
     ),
     binding(
         KEY_E,
@@ -769,7 +776,7 @@ mod tests {
         let settings = StudioSettings::compiled()?;
         assert_eq!(settings.editor.font_name.as_ref(), "Menlo-Regular");
         assert_eq!(settings.editor.tab_columns, 4);
-        assert_eq!(settings.keymap.bindings.len(), 13);
+        assert_eq!(settings.keymap.bindings.len(), 14);
         assert!(std::mem::size_of::<StudioSettings>() <= 512);
         let classes = [
             SyntaxClass::Comment,
