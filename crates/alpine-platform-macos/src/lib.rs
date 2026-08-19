@@ -716,11 +716,11 @@ pub mod native_validation {
         surface.implementation.arm_user_window_close(delay);
     }
 
-    /// Schedules AppKit's programmatic close action after a bounded delay.
+    /// Schedules a deterministic delegate-mediated close after a bounded delay.
     ///
-    /// This still enters the production `windowShouldClose` and
-    /// `windowWillClose` delegate boundaries, but does not require a standard
-    /// close button to be available on a headless validation host.
+    /// This calls the production `windowShouldClose` delegate and, only when
+    /// allowed, asks `NSWindow` to close so `windowWillClose` performs normal
+    /// teardown. It does not depend on close-button state on a headless host.
     pub fn arm_programmatic_window_close(surface: &NativeSurface, delay: Duration) {
         surface.implementation.arm_programmatic_window_close(delay);
     }

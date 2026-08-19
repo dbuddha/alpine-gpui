@@ -2538,6 +2538,7 @@ fn schedule_validation_user_window_close(
 #[cfg(alpine_native_validation)]
 fn schedule_validation_programmatic_window_close(
     window: &Retained<NSWindow>,
+    delegate: &Retained<DisplayLinkDelegate>,
     lifecycle: &Arc<AtomicU8>,
     counters: &Arc<FrameCounters>,
     delay: Duration,
@@ -2547,15 +2548,14 @@ fn schedule_validation_programmatic_window_close(
         lifecycle,
         counters,
         delay,
-        ValidationCloseAction::Programmatic,
+        ValidationCloseAction::Programmatic(delegate.clone()),
     );
 }
 
 #[cfg(alpine_native_validation)]
-#[derive(Clone, Copy)]
 enum ValidationCloseAction {
     UserButton,
-    Programmatic,
+    Programmatic(Retained<DisplayLinkDelegate>),
 }
 
 #[cfg(alpine_native_validation)]
@@ -2582,7 +2582,7 @@ fn schedule_validation_qualified_window_close(
                 timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(0.037));
                 return;
             }
-            match action {
+            match &action {
                 ValidationCloseAction::UserButton => {
                     // SAFETY: `standardWindowButton:` is an AppKit selector on
                     // NSWindow. The returned button remains owned by the retained
@@ -2601,7 +2601,11 @@ fn schedule_validation_qualified_window_close(
                         msg_send![close_button.as_ref(), performClick: None::<&AnyObject>]
                     };
                 }
-                ValidationCloseAction::Programmatic => window.performClose(None),
+                ValidationCloseAction::Programmatic(delegate) => {
+                    if delegate.windowShouldClose(&window) {
+                        window.close();
+                    }
+                }
             }
             if lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
                 timer.invalidate();
@@ -3302,6 +3306,7 @@ impl NativeSurface {
     pub(crate) fn arm_programmatic_window_close(&self, delay: Duration) {
         schedule_validation_programmatic_window_close(
             &self.window,
+            &self.delegate,
             &self.lifecycle,
             &self.counters,
             delay,

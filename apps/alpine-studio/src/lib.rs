@@ -4964,6 +4964,9 @@ pub mod native_validation {
                 };
                 timeout = Some(platform_validation::arm_run_timeout(surface, run_timeout));
                 if hosted_direct {
+                    // A headless AppKit host may decline `performClose` despite
+                    // a valid delegate. Exercise the production close-admission
+                    // and teardown delegates directly instead.
                     platform_validation::arm_programmatic_window_close(
                         surface,
                         Duration::from_millis(500),
