@@ -13,7 +13,7 @@ lcov_file=$4
 base_sha=$5
 head_sha=${ALPINE_HEAD_SHA:-HEAD}
 
-for command in jq awk; do
+for command in jq awk sort; do
     if ! command -v "$command" >/dev/null 2>&1; then
         printf 'coverage error: required command not found: %s\n' "$command" >&2
         exit 1
@@ -75,9 +75,10 @@ while IFS="$(printf '\t')" read -r filename lines functions; do
 done
 
 changed_lines=$(mktemp)
-trap 'rm -f "$changed_lines"' EXIT HUP INT TERM
+uncovered_lines=$(mktemp)
+trap 'rm -f "$changed_lines" "$uncovered_lines"' EXIT HUP INT TERM
 
-git diff --unified=0 "$base_sha...$head_sha" -- 'crates/**/*.rs' |
+git diff --unified=0 "$base_sha...$head_sha" -- 'crates/**/*.rs' 'apps/**/*.rs' |
 awk '
     /^\+\+\+ b\// { file = substr($0, 7); next }
     /^@@ / {
@@ -94,19 +95,30 @@ awk '
 ' > "$changed_lines"
 
 if [ -s "$changed_lines" ]; then
-    changed_result=$(awk -F: '
+    changed_result=$(awk -F: -v uncovered="$uncovered_lines" '
         NR == FNR { changed[$0] = 1; next }
         /^SF:/ {
             source = substr($0, 4)
-            sub(/^.*\/crates\//, "crates/", source)
+            gsub(/\\/, "/", source)
+            if (source ~ /(^|\/)crates\//) {
+                sub(/^.*\/crates\//, "crates/", source)
+            } else if (source ~ /(^|\/)apps\//) {
+                sub(/^.*\/apps\//, "apps/", source)
+            } else {
+                source = ""
+            }
             next
         }
         /^DA:/ {
             split(substr($0, 4), data, ",")
             key = source ":" data[1]
-            if (changed[key]) {
+            if (changed[key] && !seen[key]++) {
                 total++
-                if (data[2] + 0 > 0) covered++
+                if (data[2] + 0 > 0) {
+                    covered++
+                } else {
+                    print key > uncovered
+                }
             }
         }
         END { printf "%d %d", covered + 0, total + 0 }
@@ -115,6 +127,10 @@ if [ -s "$changed_lines" ]; then
     changed_total=$(printf '%s\n' "$changed_result" | awk '{print $2}')
     if [ "$changed_total" -gt 0 ]; then
         awk -v covered="$changed_covered" -v total="$changed_total" 'BEGIN { exit !(covered * 100 >= total * 90) }' || {
+            LC_ALL=C sort -u "$uncovered_lines" |
+            while IFS= read -r line; do
+                printf 'coverage error: uncovered changed executable Rust line: %s\n' "$line" >&2
+            done
             printf 'coverage error: changed executable Rust lines covered %s/%s, requires 90%%\n' "$changed_covered" "$changed_total" >&2
             exit 1
         }
