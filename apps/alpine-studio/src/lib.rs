@@ -2118,7 +2118,8 @@ impl StudioApp {
                     glyph_origin_x,
                     glyph_origin_y,
                     overlay_clip,
-                )?;
+                );
+                let glyphs = glyphs?;
                 pending_glyphs.extend(glyphs);
             }
             debug_assert!(row_count <= MAX_VISIBLE_COMPLETION_ROWS);
