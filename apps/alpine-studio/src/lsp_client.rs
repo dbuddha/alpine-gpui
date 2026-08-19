@@ -553,11 +553,12 @@ mod tests {
                 Instant::now() < deadline,
                 "mock late response was not rejected"
             );
-            let poll = client.poll(Some(current), |_| {});
-            if matches!(
-                poll,
-                Err(LspClientError::Protocol(ProtocolError::UnknownResponseId))
-            ) {
+            let mut rejected = false;
+            let poll = client.poll(Some(current), |event| {
+                rejected |=
+                    matches!(event, PeerEvent::StaleResponse { id } if id == slow.request_id);
+            });
+            if rejected {
                 return Ok(slow.request_id);
             }
             assert!(poll.is_ok(), "unexpected cancellation poll: {poll:?}");

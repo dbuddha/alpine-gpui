@@ -40,7 +40,6 @@ impl RequestStamp {
             || workspace_revision == 0
             || document_id == 0
             || document_revision == 0
-            || buffer_revision == 0
             || selection_revision == 0
         {
             return None;
@@ -501,6 +500,7 @@ pub(crate) struct LspPeer {
     lifecycle: PeerLifecycle,
     next_id: u32,
     pending: Vec<PendingRequest>,
+    cancelled: Vec<RequestId>,
     peak_retained_bytes: usize,
     cancelled_requests: u64,
     stale_responses: u64,
@@ -512,6 +512,7 @@ impl LspPeer {
             lifecycle: PeerLifecycle::Created,
             next_id: 0,
             pending: Vec::new(),
+            cancelled: Vec::new(),
             peak_retained_bytes: 0,
             cancelled_requests: 0,
             stale_responses: 0,
@@ -598,12 +599,20 @@ impl LspPeer {
         if self.pending[index].kind != PendingKind::Request {
             return Err(ProtocolError::CannotCancelLifecycle);
         }
-        self.pending.swap_remove(index);
+        if self.cancelled.len() == MAX_PENDING_REQUESTS {
+            return Err(ProtocolError::PendingCapacity);
+        }
+        let message = build_call("$/cancelRequest", None, Some(&format!(r#"{{"id":{id}}}"#)))?;
+        self.cancelled
+            .try_reserve(1)
+            .map_err(|_| ProtocolError::AllocationFailed)?;
+        let cancelled = self.pending.swap_remove(index).id;
+        self.cancelled.push(cancelled);
         self.cancelled_requests = self
             .cancelled_requests
             .checked_add(1)
             .ok_or(ProtocolError::IdExhausted)?;
-        build_call("$/cancelRequest", None, Some(&format!(r#"{{"id":{id}}}"#)))
+        Ok(message)
     }
 
     pub(crate) fn begin_shutdown(&mut self) -> Result<OutboundMessage, ProtocolError> {
@@ -652,6 +661,14 @@ impl LspPeer {
         value: ResponseValue<'a>,
         current: Option<RequestStamp>,
     ) -> Result<PeerEvent<'a>, ProtocolError> {
+        if let Some(index) = self.cancelled.iter().position(|cancelled| *cancelled == id) {
+            self.cancelled.swap_remove(index);
+            self.stale_responses = self
+                .stale_responses
+                .checked_add(1)
+                .ok_or(ProtocolError::IdExhausted)?;
+            return Ok(PeerEvent::StaleResponse { id: id.get() });
+        }
         let index = self
             .pending
             .iter()
@@ -759,6 +776,7 @@ impl LspPeer {
                 .iter()
                 .map(|pending| pending.method.len())
                 .sum::<usize>()
+            + self.cancelled.capacity() * size_of::<RequestId>()
     }
 }
 
@@ -1093,8 +1111,8 @@ mod tests {
         assert_eq!(peer.snapshot().cancelled_requests(), 1);
         let response = format!(r#"{{"jsonrpc":"2.0","id":{id},"result":[]}}"#);
         assert!(matches!(
-            peer.receive(response.as_bytes(), Some(stamp(7))),
-            Err(ProtocolError::UnknownResponseId)
+            peer.receive(response.as_bytes(), Some(stamp(7)))?,
+            PeerEvent::StaleResponse { id: event_id } if event_id == id
         ));
         Ok(())
     }
