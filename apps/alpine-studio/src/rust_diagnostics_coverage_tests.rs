@@ -308,6 +308,7 @@ fn completion_guards_navigation_and_admission_are_discriminating() -> Result<(),
     let position = LspPosition::new(0, 0)?;
     let mut absent = RustDiagnostics::default();
     assert!(absent.request_completion(position).visual_changed);
+    assert!(!absent.request_completion(position).visual_changed);
     assert!(!absent.navigate_completion(1));
     assert_eq!(absent.completion_visible_range(identity), None);
     assert!(absent.completion_row(identity, 0).is_none());
@@ -325,6 +326,7 @@ fn completion_guards_navigation_and_admission_are_discriminating() -> Result<(),
     let (mut model, input, root_two) = installed_model()?;
     model.session.as_mut().ok_or("session")?.state = SessionState::Starting;
     assert!(model.request_completion(position).visual_changed);
+    assert!(!model.request_completion(position).visual_changed);
     model.session.as_mut().ok_or("session")?.state = SessionState::Open;
     model
         .session
@@ -372,6 +374,11 @@ fn completion_guards_navigation_and_admission_are_discriminating() -> Result<(),
 fn completion_result_admission_rejects_every_stale_or_invalid_shape() -> Result<(), Box<dyn Error>>
 {
     let (mut model, input, root) = installed_model()?;
+
+    assert!(matches!(
+        completion_batch_from_response(ResponseValue::error_for_test()),
+        Err(CompletionError::Malformed)
+    ));
 
     let empty = completion_result("null")?;
     let error = completion_result(r#"[{"label":"accepted"}]"#)?;

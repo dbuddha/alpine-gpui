@@ -4672,6 +4672,15 @@ fn assert_completion_shutdown_and_idle_are_bounded(
 }
 
 fn assert_completion_trigger_guards(app: &mut StudioApp) {
+    app.composition = Some(Composition {
+        replacement: app.selection.range(),
+        text: Box::default(),
+        selected_start_utf16: 0,
+        selected_length_utf16: 0,
+    });
+    assert_eq!(app.trigger_rust_completion(), EventEffect::default());
+    app.composition = None;
+
     assert!(
         app.dispatch_command(StudioCommand::TriggerCompletion)
             .visual_changed

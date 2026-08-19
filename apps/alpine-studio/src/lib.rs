@@ -2090,9 +2090,9 @@ impl StudioApp {
                 Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
             let overlay_bounds = Rect::new(overlay_origin, overlay_size);
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
-            builder.push_quad(
-                Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip),
-            )?;
+            let background =
+                Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.push_quad(background)?;
             for (visible_row, index) in rows.enumerate() {
                 let row = self
                     .rust_diagnostics
@@ -2105,18 +2105,21 @@ impl StudioApp {
                     let row_origin = Point::new(left, row_top).ok_or(StudioRenderError::Domain)?;
                     let row_size =
                         Size::new(width, LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
-                    builder.push_quad(
+                    let highlight =
                         Quad::new(Rect::new(row_origin, row_size), command_palette_selected)
-                            .clipped(overlay_clip),
-                    )?;
+                            .clipped(overlay_clip);
+                    builder.push_quad(highlight)?;
                 }
-                pending_glyphs.extend(self.collect_glyphs(
+                let glyph_origin_x = left + FIND_BAR_INSET;
+                let glyph_origin_y = row_top + layout.ascent() + 3.0;
+                let glyphs = self.collect_glyphs(
                     &layout,
                     font,
-                    left + FIND_BAR_INSET,
-                    row_top + layout.ascent() + 3.0,
+                    glyph_origin_x,
+                    glyph_origin_y,
                     overlay_clip,
-                )?);
+                )?;
+                pending_glyphs.extend(glyphs);
             }
             debug_assert!(row_count <= MAX_VISIBLE_COMPLETION_ROWS);
         }
