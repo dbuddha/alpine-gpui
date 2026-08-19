@@ -2541,6 +2541,7 @@ fn schedule_validation_user_window_close(
 fn schedule_validation_programmatic_window_close(
     window: &Retained<NSWindow>,
     delegate: &Retained<DisplayLinkDelegate>,
+    driver: &Rc<RefCell<PresentationDriver>>,
     lifecycle: &Arc<AtomicU8>,
     counters: &Arc<FrameCounters>,
     delay: Duration,
@@ -2550,14 +2551,20 @@ fn schedule_validation_programmatic_window_close(
         lifecycle,
         counters,
         delay,
-        ValidationCloseAction::Programmatic(delegate.clone()),
+        ValidationCloseAction::Programmatic {
+            delegate: delegate.clone(),
+            driver: Rc::clone(driver),
+        },
     );
 }
 
 #[cfg(alpine_native_validation)]
 enum ValidationCloseAction {
     UserButton,
-    Programmatic(Retained<DisplayLinkDelegate>),
+    Programmatic {
+        delegate: Retained<DisplayLinkDelegate>,
+        driver: Rc<RefCell<PresentationDriver>>,
+    },
 }
 
 #[cfg(alpine_native_validation)]
@@ -2584,6 +2591,16 @@ fn schedule_validation_qualified_window_close(
                 timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(0.037));
                 return;
             }
+            if let ValidationCloseAction::Programmatic { driver, .. } = &action
+                && !driver.try_borrow().is_ok_and(|driver| {
+                    driver.pending.is_none()
+                        && driver.active.is_none()
+                        && driver.frame_slots.snapshot().occupied_slots() == 0
+                })
+            {
+                timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(0.037));
+                return;
+            }
             match &action {
                 ValidationCloseAction::UserButton => {
                     // SAFETY: `standardWindowButton:` is an AppKit selector on
@@ -2603,7 +2620,7 @@ fn schedule_validation_qualified_window_close(
                         msg_send![close_button.as_ref(), performClick: None::<&AnyObject>]
                     };
                 }
-                ValidationCloseAction::Programmatic(delegate) => {
+                ValidationCloseAction::Programmatic { delegate, .. } => {
                     // SAFETY: The selector and return type exactly match the
                     // production NSWindowDelegate method implemented above.
                     // Both retained objects remain main-thread-only and are
@@ -3315,6 +3332,7 @@ impl NativeSurface {
         schedule_validation_programmatic_window_close(
             &self.window,
             &self.delegate,
+            &self.driver,
             &self.lifecycle,
             &self.counters,
             delay,

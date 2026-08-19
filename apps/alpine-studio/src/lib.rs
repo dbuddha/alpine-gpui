@@ -4956,6 +4956,11 @@ pub mod native_validation {
                         }
                     }
                     assert!(surface.snapshot().qualified_presented_count() >= 1);
+                    // The production startup wake may admit one additional
+                    // frame after its handler is installed. Give that frame a
+                    // deterministic hosted terminal observation so close can
+                    // wait for true driver quiescence instead of wall time.
+                    platform_validation::inject_post_commit_observation(surface, None, 2.0)?;
                 }
                 let run_timeout = if hosted_direct {
                     HOSTED_RUN_TIMEOUT
@@ -4967,10 +4972,7 @@ pub mod native_validation {
                     // A headless AppKit host may decline `performClose` despite
                     // a valid delegate. Exercise the production close-admission
                     // and teardown delegates directly instead.
-                    platform_validation::arm_programmatic_window_close(
-                        surface,
-                        Duration::from_millis(500),
-                    );
+                    platform_validation::arm_programmatic_window_close(surface, Duration::ZERO);
                 } else {
                     platform_validation::arm_user_window_close(surface, Duration::from_millis(500));
                 }
