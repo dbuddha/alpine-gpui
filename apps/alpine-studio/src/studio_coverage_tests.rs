@@ -4826,6 +4826,7 @@ fn assert_worker_continuation_is_drained(
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = TestWorkspace::new()?;

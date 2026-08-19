@@ -2,10 +2,9 @@
 set -eu
 
 manifest=assurance/miri-studio-partitions.tsv
-partitions='studio-app studio-command studio-language studio-model studio-persistence studio-workspace'
 
 awk -F '\t' '
-    NF != 2 || $1 !~ /::$/ || $2 !~ /^studio-/ { exit 1 }
+    NF != 2 || $1 !~ /^[A-Za-z0-9_:]+$/ || $1 !~ /::/ || $2 !~ /^studio-/ { exit 1 }
     seen[$1]++ { if (seen[$1] != 1) exit 1 }
 ' "$manifest" || {
     printf 'Studio Miri manifest is malformed or contains duplicate prefixes.\n' >&2
@@ -45,9 +44,22 @@ while IFS="$(printf '\t')" read -r prefix partition; do
     fi
 done < "$manifest"
 
+partitions=$(cut -f 2 "$manifest" | sort -u)
 for partition in $partitions; do
     if ! awk -F '\t' -v partition="$partition" '$2 == partition { found = 1 } END { exit !found }' "$manifest"; then
         printf 'Studio Miri partition is empty: %s\n' "$partition" >&2
+        exit 1
+    fi
+done
+
+expected_partitions=$({
+    printf '%s\n' foundation text text-layout
+    printf '%s\n' "$partitions"
+} | sort -u)
+for workflow in .github/workflows/ci.yml .github/workflows/nightly-assurance.yml; do
+    actual_partitions=$(sed -n 's/^[[:space:]]*- partition: //p' "$workflow" | sort)
+    if [ "$actual_partitions" != "$expected_partitions" ]; then
+        printf 'Miri workflow partition inventory differs from the manifest: %s\n' "$workflow" >&2
         exit 1
     fi
 done

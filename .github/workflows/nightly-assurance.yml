@@ -74,7 +74,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 9
+      max-parallel: 16
       matrix:
         include:
           - partition: foundation
@@ -83,7 +83,27 @@ jobs:
             miri_flags: -Zmiri-disable-isolation
           - partition: studio-command
             miri_flags: -Zmiri-disable-isolation
-          - partition: studio-language
+          - partition: studio-language-transport
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-diagnostics
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-01
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-02
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-03
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-04
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-05
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-06
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-07
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-08
+            miri_flags: -Zmiri-disable-isolation
+          - partition: studio-language-protocol-09
             miri_flags: -Zmiri-disable-isolation
           - partition: studio-model
             miri_flags: -Zmiri-disable-isolation
