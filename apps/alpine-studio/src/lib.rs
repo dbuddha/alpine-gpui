@@ -4936,6 +4936,9 @@ pub mod native_validation {
                     // composition only and cannot support presentation claims.
                     platform_validation::inject_post_commit_observation(surface, None, 1.0)?;
                     platform_validation::run_until_frame_terminal(surface, Duration::from_secs(2));
+                    if let Some(error) = surface.take_error()? {
+                        return Err(error);
+                    }
                     assert!(surface.snapshot().qualified_presented_count() >= 1);
                 }
                 platform_validation::arm_user_window_close(surface, Duration::from_millis(500));
