@@ -4,7 +4,8 @@ use super::*;
 
 #[test]
 fn did_change_limit_and_diagnostic_severity_are_exact() -> Result<(), Box<dyn Error>> {
-    let mut document = LspDocument::from_file_path(Path::new("/tmp/main.rs"), "rust", 7)?;
+    let path = absolute_path("main.rs");
+    let mut document = LspDocument::from_file_path(&path, "rust", 7)?;
     document.set_version(8);
     let end = LspPosition::new(0, 0)?;
     assert!(
@@ -17,9 +18,10 @@ fn did_change_limit_and_diagnostic_severity_are_exact() -> Result<(), Box<dyn Er
         Err(LanguageProtocolError::DocumentTooLarge)
     ));
 
-    let params: Box<RawValue> = serde_json::from_str(
-        r#"{"uri":"file:///tmp/main.rs","version":8,"diagnostics":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"severity":2,"message":"warning"},{"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":1}},"message":"unspecified"}]}"#,
-    )?;
+    let params = raw(&format!(
+        r#"{{"uri":"{}","version":8,"diagnostics":[{{"range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":1}}}},"severity":2,"message":"warning"}},{{"range":{{"start":{{"line":1,"character":0}},"end":{{"line":1,"character":1}}}},"message":"unspecified"}}]}}"#,
+        document.uri
+    ));
     let batch = DiagnosticBatch::admit(&params, &document)?;
     assert_eq!(batch.diagnostics()[0].severity(), Some(2));
     assert_eq!(batch.diagnostics()[1].severity(), None);

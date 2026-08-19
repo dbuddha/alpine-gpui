@@ -1964,17 +1964,14 @@ impl StudioApp {
                         line,
                         remaining,
                         |marker| {
+                            let bounds = diagnostic_underline_bounds(
+                                pane_origin_x,
+                                baseline,
+                                &layout,
+                                marker,
+                            )?;
                             builder.push_quad(
-                                Quad::new(
-                                    diagnostic_underline_bounds(
-                                        pane_origin_x,
-                                        baseline,
-                                        &layout,
-                                        marker,
-                                    )?,
-                                    caret_color,
-                                )
-                                .clipped(diagnostic_clip),
+                                Quad::new(bounds, caret_color).clipped(diagnostic_clip),
                             )?;
                             Ok::<(), StudioRenderError>(())
                         },
