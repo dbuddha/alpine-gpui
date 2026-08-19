@@ -2582,6 +2582,20 @@ fn next_validation_close_observation(
 }
 
 #[cfg(alpine_native_validation)]
+const fn validation_close_resources_drained(
+    has_pending: bool,
+    has_active: bool,
+    occupied_slots: u8,
+) -> bool {
+    matches!((has_pending, has_active, occupied_slots), (false, false, 0))
+}
+
+#[cfg(alpine_native_validation)]
+const fn validation_close_should_retry(qualified_presented: u64, resources_drained: bool) -> bool {
+    qualified_presented == 0 || !resources_drained
+}
+
+#[cfg(alpine_native_validation)]
 enum ValidationCloseAction {
     UserButton,
     Programmatic {
@@ -2631,9 +2645,11 @@ fn schedule_validation_qualified_window_close(
                             .inject(VALIDATION_CLOSE_PRESENTED_TIME.to_bits());
                         observed_frames.set(next_count);
                     }
-                    driver.pending.is_none()
-                        && driver.active.is_none()
-                        && driver.frame_slots.snapshot().occupied_slots() == 0
+                    validation_close_resources_drained(
+                        driver.pending.is_some(),
+                        driver.active.is_some(),
+                        driver.frame_slots.snapshot().occupied_slots(),
+                    )
                 })
             } else {
                 true
@@ -2643,7 +2659,10 @@ fn schedule_validation_qualified_window_close(
             // active, then wait for its terminal accounting and full slot drain
             // before exercising the production close delegates. This keeps the
             // complete journey inside one NSApplication run-loop invocation.
-            if counters.qualified_presented.load(Ordering::Acquire) == 0 || !ready_to_close {
+            if validation_close_should_retry(
+                counters.qualified_presented.load(Ordering::Acquire),
+                ready_to_close,
+            ) {
                 timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(
                     VALIDATION_CLOSE_RETRY_DELAY.as_secs_f64(),
                 ));
@@ -4052,6 +4071,24 @@ mod tests {
             next_validation_close_observation(u8::MAX, Some(false)),
             None
         );
+    }
+
+    #[test]
+    #[cfg(alpine_native_validation)]
+    fn validation_close_requires_qualified_presentation_and_complete_resource_drain() {
+        assert!(validation_close_resources_drained(false, false, 0));
+        assert!(!validation_close_resources_drained(true, false, 0));
+        assert!(!validation_close_resources_drained(false, true, 0));
+        assert!(!validation_close_resources_drained(true, true, 0));
+        assert!(!validation_close_resources_drained(false, false, 1));
+        assert!(!validation_close_resources_drained(false, false, 3));
+        assert!(!validation_close_resources_drained(false, false, u8::MAX));
+
+        assert!(validation_close_should_retry(0, false));
+        assert!(validation_close_should_retry(0, true));
+        assert!(validation_close_should_retry(1, false));
+        assert!(!validation_close_should_retry(1, true));
+        assert!(!validation_close_should_retry(u64::MAX, true));
     }
 
     #[test]
