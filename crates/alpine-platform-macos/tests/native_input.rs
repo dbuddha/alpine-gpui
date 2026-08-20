@@ -23,16 +23,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let received = Arc::new(Mutex::new(Vec::new()));
         let callback_received = Arc::clone(&received);
         native_validation::arm_window_close(&surface, Duration::from_millis(500));
-        surface
-            .run_with_event_handler(move |event| {
-                if let Ok(mut received) = callback_received.lock() {
-                    received.push(event);
-                }
-                SurfaceResponse::default()
-            })
-            .map_err(|error| {
-                format!("startup focus run failed for {input_epoch:?}/{focused}: {error}")
-            })?;
+        let timeout = native_validation::arm_run_timeout(&surface, Duration::from_secs(2));
+        let run_result = surface.run_with_event_handler(move |event| {
+            if let Ok(mut received) = callback_received.lock() {
+                received.push(event);
+            }
+            SurfaceResponse::default()
+        });
+        timeout.cancel();
+        if timeout.expired() {
+            return Err(
+                format!("startup focus run timed out for {input_epoch:?}/{focused}").into(),
+            );
+        }
+        run_result.map_err(|error| {
+            format!("startup focus run failed for {input_epoch:?}/{focused}: {error}")
+        })?;
 
         let received = received
             .lock()
