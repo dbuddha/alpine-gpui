@@ -6,9 +6,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     use alpine_platform_macos::{
         AccessibilityAction, AccessibilityActionResult, AccessibilityError, AccessibilityNode,
-        AccessibilityNodeId, AccessibilityPayload, AccessibilityResponse, AccessibilityRevision,
-        AccessibilityRole, AccessibilitySelection, AccessibilitySnapshot, AccessibilityText,
-        AccessibilityTextRange, CloseDisposition, SurfaceDescriptor, SurfaceEvent, SurfaceResponse,
+        AccessibilityNodeId, AccessibilityPayload, AccessibilityRequest, AccessibilityResponse,
+        AccessibilityRevision, AccessibilityRole, AccessibilitySelection, AccessibilitySnapshot,
+        AccessibilityText, AccessibilityTextRange, ClipboardOperation, ClipboardText,
+        ClipboardWrite, CloseDisposition, SurfaceDescriptor, SurfaceEvent, SurfaceResponse,
         native_validation,
     };
 
@@ -17,6 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         revision: AccessibilityRevision,
         selection: AccessibilitySelection,
         text: String,
+        snapshot_requests: usize,
     }
 
     fn snapshot(state: &State) -> Result<AccessibilitySnapshot, AccessibilityError> {
@@ -83,27 +85,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         String::from_utf16(units.get(range.start_utf16()..end)?).ok()
     }
 
-    let descriptor = SurfaceDescriptor::new("Alpine native accessibility", 96.0, 64.0, 1.0)?;
-    let surface = native_validation::new_surface(&descriptor)?;
-    surface.show()?;
-    let state = Arc::new(Mutex::new(State {
-        revision: AccessibilityRevision::new(7, 11),
-        selection: AccessibilitySelection::new(0, 4),
-        text: "zero\none two".into(),
-    }));
-    let callback_state = Arc::clone(&state);
-    let evidence = native_validation::replay_native_accessibility_path(&surface, move |event| {
-        let SurfaceEvent::Accessibility { request, .. } = event else {
-            return SurfaceResponse::default();
-        };
-        let mut state = match callback_state.lock() {
-            Ok(state) => state,
-            Err(_) => return SurfaceResponse::default(),
-        };
+    fn respond(
+        state: &mut State,
+        request: &AccessibilityRequest,
+    ) -> Result<AccessibilityResponse, AccessibilityError> {
         let observed = state.revision;
         let result = match request.operation() {
             alpine_platform_macos::AccessibilityOperation::Snapshot => {
-                snapshot(&state).map(AccessibilityPayload::Snapshot)
+                state.snapshot_requests = state.snapshot_requests.saturating_add(1);
+                snapshot(state).map(AccessibilityPayload::Snapshot)
             }
             alpine_platform_macos::AccessibilityOperation::Text { revision, range }
                 if *revision == observed =>
@@ -165,21 +155,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 actual: observed,
             }),
         };
-        let response = match result {
-            Ok(payload) => AccessibilityResponse::success(&request, observed, payload),
-            Err(error) => Ok(AccessibilityResponse::failure(&request, observed, error)),
-        };
-        response.map_or_else(
+        match result {
+            Ok(payload) => AccessibilityResponse::success(request, observed, payload),
+            Err(error) => Ok(AccessibilityResponse::failure(request, observed, error)),
+        }
+    }
+
+    fn surface_response(
+        state: &mut State,
+        request: &AccessibilityRequest,
+        clipboard_write: Option<ClipboardWrite>,
+    ) -> SurfaceResponse {
+        respond(state, request).map_or_else(
             |_| SurfaceResponse::default(),
             |response| {
                 SurfaceResponse::from_channels(
                     None,
-                    None,
+                    clipboard_write,
                     CloseDisposition::NotRequested,
                     Some(response),
                 )
             },
         )
+    }
+
+    let descriptor = SurfaceDescriptor::new("Alpine native accessibility", 96.0, 64.0, 1.0)?;
+    let surface = native_validation::new_surface(&descriptor)?;
+    surface.show()?;
+    let state = Arc::new(Mutex::new(State {
+        revision: AccessibilityRevision::new(7, 11),
+        selection: AccessibilitySelection::new(0, 4),
+        text: "zero\none two".into(),
+        snapshot_requests: 0,
+    }));
+    let callback_state = Arc::clone(&state);
+    let evidence = native_validation::replay_native_accessibility_path(&surface, move |event| {
+        let SurfaceEvent::Accessibility { request, .. } = event else {
+            return SurfaceResponse::default();
+        };
+        let mut state = match callback_state.lock() {
+            Ok(state) => state,
+            Err(_) => return SurfaceResponse::default(),
+        };
+        surface_response(&mut state, &request, None)
     })?;
 
     assert_eq!(evidence.root_children(), 1);
@@ -216,6 +234,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(evidence.retained_slot_bytes_after_revoke(), 0);
     assert!(evidence.late_selector_rejected());
     assert_eq!(evidence.notification_counts(), [0, 0, 1, 1, 0]);
+    assert_eq!(
+        state
+            .lock()
+            .map_err(|_| "accessibility state lock poisoned")?
+            .snapshot_requests,
+        5
+    );
+
+    let rejected_descriptor =
+        SurfaceDescriptor::new("Alpine rejected accessibility", 96.0, 64.0, 1.0)?;
+    let rejected_surface = native_validation::new_surface(&rejected_descriptor)?;
+    rejected_surface.show()?;
+    let rejected_state = Arc::new(Mutex::new(State {
+        revision: AccessibilityRevision::new(7, 11),
+        selection: AccessibilitySelection::new(0, 4),
+        text: "zero\none two".into(),
+        snapshot_requests: 0,
+    }));
+    let callback_rejected_state = Arc::clone(&rejected_state);
+    let forbidden_write = ClipboardWrite::new(
+        ClipboardOperation::Copy,
+        ClipboardText::new("must-not-write-during-accessibility")?,
+    )?;
+    let rejected =
+        native_validation::replay_native_accessibility_path(&rejected_surface, move |event| {
+            let SurfaceEvent::Accessibility { request, .. } = event else {
+                return SurfaceResponse::default();
+            };
+            let mut state = match callback_rejected_state.lock() {
+                Ok(state) => state,
+                Err(_) => return SurfaceResponse::default(),
+            };
+            surface_response(&mut state, &request, Some(forbidden_write.clone()))
+        });
+    assert!(matches!(
+        rejected,
+        Err(alpine_platform_macos::SurfaceError::DriverUnavailable)
+    ));
+    let rejected_owner_evidence = native_validation::close_with_owner_evidence(rejected_surface)?;
+    assert_eq!(rejected_owner_evidence.active(), [0; 10]);
+    assert_eq!(rejected_owner_evidence.release_order_violations(), 0);
 
     let owner_evidence = native_validation::close_with_owner_evidence(surface)?;
     assert_eq!(owner_evidence.active(), [0; 10]);

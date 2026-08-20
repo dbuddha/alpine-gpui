@@ -3388,7 +3388,17 @@ impl NativeSurface {
         F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         self.delegate.install_event_handler(handler)?;
-        let result = NativeAccessibilityAdapter::validate_view(&self.view);
+        let roots: Retained<NSArray<NativeAccessibilityElement>> =
+            unsafe { msg_send![&*self.view, accessibilityChildren] };
+        let result = if roots.firstObject().is_none() {
+            Err(SurfaceError::DriverUnavailable)
+        } else {
+            self.delegate
+                .dispatch_surface_event(SurfaceEvent::Wake {
+                    timestamp: self.delegate.next_event_timestamp(),
+                })
+                .and_then(|_| NativeAccessibilityAdapter::validate_view(&self.view))
+        };
         self.delegate.clear_event_handler();
         result
     }

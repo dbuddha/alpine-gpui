@@ -596,7 +596,7 @@ impl NativeAccessibilityAdapter {
         let notification_counts = counters.notifications;
         let retained_slot_bytes_before_revoke =
             view.ivars().accessibility.borrow().retained_slot_bytes();
-        Self::revoke_view(view);
+        view.revoke_accessibility();
         let late_length: usize = unsafe { msg_send![&*editor, accessibilityNumberOfCharacters] };
         let final_counters = view.ivars().accessibility.borrow().counters;
         let retained_slot_bytes_after_revoke =
