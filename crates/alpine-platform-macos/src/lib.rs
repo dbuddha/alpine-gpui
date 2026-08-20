@@ -19,6 +19,9 @@ use alpine_platform::{
 };
 use alpine_scene::Scene;
 
+mod accessibility;
+pub use accessibility::*;
+
 /// Monotonic timestamp assigned at the native event-dispatch boundary.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct EventTimestamp(u64);
@@ -308,6 +311,13 @@ pub enum ImeEvent {
 /// Handle-free event vocabulary crossing the native surface boundary.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SurfaceEvent {
+    /// Synchronous, demand-driven assistive-technology request.
+    Accessibility {
+        /// Monotonic event timestamp.
+        timestamp: EventTimestamp,
+        /// Bounded handle-free request.
+        request: AccessibilityRequest,
+    },
     /// Keyboard identity, text, modifiers, and repeat state.
     Keyboard {
         /// Monotonic event timestamp.
@@ -396,7 +406,8 @@ impl SurfaceEvent {
     #[must_use]
     pub const fn timestamp(&self) -> EventTimestamp {
         match self {
-            Self::Keyboard { timestamp, .. }
+            Self::Accessibility { timestamp, .. }
+            | Self::Keyboard { timestamp, .. }
             | Self::Pointer { timestamp, .. }
             | Self::Scroll { timestamp, .. }
             | Self::Focus { timestamp, .. }
@@ -448,6 +459,7 @@ pub struct SurfaceResponse {
     frame: Option<SurfaceFrame>,
     clipboard_write: Option<ClipboardWrite>,
     close: CloseDisposition,
+    accessibility: Option<AccessibilityResponse>,
 }
 
 impl SurfaceResponse {
@@ -462,6 +474,23 @@ impl SurfaceResponse {
             frame,
             clipboard_write,
             close,
+            accessibility: None,
+        }
+    }
+
+    /// Creates one response from every independent bounded output channel.
+    #[must_use]
+    pub const fn from_channels(
+        frame: Option<SurfaceFrame>,
+        clipboard_write: Option<ClipboardWrite>,
+        close: CloseDisposition,
+        accessibility: Option<AccessibilityResponse>,
+    ) -> Self {
+        Self {
+            frame,
+            clipboard_write,
+            close,
+            accessibility,
         }
     }
 
@@ -481,6 +510,30 @@ impl SurfaceResponse {
     #[must_use]
     pub const fn close_disposition(&self) -> CloseDisposition {
         self.close
+    }
+
+    /// Returns the optional exact accessibility response.
+    #[must_use]
+    pub const fn accessibility_response(&self) -> Option<&AccessibilityResponse> {
+        self.accessibility.as_ref()
+    }
+
+    /// Consumes the response into every independent output channel.
+    #[must_use]
+    pub fn into_channels(
+        self,
+    ) -> (
+        Option<SurfaceFrame>,
+        Option<ClipboardWrite>,
+        CloseDisposition,
+        Option<AccessibilityResponse>,
+    ) {
+        (
+            self.frame,
+            self.clipboard_write,
+            self.close,
+            self.accessibility,
+        )
     }
 
     /// Consumes the response into its independent output channels.

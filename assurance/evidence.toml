@@ -4307,6 +4307,151 @@ assumptions = ["Close maps to the production language-session shutdown path."]
 exclusions = ["child-process join latency", "allocator behavior", "Rust refinement"]
 companion = "apps/alpine-studio/src/studio_coverage_tests.rs#completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact"
 
+[[claims]]
+id = "AEP-0250-C01"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0250-bounded-native-accessibility-transport.md"
+requirement_issue = 37
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "required"
+tla_properties = ["ResponseMatchesRequest", "MutationIsCurrent"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "unit", "kani"]
+
+[[claims]]
+id = "AEP-0250-C02"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0250-bounded-native-accessibility-transport.md"
+requirement_issue = 37
+claim_type = "memory"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0250-C03"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0250-bounded-native-accessibility-transport.md"
+requirement_issue = 37
+claim_type = "safety"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = ["AtMostOneResponse"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[claims]]
+id = "AEP-0250-C04"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0250-bounded-native-accessibility-transport.md"
+requirement_issue = 37
+claim_type = "accessibility"
+risk = "high"
+kani_applicability = "not_applicable"
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["unit", "e2e"]
+
+[[evidence]]
+id = "EV-0250-UNIT01"
+claim = "AEP-0250-C01"
+kind = "unit"
+artifact = "crates/alpine-platform-macos/src/accessibility.rs#request_and_response_identity_fail_closed"
+assertion = "Request ID, operation, payload kind, and exact revision are repeated and mismatches or stale revisions fail structurally."
+scope = "One handle-free request and response on every Rust target."
+exclusions = ["AppKit selector translation", "native callback timing"]
+
+[[evidence]]
+id = "EV-0250-KANI01"
+claim = "AEP-0250-C01"
+kind = "kani"
+artifact = "crates/alpine-platform-macos/src/accessibility.rs#checked_utf16_range_end_never_wraps"
+assertion = "Every usize UTF-16 range either has an exact non-wrapping end or returns arithmetic overflow."
+scope = "All usize start and length pairs."
+bounds = ["symbolic usize pair"]
+exclusions = ["rope conversion", "native NSRange conversion", "Rust refinement"]
+companion = "crates/alpine-platform-macos/src/accessibility.rs#byte_and_arithmetic_ceilings_are_exact"
+
+[[evidence]]
+id = "EV-0250-UNIT02"
+claim = "AEP-0250-C02"
+kind = "unit"
+artifact = "crates/alpine-platform-macos/src/accessibility.rs#snapshot_validates_identity_tree_selection_and_accounting"
+assertion = "The semantic snapshot validates root, parent, cycle, identity, focus, selection, node, name, and ownership invariants without retaining document text."
+scope = "One bounded handle-free semantic tree."
+bounds = ["271 nodes", "4 KiB per name", "256 KiB aggregate names"]
+exclusions = ["allocator physical footprint", "native element cache"]
+
+[[evidence]]
+id = "EV-0250-UNIT03"
+claim = "AEP-0250-C03"
+kind = "unit"
+artifact = "crates/alpine-runtime/src/lib.rs#foreground_context_only_accepts_newer_revisions"
+assertion = "The foreground context admits at most one accessibility response and exposes no response slot outside event dispatch."
+scope = "One synchronous runtime dispatch context."
+exclusions = ["AppKit callback reentrancy", "native close ordering"]
+
+[[evidence]]
+id = "EV-0250-E2E01"
+claim = "AEP-0250-C04"
+kind = "e2e"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#accessibility_snapshot_preserves_unicode_revision_focus_and_bounded_text"
+assertion = "Studio derives Unicode UTF-16 text, selection, focus, role, announcement, accounting, response identity, and stale-action behavior from its authoritative current buffer and semantic state."
+scope = "One local Unicode editor and bounded semantic projection."
+bounds = ["one active document", "271 nodes", "64 KiB text response"]
+exclusions = ["native AppKit elements", "VoiceOver process", "physical latency"]
+
+[[evidence]]
+id = "EV-0250-TLA01A"
+claim = "AEP-0250-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0250/AccessibilityTransport.tla#ResponseMatchesRequest"
+assertion = "A finite response is empty or repeats the active request and current observed revision exactly."
+scope = "Finite request, revision change, response, action, close, and reopen transitions."
+bounds = ["pull request: four revisions and four requests", "nightly: eight revisions and eight requests"]
+assumptions = ["One synchronous foreground accessibility owner."]
+exclusions = ["Rust refinement", "AppKit reentrancy", "UTF-16 conversion"]
+companion = "crates/alpine-platform-macos/src/accessibility.rs#request_and_response_identity_fail_closed"
+
+[[evidence]]
+id = "EV-0250-TLA01B"
+claim = "AEP-0250-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0250/AccessibilityTransport.tla#MutationIsCurrent"
+assertion = "A finite selection mutation is empty or belongs to the current open revision; the faulty stale transition violates the invariant."
+scope = "Finite current and stale action admission across revision change."
+bounds = ["pull request: four revisions and four requests", "nightly: eight revisions and eight requests"]
+assumptions = ["Checked coordinate conversion succeeds before the modeled mutation."]
+exclusions = ["selection byte semantics", "Rust refinement", "native setters"]
+companion = "apps/alpine-studio/src/studio_coverage_tests.rs#accessibility_snapshot_preserves_unicode_revision_focus_and_bounded_text"
+
+[[evidence]]
+id = "EV-0250-TLA03"
+claim = "AEP-0250-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0250/AccessibilityTransport.tla#AtMostOneResponse"
+assertion = "Finite synchronous dispatch owns at most one response; the faulty duplicate transition violates the invariant."
+scope = "One foreground response slot across request, response, close, and reopen."
+bounds = ["pull request: four revisions and four requests", "nightly: eight revisions and eight requests"]
+assumptions = ["One AppContext is live for one foreground dispatch."]
+exclusions = ["native callback reentrancy", "Rust refinement", "thread scheduling"]
+companion = "crates/alpine-runtime/src/lib.rs#foreground_context_only_accepts_newer_revisions"
+
+[[evidence]]
+id = "EV-0250-UNIT04"
+claim = "AEP-0250-C04"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#accessibility_snapshot_preserves_unicode_revision_focus_and_bounded_text"
+assertion = "Studio answers current snapshot and Unicode text requests without visual invalidation and preserves existing checked selection behavior."
+scope = "One local Unicode editor and synchronous semantic request path."
+bounds = ["one active document", "271 nodes", "64 KiB text response"]
+exclusions = ["AppKit element publication", "VoiceOver", "physical input latency"]
+
 [[evidence]]
 id = "EV-0218-TLA02"
 claim = "AEP-0218-C02"

@@ -4567,6 +4567,30 @@ fn accessibility_snapshot_preserves_unicode_revision_focus_and_bounded_text()
     let snapshot = app.accessibility_snapshot()?;
     assert_initial_accessibility_snapshot(&snapshot)?;
 
+    let request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(1))?;
+    let (response, effect) = accessibility::respond(&mut app, &request);
+    assert_eq!(response.validate_for(&request), Ok(()));
+    assert!(!effect.visual_changed);
+    assert!(matches!(
+        response.result(),
+        Ok(AccessibilityPayload::Snapshot(value))
+            if value.revision() == snapshot.revision()
+                && value.nodes().len() == snapshot.nodes().len()
+                && value.text_len_utf16() == snapshot.text_len_utf16()
+    ));
+
+    let text_request = AccessibilityRequest::text(
+        AccessibilityRequestId::new(2),
+        snapshot.revision(),
+        AccessibilityTextRange::new(1, 2),
+    )?;
+    let (text_response, text_effect) = accessibility::respond(&mut app, &text_request);
+    assert!(!text_effect.visual_changed);
+    assert!(matches!(
+        text_response.result(),
+        Ok(AccessibilityPayload::Text(text)) if text.as_str() == "🦀"
+    ));
+
     assert!(matches!(
         app.handle_accessibility_action(AccessibilityAction::set_selection(
             snapshot.revision(),

@@ -55,3 +55,4 @@
   - [AEP 0177: Bounded static command palette](aep/0177-bounded-static-command-palette.md)
   - [AEP 0180: Bounded streaming local project search](aep/0180-bounded-streaming-project-search.md)
   - [AEP 0218: Bounded revision-safe Rust completion](aep/0218-bounded-rust-completion.md)
+  - [AEP 0250: Bounded native accessibility transport](aep/0250-bounded-native-accessibility-transport.md)
