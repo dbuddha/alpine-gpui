@@ -6,11 +6,11 @@ Purpose: reject regressions that continuously callback, submit, present, or reta
 
 States: clean visible, hidden with `orderOut`, minimized with `miniaturize`, and restored visible.
 
-Control: request one strictly newer scene revision after restore. Require exactly one additional submission and direct-present call, terminal frame ownership, and a return to paused display-link state.
+Control: request one strictly newer scene revision after restore. Require exactly one additional real submission and direct-present call, terminal frame ownership, and a return to paused display-link state. Hosted runners use an explicit validation-only post-commit observation to drain the real submitted frame when Core Animation supplies no presented callback. That injected observation is not compositor evidence.
 
 Evidence: the native `native_idle` executable running under `alpine_native_validation` on hosted Apple Silicon macOS.
 
-Claim ceiling: scheduler and ownership behavior on the hosted environment only.
+Claim ceiling: scheduler, direct-present invocation, and ownership behavior on the hosted environment only. Physical compositor presentation, wakeup, and energy remain unqualified.
 
 ## NIE-E02: Fixed-hardware A/A calibration
 

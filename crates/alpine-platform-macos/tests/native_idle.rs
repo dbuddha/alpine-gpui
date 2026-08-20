@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 mod validation {
-    use std::{error::Error, time::Duration};
+    use std::{error::Error, ffi::OsStr, time::Duration};
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_platform_macos::{
@@ -26,11 +26,12 @@ mod validation {
     const SETTLEMENT: Duration = Duration::from_millis(150);
 
     pub(super) fn run() -> TestResult {
+        let hosted_direct = hosted_direct_mode()?;
         let descriptor = SurfaceDescriptor::new(TITLE, f64::from(WIDTH), f64::from(HEIGHT), 1.0)?;
         let surface = native_validation::new_surface(&descriptor)?;
         surface.show()?;
 
-        present(&surface, 1)?;
+        present(&surface, 1, hosted_direct)?;
         assert_quiescent(&surface, "visible")?;
 
         with_window(|window| window.orderOut(None))?;
@@ -42,7 +43,7 @@ mod validation {
         pump_main_run_loop(SETTLEMENT);
         assert!(native_validation::inject_configuration_callback(&surface));
         assert_window_state(true, false)?;
-        present(&surface, 2)?;
+        present(&surface, 2, hosted_direct)?;
 
         with_window(|window| window.miniaturize(None))?;
         pump_main_run_loop(SETTLEMENT);
@@ -58,7 +59,7 @@ mod validation {
         assert_quiescent(&surface, "restored-before-control")?;
 
         let before_control = surface.snapshot();
-        present(&surface, 3)?;
+        present(&surface, 3, hosted_direct)?;
         let after_control = surface.snapshot();
         assert_eq!(
             after_control.submission_count(),
@@ -78,7 +79,15 @@ mod validation {
         Ok(())
     }
 
-    fn present(surface: &NativeSurface, revision: u64) -> TestResult {
+    fn hosted_direct_mode() -> TestResult<bool> {
+        match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
+            None => Ok(false),
+            Some(mode) if mode == OsStr::new("hosted-direct") => Ok(true),
+            Some(_) => Err("unsupported presentation evidence mode".into()),
+        }
+    }
+
+    fn present(surface: &NativeSurface, revision: u64, hosted_direct: bool) -> TestResult {
         let before = surface.snapshot();
         let viewport = Size::new(WIDTH, HEIGHT).ok_or("valid idle viewport")?;
         let bounds = Rect::new(Point::new(0.0, 0.0).ok_or("valid idle origin")?, viewport);
@@ -90,6 +99,16 @@ mod validation {
             surface.request_frame(builder.finish(), clear)?.get(),
             revision
         );
+        if hosted_direct {
+            // A hosted runner can supply a callback drawable without ever
+            // reporting compositor presentation. The validation-only
+            // observation terminalizes real submitted work so this test can
+            // qualify idle ownership. Only the independently counted direct
+            // present call is evidence; this observation is not physical
+            // presentation evidence.
+            let presented_time = 1.0 + f64::from(u32::try_from(revision)?);
+            native_validation::inject_post_commit_observation(surface, None, presented_time)?;
+        }
         native_validation::run_until_frame_terminal(surface, Duration::from_secs(30));
         if let Some(error) = surface.take_error()? {
             return Err(error.into());

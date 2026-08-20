@@ -6,7 +6,7 @@ Alpine-owned counters are authoritative for frame admission, submission, direct-
 
 ## NIE-D02: Keep hosted qualification blocking and physically scoped
 
-Hosted structural qualification is a blocking regression gate because it is deterministic and available on every relevant pull request. Physical energy qualification is a release and milestone gate because its environment cannot be guaranteed by hosted CI.
+Hosted structural qualification is a blocking regression gate because it is deterministic and available on every relevant pull request. When the hosted compositor omits presented callbacks, a validation-only post-commit observation may terminalize a real submitted and directly presented frame so ownership and idle behavior remain testable. The injected observation never qualifies compositor presentation. Physical presentation and energy qualification remain release and milestone gates because their environment cannot be guaranteed by hosted CI.
 
 ## NIE-D03: Reject private power APIs
 

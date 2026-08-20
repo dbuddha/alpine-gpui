@@ -39,7 +39,7 @@ Record and hash:
 4. Predeclare settlement, sample interval, sample count, and invalidation bounds from calibration.
 5. Randomize state order within each independent window.
 6. Advance the main run loop during every state.
-7. Run the hosted invalidation control and require exactly one new submission and direct-present call. Require compositor presentation separately in physical evidence.
+7. Run the hosted invalidation control and require exactly one new submission and direct-present call. In `hosted-direct` mode, inject one validation-only post-commit observation after real submission to drain frame ownership; never count it as compositor evidence. Require compositor presentation separately in physical evidence.
 8. Run the negative control and require wakeup and energy sensitivity above the calibrated floor.
 9. Hash raw artifacts before analysis and retain analysis output separately.
 10. Repeat across at least four independent windows and twenty paired runs, increasing samples when calibration requires it.
@@ -50,7 +50,7 @@ Record and hash:
 - No callback or presentation drift after settlement in the hosted structural test.
 - Empty occupied and submitted frame slots at every terminal observation.
 - No live Alpine native owners after close and drain.
-- Exactly one additional submission and direct-present call for each hosted invalidation control, plus one observed compositor presentation in the physical control.
+- Exactly one additional real submission and direct-present call for each hosted invalidation control. A hosted synthetic terminal observation proves only bounded ownership drain; the physical control must independently observe one compositor presentation.
 - No missing, malformed, or hash-mismatched evidence artifact.
 
 ## Calibrated acceptance bounds

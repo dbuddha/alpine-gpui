@@ -109,5 +109,6 @@ fi
     -- --exact --nocapture --test-threads=1
 
 printf '%s\n' '==> hosted native idle-state qualification'
-RUSTFLAGS="${RUSTFLAGS:-} --cfg alpine_native_validation" \
+ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct \
+    RUSTFLAGS="${RUSTFLAGS:-} --cfg alpine_native_validation" \
     cargo test --locked --package alpine-platform-macos --test native_idle
