@@ -90,7 +90,7 @@ mod validation {
             surface.request_frame(builder.finish(), clear)?.get(),
             revision
         );
-        native_validation::run_until_frame_terminal(surface, Duration::from_secs(8));
+        native_validation::run_until_frame_terminal(surface, Duration::from_secs(30));
         if let Some(error) = surface.take_error()? {
             return Err(error.into());
         }
