@@ -56,7 +56,7 @@ RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_recovery
 ALPINE_REVISION=$(git rev-parse HEAD) \
-    ALPINE_NATIVE_LIFECYCLE_ARTIFACT=target/native-lifecycle-soak.toml \
+    ALPINE_NATIVE_LIFECYCLE_ARTIFACT="$(pwd)/target/native-lifecycle-soak.toml" \
     RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_lifecycle
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
