@@ -937,13 +937,9 @@ fn next_grapheme_boundary(slice: ropey::RopeSlice<'_>, byte: usize) -> Result<us
         match cursor.next_boundary(chunk, chunk_start) {
             Err(GraphemeIncomplete::NextChunk) => {
                 let candidate = following_chunk_start(chunk_start, chunk.len(), byte)?;
-                if !valid_following_chunk(chunk_start, candidate, slice.len_bytes()) {
-                    return Err(TextError::InvalidGraphemeBoundary { offset: byte });
-                }
+                validate_following_chunk(chunk_start, candidate, slice.len_bytes(), byte)?;
                 let (next_chunk, next_start, _, _) = slice.chunk_at_byte(candidate);
-                if !valid_following_chunk(chunk_start, next_start, slice.len_bytes()) {
-                    return Err(TextError::InvalidGraphemeBoundary { offset: byte });
-                }
+                validate_following_chunk(chunk_start, next_start, slice.len_bytes(), byte)?;
                 chunk = next_chunk;
                 chunk_start = next_start;
             }
@@ -975,6 +971,19 @@ fn following_chunk_start(start: usize, length: usize, offset: usize) -> Result<u
 
 fn valid_following_chunk(start: usize, next: usize, total: usize) -> bool {
     next > start && next <= total
+}
+
+fn validate_following_chunk(
+    start: usize,
+    next: usize,
+    total: usize,
+    offset: usize,
+) -> Result<(), TextError> {
+    if valid_following_chunk(start, next, total) {
+        Ok(())
+    } else {
+        Err(TextError::InvalidGraphemeBoundary { offset })
+    }
 }
 
 /// A local copy-on-write buffer with bounded deterministic history.
@@ -2395,6 +2404,13 @@ mod bounded_grapheme_mapping_tests {
         assert!(!valid_following_chunk(4, 4, 9));
         assert!(!valid_following_chunk(4, 3, 9));
         assert!(!valid_following_chunk(4, 10, 9));
+        assert_eq!(validate_following_chunk(4, 9, 9, 12), Ok(()));
+        for invalid in [4, 3, 10] {
+            assert_eq!(
+                validate_following_chunk(4, invalid, 9, 12),
+                Err(TextError::InvalidGraphemeBoundary { offset: 12 })
+            );
+        }
         let lines = Buffer::new("a\r\nb\n").snapshot();
         assert_eq!(lines.line_of_byte(ByteOffset::new(0))?, 0);
         assert_eq!(lines.line_of_byte(ByteOffset::new(2))?, 0);
