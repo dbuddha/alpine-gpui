@@ -2068,14 +2068,13 @@ define_class!(
                 {
                     link.setPaused(true);
                     stop_event_loop(&self.ivars().application);
-                } else if should_schedule_display_link_pause_confirmation(directive) {
-                    if let Some(display_link) = &self.ivars().display_link {
-                        schedule_display_link_pause_confirmation(display_link, driver);
-                    } else {
-                        link.setPaused(true);
-                    }
                 } else {
                     apply_display_link_directive(link, directive);
+                    if should_schedule_display_link_pause_confirmation(directive)
+                        && let Some(display_link) = &self.ivars().display_link
+                    {
+                        schedule_display_link_pause_confirmation(display_link, driver);
+                    }
                 }
                 #[cfg(alpine_native_validation)]
                 if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE
