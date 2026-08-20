@@ -954,13 +954,24 @@ an exact document and buffer revision and is materialized only after the mapped
 UTF-8 range is within 64 KiB. Queries do not invalidate a clean scene. Selection
 actions reuse Studio's checked UTF-16 conversion and dirty-only frame path.
 
-A separately reviewed private adapter translates these values to stable AppKit
-accessibility objects. It may not retain Studio objects, expose native handles,
-or mutate text outside the revision-checked action boundary. AppKit line and
-grapheme selectors use revision-bound mapping requests answered by Studio's
-immutable `BufferSnapshot`; chunked grapheme traversal retains no contiguous
-document copy, and unsupported text geometry remains unavailable. See AEP-0250
-and AEP-0255.
+The private `native_accessibility` adapter now translates these values into
+stable, main-thread-only `NSAccessibilityElement` subclasses keyed by semantic
+node identity and surface generation. The surface view owns a bounded cache;
+each element keeps only a weak view reference, and close revokes the callback,
+invalidates the generation, and releases every cached element. The adapter does
+not retain Studio objects or expose native handles. It requests a fresh bounded
+snapshot only after AppKit activates accessibility or accepted application
+events change active semantics. Notifications are computed while reconciling
+snapshots and posted only after the adapter borrow is released.
+
+The code editor publishes character count and selection without materializing
+the document. Selected text, bounded strings, logical lines, line ranges, and
+grapheme ranges cross the exact revision-bound request path. Selection writes
+carry the revision observed by the native element, and stale actions fail
+without mutation. Unsupported text geometry selectors are explicitly denied.
+The production native journey validates object identity, roles, labels, text
+ranges, mapping selectors, stale writes, notifications, cache accounting, late
+selector rejection, and owner drain. See AEP-0250 and AEP-0255.
 
 ### Pane document ownership (Task #127)
 

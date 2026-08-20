@@ -563,6 +563,8 @@ impl From<Option<SurfaceFrame>> for SurfaceResponse {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod native_accessibility;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 mod unsupported;
 
@@ -679,6 +681,164 @@ pub mod native_validation {
         window_closes: u64,
         pasteboard_releases: u64,
         release_order_violations: u64,
+    }
+
+    /// Handle-free evidence produced by the production AppKit accessibility selectors.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct NativeAccessibilityEvidence {
+        pub(crate) root_children: usize,
+        pub(crate) stable_root_identity: bool,
+        pub(crate) role: Box<str>,
+        pub(crate) label: Box<str>,
+        pub(crate) text_length_utf16: usize,
+        pub(crate) selected_text: Box<str>,
+        pub(crate) bounded_text: Box<str>,
+        pub(crate) selected_range: crate::AccessibilityTextRange,
+        pub(crate) line_for_index: usize,
+        pub(crate) range_for_line: crate::AccessibilityTextRange,
+        pub(crate) range_for_index: crate::AccessibilityTextRange,
+        pub(crate) bounded_text_selector_allowed: bool,
+        pub(crate) geometry_selector_allowed: bool,
+        pub(crate) semantic_tree_valid: bool,
+        pub(crate) text_selector_scope_valid: bool,
+        pub(crate) accepted_selection: crate::AccessibilityTextRange,
+        pub(crate) stale_action_rejected: bool,
+        pub(crate) peak_elements: usize,
+        pub(crate) created_elements: u64,
+        pub(crate) released_elements: u64,
+        pub(crate) notification_counts: [u64; 5],
+        pub(crate) current_elements_after_revoke: usize,
+        pub(crate) retained_slot_bytes_before_revoke: usize,
+        pub(crate) retained_slot_bytes_after_revoke: usize,
+        pub(crate) late_selector_rejected: bool,
+    }
+
+    impl NativeAccessibilityEvidence {
+        /// Returns direct children published beneath the surface view.
+        #[must_use]
+        pub const fn root_children(&self) -> usize {
+            self.root_children
+        }
+        /// Returns whether repeated snapshots preserved the root AppKit object.
+        #[must_use]
+        pub const fn stable_root_identity(&self) -> bool {
+            self.stable_root_identity
+        }
+        /// Returns the editor's native role.
+        #[must_use]
+        pub fn role(&self) -> &str {
+            &self.role
+        }
+        /// Returns the editor's native label.
+        #[must_use]
+        pub fn label(&self) -> &str {
+            &self.label
+        }
+        /// Returns the editor's complete UTF-16 length without document materialization.
+        #[must_use]
+        pub const fn text_length_utf16(&self) -> usize {
+            self.text_length_utf16
+        }
+        /// Returns the bounded selected text requested through AppKit.
+        #[must_use]
+        pub fn selected_text(&self) -> &str {
+            &self.selected_text
+        }
+        /// Returns one bounded string obtained through `accessibilityStringForRange:`.
+        #[must_use]
+        pub fn bounded_text(&self) -> &str {
+            &self.bounded_text
+        }
+        /// Returns the native selected range observed before the write.
+        #[must_use]
+        pub const fn selected_range(&self) -> crate::AccessibilityTextRange {
+            self.selected_range
+        }
+        /// Returns the line mapped from the validation index.
+        #[must_use]
+        pub const fn line_for_index(&self) -> usize {
+            self.line_for_index
+        }
+        /// Returns the range mapped from the validation line.
+        #[must_use]
+        pub const fn range_for_line(&self) -> crate::AccessibilityTextRange {
+            self.range_for_line
+        }
+        /// Returns the grapheme range mapped from the validation index.
+        #[must_use]
+        pub const fn range_for_index(&self) -> crate::AccessibilityTextRange {
+            self.range_for_index
+        }
+        /// Returns whether the bounded text selector is admitted.
+        #[must_use]
+        pub const fn bounded_text_selector_allowed(&self) -> bool {
+            self.bounded_text_selector_allowed
+        }
+        /// Returns whether unsupported geometry materialization was rejected.
+        #[must_use]
+        pub const fn geometry_selector_allowed(&self) -> bool {
+            self.geometry_selector_allowed
+        }
+        /// Returns whether role, value, focus, selection, and parentage selectors agree.
+        #[must_use]
+        pub const fn semantic_tree_valid(&self) -> bool {
+            self.semantic_tree_valid
+        }
+        /// Returns whether editor text selectors are denied on non-editor elements.
+        #[must_use]
+        pub const fn text_selector_scope_valid(&self) -> bool {
+            self.text_selector_scope_valid
+        }
+        /// Returns the accepted revision-checked selection.
+        #[must_use]
+        pub const fn accepted_selection(&self) -> crate::AccessibilityTextRange {
+            self.accepted_selection
+        }
+        /// Returns whether a stale revision action was rejected.
+        #[must_use]
+        pub const fn stale_action_rejected(&self) -> bool {
+            self.stale_action_rejected
+        }
+        /// Returns peak retained native element count.
+        #[must_use]
+        pub const fn peak_elements(&self) -> usize {
+            self.peak_elements
+        }
+        /// Returns native elements created during the journey.
+        #[must_use]
+        pub const fn created_elements(&self) -> u64 {
+            self.created_elements
+        }
+        /// Returns native elements released by cache reconciliation and revocation.
+        #[must_use]
+        pub const fn released_elements(&self) -> u64 {
+            self.released_elements
+        }
+        /// Returns layout, focus, selection, value, and announcement notifications.
+        #[must_use]
+        pub const fn notification_counts(&self) -> [u64; 5] {
+            self.notification_counts
+        }
+        /// Returns retained native elements after callback revocation.
+        #[must_use]
+        pub const fn current_elements_after_revoke(&self) -> usize {
+            self.current_elements_after_revoke
+        }
+        /// Returns bytes occupied by retained cache slots before revocation.
+        #[must_use]
+        pub const fn retained_slot_bytes_before_revoke(&self) -> usize {
+            self.retained_slot_bytes_before_revoke
+        }
+        /// Returns bytes occupied by retained cache slots after revocation.
+        #[must_use]
+        pub const fn retained_slot_bytes_after_revoke(&self) -> usize {
+            self.retained_slot_bytes_after_revoke
+        }
+        /// Returns whether a retained late element failed closed after revocation.
+        #[must_use]
+        pub const fn late_selector_rejected(&self) -> bool {
+            self.late_selector_rejected
+        }
     }
 
     impl NativeOwnerEvidence {
@@ -985,6 +1145,24 @@ pub mod native_validation {
         F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         surface.implementation.replay_native_input_path(handler)
+    }
+
+    /// Replays the production AppKit accessibility selectors against one event handler.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured native error when selector dispatch, response identity,
+    /// cache reconciliation, or lifecycle revocation fails closed.
+    pub fn replay_native_accessibility_path<F>(
+        surface: &NativeSurface,
+        handler: F,
+    ) -> Result<NativeAccessibilityEvidence, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        surface
+            .implementation
+            .replay_native_accessibility_path(handler)
     }
 
     /// Replays one exact Command-C, Command-X, or Command-V input path.

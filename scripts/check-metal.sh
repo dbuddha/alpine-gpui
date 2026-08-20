@@ -60,6 +60,8 @@ RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_input
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
+    cargo test --locked -p alpine-platform-macos --test native_accessibility
+RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_runtime
 ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct \
     RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
