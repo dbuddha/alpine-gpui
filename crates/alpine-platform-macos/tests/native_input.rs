@@ -2,12 +2,52 @@
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     use alpine_platform_macos::{
         ImeEvent, InputEpoch, KeyState, Modifiers, PointerAction, PointerButton, ScrollPhase,
         SurfaceDescriptor, SurfaceEvent, SurfaceResponse, native_validation,
     };
+
+    fn validate_startup_focus_publication(
+        descriptor: &SurfaceDescriptor,
+        input_epoch: InputEpoch,
+        focused: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let surface = native_validation::new_surface(descriptor)?;
+        surface.show()?;
+        native_validation::set_input_focus_state(&surface, input_epoch, focused);
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let callback_received = Arc::clone(&received);
+        native_validation::arm_window_close(&surface, Duration::from_millis(500));
+        surface
+            .run_with_event_handler(move |event| {
+                if let Ok(mut received) = callback_received.lock() {
+                    received.push(event);
+                }
+                SurfaceResponse::default()
+            })
+            .map_err(|error| {
+                format!("startup focus run failed for {input_epoch:?}/{focused}: {error}")
+            })?;
+
+        let received = received
+            .lock()
+            .map_err(|_| "startup focus receiver poisoned")?;
+        assert!(matches!(
+            received.first(),
+            Some(SurfaceEvent::Focus {
+                input_epoch: actual_epoch,
+                focused: actual_focus,
+                ..
+            }) if *actual_epoch == input_epoch && *actual_focus == focused
+        ));
+        assert!(matches!(received.get(1), Some(SurfaceEvent::Wake { .. })));
+        Ok(())
+    }
 
     let descriptor = SurfaceDescriptor::new("Alpine native input", 96.0, 64.0, 1.0)?;
     let surface = native_validation::new_surface(&descriptor)?;
@@ -20,7 +60,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             received.push(event);
         }
         SurfaceResponse::default()
-    })?;
+    })
+    .map_err(|error| format!("native input replay failed: {error}"))?;
 
     let received = received
         .lock()
@@ -154,6 +195,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(evidence.active(), [0; 10]);
     assert_eq!(evidence.pasteboard_releases(), 0);
     assert_eq!(evidence.release_order_violations(), 0);
+
+    validate_startup_focus_publication(&descriptor, next_epoch, true)?;
+    validate_startup_focus_publication(&descriptor, InputEpoch::INITIAL, false)?;
     Ok(())
 }
 

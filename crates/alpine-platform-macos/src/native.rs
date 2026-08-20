@@ -1701,6 +1701,12 @@ impl SurfaceView {
         )
     }
 
+    #[cfg(alpine_native_validation)]
+    fn set_input_focus_state_for_validation(&self, input_epoch: InputEpoch, focused: bool) {
+        self.ivars().input_epoch.set(input_epoch);
+        self.ivars().input_active.set(focused);
+    }
+
     fn suspend_input_epoch(&self) -> Option<InputEpoch> {
         if !self.ivars().input_active.get() {
             self.clear_marked_text();
@@ -3638,6 +3644,42 @@ impl NativeSurface {
             }
             self.delegate.publish_input_focus(true);
 
+            let current_epoch = self.view.ivars().input_epoch.get();
+            let rejected_before = self.view.rejected_ime_callbacks();
+            self.view
+                .emit_ime_at_epoch(stale_epoch, ImeEvent::Committed("active-stale".into()));
+            if self.view.rejected_ime_callbacks() != rejected_before.saturating_add(1) {
+                return Err(SurfaceError::DriverUnavailable);
+            }
+
+            self.view
+                .set_input_focus_state_for_validation(current_epoch, false);
+            let rejected_before = self.view.rejected_ime_callbacks();
+            self.view
+                .emit_ime_at_epoch(current_epoch, ImeEvent::Committed("inactive-current".into()));
+            if self.view.rejected_ime_callbacks() != rejected_before.saturating_add(1) {
+                return Err(SurfaceError::DriverUnavailable);
+            }
+
+            let rejected_before = self.view.rejected_ime_callbacks();
+            let blocked = NSString::from_str("blocked");
+            unsafe {
+                let _: () = msg_send![
+                    &*self.view,
+                    setMarkedText: &*blocked,
+                    selectedRange: NSRange::new(0, 0),
+                    replacementRange: NSRange::new(usize::MAX, 0)
+                ];
+            }
+            if self.view.rejected_ime_callbacks() != rejected_before.saturating_add(1) {
+                return Err(SurfaceError::DriverUnavailable);
+            }
+            if self.view.has_marked_text_value() {
+                return Err(SurfaceError::DriverUnavailable);
+            }
+            self.view
+                .set_input_focus_state_for_validation(current_epoch, true);
+
             let pointer = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
                 NSEventType::LeftMouseDown,
                 NSPoint::new(12.0, 18.0),
@@ -3682,6 +3724,16 @@ impl NativeSurface {
             return Err(SurfaceError::DriverUnavailable);
         }
         Ok(())
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn set_input_focus_state_for_validation(
+        &self,
+        input_epoch: InputEpoch,
+        focused: bool,
+    ) {
+        self.view
+            .set_input_focus_state_for_validation(input_epoch, focused);
     }
 
     #[cfg(alpine_native_validation)]

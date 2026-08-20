@@ -1270,6 +1270,17 @@ pub mod native_validation {
         surface.implementation.replay_native_input_path(handler)
     }
 
+    /// Sets the pre-run input epoch and focus state for startup publication validation.
+    pub fn set_input_focus_state(
+        surface: &NativeSurface,
+        input_epoch: crate::InputEpoch,
+        focused: bool,
+    ) {
+        surface
+            .implementation
+            .set_input_focus_state_for_validation(input_epoch, focused);
+    }
+
     /// Replays the production AppKit accessibility selectors against one event handler.
     ///
     /// # Errors
