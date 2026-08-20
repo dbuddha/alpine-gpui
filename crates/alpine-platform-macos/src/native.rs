@@ -2077,15 +2077,19 @@ define_class!(
                                 }
                             });
                         // SAFETY: The retained display link and weak driver are main-thread-only,
-                        // Foundation copies the block for the scheduled timer lifetime, and the
-                        // callback receives a valid NSTimer after this callback returns.
-                        let _timer = unsafe {
-                            NSTimer::scheduledTimerWithTimeInterval_repeats_block(
-                                0.0,
-                                false,
-                                &pause_block,
-                            )
+                        // Foundation copies the block for the timer lifetime, and the main run
+                        // loop retains the one-shot timer in the same common modes as the display
+                        // link. The callback receives a valid NSTimer after this callback returns.
+                        let timer = unsafe {
+                            NSTimer::timerWithTimeInterval_repeats_block(0.0, false, &pause_block)
                         };
+                        // SAFETY: Construction and callbacks are main-thread-only, this is the
+                        // process main run loop, and NSRunLoopCommonModes is static. Explicitly
+                        // sharing the display link's modes prevents terminal-loop shutdown from
+                        // stranding the confirmation in the default mode.
+                        unsafe {
+                            NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+                        }
                     }
                 }
                 #[cfg(alpine_native_validation)]
