@@ -1139,12 +1139,25 @@ mod bounded_action_tests {
             false,
             false,
             false,
-        )?
+        )
+        .unwrap_or_else(|_| unreachable!())
         .with_bounds(bounds)
         .with_activate(false);
         assert!(node.supports_activate());
         assert!(!node.is_enabled());
         assert_eq!(node.bounds(), bounds);
+        assert_eq!(
+            AccessibilityError::ActionTargetMissing(id).to_string(),
+            "accessibility action target 13 is missing"
+        );
+        assert_eq!(
+            AccessibilityError::ActionDisabled(id).to_string(),
+            "accessibility action target 13 is disabled"
+        );
+        assert_eq!(
+            AccessibilityError::InvalidBounds.to_string(),
+            "accessibility bounds are invalid"
+        );
         Ok(())
     }
 }

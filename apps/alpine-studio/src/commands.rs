@@ -407,9 +407,6 @@ impl CommandPalette {
         command: StudioCommand,
         context: CommandContext,
     ) -> Result<StudioCommand, CommandPaletteError> {
-        if !REGISTRY.iter().any(|spec| spec.command == command) {
-            return Err(CommandPaletteError::MissingSelection);
-        }
         if !context.available(command) {
             let _ = self.refresh(context)?;
             return Err(CommandPaletteError::Unavailable(command));

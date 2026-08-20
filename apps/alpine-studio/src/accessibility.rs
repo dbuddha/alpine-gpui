@@ -398,11 +398,8 @@ fn build_nodes(app: &StudioApp) -> Result<Vec<AccessibilityNode>, AccessibilityE
         .tabs
         .label(app.tabs.active_index())
         .ok_or(AccessibilityError::InvalidTree)?;
-    nodes.push(editor_node(
-        app,
-        active_name,
-        focus_owner == Some(EDITOR_NODE),
-    )?);
+    let editor = editor_node(app, active_name, focus_owner == Some(EDITOR_NODE))?;
+    nodes.push(editor);
     push_overlays(app, focus_owner, &mut nodes)?;
     push_file_rows(app, &mut nodes)?;
     push_command_rows(app, &mut nodes)?;
@@ -411,9 +408,6 @@ fn build_nodes(app: &StudioApp) -> Result<Vec<AccessibilityNode>, AccessibilityE
         nodes.push(status_node(app, status.message())?);
     }
     let focused_count = nodes.iter().filter(|value| value.is_focused()).count();
-    if nodes.len() > MAX_ACCESSIBILITY_NODES {
-        return Err(AccessibilityError::InvalidTree);
-    }
     validate_tree_shape(nodes.len(), nodes.len(), focused_count, app.focused)?;
     Ok(nodes)
 }
@@ -493,13 +487,8 @@ fn push_tabs(
             .tabs
             .label(index)
             .ok_or(AccessibilityError::InvalidTree)?;
-        nodes.push(tab_node(
-            app,
-            id,
-            label,
-            index,
-            index == app.tabs.active_index(),
-        )?);
+        let tab = tab_node(app, id, label, index, index == app.tabs.active_index())?;
+        nodes.push(tab);
     }
     Ok(())
 }
@@ -600,10 +589,11 @@ fn activate_node(
     match parent {
         Some(TAB_LIST_NODE) => {
             for index in 0..app.tabs.len() {
-                let Some(tab) = app.tabs.id_at(index) else {
-                    continue;
-                };
-                if TAB_NODE_BASE.checked_add(tab.0) == Some(target.get()) {
+                if app
+                    .tabs
+                    .id_at(index)
+                    .is_some_and(|tab| TAB_NODE_BASE.checked_add(tab.0) == Some(target.get()))
+                {
                     return Ok(app
                         .activate_document_tab(index)
                         .unwrap_or_else(|error| app.record_workspace_error(&error)));
@@ -678,6 +668,9 @@ fn bounds(
 }
 
 fn window_node(app: &StudioApp) -> Result<AccessibilityNode, AccessibilityError> {
+    let width = app.last_viewport.width();
+    let height = app.last_viewport.height();
+    let node_bounds = bounds(0.0, 0.0, width, height)?;
     node(
         WINDOW_NODE,
         None,
@@ -686,18 +679,15 @@ fn window_node(app: &StudioApp) -> Result<AccessibilityNode, AccessibilityError>
         false,
         false,
         false,
-        bounds(
-            0.0,
-            0.0,
-            app.last_viewport.width(),
-            app.last_viewport.height(),
-        )?,
+        node_bounds,
         None,
     )
 }
 
 fn tab_list_node(app: &StudioApp) -> Result<AccessibilityNode, AccessibilityError> {
     let left = app.sidebar_width(app.last_viewport);
+    let width = (app.last_viewport.width() - left).max(0.0);
+    let node_bounds = bounds(left, 0.0, width, super::TAB_BAR_HEIGHT)?;
     node(
         TAB_LIST_NODE,
         Some(WINDOW_NODE),
@@ -706,12 +696,7 @@ fn tab_list_node(app: &StudioApp) -> Result<AccessibilityNode, AccessibilityErro
         false,
         false,
         false,
-        bounds(
-            left,
-            0.0,
-            (app.last_viewport.width() - left).max(0.0),
-            super::TAB_BAR_HEIGHT,
-        )?,
+        node_bounds,
         None,
     )
 }
@@ -724,6 +709,11 @@ fn editor_node(
     let rect = app
         .active_pane_bounds()
         .map_err(|_| AccessibilityError::InvalidTree)?;
+    let x = rect.origin().x();
+    let y = rect.origin().y();
+    let width = rect.size().width();
+    let height = rect.size().height();
+    let node_bounds = bounds(x, y, width, height)?;
     node(
         EDITOR_NODE,
         Some(WINDOW_NODE),
@@ -732,12 +722,7 @@ fn editor_node(
         focused,
         false,
         false,
-        bounds(
-            rect.origin().x(),
-            rect.origin().y(),
-            rect.size().width(),
-            rect.size().height(),
-        )?,
+        node_bounds,
         None,
     )
 }
@@ -755,6 +740,8 @@ fn tab_node(
     let clipped_right = (left + super::TAB_WIDTH)
         .max(sidebar)
         .min(app.last_viewport.width());
+    let width = (clipped_right - clipped_left).max(0.0);
+    let node_bounds = bounds(clipped_left, 0.0, width, super::TAB_BAR_HEIGHT)?;
     node(
         id,
         Some(TAB_LIST_NODE),
@@ -763,17 +750,14 @@ fn tab_node(
         false,
         selected,
         false,
-        bounds(
-            clipped_left,
-            0.0,
-            (clipped_right - clipped_left).max(0.0),
-            super::TAB_BAR_HEIGHT,
-        )?,
+        node_bounds,
         Some(true),
     )
 }
 
 fn status_node(app: &StudioApp, message: &str) -> Result<AccessibilityNode, AccessibilityError> {
+    let top = (app.last_viewport.height() - super::TREE_ROW_HEIGHT).max(0.0);
+    let node_bounds = bounds(0.0, top, app.last_viewport.width(), super::TREE_ROW_HEIGHT)?;
     node(
         STATUS_NODE,
         Some(WINDOW_NODE),
@@ -782,12 +766,7 @@ fn status_node(app: &StudioApp, message: &str) -> Result<AccessibilityNode, Acce
         false,
         false,
         true,
-        bounds(
-            0.0,
-            (app.last_viewport.height() - super::TREE_ROW_HEIGHT).max(0.0),
-            app.last_viewport.width(),
-            super::TREE_ROW_HEIGHT,
-        )?,
+        node_bounds,
         None,
     )
 }
@@ -842,6 +821,11 @@ fn completion_node(
     let editor = app
         .active_pane_bounds()
         .map_err(|_| AccessibilityError::InvalidTree)?;
+    let x = editor.origin().x();
+    let y = editor.origin().y();
+    let width = editor.size().width().min(520.0);
+    let height = 240.0_f32.min(editor.size().height());
+    let node_bounds = bounds(x, y, width, height)?;
     node(
         COMPLETION_NODE,
         Some(WINDOW_NODE),
@@ -850,12 +834,7 @@ fn completion_node(
         focused,
         true,
         true,
-        bounds(
-            editor.origin().x(),
-            editor.origin().y(),
-            editor.size().width().min(520.0),
-            240.0_f32.min(editor.size().height()),
-        )?,
+        node_bounds,
         None,
     )
 }
@@ -902,7 +881,10 @@ fn push_file_rows(
         let clipped_bottom = (top + super::TREE_ROW_HEIGHT)
             .max(0.0)
             .min(app.last_viewport.height());
-        nodes.push(node(
+        let width = app.sidebar_width(app.last_viewport);
+        let height = (clipped_bottom - clipped_top).max(0.0);
+        let row_bounds = bounds(0.0, clipped_top, width, height)?;
+        let row_result = node(
             id,
             Some(FILE_TREE_NODE),
             AccessibilityRole::ListItem,
@@ -910,14 +892,11 @@ fn push_file_rows(
             false,
             row.selected,
             false,
-            bounds(
-                0.0,
-                clipped_top,
-                app.sidebar_width(app.last_viewport),
-                (clipped_bottom - clipped_top).max(0.0),
-            )?,
+            row_bounds,
             Some(true),
-        )?);
+        );
+        let row_node = row_result?;
+        nodes.push(row_node);
     }
     Ok(())
 }
@@ -942,7 +921,9 @@ fn push_command_rows(
     let first_top =
         super::TAB_BAR_HEIGHT + super::CONTENT_INSET + super::COMMAND_PALETTE_QUERY_HEIGHT;
     for (visible, row) in rows.into_iter().enumerate() {
-        nodes.push(node(
+        let top = first_top + super::usize_as_f32(visible) * super::COMMAND_PALETTE_ROW_HEIGHT;
+        let row_bounds = bounds(left, top, width, super::COMMAND_PALETTE_ROW_HEIGHT)?;
+        let row_result = node(
             command_node_id(row.command),
             Some(COMMAND_PALETTE_NODE),
             AccessibilityRole::ListItem,
@@ -950,14 +931,11 @@ fn push_command_rows(
             false,
             row.selected,
             false,
-            bounds(
-                left,
-                first_top + super::usize_as_f32(visible) * super::COMMAND_PALETTE_ROW_HEIGHT,
-                width,
-                super::COMMAND_PALETTE_ROW_HEIGHT,
-            )?,
+            row_bounds,
             Some(true),
-        )?);
+        );
+        let row_node = row_result?;
+        nodes.push(row_node);
     }
     Ok(())
 }
@@ -985,12 +963,16 @@ fn push_diagnostics(
         .active_pane_bounds()
         .map_err(|_| AccessibilityError::InvalidTree)?;
     let mut remaining = MAX_VISIBLE_DIAGNOSTIC_MARKERS;
-    for rendered in &app.rendered_lines {
+    let mut rendered_index = 0_usize;
+    loop {
         if remaining == 0 {
             break;
         }
+        let Some(rendered) = app.rendered_lines.get(rendered_index) else {
+            break;
+        };
         let mut ordinal = 0_usize;
-        app.rust_diagnostics.for_each_marker(
+        let visit = app.rust_diagnostics.for_each_marker(
             app.language_identity(),
             rendered.line,
             remaining,
@@ -1005,7 +987,12 @@ fn push_diagnostics(
                 let severity = marker.severity.map_or("diagnostic".to_owned(), |value| {
                     format!("diagnostic severity {value}")
                 });
-                nodes.push(node(
+                let x = rect.origin().x();
+                let y = rect.origin().y();
+                let width = rect.size().width();
+                let height = rect.size().height();
+                let marker_bounds = bounds(x, y, width, height)?;
+                let marker_result = node(
                     diagnostic_node_id(rendered.line, ordinal)?,
                     Some(EDITOR_NODE),
                     AccessibilityRole::ListItem,
@@ -1016,19 +1003,18 @@ fn push_diagnostics(
                     false,
                     false,
                     false,
-                    bounds(
-                        rect.origin().x(),
-                        rect.origin().y(),
-                        rect.size().width(),
-                        rect.size().height(),
-                    )?,
+                    marker_bounds,
                     Some(true),
-                )?);
+                );
+                let marker_node = marker_result?;
+                nodes.push(marker_node);
                 ordinal = ordinal.saturating_add(1);
                 Ok::<(), AccessibilityError>(())
             },
-        )?;
+        );
+        visit?;
         remaining = remaining.saturating_sub(ordinal);
+        rendered_index = rendered_index.saturating_add(1);
     }
     Ok(())
 }
@@ -1037,13 +1023,16 @@ fn activate_diagnostic(
     app: &mut StudioApp,
     target: AccessibilityNodeId,
 ) -> Result<EventEffect, AccessibilityError> {
-    let index = usize::try_from(target.get() - DIAGNOSTIC_NODE_BASE)
-        .map_err(|_| AccessibilityError::ArithmeticOverflow)?;
+    let encoded = target
+        .get()
+        .checked_sub(DIAGNOSTIC_NODE_BASE)
+        .ok_or(AccessibilityError::ArithmeticOverflow)?;
+    let index = usize::try_from(encoded).map_err(|_| AccessibilityError::ArithmeticOverflow)?;
     let line = index / MAX_VISIBLE_DIAGNOSTIC_MARKERS;
     let wanted = index % MAX_VISIBLE_DIAGNOSTIC_MARKERS;
     let mut marker = None;
     let mut ordinal = 0_usize;
-    app.rust_diagnostics.for_each_marker(
+    let visit = app.rust_diagnostics.for_each_marker(
         app.language_identity(),
         line,
         wanted.saturating_add(1),
@@ -1054,7 +1043,8 @@ fn activate_diagnostic(
             ordinal = ordinal.saturating_add(1);
             Ok::<(), AccessibilityError>(())
         },
-    )?;
+    );
+    visit?;
     let marker = marker.ok_or(PlatformAccessibilityError::ActionTargetMissing(target))?;
     let text = app.buffer().snapshot();
     let line_range = text.line_byte_range(line)?;
@@ -1073,6 +1063,75 @@ fn activate_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn action_helper_guards_are_structured() -> Result<(), Box<dyn Error>> {
+        let app_result = StudioApp::from_document(
+            crate::tests::TestTextSystem,
+            crate::StudioDocument::scratch("text"),
+            None,
+        );
+        let mut app = app_result?;
+        assert!(matches!(
+            bounds(f32::INFINITY, 0.0, 1.0, 1.0),
+            Err(AccessibilityError::Transport(
+                PlatformAccessibilityError::InvalidBounds
+            ))
+        ));
+        assert!(matches!(
+            diagnostic_node_id(usize::MAX, usize::MAX),
+            Err(AccessibilityError::ArithmeticOverflow)
+        ));
+        assert!(matches!(
+            activate_node(&mut app, AccessibilityNodeId::new(1), None),
+            Err(AccessibilityError::Transport(
+                PlatformAccessibilityError::ActionTargetMissing(_)
+            ))
+        ));
+        assert!(matches!(
+            activate_node(
+                &mut app,
+                AccessibilityNodeId::new(FILE_ROW_NODE_BASE),
+                Some(FILE_TREE_NODE),
+            ),
+            Ok(EventEffect {
+                visual_changed: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            activate_diagnostic(&mut app, AccessibilityNodeId::new(1)),
+            Err(AccessibilityError::ArithmeticOverflow)
+        ));
+        assert!(matches!(
+            activate_diagnostic(&mut app, AccessibilityNodeId::new(DIAGNOSTIC_NODE_BASE),),
+            Err(AccessibilityError::Transport(
+                PlatformAccessibilityError::ActionTargetMissing(_)
+            ))
+        ));
+        let all_commands = crate::commands::CommandContext {
+            can_save: true,
+            can_close_tab: true,
+            can_navigate_back: true,
+            can_navigate_forward: true,
+            has_workspace: true,
+            can_split_right: true,
+            can_split_down: true,
+            can_close_pane: true,
+            can_complete: true,
+        };
+        assert!(app.command_palette.open(all_commands)?);
+        let save = command_node_id(StudioCommand::SaveFile);
+        assert!(activate_node(&mut app, save, Some(COMMAND_PALETTE_NODE)).is_ok());
+        let absent = AccessibilityNodeId::new(u64::MAX);
+        assert!(matches!(
+            activate_node(&mut app, absent, Some(COMMAND_PALETTE_NODE)),
+            Err(AccessibilityError::Transport(
+                PlatformAccessibilityError::ActionTargetMissing(id)
+            )) if id == absent
+        ));
+        Ok(())
+    }
 
     #[test]
     fn node_count_and_tree_shape_boundaries_are_exact() {
