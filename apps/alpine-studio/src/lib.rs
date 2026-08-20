@@ -4982,7 +4982,8 @@ pub mod native_validation {
         WINDOW_WIDTH, Workspace, native_file_app,
     };
 
-    const NATIVE_INPUT_FRAMES: usize = 5;
+    const NATIVE_INPUT_EVENTS: usize = 12;
+    const NATIVE_INPUT_FRAMES: usize = 10;
     const HOSTED_RUN_TIMEOUT: Duration = Duration::from_secs(6);
     const TREE_TOGGLE_MODIFIER_BITS: u8 = 0x09;
     const COMMAND_SHIFT_MODIFIERS: Modifiers = Modifiers::from_bits(TREE_TOGGLE_MODIFIER_BITS);
@@ -5363,6 +5364,8 @@ pub mod native_validation {
         ime_started: usize,
         ime_updated: usize,
         ime_committed: usize,
+        ime_cancelled: usize,
+        focus: usize,
         pointer: usize,
         scroll: usize,
         unexpected: usize,
@@ -5377,8 +5380,7 @@ pub mod native_validation {
                 SurfaceEvent::Keyboard { .. } => {
                     self.keyboard = self.keyboard.saturating_add(1);
                 }
-                SurfaceEvent::Accessibility { .. }
-                | SurfaceEvent::Ime {
+                SurfaceEvent::Ime {
                     event: ImeEvent::Started,
                     ..
                 } => self.ime_started = self.ime_started.saturating_add(1),
@@ -5390,17 +5392,20 @@ pub mod native_validation {
                     event: ImeEvent::Committed(_),
                     ..
                 } => self.ime_committed = self.ime_committed.saturating_add(1),
+                SurfaceEvent::Ime {
+                    event: ImeEvent::Cancelled,
+                    ..
+                } => self.ime_cancelled = self.ime_cancelled.saturating_add(1),
+                SurfaceEvent::Focus { .. } => {
+                    self.focus = self.focus.saturating_add(1);
+                }
                 SurfaceEvent::Pointer { .. } => {
                     self.pointer = self.pointer.saturating_add(1);
                 }
                 SurfaceEvent::Scroll { .. } => {
                     self.scroll = self.scroll.saturating_add(1);
                 }
-                SurfaceEvent::Ime {
-                    event: ImeEvent::Cancelled,
-                    ..
-                }
-                | SurfaceEvent::Focus { .. }
+                SurfaceEvent::Accessibility { .. }
                 | SurfaceEvent::Resize { .. }
                 | SurfaceEvent::Clipboard { .. }
                 | SurfaceEvent::Wake { .. }
@@ -5911,16 +5916,18 @@ pub mod native_validation {
         assert_ne!(input_revision, initial_revision);
         let (input_events, input_frames) = {
             let evidence = input_evidence.borrow();
-            assert_eq!(evidence.events, 7);
+            assert_eq!(evidence.events, NATIVE_INPUT_EVENTS);
             assert_eq!(evidence.keyboard, 1);
-            assert_eq!(evidence.ime_started, 1);
-            assert_eq!(evidence.ime_updated, 1);
+            assert_eq!(evidence.ime_started, 2);
+            assert_eq!(evidence.ime_updated, 2);
             assert_eq!(evidence.ime_committed, 2);
+            assert_eq!(evidence.ime_cancelled, 1);
+            assert_eq!(evidence.focus, 2);
             assert_eq!(evidence.pointer, 1);
             assert_eq!(evidence.scroll, 1);
             assert_eq!(evidence.unexpected, 0);
             assert_eq!(evidence.frames, NATIVE_INPUT_FRAMES);
-            assert_eq!(evidence.frame_revisions, [2, 3, 4, 5, 6]);
+            assert_eq!(evidence.frame_revisions, [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
             (evidence.events, evidence.frames)
         };
         assert!(state.borrow_mut().frame_if_dirty().is_none());
