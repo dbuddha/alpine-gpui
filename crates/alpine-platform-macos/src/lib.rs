@@ -1567,7 +1567,10 @@ pub struct SurfaceSnapshot {
     skipped_count: u64,
     failed_count: u64,
     allocated_bytes: u128,
+    peak_retained_bytes: usize,
     current_retained_bytes: usize,
+    current_upload_bytes: usize,
+    peak_upload_bytes: usize,
     frame_slot_capacity: u8,
     occupied_frame_slots: u8,
     submitted_frame_slots: u8,
@@ -1752,6 +1755,24 @@ impl SurfaceSnapshot {
     #[must_use]
     pub const fn current_retained_bytes(self) -> usize {
         self.current_retained_bytes
+    }
+
+    /// Returns the largest renderer-owned retention observed by this surface.
+    #[must_use]
+    pub const fn peak_retained_bytes(self) -> usize {
+        self.peak_retained_bytes
+    }
+
+    /// Returns reusable upload-buffer bytes currently retained by frame slots.
+    #[must_use]
+    pub const fn current_upload_bytes(self) -> usize {
+        self.current_upload_bytes
+    }
+
+    /// Returns the largest simultaneous reusable upload retention observed.
+    #[must_use]
+    pub const fn peak_upload_bytes(self) -> usize {
+        self.peak_upload_bytes
     }
 
     /// Returns the fixed number of reusable native presentation slots.
@@ -2794,7 +2815,10 @@ mod tests {
             skipped_count: 41,
             failed_count: 43,
             allocated_bytes: 47,
+            peak_retained_bytes: 59,
             current_retained_bytes: 53,
+            current_upload_bytes: 31,
+            peak_upload_bytes: 37,
             frame_slot_capacity: 3,
             occupied_frame_slots: 2,
             submitted_frame_slots: 1,
@@ -2834,7 +2858,10 @@ mod tests {
             skipped_count: 59,
             failed_count: 61,
             allocated_bytes: 67,
+            peak_retained_bytes: 73,
             current_retained_bytes: 71,
+            current_upload_bytes: 41,
+            peak_upload_bytes: 43,
             frame_slot_capacity: 3,
             occupied_frame_slots: 0,
             submitted_frame_slots: 0,
@@ -2875,6 +2902,9 @@ mod tests {
         assert_eq!(snapshot.failed_count(), 43);
         assert_eq!(snapshot.allocated_bytes(), 47);
         assert_eq!(snapshot.current_retained_bytes(), 53);
+        assert_eq!(snapshot.peak_retained_bytes(), 59);
+        assert_eq!(snapshot.current_upload_bytes(), 31);
+        assert_eq!(snapshot.peak_upload_bytes(), 37);
         assert_eq!(snapshot.frame_slot_capacity(), 3);
         assert_eq!(snapshot.occupied_frame_slots(), 2);
         assert_eq!(snapshot.submitted_frame_slots(), 1);
@@ -2928,6 +2958,9 @@ mod tests {
         assert_eq!(inverse.failed_count(), 61);
         assert_eq!(inverse.allocated_bytes(), 67);
         assert_eq!(inverse.current_retained_bytes(), 71);
+        assert_eq!(inverse.peak_retained_bytes(), 73);
+        assert_eq!(inverse.current_upload_bytes(), 41);
+        assert_eq!(inverse.peak_upload_bytes(), 43);
         assert_eq!(inverse.frame_slot_capacity(), 3);
         assert_eq!(inverse.occupied_frame_slots(), 0);
         assert_eq!(inverse.submitted_frame_slots(), 0);
