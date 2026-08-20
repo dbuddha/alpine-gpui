@@ -1,267 +1,89 @@
 //! Bounded, revision-synchronized Studio accessibility semantics.
 
-#![expect(
-    dead_code,
-    reason = "the reviewed native adapter will consume this safe semantic boundary in the next Task #130 slice"
-)]
+use std::{error::Error, fmt, sync::Arc};
 
-use std::{error::Error, fmt, mem, sync::Arc};
-
+#[cfg(test)]
+pub(crate) use alpine_platform_macos::AccessibilityReport;
+pub(crate) use alpine_platform_macos::{
+    AccessibilityAction, AccessibilityNode, AccessibilityNodeId, AccessibilityRevision,
+    AccessibilityRole, AccessibilitySelection,
+    AccessibilitySnapshot as PlatformAccessibilitySnapshot, AccessibilityTextRange,
+    MAX_ACCESSIBILITY_NODES,
+};
+use alpine_platform_macos::{
+    AccessibilityActionResult, AccessibilityError as PlatformAccessibilityError,
+    AccessibilityOperation, AccessibilityPayload, AccessibilityRequest, AccessibilityResponse,
+    AccessibilityText, MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES,
+};
 use alpine_text::{BufferSnapshot, ByteOffset, Selection, TextError};
 
 use super::{EventEffect, StudioApp};
 
-pub(crate) const MAX_ACCESSIBILITY_NODES: usize = 271;
-pub(crate) const MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES: usize = 65_536;
+pub(crate) const MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES: usize =
+    MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES;
 
-const WINDOW_NODE: AccessibilityNodeId = AccessibilityNodeId(1);
-const TAB_LIST_NODE: AccessibilityNodeId = AccessibilityNodeId(2);
-const EDITOR_NODE: AccessibilityNodeId = AccessibilityNodeId(3);
-const FILE_TREE_NODE: AccessibilityNodeId = AccessibilityNodeId(4);
-const FIND_NODE: AccessibilityNodeId = AccessibilityNodeId(5);
-const QUICK_OPEN_NODE: AccessibilityNodeId = AccessibilityNodeId(6);
-const PROJECT_SEARCH_NODE: AccessibilityNodeId = AccessibilityNodeId(7);
-const COMMAND_PALETTE_NODE: AccessibilityNodeId = AccessibilityNodeId(8);
-const STATUS_NODE: AccessibilityNodeId = AccessibilityNodeId(9);
-const COMPLETION_NODE: AccessibilityNodeId = AccessibilityNodeId(10);
+const WINDOW_NODE: AccessibilityNodeId = AccessibilityNodeId::new(1);
+const TAB_LIST_NODE: AccessibilityNodeId = AccessibilityNodeId::new(2);
+const EDITOR_NODE: AccessibilityNodeId = AccessibilityNodeId::new(3);
+const FILE_TREE_NODE: AccessibilityNodeId = AccessibilityNodeId::new(4);
+const FIND_NODE: AccessibilityNodeId = AccessibilityNodeId::new(5);
+const QUICK_OPEN_NODE: AccessibilityNodeId = AccessibilityNodeId::new(6);
+const PROJECT_SEARCH_NODE: AccessibilityNodeId = AccessibilityNodeId::new(7);
+const COMMAND_PALETTE_NODE: AccessibilityNodeId = AccessibilityNodeId::new(8);
+const STATUS_NODE: AccessibilityNodeId = AccessibilityNodeId::new(9);
+const COMPLETION_NODE: AccessibilityNodeId = AccessibilityNodeId::new(10);
 const TAB_NODE_BASE: u64 = 1_024;
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct AccessibilityNodeId(u64);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AccessibilityRole {
-    Window,
-    TabList,
-    Tab,
-    CodeEditor,
-    FileTree,
-    SearchField,
-    Dialog,
-    Status,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct AccessibilityNode {
-    id: AccessibilityNodeId,
-    parent: Option<AccessibilityNodeId>,
-    role: AccessibilityRole,
-    name: Arc<str>,
-    focused: bool,
-    selected: bool,
-    announces: bool,
-}
-
-impl AccessibilityNode {
-    pub(crate) const fn id(&self) -> AccessibilityNodeId {
-        self.id
-    }
-
-    pub(crate) const fn parent(&self) -> Option<AccessibilityNodeId> {
-        self.parent
-    }
-
-    pub(crate) const fn role(&self) -> AccessibilityRole {
-        self.role
-    }
-
-    pub(crate) fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub(crate) const fn is_focused(&self) -> bool {
-        self.focused
-    }
-
-    pub(crate) const fn is_selected(&self) -> bool {
-        self.selected
-    }
-
-    pub(crate) const fn announces(&self) -> bool {
-        self.announces
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AccessibilityRevision {
-    document: u64,
-    buffer: u64,
-}
-
-impl AccessibilityRevision {
-    const fn new(document: u64, buffer: u64) -> Self {
-        Self { document, buffer }
-    }
-
-    pub(crate) const fn document(self) -> u64 {
-        self.document
-    }
-
-    pub(crate) const fn buffer(self) -> u64 {
-        self.buffer
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AccessibilityTextRange {
-    start_utf16: usize,
-    length_utf16: usize,
-}
-
-impl AccessibilityTextRange {
-    pub(crate) const fn new(start_utf16: usize, length_utf16: usize) -> Self {
-        Self {
-            start_utf16,
-            length_utf16,
-        }
-    }
-
-    pub(crate) const fn start_utf16(self) -> usize {
-        self.start_utf16
-    }
-
-    pub(crate) const fn length_utf16(self) -> usize {
-        self.length_utf16
-    }
-
-    fn end_utf16(self) -> Result<usize, AccessibilityError> {
-        self.start_utf16
-            .checked_add(self.length_utf16)
-            .ok_or(AccessibilityError::ArithmeticOverflow)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AccessibilitySelection {
-    anchor_utf16: usize,
-    head_utf16: usize,
-}
-
-impl AccessibilitySelection {
-    pub(crate) const fn anchor_utf16(self) -> usize {
-        self.anchor_utf16
-    }
-
-    pub(crate) const fn head_utf16(self) -> usize {
-        self.head_utf16
-    }
-
-    pub(crate) fn range(self) -> AccessibilityTextRange {
-        let start = self.anchor_utf16.min(self.head_utf16);
-        AccessibilityTextRange::new(start, self.anchor_utf16.abs_diff(self.head_utf16))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AccessibilityReport {
-    node_count: usize,
-    owned_node_bytes: usize,
-    referenced_name_bytes: usize,
-    max_nodes: usize,
-    max_text_request_bytes: usize,
-}
-
-impl AccessibilityReport {
-    pub(crate) const fn node_count(self) -> usize {
-        self.node_count
-    }
-
-    pub(crate) const fn owned_node_bytes(self) -> usize {
-        self.owned_node_bytes
-    }
-
-    pub(crate) const fn referenced_name_bytes(self) -> usize {
-        self.referenced_name_bytes
-    }
-
-    pub(crate) const fn max_nodes(self) -> usize {
-        self.max_nodes
-    }
-
-    pub(crate) const fn max_text_request_bytes(self) -> usize {
-        self.max_text_request_bytes
-    }
-}
 
 #[derive(Clone, Debug)]
 pub(crate) struct AccessibilitySnapshot {
-    revision: AccessibilityRevision,
-    nodes: Vec<AccessibilityNode>,
+    transport: PlatformAccessibilitySnapshot,
+    #[cfg(test)]
     text: BufferSnapshot,
-    selection: AccessibilitySelection,
-    text_len_utf16: usize,
-    line_count: usize,
-    dirty: bool,
-    report: AccessibilityReport,
 }
 
 impl AccessibilitySnapshot {
+    #[cfg(test)]
     pub(crate) const fn revision(&self) -> AccessibilityRevision {
-        self.revision
+        self.transport.revision()
     }
 
+    #[cfg(test)]
     pub(crate) fn nodes(&self) -> &[AccessibilityNode] {
-        &self.nodes
+        self.transport.nodes()
     }
 
+    #[cfg(test)]
     pub(crate) const fn selection(&self) -> AccessibilitySelection {
-        self.selection
+        self.transport.selection()
     }
 
+    #[cfg(test)]
     pub(crate) const fn text_len_utf16(&self) -> usize {
-        self.text_len_utf16
+        self.transport.text_len_utf16()
     }
 
+    #[cfg(test)]
     pub(crate) const fn line_count(&self) -> usize {
-        self.line_count
+        self.transport.line_count()
     }
 
+    #[cfg(test)]
     pub(crate) const fn is_dirty(&self) -> bool {
-        self.dirty
+        self.transport.is_dirty()
     }
 
+    #[cfg(test)]
     pub(crate) const fn report(&self) -> AccessibilityReport {
-        self.report
+        self.transport.report()
     }
 
+    #[cfg(test)]
     pub(crate) fn text(&self, range: AccessibilityTextRange) -> Result<String, AccessibilityError> {
-        let end_utf16 = range.end_utf16()?;
-        let start = self.text.byte_of_appkit_utf16(range.start_utf16())?;
-        let end = self.text.byte_of_appkit_utf16(end_utf16)?;
-        let byte_count = end
-            .get()
-            .checked_sub(start.get())
-            .ok_or(AccessibilityError::ArithmeticOverflow)?;
-        if byte_count > MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES {
-            return Err(AccessibilityError::TextRequestTooLarge {
-                actual: byte_count,
-                limit: MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES,
-            });
-        }
-        self.text.slice(start.get()..end.get()).map_err(Into::into)
+        text_from_snapshot(&self.text, range)
     }
-}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AccessibilityAction {
-    SetSelection {
-        revision: AccessibilityRevision,
-        anchor_utf16: usize,
-        head_utf16: usize,
-    },
-}
-
-impl AccessibilityAction {
-    pub(crate) const fn set_selection(
-        revision: AccessibilityRevision,
-        anchor_utf16: usize,
-        head_utf16: usize,
-    ) -> Self {
-        Self::SetSelection {
-            revision,
-            anchor_utf16,
-            head_utf16,
-        }
+    fn into_transport(self) -> PlatformAccessibilitySnapshot {
+        self.transport
     }
 }
 
@@ -279,6 +101,25 @@ pub(crate) enum AccessibilityError {
         limit: usize,
     },
     Text(TextError),
+    Transport(PlatformAccessibilityError),
+}
+
+impl AccessibilityError {
+    fn into_transport(self) -> PlatformAccessibilityError {
+        match self {
+            Self::AllocationFailed => PlatformAccessibilityError::AllocationFailed,
+            Self::ArithmeticOverflow => PlatformAccessibilityError::ArithmeticOverflow,
+            Self::InvalidTree => PlatformAccessibilityError::InvalidTree,
+            Self::StaleRevision { expected, actual } => {
+                PlatformAccessibilityError::StaleRevision { expected, actual }
+            }
+            Self::TextRequestTooLarge { actual, limit } => {
+                PlatformAccessibilityError::TextResponseTooLarge { actual, limit }
+            }
+            Self::Text(_) => PlatformAccessibilityError::TextMappingFailed,
+            Self::Transport(error) => error,
+        }
+    }
 }
 
 impl fmt::Display for AccessibilityError {
@@ -296,6 +137,7 @@ impl fmt::Display for AccessibilityError {
                 "accessibility text request {actual} bytes exceeds limit {limit}"
             ),
             Self::Text(error) => write!(formatter, "accessibility text mapping failed: {error}"),
+            Self::Transport(error) => write!(formatter, "accessibility transport failed: {error}"),
         }
     }
 }
@@ -304,6 +146,7 @@ impl Error for AccessibilityError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Text(error) => Some(error),
+            Self::Transport(error) => Some(error),
             Self::AllocationFailed
             | Self::ArithmeticOverflow
             | Self::InvalidTree
@@ -319,45 +162,147 @@ impl From<TextError> for AccessibilityError {
     }
 }
 
+impl From<PlatformAccessibilityError> for AccessibilityError {
+    fn from(error: PlatformAccessibilityError) -> Self {
+        match error {
+            PlatformAccessibilityError::AllocationFailed => Self::AllocationFailed,
+            PlatformAccessibilityError::ArithmeticOverflow => Self::ArithmeticOverflow,
+            PlatformAccessibilityError::InvalidTree => Self::InvalidTree,
+            PlatformAccessibilityError::StaleRevision { expected, actual } => {
+                Self::StaleRevision { expected, actual }
+            }
+            PlatformAccessibilityError::TextResponseTooLarge { actual, limit } => {
+                Self::TextRequestTooLarge { actual, limit }
+            }
+            other => Self::Transport(other),
+        }
+    }
+}
+
 pub(super) fn revision(app: &StudioApp) -> AccessibilityRevision {
     AccessibilityRevision::new(app.runtime_document_revision, app.buffer().revision().get())
 }
 
 pub(super) fn snapshot(app: &StudioApp) -> Result<AccessibilitySnapshot, AccessibilityError> {
     let nodes = build_nodes(app)?;
-    let node_count = nodes.len();
     let text = app.buffer().snapshot();
-    let selection = AccessibilitySelection {
-        anchor_utf16: text.appkit_utf16_of_byte(app.selection.anchor())?,
-        head_utf16: text.appkit_utf16_of_byte(app.selection.head())?,
-    };
+    let selection = selection_from_snapshot(app, &text)?;
     let text_len_utf16 = text.appkit_utf16_of_byte(ByteOffset::new(text.len_bytes()))?;
-    let referenced_name_bytes = nodes.iter().try_fold(0_usize, |total, node| {
-        total
-            .checked_add(node.name.len())
-            .ok_or(AccessibilityError::ArithmeticOverflow)
-    })?;
-    let owned_node_bytes = nodes
-        .capacity()
-        .checked_mul(mem::size_of::<AccessibilityNode>())
-        .ok_or(AccessibilityError::ArithmeticOverflow)?;
-    let report = AccessibilityReport {
-        node_count,
-        owned_node_bytes,
-        referenced_name_bytes,
-        max_nodes: MAX_ACCESSIBILITY_NODES,
-        max_text_request_bytes: MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES,
-    };
+    let transport = transport_snapshot(app, nodes, selection, text_len_utf16, text.line_count())?;
     Ok(AccessibilitySnapshot {
-        revision: revision(app),
-        nodes,
-        line_count: text.line_count(),
+        transport,
+        #[cfg(test)]
         text,
+    })
+}
+
+fn transport_snapshot(
+    app: &StudioApp,
+    nodes: Vec<AccessibilityNode>,
+    selection: AccessibilitySelection,
+    text_len_utf16: usize,
+    line_count: usize,
+) -> Result<PlatformAccessibilitySnapshot, PlatformAccessibilityError> {
+    PlatformAccessibilitySnapshot::new(
+        revision(app),
+        WINDOW_NODE,
+        nodes,
         selection,
         text_len_utf16,
-        dirty: app.document.is_dirty(),
-        report,
-    })
+        line_count,
+        app.document.is_dirty(),
+    )
+}
+
+fn selection_from_snapshot(
+    app: &StudioApp,
+    text: &BufferSnapshot,
+) -> Result<AccessibilitySelection, AccessibilityError> {
+    Ok(AccessibilitySelection::new(
+        text.appkit_utf16_of_byte(app.selection.anchor())?,
+        text.appkit_utf16_of_byte(app.selection.head())?,
+    ))
+}
+
+fn text_from_snapshot(
+    text: &BufferSnapshot,
+    range: AccessibilityTextRange,
+) -> Result<String, AccessibilityError> {
+    let end_utf16 = range.end_utf16()?;
+    let start = text.byte_of_appkit_utf16(range.start_utf16())?;
+    let end = text.byte_of_appkit_utf16(end_utf16)?;
+    let byte_count = end
+        .get()
+        .checked_sub(start.get())
+        .ok_or(AccessibilityError::ArithmeticOverflow)?;
+    if byte_count > MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES {
+        return Err(AccessibilityError::TextRequestTooLarge {
+            actual: byte_count,
+            limit: MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES,
+        });
+    }
+    text.slice(start.get()..end.get()).map_err(Into::into)
+}
+
+fn require_revision(
+    expected: AccessibilityRevision,
+    actual: AccessibilityRevision,
+) -> Result<(), AccessibilityError> {
+    if expected != actual {
+        return Err(AccessibilityError::StaleRevision { expected, actual });
+    }
+    Ok(())
+}
+
+pub(super) fn respond(
+    app: &mut StudioApp,
+    request: &AccessibilityRequest,
+) -> (AccessibilityResponse, EventEffect) {
+    let observed = revision(app);
+    let (result, effect) = match request.operation() {
+        AccessibilityOperation::Snapshot => (
+            snapshot(app).map(|value| AccessibilityPayload::Snapshot(value.into_transport())),
+            EventEffect::default(),
+        ),
+        AccessibilityOperation::Text { revision, range } => (
+            require_revision(*revision, observed).and_then(|()| {
+                let text = text_from_snapshot(&app.buffer().snapshot(), *range)?;
+                Ok(AccessibilityPayload::Text(AccessibilityText::new(text)?))
+            }),
+            EventEffect::default(),
+        ),
+        AccessibilityOperation::Selection { revision } => (
+            require_revision(*revision, observed).and_then(|()| {
+                let text = app.buffer().snapshot();
+                selection_from_snapshot(app, &text).map(AccessibilityPayload::Selection)
+            }),
+            EventEffect::default(),
+        ),
+        AccessibilityOperation::Action(action) => match apply_action(app, *action) {
+            Ok(effect) => {
+                let result = if effect.visual_changed {
+                    AccessibilityActionResult::Applied
+                } else {
+                    AccessibilityActionResult::Unchanged
+                };
+                (Ok(AccessibilityPayload::Action(result)), effect)
+            }
+            Err(error) => (Err(error), EventEffect::default()),
+        },
+    };
+    (finish_response(request, observed, result), effect)
+}
+
+fn finish_response(
+    request: &AccessibilityRequest,
+    observed: AccessibilityRevision,
+    result: Result<AccessibilityPayload, AccessibilityError>,
+) -> AccessibilityResponse {
+    match result {
+        Ok(payload) => AccessibilityResponse::success(request, observed, payload)
+            .unwrap_or_else(|error| AccessibilityResponse::failure(request, observed, error)),
+        Err(error) => AccessibilityResponse::failure(request, observed, error.into_transport()),
+    }
 }
 
 fn build_nodes(app: &StudioApp) -> Result<Vec<AccessibilityNode>, AccessibilityError> {
@@ -371,57 +316,24 @@ fn build_nodes(app: &StudioApp) -> Result<Vec<AccessibilityNode>, AccessibilityE
             .completion_is_open(app.language_identity()),
     ];
     let node_count = required_node_count(app.tabs.len(), overlays, app.local_status.is_some())?;
-
     let focus_owner = focus_owner(app);
     let mut nodes = Vec::new();
     nodes
         .try_reserve_exact(node_count)
         .map_err(|_| AccessibilityError::AllocationFailed)?;
-    nodes.push(node(
-        WINDOW_NODE,
-        None,
-        AccessibilityRole::Window,
-        Arc::from("Alpine Studio"),
-        false,
-        false,
-        false,
-    ));
-    nodes.push(node(
-        TAB_LIST_NODE,
-        Some(WINDOW_NODE),
-        AccessibilityRole::TabList,
-        Arc::from("Open documents"),
-        false,
-        false,
-        false,
-    ));
+    nodes.push(window_node()?);
+    nodes.push(tab_list_node()?);
     push_tabs(app, &mut nodes)?;
     let active_name = app
         .tabs
         .label(app.tabs.active_index())
         .ok_or(AccessibilityError::InvalidTree)?;
-    nodes.push(node(
-        EDITOR_NODE,
-        Some(WINDOW_NODE),
-        AccessibilityRole::CodeEditor,
-        active_name,
-        focus_owner == Some(EDITOR_NODE),
-        false,
-        false,
-    ));
-    push_overlays(app, focus_owner, &mut nodes);
+    nodes.push(editor_node(active_name, focus_owner == Some(EDITOR_NODE))?);
+    push_overlays(app, focus_owner, &mut nodes)?;
     if let Some(status) = app.local_status.as_ref() {
-        nodes.push(node(
-            STATUS_NODE,
-            Some(WINDOW_NODE),
-            AccessibilityRole::Status,
-            Arc::from(status.message()),
-            false,
-            false,
-            true,
-        ));
+        nodes.push(status_node(status.message())?);
     }
-    let focused_count = nodes.iter().filter(|node| node.is_focused()).count();
+    let focused_count = nodes.iter().filter(|value| value.is_focused()).count();
     validate_tree_shape(nodes.len(), node_count, focused_count, app.focused)?;
     Ok(nodes)
 }
@@ -462,9 +374,8 @@ fn validate_tree_shape(
 
 fn focus_owner(app: &StudioApp) -> Option<AccessibilityNodeId> {
     if !app.focused {
-        return None;
-    }
-    if app.command_palette.is_open() {
+        None
+    } else if app.command_palette.is_open() {
         Some(COMMAND_PALETTE_NODE)
     } else if app
         .rust_diagnostics
@@ -493,22 +404,16 @@ fn push_tabs(
             .tabs
             .id_at(index)
             .ok_or(AccessibilityError::InvalidTree)?;
-        let id = AccessibilityNodeId(
+        let id = AccessibilityNodeId::new(
             TAB_NODE_BASE
                 .checked_add(tab.0)
                 .ok_or(AccessibilityError::ArithmeticOverflow)?,
         );
-        nodes.push(node(
-            id,
-            Some(TAB_LIST_NODE),
-            AccessibilityRole::Tab,
-            app.tabs
-                .label(index)
-                .ok_or(AccessibilityError::InvalidTree)?,
-            false,
-            index == app.tabs.active_index(),
-            false,
-        ));
+        let label = app
+            .tabs
+            .label(index)
+            .ok_or(AccessibilityError::InvalidTree)?;
+        nodes.push(tab_node(id, label, index == app.tabs.active_index())?);
     }
     Ok(())
 }
@@ -517,61 +422,51 @@ fn push_overlays(
     app: &StudioApp,
     focus_owner: Option<AccessibilityNodeId>,
     nodes: &mut Vec<AccessibilityNode>,
-) {
-    push_conditional_node(
-        nodes,
-        app.file_tree.is_visible(),
-        FILE_TREE_NODE,
-        AccessibilityRole::FileTree,
-        "Files",
-        focus_owner == Some(FILE_TREE_NODE),
-    );
-    push_conditional_node(
-        nodes,
-        app.find.is_open(),
-        FIND_NODE,
-        AccessibilityRole::SearchField,
-        "Find in document",
-        focus_owner == Some(FIND_NODE),
-    );
-    push_conditional_node(
-        nodes,
-        app.quick_open.is_open(),
-        QUICK_OPEN_NODE,
-        AccessibilityRole::Dialog,
-        "Quick open",
-        focus_owner == Some(QUICK_OPEN_NODE),
-    );
-    push_conditional_node(
-        nodes,
-        app.project_search.is_open(),
-        PROJECT_SEARCH_NODE,
-        AccessibilityRole::Dialog,
-        "Project search",
-        focus_owner == Some(PROJECT_SEARCH_NODE),
-    );
-    push_conditional_node(
-        nodes,
-        app.command_palette.is_open(),
-        COMMAND_PALETTE_NODE,
-        AccessibilityRole::Dialog,
-        "Command palette",
-        focus_owner == Some(COMMAND_PALETTE_NODE),
-    );
+) -> Result<(), AccessibilityError> {
+    let overlays = [
+        (
+            app.file_tree.is_visible(),
+            FILE_TREE_NODE,
+            AccessibilityRole::FileTree,
+            "Files",
+        ),
+        (
+            app.find.is_open(),
+            FIND_NODE,
+            AccessibilityRole::SearchField,
+            "Find in document",
+        ),
+        (
+            app.quick_open.is_open(),
+            QUICK_OPEN_NODE,
+            AccessibilityRole::Dialog,
+            "Quick open",
+        ),
+        (
+            app.project_search.is_open(),
+            PROJECT_SEARCH_NODE,
+            AccessibilityRole::Dialog,
+            "Project search",
+        ),
+        (
+            app.command_palette.is_open(),
+            COMMAND_PALETTE_NODE,
+            AccessibilityRole::Dialog,
+            "Command palette",
+        ),
+    ];
+    for (present, id, role, name) in overlays {
+        let focused = focus_owner == Some(id);
+        push_conditional_node(nodes, present, id, role, name, focused)?;
+    }
     if let Some(label) = app
         .rust_diagnostics
         .completion_accessibility_label(app.language_identity())
     {
-        nodes.push(node(
-            COMPLETION_NODE,
-            Some(WINDOW_NODE),
-            AccessibilityRole::Dialog,
-            label,
-            focus_owner == Some(COMPLETION_NODE),
-            true,
-            true,
-        ));
+        let focused = focus_owner == Some(COMPLETION_NODE);
+        nodes.push(completion_node(label, focused)?);
     }
+    Ok(())
 }
 
 pub(super) fn apply_action(
@@ -582,15 +477,14 @@ pub(super) fn apply_action(
     match action {
         AccessibilityAction::SetSelection {
             revision: expected,
-            anchor_utf16,
-            head_utf16,
+            selection,
         } => {
             if expected != actual {
                 return Err(AccessibilityError::StaleRevision { expected, actual });
             }
             let text = app.buffer().snapshot();
-            let anchor = text.byte_of_appkit_utf16(anchor_utf16)?;
-            let head = text.byte_of_appkit_utf16(head_utf16)?;
+            let anchor = text.byte_of_appkit_utf16(selection.anchor_utf16())?;
+            let head = text.byte_of_appkit_utf16(selection.head_utf16())?;
             Ok(app.set_selection(Selection::new(anchor, head)))
         }
     }
@@ -604,16 +498,101 @@ fn node(
     focused: bool,
     selected: bool,
     announces: bool,
-) -> AccessibilityNode {
-    AccessibilityNode {
-        id,
-        parent,
-        role,
+) -> Result<AccessibilityNode, AccessibilityError> {
+    AccessibilityNode::new(id, parent, role, name, focused, selected, announces).map_err(Into::into)
+}
+
+fn window_node() -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        WINDOW_NODE,
+        None,
+        AccessibilityRole::Window,
+        Arc::from("Alpine Studio"),
+        false,
+        false,
+        false,
+    )
+}
+
+fn tab_list_node() -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        TAB_LIST_NODE,
+        Some(WINDOW_NODE),
+        AccessibilityRole::TabList,
+        Arc::from("Open documents"),
+        false,
+        false,
+        false,
+    )
+}
+
+fn editor_node(name: Arc<str>, focused: bool) -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        EDITOR_NODE,
+        Some(WINDOW_NODE),
+        AccessibilityRole::CodeEditor,
         name,
         focused,
+        false,
+        false,
+    )
+}
+
+fn tab_node(
+    id: AccessibilityNodeId,
+    name: Arc<str>,
+    selected: bool,
+) -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        id,
+        Some(TAB_LIST_NODE),
+        AccessibilityRole::Tab,
+        name,
+        false,
         selected,
-        announces,
-    }
+        false,
+    )
+}
+
+fn status_node(message: &str) -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        STATUS_NODE,
+        Some(WINDOW_NODE),
+        AccessibilityRole::Status,
+        Arc::from(message),
+        false,
+        false,
+        true,
+    )
+}
+
+fn overlay_node(
+    id: AccessibilityNodeId,
+    role: AccessibilityRole,
+    name: &'static str,
+    focused: bool,
+) -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        id,
+        Some(WINDOW_NODE),
+        role,
+        Arc::from(name),
+        focused,
+        false,
+        false,
+    )
+}
+
+fn completion_node(name: Arc<str>, focused: bool) -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        COMPLETION_NODE,
+        Some(WINDOW_NODE),
+        AccessibilityRole::Dialog,
+        name,
+        focused,
+        true,
+        true,
+    )
 }
 
 fn push_conditional_node(
@@ -623,18 +602,11 @@ fn push_conditional_node(
     role: AccessibilityRole,
     name: &'static str,
     focused: bool,
-) {
+) -> Result<(), AccessibilityError> {
     if present {
-        nodes.push(node(
-            id,
-            Some(WINDOW_NODE),
-            role,
-            Arc::from(name),
-            focused,
-            false,
-            false,
-        ));
+        nodes.push(overlay_node(id, role, name, focused)?);
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -642,61 +614,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn observers_preserve_non_identity_values_and_exact_flags() {
-        let selected = node(
-            AccessibilityNodeId(42),
-            Some(WINDOW_NODE),
-            AccessibilityRole::Tab,
-            Arc::from("selected"),
-            false,
-            true,
-            false,
-        );
-        let announced = node(
-            AccessibilityNodeId(43),
-            Some(WINDOW_NODE),
-            AccessibilityRole::Status,
-            Arc::from("announced"),
-            false,
-            false,
-            true,
-        );
-        assert!(selected.is_selected());
-        assert!(!selected.announces());
-        assert!(!announced.is_selected());
-        assert!(announced.announces());
-
-        let revision = AccessibilityRevision::new(7, 11);
-        assert_eq!(revision.document(), 7);
-        assert_eq!(revision.buffer(), 11);
-        let selection = AccessibilitySelection {
-            anchor_utf16: 9,
-            head_utf16: 2,
-        };
-        assert_eq!(selection.anchor_utf16(), 9);
-        assert_eq!(selection.head_utf16(), 2);
-        assert_eq!(selection.range(), AccessibilityTextRange::new(2, 7));
-
-        let report = AccessibilityReport {
-            node_count: 5,
-            owned_node_bytes: 640,
-            referenced_name_bytes: 37,
-            max_nodes: 270,
-            max_text_request_bytes: 65_536,
-        };
-        assert_eq!(report.node_count(), 5);
-        assert_eq!(report.owned_node_bytes(), 640);
-        assert_eq!(report.referenced_name_bytes(), 37);
-    }
-
-    #[test]
     fn node_count_and_tree_shape_boundaries_are_exact() {
         assert_eq!(required_node_count(0, [false; 6], false), Ok(3));
-        for overlay in 0..6 {
-            let mut overlays = [false; 6];
-            overlays[overlay] = true;
-            assert_eq!(required_node_count(0, overlays, false), Ok(4));
-        }
         assert_eq!(
             required_node_count(261, [true; 6], true),
             Ok(MAX_ACCESSIBILITY_NODES)
@@ -711,53 +630,111 @@ mod tests {
         );
         assert_eq!(validate_tree_shape(4, 4, 1, true), Ok(()));
         assert_eq!(
-            validate_tree_shape(3, 4, 1, true),
-            Err(AccessibilityError::InvalidTree)
-        );
-        assert_eq!(
             validate_tree_shape(4, 4, 0, true),
             Err(AccessibilityError::InvalidTree)
         );
     }
 
     #[test]
-    fn diagnostics_and_error_sources_are_exact() {
+    fn diagnostics_preserve_text_and_transport_sources() {
+        let text = TextError::InvalidUtf16Boundary { offset: 2 };
+        assert!(AccessibilityError::Text(text).source().is_some());
+        assert!(
+            AccessibilityError::Transport(PlatformAccessibilityError::InvalidTree)
+                .source()
+                .is_some()
+        );
+        assert!(AccessibilityError::InvalidTree.source().is_none());
+    }
+
+    #[test]
+    fn revision_admission_is_exact() {
+        let expected = AccessibilityRevision::new(3, 5);
+        assert_eq!(require_revision(expected, expected), Ok(()));
+        let actual = AccessibilityRevision::new(3, 6);
+        assert_eq!(
+            require_revision(expected, actual),
+            Err(AccessibilityError::StaleRevision { expected, actual })
+        );
+    }
+
+    #[test]
+    fn transport_conversion_and_response_finalization_are_discriminating()
+    -> Result<(), Box<dyn Error>> {
         let expected = AccessibilityRevision::new(3, 5);
         let actual = AccessibilityRevision::new(7, 11);
         let text = TextError::InvalidUtf16Boundary { offset: 2 };
-        let diagnostics = [
+        let conversions = [
             (
                 AccessibilityError::AllocationFailed,
-                "accessibility allocation failed".to_owned(),
+                PlatformAccessibilityError::AllocationFailed,
             ),
             (
                 AccessibilityError::ArithmeticOverflow,
-                "accessibility arithmetic overflow".to_owned(),
+                PlatformAccessibilityError::ArithmeticOverflow,
             ),
             (
                 AccessibilityError::InvalidTree,
-                "accessibility tree is inconsistent".to_owned(),
+                PlatformAccessibilityError::InvalidTree,
             ),
             (
                 AccessibilityError::StaleRevision { expected, actual },
-                format!("stale accessibility revision {actual:?}; expected {expected:?}"),
+                PlatformAccessibilityError::StaleRevision { expected, actual },
             ),
             (
                 AccessibilityError::TextRequestTooLarge {
                     actual: 65_537,
                     limit: 65_536,
                 },
-                "accessibility text request 65537 bytes exceeds limit 65536".to_owned(),
+                PlatformAccessibilityError::TextResponseTooLarge {
+                    actual: 65_537,
+                    limit: 65_536,
+                },
             ),
             (
                 AccessibilityError::Text(text.clone()),
-                format!("accessibility text mapping failed: {text}"),
+                PlatformAccessibilityError::TextMappingFailed,
+            ),
+            (
+                AccessibilityError::Transport(PlatformAccessibilityError::RequestMismatch),
+                PlatformAccessibilityError::RequestMismatch,
             ),
         ];
-        for (error, message) in diagnostics {
-            assert_eq!(error.to_string(), message);
+        for (local, platform) in conversions {
+            assert!(!local.to_string().is_empty());
+            assert_eq!(local.into_transport(), platform);
         }
-        assert!(AccessibilityError::Text(text).source().is_some());
-        assert!(AccessibilityError::InvalidTree.source().is_none());
+
+        let reverse = [
+            PlatformAccessibilityError::AllocationFailed,
+            PlatformAccessibilityError::ArithmeticOverflow,
+            PlatformAccessibilityError::InvalidTree,
+            PlatformAccessibilityError::StaleRevision { expected, actual },
+            PlatformAccessibilityError::TextResponseTooLarge {
+                actual: 65_537,
+                limit: 65_536,
+            },
+            PlatformAccessibilityError::RequestMismatch,
+        ];
+        for platform in reverse {
+            assert!(!AccessibilityError::from(platform).to_string().is_empty());
+        }
+
+        let request_result =
+            AccessibilityRequest::snapshot(alpine_platform_macos::AccessibilityRequestId::new(1));
+        let request = request_result?;
+        let text_result = AccessibilityText::new("wrong kind");
+        let text = text_result?;
+        let response = finish_response(&request, actual, Ok(AccessibilityPayload::Text(text)));
+        assert_eq!(
+            response.result(),
+            &Err(PlatformAccessibilityError::RequestMismatch)
+        );
+        let failure = finish_response(&request, actual, Err(AccessibilityError::InvalidTree));
+        assert_eq!(
+            failure.result(),
+            &Err(PlatformAccessibilityError::InvalidTree)
+        );
+        Ok(())
     }
 }

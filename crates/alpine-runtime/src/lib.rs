@@ -12,8 +12,8 @@ use std::{
 
 use alpine_core::{LinearRgba, Size};
 use alpine_platform_macos::{
-    ClipboardWrite, CloseDisposition, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceFrame,
-    SurfaceResponse,
+    AccessibilityResponse, ClipboardWrite, CloseDisposition, SurfaceDescriptor, SurfaceError,
+    SurfaceEvent, SurfaceFrame, SurfaceResponse,
 };
 use alpine_scene::{Scene, SceneRevision};
 
@@ -864,6 +864,7 @@ pub struct AppContext<'a, T> {
     external: &'a ExternalQueue<T>,
     clipboard_write: Option<&'a mut Option<ClipboardWrite>>,
     close_disposition: Option<&'a mut CloseDisposition>,
+    accessibility_response: Option<&'a mut Option<AccessibilityResponse>>,
 }
 
 impl<T: Send + 'static> AppContext<'_, T> {
@@ -927,6 +928,20 @@ impl<T: Send + 'static> AppContext<'_, T> {
             return false;
         }
         *disposition = CloseDisposition::Cancel;
+        true
+    }
+
+    /// Returns one exact accessibility response for the current event.
+    ///
+    /// Returns `false` outside event dispatch or when a response is already set.
+    pub fn respond_accessibility(&mut self, response: AccessibilityResponse) -> bool {
+        let Some(slot) = self.accessibility_response.as_deref_mut() else {
+            return false;
+        };
+        if slot.is_some() {
+            return false;
+        }
+        *slot = Some(response);
         true
     }
 
@@ -1151,6 +1166,7 @@ impl<D: AppDelegate + 'static> Application<D> {
             return SurfaceResponse::default();
         }
         let mut clipboard_write = None;
+        let mut accessibility_response = None;
         let mut close_disposition = if matches!(event, SurfaceEvent::CloseRequested { .. }) {
             CloseDisposition::Allow
         } else {
@@ -1173,6 +1189,7 @@ impl<D: AppDelegate + 'static> Application<D> {
                 external: &self.external,
                 clipboard_write: Some(&mut clipboard_write),
                 close_disposition: Some(&mut close_disposition),
+                accessibility_response: Some(&mut accessibility_response),
             };
             self.delegate.event(event, &mut context);
         }
@@ -1180,9 +1197,19 @@ impl<D: AppDelegate + 'static> Application<D> {
             self.external.close();
             self.shutting_down = true;
             self.dirty = false;
-            return SurfaceResponse::new(None, clipboard_write, close_disposition);
+            return SurfaceResponse::from_channels(
+                None,
+                clipboard_write,
+                close_disposition,
+                accessibility_response,
+            );
         }
-        SurfaceResponse::new(self.frame_if_dirty(), clipboard_write, close_disposition)
+        SurfaceResponse::from_channels(
+            self.frame_if_dirty(),
+            clipboard_write,
+            close_disposition,
+            accessibility_response,
+        )
     }
 
     /// Builds the current immutable frame only when observable state is dirty.
@@ -1375,6 +1402,7 @@ impl<D: AppDelegate + 'static> Application<D> {
             external: &self.external,
             clipboard_write: None,
             close_disposition: None,
+            accessibility_response: None,
         };
         self.delegate.worker_result(token, result, &mut context);
     }
@@ -1399,7 +1427,9 @@ mod tests {
 
     use alpine_core::Size;
     use alpine_platform_macos::{
-        ClipboardOperation, ClipboardText, EventTimestamp, SurfaceEvent, SurfaceExtent,
+        AccessibilityError, AccessibilityRequest, AccessibilityRequestId, AccessibilityResponse,
+        AccessibilityRevision, ClipboardOperation, ClipboardText, EventTimestamp, SurfaceEvent,
+        SurfaceExtent,
     };
     use alpine_scene::{SceneBuilder, SceneRevision};
 
@@ -1601,6 +1631,7 @@ mod tests {
         application.dirty = false;
         let mut clipboard_write = None;
         let mut close_disposition = CloseDisposition::Allow;
+        let mut accessibility_response = None;
         let mut context = AppContext {
             workspace_revision: &mut application.workspace_revision,
             document_revision: &mut application.document_revision,
@@ -1609,6 +1640,7 @@ mod tests {
             external: &application.external,
             clipboard_write: Some(&mut clipboard_write),
             close_disposition: Some(&mut close_disposition),
+            accessibility_response: Some(&mut accessibility_response),
         };
         assert_eq!(context.workspace_revision().get(), 0);
         assert_eq!(context.document_revision().get(), 0);
@@ -1625,11 +1657,21 @@ mod tests {
         assert!(!context.write_clipboard(write.clone()));
         assert!(context.cancel_close());
         assert!(!context.cancel_close());
+        let request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(1))
+            .map_err(|_| RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        let response = AccessibilityResponse::failure(
+            &request,
+            AccessibilityRevision::new(2, 3),
+            AccessibilityError::InvalidTree,
+        );
+        assert!(context.respond_accessibility(response.clone()));
+        assert!(!context.respond_accessibility(response.clone()));
         assert_eq!(context.workspace_revision().get(), 2);
         assert_eq!(context.document_revision().get(), 3);
         let external = context.external_producer();
         assert_eq!(clipboard_write.as_ref(), Some(&write));
         assert_eq!(close_disposition, CloseDisposition::Cancel);
+        assert_eq!(accessibility_response.as_ref(), Some(&response));
         assert_eq!(external.submit(17, 4), ExternalAdmission::Admitted);
         let mut no_response_context = AppContext {
             workspace_revision: &mut application.workspace_revision,
@@ -1639,9 +1681,11 @@ mod tests {
             external: &application.external,
             clipboard_write: None,
             close_disposition: None,
+            accessibility_response: None,
         };
         assert!(!no_response_context.write_clipboard(write));
         assert!(!no_response_context.cancel_close());
+        assert!(!no_response_context.respond_accessibility(response));
         assert!(application.dirty);
         assert_eq!(application.snapshot().external().current_items(), 1);
         Ok(())
@@ -1931,6 +1975,7 @@ mod tests {
             external: &application.external,
             clipboard_write: None,
             close_disposition: None,
+            accessibility_response: None,
         };
         AppDelegate::worker_result(&mut application.delegate, token(3), 9, &mut context);
         assert!(!application.dirty);
@@ -1999,6 +2044,7 @@ mod tests {
                 external: &application.external,
                 clipboard_write: None,
                 close_disposition: None,
+                accessibility_response: None,
             };
             let submitted = context.spawn(move || {
                 let _ = started_sender.send(());

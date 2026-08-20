@@ -944,11 +944,19 @@ conversion walks rope storage directly without allocating a whole-document
 string. The model exposes stable roles for the window, tabs, active code editor,
 file tree, transient search and command surfaces, and announcing status.
 
-This safe internal slice adds no native object, callback, dependency, or public
-API. A separately reviewed `alpine-platform-macos` adapter will translate these
-semantics to AppKit accessibility objects and marshal actions back to the main
-thread; it may not retain Studio objects or mutate text outside the
-revision-checked action boundary.
+The public safe transport is owned by `alpine-platform-macos`: validated roles,
+nodes, revisions, UTF-16 ranges, selections, requests, responses, errors, and
+accounting contain no AppKit handle. One synchronous `SurfaceEvent` request
+crosses the existing main-thread delegate boundary and `AppContext` admits at
+most one exact response. Semantic snapshots retain at most 271 nodes, 4 KiB per
+name, 256 KiB of referenced names, and no document text. Text is pulled against
+an exact document and buffer revision and is materialized only after the mapped
+UTF-8 range is within 64 KiB. Queries do not invalidate a clean scene. Selection
+actions reuse Studio's checked UTF-16 conversion and dirty-only frame path.
+
+A separately reviewed private adapter translates these values to stable AppKit
+accessibility objects. It may not retain Studio objects, expose native handles,
+or mutate text outside the revision-checked action boundary. See AEP-0250.
 
 ### Pane document ownership (Task #127)
 

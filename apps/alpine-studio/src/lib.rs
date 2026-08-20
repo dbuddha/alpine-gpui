@@ -85,6 +85,8 @@ use accessibility::{AccessibilityAction, AccessibilityError, AccessibilitySnapsh
 #[cfg(test)]
 use accessibility::{AccessibilityRole, AccessibilityTextRange};
 use alpine_core::{LinearRgba, Point, Rect, Size};
+#[cfg(test)]
+use alpine_platform_macos::{AccessibilityPayload, AccessibilityRequest, AccessibilityRequestId};
 use alpine_platform_macos::{
     ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite, ImeEvent,
     KeyState, Modifiers, PointerAction, PointerButton, SurfaceError, SurfaceEvent,
@@ -2618,7 +2620,8 @@ impl StudioApp {
                 return self.handle_clipboard_completion(event);
             }
             SurfaceEvent::CloseRequested { .. } => return self.handle_close_request(),
-            SurfaceEvent::Keyboard { .. }
+            SurfaceEvent::Accessibility { .. }
+            | SurfaceEvent::Keyboard { .. }
             | SurfaceEvent::Resize { .. }
             | SurfaceEvent::Wake { .. } => EventEffect::default(),
         };
@@ -4545,6 +4548,17 @@ impl AppDelegate for StudioApp {
     type WorkerOutput = StudioWorkerOutput;
 
     fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, StudioWorkerOutput>) {
+        if let SurfaceEvent::Accessibility { request, .. } = event {
+            let selection_before = self.selection;
+            let (response, effect) = accessibility::respond(self, request);
+            let admitted = context.respond_accessibility(response);
+            self.input_failures = accessibility_admission_failures(self.input_failures, admitted);
+            self.advance_selection_revision(selection_before);
+            if effect.visual_changed {
+                context.invalidate();
+            }
+            return;
+        }
         let selection_before = self.selection;
         let StudioTransition {
             mut effect,
@@ -4659,6 +4673,10 @@ impl AppDelegate for StudioApp {
     fn frame(&mut self, context: WindowContext) -> Scene {
         self.scene(context.scene_revision(), context.viewport())
     }
+}
+
+fn accessibility_admission_failures(current: u64, admitted: bool) -> u64 {
+    current.saturating_add(u64::from(!admitted))
 }
 
 impl StudioApp {
@@ -5284,7 +5302,8 @@ pub mod native_validation {
                 SurfaceEvent::Keyboard { .. } => {
                     self.keyboard = self.keyboard.saturating_add(1);
                 }
-                SurfaceEvent::Ime {
+                SurfaceEvent::Accessibility { .. }
+                | SurfaceEvent::Ime {
                     event: ImeEvent::Started,
                     ..
                 } => self.ime_started = self.ime_started.saturating_add(1),

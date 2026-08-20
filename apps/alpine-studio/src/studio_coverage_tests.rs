@@ -4567,6 +4567,30 @@ fn accessibility_snapshot_preserves_unicode_revision_focus_and_bounded_text()
     let snapshot = app.accessibility_snapshot()?;
     assert_initial_accessibility_snapshot(&snapshot)?;
 
+    let request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(1))?;
+    let (response, effect) = accessibility::respond(&mut app, &request);
+    assert_eq!(response.validate_for(&request), Ok(()));
+    assert!(!effect.visual_changed);
+    assert!(matches!(
+        response.result(),
+        Ok(AccessibilityPayload::Snapshot(value))
+            if value.revision() == snapshot.revision()
+                && value.nodes().len() == snapshot.nodes().len()
+                && value.text_len_utf16() == snapshot.text_len_utf16()
+    ));
+
+    let text_request = AccessibilityRequest::text(
+        AccessibilityRequestId::new(2),
+        snapshot.revision(),
+        AccessibilityTextRange::new(1, 2),
+    )?;
+    let (text_response, text_effect) = accessibility::respond(&mut app, &text_request);
+    assert!(!text_effect.visual_changed);
+    assert!(matches!(
+        text_response.result(),
+        Ok(AccessibilityPayload::Text(text)) if text.as_str() == "🦀"
+    ));
+
     assert!(matches!(
         app.handle_accessibility_action(AccessibilityAction::set_selection(
             snapshot.revision(),
@@ -4628,6 +4652,163 @@ fn accessibility_snapshot_preserves_unicode_revision_focus_and_bounded_text()
         )),
         Err(AccessibilityError::StaleRevision { expected, actual: found })
             if expected == snapshot.revision() && found == actual
+    ));
+    Ok(())
+}
+
+#[test]
+fn accessibility_runtime_dispatch_is_exact_dirty_neutral_and_revision_checked()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(accessibility_admission_failures(4, true), 4);
+    assert_eq!(accessibility_admission_failures(4, false), 5);
+    assert_eq!(accessibility_admission_failures(u64::MAX, false), u64::MAX);
+    let app = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("a🦀é"), None)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    assert!(runtime.frame_if_dirty().is_some());
+    assert!(runtime.frame_if_dirty().is_none());
+
+    let snapshot_request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(10))?;
+    let snapshot_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(10),
+        request: snapshot_request.clone(),
+    });
+    assert!(snapshot_response.frame().is_none());
+    let snapshot_response = snapshot_response
+        .accessibility_response()
+        .ok_or("snapshot response")?;
+    assert_eq!(snapshot_response.validate_for(&snapshot_request), Ok(()));
+    let revision = match snapshot_response.result() {
+        Ok(AccessibilityPayload::Snapshot(snapshot)) => snapshot.revision(),
+        _ => return Err("snapshot payload".into()),
+    };
+
+    let selection_request =
+        AccessibilityRequest::selection(AccessibilityRequestId::new(11), revision)?;
+    let selection_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(11),
+        request: selection_request,
+    });
+    assert!(selection_response.frame().is_none());
+    assert!(matches!(
+        selection_response
+            .accessibility_response()
+            .ok_or("selection response")?
+            .result(),
+        Ok(AccessibilityPayload::Selection(selection))
+            if selection.anchor_utf16() == 0 && selection.head_utf16() == 0
+    ));
+
+    let unchanged_request = AccessibilityRequest::action(
+        AccessibilityRequestId::new(12),
+        AccessibilityAction::set_selection(revision, 0, 0),
+    )?;
+    let unchanged_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(12),
+        request: unchanged_request,
+    });
+    assert!(unchanged_response.frame().is_none());
+    assert!(matches!(
+        unchanged_response
+            .accessibility_response()
+            .ok_or("unchanged action response")?
+            .result(),
+        Ok(AccessibilityPayload::Action(
+            alpine_platform_macos::AccessibilityActionResult::Unchanged
+        ))
+    ));
+
+    let applied_request = AccessibilityRequest::action(
+        AccessibilityRequestId::new(13),
+        AccessibilityAction::set_selection(revision, 0, 1),
+    )?;
+    let applied_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(13),
+        request: applied_request,
+    });
+    assert!(applied_response.frame().is_some());
+    assert!(matches!(
+        applied_response
+            .accessibility_response()
+            .ok_or("applied action response")?
+            .result(),
+        Ok(AccessibilityPayload::Action(
+            alpine_platform_macos::AccessibilityActionResult::Applied
+        ))
+    ));
+    Ok(())
+}
+
+#[test]
+fn accessibility_runtime_rejects_stale_mapping_and_oversized_text()
+-> Result<(), Box<dyn std::error::Error>> {
+    let app = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("a🦀é"), None)?;
+    let revision = accessibility::revision(&app);
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    assert!(runtime.frame_if_dirty().is_some());
+    let stale = alpine_platform_macos::AccessibilityRevision::new(
+        revision.document(),
+        revision.buffer() + 1,
+    );
+    let stale_request = AccessibilityRequest::text(
+        AccessibilityRequestId::new(14),
+        stale,
+        AccessibilityTextRange::new(0, 0),
+    )?;
+    let stale_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(14),
+        request: stale_request,
+    });
+    assert!(stale_response.frame().is_none());
+    assert!(matches!(
+        stale_response
+            .accessibility_response()
+            .ok_or("stale response")?
+            .result(),
+        Err(alpine_platform_macos::AccessibilityError::StaleRevision {
+            expected,
+            actual,
+        }) if *expected == stale && *actual == revision
+    ));
+
+    let invalid_mapping_request = AccessibilityRequest::action(
+        AccessibilityRequestId::new(15),
+        AccessibilityAction::set_selection(revision, 2, 2),
+    )?;
+    let invalid_mapping_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(15),
+        request: invalid_mapping_request,
+    });
+    assert!(invalid_mapping_response.frame().is_none());
+    assert_eq!(
+        invalid_mapping_response
+            .accessibility_response()
+            .ok_or("mapping response")?
+            .result(),
+        &Err(alpine_platform_macos::AccessibilityError::TextMappingFailed)
+    );
+
+    let mut oversized = StudioApp::from_document(
+        TestTextSystem,
+        StudioDocument::scratch(&"é".repeat(32_769)),
+        None,
+    )?;
+    let oversized_revision = accessibility::revision(&oversized);
+    let oversized_request = AccessibilityRequest::text(
+        AccessibilityRequestId::new(16),
+        oversized_revision,
+        AccessibilityTextRange::new(0, 32_769),
+    )?;
+    let (oversized_response, effect) = accessibility::respond(&mut oversized, &oversized_request);
+    assert!(!effect.visual_changed);
+    assert!(matches!(
+        oversized_response.result(),
+        Err(alpine_platform_macos::AccessibilityError::TextResponseTooLarge {
+            actual,
+            limit,
+        }) if *actual == 65_538
+            && *limit == accessibility::MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES
     ));
     Ok(())
 }
