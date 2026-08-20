@@ -50,6 +50,13 @@ if [ -n "$workflow_files" ]; then
         grep -nE 'continue-on-error:[[:space:]]*true' $workflow_files >&2 || true
     fi
 
+    if ! grep -Fq -- "--exclude 'crates/alpine-platform-macos/src/native_accessibility.rs'" .github/workflows/ci.yml; then
+        fail 'Linux changed-code mutation must delegate native accessibility to macOS validation'
+    fi
+    if ! grep -Fq -- '--file crates/alpine-platform-macos/src/native_accessibility.rs' .github/workflows/ci.yml; then
+        fail 'required macOS validation must own changed native accessibility mutation'
+    fi
+
     weekly_mutation_workflow=.github/workflows/weekly-assurance.yml
     if [ -f "$weekly_mutation_workflow" ]; then
         output_parent_line=$(grep -nF 'mkdir -p target' "$weekly_mutation_workflow" \
