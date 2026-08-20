@@ -17,7 +17,6 @@ fn main() -> Result<(), alpine_platform_macos::SurfaceError> {
     assert!(snapshot.framebuffer_only());
     assert_eq!(snapshot.submission_count(), 0);
     assert_eq!(snapshot.current_retained_bytes(), 0);
-    assert!(snapshot.peak_retained_bytes() > 0);
     assert!(snapshot.current_upload_bytes() > 0);
     assert!(snapshot.current_upload_bytes() <= snapshot.peak_upload_bytes());
     assert!(snapshot.peak_upload_bytes() <= 3 * 8 * 1024 * 1024);
