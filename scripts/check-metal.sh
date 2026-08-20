@@ -107,3 +107,8 @@ fi
     ALPINE_CAPTURE_RSS=1 cargo test --locked -p alpine-metal \
     native::tests::cancellation_shutdown_and_steady_state_have_no_hidden_native_work \
     -- --exact --nocapture --test-threads=1
+
+printf '%s\n' '==> hosted native idle-state qualification'
+ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct \
+    RUSTFLAGS="${RUSTFLAGS:-} --cfg alpine_native_validation" \
+    cargo test --locked --package alpine-platform-macos --test native_idle

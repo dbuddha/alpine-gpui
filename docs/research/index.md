@@ -55,3 +55,7 @@ measurement rules so implementation does not depend on chat history.
 - Never turn a normalized product comparison into a universal framework claim.
 - Preserve workload, environment, exclusion, raw sample, and invalid-run
   identities for every performance statement.
+
+## Native idle wakeup and energy
+
+- [Decision-grade research package](native-idle-energy/index.md): source map, findings, experiments, decisions, and the fixed-hardware claim boundary for Task #237.

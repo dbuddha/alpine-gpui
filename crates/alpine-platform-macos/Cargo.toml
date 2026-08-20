@@ -81,3 +81,7 @@ harness = false
 [[test]]
 name = "native_onscreen_sdr"
 harness = false
+
+[[test]]
+name = "native_idle"
+harness = false
