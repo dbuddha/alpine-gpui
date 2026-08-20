@@ -569,16 +569,23 @@ pub mod native_validation {
         Allow,
     }
 
-    /// Handle-free identity for one real AppKit screen used by physical validation.
+    /// Handle-free identity for one real `AppKit` screen used by physical validation.
     #[derive(Clone, Copy, Debug, PartialEq)]
     pub struct ValidationScreenConfiguration {
-        index: usize,
-        identity: usize,
-        backing_scale: f64,
-        visible_x: f64,
-        visible_y: f64,
-        visible_width: f64,
-        visible_height: f64,
+        /// Stable index within the current `AppKit` screen list.
+        pub index: usize,
+        /// Process-local `AppKit` screen object identity.
+        pub identity: usize,
+        /// Backing pixels per logical screen unit.
+        pub backing_scale: f64,
+        /// Visible screen origin on the `AppKit` x axis.
+        pub visible_x: f64,
+        /// Visible screen origin on the `AppKit` y axis.
+        pub visible_y: f64,
+        /// Visible logical screen width.
+        pub visible_width: f64,
+        /// Visible logical screen height.
+        pub visible_height: f64,
     }
 
     impl ValidationScreenConfiguration {
@@ -604,35 +611,6 @@ pub mod native_validation {
                 visible_width,
                 visible_height,
             }
-        }
-
-        /// Returns the stable index within the current AppKit screen list.
-        #[must_use]
-        pub const fn index(self) -> usize {
-            self.index
-        }
-
-        /// Returns the process-local AppKit screen object identity.
-        #[must_use]
-        pub const fn identity(self) -> usize {
-            self.identity
-        }
-
-        /// Returns backing pixels per logical screen unit.
-        #[must_use]
-        pub const fn backing_scale(self) -> f64 {
-            self.backing_scale
-        }
-
-        /// Returns the visible screen origin and extent.
-        #[must_use]
-        pub const fn visible_frame(self) -> (f64, f64, f64, f64) {
-            (
-                self.visible_x,
-                self.visible_y,
-                self.visible_width,
-                self.visible_height,
-            )
         }
     }
 

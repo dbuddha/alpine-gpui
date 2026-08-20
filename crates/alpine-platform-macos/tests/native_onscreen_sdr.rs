@@ -93,25 +93,32 @@ mod validation {
         )?;
         let surface = native_validation::new_surface(&descriptor)?;
         let screens = native_validation::screen_configurations(&surface);
-        assert!(!screens.is_empty());
+        let enumerated = screens
+            .first()
+            .copied()
+            .ok_or("AppKit did not publish a physical screen")?;
         assert!(native_validation::move_window_to_screen(&surface, usize::MAX).is_err());
 
         let Some(config) = CaptureConfig::from_environment()? else {
             let first = native_validation::move_window_to_screen(&surface, 0)?;
-            assert_eq!(first.index(), 0);
-            assert_ne!(first.identity(), 0);
-            assert!(first.backing_scale().is_finite());
-            assert!(first.backing_scale() > 0.0);
-            let (_, _, width, height) = first.visible_frame();
-            assert!(width > 0.0 && height > 0.0);
+            assert_eq!(first, enumerated);
+            assert_eq!(first.index, 0);
+            assert_ne!(first.identity, 0);
+            assert!(first.backing_scale.is_finite());
+            assert!(first.backing_scale > 0.0);
+            assert!(first.visible_x.is_finite() && first.visible_y.is_finite());
+            assert!(first.visible_width > 0.0 && first.visible_height > 0.0);
             surface.close();
             return Ok(());
         };
 
         fs::create_dir_all(&config.output)?;
-        let (first, second) = distinct_scale_pair(&screens)
+        let (enumerated_first, enumerated_second) = distinct_scale_pair(&screens)
             .ok_or("full qualification requires two real displays with different backing scales")?;
-        let first = native_validation::move_window_to_screen(&surface, first.index())?;
+        let first = native_validation::move_window_to_screen(&surface, enumerated_first.index)?;
+        if first != enumerated_first {
+            return Err("moved first-screen configuration drifted from enumeration".into());
+        }
         surface.show()?;
 
         let accepted_scene = config.output.join("accepted.scene");
@@ -137,7 +144,7 @@ mod validation {
             revision,
             INITIAL_WIDTH,
             INITIAL_HEIGHT,
-            first.backing_scale(),
+            first.backing_scale,
             launch,
             &accepted_scene,
         )?;
@@ -165,14 +172,17 @@ mod validation {
             revision,
             RESIZED_WIDTH,
             RESIZED_HEIGHT,
-            first.backing_scale(),
+            first.backing_scale,
             resized,
             &accepted_scene,
         )?;
 
-        let moved = native_validation::move_window_to_screen(&surface, second.index())?;
-        if moved.identity() == first.identity()
-            || moved.backing_scale().to_bits() == first.backing_scale().to_bits()
+        let moved = native_validation::move_window_to_screen(&surface, enumerated_second.index)?;
+        if moved != enumerated_second {
+            return Err("moved second-screen configuration drifted from enumeration".into());
+        }
+        if moved.identity == first.identity
+            || moved.backing_scale.to_bits() == first.backing_scale.to_bits()
         {
             return Err(
                 "real display move did not change display identity and backing scale".into(),
@@ -193,7 +203,7 @@ mod validation {
             revision,
             RESIZED_WIDTH,
             RESIZED_HEIGHT,
-            moved.backing_scale(),
+            moved.backing_scale,
             display_move,
             &accepted_scene,
         )?;
@@ -213,7 +223,7 @@ mod validation {
             revision,
             RESIZED_WIDTH,
             RESIZED_HEIGHT,
-            moved.backing_scale(),
+            moved.backing_scale,
             wrong,
             &wrong_scene,
         )?;
@@ -233,8 +243,8 @@ mod validation {
                 .iter()
                 .copied()
                 .find(|second| {
-                    second.identity() != first.identity()
-                        && second.backing_scale().to_bits() != first.backing_scale().to_bits()
+                    second.identity != first.identity
+                        && second.backing_scale.to_bits() != first.backing_scale.to_bits()
                 })
                 .map(|second| (first, second))
         })
