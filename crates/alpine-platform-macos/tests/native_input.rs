@@ -107,7 +107,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(received);
 
     let evidence = native_validation::close_with_owner_evidence(surface)?;
-    assert_eq!(evidence.active(), [0; 9]);
+    assert_eq!(evidence.active(), [0; 10]);
+    assert_eq!(evidence.pasteboard_releases(), 1);
     assert_eq!(evidence.release_order_violations(), 0);
     Ok(())
 }
