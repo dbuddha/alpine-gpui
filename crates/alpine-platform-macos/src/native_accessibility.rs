@@ -46,8 +46,13 @@ struct RefreshOutcome {
     notifications: Vec<NotificationIntent>,
 }
 
+struct PostedNotifications {
+    counts: [u64; 5],
+}
+
 impl RefreshOutcome {
-    fn post(self) {
+    fn post(self) -> PostedNotifications {
+        let mut counts = [0_u64; 5];
         for intent in self.notifications {
             // SAFETY: the element remains retained for this synchronous AppKit call,
             // and each notification constant is process-lifetime immutable.
@@ -75,7 +80,9 @@ impl RefreshOutcome {
                     ),
                 }
             }
+            counts[intent.kind as usize] = counts[intent.kind as usize].saturating_add(1);
         }
+        PostedNotifications { counts }
     }
 }
 
@@ -137,7 +144,11 @@ impl NativeAccessibilityAdapter {
 
     pub(crate) fn refresh_view(view: &SurfaceView) -> Result<(), SurfaceError> {
         let outcome = view.ivars().accessibility.borrow_mut().refresh(view)?;
-        outcome.post();
+        let posted = outcome.post();
+        let mut adapter = view.ivars().accessibility.borrow_mut();
+        for (count, posted) in adapter.counters.notifications.iter_mut().zip(posted.counts) {
+            *count = count.saturating_add(posted);
+        }
         Ok(())
     }
 
@@ -314,8 +325,6 @@ impl NativeAccessibilityAdapter {
         kind: NotificationKind,
     ) {
         if let Some(element) = self.element(id) {
-            self.counters.notifications[kind as usize] =
-                self.counters.notifications[kind as usize].saturating_add(1);
             intents.push(NotificationIntent { element, kind });
         }
     }
@@ -568,8 +577,13 @@ impl NativeAccessibilityAdapter {
         };
         let status_character_count: usize =
             unsafe { msg_send![&*status, accessibilityNumberOfCharacters] };
-        let text_selector_scope_valid =
-            !status_text_selector_allowed && status_character_count == 0;
+        let checked_range_contract_valid = checked_range(NSRange::new(0, 2), 2)
+            == Some(AccessibilityTextRange::new(0, 2))
+            && checked_range(NSRange::new(usize::MAX, 0), usize::MAX).is_none()
+            && checked_range(NSRange::new(usize::MAX - 1, 2), usize::MAX).is_none();
+        let text_selector_scope_valid = !status_text_selector_allowed
+            && status_character_count == 0
+            && checked_range_contract_valid;
         let accepted_native = NSRange::new(2, 2);
         let _: () =
             unsafe { msg_send![&*editor, setAccessibilitySelectedTextRange: accepted_native] };

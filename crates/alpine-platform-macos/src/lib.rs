@@ -814,7 +814,9 @@ pub mod native_validation {
         pub const fn released_elements(&self) -> u64 {
             self.released_elements
         }
-        /// Returns layout, focus, selection, value, and announcement notifications.
+        /// Returns completed synchronous AppKit post calls by notification kind.
+        ///
+        /// These counts prove invocation, not observation by an assistive client.
         #[must_use]
         pub const fn notification_counts(&self) -> [u64; 5] {
             self.notification_counts

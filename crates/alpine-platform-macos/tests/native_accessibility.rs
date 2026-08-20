@@ -19,59 +19,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         selection: AccessibilitySelection,
         text: String,
         snapshot_requests: usize,
+        include_status: bool,
     }
 
     fn snapshot(state: &State) -> Result<AccessibilitySnapshot, AccessibilityError> {
+        let mut nodes = vec![
+            AccessibilityNode::new(
+                AccessibilityNodeId::new(1),
+                None,
+                AccessibilityRole::Window,
+                "Alpine Studio".into(),
+                false,
+                false,
+                false,
+            )?,
+            AccessibilityNode::new(
+                AccessibilityNodeId::new(2),
+                Some(AccessibilityNodeId::new(1)),
+                AccessibilityRole::TabList,
+                "Open editors".into(),
+                false,
+                false,
+                false,
+            )?,
+            AccessibilityNode::new(
+                AccessibilityNodeId::new(3),
+                Some(AccessibilityNodeId::new(2)),
+                AccessibilityRole::Tab,
+                "main.rs".into(),
+                false,
+                true,
+                false,
+            )?,
+            AccessibilityNode::new(
+                AccessibilityNodeId::new(4),
+                Some(AccessibilityNodeId::new(1)),
+                AccessibilityRole::CodeEditor,
+                "main.rs editor".into(),
+                true,
+                false,
+                false,
+            )?,
+        ];
+        if state.include_status {
+            nodes.push(AccessibilityNode::new(
+                AccessibilityNodeId::new(5),
+                Some(AccessibilityNodeId::new(1)),
+                AccessibilityRole::Status,
+                "Ready".into(),
+                false,
+                false,
+                true,
+            )?);
+        }
         AccessibilitySnapshot::new(
             state.revision,
             AccessibilityNodeId::new(1),
-            vec![
-                AccessibilityNode::new(
-                    AccessibilityNodeId::new(1),
-                    None,
-                    AccessibilityRole::Window,
-                    "Alpine Studio".into(),
-                    false,
-                    false,
-                    false,
-                )?,
-                AccessibilityNode::new(
-                    AccessibilityNodeId::new(2),
-                    Some(AccessibilityNodeId::new(1)),
-                    AccessibilityRole::TabList,
-                    "Open editors".into(),
-                    false,
-                    false,
-                    false,
-                )?,
-                AccessibilityNode::new(
-                    AccessibilityNodeId::new(3),
-                    Some(AccessibilityNodeId::new(2)),
-                    AccessibilityRole::Tab,
-                    "main.rs".into(),
-                    false,
-                    true,
-                    false,
-                )?,
-                AccessibilityNode::new(
-                    AccessibilityNodeId::new(4),
-                    Some(AccessibilityNodeId::new(1)),
-                    AccessibilityRole::CodeEditor,
-                    "main.rs editor".into(),
-                    true,
-                    false,
-                    false,
-                )?,
-                AccessibilityNode::new(
-                    AccessibilityNodeId::new(5),
-                    Some(AccessibilityNodeId::new(1)),
-                    AccessibilityRole::Status,
-                    "Ready".into(),
-                    false,
-                    false,
-                    true,
-                )?,
-            ],
+            nodes,
             state.selection,
             state.text.encode_utf16().count(),
             2,
@@ -142,6 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 && selection.head_utf16() <= state.text.encode_utf16().count() =>
             {
                 state.selection = *selection;
+                state.include_status = false;
                 state.revision = AccessibilityRevision::new(
                     observed.document(),
                     observed.buffer().saturating_add(1),
@@ -187,6 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         selection: AccessibilitySelection::new(0, 4),
         text: "zero\none two".into(),
         snapshot_requests: 0,
+        include_status: true,
     }));
     let callback_state = Arc::clone(&state);
     let evidence = native_validation::replay_native_accessibility_path(&surface, move |event| {
@@ -229,11 +235,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(evidence.current_elements_after_revoke(), 0);
     assert_eq!(
         evidence.retained_slot_bytes_before_revoke(),
-        evidence.peak_elements() * core::mem::size_of::<usize>()
+        (evidence.peak_elements() - 1) * core::mem::size_of::<usize>()
     );
     assert_eq!(evidence.retained_slot_bytes_after_revoke(), 0);
     assert!(evidence.late_selector_rejected());
-    assert_eq!(evidence.notification_counts(), [0, 0, 1, 1, 0]);
+    assert_eq!(evidence.notification_counts(), [1, 0, 1, 1, 0]);
     assert_eq!(
         state
             .lock()
@@ -251,6 +257,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         selection: AccessibilitySelection::new(0, 4),
         text: "zero\none two".into(),
         snapshot_requests: 0,
+        include_status: true,
     }));
     let callback_rejected_state = Arc::clone(&rejected_state);
     let forbidden_write = ClipboardWrite::new(
