@@ -17,8 +17,8 @@ On Apple Silicon macOS only, `alpine-metal` uses narrowly featured, exact-versio
 targets neither compile nor link those dependencies.
 `alpine-platform-macos` depends on the portable platform, core, scene, and Metal
 crates. On Apple Silicon macOS only, it uses narrowly featured, exact-version
-`block2`, `objc2`, `objc2-app-kit`, `objc2-foundation`, `objc2-metal`, and
-`objc2-quartz-core` bindings. The same target uses the exact-version,
+`block2`, `objc2`, `objc2-app-kit`, `objc2-core-foundation`, `objc2-foundation`,
+`objc2-metal`, and `objc2-quartz-core` bindings. The same target uses the exact-version,
 narrowly featured `objc2-core-graphics` binding to own a standard sRGB color
 space. Its safe application API exposes no native handle,
 remains available on other targets, and returns a structured

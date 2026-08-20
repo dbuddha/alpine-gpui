@@ -159,13 +159,17 @@ mod validation {
             pump_main_run_loop(Duration::from_millis(5));
         }
         let after = surface.snapshot();
+        let pause_confirmations = native_validation::pause_confirmation_count(surface);
         assert!(
             after.display_link_paused(),
-            "display link did not pause within the settlement bound"
+            "display link did not pause within the settlement bound: confirmations={pause_confirmations}, callbacks_before={}, callbacks_after={}",
+            before.callback_count(),
+            after.callback_count()
         );
         assert!(
-            native_validation::pause_confirmation_count(surface) >= minimum_pause_confirmations,
-            "post-callback pause reaffirmation did not complete within the settlement bound"
+            pause_confirmations >= minimum_pause_confirmations,
+            "post-callback pause reaffirmation did not complete within the settlement bound: expected_at_least={minimum_pause_confirmations}, actual={pause_confirmations}, native_paused={}",
+            after.display_link_paused()
         );
         assert_eq!(
             after.submission_count(),

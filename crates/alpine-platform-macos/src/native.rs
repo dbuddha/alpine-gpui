@@ -30,6 +30,7 @@ use objc2_app_kit::{
 };
 #[cfg(alpine_native_validation)]
 use objc2_app_kit::{NSEventType, NSScreen, NSWindowButton};
+use objc2_core_foundation::{CFRunLoop, kCFRunLoopCommonModes};
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 #[cfg(alpine_native_validation)]
 use objc2_core_graphics::{CGEvent, CGEventFlags, CGScrollEventUnit};
@@ -56,7 +57,7 @@ use alpine_platform::{
 };
 use alpine_scene::Scene;
 use block2::RcBlock;
-use dispatch2::{DispatchQueue, MainThreadBound};
+use dispatch2::DispatchQueue;
 
 use crate::native_accessibility::{NativeAccessibilityAdapter, NativeAccessibilityElement};
 use crate::{
@@ -2735,19 +2736,24 @@ fn schedule_display_link_pause_confirmation(
     driver: &Rc<RefCell<PresentationDriver>>,
     #[cfg(alpine_native_validation)] pause_confirmation_count: Arc<AtomicU64>,
 ) {
-    let Some(marker) = MainThreadMarker::new() else {
+    if MainThreadMarker::new().is_none() {
         display_link.setPaused(true);
         return;
+    }
+    let Some(run_loop) = CFRunLoop::main() else {
+        return;
     };
-    let context = Arc::new(MainThreadBound::new(
-        (display_link.clone(), Rc::downgrade(driver)),
-        marker,
-    ));
-    DispatchQueue::main().exec_async(move || {
-        let Some(marker) = MainThreadMarker::new() else {
+    // SAFETY: Core Foundation publishes this process-lifetime constant as a
+    // CFRunLoopMode, which is a CFString and therefore a valid CFType mode.
+    let Some(common_modes) = (unsafe { kCFRunLoopCommonModes }) else {
+        return;
+    };
+    let display_link = display_link.clone();
+    let driver = Rc::downgrade(driver);
+    let confirmation: RcBlock<dyn Fn()> = RcBlock::new(move || {
+        if MainThreadMarker::new().is_none() {
             return;
-        };
-        let (display_link, driver) = context.get(marker);
+        }
         let should_pause = driver.upgrade().is_some_and(|driver| {
             driver
                 .try_borrow()
@@ -2756,9 +2762,18 @@ fn schedule_display_link_pause_confirmation(
         if should_pause {
             display_link.setPaused(true);
             #[cfg(alpine_native_validation)]
-            pause_confirmation_count.fetch_add(1, Ordering::Relaxed);
+            if display_link.isPaused() {
+                pause_confirmation_count.fetch_add(1, Ordering::Relaxed);
+            }
         }
     });
+    // SAFETY: this call copies the block before returning. The block captures
+    // main-thread-only owners, is enqueued on the main run loop, and the common
+    // mode constant above has the required CFType identity.
+    unsafe {
+        run_loop.perform_block(Some(common_modes), Some(&confirmation));
+    }
+    run_loop.wake_up();
 }
 
 #[cfg(alpine_native_validation)]

@@ -18,6 +18,7 @@ block2 = { version = "=0.6.2", default-features = false }
 dispatch2 = { version = "=0.3.0", default-features = false, features = ["std"] }
 objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSAccessibilityConstants", "NSAccessibilityElement", "NSAccessibilityProtocols", "NSApplication", "NSAttributedString", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSScreen", "NSTextInputClient", "NSView", "NSWindow", "objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core"] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["block2", "CFRunLoop"] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["CGColorSpace", "CGEvent", "CGEventTypes"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSAttributedString", "NSDate", "NSGeometry", "NSNotification", "NSObject", "NSRange", "NSRunLoop", "NSString", "NSTimer"] }
 objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "block2", "objc2-core-foundation", "MTLDevice", "MTLDrawable", "MTLPixelFormat", "MTLTexture"] }
