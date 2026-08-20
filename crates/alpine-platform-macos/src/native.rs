@@ -368,14 +368,6 @@ impl InitializationProbe {
         self.0.window.replace(Some(Weak::from_retained(window)));
     }
 
-    fn window_deallocated(&self) -> bool {
-        self.0
-            .window
-            .borrow()
-            .as_ref()
-            .is_none_or(|window| window.load().is_none())
-    }
-
     fn record_pasteboard_release(&self) {
         self.0
             .pasteboard_releases
@@ -4072,7 +4064,22 @@ pub(crate) fn exercise_initialization_fault(
     if !failed_at_expected_stage {
         return Err(native_unavailable(stage));
     }
-    if !probe.window_deallocated() {
+    let observed_window_deallocation = probe
+        .0
+        .window
+        .borrow()
+        .as_ref()
+        .map(|window| window.load().is_none());
+    let expected_window_deallocation = match stage {
+        SurfaceStage::MainThread | SurfaceStage::Device | SurfaceStage::Renderer => None,
+        SurfaceStage::Window
+        | SurfaceStage::View
+        | SurfaceStage::ColorSpace
+        | SurfaceStage::Layer
+        | SurfaceStage::DisplayLink
+        | SurfaceStage::RunLoop => Some(true),
+    };
+    if observed_window_deallocation != expected_window_deallocation {
         return Err(native_unavailable(SurfaceStage::Window));
     }
     Ok(probe.evidence())
@@ -4096,6 +4103,25 @@ pub(crate) fn validate_initialization_rollback() -> Result<(), SurfaceError> {
     ];
 
     for (stage, owner_count) in stages {
+        let expected = expected_owner_counts(owner_count);
+        let fault_evidence = exercise_initialization_fault(stage)?;
+        assert_eq!(
+            fault_evidence.acquired(),
+            expected,
+            "fault acquisition after {stage:?}"
+        );
+        assert_eq!(
+            fault_evidence.released(),
+            expected,
+            "fault release after {stage:?}"
+        );
+        assert_eq!(
+            fault_evidence.active(),
+            [0; NATIVE_OWNER_KINDS],
+            "fault active after {stage:?}"
+        );
+        assert_eq!(fault_evidence.release_order_violations(), 0);
+
         let control = InitializationControl::validation(Some(stage));
         let Some(observer) = control.observer() else {
             return Err(native_unavailable(SurfaceStage::MainThread));
@@ -4112,7 +4138,6 @@ pub(crate) fn validate_initialization_rollback() -> Result<(), SurfaceError> {
         );
         drop(result);
 
-        let expected = expected_owner_counts(owner_count);
         let (acquired, released, active) = probe.counts();
         assert!(failed_at_expected_stage, "fault after {stage:?}");
         assert_eq!(acquired, expected, "acquisition after {stage:?}");
@@ -4165,13 +4190,25 @@ pub(crate) fn validate_initialization_rollback() -> Result<(), SurfaceError> {
         NativeOwnerKind::Window,
         NativeOwnerKind::Delegate,
         NativeOwnerKind::DisplayLink,
+        NativeOwnerKind::Pasteboard,
     ] {
         drop(faulty_cleanup.acquire(kind));
     }
     let (_, faulty_releases, faulty_active) = faulty_cleanup.counts();
-    assert_eq!(faulty_releases, [0, 0, 0, 1, 0, 0, 0, 1, 1, 0]);
+    assert_eq!(faulty_releases, [0, 0, 0, 1, 0, 0, 0, 1, 1, 1]);
     assert_eq!(faulty_active, [0; NATIVE_OWNER_KINDS]);
-    assert_eq!(faulty_cleanup.0.release_order_violations.get(), 3);
+    assert_eq!(faulty_cleanup.0.release_order_violations.get(), 4);
+
+    let pasteboard_probe = InitializationProbe::default();
+    drop(ValidationPasteboard::new(Some(pasteboard_probe.clone())));
+    let (pasteboard_acquired, pasteboard_released, pasteboard_active) = pasteboard_probe.counts();
+    let mut pasteboard_expected = [0; NATIVE_OWNER_KINDS];
+    pasteboard_expected[NativeOwnerKind::Pasteboard.index()] = 1;
+    assert_eq!(pasteboard_acquired, pasteboard_expected);
+    assert_eq!(pasteboard_released, pasteboard_expected);
+    assert_eq!(pasteboard_active, [0; NATIVE_OWNER_KINDS]);
+    assert_eq!(pasteboard_probe.0.pasteboard_releases.get(), 1);
+    assert_eq!(pasteboard_probe.0.release_order_violations.get(), 0);
     Ok(())
 }
 
