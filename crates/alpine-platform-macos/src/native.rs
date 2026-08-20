@@ -14,6 +14,8 @@ use alpine_core::Point;
 use std::time::{Duration, Instant};
 
 #[cfg(alpine_native_validation)]
+use objc2::rc::{Weak, autoreleasepool};
+#[cfg(alpine_native_validation)]
 use objc2::runtime::Bool;
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
@@ -312,6 +314,7 @@ struct InitializationProbeState {
     window_closes: Cell<u64>,
     pasteboard_releases: Cell<u64>,
     release_order_violations: Cell<u64>,
+    window: RefCell<Option<Weak<NSWindow>>>,
 }
 
 #[cfg(alpine_native_validation)]
@@ -359,6 +362,18 @@ impl InitializationProbe {
 
     fn record_window_close(&self) {
         self.0.window_closes.set(self.0.window_closes.get() + 1);
+    }
+
+    fn record_window(&self, window: &Retained<NSWindow>) {
+        self.0.window.replace(Some(Weak::from_retained(window)));
+    }
+
+    fn window_deallocated(&self) -> bool {
+        self.0
+            .window
+            .borrow()
+            .as_ref()
+            .is_none_or(|window| window.load().is_none())
     }
 
     fn record_pasteboard_release(&self) {
@@ -2927,7 +2942,9 @@ impl NativeSurface {
             NSSize::new(extent.logical_width(), extent.logical_height()),
         );
         // SAFETY: The validated finite positive content rectangle satisfies
-        // NSWindow's initializer contract. Alpine disables release-on-close
+        // NSWindow's initializer contract. Defer the window-server device until
+        // first show so failed construction and never-shown surfaces do not
+        // allocate backing resources. Alpine disables release-on-close
         // immediately below and retains the returned window for its lifetime.
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -2935,9 +2952,13 @@ impl NativeSurface {
                 frame,
                 standard_window_style_mask(),
                 NSBackingStoreType::Buffered,
-                false,
+                true,
             )
         };
+        #[cfg(alpine_native_validation)]
+        if let Some(probe) = control.probe() {
+            probe.record_window(&window);
+        }
         // SAFETY: This window is created without a window controller and is
         // retained by NativeSurface until close, so AppKit must not release it.
         unsafe { window.setReleasedWhenClosed(false) };
@@ -4028,6 +4049,33 @@ impl Drop for NativeSurfaceBuilder {
 
 fn take_owner<T>(owner: &mut Option<T>, stage: SurfaceStage) -> Result<T, SurfaceError> {
     owner.take().ok_or_else(|| native_unavailable(stage))
+}
+
+#[cfg(alpine_native_validation)]
+pub(crate) fn exercise_initialization_fault(
+    stage: SurfaceStage,
+) -> Result<crate::native_validation::NativeOwnerEvidence, SurfaceError> {
+    let descriptor = SurfaceDescriptor::new("Alpine initialization stage", 32.0, 24.0, 1.0)?;
+    let control = InitializationControl::validation(Some(stage));
+    let probe = control.probe().ok_or(SurfaceError::DriverUnavailable)?;
+    let failed_at_expected_stage = autoreleasepool(|_| {
+        let result = NativeSurface::new_with_control(&descriptor, &control);
+        let failed_at_expected_stage = matches!(
+            &result,
+            Err(SurfaceError::NativeUnavailable {
+                stage: failed_stage,
+            }) if *failed_stage == stage
+        );
+        drop(result);
+        failed_at_expected_stage
+    });
+    if !failed_at_expected_stage {
+        return Err(native_unavailable(stage));
+    }
+    if !probe.window_deallocated() {
+        return Err(native_unavailable(SurfaceStage::Window));
+    }
+    Ok(probe.evidence())
 }
 
 #[cfg(alpine_native_validation)]

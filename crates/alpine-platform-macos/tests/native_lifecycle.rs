@@ -21,22 +21,27 @@ mod validation {
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_platform::PresentationOutcome;
     use alpine_platform_macos::{
-        SurfaceDescriptor, SurfaceLifecycle, SurfaceResponse, native_validation,
+        SurfaceDescriptor, SurfaceLifecycle, SurfaceResponse, SurfaceStage, native_validation,
     };
     use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
     use objc2::rc::autoreleasepool;
+    use objc2_foundation::{NSDate, NSRunLoop};
 
     type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
     const OWNER_KINDS: usize = 10;
     const LIFECYCLE_OWNER_COUNTS: [u64; OWNER_KINDS] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 0];
-    const SOAK_WARMUP_ITERATIONS: usize = 8;
+    const QUALIFICATION_WARMUP_ITERATIONS: usize = 512;
+    const DIAGNOSTIC_WARMUP_ITERATIONS: usize = 8;
     const SOAK_SAMPLE_COUNT: usize = 65;
     const SOAK_TAIL_SAMPLE_COUNT: usize = 9;
     const SOAK_MAX_GROWTH_PAGES: u64 = 16;
     const MAX_PRESENTATION_UPLOAD_BYTES: usize = 3 * 8 * 1024 * 1024;
     const LIFECYCLE_ARTIFACT_ENV: &str = "ALPINE_NATIVE_LIFECYCLE_ARTIFACT";
     const LIFECYCLE_RSS_ENV: &str = "ALPINE_NATIVE_LIFECYCLE_CAPTURE_RSS";
+    const LIFECYCLE_STAGE_RSS_ENV: &str = "ALPINE_NATIVE_LIFECYCLE_STAGE_RSS";
+    const LIFECYCLE_STAGE_SAMPLE_COUNT_ENV: &str = "ALPINE_NATIVE_LIFECYCLE_STAGE_SAMPLE_COUNT";
+    const MAX_DIAGNOSTIC_SAMPLE_COUNT: usize = 4_097;
     const REVISION_ENV: &str = "ALPINE_REVISION";
     const METAL_DIAGNOSTIC_ENVS: [&str; 6] = [
         "MTL_DEBUG_LAYER",
@@ -71,6 +76,9 @@ mod validation {
     pub(super) fn run() -> TestResult {
         if let Some(scenario) = std::env::var_os(CHILD_SCENARIO_ENV) {
             return run_child_scenario(&scenario);
+        }
+        if let Some(stage) = std::env::var_os(LIFECYCLE_STAGE_RSS_ENV) {
+            return run_stage_soak(&stage);
         }
 
         validate_bounded_child(MISSING_CLOSE_SCENARIO, Duration::from_secs(2))?;
@@ -317,7 +325,7 @@ mod validation {
 
     fn collect_owner_soak() -> TestResult<OwnerSoakEvidence> {
         let descriptor = SurfaceDescriptor::new("Alpine owner soak", 32.0, 24.0, 1.0)?;
-        for _ in 0..SOAK_WARMUP_ITERATIONS {
+        for _ in 0..QUALIFICATION_WARMUP_ITERATIONS {
             validate_owner_iteration(&descriptor)?;
         }
         let mut samples = Vec::with_capacity(SOAK_SAMPLE_COUNT);
@@ -325,6 +333,13 @@ mod validation {
         for _ in 0..SOAK_SAMPLE_COUNT {
             validate_owner_iteration(&descriptor)?;
             samples.push(resident_bytes()?);
+        }
+        summarize_samples(samples)
+    }
+
+    fn summarize_samples(samples: Vec<u64>) -> TestResult<OwnerSoakEvidence> {
+        if samples.len() < SOAK_TAIL_SAMPLE_COUNT {
+            return Err("RSS summary requires the complete tail window".into());
         }
         let page_bytes = host_page_bytes()?;
         let maximum_bytes = samples.iter().copied().max().ok_or("maximum RSS sample")?;
@@ -348,8 +363,123 @@ mod validation {
         })
     }
 
+    fn run_stage_soak(value: &OsStr) -> TestResult {
+        if !residency_capture_enabled()? {
+            return Err("initialization-stage RSS capture requires residency capture".into());
+        }
+        let stage = parse_stage(value)?;
+        let sample_count = diagnostic_sample_count()?;
+        let (soak, acquired_owner_kinds) = collect_stage_soak(stage, sample_count)?;
+        write_stage_artifact(stage, &soak, acquired_owner_kinds)
+    }
+
+    fn diagnostic_sample_count() -> TestResult<usize> {
+        let Some(value) = std::env::var_os(LIFECYCLE_STAGE_SAMPLE_COUNT_ENV) else {
+            return Ok(SOAK_SAMPLE_COUNT);
+        };
+        let value = value
+            .to_str()
+            .ok_or("initialization-stage sample count must be UTF-8")?
+            .parse::<usize>()?;
+        if !(SOAK_TAIL_SAMPLE_COUNT..=MAX_DIAGNOSTIC_SAMPLE_COUNT).contains(&value) {
+            return Err(format!(
+                "initialization-stage sample count must be between {SOAK_TAIL_SAMPLE_COUNT} and {MAX_DIAGNOSTIC_SAMPLE_COUNT}"
+            )
+            .into());
+        }
+        Ok(value)
+    }
+
+    fn parse_stage(value: &OsStr) -> TestResult<SurfaceStage> {
+        for (name, stage) in [
+            ("main-thread", SurfaceStage::MainThread),
+            ("device", SurfaceStage::Device),
+            ("renderer", SurfaceStage::Renderer),
+            ("window", SurfaceStage::Window),
+            ("view", SurfaceStage::View),
+            ("color-space", SurfaceStage::ColorSpace),
+            ("layer", SurfaceStage::Layer),
+            ("display-link", SurfaceStage::DisplayLink),
+            ("run-loop", SurfaceStage::RunLoop),
+        ] {
+            if value == OsStr::new(name) {
+                return Ok(stage);
+            }
+        }
+        Err(format!("unsupported initialization-stage RSS value: {value:?}").into())
+    }
+
+    fn stage_name(stage: SurfaceStage) -> &'static str {
+        match stage {
+            SurfaceStage::MainThread => "main-thread",
+            SurfaceStage::Device => "device",
+            SurfaceStage::Renderer => "renderer",
+            SurfaceStage::Window => "window",
+            SurfaceStage::View => "view",
+            SurfaceStage::ColorSpace => "color-space",
+            SurfaceStage::Layer => "layer",
+            SurfaceStage::DisplayLink => "display-link",
+            SurfaceStage::RunLoop => "run-loop",
+        }
+    }
+
+    fn collect_stage_soak(
+        stage: SurfaceStage,
+        sample_count: usize,
+    ) -> TestResult<(OwnerSoakEvidence, usize)> {
+        let mut acquired_owner_kinds = None;
+        for _ in 0..DIAGNOSTIC_WARMUP_ITERATIONS {
+            admit_stage_owner_count(&mut acquired_owner_kinds, validate_stage_iteration(stage)?)?;
+        }
+        let mut samples = Vec::with_capacity(sample_count);
+        let _ = resident_bytes()?;
+        for _ in 0..sample_count {
+            admit_stage_owner_count(&mut acquired_owner_kinds, validate_stage_iteration(stage)?)?;
+            samples.push(resident_bytes()?);
+        }
+        let acquired_owner_kinds =
+            acquired_owner_kinds.ok_or("stage soak requires ownership evidence")?;
+        Ok((summarize_samples(samples)?, acquired_owner_kinds))
+    }
+
+    fn admit_stage_owner_count(current: &mut Option<usize>, observed: usize) -> TestResult {
+        match *current {
+            None => *current = Some(observed),
+            Some(expected) if expected == observed => {}
+            Some(expected) => {
+                return Err(format!(
+                    "initialization-stage owner count changed from {expected} to {observed}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_stage_iteration(stage: SurfaceStage) -> TestResult<usize> {
+        let acquired_owner_kinds = autoreleasepool(|_| -> TestResult<usize> {
+            let evidence = native_validation::exercise_initialization_fault(stage)?;
+            assert_eq!(evidence.acquired(), evidence.released());
+            assert_eq!(evidence.active(), [0; OWNER_KINDS]);
+            assert_eq!(evidence.release_order_violations(), 0);
+            assert!(
+                evidence
+                    .acquired()
+                    .iter()
+                    .all(|count| *count == 0 || *count == 1)
+            );
+            Ok(evidence
+                .acquired()
+                .iter()
+                .filter(|count| **count == 1)
+                .count())
+        })?;
+        drain_framework_work();
+        Ok(acquired_owner_kinds)
+    }
+
     fn validate_owner_iteration(descriptor: &SurfaceDescriptor) -> TestResult {
-        autoreleasepool(|_| {
+        autoreleasepool(|_| -> TestResult {
             let surface = native_validation::new_surface(descriptor)?;
             let snapshot = surface.snapshot();
             assert!(snapshot.display_link_paused());
@@ -360,7 +490,15 @@ mod validation {
             validate_bounded_accounting(snapshot);
             assert_exact_teardown(native_validation::close_with_owner_evidence(surface)?);
             Ok(())
-        })
+        })?;
+        drain_framework_work();
+        Ok(())
+    }
+
+    fn drain_framework_work() {
+        autoreleasepool(|_| {
+            NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.001));
+        });
     }
 
     fn resident_bytes() -> TestResult<u64> {
@@ -450,7 +588,10 @@ mod validation {
             artifact,
             "process_owner_plateau_qualified = {process_owner_plateau_qualified}"
         )?;
-        writeln!(artifact, "warmup_iterations = {SOAK_WARMUP_ITERATIONS}")?;
+        writeln!(
+            artifact,
+            "warmup_iterations = {QUALIFICATION_WARMUP_ITERATIONS}"
+        )?;
         writeln!(artifact, "sample_count = {}", soak.samples.len())?;
         writeln!(artifact, "page_bytes = {}", soak.page_bytes)?;
         writeln!(artifact, "initial_bytes = {}", soak.samples[0])?;
@@ -462,6 +603,59 @@ mod validation {
         writeln!(artifact, "owner_kinds = {OWNER_KINDS}")?;
         writeln!(artifact, "acquired_owner_kinds_per_iteration = 9")?;
         writeln!(artifact, "active_owners_after_each_close = 0")?;
+        write!(artifact, "rss_samples_bytes = [")?;
+        for (index, sample) in soak.samples.iter().enumerate() {
+            if index != 0 {
+                write!(artifact, ", ")?;
+            }
+            write!(artifact, "{sample}")?;
+        }
+        writeln!(artifact, "]")?;
+        artifact.flush()?;
+        artifact.sync_all()?;
+        Ok(())
+    }
+
+    fn write_stage_artifact(
+        stage: SurfaceStage,
+        soak: &OwnerSoakEvidence,
+        acquired_owner_kinds: usize,
+    ) -> TestResult {
+        let path = std::env::var_os(LIFECYCLE_ARTIFACT_ENV)
+            .ok_or("initialization-stage RSS capture requires an artifact path")?;
+        let revision = std::env::var(REVISION_ENV)?;
+        if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("native lifecycle artifact requires an exact 40-hex revision".into());
+        }
+        let path = Path::new(&path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut artifact = File::create(path)?;
+        writeln!(artifact, "schema_version = 1")?;
+        writeln!(artifact, "revision = \"{}\"", revision.to_ascii_lowercase())?;
+        writeln!(artifact, "platform = \"macos\"")?;
+        writeln!(artifact, "architecture = \"aarch64\"")?;
+        writeln!(artifact, "evidence_scope = \"initialization-stage-soak\"")?;
+        writeln!(artifact, "diagnostic_only = true")?;
+        writeln!(artifact, "qualification_claim = false")?;
+        writeln!(artifact, "stage = \"{}\"", stage_name(stage))?;
+        writeln!(
+            artifact,
+            "warmup_iterations = {DIAGNOSTIC_WARMUP_ITERATIONS}"
+        )?;
+        writeln!(artifact, "sample_count = {}", soak.samples.len())?;
+        writeln!(artifact, "page_bytes = {}", soak.page_bytes)?;
+        writeln!(artifact, "initial_bytes = {}", soak.samples[0])?;
+        writeln!(artifact, "maximum_bytes = {}", soak.maximum_bytes)?;
+        writeln!(artifact, "tail_minimum_bytes = {}", soak.tail_minimum_bytes)?;
+        writeln!(artifact, "tail_maximum_bytes = {}", soak.tail_maximum_bytes)?;
+        writeln!(artifact, "owner_kinds = {OWNER_KINDS}")?;
+        writeln!(
+            artifact,
+            "acquired_owner_kinds_per_iteration = {acquired_owner_kinds}"
+        )?;
+        writeln!(artifact, "active_owners_after_each_rollback = 0")?;
         write!(artifact, "rss_samples_bytes = [")?;
         for (index, sample) in soak.samples.iter().enumerate() {
             if index != 0 {

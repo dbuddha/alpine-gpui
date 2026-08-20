@@ -997,6 +997,18 @@ pub mod native_validation {
         native::validate_initialization_rollback()
     }
 
+    /// Exercises one initialization-stage failure and returns post-rollback ownership evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured native surface error if the requested stage does
+    /// not fail exactly or validation ownership instrumentation is absent.
+    pub fn exercise_initialization_fault(
+        stage: crate::SurfaceStage,
+    ) -> Result<NativeOwnerEvidence, SurfaceError> {
+        native::exercise_initialization_fault(stage)
+    }
+
     /// Closes one validation surface and returns exact post-drop owner evidence.
     ///
     /// # Errors

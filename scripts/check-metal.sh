@@ -78,7 +78,25 @@ ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct \
     ALPINE_REVISION="$(git rev-parse HEAD)" \
     ALPINE_NATIVE_LIFECYCLE_ARTIFACT="$(pwd)/target/native-lifecycle-soak.toml" \
     RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
-    cargo test --locked -p alpine-platform-macos --test native_lifecycle
+    cargo test --locked -p alpine-platform-macos --test native_lifecycle || lifecycle_status=$?
+if [[ "${lifecycle_status-0}" -ne 0 ]]; then
+    for stage in main-thread device renderer window view color-space layer display-link run-loop; do
+        /usr/bin/env \
+            -u MTL_DEBUG_LAYER \
+            -u MTL_DEBUG_LAYER_ERROR_MODE \
+            -u MTL_SHADER_VALIDATION \
+            -u MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING \
+            -u MTL_SHADER_VALIDATION_REPORT_TO_STDERR \
+            -u MTL_SHADER_VALIDATION_ABORT_ON_FAULT \
+            ALPINE_NATIVE_LIFECYCLE_CAPTURE_RSS=1 \
+            ALPINE_NATIVE_LIFECYCLE_STAGE_RSS="$stage" \
+            ALPINE_REVISION="$(git rev-parse HEAD)" \
+            ALPINE_NATIVE_LIFECYCLE_ARTIFACT="$(pwd)/target/native-lifecycle-stage-$stage.toml" \
+            RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
+            cargo test --locked -p alpine-platform-macos --test native_lifecycle
+    done
+    exit "$lifecycle_status"
+fi
 /usr/bin/env \
     -u MTL_DEBUG_LAYER \
     -u MTL_DEBUG_LAYER_ERROR_MODE \
