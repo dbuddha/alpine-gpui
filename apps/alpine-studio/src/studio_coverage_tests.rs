@@ -275,6 +275,18 @@ fn assert_focus_epoch_cancels_owner(app: &mut StudioApp) -> Result<(), StudioRen
         })
         .visual_changed
     );
+    let stale_focus_before = app.rejected_stale_input_events;
+    assert!(
+        !app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(13),
+            input_epoch: InputEpoch::INITIAL,
+            focused: false,
+        })
+        .visual_changed
+    );
+    assert_eq!(app.input_epoch, next_epoch);
+    assert!(app.focused);
+    assert_eq!(app.rejected_stale_input_events, stale_focus_before + 1);
     assert!(
         !app.handle_event(&ime_at(InputEpoch::INITIAL, ImeEvent::Started))
             .visual_changed
