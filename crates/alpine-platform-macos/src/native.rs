@@ -33,13 +33,13 @@ use objc2_app_kit::{NSEventType, NSScreen, NSWindowButton};
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 #[cfg(alpine_native_validation)]
 use objc2_core_graphics::{CGEvent, CGEventFlags, CGScrollEventUnit};
-#[cfg(alpine_native_validation)]
-use objc2_foundation::NSDate;
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotification, NSObject, NSObjectProtocol,
-    NSPoint, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
+    NSPoint, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
     NSUTF8StringEncoding,
 };
+#[cfg(alpine_native_validation)]
+use objc2_foundation::{NSDate, NSTimer};
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLPixelFormat};
 use objc2_quartz_core::{
     CAMetalDisplayLink, CAMetalDisplayLinkDelegate, CAMetalDisplayLinkUpdate, CAMetalDrawable,
@@ -56,7 +56,7 @@ use alpine_platform::{
 };
 use alpine_scene::Scene;
 use block2::RcBlock;
-use dispatch2::DispatchQueue;
+use dispatch2::{DispatchQueue, MainThreadBound};
 
 use crate::{
     ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite,
@@ -1935,6 +1935,8 @@ struct DisplayLinkDelegateIvars {
     window_close_started: Arc<AtomicBool>,
     callback_count: Arc<AtomicU64>,
     rejected_callback_count: Arc<AtomicU64>,
+    #[cfg(alpine_native_validation)]
+    pause_confirmation_count: Arc<AtomicU64>,
     counters: Arc<FrameCounters>,
     driver: Option<Rc<RefCell<PresentationDriver>>>,
     application: Retained<NSApplication>,
@@ -2073,42 +2075,14 @@ define_class!(
                     if should_schedule_display_link_pause_confirmation(directive)
                         && let Some(display_link) = &self.ivars().display_link
                     {
-                        let display_link = display_link.clone();
-                        let driver = Rc::downgrade(driver);
-                        let pause_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
-                            RcBlock::new(move |timer: NonNull<NSTimer>| {
-                                // SAFETY: Foundation supplies a valid borrowed timer for the
-                                // complete callback, and the reference does not escape.
-                                unsafe { timer.as_ref() }.invalidate();
-                                let should_pause = driver.upgrade().is_some_and(|driver| {
-                                    driver.try_borrow().is_ok_and(|driver| {
-                                        should_confirm_display_link_pause(
-                                            driver.display_link_state(),
-                                        )
-                                    })
-                                });
-                                if should_pause {
-                                    display_link.setPaused(true);
-                                }
-                            });
-                        // The paused property observed inside this callback is not evidence that
-                        // the link remains paused after callback delivery unwinds. Schedule one
-                        // guarded reaffirmation for every Pause directive so the durable native
-                        // state is established outside the callback without retrying or delaying.
-                        // SAFETY: The retained display link and weak driver are main-thread-only,
-                        // Foundation copies the block for the timer lifetime, and the main run
-                        // loop retains the one-shot timer in the same common modes as the display
-                        // link. The callback receives a valid NSTimer after this callback returns.
-                        let timer = unsafe {
-                            NSTimer::timerWithTimeInterval_repeats_block(0.0, false, &pause_block)
-                        };
-                        // SAFETY: Construction and callbacks are main-thread-only, this is the
-                        // process main run loop, and NSRunLoopCommonModes is static. Explicitly
-                        // sharing the display link's modes prevents terminal-loop shutdown from
-                        // stranding the confirmation in the default mode.
-                        unsafe {
-                            NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
-                        }
+                        #[cfg(alpine_native_validation)]
+                        schedule_display_link_pause_confirmation(
+                            display_link,
+                            driver,
+                            Arc::clone(&self.ivars().pause_confirmation_count),
+                        );
+                        #[cfg(not(alpine_native_validation))]
+                        schedule_display_link_pause_confirmation(display_link, driver);
                     }
                 }
                 #[cfg(alpine_native_validation)]
@@ -2682,6 +2656,37 @@ const fn should_schedule_display_link_pause_confirmation(directive: DisplayLinkD
     matches!(directive, DisplayLinkDirective::Pause)
 }
 
+fn schedule_display_link_pause_confirmation(
+    display_link: &Retained<CAMetalDisplayLink>,
+    driver: &Rc<RefCell<PresentationDriver>>,
+    #[cfg(alpine_native_validation)] pause_confirmation_count: Arc<AtomicU64>,
+) {
+    let Some(marker) = MainThreadMarker::new() else {
+        display_link.setPaused(true);
+        return;
+    };
+    let context = Arc::new(MainThreadBound::new(
+        (display_link.clone(), Rc::downgrade(driver)),
+        marker,
+    ));
+    DispatchQueue::main().exec_async(move || {
+        let Some(marker) = MainThreadMarker::new() else {
+            return;
+        };
+        let (display_link, driver) = context.get(marker);
+        let should_pause = driver.upgrade().is_some_and(|driver| {
+            driver
+                .try_borrow()
+                .is_ok_and(|driver| should_confirm_display_link_pause(driver.display_link_state()))
+        });
+        if should_pause {
+            display_link.setPaused(true);
+            #[cfg(alpine_native_validation)]
+            pause_confirmation_count.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
 #[cfg(alpine_native_validation)]
 fn schedule_validation_window_close(window: &Retained<NSWindow>, delay: Duration) {
     let window = window.clone();
@@ -3126,6 +3131,8 @@ impl NativeSurface {
                 window_close_started: Arc::clone(&builder.window_close_started),
                 callback_count: Arc::clone(&builder.callback_count),
                 rejected_callback_count: Arc::clone(&builder.rejected_callback_count),
+                #[cfg(alpine_native_validation)]
+                pause_confirmation_count: Arc::new(AtomicU64::new(0)),
                 counters: Arc::clone(&builder.counters),
                 driver: Some(driver),
                 application: builder
@@ -3672,6 +3679,12 @@ impl NativeSurface {
             regular_activation_policy: self.application.activationPolicy()
                 == NSApplicationActivationPolicy::Regular,
             display_link_paused: self.display_link.isPaused(),
+            #[cfg(alpine_native_validation)]
+            pause_confirmation_count: self
+                .delegate
+                .ivars()
+                .pause_confirmation_count
+                .load(Ordering::Acquire),
             visible: self.window.isVisible(),
             callback_count: self.callback_count.load(Ordering::Acquire),
             rejected_callback_count: self.rejected_callback_count.load(Ordering::Acquire),
