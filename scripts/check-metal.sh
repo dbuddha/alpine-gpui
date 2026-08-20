@@ -30,6 +30,11 @@ export MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING=1
 export MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1
 export MTL_SHADER_VALIDATION_ABORT_ON_FAULT=1
 
+mkdir -p target
+xcrun swiftc -parse-as-library tools/onscreen-sdr-capture/Capture.swift \
+    -o target/onscreen-sdr-capture-helper
+target/onscreen-sdr-capture-helper --self-test
+
 for validation_test in \
     native::tests::renders_discriminating_scene_once_and_matches_cpu_oracle \
     native::tests::renders_a8_glyphs_and_reuses_only_identical_atlas_storage \
@@ -56,6 +61,9 @@ RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_input
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_runtime
+ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct \
+    RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
+    cargo test --locked -p alpine-platform-macos --test native_onscreen_sdr
 /usr/bin/env -u ALPINE_RUST_ANALYZER \
     RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-studio --test native_process

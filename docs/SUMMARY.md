@@ -18,6 +18,7 @@
 - [Assurance strategy](quality/assurance.md)
   - [Performance qualification](quality/performance.md)
   - [Comparator protocol v1](quality/comparator-protocol.md)
+  - [Onscreen SDR qualification](quality/onscreen-sdr.md)
 - [Platform strategy](platforms/README.md)
 - [Case studies](case-studies/README.md)
   - [Zed Editor stable application](case-studies/zed-editor.md)
