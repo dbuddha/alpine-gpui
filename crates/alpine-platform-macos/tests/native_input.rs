@@ -142,15 +142,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let timestamps = received
         .iter()
-        .map(|event| match event {
-            SurfaceEvent::Keyboard { timestamp, .. }
-            | SurfaceEvent::Pointer { timestamp, .. }
-            | SurfaceEvent::Scroll { timestamp, .. }
-            | SurfaceEvent::Ime { timestamp, .. } => timestamp.get(),
-            _ => 0,
-        })
+        .map(|event| event.timestamp().get())
         .collect::<Vec<_>>();
-    assert!(timestamps.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(
+        timestamps.windows(2).all(|pair| pair[0] < pair[1]),
+        "native input timestamps must increase: {timestamps:?}"
+    );
     drop(received);
 
     let evidence = native_validation::close_with_owner_evidence(surface)?;

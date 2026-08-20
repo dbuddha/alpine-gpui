@@ -300,6 +300,84 @@ fn assert_focus_epoch_cancels_owner(app: &mut StudioApp) -> Result<(), StudioRen
 }
 
 #[test]
+fn focus_epoch_admission_preserves_current_and_cancels_future_sessions()
+-> Result<(), StudioRenderError> {
+    let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
+    assert!(app.handle_event(&ime(ImeEvent::Started)).visual_changed);
+    assert!(app.composition.is_some());
+
+    assert!(
+        !app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(1),
+            input_epoch: InputEpoch::INITIAL,
+            focused: true,
+        })
+        .visual_changed
+    );
+    assert!(app.focused);
+    assert!(app.composition.is_some());
+
+    let stale_before = app.rejected_stale_input_events;
+    assert!(
+        !app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(2),
+            input_epoch: InputEpoch::INITIAL,
+            focused: false,
+        })
+        .visual_changed
+    );
+    assert!(app.focused);
+    assert!(app.composition.is_some());
+    assert_eq!(app.rejected_stale_input_events, stale_before + 1);
+
+    let migrated_epoch = InputEpoch::INITIAL
+        .checked_next()
+        .ok_or(StudioRenderError::Domain)?;
+    assert!(
+        app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(3),
+            input_epoch: migrated_epoch,
+            focused: true,
+        })
+        .visual_changed
+    );
+    assert_eq!(app.input_epoch, migrated_epoch);
+    assert!(app.focused);
+    assert!(app.composition.is_none());
+
+    assert!(
+        app.handle_event(&ime_at(migrated_epoch, ImeEvent::Started))
+            .visual_changed
+    );
+    let suspended_epoch = migrated_epoch
+        .checked_next()
+        .ok_or(StudioRenderError::Domain)?;
+    assert!(
+        app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(4),
+            input_epoch: suspended_epoch,
+            focused: false,
+        })
+        .visual_changed
+    );
+    assert!(!app.focused);
+    assert!(app.composition.is_none());
+
+    let revision = app.buffer().revision();
+    let rejected_before = app.rejected_stale_input_events;
+    assert!(
+        !app.handle_event(&ime_at(
+            suspended_epoch,
+            ImeEvent::Committed("unfocused".into()),
+        ))
+        .visual_changed
+    );
+    assert_eq!(app.buffer().revision(), revision);
+    assert_eq!(app.rejected_stale_input_events, rejected_before + 1);
+    Ok(())
+}
+
+#[test]
 fn focus_epochs_cancel_every_composing_owner_and_reject_obsolete_mutation()
 -> Result<(), StudioRenderError> {
     let mut editor = test_app().map_err(|_| StudioRenderError::Domain)?;
