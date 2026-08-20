@@ -953,6 +953,12 @@ pub mod native_validation {
         surface.implementation.run_until_frame_terminal(timeout);
     }
 
+    /// Returns post-callback pause reaffirmations completed by the main queue.
+    #[must_use]
+    pub fn pause_confirmation_count(surface: &NativeSurface) -> u64 {
+        surface.snapshot().pause_confirmation_count
+    }
+
     /// Arms a bounded guard around a subsequent production `run` call.
     ///
     /// The guard is validation-only. Expiration wakes and stops AppKit without
@@ -1812,6 +1818,8 @@ pub struct SurfaceSnapshot {
     maximum_drawable_count: u8,
     regular_activation_policy: bool,
     display_link_paused: bool,
+    #[cfg(alpine_native_validation)]
+    pause_confirmation_count: u64,
     visible: bool,
     callback_count: u64,
     rejected_callback_count: u64,
@@ -3089,6 +3097,8 @@ mod tests {
             maximum_drawable_count: 2,
             regular_activation_policy: false,
             display_link_paused: false,
+            #[cfg(alpine_native_validation)]
+            pause_confirmation_count: 25,
             visible: true,
             callback_count: 23,
             rejected_callback_count: 24,
@@ -3132,6 +3142,8 @@ mod tests {
             maximum_drawable_count: 3,
             regular_activation_policy: true,
             display_link_paused: true,
+            #[cfg(alpine_native_validation)]
+            pause_confirmation_count: 41,
             visible: false,
             callback_count: 37,
             rejected_callback_count: 39,
