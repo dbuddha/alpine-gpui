@@ -13,7 +13,7 @@ use std::io::{self, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete, UnicodeSegmentation};
 
 #[cfg(kani)]
 mod proofs;
@@ -693,6 +693,31 @@ impl BufferSnapshot {
         })
     }
 
+    /// Returns the byte range of the extended grapheme containing `offset`
+    /// without materializing the document.
+    ///
+    /// A final document-boundary offset maps to an empty range at the end.
+    ///
+    /// # Errors
+    ///
+    /// Rejects out-of-bounds and non-character-boundary offsets, and reports
+    /// malformed chunk traversal as an invalid grapheme boundary.
+    pub fn grapheme_byte_range_at(&self, offset: ByteOffset) -> Result<Range<usize>, TextError> {
+        self.validate_offset(offset.0)?;
+        let len = self.len_bytes();
+        if offset.0 == len {
+            return Ok(len..len);
+        }
+        let slice = self.rope.slice(..);
+        let start = if is_grapheme_boundary(slice, offset.0)? {
+            offset.0
+        } else {
+            previous_grapheme_boundary(slice, offset.0)?
+        };
+        let end = next_grapheme_boundary(slice, start)?;
+        Ok(start..end)
+    }
+
     fn validate_offset(&self, offset: usize) -> Result<(), TextError> {
         if offset > self.len_bytes() {
             return Err(TextError::ByteOutOfBounds {
@@ -847,6 +872,81 @@ struct HistoryEntry {
     before: HistoryState,
     after: HistoryState,
     changed_bytes: usize,
+}
+
+fn is_grapheme_boundary(slice: ropey::RopeSlice<'_>, byte: usize) -> Result<bool, TextError> {
+    let (chunk, chunk_start, _, _) = slice.chunk_at_byte(byte);
+    let mut cursor = GraphemeCursor::new(byte, slice.len_bytes(), true);
+    loop {
+        match cursor.is_boundary(chunk, chunk_start) {
+            Ok(boundary) => return Ok(boundary),
+            Err(GraphemeIncomplete::PreContext(context_end)) => {
+                let context_byte = context_end
+                    .checked_sub(1)
+                    .ok_or(TextError::InvalidGraphemeBoundary { offset: byte })?;
+                let (context, context_start, _, _) = slice.chunk_at_byte(context_byte);
+                cursor.provide_context(context, context_start);
+            }
+            Err(_) => return Err(TextError::InvalidGraphemeBoundary { offset: byte }),
+        }
+    }
+}
+
+fn previous_grapheme_boundary(
+    slice: ropey::RopeSlice<'_>,
+    byte: usize,
+) -> Result<usize, TextError> {
+    let (mut chunk, mut chunk_start, _, _) = slice.chunk_at_byte(byte);
+    let mut cursor = GraphemeCursor::new(byte, slice.len_bytes(), true);
+    loop {
+        match cursor.prev_boundary(chunk, chunk_start) {
+            Ok(Some(boundary)) => return Ok(boundary),
+            Ok(None) => return Ok(0),
+            Err(GraphemeIncomplete::PrevChunk) => {
+                let previous = chunk_start
+                    .checked_sub(1)
+                    .ok_or(TextError::InvalidGraphemeBoundary { offset: byte })?;
+                let (previous_chunk, previous_start, _, _) = slice.chunk_at_byte(previous);
+                chunk = previous_chunk;
+                chunk_start = previous_start;
+            }
+            Err(GraphemeIncomplete::PreContext(context_end)) => {
+                let context_byte = context_end
+                    .checked_sub(1)
+                    .ok_or(TextError::InvalidGraphemeBoundary { offset: byte })?;
+                let (context, context_start, _, _) = slice.chunk_at_byte(context_byte);
+                cursor.provide_context(context, context_start);
+            }
+            Err(_) => return Err(TextError::InvalidGraphemeBoundary { offset: byte }),
+        }
+    }
+}
+
+fn next_grapheme_boundary(slice: ropey::RopeSlice<'_>, byte: usize) -> Result<usize, TextError> {
+    let (mut chunk, mut chunk_start, _, _) = slice.chunk_at_byte(byte);
+    let mut cursor = GraphemeCursor::new(byte, slice.len_bytes(), true);
+    loop {
+        match cursor.next_boundary(chunk, chunk_start) {
+            Ok(Some(boundary)) => return Ok(boundary),
+            Ok(None) => return Ok(slice.len_bytes()),
+            Err(GraphemeIncomplete::NextChunk) => {
+                chunk_start = chunk_start
+                    .checked_add(chunk.len())
+                    .ok_or(TextError::InvalidGraphemeBoundary { offset: byte })?;
+                let (next_chunk, next_start, _, _) = slice.chunk_at_byte(chunk_start);
+                chunk = next_chunk;
+                chunk_start = next_start;
+            }
+            Err(GraphemeIncomplete::PreContext(context_end)) => {
+                let context_byte = context_end
+                    .checked_sub(1)
+                    .ok_or(TextError::InvalidGraphemeBoundary { offset: byte })?;
+                let (context, context_start, _, _) = slice.chunk_at_byte(context_byte);
+                cursor.provide_context(context, context_start);
+            }
+            Err(_) => return Err(TextError::InvalidGraphemeBoundary { offset: byte }),
+        }
+    }
 }
 
 /// A local copy-on-write buffer with bounded deterministic history.
@@ -2201,6 +2301,41 @@ mod tests {
             })
         ));
         fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bounded_grapheme_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn chunked_grapheme_range_queries_match_independent_string_oracle() -> Result<(), TextError> {
+        let text = format!("{}e\u{301}x🇬🇧👩‍💻", "a".repeat(2_048));
+        let snapshot = Buffer::new(&text).snapshot();
+        let mut expected_ranges = Vec::new();
+        for (start, grapheme) in text.grapheme_indices(true) {
+            expected_ranges.push(start..start + grapheme.len());
+        }
+        for offset in text.char_indices().map(|(offset, _)| offset) {
+            let expected = expected_ranges
+                .iter()
+                .find(|range| range.start <= offset && offset < range.end)
+                .cloned()
+                .ok_or(TextError::InvalidGraphemeBoundary { offset })?;
+            assert_eq!(
+                snapshot.grapheme_byte_range_at(ByteOffset::new(offset))?,
+                expected
+            );
+        }
+        assert_eq!(
+            snapshot.grapheme_byte_range_at(ByteOffset::new(text.len()))?,
+            text.len()..text.len()
+        );
+        assert!(matches!(
+            snapshot.grapheme_byte_range_at(ByteOffset::new(text.len() + 1)),
+            Err(TextError::ByteOutOfBounds { .. })
+        ));
         Ok(())
     }
 }

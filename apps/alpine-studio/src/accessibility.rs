@@ -254,6 +254,60 @@ fn require_revision(
     Ok(())
 }
 
+fn line_for_index_from_snapshot(
+    text: &BufferSnapshot,
+    index_utf16: usize,
+) -> Result<usize, AccessibilityError> {
+    let byte = text.byte_of_appkit_utf16(index_utf16)?.get();
+    if byte == text.len_bytes() {
+        return text
+            .line_count()
+            .checked_sub(1)
+            .ok_or(AccessibilityError::InvalidTree);
+    }
+    let mut low = 0_usize;
+    let mut high = text.line_count();
+    while low < high {
+        let middle = low + (high - low) / 2;
+        let range = text.line_byte_range(middle)?;
+        if byte < range.start {
+            high = middle;
+        } else if byte >= range.end {
+            low = middle + 1;
+        } else {
+            return Ok(middle);
+        }
+    }
+    Err(AccessibilityError::InvalidTree)
+}
+
+fn range_for_line_from_snapshot(
+    text: &BufferSnapshot,
+    line: usize,
+) -> Result<AccessibilityTextRange, AccessibilityError> {
+    let bytes = text.line_byte_range(line)?;
+    let start = text.appkit_utf16_of_byte(ByteOffset::new(bytes.start))?;
+    let end = text.appkit_utf16_of_byte(ByteOffset::new(bytes.end))?;
+    let length = end
+        .checked_sub(start)
+        .ok_or(AccessibilityError::ArithmeticOverflow)?;
+    Ok(AccessibilityTextRange::new(start, length))
+}
+
+fn range_for_index_from_snapshot(
+    text: &BufferSnapshot,
+    index_utf16: usize,
+) -> Result<AccessibilityTextRange, AccessibilityError> {
+    let byte = text.byte_of_appkit_utf16(index_utf16)?;
+    let bytes = text.grapheme_byte_range_at(byte)?;
+    let start = text.appkit_utf16_of_byte(ByteOffset::new(bytes.start))?;
+    let end = text.appkit_utf16_of_byte(ByteOffset::new(bytes.end))?;
+    let length = end
+        .checked_sub(start)
+        .ok_or(AccessibilityError::ArithmeticOverflow)?;
+    Ok(AccessibilityTextRange::new(start, length))
+}
+
 pub(super) fn respond(
     app: &mut StudioApp,
     request: &AccessibilityRequest,
@@ -275,6 +329,33 @@ pub(super) fn respond(
             require_revision(*revision, observed).and_then(|()| {
                 let text = app.buffer().snapshot();
                 selection_from_snapshot(app, &text).map(AccessibilityPayload::Selection)
+            }),
+            EventEffect::default(),
+        ),
+        AccessibilityOperation::LineForIndex {
+            revision,
+            index_utf16,
+        } => (
+            require_revision(*revision, observed).and_then(|()| {
+                line_for_index_from_snapshot(&app.buffer().snapshot(), *index_utf16)
+                    .map(AccessibilityPayload::Line)
+            }),
+            EventEffect::default(),
+        ),
+        AccessibilityOperation::RangeForLine { revision, line } => (
+            require_revision(*revision, observed).and_then(|()| {
+                range_for_line_from_snapshot(&app.buffer().snapshot(), *line)
+                    .map(AccessibilityPayload::Range)
+            }),
+            EventEffect::default(),
+        ),
+        AccessibilityOperation::RangeForIndex {
+            revision,
+            index_utf16,
+        } => (
+            require_revision(*revision, observed).and_then(|()| {
+                range_for_index_from_snapshot(&app.buffer().snapshot(), *index_utf16)
+                    .map(AccessibilityPayload::Range)
             }),
             EventEffect::default(),
         ),
@@ -735,6 +816,61 @@ mod tests {
             failure.result(),
             &Err(PlatformAccessibilityError::InvalidTree)
         );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bounded_mapping_tests {
+    use super::*;
+    use alpine_text::Buffer;
+
+    #[test]
+    fn line_and_grapheme_mappings_cover_unicode_and_line_boundaries()
+    -> Result<(), AccessibilityError> {
+        let snapshot = Buffer::new("a\r\n😀e\u{301}\n").snapshot();
+        assert_eq!(line_for_index_from_snapshot(&snapshot, 0)?, 0);
+        assert_eq!(line_for_index_from_snapshot(&snapshot, 2)?, 0);
+        assert_eq!(line_for_index_from_snapshot(&snapshot, 3)?, 1);
+        assert_eq!(line_for_index_from_snapshot(&snapshot, 8)?, 2);
+        assert_eq!(
+            range_for_line_from_snapshot(&snapshot, 0)?,
+            AccessibilityTextRange::new(0, 3)
+        );
+        assert_eq!(
+            range_for_line_from_snapshot(&snapshot, 1)?,
+            AccessibilityTextRange::new(3, 5)
+        );
+        assert_eq!(
+            range_for_line_from_snapshot(&snapshot, 2)?,
+            AccessibilityTextRange::new(8, 0)
+        );
+        assert_eq!(
+            range_for_index_from_snapshot(&snapshot, 3)?,
+            AccessibilityTextRange::new(3, 2)
+        );
+        assert_eq!(
+            range_for_index_from_snapshot(&snapshot, 5)?,
+            AccessibilityTextRange::new(5, 2)
+        );
+        assert_eq!(
+            range_for_index_from_snapshot(&snapshot, 6)?,
+            AccessibilityTextRange::new(5, 2)
+        );
+        assert_eq!(
+            range_for_index_from_snapshot(&snapshot, 8)?,
+            AccessibilityTextRange::new(8, 0)
+        );
+        assert!(matches!(
+            range_for_index_from_snapshot(&snapshot, 4),
+            Err(AccessibilityError::Text(
+                TextError::InvalidUtf16Boundary { .. }
+            ))
+        ));
+        assert!(matches!(
+            range_for_line_from_snapshot(&snapshot, 3),
+            Err(AccessibilityError::Text(TextError::LineOutOfBounds { .. }))
+        ));
         Ok(())
     }
 }

@@ -56,3 +56,4 @@
   - [AEP 0180: Bounded streaming local project search](aep/0180-bounded-streaming-project-search.md)
   - [AEP 0218: Bounded revision-safe Rust completion](aep/0218-bounded-rust-completion.md)
   - [AEP 0250: Bounded native accessibility transport](aep/0250-bounded-native-accessibility-transport.md)
+  - [AEP 0255: Bounded native accessibility text mapping](aep/0255-bounded-native-accessibility-text-mapping.md)

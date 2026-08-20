@@ -956,7 +956,11 @@ actions reuse Studio's checked UTF-16 conversion and dirty-only frame path.
 
 A separately reviewed private adapter translates these values to stable AppKit
 accessibility objects. It may not retain Studio objects, expose native handles,
-or mutate text outside the revision-checked action boundary. See AEP-0250.
+or mutate text outside the revision-checked action boundary. AppKit line and
+grapheme selectors use revision-bound mapping requests answered by Studio's
+immutable `BufferSnapshot`; chunked grapheme traversal retains no contiguous
+document copy, and unsupported text geometry remains unavailable. See AEP-0250
+and AEP-0255.
 
 ### Pane document ownership (Task #127)
 
