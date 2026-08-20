@@ -24,6 +24,7 @@ mod validation {
         SurfaceDescriptor, SurfaceLifecycle, SurfaceResponse, native_validation,
     };
     use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
+    use objc2::rc::autoreleasepool;
 
     type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -69,8 +70,10 @@ mod validation {
         let (scene, clear) = validation_scene()?;
         validate_visible_clean_idle(hosted_direct)?;
         validate_pending_close(scene, clear)?;
-        let soak = validate_owner_soak()?;
-        write_lifecycle_artifact(&soak)
+        let soak = collect_owner_soak()?;
+        let plateau = validate_resident_plateau(&soak);
+        write_lifecycle_artifact(&soak, plateau.is_ok())?;
+        plateau
     }
 
     fn hosted_direct() -> TestResult<bool> {
@@ -278,7 +281,7 @@ mod validation {
         Ok(())
     }
 
-    fn validate_owner_soak() -> TestResult<OwnerSoakEvidence> {
+    fn collect_owner_soak() -> TestResult<OwnerSoakEvidence> {
         let descriptor = SurfaceDescriptor::new("Alpine owner soak", 32.0, 24.0, 1.0)?;
         for _ in 0..SOAK_WARMUP_ITERATIONS {
             validate_owner_iteration(&descriptor)?;
@@ -290,8 +293,18 @@ mod validation {
             samples.push(resident_bytes()?);
         }
         let page_bytes = host_page_bytes()?;
-        let (maximum_bytes, tail_minimum_bytes, tail_maximum_bytes) =
-            validate_resident_plateau(&samples, page_bytes)?;
+        let maximum_bytes = samples.iter().copied().max().ok_or("maximum RSS sample")?;
+        let tail = &samples[samples.len() - SOAK_TAIL_SAMPLE_COUNT..];
+        let tail_minimum_bytes = tail
+            .iter()
+            .copied()
+            .min()
+            .ok_or("tail minimum RSS sample")?;
+        let tail_maximum_bytes = tail
+            .iter()
+            .copied()
+            .max()
+            .ok_or("tail maximum RSS sample")?;
         Ok(OwnerSoakEvidence {
             page_bytes,
             samples,
@@ -302,16 +315,18 @@ mod validation {
     }
 
     fn validate_owner_iteration(descriptor: &SurfaceDescriptor) -> TestResult {
-        let surface = native_validation::new_surface(descriptor)?;
-        let snapshot = surface.snapshot();
-        assert!(snapshot.display_link_paused());
-        assert_eq!(snapshot.callback_count(), 0);
-        assert_eq!(snapshot.submission_count(), 0);
-        assert_eq!(snapshot.allocated_bytes(), 0);
-        assert_eq!(snapshot.current_retained_bytes(), 0);
-        validate_bounded_accounting(snapshot);
-        assert_exact_teardown(native_validation::close_with_owner_evidence(surface)?);
-        Ok(())
+        autoreleasepool(|_| {
+            let surface = native_validation::new_surface(descriptor)?;
+            let snapshot = surface.snapshot();
+            assert!(snapshot.display_link_paused());
+            assert_eq!(snapshot.callback_count(), 0);
+            assert_eq!(snapshot.submission_count(), 0);
+            assert_eq!(snapshot.allocated_bytes(), 0);
+            assert_eq!(snapshot.current_retained_bytes(), 0);
+            validate_bounded_accounting(snapshot);
+            assert_exact_teardown(native_validation::close_with_owner_evidence(surface)?);
+            Ok(())
+        })
     }
 
     fn resident_bytes() -> TestResult<u64> {
@@ -340,50 +355,43 @@ mod validation {
         Ok(page_bytes)
     }
 
-    fn validate_resident_plateau(samples: &[u64], page_bytes: u64) -> TestResult<(u64, u64, u64)> {
-        if samples.len() != SOAK_SAMPLE_COUNT {
+    fn validate_resident_plateau(soak: &OwnerSoakEvidence) -> TestResult {
+        if soak.samples.len() != SOAK_SAMPLE_COUNT {
             return Err(format!(
                 "native lifecycle soak requires {SOAK_SAMPLE_COUNT} RSS samples, found {}",
-                samples.len()
+                soak.samples.len()
             )
             .into());
         }
-        let initial_bytes = samples[0];
-        let maximum_bytes = samples.iter().copied().max().ok_or("maximum RSS sample")?;
+        let initial_bytes = soak.samples[0];
         let allowed_maximum = initial_bytes
             .checked_add(
-                page_bytes
+                soak.page_bytes
                     .checked_mul(SOAK_MAX_GROWTH_PAGES)
                     .ok_or("RSS growth limit overflow")?,
             )
             .ok_or("RSS maximum limit overflow")?;
-        if maximum_bytes > allowed_maximum {
+        if soak.maximum_bytes > allowed_maximum {
             return Err(format!(
-                "native lifecycle RSS grew from {initial_bytes} to {maximum_bytes} bytes, above {allowed_maximum}"
+                "native lifecycle RSS grew from {initial_bytes} to {} bytes, above {allowed_maximum}",
+                soak.maximum_bytes
             )
             .into());
         }
-        let tail = &samples[samples.len() - SOAK_TAIL_SAMPLE_COUNT..];
-        let tail_minimum_bytes = tail
-            .iter()
-            .copied()
-            .min()
-            .ok_or("tail minimum RSS sample")?;
-        let tail_maximum_bytes = tail
-            .iter()
-            .copied()
-            .max()
-            .ok_or("tail maximum RSS sample")?;
-        if tail_maximum_bytes - tail_minimum_bytes > page_bytes {
+        if soak.tail_maximum_bytes - soak.tail_minimum_bytes > soak.page_bytes {
             return Err(format!(
-                "native lifecycle RSS tail spans {tail_minimum_bytes} to {tail_maximum_bytes} bytes, above one {page_bytes}-byte page"
+                "native lifecycle RSS tail spans {} to {} bytes, above one {}-byte page",
+                soak.tail_minimum_bytes, soak.tail_maximum_bytes, soak.page_bytes
             )
             .into());
         }
-        Ok((maximum_bytes, tail_minimum_bytes, tail_maximum_bytes))
+        Ok(())
     }
 
-    fn write_lifecycle_artifact(soak: &OwnerSoakEvidence) -> TestResult {
+    fn write_lifecycle_artifact(
+        soak: &OwnerSoakEvidence,
+        process_owner_plateau_qualified: bool,
+    ) -> TestResult {
         let Some(path) = std::env::var_os(LIFECYCLE_ARTIFACT_ENV) else {
             return Ok(());
         };
@@ -402,6 +410,10 @@ mod validation {
         writeln!(artifact, "architecture = \"aarch64\"")?;
         writeln!(artifact, "evidence_scope = \"process-owner-soak\"")?;
         writeln!(artifact, "physical_lifecycle_qualified = false")?;
+        writeln!(
+            artifact,
+            "process_owner_plateau_qualified = {process_owner_plateau_qualified}"
+        )?;
         writeln!(artifact, "warmup_iterations = {SOAK_WARMUP_ITERATIONS}")?;
         writeln!(artifact, "sample_count = {}", soak.samples.len())?;
         writeln!(artifact, "page_bytes = {}", soak.page_bytes)?;
