@@ -4621,6 +4621,19 @@ tla_properties = []
 platform_scope = ["portable", "macos-metal"]
 required_evidence = ["unit", "native"]
 
+[[claims]]
+id = "AEP-0268-C04"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0268-bounded-native-input-accessibility-lifecycle.md"
+requirement_issue = 37
+claim_type = "functional"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["macos-metal"]
+required_evidence = ["native"]
+
 [[evidence]]
 id = "EV-0268-KANI01"
 claim = "AEP-0268-C01"
@@ -4677,3 +4690,12 @@ artifact = "crates/alpine-platform-macos/tests/native_input.rs#main"
 assertion = "A production AppKit marked-text session emits exactly one cancellation before loss and begins no replacement session until refocus."
 scope = "One native composing SurfaceView and one loss/refocus cycle."
 exclusions = ["all Studio owner projections", "physical input-method matrix"]
+
+[[evidence]]
+id = "EV-0268-NATIVE04"
+claim = "AEP-0268-C04"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_input.rs#main"
+assertion = "The production AppKit view clears marked input, deactivates its epoch when the input handler is revoked, rejects a late callback without dispatch, and closes with every native owner drained and no release-order violation."
+scope = "One hosted Apple Silicon SurfaceView handler-revocation and close path after loss and refocus."
+exclusions = ["physical hide, minimize, sleep, and wake", "VoiceOver delivery", "multi-window input"]
