@@ -3435,6 +3435,10 @@ impl NativeSurface {
         self.wake_bridge.revoke();
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the handle-free snapshot copies independent native evidence without abstraction"
+    )]
     pub(crate) fn snapshot(&self) -> SurfaceSnapshot {
         let driver = self.driver.try_borrow();
         let (surface_epoch, sized, presentation_visible) =
@@ -3455,7 +3459,10 @@ impl NativeSurface {
             (drawable_size.width as u32, drawable_size.height as u32);
         let (
             allocated_bytes,
+            peak_retained_bytes,
             current_retained_bytes,
+            current_upload_bytes,
+            peak_upload_bytes,
             occupied_frame_slots,
             submitted_frame_slots,
             peak_occupied_frame_slots,
@@ -3464,14 +3471,19 @@ impl NativeSurface {
             last_superseded,
             last_cancelled,
             last_pending_cancellation,
-        ) = driver
-            .as_ref()
-            .map_or((0, 0, 0, 0, 0, 0, None, None, None, None), |driver| {
+        ) = driver.as_ref().map_or(
+            (0, 0, 0, 0, 0, 0, 0, 0, 0, None, None, None, None),
+            |driver| {
                 let accounting = driver.backend.accounting();
+                let presentation =
+                    alpine_metal::platform_spi::presentation_snapshot(&driver.backend);
                 let slots = driver.frame_slots.snapshot();
                 (
                     accounting.allocated_bytes(),
+                    accounting.peak_retained_bytes(),
                     accounting.current_retained_bytes(),
+                    presentation.current_upload_bytes(),
+                    presentation.peak_upload_bytes(),
                     slots.occupied_slots(),
                     slots.submitted_slots(),
                     slots.peak_occupied_slots(),
@@ -3481,7 +3493,8 @@ impl NativeSurface {
                     driver.last_cancelled,
                     driver.last_pending_cancellation,
                 )
-            });
+            },
+        );
         SurfaceSnapshot {
             physical_width,
             physical_height,
@@ -3518,7 +3531,10 @@ impl NativeSurface {
             skipped_count: self.counters.skipped.load(Ordering::Acquire),
             failed_count: self.counters.failed.load(Ordering::Acquire),
             allocated_bytes,
+            peak_retained_bytes,
             current_retained_bytes,
+            current_upload_bytes,
+            peak_upload_bytes,
             frame_slot_capacity: 3,
             occupied_frame_slots,
             submitted_frame_slots,

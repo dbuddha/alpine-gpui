@@ -26,6 +26,17 @@ mod validation {
 
     const OWNER_KINDS: usize = 9;
     const SOAK_ITERATIONS: usize = 32;
+    const MAX_PRESENTATION_UPLOAD_BYTES: usize = 3 * 8 * 1024 * 1024;
+
+    fn validate_bounded_accounting(snapshot: alpine_platform_macos::SurfaceSnapshot) {
+        assert!(snapshot.current_retained_bytes() <= snapshot.peak_retained_bytes());
+        assert!(snapshot.current_upload_bytes() <= snapshot.peak_upload_bytes());
+        assert!(snapshot.peak_upload_bytes() <= MAX_PRESENTATION_UPLOAD_BYTES);
+        assert_eq!(snapshot.frame_slot_capacity(), 3);
+        assert!(snapshot.occupied_frame_slots() <= snapshot.frame_slot_capacity());
+        assert!(snapshot.submitted_frame_slots() <= snapshot.occupied_frame_slots());
+        assert!(snapshot.peak_occupied_frame_slots() <= snapshot.frame_slot_capacity());
+    }
     const CHILD_SCENARIO_ENV: &str = "ALPINE_NATIVE_LIFECYCLE_SCENARIO";
     const MISSING_CLOSE_SCENARIO: &str = "missing-close-control";
     const POST_COMMIT_CLOSE_SCENARIO: &str = "post-commit-close";
@@ -129,6 +140,7 @@ mod validation {
         assert_eq!(before.submission_count(), 0);
         assert_eq!(before.allocated_bytes(), 0);
         assert_eq!(before.current_retained_bytes(), 0);
+        validate_bounded_accounting(before);
 
         native_validation::run_until_frame_terminal(&surface, Duration::from_millis(100));
         let after = surface.snapshot();
@@ -137,6 +149,7 @@ mod validation {
         assert_eq!(after.direct_present_count(), before.direct_present_count());
         assert_eq!(after.allocated_bytes(), before.allocated_bytes());
         assert_eq!(after.current_retained_bytes(), 0);
+        validate_bounded_accounting(after);
         assert!(after.display_link_paused());
 
         assert_exact_teardown(native_validation::close_with_owner_evidence(surface)?);
@@ -152,6 +165,7 @@ mod validation {
         assert!(pending.display_link_paused());
         assert_eq!(pending.submission_count(), 0);
         assert_eq!(pending.current_retained_bytes(), 0);
+        validate_bounded_accounting(pending);
 
         native_validation::close_window(&surface);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
@@ -171,6 +185,7 @@ mod validation {
         assert_eq!(closed.direct_present_count(), 0);
         assert_eq!(closed.allocated_bytes(), 0);
         assert_eq!(closed.current_retained_bytes(), 0);
+        validate_bounded_accounting(closed);
         assert_eq!(closed.pending_cancellation_count(), 1);
         let cancellation = closed
             .last_pending_cancellation()
@@ -229,6 +244,7 @@ mod validation {
         assert_eq!(snapshot.cancelled_count(), 1);
         assert_eq!(snapshot.failed_count(), 0);
         assert_eq!(snapshot.current_retained_bytes(), 0);
+        validate_bounded_accounting(snapshot);
         assert_eq!(snapshot.occupied_frame_slots(), 0);
         assert_eq!(snapshot.submitted_frame_slots(), 0);
         assert!(snapshot.display_link_paused());
@@ -254,6 +270,7 @@ mod validation {
             assert_eq!(snapshot.submission_count(), 0);
             assert_eq!(snapshot.allocated_bytes(), 0);
             assert_eq!(snapshot.current_retained_bytes(), 0);
+            validate_bounded_accounting(snapshot);
             assert_exact_teardown(native_validation::close_with_owner_evidence(surface)?);
         }
         Ok(())
