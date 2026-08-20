@@ -5083,14 +5083,14 @@ pub mod native_validation {
         assert_eq!(observer.rejected_callback_count(), rejected + 1);
 
         let owners = platform_validation::close_with_owner_evidence(surface)?;
-        assert_eq!(owners.acquired(), [1; 10]);
-        assert_eq!(owners.released(), [1; 10]);
+        assert_eq!(owners.acquired(), [1, 1, 1, 1, 1, 1, 1, 1, 1, 0]);
+        assert_eq!(owners.released(), [1, 1, 1, 1, 1, 1, 1, 1, 1, 0]);
         assert_eq!(owners.active(), [0; 10]);
         assert_eq!(owners.run_loop_registrations(), 1);
         assert_eq!(owners.link_invalidations(), 1);
         assert_eq!(owners.delegate_revocations(), 1);
         assert_eq!(owners.window_closes(), 1);
-        assert_eq!(owners.pasteboard_releases(), 1);
+        assert_eq!(owners.pasteboard_releases(), 0);
         assert_eq!(owners.release_order_violations(), 0);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closed);
         println!(
@@ -5132,7 +5132,7 @@ pub mod native_validation {
             self.persisted_bytes
         }
 
-        /// Returns native owner classes observed at zero after drain.
+        /// Returns native owner classes released exactly once during drain.
         #[must_use]
         pub const fn released_owner_classes(self) -> usize {
             self.released_owner_classes
@@ -5181,7 +5181,7 @@ pub mod native_validation {
             self.persisted_bytes
         }
 
-        /// Returns native owner classes observed at zero after drain.
+        /// Returns native owner classes released exactly once during drain.
         #[must_use]
         pub const fn released_owner_classes(self) -> usize {
             self.released_owner_classes
@@ -5230,7 +5230,7 @@ pub mod native_validation {
             self.matched_bytes
         }
 
-        /// Returns native owner classes observed at zero after drain.
+        /// Returns native owner classes released exactly once during drain.
         #[must_use]
         pub const fn released_owner_classes(self) -> usize {
             self.released_owner_classes
@@ -5600,7 +5600,7 @@ pub mod native_validation {
         drop(state);
         let owner_evidence = platform_validation::close_with_owner_evidence(surface)?;
         assert_eq!(owner_evidence.active(), [0; 10]);
-        assert_eq!(owner_evidence.pasteboard_releases(), 1);
+        assert_eq!(owner_evidence.pasteboard_releases(), 0);
         assert_eq!(owner_evidence.release_order_violations(), 0);
         Ok(NativeFileTreeEvidence {
             keyboard_events,
@@ -5609,9 +5609,9 @@ pub mod native_validation {
             admitted_frames,
             persisted_bytes: "!beta".len(),
             released_owner_classes: owner_evidence
-                .active()
+                .released()
                 .iter()
-                .filter(|active| **active == 0)
+                .filter(|released| **released == 1)
                 .count(),
         })
     }
@@ -5753,7 +5753,7 @@ pub mod native_validation {
         drop(state);
         let owner_evidence = platform_validation::close_with_owner_evidence(surface)?;
         assert_eq!(owner_evidence.active(), [0; 10]);
-        assert_eq!(owner_evidence.pasteboard_releases(), 1);
+        assert_eq!(owner_evidence.pasteboard_releases(), 0);
         assert_eq!(owner_evidence.release_order_violations(), 0);
         Ok(NativeProjectSearchEvidence {
             keyboard_events,
@@ -5762,9 +5762,9 @@ pub mod native_validation {
             admitted_frames,
             matched_bytes: "needle".len(),
             released_owner_classes: owner_evidence
-                .active()
+                .released()
                 .iter()
-                .filter(|active| **active == 0)
+                .filter(|released| **released == 1)
                 .count(),
         })
     }
@@ -5900,9 +5900,9 @@ pub mod native_validation {
             input_frames,
             persisted_bytes: expected_after_input.len(),
             released_owner_classes: evidence
-                .active()
+                .released()
                 .iter()
-                .filter(|active| **active == 0)
+                .filter(|released| **released == 1)
                 .count(),
         })
     }

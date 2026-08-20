@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(revoked_waker.wake(), SurfaceWakeAdmission::Closed);
     let revoked_owners = native_validation::close_with_owner_evidence(revoked_surface)?;
     assert_eq!(revoked_owners.active(), [0; 10]);
-    assert_eq!(revoked_owners.pasteboard_releases(), 1);
+    assert_eq!(revoked_owners.pasteboard_releases(), 0);
     assert_eq!(revoked_owners.release_order_violations(), 0);
 
     let descriptor = SurfaceDescriptor::new("Alpine worker wake", 96.0, 64.0, 1.0)?;
@@ -93,7 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let owners = native_validation::close_with_owner_evidence(surface)?;
     assert_eq!(owners.active(), [0; 10]);
-    assert_eq!(owners.pasteboard_releases(), 1);
+    assert_eq!(owners.pasteboard_releases(), 0);
     assert_eq!(owners.release_order_violations(), 0);
     Ok(())
 }

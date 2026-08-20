@@ -29,6 +29,7 @@ mod validation {
     type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
     const OWNER_KINDS: usize = 10;
+    const LIFECYCLE_OWNER_COUNTS: [u64; OWNER_KINDS] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 0];
     const SOAK_WARMUP_ITERATIONS: usize = 8;
     const SOAK_SAMPLE_COUNT: usize = 65;
     const SOAK_TAIL_SAMPLE_COUNT: usize = 9;
@@ -459,6 +460,7 @@ mod validation {
         writeln!(artifact, "maximum_growth_pages = {SOAK_MAX_GROWTH_PAGES}")?;
         writeln!(artifact, "tail_growth_pages = 1")?;
         writeln!(artifact, "owner_kinds = {OWNER_KINDS}")?;
+        writeln!(artifact, "acquired_owner_kinds_per_iteration = 9")?;
         writeln!(artifact, "active_owners_after_each_close = 0")?;
         write!(artifact, "rss_samples_bytes = [")?;
         for (index, sample) in soak.samples.iter().enumerate() {
@@ -474,14 +476,14 @@ mod validation {
     }
 
     fn assert_exact_teardown(evidence: native_validation::NativeOwnerEvidence) {
-        assert_eq!(evidence.acquired(), [1; OWNER_KINDS]);
-        assert_eq!(evidence.released(), [1; OWNER_KINDS]);
+        assert_eq!(evidence.acquired(), LIFECYCLE_OWNER_COUNTS);
+        assert_eq!(evidence.released(), LIFECYCLE_OWNER_COUNTS);
         assert_eq!(evidence.active(), [0; OWNER_KINDS]);
         assert_eq!(evidence.run_loop_registrations(), 1);
         assert_eq!(evidence.link_invalidations(), 1);
         assert_eq!(evidence.delegate_revocations(), 1);
         assert_eq!(evidence.window_closes(), 1);
-        assert_eq!(evidence.pasteboard_releases(), 1);
+        assert_eq!(evidence.pasteboard_releases(), 0);
         assert_eq!(evidence.release_order_violations(), 0);
     }
 
