@@ -14,6 +14,8 @@ use alpine_core::Point;
 use std::time::{Duration, Instant};
 
 #[cfg(alpine_native_validation)]
+use objc2::rc::{Weak, autoreleasepool};
+#[cfg(alpine_native_validation)]
 use objc2::runtime::Bool;
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
@@ -137,7 +139,7 @@ impl NativeWakeBridge {
 }
 
 #[cfg(alpine_native_validation)]
-const NATIVE_OWNER_KINDS: usize = 9;
+const NATIVE_OWNER_KINDS: usize = 10;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeOwnerKind {
@@ -150,6 +152,11 @@ enum NativeOwnerKind {
     Layer,
     Delegate,
     DisplayLink,
+    #[allow(
+        dead_code,
+        reason = "the validation clipboard integration acquires this owner lazily"
+    )]
+    Pasteboard,
 }
 
 impl NativeOwnerKind {
@@ -165,6 +172,7 @@ impl NativeOwnerKind {
             Self::Layer => 6,
             Self::Delegate => 7,
             Self::DisplayLink => 8,
+            Self::Pasteboard => 9,
         }
     }
 }
@@ -304,7 +312,9 @@ struct InitializationProbeState {
     link_invalidations: Cell<u64>,
     delegate_revocations: Cell<u64>,
     window_closes: Cell<u64>,
+    pasteboard_releases: Cell<u64>,
     release_order_violations: Cell<u64>,
+    window: RefCell<Option<Weak<NSWindow>>>,
 }
 
 #[cfg(alpine_native_validation)]
@@ -354,6 +364,16 @@ impl InitializationProbe {
         self.0.window_closes.set(self.0.window_closes.get() + 1);
     }
 
+    fn record_window(&self, window: &Retained<NSWindow>) {
+        self.0.window.replace(Some(Weak::from_retained(window)));
+    }
+
+    fn record_pasteboard_release(&self) {
+        self.0
+            .pasteboard_releases
+            .set(self.0.pasteboard_releases.get() + 1);
+    }
+
     fn evidence(&self) -> crate::native_validation::NativeOwnerEvidence {
         let (acquired, released, active) = self.counts();
         crate::native_validation::NativeOwnerEvidence::new(
@@ -364,6 +384,7 @@ impl InitializationProbe {
             self.0.link_invalidations.get(),
             self.0.delegate_revocations.get(),
             self.0.window_closes.get(),
+            self.0.pasteboard_releases.get(),
             self.0.release_order_violations.get(),
         )
     }
@@ -389,6 +410,7 @@ impl Drop for InitializationLease {
             NativeOwnerKind::DisplayLink => self.probe.0.link_invalidations.get() > 0,
             NativeOwnerKind::Delegate => self.probe.0.delegate_revocations.get() > 0,
             NativeOwnerKind::Window => self.probe.0.window_closes.get() > 0,
+            NativeOwnerKind::Pasteboard => self.probe.0.pasteboard_releases.get() > 0,
             NativeOwnerKind::Application
             | NativeOwnerKind::Device
             | NativeOwnerKind::Renderer
@@ -1892,11 +1914,61 @@ struct DisplayLinkDelegateIvars {
     event_handler: RefCell<Option<SurfaceEventHandler>>,
     event_sequence: Cell<u64>,
     #[cfg(alpine_native_validation)]
-    validation_pasteboard: Retained<NSPasteboard>,
+    validation_pasteboard: RefCell<Option<ValidationPasteboard>>,
     #[cfg(alpine_native_validation)]
     clipboard_fault: Cell<Option<ClipboardError>>,
     #[cfg(alpine_native_validation)]
     validation_probe: Option<InitializationProbe>,
+}
+
+#[cfg(alpine_native_validation)]
+struct ValidationPasteboard {
+    pasteboard: Retained<NSPasteboard>,
+    probe: Option<InitializationProbe>,
+    lease: RefCell<Option<InitializationLease>>,
+    released: Cell<bool>,
+}
+
+#[cfg(alpine_native_validation)]
+impl ValidationPasteboard {
+    fn new(probe: Option<InitializationProbe>) -> Self {
+        let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+        let lease = probe
+            .as_ref()
+            .map(|probe| probe.acquire(NativeOwnerKind::Pasteboard));
+        Self {
+            pasteboard,
+            probe,
+            lease: RefCell::new(lease),
+            released: Cell::new(false),
+        }
+    }
+
+    fn retained(&self) -> Retained<NSPasteboard> {
+        self.pasteboard.clone()
+    }
+
+    fn release(&self) {
+        if self.released.replace(true) {
+            return;
+        }
+        // SAFETY: `pasteboardWithUniqueName` returns a registered server-side
+        // pasteboard, and AppKit documents `releaseGlobally` as its matching
+        // resource-release operation. The retained receiver remains alive for
+        // the duration of this message.
+        let _: () = unsafe { msg_send![&*self.pasteboard, releaseGlobally] };
+        if let Some(probe) = &self.probe {
+            probe.record_pasteboard_release();
+        }
+        drop(self.lease.borrow_mut().take());
+    }
+}
+
+#[cfg(alpine_native_validation)]
+impl Drop for ValidationPasteboard {
+    fn drop(&mut self) {
+        self.release();
+    }
 }
 
 define_class!(
@@ -2326,7 +2398,12 @@ impl DisplayLinkDelegate {
     fn pasteboard(&self) -> Retained<NSPasteboard> {
         #[cfg(alpine_native_validation)]
         {
-            return self.ivars().validation_pasteboard.clone();
+            let mut pasteboard = self.ivars().validation_pasteboard.borrow_mut();
+            return pasteboard
+                .get_or_insert_with(|| {
+                    ValidationPasteboard::new(self.ivars().validation_probe.clone())
+                })
+                .retained();
         }
         #[cfg(not(alpine_native_validation))]
         {
@@ -2857,7 +2934,9 @@ impl NativeSurface {
             NSSize::new(extent.logical_width(), extent.logical_height()),
         );
         // SAFETY: The validated finite positive content rectangle satisfies
-        // NSWindow's initializer contract. Alpine disables release-on-close
+        // NSWindow's initializer contract. Defer the window-server device until
+        // first show so failed construction and never-shown surfaces do not
+        // allocate backing resources. Alpine disables release-on-close
         // immediately below and retains the returned window for its lifetime.
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -2865,9 +2944,13 @@ impl NativeSurface {
                 frame,
                 standard_window_style_mask(),
                 NSBackingStoreType::Buffered,
-                false,
+                true,
             )
         };
+        #[cfg(alpine_native_validation)]
+        if let Some(probe) = control.probe() {
+            probe.record_window(&window);
+        }
         // SAFETY: This window is created without a window controller and is
         // retained by NativeSurface until close, so AppKit must not release it.
         unsafe { window.setReleasedWhenClosed(false) };
@@ -2978,7 +3061,7 @@ impl NativeSurface {
                 event_handler: RefCell::new(None),
                 event_sequence: Cell::new(0),
                 #[cfg(alpine_native_validation)]
-                validation_pasteboard: NSPasteboard::pasteboardWithUniqueName(),
+                validation_pasteboard: RefCell::new(None),
                 #[cfg(alpine_native_validation)]
                 clipboard_fault: Cell::new(None),
                 #[cfg(alpine_native_validation)]
@@ -3783,6 +3866,16 @@ impl Drop for NativeSurface {
             probe.record_delegate_revocation();
         }
         self.window.setDelegate(None);
+        #[cfg(alpine_native_validation)]
+        if let Some(pasteboard) = self
+            .delegate
+            .ivars()
+            .validation_pasteboard
+            .borrow()
+            .as_ref()
+        {
+            pasteboard.release();
+        }
         if must_close_window {
             self.window.orderOut(None);
             self.window.close();
@@ -3936,12 +4029,60 @@ impl Drop for NativeSurfaceBuilder {
                 probe.record_window_close();
             }
         }
+        #[cfg(alpine_native_validation)]
+        if let Some(delegate) = &self.delegate {
+            if let Some(pasteboard) = delegate.ivars().validation_pasteboard.borrow().as_ref() {
+                pasteboard.release();
+            }
+        }
         finish_close_observer_state(&self.lifecycle);
     }
 }
 
 fn take_owner<T>(owner: &mut Option<T>, stage: SurfaceStage) -> Result<T, SurfaceError> {
     owner.take().ok_or_else(|| native_unavailable(stage))
+}
+
+#[cfg(alpine_native_validation)]
+pub(crate) fn exercise_initialization_fault(
+    stage: SurfaceStage,
+) -> Result<crate::native_validation::NativeOwnerEvidence, SurfaceError> {
+    let descriptor = SurfaceDescriptor::new("Alpine initialization stage", 32.0, 24.0, 1.0)?;
+    let control = InitializationControl::validation(Some(stage));
+    let probe = control.probe().ok_or(SurfaceError::DriverUnavailable)?;
+    let failed_at_expected_stage = autoreleasepool(|_| {
+        let result = NativeSurface::new_with_control(&descriptor, &control);
+        let failed_at_expected_stage = matches!(
+            &result,
+            Err(SurfaceError::NativeUnavailable {
+                stage: failed_stage,
+            }) if *failed_stage == stage
+        );
+        drop(result);
+        failed_at_expected_stage
+    });
+    if !failed_at_expected_stage {
+        return Err(native_unavailable(stage));
+    }
+    let observed_window_deallocation = probe
+        .0
+        .window
+        .borrow()
+        .as_ref()
+        .map(|window| window.load().is_none());
+    let expected_window_deallocation = match stage {
+        SurfaceStage::MainThread | SurfaceStage::Device | SurfaceStage::Renderer => None,
+        SurfaceStage::Window
+        | SurfaceStage::View
+        | SurfaceStage::ColorSpace
+        | SurfaceStage::Layer
+        | SurfaceStage::DisplayLink
+        | SurfaceStage::RunLoop => Some(true),
+    };
+    if observed_window_deallocation != expected_window_deallocation {
+        return Err(native_unavailable(SurfaceStage::Window));
+    }
+    Ok(probe.evidence())
 }
 
 #[cfg(alpine_native_validation)]
@@ -3962,6 +4103,25 @@ pub(crate) fn validate_initialization_rollback() -> Result<(), SurfaceError> {
     ];
 
     for (stage, owner_count) in stages {
+        let expected = expected_owner_counts(owner_count);
+        let fault_evidence = exercise_initialization_fault(stage)?;
+        assert_eq!(
+            fault_evidence.acquired(),
+            expected,
+            "fault acquisition after {stage:?}"
+        );
+        assert_eq!(
+            fault_evidence.released(),
+            expected,
+            "fault release after {stage:?}"
+        );
+        assert_eq!(
+            fault_evidence.active(),
+            [0; NATIVE_OWNER_KINDS],
+            "fault active after {stage:?}"
+        );
+        assert_eq!(fault_evidence.release_order_violations(), 0);
+
         let control = InitializationControl::validation(Some(stage));
         let Some(observer) = control.observer() else {
             return Err(native_unavailable(SurfaceStage::MainThread));
@@ -3978,7 +4138,6 @@ pub(crate) fn validate_initialization_rollback() -> Result<(), SurfaceError> {
         );
         drop(result);
 
-        let expected = expected_owner_counts(owner_count);
         let (acquired, released, active) = probe.counts();
         assert!(failed_at_expected_stage, "fault after {stage:?}");
         assert_eq!(acquired, expected, "acquisition after {stage:?}");
@@ -3992,11 +4151,11 @@ pub(crate) fn validate_initialization_rollback() -> Result<(), SurfaceError> {
         );
         assert_eq!(
             probe.0.link_invalidations.get(),
-            u64::from(owner_count == NATIVE_OWNER_KINDS)
+            u64::from(owner_count > NativeOwnerKind::DisplayLink.index())
         );
         assert_eq!(
             probe.0.delegate_revocations.get(),
-            u64::from(owner_count == NATIVE_OWNER_KINDS)
+            u64::from(owner_count > NativeOwnerKind::Delegate.index())
         );
         assert_eq!(probe.0.window_closes.get(), u64::from(owner_count >= 4));
         assert_eq!(probe.0.release_order_violations.get(), 0);
@@ -4013,10 +4172,10 @@ pub(crate) fn validate_initialization_rollback() -> Result<(), SurfaceError> {
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
     drop(surface);
 
-    let all_owners = [1; NATIVE_OWNER_KINDS];
+    let initialized_owners = expected_owner_counts(NativeOwnerKind::Pasteboard.index());
     let (acquired, released, active) = probe.counts();
-    assert_eq!(acquired, all_owners);
-    assert_eq!(released, all_owners);
+    assert_eq!(acquired, initialized_owners);
+    assert_eq!(released, initialized_owners);
     assert_eq!(active, [0; NATIVE_OWNER_KINDS]);
     assert_eq!(probe.0.run_loop_registrations.get(), 1);
     assert_eq!(probe.0.link_invalidations.get(), 1);
@@ -4031,13 +4190,25 @@ pub(crate) fn validate_initialization_rollback() -> Result<(), SurfaceError> {
         NativeOwnerKind::Window,
         NativeOwnerKind::Delegate,
         NativeOwnerKind::DisplayLink,
+        NativeOwnerKind::Pasteboard,
     ] {
         drop(faulty_cleanup.acquire(kind));
     }
     let (_, faulty_releases, faulty_active) = faulty_cleanup.counts();
-    assert_eq!(faulty_releases, [0, 0, 0, 1, 0, 0, 0, 1, 1]);
+    assert_eq!(faulty_releases, [0, 0, 0, 1, 0, 0, 0, 1, 1, 1]);
     assert_eq!(faulty_active, [0; NATIVE_OWNER_KINDS]);
-    assert_eq!(faulty_cleanup.0.release_order_violations.get(), 3);
+    assert_eq!(faulty_cleanup.0.release_order_violations.get(), 4);
+
+    let pasteboard_probe = InitializationProbe::default();
+    drop(ValidationPasteboard::new(Some(pasteboard_probe.clone())));
+    let (pasteboard_acquired, pasteboard_released, pasteboard_active) = pasteboard_probe.counts();
+    let mut pasteboard_expected = [0; NATIVE_OWNER_KINDS];
+    pasteboard_expected[NativeOwnerKind::Pasteboard.index()] = 1;
+    assert_eq!(pasteboard_acquired, pasteboard_expected);
+    assert_eq!(pasteboard_released, pasteboard_expected);
+    assert_eq!(pasteboard_active, [0; NATIVE_OWNER_KINDS]);
+    assert_eq!(pasteboard_probe.0.pasteboard_releases.get(), 1);
+    assert_eq!(pasteboard_probe.0.release_order_violations.get(), 0);
     Ok(())
 }
 

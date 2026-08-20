@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(evidence.input_events(), 7);
     assert_eq!(evidence.input_frames(), 5);
     assert!(evidence.persisted_bytes() > 1_000);
-    assert_eq!(evidence.released_owner_classes(), 9);
+    assert_eq!(evidence.released_owner_classes(), 10);
     let tree = alpine_studio::native_validation::qualify_file_tree_process()?;
     assert_eq!(tree.keyboard_events(), 6);
     assert_eq!(tree.pointer_events(), 2);
