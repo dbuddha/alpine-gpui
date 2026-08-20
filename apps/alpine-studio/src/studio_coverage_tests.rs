@@ -5740,6 +5740,152 @@ fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end semantic journey preserves action, frame, and no-mutation controls"
+)]
+fn accessibility_activation_routes_current_commands_and_rejects_stale_targets()
+-> Result<(), Box<dyn Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha")?;
+    root.write("beta.rs", "beta")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = app.workspace.as_ref().ok_or("workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("alpha")?;
+    let beta = workspace.index_named("beta.rs").ok_or("beta")?;
+    app.open_workspace_entry(alpha)?;
+    app.open_workspace_entry(beta)?;
+    let stale_revision = accessibility::revision(&app);
+    assert!(app.replace_selection("dirty").document_changed);
+    let context = app.command_context();
+    assert!(app.command_palette.open(context)?);
+    let snapshot = app.accessibility_snapshot()?;
+    assert_eq!(
+        snapshot
+            .nodes()
+            .iter()
+            .filter(|node| node.is_focused())
+            .count(),
+        1
+    );
+    assert!(snapshot.nodes().iter().all(|node| {
+        let bounds = node.bounds();
+        [bounds.x(), bounds.y(), bounds.width(), bounds.height()]
+            .into_iter()
+            .all(f32::is_finite)
+    }));
+    let tab = snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.role() == AccessibilityRole::Tab && node.is_selected())
+        .ok_or("tab node")?;
+    assert!(tab.supports_activate());
+    let tab_effect = accessibility::apply_action(
+        &mut app,
+        AccessibilityAction::activate(snapshot.revision(), tab.id()),
+    )?;
+    assert!(!tab_effect.visual_changed);
+    let editor = snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.role() == AccessibilityRole::CodeEditor)
+        .ok_or("editor node")?;
+    let editor_error = accessibility::apply_action(
+        &mut app,
+        AccessibilityAction::activate(snapshot.revision(), editor.id()),
+    );
+    assert!(matches!(
+        editor_error,
+        Err(accessibility::AccessibilityError::Transport(
+            alpine_platform_macos::AccessibilityError::ActionDisabled(id)
+        )) if id == editor.id()
+    ));
+    let close = snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.name() == "File: Close Tab")
+        .ok_or("close command node")?;
+    assert!(close.supports_activate() && close.is_enabled());
+    let revision = snapshot.revision();
+    let close_id = close.id();
+    let before = app.buffer().snapshot().text();
+    let before_utf16 = before.encode_utf16().count();
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    assert!(runtime.frame_if_dirty().is_some());
+    assert!(runtime.frame_if_dirty().is_none());
+
+    let close_request = AccessibilityRequest::action(
+        AccessibilityRequestId::new(80),
+        AccessibilityAction::activate(revision, close_id),
+    )?;
+    let close_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(80),
+        request: close_request,
+    });
+    assert!(close_response.frame().is_some());
+    assert!(runtime.frame_if_dirty().is_none());
+
+    let snapshot_request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(83))?;
+    let current_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(83),
+        request: snapshot_request,
+    });
+    assert!(current_response.frame().is_none());
+    let current = match current_response
+        .accessibility_response()
+        .ok_or("current snapshot response")?
+        .result()
+    {
+        Ok(AccessibilityPayload::Snapshot(snapshot)) => {
+            assert!(snapshot.is_dirty());
+            assert_eq!(snapshot.text_len_utf16(), before_utf16);
+            snapshot.revision()
+        }
+        _ => return Err("current snapshot payload".into()),
+    };
+
+    let stale_request = AccessibilityRequest::action(
+        AccessibilityRequestId::new(81),
+        AccessibilityAction::activate(stale_revision, close_id),
+    )?;
+    let stale_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(81),
+        request: stale_request,
+    });
+    assert!(stale_response.frame().is_none());
+    assert!(matches!(
+        stale_response
+            .accessibility_response()
+            .ok_or("stale action response")?
+            .result(),
+        Err(alpine_platform_macos::AccessibilityError::StaleRevision { .. })
+    ));
+
+    let missing_request = AccessibilityRequest::action(
+        AccessibilityRequestId::new(82),
+        AccessibilityAction::activate(
+            current,
+            alpine_platform_macos::AccessibilityNodeId::new(u64::MAX),
+        ),
+    )?;
+    let missing_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(82),
+        request: missing_request,
+    });
+    assert!(missing_response.frame().is_none());
+    assert!(matches!(
+        missing_response
+            .accessibility_response()
+            .ok_or("missing action response")?
+            .result(),
+        Err(alpine_platform_macos::AccessibilityError::ActionTargetMissing(id))
+            if *id == alpine_platform_macos::AccessibilityNodeId::new(u64::MAX)
+    ));
+    Ok(())
+}
+
+#[test]
 fn selection_revision_advances_only_for_real_selection_changes() -> Result<(), Box<dyn Error>> {
     let mut app = test_app()?;
     let original = app.selection;

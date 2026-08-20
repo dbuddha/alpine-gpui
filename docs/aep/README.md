@@ -36,6 +36,7 @@ Accepted AEPs:
 - [AEP 0250: Bounded native accessibility transport](0250-bounded-native-accessibility-transport.md)
 - [AEP 0255: Bounded native accessibility text mapping](0255-bounded-native-accessibility-text-mapping.md)
 - [AEP 0268: Bounded native input and accessibility lifecycle](0268-bounded-native-input-accessibility-lifecycle.md)
+- [AEP 0270: Bounded accessibility actions and geometry](0270-bounded-accessibility-actions.md)
 
 Proposed AEPs:
 

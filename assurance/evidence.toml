@@ -4699,3 +4699,112 @@ artifact = "crates/alpine-platform-macos/tests/native_input.rs#main"
 assertion = "The production AppKit view clears marked input, deactivates its epoch when the input handler is revoked, rejects a late callback without dispatch, and closes with every native owner drained and no release-order violation."
 scope = "One hosted Apple Silicon SurfaceView handler-revocation and close path after loss and refocus."
 exclusions = ["physical hide, minimize, sleep, and wake", "VoiceOver delivery", "multi-window input"]
+
+[[claims]]
+id = "AEP-0270-C01"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0270-bounded-accessibility-actions.md"
+requirement_issue = 37
+claim_type = "functional"
+risk = "high"
+kani_applicability = "required"
+tla_properties = []
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["kani", "unit"]
+
+[[claims]]
+id = "AEP-0270-C02"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0270-bounded-accessibility-actions.md"
+requirement_issue = 37
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0270-C03"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0270-bounded-accessibility-actions.md"
+requirement_issue = 37
+claim_type = "accessibility"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["macos-metal"]
+required_evidence = ["native"]
+
+[[claims]]
+id = "AEP-0270-C04"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0270-bounded-accessibility-actions.md"
+requirement_issue = 37
+claim_type = "memory"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["unit", "native"]
+
+[[evidence]]
+id = "EV-0270-KANI01"
+claim = "AEP-0270-C01"
+kind = "kani"
+artifact = "crates/alpine-platform-macos/src/accessibility.rs#activation_revision_and_target_identity_are_preserved"
+assertion = "Every constructed activation preserves its exact document revision, buffer revision, and non-zero semantic node identity."
+scope = "All modeled u64 revision and target values."
+bounds = ["complete scalar domain"]
+assumptions = ["zero semantic identity is rejected by node construction before publication"]
+exclusions = ["AppKit delivery", "Studio command mutation"]
+companion = "crates/alpine-platform-macos/src/accessibility.rs#bounds_and_activation_values_fail_closed"
+
+[[evidence]]
+id = "EV-0270-UNIT01"
+claim = "AEP-0270-C01"
+kind = "unit"
+artifact = "crates/alpine-platform-macos/src/accessibility.rs#bounds_and_activation_values_fail_closed"
+assertion = "Finite bounds normalize negative zero and reject NaN, overflowed axes, and out-of-domain values while action capability and enabled state remain exact."
+scope = "Portable public accessibility values and fixed geometry ceiling."
+exclusions = ["screen conversion", "physical display migration"]
+
+[[evidence]]
+id = "EV-0270-UNIT02"
+claim = "AEP-0270-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#accessibility_activation_routes_current_commands_and_rejects_stale_targets"
+assertion = "Studio admits current tab and command targets, preserves dirty text through close refusal, rejects stale and missing targets before mutation, and schedules at most one frame."
+scope = "One local Studio foreground owner and the closed accessibility Activate vocabulary."
+exclusions = ["AppKit selector delivery", "physical VoiceOver"]
+
+[[evidence]]
+id = "EV-0270-NATIVE01"
+claim = "AEP-0270-C03"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_accessibility.rs#main"
+assertion = "Production AppKit selectors preserve external identity across unchanged refresh, convert finite bounds, admit one current press, reject revoked press, and drain every native element."
+scope = "One hosted Apple Silicon AppKit surface and bounded semantic tree."
+exclusions = ["physical VoiceOver", "display migration", "multi-window input"]
+
+[[evidence]]
+id = "EV-0270-NATIVE02"
+claim = "AEP-0270-C04"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_accessibility.rs#main"
+assertion = "Selector queries and one activation retain no Studio callback or document, element residency remains node-bounded, and revocation returns cached slots to zero."
+scope = "One production adapter activation and close cycle."
+exclusions = ["long physical assistive-technology soak", "allocator sampling"]
+
+[[evidence]]
+id = "EV-0270-UNIT03"
+claim = "AEP-0270-C04"
+kind = "unit"
+artifact = "crates/alpine-platform-macos/src/accessibility.rs#snapshot_validates_identity_tree_selection_and_accounting"
+assertion = "Snapshot accounting derives owned node bytes from exact node struct size and enforces fixed node and referenced-name ceilings after bounds and action fields are included."
+scope = "One portable bounded semantic snapshot."
+exclusions = ["native object allocator overhead", "physical assistive-technology soak"]

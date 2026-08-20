@@ -5,8 +5,8 @@ use std::{error::Error, fmt, sync::Arc};
 #[cfg(test)]
 pub(crate) use alpine_platform_macos::AccessibilityReport;
 pub(crate) use alpine_platform_macos::{
-    AccessibilityAction, AccessibilityNode, AccessibilityNodeId, AccessibilityRevision,
-    AccessibilityRole, AccessibilitySelection,
+    AccessibilityAction, AccessibilityBounds, AccessibilityNode, AccessibilityNodeId,
+    AccessibilityRevision, AccessibilityRole, AccessibilitySelection,
     AccessibilitySnapshot as PlatformAccessibilitySnapshot, AccessibilityTextRange,
     MAX_ACCESSIBILITY_NODES,
 };
@@ -17,7 +17,7 @@ use alpine_platform_macos::{
 };
 use alpine_text::{BufferSnapshot, ByteOffset, Selection, TextError};
 
-use super::{EventEffect, StudioApp};
+use super::{EventEffect, MAX_VISIBLE_DIAGNOSTIC_MARKERS, StudioApp, StudioCommand};
 
 pub(crate) const MAX_ACCESSIBILITY_TEXT_REQUEST_BYTES: usize =
     MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES;
@@ -33,6 +33,9 @@ const COMMAND_PALETTE_NODE: AccessibilityNodeId = AccessibilityNodeId::new(8);
 const STATUS_NODE: AccessibilityNodeId = AccessibilityNodeId::new(9);
 const COMPLETION_NODE: AccessibilityNodeId = AccessibilityNodeId::new(10);
 const TAB_NODE_BASE: u64 = 1_024;
+const FILE_ROW_NODE_BASE: u64 = 1 << 20;
+const COMMAND_ROW_NODE_BASE: u64 = 2 << 20;
+const DIAGNOSTIC_NODE_BASE: u64 = 3 << 20;
 
 #[derive(Clone, Debug)]
 pub(crate) struct AccessibilitySnapshot {
@@ -47,7 +50,6 @@ impl AccessibilitySnapshot {
         self.transport.revision()
     }
 
-    #[cfg(test)]
     pub(crate) fn nodes(&self) -> &[AccessibilityNode] {
         self.transport.nodes()
     }
@@ -173,6 +175,12 @@ impl From<PlatformAccessibilityError> for AccessibilityError {
             }
             PlatformAccessibilityError::TextResponseTooLarge { actual, limit } => {
                 Self::TextRequestTooLarge { actual, limit }
+            }
+            PlatformAccessibilityError::ActionTargetMissing(id) => {
+                Self::Transport(PlatformAccessibilityError::ActionTargetMissing(id))
+            }
+            PlatformAccessibilityError::ActionDisabled(id) => {
+                Self::Transport(PlatformAccessibilityError::ActionDisabled(id))
             }
             other => Self::Transport(other),
         }
@@ -383,20 +391,30 @@ fn build_nodes(app: &StudioApp) -> Result<Vec<AccessibilityNode>, AccessibilityE
     nodes
         .try_reserve_exact(node_count)
         .map_err(|_| AccessibilityError::AllocationFailed)?;
-    nodes.push(window_node()?);
-    nodes.push(tab_list_node()?);
+    nodes.push(window_node(app)?);
+    nodes.push(tab_list_node(app)?);
     push_tabs(app, &mut nodes)?;
     let active_name = app
         .tabs
         .label(app.tabs.active_index())
         .ok_or(AccessibilityError::InvalidTree)?;
-    nodes.push(editor_node(active_name, focus_owner == Some(EDITOR_NODE))?);
+    nodes.push(editor_node(
+        app,
+        active_name,
+        focus_owner == Some(EDITOR_NODE),
+    )?);
     push_overlays(app, focus_owner, &mut nodes)?;
+    push_file_rows(app, &mut nodes)?;
+    push_command_rows(app, &mut nodes)?;
+    push_diagnostics(app, &mut nodes)?;
     if let Some(status) = app.local_status.as_ref() {
-        nodes.push(status_node(status.message())?);
+        nodes.push(status_node(app, status.message())?);
     }
     let focused_count = nodes.iter().filter(|value| value.is_focused()).count();
-    validate_tree_shape(nodes.len(), node_count, focused_count, app.focused)?;
+    if nodes.len() > MAX_ACCESSIBILITY_NODES {
+        return Err(AccessibilityError::InvalidTree);
+    }
+    validate_tree_shape(nodes.len(), nodes.len(), focused_count, app.focused)?;
     Ok(nodes)
 }
 
@@ -475,7 +493,13 @@ fn push_tabs(
             .tabs
             .label(index)
             .ok_or(AccessibilityError::InvalidTree)?;
-        nodes.push(tab_node(id, label, index == app.tabs.active_index())?);
+        nodes.push(tab_node(
+            app,
+            id,
+            label,
+            index,
+            index == app.tabs.active_index(),
+        )?);
     }
     Ok(())
 }
@@ -519,14 +543,14 @@ fn push_overlays(
     ];
     for (present, id, role, name) in overlays {
         let focused = focus_owner == Some(id);
-        push_conditional_node(nodes, present, id, role, name, focused)?;
+        push_conditional_node(app, nodes, present, id, role, name, focused)?;
     }
     if let Some(label) = app
         .rust_diagnostics
         .completion_accessibility_label(app.language_identity())
     {
         let focused = focus_owner == Some(COMPLETION_NODE);
-        nodes.push(completion_node(label, focused)?);
+        nodes.push(completion_node(app, label, focused)?);
     }
     Ok(())
 }
@@ -549,9 +573,80 @@ pub(super) fn apply_action(
             let head = text.byte_of_appkit_utf16(selection.head_utf16())?;
             Ok(app.set_selection(Selection::new(anchor, head)))
         }
+        AccessibilityAction::Activate {
+            revision: expected,
+            node: target,
+        } => {
+            require_revision(expected, actual)?;
+            let current = snapshot(app)?;
+            let node = current
+                .nodes()
+                .iter()
+                .find(|node| node.id() == target)
+                .ok_or(PlatformAccessibilityError::ActionTargetMissing(target))?;
+            if !node.supports_activate() || !node.is_enabled() {
+                return Err(PlatformAccessibilityError::ActionDisabled(target).into());
+            }
+            activate_node(app, target, node.parent())
+        }
     }
 }
 
+fn activate_node(
+    app: &mut StudioApp,
+    target: AccessibilityNodeId,
+    parent: Option<AccessibilityNodeId>,
+) -> Result<EventEffect, AccessibilityError> {
+    match parent {
+        Some(TAB_LIST_NODE) => {
+            for index in 0..app.tabs.len() {
+                let Some(tab) = app.tabs.id_at(index) else {
+                    continue;
+                };
+                if TAB_NODE_BASE.checked_add(tab.0) == Some(target.get()) {
+                    return Ok(app
+                        .activate_document_tab(index)
+                        .unwrap_or_else(|error| app.record_workspace_error(&error)));
+                }
+            }
+        }
+        Some(FILE_TREE_NODE) => {
+            let index = target
+                .get()
+                .checked_sub(FILE_ROW_NODE_BASE)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or(AccessibilityError::ArithmeticOverflow)?;
+            return Ok(match app.file_tree.activate_row(index) {
+                Ok(action) => app.apply_file_tree_action(action),
+                Err(error) => app.record_file_tree_error(&error),
+            });
+        }
+        Some(COMMAND_PALETTE_NODE) => {
+            let rows = app
+                .command_palette
+                .visible_commands()
+                .map_err(|_| AccessibilityError::InvalidTree)?;
+            if let Some(row) = rows
+                .into_iter()
+                .find(|row| command_node_id(row.command) == target)
+            {
+                let context = app.command_context();
+                return Ok(match app.command_palette.execute(row.command, context) {
+                    Ok(command) => EventEffect::visual().merge(app.dispatch_command(command)),
+                    Err(error) => app.record_command_palette_error(&error),
+                });
+            }
+        }
+        Some(EDITOR_NODE) => return activate_diagnostic(app, target),
+        None | Some(_) => {}
+    }
+    Err(PlatformAccessibilityError::ActionTargetMissing(target).into())
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "semantic axes and bounded action state remain explicit evidence"
+)]
 fn node(
     id: AccessibilityNodeId,
     parent: Option<AccessibilityNodeId>,
@@ -560,11 +655,29 @@ fn node(
     focused: bool,
     selected: bool,
     announces: bool,
+    bounds: AccessibilityBounds,
+    activate: Option<bool>,
 ) -> Result<AccessibilityNode, AccessibilityError> {
-    AccessibilityNode::new(id, parent, role, name, focused, selected, announces).map_err(Into::into)
+    let node = AccessibilityNode::new(id, parent, role, name, focused, selected, announces)
+        .map_err(AccessibilityError::from)?
+        .with_bounds(bounds);
+    Ok(match activate {
+        Some(enabled) => node.with_activate(enabled),
+        None => node,
+    })
 }
 
-fn window_node() -> Result<AccessibilityNode, AccessibilityError> {
+fn bounds(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) -> Result<AccessibilityBounds, AccessibilityError> {
+    AccessibilityBounds::new(x.max(0.0), y.max(0.0), width.max(0.0), height.max(0.0))
+        .map_err(Into::into)
+}
+
+fn window_node(app: &StudioApp) -> Result<AccessibilityNode, AccessibilityError> {
     node(
         WINDOW_NODE,
         None,
@@ -573,10 +686,18 @@ fn window_node() -> Result<AccessibilityNode, AccessibilityError> {
         false,
         false,
         false,
+        bounds(
+            0.0,
+            0.0,
+            app.last_viewport.width(),
+            app.last_viewport.height(),
+        )?,
+        None,
     )
 }
 
-fn tab_list_node() -> Result<AccessibilityNode, AccessibilityError> {
+fn tab_list_node(app: &StudioApp) -> Result<AccessibilityNode, AccessibilityError> {
+    let left = app.sidebar_width(app.last_viewport);
     node(
         TAB_LIST_NODE,
         Some(WINDOW_NODE),
@@ -585,10 +706,24 @@ fn tab_list_node() -> Result<AccessibilityNode, AccessibilityError> {
         false,
         false,
         false,
+        bounds(
+            left,
+            0.0,
+            (app.last_viewport.width() - left).max(0.0),
+            super::TAB_BAR_HEIGHT,
+        )?,
+        None,
     )
 }
 
-fn editor_node(name: Arc<str>, focused: bool) -> Result<AccessibilityNode, AccessibilityError> {
+fn editor_node(
+    app: &StudioApp,
+    name: Arc<str>,
+    focused: bool,
+) -> Result<AccessibilityNode, AccessibilityError> {
+    let rect = app
+        .active_pane_bounds()
+        .map_err(|_| AccessibilityError::InvalidTree)?;
     node(
         EDITOR_NODE,
         Some(WINDOW_NODE),
@@ -597,14 +732,29 @@ fn editor_node(name: Arc<str>, focused: bool) -> Result<AccessibilityNode, Acces
         focused,
         false,
         false,
+        bounds(
+            rect.origin().x(),
+            rect.origin().y(),
+            rect.size().width(),
+            rect.size().height(),
+        )?,
+        None,
     )
 }
 
 fn tab_node(
+    app: &StudioApp,
     id: AccessibilityNodeId,
     name: Arc<str>,
+    index: usize,
     selected: bool,
 ) -> Result<AccessibilityNode, AccessibilityError> {
+    let sidebar = app.sidebar_width(app.last_viewport);
+    let left = sidebar + super::usize_as_f32(index) * super::TAB_WIDTH - app.tab_scroll_x;
+    let clipped_left = left.max(sidebar).min(app.last_viewport.width());
+    let clipped_right = (left + super::TAB_WIDTH)
+        .max(sidebar)
+        .min(app.last_viewport.width());
     node(
         id,
         Some(TAB_LIST_NODE),
@@ -613,10 +763,17 @@ fn tab_node(
         false,
         selected,
         false,
+        bounds(
+            clipped_left,
+            0.0,
+            (clipped_right - clipped_left).max(0.0),
+            super::TAB_BAR_HEIGHT,
+        )?,
+        Some(true),
     )
 }
 
-fn status_node(message: &str) -> Result<AccessibilityNode, AccessibilityError> {
+fn status_node(app: &StudioApp, message: &str) -> Result<AccessibilityNode, AccessibilityError> {
     node(
         STATUS_NODE,
         Some(WINDOW_NODE),
@@ -625,15 +782,45 @@ fn status_node(message: &str) -> Result<AccessibilityNode, AccessibilityError> {
         false,
         false,
         true,
+        bounds(
+            0.0,
+            (app.last_viewport.height() - super::TREE_ROW_HEIGHT).max(0.0),
+            app.last_viewport.width(),
+            super::TREE_ROW_HEIGHT,
+        )?,
+        None,
     )
 }
 
 fn overlay_node(
+    app: &StudioApp,
     id: AccessibilityNodeId,
     role: AccessibilityRole,
     name: &'static str,
     focused: bool,
 ) -> Result<AccessibilityNode, AccessibilityError> {
+    let width = match id {
+        FIND_NODE => super::FIND_BAR_WIDTH,
+        PROJECT_SEARCH_NODE => super::PROJECT_SEARCH_WIDTH,
+        FILE_TREE_NODE => app.sidebar_width(app.last_viewport),
+        _ => super::QUICK_OPEN_WIDTH,
+    }
+    .min(app.last_viewport.width());
+    let height = if id == FILE_TREE_NODE {
+        app.last_viewport.height()
+    } else {
+        (app.last_viewport.height() - super::TAB_BAR_HEIGHT).min(360.0)
+    };
+    let x = if id == FILE_TREE_NODE {
+        0.0
+    } else {
+        (app.last_viewport.width() - width) * 0.5
+    };
+    let y = if id == FILE_TREE_NODE {
+        0.0
+    } else {
+        super::TAB_BAR_HEIGHT + super::CONTENT_INSET
+    };
     node(
         id,
         Some(WINDOW_NODE),
@@ -642,10 +829,19 @@ fn overlay_node(
         focused,
         false,
         false,
+        bounds(x, y, width, height)?,
+        None,
     )
 }
 
-fn completion_node(name: Arc<str>, focused: bool) -> Result<AccessibilityNode, AccessibilityError> {
+fn completion_node(
+    app: &StudioApp,
+    name: Arc<str>,
+    focused: bool,
+) -> Result<AccessibilityNode, AccessibilityError> {
+    let editor = app
+        .active_pane_bounds()
+        .map_err(|_| AccessibilityError::InvalidTree)?;
     node(
         COMPLETION_NODE,
         Some(WINDOW_NODE),
@@ -654,10 +850,18 @@ fn completion_node(name: Arc<str>, focused: bool) -> Result<AccessibilityNode, A
         focused,
         true,
         true,
+        bounds(
+            editor.origin().x(),
+            editor.origin().y(),
+            editor.size().width().min(520.0),
+            240.0_f32.min(editor.size().height()),
+        )?,
+        None,
     )
 }
 
 fn push_conditional_node(
+    app: &StudioApp,
     nodes: &mut Vec<AccessibilityNode>,
     present: bool,
     id: AccessibilityNodeId,
@@ -666,9 +870,204 @@ fn push_conditional_node(
     focused: bool,
 ) -> Result<(), AccessibilityError> {
     if present {
-        nodes.push(overlay_node(id, role, name, focused)?);
+        nodes.push(overlay_node(app, id, role, name, focused)?);
     }
     Ok(())
+}
+
+fn push_file_rows(
+    app: &StudioApp,
+    nodes: &mut Vec<AccessibilityNode>,
+) -> Result<(), AccessibilityError> {
+    if !app.file_tree.is_visible() || !app.file_tree.is_active() {
+        return Ok(());
+    }
+    let first =
+        super::floor_f32_to_usize(app.workspace_scroll_y / super::TREE_ROW_HEIGHT).unwrap_or(0);
+    let rows = app
+        .file_tree
+        .visible_rows(first, app.visible_tree_rows(), super::TREE_OVERSCAN_ROWS)
+        .map_err(|_| AccessibilityError::InvalidTree)?;
+    for row in rows {
+        let id = AccessibilityNodeId::new(
+            FILE_ROW_NODE_BASE
+                .checked_add(
+                    u64::try_from(row.index).map_err(|_| AccessibilityError::ArithmeticOverflow)?,
+                )
+                .ok_or(AccessibilityError::ArithmeticOverflow)?,
+        );
+        let top = super::CONTENT_INSET + super::usize_as_f32(row.index) * super::TREE_ROW_HEIGHT
+            - app.workspace_scroll_y;
+        let clipped_top = top.max(0.0).min(app.last_viewport.height());
+        let clipped_bottom = (top + super::TREE_ROW_HEIGHT)
+            .max(0.0)
+            .min(app.last_viewport.height());
+        nodes.push(node(
+            id,
+            Some(FILE_TREE_NODE),
+            AccessibilityRole::ListItem,
+            Arc::clone(&row.path),
+            false,
+            row.selected,
+            false,
+            bounds(
+                0.0,
+                clipped_top,
+                app.sidebar_width(app.last_viewport),
+                (clipped_bottom - clipped_top).max(0.0),
+            )?,
+            Some(true),
+        )?);
+    }
+    Ok(())
+}
+
+fn command_node_id(command: StudioCommand) -> AccessibilityNodeId {
+    AccessibilityNodeId::new(COMMAND_ROW_NODE_BASE + u64::from(command as u8))
+}
+
+fn push_command_rows(
+    app: &StudioApp,
+    nodes: &mut Vec<AccessibilityNode>,
+) -> Result<(), AccessibilityError> {
+    if !app.command_palette.is_open() {
+        return Ok(());
+    }
+    let rows = app
+        .command_palette
+        .visible_commands()
+        .map_err(|_| AccessibilityError::InvalidTree)?;
+    let width = super::COMMAND_PALETTE_WIDTH.min(app.last_viewport.width());
+    let left = (app.last_viewport.width() - width) * 0.5;
+    let first_top =
+        super::TAB_BAR_HEIGHT + super::CONTENT_INSET + super::COMMAND_PALETTE_QUERY_HEIGHT;
+    for (visible, row) in rows.into_iter().enumerate() {
+        nodes.push(node(
+            command_node_id(row.command),
+            Some(COMMAND_PALETTE_NODE),
+            AccessibilityRole::ListItem,
+            Arc::from(row.title),
+            false,
+            row.selected,
+            false,
+            bounds(
+                left,
+                first_top + super::usize_as_f32(visible) * super::COMMAND_PALETTE_ROW_HEIGHT,
+                width,
+                super::COMMAND_PALETTE_ROW_HEIGHT,
+            )?,
+            Some(true),
+        )?);
+    }
+    Ok(())
+}
+
+fn diagnostic_node_id(
+    line: usize,
+    ordinal: usize,
+) -> Result<AccessibilityNodeId, AccessibilityError> {
+    let index = line
+        .checked_mul(MAX_VISIBLE_DIAGNOSTIC_MARKERS)
+        .and_then(|value| value.checked_add(ordinal))
+        .ok_or(AccessibilityError::ArithmeticOverflow)?;
+    Ok(AccessibilityNodeId::new(
+        DIAGNOSTIC_NODE_BASE
+            .checked_add(u64::try_from(index).map_err(|_| AccessibilityError::ArithmeticOverflow)?)
+            .ok_or(AccessibilityError::ArithmeticOverflow)?,
+    ))
+}
+
+fn push_diagnostics(
+    app: &StudioApp,
+    nodes: &mut Vec<AccessibilityNode>,
+) -> Result<(), AccessibilityError> {
+    let pane = app
+        .active_pane_bounds()
+        .map_err(|_| AccessibilityError::InvalidTree)?;
+    let mut remaining = MAX_VISIBLE_DIAGNOSTIC_MARKERS;
+    for rendered in &app.rendered_lines {
+        if remaining == 0 {
+            break;
+        }
+        let mut ordinal = 0_usize;
+        app.rust_diagnostics.for_each_marker(
+            app.language_identity(),
+            rendered.line,
+            remaining,
+            |marker| {
+                let rect = super::diagnostic_underline_bounds(
+                    pane.origin().x(),
+                    rendered.baseline,
+                    &rendered.layout,
+                    marker,
+                )
+                .map_err(|_| AccessibilityError::InvalidTree)?;
+                let severity = marker.severity.map_or("diagnostic".to_owned(), |value| {
+                    format!("diagnostic severity {value}")
+                });
+                nodes.push(node(
+                    diagnostic_node_id(rendered.line, ordinal)?,
+                    Some(EDITOR_NODE),
+                    AccessibilityRole::ListItem,
+                    Arc::from(format!(
+                        "{severity} on line {}",
+                        rendered.line.saturating_add(1)
+                    )),
+                    false,
+                    false,
+                    false,
+                    bounds(
+                        rect.origin().x(),
+                        rect.origin().y(),
+                        rect.size().width(),
+                        rect.size().height(),
+                    )?,
+                    Some(true),
+                )?);
+                ordinal = ordinal.saturating_add(1);
+                Ok::<(), AccessibilityError>(())
+            },
+        )?;
+        remaining = remaining.saturating_sub(ordinal);
+    }
+    Ok(())
+}
+
+fn activate_diagnostic(
+    app: &mut StudioApp,
+    target: AccessibilityNodeId,
+) -> Result<EventEffect, AccessibilityError> {
+    let index = usize::try_from(target.get() - DIAGNOSTIC_NODE_BASE)
+        .map_err(|_| AccessibilityError::ArithmeticOverflow)?;
+    let line = index / MAX_VISIBLE_DIAGNOSTIC_MARKERS;
+    let wanted = index % MAX_VISIBLE_DIAGNOSTIC_MARKERS;
+    let mut marker = None;
+    let mut ordinal = 0_usize;
+    app.rust_diagnostics.for_each_marker(
+        app.language_identity(),
+        line,
+        wanted.saturating_add(1),
+        |candidate| {
+            if ordinal == wanted {
+                marker = Some(candidate);
+            }
+            ordinal = ordinal.saturating_add(1);
+            Ok::<(), AccessibilityError>(())
+        },
+    )?;
+    let marker = marker.ok_or(PlatformAccessibilityError::ActionTargetMissing(target))?;
+    let text = app.buffer().snapshot();
+    let line_range = text.line_byte_range(line)?;
+    let line_start_utf16 = text.appkit_utf16_of_byte(ByteOffset::new(line_range.start))?;
+    let start_utf16 = line_start_utf16
+        .checked_add(marker.start_utf16 as usize)
+        .ok_or(AccessibilityError::ArithmeticOverflow)?;
+    let end_utf16 = line_start_utf16
+        .checked_add(marker.end_utf16.unwrap_or(marker.start_utf16) as usize)
+        .ok_or(AccessibilityError::ArithmeticOverflow)?;
+    let start = text.byte_of_appkit_utf16(start_utf16)?;
+    let end = text.byte_of_appkit_utf16(end_utf16)?;
+    Ok(app.set_selection(Selection::new(start, end)))
 }
 
 #[cfg(test)]

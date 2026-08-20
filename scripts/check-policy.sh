@@ -56,7 +56,7 @@ if [ -n "$workflow_files" ]; then
     if ! grep -Fq -- '--file crates/alpine-platform-macos/src/native_accessibility.rs' .github/workflows/ci.yml; then
         fail 'required macOS validation must own changed native accessibility mutation'
     fi
-    native_accessibility_pr_scope='RefreshOutcome::post|NativeAccessibilityAdapter::refresh_view_if_active|NativeAccessibilityAdapter::reconcile_elements|NativeAccessibilityAdapter::revoke|NativeAccessibilityAdapter::set_selection|NativeAccessibilityElement::with_adapter|NativeAccessibilityElement::with_adapter_mut|checked_range'
+    native_accessibility_pr_scope='RefreshOutcome::post|NativeAccessibilityAdapter::refresh_view_if_active|NativeAccessibilityAdapter::reconcile_elements|NativeAccessibilityAdapter::revoke|NativeAccessibilityAdapter::set_selection|NativeAccessibilityAdapter::activate|NativeAccessibilityElement::with_adapter|NativeAccessibilityElement::with_adapter_mut|NativeAccessibilityElement::accessibility_frame_impl|reusable_semantics|checked_range'
     if ! grep -Fq -- "--re '$native_accessibility_pr_scope'" .github/workflows/ci.yml \
         || ! grep -Fq -- '-- --locked --test native_accessibility' .github/workflows/ci.yml; then
         fail 'required macOS validation must mutation-test the bounded native accessibility risk slice through its exact journey'

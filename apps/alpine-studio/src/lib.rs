@@ -3225,9 +3225,7 @@ impl StudioApp {
         let editor_bounds = self.editor_region(self.last_viewport).ok();
         CommandContext {
             can_save: self.document.is_file() && self.document.is_dirty(),
-            can_close_tab: self.tabs.len() > 1
-                && !self.document.is_dirty()
-                && self.last_file_error.is_none(),
+            can_close_tab: self.tabs.len() > 1 && self.last_file_error.is_none(),
             can_navigate_back: self.tabs.can_navigate_back(),
             can_navigate_forward: self.tabs.can_navigate_forward(),
             has_workspace: self.workspace.is_some(),

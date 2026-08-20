@@ -399,11 +399,21 @@ impl CommandPalette {
         let spec = REGISTRY
             .get(usize::from(selected.registry_index))
             .ok_or(CommandPaletteError::MissingSelection)?;
-        if !context.available(spec.command) {
-            let _ = self.refresh(context)?;
-            return Err(CommandPaletteError::Unavailable(spec.command));
+        self.execute(spec.command, context)
+    }
+
+    pub(crate) fn execute(
+        &mut self,
+        command: StudioCommand,
+        context: CommandContext,
+    ) -> Result<StudioCommand, CommandPaletteError> {
+        if !REGISTRY.iter().any(|spec| spec.command == command) {
+            return Err(CommandPaletteError::MissingSelection);
         }
-        let command = spec.command;
+        if !context.available(command) {
+            let _ = self.refresh(context)?;
+            return Err(CommandPaletteError::Unavailable(command));
+        }
         self.executions = self.executions.saturating_add(1);
         self.release();
         Ok(command)

@@ -578,7 +578,11 @@ fn command_context_distinguishes_scratch_dirty_and_each_close_guard()
         app.handle_event(&ime(ImeEvent::Committed("dirty".into())))
             .visual_changed
     );
-    assert!(!app.command_context().can_close_tab);
+    assert!(app.command_context().can_close_tab);
+    let before = app.buffer().snapshot().text();
+    assert!(app.dispatch_command(StudioCommand::CloseTab).visual_changed);
+    assert!(app.document.is_dirty());
+    assert_eq!(app.buffer().snapshot().text(), before);
     Ok(())
 }
 
