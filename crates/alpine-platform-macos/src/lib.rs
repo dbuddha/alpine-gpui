@@ -617,13 +617,14 @@ pub mod native_validation {
     /// Validation-only exact ownership and teardown counts for one surface.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct NativeOwnerEvidence {
-        acquired: [u64; 9],
-        released: [u64; 9],
-        active: [u64; 9],
+        acquired: [u64; 10],
+        released: [u64; 10],
+        active: [u64; 10],
         run_loop_registrations: u64,
         link_invalidations: u64,
         delegate_revocations: u64,
         window_closes: u64,
+        pasteboard_releases: u64,
         release_order_violations: u64,
     }
 
@@ -633,13 +634,14 @@ pub mod native_validation {
             reason = "validation evidence preserves each independent cleanup counter"
         )]
         pub(crate) const fn new(
-            acquired: [u64; 9],
-            released: [u64; 9],
-            active: [u64; 9],
+            acquired: [u64; 10],
+            released: [u64; 10],
+            active: [u64; 10],
             run_loop_registrations: u64,
             link_invalidations: u64,
             delegate_revocations: u64,
             window_closes: u64,
+            pasteboard_releases: u64,
             release_order_violations: u64,
         ) -> Self {
             Self {
@@ -650,25 +652,26 @@ pub mod native_validation {
                 link_invalidations,
                 delegate_revocations,
                 window_closes,
+                pasteboard_releases,
                 release_order_violations,
             }
         }
 
         /// Returns per-kind acquisitions in application-to-display-link order.
         #[must_use]
-        pub const fn acquired(self) -> [u64; 9] {
+        pub const fn acquired(self) -> [u64; 10] {
             self.acquired
         }
 
         /// Returns per-kind releases in application-to-display-link order.
         #[must_use]
-        pub const fn released(self) -> [u64; 9] {
+        pub const fn released(self) -> [u64; 10] {
             self.released
         }
 
         /// Returns per-kind owners remaining after close.
         #[must_use]
-        pub const fn active(self) -> [u64; 9] {
+        pub const fn active(self) -> [u64; 10] {
             self.active
         }
 
@@ -694,6 +697,12 @@ pub mod native_validation {
         #[must_use]
         pub const fn window_closes(self) -> u64 {
             self.window_closes
+        }
+
+        /// Returns unique validation-pasteboard server releases.
+        #[must_use]
+        pub const fn pasteboard_releases(self) -> u64 {
+            self.pasteboard_releases
         }
 
         /// Returns owner releases observed before required cleanup.
@@ -1007,24 +1016,32 @@ pub mod native_validation {
         #[test]
         fn owner_evidence_accessors_preserve_each_independent_counter() {
             let evidence = NativeOwnerEvidence::new(
-                [2, 3, 5, 7, 11, 13, 17, 19, 23],
-                [29, 31, 37, 41, 43, 47, 53, 59, 61],
-                [67, 71, 73, 79, 83, 89, 97, 101, 103],
-                107,
-                109,
-                113,
+                [2, 3, 5, 7, 11, 13, 17, 19, 23, 29],
+                [31, 37, 41, 43, 47, 53, 59, 61, 67, 71],
+                [73, 79, 83, 89, 97, 101, 103, 107, 109, 113],
                 127,
                 131,
+                137,
+                139,
+                149,
+                151,
             );
 
-            assert_eq!(evidence.acquired(), [2, 3, 5, 7, 11, 13, 17, 19, 23]);
-            assert_eq!(evidence.released(), [29, 31, 37, 41, 43, 47, 53, 59, 61]);
-            assert_eq!(evidence.active(), [67, 71, 73, 79, 83, 89, 97, 101, 103]);
-            assert_eq!(evidence.run_loop_registrations(), 107);
-            assert_eq!(evidence.link_invalidations(), 109);
-            assert_eq!(evidence.delegate_revocations(), 113);
-            assert_eq!(evidence.window_closes(), 127);
-            assert_eq!(evidence.release_order_violations(), 131);
+            assert_eq!(evidence.acquired(), [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]);
+            assert_eq!(
+                evidence.released(),
+                [31, 37, 41, 43, 47, 53, 59, 61, 67, 71]
+            );
+            assert_eq!(
+                evidence.active(),
+                [73, 79, 83, 89, 97, 101, 103, 107, 109, 113]
+            );
+            assert_eq!(evidence.run_loop_registrations(), 127);
+            assert_eq!(evidence.link_invalidations(), 131);
+            assert_eq!(evidence.delegate_revocations(), 137);
+            assert_eq!(evidence.window_closes(), 139);
+            assert_eq!(evidence.pasteboard_releases(), 149);
+            assert_eq!(evidence.release_order_violations(), 151);
         }
     }
 }

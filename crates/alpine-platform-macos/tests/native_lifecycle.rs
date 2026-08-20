@@ -28,7 +28,7 @@ mod validation {
 
     type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
-    const OWNER_KINDS: usize = 9;
+    const OWNER_KINDS: usize = 10;
     const SOAK_WARMUP_ITERATIONS: usize = 8;
     const SOAK_SAMPLE_COUNT: usize = 65;
     const SOAK_TAIL_SAMPLE_COUNT: usize = 9;
@@ -481,6 +481,7 @@ mod validation {
         assert_eq!(evidence.link_invalidations(), 1);
         assert_eq!(evidence.delegate_revocations(), 1);
         assert_eq!(evidence.window_closes(), 1);
+        assert_eq!(evidence.pasteboard_releases(), 1);
         assert_eq!(evidence.release_order_violations(), 0);
     }
 

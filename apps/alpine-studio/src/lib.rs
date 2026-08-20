@@ -5083,13 +5083,14 @@ pub mod native_validation {
         assert_eq!(observer.rejected_callback_count(), rejected + 1);
 
         let owners = platform_validation::close_with_owner_evidence(surface)?;
-        assert_eq!(owners.acquired(), [1; 9]);
-        assert_eq!(owners.released(), [1; 9]);
-        assert_eq!(owners.active(), [0; 9]);
+        assert_eq!(owners.acquired(), [1; 10]);
+        assert_eq!(owners.released(), [1; 10]);
+        assert_eq!(owners.active(), [0; 10]);
         assert_eq!(owners.run_loop_registrations(), 1);
         assert_eq!(owners.link_invalidations(), 1);
         assert_eq!(owners.delegate_revocations(), 1);
         assert_eq!(owners.window_closes(), 1);
+        assert_eq!(owners.pasteboard_releases(), 1);
         assert_eq!(owners.release_order_violations(), 0);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closed);
         println!(
@@ -5598,7 +5599,8 @@ pub mod native_validation {
         };
         drop(state);
         let owner_evidence = platform_validation::close_with_owner_evidence(surface)?;
-        assert_eq!(owner_evidence.active(), [0; 9]);
+        assert_eq!(owner_evidence.active(), [0; 10]);
+        assert_eq!(owner_evidence.pasteboard_releases(), 1);
         assert_eq!(owner_evidence.release_order_violations(), 0);
         Ok(NativeFileTreeEvidence {
             keyboard_events,
@@ -5750,7 +5752,8 @@ pub mod native_validation {
         };
         drop(state);
         let owner_evidence = platform_validation::close_with_owner_evidence(surface)?;
-        assert_eq!(owner_evidence.active(), [0; 9]);
+        assert_eq!(owner_evidence.active(), [0; 10]);
+        assert_eq!(owner_evidence.pasteboard_releases(), 1);
         assert_eq!(owner_evidence.release_order_violations(), 0);
         Ok(NativeProjectSearchEvidence {
             keyboard_events,
@@ -5889,7 +5892,8 @@ pub mod native_validation {
 
         drop(state);
         let evidence = platform_validation::close_with_owner_evidence(surface)?;
-        assert_eq!(evidence.active(), [0; 9]);
+        assert_eq!(evidence.active(), [0; 10]);
+        assert_eq!(evidence.pasteboard_releases(), 1);
         assert_eq!(evidence.release_order_violations(), 0);
         Ok(NativeProcessEvidence {
             input_events,
