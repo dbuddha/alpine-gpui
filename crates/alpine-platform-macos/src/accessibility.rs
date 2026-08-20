@@ -924,7 +924,7 @@ mod tests {
     fn snapshot_validates_identity_tree_selection_and_accounting() -> Result<(), AccessibilityError>
     {
         let root = AccessibilityNodeId::new(1);
-        let snapshot = AccessibilitySnapshot::new(
+        let snapshot_result = AccessibilitySnapshot::new(
             AccessibilityRevision::new(3, 5),
             root,
             vec![node(1, None, true)?, node(2, Some(1), false)?],
@@ -932,7 +932,8 @@ mod tests {
             7,
             1,
             true,
-        )?;
+        );
+        let snapshot = snapshot_result?;
         assert_eq!(snapshot.nodes().len(), 2);
         assert_eq!(snapshot.report().referenced_name_bytes(), 8);
         assert_eq!(
@@ -957,16 +958,16 @@ mod tests {
     #[test]
     fn request_and_response_identity_fail_closed() -> Result<(), AccessibilityError> {
         let revision = AccessibilityRevision::new(7, 11);
-        let request = AccessibilityRequest::text(
+        let request_result = AccessibilityRequest::text(
             AccessibilityRequestId::new(13),
             revision,
             AccessibilityTextRange::new(1, 2),
-        )?;
-        let response = AccessibilityResponse::success(
-            &request,
-            revision,
-            AccessibilityPayload::Text(AccessibilityText::new("ok")?),
-        )?;
+        );
+        let request = request_result?;
+        let text = AccessibilityText::new("ok")?;
+        let response_result =
+            AccessibilityResponse::success(&request, revision, AccessibilityPayload::Text(text));
+        let response = response_result?;
         assert_eq!(response.validate_for(&request), Ok(()));
         let other = AccessibilityRequest::selection(AccessibilityRequestId::new(14), revision)?;
         assert_eq!(
@@ -1005,5 +1006,304 @@ mod tests {
                 limit: MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES,
             })
         );
+    }
+
+    fn flat_tree(
+        count: usize,
+        name_bytes: usize,
+    ) -> Result<Vec<AccessibilityNode>, AccessibilityError> {
+        let name: Arc<str> = "x".repeat(name_bytes).into();
+        (1..=count)
+            .map(|id| {
+                AccessibilityNode::new(
+                    AccessibilityNodeId::new(id as u64),
+                    (id != 1).then_some(AccessibilityNodeId::new(1)),
+                    AccessibilityRole::CodeEditor,
+                    Arc::clone(&name),
+                    id == 1,
+                    id == 2,
+                    id == 3,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn public_values_preserve_every_axis_and_ceiling() -> Result<(), AccessibilityError> {
+        let root = AccessibilityNodeId::new(1);
+        let child_result = AccessibilityNode::new(
+            AccessibilityNodeId::new(2),
+            Some(root),
+            AccessibilityRole::Tab,
+            Arc::from("selected tab"),
+            true,
+            true,
+            true,
+        );
+        let child = child_result?;
+        assert_eq!(root.get(), 1);
+        assert_eq!(child.id().get(), 2);
+        assert_eq!(child.parent(), Some(root));
+        assert_eq!(child.role(), AccessibilityRole::Tab);
+        assert_eq!(child.name(), "selected tab");
+        assert!(child.is_focused());
+        assert!(child.is_selected());
+        assert!(child.announces());
+        assert_eq!(
+            AccessibilityNode::new(
+                AccessibilityNodeId::new(0),
+                None,
+                AccessibilityRole::Window,
+                Arc::from("invalid"),
+                false,
+                false,
+                false,
+            ),
+            Err(AccessibilityError::InvalidNodeId)
+        );
+        assert_eq!(
+            AccessibilityNode::new(
+                AccessibilityNodeId::new(2),
+                Some(AccessibilityNodeId::new(0)),
+                AccessibilityRole::Window,
+                Arc::from("invalid"),
+                false,
+                false,
+                false,
+            ),
+            Err(AccessibilityError::InvalidNodeId)
+        );
+        assert!(matches!(
+            AccessibilityNode::new(
+                AccessibilityNodeId::new(2),
+                Some(root),
+                AccessibilityRole::Window,
+                "x".repeat(MAX_ACCESSIBILITY_NODE_NAME_BYTES + 1).into(),
+                false,
+                false,
+                false,
+            ),
+            Err(AccessibilityError::NodeNameTooLarge { actual, limit })
+                if actual == MAX_ACCESSIBILITY_NODE_NAME_BYTES + 1
+                    && limit == MAX_ACCESSIBILITY_NODE_NAME_BYTES
+        ));
+
+        let revision = AccessibilityRevision::new(7, 11);
+        assert_eq!(revision.document(), 7);
+        assert_eq!(revision.buffer(), 11);
+        let range = AccessibilityTextRange::new(3, 5);
+        assert_eq!(range.start_utf16(), 3);
+        assert_eq!(range.length_utf16(), 5);
+        assert_eq!(range.end_utf16(), Ok(8));
+        let selection = AccessibilitySelection::new(8, 3);
+        assert_eq!(selection.anchor_utf16(), 8);
+        assert_eq!(selection.head_utf16(), 3);
+        assert_eq!(selection.range(), range);
+
+        let snapshot_result = AccessibilitySnapshot::new(
+            revision,
+            root,
+            vec![node(1, None, false)?, child],
+            selection,
+            8,
+            2,
+            true,
+        );
+        let snapshot = snapshot_result?;
+        assert_eq!(snapshot.root(), root);
+        assert_eq!(snapshot.text_len_utf16(), 8);
+        assert_eq!(snapshot.line_count(), 2);
+        assert!(snapshot.is_dirty());
+        assert_eq!(snapshot.report().node_count(), 2);
+        assert_eq!(
+            snapshot.report().owned_node_bytes(),
+            2 * mem::size_of::<AccessibilityNode>()
+        );
+        assert_eq!(snapshot.report().max_nodes(), MAX_ACCESSIBILITY_NODES);
+        assert_eq!(
+            snapshot.report().max_text_request_bytes(),
+            MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_trees_and_budgets_fail_before_publication() -> Result<(), AccessibilityError> {
+        let revision = AccessibilityRevision::new(1, 1);
+        let root = AccessibilityNodeId::new(1);
+        let empty_selection = AccessibilitySelection::new(0, 0);
+        assert_eq!(
+            AccessibilitySnapshot::new(revision, root, Vec::new(), empty_selection, 0, 1, false,),
+            Err(AccessibilityError::InvalidTree)
+        );
+        assert!(matches!(
+            AccessibilitySnapshot::new(
+                revision,
+                root,
+                flat_tree(MAX_ACCESSIBILITY_NODES + 1, 1)?,
+                empty_selection,
+                0,
+                1,
+                false,
+            ),
+            Err(AccessibilityError::TooManyNodes { actual, limit })
+                if actual == MAX_ACCESSIBILITY_NODES + 1 && limit == MAX_ACCESSIBILITY_NODES
+        ));
+        assert!(matches!(
+            AccessibilitySnapshot::new(
+                revision,
+                root,
+                flat_tree(MAX_ACCESSIBILITY_NODES, 1_000)?,
+                empty_selection,
+                0,
+                1,
+                false,
+            ),
+            Err(AccessibilityError::NameBudgetExceeded { actual, limit })
+                if actual == MAX_ACCESSIBILITY_NODES * 1_000
+                    && limit == MAX_ACCESSIBILITY_NAME_BYTES
+        ));
+        assert_eq!(
+            AccessibilitySnapshot::new(
+                revision,
+                root,
+                flat_tree(1, 1)?,
+                AccessibilitySelection::new(1, 0),
+                0,
+                1,
+                false,
+            ),
+            Err(AccessibilityError::InvalidSelection { text_len_utf16: 0 })
+        );
+
+        let root_with_parent = vec![node(1, Some(2), false)?, node(2, Some(1), false)?];
+        let missing_parent = vec![node(1, None, false)?, node(2, Some(9), false)?];
+        let cycle = vec![
+            node(1, None, false)?,
+            node(2, Some(3), false)?,
+            node(3, Some(2), false)?,
+        ];
+        let multiple_focus = vec![node(1, None, true)?, node(2, Some(1), true)?];
+        for nodes in [root_with_parent, missing_parent, cycle, multiple_focus] {
+            assert_eq!(
+                AccessibilitySnapshot::new(revision, root, nodes, empty_selection, 0, 1, false,),
+                Err(AccessibilityError::InvalidTree)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn requests_responses_and_diagnostics_preserve_identity() -> Result<(), AccessibilityError> {
+        let revision = AccessibilityRevision::new(3, 5);
+        let snapshot_request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(1))?;
+        assert_eq!(snapshot_request.id().get(), 1);
+        assert_eq!(snapshot_request.kind(), AccessibilityRequestKind::Snapshot);
+        assert_eq!(snapshot_request.revision(), None);
+        assert!(matches!(
+            snapshot_request.operation(),
+            AccessibilityOperation::Snapshot
+        ));
+
+        let selection_request =
+            AccessibilityRequest::selection(AccessibilityRequestId::new(2), revision)?;
+        assert_eq!(
+            selection_request.kind(),
+            AccessibilityRequestKind::Selection
+        );
+        assert_eq!(selection_request.revision(), Some(revision));
+        let action = AccessibilityAction::set_selection(revision, 4, 2);
+        assert_eq!(action.revision(), revision);
+        let action_request = AccessibilityRequest::action(AccessibilityRequestId::new(3), action)?;
+        assert_eq!(action_request.kind(), AccessibilityRequestKind::Action);
+        assert!(matches!(
+            action_request.operation(),
+            AccessibilityOperation::Action(AccessibilityAction::SetSelection { selection, .. })
+                if selection.anchor_utf16() == 4 && selection.head_utf16() == 2
+        ));
+        assert!(matches!(
+            AccessibilityRequest::text(
+                AccessibilityRequestId::new(4),
+                revision,
+                AccessibilityTextRange::new(0, MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES + 1),
+            ),
+            Err(AccessibilityError::TextResponseTooLarge { actual, limit })
+                if actual == MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES + 1
+                    && limit == MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES
+        ));
+
+        let text = AccessibilityText::new("bounded")?;
+        assert_eq!(text.as_str(), "bounded");
+        let response_result = AccessibilityResponse::success(
+            &selection_request,
+            revision,
+            AccessibilityPayload::Selection(AccessibilitySelection::new(1, 2)),
+        );
+        let response = response_result?;
+        assert_eq!(response.request_id().get(), 2);
+        assert_eq!(response.kind(), AccessibilityRequestKind::Selection);
+        assert_eq!(response.requested_revision(), Some(revision));
+        assert_eq!(response.observed_revision(), revision);
+        assert!(response.result().is_ok());
+        assert_eq!(response.validate_for(&selection_request), Ok(()));
+        assert_eq!(
+            AccessibilityResponse::success(
+                &selection_request,
+                revision,
+                AccessibilityPayload::Action(AccessibilityActionResult::Applied),
+            ),
+            Err(AccessibilityError::RequestMismatch)
+        );
+        let failure = AccessibilityResponse::failure(
+            &action_request,
+            revision,
+            AccessibilityError::DuplicateResponse,
+        );
+        assert_eq!(
+            failure.result(),
+            &Err(AccessibilityError::DuplicateResponse)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostics_are_stable_and_nonempty() {
+        let revision = AccessibilityRevision::new(3, 5);
+        let diagnostics = [
+            AccessibilityError::AllocationFailed,
+            AccessibilityError::ArithmeticOverflow,
+            AccessibilityError::InvalidRequestId,
+            AccessibilityError::InvalidNodeId,
+            AccessibilityError::DuplicateNodeId(AccessibilityNodeId::new(9)),
+            AccessibilityError::InvalidTree,
+            AccessibilityError::TooManyNodes {
+                actual: 2,
+                limit: 1,
+            },
+            AccessibilityError::NodeNameTooLarge {
+                actual: 2,
+                limit: 1,
+            },
+            AccessibilityError::NameBudgetExceeded {
+                actual: 2,
+                limit: 1,
+            },
+            AccessibilityError::InvalidSelection { text_len_utf16: 1 },
+            AccessibilityError::TextResponseTooLarge {
+                actual: 2,
+                limit: 1,
+            },
+            AccessibilityError::StaleRevision {
+                expected: revision,
+                actual: AccessibilityRevision::new(3, 6),
+            },
+            AccessibilityError::TextMappingFailed,
+            AccessibilityError::DuplicateResponse,
+            AccessibilityError::RequestMismatch,
+        ];
+        for error in diagnostics {
+            assert!(!error.to_string().is_empty());
+        }
     }
 }

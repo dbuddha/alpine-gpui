@@ -188,20 +188,30 @@ pub(super) fn snapshot(app: &StudioApp) -> Result<AccessibilitySnapshot, Accessi
     let text = app.buffer().snapshot();
     let selection = selection_from_snapshot(app, &text)?;
     let text_len_utf16 = text.appkit_utf16_of_byte(ByteOffset::new(text.len_bytes()))?;
-    let transport = PlatformAccessibilitySnapshot::new(
-        revision(app),
-        WINDOW_NODE,
-        nodes,
-        selection,
-        text_len_utf16,
-        text.line_count(),
-        app.document.is_dirty(),
-    )?;
+    let transport = transport_snapshot(app, nodes, selection, text_len_utf16, text.line_count())?;
     Ok(AccessibilitySnapshot {
         transport,
         #[cfg(test)]
         text,
     })
+}
+
+fn transport_snapshot(
+    app: &StudioApp,
+    nodes: Vec<AccessibilityNode>,
+    selection: AccessibilitySelection,
+    text_len_utf16: usize,
+    line_count: usize,
+) -> Result<PlatformAccessibilitySnapshot, PlatformAccessibilityError> {
+    PlatformAccessibilitySnapshot::new(
+        revision(app),
+        WINDOW_NODE,
+        nodes,
+        selection,
+        text_len_utf16,
+        line_count,
+        app.document.is_dirty(),
+    )
 }
 
 fn selection_from_snapshot(
@@ -281,12 +291,19 @@ pub(super) fn respond(
             Err(error) => (Err(error), EventEffect::default()),
         },
     };
-    let response = match result {
+    (finish_response(request, observed, result), effect)
+}
+
+fn finish_response(
+    request: &AccessibilityRequest,
+    observed: AccessibilityRevision,
+    result: Result<AccessibilityPayload, AccessibilityError>,
+) -> AccessibilityResponse {
+    match result {
         Ok(payload) => AccessibilityResponse::success(request, observed, payload)
             .unwrap_or_else(|error| AccessibilityResponse::failure(request, observed, error)),
         Err(error) => AccessibilityResponse::failure(request, observed, error.into_transport()),
-    };
-    (response, effect)
+    }
 }
 
 fn build_nodes(app: &StudioApp) -> Result<Vec<AccessibilityNode>, AccessibilityError> {
@@ -305,49 +322,17 @@ fn build_nodes(app: &StudioApp) -> Result<Vec<AccessibilityNode>, AccessibilityE
     nodes
         .try_reserve_exact(node_count)
         .map_err(|_| AccessibilityError::AllocationFailed)?;
-    nodes.push(node(
-        WINDOW_NODE,
-        None,
-        AccessibilityRole::Window,
-        Arc::from("Alpine Studio"),
-        false,
-        false,
-        false,
-    )?);
-    nodes.push(node(
-        TAB_LIST_NODE,
-        Some(WINDOW_NODE),
-        AccessibilityRole::TabList,
-        Arc::from("Open documents"),
-        false,
-        false,
-        false,
-    )?);
+    nodes.push(window_node()?);
+    nodes.push(tab_list_node()?);
     push_tabs(app, &mut nodes)?;
     let active_name = app
         .tabs
         .label(app.tabs.active_index())
         .ok_or(AccessibilityError::InvalidTree)?;
-    nodes.push(node(
-        EDITOR_NODE,
-        Some(WINDOW_NODE),
-        AccessibilityRole::CodeEditor,
-        active_name,
-        focus_owner == Some(EDITOR_NODE),
-        false,
-        false,
-    )?);
+    nodes.push(editor_node(active_name, focus_owner == Some(EDITOR_NODE))?);
     push_overlays(app, focus_owner, &mut nodes)?;
     if let Some(status) = app.local_status.as_ref() {
-        nodes.push(node(
-            STATUS_NODE,
-            Some(WINDOW_NODE),
-            AccessibilityRole::Status,
-            Arc::from(status.message()),
-            false,
-            false,
-            true,
-        )?);
+        nodes.push(status_node(status.message())?);
     }
     let focused_count = nodes.iter().filter(|value| value.is_focused()).count();
     validate_tree_shape(nodes.len(), node_count, focused_count, app.focused)?;
@@ -425,17 +410,11 @@ fn push_tabs(
                 .checked_add(tab.0)
                 .ok_or(AccessibilityError::ArithmeticOverflow)?,
         );
-        nodes.push(node(
-            id,
-            Some(TAB_LIST_NODE),
-            AccessibilityRole::Tab,
-            app.tabs
-                .label(index)
-                .ok_or(AccessibilityError::InvalidTree)?,
-            false,
-            index == app.tabs.active_index(),
-            false,
-        )?);
+        let label = app
+            .tabs
+            .label(index)
+            .ok_or(AccessibilityError::InvalidTree)?;
+        nodes.push(tab_node(id, label, index == app.tabs.active_index())?);
     }
     Ok(())
 }
@@ -445,59 +424,48 @@ fn push_overlays(
     focus_owner: Option<AccessibilityNodeId>,
     nodes: &mut Vec<AccessibilityNode>,
 ) -> Result<(), AccessibilityError> {
-    push_conditional_node(
-        nodes,
-        app.file_tree.is_visible(),
-        FILE_TREE_NODE,
-        AccessibilityRole::FileTree,
-        "Files",
-        focus_owner == Some(FILE_TREE_NODE),
-    )?;
-    push_conditional_node(
-        nodes,
-        app.find.is_open(),
-        FIND_NODE,
-        AccessibilityRole::SearchField,
-        "Find in document",
-        focus_owner == Some(FIND_NODE),
-    )?;
-    push_conditional_node(
-        nodes,
-        app.quick_open.is_open(),
-        QUICK_OPEN_NODE,
-        AccessibilityRole::Dialog,
-        "Quick open",
-        focus_owner == Some(QUICK_OPEN_NODE),
-    )?;
-    push_conditional_node(
-        nodes,
-        app.project_search.is_open(),
-        PROJECT_SEARCH_NODE,
-        AccessibilityRole::Dialog,
-        "Project search",
-        focus_owner == Some(PROJECT_SEARCH_NODE),
-    )?;
-    push_conditional_node(
-        nodes,
-        app.command_palette.is_open(),
-        COMMAND_PALETTE_NODE,
-        AccessibilityRole::Dialog,
-        "Command palette",
-        focus_owner == Some(COMMAND_PALETTE_NODE),
-    )?;
+    let overlays = [
+        (
+            app.file_tree.is_visible(),
+            FILE_TREE_NODE,
+            AccessibilityRole::FileTree,
+            "Files",
+        ),
+        (
+            app.find.is_open(),
+            FIND_NODE,
+            AccessibilityRole::SearchField,
+            "Find in document",
+        ),
+        (
+            app.quick_open.is_open(),
+            QUICK_OPEN_NODE,
+            AccessibilityRole::Dialog,
+            "Quick open",
+        ),
+        (
+            app.project_search.is_open(),
+            PROJECT_SEARCH_NODE,
+            AccessibilityRole::Dialog,
+            "Project search",
+        ),
+        (
+            app.command_palette.is_open(),
+            COMMAND_PALETTE_NODE,
+            AccessibilityRole::Dialog,
+            "Command palette",
+        ),
+    ];
+    for (present, id, role, name) in overlays {
+        let focused = focus_owner == Some(id);
+        push_conditional_node(nodes, present, id, role, name, focused)?;
+    }
     if let Some(label) = app
         .rust_diagnostics
         .completion_accessibility_label(app.language_identity())
     {
-        nodes.push(node(
-            COMPLETION_NODE,
-            Some(WINDOW_NODE),
-            AccessibilityRole::Dialog,
-            label,
-            focus_owner == Some(COMPLETION_NODE),
-            true,
-            true,
-        )?);
+        let focused = focus_owner == Some(COMPLETION_NODE);
+        nodes.push(completion_node(label, focused)?);
     }
     Ok(())
 }
@@ -535,6 +503,99 @@ fn node(
     AccessibilityNode::new(id, parent, role, name, focused, selected, announces).map_err(Into::into)
 }
 
+fn window_node() -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        WINDOW_NODE,
+        None,
+        AccessibilityRole::Window,
+        Arc::from("Alpine Studio"),
+        false,
+        false,
+        false,
+    )
+}
+
+fn tab_list_node() -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        TAB_LIST_NODE,
+        Some(WINDOW_NODE),
+        AccessibilityRole::TabList,
+        Arc::from("Open documents"),
+        false,
+        false,
+        false,
+    )
+}
+
+fn editor_node(name: Arc<str>, focused: bool) -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        EDITOR_NODE,
+        Some(WINDOW_NODE),
+        AccessibilityRole::CodeEditor,
+        name,
+        focused,
+        false,
+        false,
+    )
+}
+
+fn tab_node(
+    id: AccessibilityNodeId,
+    name: Arc<str>,
+    selected: bool,
+) -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        id,
+        Some(TAB_LIST_NODE),
+        AccessibilityRole::Tab,
+        name,
+        false,
+        selected,
+        false,
+    )
+}
+
+fn status_node(message: &str) -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        STATUS_NODE,
+        Some(WINDOW_NODE),
+        AccessibilityRole::Status,
+        Arc::from(message),
+        false,
+        false,
+        true,
+    )
+}
+
+fn overlay_node(
+    id: AccessibilityNodeId,
+    role: AccessibilityRole,
+    name: &'static str,
+    focused: bool,
+) -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        id,
+        Some(WINDOW_NODE),
+        role,
+        Arc::from(name),
+        focused,
+        false,
+        false,
+    )
+}
+
+fn completion_node(name: Arc<str>, focused: bool) -> Result<AccessibilityNode, AccessibilityError> {
+    node(
+        COMPLETION_NODE,
+        Some(WINDOW_NODE),
+        AccessibilityRole::Dialog,
+        name,
+        focused,
+        true,
+        true,
+    )
+}
+
 fn push_conditional_node(
     nodes: &mut Vec<AccessibilityNode>,
     present: bool,
@@ -544,15 +605,7 @@ fn push_conditional_node(
     focused: bool,
 ) -> Result<(), AccessibilityError> {
     if present {
-        nodes.push(node(
-            id,
-            Some(WINDOW_NODE),
-            role,
-            Arc::from(name),
-            focused,
-            false,
-            false,
-        )?);
+        nodes.push(overlay_node(id, role, name, focused)?);
     }
     Ok(())
 }
@@ -593,5 +646,85 @@ mod tests {
                 .is_some()
         );
         assert!(AccessibilityError::InvalidTree.source().is_none());
+    }
+
+    #[test]
+    fn transport_conversion_and_response_finalization_are_discriminating()
+    -> Result<(), Box<dyn Error>> {
+        let expected = AccessibilityRevision::new(3, 5);
+        let actual = AccessibilityRevision::new(7, 11);
+        let text = TextError::InvalidUtf16Boundary { offset: 2 };
+        let conversions = [
+            (
+                AccessibilityError::AllocationFailed,
+                PlatformAccessibilityError::AllocationFailed,
+            ),
+            (
+                AccessibilityError::ArithmeticOverflow,
+                PlatformAccessibilityError::ArithmeticOverflow,
+            ),
+            (
+                AccessibilityError::InvalidTree,
+                PlatformAccessibilityError::InvalidTree,
+            ),
+            (
+                AccessibilityError::StaleRevision { expected, actual },
+                PlatformAccessibilityError::StaleRevision { expected, actual },
+            ),
+            (
+                AccessibilityError::TextRequestTooLarge {
+                    actual: 65_537,
+                    limit: 65_536,
+                },
+                PlatformAccessibilityError::TextResponseTooLarge {
+                    actual: 65_537,
+                    limit: 65_536,
+                },
+            ),
+            (
+                AccessibilityError::Text(text.clone()),
+                PlatformAccessibilityError::TextMappingFailed,
+            ),
+            (
+                AccessibilityError::Transport(PlatformAccessibilityError::RequestMismatch),
+                PlatformAccessibilityError::RequestMismatch,
+            ),
+        ];
+        for (local, platform) in conversions {
+            assert!(!local.to_string().is_empty());
+            assert_eq!(local.into_transport(), platform);
+        }
+
+        let reverse = [
+            PlatformAccessibilityError::AllocationFailed,
+            PlatformAccessibilityError::ArithmeticOverflow,
+            PlatformAccessibilityError::InvalidTree,
+            PlatformAccessibilityError::StaleRevision { expected, actual },
+            PlatformAccessibilityError::TextResponseTooLarge {
+                actual: 65_537,
+                limit: 65_536,
+            },
+            PlatformAccessibilityError::RequestMismatch,
+        ];
+        for platform in reverse {
+            assert!(!AccessibilityError::from(platform).to_string().is_empty());
+        }
+
+        let request_result =
+            AccessibilityRequest::snapshot(alpine_platform_macos::AccessibilityRequestId::new(1));
+        let request = request_result?;
+        let text_result = AccessibilityText::new("wrong kind");
+        let text = text_result?;
+        let response = finish_response(&request, actual, Ok(AccessibilityPayload::Text(text)));
+        assert_eq!(
+            response.result(),
+            &Err(PlatformAccessibilityError::RequestMismatch)
+        );
+        let failure = finish_response(&request, actual, Err(AccessibilityError::InvalidTree));
+        assert_eq!(
+            failure.result(),
+            &Err(PlatformAccessibilityError::InvalidTree)
+        );
+        Ok(())
     }
 }

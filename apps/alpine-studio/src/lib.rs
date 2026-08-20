@@ -4551,9 +4551,8 @@ impl AppDelegate for StudioApp {
         if let SurfaceEvent::Accessibility { request, .. } = event {
             let selection_before = self.selection;
             let (response, effect) = accessibility::respond(self, request);
-            if !context.respond_accessibility(response) {
-                self.input_failures = self.input_failures.saturating_add(1);
-            }
+            let admitted = context.respond_accessibility(response);
+            self.input_failures = self.input_failures.saturating_add(u64::from(!admitted));
             self.advance_selection_revision(selection_before);
             if effect.visual_changed {
                 context.invalidate();

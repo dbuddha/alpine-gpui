@@ -2513,6 +2513,35 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn accessibility_event_and_response_channel_preserve_identity() -> Result<(), Box<dyn Error>> {
+        let timestamp = EventTimestamp::new(29);
+        let request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(7))?;
+        let event = SurfaceEvent::Accessibility {
+            timestamp,
+            request: request.clone(),
+        };
+        assert_eq!(event.timestamp(), timestamp);
+
+        let response = AccessibilityResponse::failure(
+            &request,
+            AccessibilityRevision::new(3, 5),
+            AccessibilityError::InvalidTree,
+        );
+        let surface = SurfaceResponse::from_channels(
+            None,
+            None,
+            CloseDisposition::NotRequested,
+            Some(response.clone()),
+        );
+        assert_eq!(surface.accessibility_response(), Some(&response));
+        assert_eq!(
+            surface.into_channels(),
+            (None, None, CloseDisposition::NotRequested, Some(response))
+        );
+        Ok(())
+    }
+
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     #[test]
     fn public_event_loop_wrapper_preserves_unsupported_error() {
