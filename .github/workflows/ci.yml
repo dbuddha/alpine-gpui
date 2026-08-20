@@ -485,6 +485,14 @@ jobs:
             target/metal/offscreen.metallib.manifest.txt
           retention-days: 7
           if-no-files-found: error
+      - name: Upload native lifecycle soak evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-lifecycle-${{ github.sha }}
+          path: target/native-lifecycle-soak.toml
+          retention-days: 30
+          if-no-files-found: warn
       - name: Upload rust-analyzer compatibility evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
