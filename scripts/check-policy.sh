@@ -130,13 +130,18 @@ fi
 research_files=$(find docs/research -type f -print 2>/dev/null | sort || true)
 expected_research_files='docs/research/alpine-studio-adversarial-review.md
 docs/research/index.md
+docs/research/native-idle-energy/decisions.md
+docs/research/native-idle-energy/experiments.md
+docs/research/native-idle-energy/findings.md
+docs/research/native-idle-energy/index.md
+docs/research/native-idle-energy/source-map.md
 docs/research/wgpu/decisions.md
 docs/research/wgpu/experiments.md
 docs/research/wgpu/findings.md
 docs/research/wgpu/index.md
 docs/research/wgpu/source-map.md'
 if [ "$research_files" != "$expected_research_files" ]; then
-    fail 'docs/research may contain only accepted catalog, review, and WGPU package artifacts'
+    fail 'docs/research may contain only accepted catalog, review, and decision-grade package artifacts'
     printf '%s\n' "$research_files" >&2
 fi
 
