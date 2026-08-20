@@ -504,7 +504,7 @@ impl NativeAccessibilityAdapter {
         let selected_range: NSRange =
             unsafe { msg_send![&*editor, accessibilitySelectedTextRange] };
         let line_for_index: usize =
-            unsafe { msg_send![&*editor, accessibilityLineForIndex: 3usize] };
+            unsafe { msg_send![&*editor, accessibilityLineForIndex: 6usize] };
         let range_for_line: NSRange =
             unsafe { msg_send![&*editor, accessibilityRangeForLine: 1usize] };
         let range_for_index: NSRange =

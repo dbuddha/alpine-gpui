@@ -190,7 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(evidence.selected_text(), "zero");
     assert_eq!(evidence.bounded_text(), "one");
     assert_eq!(evidence.selected_range(), AccessibilityTextRange::new(0, 4));
-    assert_eq!(evidence.line_for_index(), 0);
+    assert_eq!(evidence.line_for_index(), 1);
     assert_eq!(evidence.range_for_line(), AccessibilityTextRange::new(5, 7));
     assert_eq!(
         evidence.range_for_index(),
@@ -209,11 +209,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(evidence.created_elements(), 5);
     assert_eq!(evidence.released_elements(), 5);
     assert_eq!(evidence.current_elements_after_revoke(), 0);
-    assert!(evidence.retained_slot_bytes_before_revoke() > 0);
+    assert_eq!(
+        evidence.retained_slot_bytes_before_revoke(),
+        evidence.peak_elements() * core::mem::size_of::<usize>()
+    );
     assert_eq!(evidence.retained_slot_bytes_after_revoke(), 0);
     assert!(evidence.late_selector_rejected());
-    assert!(evidence.notification_counts()[2] >= 1);
-    assert!(evidence.notification_counts()[3] >= 1);
+    assert_eq!(evidence.notification_counts(), [0, 0, 1, 1, 0]);
 
     let owner_evidence = native_validation::close_with_owner_evidence(surface)?;
     assert_eq!(owner_evidence.active(), [0; 10]);
