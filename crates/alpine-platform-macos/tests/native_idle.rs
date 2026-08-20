@@ -7,7 +7,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 mod validation {
-    use std::{error::Error, ffi::OsStr, time::Duration};
+    use std::{
+        error::Error,
+        ffi::OsStr,
+        time::{Duration, Instant},
+    };
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_platform_macos::{
@@ -113,6 +117,7 @@ mod validation {
         if let Some(error) = surface.take_error()? {
             return Err(error.into());
         }
+        await_display_link_paused(surface, SETTLEMENT)?;
         let snapshot = surface.snapshot();
         assert!(
             snapshot.submission_count() > before.submission_count(),
@@ -125,6 +130,32 @@ mod validation {
         assert_eq!(snapshot.occupied_frame_slots(), 0);
         assert_eq!(snapshot.submitted_frame_slots(), 0);
         assert!(snapshot.display_link_paused());
+        Ok(())
+    }
+
+    fn await_display_link_paused(surface: &NativeSurface, timeout: Duration) -> TestResult {
+        let before = surface.snapshot();
+        let deadline = Instant::now() + timeout;
+        while !surface.snapshot().display_link_paused() && Instant::now() < deadline {
+            pump_main_run_loop(Duration::from_millis(5));
+        }
+        let after = surface.snapshot();
+        assert!(
+            after.display_link_paused(),
+            "display link did not pause within the settlement bound"
+        );
+        assert_eq!(
+            after.submission_count(),
+            before.submission_count(),
+            "pause observation admitted an extra submission"
+        );
+        assert_eq!(
+            after.direct_present_count(),
+            before.direct_present_count(),
+            "pause observation issued an extra direct presentation"
+        );
+        assert_eq!(after.occupied_frame_slots(), 0);
+        assert_eq!(after.submitted_frame_slots(), 0);
         Ok(())
     }
 
