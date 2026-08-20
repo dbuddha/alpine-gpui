@@ -2058,7 +2058,34 @@ define_class!(
                         && !link.isPaused()
                         && let Some(display_link) = &self.ivars().display_link
                     {
-                        schedule_display_link_pause_confirmation(display_link, driver);
+                        let display_link = display_link.clone();
+                        let driver = Rc::downgrade(driver);
+                        let pause_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
+                            RcBlock::new(move |timer: NonNull<NSTimer>| {
+                                // SAFETY: Foundation supplies a valid borrowed timer for the
+                                // complete callback, and the reference does not escape.
+                                unsafe { timer.as_ref() }.invalidate();
+                                let should_pause = driver.upgrade().is_some_and(|driver| {
+                                    driver.try_borrow().is_ok_and(|driver| {
+                                        should_confirm_display_link_pause(
+                                            driver.display_link_state(),
+                                        )
+                                    })
+                                });
+                                if should_pause {
+                                    display_link.setPaused(true);
+                                }
+                            });
+                        // SAFETY: The retained display link and weak driver are main-thread-only,
+                        // Foundation copies the block for the scheduled timer lifetime, and the
+                        // callback receives a valid NSTimer after this callback returns.
+                        let _timer = unsafe {
+                            NSTimer::scheduledTimerWithTimeInterval_repeats_block(
+                                0.0,
+                                false,
+                                &pause_block,
+                            )
+                        };
                     }
                 }
                 #[cfg(alpine_native_validation)]
@@ -2626,33 +2653,6 @@ fn apply_display_link_directive(link: &CAMetalDisplayLink, directive: DisplayLin
 
 const fn should_confirm_display_link_pause(state: DisplayLinkState) -> bool {
     matches!(state, DisplayLinkState::Paused)
-}
-
-fn schedule_display_link_pause_confirmation(
-    display_link: &Retained<CAMetalDisplayLink>,
-    driver: &Rc<RefCell<PresentationDriver>>,
-) {
-    let display_link = display_link.clone();
-    let driver = Rc::downgrade(driver);
-    let pause_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
-        RcBlock::new(move |timer: NonNull<NSTimer>| {
-            // SAFETY: Foundation supplies a valid borrowed timer for the
-            // complete callback, and the reference does not escape.
-            unsafe { timer.as_ref() }.invalidate();
-            let should_pause = driver.upgrade().is_some_and(|driver| {
-                driver.try_borrow().is_ok_and(|driver| {
-                    should_confirm_display_link_pause(driver.display_link_state())
-                })
-            });
-            if should_pause {
-                display_link.setPaused(true);
-            }
-        });
-    // SAFETY: The retained display link and weak driver are main-thread-only,
-    // Foundation copies the block for the scheduled timer lifetime, and the
-    // callback receives a valid NSTimer after the current callback returns.
-    let _timer =
-        unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.0, false, &pause_block) };
 }
 
 #[cfg(alpine_native_validation)]
