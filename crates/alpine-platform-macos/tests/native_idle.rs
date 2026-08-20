@@ -117,7 +117,11 @@ mod validation {
         if let Some(error) = surface.take_error()? {
             return Err(error.into());
         }
-        await_display_link_paused(surface, SETTLEMENT)?;
+        let expected_pause_confirmations = before
+            .pause_confirmation_count()
+            .checked_add(1)
+            .ok_or("pause confirmation count exhausted")?;
+        await_display_link_paused(surface, SETTLEMENT, expected_pause_confirmations)?;
         let snapshot = surface.snapshot();
         assert!(
             snapshot.submission_count() > before.submission_count(),
@@ -130,19 +134,37 @@ mod validation {
         assert_eq!(snapshot.occupied_frame_slots(), 0);
         assert_eq!(snapshot.submitted_frame_slots(), 0);
         assert!(snapshot.display_link_paused());
+        assert_eq!(
+            snapshot.pause_confirmation_count(),
+            expected_pause_confirmations,
+            "every setup revision must complete exactly one post-callback pause reaffirmation"
+        );
         Ok(())
     }
 
-    fn await_display_link_paused(surface: &NativeSurface, timeout: Duration) -> TestResult {
+    fn await_display_link_paused(
+        surface: &NativeSurface,
+        timeout: Duration,
+        minimum_pause_confirmations: u64,
+    ) -> TestResult {
         let before = surface.snapshot();
         let deadline = Instant::now() + timeout;
-        while !surface.snapshot().display_link_paused() && Instant::now() < deadline {
+        while {
+            let snapshot = surface.snapshot();
+            (!snapshot.display_link_paused()
+                || snapshot.pause_confirmation_count() < minimum_pause_confirmations)
+                && Instant::now() < deadline
+        } {
             pump_main_run_loop(Duration::from_millis(5));
         }
         let after = surface.snapshot();
         assert!(
             after.display_link_paused(),
             "display link did not pause within the settlement bound"
+        );
+        assert!(
+            after.pause_confirmation_count() >= minimum_pause_confirmations,
+            "post-callback pause reaffirmation did not complete within the settlement bound"
         );
         assert_eq!(
             after.submission_count(),

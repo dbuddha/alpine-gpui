@@ -1634,6 +1634,8 @@ pub struct SurfaceSnapshot {
     maximum_drawable_count: u8,
     regular_activation_policy: bool,
     display_link_paused: bool,
+    #[cfg(alpine_native_validation)]
+    pause_confirmation_count: u64,
     visible: bool,
     callback_count: u64,
     rejected_callback_count: u64,
@@ -1741,6 +1743,13 @@ impl SurfaceSnapshot {
     #[must_use]
     pub const fn display_link_paused(self) -> bool {
         self.display_link_paused
+    }
+
+    /// Returns post-callback pause reaffirmations completed by the main queue.
+    #[cfg(alpine_native_validation)]
+    #[must_use]
+    pub const fn pause_confirmation_count(self) -> u64 {
+        self.pause_confirmation_count
     }
 
     /// Returns whether `AppKit` currently reports the window as visible.
@@ -2911,6 +2920,8 @@ mod tests {
             maximum_drawable_count: 2,
             regular_activation_policy: false,
             display_link_paused: false,
+            #[cfg(alpine_native_validation)]
+            pause_confirmation_count: 25,
             visible: true,
             callback_count: 23,
             rejected_callback_count: 24,
@@ -2954,6 +2965,8 @@ mod tests {
             maximum_drawable_count: 3,
             regular_activation_policy: true,
             display_link_paused: true,
+            #[cfg(alpine_native_validation)]
+            pause_confirmation_count: 41,
             visible: false,
             callback_count: 37,
             rejected_callback_count: 39,
@@ -3000,6 +3013,8 @@ mod tests {
         assert_eq!(snapshot.maximum_drawable_count(), 2);
         assert!(!snapshot.regular_activation_policy());
         assert!(!snapshot.display_link_paused());
+        #[cfg(alpine_native_validation)]
+        assert_eq!(snapshot.pause_confirmation_count(), 25);
         assert!(snapshot.visible());
         assert_eq!(snapshot.callback_count(), 23);
         assert_eq!(snapshot.submission_count(), 29);
@@ -3053,6 +3068,8 @@ mod tests {
         assert_eq!(inverse.maximum_drawable_count(), 3);
         assert!(inverse.regular_activation_policy());
         assert!(inverse.display_link_paused());
+        #[cfg(alpine_native_validation)]
+        assert_eq!(inverse.pause_confirmation_count(), 41);
         assert!(!inverse.visible());
         assert_eq!(inverse.callback_count(), 37);
         assert_eq!(inverse.rejected_callback_count(), 39);

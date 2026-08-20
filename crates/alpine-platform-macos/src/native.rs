@@ -1935,6 +1935,8 @@ struct DisplayLinkDelegateIvars {
     window_close_started: Arc<AtomicBool>,
     callback_count: Arc<AtomicU64>,
     rejected_callback_count: Arc<AtomicU64>,
+    #[cfg(alpine_native_validation)]
+    pause_confirmation_count: Arc<AtomicU64>,
     counters: Arc<FrameCounters>,
     driver: Option<Rc<RefCell<PresentationDriver>>>,
     application: Retained<NSApplication>,
@@ -2073,6 +2075,13 @@ define_class!(
                     if should_schedule_display_link_pause_confirmation(directive)
                         && let Some(display_link) = &self.ivars().display_link
                     {
+                        #[cfg(alpine_native_validation)]
+                        schedule_display_link_pause_confirmation(
+                            display_link,
+                            driver,
+                            Arc::clone(&self.ivars().pause_confirmation_count),
+                        );
+                        #[cfg(not(alpine_native_validation))]
                         schedule_display_link_pause_confirmation(display_link, driver);
                     }
                 }
@@ -2650,6 +2659,7 @@ const fn should_schedule_display_link_pause_confirmation(directive: DisplayLinkD
 fn schedule_display_link_pause_confirmation(
     display_link: &Retained<CAMetalDisplayLink>,
     driver: &Rc<RefCell<PresentationDriver>>,
+    #[cfg(alpine_native_validation)] pause_confirmation_count: Arc<AtomicU64>,
 ) {
     let Some(marker) = MainThreadMarker::new() else {
         display_link.setPaused(true);
@@ -2671,6 +2681,8 @@ fn schedule_display_link_pause_confirmation(
         });
         if should_pause {
             display_link.setPaused(true);
+            #[cfg(alpine_native_validation)]
+            pause_confirmation_count.fetch_add(1, Ordering::Relaxed);
         }
     });
 }
@@ -3119,6 +3131,8 @@ impl NativeSurface {
                 window_close_started: Arc::clone(&builder.window_close_started),
                 callback_count: Arc::clone(&builder.callback_count),
                 rejected_callback_count: Arc::clone(&builder.rejected_callback_count),
+                #[cfg(alpine_native_validation)]
+                pause_confirmation_count: Arc::new(AtomicU64::new(0)),
                 counters: Arc::clone(&builder.counters),
                 driver: Some(driver),
                 application: builder
@@ -3665,6 +3679,12 @@ impl NativeSurface {
             regular_activation_policy: self.application.activationPolicy()
                 == NSApplicationActivationPolicy::Regular,
             display_link_paused: self.display_link.isPaused(),
+            #[cfg(alpine_native_validation)]
+            pause_confirmation_count: self
+                .delegate
+                .ivars()
+                .pause_confirmation_count
+                .load(Ordering::Acquire),
             visible: self.window.isVisible(),
             callback_count: self.callback_count.load(Ordering::Acquire),
             rejected_callback_count: self.rejected_callback_count.load(Ordering::Acquire),
