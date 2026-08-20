@@ -1838,6 +1838,22 @@ mod native_input_tests {
     }
 
     #[test]
+    fn every_pause_directive_schedules_post_callback_confirmation() {
+        assert!(should_schedule_display_link_pause_confirmation(
+            DisplayLinkDirective::Pause
+        ));
+        assert!(!should_schedule_display_link_pause_confirmation(
+            DisplayLinkDirective::None
+        ));
+        assert!(!should_schedule_display_link_pause_confirmation(
+            DisplayLinkDirective::Resume
+        ));
+        assert!(!should_schedule_display_link_pause_confirmation(
+            DisplayLinkDirective::Invalidate
+        ));
+    }
+
+    #[test]
     fn finite_f32_rejects_invalid_or_unrepresentable_values() {
         assert_eq!(finite_f32(1.25), Some(1.25));
         assert_eq!(finite_f32(f64::from(f32::MIN)), Some(f32::MIN));
@@ -2054,8 +2070,7 @@ define_class!(
                     stop_event_loop(&self.ivars().application);
                 } else {
                     apply_display_link_directive(link, directive);
-                    if matches!(directive, DisplayLinkDirective::Pause)
-                        && !link.isPaused()
+                    if should_schedule_display_link_pause_confirmation(directive)
                         && let Some(display_link) = &self.ivars().display_link
                     {
                         let display_link = display_link.clone();
@@ -2076,6 +2091,10 @@ define_class!(
                                     display_link.setPaused(true);
                                 }
                             });
+                        // The paused property observed inside this callback is not evidence that
+                        // the link remains paused after callback delivery unwinds. Schedule one
+                        // guarded reaffirmation for every Pause directive so the durable native
+                        // state is established outside the callback without retrying or delaying.
                         // SAFETY: The retained display link and weak driver are main-thread-only,
                         // Foundation copies the block for the timer lifetime, and the main run
                         // loop retains the one-shot timer in the same common modes as the display
@@ -2657,6 +2676,10 @@ fn apply_display_link_directive(link: &CAMetalDisplayLink, directive: DisplayLin
 
 const fn should_confirm_display_link_pause(state: DisplayLinkState) -> bool {
     matches!(state, DisplayLinkState::Paused)
+}
+
+const fn should_schedule_display_link_pause_confirmation(directive: DisplayLinkDirective) -> bool {
+    matches!(directive, DisplayLinkDirective::Pause)
 }
 
 #[cfg(alpine_native_validation)]
