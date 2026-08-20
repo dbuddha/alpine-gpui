@@ -4657,6 +4657,42 @@ fn accessibility_snapshot_preserves_unicode_revision_focus_and_bounded_text()
 }
 
 #[test]
+fn accessibility_text_mapping_dispatches_exact_unicode_results()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("a🦀é"), None)?;
+    let revision = app.accessibility_snapshot()?.revision();
+    let line_request =
+        AccessibilityRequest::line_for_index(AccessibilityRequestId::new(3), revision, 3)?;
+    let (line_response, line_effect) = accessibility::respond(&mut app, &line_request);
+    assert!(!line_effect.visual_changed);
+    assert_eq!(line_response.result(), &Ok(AccessibilityPayload::Line(0)));
+
+    let line_range_request =
+        AccessibilityRequest::range_for_line(AccessibilityRequestId::new(4), revision, 0)?;
+    let (line_range_response, line_range_effect) =
+        accessibility::respond(&mut app, &line_range_request);
+    assert!(!line_range_effect.visual_changed);
+    assert_eq!(
+        line_range_response.result(),
+        &Ok(AccessibilityPayload::Range(AccessibilityTextRange::new(
+            0, 4
+        )))
+    );
+
+    let grapheme_request =
+        AccessibilityRequest::range_for_index(AccessibilityRequestId::new(5), revision, 1)?;
+    let (grapheme_response, grapheme_effect) = accessibility::respond(&mut app, &grapheme_request);
+    assert!(!grapheme_effect.visual_changed);
+    assert_eq!(
+        grapheme_response.result(),
+        &Ok(AccessibilityPayload::Range(AccessibilityTextRange::new(
+            1, 2
+        )))
+    );
+    Ok(())
+}
+
+#[test]
 fn accessibility_runtime_dispatch_is_exact_dirty_neutral_and_revision_checked()
 -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(accessibility_admission_failures(4, true), 4);
@@ -4765,6 +4801,23 @@ fn accessibility_runtime_rejects_stale_mapping_and_oversized_text()
         stale_response
             .accessibility_response()
             .ok_or("stale response")?
+            .result(),
+        Err(alpine_platform_macos::AccessibilityError::StaleRevision {
+            expected,
+            actual,
+        }) if *expected == stale && *actual == revision
+    ));
+
+    let stale_mapping_request =
+        AccessibilityRequest::line_for_index(AccessibilityRequestId::new(17), stale, 0)?;
+    let stale_mapping_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(17),
+        request: stale_mapping_request,
+    });
+    assert!(matches!(
+        stale_mapping_response
+            .accessibility_response()
+            .ok_or("stale mapping response")?
             .result(),
         Err(alpine_platform_macos::AccessibilityError::StaleRevision {
             expected,

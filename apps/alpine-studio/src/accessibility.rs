@@ -258,27 +258,8 @@ fn line_for_index_from_snapshot(
     text: &BufferSnapshot,
     index_utf16: usize,
 ) -> Result<usize, AccessibilityError> {
-    let byte = text.byte_of_appkit_utf16(index_utf16)?.get();
-    if byte == text.len_bytes() {
-        return text
-            .line_count()
-            .checked_sub(1)
-            .ok_or(AccessibilityError::InvalidTree);
-    }
-    let mut low = 0_usize;
-    let mut high = text.line_count();
-    while low < high {
-        let middle = low + (high - low) / 2;
-        let range = text.line_byte_range(middle)?;
-        if byte < range.start {
-            high = middle;
-        } else if byte >= range.end {
-            low = middle + 1;
-        } else {
-            return Ok(middle);
-        }
-    }
-    Err(AccessibilityError::InvalidTree)
+    let byte = text.byte_of_appkit_utf16(index_utf16)?;
+    text.line_of_byte(byte).map_err(Into::into)
 }
 
 fn range_for_line_from_snapshot(

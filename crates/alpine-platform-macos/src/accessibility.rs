@@ -991,15 +991,15 @@ mod mapping_protocol_tests {
             &line_range_request,
             revision,
             AccessibilityPayload::Range(range),
-        )?;
+        );
         assert_eq!(
             line_range_request.kind(),
             AccessibilityRequestKind::RangeForLine
         );
-        assert_eq!(
-            line_range_response.validate_for(&line_range_request),
-            Ok(())
-        );
+        assert!(matches!(
+            &line_range_response,
+            Ok(response) if response.validate_for(&line_range_request) == Ok(())
+        ));
 
         let grapheme_request =
             AccessibilityRequest::range_for_index(AccessibilityRequestId::new(19), revision, 8)?;
@@ -1015,10 +1015,12 @@ mod mapping_protocol_tests {
             ),
             Err(AccessibilityError::RequestMismatch)
         );
-        assert_eq!(
-            line_range_response.validate_for(&grapheme_request),
-            Err(AccessibilityError::RequestMismatch)
-        );
+        assert!(matches!(
+            &line_range_response,
+            Ok(response)
+                if response.validate_for(&grapheme_request)
+                    == Err(AccessibilityError::RequestMismatch)
+        ));
         Ok(())
     }
 }
