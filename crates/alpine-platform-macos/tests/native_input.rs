@@ -5,7 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::{Arc, Mutex};
 
     use alpine_platform_macos::{
-        ImeEvent, KeyState, Modifiers, PointerAction, PointerButton, ScrollPhase,
+        ImeEvent, InputEpoch, KeyState, Modifiers, PointerAction, PointerButton, ScrollPhase,
         SurfaceDescriptor, SurfaceEvent, SurfaceResponse, native_validation,
     };
 
@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let received = received
         .lock()
         .map_err(|_| "native input receiver poisoned")?;
-    assert_eq!(received.len(), 7);
+    assert_eq!(received.len(), 12);
     assert!(matches!(
         &received[0],
         SurfaceEvent::Keyboard {
@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(matches!(
         &received[1],
         SurfaceEvent::Ime {
+            input_epoch: InputEpoch::INITIAL,
             event: ImeEvent::Committed(text),
             ..
         } if text.as_ref() == "A"
@@ -47,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(matches!(
         &received[2],
         SurfaceEvent::Ime {
+            input_epoch: InputEpoch::INITIAL,
             event: ImeEvent::Started,
             ..
         }
@@ -54,6 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(matches!(
         &received[3],
         SurfaceEvent::Ime {
+            input_epoch: InputEpoch::INITIAL,
             event: ImeEvent::Updated {
                 text,
                 selected_start_utf16: 1,
@@ -65,12 +68,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(matches!(
         &received[4],
         SurfaceEvent::Ime {
+            input_epoch: InputEpoch::INITIAL,
             event: ImeEvent::Committed(text),
             ..
         } if text.as_ref() == "漢字"
     ));
     assert!(matches!(
         &received[5],
+        SurfaceEvent::Ime {
+            input_epoch: InputEpoch::INITIAL,
+            event: ImeEvent::Started,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &received[6],
+        SurfaceEvent::Ime {
+            input_epoch: InputEpoch::INITIAL,
+            event: ImeEvent::Updated { text, .. },
+            ..
+        } if text.as_ref() == "かな"
+    ));
+    assert!(matches!(
+        &received[7],
+        SurfaceEvent::Ime {
+            input_epoch: InputEpoch::INITIAL,
+            event: ImeEvent::Cancelled,
+            ..
+        }
+    ));
+    let next_epoch = InputEpoch::INITIAL
+        .checked_next()
+        .ok_or("next input epoch")?;
+    assert!(matches!(
+        &received[8],
+        SurfaceEvent::Focus {
+            input_epoch,
+            focused: false,
+            ..
+        } if *input_epoch == next_epoch
+    ));
+    assert!(matches!(
+        &received[9],
+        SurfaceEvent::Focus {
+            input_epoch,
+            focused: true,
+            ..
+        } if *input_epoch == next_epoch
+    ));
+    assert!(matches!(
+        &received[10],
         SurfaceEvent::Pointer {
             action: PointerAction::Down,
             position,
@@ -82,7 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             && modifiers.bits() == Modifiers::COMMAND
     ));
     assert!(matches!(
-        &received[6],
+        &received[11],
         SurfaceEvent::Scroll {
             delta_x: 4.0,
             delta_y: -3.0,

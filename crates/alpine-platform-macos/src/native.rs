@@ -63,12 +63,12 @@ use crate::native_accessibility::{NativeAccessibilityAdapter, NativeAccessibilit
 use crate::{
     AccessibilityRequest, AccessibilityResponse, ClipboardError, ClipboardEvent,
     ClipboardOperation, ClipboardText, ClipboardWrite, CloseDisposition, EventTimestamp,
-    FrameTerminalEvidence, ImeEvent, KeyState, Modifiers, PointerAction, PointerButton,
-    SURFACE_CLOSING, SURFACE_LIVE, ScrollPhase, SdrColorContract, SurfaceConfiguration,
-    SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceLifecycle, SurfaceObserver,
-    SurfaceResponse, SurfaceSnapshot, SurfaceStage, SurfaceWakeAdmission, SurfaceWakeCounters,
-    SurfaceWaker, begin_close_observer_state, finish_close_observer_state, new_observer_state,
-    presentation_visible,
+    FrameTerminalEvidence, ImeEvent, InputEpoch, InputEpochAdmission, KeyState, Modifiers,
+    PointerAction, PointerButton, SURFACE_CLOSING, SURFACE_LIVE, ScrollPhase, SdrColorContract,
+    SurfaceConfiguration, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceLifecycle,
+    SurfaceObserver, SurfaceResponse, SurfaceSnapshot, SurfaceStage, SurfaceWakeAdmission,
+    SurfaceWakeCounters, SurfaceWaker, begin_close_observer_state, finish_close_observer_state,
+    new_observer_state, presentation_visible,
 };
 
 type Device = Retained<ProtocolObject<dyn MTLDevice>>;
@@ -1280,7 +1280,10 @@ pub(crate) enum NativeInputEvent {
         precise: bool,
         modifiers: Modifiers,
     },
-    Ime(ImeEvent),
+    Ime {
+        input_epoch: InputEpoch,
+        event: ImeEvent,
+    },
 }
 
 pub(crate) struct SurfaceViewIvars {
@@ -1288,6 +1291,10 @@ pub(crate) struct SurfaceViewIvars {
     input_dispatch_failed: Cell<bool>,
     marked_text: RefCell<Box<str>>,
     marked_selection: Cell<NSRange>,
+    input_epoch: Cell<InputEpoch>,
+    input_active: Cell<bool>,
+    discarding_marked_text: Cell<bool>,
+    rejected_ime_callbacks: Cell<u64>,
     pub(crate) accessibility: RefCell<NativeAccessibilityAdapter>,
 }
 
@@ -1315,10 +1322,13 @@ define_class!(
             string: &AnyObject,
             _replacement_range: NSRange,
         ) {
+            if !self.accepts_ime_callback() {
+                return;
+            }
             let text = input_text(string);
             self.clear_marked_text();
             if !text.is_empty() {
-                self.emit(NativeInputEvent::Ime(ImeEvent::Committed(text)));
+                self.emit_ime(ImeEvent::Committed(text));
             }
         }
 
@@ -1340,25 +1350,28 @@ define_class!(
             selected_range: NSRange,
             _replacement_range: NSRange,
         ) {
+            if !self.accepts_ime_callback() {
+                return;
+            }
             let text = input_text(string);
             if text.is_empty() {
                 if self.has_marked_text_value() {
                     self.clear_marked_text();
-                    self.emit(NativeInputEvent::Ime(ImeEvent::Cancelled));
+                    self.emit_ime(ImeEvent::Cancelled);
                 }
                 return;
             }
 
             if !self.has_marked_text_value() {
-                self.emit(NativeInputEvent::Ime(ImeEvent::Started));
+                self.emit_ime(ImeEvent::Started);
             }
             self.ivars().marked_text.replace(text.clone());
             self.ivars().marked_selection.set(selected_range);
-            self.emit(NativeInputEvent::Ime(ImeEvent::Updated {
+            self.emit_ime(ImeEvent::Updated {
                 text,
                 selected_start_utf16: saturating_u32(selected_range.location),
                 selected_length_utf16: saturating_u32(selected_range.length),
-            }));
+            });
         }
 
         #[unsafe(method(unmarkText))]
@@ -1367,10 +1380,17 @@ define_class!(
             reason = "the generated protocol requires this Rust method name"
         )]
         fn unmarkText(&self) {
+            if self.ivars().discarding_marked_text.get() {
+                self.clear_marked_text();
+                return;
+            }
+            if !self.accepts_ime_callback() {
+                return;
+            }
             let text = self.ivars().marked_text.borrow().clone();
             self.clear_marked_text();
             if !text.is_empty() {
-                self.emit(NativeInputEvent::Ime(ImeEvent::Committed(text)));
+                self.emit_ime(ImeEvent::Committed(text));
             }
         }
 
@@ -1569,6 +1589,10 @@ impl SurfaceView {
             input_dispatch_failed: Cell::new(false),
             marked_text: RefCell::new(Box::default()),
             marked_selection: Cell::new(NSRange::new(0, 0)),
+            input_epoch: Cell::new(InputEpoch::INITIAL),
+            input_active: Cell::new(true),
+            discarding_marked_text: Cell::new(false),
+            rejected_ime_callbacks: Cell::new(0),
             accessibility: RefCell::new(NativeAccessibilityAdapter::new()),
         });
         // SAFETY: `frame` is finite and positive because the surface descriptor
@@ -1589,6 +1613,7 @@ impl SurfaceView {
     }
 
     pub(crate) fn clear_input_handler(&self) {
+        let _ = self.suspend_input_epoch();
         if let Ok(mut installed) = self.ivars().input_handler.try_borrow_mut() {
             installed.take();
         }
@@ -1629,6 +1654,92 @@ impl SurfaceView {
             return;
         };
         handler(event);
+    }
+
+    fn emit_ime(&self, event: ImeEvent) {
+        self.emit_ime_at_epoch(self.ivars().input_epoch.get(), event);
+    }
+
+    fn emit_ime_at_epoch(&self, input_epoch: InputEpoch, event: ImeEvent) {
+        if !self.ivars().input_active.get()
+            || self.ivars().input_epoch.get().classify(input_epoch) != InputEpochAdmission::Current
+        {
+            self.reject_ime_callback();
+            return;
+        }
+        self.emit(NativeInputEvent::Ime { input_epoch, event });
+    }
+
+    fn accepts_ime_callback(&self) -> bool {
+        if self.ivars().input_active.get() {
+            true
+        } else {
+            self.reject_ime_callback();
+            self.clear_marked_text();
+            false
+        }
+    }
+
+    fn reject_ime_callback(&self) {
+        self.ivars()
+            .rejected_ime_callbacks
+            .set(self.ivars().rejected_ime_callbacks.get().saturating_add(1));
+    }
+
+    fn resume_input_epoch(&self) -> Option<InputEpoch> {
+        if self.ivars().input_active.replace(true) {
+            None
+        } else {
+            Some(self.ivars().input_epoch.get())
+        }
+    }
+
+    fn input_focus_state(&self) -> (InputEpoch, bool) {
+        (
+            self.ivars().input_epoch.get(),
+            self.ivars().input_active.get(),
+        )
+    }
+
+    fn suspend_input_epoch(&self) -> Option<InputEpoch> {
+        if !self.ivars().input_active.get() {
+            self.clear_marked_text();
+            return None;
+        }
+        let input_epoch = self.ivars().input_epoch.get();
+        let had_marked_text = self.has_marked_text_value();
+        self.ivars().discarding_marked_text.set(true);
+        // SAFETY: `inputContext` is inherited from NSResponder and returns a
+        // nullable Objective-C object valid for this synchronous main-thread
+        // callback. The generated AppKit feature set does not expose the
+        // concrete NSTextInputContext type, so the two selectors remain local
+        // to this reviewed unsafe boundary.
+        let input_context: Option<Retained<AnyObject>> = unsafe { msg_send![self, inputContext] };
+        if let Some(input_context) = input_context {
+            // SAFETY: AppKit's input context implements discardMarkedText and
+            // the retained receiver remains live for the synchronous message.
+            unsafe {
+                let _: () = msg_send![&*input_context, discardMarkedText];
+            }
+        }
+        self.ivars().discarding_marked_text.set(false);
+        self.clear_marked_text();
+        if had_marked_text {
+            self.emit_ime_at_epoch(input_epoch, ImeEvent::Cancelled);
+        }
+        let Some(next) = input_epoch.checked_next() else {
+            self.ivars().input_active.set(false);
+            self.ivars().input_dispatch_failed.set(true);
+            return None;
+        };
+        self.ivars().input_epoch.set(next);
+        self.ivars().input_active.set(false);
+        Some(next)
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn rejected_ime_callbacks(&self) -> u64 {
+        self.ivars().rejected_ime_callbacks.get()
     }
 
     fn emit_pointer(&self, event: &NSEvent, action: PointerAction, button: PointerButton) {
@@ -2160,18 +2271,12 @@ define_class!(
 
         #[unsafe(method(windowDidBecomeKey:))]
         fn window_did_become_key(&self, _notification: &NSNotification) {
-            self.dispatch_callback_event(SurfaceEvent::Focus {
-                timestamp: self.next_event_timestamp(),
-                focused: true,
-            });
+            self.publish_input_focus(true);
         }
 
         #[unsafe(method(windowDidResignKey:))]
         fn window_did_resign_key(&self, _notification: &NSNotification) {
-            self.dispatch_callback_event(SurfaceEvent::Focus {
-                timestamp: self.next_event_timestamp(),
-                focused: false,
-            });
+            self.publish_input_focus(false);
         }
 
         #[unsafe(method(windowDidChangeScreen:))]
@@ -2187,10 +2292,22 @@ define_class!(
         #[unsafe(method(windowDidChangeOcclusionState:))]
         fn window_did_change_occlusion_state(&self, _notification: &NSNotification) {
             let _ = self.synchronize_native_configuration_from_callback();
+            if self.ivars().window.as_ref().is_some_and(|window| {
+                !presentation_visible(
+                    window.isVisible(),
+                    window.isMiniaturized(),
+                    window
+                        .occlusionState()
+                        .contains(NSWindowOcclusionState::Visible),
+                )
+            }) {
+                self.publish_input_focus(false);
+            }
         }
 
         #[unsafe(method(windowDidMiniaturize:))]
         fn window_did_miniaturize(&self, _notification: &NSNotification) {
+            self.publish_input_focus(false);
             let _ = self.synchronize_native_configuration_from_callback();
         }
 
@@ -2294,6 +2411,24 @@ impl DisplayLinkDelegate {
         EventTimestamp::new(next)
     }
 
+    fn publish_input_focus(&self, focused: bool) {
+        let Some(view) = &self.ivars().view else {
+            return;
+        };
+        let input_epoch = if focused {
+            view.resume_input_epoch()
+        } else {
+            view.suspend_input_epoch()
+        };
+        if let Some(input_epoch) = input_epoch {
+            self.dispatch_callback_event(SurfaceEvent::Focus {
+                timestamp: self.next_event_timestamp(),
+                input_epoch,
+                focused,
+            });
+        }
+    }
+
     fn dispatch_native_input_event(&self, event: NativeInputEvent) {
         if let Err(error) = self.try_dispatch_native_input_event(event) {
             self.record_dispatch_error(error);
@@ -2344,7 +2479,11 @@ impl DisplayLinkDelegate {
                 precise,
                 modifiers,
             },
-            NativeInputEvent::Ime(event) => SurfaceEvent::Ime { timestamp, event },
+            NativeInputEvent::Ime { input_epoch, event } => SurfaceEvent::Ime {
+                timestamp,
+                input_epoch,
+                event,
+            },
         };
         let _close = self.dispatch_surface_event(event)?;
         if clipboard_operation == Some(ClipboardOperation::Paste) {
@@ -2583,6 +2722,7 @@ impl DisplayLinkDelegate {
         {
             return;
         }
+        self.publish_input_focus(false);
         if let Some(view) = &self.ivars().view {
             view.revoke_accessibility();
         }
@@ -3346,6 +3486,14 @@ impl NativeSurface {
             self.delegate.clear_event_handler();
             return Err(SurfaceError::DriverUnavailable);
         }
+        let (input_epoch, focused) = self.view.input_focus_state();
+        if input_epoch != InputEpoch::INITIAL || !focused {
+            let _close = self.delegate.dispatch_surface_event(SurfaceEvent::Focus {
+                timestamp: self.delegate.next_event_timestamp(),
+                input_epoch,
+                focused,
+            })?;
+        }
         let wake_result = self.delegate.dispatch_surface_event(SurfaceEvent::Wake {
             timestamp: self.delegate.next_event_timestamp(),
         });
@@ -3471,6 +3619,25 @@ impl NativeSurface {
                 return Err(SurfaceError::DriverUnavailable);
             }
 
+            let stale_epoch = self.view.ivars().input_epoch.get();
+            let marked = NSString::from_str("かな");
+            unsafe {
+                let _: () = msg_send![
+                    &*self.view,
+                    setMarkedText: &*marked,
+                    selectedRange: NSRange::new(1, 0),
+                    replacementRange: NSRange::new(usize::MAX, 0)
+                ];
+            }
+            self.delegate.publish_input_focus(false);
+            let rejected_before = self.view.rejected_ime_callbacks();
+            self.view
+                .emit_ime_at_epoch(stale_epoch, ImeEvent::Committed("stale".into()));
+            if self.view.rejected_ime_callbacks() != rejected_before.saturating_add(1) {
+                return Err(SurfaceError::DriverUnavailable);
+            }
+            self.delegate.publish_input_focus(true);
+
             let pointer = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
                 NSEventType::LeftMouseDown,
                 NSPoint::new(12.0, 18.0),
@@ -3504,7 +3671,10 @@ impl NativeSurface {
         self.view.clear_input_handler();
         self.delegate.clear_event_handler();
         resolve_input_dispatch(replay_result, self.view.take_input_dispatch_failure())?;
-        self.view.emit(NativeInputEvent::Ime(ImeEvent::Cancelled));
+        self.view.emit(NativeInputEvent::Ime {
+            input_epoch: self.view.ivars().input_epoch.get(),
+            event: ImeEvent::Cancelled,
+        });
         if !self.view.take_input_dispatch_failure() {
             return Err(SurfaceError::DriverUnavailable);
         }

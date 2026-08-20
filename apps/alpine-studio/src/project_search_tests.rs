@@ -6,7 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use alpine_platform_macos::{EventTimestamp, ImeEvent, KeyState, Modifiers, SurfaceEvent};
+use alpine_platform_macos::{
+    EventTimestamp, ImeEvent, InputEpoch, KeyState, Modifiers, SurfaceEvent,
+};
 use alpine_text_layout::{
     FontKey, GlyphBitmap, GlyphRasterizer, LayoutError, LineLayout, RasterizedGlyph, ShapedGlyph,
     TextShaper,
@@ -124,6 +126,7 @@ fn key(physical_key: u16, modifiers: Modifiers) -> SurfaceEvent {
 fn ime(text: &str) -> SurfaceEvent {
     SurfaceEvent::Ime {
         timestamp: EventTimestamp::new(2),
+        input_epoch: InputEpoch::INITIAL,
         event: ImeEvent::Committed(text.into()),
     }
 }
@@ -374,6 +377,7 @@ fn project_search_focus_render_error_and_existing_tab_routes_are_discriminating(
     assert!(
         app.handle_event(&SurfaceEvent::Ime {
             timestamp: EventTimestamp::new(3),
+            input_epoch: InputEpoch::INITIAL,
             event: ImeEvent::Started,
         })
         .visual_changed
@@ -381,6 +385,7 @@ fn project_search_focus_render_error_and_existing_tab_routes_are_discriminating(
     assert!(
         app.handle_event(&SurfaceEvent::Ime {
             timestamp: EventTimestamp::new(4),
+            input_epoch: InputEpoch::INITIAL,
             event: ImeEvent::Updated {
                 text: "é".into(),
                 selected_start_utf16: 1,
@@ -392,6 +397,7 @@ fn project_search_focus_render_error_and_existing_tab_routes_are_discriminating(
     assert!(
         app.handle_event(&SurfaceEvent::Ime {
             timestamp: EventTimestamp::new(5),
+            input_epoch: InputEpoch::INITIAL,
             event: ImeEvent::Cancelled,
         })
         .visual_changed
@@ -399,6 +405,7 @@ fn project_search_focus_render_error_and_existing_tab_routes_are_discriminating(
     assert!(
         app.handle_event(&SurfaceEvent::Ime {
             timestamp: EventTimestamp::new(6),
+            input_epoch: InputEpoch::INITIAL,
             event: ImeEvent::Updated {
                 text: "x".into(),
                 selected_start_utf16: 2,

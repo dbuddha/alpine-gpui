@@ -288,6 +288,64 @@ pub enum CloseDisposition {
     Cancel,
 }
 
+/// Monotonic identity for one native text-input session.
+///
+/// Epoch zero is invalid. Native focus or lifecycle loss advances the epoch
+/// after marked text is discarded and any active composition is cancelled.
+/// Consumers must reject IME values whose epoch is not current before mutation.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct InputEpoch(u64);
+
+impl InputEpoch {
+    /// First valid epoch for a newly created native surface.
+    pub const INITIAL: Self = Self(1);
+
+    /// Creates a non-zero input epoch.
+    #[must_use]
+    pub const fn new(value: u64) -> Option<Self> {
+        if value == 0 { None } else { Some(Self(value)) }
+    }
+
+    /// Returns the underlying monotonic identity.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    /// Returns the next distinct epoch, or `None` at the representable limit.
+    #[must_use]
+    pub const fn checked_next(self) -> Option<Self> {
+        match self.0.checked_add(1) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    /// Classifies an event epoch against this current epoch.
+    #[must_use]
+    pub const fn classify(self, event: Self) -> InputEpochAdmission {
+        if event.0 < self.0 {
+            InputEpochAdmission::Stale
+        } else if event.0 > self.0 {
+            InputEpochAdmission::Future
+        } else {
+            InputEpochAdmission::Current
+        }
+    }
+}
+
+/// Mutation admission for an epoch-tagged native input value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputEpochAdmission {
+    /// The event belongs to the active input session.
+    Current,
+    /// The event belongs to an obsolete input session.
+    Stale,
+    /// The event arrived before its focus transition established the epoch.
+    Future,
+}
+
 /// Input-method composition lifecycle and owned text payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ImeEvent {
@@ -365,6 +423,8 @@ pub enum SurfaceEvent {
     Focus {
         /// Monotonic event timestamp.
         timestamp: EventTimestamp,
+        /// Epoch active after this focus transition.
+        input_epoch: InputEpoch,
         /// Whether the Studio window became focused.
         focused: bool,
     },
@@ -386,6 +446,8 @@ pub enum SurfaceEvent {
     Ime {
         /// Monotonic event timestamp.
         timestamp: EventTimestamp,
+        /// Native input session that produced this composition value.
+        input_epoch: InputEpoch,
         /// Composition lifecycle and text.
         event: ImeEvent,
     },
@@ -417,6 +479,59 @@ impl SurfaceEvent {
             | Self::Wake { timestamp }
             | Self::CloseRequested { timestamp } => *timestamp,
         }
+    }
+}
+
+#[cfg(kani)]
+mod input_epoch_verification {
+    use super::{InputEpoch, InputEpochAdmission};
+
+    #[cfg_attr(test, mutants::skip)] // The dedicated Kani gate executes this proof.
+    #[kani::proof]
+    fn checked_epoch_boundaries_never_wrap_or_alias() {
+        let value = kani::any::<u64>();
+        kani::assume(value != 0);
+        let Some(epoch) = InputEpoch::new(value) else {
+            unreachable!();
+        };
+        match epoch.checked_next() {
+            Some(next) => {
+                assert_eq!(next.get(), value + 1);
+                assert_eq!(next.classify(epoch), InputEpochAdmission::Stale);
+                assert_eq!(epoch.classify(next), InputEpochAdmission::Future);
+            }
+            None => assert_eq!(value, u64::MAX),
+        }
+        assert_eq!(epoch.classify(epoch), InputEpochAdmission::Current);
+    }
+}
+
+#[cfg(test)]
+mod input_epoch_tests {
+    use super::{InputEpoch, InputEpochAdmission};
+
+    #[test]
+    fn epoch_construction_advancement_and_admission_are_exact() {
+        assert_eq!(InputEpoch::new(0), None);
+        assert_eq!(InputEpoch::new(1), Some(InputEpoch::INITIAL));
+        let next = InputEpoch::INITIAL.checked_next();
+        assert_eq!(next.map(InputEpoch::get), Some(2));
+        assert_eq!(
+            InputEpoch::new(u64::MAX).and_then(InputEpoch::checked_next),
+            None
+        );
+        assert_eq!(
+            InputEpoch::INITIAL.classify(InputEpoch::INITIAL),
+            InputEpochAdmission::Current
+        );
+        assert_eq!(
+            next.map(|epoch| epoch.classify(InputEpoch::INITIAL)),
+            Some(InputEpochAdmission::Stale)
+        );
+        assert_eq!(
+            next.map(|epoch| InputEpoch::INITIAL.classify(epoch)),
+            Some(InputEpochAdmission::Future)
+        );
     }
 }
 
@@ -2599,6 +2714,7 @@ mod tests {
             },
             SurfaceEvent::Focus {
                 timestamp,
+                input_epoch: InputEpoch::INITIAL,
                 focused: true,
             },
             SurfaceEvent::Resize { timestamp, extent },
@@ -2608,6 +2724,7 @@ mod tests {
             },
             SurfaceEvent::Ime {
                 timestamp,
+                input_epoch: InputEpoch::INITIAL,
                 event: ImeEvent::Started,
             },
             SurfaceEvent::Wake { timestamp },

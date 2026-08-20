@@ -66,6 +66,7 @@ tests::find_command_modifiers_do_not_edit_or_switch_fields	studio-app-02
 tests::find_failure_paths_fail_closed_without_mutating_the_document	studio-app-02
 tests::find_focus_rejections_and_empty_actions_remain_bounded	studio-app-03
 tests::find_scroll_and_replacement_budget_boundaries_are_exact	studio-app-03
+tests::focus_epochs_cancel_every_composing_owner_and_reject_obsolete_mutation	studio-app-03
 tests::folder_launch_primes_lazy_tree_without_stealing_editor_focus	studio-app-03
 tests::grapheme_delete_and_command_undo_restore_text	studio-app-03
 tests::ime_preview_is_non_destructive_and_commit_is_atomic	studio-app-03
