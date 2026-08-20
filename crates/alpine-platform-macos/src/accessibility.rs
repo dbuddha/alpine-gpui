@@ -495,6 +495,27 @@ pub enum AccessibilityOperation {
         /// Exact revision required by the request.
         revision: AccessibilityRevision,
     },
+    /// Map one global UTF-16 index to its zero-based logical line.
+    LineForIndex {
+        /// Exact revision required by the request.
+        revision: AccessibilityRevision,
+        /// Global `AppKit` UTF-16 index to map.
+        index_utf16: usize,
+    },
+    /// Map one zero-based logical line to its global UTF-16 range.
+    RangeForLine {
+        /// Exact revision required by the request.
+        revision: AccessibilityRevision,
+        /// Zero-based logical line to map.
+        line: usize,
+    },
+    /// Map one global UTF-16 index to its containing grapheme range.
+    RangeForIndex {
+        /// Exact revision required by the request.
+        revision: AccessibilityRevision,
+        /// Global `AppKit` UTF-16 index to map.
+        index_utf16: usize,
+    },
     /// Apply one revision-checked action.
     Action(AccessibilityAction),
 }
@@ -508,6 +529,12 @@ pub enum AccessibilityRequestKind {
     Text,
     /// Directional selection request.
     Selection,
+    /// UTF-16 index to logical-line mapping request.
+    LineForIndex,
+    /// Logical-line to UTF-16 range mapping request.
+    RangeForLine,
+    /// UTF-16 index to grapheme-range mapping request.
+    RangeForIndex,
     /// Revision-checked action request.
     Action,
 }
@@ -570,6 +597,54 @@ impl AccessibilityRequest {
     ) -> Result<Self, AccessibilityError> {
         Self::new(id, AccessibilityOperation::Selection { revision })
     }
+    /// Creates a revision-checked UTF-16 index to logical-line mapping.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero request identity.
+    pub fn line_for_index(
+        id: AccessibilityRequestId,
+        revision: AccessibilityRevision,
+        index_utf16: usize,
+    ) -> Result<Self, AccessibilityError> {
+        Self::new(
+            id,
+            AccessibilityOperation::LineForIndex {
+                revision,
+                index_utf16,
+            },
+        )
+    }
+    /// Creates a revision-checked logical-line to UTF-16 range mapping.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero request identity.
+    pub fn range_for_line(
+        id: AccessibilityRequestId,
+        revision: AccessibilityRevision,
+        line: usize,
+    ) -> Result<Self, AccessibilityError> {
+        Self::new(id, AccessibilityOperation::RangeForLine { revision, line })
+    }
+    /// Creates a revision-checked UTF-16 index to grapheme-range mapping.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero request identity.
+    pub fn range_for_index(
+        id: AccessibilityRequestId,
+        revision: AccessibilityRevision,
+        index_utf16: usize,
+    ) -> Result<Self, AccessibilityError> {
+        Self::new(
+            id,
+            AccessibilityOperation::RangeForIndex {
+                revision,
+                index_utf16,
+            },
+        )
+    }
     /// Creates a revision-checked action request.
     ///
     /// # Errors
@@ -598,6 +673,9 @@ impl AccessibilityRequest {
             AccessibilityOperation::Snapshot => AccessibilityRequestKind::Snapshot,
             AccessibilityOperation::Text { .. } => AccessibilityRequestKind::Text,
             AccessibilityOperation::Selection { .. } => AccessibilityRequestKind::Selection,
+            AccessibilityOperation::LineForIndex { .. } => AccessibilityRequestKind::LineForIndex,
+            AccessibilityOperation::RangeForLine { .. } => AccessibilityRequestKind::RangeForLine,
+            AccessibilityOperation::RangeForIndex { .. } => AccessibilityRequestKind::RangeForIndex,
             AccessibilityOperation::Action(_) => AccessibilityRequestKind::Action,
         }
     }
@@ -607,7 +685,10 @@ impl AccessibilityRequest {
         match self.operation {
             AccessibilityOperation::Snapshot => None,
             AccessibilityOperation::Text { revision, .. }
-            | AccessibilityOperation::Selection { revision } => Some(revision),
+            | AccessibilityOperation::Selection { revision }
+            | AccessibilityOperation::LineForIndex { revision, .. }
+            | AccessibilityOperation::RangeForLine { revision, .. }
+            | AccessibilityOperation::RangeForIndex { revision, .. } => Some(revision),
             AccessibilityOperation::Action(action) => Some(action.revision()),
         }
     }
@@ -658,6 +739,10 @@ pub enum AccessibilityPayload {
     Text(AccessibilityText),
     /// Current directional selection.
     Selection(AccessibilitySelection),
+    /// Zero-based logical line.
+    Line(usize),
+    /// Global UTF-16 range.
+    Range(AccessibilityTextRange),
     /// Terminal action result.
     Action(AccessibilityActionResult),
 }
@@ -669,6 +754,12 @@ impl AccessibilityPayload {
             (AccessibilityRequestKind::Snapshot, Self::Snapshot(_))
                 | (AccessibilityRequestKind::Text, Self::Text(_))
                 | (AccessibilityRequestKind::Selection, Self::Selection(_))
+                | (AccessibilityRequestKind::LineForIndex, Self::Line(_))
+                | (
+                    AccessibilityRequestKind::RangeForLine
+                        | AccessibilityRequestKind::RangeForIndex,
+                    Self::Range(_),
+                )
                 | (AccessibilityRequestKind::Action, Self::Action(_))
         )
     }
@@ -877,6 +968,62 @@ impl fmt::Display for AccessibilityError {
 }
 
 impl Error for AccessibilityError {}
+
+#[cfg(test)]
+mod mapping_protocol_tests {
+    use super::*;
+
+    #[test]
+    fn mapping_request_kinds_and_payloads_are_exact() -> Result<(), AccessibilityError> {
+        let revision = AccessibilityRevision::new(11, 13);
+        let line_request =
+            AccessibilityRequest::line_for_index(AccessibilityRequestId::new(17), revision, 19)?;
+        let line_response =
+            AccessibilityResponse::success(&line_request, revision, AccessibilityPayload::Line(2))?;
+        assert_eq!(line_request.kind(), AccessibilityRequestKind::LineForIndex);
+        assert_eq!(line_request.revision(), Some(revision));
+        assert_eq!(line_response.validate_for(&line_request), Ok(()));
+
+        let line_range_request =
+            AccessibilityRequest::range_for_line(AccessibilityRequestId::new(18), revision, 2)?;
+        let range = AccessibilityTextRange::new(7, 5);
+        let line_range_response = AccessibilityResponse::success(
+            &line_range_request,
+            revision,
+            AccessibilityPayload::Range(range),
+        );
+        assert_eq!(
+            line_range_request.kind(),
+            AccessibilityRequestKind::RangeForLine
+        );
+        assert!(matches!(
+            &line_range_response,
+            Ok(response) if response.validate_for(&line_range_request) == Ok(())
+        ));
+
+        let grapheme_request =
+            AccessibilityRequest::range_for_index(AccessibilityRequestId::new(19), revision, 8)?;
+        assert_eq!(
+            grapheme_request.kind(),
+            AccessibilityRequestKind::RangeForIndex
+        );
+        assert_eq!(
+            AccessibilityResponse::success(
+                &grapheme_request,
+                revision,
+                AccessibilityPayload::Line(2),
+            ),
+            Err(AccessibilityError::RequestMismatch)
+        );
+        assert!(matches!(
+            &line_range_response,
+            Ok(response)
+                if response.validate_for(&grapheme_request)
+                    == Err(AccessibilityError::RequestMismatch)
+        ));
+        Ok(())
+    }
+}
 
 #[cfg(kani)]
 mod verification {
