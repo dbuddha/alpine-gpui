@@ -1137,16 +1137,19 @@ mod tests {
         let inactive = node(2, Some(1), false)?;
         assert!(!inactive.is_selected());
         assert!(!inactive.announces());
-        let clean = AccessibilitySnapshot::new(
-            AccessibilityRevision::new(7, 11),
-            root,
-            vec![node(1, None, false)?, inactive],
-            AccessibilitySelection::new(0, 0),
-            0,
-            1,
-            false,
-        )?;
-        assert!(!clean.is_dirty());
+        assert_eq!(
+            AccessibilitySnapshot::new(
+                AccessibilityRevision::new(7, 11),
+                root,
+                vec![node(1, None, false)?, inactive],
+                AccessibilitySelection::new(0, 0),
+                0,
+                1,
+                false,
+            )
+            .map(|snapshot| snapshot.is_dirty()),
+            Ok(false)
+        );
         Ok(())
     }
 
@@ -1306,18 +1309,22 @@ mod tests {
             AccessibilityRequestId::new(2),
             revision,
             AccessibilityTextRange::new(0, 0),
-        )?;
+        );
         assert_eq!(
-            response.validate_for(&wrong_kind),
-            Err(AccessibilityError::RequestMismatch)
+            wrong_kind
+                .as_ref()
+                .map(|request| response.validate_for(request)),
+            Ok(Err(AccessibilityError::RequestMismatch))
         );
         let wrong_revision = AccessibilityRequest::selection(
             AccessibilityRequestId::new(2),
             AccessibilityRevision::new(3, 6),
-        )?;
+        );
         assert_eq!(
-            response.validate_for(&wrong_revision),
-            Err(AccessibilityError::RequestMismatch)
+            wrong_revision
+                .as_ref()
+                .map(|request| response.validate_for(request)),
+            Ok(Err(AccessibilityError::RequestMismatch))
         );
         assert_eq!(
             AccessibilityResponse::success(
