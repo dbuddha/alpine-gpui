@@ -35,7 +35,16 @@ mod validation {
     const SOAK_MAX_GROWTH_PAGES: u64 = 16;
     const MAX_PRESENTATION_UPLOAD_BYTES: usize = 3 * 8 * 1024 * 1024;
     const LIFECYCLE_ARTIFACT_ENV: &str = "ALPINE_NATIVE_LIFECYCLE_ARTIFACT";
+    const LIFECYCLE_RSS_ENV: &str = "ALPINE_NATIVE_LIFECYCLE_CAPTURE_RSS";
     const REVISION_ENV: &str = "ALPINE_REVISION";
+    const METAL_DIAGNOSTIC_ENVS: [&str; 6] = [
+        "MTL_DEBUG_LAYER",
+        "MTL_DEBUG_LAYER_ERROR_MODE",
+        "MTL_SHADER_VALIDATION",
+        "MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING",
+        "MTL_SHADER_VALIDATION_REPORT_TO_STDERR",
+        "MTL_SHADER_VALIDATION_ABORT_ON_FAULT",
+    ];
 
     struct OwnerSoakEvidence {
         page_bytes: u64,
@@ -70,10 +79,34 @@ mod validation {
         let (scene, clear) = validation_scene()?;
         validate_visible_clean_idle(hosted_direct)?;
         validate_pending_close(scene, clear)?;
+        if !residency_capture_enabled()? {
+            return Ok(());
+        }
         let soak = collect_owner_soak()?;
         let plateau = validate_resident_plateau(&soak);
         write_lifecycle_artifact(&soak, plateau.is_ok())?;
         plateau
+    }
+
+    fn residency_capture_enabled() -> TestResult<bool> {
+        match std::env::var_os(LIFECYCLE_RSS_ENV) {
+            None => Ok(false),
+            Some(value) if value == OsStr::new("1") => {
+                if std::env::var_os(LIFECYCLE_ARTIFACT_ENV).is_none() {
+                    return Err("native lifecycle RSS capture requires an artifact path".into());
+                }
+                for name in METAL_DIAGNOSTIC_ENVS {
+                    if std::env::var_os(name).is_some() {
+                        return Err(format!(
+                            "native lifecycle RSS capture forbids diagnostic environment {name}"
+                        )
+                        .into());
+                    }
+                }
+                Ok(true)
+            }
+            Some(_) => Err("native lifecycle RSS capture must be exactly 1".into()),
+        }
     }
 
     fn hosted_direct() -> TestResult<bool> {
@@ -410,6 +443,8 @@ mod validation {
         writeln!(artifact, "architecture = \"aarch64\"")?;
         writeln!(artifact, "evidence_scope = \"process-owner-soak\"")?;
         writeln!(artifact, "physical_lifecycle_qualified = false")?;
+        writeln!(artifact, "metal_api_validation_enabled = false")?;
+        writeln!(artifact, "metal_shader_validation_enabled = false")?;
         writeln!(
             artifact,
             "process_owner_plateau_qualified = {process_owner_plateau_qualified}"

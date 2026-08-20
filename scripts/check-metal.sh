@@ -55,9 +55,7 @@ RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_color
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_recovery
-ALPINE_REVISION=$(git rev-parse HEAD) \
-    ALPINE_NATIVE_LIFECYCLE_ARTIFACT="$(pwd)/target/native-lifecycle-soak.toml" \
-    RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
+RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_lifecycle
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_input
@@ -69,6 +67,18 @@ ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct \
 /usr/bin/env -u ALPINE_RUST_ANALYZER \
     RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-studio --test native_process
+/usr/bin/env \
+    -u MTL_DEBUG_LAYER \
+    -u MTL_DEBUG_LAYER_ERROR_MODE \
+    -u MTL_SHADER_VALIDATION \
+    -u MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING \
+    -u MTL_SHADER_VALIDATION_REPORT_TO_STDERR \
+    -u MTL_SHADER_VALIDATION_ABORT_ON_FAULT \
+    ALPINE_NATIVE_LIFECYCLE_CAPTURE_RSS=1 \
+    ALPINE_REVISION="$(git rev-parse HEAD)" \
+    ALPINE_NATIVE_LIFECYCLE_ARTIFACT="$(pwd)/target/native-lifecycle-soak.toml" \
+    RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
+    cargo test --locked -p alpine-platform-macos --test native_lifecycle
 /usr/bin/env \
     -u MTL_DEBUG_LAYER \
     -u MTL_DEBUG_LAYER_ERROR_MODE \
