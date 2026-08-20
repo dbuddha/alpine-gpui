@@ -33,13 +33,13 @@ use objc2_app_kit::{NSEventType, NSScreen, NSWindowButton};
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 #[cfg(alpine_native_validation)]
 use objc2_core_graphics::{CGEvent, CGEventFlags, CGScrollEventUnit};
+#[cfg(alpine_native_validation)]
+use objc2_foundation::NSDate;
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotification, NSObject, NSObjectProtocol,
-    NSPoint, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
+    NSPoint, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
     NSUTF8StringEncoding,
 };
-#[cfg(alpine_native_validation)]
-use objc2_foundation::{NSDate, NSTimer};
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLPixelFormat};
 use objc2_quartz_core::{
     CAMetalDisplayLink, CAMetalDisplayLinkDelegate, CAMetalDisplayLinkUpdate, CAMetalDrawable,
@@ -652,6 +652,10 @@ impl PresentationDriver {
             }
             _ => Ok(DisplayLinkDirective::None),
         }
+    }
+
+    const fn display_link_state(&self) -> DisplayLinkState {
+        self.state.display_link()
     }
 
     fn update(
@@ -1823,6 +1827,17 @@ mod native_input_tests {
     }
 
     #[test]
+    fn deferred_pause_confirmation_only_accepts_portable_paused_state() {
+        assert!(should_confirm_display_link_pause(DisplayLinkState::Paused));
+        assert!(!should_confirm_display_link_pause(
+            DisplayLinkState::Running
+        ));
+        assert!(!should_confirm_display_link_pause(
+            DisplayLinkState::Invalid
+        ));
+    }
+
+    #[test]
     fn finite_f32_rejects_invalid_or_unrepresentable_values() {
         assert_eq!(finite_f32(1.25), Some(1.25));
         assert_eq!(finite_f32(f64::from(f32::MIN)), Some(f32::MIN));
@@ -2039,6 +2054,12 @@ define_class!(
                     stop_event_loop(&self.ivars().application);
                 } else {
                     apply_display_link_directive(link, directive);
+                    if matches!(directive, DisplayLinkDirective::Pause)
+                        && !link.isPaused()
+                        && let Some(display_link) = &self.ivars().display_link
+                    {
+                        schedule_display_link_pause_confirmation(display_link, driver);
+                    }
                 }
                 #[cfg(alpine_native_validation)]
                 if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE
@@ -2601,6 +2622,37 @@ fn apply_display_link_directive(link: &CAMetalDisplayLink, directive: DisplayLin
             link.invalidate();
         }
     }
+}
+
+const fn should_confirm_display_link_pause(state: DisplayLinkState) -> bool {
+    matches!(state, DisplayLinkState::Paused)
+}
+
+fn schedule_display_link_pause_confirmation(
+    display_link: &Retained<CAMetalDisplayLink>,
+    driver: &Rc<RefCell<PresentationDriver>>,
+) {
+    let display_link = display_link.clone();
+    let driver = Rc::downgrade(driver);
+    let pause_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
+        RcBlock::new(move |timer: NonNull<NSTimer>| {
+            // SAFETY: Foundation supplies a valid borrowed timer for the
+            // complete callback, and the reference does not escape.
+            unsafe { timer.as_ref() }.invalidate();
+            let should_pause = driver.upgrade().is_some_and(|driver| {
+                driver.try_borrow().is_ok_and(|driver| {
+                    should_confirm_display_link_pause(driver.display_link_state())
+                })
+            });
+            if should_pause {
+                display_link.setPaused(true);
+            }
+        });
+    // SAFETY: The retained display link and weak driver are main-thread-only,
+    // Foundation copies the block for the scheduled timer lifetime, and the
+    // callback receives a valid NSTimer after the current callback returns.
+    let _timer =
+        unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.0, false, &pause_block) };
 }
 
 #[cfg(alpine_native_validation)]
