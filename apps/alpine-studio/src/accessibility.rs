@@ -245,10 +245,9 @@ fn text_from_snapshot(
 }
 
 fn require_revision(
-    app: &StudioApp,
     expected: AccessibilityRevision,
+    actual: AccessibilityRevision,
 ) -> Result<(), AccessibilityError> {
-    let actual = revision(app);
     if expected != actual {
         return Err(AccessibilityError::StaleRevision { expected, actual });
     }
@@ -266,14 +265,14 @@ pub(super) fn respond(
             EventEffect::default(),
         ),
         AccessibilityOperation::Text { revision, range } => (
-            require_revision(app, *revision).and_then(|()| {
+            require_revision(*revision, observed).and_then(|()| {
                 let text = text_from_snapshot(&app.buffer().snapshot(), *range)?;
                 Ok(AccessibilityPayload::Text(AccessibilityText::new(text)?))
             }),
             EventEffect::default(),
         ),
         AccessibilityOperation::Selection { revision } => (
-            require_revision(app, *revision).and_then(|()| {
+            require_revision(*revision, observed).and_then(|()| {
                 let text = app.buffer().snapshot();
                 selection_from_snapshot(app, &text).map(AccessibilityPayload::Selection)
             }),
@@ -646,6 +645,17 @@ mod tests {
                 .is_some()
         );
         assert!(AccessibilityError::InvalidTree.source().is_none());
+    }
+
+    #[test]
+    fn revision_admission_is_exact() {
+        let expected = AccessibilityRevision::new(3, 5);
+        assert_eq!(require_revision(expected, expected), Ok(()));
+        let actual = AccessibilityRevision::new(3, 6);
+        assert_eq!(
+            require_revision(expected, actual),
+            Err(AccessibilityError::StaleRevision { expected, actual })
+        );
     }
 
     #[test]

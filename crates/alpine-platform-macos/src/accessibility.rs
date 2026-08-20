@@ -882,6 +882,7 @@ impl Error for AccessibilityError {}
 mod verification {
     use super::*;
 
+    #[cfg_attr(test, mutants::skip)] // This cfg(kani) proof is executed by the dedicated Kani gate.
     #[kani::proof]
     fn checked_utf16_range_end_never_wraps() {
         let start = kani::any::<usize>();
@@ -1128,6 +1129,28 @@ mod tests {
     }
 
     #[test]
+    fn exact_limits_and_false_observer_axes_are_discriminating() -> Result<(), AccessibilityError> {
+        assert_eq!(MAX_ACCESSIBILITY_NODE_NAME_BYTES, 4_096);
+        assert_eq!(MAX_ACCESSIBILITY_NAME_BYTES, 262_144);
+        assert_eq!(MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES, 65_536);
+        let root = AccessibilityNodeId::new(1);
+        let inactive = node(2, Some(1), false)?;
+        assert!(!inactive.is_selected());
+        assert!(!inactive.announces());
+        let clean = AccessibilitySnapshot::new(
+            AccessibilityRevision::new(7, 11),
+            root,
+            vec![node(1, None, false)?, inactive],
+            AccessibilitySelection::new(0, 0),
+            0,
+            1,
+            false,
+        )?;
+        assert!(!clean.is_dirty());
+        Ok(())
+    }
+
+    #[test]
     fn malformed_trees_and_budgets_fail_before_publication() -> Result<(), AccessibilityError> {
         let revision = AccessibilityRevision::new(1, 1);
         let root = AccessibilityNodeId::new(1);
@@ -1149,6 +1172,18 @@ mod tests {
             Err(AccessibilityError::TooManyNodes { actual, limit })
                 if actual == MAX_ACCESSIBILITY_NODES + 1 && limit == MAX_ACCESSIBILITY_NODES
         ));
+        assert_eq!(
+            AccessibilitySnapshot::new(
+                revision,
+                AccessibilityNodeId::new(0),
+                flat_tree(MAX_ACCESSIBILITY_NODES + 1, 1)?,
+                empty_selection,
+                0,
+                1,
+                false,
+            ),
+            Err(AccessibilityError::InvalidTree)
+        );
         assert!(matches!(
             AccessibilitySnapshot::new(
                 revision,
@@ -1190,6 +1225,22 @@ mod tests {
                 Err(AccessibilityError::InvalidTree)
             );
         }
+        assert!(
+            AccessibilitySnapshot::new(
+                revision,
+                root,
+                vec![
+                    node(1, None, false)?,
+                    node(2, Some(1), false)?,
+                    node(3, Some(2), false)?,
+                ],
+                empty_selection,
+                0,
+                1,
+                false,
+            )
+            .is_ok()
+        );
         Ok(())
     }
 
@@ -1246,6 +1297,28 @@ mod tests {
         assert_eq!(response.observed_revision(), revision);
         assert!(response.result().is_ok());
         assert_eq!(response.validate_for(&selection_request), Ok(()));
+        let wrong_id = AccessibilityRequest::selection(AccessibilityRequestId::new(20), revision)?;
+        assert_eq!(
+            response.validate_for(&wrong_id),
+            Err(AccessibilityError::RequestMismatch)
+        );
+        let wrong_kind = AccessibilityRequest::text(
+            AccessibilityRequestId::new(2),
+            revision,
+            AccessibilityTextRange::new(0, 0),
+        )?;
+        assert_eq!(
+            response.validate_for(&wrong_kind),
+            Err(AccessibilityError::RequestMismatch)
+        );
+        let wrong_revision = AccessibilityRequest::selection(
+            AccessibilityRequestId::new(2),
+            AccessibilityRevision::new(3, 6),
+        )?;
+        assert_eq!(
+            response.validate_for(&wrong_revision),
+            Err(AccessibilityError::RequestMismatch)
+        );
         assert_eq!(
             AccessibilityResponse::success(
                 &selection_request,

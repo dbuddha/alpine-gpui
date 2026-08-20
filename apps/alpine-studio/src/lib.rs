@@ -4552,7 +4552,7 @@ impl AppDelegate for StudioApp {
             let selection_before = self.selection;
             let (response, effect) = accessibility::respond(self, request);
             let admitted = context.respond_accessibility(response);
-            self.input_failures = self.input_failures.saturating_add(u64::from(!admitted));
+            self.input_failures = accessibility_admission_failures(self.input_failures, admitted);
             self.advance_selection_revision(selection_before);
             if effect.visual_changed {
                 context.invalidate();
@@ -4673,6 +4673,10 @@ impl AppDelegate for StudioApp {
     fn frame(&mut self, context: WindowContext) -> Scene {
         self.scene(context.scene_revision(), context.viewport())
     }
+}
+
+fn accessibility_admission_failures(current: u64, admitted: bool) -> u64 {
+    current.saturating_add(u64::from(!admitted))
 }
 
 impl StudioApp {

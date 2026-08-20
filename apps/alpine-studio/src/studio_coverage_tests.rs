@@ -4659,6 +4659,9 @@ fn accessibility_snapshot_preserves_unicode_revision_focus_and_bounded_text()
 #[test]
 fn accessibility_runtime_dispatch_is_exact_dirty_neutral_and_revision_checked()
 -> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(accessibility_admission_failures(4, true), 4);
+    assert_eq!(accessibility_admission_failures(4, false), 5);
+    assert_eq!(accessibility_admission_failures(u64::MAX, false), u64::MAX);
     let app = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("a🦀é"), None)?;
     let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
     let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
