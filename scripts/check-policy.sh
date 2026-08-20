@@ -157,6 +157,11 @@ fi
 research_files=$(find docs/research -type f -print 2>/dev/null | sort || true)
 expected_research_files='docs/research/alpine-studio-adversarial-review.md
 docs/research/index.md
+docs/research/macos-accessibility-lifecycle/decisions.md
+docs/research/macos-accessibility-lifecycle/experiments.md
+docs/research/macos-accessibility-lifecycle/findings.md
+docs/research/macos-accessibility-lifecycle/index.md
+docs/research/macos-accessibility-lifecycle/source-map.md
 docs/research/native-idle-energy/decisions.md
 docs/research/native-idle-energy/experiments.md
 docs/research/native-idle-energy/findings.md

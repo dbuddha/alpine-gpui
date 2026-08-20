@@ -202,8 +202,213 @@ fn viewport() -> Result<Size, SurfaceError> {
 fn ime(event: ImeEvent) -> SurfaceEvent {
     SurfaceEvent::Ime {
         timestamp: EventTimestamp::new(1),
+        input_epoch: InputEpoch::INITIAL,
         event,
     }
+}
+
+fn ime_at(input_epoch: InputEpoch, event: ImeEvent) -> SurfaceEvent {
+    SurfaceEvent::Ime {
+        timestamp: EventTimestamp::new(input_epoch.get()),
+        input_epoch,
+        event,
+    }
+}
+
+fn assert_focus_epoch_cancels_owner(app: &mut StudioApp) -> Result<(), StudioRenderError> {
+    let next_epoch = InputEpoch::INITIAL
+        .checked_next()
+        .ok_or(StudioRenderError::Domain)?;
+    assert!(app.handle_event(&ime(ImeEvent::Started)).visual_changed);
+    assert!(
+        app.handle_event(&ime(ImeEvent::Updated {
+            text: "é".into(),
+            selected_start_utf16: 1,
+            selected_length_utf16: 0,
+        }))
+        .visual_changed
+    );
+
+    let document_revision = app.buffer().revision();
+    let stale_before = app.rejected_stale_input_events;
+    let future_before = app.rejected_future_input_events;
+    assert!(
+        app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(10),
+            input_epoch: next_epoch,
+            focused: false,
+        })
+        .visual_changed
+    );
+    assert_eq!(app.input_epoch, next_epoch);
+    assert!(!app.focused);
+    assert!(
+        !app.handle_event(&ime_at(
+            InputEpoch::INITIAL,
+            ImeEvent::Committed("obsolete".into()),
+        ))
+        .visual_changed
+    );
+    assert_eq!(app.buffer().revision(), document_revision);
+    assert_eq!(app.rejected_stale_input_events, stale_before + 1);
+
+    let future_epoch = next_epoch.checked_next().ok_or(StudioRenderError::Domain)?;
+    assert!(
+        !app.handle_event(&ime_at(future_epoch, ImeEvent::Committed("future".into()),))
+            .visual_changed
+    );
+    assert_eq!(app.buffer().revision(), document_revision);
+    assert_eq!(app.rejected_future_input_events, future_before + 1);
+    assert!(
+        !app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(11),
+            input_epoch: next_epoch,
+            focused: false,
+        })
+        .visual_changed
+    );
+    assert!(
+        app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(12),
+            input_epoch: next_epoch,
+            focused: true,
+        })
+        .visual_changed
+    );
+    let stale_focus_before = app.rejected_stale_input_events;
+    assert!(
+        !app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(13),
+            input_epoch: InputEpoch::INITIAL,
+            focused: false,
+        })
+        .visual_changed
+    );
+    assert_eq!(app.input_epoch, next_epoch);
+    assert!(app.focused);
+    assert_eq!(app.rejected_stale_input_events, stale_focus_before + 1);
+    assert!(
+        !app.handle_event(&ime_at(InputEpoch::INITIAL, ImeEvent::Started))
+            .visual_changed
+    );
+    assert!(
+        !app.handle_event(&ime_at(next_epoch, ImeEvent::Cancelled))
+            .visual_changed
+    );
+    assert_eq!(app.buffer().revision(), document_revision);
+    Ok(())
+}
+
+#[test]
+fn focus_epoch_admission_preserves_current_and_cancels_future_sessions()
+-> Result<(), StudioRenderError> {
+    let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
+    assert!(app.handle_event(&ime(ImeEvent::Started)).visual_changed);
+    assert!(app.composition.is_some());
+
+    assert!(
+        !app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(1),
+            input_epoch: InputEpoch::INITIAL,
+            focused: true,
+        })
+        .visual_changed
+    );
+    assert!(app.focused);
+    assert!(app.composition.is_some());
+
+    let stale_before = app.rejected_stale_input_events;
+    assert!(
+        !app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(2),
+            input_epoch: InputEpoch::INITIAL,
+            focused: false,
+        })
+        .visual_changed
+    );
+    assert!(app.focused);
+    assert!(app.composition.is_some());
+    assert_eq!(app.rejected_stale_input_events, stale_before + 1);
+
+    let migrated_epoch = InputEpoch::INITIAL
+        .checked_next()
+        .ok_or(StudioRenderError::Domain)?;
+    assert!(
+        app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(3),
+            input_epoch: migrated_epoch,
+            focused: true,
+        })
+        .visual_changed
+    );
+    assert_eq!(app.input_epoch, migrated_epoch);
+    assert!(app.focused);
+    assert!(app.composition.is_none());
+
+    assert!(
+        app.handle_event(&ime_at(migrated_epoch, ImeEvent::Started))
+            .visual_changed
+    );
+    let suspended_epoch = migrated_epoch
+        .checked_next()
+        .ok_or(StudioRenderError::Domain)?;
+    assert!(
+        app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(4),
+            input_epoch: suspended_epoch,
+            focused: false,
+        })
+        .visual_changed
+    );
+    assert!(!app.focused);
+    assert!(app.composition.is_none());
+
+    let revision = app.buffer().revision();
+    let rejected_before = app.rejected_stale_input_events;
+    assert!(
+        !app.handle_event(&ime_at(
+            suspended_epoch,
+            ImeEvent::Committed("unfocused".into()),
+        ))
+        .visual_changed
+    );
+    assert_eq!(app.buffer().revision(), revision);
+    assert_eq!(app.rejected_stale_input_events, rejected_before + 1);
+    Ok(())
+}
+
+#[test]
+fn focus_epochs_cancel_every_composing_owner_and_reject_obsolete_mutation()
+-> Result<(), StudioRenderError> {
+    let mut editor = test_app().map_err(|_| StudioRenderError::Domain)?;
+    assert_focus_epoch_cancels_owner(&mut editor)?;
+
+    let mut find = test_app().map_err(|_| StudioRenderError::Domain)?;
+    assert!(find.find.open(false));
+    assert_focus_epoch_cancels_owner(&mut find)?;
+
+    let mut quick_open = test_app().map_err(|_| StudioRenderError::Domain)?;
+    assert!(
+        quick_open
+            .quick_open
+            .open(1)
+            .map_err(|_| StudioRenderError::Domain)?
+    );
+    assert_focus_epoch_cancels_owner(&mut quick_open)?;
+
+    let mut command_palette = test_app().map_err(|_| StudioRenderError::Domain)?;
+    assert!(command_palette.open_command_palette().visual_changed);
+    assert_focus_epoch_cancels_owner(&mut command_palette)?;
+
+    let mut project_search = test_app().map_err(|_| StudioRenderError::Domain)?;
+    assert!(
+        project_search
+            .project_search
+            .open(1)
+            .map_err(|_| StudioRenderError::Domain)?
+    );
+    assert_focus_epoch_cancels_owner(&mut project_search)?;
+    Ok(())
 }
 
 fn key(physical_key: u16, modifiers: Modifiers) -> SurfaceEvent {
@@ -2731,9 +2936,13 @@ fn keyboard_commands_cover_selection_navigation_and_history() -> Result<(), Surf
 )]
 fn input_edges_are_bounded_and_failed_edits_are_atomic() -> Result<(), StudioRenderError> {
     let mut app = test_app().map_err(|_| StudioRenderError::Domain)?;
+    let next_epoch = InputEpoch::INITIAL
+        .checked_next()
+        .ok_or(StudioRenderError::Domain)?;
     assert!(
         app.handle_event(&SurfaceEvent::Focus {
             timestamp: EventTimestamp::new(1),
+            input_epoch: next_epoch,
             focused: false,
         })
         .visual_changed
@@ -2741,6 +2950,7 @@ fn input_edges_are_bounded_and_failed_edits_are_atomic() -> Result<(), StudioRen
     assert!(
         !app.handle_event(&SurfaceEvent::Focus {
             timestamp: EventTimestamp::new(2),
+            input_epoch: next_epoch,
             focused: false,
         })
         .visual_changed
@@ -2754,9 +2964,37 @@ fn input_edges_are_bounded_and_failed_edits_are_atomic() -> Result<(), StudioRen
         }))
         .visual_changed
     );
-    assert!(app.handle_event(&ime(ImeEvent::Started)).visual_changed);
-    assert!(app.handle_event(&ime(ImeEvent::Cancelled)).visual_changed);
-    assert!(!app.handle_event(&ime(ImeEvent::Cancelled)).visual_changed);
+    assert!(
+        app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(3),
+            input_epoch: next_epoch,
+            focused: true,
+        })
+        .visual_changed
+    );
+    assert!(
+        !app.handle_event(&ime_at(
+            next_epoch,
+            ImeEvent::Updated {
+                text: "x".into(),
+                selected_start_utf16: 2,
+                selected_length_utf16: 0,
+            },
+        ))
+        .visual_changed
+    );
+    assert!(
+        app.handle_event(&ime_at(next_epoch, ImeEvent::Started))
+            .visual_changed
+    );
+    assert!(
+        app.handle_event(&ime_at(next_epoch, ImeEvent::Cancelled))
+            .visual_changed
+    );
+    assert!(
+        !app.handle_event(&ime_at(next_epoch, ImeEvent::Cancelled))
+            .visual_changed
+    );
 
     let failures = app.input_failures;
     assert!(
@@ -5051,6 +5289,9 @@ fn completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact()
         app.handle_event(&SurfaceEvent::Focus {
             focused: false,
             timestamp: EventTimestamp::new(312),
+            input_epoch: InputEpoch::INITIAL
+                .checked_next()
+                .ok_or("next input epoch")?,
         })
         .visual_changed
     );

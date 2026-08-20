@@ -6,7 +6,9 @@ use std::{
     time::Instant,
 };
 
-use alpine_platform_macos::{EventTimestamp, ImeEvent, KeyState, Modifiers, SurfaceEvent};
+use alpine_platform_macos::{
+    EventTimestamp, ImeEvent, InputEpoch, KeyState, Modifiers, SurfaceEvent,
+};
 use alpine_text::{ByteOffset, Selection};
 use alpine_text_layout::{
     FontKey, GlyphBitmap, GlyphRasterizer, LayoutError, LineLayout, RasterizedGlyph, ShapedGlyph,
@@ -115,6 +117,7 @@ fn logical_key(logical_key: &str, modifiers: Modifiers) -> SurfaceEvent {
 fn ime(event: ImeEvent) -> SurfaceEvent {
     SurfaceEvent::Ime {
         timestamp: EventTimestamp::new(2),
+        input_epoch: InputEpoch::INITIAL,
         event,
     }
 }

@@ -89,7 +89,8 @@ use alpine_core::{LinearRgba, Point, Rect, Size};
 use alpine_platform_macos::{AccessibilityPayload, AccessibilityRequest, AccessibilityRequestId};
 use alpine_platform_macos::{
     ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite, ImeEvent,
-    KeyState, Modifiers, PointerAction, PointerButton, SurfaceError, SurfaceEvent,
+    InputEpoch, InputEpochAdmission, KeyState, Modifiers, PointerAction, PointerButton,
+    SurfaceError, SurfaceEvent,
 };
 use alpine_runtime::{AppContext, AppDelegate, DocumentRevision, RuntimeError, WindowContext};
 use alpine_scene::{
@@ -1008,6 +1009,9 @@ struct StudioApp {
     selection_revision: u64,
     selection: Selection,
     composition: Option<Composition>,
+    input_epoch: InputEpoch,
+    rejected_stale_input_events: u64,
+    rejected_future_input_events: u64,
     scroll_y: f32,
     focused: bool,
     pointer_selecting: bool,
@@ -1252,6 +1256,9 @@ impl StudioApp {
             selection_revision: 1,
             selection: Selection::caret(ByteOffset::new(0)),
             composition: None,
+            input_epoch: InputEpoch::INITIAL,
+            rejected_stale_input_events: 0,
+            rejected_future_input_events: 0,
             scroll_y: 0.0,
             focused: true,
             pointer_selecting: false,
@@ -2604,18 +2611,14 @@ impl StudioApp {
                 };
                 changed.then(EventEffect::visual).unwrap_or_default()
             }
-            SurfaceEvent::Focus { focused, .. } => {
-                let changed = self.focused != *focused;
-                self.focused = *focused;
-                let completion = (!*focused && self.rust_diagnostics.cancel_completion())
-                    .then(EventEffect::visual)
-                    .unwrap_or_default();
-                changed
-                    .then(EventEffect::visual)
-                    .unwrap_or_default()
-                    .merge(completion)
-            }
-            SurfaceEvent::Ime { event, .. } => self.handle_ime(event),
+            SurfaceEvent::Focus {
+                input_epoch,
+                focused,
+                ..
+            } => self.handle_focus(*input_epoch, *focused),
+            SurfaceEvent::Ime {
+                input_epoch, event, ..
+            } => self.handle_epoch_ime(*input_epoch, event),
             SurfaceEvent::Clipboard { event, .. } => {
                 return self.handle_clipboard_completion(event);
             }
@@ -2985,6 +2988,78 @@ impl StudioApp {
             }
             ImeEvent::Cancelled => self.cancel_composition(),
         }
+    }
+
+    fn handle_epoch_ime(&mut self, input_epoch: InputEpoch, event: &ImeEvent) -> EventEffect {
+        match self.input_epoch.classify(input_epoch) {
+            InputEpochAdmission::Current if self.focused => self.handle_ime(event),
+            InputEpochAdmission::Stale | InputEpochAdmission::Current => {
+                self.rejected_stale_input_events =
+                    self.rejected_stale_input_events.saturating_add(1);
+                EventEffect::default()
+            }
+            InputEpochAdmission::Future => {
+                self.rejected_future_input_events =
+                    self.rejected_future_input_events.saturating_add(1);
+                EventEffect::default()
+            }
+        }
+    }
+
+    fn handle_focus(&mut self, input_epoch: InputEpoch, focused: bool) -> EventEffect {
+        let admission = self.input_epoch.classify(input_epoch);
+        if admission == InputEpochAdmission::Stale
+            || (!focused && self.focused && admission == InputEpochAdmission::Current)
+        {
+            self.rejected_stale_input_events = self.rejected_stale_input_events.saturating_add(1);
+            return EventEffect::default();
+        }
+
+        let mut effect = EventEffect::default();
+        if admission == InputEpochAdmission::Future || !focused {
+            effect = effect.merge(self.cancel_focused_composition());
+        }
+        self.input_epoch = input_epoch;
+        let changed = self.focused != focused;
+        self.focused = focused;
+        let completion = (!focused && self.rust_diagnostics.cancel_completion())
+            .then(EventEffect::visual)
+            .unwrap_or_default();
+        effect
+            .merge(changed.then(EventEffect::visual).unwrap_or_default())
+            .merge(completion)
+    }
+
+    fn cancel_focused_composition(&mut self) -> EventEffect {
+        if self.command_palette.is_open() {
+            return self
+                .command_palette
+                .cancel_composition()
+                .then(EventEffect::visual)
+                .unwrap_or_default();
+        }
+        if self.project_search.is_open() {
+            return self
+                .project_search
+                .cancel_composition()
+                .then(EventEffect::visual)
+                .unwrap_or_default();
+        }
+        if self.quick_open.is_open() {
+            return self
+                .quick_open
+                .cancel_composition()
+                .then(EventEffect::visual)
+                .unwrap_or_default();
+        }
+        if self.find.is_open() {
+            return self
+                .find
+                .cancel_composition()
+                .then(EventEffect::visual)
+                .unwrap_or_default();
+        }
+        self.cancel_composition()
     }
 
     fn open_command_palette(&mut self) -> EventEffect {
@@ -4894,8 +4969,8 @@ pub mod native_validation {
     };
 
     use alpine_platform_macos::{
-        ClipboardError, ClipboardOperation, EventTimestamp, ImeEvent, KeyState, Modifiers,
-        NativeSurface, PointerAction, PointerButton, SurfaceDescriptor, SurfaceEvent,
+        ClipboardError, ClipboardOperation, EventTimestamp, ImeEvent, InputEpoch, KeyState,
+        Modifiers, NativeSurface, PointerAction, PointerButton, SurfaceDescriptor, SurfaceEvent,
         SurfaceLifecycle, SurfaceResponse, native_validation as platform_validation,
     };
     use alpine_runtime::{Application, WorkerConfig};
@@ -4907,7 +4982,8 @@ pub mod native_validation {
         WINDOW_WIDTH, Workspace, native_file_app,
     };
 
-    const NATIVE_INPUT_FRAMES: usize = 5;
+    const NATIVE_INPUT_EVENTS: usize = 12;
+    const NATIVE_INPUT_FRAMES: usize = 10;
     const HOSTED_RUN_TIMEOUT: Duration = Duration::from_secs(6);
     const TREE_TOGGLE_MODIFIER_BITS: u8 = 0x09;
     const COMMAND_SHIFT_MODIFIERS: Modifiers = Modifiers::from_bits(TREE_TOGGLE_MODIFIER_BITS);
@@ -5288,6 +5364,8 @@ pub mod native_validation {
         ime_started: usize,
         ime_updated: usize,
         ime_committed: usize,
+        ime_cancelled: usize,
+        focus: usize,
         pointer: usize,
         scroll: usize,
         unexpected: usize,
@@ -5302,8 +5380,7 @@ pub mod native_validation {
                 SurfaceEvent::Keyboard { .. } => {
                     self.keyboard = self.keyboard.saturating_add(1);
                 }
-                SurfaceEvent::Accessibility { .. }
-                | SurfaceEvent::Ime {
+                SurfaceEvent::Ime {
                     event: ImeEvent::Started,
                     ..
                 } => self.ime_started = self.ime_started.saturating_add(1),
@@ -5315,17 +5392,20 @@ pub mod native_validation {
                     event: ImeEvent::Committed(_),
                     ..
                 } => self.ime_committed = self.ime_committed.saturating_add(1),
+                SurfaceEvent::Ime {
+                    event: ImeEvent::Cancelled,
+                    ..
+                } => self.ime_cancelled = self.ime_cancelled.saturating_add(1),
+                SurfaceEvent::Focus { .. } => {
+                    self.focus = self.focus.saturating_add(1);
+                }
                 SurfaceEvent::Pointer { .. } => {
                     self.pointer = self.pointer.saturating_add(1);
                 }
                 SurfaceEvent::Scroll { .. } => {
                     self.scroll = self.scroll.saturating_add(1);
                 }
-                SurfaceEvent::Ime {
-                    event: ImeEvent::Cancelled,
-                    ..
-                }
-                | SurfaceEvent::Focus { .. }
+                SurfaceEvent::Accessibility { .. }
                 | SurfaceEvent::Resize { .. }
                 | SurfaceEvent::Clipboard { .. }
                 | SurfaceEvent::Wake { .. }
@@ -5580,6 +5660,7 @@ pub mod native_validation {
             &journey,
             &[SurfaceEvent::Ime {
                 timestamp: EventTimestamp::new(620),
+                input_epoch: InputEpoch::INITIAL,
                 event: ImeEvent::Committed("!".into()),
             }],
         )?;
@@ -5591,6 +5672,7 @@ pub mod native_validation {
                 keyboard_event(621, KEY_P, "p", COMMAND_SHIFT_MODIFIERS),
                 SurfaceEvent::Ime {
                     timestamp: EventTimestamp::new(622),
+                    input_epoch: InputEpoch::INITIAL,
                     event: ImeEvent::Committed("save".into()),
                 },
                 keyboard_event(623, KEY_RETURN, "Enter", Modifiers::default()),
@@ -5684,6 +5766,7 @@ pub mod native_validation {
                 keyboard_event(700, KEY_F, "f", COMMAND_SHIFT_MODIFIERS),
                 SurfaceEvent::Ime {
                     timestamp: EventTimestamp::new(701),
+                    input_epoch: InputEpoch::INITIAL,
                     event: ImeEvent::Committed("needle".into()),
                 },
             ],
@@ -5746,6 +5829,7 @@ pub mod native_validation {
             &[
                 SurfaceEvent::Ime {
                     timestamp: EventTimestamp::new(1_216),
+                    input_epoch: InputEpoch::INITIAL,
                     event: ImeEvent::Committed("!".into()),
                 },
                 keyboard_event(1_217, KEY_S, "s", Modifiers::from_bits(Modifiers::COMMAND)),
@@ -5832,16 +5916,18 @@ pub mod native_validation {
         assert_ne!(input_revision, initial_revision);
         let (input_events, input_frames) = {
             let evidence = input_evidence.borrow();
-            assert_eq!(evidence.events, 7);
+            assert_eq!(evidence.events, NATIVE_INPUT_EVENTS);
             assert_eq!(evidence.keyboard, 1);
-            assert_eq!(evidence.ime_started, 1);
-            assert_eq!(evidence.ime_updated, 1);
+            assert_eq!(evidence.ime_started, 2);
+            assert_eq!(evidence.ime_updated, 2);
             assert_eq!(evidence.ime_committed, 2);
+            assert_eq!(evidence.ime_cancelled, 1);
+            assert_eq!(evidence.focus, 2);
             assert_eq!(evidence.pointer, 1);
             assert_eq!(evidence.scroll, 1);
             assert_eq!(evidence.unexpected, 0);
             assert_eq!(evidence.frames, NATIVE_INPUT_FRAMES);
-            assert_eq!(evidence.frame_revisions, [2, 3, 4, 5, 6]);
+            assert_eq!(evidence.frame_revisions, [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
             (evidence.events, evidence.frames)
         };
         assert!(state.borrow_mut().frame_if_dirty().is_none());

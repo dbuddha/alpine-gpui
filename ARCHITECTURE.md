@@ -973,6 +973,25 @@ The production native journey validates object identity, roles, labels, text
 ranges, mapping selectors, stale writes, notifications, cache accounting, late
 selector rejection, and owner drain. See AEP-0250 and AEP-0255.
 
+Native text input carries one non-zero monotonic `InputEpoch` across the same
+handle-free event boundary. Every IME start, update, commit, and cancellation is
+tagged with the epoch active when AppKit produced it. On key-window loss,
+occlusion, minimization, or close, the main-thread AppKit view first asks its
+`NSTextInputContext` to discard marked text, suppresses reentrant `unmarkText`
+commit, emits at most one cancellation for the old epoch, advances the epoch,
+and only then publishes focus loss. Refocus reuses that newly established epoch
+and cannot revive the discarded session.
+
+Studio admits IME mutation only when the event epoch exactly matches its current
+epoch and the window is focused. Stale and prematurely future events update
+separate bounded counters but are otherwise atomic no-ops. Focus loss cancels
+the one active composition owner among editor, find, quick open, command
+palette, and project search before adopting the new epoch. Cancellation changes
+frame demand only when visible composition or focus state changed; it performs
+no GPU, filesystem, language-worker, clipboard, timer, or queue work. Native
+handler revocation clears marked text and leaves input inactive even when no
+application callback remains. See AEP-0268.
+
 ### Pane document ownership (Task #127)
 
 Pane leaves retain a stable document-tab identity and pane-local view state. The global document-tab store remains the sole owner of document payloads and buffers; panes never clone an editor or buffer. Scene construction resolves each pane identity to an immutable snapshot, while focus activates that identity through the existing checked tab transition. Selection state follows the document revision and is synchronized across panes showing the same tab, while scroll remains pane-local. Closing a tab retargets every referencing pane to the replacement active tab before the next scene is admitted.

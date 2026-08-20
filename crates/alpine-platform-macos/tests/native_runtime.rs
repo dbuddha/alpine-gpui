@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use alpine_core::Point;
     use alpine_platform_macos::{
         ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite,
-        CloseDisposition, EventTimestamp, ImeEvent, KeyState, Modifiers, PointerAction,
+        CloseDisposition, EventTimestamp, ImeEvent, InputEpoch, KeyState, Modifiers, PointerAction,
         PointerButton, ScrollPhase, SurfaceDescriptor, SurfaceEvent, SurfaceExtent,
         SurfaceLifecycle, SurfaceResponse, native_validation,
     };
@@ -42,6 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         SurfaceEvent::Focus {
             timestamp: EventTimestamp::new(4),
+            input_epoch: InputEpoch::INITIAL,
             focused: true,
         },
         SurfaceEvent::Resize {
@@ -54,6 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         SurfaceEvent::Ime {
             timestamp: EventTimestamp::new(7),
+            input_epoch: InputEpoch::INITIAL,
             event: ImeEvent::Updated {
                 text: "kana".into(),
                 selected_start_utf16: 1,

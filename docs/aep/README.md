@@ -33,6 +33,9 @@ Accepted AEPs:
 - [AEP 0177: Bounded static command palette](0177-bounded-static-command-palette.md)
 - [AEP 0180: Bounded streaming local project search](0180-bounded-streaming-project-search.md)
 - [AEP 0218: Bounded revision-safe Rust completion](0218-bounded-rust-completion.md)
+- [AEP 0250: Bounded native accessibility transport](0250-bounded-native-accessibility-transport.md)
+- [AEP 0255: Bounded native accessibility text mapping](0255-bounded-native-accessibility-text-mapping.md)
+- [AEP 0268: Bounded native input and accessibility lifecycle](0268-bounded-native-input-accessibility-lifecycle.md)
 
 Proposed AEPs:
 

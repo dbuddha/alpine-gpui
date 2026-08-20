@@ -4,8 +4,8 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     qualify_shipping_executable()?;
     let evidence = alpine_studio::native_validation::qualify_clipboard_and_close_process()?;
-    assert_eq!(evidence.input_events(), 7);
-    assert_eq!(evidence.input_frames(), 5);
+    assert_eq!(evidence.input_events(), 12);
+    assert_eq!(evidence.input_frames(), 10);
     assert!(evidence.persisted_bytes() > 1_000);
     assert_eq!(evidence.released_owner_classes(), 10);
     let tree = alpine_studio::native_validation::qualify_file_tree_process()?;

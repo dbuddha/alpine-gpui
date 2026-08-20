@@ -4582,3 +4582,120 @@ bounds = ["pull request: four identities and four requests", "nightly: eight ide
 assumptions = ["Checked Rust coordinate conversion succeeds before the modeled apply action."]
 exclusions = ["transaction byte semantics", "undo implementation", "Rust refinement"]
 companion = "apps/alpine-studio/src/studio_coverage_tests.rs#completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact"
+[[claims]]
+id = "AEP-0268-C01"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0268-bounded-native-input-accessibility-lifecycle.md"
+requirement_issue = 37
+claim_type = "functional"
+risk = "critical"
+kani_applicability = "required"
+tla_properties = []
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["kani", "unit", "native"]
+
+[[claims]]
+id = "AEP-0268-C02"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0268-bounded-native-input-accessibility-lifecycle.md"
+requirement_issue = 37
+claim_type = "functional"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable"]
+required_evidence = ["unit"]
+
+[[claims]]
+id = "AEP-0268-C03"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0268-bounded-native-input-accessibility-lifecycle.md"
+requirement_issue = 37
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["unit", "native"]
+
+[[claims]]
+id = "AEP-0268-C04"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0268-bounded-native-input-accessibility-lifecycle.md"
+requirement_issue = 37
+claim_type = "functional"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["macos-metal"]
+required_evidence = ["native"]
+
+[[evidence]]
+id = "EV-0268-KANI01"
+claim = "AEP-0268-C01"
+kind = "kani"
+artifact = "crates/alpine-platform-macos/src/lib.rs#checked_epoch_boundaries_never_wrap_or_alias"
+assertion = "A non-zero input epoch advances to one distinct greater identity or rejects at u64::MAX, and current, stale, and future classification never aliases."
+scope = "Complete non-zero u64 epoch domain and one checked transition."
+bounds = ["all non-zero u64 values"]
+assumptions = ["one transition is evaluated synchronously"]
+exclusions = ["AppKit callback delivery", "Studio owner mutation", "multi-window input"]
+companion = "crates/alpine-platform-macos/src/lib.rs#epoch_construction_advancement_and_admission_are_exact"
+
+[[evidence]]
+id = "EV-0268-UNIT01"
+claim = "AEP-0268-C01"
+kind = "unit"
+artifact = "crates/alpine-platform-macos/src/lib.rs#epoch_construction_advancement_and_admission_are_exact"
+assertion = "Zero is rejected, the initial epoch advances to two, maximum exhaustion fails closed, and all three admission classes are exact."
+scope = "Portable handle-free input epoch value contract."
+exclusions = ["native marked text", "focus owner composition"]
+
+[[evidence]]
+id = "EV-0268-NATIVE01"
+claim = "AEP-0268-C01"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_input.rs#main"
+assertion = "The production AppKit responder emits cancellation under the old epoch before focus loss under the next epoch, rejects an injected stale commit, and refocuses under the next epoch."
+scope = "One real SurfaceView NSTextInputClient path on hosted Apple Silicon macOS."
+exclusions = ["physical VoiceOver", "actual sleep and wake", "multi-window input"]
+
+[[evidence]]
+id = "EV-0268-UNIT02"
+claim = "AEP-0268-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#focus_epochs_cancel_every_composing_owner_and_reject_obsolete_mutation"
+assertion = "Stale and future IME commits leave the document revision unchanged, schedule no visual work, and increment distinct rejection evidence."
+scope = "Editor and every supported transient composing owner."
+exclusions = ["AppKit callback scheduling", "physical input methods"]
+
+[[evidence]]
+id = "EV-0268-UNIT03"
+claim = "AEP-0268-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#focus_epochs_cancel_every_composing_owner_and_reject_obsolete_mutation"
+assertion = "Editor, find, quick open, command palette, and project search each cancel visible composition on one epoch-advancing focus loss; duplicate loss and later cancellation are quiet."
+scope = "Five supported Studio composition owners."
+exclusions = ["file tree, which accepts no composition", "native selector delivery"]
+
+[[evidence]]
+id = "EV-0268-NATIVE03"
+claim = "AEP-0268-C03"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_input.rs#main"
+assertion = "A production AppKit marked-text session emits exactly one cancellation before loss and begins no replacement session until refocus."
+scope = "One native composing SurfaceView and one loss/refocus cycle."
+exclusions = ["all Studio owner projections", "physical input-method matrix"]
+
+[[evidence]]
+id = "EV-0268-NATIVE04"
+claim = "AEP-0268-C04"
+kind = "native"
+artifact = "crates/alpine-platform-macos/tests/native_input.rs#main"
+assertion = "The production AppKit view clears marked input, deactivates its epoch when the input handler is revoked, rejects a late callback without dispatch, and closes with every native owner drained and no release-order violation."
+scope = "One hosted Apple Silicon SurfaceView handler-revocation and close path after loss and refocus."
+exclusions = ["physical hide, minimize, sleep, and wake", "VoiceOver delivery", "multi-window input"]
