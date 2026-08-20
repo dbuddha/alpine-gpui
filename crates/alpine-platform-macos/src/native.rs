@@ -14,12 +14,12 @@ use alpine_core::Point;
 use std::time::{Duration, Instant};
 
 #[cfg(alpine_native_validation)]
-use objc2::rc::{Weak, autoreleasepool};
+use objc2::rc::autoreleasepool;
 #[cfg(alpine_native_validation)]
 use objc2::runtime::Bool;
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
-    rc::Retained,
+    rc::{Retained, Weak},
     runtime::{AnyObject, ProtocolObject, Sel},
 };
 use objc2_app_kit::{
@@ -30,6 +30,7 @@ use objc2_app_kit::{
 };
 #[cfg(alpine_native_validation)]
 use objc2_app_kit::{NSEventType, NSScreen, NSWindowButton};
+use objc2_core_foundation::{CFRunLoop, kCFRunLoopCommonModes};
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 #[cfg(alpine_native_validation)]
 use objc2_core_graphics::{CGEvent, CGEventFlags, CGScrollEventUnit};
@@ -56,16 +57,18 @@ use alpine_platform::{
 };
 use alpine_scene::Scene;
 use block2::RcBlock;
-use dispatch2::{DispatchQueue, MainThreadBound};
+use dispatch2::DispatchQueue;
 
+use crate::native_accessibility::{NativeAccessibilityAdapter, NativeAccessibilityElement};
 use crate::{
-    ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite,
-    CloseDisposition, EventTimestamp, FrameTerminalEvidence, ImeEvent, KeyState, Modifiers,
-    PointerAction, PointerButton, SURFACE_CLOSING, SURFACE_LIVE, ScrollPhase, SdrColorContract,
-    SurfaceConfiguration, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceLifecycle,
-    SurfaceObserver, SurfaceResponse, SurfaceSnapshot, SurfaceStage, SurfaceWakeAdmission,
-    SurfaceWakeCounters, SurfaceWaker, begin_close_observer_state, finish_close_observer_state,
-    new_observer_state, presentation_visible,
+    AccessibilityRequest, AccessibilityResponse, ClipboardError, ClipboardEvent,
+    ClipboardOperation, ClipboardText, ClipboardWrite, CloseDisposition, EventTimestamp,
+    FrameTerminalEvidence, ImeEvent, KeyState, Modifiers, PointerAction, PointerButton,
+    SURFACE_CLOSING, SURFACE_LIVE, ScrollPhase, SdrColorContract, SurfaceConfiguration,
+    SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceLifecycle, SurfaceObserver,
+    SurfaceResponse, SurfaceSnapshot, SurfaceStage, SurfaceWakeAdmission, SurfaceWakeCounters,
+    SurfaceWaker, begin_close_observer_state, finish_close_observer_state, new_observer_state,
+    presentation_visible,
 };
 
 type Device = Retained<ProtocolObject<dyn MTLDevice>>;
@@ -1285,6 +1288,7 @@ pub(crate) struct SurfaceViewIvars {
     input_dispatch_failed: Cell<bool>,
     marked_text: RefCell<Box<str>>,
     marked_selection: Cell<NSRange>,
+    pub(crate) accessibility: RefCell<NativeAccessibilityAdapter>,
 }
 
 define_class!(
@@ -1456,6 +1460,16 @@ define_class!(
     }
 
     impl SurfaceView {
+        #[unsafe(method(isAccessibilityElement))]
+        fn is_accessibility_element(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method_id(accessibilityChildren))]
+        fn accessibility_children(&self) -> Retained<NSArray<NativeAccessibilityElement>> {
+            NativeAccessibilityAdapter::surface_children(self)
+        }
+
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             true
@@ -1555,6 +1569,7 @@ impl SurfaceView {
             input_dispatch_failed: Cell::new(false),
             marked_text: RefCell::new(Box::default()),
             marked_selection: Cell::new(NSRange::new(0, 0)),
+            accessibility: RefCell::new(NativeAccessibilityAdapter::new()),
         });
         // SAFETY: `frame` is finite and positive because the surface descriptor
         // validated it before allocating this view.
@@ -1582,6 +1597,26 @@ impl SurfaceView {
 
     pub(crate) fn take_input_dispatch_failure(&self) -> bool {
         self.ivars().input_dispatch_failed.replace(false)
+    }
+
+    fn install_accessibility_delegate(&self, delegate: &Retained<DisplayLinkDelegate>) {
+        let weak = Weak::from_retained(delegate);
+        self.ivars()
+            .accessibility
+            .borrow_mut()
+            .install(Box::new(move |request| {
+                weak.load()
+                    .ok_or(SurfaceError::DriverUnavailable)?
+                    .dispatch_accessibility_request(request)
+            }));
+    }
+
+    pub(crate) fn refresh_accessibility_if_active(&self) -> Result<(), SurfaceError> {
+        NativeAccessibilityAdapter::refresh_view_if_active(self)
+    }
+
+    pub(crate) fn revoke_accessibility(&self) {
+        NativeAccessibilityAdapter::revoke_view(self);
     }
 
     fn emit(&self, event: NativeInputEvent) {
@@ -2370,7 +2405,10 @@ impl DisplayLinkDelegate {
                 .as_mut()
                 .map_or_else(SurfaceResponse::default, |handler| handler(event))
         };
-        let (frame, clipboard_write, close) = response.into_parts();
+        let (frame, clipboard_write, close, accessibility) = response.into_channels();
+        if accessibility.is_some() {
+            return Err(SurfaceError::DriverUnavailable);
+        }
         if close_requested {
             if close == CloseDisposition::NotRequested {
                 return Ok(close);
@@ -2416,7 +2454,41 @@ impl DisplayLinkDelegate {
                 false,
             )?;
         }
+        self.ivars()
+            .view
+            .as_ref()
+            .ok_or(SurfaceError::DriverUnavailable)?
+            .refresh_accessibility_if_active()?;
         Ok(close)
+    }
+
+    fn dispatch_accessibility_request(
+        &self,
+        request: &AccessibilityRequest,
+    ) -> Result<AccessibilityResponse, SurfaceError> {
+        let event = SurfaceEvent::Accessibility {
+            timestamp: self.next_event_timestamp(),
+            request: request.clone(),
+        };
+        let response = {
+            let mut installed = self
+                .ivars()
+                .event_handler
+                .try_borrow_mut()
+                .map_err(|_| SurfaceError::DriverUnavailable)?;
+            installed
+                .as_mut()
+                .map_or_else(SurfaceResponse::default, |handler| handler(event))
+        };
+        let (frame, clipboard, close, accessibility) = response.into_channels();
+        if frame.is_some() || clipboard.is_some() || close != CloseDisposition::NotRequested {
+            return Err(SurfaceError::DriverUnavailable);
+        }
+        let response = accessibility.ok_or(SurfaceError::DriverUnavailable)?;
+        response
+            .validate_for(request)
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        Ok(response)
     }
 
     fn dispatch_callback_event(&self, event: SurfaceEvent) {
@@ -2510,6 +2582,9 @@ impl DisplayLinkDelegate {
             .is_err()
         {
             return;
+        }
+        if let Some(view) = &self.ivars().view {
+            view.revoke_accessibility();
         }
         begin_close_observer_state(&self.ivars().lifecycle);
         #[cfg(alpine_native_validation)]
@@ -2661,19 +2736,24 @@ fn schedule_display_link_pause_confirmation(
     driver: &Rc<RefCell<PresentationDriver>>,
     #[cfg(alpine_native_validation)] pause_confirmation_count: Arc<AtomicU64>,
 ) {
-    let Some(marker) = MainThreadMarker::new() else {
+    if MainThreadMarker::new().is_none() {
         display_link.setPaused(true);
         return;
+    }
+    let Some(run_loop) = CFRunLoop::main() else {
+        return;
     };
-    let context = Arc::new(MainThreadBound::new(
-        (display_link.clone(), Rc::downgrade(driver)),
-        marker,
-    ));
-    DispatchQueue::main().exec_async(move || {
-        let Some(marker) = MainThreadMarker::new() else {
+    // SAFETY: Core Foundation publishes this process-lifetime constant as a
+    // CFRunLoopMode, which is a CFString and therefore a valid CFType mode.
+    let Some(common_modes) = (unsafe { kCFRunLoopCommonModes }) else {
+        return;
+    };
+    let display_link = display_link.clone();
+    let driver = Rc::downgrade(driver);
+    let confirmation: RcBlock<dyn Fn()> = RcBlock::new(move || {
+        if MainThreadMarker::new().is_none() {
             return;
-        };
-        let (display_link, driver) = context.get(marker);
+        }
         let should_pause = driver.upgrade().is_some_and(|driver| {
             driver
                 .try_borrow()
@@ -2682,9 +2762,18 @@ fn schedule_display_link_pause_confirmation(
         if should_pause {
             display_link.setPaused(true);
             #[cfg(alpine_native_validation)]
-            pause_confirmation_count.fetch_add(1, Ordering::Relaxed);
+            if display_link.isPaused() {
+                pause_confirmation_count.fetch_add(1, Ordering::Relaxed);
+            }
         }
     });
+    // SAFETY: this call copies the block before returning. The block captures
+    // main-thread-only owners, is enqueued on the main run loop, and the common
+    // mode constant above has the required CFType identity.
+    unsafe {
+        run_loop.perform_block(Some(common_modes), Some(&confirmation));
+    }
+    run_loop.wake_up();
 }
 
 #[cfg(alpine_native_validation)]
@@ -3160,6 +3249,11 @@ impl NativeSurface {
             .delegate
             .as_ref()
             .ok_or_else(|| native_unavailable(SurfaceStage::DisplayLink))?;
+        let view = builder
+            .view
+            .as_ref()
+            .ok_or_else(|| native_unavailable(SurfaceStage::View))?;
+        view.install_accessibility_delegate(delegate);
         let display_link = builder
             .display_link
             .as_ref()
@@ -3257,6 +3351,7 @@ impl NativeSurface {
         });
         let run_result = wake_result.and_then(|_| self.run());
         self.wake_bridge.revoke();
+        self.view.revoke_accessibility();
         self.view.clear_input_handler();
         self.delegate.clear_event_handler();
         resolve_input_dispatch(run_result, self.view.take_input_dispatch_failure())
@@ -3280,6 +3375,30 @@ impl NativeSurface {
             .iter()
             .cloned()
             .try_for_each(|event| self.delegate.dispatch_surface_event(event).map(|_| ()));
+        self.delegate.clear_event_handler();
+        result
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn replay_native_accessibility_path<F>(
+        &self,
+        handler: F,
+    ) -> Result<crate::native_validation::NativeAccessibilityEvidence, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        self.delegate.install_event_handler(handler)?;
+        let roots: Retained<NSArray<NativeAccessibilityElement>> =
+            unsafe { msg_send![&*self.view, accessibilityChildren] };
+        let result = if roots.firstObject().is_none() {
+            Err(SurfaceError::DriverUnavailable)
+        } else {
+            self.delegate
+                .dispatch_surface_event(SurfaceEvent::Wake {
+                    timestamp: self.delegate.next_event_timestamp(),
+                })
+                .and_then(|_| NativeAccessibilityAdapter::validate_view(&self.view))
+        };
         self.delegate.clear_event_handler();
         result
     }
@@ -3935,6 +4054,7 @@ fn require_device(device: Option<Device>) -> Result<Device, SurfaceError> {
 impl Drop for NativeSurface {
     fn drop(&mut self) {
         self.wake_bridge.revoke();
+        self.view.revoke_accessibility();
         let native_close_started = self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE;
         let must_close_window = !self.window_close_started.load(Ordering::Acquire);
         if !native_close_started {

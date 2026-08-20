@@ -209,7 +209,7 @@ jobs:
             cargo mutants --no-config --file crates/alpine-metal/src/native.rs --features platform-spi --no-shuffle --output target/native-mutants.out -- --locked
             cargo mutants --no-config --file crates/alpine-metal/src/platform_spi.rs --features platform-spi --no-shuffle --output target/native-platform-spi-mutants.out -- --locked
             cargo mutants --no-config --file crates/alpine-metal/src/submission.rs --features platform-spi --re 'MetalBackend::render_callback_drawable|record_drawable_attempt|verify_drawable_attempt_lifecycle|complete_drawable_attempt' --no-shuffle --output target/native-submission-mutants.out -- --locked
-            cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re 'validate_initialization_rollback|native_validation::arm_window_close' --no-shuffle --output target/native-platform-contract-mutants.out -- --locked
+            cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re 'validate_initialization_rollback|native_validation::arm_window_close|native_validation::NativeAccessibilityEvidence::' --no-shuffle --output target/native-platform-contract-mutants.out -- --locked
             cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|NativeSurface::arm_window_close' --no-shuffle --output target/native-platform-mutants.out -- --locked
             cargo mutants --no-config --file crates/alpine-runtime/src/lib.rs --re 'run_on_native_surface' --test-package alpine-studio --no-shuffle --output target/native-runtime-mutants.out -- --locked
             if find target/native-runtime-mutants.out -name unviable.txt -type f -size +0c | grep -q .; then
@@ -243,5 +243,58 @@ jobs:
           path: |
             target/metal/offscreen.metallib
             target/metal/offscreen.metallib.manifest.txt
+          retention-days: 14
+          if-no-files-found: error
+
+  native-accessibility-mutation:
+    name: native-accessibility-mutation-${{ matrix.id }}
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: 1
+            shard: 1/8
+          - id: 2
+            shard: 2/8
+          - id: 3
+            shard: 3/8
+          - id: 4
+            shard: 4/8
+          - id: 5
+            shard: 5/8
+          - id: 6
+            shard: 6/8
+          - id: 7
+            shard: 7/8
+          - id: 8
+            shard: 8/8
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
+      RUSTFLAGS: --cfg alpine_native_validation
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install native mutation tooling
+        run: cargo install --locked cargo-mutants --version 27.1.0
+      - name: Install the optional Metal toolchain when absent
+        run: |
+          if ! xcrun --sdk macosx --find metal >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk macosx --find metal
+          xcrun --sdk macosx --find metallib
+      - name: Require exhaustive native accessibility mutants to be killed
+        run: |
+          cargo mutants --no-config --file crates/alpine-platform-macos/src/native_accessibility.rs --test-package alpine-platform-macos --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-accessibility-mutants-${{ matrix.id }}.out" -- --locked
+      - name: Upload native accessibility mutation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-accessibility-mutation-${{ matrix.id }}-${{ github.sha }}
+          path: target/native-accessibility-mutants-${{ matrix.id }}.out
           retention-days: 14
           if-no-files-found: error

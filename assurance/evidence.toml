@@ -4452,6 +4452,16 @@ scope = "One local Unicode editor and synchronous semantic request path."
 bounds = ["one active document", "271 nodes", "64 KiB text response"]
 exclusions = ["AppKit element publication", "VoiceOver", "physical input latency"]
 
+[[evidence]]
+id = "EV-0250-NATIVE04"
+claim = "AEP-0250-C04"
+kind = "e2e"
+artifact = "crates/alpine-platform-macos/tests/native_accessibility.rs"
+assertion = "Production AppKit selectors publish stable role, label, focus, selection, bounded text, and exact revision actions; stale actions fail, notifications follow accepted changes, and revocation releases the cache before late selectors can resolve."
+scope = "One real Apple Silicon AppKit surface, five semantic nodes, one code editor, and the production synchronous SurfaceEvent transport."
+bounds = ["271 native elements", "64 KiB per text response", "one main-thread request at a time"]
+exclusions = ["VoiceOver process navigation", "text geometry", "physical assistive-technology latency"]
+
 [[claims]]
 id = "AEP-0255-C01"
 mission = "MP-01"
@@ -4529,6 +4539,16 @@ artifact = "apps/alpine-studio/src/accessibility.rs#line_and_grapheme_mappings_c
 assertion = "Studio maps UTF-16 indices, CRLF lines, final empty lines, surrogate pairs, combining sequences, and invalid boundaries through its immutable text owner."
 scope = "One Unicode buffer with three logical lines and exact boundary controls."
 exclusions = ["AppKit selector publication", "VoiceOver process"]
+
+[[evidence]]
+id = "EV-0255-NATIVE02"
+claim = "AEP-0255-C02"
+kind = "e2e"
+artifact = "crates/alpine-platform-macos/tests/native_accessibility.rs"
+assertion = "Production accessibilityLineForIndex, accessibilityRangeForLine, accessibilityRangeForIndex, and accessibilityStringForRange selectors preserve exact bounded AppKit UTF-16 request and response identity while unsupported geometry is denied."
+scope = "One real Apple Silicon AppKit accessibility element over the revision-bound Studio mapping transport."
+bounds = ["64 KiB per text response", "checked NSRange conversion", "one synchronous mapping request"]
+exclusions = ["VoiceOver process navigation", "screen-coordinate text geometry", "physical latency"]
 
 [[evidence]]
 id = "EV-0255-UNIT03"

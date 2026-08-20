@@ -50,6 +50,32 @@ if [ -n "$workflow_files" ]; then
         grep -nE 'continue-on-error:[[:space:]]*true' $workflow_files >&2 || true
     fi
 
+    if ! grep -Fq -- "--exclude 'crates/alpine-platform-macos/src/native_accessibility.rs'" .github/workflows/ci.yml; then
+        fail 'Linux changed-code mutation must delegate native accessibility to macOS validation'
+    fi
+    if ! grep -Fq -- '--file crates/alpine-platform-macos/src/native_accessibility.rs' .github/workflows/ci.yml; then
+        fail 'required macOS validation must own changed native accessibility mutation'
+    fi
+    native_accessibility_pr_scope='RefreshOutcome::post|NativeAccessibilityAdapter::refresh_view_if_active|NativeAccessibilityAdapter::reconcile_elements|NativeAccessibilityAdapter::revoke|NativeAccessibilityAdapter::set_selection|NativeAccessibilityElement::with_adapter|NativeAccessibilityElement::with_adapter_mut|checked_range'
+    if ! grep -Fq -- "--re '$native_accessibility_pr_scope'" .github/workflows/ci.yml \
+        || ! grep -Fq -- '-- --locked --test native_accessibility' .github/workflows/ci.yml; then
+        fail 'required macOS validation must mutation-test the bounded native accessibility risk slice through its exact journey'
+    fi
+    if ! grep -Fq -- 'native_validation::NativeAccessibilityEvidence::' .github/workflows/ci.yml; then
+        fail 'validation-only native accessibility evidence getters must not consume the pull-request mutation budget'
+    fi
+
+    nightly_native_workflow=.github/workflows/nightly-assurance.yml
+    if [ -f "$nightly_native_workflow" ]; then
+        if ! grep -Fq 'native-accessibility-mutation:' "$nightly_native_workflow" \
+            || [ "$(grep -Ec '^[[:space:]]+shard: [1-8]/8$' "$nightly_native_workflow")" -ne 8 ] \
+            || [ "$(grep -Fc -- '--file crates/alpine-platform-macos/src/native_accessibility.rs' "$nightly_native_workflow")" -ne 1 ] \
+            || ! grep -Fq -- '--shard "${{ matrix.shard }}"' "$nightly_native_workflow" \
+            || ! grep -Fq 'target/native-accessibility-mutants-${{ matrix.id }}.out' "$nightly_native_workflow"; then
+            fail 'nightly assurance must exhaustively shard and retain native accessibility mutation evidence'
+        fi
+    fi
+
     weekly_mutation_workflow=.github/workflows/weekly-assurance.yml
     if [ -f "$weekly_mutation_workflow" ]; then
         output_parent_line=$(grep -nF 'mkdir -p target' "$weekly_mutation_workflow" \
@@ -83,6 +109,7 @@ unsafe_source_files=$(find crates -type f -name '*.rs' -print0 \
     | sort || true)
 expected_unsafe_source_files='crates/alpine-metal/src/native.rs
 crates/alpine-platform-macos/src/native.rs
+crates/alpine-platform-macos/src/native_accessibility.rs
 crates/alpine-text-layout/src/native.rs'
 if [ "$unsafe_source_files" != "$expected_unsafe_source_files" ]; then
     fail 'unsafe Rust constructs must remain isolated in audited native boundary files'

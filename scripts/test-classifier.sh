@@ -141,6 +141,12 @@ assert_output "$macos_platform" mutation=true
 assert_output "$macos_platform" kani=true
 assert_output "$macos_platform" metal=true
 
+macos_accessibility=$(run_fixture crates/alpine-platform-macos/src/native_accessibility.rs)
+assert_output "$macos_accessibility" coverage=true
+assert_output "$macos_accessibility" mutation=true
+assert_output "$macos_accessibility" kani=true
+assert_output "$macos_accessibility" metal=true
+
 shader=$(run_fixture shaders/offscreen.metal)
 assert_output "$shader" coverage=false
 assert_output "$shader" mutation=false
