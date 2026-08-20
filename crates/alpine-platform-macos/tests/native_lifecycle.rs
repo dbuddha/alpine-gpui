@@ -242,6 +242,7 @@ mod validation {
         assert_eq!(snapshot.direct_present_count(), 1);
         assert_eq!(snapshot.qualified_presented_count(), 0);
         assert_eq!(snapshot.cancelled_count(), 1);
+        assert!(snapshot.peak_upload_bytes() > 0);
         assert_eq!(snapshot.failed_count(), 0);
         assert_eq!(snapshot.current_retained_bytes(), 0);
         validate_bounded_accounting(snapshot);
