@@ -2,6 +2,12 @@
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let initial = alpine_studio::initial_scene()?;
+    assert_eq!(initial.revision().get(), 1);
+    assert!(!initial.operations().is_empty());
+    assert!(!initial.clips().is_empty());
+    assert!(!initial.quads().is_empty());
+    assert!(!initial.glyphs().is_empty());
     qualify_shipping_executable()?;
     let evidence = alpine_studio::native_validation::qualify_clipboard_and_close_process()?;
     assert_eq!(evidence.input_events(), 12);
