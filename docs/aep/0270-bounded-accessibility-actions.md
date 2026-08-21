@@ -75,6 +75,13 @@ and request no frame. Activation performs one bounded snapshot validation and
 then calls one existing foreground command; its resulting visual effect enters
 the existing latest-wins frame coalescer.
 
+The `cfg(kani)` activation harness is executed and owned by the Kani gate, not
+by portable `cargo test`. Changed-code and weekly mutation therefore exclude
+that exact proof-harness name while continuing to mutate the constructors,
+getters, validation, routing, and pure geometry that its assertions map to.
+Portable tests independently discriminate those executable contracts; the
+classifier does not convert an uncompiled proof body into a false survivor.
+
 External identifiers are formatted on demand and are not retained in the
 semantic snapshot. Native cache residency remains bounded by the node ceiling,
 and revocation releases every retained element. This slice adds no GPU work,

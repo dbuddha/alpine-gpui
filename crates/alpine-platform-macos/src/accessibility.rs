@@ -1113,10 +1113,12 @@ mod bounded_action_tests {
 
     #[test]
     fn bounds_and_activation_values_fail_closed() -> Result<(), AccessibilityError> {
-        let bounds = AccessibilityBounds::new(-0.0, 2.0, 30.0, 40.0)?;
+        let normalized_zero = AccessibilityBounds::new(-0.0, 2.0, 30.0, 40.0)?;
+        assert_eq!(normalized_zero.x().to_bits(), 0.0_f32.to_bits());
+        let bounds = AccessibilityBounds::new(1.5, 2.0, 30.0, 40.0)?;
         assert_eq!(
             (bounds.x(), bounds.y(), bounds.width(), bounds.height()),
-            (0.0, 2.0, 30.0, 40.0)
+            (1.5, 2.0, 30.0, 40.0)
         );
         assert_eq!(
             AccessibilityBounds::new(f32::NAN, 0.0, 1.0, 1.0),
@@ -1131,7 +1133,7 @@ mod bounded_action_tests {
         let action = AccessibilityAction::activate(revision, id);
         assert_eq!(action.revision(), revision);
         assert_eq!(action, AccessibilityAction::Activate { revision, node: id });
-        let node = AccessibilityNode::new(
+        let default_node = AccessibilityNode::new(
             id,
             None,
             AccessibilityRole::ListItem,
@@ -1140,9 +1142,10 @@ mod bounded_action_tests {
             false,
             false,
         )
-        .unwrap_or_else(|_| unreachable!())
-        .with_bounds(bounds)
-        .with_activate(false);
+        .unwrap_or_else(|_| unreachable!());
+        assert!(default_node.is_enabled());
+        assert!(!default_node.supports_activate());
+        let node = default_node.with_bounds(bounds).with_activate(false);
         assert!(node.supports_activate());
         assert!(!node.is_enabled());
         assert_eq!(node.bounds(), bounds);

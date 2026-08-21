@@ -667,6 +667,117 @@ fn bounds(
         .map_err(Into::into)
 }
 
+fn tab_list_bounds(
+    viewport_width: f32,
+    sidebar: f32,
+) -> Result<AccessibilityBounds, AccessibilityError> {
+    bounds(
+        sidebar,
+        0.0,
+        (viewport_width - sidebar).max(0.0),
+        super::TAB_BAR_HEIGHT,
+    )
+}
+
+fn tab_bounds(
+    viewport_width: f32,
+    sidebar: f32,
+    index: usize,
+    scroll_x: f32,
+) -> Result<AccessibilityBounds, AccessibilityError> {
+    let left = sidebar + super::usize_as_f32(index) * super::TAB_WIDTH - scroll_x;
+    let clipped_left = left.max(sidebar).min(viewport_width);
+    let clipped_right = (left + super::TAB_WIDTH).max(sidebar).min(viewport_width);
+    bounds(
+        clipped_left,
+        0.0,
+        (clipped_right - clipped_left).max(0.0),
+        super::TAB_BAR_HEIGHT,
+    )
+}
+
+fn status_bounds(
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Result<AccessibilityBounds, AccessibilityError> {
+    bounds(
+        0.0,
+        (viewport_height - super::TREE_ROW_HEIGHT).max(0.0),
+        viewport_width,
+        super::TREE_ROW_HEIGHT,
+    )
+}
+
+fn overlay_bounds(
+    viewport_width: f32,
+    viewport_height: f32,
+    sidebar: f32,
+    id: AccessibilityNodeId,
+) -> Result<AccessibilityBounds, AccessibilityError> {
+    let width = match id {
+        FIND_NODE => super::FIND_BAR_WIDTH,
+        PROJECT_SEARCH_NODE => super::PROJECT_SEARCH_WIDTH,
+        FILE_TREE_NODE => sidebar,
+        _ => super::QUICK_OPEN_WIDTH,
+    }
+    .min(viewport_width);
+    let is_file_tree = id == FILE_TREE_NODE;
+    let height = if is_file_tree {
+        viewport_height
+    } else {
+        (viewport_height - super::TAB_BAR_HEIGHT).min(360.0)
+    };
+    let x = if is_file_tree {
+        0.0
+    } else {
+        (viewport_width - width) * 0.5
+    };
+    let y = if is_file_tree {
+        0.0
+    } else {
+        super::TAB_BAR_HEIGHT + super::CONTENT_INSET
+    };
+    bounds(x, y, width, height)
+}
+
+const fn should_project_file_rows(visible: bool, active: bool) -> bool {
+    visible && active
+}
+
+fn first_visible_file_row(scroll_y: f32) -> usize {
+    super::floor_f32_to_usize(scroll_y / super::TREE_ROW_HEIGHT).unwrap_or(0)
+}
+
+fn file_row_bounds(
+    viewport_height: f32,
+    sidebar: f32,
+    row_index: usize,
+    scroll_y: f32,
+) -> Result<AccessibilityBounds, AccessibilityError> {
+    let top =
+        super::CONTENT_INSET + super::usize_as_f32(row_index) * super::TREE_ROW_HEIGHT - scroll_y;
+    let clipped_top = top.max(0.0).min(viewport_height);
+    let clipped_bottom = (top + super::TREE_ROW_HEIGHT).max(0.0).min(viewport_height);
+    bounds(
+        0.0,
+        clipped_top,
+        sidebar,
+        (clipped_bottom - clipped_top).max(0.0),
+    )
+}
+
+fn command_row_bounds(
+    viewport_width: f32,
+    visible_index: usize,
+) -> Result<AccessibilityBounds, AccessibilityError> {
+    let width = super::COMMAND_PALETTE_WIDTH.min(viewport_width);
+    let left = (viewport_width - width) * 0.5;
+    let first_top =
+        super::TAB_BAR_HEIGHT + super::CONTENT_INSET + super::COMMAND_PALETTE_QUERY_HEIGHT;
+    let top = first_top + super::usize_as_f32(visible_index) * super::COMMAND_PALETTE_ROW_HEIGHT;
+    bounds(left, top, width, super::COMMAND_PALETTE_ROW_HEIGHT)
+}
+
 fn window_node(app: &StudioApp) -> Result<AccessibilityNode, AccessibilityError> {
     let width = app.last_viewport.width();
     let height = app.last_viewport.height();
@@ -686,8 +797,7 @@ fn window_node(app: &StudioApp) -> Result<AccessibilityNode, AccessibilityError>
 
 fn tab_list_node(app: &StudioApp) -> Result<AccessibilityNode, AccessibilityError> {
     let left = app.sidebar_width(app.last_viewport);
-    let width = (app.last_viewport.width() - left).max(0.0);
-    let node_bounds = bounds(left, 0.0, width, super::TAB_BAR_HEIGHT)?;
+    let node_bounds = tab_list_bounds(app.last_viewport.width(), left)?;
     node(
         TAB_LIST_NODE,
         Some(WINDOW_NODE),
@@ -735,13 +845,7 @@ fn tab_node(
     selected: bool,
 ) -> Result<AccessibilityNode, AccessibilityError> {
     let sidebar = app.sidebar_width(app.last_viewport);
-    let left = sidebar + super::usize_as_f32(index) * super::TAB_WIDTH - app.tab_scroll_x;
-    let clipped_left = left.max(sidebar).min(app.last_viewport.width());
-    let clipped_right = (left + super::TAB_WIDTH)
-        .max(sidebar)
-        .min(app.last_viewport.width());
-    let width = (clipped_right - clipped_left).max(0.0);
-    let node_bounds = bounds(clipped_left, 0.0, width, super::TAB_BAR_HEIGHT)?;
+    let node_bounds = tab_bounds(app.last_viewport.width(), sidebar, index, app.tab_scroll_x)?;
     node(
         id,
         Some(TAB_LIST_NODE),
@@ -756,8 +860,7 @@ fn tab_node(
 }
 
 fn status_node(app: &StudioApp, message: &str) -> Result<AccessibilityNode, AccessibilityError> {
-    let top = (app.last_viewport.height() - super::TREE_ROW_HEIGHT).max(0.0);
-    let node_bounds = bounds(0.0, top, app.last_viewport.width(), super::TREE_ROW_HEIGHT)?;
+    let node_bounds = status_bounds(app.last_viewport.width(), app.last_viewport.height())?;
     node(
         STATUS_NODE,
         Some(WINDOW_NODE),
@@ -778,28 +881,12 @@ fn overlay_node(
     name: &'static str,
     focused: bool,
 ) -> Result<AccessibilityNode, AccessibilityError> {
-    let width = match id {
-        FIND_NODE => super::FIND_BAR_WIDTH,
-        PROJECT_SEARCH_NODE => super::PROJECT_SEARCH_WIDTH,
-        FILE_TREE_NODE => app.sidebar_width(app.last_viewport),
-        _ => super::QUICK_OPEN_WIDTH,
-    }
-    .min(app.last_viewport.width());
-    let height = if id == FILE_TREE_NODE {
-        app.last_viewport.height()
-    } else {
-        (app.last_viewport.height() - super::TAB_BAR_HEIGHT).min(360.0)
-    };
-    let x = if id == FILE_TREE_NODE {
-        0.0
-    } else {
-        (app.last_viewport.width() - width) * 0.5
-    };
-    let y = if id == FILE_TREE_NODE {
-        0.0
-    } else {
-        super::TAB_BAR_HEIGHT + super::CONTENT_INSET
-    };
+    let node_bounds = overlay_bounds(
+        app.last_viewport.width(),
+        app.last_viewport.height(),
+        app.sidebar_width(app.last_viewport),
+        id,
+    )?;
     node(
         id,
         Some(WINDOW_NODE),
@@ -808,7 +895,7 @@ fn overlay_node(
         focused,
         false,
         false,
-        bounds(x, y, width, height)?,
+        node_bounds,
         None,
     )
 }
@@ -858,11 +945,10 @@ fn push_file_rows(
     app: &StudioApp,
     nodes: &mut Vec<AccessibilityNode>,
 ) -> Result<(), AccessibilityError> {
-    if !app.file_tree.is_visible() || !app.file_tree.is_active() {
+    if !should_project_file_rows(app.file_tree.is_visible(), app.file_tree.is_active()) {
         return Ok(());
     }
-    let first =
-        super::floor_f32_to_usize(app.workspace_scroll_y / super::TREE_ROW_HEIGHT).unwrap_or(0);
+    let first = first_visible_file_row(app.workspace_scroll_y);
     let rows = app
         .file_tree
         .visible_rows(first, app.visible_tree_rows(), super::TREE_OVERSCAN_ROWS)
@@ -875,15 +961,13 @@ fn push_file_rows(
                 )
                 .ok_or(AccessibilityError::ArithmeticOverflow)?,
         );
-        let top = super::CONTENT_INSET + super::usize_as_f32(row.index) * super::TREE_ROW_HEIGHT
-            - app.workspace_scroll_y;
-        let clipped_top = top.max(0.0).min(app.last_viewport.height());
-        let clipped_bottom = (top + super::TREE_ROW_HEIGHT)
-            .max(0.0)
-            .min(app.last_viewport.height());
         let width = app.sidebar_width(app.last_viewport);
-        let height = (clipped_bottom - clipped_top).max(0.0);
-        let row_bounds = bounds(0.0, clipped_top, width, height)?;
+        let row_bounds = file_row_bounds(
+            app.last_viewport.height(),
+            width,
+            row.index,
+            app.workspace_scroll_y,
+        )?;
         let row_result = node(
             id,
             Some(FILE_TREE_NODE),
@@ -916,13 +1000,8 @@ fn push_command_rows(
         .command_palette
         .visible_commands()
         .map_err(|_| AccessibilityError::InvalidTree)?;
-    let width = super::COMMAND_PALETTE_WIDTH.min(app.last_viewport.width());
-    let left = (app.last_viewport.width() - width) * 0.5;
-    let first_top =
-        super::TAB_BAR_HEIGHT + super::CONTENT_INSET + super::COMMAND_PALETTE_QUERY_HEIGHT;
     for (visible, row) in rows.into_iter().enumerate() {
-        let top = first_top + super::usize_as_f32(visible) * super::COMMAND_PALETTE_ROW_HEIGHT;
-        let row_bounds = bounds(left, top, width, super::COMMAND_PALETTE_ROW_HEIGHT)?;
+        let row_bounds = command_row_bounds(app.last_viewport.width(), visible)?;
         let row_result = node(
             command_node_id(row.command),
             Some(COMMAND_PALETTE_NODE),
@@ -1311,5 +1390,163 @@ mod bounded_mapping_tests {
             Err(AccessibilityError::Text(TextError::LineOutOfBounds { .. }))
         ));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod semantic_geometry_tests {
+    use super::*;
+
+    fn values(bounds: AccessibilityBounds) -> (f32, f32, f32, f32) {
+        (bounds.x(), bounds.y(), bounds.width(), bounds.height())
+    }
+
+    #[test]
+    fn semantic_container_geometry_is_exact() -> Result<(), AccessibilityError> {
+        let viewport_width = 840.0;
+        let viewport_height = 240.0;
+        let sidebar = 200.0;
+
+        assert_eq!(
+            values(tab_list_bounds(viewport_width, sidebar)?),
+            (sidebar, 0.0, 640.0, super::super::TAB_BAR_HEIGHT)
+        );
+
+        let tab_index = 2;
+        let tab_scroll = 37.0;
+        let tab_left =
+            sidebar + super::super::usize_as_f32(tab_index) * super::super::TAB_WIDTH - tab_scroll;
+        assert_eq!(
+            values(tab_bounds(viewport_width, sidebar, tab_index, tab_scroll,)?),
+            (
+                tab_left,
+                0.0,
+                super::super::TAB_WIDTH,
+                super::super::TAB_BAR_HEIGHT,
+            )
+        );
+
+        assert_eq!(
+            values(status_bounds(viewport_width, viewport_height)?),
+            (
+                0.0,
+                viewport_height - super::super::TREE_ROW_HEIGHT,
+                viewport_width,
+                super::super::TREE_ROW_HEIGHT,
+            )
+        );
+
+        let overlay_height = (viewport_height - super::super::TAB_BAR_HEIGHT).min(360.0);
+        let overlay_y = super::super::TAB_BAR_HEIGHT + super::super::CONTENT_INSET;
+        let find_width = super::super::FIND_BAR_WIDTH.min(viewport_width);
+        assert_eq!(
+            values(overlay_bounds(
+                viewport_width,
+                viewport_height,
+                sidebar,
+                FIND_NODE,
+            )?),
+            (
+                (viewport_width - find_width) * 0.5,
+                overlay_y,
+                find_width,
+                overlay_height,
+            )
+        );
+        let search_width = super::super::PROJECT_SEARCH_WIDTH.min(viewport_width);
+        assert_eq!(
+            values(overlay_bounds(
+                viewport_width,
+                viewport_height,
+                sidebar,
+                PROJECT_SEARCH_NODE,
+            )?),
+            (
+                (viewport_width - search_width) * 0.5,
+                overlay_y,
+                search_width,
+                overlay_height,
+            )
+        );
+        assert_eq!(
+            values(overlay_bounds(
+                viewport_width,
+                viewport_height,
+                sidebar,
+                FILE_TREE_NODE,
+            )?),
+            (0.0, 0.0, sidebar, viewport_height)
+        );
+        let quick_width = super::super::QUICK_OPEN_WIDTH.min(viewport_width);
+        assert_eq!(
+            values(overlay_bounds(
+                viewport_width,
+                viewport_height,
+                sidebar,
+                QUICK_OPEN_NODE,
+            )?),
+            (
+                (viewport_width - quick_width) * 0.5,
+                overlay_y,
+                quick_width,
+                overlay_height,
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_row_geometry_is_exact() -> Result<(), AccessibilityError> {
+        let viewport_width = 840.0;
+        let viewport_height = 540.0;
+        let sidebar = 200.0;
+        let row_index = 3;
+        let scroll_y = 50.0;
+        let row_top = super::super::CONTENT_INSET
+            + super::super::usize_as_f32(row_index) * super::super::TREE_ROW_HEIGHT
+            - scroll_y;
+        assert_eq!(
+            values(file_row_bounds(
+                viewport_height,
+                sidebar,
+                row_index,
+                scroll_y,
+            )?),
+            (0.0, row_top, sidebar, super::super::TREE_ROW_HEIGHT)
+        );
+
+        let visible_index = 2;
+        let command_width = super::super::COMMAND_PALETTE_WIDTH.min(viewport_width);
+        let command_top = super::super::TAB_BAR_HEIGHT
+            + super::super::CONTENT_INSET
+            + super::super::COMMAND_PALETTE_QUERY_HEIGHT
+            + super::super::usize_as_f32(visible_index) * super::super::COMMAND_PALETTE_ROW_HEIGHT;
+        assert_eq!(
+            values(command_row_bounds(viewport_width, visible_index)?),
+            (
+                (viewport_width - command_width) * 0.5,
+                command_top,
+                command_width,
+                super::super::COMMAND_PALETTE_ROW_HEIGHT,
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn row_admission_scroll_and_command_identity_are_exact() {
+        assert!(should_project_file_rows(true, true));
+        assert!(!should_project_file_rows(true, false));
+        assert!(!should_project_file_rows(false, true));
+        assert!(!should_project_file_rows(false, false));
+
+        let scroll = super::super::TREE_ROW_HEIGHT * 2.0 + 1.0;
+        assert_eq!(first_visible_file_row(scroll), 2);
+
+        let close = StudioCommand::CloseTab;
+        assert_eq!(
+            command_node_id(close).get(),
+            COMMAND_ROW_NODE_BASE + u64::from(close as u8)
+        );
     }
 }
