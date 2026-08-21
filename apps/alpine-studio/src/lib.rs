@@ -1042,6 +1042,7 @@ struct StudioApp {
     glyph_atlas: GlyphAtlas,
     published_atlas: Option<GlyphAtlasImage>,
     atlas_revision: u64,
+    published_atlas_source_revision: u64,
     text_system: Box<dyn StudioTextSystem>,
     rust_diagnostics: RustDiagnostics,
     language_wake_latch: LanguageWakeLatch,
@@ -1286,6 +1287,7 @@ impl StudioApp {
             glyph_atlas: GlyphAtlas::new(atlas_budget),
             published_atlas: None,
             atlas_revision: 0,
+            published_atlas_source_revision: 0,
             text_system: Box::new(text_system),
             rust_diagnostics: RustDiagnostics::default(),
             language_wake_latch: LanguageWakeLatch::default(),
@@ -2485,18 +2487,21 @@ impl StudioApp {
                 PositiveFinite::new(requested_font.scale()).ok_or(StudioRenderError::Domain)?,
                 requested_font.tab_columns(),
             );
-            let rasterized = self.text_system.rasterize(font, glyph.glyph_id(), 0)?;
-            let Some(bitmap) = rasterized.bitmap() else {
+            let key = GlyphKey::new(font, glyph.glyph_id(), 0);
+            let cached = if let Some(cached) = self.glyph_atlas.lookup(key)? {
+                cached
+            } else {
+                let rasterized = self.text_system.rasterize(font, glyph.glyph_id(), 0)?;
+                self.glyph_atlas.insert_rasterized(key, &rasterized)?
+            };
+            let Some(rect) = cached.rect() else {
                 continue;
             };
-            let rect = self
-                .glyph_atlas
-                .insert(GlyphKey::new(font, glyph.glyph_id(), 0), bitmap)?;
             let width = u32_as_f32(rect.width().get()) / font.scale();
             let height = u32_as_f32(rect.height().get()) / font.scale();
             let origin = Point::new(
-                origin_x + glyph.x() + rasterized.left(),
-                baseline - rasterized.top() + glyph.y(),
+                origin_x + glyph.x() + cached.left(),
+                baseline - cached.top() + glyph.y(),
             )
             .ok_or(StudioRenderError::Domain)?;
             let size = Size::new(width, height).ok_or(StudioRenderError::Domain)?;
@@ -2544,7 +2549,8 @@ impl StudioApp {
         let snapshot = self.glyph_atlas.snapshot();
         let dimension = NonZeroU32::new(snapshot.dimension()).ok_or(StudioRenderError::Domain)?;
         let must_publish = self.published_atlas.as_ref().is_none_or(|atlas| {
-            atlas.width() != dimension || atlas.pixels() != self.glyph_atlas.pixels()
+            atlas.width() != dimension
+                || self.published_atlas_source_revision != snapshot.pixel_revision()
         });
         if must_publish {
             self.atlas_revision = self
@@ -2554,6 +2560,7 @@ impl StudioApp {
             let pixels: Arc<[u8]> = self.glyph_atlas.pixels().to_vec().into();
             let image = GlyphAtlasImage::new(self.atlas_revision, dimension, dimension, pixels);
             self.published_atlas = Some(image?);
+            self.published_atlas_source_revision = snapshot.pixel_revision();
         }
         Ok(())
     }

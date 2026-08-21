@@ -3,7 +3,10 @@ use std::{
     fs,
     num::NonZeroU32,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use alpine_platform_macos::{CloseDisposition, EventTimestamp, ScrollPhase};
@@ -121,6 +124,32 @@ impl GlyphRasterizer for TestTextSystem {
     }
 }
 
+struct CountingTextSystem {
+    rasterizations: Arc<AtomicU64>,
+}
+
+impl TextShaper for CountingTextSystem {
+    fn shape(&mut self, text: &str, font: FontKey) -> Result<LineLayout, LayoutError> {
+        TestTextSystem.shape(text, font)
+    }
+}
+
+impl GlyphRasterizer for CountingTextSystem {
+    fn rasterize(
+        &mut self,
+        font: FontKey,
+        glyph_id: u32,
+        subpixel_x: u8,
+    ) -> Result<RasterizedGlyph, LayoutError> {
+        self.rasterizations.fetch_add(1, Ordering::Relaxed);
+        if glyph_id == u32::from(' ') {
+            RasterizedGlyph::new(None, 0.0, 0.0)
+        } else {
+            TestTextSystem.rasterize(font, glyph_id, subpixel_x)
+        }
+    }
+}
+
 struct UnresolvedEmptyTextSystem;
 
 impl TextShaper for UnresolvedEmptyTextSystem {
@@ -199,6 +228,33 @@ fn viewport() -> Result<Size, SurfaceError> {
     Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::invariant(
         alpine_platform_macos::SurfaceOperation::Application,
     ))
+}
+
+#[test]
+fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_frames()
+-> Result<(), Box<dyn Error>> {
+    let rasterizations = Arc::new(AtomicU64::new(0));
+    let mut app = StudioApp::new(CountingTextSystem {
+        rasterizations: Arc::clone(&rasterizations),
+    })?;
+    let viewport = viewport()?;
+    let _ = app.try_scene(SceneRevision::new(1), viewport)?;
+    let cold_rasterizations = rasterizations.swap(0, Ordering::Relaxed);
+    assert!(cold_rasterizations > 0);
+    let publication_revision = app.atlas_revision;
+    let source_revision = app.published_atlas_source_revision;
+    let pixel_revision = app.glyph_atlas.snapshot().pixel_revision();
+
+    let last_revision = if cfg!(miri) { 11 } else { 10_001 };
+    for revision in 2..=last_revision {
+        let _ = app.try_scene(SceneRevision::new(revision), viewport)?;
+    }
+
+    assert_eq!(rasterizations.load(Ordering::Relaxed), 0);
+    assert_eq!(app.atlas_revision, publication_revision);
+    assert_eq!(app.published_atlas_source_revision, source_revision);
+    assert_eq!(app.glyph_atlas.snapshot().pixel_revision(), pixel_revision);
+    Ok(())
 }
 
 fn ime(event: ImeEvent) -> SurfaceEvent {

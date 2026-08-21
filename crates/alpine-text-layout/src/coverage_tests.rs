@@ -412,7 +412,13 @@ fn cache_budget_atlas_geometry_and_error_evidence_are_complete() -> Result<(), B
         Err(LayoutError::AtlasSaturated)
     );
     assert_eq!(
-        GlyphAtlas::new(growth_budget).insert_miss(GlyphKey::new(font()?, 40, 0), &pixel, 0,),
+        GlyphAtlas::new(growth_budget).insert_miss(
+            GlyphKey::new(font()?, 40, 0),
+            &pixel,
+            0.0,
+            0.0,
+            0,
+        ),
         Err(LayoutError::AtlasSaturated)
     );
     assert_eq!(GlyphAtlas::new(modest_budget).evict_oldest(), Ok(false));
@@ -658,11 +664,23 @@ fn atlas_sequence_failures_preserve_owned_storage() -> Result<(), Box<dyn Error>
         hits.insert(first, &bitmap),
         Err(LayoutError::SequenceExhausted)
     );
-    assert_eq!(hits.entries[0].rect, retained);
+    assert_eq!(hits.entries[0].glyph.rect(), Some(retained));
 
     let mut pressure = GlyphAtlas::new(budget);
     pressure.pressure_events = u64::MAX;
     assert_eq!(pressure.pressure(), Err(LayoutError::SequenceExhausted));
+
+    let mut pixel_revision = GlyphAtlas::new(budget);
+    pixel_revision.insert(first, &bitmap)?;
+    pixel_revision.pixel_revision = u64::MAX;
+    let retained_snapshot = pixel_revision.snapshot();
+    let retained_pixels = pixel_revision.pixels().to_vec();
+    assert_eq!(
+        pixel_revision.pressure(),
+        Err(LayoutError::SequenceExhausted)
+    );
+    assert_eq!(pixel_revision.snapshot(), retained_snapshot);
+    assert_eq!(pixel_revision.pixels(), retained_pixels);
 
     let mut pressure_evictions = GlyphAtlas::new(budget);
     pressure_evictions.insert(first, &bitmap)?;
