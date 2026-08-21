@@ -13,6 +13,8 @@ use std::{
 };
 
 use alpine_text::BufferSnapshot;
+#[cfg(test)]
+use serde_json::value::RawValue;
 
 use crate::{
     lsp_client::{LspClient, LspClientError, LspClientPoll},
@@ -22,6 +24,7 @@ use crate::{
     },
     lsp_process::{ConfigError, ProcessIdentity, ProcessSpec, ProcessWake, StopReason},
     rust_completion::{CompletionBatch, CompletionError, CompletionItem},
+    rust_navigation::{HoverContent, NavigationError, SourceLocation, SourceLocations},
 };
 
 const MAX_POLLS_PER_TURN: usize = 8;
@@ -153,6 +156,45 @@ pub(crate) struct CompletionRow<'a> {
     pub(crate) selected: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NavigationRow<'a> {
+    pub(crate) label: &'a str,
+    pub(crate) selected: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NavigationRequestKind {
+    Hover,
+    Definition,
+    References,
+}
+
+impl NavigationRequestKind {
+    const fn method(self) -> &'static str {
+        match self {
+            Self::Hover => "textDocument/hover",
+            Self::Definition => "textDocument/definition",
+            Self::References => "textDocument/references",
+        }
+    }
+
+    const fn empty_status(self) -> &'static str {
+        match self {
+            Self::Hover => "No Rust hover information.",
+            Self::Definition => "No Rust definition found.",
+            Self::References => "No Rust references found.",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Hover => "Rust hover",
+            Self::Definition => "Rust definition",
+            Self::References => "Rust references",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) active: bool,
@@ -174,6 +216,17 @@ pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) completion_cancellations: u64,
     pub(crate) stale_completions: u64,
     pub(crate) completion_truncations: u64,
+    pub(crate) navigation_pending: bool,
+    pub(crate) hover_bytes: usize,
+    pub(crate) location_items: usize,
+    pub(crate) location_bytes: usize,
+    pub(crate) peak_hover_bytes: usize,
+    pub(crate) peak_location_items: usize,
+    pub(crate) peak_location_bytes: usize,
+    pub(crate) navigation_requests: u64,
+    pub(crate) navigation_cancellations: u64,
+    pub(crate) stale_navigation: u64,
+    pub(crate) navigation_truncations: u64,
     pub(crate) process_retained_bytes: usize,
     pub(crate) process_queued_events: usize,
     pub(crate) process_submitted_inputs: u64,
@@ -225,6 +278,55 @@ struct AdmittedCompletion {
     first_visible: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingNavigation {
+    request_id: u32,
+    stamp: RequestStamp,
+    kind: NavigationRequestKind,
+    identity: LanguageIdentity,
+    process_epoch: u64,
+    lsp_version: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum NavigationResult {
+    Hover(HoverContent),
+    Locations {
+        kind: NavigationRequestKind,
+        batch: SourceLocations,
+        selected: usize,
+        first_visible: usize,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AdmittedNavigation {
+    request_id: u32,
+    identity: LanguageIdentity,
+    process_epoch: u64,
+    lsp_version: i32,
+    result: NavigationResult,
+}
+
+enum NavigationCandidate {
+    Hover(Result<Option<HoverContent>, NavigationError>),
+    Locations(Result<SourceLocations, NavigationError>),
+}
+
+#[derive(Default)]
+struct PollCandidates {
+    initialized: bool,
+    diagnostics: Option<Result<DiagnosticBatch, LanguageProtocolError>>,
+    completion: Option<(u32, RequestStamp, Result<CompletionBatch, CompletionError>)>,
+    navigation: Option<(
+        u32,
+        RequestStamp,
+        NavigationRequestKind,
+        NavigationCandidate,
+    )>,
+    stale_response: Option<u32>,
+}
+
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 thread_local! {
     static LAST_COMPLETION_RESPONSE: std::cell::RefCell<Option<Box<str>>> = const {
@@ -248,6 +350,28 @@ fn completion_batch_from_response(
     }
 }
 
+fn navigation_from_response(
+    kind: NavigationRequestKind,
+    value: ResponseValue<'_>,
+) -> NavigationCandidate {
+    match (kind, value) {
+        (NavigationRequestKind::Hover, ResponseValue::Result(result)) => {
+            NavigationCandidate::Hover(HoverContent::admit(result))
+        }
+        (
+            NavigationRequestKind::Definition | NavigationRequestKind::References,
+            ResponseValue::Result(result),
+        ) => NavigationCandidate::Locations(SourceLocations::admit(result)),
+        (NavigationRequestKind::Hover, ResponseValue::Error(_)) => {
+            NavigationCandidate::Hover(Err(NavigationError::Malformed))
+        }
+        (
+            NavigationRequestKind::Definition | NavigationRequestKind::References,
+            ResponseValue::Error(_),
+        ) => NavigationCandidate::Locations(Err(NavigationError::Malformed)),
+    }
+}
+
 struct RustSession {
     target: Target,
     identity: LanguageIdentity,
@@ -264,6 +388,8 @@ struct RustSession {
     diagnostics: Option<AdmittedDiagnostics>,
     pending_completion: Option<PendingCompletion>,
     completion: Option<AdmittedCompletion>,
+    pending_navigation: Option<PendingNavigation>,
+    navigation: Option<AdmittedNavigation>,
     client: LspClient,
 }
 
@@ -277,6 +403,7 @@ pub(crate) enum RustDiagnosticsError {
     Language(LanguageProtocolError),
     Client(LspClientError),
     Completion(CompletionError),
+    Navigation(NavigationError),
 }
 
 impl fmt::Display for RustDiagnosticsError {
@@ -302,6 +429,13 @@ pub(crate) struct RustDiagnostics {
     completion_cancellations: u64,
     stale_completions: u64,
     completion_truncations: u64,
+    peak_hover_bytes: usize,
+    peak_location_items: usize,
+    peak_location_bytes: usize,
+    navigation_requests: u64,
+    navigation_cancellations: u64,
+    stale_navigation: u64,
+    navigation_truncations: u64,
     polls: u64,
     stale_wakes: u64,
     stale_diagnostics: u64,
@@ -327,6 +461,13 @@ impl Default for RustDiagnostics {
             completion_cancellations: 0,
             stale_completions: 0,
             completion_truncations: 0,
+            peak_hover_bytes: 0,
+            peak_location_items: 0,
+            peak_location_bytes: 0,
+            navigation_requests: 0,
+            navigation_cancellations: 0,
+            stale_navigation: 0,
+            navigation_truncations: 0,
             polls: 0,
             stale_wakes: 0,
             stale_diagnostics: 0,
@@ -373,9 +514,14 @@ impl RustDiagnostics {
         let mut visual_changed = false;
         if input.identity != session.identity {
             merge_visual_changed(&mut visual_changed, session.completion.take().is_some());
+            merge_visual_changed(&mut visual_changed, session.navigation.take().is_some());
             if let Some(pending) = session.pending_completion.take() {
                 let _ = session.client.cancel(pending.request_id);
                 self.completion_cancellations = self.completion_cancellations.saturating_add(1);
+            }
+            if let Some(pending) = session.pending_navigation.take() {
+                let _ = session.client.cancel(pending.request_id);
+                self.navigation_cancellations = self.navigation_cancellations.saturating_add(1);
             }
         }
         if input.identity.buffer_revision != session.identity.buffer_revision {
@@ -415,54 +561,34 @@ impl RustDiagnostics {
         let mut visual_changed = false;
         for _ in 0..MAX_POLLS_PER_TURN {
             self.polls = self.polls.saturating_add(1);
-            let mut initialized = false;
-            let mut candidate = None;
-            let mut completion_candidate = None;
-            let mut stale_completion = None;
-            let poll = {
-                let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
-                let expected = &session.document;
-                let current = session.pending_completion.map(|pending| pending.stamp);
-                session.client.poll(current, |event| match event {
-                    PeerEvent::Initialized(_) => initialized = true,
-                    PeerEvent::InboundNotification {
-                        method: "textDocument/publishDiagnostics",
-                        params: Some(params),
-                    } => candidate = Some(DiagnosticBatch::admit(params, expected)),
-                    PeerEvent::Response {
-                        id,
-                        method,
-                        stamp,
-                        value,
-                    } if method.as_ref() == "textDocument/completion" => {
-                        let batch = completion_batch_from_response(value);
-                        completion_candidate = Some((id, stamp, batch));
-                    }
-                    PeerEvent::StaleResponse { id } => stale_completion = Some(id),
-                    _ => {}
-                })
-            };
-            let poll = match poll {
-                Ok(poll) => poll,
+            let (poll, candidates) = match self.collect_poll_candidates() {
+                Ok(value) => value,
                 Err(error) => {
                     let restarted = self.restart_or_fail(RustDiagnosticsError::Client(error));
                     merge_visual_changed(&mut visual_changed, restarted);
                     break;
                 }
             };
-            if initialized {
+            if candidates.initialized {
                 let opened = self.open_document();
                 merge_visual_changed(&mut visual_changed, opened);
             }
-            if let Some(candidate) = candidate {
+            if let Some(candidate) = candidates.diagnostics {
                 let admitted = self.admit(candidate);
                 merge_visual_changed(&mut visual_changed, admitted);
             }
-            if let Some(id) = stale_completion {
+            if let Some(id) = candidates.stale_response {
                 merge_visual_changed(&mut visual_changed, self.reject_stale_completion(id));
+                merge_visual_changed(&mut visual_changed, self.reject_stale_navigation(id));
             }
-            if let Some((id, stamp, batch)) = completion_candidate {
+            if let Some((id, stamp, batch)) = candidates.completion {
                 merge_visual_changed(&mut visual_changed, self.admit_completion(id, stamp, batch));
+            }
+            if let Some((id, stamp, kind, candidate)) = candidates.navigation {
+                merge_visual_changed(
+                    &mut visual_changed,
+                    self.admit_navigation(id, stamp, kind, candidate),
+                );
             }
             if self.apply_poll(poll, &mut visual_changed) {
                 break;
@@ -491,12 +617,62 @@ impl RustDiagnostics {
         }
     }
 
+    fn collect_poll_candidates(
+        &mut self,
+    ) -> Result<(LspClientPoll, PollCandidates), LspClientError> {
+        let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
+        let expected = &session.document;
+        let current = session
+            .pending_navigation
+            .map(|pending| pending.stamp)
+            .or_else(|| session.pending_completion.map(|pending| pending.stamp));
+        let mut candidates = PollCandidates::default();
+        let poll = session.client.poll(current, |event| match event {
+            PeerEvent::Initialized(_) => candidates.initialized = true,
+            PeerEvent::InboundNotification {
+                method: "textDocument/publishDiagnostics",
+                params: Some(params),
+            } => candidates.diagnostics = Some(DiagnosticBatch::admit(params, expected)),
+            PeerEvent::Response {
+                id,
+                method,
+                stamp,
+                value,
+            } if method.as_ref() == "textDocument/completion" => {
+                candidates.completion = Some((id, stamp, completion_batch_from_response(value)));
+            }
+            PeerEvent::Response {
+                id,
+                method,
+                stamp,
+                value,
+            } if matches!(
+                method.as_ref(),
+                "textDocument/hover" | "textDocument/definition" | "textDocument/references"
+            ) =>
+            {
+                let kind = match method.as_ref() {
+                    "textDocument/hover" => NavigationRequestKind::Hover,
+                    "textDocument/definition" => NavigationRequestKind::Definition,
+                    "textDocument/references" => NavigationRequestKind::References,
+                    _ => unreachable!(),
+                };
+                candidates.navigation =
+                    Some((id, stamp, kind, navigation_from_response(kind, value)));
+            }
+            PeerEvent::StaleResponse { id } => candidates.stale_response = Some(id),
+            _ => {}
+        })?;
+        Ok((poll, candidates))
+    }
+
     pub(crate) fn status_message(&self) -> Option<Arc<str>> {
         self.status.clone()
     }
 
     pub(crate) fn request_completion(&mut self, position: LspPosition) -> LanguageEffect {
-        let mut visual_changed = self.cancel_completion();
+        let mut visual_changed = self.cancel_navigation();
+        visual_changed |= self.cancel_completion();
         let Some(session) = self.session.as_mut() else {
             return LanguageEffect {
                 visual_changed: replace_status(
@@ -548,6 +724,69 @@ impl RustDiagnostics {
         }
     }
 
+    pub(crate) fn request_navigation(
+        &mut self,
+        kind: NavigationRequestKind,
+        position: LspPosition,
+    ) -> LanguageEffect {
+        let mut visual_changed = self.cancel_completion();
+        visual_changed |= self.cancel_navigation();
+        let Some(session) = self.session.as_mut() else {
+            return LanguageEffect {
+                visual_changed: replace_status(
+                    &mut self.status,
+                    Some(Arc::from("Rust analysis is not ready for navigation.")),
+                ) || visual_changed,
+                continuation: None,
+            };
+        };
+        if session.state != SessionState::Open {
+            return LanguageEffect {
+                visual_changed: replace_status(
+                    &mut self.status,
+                    Some(Arc::from("Rust analysis is not ready for navigation.")),
+                ) || visual_changed,
+                continuation: None,
+            };
+        }
+        let Some(stamp) = session.identity.request_stamp() else {
+            return self.fail(RustDiagnosticsError::InvalidIdentity);
+        };
+        let params = match kind {
+            NavigationRequestKind::References => session.document.references_params(position),
+            NavigationRequestKind::Hover | NavigationRequestKind::Definition => {
+                session.document.position_params(position)
+            }
+        };
+        let result = params
+            .map_err(RustDiagnosticsError::Language)
+            .and_then(|params| {
+                session
+                    .client
+                    .begin_request(kind.method(), Some(&params), stamp)
+                    .map_err(RustDiagnosticsError::Client)
+            });
+        match result {
+            Ok(request) => {
+                session.pending_navigation = Some(PendingNavigation {
+                    request_id: request.request_id,
+                    stamp,
+                    kind,
+                    identity: session.identity,
+                    process_epoch: session.process_epoch,
+                    lsp_version: session.lsp_version,
+                });
+                self.navigation_requests = self.navigation_requests.saturating_add(1);
+                visual_changed |= replace_status(&mut self.status, None);
+                LanguageEffect {
+                    visual_changed,
+                    continuation: None,
+                }
+            }
+            Err(error) => self.fail(error),
+        }
+    }
+
     pub(crate) fn completion_is_open(&self, identity: LanguageIdentity) -> bool {
         self.session.as_ref().is_some_and(|session| {
             session.completion.as_ref().is_some_and(|completion| {
@@ -577,6 +816,147 @@ impl RustDiagnostics {
             }
         }
         changed
+    }
+
+    pub(crate) fn cancel_navigation(&mut self) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let mut changed = session.navigation.take().is_some();
+        if let Some(pending) = session.pending_navigation.take() {
+            match session.client.cancel(pending.request_id) {
+                Ok(_) => {
+                    self.navigation_cancellations = self.navigation_cancellations.saturating_add(1);
+                }
+                Err(error) => {
+                    changed |= replace_status(
+                        &mut self.status,
+                        Some(Arc::from(RustDiagnosticsError::Client(error).to_string())),
+                    );
+                }
+            }
+        }
+        changed
+    }
+
+    pub(crate) fn navigation_is_open(&self, identity: LanguageIdentity) -> bool {
+        self.navigation(identity).is_some()
+    }
+
+    pub(crate) fn hover_content(&self, identity: LanguageIdentity) -> Option<&HoverContent> {
+        match &self.navigation(identity)?.result {
+            NavigationResult::Hover(hover) => Some(hover),
+            NavigationResult::Locations { .. } => None,
+        }
+    }
+
+    pub(crate) fn hover_visible_line_count(&self, identity: LanguageIdentity) -> usize {
+        self.hover_content(identity)
+            .map_or(0, |hover| hover.visible_lines().count())
+    }
+
+    pub(crate) fn hover_line(&self, identity: LanguageIdentity, index: usize) -> Option<&str> {
+        self.hover_content(identity)?.visible_lines().nth(index)
+    }
+
+    pub(crate) fn navigation_visible_range(
+        &self,
+        identity: LanguageIdentity,
+    ) -> Option<Range<usize>> {
+        match &self.navigation(identity)?.result {
+            NavigationResult::Locations {
+                batch,
+                first_visible,
+                ..
+            } => Some(batch.visible_range(*first_visible)),
+            NavigationResult::Hover(_) => None,
+        }
+    }
+
+    pub(crate) fn navigation_row(
+        &self,
+        identity: LanguageIdentity,
+        index: usize,
+    ) -> Option<NavigationRow<'_>> {
+        match &self.navigation(identity)?.result {
+            NavigationResult::Locations {
+                batch, selected, ..
+            } => batch.locations().get(index).map(|location| NavigationRow {
+                label: location.uri(),
+                selected: index == *selected,
+            }),
+            NavigationResult::Hover(_) => None,
+        }
+    }
+
+    pub(crate) fn navigate_navigation(&mut self, delta: isize) -> bool {
+        let Some(NavigationResult::Locations {
+            batch,
+            selected,
+            first_visible,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.navigation.as_mut())
+            .map(|navigation| &mut navigation.result)
+        else {
+            return false;
+        };
+        let previous = *selected;
+        *selected = selected
+            .saturating_add_signed(delta)
+            .min(batch.locations().len().saturating_sub(1));
+        if *selected < *first_visible {
+            *first_visible = *selected;
+        } else if *selected
+            >= first_visible.saturating_add(crate::rust_navigation::MAX_VISIBLE_SOURCE_LOCATIONS)
+        {
+            *first_visible = selected
+                .saturating_add(1)
+                .saturating_sub(crate::rust_navigation::MAX_VISIBLE_SOURCE_LOCATIONS);
+        }
+        previous != *selected
+    }
+
+    pub(crate) fn selected_source_location(
+        &self,
+        identity: LanguageIdentity,
+    ) -> Option<SourceLocation> {
+        match &self.navigation(identity)?.result {
+            NavigationResult::Locations {
+                batch, selected, ..
+            } => batch.locations().get(*selected).cloned(),
+            NavigationResult::Hover(_) => None,
+        }
+    }
+
+    pub(crate) fn navigation_has_target(&self, identity: LanguageIdentity) -> bool {
+        self.selected_source_location(identity).is_some()
+    }
+
+    pub(crate) fn navigation_accessibility_label(
+        &self,
+        identity: LanguageIdentity,
+    ) -> Option<Arc<str>> {
+        let navigation = self.navigation(identity)?;
+        Some(match &navigation.result {
+            NavigationResult::Hover(hover) => Arc::from(format!("Rust hover: {}", hover.text())),
+            NavigationResult::Locations {
+                kind,
+                batch,
+                selected,
+                ..
+            } => {
+                let location = batch.locations().get(*selected)?;
+                Arc::from(format!(
+                    "{}: {} result(s), selected {}",
+                    kind.label(),
+                    batch.locations().len(),
+                    location.uri()
+                ))
+            }
+        })
     }
 
     pub(crate) fn navigate_completion(&mut self, delta: isize) -> bool {
@@ -803,6 +1183,24 @@ impl RustDiagnostics {
                     completion.map_or(0, |value| value.batch.retained_bytes()),
                 )
             });
+        let (navigation_pending, hover_bytes, location_items, location_bytes) =
+            self.session.as_ref().map_or((false, 0, 0, 0), |session| {
+                match session.navigation.as_ref().map(|value| &value.result) {
+                    Some(NavigationResult::Hover(hover)) => (
+                        session.pending_navigation.is_some(),
+                        hover.retained_bytes(),
+                        0,
+                        0,
+                    ),
+                    Some(NavigationResult::Locations { batch, .. }) => (
+                        session.pending_navigation.is_some(),
+                        0,
+                        batch.locations().len(),
+                        batch.retained_bytes(),
+                    ),
+                    None => (session.pending_navigation.is_some(), 0, 0, 0),
+                }
+            });
         let process = self
             .session
             .as_ref()
@@ -828,6 +1226,17 @@ impl RustDiagnostics {
             completion_cancellations: self.completion_cancellations,
             stale_completions: self.stale_completions,
             completion_truncations: self.completion_truncations,
+            navigation_pending,
+            hover_bytes,
+            location_items,
+            location_bytes,
+            peak_hover_bytes: self.peak_hover_bytes,
+            peak_location_items: self.peak_location_items,
+            peak_location_bytes: self.peak_location_bytes,
+            navigation_requests: self.navigation_requests,
+            navigation_cancellations: self.navigation_cancellations,
+            stale_navigation: self.stale_navigation,
+            navigation_truncations: self.navigation_truncations,
             process_retained_bytes: process.retained_bytes,
             process_queued_events: process.queued_events,
             process_submitted_inputs: process.submitted_inputs,
@@ -898,6 +1307,8 @@ impl RustDiagnostics {
             diagnostics: None,
             pending_completion: None,
             completion: None,
+            pending_navigation: None,
+            navigation: None,
             client,
         });
         Ok(())
@@ -1089,6 +1500,139 @@ impl RustDiagnostics {
         admitted_matches
     }
 
+    fn admit_navigation(
+        &mut self,
+        id: u32,
+        stamp: RequestStamp,
+        kind: NavigationRequestKind,
+        candidate: NavigationCandidate,
+    ) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let Some(pending) = session.pending_navigation.take() else {
+            self.stale_navigation = self.stale_navigation.saturating_add(1);
+            return false;
+        };
+        if pending.request_id != id
+            || pending.stamp != stamp
+            || pending.kind != kind
+            || pending.identity != session.identity
+            || pending.process_epoch != session.process_epoch
+            || pending.lsp_version != session.lsp_version
+        {
+            self.stale_navigation = self.stale_navigation.saturating_add(1);
+            return false;
+        }
+        let result = match candidate {
+            NavigationCandidate::Hover(Ok(Some(hover))) => {
+                self.peak_hover_bytes = self.peak_hover_bytes.max(hover.retained_bytes());
+                NavigationResult::Hover(hover)
+            }
+            NavigationCandidate::Locations(Ok(batch)) if !batch.locations().is_empty() => {
+                self.peak_location_items = self.peak_location_items.max(batch.locations().len());
+                self.peak_location_bytes = self.peak_location_bytes.max(batch.retained_bytes());
+                self.navigation_truncations = self
+                    .navigation_truncations
+                    .saturating_add(u64::from(batch.omitted() > 0));
+                NavigationResult::Locations {
+                    kind,
+                    batch,
+                    selected: 0,
+                    first_visible: 0,
+                }
+            }
+            NavigationCandidate::Hover(Ok(None)) | NavigationCandidate::Locations(Ok(_)) => {
+                session.navigation = None;
+                return replace_status(&mut self.status, Some(Arc::from(kind.empty_status())));
+            }
+            NavigationCandidate::Hover(Err(error)) | NavigationCandidate::Locations(Err(error)) => {
+                session.navigation = None;
+                return replace_status(
+                    &mut self.status,
+                    Some(Arc::from(
+                        RustDiagnosticsError::Navigation(error).to_string(),
+                    )),
+                );
+            }
+        };
+        session.navigation = Some(AdmittedNavigation {
+            request_id: id,
+            identity: pending.identity,
+            process_epoch: pending.process_epoch,
+            lsp_version: pending.lsp_version,
+            result,
+        });
+        let _ = replace_status(&mut self.status, None);
+        true
+    }
+
+    fn reject_stale_navigation(&mut self, id: u32) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let pending_matches = session
+            .pending_navigation
+            .is_some_and(|pending| pending.request_id == id);
+        if pending_matches {
+            session.pending_navigation = None;
+        }
+        let admitted_matches = session
+            .navigation
+            .as_ref()
+            .is_some_and(|navigation| navigation.request_id == id);
+        if admitted_matches {
+            session.navigation = None;
+        }
+        self.stale_navigation = self.stale_navigation.saturating_add(1);
+        admitted_matches
+    }
+
+    fn navigation(&self, identity: LanguageIdentity) -> Option<&AdmittedNavigation> {
+        let session = self.session.as_ref()?;
+        let navigation = session.navigation.as_ref()?;
+        (navigation.identity == identity
+            && navigation.process_epoch == session.process_epoch
+            && navigation.lsp_version == session.lsp_version)
+            .then_some(navigation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_navigation_for_test(
+        &mut self,
+        identity: LanguageIdentity,
+        kind: NavigationRequestKind,
+        result: &RawValue,
+    ) -> Result<(), NavigationError> {
+        let session = self.session.as_mut().ok_or(NavigationError::Malformed)?;
+        if session.identity != identity {
+            return Err(NavigationError::Malformed);
+        }
+        let admitted = match navigation_from_response(kind, ResponseValue::Result(result)) {
+            NavigationCandidate::Hover(Ok(Some(hover))) => NavigationResult::Hover(hover),
+            NavigationCandidate::Locations(Ok(batch)) if !batch.locations().is_empty() => {
+                NavigationResult::Locations {
+                    kind,
+                    batch,
+                    selected: 0,
+                    first_visible: 0,
+                }
+            }
+            NavigationCandidate::Hover(Ok(None) | Err(_))
+            | NavigationCandidate::Locations(Ok(_) | Err(_)) => {
+                return Err(NavigationError::Malformed);
+            }
+        };
+        session.navigation = Some(AdmittedNavigation {
+            request_id: 0,
+            identity,
+            process_epoch: session.process_epoch,
+            lsp_version: session.lsp_version,
+            result: admitted,
+        });
+        Ok(())
+    }
+
     fn restart_or_fail(&mut self, error: RustDiagnosticsError) -> bool {
         let Some(session) = self.session.as_mut() else {
             return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
@@ -1097,6 +1641,8 @@ impl RustDiagnostics {
             session.diagnostics = None;
             session.pending_completion = None;
             session.completion = None;
+            session.pending_navigation = None;
+            session.navigation = None;
             return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
         }
         let Some(generation) = session.process_generation.checked_add(1) else {
@@ -1125,6 +1671,8 @@ impl RustDiagnostics {
         session.diagnostics = None;
         session.pending_completion = None;
         session.completion = None;
+        session.pending_navigation = None;
+        session.navigation = None;
         self.restarts = self.restarts.saturating_add(1);
         replace_status(
             &mut self.status,
@@ -1137,6 +1685,8 @@ impl RustDiagnostics {
             session.diagnostics = None;
             session.pending_completion = None;
             session.completion = None;
+            session.pending_navigation = None;
+            session.navigation = None;
         }
         LanguageEffect {
             visual_changed: replace_status(&mut self.status, Some(Arc::from(error.to_string()))),
@@ -1308,6 +1858,8 @@ fn test_session(
         }),
         pending_completion: None,
         completion: None,
+        pending_navigation: None,
+        navigation: None,
         client,
     }
 }

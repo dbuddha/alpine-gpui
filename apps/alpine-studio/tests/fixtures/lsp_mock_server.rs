@@ -106,6 +106,39 @@ fn run() -> io::Result<()> {
                         ),
                     )?;
                 }
+                Some("textDocument/hover") if initialized => {
+                    if message.contains(r#""character":99"#) {
+                        continue;
+                    }
+                    let id = json_id(message)?;
+                    write_frame(
+                        &mut output,
+                        &format!(
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"contents":{{"kind":"markdown","value":"`fn main()`\n\nMock hover"}}}}}}"#
+                        ),
+                    )?;
+                }
+                Some("textDocument/definition" | "textDocument/references") if initialized => {
+                    if message.contains(r#""character":99"#) {
+                        continue;
+                    }
+                    let id = json_id(message)?;
+                    let uri = json_string(message, "uri").ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "missing document URI")
+                    })?;
+                    let location = format!(
+                        r#"{{"uri":"{uri}","range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":2}}}}}}"#
+                    );
+                    let result = if method == Some("textDocument/references") {
+                        format!("[{location},{location}]")
+                    } else {
+                        location
+                    };
+                    write_frame(
+                        &mut output,
+                        &format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{result}}}"#),
+                    )?;
+                }
                 Some("test/echo") if initialized => {
                     let id = json_id(message)?;
                     write_frame(

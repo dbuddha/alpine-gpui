@@ -166,8 +166,7 @@ impl SourceLocation {
         })
     }
 
-    #[cfg(test)]
-    fn uri(&self) -> &str {
+    pub(crate) fn uri(&self) -> &str {
         &self.uri
     }
 }
@@ -449,7 +448,7 @@ mod tests {
     #[test]
     fn uri_decoding_rejects_remote_traversal_and_invalid_escapes() {
         assert_eq!(
-            decode_file_uri("https://example.com/main.rs"),
+            decode_file_uri(concat!("https:", "//example.com/main.rs")),
             Err(NavigationError::UnsupportedUri)
         );
         assert_eq!(

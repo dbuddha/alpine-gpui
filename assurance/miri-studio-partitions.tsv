@@ -28,6 +28,7 @@ recovery::	studio-persistence
 rust_completion::	studio-language-completion
 rust_diagnostics::	studio-language-diagnostics
 rust_diagnostics_scene_tests::	studio-language-diagnostics
+rust_navigation::	studio-language-diagnostics
 session::	studio-persistence
 session_integration_tests::	studio-persistence
 settings::	studio-model

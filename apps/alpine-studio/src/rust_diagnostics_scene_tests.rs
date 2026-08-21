@@ -34,6 +34,95 @@ fn assert_invalid_diagnostic_origin(app: &mut StudioApp, viewport: Size) {
 }
 
 #[test]
+fn navigation_overlay_keyboard_and_accessibility_use_validated_product_paths()
+-> Result<(), Box<dyn Error>> {
+    let root = std::env::temp_dir().join(format!(
+        "alpine-navigation-scene-{}-{}",
+        std::process::id(),
+        NEXT_SCENE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&root)?;
+    let path = root.join("main.rs");
+    fs::write(&path, "fn target() {}\n")?;
+    let path = fs::canonicalize(path)?;
+    let mut app = StudioApp::open_file(tests::TestTextSystem, &path)?;
+    let viewport = Size::new(640.0, 360.0).ok_or("viewport")?;
+    let input = app.active_rust_document().ok_or("Rust document")?;
+    let identity = app.language_identity();
+    let document = lsp_language::LspDocument::from_file_path(&path, "rust", 1)?;
+    let open = document.did_open_params("")?;
+    let value: serde_json::Value = serde_json::from_str(open.get())?;
+    let uri = value["textDocument"]["uri"].as_str().ok_or("URI")?;
+    let diagnostics: Box<RawValue> = serde_json::from_str(&format!(
+        r#"{{"uri":"{uri}","version":1,"diagnostics":[]}}"#
+    ))?;
+    app.rust_diagnostics.install_for_test(
+        input,
+        &diagnostics,
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    let baseline = app.scene(SceneRevision::new(1), viewport);
+
+    let hover: Box<RawValue> =
+        serde_json::from_str(r#"{"contents":["fn target()","Local hover"]}"#)?;
+    app.rust_diagnostics.install_navigation_for_test(
+        identity,
+        NavigationRequestKind::Hover,
+        &hover,
+    )?;
+    let hover_scene = app.scene(SceneRevision::new(2), viewport);
+    assert_eq!(hover_scene.quads().len(), baseline.quads().len() + 1);
+    let hover_snapshot = app.accessibility_snapshot()?;
+    assert!(hover_snapshot.nodes().iter().any(|node| {
+        node.role() == AccessibilityRole::Dialog
+            && node.name().starts_with("Rust hover:")
+            && node.is_focused()
+            && !node.supports_activate()
+    }));
+
+    let locations: Box<RawValue> = serde_json::from_str(&format!(
+        r#"[{{"uri":"{uri}","range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":2}}}}}},{{"uri":"{uri}","range":{{"start":{{"line":0,"character":3}},"end":{{"line":0,"character":9}}}}}}]"#
+    ))?;
+    app.rust_diagnostics.install_navigation_for_test(
+        identity,
+        NavigationRequestKind::References,
+        &locations,
+    )?;
+    let location_scene = app.scene(SceneRevision::new(3), viewport);
+    assert_eq!(location_scene.quads().len(), baseline.quads().len() + 2);
+    let location_snapshot = app.accessibility_snapshot()?;
+    let navigation = location_snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.name().starts_with("Rust references:"))
+        .ok_or("navigation accessibility node")?;
+    assert!(navigation.is_focused() && navigation.supports_activate());
+    let action = AccessibilityAction::Activate {
+        revision: location_snapshot.revision(),
+        node: navigation.id(),
+    };
+    assert!(app.handle_accessibility_action(action)?.visual_changed);
+    assert_eq!(app.selection.range(), 0..2);
+
+    app.rust_diagnostics.install_navigation_for_test(
+        app.language_identity(),
+        NavigationRequestKind::References,
+        &locations,
+    )?;
+    assert!(
+        app.handle_key(KEY_DOWN, Modifiers::from_bits(0))
+            .visual_changed
+    );
+    assert!(
+        app.handle_key(KEY_RETURN, Modifiers::from_bits(0))
+            .visual_changed
+    );
+    assert_eq!(app.selection.range(), 3..9);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn diagnostic_scene_adds_clipped_marker_and_bounded_message_then_clears()
 -> Result<(), Box<dyn Error>> {
     let root = std::env::temp_dir().join(format!(
