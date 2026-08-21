@@ -462,20 +462,15 @@ impl GlyphRasterizer for CoreTextSystem {
             );
         }
         drop(context);
-        let mut top_down = Vec::new();
-        top_down
-            .try_reserve_exact(bytes)
-            .map_err(|_| LayoutError::AllocationFailed)?;
-        for row in pixels.chunks_exact(width).rev() {
-            top_down.extend_from_slice(row);
-        }
+        // The bitmap context and CTM above place the glyph's logical top row
+        // at offset zero. Reversing these rows would vertically invert text.
         let width =
             NonZeroU32::new(u32::try_from(width).map_err(|_| LayoutError::ArithmeticOverflow)?)
                 .ok_or(LayoutError::InvalidShaperOutput)?;
         let height =
             NonZeroU32::new(u32::try_from(height).map_err(|_| LayoutError::ArithmeticOverflow)?)
                 .ok_or(LayoutError::InvalidShaperOutput)?;
-        let bitmap = GlyphBitmap::new(width, height, top_down)?;
+        let bitmap = GlyphBitmap::new(width, height, pixels)?;
         RasterizedGlyph::new(Some(bitmap), left, top)
     }
 }
@@ -533,6 +528,58 @@ mod tests {
         if let Some(bitmap) = raster.bitmap() {
             assert!(bitmap.pixels.iter().any(|alpha| *alpha != 0));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn rasterizes_asymmetric_glyphs_in_logical_top_down_order() -> Result<(), LayoutError> {
+        let mut system = CoreTextSystem::new();
+        system.register_font(1, "Menlo-Regular")?;
+        let key = FontKey::new(
+            1,
+            PositiveFinite::new(32.0).ok_or(LayoutError::InvalidShaperOutput)?,
+            PositiveFinite::new(1.0).ok_or(LayoutError::InvalidShaperOutput)?,
+            NonZeroU32::new(4).ok_or(LayoutError::InvalidShaperOutput)?,
+        );
+        let layout = system.shape("F", key)?;
+        let glyph = layout
+            .glyphs()
+            .first()
+            .copied()
+            .ok_or(LayoutError::NativeFailure("test glyph"))?;
+        let raster = system.rasterize(key, glyph.glyph_id(), 0)?;
+        let bitmap = raster
+            .bitmap()
+            .ok_or(LayoutError::NativeFailure("test bitmap"))?;
+        let width =
+            usize::try_from(bitmap.width.get()).map_err(|_| LayoutError::ArithmeticOverflow)?;
+        let height =
+            usize::try_from(bitmap.height.get()).map_err(|_| LayoutError::ArithmeticOverflow)?;
+        let quarter_rows = height / 4;
+        if quarter_rows == 0 {
+            return Err(LayoutError::NativeFailure("test bitmap height"));
+        }
+        let quarter_bytes = width
+            .checked_mul(quarter_rows)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        let top_coverage = bitmap.pixels[..quarter_bytes]
+            .iter()
+            .map(|alpha| u64::from(*alpha))
+            .sum::<u64>();
+        let bottom_start = bitmap
+            .pixels
+            .len()
+            .checked_sub(quarter_bytes)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        let bottom_coverage = bitmap.pixels[bottom_start..]
+            .iter()
+            .map(|alpha| u64::from(*alpha))
+            .sum::<u64>();
+
+        assert!(
+            top_coverage > bottom_coverage,
+            "uppercase F must retain its heavier top bar above its lower stem: top={top_coverage}, bottom={bottom_coverage}"
+        );
         Ok(())
     }
 
