@@ -881,12 +881,9 @@ fn overlay_node(
     name: &'static str,
     focused: bool,
 ) -> Result<AccessibilityNode, AccessibilityError> {
-    let node_bounds = overlay_bounds(
-        app.last_viewport.width(),
-        app.last_viewport.height(),
-        app.sidebar_width(app.last_viewport),
-        id,
-    )?;
+    let viewport = app.last_viewport;
+    let sidebar = app.sidebar_width(viewport);
+    let node_bounds = overlay_bounds(viewport.width(), viewport.height(), sidebar, id)?;
     node(
         id,
         Some(WINDOW_NODE),
@@ -962,12 +959,9 @@ fn push_file_rows(
                 .ok_or(AccessibilityError::ArithmeticOverflow)?,
         );
         let width = app.sidebar_width(app.last_viewport);
-        let row_bounds = file_row_bounds(
-            app.last_viewport.height(),
-            width,
-            row.index,
-            app.workspace_scroll_y,
-        )?;
+        let viewport_height = app.last_viewport.height();
+        let scroll_y = app.workspace_scroll_y;
+        let row_bounds = file_row_bounds(viewport_height, width, row.index, scroll_y)?;
         let row_result = node(
             id,
             Some(FILE_TREE_NODE),
@@ -1439,13 +1433,9 @@ mod semantic_geometry_tests {
         let overlay_height = (viewport_height - super::super::TAB_BAR_HEIGHT).min(360.0);
         let overlay_y = super::super::TAB_BAR_HEIGHT + super::super::CONTENT_INSET;
         let find_width = super::super::FIND_BAR_WIDTH.min(viewport_width);
+        let find = overlay_bounds(viewport_width, viewport_height, sidebar, FIND_NODE)?;
         assert_eq!(
-            values(overlay_bounds(
-                viewport_width,
-                viewport_height,
-                sidebar,
-                FIND_NODE,
-            )?),
+            values(find),
             (
                 (viewport_width - find_width) * 0.5,
                 overlay_y,
@@ -1454,13 +1444,10 @@ mod semantic_geometry_tests {
             )
         );
         let search_width = super::super::PROJECT_SEARCH_WIDTH.min(viewport_width);
+        let id = PROJECT_SEARCH_NODE;
+        let search = overlay_bounds(viewport_width, viewport_height, sidebar, id)?;
         assert_eq!(
-            values(overlay_bounds(
-                viewport_width,
-                viewport_height,
-                sidebar,
-                PROJECT_SEARCH_NODE,
-            )?),
+            values(search),
             (
                 (viewport_width - search_width) * 0.5,
                 overlay_y,
@@ -1468,23 +1455,12 @@ mod semantic_geometry_tests {
                 overlay_height,
             )
         );
-        assert_eq!(
-            values(overlay_bounds(
-                viewport_width,
-                viewport_height,
-                sidebar,
-                FILE_TREE_NODE,
-            )?),
-            (0.0, 0.0, sidebar, viewport_height)
-        );
+        let file_tree = overlay_bounds(viewport_width, viewport_height, sidebar, FILE_TREE_NODE)?;
+        assert_eq!(values(file_tree), (0.0, 0.0, sidebar, viewport_height));
         let quick_width = super::super::QUICK_OPEN_WIDTH.min(viewport_width);
+        let quick = overlay_bounds(viewport_width, viewport_height, sidebar, QUICK_OPEN_NODE)?;
         assert_eq!(
-            values(overlay_bounds(
-                viewport_width,
-                viewport_height,
-                sidebar,
-                QUICK_OPEN_NODE,
-            )?),
+            values(quick),
             (
                 (viewport_width - quick_width) * 0.5,
                 overlay_y,
@@ -1505,13 +1481,9 @@ mod semantic_geometry_tests {
         let row_top = super::super::CONTENT_INSET
             + super::super::usize_as_f32(row_index) * super::super::TREE_ROW_HEIGHT
             - scroll_y;
+        let row = file_row_bounds(viewport_height, sidebar, row_index, scroll_y)?;
         assert_eq!(
-            values(file_row_bounds(
-                viewport_height,
-                sidebar,
-                row_index,
-                scroll_y,
-            )?),
+            values(row),
             (0.0, row_top, sidebar, super::super::TREE_ROW_HEIGHT)
         );
 
