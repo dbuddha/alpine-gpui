@@ -28,6 +28,7 @@
 - [Assurance strategy](quality/assurance.md)
   - [Formal assurance effectiveness](quality/formal-effectiveness.md)
   - [Performance qualification](quality/performance.md)
+  - [Alpine Studio residency protocol](quality/studio-residency.md)
   - [Comparator protocol v1](quality/comparator-protocol.md)
   - [Onscreen SDR qualification](quality/onscreen-sdr.md)
   - [Native idle wakeup and energy protocol](quality/native-idle-energy.md)
