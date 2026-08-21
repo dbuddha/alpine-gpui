@@ -1992,16 +1992,34 @@ mod native_input_tests {
     #[test]
     fn every_pause_directive_schedules_post_callback_confirmation() {
         assert!(should_schedule_display_link_pause_confirmation(
-            DisplayLinkDirective::Pause
+            DisplayLinkDirective::Pause,
+            DisplayLinkState::Paused,
+            true,
+        ));
+        assert!(should_schedule_display_link_pause_confirmation(
+            DisplayLinkDirective::None,
+            DisplayLinkState::Paused,
+            false,
         ));
         assert!(!should_schedule_display_link_pause_confirmation(
-            DisplayLinkDirective::None
+            DisplayLinkDirective::None,
+            DisplayLinkState::Paused,
+            true,
         ));
         assert!(!should_schedule_display_link_pause_confirmation(
-            DisplayLinkDirective::Resume
+            DisplayLinkDirective::None,
+            DisplayLinkState::Running,
+            false,
         ));
         assert!(!should_schedule_display_link_pause_confirmation(
-            DisplayLinkDirective::Invalidate
+            DisplayLinkDirective::Resume,
+            DisplayLinkState::Paused,
+            false,
+        ));
+        assert!(!should_schedule_display_link_pause_confirmation(
+            DisplayLinkDirective::Invalidate,
+            DisplayLinkState::Paused,
+            false,
         ));
     }
 
@@ -2214,17 +2232,18 @@ define_class!(
                 return;
             }
             if let Some(driver) = &self.ivars().driver {
-                let directive = driver.try_borrow_mut().map_or_else(
+                let (directive, display_link_state) = driver.try_borrow_mut().map_or_else(
                     |_| {
                         self.ivars().counters.failed.fetch_add(1, Ordering::Relaxed);
-                        DisplayLinkDirective::Pause
+                        (DisplayLinkDirective::Pause, DisplayLinkState::Paused)
                     },
                     |mut driver| {
-                        if lifecycle == SURFACE_CLOSING {
+                        let directive = if lifecycle == SURFACE_CLOSING {
                             driver.drain_shutdown(&self.ivars().counters)
                         } else {
                             driver.update(update, &self.ivars().counters)
-                        }
+                        };
+                        (directive, driver.display_link_state())
                     },
                 );
                 if lifecycle == SURFACE_CLOSING
@@ -2234,8 +2253,11 @@ define_class!(
                     stop_event_loop(&self.ivars().application);
                 } else {
                     apply_display_link_directive(link, directive);
-                    if should_schedule_display_link_pause_confirmation(directive)
-                        && let Some(display_link) = &self.ivars().display_link
+                    if should_schedule_display_link_pause_confirmation(
+                        directive,
+                        display_link_state,
+                        link.isPaused(),
+                    ) && let Some(display_link) = &self.ivars().display_link
                     {
                         #[cfg(alpine_native_validation)]
                         schedule_display_link_pause_confirmation(
@@ -2883,8 +2905,15 @@ const fn should_confirm_display_link_pause(state: DisplayLinkState) -> bool {
     matches!(state, DisplayLinkState::Paused)
 }
 
-const fn should_schedule_display_link_pause_confirmation(directive: DisplayLinkDirective) -> bool {
+const fn should_schedule_display_link_pause_confirmation(
+    directive: DisplayLinkDirective,
+    state: DisplayLinkState,
+    native_paused: bool,
+) -> bool {
     matches!(directive, DisplayLinkDirective::Pause)
+        || (matches!(directive, DisplayLinkDirective::None)
+            && matches!(state, DisplayLinkState::Paused)
+            && !native_paused)
 }
 
 fn schedule_display_link_pause_confirmation(

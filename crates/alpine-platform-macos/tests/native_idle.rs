@@ -139,6 +139,12 @@ mod validation {
             expected_pause_confirmations,
             "every setup revision must complete exactly one post-callback pause reaffirmation"
         );
+        let pause_evidence = native_validation::pause_confirmation_evidence(surface);
+        assert_eq!(pause_evidence.requested(), expected_pause_confirmations);
+        assert_eq!(pause_evidence.enqueued(), expected_pause_confirmations);
+        assert_eq!(pause_evidence.executed(), expected_pause_confirmations);
+        assert_eq!(pause_evidence.eligible(), expected_pause_confirmations);
+        assert_eq!(pause_evidence.observed(), expected_pause_confirmations);
         Ok(())
     }
 
