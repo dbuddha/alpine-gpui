@@ -340,9 +340,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     assert!(matches!(
         rejected,
-        Err(alpine_platform_macos::SurfaceError::invariant(
-            alpine_platform_macos::SurfaceOperation::Application
-        ))
+        Err(alpine_platform_macos::SurfaceError::InvariantViolation {
+            operation: alpine_platform_macos::SurfaceOperation::Application
+        })
     ));
     let rejected_owner_evidence = native_validation::close_with_owner_evidence(rejected_surface)?;
     assert_eq!(rejected_owner_evidence.active(), [0; 10]);

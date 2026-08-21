@@ -1438,6 +1438,11 @@ mod tests {
     use super::*;
 
     static ROLLBACK_WORKER_FINISHED: AtomicBool = AtomicBool::new(false);
+    const APPLICATION_INVARIANT: SurfaceError = SurfaceError::InvariantViolation {
+        operation: alpine_platform_macos::SurfaceOperation::Application,
+    };
+    const APPLICATION_RUNTIME_INVARIANT: RuntimeError =
+        RuntimeError::Surface(APPLICATION_INVARIANT);
 
     fn rollback_worker_probe() {
         thread::sleep(Duration::from_millis(100));
@@ -1654,22 +1659,15 @@ mod tests {
         assert!(!context.advance_document(DocumentRevision::new(1)));
         *context.dirty = false;
         context.invalidate();
-        let text = ClipboardText::new("response").map_err(|_| {
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-        })?;
-        let write = ClipboardWrite::new(ClipboardOperation::Copy, text).map_err(|_| {
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-        })?;
+        let text = ClipboardText::new("response").map_err(|_| APPLICATION_INVARIANT)?;
+        let write = ClipboardWrite::new(ClipboardOperation::Copy, text)
+            .map_err(|_| APPLICATION_INVARIANT)?;
         assert!(context.write_clipboard(write.clone()));
         assert!(!context.write_clipboard(write.clone()));
         assert!(context.cancel_close());
         assert!(!context.cancel_close());
-        let request =
-            AccessibilityRequest::snapshot(AccessibilityRequestId::new(1)).map_err(|_| {
-                RuntimeError::Surface(SurfaceError::invariant(
-                    alpine_platform_macos::SurfaceOperation::Application,
-                ))
-            })?;
+        let request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(1))
+            .map_err(|_| APPLICATION_RUNTIME_INVARIANT)?;
         let response = AccessibilityResponse::failure(
             &request,
             AccessibilityRevision::new(2, 3),
@@ -1773,12 +1771,9 @@ mod tests {
 
     #[test]
     fn cancelled_close_returns_one_bounded_response_and_stays_live() -> Result<(), RuntimeError> {
-        let text = ClipboardText::new("selected").map_err(|_| {
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-        })?;
-        let write = ClipboardWrite::new(ClipboardOperation::Cut, text).map_err(|_| {
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-        })?;
+        let text = ClipboardText::new("selected").map_err(|_| APPLICATION_INVARIANT)?;
+        let write = ClipboardWrite::new(ClipboardOperation::Cut, text)
+            .map_err(|_| APPLICATION_INVARIANT)?;
         let delegate = TestDelegate {
             cancel_close: true,
             clipboard_write: Some(write.clone()),
@@ -2004,9 +1999,7 @@ mod tests {
     #[test]
     fn application_run_rejects_unsupported_host() -> Result<(), SurfaceError> {
         let descriptor = SurfaceDescriptor::new("Alpine", 10.0, 10.0, 1.0)?;
-        let application = runtime(TestDelegate::default()).map_err(|_| {
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-        })?;
+        let application = runtime(TestDelegate::default()).map_err(|_| APPLICATION_INVARIANT)?;
         assert!(matches!(
             application.run(&descriptor),
             Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))

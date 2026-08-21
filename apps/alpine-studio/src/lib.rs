@@ -196,6 +196,9 @@ const COMMAND_PALETTE_WIDTH: f32 = 620.0;
 const COMMAND_PALETTE_QUERY_HEIGHT: f32 = 34.0;
 const COMMAND_PALETTE_ROW_HEIGHT: f32 = 24.0;
 const INITIAL_TEXT: &str = "fn main() {\n    println!(\"Alpine Studio\");\n}\n\n// Local, direct, and deliberately small.\n";
+const APPLICATION_INVARIANT: SurfaceError = SurfaceError::InvariantViolation {
+    operation: alpine_platform_macos::SurfaceOperation::Application,
+};
 
 /// A structured Alpine Studio launch failure.
 #[derive(Debug)]
@@ -1179,9 +1182,9 @@ impl StudioApp {
         let workspace = Workspace::open(path.as_ref(), WorkspaceLimits::default())?;
         let root = workspace.root().to_path_buf();
         let mut app = Self::from_workspace(text_system, workspace).map_err(StudioError::from)?;
-        app.file_tree.activate(1).map_err(|_| {
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-        })?;
+        app.file_tree
+            .activate(1)
+            .map_err(|_| APPLICATION_INVARIANT)?;
         let request = app.file_tree.take_request(&root);
         let admission = request.map(|request| app.file_tree.admit(request.execute()));
         assert_eq!(
@@ -1230,9 +1233,9 @@ impl StudioApp {
     }
 
     fn prime_workspace_launch(&mut self) -> Result<(), StudioError> {
-        self.file_tree.activate(1).map_err(|_| {
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-        })?;
+        self.file_tree
+            .activate(1)
+            .map_err(|_| APPLICATION_INVARIANT)?;
         self.file_tree.unfocus();
         Ok(())
     }
@@ -1243,28 +1246,18 @@ impl StudioApp {
         path: Option<&Path>,
         workspace: Option<Workspace>,
     ) -> Result<Self, SurfaceError> {
-        let settings = SettingsState::compiled().map_err(|_| {
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-        })?;
-        let last_viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application),
-        )?;
-        let layout_budget = NonZeroUsize::new(DEFAULT_LAYOUT_BUDGET_BYTES).ok_or(
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application),
-        )?;
-        let atlas_budget = NonZeroUsize::new(DEFAULT_ATLAS_BUDGET_BYTES).ok_or(
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application),
-        )?;
-        let syntax_cache = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES).map_err(|_| {
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-        })?;
+        let settings = SettingsState::compiled().map_err(|_| APPLICATION_INVARIANT)?;
+        let last_viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(APPLICATION_INVARIANT)?;
+        let layout_budget =
+            NonZeroUsize::new(DEFAULT_LAYOUT_BUDGET_BYTES).ok_or(APPLICATION_INVARIANT)?;
+        let atlas_budget =
+            NonZeroUsize::new(DEFAULT_ATLAS_BUDGET_BYTES).ok_or(APPLICATION_INVARIANT)?;
+        let syntax_cache =
+            SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES).map_err(|_| APPLICATION_INVARIANT)?;
         let runtime_document_revision = document.buffer().revision().get();
-        let tabs = DocumentTabs::new(path, None, DocumentTabLimits::default()).map_err(|_| {
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-        })?;
-        let active_tab = tabs.active_id().map_err(|_| {
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-        })?;
+        let tabs = DocumentTabs::new(path, None, DocumentTabLimits::default())
+            .map_err(|_| APPLICATION_INVARIANT)?;
+        let active_tab = tabs.active_id().map_err(|_| APPLICATION_INVARIANT)?;
         let panes = PaneGrid::new(active_tab, DocumentViewState::default());
         Ok(Self {
             settings,
@@ -1677,9 +1670,7 @@ impl StudioApp {
         let recovery_path = recovery::path_for_session(&path);
         self.session_path = Some(path);
         self.recovery = Some(
-            recovery::RecoveryCoordinator::new(recovery_path).map_err(|_| {
-                SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-            })?,
+            recovery::RecoveryCoordinator::new(recovery_path).map_err(|_| APPLICATION_INVARIANT)?,
         );
         self.publish_recovery();
         Ok(())
