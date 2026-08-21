@@ -62,20 +62,22 @@ mod validation {
         assert_window_state(true, false)?;
         assert_quiescent(&surface, "restored-before-control")?;
 
-        let before_control = surface.snapshot();
-        present(&surface, 3, hosted_direct)?;
-        let after_control = surface.snapshot();
-        assert_eq!(
-            after_control.submission_count(),
-            before_control.submission_count() + 1,
-            "the invalidation control must admit exactly one submission"
-        );
-        assert_eq!(
-            after_control.direct_present_count(),
-            before_control.direct_present_count() + 1,
-            "the invalidation control must issue exactly one direct presentation"
-        );
-        assert_quiescent(&surface, "restored-control")?;
+        for revision in 3..=10 {
+            let before_control = surface.snapshot();
+            present(&surface, revision, hosted_direct)?;
+            let after_control = surface.snapshot();
+            assert_eq!(
+                after_control.submission_count(),
+                before_control.submission_count() + 1,
+                "every invalidation control must admit exactly one submission"
+            );
+            assert_eq!(
+                after_control.direct_present_count(),
+                before_control.direct_present_count() + 1,
+                "every invalidation control must issue exactly one direct presentation"
+            );
+            assert_quiescent(&surface, &format!("restored-control-{revision}"))?;
+        }
 
         let evidence = native_validation::close_with_owner_evidence(surface)?;
         assert_eq!(evidence.active(), [0; 10]);
@@ -139,6 +141,12 @@ mod validation {
             expected_pause_confirmations,
             "every setup revision must complete exactly one post-callback pause reaffirmation"
         );
+        let pause_evidence = native_validation::pause_confirmation_evidence(surface);
+        assert_eq!(pause_evidence.requested(), expected_pause_confirmations);
+        assert_eq!(pause_evidence.enqueued(), expected_pause_confirmations);
+        assert_eq!(pause_evidence.executed(), expected_pause_confirmations);
+        assert_eq!(pause_evidence.eligible(), expected_pause_confirmations);
+        assert_eq!(pause_evidence.observed(), expected_pause_confirmations);
         Ok(())
     }
 
@@ -159,16 +167,17 @@ mod validation {
             pump_main_run_loop(Duration::from_millis(5));
         }
         let after = surface.snapshot();
-        let pause_confirmations = native_validation::pause_confirmation_count(surface);
+        let pause_evidence = native_validation::pause_confirmation_evidence(surface);
+        let pause_confirmations = pause_evidence.observed();
         assert!(
             after.display_link_paused(),
-            "display link did not pause within the settlement bound: confirmations={pause_confirmations}, callbacks_before={}, callbacks_after={}",
+            "display link did not pause within the settlement bound: pause_evidence={pause_evidence:?}, callbacks_before={}, callbacks_after={}, before={before:?}, after={after:?}",
             before.callback_count(),
             after.callback_count()
         );
         assert!(
             pause_confirmations >= minimum_pause_confirmations,
-            "post-callback pause reaffirmation did not complete within the settlement bound: expected_at_least={minimum_pause_confirmations}, actual={pause_confirmations}, native_paused={}",
+            "post-callback pause reaffirmation did not complete within the settlement bound: expected_at_least={minimum_pause_confirmations}, pause_evidence={pause_evidence:?}, native_paused={}",
             after.display_link_paused()
         );
         assert_eq!(
