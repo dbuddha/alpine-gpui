@@ -1165,6 +1165,11 @@ impl<D: AppDelegate + 'static> Application<D> {
         if self.shutting_down {
             return SurfaceResponse::default();
         }
+        let defer_accessibility_query_frame = matches!(
+            event,
+            SurfaceEvent::Accessibility { request, .. }
+                if request.kind() != alpine_platform_macos::AccessibilityRequestKind::Action
+        );
         let mut clipboard_write = None;
         let mut accessibility_response = None;
         let mut close_disposition = if matches!(event, SurfaceEvent::CloseRequested { .. }) {
@@ -1204,8 +1209,13 @@ impl<D: AppDelegate + 'static> Application<D> {
                 accessibility_response,
             );
         }
+        let frame = if defer_accessibility_query_frame {
+            None
+        } else {
+            self.frame_if_dirty()
+        };
         SurfaceResponse::from_channels(
-            self.frame_if_dirty(),
+            frame,
             clipboard_write,
             close_disposition,
             accessibility_response,
@@ -1471,6 +1481,7 @@ mod tests {
         invalid_scene: bool,
         cancel_close: bool,
         clipboard_write: Option<ClipboardWrite>,
+        respond_accessibility: bool,
     }
 
     impl AppDelegate for TestDelegate {
@@ -1483,6 +1494,17 @@ mod tests {
             }
             if self.cancel_close && matches!(event, SurfaceEvent::CloseRequested { .. }) {
                 assert!(context.cancel_close());
+            }
+            if self.respond_accessibility
+                && let SurfaceEvent::Accessibility { request, .. } = event
+            {
+                assert!(
+                    context.respond_accessibility(AccessibilityResponse::failure(
+                        request,
+                        AccessibilityRevision::new(0, 0),
+                        AccessibilityError::InvalidTree,
+                    ))
+                );
             }
         }
 
@@ -1724,6 +1746,43 @@ mod tests {
         assert_eq!(application.delegate.results.len(), 1);
         assert_eq!(application.delegate.results[0].1, 55);
         assert_eq!(application.snapshot().worker().queued_results(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn accessibility_query_defers_concurrent_worker_frame_until_next_wake()
+    -> Result<(), RuntimeError> {
+        let mut application = runtime(TestDelegate {
+            respond_accessibility: true,
+            ..TestDelegate::default()
+        })?;
+        assert!(application.frame_if_dirty().is_some());
+        let producer = application.external.producer();
+        assert_eq!(producer.submit(55, 0), ExternalAdmission::Admitted);
+        let request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(17))
+            .map_err(|_| RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        let query = application.dispatch_with_response(&SurfaceEvent::Accessibility {
+            timestamp: EventTimestamp::new(21),
+            request,
+        });
+        assert!(query.frame().is_none());
+        assert_eq!(application.delegate.results.len(), 1);
+        assert_eq!(application.delegate.results[0].1, 55);
+        assert!(application.snapshot().is_dirty());
+
+        let wake = application.dispatch_with_response(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(22),
+        });
+        assert!(wake.frame().is_some());
+        assert!(!application.snapshot().is_dirty());
+        assert!(
+            application
+                .dispatch_with_response(&SurfaceEvent::Wake {
+                    timestamp: EventTimestamp::new(23),
+                })
+                .frame()
+                .is_none()
+        );
         Ok(())
     }
 

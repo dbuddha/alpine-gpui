@@ -594,9 +594,15 @@ fn activate_node(
                     .id_at(index)
                     .is_some_and(|tab| TAB_NODE_BASE.checked_add(tab.0) == Some(target.get()))
                 {
-                    return Ok(app
-                        .activate_document_tab(index)
-                        .unwrap_or_else(|error| app.record_workspace_error(&error)));
+                    let focus = app
+                        .file_tree
+                        .unfocus()
+                        .then(EventEffect::visual)
+                        .unwrap_or_default();
+                    return Ok(focus.merge(
+                        app.activate_document_tab(index)
+                            .unwrap_or_else(|error| app.record_workspace_error(&error)),
+                    ));
                 }
             }
         }
@@ -1130,7 +1136,12 @@ fn activate_diagnostic(
         .ok_or(AccessibilityError::ArithmeticOverflow)?;
     let start = text.byte_of_appkit_utf16(start_utf16)?;
     let end = text.byte_of_appkit_utf16(end_utf16)?;
-    Ok(app.set_selection(Selection::new(start, end)))
+    let focus = app
+        .file_tree
+        .unfocus()
+        .then(EventEffect::visual)
+        .unwrap_or_default();
+    Ok(focus.merge(app.set_selection(Selection::new(start, end))))
 }
 
 #[cfg(test)]

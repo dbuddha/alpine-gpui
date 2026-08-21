@@ -978,6 +978,112 @@ impl NativeAccessibilityAdapter {
     }
 
     #[cfg(alpine_native_validation)]
+    pub(crate) fn inspect_view(
+        view: &Retained<SurfaceView>,
+    ) -> Result<crate::native_validation::NativeAccessibilityTreeEvidence, SurfaceError> {
+        Self::refresh_view(view)?;
+        let (revision, elements) = {
+            let adapter = view.ivars().accessibility.borrow();
+            let revision = adapter
+                .snapshot
+                .as_ref()
+                .map(AccessibilitySnapshot::revision)
+                .ok_or(SurfaceError::DriverUnavailable)?;
+            let elements = adapter
+                .elements
+                .iter()
+                .map(|cached| (cached.id, cached.element.clone()))
+                .collect::<Vec<_>>();
+            (revision, elements)
+        };
+        let mut nodes = Vec::new();
+        nodes
+            .try_reserve_exact(elements.len())
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        let mut focused_nodes = 0_usize;
+        for (id, element) in elements {
+            let role: Retained<NSString> = unsafe { msg_send![&*element, accessibilityRole] };
+            let label: Retained<NSString> = unsafe { msg_send![&*element, accessibilityLabel] };
+            let identifier: Retained<NSString> =
+                unsafe { msg_send![&*element, accessibilityIdentifier] };
+            let focused: bool = unsafe { msg_send![&*element, isAccessibilityFocused] };
+            let selected: bool = unsafe { msg_send![&*element, isAccessibilitySelected] };
+            let activate_allowed: bool = unsafe {
+                msg_send![&*element, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
+            };
+            let current: bool = unsafe { msg_send![&*element, isAccessibilityElement] };
+            let frame: NSRect = unsafe { msg_send![&*element, accessibilityFrame] };
+            let bounded_screen_frame = bounded_screen_frame(frame);
+            focused_nodes = focused_nodes.saturating_add(usize::from(focused));
+            nodes.push(crate::native_validation::NativeAccessibilityNodeEvidence {
+                semantic_id: id.get(),
+                role: role.to_string().into_boxed_str(),
+                label: label.to_string().into_boxed_str(),
+                identifier: identifier.to_string().into_boxed_str(),
+                focused,
+                selected,
+                activate_allowed,
+                current,
+                bounded_screen_frame,
+            });
+        }
+        Ok(crate::native_validation::NativeAccessibilityTreeEvidence {
+            revision,
+            nodes: nodes.into_boxed_slice(),
+            focused_nodes,
+        })
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn activate_named_view(
+        view: &Retained<SurfaceView>,
+        role: AccessibilityRole,
+        label: &str,
+    ) -> Result<crate::native_validation::NativeAccessibilityActivationEvidence, SurfaceError> {
+        Self::refresh_view(view)?;
+        let (id, element) = {
+            let adapter = view.ivars().accessibility.borrow();
+            let snapshot = adapter
+                .snapshot
+                .as_ref()
+                .ok_or(SurfaceError::DriverUnavailable)?;
+            let mut matches = snapshot
+                .nodes()
+                .iter()
+                .filter(|node| node.role() == role && node.name() == label);
+            let node = matches.next().ok_or(SurfaceError::DriverUnavailable)?;
+            if matches.next().is_some() {
+                return Err(SurfaceError::DriverUnavailable);
+            }
+            let element = adapter
+                .element(node.id())
+                .ok_or(SurfaceError::DriverUnavailable)?;
+            (node.id(), element)
+        };
+        let native_role: Retained<NSString> = unsafe { msg_send![&*element, accessibilityRole] };
+        let native_label: Retained<NSString> = unsafe { msg_send![&*element, accessibilityLabel] };
+        let identifier: Retained<NSString> =
+            unsafe { msg_send![&*element, accessibilityIdentifier] };
+        let selector_allowed: bool = unsafe {
+            msg_send![&*element, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
+        };
+        let accepted: bool = unsafe { msg_send![&*element, accessibilityPerformPress] };
+        let current_after_action: bool = unsafe { msg_send![&*element, isAccessibilityElement] };
+        Ok(
+            crate::native_validation::NativeAccessibilityActivationEvidence {
+                semantic_id: id.get(),
+                role: native_role.to_string().into_boxed_str(),
+                label: native_label.to_string().into_boxed_str(),
+                identifier: identifier.to_string().into_boxed_str(),
+                selector_allowed,
+                accepted,
+                current_after_action,
+                dispatch_failed: element.ivars().dispatch_failed.get(),
+            },
+        )
+    }
+
+    #[cfg(alpine_native_validation)]
     pub(crate) fn validate_view(
         view: &Retained<SurfaceView>,
     ) -> Result<crate::native_validation::NativeAccessibilityEvidence, SurfaceError> {
@@ -1039,12 +1145,7 @@ impl NativeAccessibilityAdapter {
         let stable_external_identifier = !identifier.to_string().is_empty()
             && identifier.to_string() == repeated_identifier.to_string();
         let frame: NSRect = unsafe { msg_send![&*tab, accessibilityFrame] };
-        let bounded_screen_frame = frame.origin.x.is_finite()
-            && frame.origin.y.is_finite()
-            && frame.size.width.is_finite()
-            && frame.size.height.is_finite()
-            && frame.size.width > 0.0
-            && frame.size.height > 0.0;
+        let bounded_screen_frame = bounded_screen_frame(frame);
         let tab_activate_selector_allowed: bool = unsafe {
             msg_send![&*tab, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
         };
@@ -1714,6 +1815,46 @@ fn checked_range(range: NSRange, text_length: usize) -> Option<AccessibilityText
     Some(AccessibilityTextRange::new(range.location, range.length))
 }
 
+#[cfg(any(test, alpine_native_validation))]
+fn bounded_screen_frame(frame: NSRect) -> bool {
+    frame.origin.x.is_finite()
+        && frame.origin.y.is_finite()
+        && frame.size.width.is_finite()
+        && frame.size.height.is_finite()
+        && frame.size.width > 0.0
+        && frame.size.height > 0.0
+}
+
 const fn not_found_range() -> NSRange {
     NSRange::new(usize::MAX, 0)
+}
+
+#[cfg(test)]
+mod bounded_screen_frame_tests {
+    use super::*;
+
+    fn frame(x: f64, y: f64, width: f64, height: f64) -> NSRect {
+        NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
+    }
+
+    #[test]
+    fn every_finite_and_nonempty_axis_is_required_independently() {
+        assert!(bounded_screen_frame(frame(-20.0, -10.0, 40.0, 30.0)));
+
+        assert!(!bounded_screen_frame(frame(f64::NAN, 1.0, 2.0, 3.0)));
+        assert!(!bounded_screen_frame(frame(1.0, f64::NAN, 2.0, 3.0)));
+        assert!(!bounded_screen_frame(frame(1.0, 2.0, f64::NAN, 3.0)));
+        assert!(!bounded_screen_frame(frame(1.0, 2.0, 3.0, f64::NAN)));
+        assert!(!bounded_screen_frame(frame(f64::INFINITY, 1.0, 2.0, 3.0)));
+        assert!(!bounded_screen_frame(frame(
+            1.0,
+            f64::NEG_INFINITY,
+            2.0,
+            3.0
+        )));
+        assert!(!bounded_screen_frame(frame(1.0, 2.0, 0.0, 3.0)));
+        assert!(!bounded_screen_frame(frame(1.0, 2.0, -1.0, 3.0)));
+        assert!(!bounded_screen_frame(frame(1.0, 2.0, 3.0, 0.0)));
+        assert!(!bounded_screen_frame(frame(1.0, 2.0, 3.0, -1.0)));
+    }
 }

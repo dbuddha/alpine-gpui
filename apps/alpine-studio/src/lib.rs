@@ -5722,6 +5722,11 @@ pub mod native_validation {
         })
     }
 
+    mod accessibility_process;
+    pub use accessibility_process::{
+        NativeStudioAccessibilityEvidence, qualify_studio_accessibility_process,
+    };
+
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum PresentationEvidenceMode {
         Physical,

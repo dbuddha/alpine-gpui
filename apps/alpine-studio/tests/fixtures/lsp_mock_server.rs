@@ -1,11 +1,10 @@
 use std::{
     io::{self, Read, Write},
-    process,
-    thread,
+    process, thread,
     time::Duration,
 };
 
-fn main() {
+pub(crate) fn main() {
     if run().is_err() {
         process::exit(2);
     }
@@ -129,11 +128,7 @@ fn run() -> io::Result<()> {
                     )?;
                 }
                 Some("exit") if initialized => return Ok(()),
-                None
-                    if initialized
-                        && message
-                            == r#"{"jsonrpc":"2.0","id":0,"result":null}"# =>
-                {
+                None if initialized && message == r#"{"jsonrpc":"2.0","id":0,"result":null}"# => {
                     write_frame(
                         &mut output,
                         r#"{"jsonrpc":"2.0","method":"test/server-request-acknowledged"}"#,

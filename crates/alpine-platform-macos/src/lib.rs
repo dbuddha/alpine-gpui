@@ -861,6 +861,150 @@ pub mod native_validation {
         }
     }
 
+    /// One handle-free native element observed through production AppKit selectors.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct NativeAccessibilityNodeEvidence {
+        pub(crate) semantic_id: u64,
+        pub(crate) role: Box<str>,
+        pub(crate) label: Box<str>,
+        pub(crate) identifier: Box<str>,
+        pub(crate) focused: bool,
+        pub(crate) selected: bool,
+        pub(crate) activate_allowed: bool,
+        pub(crate) current: bool,
+        pub(crate) bounded_screen_frame: bool,
+    }
+
+    impl NativeAccessibilityNodeEvidence {
+        /// Returns the stable semantic node identity.
+        #[must_use]
+        pub const fn semantic_id(&self) -> u64 {
+            self.semantic_id
+        }
+        /// Returns the AppKit role exposed by the native element.
+        #[must_use]
+        pub fn role(&self) -> &str {
+            &self.role
+        }
+        /// Returns the bounded AppKit label.
+        #[must_use]
+        pub fn label(&self) -> &str {
+            &self.label
+        }
+        /// Returns the generation-bound external identifier.
+        #[must_use]
+        pub fn identifier(&self) -> &str {
+            &self.identifier
+        }
+        /// Returns whether AppKit observes this element as focused.
+        #[must_use]
+        pub const fn focused(&self) -> bool {
+            self.focused
+        }
+        /// Returns whether AppKit observes this element as selected.
+        #[must_use]
+        pub const fn selected(&self) -> bool {
+            self.selected
+        }
+        /// Returns whether AppKit admits the press selector.
+        #[must_use]
+        pub const fn activate_allowed(&self) -> bool {
+            self.activate_allowed
+        }
+        /// Returns whether the element remains current at observation time.
+        #[must_use]
+        pub const fn current(&self) -> bool {
+            self.current
+        }
+        /// Returns whether the converted screen frame is finite and nonempty.
+        #[must_use]
+        pub const fn bounded_screen_frame(&self) -> bool {
+            self.bounded_screen_frame
+        }
+    }
+
+    /// Handle-free evidence from one complete production AppKit semantic query.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct NativeAccessibilityTreeEvidence {
+        pub(crate) revision: crate::AccessibilityRevision,
+        pub(crate) nodes: Box<[NativeAccessibilityNodeEvidence]>,
+        pub(crate) focused_nodes: usize,
+    }
+
+    impl NativeAccessibilityTreeEvidence {
+        /// Returns the exact semantic revision queried through AppKit.
+        #[must_use]
+        pub const fn revision(&self) -> crate::AccessibilityRevision {
+            self.revision
+        }
+        /// Returns every bounded current native element in semantic order.
+        #[must_use]
+        pub fn nodes(&self) -> &[NativeAccessibilityNodeEvidence] {
+            &self.nodes
+        }
+        /// Returns the number of elements AppKit reports as focused.
+        #[must_use]
+        pub const fn focused_nodes(&self) -> usize {
+            self.focused_nodes
+        }
+    }
+
+    /// Handle-free evidence from one named production AppKit press action.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct NativeAccessibilityActivationEvidence {
+        pub(crate) semantic_id: u64,
+        pub(crate) role: Box<str>,
+        pub(crate) label: Box<str>,
+        pub(crate) identifier: Box<str>,
+        pub(crate) selector_allowed: bool,
+        pub(crate) accepted: bool,
+        pub(crate) current_after_action: bool,
+        pub(crate) dispatch_failed: bool,
+    }
+
+    impl NativeAccessibilityActivationEvidence {
+        /// Returns the activated semantic node identity.
+        #[must_use]
+        pub const fn semantic_id(&self) -> u64 {
+            self.semantic_id
+        }
+        /// Returns the native role used to select the action target.
+        #[must_use]
+        pub fn role(&self) -> &str {
+            &self.role
+        }
+        /// Returns the exact native label used to select the action target.
+        #[must_use]
+        pub fn label(&self) -> &str {
+            &self.label
+        }
+        /// Returns the target's generation-bound external identifier.
+        #[must_use]
+        pub fn identifier(&self) -> &str {
+            &self.identifier
+        }
+        /// Returns whether AppKit admitted `accessibilityPerformPress`.
+        #[must_use]
+        pub const fn selector_allowed(&self) -> bool {
+            self.selector_allowed
+        }
+        /// Returns whether the production action authority accepted the press.
+        #[must_use]
+        pub const fn accepted(&self) -> bool {
+            self.accepted
+        }
+        /// Returns whether the same native instance remains current afterward.
+        #[must_use]
+        pub const fn current_after_action(&self) -> bool {
+            self.current_after_action
+        }
+        /// Returns whether native dispatch observed a structured callback failure.
+        #[must_use]
+        pub const fn dispatch_failed(&self) -> bool {
+            self.dispatch_failed
+        }
+    }
+
     /// Handle-free evidence produced by the production AppKit accessibility selectors.
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct NativeAccessibilityEvidence {
@@ -1546,6 +1690,23 @@ pub mod native_validation {
         surface.implementation.replay_native_input_path(handler)
     }
 
+    /// Commits exact text through the production AppKit text-input selector.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured native or dispatch error when the current
+    /// responder cannot admit and deliver the text through its live input epoch.
+    pub fn commit_native_text<F>(
+        surface: &NativeSurface,
+        text: &str,
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        surface.implementation.commit_native_text(text, handler)
+    }
+
     /// Sets the pre-run input epoch and focus state for startup publication validation.
     pub fn set_input_focus_state(
         surface: &NativeSurface,
@@ -1573,6 +1734,44 @@ pub mod native_validation {
         surface
             .implementation
             .replay_native_accessibility_path(handler)
+    }
+
+    /// Queries every current production AppKit accessibility element.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured native error when semantic refresh, selector
+    /// dispatch, or bounded evidence construction fails closed.
+    pub fn inspect_native_accessibility_tree<F>(
+        surface: &NativeSurface,
+        handler: F,
+    ) -> Result<NativeAccessibilityTreeEvidence, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        surface
+            .implementation
+            .inspect_native_accessibility_tree(handler)
+    }
+
+    /// Presses one exact current native element selected by semantic role and label.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured native error when the exact target is absent,
+    /// ambiguous, revoked, disabled, or cannot dispatch through production code.
+    pub fn activate_named_native_accessibility_node<F>(
+        surface: &NativeSurface,
+        role: crate::AccessibilityRole,
+        label: &str,
+        handler: F,
+    ) -> Result<NativeAccessibilityActivationEvidence, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        surface
+            .implementation
+            .activate_named_native_accessibility_node(role, label, handler)
     }
 
     /// Replays one exact Command-C, Command-X, or Command-V input path.

@@ -1802,6 +1802,13 @@ impl SurfaceView {
         self.clear_marked_text();
     }
 
+    #[cfg(alpine_native_validation)]
+    fn detach_input_handler_for_validation(&self) {
+        if let Ok(mut installed) = self.ivars().input_handler.try_borrow_mut() {
+            installed.take();
+        }
+    }
+
     pub(crate) fn take_input_dispatch_failure(&self) -> bool {
         self.ivars().input_dispatch_failed.replace(false)
     }
@@ -2931,6 +2938,29 @@ impl DisplayLinkDelegate {
         self.dispatch_surface_event_inner(event, true, received_at)
     }
 
+    fn submit_surface_frame(
+        &self,
+        frame: crate::SurfaceFrame,
+        operation: SurfaceOperation,
+    ) -> Result<(), SurfaceError> {
+        let (scene, clear) = frame.into_parts();
+        let (_, directive) = self
+            .ivars()
+            .driver
+            .as_ref()
+            .ok_or(SurfaceError::invariant(operation))?
+            .try_borrow_mut()
+            .map_err(|_| SurfaceError::owner_conflict(operation))?
+            .request_frame(scene, clear)?;
+        let display_link = self
+            .ivars()
+            .display_link
+            .as_ref()
+            .ok_or(SurfaceError::invariant(operation))?;
+        apply_display_link_directive(display_link, directive);
+        Ok(())
+    }
+
     fn dispatch_surface_event_inner(
         &self,
         event: SurfaceEvent,
@@ -3008,11 +3038,13 @@ impl DisplayLinkDelegate {
                 Instant::now(),
             )?;
         }
-        self.ivars()
-            .view
-            .as_ref()
-            .ok_or(SurfaceError::invariant(SurfaceOperation::Input))?
-            .refresh_accessibility_if_active()?;
+        if close != CloseDisposition::Allow {
+            self.ivars()
+                .view
+                .as_ref()
+                .ok_or(SurfaceError::invariant(SurfaceOperation::Input))?
+                .refresh_accessibility_if_active()?;
+        }
         Ok(close)
     }
 
@@ -3035,7 +3067,7 @@ impl DisplayLinkDelegate {
                 .map_or_else(SurfaceResponse::default, |handler| handler(event))
         };
         let (frame, clipboard, close, accessibility) = response.into_channels();
-        if frame.is_some() || clipboard.is_some() || close != CloseDisposition::NotRequested {
+        if clipboard.is_some() || close != CloseDisposition::NotRequested {
             return Err(SurfaceError::invariant(SurfaceOperation::Accessibility));
         }
         let response =
@@ -3043,6 +3075,20 @@ impl DisplayLinkDelegate {
         response
             .validate_for(request)
             .map_err(|_| SurfaceError::invariant(SurfaceOperation::Accessibility))?;
+        if let Some(frame) = frame {
+            let successful_action = request.kind() == crate::AccessibilityRequestKind::Action
+                && matches!(
+                    response.result(),
+                    Ok(crate::AccessibilityPayload::Action(
+                        crate::AccessibilityActionResult::Applied
+                            | crate::AccessibilityActionResult::Unchanged
+                    ))
+                );
+            if !successful_action {
+                return Err(SurfaceError::invariant(SurfaceOperation::Accessibility));
+            }
+            self.submit_surface_frame(frame, SurfaceOperation::Accessibility)?;
+        }
         Ok(response)
     }
 
@@ -3138,10 +3184,10 @@ impl DisplayLinkDelegate {
         {
             return;
         }
-        self.publish_input_focus(false);
         if let Some(view) = &self.ivars().view {
             view.revoke_accessibility();
         }
+        self.publish_input_focus(false);
         begin_close_observer_state(&self.ivars().lifecycle);
         #[cfg(alpine_native_validation)]
         if let Some(probe) = &self.ivars().validation_probe {
@@ -3551,6 +3597,11 @@ fn schedule_validation_qualified_window_close(
                     let should_close: Bool =
                         unsafe { msg_send![&**delegate, windowShouldClose: &**window] };
                     if bool::from(should_close) {
+                        // Headless AppKit may terminate its run loop without
+                        // delivering windowWillClose. Invoke the same
+                        // idempotent production teardown authority directly;
+                        // a later native callback is safely coalesced.
+                        delegate.begin_native_close();
                         window.close();
                     }
                 }
@@ -3991,6 +4042,36 @@ impl NativeSurface {
     }
 
     #[cfg(alpine_native_validation)]
+    pub(crate) fn inspect_native_accessibility_tree<F>(
+        &self,
+        handler: F,
+    ) -> Result<crate::native_validation::NativeAccessibilityTreeEvidence, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        self.delegate.install_event_handler(handler)?;
+        let result = NativeAccessibilityAdapter::inspect_view(&self.view);
+        self.delegate.clear_event_handler();
+        result
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn activate_named_native_accessibility_node<F>(
+        &self,
+        role: crate::AccessibilityRole,
+        label: &str,
+        handler: F,
+    ) -> Result<crate::native_validation::NativeAccessibilityActivationEvidence, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        self.delegate.install_event_handler(handler)?;
+        let result = NativeAccessibilityAdapter::activate_named_view(&self.view, role, label);
+        self.delegate.clear_event_handler();
+        result
+    }
+
+    #[cfg(alpine_native_validation)]
     pub(crate) fn replay_native_input_path<F>(&self, handler: F) -> Result<(), SurfaceError>
     where
         F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
@@ -4157,6 +4238,58 @@ impl NativeSurface {
             return Err(SurfaceError::validation(SurfaceOperation::Validation));
         }
         Ok(())
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn commit_native_text<F>(&self, text: &str, handler: F) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        self.delegate.install_event_handler(handler)?;
+        let delegate = self.delegate.clone();
+        if !self.view.install_input_handler(Box::new(move |event| {
+            delegate.dispatch_native_input_event(event);
+        })) {
+            self.delegate.clear_event_handler();
+            return Err(SurfaceError::DriverUnavailable);
+        }
+        if let Err(error) = self.activate_input_responder() {
+            self.view.detach_input_handler_for_validation();
+            self.delegate.clear_event_handler();
+            return Err(error);
+        }
+        let (input_epoch, focused) = self.view.input_focus_state();
+        if let Err(error) = self.delegate.dispatch_surface_event(SurfaceEvent::Focus {
+            timestamp: self.delegate.next_event_timestamp(),
+            input_epoch,
+            focused,
+        }) {
+            self.view.detach_input_handler_for_validation();
+            self.delegate.clear_event_handler();
+            return Err(error);
+        }
+
+        let rejected_before = self.view.rejected_ime_callbacks();
+        let committed = NSString::from_str(text);
+        // SAFETY: SurfaceView implements NSTextInputClient, the retained
+        // NSString remains live for the synchronous selector, and no native
+        // object crosses the validation boundary.
+        unsafe {
+            let _: () = msg_send![
+                &*self.view,
+                insertText: &*committed,
+                replacementRange: NSRange::new(NSUInteger::MAX, 0)
+            ];
+        }
+        let replay_result = if self.view.rejected_ime_callbacks() == rejected_before {
+            Ok(())
+        } else {
+            Err(SurfaceError::DriverUnavailable)
+        };
+
+        self.view.detach_input_handler_for_validation();
+        self.delegate.clear_event_handler();
+        resolve_input_dispatch(replay_result, self.view.take_input_dispatch_failure())
     }
 
     #[cfg(alpine_native_validation)]

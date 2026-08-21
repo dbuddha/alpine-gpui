@@ -1,7 +1,28 @@
 //! Native process composition for Studio clipboard and dirty-close behavior.
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+#[path = "fixtures/lsp_mock_server.rs"]
+mod lsp_mock_server;
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("ALPINE_STUDIO_NATIVE_LSP_SERVER").is_some() {
+        lsp_mock_server::main();
+        return Ok(());
+    }
+    if std::env::var_os("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_CHILD").is_some() {
+        let evidence = alpine_studio::native_validation::qualify_studio_accessibility_process()?;
+        assert_eq!(evidence.tree_actions(), 3);
+        assert_eq!(evidence.tab_actions(), 2);
+        assert_eq!(evidence.command_actions(), 2);
+        assert_eq!(evidence.diagnostic_actions(), 1);
+        assert_eq!(evidence.query_frames(), 0);
+        assert!(evidence.maximum_action_frames() <= 1);
+        assert!(evidence.persisted_bytes() > 32);
+        assert_eq!(evidence.released_owner_classes(), 9);
+        println!("alpine-native-accessibility-qualified");
+        return Ok(());
+    }
     let initial = alpine_studio::initial_scene()?;
     assert_eq!(initial.revision().get(), 1);
     assert!(!initial.operations().is_empty());
@@ -28,7 +49,86 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(search.admitted_frames() >= 5);
     assert_eq!(search.matched_bytes(), 6);
     assert_eq!(search.released_owner_classes(), 9);
+    qualify_accessibility_child()?;
     Ok(())
+}
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
+    use std::{
+        io::Read as _,
+        os::unix::fs::PermissionsExt as _,
+        process::{Command, Stdio},
+        thread,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    };
+
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "alpine-studio-native-accessibility-child-{}-{nonce}",
+        std::process::id()
+    ));
+    let home = root.join("home");
+    let server = root.join("rust-analyzer-fixture");
+    std::fs::create_dir_all(&home)?;
+    std::fs::write(
+        &server,
+        "#!/bin/sh\nALPINE_STUDIO_NATIVE_LSP_SERVER=1 exec \"$ALPINE_STUDIO_NATIVE_PROCESS_EXE\"\n",
+    )?;
+    std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o700))?;
+    let executable = std::env::current_exe()?;
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let mut child = Command::new(&executable)
+            .env("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_CHILD", "1")
+            .env("ALPINE_STUDIO_NATIVE_PROCESS_EXE", &executable)
+            .env("ALPINE_RUST_ANALYZER", &server)
+            .env("HOME", &home)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let timeout = Duration::from_secs(15);
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill()?;
+                let status = child.wait()?;
+                return Err(format!(
+                    "native Studio accessibility child exceeded {timeout:?} and ended with {status}"
+                )
+                .into());
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        if let Some(mut pipe) = child.stdout.take() {
+            pipe.read_to_string(&mut stdout)?;
+        }
+        if let Some(mut pipe) = child.stderr.take() {
+            pipe.read_to_string(&mut stderr)?;
+        }
+        if !status.success() {
+            return Err(format!(
+                "native Studio accessibility child failed with {status}; stdout={stdout:?}; stderr={stderr:?}"
+            )
+            .into());
+        }
+        assert_eq!(stdout.trim(), "alpine-native-accessibility-qualified");
+        assert!(stderr.lines().all(|line| {
+            line.ends_with("Metal API Validation Enabled")
+                || line.ends_with("Metal GPU Validation Enabled")
+        }));
+        Ok(())
+    })();
+    let cleanup = std::fs::remove_dir_all(root);
+    match (result, cleanup) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(Box::new(error)),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
