@@ -3,7 +3,7 @@ set -eu
 
 fixture=target/formal-effectiveness-fixture
 rm -rf "$fixture"
-mkdir -p "$fixture/formal/tla/aep-test" "$fixture/logs/aep-test" "$fixture/kani-src/crates/example/src" "$fixture/kani"
+mkdir -p "$fixture/formal/tla/aep-test" "$fixture/logs/aep-test" "$fixture/kani"
 trap 'rm -rf "$fixture"' EXIT HUP INT TERM
 
 cat > "$fixture/formal/tla/aep-test/Example.tla" <<'EOF'
@@ -55,19 +55,10 @@ printf 'aep-test\tMissing.cfg\tExpectedInvariant\n' >> "$fixture/formal/tla/effe
 assert_fails 'incomplete TLA+ control inventory' env TLA_MODEL_ROOT="$fixture/formal/tla" TLA_CONTROL_MANIFEST="$fixture/formal/tla/effectiveness-controls.tsv" scripts/analyze-tla-effectiveness.sh --check-controls
 scripts/analyze-tla-effectiveness.sh --check-controls formal/tla formal/tla/effectiveness-controls.tsv
 
-cat > "$fixture/kani-src/crates/example/src/lib.rs" <<'EOF'
-#[kani::proof]
-fn bounded_property() {
-    let value: u8 = kani::any();
-    kani::assume(value <= 1);
-    kani::cover!(value == 0);
-    kani::cover!(value == 1);
-    assert!(value <= 1);
-}
-EOF
 cat > "$fixture/kani/harnesses.json" <<'EOF'
-{"kani-version":"0.67.0","file-version":"0.1","standard-harnesses":[]}
+{"kani-version":"0.67.0","file-version":"0.1","standard-harnesses":{"fixture.rs":["example::bounded_property"]},"contract-harnesses":{},"contracts":[],"totals":{"standard-harnesses":1,"contract-harnesses":0,"functions-under-contract":0}}
 EOF
+printf 'example::bounded_property\t2\n' > "$fixture/kani/effectiveness-controls.tsv"
 cat > "$fixture/kani/proofs.log" <<'EOF'
 Checking harness example::bounded_property...
 RESULTS:
@@ -80,11 +71,14 @@ SUMMARY:
 VERIFICATION:- SUCCESSFUL
 Complete - 1 successfully verified harnesses, 0 failures, 1 total.
 EOF
-KANI_SOURCE_ROOT="$fixture/kani-src" REVISION=fixture \
+KANI_CONTROL_MANIFEST="$fixture/kani/effectiveness-controls.tsv" REVISION=fixture \
     scripts/analyze-kani-effectiveness.sh "$fixture/kani/harnesses.json" "$fixture/kani/proofs.log" "$fixture/kani/report"
 grep -Fq 'proof_harnesses = 1' "$fixture/kani/report/effectiveness.toml"
 grep -Fq 'satisfied_cover_properties = 2' "$fixture/kani/report/effectiveness.toml"
 
 awk '!changed && /SATISFIED/ { sub(/SATISFIED/, "UNSATISFIABLE"); changed = 1 } { print }' \
     "$fixture/kani/proofs.log" > "$fixture/kani/proofs-bad.log"
-assert_fails 'unsatisfied Kani cover' env KANI_SOURCE_ROOT="$fixture/kani-src" scripts/analyze-kani-effectiveness.sh "$fixture/kani/harnesses.json" "$fixture/kani/proofs-bad.log" "$fixture/kani/report"
+assert_fails 'unsatisfied Kani cover' env KANI_CONTROL_MANIFEST="$fixture/kani/effectiveness-controls.tsv" scripts/analyze-kani-effectiveness.sh "$fixture/kani/harnesses.json" "$fixture/kani/proofs-bad.log" "$fixture/kani/report"
+
+printf 'example::bounded_property\t1\n' > "$fixture/kani/effectiveness-controls-wrong.tsv"
+assert_fails 'wrong Kani cover count' env KANI_CONTROL_MANIFEST="$fixture/kani/effectiveness-controls-wrong.tsv" scripts/analyze-kani-effectiveness.sh "$fixture/kani/harnesses.json" "$fixture/kani/proofs.log" "$fixture/kani/report"

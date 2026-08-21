@@ -491,6 +491,8 @@ mod input_epoch_verification {
     fn checked_epoch_boundaries_never_wrap_or_alias() {
         let value = kani::any::<u64>();
         kani::assume(value != 0);
+        kani::cover!(value == 1, "minimum live epoch");
+        kani::cover!(value == u64::MAX, "exhausted epoch");
         let Some(epoch) = InputEpoch::new(value) else {
             unreachable!();
         };
