@@ -387,6 +387,21 @@ fn cache_budget_atlas_geometry_and_error_evidence_are_complete() -> Result<(), B
     assert_eq!(reused.hits(), 2);
     assert_eq!(reused.misses(), 2);
 
+    let rasterized = RasterizedGlyph::new(Some(pixel.clone()), -1.0, 2.0)?;
+    let raster_key = GlyphKey::new(font()?, 50, 0);
+    let mut raster_reuse = GlyphAtlas::new(growth_budget);
+    let admitted = raster_reuse.insert_rasterized(raster_key, &rasterized)?;
+    assert_eq!(
+        raster_reuse.insert_rasterized(raster_key, &rasterized)?,
+        admitted
+    );
+
+    let empty = RasterizedGlyph::new(None, 0.0, 0.0)?;
+    let empty_key = GlyphKey::new(font()?, 51, 0);
+    raster_reuse.insert_rasterized(empty_key, &empty)?;
+    assert!(raster_reuse.lookup(empty_key)?.is_some());
+    assert!(raster_reuse.insert(empty_key, &pixel).is_ok());
+
     let mut pressure_counts = atlas;
     pressure_counts.pressure()?;
     pressure_counts.pressure()?;
@@ -400,6 +415,16 @@ fn cache_budget_atlas_geometry_and_error_evidence_are_complete() -> Result<(), B
         over_budget.insert(GlyphKey::new(font()?, 3, 0), &two_pixels),
         Err(LayoutError::GlyphExceedsAtlasBudget { .. })
     ));
+    let oversized_raster = RasterizedGlyph::new(Some(two_pixels.clone()), 0.0, 0.0)?;
+    assert!(matches!(
+        over_budget.insert_rasterized(GlyphKey::new(font()?, 52, 0), &oversized_raster),
+        Err(LayoutError::GlyphExceedsAtlasBudget { .. })
+    ));
+    let mut empty_saturated = GlyphAtlas::new(tiny_budget);
+    assert_eq!(
+        empty_saturated.insert_rasterized(GlyphKey::new(font()?, 53, 0), &empty),
+        Err(LayoutError::AtlasSaturated)
+    );
     let mut metadata_saturated = GlyphAtlas::new(tiny_budget);
     assert_eq!(
         metadata_saturated.insert(GlyphKey::new(font()?, 30, 0), &pixel),
@@ -432,6 +457,33 @@ fn cache_budget_atlas_geometry_and_error_evidence_are_complete() -> Result<(), B
     let mut equal_peak = GlyphAtlas::new(tiny_budget);
     equal_peak.pixels = vec![0];
     assert_eq!(equal_peak.update_peak(), Ok(()));
+
+    let invalid_rect = AtlasRect::new(1, 0, one, one);
+    let mut invalid_pixels = GlyphAtlas::new(growth_budget);
+    invalid_pixels.dimension = 1;
+    invalid_pixels.pixels = vec![0];
+    let invalid_revision = invalid_pixels.pixel_revision;
+    assert_eq!(
+        invalid_pixels.copy_bitmap(invalid_rect, &pixel),
+        Err(LayoutError::ArithmeticOverflow)
+    );
+    assert_eq!(
+        invalid_pixels.clear_rect(invalid_rect),
+        Err(LayoutError::ArithmeticOverflow)
+    );
+    assert_eq!(invalid_pixels.pixel_revision, invalid_revision);
+
+    let mut positive_eviction = GlyphAtlas::new(growth_budget);
+    positive_eviction.insert(GlyphKey::new(font()?, 54, 0), &pixel)?;
+    assert_eq!(positive_eviction.evict_oldest(), Ok(true));
+    assert!(positive_eviction.entries.is_empty());
+    assert!(positive_eviction.pixels().iter().all(|pixel| *pixel == 0));
+
+    let mut empty_eviction = GlyphAtlas::new(growth_budget);
+    empty_eviction.insert_rasterized(GlyphKey::new(font()?, 55, 0), &empty)?;
+    assert_eq!(empty_eviction.evict_oldest(), Ok(true));
+    assert!(empty_eviction.entries.is_empty());
+    assert!(empty_eviction.free.is_empty());
 
     let exact_bitmap_budget = NonZeroUsize::new(2).ok_or("exact bitmap budget")?;
     let mut exact_bitmap = GlyphAtlas::new(exact_bitmap_budget);
