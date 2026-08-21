@@ -2,6 +2,7 @@
 
 mod ax;
 mod calibration;
+mod dogfood;
 mod lab;
 mod lab_v2;
 mod onscreen;
@@ -154,28 +155,19 @@ fn run() -> Result<String, Vec<String>> {
     }
     if matches!(
         command.as_str(),
+        "validate-studio-dogfood" | "studio-dogfood-report"
+    ) {
+        return run_dogfood_command(&command, &mut arguments);
+    }
+    if matches!(
+        command.as_str(),
         "validate-qualification"
             | "qualification-report"
             | "validate-aa-calibration"
             | "aa-calibration-report"
             | "validate-scene-trace"
     ) {
-        let Some(path) = arguments.next() else {
-            return Err(vec![format!("{command} requires a manifest path")]);
-        };
-        if arguments.next().is_some() {
-            return Err(vec![format!("{command} accepts exactly one manifest path")]);
-        }
-        if matches!(
-            command.as_str(),
-            "validate-aa-calibration" | "aa-calibration-report"
-        ) {
-            return calibration::run(&command, Path::new(&path), Path::new("."));
-        }
-        if command == "validate-scene-trace" {
-            return qualification::run_scene(Path::new(&path), Path::new("."));
-        }
-        return qualification::run(&command, Path::new(&path), Path::new("."));
+        return run_qualification_command(&command, &mut arguments);
     }
     if matches!(
         command.as_str(),
@@ -226,7 +218,7 @@ fn run() -> Result<String, Vec<String>> {
         )),
         "report" => Ok(render_report(&registry)),
         other => Err(vec![format!(
-            "unknown command {other:?}; expected validate, report, validate-scene-trace, render-scene-reference, render-scene-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, or upstream-radar"
+            "unknown command {other:?}; expected validate, report, validate-scene-trace, render-scene-reference, render-scene-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, validate-studio-dogfood, studio-dogfood-report, or upstream-radar"
         )]),
     }
 }
@@ -247,6 +239,19 @@ fn run_lab_command(
     } else {
         lab::run(command, path)
     }
+}
+
+fn run_dogfood_command(
+    command: &str,
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<String, Vec<String>> {
+    let Some(path) = arguments.next() else {
+        return Err(vec![format!("{command} requires a manifest path")]);
+    };
+    if arguments.next().is_some() {
+        return Err(vec![format!("{command} accepts exactly one manifest path")]);
+    }
+    dogfood::run(command, Path::new(&path))
 }
 
 fn run_ax_command(
