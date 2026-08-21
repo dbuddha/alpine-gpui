@@ -82,3 +82,6 @@ assert_fails 'unsatisfied Kani cover' env KANI_CONTROL_MANIFEST="$fixture/kani/e
 
 printf 'example::bounded_property\t1\n' > "$fixture/kani/effectiveness-controls-wrong.tsv"
 assert_fails 'wrong Kani cover count' env KANI_CONTROL_MANIFEST="$fixture/kani/effectiveness-controls-wrong.tsv" scripts/analyze-kani-effectiveness.sh "$fixture/kani/harnesses.json" "$fixture/kani/proofs.log" "$fixture/kani/report"
+
+printf '%s\n' 'example::bounded_property\t2' > "$fixture/kani/effectiveness-controls-literal-escape.tsv"
+assert_fails 'literal escape instead of Kani manifest tab' env KANI_CONTROL_MANIFEST="$fixture/kani/effectiveness-controls-literal-escape.tsv" scripts/analyze-kani-effectiveness.sh "$fixture/kani/harnesses.json" "$fixture/kani/proofs.log" "$fixture/kani/report"

@@ -22,12 +22,14 @@ test "$file_version" = 0.1 || fail "expected inventory schema 0.1, found ${file_
 
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
-awk -F '\t' '
+if ! awk -F '\t' '
     /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
     NF != 2 || $1 == "" || $2 !~ /^[1-9][0-9]*$/ { exit 2 }
     { print $1 "\t" $2 }
-' "$manifest" | sort > "$temporary/expected" ||
+' "$manifest" > "$temporary/expected.unsorted"; then
     fail "manifest rows must contain a harness and positive cover count"
+fi
+sort "$temporary/expected.unsorted" > "$temporary/expected"
 if test "$(cut -f1 "$temporary/expected" | uniq -d | wc -l | tr -d ' ')" -ne 0; then
     fail "control manifest contains duplicate harnesses"
 fi
