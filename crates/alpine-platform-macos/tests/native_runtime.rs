@@ -157,7 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         surface.take_error()?,
         Some(alpine_platform_macos::SurfaceError::invariant(
-            alpine_platform_macos::SurfaceOperation::Application
+            alpine_platform_macos::SurfaceOperation::Input
         ))
     );
     assert_eq!(surface.take_error()?, None);
