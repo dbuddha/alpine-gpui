@@ -3,7 +3,9 @@ set -eu
 
 output_dir=target/dogfood-capture
 bundle_dir="$output_dir/bundle"
+recorded_dir="$output_dir/recorded"
 mkdir -p "$bundle_dir"
+rm -rf "$recorded_dir"
 
 cargo run --quiet --locked -p alpine-assurance -- \
     validate-studio-dogfood assurance/dogfood/v1/session.toml \
@@ -17,6 +19,26 @@ grep -Fq 'validated Studio dogfood capture fixture-dogfood-session' \
 grep -Fq 'Performance claim: none' "$output_dir/report.md"
 grep -Fq 'Idle submissions: 0' "$output_dir/report.md"
 grep -Fq '`glyph-atlas-gpu`' "$output_dir/report.md"
+
+cargo run --quiet --locked -p alpine-assurance -- \
+    record-studio-dogfood \
+    assurance/dogfood/v1/session.toml \
+    assurance/dogfood/v1/snapshot.toml \
+    "$recorded_dir" > "$output_dir/recorded.txt"
+grep -Fq 'recorded Studio dogfood capture fixture-dogfood-session' \
+    "$output_dir/recorded.txt"
+cargo run --quiet --locked -p alpine-assurance -- \
+    validate-studio-dogfood "$recorded_dir/session.toml" \
+    > "$output_dir/recorded-validation.txt"
+if cargo run --quiet --locked -p alpine-assurance -- \
+    record-studio-dogfood \
+    assurance/dogfood/v1/session.toml \
+    assurance/dogfood/v1/snapshot.toml \
+    "$recorded_dir" > "$output_dir/recorded-overwrite.log" 2>&1; then
+    printf 'dogfood recorder unexpectedly overwrote an existing bundle\n' >&2
+    exit 1
+fi
+grep -Fq 'already exists' "$output_dir/recorded-overwrite.log"
 
 cp assurance/dogfood/v1/session.toml "$bundle_dir/session.toml"
 cp assurance/dogfood/v1/snapshot.toml "$bundle_dir/snapshot.toml"

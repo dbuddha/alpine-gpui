@@ -8,7 +8,7 @@ use std::{
     process::Command,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const MAX_MANIFEST_BYTES: u64 = 65_536;
 const MAX_SNAPSHOT_BYTES: u64 = 1_048_576;
@@ -52,7 +52,7 @@ const COVERAGE_KINDS: &[&str] = &[
 ];
 const REQUIRED_EXCLUSIONS: &[&str] = &["telemetry", "network-io", "comparative-claim"];
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Capture {
     schema: String,
@@ -81,7 +81,7 @@ struct Capture {
     language_server: LanguageServerIdentity,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Environment {
     hardware_id: String,
@@ -94,7 +94,7 @@ struct Environment {
     locale: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct FontIdentity {
     family: String,
@@ -102,7 +102,7 @@ struct FontIdentity {
     size_milli_points: u32,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct LanguageServerIdentity {
     name: String,
@@ -233,6 +233,99 @@ pub(crate) fn run(command: &str, manifest_path: &Path) -> Result<String, Vec<Str
             "unsupported Studio dogfood command {command}"
         )]),
     }
+}
+
+pub(crate) fn record(
+    draft_path: &Path,
+    snapshot_path: &Path,
+    destination: &Path,
+) -> Result<String, Vec<String>> {
+    let mut capture: Capture = load_toml(draft_path, MAX_MANIFEST_BYTES)?;
+    let snapshot: Snapshot = load_toml(snapshot_path, MAX_SNAPSHOT_BYTES)?;
+    "snapshot.toml".clone_into(&mut capture.snapshot_file);
+    capture.snapshot_sha256 = calculate_sha256(snapshot_path).map_err(|error| vec![error])?;
+    let mut errors = validate(&capture, &snapshot);
+    errors.sort();
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    if destination.exists() {
+        return Err(vec![format!(
+            "dogfood capture destination {} already exists",
+            destination.display()
+        )]);
+    }
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    if !parent.is_dir() {
+        return Err(vec![format!(
+            "dogfood capture parent {} is unavailable",
+            parent.display()
+        )]);
+    }
+    let staging = staging_path(destination)?;
+    if staging.exists() {
+        return Err(vec![format!(
+            "dogfood capture staging path {} already exists",
+            staging.display()
+        )]);
+    }
+    fs::create_dir(&staging).map_err(|error| {
+        vec![format!(
+            "cannot create dogfood staging directory {}: {error}",
+            staging.display()
+        )]
+    })?;
+    let result = write_staged_bundle(&capture, snapshot_path, &staging, destination);
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    result
+}
+
+fn staging_path(destination: &Path) -> Result<PathBuf, Vec<String>> {
+    let name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| vec!["dogfood capture destination needs a UTF-8 file name".to_owned()])?;
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    Ok(parent.join(format!(".{name}.staging")))
+}
+
+fn write_staged_bundle(
+    capture: &Capture,
+    snapshot_path: &Path,
+    staging: &Path,
+    destination: &Path,
+) -> Result<String, Vec<String>> {
+    let staged_snapshot = staging.join("snapshot.toml");
+    fs::copy(snapshot_path, &staged_snapshot).map_err(|error| {
+        vec![format!(
+            "cannot stage dogfood snapshot {}: {error}",
+            snapshot_path.display()
+        )]
+    })?;
+    let source = toml::to_string_pretty(capture)
+        .map_err(|error| vec![format!("cannot encode dogfood manifest: {error}")])?;
+    let manifest = staging.join("session.toml");
+    fs::write(&manifest, source).map_err(|error| {
+        vec![format!(
+            "cannot stage dogfood manifest {}: {error}",
+            manifest.display()
+        )]
+    })?;
+    run("validate-studio-dogfood", &manifest)?;
+    fs::rename(staging, destination).map_err(|error| {
+        vec![format!(
+            "cannot publish dogfood capture {}: {error}",
+            destination.display()
+        )]
+    })?;
+    Ok(format!(
+        "recorded Studio dogfood capture {} at {}",
+        capture.id,
+        destination.display()
+    ))
 }
 
 fn load_toml<T>(path: &Path, limit: u64) -> Result<T, Vec<String>>
@@ -774,7 +867,11 @@ fn render_report(capture: &Capture, snapshot: &Snapshot) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
+
+    static RECORD_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
     fn fixture_paths() -> (PathBuf, PathBuf) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -802,6 +899,28 @@ mod tests {
             assert!(report.contains("Idle submissions: 0"));
             assert!(report.contains("`glyph-atlas-gpu`"));
         }
+    }
+
+    #[test]
+    fn recorder_seals_valid_bundle_and_refuses_overwrite() -> Result<(), String> {
+        let (manifest, snapshot) = fixture_paths();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        let sequence = RECORD_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let destination = root.join(format!("dogfood-record-{}-{sequence}", std::process::id()));
+        let result = record(&manifest, &snapshot, &destination);
+        assert!(result.is_ok(), "{result:#?}");
+        assert!(destination.join("session.toml").is_file());
+        assert!(destination.join("snapshot.toml").is_file());
+        assert!(run("validate-studio-dogfood", &destination.join("session.toml")).is_ok());
+        let repeated = record(&manifest, &snapshot, &destination);
+        assert!(
+            repeated
+                .as_ref()
+                .is_err_and(|errors| errors.iter().any(|error| error.contains("already exists")))
+        );
+        fs::remove_dir_all(destination).map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     #[test]

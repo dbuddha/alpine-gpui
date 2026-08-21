@@ -46,6 +46,7 @@
   - [Performance qualification](quality/performance.md)
   - [Alpine Studio release profiling](quality/studio-release-profiling.md)
   - [Alpine Studio residency protocol](quality/studio-residency.md)
+  - [Alpine Studio dogfood capture](quality/studio-dogfood-capture.md)
   - [Comparator protocol v1](quality/comparator-protocol.md)
   - [Onscreen SDR qualification](quality/onscreen-sdr.md)
   - [Native idle wakeup and energy protocol](quality/native-idle-energy.md)

@@ -147,6 +147,9 @@ fn run() -> Result<String, Vec<String>> {
     ) {
         return run_onscreen_command(&command, &mut arguments);
     }
+    if command == "record-studio-dogfood" {
+        return run_dogfood_record_command(&mut arguments);
+    }
     if matches!(
         command.as_str(),
         "validate-ax-fixture" | "validate-ax-evidence" | "ax-evidence-report"
@@ -218,7 +221,7 @@ fn run() -> Result<String, Vec<String>> {
         )),
         "report" => Ok(render_report(&registry)),
         other => Err(vec![format!(
-            "unknown command {other:?}; expected validate, report, validate-scene-trace, render-scene-reference, render-scene-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, validate-studio-dogfood, studio-dogfood-report, or upstream-radar"
+            "unknown command {other:?}; expected validate, report, validate-scene-trace, render-scene-reference, render-scene-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, record-studio-dogfood, validate-studio-dogfood, studio-dogfood-report, or upstream-radar"
         )]),
     }
 }
@@ -252,6 +255,36 @@ fn run_dogfood_command(
         return Err(vec![format!("{command} accepts exactly one manifest path")]);
     }
     dogfood::run(command, Path::new(&path))
+}
+
+fn run_dogfood_record_command(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<String, Vec<String>> {
+    let Some(draft) = arguments.next() else {
+        return Err(vec![
+            "record-studio-dogfood requires a draft, snapshot, and destination".to_owned(),
+        ]);
+    };
+    let Some(snapshot) = arguments.next() else {
+        return Err(vec![
+            "record-studio-dogfood requires a snapshot and destination".to_owned(),
+        ]);
+    };
+    let Some(destination) = arguments.next() else {
+        return Err(vec![
+            "record-studio-dogfood requires a destination".to_owned(),
+        ]);
+    };
+    if arguments.next().is_some() {
+        return Err(vec![
+            "record-studio-dogfood accepts exactly three paths".to_owned(),
+        ]);
+    }
+    dogfood::record(
+        Path::new(&draft),
+        Path::new(&snapshot),
+        Path::new(&destination),
+    )
 }
 
 fn run_ax_command(
