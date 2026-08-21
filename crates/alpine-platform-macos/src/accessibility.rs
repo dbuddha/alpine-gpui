@@ -209,7 +209,6 @@ impl AccessibilityNode {
 
     /// Retains the bounded semantic name for a post-borrow native payload.
     #[must_use]
-    #[cfg(target_os = "macos")]
     pub(crate) fn retained_name(&self) -> Arc<str> {
         Arc::clone(&self.name)
     }
@@ -1283,6 +1282,15 @@ mod tests {
             false,
             false,
         )
+    }
+
+    #[test]
+    fn retained_name_preserves_exact_shared_storage() -> Result<(), AccessibilityError> {
+        let node = node(1, None, true)?;
+        let retained = node.retained_name();
+        assert_eq!(&*retained, "node");
+        assert!(Arc::ptr_eq(&retained, &node.name));
+        Ok(())
     }
 
     #[test]
