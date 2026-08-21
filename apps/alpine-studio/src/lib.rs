@@ -57,6 +57,14 @@ mod quick_open;
 mod recovery;
 mod rust_completion;
 mod rust_diagnostics;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Task #219 stages bounded navigation values before language-session and UI wiring"
+    )
+)]
+mod rust_navigation;
 mod session;
 #[cfg_attr(
     not(test),
