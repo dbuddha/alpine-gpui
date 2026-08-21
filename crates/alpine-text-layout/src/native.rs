@@ -551,10 +551,10 @@ mod tests {
         let bitmap = raster
             .bitmap()
             .ok_or(LayoutError::NativeFailure("test bitmap"))?;
-        let width = usize::try_from(bitmap.width.get())
-            .map_err(|_| LayoutError::ArithmeticOverflow)?;
-        let height = usize::try_from(bitmap.height.get())
-            .map_err(|_| LayoutError::ArithmeticOverflow)?;
+        let width =
+            usize::try_from(bitmap.width.get()).map_err(|_| LayoutError::ArithmeticOverflow)?;
+        let height =
+            usize::try_from(bitmap.height.get()).map_err(|_| LayoutError::ArithmeticOverflow)?;
         let quarter_rows = height / 4;
         if quarter_rows == 0 {
             return Err(LayoutError::NativeFailure("test bitmap height"));
