@@ -15,11 +15,17 @@ fn selection_transform_stays_at_or_after_replacement_start() {
         replacement: ["", "x", "xx", "xxx"][inserted].to_owned(),
     };
     let transformed = transform_offset(offset, &[edit]);
+    kani::cover!(offset == start && removed > 0, "replacement start");
+    kani::cover!(offset > start && offset <= end, "inside replacement");
+    kani::cover!(offset < start, "before replacement");
+    kani::cover!(offset > end, "after replacement");
     if offset == start && removed > 0 {
         assert_eq!(transformed, start);
     } else if offset >= start && offset <= end {
         assert_eq!(transformed, start + inserted);
     } else if offset < start {
         assert_eq!(transformed, offset);
+    } else {
+        assert_eq!(transformed, offset - removed + inserted);
     }
 }

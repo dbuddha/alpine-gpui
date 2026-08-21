@@ -1179,6 +1179,8 @@ fn activation_revision_and_target_identity_are_preserved() {
     let buffer = kani::any::<u64>();
     let target = kani::any::<u64>();
     kani::assume(target != 0);
+    kani::cover!(target == 1, "minimum target identity");
+    kani::cover!(document == 0 && buffer == 0, "zero revision identity");
     let revision = AccessibilityRevision::new(document, buffer);
     let node = AccessibilityNodeId::new(target);
     let action = AccessibilityAction::activate(revision, node);
@@ -1251,6 +1253,11 @@ mod verification {
     fn checked_utf16_range_end_never_wraps() {
         let start = kani::any::<usize>();
         let length = kani::any::<usize>();
+        kani::cover!(start == 0 && length == 0, "empty origin range");
+        kani::cover!(
+            start == usize::MAX && length == 1,
+            "checked overflow boundary"
+        );
         let range = AccessibilityTextRange::new(start, length);
         match range.end_utf16() {
             Ok(end) => {

@@ -26,6 +26,7 @@
     - [macOS accessibility decisions](research/macos-accessibility-lifecycle/decisions.md)
   - [GitHub Wiki mirror policy](wiki/README.md)
 - [Assurance strategy](quality/assurance.md)
+  - [Formal assurance effectiveness](quality/formal-effectiveness.md)
   - [Performance qualification](quality/performance.md)
   - [Comparator protocol v1](quality/comparator-protocol.md)
   - [Onscreen SDR qualification](quality/onscreen-sdr.md)

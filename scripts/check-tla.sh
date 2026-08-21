@@ -61,3 +61,5 @@ for model_dir in formal/tla/aep-*; do
         fi
     done
 done
+
+scripts/analyze-tla-effectiveness.sh "$mode" "$output_dir" "$output_dir"

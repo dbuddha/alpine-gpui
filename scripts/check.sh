@@ -16,6 +16,7 @@ scripts/test-coverage.sh
 scripts/test-miri-partitions.sh
 scripts/test-hierarchy.sh
 scripts/test-assurance.sh
+scripts/test-formal-effectiveness.sh
 scripts/test-qualification.sh
 scripts/test-zed-lab-evidence.sh
 scripts/test-calibration.sh
