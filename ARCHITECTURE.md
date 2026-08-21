@@ -1006,6 +1006,22 @@ actions enter the existing one-frame coalescing path. No `SetFocus`, arbitrary
 text geometry, callback registry, second semantic tree, or generic element
 framework is introduced. See AEP-0270.
 
+Accessibility refresh now returns one bounded native dispatch batch after the
+adapter borrow ends. Removed and semantically replaced instances leave the
+current identity set before their destruction posts. Layout posts target the
+current root and carry `NSAccessibilityUIElementsKey` with only current bounded
+affected elements; announcement posts carry bounded text and medium priority
+under AppKit's required keys. Close invalidates every identity, posts destruction
+outside the borrow while reentrant access fails closed, releases the batch, and
+only then revokes the application handler. No post is admitted afterward.
+
+Posting evidence records six per-kind invocation counters, a bounded
+observer-facing protocol prefix, payload bytes, temporary retained bytes,
+omissions, invalid user-info, and post-after-revocation violations. These values
+prove AppKit call shape, not delivery to assistive technology. Notification work
+requests no frame and touches no GPU, worker, timer, channel, or filesystem
+authority. See AEP-0271.
+
 ### Pane document ownership (Task #127)
 
 Pane leaves retain a stable document-tab identity and pane-local view state. The global document-tab store remains the sole owner of document payloads and buffers; panes never clone an editor or buffer. Scene construction resolves each pane identity to an immutable snapshot, while focus activates that identity through the existing checked tab transition. Selection state follows the document revision and is synchronized across panes showing the same tab, while scroll remains pane-local. Closing a tab retargets every referencing pane to the replacement active tab before the next scene is admitted.

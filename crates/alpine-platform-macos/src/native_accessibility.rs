@@ -1,22 +1,26 @@
 //! Private `AppKit` accessibility adapter over Alpine's bounded semantic transport.
 
-#[cfg(alpine_native_validation)]
 use core::mem;
-use std::cell::Cell;
+use std::{cell::Cell, sync::Arc};
 
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::{Retained, Weak},
-    runtime::{Bool, NSObjectProtocol, Sel},
+    runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject, Sel},
     sel,
 };
 use objc2_app_kit::{
-    NSAccessibilityAnnouncementRequestedNotification, NSAccessibilityElement,
-    NSAccessibilityFocusedUIElementChangedNotification, NSAccessibilityLayoutChangedNotification,
-    NSAccessibilityPostNotification, NSAccessibilitySelectedTextChangedNotification,
+    NSAccessibilityAnnouncementKey, NSAccessibilityAnnouncementRequestedNotification,
+    NSAccessibilityElement, NSAccessibilityFocusedUIElementChangedNotification,
+    NSAccessibilityLayoutChangedNotification, NSAccessibilityPostNotification,
+    NSAccessibilityPostNotificationWithUserInfo, NSAccessibilityPriorityKey,
+    NSAccessibilityPriorityLevel, NSAccessibilitySelectedTextChangedNotification,
+    NSAccessibilityUIElementDestroyedNotification, NSAccessibilityUIElementsKey,
     NSAccessibilityValueChangedNotification,
 };
-use objc2_foundation::{NSArray, NSPoint, NSRange, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSArray, NSMutableDictionary, NSNumber, NSPoint, NSRange, NSRect, NSSize, NSString,
+};
 
 use crate::{
     AccessibilityAction, AccessibilityActionResult, AccessibilityError, AccessibilityNode,
@@ -24,6 +28,9 @@ use crate::{
     AccessibilityResponse, AccessibilityRevision, AccessibilityRole, AccessibilitySnapshot,
     AccessibilityTextRange, SurfaceError, native::SurfaceView,
 };
+
+#[cfg(alpine_native_validation)]
+use crate::AccessibilityBounds;
 
 type RequestHandler =
     Box<dyn FnMut(&AccessibilityRequest) -> Result<AccessibilityResponse, SurfaceError> + 'static>;
@@ -35,56 +42,299 @@ enum NotificationKind {
     Selection = 2,
     Value = 3,
     Announcement = 4,
+    Destroyed = 5,
 }
 
-struct NotificationIntent {
-    element: Retained<NativeAccessibilityElement>,
-    kind: NotificationKind,
+#[derive(Clone, Copy, Default)]
+struct PostedNotificationRecord {
+    #[cfg(alpine_native_validation)]
+    kind_index: u8,
+    #[cfg(alpine_native_validation)]
+    target: u64,
+    #[cfg(alpine_native_validation)]
+    payload_elements: usize,
+    payload_bytes: usize,
+    #[cfg(alpine_native_validation)]
+    priority: isize,
+}
+
+impl PostedNotificationRecord {
+    #[cfg(alpine_native_validation)]
+    const EMPTY: Self = Self {
+        kind_index: 0,
+        target: 0,
+        payload_elements: 0,
+        payload_bytes: 0,
+        priority: 0,
+    };
+
+    const fn payload_bytes(self) -> usize {
+        self.payload_bytes
+    }
+}
+
+enum NotificationIntent {
+    Plain {
+        element: Retained<NativeAccessibilityElement>,
+        id: AccessibilityNodeId,
+        kind: NotificationKind,
+    },
+    Layout {
+        element: Retained<NativeAccessibilityElement>,
+        id: AccessibilityNodeId,
+        affected: Vec<Retained<NativeAccessibilityElement>>,
+    },
+    Announcement {
+        element: Retained<NativeAccessibilityElement>,
+        id: AccessibilityNodeId,
+        text: Arc<str>,
+    },
+    Destroyed {
+        element: Retained<NativeAccessibilityElement>,
+        id: AccessibilityNodeId,
+    },
 }
 
 struct RefreshOutcome {
     notifications: Vec<NotificationIntent>,
 }
 
+struct NotificationPostReceipt {
+    invoked: bool,
+    user_info_valid: bool,
+}
+
 struct PostedNotifications {
-    counts: [u64; 5],
+    counts: [u64; 6],
+    payload_bytes: usize,
+    peak_retained_bytes: usize,
+    #[cfg(alpine_native_validation)]
+    records: [PostedNotificationRecord; MAX_VALIDATION_NOTIFICATION_RECORDS],
+    #[cfg(alpine_native_validation)]
+    record_count: usize,
+    #[cfg(alpine_native_validation)]
+    omitted_records: u64,
+    #[cfg(alpine_native_validation)]
+    invalid_user_info: u64,
 }
 
 impl RefreshOutcome {
     fn post(self) -> PostedNotifications {
-        let mut counts = [0_u64; 5];
+        let peak_retained_bytes = self.retained_bytes();
+        let mut posted = PostedNotifications {
+            counts: [0; 6],
+            payload_bytes: 0,
+            peak_retained_bytes,
+            #[cfg(alpine_native_validation)]
+            records: [PostedNotificationRecord::EMPTY; MAX_VALIDATION_NOTIFICATION_RECORDS],
+            #[cfg(alpine_native_validation)]
+            record_count: 0,
+            #[cfg(alpine_native_validation)]
+            omitted_records: 0,
+            #[cfg(alpine_native_validation)]
+            invalid_user_info: 0,
+        };
         for intent in self.notifications {
-            // SAFETY: the element remains retained for this synchronous AppKit call,
-            // and each notification constant is process-lifetime immutable.
-            unsafe {
-                match intent.kind {
-                    NotificationKind::Layout => NSAccessibilityPostNotification(
-                        &intent.element,
-                        NSAccessibilityLayoutChangedNotification,
-                    ),
-                    NotificationKind::Focus => NSAccessibilityPostNotification(
-                        &intent.element,
-                        NSAccessibilityFocusedUIElementChangedNotification,
-                    ),
-                    NotificationKind::Selection => NSAccessibilityPostNotification(
-                        &intent.element,
-                        NSAccessibilitySelectedTextChangedNotification,
-                    ),
-                    NotificationKind::Value => NSAccessibilityPostNotification(
-                        &intent.element,
-                        NSAccessibilityValueChangedNotification,
-                    ),
-                    NotificationKind::Announcement => NSAccessibilityPostNotification(
-                        &intent.element,
-                        NSAccessibilityAnnouncementRequestedNotification,
-                    ),
-                }
+            let kind = intent.kind();
+            let record = intent.record();
+            let receipt = intent.post();
+            if !receipt.invoked {
+                continue;
             }
-            counts[intent.kind as usize] = counts[intent.kind as usize].saturating_add(1);
+            posted.payload_bytes = posted.payload_bytes.saturating_add(record.payload_bytes());
+            #[cfg(alpine_native_validation)]
+            posted.push_record(record);
+            #[cfg(alpine_native_validation)]
+            if !receipt.user_info_valid {
+                posted.invalid_user_info = posted.invalid_user_info.saturating_add(1);
+            }
+            #[cfg(not(alpine_native_validation))]
+            let _ = receipt.user_info_valid;
+            posted.counts[kind as usize] = posted.counts[kind as usize].saturating_add(1);
         }
-        PostedNotifications { counts }
+        posted
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.notifications.iter().fold(0_usize, |bytes, intent| {
+            bytes.saturating_add(intent.retained_bytes())
+        })
     }
 }
+
+impl PostedNotifications {
+    #[cfg(alpine_native_validation)]
+    fn push_record(&mut self, record: PostedNotificationRecord) {
+        if let Some(slot) = self.records.get_mut(self.record_count) {
+            *slot = record;
+            self.record_count = self.record_count.saturating_add(1);
+        } else {
+            self.omitted_records = self.omitted_records.saturating_add(1);
+        }
+    }
+}
+
+impl NotificationIntent {
+    fn kind(&self) -> NotificationKind {
+        match self {
+            Self::Plain { kind, .. } => *kind,
+            Self::Layout { .. } => NotificationKind::Layout,
+            Self::Announcement { .. } => NotificationKind::Announcement,
+            Self::Destroyed { .. } => NotificationKind::Destroyed,
+        }
+    }
+
+    fn record(&self) -> PostedNotificationRecord {
+        let (_id, _payload_elements, payload_bytes, _priority) = match self {
+            Self::Plain { id, .. } | Self::Destroyed { id, .. } => (*id, 0, 0, 0),
+            Self::Layout { id, affected, .. } => (
+                *id,
+                affected.len(),
+                affected
+                    .len()
+                    .saturating_mul(mem::size_of::<Retained<NativeAccessibilityElement>>()),
+                0,
+            ),
+            Self::Announcement { id, text, .. } => {
+                (*id, 0, text.len(), NSAccessibilityPriorityLevel::Medium.0)
+            }
+        };
+        PostedNotificationRecord {
+            #[cfg(alpine_native_validation)]
+            kind_index: self.kind() as u8,
+            #[cfg(alpine_native_validation)]
+            target: _id.get(),
+            #[cfg(alpine_native_validation)]
+            payload_elements: _payload_elements,
+            payload_bytes,
+            #[cfg(alpine_native_validation)]
+            priority: _priority,
+        }
+    }
+
+    fn retained_bytes(&self) -> usize {
+        let element_slot = mem::size_of::<Retained<NativeAccessibilityElement>>();
+        match self {
+            Self::Plain { .. } | Self::Destroyed { .. } => element_slot,
+            Self::Layout { affected, .. } => {
+                element_slot.saturating_add(affected.len().saturating_mul(element_slot))
+            }
+            Self::Announcement { text, .. } => element_slot.saturating_add(text.len()),
+        }
+    }
+
+    fn post(self) -> NotificationPostReceipt {
+        // SAFETY: every target and payload element remains retained for this
+        // synchronous AppKit call, and notification constants are immutable.
+        unsafe {
+            match self {
+                Self::Plain { element, kind, .. } => {
+                    let notification = match kind {
+                        NotificationKind::Focus => {
+                            NSAccessibilityFocusedUIElementChangedNotification
+                        }
+                        NotificationKind::Selection => {
+                            NSAccessibilitySelectedTextChangedNotification
+                        }
+                        NotificationKind::Value => NSAccessibilityValueChangedNotification,
+                        NotificationKind::Layout
+                        | NotificationKind::Announcement
+                        | NotificationKind::Destroyed => {
+                            return NotificationPostReceipt {
+                                invoked: false,
+                                user_info_valid: false,
+                            };
+                        }
+                    };
+                    NSAccessibilityPostNotification(&element, notification);
+                    NotificationPostReceipt {
+                        invoked: true,
+                        user_info_valid: true,
+                    }
+                }
+                Self::Layout {
+                    element, affected, ..
+                } => {
+                    let elements = NSArray::from_retained_slice(&affected);
+                    let user_info = NSMutableDictionary::<_, AnyObject>::new();
+                    user_info.setObject_forKey(
+                        &*elements,
+                        ProtocolObject::from_ref(NSAccessibilityUIElementsKey),
+                    );
+                    let valid = layout_user_info_valid(
+                        user_info.count(),
+                        user_info
+                            .objectForKey(NSAccessibilityUIElementsKey)
+                            .is_some(),
+                    );
+                    NSAccessibilityPostNotificationWithUserInfo(
+                        &element,
+                        NSAccessibilityLayoutChangedNotification,
+                        Some(&user_info),
+                    );
+                    NotificationPostReceipt {
+                        invoked: true,
+                        user_info_valid: valid,
+                    }
+                }
+                Self::Announcement { element, text, .. } => {
+                    let text = NSString::from_str(&text);
+                    let priority = NSNumber::new_isize(NSAccessibilityPriorityLevel::Medium.0);
+                    let user_info = NSMutableDictionary::<_, AnyObject>::new();
+                    user_info.setObject_forKey(
+                        &*text,
+                        ProtocolObject::from_ref(NSAccessibilityAnnouncementKey),
+                    );
+                    user_info.setObject_forKey(
+                        &*priority,
+                        ProtocolObject::from_ref(NSAccessibilityPriorityKey),
+                    );
+                    let valid = announcement_user_info_valid(
+                        user_info.count(),
+                        user_info
+                            .objectForKey(NSAccessibilityAnnouncementKey)
+                            .is_some(),
+                        user_info.objectForKey(NSAccessibilityPriorityKey).is_some(),
+                    );
+                    NSAccessibilityPostNotificationWithUserInfo(
+                        &element,
+                        NSAccessibilityAnnouncementRequestedNotification,
+                        Some(&user_info),
+                    );
+                    NotificationPostReceipt {
+                        invoked: true,
+                        user_info_valid: valid,
+                    }
+                }
+                Self::Destroyed { element, .. } => {
+                    NSAccessibilityPostNotification(
+                        &element,
+                        NSAccessibilityUIElementDestroyedNotification,
+                    );
+                    NotificationPostReceipt {
+                        invoked: true,
+                        user_info_valid: true,
+                    }
+                }
+            }
+        }
+    }
+}
+
+const fn layout_user_info_valid(entry_count: usize, has_elements: bool) -> bool {
+    entry_count == 1 && has_elements
+}
+
+const fn announcement_user_info_valid(
+    entry_count: usize,
+    has_announcement: bool,
+    has_priority: bool,
+) -> bool {
+    entry_count == 2 && has_announcement && has_priority
+}
+
+#[cfg(alpine_native_validation)]
+const MAX_VALIDATION_NOTIFICATION_RECORDS: usize = 32;
 
 struct CachedElement {
     id: AccessibilityNodeId,
@@ -99,7 +349,19 @@ struct AdapterCounters {
     released_elements: u64,
     requests: u64,
     failed_requests: u64,
-    notifications: [u64; 5],
+    notifications: [u64; 6],
+    posted_payload_bytes: usize,
+    peak_notification_retained_bytes: usize,
+    posts_after_handler_revocation: u64,
+    revoke_starts: u64,
+    #[cfg(alpine_native_validation)]
+    notification_records: [PostedNotificationRecord; MAX_VALIDATION_NOTIFICATION_RECORDS],
+    #[cfg(alpine_native_validation)]
+    notification_record_count: usize,
+    #[cfg(alpine_native_validation)]
+    omitted_notification_records: u64,
+    #[cfg(alpine_native_validation)]
+    invalid_notification_user_info: u64,
 }
 
 pub(crate) struct NativeAccessibilityAdapter {
@@ -110,6 +372,7 @@ pub(crate) struct NativeAccessibilityAdapter {
     generation: u64,
     next_element_generation: u64,
     active: bool,
+    revoking: bool,
     counters: AdapterCounters,
 }
 
@@ -123,19 +386,34 @@ impl NativeAccessibilityAdapter {
             generation: 1,
             next_element_generation: 1,
             active: false,
+            revoking: false,
             counters: AdapterCounters {
                 peak_elements: 0,
                 created_elements: 0,
                 released_elements: 0,
                 requests: 0,
                 failed_requests: 0,
-                notifications: [0; 5],
+                notifications: [0; 6],
+                posted_payload_bytes: 0,
+                peak_notification_retained_bytes: 0,
+                posts_after_handler_revocation: 0,
+                revoke_starts: 0,
+                #[cfg(alpine_native_validation)]
+                notification_records: [PostedNotificationRecord::EMPTY;
+                    MAX_VALIDATION_NOTIFICATION_RECORDS],
+                #[cfg(alpine_native_validation)]
+                notification_record_count: 0,
+                #[cfg(alpine_native_validation)]
+                omitted_notification_records: 0,
+                #[cfg(alpine_native_validation)]
+                invalid_notification_user_info: 0,
             },
         }
     }
 
     pub(crate) fn install(&mut self, handler: RequestHandler) {
         self.handler = Some(handler);
+        self.revoking = false;
     }
 
     pub(crate) fn refresh_view_if_active(view: &SurfaceView) -> Result<(), SurfaceError> {
@@ -148,10 +426,10 @@ impl NativeAccessibilityAdapter {
     pub(crate) fn refresh_view(view: &SurfaceView) -> Result<(), SurfaceError> {
         let outcome = view.ivars().accessibility.borrow_mut().refresh(view)?;
         let posted = outcome.post();
-        let mut adapter = view.ivars().accessibility.borrow_mut();
-        for (count, posted) in adapter.counters.notifications.iter_mut().zip(posted.counts) {
-            *count = count.saturating_add(posted);
-        }
+        view.ivars()
+            .accessibility
+            .borrow_mut()
+            .record_posted(&posted);
         Ok(())
     }
 
@@ -174,7 +452,14 @@ impl NativeAccessibilityAdapter {
     }
 
     pub(crate) fn revoke_view(view: &SurfaceView) {
-        view.ivars().accessibility.borrow_mut().revoke();
+        let outcome = view.ivars().accessibility.borrow_mut().begin_revoke();
+        let Some(outcome) = outcome else {
+            return;
+        };
+        let posted = outcome.post();
+        let mut adapter = view.ivars().accessibility.borrow_mut();
+        adapter.record_posted(&posted);
+        adapter.finish_revoke();
     }
 
     fn next_id(&mut self) -> Result<AccessibilityRequestId, SurfaceError> {
@@ -215,6 +500,9 @@ impl NativeAccessibilityAdapter {
     }
 
     fn refresh(&mut self, view: &SurfaceView) -> Result<RefreshOutcome, SurfaceError> {
+        if self.revoking || self.handler.is_none() {
+            return Err(SurfaceError::DriverUnavailable);
+        }
         let request = AccessibilityRequest::snapshot(self.next_id()?)
             .map_err(|_| SurfaceError::DriverUnavailable)?;
         let response = self.dispatch(&request)?;
@@ -223,8 +511,17 @@ impl NativeAccessibilityAdapter {
             _ => return Err(SurfaceError::DriverUnavailable),
         };
         let previous = self.snapshot.clone();
-        self.reconcile_elements(view, &snapshot)?;
-        let notifications = self.notification_intents(previous.as_ref(), &snapshot)?;
+        let mut notifications = Vec::new();
+        notifications
+            .try_reserve(
+                self.elements
+                    .len()
+                    .saturating_add(snapshot.nodes().len())
+                    .saturating_add(5),
+            )
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        self.reconcile_elements(view, &snapshot, &mut notifications)?;
+        self.append_notification_intents(previous.as_ref(), &snapshot, &mut notifications)?;
         self.snapshot = Some(snapshot);
         self.active = true;
         Ok(RefreshOutcome { notifications })
@@ -234,6 +531,7 @@ impl NativeAccessibilityAdapter {
         &mut self,
         view: &SurfaceView,
         snapshot: &AccessibilitySnapshot,
+        notifications: &mut Vec<NotificationIntent>,
     ) -> Result<(), SurfaceError> {
         let mut next = Vec::new();
         next.try_reserve_exact(snapshot.nodes().len())
@@ -280,36 +578,47 @@ impl NativeAccessibilityAdapter {
                 element,
             });
         }
-        let released = self
+        let retired = self
             .elements
             .iter()
-            .filter(|entry| !snapshot.nodes().iter().any(|node| node.id() == entry.id))
-            .count();
+            .filter(|entry| {
+                !next.iter().any(|candidate| {
+                    candidate.id == entry.id
+                        && candidate.instance_generation == entry.instance_generation
+                })
+            })
+            .map(|entry| (entry.id, entry.element.clone()))
+            .collect::<Vec<_>>();
         self.elements = next;
+        notifications.extend(
+            retired
+                .iter()
+                .map(|(id, element)| NotificationIntent::Destroyed {
+                    element: element.clone(),
+                    id: *id,
+                }),
+        );
         self.counters.created_elements = self.counters.created_elements.saturating_add(created);
         self.counters.released_elements = self
             .counters
             .released_elements
-            .saturating_add(u64::try_from(released).unwrap_or(u64::MAX));
+            .saturating_add(u64::try_from(retired.len()).unwrap_or(u64::MAX));
         self.counters.peak_elements = self.counters.peak_elements.max(self.elements.len());
         Ok(())
     }
 
-    fn notification_intents(
-        &mut self,
+    fn append_notification_intents(
+        &self,
         previous: Option<&AccessibilitySnapshot>,
         current: &AccessibilitySnapshot,
-    ) -> Result<Vec<NotificationIntent>, SurfaceError> {
+        intents: &mut Vec<NotificationIntent>,
+    ) -> Result<(), SurfaceError> {
         let Some(previous) = previous else {
-            return Ok(Vec::new());
+            return Ok(());
         };
-        let mut intents = Vec::new();
-        intents
-            .try_reserve(current.nodes().len().saturating_add(4))
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
         let tree_changed = structural_tree_changed(previous, current);
         if tree_changed {
-            self.push_notification(&mut intents, current.root(), NotificationKind::Layout);
+            self.push_layout_notification(intents, previous, current)?;
         }
         let previous_focus = previous
             .nodes()
@@ -324,19 +633,19 @@ impl NativeAccessibilityAdapter {
         if previous_focus != current_focus
             && let Some(id) = current_focus
         {
-            self.push_notification(&mut intents, id, NotificationKind::Focus);
+            self.push_notification(intents, id, NotificationKind::Focus);
         }
         if previous.selection() != current.selection()
             && let Some(id) = role_id(current, AccessibilityRole::CodeEditor)
         {
-            self.push_notification(&mut intents, id, NotificationKind::Selection);
+            self.push_notification(intents, id, NotificationKind::Selection);
         }
         if (previous.revision() != current.revision()
             || previous.text_len_utf16() != current.text_len_utf16()
             || previous.is_dirty() != current.is_dirty())
             && let Some(id) = role_id(current, AccessibilityRole::CodeEditor)
         {
-            self.push_notification(&mut intents, id, NotificationKind::Value);
+            self.push_notification(intents, id, NotificationKind::Value);
         }
         for node in current.nodes().iter().filter(|node| node.announces()) {
             let changed = previous
@@ -345,33 +654,141 @@ impl NativeAccessibilityAdapter {
                 .find(|prior| prior.id() == node.id())
                 != Some(node);
             if changed {
-                self.push_notification(&mut intents, node.id(), NotificationKind::Announcement);
+                self.push_announcement(intents, current.root(), node);
             }
         }
-        Ok(intents)
+        Ok(())
     }
 
     fn push_notification(
-        &mut self,
+        &self,
         intents: &mut Vec<NotificationIntent>,
         id: AccessibilityNodeId,
         kind: NotificationKind,
     ) {
         if let Some(element) = self.element(id) {
-            intents.push(NotificationIntent { element, kind });
+            intents.push(NotificationIntent::Plain { element, id, kind });
         }
     }
 
-    fn revoke(&mut self) {
-        self.handler.take();
-        self.snapshot.take();
-        self.counters.released_elements = self
+    fn push_layout_notification(
+        &self,
+        intents: &mut Vec<NotificationIntent>,
+        previous: &AccessibilitySnapshot,
+        current: &AccessibilitySnapshot,
+    ) -> Result<(), SurfaceError> {
+        let Some(element) = self.element(current.root()) else {
+            return Ok(());
+        };
+        let mut affected = Vec::new();
+        affected
+            .try_reserve_exact(current.nodes().len())
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        for node in current.nodes() {
+            let changed = node.id() == current.root()
+                || previous
+                    .nodes()
+                    .iter()
+                    .find(|prior| prior.id() == node.id())
+                    .is_none_or(|prior| layout_semantics_changed(prior, node));
+            if changed && let Some(affected_element) = self.element(node.id()) {
+                affected.push(affected_element);
+            }
+        }
+        intents.push(NotificationIntent::Layout {
+            element,
+            id: current.root(),
+            affected,
+        });
+        Ok(())
+    }
+
+    fn push_announcement(
+        &self,
+        intents: &mut Vec<NotificationIntent>,
+        root: AccessibilityNodeId,
+        source: &AccessibilityNode,
+    ) {
+        if let Some(element) = self.element(root) {
+            intents.push(NotificationIntent::Announcement {
+                element,
+                id: root,
+                text: source.retained_name(),
+            });
+        }
+    }
+
+    fn record_posted(&mut self, posted: &PostedNotifications) {
+        if self.handler.is_none() {
+            self.counters.posts_after_handler_revocation = self
+                .counters
+                .posts_after_handler_revocation
+                .saturating_add(posted.counts.into_iter().sum());
+        }
+        for (count, posted_count) in self.counters.notifications.iter_mut().zip(posted.counts) {
+            *count = count.saturating_add(posted_count);
+        }
+        self.counters.posted_payload_bytes = self
             .counters
-            .released_elements
-            .saturating_add(u64::try_from(self.elements.len()).unwrap_or(u64::MAX));
-        self.elements.clear();
+            .posted_payload_bytes
+            .saturating_add(posted.payload_bytes);
+        self.counters.peak_notification_retained_bytes = self
+            .counters
+            .peak_notification_retained_bytes
+            .max(posted.peak_retained_bytes);
+        #[cfg(alpine_native_validation)]
+        {
+            for record in posted.records.iter().copied().take(posted.record_count) {
+                if let Some(slot) = self
+                    .counters
+                    .notification_records
+                    .get_mut(self.counters.notification_record_count)
+                {
+                    *slot = record;
+                    self.counters.notification_record_count =
+                        self.counters.notification_record_count.saturating_add(1);
+                } else {
+                    self.counters.omitted_notification_records =
+                        self.counters.omitted_notification_records.saturating_add(1);
+                }
+            }
+            self.counters.omitted_notification_records = self
+                .counters
+                .omitted_notification_records
+                .saturating_add(posted.omitted_records);
+            self.counters.invalid_notification_user_info = self
+                .counters
+                .invalid_notification_user_info
+                .saturating_add(posted.invalid_user_info);
+        }
+    }
+
+    fn begin_revoke(&mut self) -> Option<RefreshOutcome> {
+        if self.revoking || self.handler.is_none() {
+            return None;
+        }
+        self.counters.revoke_starts = self.counters.revoke_starts.saturating_add(1);
+        self.revoking = true;
         self.active = false;
+        self.snapshot.take();
+        let retired = mem::take(&mut self.elements);
+        let released = u64::try_from(retired.len()).unwrap_or(u64::MAX);
+        self.counters.released_elements = self.counters.released_elements.saturating_add(released);
         self.generation = self.generation.saturating_add(1);
+        Some(RefreshOutcome {
+            notifications: retired
+                .into_iter()
+                .map(|entry| NotificationIntent::Destroyed {
+                    element: entry.element,
+                    id: entry.id,
+                })
+                .collect(),
+        })
+    }
+
+    fn finish_revoke(&mut self) {
+        self.handler.take();
+        self.revoking = false;
     }
 
     fn valid(&self, generation: u64, instance_generation: u64, id: AccessibilityNodeId) -> bool {
@@ -734,11 +1151,107 @@ impl NativeAccessibilityAdapter {
                 && !reusable_semantics(current, &changed_name)
                 && !reusable_semantics(current, &changed_action)
         };
+        let layout_semantics_changed_valid = {
+            let snapshot = view
+                .ivars()
+                .accessibility
+                .borrow()
+                .snapshot
+                .clone()
+                .ok_or(SurfaceError::DriverUnavailable)?;
+            let current = snapshot
+                .nodes()
+                .iter()
+                .find(|node| node.role() == AccessibilityRole::Tab)
+                .ok_or(SurfaceError::DriverUnavailable)?;
+            let make_node = |parent, role, name: Arc<str>, bounds, activate| {
+                AccessibilityNode::new(
+                    current.id(),
+                    parent,
+                    role,
+                    name,
+                    current.is_focused(),
+                    current.is_selected(),
+                    current.announces(),
+                )
+                .map(|node| {
+                    let node = node.with_bounds(bounds);
+                    match activate {
+                        Some(enabled) => node.with_activate(enabled),
+                        None => node,
+                    }
+                })
+            };
+            let changed_parent = make_node(
+                None,
+                current.role(),
+                current.name().into(),
+                current.bounds(),
+                Some(current.is_enabled()),
+            )
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            let changed_role = make_node(
+                current.parent(),
+                AccessibilityRole::Status,
+                current.name().into(),
+                current.bounds(),
+                Some(current.is_enabled()),
+            )
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            let changed_name = make_node(
+                current.parent(),
+                current.role(),
+                "different layout target".into(),
+                current.bounds(),
+                Some(current.is_enabled()),
+            )
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            let changed_bounds = make_node(
+                current.parent(),
+                current.role(),
+                current.name().into(),
+                AccessibilityBounds::new(1.0, 1.0, 1.0, 1.0)
+                    .map_err(|_| SurfaceError::DriverUnavailable)?,
+                Some(current.is_enabled()),
+            )
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            let changed_enabled = make_node(
+                current.parent(),
+                current.role(),
+                current.name().into(),
+                current.bounds(),
+                Some(false),
+            )
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            let changed_action = make_node(
+                current.parent(),
+                current.role(),
+                current.name().into(),
+                current.bounds(),
+                None,
+            )
+            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            !layout_semantics_changed(current, current)
+                && layout_semantics_changed(current, &changed_parent)
+                && layout_semantics_changed(current, &changed_role)
+                && layout_semantics_changed(current, &changed_name)
+                && layout_semantics_changed(current, &changed_bounds)
+                && layout_semantics_changed(current, &changed_enabled)
+                && layout_semantics_changed(current, &changed_action)
+        };
+        let notification_user_info_controls_valid = layout_user_info_valid(1, true)
+            && !layout_user_info_valid(0, true)
+            && !layout_user_info_valid(1, false)
+            && announcement_user_info_valid(2, true, true)
+            && !announcement_user_info_valid(1, true, true)
+            && !announcement_user_info_valid(2, false, true)
+            && !announcement_user_info_valid(2, true, false);
         let semantic_tree_valid = role_mapping_valid
             && editor_focused
             && tab_selected
             && reusable_semantics_valid
-            && status_value.is_some_and(|value| value.to_string() == "Ready")
+            && layout_semantics_changed_valid
+            && status_value.is_some_and(|value| value.to_string() == "Opened main.rs")
             && editor_parent.is_some_and(|parent| core::ptr::eq(&*parent, &*root));
         let status_text_selector_allowed: bool = unsafe {
             msg_send![&*status, isAccessibilitySelectorAllowed: sel!(accessibilityStringForRange:)]
@@ -775,9 +1288,9 @@ impl NativeAccessibilityAdapter {
         let counters = view.ivars().accessibility.borrow().counters;
         let peak_elements = counters.peak_elements;
         let created_elements = counters.created_elements;
-        let notification_counts = counters.notifications;
         let retained_slot_bytes_before_revoke =
             view.ivars().accessibility.borrow().retained_slot_bytes();
+        view.revoke_accessibility();
         view.revoke_accessibility();
         let late_length: usize = unsafe { msg_send![&*editor, accessibilityNumberOfCharacters] };
         let revoked_activation_rejected: bool =
@@ -813,7 +1326,29 @@ impl NativeAccessibilityAdapter {
             peak_elements,
             created_elements,
             released_elements: final_counters.released_elements,
-            notification_counts,
+            notification_counts: final_counters.notifications,
+            notification_records: final_counters.notification_records
+                [..final_counters.notification_record_count]
+                .iter()
+                .map(|record| {
+                    crate::native_validation::NativeAccessibilityNotificationRecord::new(
+                        record.kind_index,
+                        record.target,
+                        record.payload_elements,
+                        record.payload_bytes,
+                        record.priority,
+                    )
+                })
+                .collect(),
+            omitted_notification_records: final_counters.omitted_notification_records,
+            invalid_notification_user_info: final_counters.invalid_notification_user_info,
+            notification_user_info_controls_valid,
+            posts_after_handler_revocation: final_counters.posts_after_handler_revocation,
+            revoke_starts: final_counters.revoke_starts,
+            revoke_terminal: view.ivars().accessibility.borrow().handler.is_none()
+                && !view.ivars().accessibility.borrow().revoking,
+            posted_notification_payload_bytes: final_counters.posted_payload_bytes,
+            peak_notification_retained_bytes: final_counters.peak_notification_retained_bytes,
             current_elements_after_revoke: view.ivars().accessibility.borrow().elements.len(),
             retained_slot_bytes_before_revoke,
             retained_slot_bytes_after_revoke,
@@ -1121,6 +1656,15 @@ fn structural_tree_changed(
                     || left.is_enabled() != right.is_enabled()
                     || left.supports_activate() != right.supports_activate()
             })
+}
+
+fn layout_semantics_changed(previous: &AccessibilityNode, current: &AccessibilityNode) -> bool {
+    previous.parent() != current.parent()
+        || previous.role() != current.role()
+        || previous.name() != current.name()
+        || previous.bounds() != current.bounds()
+        || previous.is_enabled() != current.is_enabled()
+        || previous.supports_activate() != current.supports_activate()
 }
 
 fn reusable_semantics(previous: &AccessibilityNode, current: &AccessibilityNode) -> bool {

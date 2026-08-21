@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         selection: AccessibilitySelection,
         text: String,
         snapshot_requests: usize,
-        include_status: bool,
+        status: Option<String>,
         activations: usize,
     }
 
@@ -67,13 +67,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?
             .with_bounds(AccessibilityBounds::new(0.0, 24.0, 96.0, 40.0)?),
         ];
-        if state.include_status {
+        if let Some(status) = &state.status {
             nodes.push(
                 AccessibilityNode::new(
                     AccessibilityNodeId::new(5),
                     Some(AccessibilityNodeId::new(1)),
                     AccessibilityRole::Status,
-                    "Ready".into(),
+                    status.clone().into(),
                     false,
                     false,
                     true,
@@ -155,7 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 && selection.head_utf16() <= state.text.encode_utf16().count() =>
             {
                 state.selection = *selection;
-                state.include_status = false;
+                state.status = None;
                 state.revision = AccessibilityRevision::new(
                     observed.document(),
                     observed.buffer().saturating_add(1),
@@ -168,8 +168,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AccessibilityAction::Activate { revision, .. },
             ) if *revision == observed => {
                 state.activations = state.activations.saturating_add(1);
+                state.status = Some("Opened main.rs".into());
                 Ok(AccessibilityPayload::Action(
-                    AccessibilityActionResult::Unchanged,
+                    AccessibilityActionResult::Applied,
                 ))
             }
             _ => Err(AccessibilityError::StaleRevision {
@@ -209,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         selection: AccessibilitySelection::new(0, 4),
         text: "zero\none two".into(),
         snapshot_requests: 0,
-        include_status: true,
+        status: Some("Ready".into()),
         activations: 0,
     }));
     let callback_state = Arc::clone(&state);
@@ -253,8 +254,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(evidence.accepted_activation());
     assert!(evidence.revoked_activation_rejected());
     assert_eq!(evidence.peak_elements(), 5);
-    assert_eq!(evidence.created_elements(), 5);
-    assert_eq!(evidence.released_elements(), 5);
+    assert_eq!(evidence.created_elements(), 6);
+    assert_eq!(evidence.released_elements(), 6);
     assert_eq!(evidence.current_elements_after_revoke(), 0);
     assert_eq!(
         evidence.retained_slot_bytes_before_revoke(),
@@ -262,7 +263,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(evidence.retained_slot_bytes_after_revoke(), 0);
     assert!(evidence.late_selector_rejected());
-    assert_eq!(evidence.notification_counts(), [1, 0, 1, 1, 0]);
+    assert_eq!(evidence.notification_counts(), [2, 0, 1, 1, 1, 6]);
+    let records = evidence.notification_records();
+    assert_eq!(records.len(), 11);
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| (record.kind_index(), record.target()))
+            .collect::<Vec<_>>(),
+        vec![
+            (5, 5),
+            (0, 1),
+            (4, 1),
+            (5, 5),
+            (0, 1),
+            (2, 4),
+            (3, 4),
+            (5, 1),
+            (5, 2),
+            (5, 3),
+            (5, 4),
+        ]
+    );
+    assert_eq!(records[1].payload_elements(), 2);
+    assert_eq!(records[4].payload_elements(), 1);
+    assert_eq!(records[2].payload_bytes(), "Opened main.rs".len());
+    assert_eq!(records[2].priority(), 50);
+    assert_eq!(evidence.omitted_notification_records(), 0);
+    assert_eq!(evidence.invalid_notification_user_info(), 0);
+    assert!(evidence.notification_user_info_controls_valid());
+    assert_eq!(evidence.posts_after_handler_revocation(), 0);
+    assert_eq!(evidence.revoke_starts(), 1);
+    assert!(evidence.revoke_terminal());
+    assert_eq!(
+        evidence.posted_notification_payload_bytes(),
+        3 * core::mem::size_of::<usize>() + "Opened main.rs".len()
+    );
+    assert_eq!(
+        evidence.peak_notification_retained_bytes(),
+        5 * core::mem::size_of::<usize>() + "Opened main.rs".len()
+    );
     let state_evidence = state
         .lock()
         .map_err(|_| "accessibility state lock poisoned")?;
@@ -279,7 +319,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         selection: AccessibilitySelection::new(0, 4),
         text: "zero\none two".into(),
         snapshot_requests: 0,
-        include_status: true,
+        status: Some("Ready".into()),
         activations: 0,
     }));
     let callback_rejected_state = Arc::clone(&rejected_state);
