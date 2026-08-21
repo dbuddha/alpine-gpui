@@ -19,6 +19,10 @@ is_uint() {
     esac
 }
 
+is_decimal() {
+    printf '%s\n' "$1" | grep -Eq '^[0-9]+([.][0-9]+)?$'
+}
+
 [ "$#" -ge 4 ] && [ "$#" -le 5 ] || {
     usage >&2
     exit 2
@@ -51,6 +55,8 @@ summary="$output_dir/summary.toml"
 : > "$raw_samples"
 
 index=0
+previous_wall_time=
+previous_peak=
 while /usr/bin/plutil -extract "samples.$index" xml1 -o /dev/null \
     "$raw_json" >/dev/null 2>&1; do
     extract() {
@@ -73,6 +79,18 @@ while /usr/bin/plutil -extract "samples.$index" xml1 -o /dev/null \
     for value in "$physical" "$physical_peak" "$private_dirty"; do
         is_uint "$value" || fail "sample $index contains a non-integer byte value"
     done
+    is_decimal "$wall_time" || fail "sample $index has an invalid wall identity"
+    if [ -n "$previous_wall_time" ]; then
+        awk -v previous="$previous_wall_time" -v current="$wall_time" \
+            'BEGIN { exit !(current > previous) }' ||
+            fail "sample $index wall identity is not strictly increasing"
+    fi
+    [ "$physical_peak" -ge "$physical" ] ||
+        fail "sample $index peak is below its current physical footprint"
+    if [ -n "$previous_peak" ]; then
+        [ "$physical_peak" -ge "$previous_peak" ] ||
+            fail "sample $index reported peak moved backward"
+    fi
     if /usr/bin/plutil -extract "samples.$index.processes.1.pid" raw \
         -o /dev/null "$raw_json" >/dev/null 2>&1; then
         fail "sample $index contains more than one process"
@@ -81,6 +99,8 @@ while /usr/bin/plutil -extract "samples.$index" xml1 -o /dev/null \
     printf '%s\t%s\t%s\t%s\t%s\n' \
         "$index" "$wall_time" "$physical" "$physical_peak" "$private_dirty" \
         >> "$raw_samples"
+    previous_wall_time=$wall_time
+    previous_peak=$physical_peak
     index=$((index + 1))
 done
 

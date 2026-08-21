@@ -9,11 +9,13 @@ not identify which Alpine owner retained memory.
 ## Evidence boundary
 
 Physical capture runs only on Apple Silicon macOS. The capture retains Apple's
-untouched `footprint` JSON in byte units, a derived sample table, a bounded
-analysis summary, and a manifest binding the result to the full Git revision,
-binary hash, workload hash, environment hash, warmup, sampling interval, and
-post-close observation. CI checks the parser and rejection rules with synthetic
-fixtures; CI does not turn hosted-machine samples into performance evidence.
+untouched `footprint` JSON in byte units, the exact workload and environment
+records, a derived sample table, a bounded analysis summary, and a manifest
+binding the result to a clean full Git revision, exact process executable and
+binary hash, derived record hashes, process-start identity, warmup, sampling
+interval, and post-close observation. CI checks the parser and rejection rules
+with synthetic fixtures; CI does not turn hosted-machine samples into
+performance evidence.
 
 The v1 capture targets one process. Local language servers and other child
 processes require separate artifacts and must be reported beside the Studio
@@ -33,15 +35,21 @@ production UI during the post-capture timeout. A four-hour capture at a
 scripts/capture-studio-residency.sh \
   --pid "$STUDIO_PID" \
   --binary target/release/alpine-studio \
+  --repository . \
   --output-dir target/residency/alpine-repository-long-edit \
   --revision "$(git rev-parse HEAD)" \
-  --workload-hash "$WORKLOAD_SHA256" \
-  --environment-hash "$ENVIRONMENT_SHA256" \
+  --workload target/residency-inputs/alpine-long-edit-workload.toml \
+  --environment target/residency-inputs/apple-silicon-environment.toml \
   --duration-seconds 14400 \
   --interval-seconds 15 \
   --warmup-seconds 600 \
   --post-close-timeout-seconds 60
 ```
+
+The capture copies both input records into its immutable output and derives
+their SHA-256 identities itself. Caller-supplied hashes are not accepted. The
+declared repository must be clean at the declared revision, and the target PID
+must expose the exact canonical executable path supplied by `--binary`.
 
 The first captures are informational baselines. A blocking window adds
 `--slope-limit-bytes-per-second` only after A/A calibration has established a
@@ -82,7 +90,8 @@ the comparator protocol's independent-window statistics are satisfied.
 ## CI contract
 
 `scripts/test-studio-residency.sh` proves that stable samples pass a calibrated
-window, positive growth fails, process identity cannot drift, non-byte evidence
-is rejected, and warm-window bounds are enforced. It does not prove macOS
-measurement accuracy, long-session boundedness, or comparative superiority.
-Those require retained physical-hardware artifacts.
+window, positive growth fails, process identity cannot drift, timestamps are
+strictly monotonic, sampled peaks are valid, non-byte evidence is rejected, and
+warm-window bounds are enforced. It does not prove macOS measurement accuracy,
+long-session boundedness, post-close baseline recovery, or comparative
+superiority. Those require retained physical-hardware artifacts under #241.

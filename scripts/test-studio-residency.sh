@@ -58,8 +58,27 @@ if scripts/analyze-studio-residency.sh "$output_dir/wrong-unit.json" 42 1 \
 fi
 grep -Fq 'must use byte units' "$output_dir/wrong-unit.log"
 
-if scripts/capture-studio-residency.sh --help | grep -Fq \
-    'capture-studio-residency.sh'; then
+sed 's/"wall_time_s":1003.0/"wall_time_s":1001.5/' \
+    "$output_dir/stable.json" > "$output_dir/non-monotonic.json"
+if scripts/analyze-studio-residency.sh "$output_dir/non-monotonic.json" 42 1 \
+    "$output_dir/non-monotonic" > "$output_dir/non-monotonic.log" 2>&1; then
+    printf 'non-monotonic residency fixture unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'wall identity is not strictly increasing' \
+    "$output_dir/non-monotonic.log"
+
+sed 's/"phys_footprint_peak":1000000/"phys_footprint_peak":999999/' \
+    "$output_dir/stable.json" > "$output_dir/invalid-peak.json"
+if scripts/analyze-studio-residency.sh "$output_dir/invalid-peak.json" 42 1 \
+    "$output_dir/invalid-peak" > "$output_dir/invalid-peak.log" 2>&1; then
+    printf 'invalid residency peak unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'peak is below its current physical footprint' \
+    "$output_dir/invalid-peak.log"
+
+if scripts/capture-studio-residency.sh --help | grep -Fq -- '--workload PATH'; then
     :
 else
     printf 'capture usage is unavailable\n' >&2
