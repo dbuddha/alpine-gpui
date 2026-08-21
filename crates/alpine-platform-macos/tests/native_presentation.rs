@@ -22,8 +22,16 @@ mod validation {
         let hosted_direct = hosted_direct_mode()?;
         let descriptor = SurfaceDescriptor::new("Alpine presented frame", 96.0, 64.0, 1.0)?;
         let surface = native_validation::new_surface(&descriptor)?;
-        native_validation::inject_driver_error(&surface, SurfaceError::DriverUnavailable);
-        assert_eq!(surface.take_error()?, Some(SurfaceError::DriverUnavailable));
+        native_validation::inject_driver_error(
+            &surface,
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application),
+        );
+        assert_eq!(
+            surface.take_error()?,
+            Some(SurfaceError::invariant(
+                alpine_platform_macos::SurfaceOperation::Application
+            ))
+        );
         assert_eq!(surface.take_error()?, None);
         surface.show()?;
 

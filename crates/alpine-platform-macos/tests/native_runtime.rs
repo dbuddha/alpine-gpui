@@ -156,7 +156,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_eq!(
         surface.take_error()?,
-        Some(alpine_platform_macos::SurfaceError::DriverUnavailable)
+        Some(alpine_platform_macos::SurfaceError::invariant(
+            alpine_platform_macos::SurfaceOperation::Application
+        ))
     );
     assert_eq!(surface.take_error()?, None);
 

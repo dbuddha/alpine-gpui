@@ -263,7 +263,9 @@ impl From<SurfaceError> for StudioError {
 /// Returns a structured unsupported or native construction failure.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn initial_scene() -> Result<Scene, SurfaceError> {
-    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
+    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
     let mut app = native_app()?;
     Ok(app.scene(SceneRevision::new(1), viewport))
 }
@@ -348,7 +350,9 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
             let mut text_system = alpine_text_layout::CoreTextSystem::new();
             text_system
                 .register_font(FONT_FAMILY, FONT_NAME)
-                .map_err(|_| SurfaceError::DriverUnavailable)?;
+                .map_err(|_| {
+                    SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+                })?;
             let mut app = StudioApp::from_workspace(text_system, workspace)?;
             app.prime_workspace_launch()?;
             run_native(with_default_session(app)?).map_err(StudioError::from)
@@ -386,7 +390,9 @@ fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
         f64::from(WINDOW_HEIGHT),
         2.0,
     )?;
-    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
+    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
     let application = Application::new(app, viewport, clear, WorkerConfig::default())?;
     #[cfg(alpine_native_validation)]
     if production_process_validation {
@@ -401,7 +407,9 @@ fn native_app() -> Result<StudioApp, SurfaceError> {
     let mut text_system = alpine_text_layout::CoreTextSystem::new();
     text_system
         .register_font(FONT_FAMILY, FONT_NAME)
-        .map_err(|_| SurfaceError::DriverUnavailable)?;
+        .map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
     StudioApp::new(text_system)
 }
 
@@ -426,7 +434,9 @@ fn native_restored_app() -> Result<StudioApp, SurfaceError> {
             let mut text_system = alpine_text_layout::CoreTextSystem::new();
             text_system
                 .register_font(FONT_FAMILY, FONT_NAME)
-                .map_err(|_| SurfaceError::DriverUnavailable)?;
+                .map_err(|_| {
+                    SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+                })?;
             match StudioApp::from_recovery(text_system, state) {
                 Ok(mut app) => {
                     app.configure_persistence(path)?;
@@ -434,7 +444,9 @@ fn native_restored_app() -> Result<StudioApp, SurfaceError> {
                 }
                 Err(error) => match availability {
                     RestoreAvailability::AllowPlaceholder => {
-                        return Err(SurfaceError::DriverUnavailable);
+                        return Err(SurfaceError::invariant(
+                            alpine_platform_macos::SurfaceOperation::Application,
+                        ));
                     }
                     RestoreAvailability::Strict => {
                         Some(format!("Recovery restore skipped: {error}"))
@@ -453,7 +465,9 @@ fn native_restored_app() -> Result<StudioApp, SurfaceError> {
             let mut text_system = alpine_text_layout::CoreTextSystem::new();
             text_system
                 .register_font(FONT_FAMILY, FONT_NAME)
-                .map_err(|_| SurfaceError::DriverUnavailable)?;
+                .map_err(|_| {
+                    SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+                })?;
             match StudioApp::from_session(text_system, state) {
                 Ok(app) => app,
                 Err(error) => session_fallback(&error.to_string())?,
@@ -486,8 +500,9 @@ fn session_fallback(detail: &str) -> Result<StudioApp, SurfaceError> {
 #[cfg_attr(test, mutants::skip)] // Cross-platform persistence behavior is qualified independently.
 fn with_default_session(mut app: StudioApp) -> Result<StudioApp, SurfaceError> {
     if let Ok(path) = session::default_path() {
-        recovery::ensure_replaceable(&recovery::path_for_session(&path))
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        recovery::ensure_replaceable(&recovery::path_for_session(&path)).map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
         app.configure_persistence(path)?;
     }
     Ok(app)
@@ -499,7 +514,9 @@ fn native_file_app(path: &Path) -> Result<StudioApp, StudioError> {
     let mut text_system = alpine_text_layout::CoreTextSystem::new();
     text_system
         .register_font(FONT_FAMILY, FONT_NAME)
-        .map_err(|_| SurfaceError::DriverUnavailable)?;
+        .map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
     StudioApp::from_document(text_system, document, Some(path)).map_err(StudioError::from)
 }
 
@@ -1162,9 +1179,9 @@ impl StudioApp {
         let workspace = Workspace::open(path.as_ref(), WorkspaceLimits::default())?;
         let root = workspace.root().to_path_buf();
         let mut app = Self::from_workspace(text_system, workspace).map_err(StudioError::from)?;
-        app.file_tree
-            .activate(1)
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        app.file_tree.activate(1).map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
         let request = app.file_tree.take_request(&root);
         let admission = request.map(|request| app.file_tree.admit(request.execute()));
         assert_eq!(
@@ -1213,9 +1230,9 @@ impl StudioApp {
     }
 
     fn prime_workspace_launch(&mut self) -> Result<(), StudioError> {
-        self.file_tree
-            .activate(1)
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        self.file_tree.activate(1).map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
         self.file_tree.unfocus();
         Ok(())
     }
@@ -1226,21 +1243,28 @@ impl StudioApp {
         path: Option<&Path>,
         workspace: Option<Workspace>,
     ) -> Result<Self, SurfaceError> {
-        let settings = SettingsState::compiled().map_err(|_| SurfaceError::DriverUnavailable)?;
-        let last_viewport =
-            Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)?;
-        let layout_budget = NonZeroUsize::new(DEFAULT_LAYOUT_BUDGET_BYTES)
-            .ok_or(SurfaceError::DriverUnavailable)?;
-        let atlas_budget =
-            NonZeroUsize::new(DEFAULT_ATLAS_BUDGET_BYTES).ok_or(SurfaceError::DriverUnavailable)?;
-        let syntax_cache = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        let settings = SettingsState::compiled().map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
+        let last_viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application),
+        )?;
+        let layout_budget = NonZeroUsize::new(DEFAULT_LAYOUT_BUDGET_BYTES).ok_or(
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application),
+        )?;
+        let atlas_budget = NonZeroUsize::new(DEFAULT_ATLAS_BUDGET_BYTES).ok_or(
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application),
+        )?;
+        let syntax_cache = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES).map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
         let runtime_document_revision = document.buffer().revision().get();
-        let tabs = DocumentTabs::new(path, None, DocumentTabLimits::default())
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
-        let active_tab = tabs
-            .active_id()
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        let tabs = DocumentTabs::new(path, None, DocumentTabLimits::default()).map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
+        let active_tab = tabs.active_id().map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
         let panes = PaneGrid::new(active_tab, DocumentViewState::default());
         Ok(Self {
             settings,
@@ -1653,8 +1677,9 @@ impl StudioApp {
         let recovery_path = recovery::path_for_session(&path);
         self.session_path = Some(path);
         self.recovery = Some(
-            recovery::RecoveryCoordinator::new(recovery_path)
-                .map_err(|_| SurfaceError::DriverUnavailable)?,
+            recovery::RecoveryCoordinator::new(recovery_path).map_err(|_| {
+                SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+            })?,
         );
         self.publish_recovery();
         Ok(())
@@ -5123,10 +5148,14 @@ pub mod native_validation {
                 Ok(())
             })?
             .ok_or(alpine_runtime::RuntimeError::Surface(
-                alpine_platform_macos::SurfaceError::DriverUnavailable,
+                alpine_platform_macos::SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                ),
             ))?;
         let timeout = timeout.ok_or(alpine_runtime::RuntimeError::Surface(
-            alpine_platform_macos::SurfaceError::DriverUnavailable,
+            alpine_platform_macos::SurfaceError::invariant(
+                alpine_platform_macos::SurfaceOperation::Application,
+            ),
         ))?;
         timeout.cancel();
         assert!(timeout.cancelled());
@@ -5528,12 +5557,16 @@ pub mod native_validation {
         let delegate = StudioApp::from_workspace(text_system, workspace)?;
         let clear = alpine_core::LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(
             StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
-                alpine_platform_macos::SurfaceError::DriverUnavailable,
+                alpine_platform_macos::SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                ),
             )),
         )?;
         let viewport = alpine_core::Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(
             StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
-                alpine_platform_macos::SurfaceError::DriverUnavailable,
+                alpine_platform_macos::SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                ),
             )),
         )?;
         let descriptor = SurfaceDescriptor::new(
@@ -5729,12 +5762,16 @@ pub mod native_validation {
         let delegate = StudioApp::from_workspace(text_system, workspace)?;
         let clear = alpine_core::LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(
             StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
-                alpine_platform_macos::SurfaceError::DriverUnavailable,
+                alpine_platform_macos::SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                ),
             )),
         )?;
         let viewport = alpine_core::Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(
             StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
-                alpine_platform_macos::SurfaceError::DriverUnavailable,
+                alpine_platform_macos::SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                ),
             )),
         )?;
         let descriptor = SurfaceDescriptor::new(
@@ -5878,12 +5915,16 @@ pub mod native_validation {
         delegate.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(5));
         let clear = alpine_core::LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(
             StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
-                alpine_platform_macos::SurfaceError::DriverUnavailable,
+                alpine_platform_macos::SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                ),
             )),
         )?;
         let viewport = alpine_core::Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(
             StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
-                alpine_platform_macos::SurfaceError::DriverUnavailable,
+                alpine_platform_macos::SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                ),
             )),
         )?;
         let descriptor = SurfaceDescriptor::new(

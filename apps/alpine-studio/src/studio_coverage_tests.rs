@@ -196,7 +196,9 @@ fn test_app() -> Result<StudioApp, SurfaceError> {
 }
 
 fn viewport() -> Result<Size, SurfaceError> {
-    Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::DriverUnavailable)
+    Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))
 }
 
 fn ime(event: ImeEvent) -> SurfaceEvent {
@@ -679,11 +681,13 @@ fn editor_scene_projects_compiled_rust_syntax_onto_visible_glyphs() -> Result<()
 #[test]
 fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeError> {
     let viewport = viewport()?;
-    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
     let mut application = Application::new(test_app()?, viewport, clear, WorkerConfig::default())?;
-    let first = application
-        .frame_if_dirty()
-        .ok_or(SurfaceError::DriverUnavailable)?;
+    let first = application.frame_if_dirty().ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
     assert!(
         application
             .dispatch(&SurfaceEvent::Wake {
@@ -693,7 +697,9 @@ fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeEr
     );
     let changed = application
         .dispatch(&ime(ImeEvent::Committed("x".into())))
-        .ok_or(SurfaceError::DriverUnavailable)?;
+        .ok_or(SurfaceError::invariant(
+            alpine_platform_macos::SurfaceOperation::Application,
+        ))?;
     assert!(changed.scene().glyphs().len() > first.scene().glyphs().len());
     assert_eq!(application.snapshot().document_revision().get(), 1);
     assert!(
@@ -710,7 +716,9 @@ fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeEr
 fn runtime_find_worker_admits_current_results_and_schedules_replacement()
 -> Result<(), Box<dyn std::error::Error>> {
     let viewport = viewport()?;
-    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
     let mut app = test_app()?;
     *app.buffer_mut() = Buffer::new("alpha beta alpha");
     let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
@@ -892,7 +900,9 @@ fn malformed_find_highlight_fails_before_scene_publication()
 #[test]
 fn runtime_find_failures_are_bounded_and_visible() -> Result<(), Box<dyn std::error::Error>> {
     let viewport = viewport()?;
-    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
     let command = Modifiers::from_bits(Modifiers::COMMAND);
     let command_option = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION);
 
@@ -1142,7 +1152,9 @@ fn status_raster_failure_is_structured_after_empty_document_layout() -> Result<(
 fn studio_runtime_returns_clipboard_and_dirty_close_responses()
 -> Result<(), Box<dyn std::error::Error>> {
     let viewport = viewport()?;
-    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
     let mut copy_app = test_app()?;
     copy_app.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(2));
     let mut copy_runtime = Application::new(copy_app, viewport, clear, WorkerConfig::default())?;
@@ -3573,7 +3585,9 @@ fn runtime_quick_open_worker_admits_inventory_and_ranked_results()
     root.write("alpha.rs", "alpha")?;
     let app = StudioApp::open_workspace(TestTextSystem, root.path())?;
     let viewport = viewport()?;
-    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
     let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
     let command = Modifiers::from_bits(Modifiers::COMMAND);
 
@@ -4289,7 +4303,9 @@ fn quick_open_overlay_raster_failures_preserve_scene_atomicity()
 #[test]
 fn runtime_quick_open_submission_failures_invalidate_without_blocking()
 -> Result<(), Box<dyn std::error::Error>> {
-    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
     let worker_config = WorkerConfig::new(
         std::num::NonZeroUsize::MIN,
         std::num::NonZeroUsize::MIN,
@@ -4484,7 +4500,9 @@ fn file_tree_keyboard_geometry_and_error_routing_are_discriminating()
 #[test]
 fn runtime_file_tree_submission_admits_and_forced_failure_rolls_back()
 -> Result<(), Box<dyn std::error::Error>> {
-    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
     let command_shift = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
 
     let admitted_root = TestWorkspace::new()?;
@@ -4682,7 +4700,9 @@ fn active_tree_without_workspace_fails_before_worker_submission()
         Err(FileTreeError::NoWorkspace)
     ));
 
-    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
     let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
     assert!(
         runtime
@@ -5679,7 +5699,9 @@ fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
     app.rust_diagnostics = RustDiagnostics::with_server(rust_diagnostics::tests::mock_executable());
     app.rust_diagnostics.force_continuation_once_for_test();
     let viewport = viewport()?;
-    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
     let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
     let baseline_quads = runtime
         .frame_if_dirty()

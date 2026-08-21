@@ -26,7 +26,7 @@ use crate::{
     AccessibilityAction, AccessibilityActionResult, AccessibilityError, AccessibilityNode,
     AccessibilityNodeId, AccessibilityPayload, AccessibilityRequest, AccessibilityRequestId,
     AccessibilityResponse, AccessibilityRevision, AccessibilityRole, AccessibilitySnapshot,
-    AccessibilityTextRange, SurfaceError, native::SurfaceView,
+    AccessibilityTextRange, SurfaceError, SurfaceOperation, native::SurfaceView,
 };
 
 #[cfg(alpine_native_validation)]
@@ -467,7 +467,7 @@ impl NativeAccessibilityAdapter {
         self.next_request_id = self
             .next_request_id
             .checked_add(1)
-            .ok_or(SurfaceError::DriverUnavailable)?;
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Accessibility))?;
         Ok(AccessibilityRequestId::new(id))
     }
 
@@ -478,14 +478,14 @@ impl NativeAccessibilityAdapter {
         self.counters.requests = self.counters.requests.saturating_add(1);
         let Some(handler) = self.handler.as_mut() else {
             self.counters.failed_requests = self.counters.failed_requests.saturating_add(1);
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(SurfaceOperation::Accessibility));
         };
         let result = handler(request);
         match result {
             Ok(response) => {
                 if response.validate_for(request).is_err() {
                     self.counters.failed_requests = self.counters.failed_requests.saturating_add(1);
-                    return Err(SurfaceError::DriverUnavailable);
+                    return Err(SurfaceError::invariant(SurfaceOperation::Accessibility));
                 }
                 if response.result().is_err() {
                     self.counters.failed_requests = self.counters.failed_requests.saturating_add(1);
@@ -501,14 +501,14 @@ impl NativeAccessibilityAdapter {
 
     fn refresh(&mut self, view: &SurfaceView) -> Result<RefreshOutcome, SurfaceError> {
         if self.revoking || self.handler.is_none() {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(SurfaceOperation::Accessibility));
         }
         let request = AccessibilityRequest::snapshot(self.next_id()?)
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Accessibility))?;
         let response = self.dispatch(&request)?;
         let snapshot = match response.result() {
             Ok(AccessibilityPayload::Snapshot(snapshot)) => snapshot.clone(),
-            _ => return Err(SurfaceError::DriverUnavailable),
+            _ => return Err(SurfaceError::invariant(SurfaceOperation::Accessibility)),
         };
         let previous = self.snapshot.clone();
         let mut notifications = Vec::new();
@@ -519,7 +519,7 @@ impl NativeAccessibilityAdapter {
                     .saturating_add(snapshot.nodes().len())
                     .saturating_add(5),
             )
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Accessibility))?;
         self.reconcile_elements(view, &snapshot, &mut notifications)?;
         self.append_notification_intents(previous.as_ref(), &snapshot, &mut notifications)?;
         self.snapshot = Some(snapshot);
@@ -535,9 +535,11 @@ impl NativeAccessibilityAdapter {
     ) -> Result<(), SurfaceError> {
         let mut next = Vec::new();
         next.try_reserve_exact(snapshot.nodes().len())
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Accessibility))?;
         let mut created = 0_u64;
-        let main_thread = MainThreadMarker::new().ok_or(SurfaceError::DriverUnavailable)?;
+        let main_thread = MainThreadMarker::new().ok_or(SurfaceError::NativeUnavailable {
+            stage: crate::SurfaceStage::MainThread,
+        })?;
         for node in snapshot.nodes() {
             let reusable = self
                 .elements
@@ -559,7 +561,7 @@ impl NativeAccessibilityAdapter {
                 self.next_element_generation = self
                     .next_element_generation
                     .checked_add(1)
-                    .ok_or(SurfaceError::DriverUnavailable)?;
+                    .ok_or(SurfaceError::invariant(SurfaceOperation::Accessibility))?;
                 created = created.saturating_add(1);
                 (
                     NativeAccessibilityElement::new(
@@ -683,7 +685,7 @@ impl NativeAccessibilityAdapter {
         let mut affected = Vec::new();
         affected
             .try_reserve_exact(current.nodes().len())
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Accessibility))?;
         for node in current.nodes() {
             let changed = node.id() == current.root()
                 || previous
@@ -983,7 +985,9 @@ impl NativeAccessibilityAdapter {
             unsafe { msg_send![&**view, accessibilityChildren] };
         let repeated: Retained<NSArray<NativeAccessibilityElement>> =
             unsafe { msg_send![&**view, accessibilityChildren] };
-        let root = roots.firstObject().ok_or(SurfaceError::DriverUnavailable)?;
+        let root = roots
+            .firstObject()
+            .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
         let stable_root_identity = repeated
             .firstObject()
             .is_some_and(|candidate| core::ptr::eq(&*root, &*candidate));
@@ -995,7 +999,7 @@ impl NativeAccessibilityAdapter {
             .as_ref()
             .and_then(|snapshot| role_id(snapshot, AccessibilityRole::CodeEditor))
             .and_then(|id| view.ivars().accessibility.borrow().element(id))
-            .ok_or(SurfaceError::DriverUnavailable)?;
+            .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
         let role: Retained<NSString> = unsafe { msg_send![&*editor, accessibilityRole] };
         let label: Retained<NSString> = unsafe { msg_send![&*editor, accessibilityLabel] };
         let text_length_utf16: usize =
@@ -1004,7 +1008,8 @@ impl NativeAccessibilityAdapter {
             unsafe { msg_send![&*editor, accessibilitySelectedText] };
         let bounded_text: Option<Retained<NSString>> =
             unsafe { msg_send![&*editor, accessibilityStringForRange: NSRange::new(5, 3)] };
-        let bounded_text = bounded_text.ok_or(SurfaceError::DriverUnavailable)?;
+        let bounded_text =
+            bounded_text.ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
         let selected_range: NSRange =
             unsafe { msg_send![&*editor, accessibilitySelectedTextRange] };
         let line_for_index: usize =
@@ -1027,7 +1032,7 @@ impl NativeAccessibilityAdapter {
             .as_ref()
             .and_then(|snapshot| role_id(snapshot, AccessibilityRole::Tab))
             .and_then(|id| view.ivars().accessibility.borrow().element(id))
-            .ok_or(SurfaceError::DriverUnavailable)?;
+            .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
         let identifier: Retained<NSString> = unsafe { msg_send![&*tab, accessibilityIdentifier] };
         let repeated_identifier: Retained<NSString> =
             unsafe { msg_send![&*tab, accessibilityIdentifier] };
@@ -1052,7 +1057,7 @@ impl NativeAccessibilityAdapter {
             .as_ref()
             .and_then(|snapshot| role_id(snapshot, AccessibilityRole::Status))
             .and_then(|id| view.ivars().accessibility.borrow().element(id))
-            .ok_or(SurfaceError::DriverUnavailable)?;
+            .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
         let status_activate_selector_allowed: bool = unsafe {
             msg_send![&*status, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
         };
@@ -1092,12 +1097,12 @@ impl NativeAccessibilityAdapter {
                 .borrow()
                 .snapshot
                 .clone()
-                .ok_or(SurfaceError::DriverUnavailable)?;
+                .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
             let current = snapshot
                 .nodes()
                 .iter()
                 .find(|node| node.role() == AccessibilityRole::Tab)
-                .ok_or(SurfaceError::DriverUnavailable)?;
+                .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
             let changed_parent = AccessibilityNode::new(
                 current.id(),
                 None,
@@ -1107,7 +1112,7 @@ impl NativeAccessibilityAdapter {
                 current.is_selected(),
                 current.announces(),
             )
-            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?
             .with_bounds(current.bounds())
             .with_activate(current.is_enabled());
             let changed_role = AccessibilityNode::new(
@@ -1119,7 +1124,7 @@ impl NativeAccessibilityAdapter {
                 current.is_selected(),
                 current.announces(),
             )
-            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?
             .with_bounds(current.bounds())
             .with_activate(current.is_enabled());
             let changed_name = AccessibilityNode::new(
@@ -1131,7 +1136,7 @@ impl NativeAccessibilityAdapter {
                 current.is_selected(),
                 current.announces(),
             )
-            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?
             .with_bounds(current.bounds())
             .with_activate(current.is_enabled());
             let changed_action = AccessibilityNode::new(
@@ -1143,7 +1148,7 @@ impl NativeAccessibilityAdapter {
                 current.is_selected(),
                 current.announces(),
             )
-            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?
             .with_bounds(current.bounds());
             reusable_semantics(current, current)
                 && !reusable_semantics(current, &changed_parent)
@@ -1158,12 +1163,12 @@ impl NativeAccessibilityAdapter {
                 .borrow()
                 .snapshot
                 .clone()
-                .ok_or(SurfaceError::DriverUnavailable)?;
+                .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
             let current = snapshot
                 .nodes()
                 .iter()
                 .find(|node| node.role() == AccessibilityRole::Tab)
-                .ok_or(SurfaceError::DriverUnavailable)?;
+                .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
             let make_node = |parent, role, name: Arc<str>, bounds, activate| {
                 AccessibilityNode::new(
                     current.id(),
@@ -1189,7 +1194,7 @@ impl NativeAccessibilityAdapter {
                 current.bounds(),
                 Some(current.is_enabled()),
             )
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?;
             let changed_role = make_node(
                 current.parent(),
                 AccessibilityRole::Status,
@@ -1197,7 +1202,7 @@ impl NativeAccessibilityAdapter {
                 current.bounds(),
                 Some(current.is_enabled()),
             )
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?;
             let changed_name = make_node(
                 current.parent(),
                 current.role(),
@@ -1205,16 +1210,16 @@ impl NativeAccessibilityAdapter {
                 current.bounds(),
                 Some(current.is_enabled()),
             )
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?;
             let changed_bounds = make_node(
                 current.parent(),
                 current.role(),
                 current.name().into(),
                 AccessibilityBounds::new(1.0, 1.0, 1.0, 1.0)
-                    .map_err(|_| SurfaceError::DriverUnavailable)?,
+                    .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?,
                 Some(current.is_enabled()),
             )
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?;
             let changed_enabled = make_node(
                 current.parent(),
                 current.role(),
@@ -1222,7 +1227,7 @@ impl NativeAccessibilityAdapter {
                 current.bounds(),
                 Some(false),
             )
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?;
             let changed_action = make_node(
                 current.parent(),
                 current.role(),
@@ -1230,7 +1235,7 @@ impl NativeAccessibilityAdapter {
                 current.bounds(),
                 None,
             )
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?;
             !layout_semantics_changed(current, current)
                 && layout_semantics_changed(current, &changed_parent)
                 && layout_semantics_changed(current, &changed_role)
@@ -1277,7 +1282,7 @@ impl NativeAccessibilityAdapter {
             .snapshot
             .as_ref()
             .map(AccessibilitySnapshot::revision)
-            .ok_or(SurfaceError::DriverUnavailable)?;
+            .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
         let stale_action_rejected = !view.ivars().accessibility.borrow_mut().set_selection(
             AccessibilityRevision::new(
                 stale_revision.document(),
@@ -1306,17 +1311,19 @@ impl NativeAccessibilityAdapter {
             text_length_utf16,
             selected_text: selected_text.to_string().into_boxed_str(),
             bounded_text: bounded_text.to_string().into_boxed_str(),
-            selected_range: from_ns_range(selected_range).ok_or(SurfaceError::DriverUnavailable)?,
+            selected_range: from_ns_range(selected_range)
+                .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?,
             line_for_index,
-            range_for_line: from_ns_range(range_for_line).ok_or(SurfaceError::DriverUnavailable)?,
+            range_for_line: from_ns_range(range_for_line)
+                .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?,
             range_for_index: from_ns_range(range_for_index)
-                .ok_or(SurfaceError::DriverUnavailable)?,
+                .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?,
             bounded_text_selector_allowed,
             geometry_selector_allowed,
             semantic_tree_valid,
             text_selector_scope_valid,
             accepted_selection: from_ns_range(accepted_selection)
-                .ok_or(SurfaceError::DriverUnavailable)?,
+                .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?,
             stale_action_rejected,
             stable_external_identifier,
             bounded_screen_frame,

@@ -1261,7 +1261,9 @@ impl<D: AppDelegate + 'static> Application<D> {
         {
             let surface = NativeSurface::new(descriptor)?;
             self.run_on_native_surface(&surface, |_| Ok(()))?
-                .ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+                .ok_or(RuntimeError::Surface(SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                )))?;
             Ok(())
         }
 
@@ -1503,10 +1505,12 @@ mod tests {
     where
         D: AppDelegate<WorkerOutput = u64> + 'static,
     {
-        let viewport =
-            Size::new(96.0, 64.0).ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
-        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0)
-            .ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        let viewport = Size::new(96.0, 64.0).ok_or(RuntimeError::Surface(
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application),
+        ))?;
+        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or(RuntimeError::Surface(
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application),
+        ))?;
         Application::new(
             delegate,
             viewport,
@@ -1650,15 +1654,22 @@ mod tests {
         assert!(!context.advance_document(DocumentRevision::new(1)));
         *context.dirty = false;
         context.invalidate();
-        let text = ClipboardText::new("response").map_err(|_| SurfaceError::DriverUnavailable)?;
-        let write = ClipboardWrite::new(ClipboardOperation::Copy, text)
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        let text = ClipboardText::new("response").map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
+        let write = ClipboardWrite::new(ClipboardOperation::Copy, text).map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
         assert!(context.write_clipboard(write.clone()));
         assert!(!context.write_clipboard(write.clone()));
         assert!(context.cancel_close());
         assert!(!context.cancel_close());
-        let request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(1))
-            .map_err(|_| RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        let request =
+            AccessibilityRequest::snapshot(AccessibilityRequestId::new(1)).map_err(|_| {
+                RuntimeError::Surface(SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                ))
+            })?;
         let response = AccessibilityResponse::failure(
             &request,
             AccessibilityRevision::new(2, 3),
@@ -1730,7 +1741,9 @@ mod tests {
                 timestamp: EventTimestamp::new(5),
                 extent,
             })
-            .ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+            .ok_or(RuntimeError::Surface(SurfaceError::invariant(
+                alpine_platform_macos::SurfaceOperation::Application,
+            )))?;
         assert_eq!(
             resized.scene().viewport(),
             Size::new(120.0, 80.0).unwrap_or_default()
@@ -1760,9 +1773,12 @@ mod tests {
 
     #[test]
     fn cancelled_close_returns_one_bounded_response_and_stays_live() -> Result<(), RuntimeError> {
-        let text = ClipboardText::new("selected").map_err(|_| SurfaceError::DriverUnavailable)?;
-        let write = ClipboardWrite::new(ClipboardOperation::Cut, text)
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+        let text = ClipboardText::new("selected").map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
+        let write = ClipboardWrite::new(ClipboardOperation::Cut, text).map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
         let delegate = TestDelegate {
             cancel_close: true,
             clipboard_write: Some(write.clone()),
@@ -1953,10 +1969,12 @@ mod tests {
 
     #[test]
     fn default_worker_result_is_a_noop() -> Result<(), RuntimeError> {
-        let viewport =
-            Size::new(10.0, 10.0).ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
-        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0)
-            .ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        let viewport = Size::new(10.0, 10.0).ok_or(RuntimeError::Surface(
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application),
+        ))?;
+        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or(RuntimeError::Surface(
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application),
+        ))?;
         let config = WorkerConfig::default();
         let mut application = Application::new(DefaultResultDelegate, viewport, clear, config)?;
         assert!(
@@ -1986,8 +2004,9 @@ mod tests {
     #[test]
     fn application_run_rejects_unsupported_host() -> Result<(), SurfaceError> {
         let descriptor = SurfaceDescriptor::new("Alpine", 10.0, 10.0, 1.0)?;
-        let application =
-            runtime(TestDelegate::default()).map_err(|_| SurfaceError::DriverUnavailable)?;
+        let application = runtime(TestDelegate::default()).map_err(|_| {
+            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+        })?;
         assert!(matches!(
             application.run(&descriptor),
             Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))
@@ -1998,9 +2017,12 @@ mod tests {
     #[test]
     fn clean_events_do_not_build_or_submit_another_frame() -> Result<(), RuntimeError> {
         let mut application = runtime(TestDelegate::default())?;
-        let first = application
-            .frame_if_dirty()
-            .ok_or(RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        let first =
+            application
+                .frame_if_dirty()
+                .ok_or(RuntimeError::Surface(SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                )))?;
         assert_eq!(first.scene().revision(), SceneRevision::new(1));
         assert!(
             application
