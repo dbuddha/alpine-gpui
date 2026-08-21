@@ -2023,6 +2023,90 @@ mod native_input_tests {
         ));
     }
 
+    #[cfg(alpine_native_validation)]
+    #[test]
+    fn pause_diagnostics_record_and_decode_every_state() {
+        let counters = PauseConfirmationCounters::default();
+        counters.record_callback(
+            DisplayLinkDirective::None,
+            DisplayLinkState::Paused,
+            false,
+            Some((true, false)),
+        );
+        assert_eq!(counters.callback_observations.load(Ordering::Acquire), 1);
+        assert_eq!(counters.last_directive.load(Ordering::Acquire), 1);
+        assert_eq!(counters.last_portable_state.load(Ordering::Acquire), 1);
+        assert!(!counters.last_native_paused_before.load(Ordering::Acquire));
+        assert!(counters.last_pending.load(Ordering::Acquire));
+        assert!(!counters.last_active.load(Ordering::Acquire));
+
+        counters.record_callback(
+            DisplayLinkDirective::Resume,
+            DisplayLinkState::Running,
+            true,
+            Some((false, true)),
+        );
+        assert_eq!(counters.callback_observations.load(Ordering::Acquire), 2);
+        assert_eq!(counters.last_directive.load(Ordering::Acquire), 2);
+        assert_eq!(counters.last_portable_state.load(Ordering::Acquire), 2);
+        assert!(counters.last_native_paused_before.load(Ordering::Acquire));
+        assert!(!counters.last_pending.load(Ordering::Acquire));
+        assert!(counters.last_active.load(Ordering::Acquire));
+
+        counters.record_callback(
+            DisplayLinkDirective::Pause,
+            DisplayLinkState::Invalid,
+            false,
+            None,
+        );
+        assert_eq!(counters.callback_observations.load(Ordering::Acquire), 3);
+        assert_eq!(counters.last_directive.load(Ordering::Acquire), 3);
+        assert_eq!(counters.last_portable_state.load(Ordering::Acquire), 3);
+        assert!(!counters.last_pending.load(Ordering::Acquire));
+        assert!(counters.last_active.load(Ordering::Acquire));
+
+        counters.record_callback(
+            DisplayLinkDirective::Invalidate,
+            DisplayLinkState::Paused,
+            true,
+            Some((false, false)),
+        );
+        assert_eq!(counters.callback_observations.load(Ordering::Acquire), 4);
+        assert_eq!(counters.last_directive.load(Ordering::Acquire), 4);
+        assert_eq!(counters.last_portable_state.load(Ordering::Acquire), 1);
+
+        use crate::native_validation::{PauseDirectiveEvidence, PausePortableStateEvidence};
+        assert_eq!(pause_directive_evidence(0), PauseDirectiveEvidence::Unknown);
+        assert_eq!(pause_directive_evidence(1), PauseDirectiveEvidence::None);
+        assert_eq!(pause_directive_evidence(2), PauseDirectiveEvidence::Resume);
+        assert_eq!(pause_directive_evidence(3), PauseDirectiveEvidence::Pause);
+        assert_eq!(
+            pause_directive_evidence(4),
+            PauseDirectiveEvidence::Invalidate
+        );
+        assert_eq!(pause_directive_evidence(5), PauseDirectiveEvidence::Unknown);
+        assert_eq!(
+            pause_portable_state_evidence(0),
+            PausePortableStateEvidence::Unknown
+        );
+        assert_eq!(
+            pause_portable_state_evidence(1),
+            PausePortableStateEvidence::Paused
+        );
+        assert_eq!(
+            pause_portable_state_evidence(2),
+            PausePortableStateEvidence::Running
+        );
+        assert_eq!(
+            pause_portable_state_evidence(3),
+            PausePortableStateEvidence::Invalid
+        );
+        assert_eq!(
+            pause_portable_state_evidence(4),
+            PausePortableStateEvidence::Unknown
+        );
+    }
+
     #[test]
     fn finite_f32_rejects_invalid_or_unrepresentable_values() {
         assert_eq!(finite_f32(1.25), Some(1.25));
@@ -2174,6 +2258,29 @@ impl PauseConfirmationCounters {
             self.last_pending.store(pending, Ordering::Release);
             self.last_active.store(active, Ordering::Release);
         }
+    }
+}
+
+#[cfg(alpine_native_validation)]
+const fn pause_directive_evidence(value: u8) -> crate::native_validation::PauseDirectiveEvidence {
+    match value {
+        1 => crate::native_validation::PauseDirectiveEvidence::None,
+        2 => crate::native_validation::PauseDirectiveEvidence::Resume,
+        3 => crate::native_validation::PauseDirectiveEvidence::Pause,
+        4 => crate::native_validation::PauseDirectiveEvidence::Invalidate,
+        _ => crate::native_validation::PauseDirectiveEvidence::Unknown,
+    }
+}
+
+#[cfg(alpine_native_validation)]
+const fn pause_portable_state_evidence(
+    value: u8,
+) -> crate::native_validation::PausePortableStateEvidence {
+    match value {
+        1 => crate::native_validation::PausePortableStateEvidence::Paused,
+        2 => crate::native_validation::PausePortableStateEvidence::Running,
+        3 => crate::native_validation::PausePortableStateEvidence::Invalid,
+        _ => crate::native_validation::PausePortableStateEvidence::Unknown,
     }
 }
 
@@ -4189,19 +4296,8 @@ impl NativeSurface {
             counters.eligible.load(Ordering::Acquire),
             counters.observed.load(Ordering::Acquire),
             counters.callback_observations.load(Ordering::Acquire),
-            match counters.last_directive.load(Ordering::Acquire) {
-                1 => crate::native_validation::PauseDirectiveEvidence::None,
-                2 => crate::native_validation::PauseDirectiveEvidence::Resume,
-                3 => crate::native_validation::PauseDirectiveEvidence::Pause,
-                4 => crate::native_validation::PauseDirectiveEvidence::Invalidate,
-                _ => crate::native_validation::PauseDirectiveEvidence::Unknown,
-            },
-            match counters.last_portable_state.load(Ordering::Acquire) {
-                1 => crate::native_validation::PausePortableStateEvidence::Paused,
-                2 => crate::native_validation::PausePortableStateEvidence::Running,
-                3 => crate::native_validation::PausePortableStateEvidence::Invalid,
-                _ => crate::native_validation::PausePortableStateEvidence::Unknown,
-            },
+            pause_directive_evidence(counters.last_directive.load(Ordering::Acquire)),
+            pause_portable_state_evidence(counters.last_portable_state.load(Ordering::Acquire)),
             counters.last_native_paused_before.load(Ordering::Acquire),
             counters.last_native_paused_after.load(Ordering::Acquire),
             counters.last_pending.load(Ordering::Acquire),
