@@ -1,5 +1,6 @@
 //! Validates and reports Alpine's claim-to-evidence graph.
 
+mod ax;
 mod calibration;
 mod lab;
 mod onscreen;
@@ -152,6 +153,18 @@ fn run() -> Result<String, Vec<String>> {
     }
     if matches!(
         command.as_str(),
+        "validate-ax-evidence" | "ax-evidence-report"
+    ) {
+        let Some(path) = arguments.next() else {
+            return Err(vec![format!("{command} requires an artifact bundle path")]);
+        };
+        if arguments.next().is_some() {
+            return Err(vec![format!("{command} accepts exactly one bundle path")]);
+        }
+        return ax::run(&command, Path::new(&path));
+    }
+    if matches!(
+        command.as_str(),
         "validate-qualification"
             | "qualification-report"
             | "validate-aa-calibration"
@@ -224,7 +237,7 @@ fn run() -> Result<String, Vec<String>> {
         )),
         "report" => Ok(render_report(&registry)),
         other => Err(vec![format!(
-            "unknown command {other:?}; expected validate, report, validate-scene-trace, render-scene-reference, render-scene-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, or upstream-radar"
+            "unknown command {other:?}; expected validate, report, validate-scene-trace, render-scene-reference, render-scene-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-evidence, ax-evidence-report, or upstream-radar"
         )]),
     }
 }

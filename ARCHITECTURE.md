@@ -275,6 +275,15 @@ recomputed artifact SHA-256. Its deterministic integer report is descriptive
 only and cannot establish an equivalence margin, sample size, confidence
 interval, or performance claim.
 
+The same non-shipping tool validates trusted-machine accessibility bundles
+without widening Studio or platform APIs. A bundle binds exact repository,
+Studio binary, harness, scenario, environment, AX tree, notification stream,
+latency, residency, Inspector, VoiceOver, and post-close evidence by SHA-256.
+Physical latency and residency samples remain descriptive until separately
+accepted A/A calibration activates a budget. The validator cannot grant or
+bypass macOS Accessibility trust, automate human VoiceOver attestation, or
+turn hosted selector invocation into external delivery evidence.
+
 ```mermaid
 flowchart LR
     caller["alpine-studio or test caller<br/>public Alpine APIs only"]
