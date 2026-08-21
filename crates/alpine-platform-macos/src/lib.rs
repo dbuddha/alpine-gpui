@@ -798,6 +798,65 @@ pub mod native_validation {
         release_order_violations: u64,
     }
 
+    /// One bounded record from the observer-facing AppKit post protocol.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct NativeAccessibilityNotificationRecord {
+        pub(crate) kind_index: u8,
+        pub(crate) target: u64,
+        pub(crate) payload_elements: usize,
+        pub(crate) payload_bytes: usize,
+        pub(crate) priority: isize,
+    }
+
+    impl NativeAccessibilityNotificationRecord {
+        pub(crate) const fn new(
+            kind_index: u8,
+            target: u64,
+            payload_elements: usize,
+            payload_bytes: usize,
+            priority: isize,
+        ) -> Self {
+            Self {
+                kind_index,
+                target,
+                payload_elements,
+                payload_bytes,
+                priority,
+            }
+        }
+
+        /// Returns the kind index in layout, focus, selection, value,
+        /// announcement, and destroyed order.
+        #[must_use]
+        pub const fn kind_index(self) -> u8 {
+            self.kind_index
+        }
+
+        /// Returns the stable semantic target identity passed to AppKit.
+        #[must_use]
+        pub const fn target(self) -> u64 {
+            self.target
+        }
+
+        /// Returns current elements named by a layout payload.
+        #[must_use]
+        pub const fn payload_elements(self) -> usize {
+            self.payload_elements
+        }
+
+        /// Returns retained layout-slot or announcement UTF-8 payload bytes.
+        #[must_use]
+        pub const fn payload_bytes(self) -> usize {
+            self.payload_bytes
+        }
+
+        /// Returns AppKit announcement priority, or zero for other kinds.
+        #[must_use]
+        pub const fn priority(self) -> isize {
+            self.priority
+        }
+    }
+
     /// Handle-free evidence produced by the production AppKit accessibility selectors.
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct NativeAccessibilityEvidence {
@@ -826,7 +885,16 @@ pub mod native_validation {
         pub(crate) peak_elements: usize,
         pub(crate) created_elements: u64,
         pub(crate) released_elements: u64,
-        pub(crate) notification_counts: [u64; 5],
+        pub(crate) notification_counts: [u64; 6],
+        pub(crate) notification_records: Box<[NativeAccessibilityNotificationRecord]>,
+        pub(crate) omitted_notification_records: u64,
+        pub(crate) invalid_notification_user_info: u64,
+        pub(crate) notification_user_info_controls_valid: bool,
+        pub(crate) posts_after_handler_revocation: u64,
+        pub(crate) revoke_starts: u64,
+        pub(crate) revoke_terminal: bool,
+        pub(crate) posted_notification_payload_bytes: usize,
+        pub(crate) peak_notification_retained_bytes: usize,
         pub(crate) current_elements_after_revoke: usize,
         pub(crate) retained_slot_bytes_before_revoke: usize,
         pub(crate) retained_slot_bytes_after_revoke: usize,
@@ -963,8 +1031,55 @@ pub mod native_validation {
         ///
         /// These counts prove invocation, not observation by an assistive client.
         #[must_use]
-        pub const fn notification_counts(&self) -> [u64; 5] {
+        pub const fn notification_counts(&self) -> [u64; 6] {
             self.notification_counts
+        }
+        /// Returns the bounded observer-facing AppKit post protocol fixture.
+        ///
+        /// Records prove post invocation shape, not external delivery.
+        #[must_use]
+        pub fn notification_records(&self) -> &[NativeAccessibilityNotificationRecord] {
+            &self.notification_records
+        }
+        /// Returns records omitted after the fixed validation evidence ceiling.
+        #[must_use]
+        pub const fn omitted_notification_records(&self) -> u64 {
+            self.omitted_notification_records
+        }
+        /// Returns constructed payload dictionaries missing required AppKit keys.
+        #[must_use]
+        pub const fn invalid_notification_user_info(&self) -> u64 {
+            self.invalid_notification_user_info
+        }
+        /// Returns whether positive and malformed payload-key controls discriminate.
+        #[must_use]
+        pub const fn notification_user_info_controls_valid(&self) -> bool {
+            self.notification_user_info_controls_valid
+        }
+        /// Returns posts attempted after the application handler was revoked.
+        #[must_use]
+        pub const fn posts_after_handler_revocation(&self) -> u64 {
+            self.posts_after_handler_revocation
+        }
+        /// Returns the number of admitted revoke transitions.
+        #[must_use]
+        pub const fn revoke_starts(&self) -> u64 {
+            self.revoke_starts
+        }
+        /// Returns whether revoke ended with no handler and no transition in progress.
+        #[must_use]
+        pub const fn revoke_terminal(&self) -> bool {
+            self.revoke_terminal
+        }
+        /// Returns cumulative bounded payload bytes passed to AppKit posts.
+        #[must_use]
+        pub const fn posted_notification_payload_bytes(&self) -> usize {
+            self.posted_notification_payload_bytes
+        }
+        /// Returns peak temporary retained slots and announcement bytes.
+        #[must_use]
+        pub const fn peak_notification_retained_bytes(&self) -> usize {
+            self.peak_notification_retained_bytes
         }
         /// Returns retained native elements after callback revocation.
         #[must_use]

@@ -206,6 +206,12 @@ impl AccessibilityNode {
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    /// Retains the bounded semantic name for a post-borrow native payload.
+    #[must_use]
+    pub(crate) fn retained_name(&self) -> Arc<str> {
+        Arc::clone(&self.name)
+    }
     /// Returns whether this node owns native focus.
     #[must_use]
     pub const fn is_focused(&self) -> bool {
