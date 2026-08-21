@@ -425,6 +425,12 @@ fn cache_budget_atlas_geometry_and_error_evidence_are_complete() -> Result<(), B
         empty_saturated.insert_rasterized(GlyphKey::new(font()?, 53, 0), &empty),
         Err(LayoutError::AtlasSaturated)
     );
+    let exact_raster = RasterizedGlyph::new(Some(pixel.clone()), 0.0, 0.0)?;
+    let mut exact_raster_budget = GlyphAtlas::new(tiny_budget);
+    assert_eq!(
+        exact_raster_budget.insert_rasterized(GlyphKey::new(font()?, 56, 0), &exact_raster),
+        Err(LayoutError::AtlasSaturated)
+    );
     let mut metadata_saturated = GlyphAtlas::new(tiny_budget);
     assert_eq!(
         metadata_saturated.insert(GlyphKey::new(font()?, 30, 0), &pixel),
@@ -472,6 +478,17 @@ fn cache_budget_atlas_geometry_and_error_evidence_are_complete() -> Result<(), B
         Err(LayoutError::ArithmeticOverflow)
     );
     assert_eq!(invalid_pixels.pixel_revision, invalid_revision);
+
+    let valid_rect = AtlasRect::new(0, 0, one, one);
+    let mut exact_pixels = GlyphAtlas::new(growth_budget);
+    exact_pixels.dimension = 1;
+    exact_pixels.pixels = vec![0];
+    assert_eq!(exact_pixels.copy_bitmap(valid_rect, &pixel), Ok(()));
+    assert_eq!(exact_pixels.pixels(), &[1]);
+    assert_eq!(exact_pixels.pixel_revision, 1);
+    assert_eq!(exact_pixels.clear_rect(valid_rect), Ok(()));
+    assert_eq!(exact_pixels.pixels(), &[0]);
+    assert_eq!(exact_pixels.pixel_revision, 2);
 
     let mut positive_eviction = GlyphAtlas::new(growth_budget);
     positive_eviction.insert(GlyphKey::new(font()?, 54, 0), &pixel)?;

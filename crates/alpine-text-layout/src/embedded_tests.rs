@@ -190,7 +190,7 @@ fn atlas_lookup_retains_raster_bearings_and_empty_outcomes() -> Result<(), Box<d
     assert_eq!(visible.left(), -1.5);
     assert_eq!(visible.top(), 3.25);
     let visible_revision = atlas.snapshot().pixel_revision();
-    assert!(visible_revision > 0);
+    assert_eq!(visible_revision, 2);
     assert_eq!(atlas.lookup(visible_key)?, Some(visible));
     assert_eq!(atlas.snapshot().pixel_revision(), visible_revision);
 
