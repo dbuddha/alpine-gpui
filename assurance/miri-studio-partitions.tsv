@@ -34,6 +34,7 @@ settings::	studio-model
 syntax::	studio-model
 tests::accessibility_non_identity_state_and_every_focus_owner_are_exact	studio-app-01
 tests::accessibility_runtime_dispatch_is_exact_dirty_neutral_and_revision_checked	studio-app-01
+tests::accessibility_activation_routes_current_commands_and_rejects_stale_targets	studio-app-01
 tests::accessibility_runtime_rejects_stale_mapping_and_oversized_text	studio-app-01
 tests::accessibility_snapshot_preserves_unicode_revision_focus_and_bounded_text	studio-app-01
 tests::accessibility_text_mapping_dispatches_exact_unicode_results	studio-app-01

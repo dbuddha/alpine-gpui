@@ -399,11 +399,18 @@ impl CommandPalette {
         let spec = REGISTRY
             .get(usize::from(selected.registry_index))
             .ok_or(CommandPaletteError::MissingSelection)?;
-        if !context.available(spec.command) {
+        self.execute(spec.command, context)
+    }
+
+    pub(crate) fn execute(
+        &mut self,
+        command: StudioCommand,
+        context: CommandContext,
+    ) -> Result<StudioCommand, CommandPaletteError> {
+        if !context.available(command) {
             let _ = self.refresh(context)?;
-            return Err(CommandPaletteError::Unavailable(spec.command));
+            return Err(CommandPaletteError::Unavailable(command));
         }
-        let command = spec.command;
         self.executions = self.executions.saturating_add(1);
         self.release();
         Ok(command)

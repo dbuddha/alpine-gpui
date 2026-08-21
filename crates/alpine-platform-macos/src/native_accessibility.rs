@@ -7,7 +7,7 @@ use std::cell::Cell;
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::{Retained, Weak},
-    runtime::{NSObjectProtocol, Sel},
+    runtime::{Bool, NSObjectProtocol, Sel},
     sel,
 };
 use objc2_app_kit::{
@@ -16,7 +16,7 @@ use objc2_app_kit::{
     NSAccessibilityPostNotification, NSAccessibilitySelectedTextChangedNotification,
     NSAccessibilityValueChangedNotification,
 };
-use objc2_foundation::{NSArray, NSRange, NSString};
+use objc2_foundation::{NSArray, NSPoint, NSRange, NSRect, NSSize, NSString};
 
 use crate::{
     AccessibilityAction, AccessibilityActionResult, AccessibilityError, AccessibilityNode,
@@ -88,6 +88,7 @@ impl RefreshOutcome {
 
 struct CachedElement {
     id: AccessibilityNodeId,
+    instance_generation: u64,
     element: Retained<NativeAccessibilityElement>,
 }
 
@@ -107,6 +108,7 @@ pub(crate) struct NativeAccessibilityAdapter {
     elements: Vec<CachedElement>,
     next_request_id: u64,
     generation: u64,
+    next_element_generation: u64,
     active: bool,
     counters: AdapterCounters,
 }
@@ -119,6 +121,7 @@ impl NativeAccessibilityAdapter {
             elements: Vec::new(),
             next_request_id: 1,
             generation: 1,
+            next_element_generation: 1,
             active: false,
             counters: AdapterCounters {
                 peak_elements: 0,
@@ -238,12 +241,42 @@ impl NativeAccessibilityAdapter {
         let mut created = 0_u64;
         let main_thread = MainThreadMarker::new().ok_or(SurfaceError::DriverUnavailable)?;
         for node in snapshot.nodes() {
-            let element = self.element(node.id()).unwrap_or_else(|| {
+            let reusable = self
+                .elements
+                .iter()
+                .find(|entry| entry.id == node.id())
+                .and_then(|entry| {
+                    self.snapshot
+                        .as_ref()
+                        .and_then(|prior| {
+                            prior.nodes().iter().find(|prior| prior.id() == node.id())
+                        })
+                        .filter(|prior| reusable_semantics(prior, node))
+                        .map(|_| (entry.element.clone(), entry.instance_generation))
+                });
+            let (element, instance_generation) = if let Some(reusable) = reusable {
+                reusable
+            } else {
+                let instance_generation = self.next_element_generation;
+                self.next_element_generation = self
+                    .next_element_generation
+                    .checked_add(1)
+                    .ok_or(SurfaceError::DriverUnavailable)?;
                 created = created.saturating_add(1);
-                NativeAccessibilityElement::new(main_thread, view, node.id(), self.generation)
-            });
+                (
+                    NativeAccessibilityElement::new(
+                        main_thread,
+                        view,
+                        node.id(),
+                        self.generation,
+                        instance_generation,
+                    ),
+                    instance_generation,
+                )
+            };
             next.push(CachedElement {
                 id: node.id(),
+                instance_generation,
                 element,
             });
         }
@@ -341,17 +374,22 @@ impl NativeAccessibilityAdapter {
         self.generation = self.generation.saturating_add(1);
     }
 
-    fn valid(&self, generation: u64, id: AccessibilityNodeId) -> bool {
+    fn valid(&self, generation: u64, instance_generation: u64, id: AccessibilityNodeId) -> bool {
         self.active
             && self.generation == generation
             && self
-                .snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.nodes().iter().any(|node| node.id() == id))
+                .elements
+                .iter()
+                .any(|entry| entry.id == id && entry.instance_generation == instance_generation)
     }
 
-    fn node(&self, generation: u64, id: AccessibilityNodeId) -> Option<&AccessibilityNode> {
-        if !self.valid(generation, id) {
+    fn node(
+        &self,
+        generation: u64,
+        instance_generation: u64,
+        id: AccessibilityNodeId,
+    ) -> Option<&AccessibilityNode> {
+        if !self.valid(generation, instance_generation, id) {
             return None;
         }
         self.snapshot
@@ -371,12 +409,13 @@ impl NativeAccessibilityAdapter {
     fn children(
         &self,
         generation: u64,
+        instance_generation: u64,
         id: AccessibilityNodeId,
     ) -> Vec<Retained<NativeAccessibilityElement>> {
         let Some(snapshot) = self
             .snapshot
             .as_ref()
-            .filter(|_| self.valid(generation, id))
+            .filter(|_| self.valid(generation, instance_generation, id))
         else {
             return Vec::new();
         };
@@ -457,12 +496,51 @@ impl NativeAccessibilityAdapter {
         )
     }
 
+    fn activate(
+        &mut self,
+        generation: u64,
+        instance_generation: u64,
+        id: AccessibilityNodeId,
+    ) -> bool {
+        let Some((revision, enabled)) =
+            self.node(generation, instance_generation, id).map(|node| {
+                (
+                    self.snapshot.as_ref().map(AccessibilitySnapshot::revision),
+                    node.supports_activate() && node.is_enabled(),
+                )
+            })
+        else {
+            return false;
+        };
+        let Some(revision) = revision.filter(|_| enabled) else {
+            return false;
+        };
+        let Ok(request_id) = self.next_id() else {
+            return false;
+        };
+        let Ok(request) =
+            AccessibilityRequest::action(request_id, AccessibilityAction::activate(revision, id))
+        else {
+            return false;
+        };
+        let Ok(response) = self.dispatch(&request) else {
+            return false;
+        };
+        matches!(
+            response.result(),
+            Ok(AccessibilityPayload::Action(
+                AccessibilityActionResult::Applied | AccessibilityActionResult::Unchanged
+            ))
+        )
+    }
+
     fn snapshot_metadata(
         &self,
         generation: u64,
+        instance_generation: u64,
         id: AccessibilityNodeId,
     ) -> Option<(AccessibilityRevision, usize, AccessibilityTextRange)> {
-        if self.node(generation, id)?.role() != AccessibilityRole::CodeEditor {
+        if self.node(generation, instance_generation, id)?.role() != AccessibilityRole::CodeEditor {
             return None;
         }
         let snapshot = self.snapshot.as_ref()?;
@@ -533,6 +611,22 @@ impl NativeAccessibilityAdapter {
             .and_then(|snapshot| role_id(snapshot, AccessibilityRole::Tab))
             .and_then(|id| view.ivars().accessibility.borrow().element(id))
             .ok_or(SurfaceError::DriverUnavailable)?;
+        let identifier: Retained<NSString> = unsafe { msg_send![&*tab, accessibilityIdentifier] };
+        let repeated_identifier: Retained<NSString> =
+            unsafe { msg_send![&*tab, accessibilityIdentifier] };
+        let stable_external_identifier = !identifier.to_string().is_empty()
+            && identifier.to_string() == repeated_identifier.to_string();
+        let frame: NSRect = unsafe { msg_send![&*tab, accessibilityFrame] };
+        let bounded_screen_frame = frame.origin.x.is_finite()
+            && frame.origin.y.is_finite()
+            && frame.size.width.is_finite()
+            && frame.size.height.is_finite()
+            && frame.size.width > 0.0
+            && frame.size.height > 0.0;
+        let tab_activate_selector_allowed: bool = unsafe {
+            msg_send![&*tab, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
+        };
+        let accepted_activation: bool = unsafe { msg_send![&*tab, accessibilityPerformPress] };
         let status = view
             .ivars()
             .accessibility
@@ -542,6 +636,13 @@ impl NativeAccessibilityAdapter {
             .and_then(|snapshot| role_id(snapshot, AccessibilityRole::Status))
             .and_then(|id| view.ivars().accessibility.borrow().element(id))
             .ok_or(SurfaceError::DriverUnavailable)?;
+        let status_activate_selector_allowed: bool = unsafe {
+            msg_send![&*status, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
+        };
+        let status_activation: bool = unsafe { msg_send![&*status, accessibilityPerformPress] };
+        let activate_selector_allowed = tab_activate_selector_allowed
+            && !status_activate_selector_allowed
+            && !status_activation;
         let editor_parent: Option<Retained<NativeAccessibilityElement>> =
             unsafe { msg_send![&*editor, accessibilityParent] };
         let editor_focused: bool = unsafe { msg_send![&*editor, isAccessibilityFocused] };
@@ -567,9 +668,76 @@ impl NativeAccessibilityAdapter {
                         })
                 })
             });
+        let reusable_semantics_valid = {
+            let snapshot = view
+                .ivars()
+                .accessibility
+                .borrow()
+                .snapshot
+                .clone()
+                .ok_or(SurfaceError::DriverUnavailable)?;
+            let current = snapshot
+                .nodes()
+                .iter()
+                .find(|node| node.role() == AccessibilityRole::Tab)
+                .ok_or(SurfaceError::DriverUnavailable)?;
+            let changed_parent = AccessibilityNode::new(
+                current.id(),
+                None,
+                current.role(),
+                current.name().into(),
+                current.is_focused(),
+                current.is_selected(),
+                current.announces(),
+            )
+            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .with_bounds(current.bounds())
+            .with_activate(current.is_enabled());
+            let changed_role = AccessibilityNode::new(
+                current.id(),
+                current.parent(),
+                AccessibilityRole::Status,
+                current.name().into(),
+                current.is_focused(),
+                current.is_selected(),
+                current.announces(),
+            )
+            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .with_bounds(current.bounds())
+            .with_activate(current.is_enabled());
+            let changed_name = AccessibilityNode::new(
+                current.id(),
+                current.parent(),
+                current.role(),
+                "different semantic target".into(),
+                current.is_focused(),
+                current.is_selected(),
+                current.announces(),
+            )
+            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .with_bounds(current.bounds())
+            .with_activate(current.is_enabled());
+            let changed_action = AccessibilityNode::new(
+                current.id(),
+                current.parent(),
+                current.role(),
+                current.name().into(),
+                current.is_focused(),
+                current.is_selected(),
+                current.announces(),
+            )
+            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .with_bounds(current.bounds());
+            reusable_semantics(current, current)
+                && !reusable_semantics(current, &changed_parent)
+                && !reusable_semantics(current, &changed_role)
+                && !reusable_semantics(current, &changed_name)
+                && !reusable_semantics(current, &changed_action)
+        };
         let semantic_tree_valid = role_mapping_valid
             && editor_focused
             && tab_selected
+            && reusable_semantics_valid
             && status_value.is_some_and(|value| value.to_string() == "Ready")
             && editor_parent.is_some_and(|parent| core::ptr::eq(&*parent, &*root));
         let status_text_selector_allowed: bool = unsafe {
@@ -612,6 +780,8 @@ impl NativeAccessibilityAdapter {
             view.ivars().accessibility.borrow().retained_slot_bytes();
         view.revoke_accessibility();
         let late_length: usize = unsafe { msg_send![&*editor, accessibilityNumberOfCharacters] };
+        let revoked_activation_rejected: bool =
+            unsafe { msg_send![&*tab, accessibilityPerformPress] };
         let final_counters = view.ivars().accessibility.borrow().counters;
         let retained_slot_bytes_after_revoke =
             view.ivars().accessibility.borrow().retained_slot_bytes();
@@ -635,6 +805,11 @@ impl NativeAccessibilityAdapter {
             accepted_selection: from_ns_range(accepted_selection)
                 .ok_or(SurfaceError::DriverUnavailable)?,
             stale_action_rejected,
+            stable_external_identifier,
+            bounded_screen_frame,
+            activate_selector_allowed,
+            accepted_activation,
+            revoked_activation_rejected: !revoked_activation_rejected,
             peak_elements,
             created_elements,
             released_elements: final_counters.released_elements,
@@ -651,6 +826,7 @@ pub(crate) struct NativeAccessibilityElementIvars {
     view: Weak<SurfaceView>,
     id: AccessibilityNodeId,
     generation: u64,
+    instance_generation: u64,
     dispatch_failed: Cell<bool>,
 }
 
@@ -666,7 +842,15 @@ define_class!(
 
     impl NativeAccessibilityElement {
         #[unsafe(method(isAccessibilityElement))]
-        fn is_accessibility_element(&self) -> bool { self.with_adapter(|adapter| adapter.valid(self.ivars().generation, self.ivars().id)).unwrap_or(false) }
+        fn is_accessibility_element(&self) -> bool { self.with_adapter(|adapter| adapter.valid(self.ivars().generation, self.ivars().instance_generation, self.ivars().id)).unwrap_or(false) }
+
+        #[unsafe(method_id(accessibilityIdentifier))]
+        fn accessibility_identifier(&self) -> Retained<NSString> {
+            NSString::from_str(&format!("alpine.ax.{}.{}.{}", self.ivars().generation, self.ivars().instance_generation, self.ivars().id.get()))
+        }
+
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame(&self) -> NSRect { self.accessibility_frame_impl() }
 
         #[unsafe(method_id(accessibilityRole))]
         fn accessibility_role(&self) -> Retained<NSString> {
@@ -691,7 +875,7 @@ define_class!(
 
         #[unsafe(method_id(accessibilityChildren))]
         fn accessibility_children(&self) -> Retained<NSArray<NativeAccessibilityElement>> {
-            let children = self.with_adapter(|adapter| adapter.children(self.ivars().generation, self.ivars().id)).unwrap_or_default();
+            let children = self.with_adapter(|adapter| adapter.children(self.ivars().generation, self.ivars().instance_generation, self.ivars().id)).unwrap_or_default();
             NSArray::from_retained_slice(&children)
         }
 
@@ -700,6 +884,19 @@ define_class!(
 
         #[unsafe(method(isAccessibilitySelected))]
         fn is_accessibility_selected(&self) -> bool { self.node().is_some_and(|node| node.is_selected()) }
+
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> Bool {
+            let applied = self.with_adapter_mut(|adapter| adapter.activate(self.ivars().generation, self.ivars().instance_generation, self.ivars().id)).unwrap_or(false);
+            if applied
+                && let Some(view) = self.ivars().view.load()
+                && NativeAccessibilityAdapter::refresh_view(&view).is_err()
+            {
+                self.ivars().dispatch_failed.set(true);
+                return false.into();
+            }
+            applied.into()
+        }
 
         #[unsafe(method(accessibilityNumberOfCharacters))]
         fn accessibility_number_of_characters(&self) -> usize {
@@ -758,12 +955,16 @@ define_class!(
                 .node()
                 .is_some_and(|node| node.role() == AccessibilityRole::CodeEditor);
             selector == sel!(accessibilityRole)
+                || selector == sel!(accessibilityIdentifier)
+                || selector == sel!(accessibilityFrame)
                 || selector == sel!(accessibilityLabel)
                 || selector == sel!(accessibilityValue)
                 || selector == sel!(accessibilityParent)
                 || selector == sel!(accessibilityChildren)
                 || selector == sel!(isAccessibilityFocused)
                 || selector == sel!(isAccessibilitySelected)
+                || (self.node().is_some_and(|node| node.supports_activate() && node.is_enabled())
+                    && selector == sel!(accessibilityPerformPress))
                 || (text_editor
                     && (selector == sel!(accessibilityNumberOfCharacters)
                         || selector == sel!(accessibilitySelectedText)
@@ -783,12 +984,14 @@ impl NativeAccessibilityElement {
         view: &SurfaceView,
         id: AccessibilityNodeId,
         generation: u64,
+        instance_generation: u64,
     ) -> Retained<Self> {
         let retained_view = view.retain();
         let allocated = Self::alloc(main_thread).set_ivars(NativeAccessibilityElementIvars {
             view: Weak::from_retained(&retained_view),
             id,
             generation,
+            instance_generation,
             dispatch_failed: Cell::new(false),
         });
         // SAFETY: NSAccessibilityElement's parameterless initializer accepts a
@@ -817,7 +1020,11 @@ impl NativeAccessibilityElement {
     fn node(&self) -> Option<AccessibilityNode> {
         self.with_adapter(|adapter| {
             adapter
-                .node(self.ivars().generation, self.ivars().id)
+                .node(
+                    self.ivars().generation,
+                    self.ivars().instance_generation,
+                    self.ivars().id,
+                )
                 .cloned()
         })
         .flatten()
@@ -832,6 +1039,25 @@ impl NativeAccessibilityElement {
         let parent = self.node()?.parent()?;
         self.with_adapter(|adapter| adapter.element(parent))
             .flatten()
+    }
+
+    fn accessibility_frame_impl(&self) -> NSRect {
+        let Some(node) = self.node() else {
+            return NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0));
+        };
+        let bounds = node.bounds();
+        let local = NSRect::new(
+            NSPoint::new(f64::from(bounds.x()), f64::from(bounds.y())),
+            NSSize::new(f64::from(bounds.width()), f64::from(bounds.height())),
+        );
+        self.ivars()
+            .view
+            .load()
+            .and_then(|view| {
+                view.window()
+                    .map(|window| window.convertRectToScreen(local))
+            })
+            .unwrap_or(local)
     }
 
     fn accessibility_selected_text_impl(&self) -> Retained<NSString> {
@@ -855,7 +1081,11 @@ impl NativeAccessibilityElement {
 
     fn metadata(&self) -> Option<(AccessibilityRevision, usize, AccessibilityTextRange)> {
         self.with_adapter(|adapter| {
-            adapter.snapshot_metadata(self.ivars().generation, self.ivars().id)
+            adapter.snapshot_metadata(
+                self.ivars().generation,
+                self.ivars().instance_generation,
+                self.ivars().id,
+            )
         })
         .flatten()
     }
@@ -887,7 +1117,17 @@ fn structural_tree_changed(
                     || left.parent() != right.parent()
                     || left.role() != right.role()
                     || left.name() != right.name()
+                    || left.bounds() != right.bounds()
+                    || left.is_enabled() != right.is_enabled()
+                    || left.supports_activate() != right.supports_activate()
             })
+}
+
+fn reusable_semantics(previous: &AccessibilityNode, current: &AccessibilityNode) -> bool {
+    previous.parent() == current.parent()
+        && previous.role() == current.role()
+        && previous.name() == current.name()
+        && previous.supports_activate() == current.supports_activate()
 }
 
 const fn role_name(role: AccessibilityRole) -> &'static str {
@@ -899,6 +1139,7 @@ const fn role_name(role: AccessibilityRole) -> &'static str {
         AccessibilityRole::FileTree => "AXOutline",
         AccessibilityRole::SearchField => "AXTextField",
         AccessibilityRole::Status => "AXStaticText",
+        AccessibilityRole::ListItem => "AXRow",
     }
 }
 

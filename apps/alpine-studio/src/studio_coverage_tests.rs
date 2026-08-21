@@ -5740,6 +5740,237 @@ fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end semantic journey preserves action, frame, and no-mutation controls"
+)]
+fn accessibility_activation_routes_current_commands_and_rejects_stale_targets()
+-> Result<(), Box<dyn Error>> {
+    let root = TestWorkspace::new()?;
+    root.write(
+        "alpha.rs",
+        "fn alpha() {}\nsecond line\nthird line\nfourth line\n",
+    )?;
+    root.write("beta.rs", "beta")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = app.workspace.as_ref().ok_or("workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("alpha")?;
+    let beta = workspace.index_named("beta.rs").ok_or("beta")?;
+    app.open_workspace_entry(alpha)?;
+    app.open_workspace_entry(beta)?;
+    let command_shift = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
+    assert!(app.handle_event(&key(KEY_E, command_shift)).visual_changed);
+    if let Some(tree_request) = app.prepare_file_tree_request()? {
+        assert!(
+            app.apply_file_tree_output(tree_request.execute())
+                .visual_changed
+        );
+    }
+    let tree_snapshot = app.accessibility_snapshot()?;
+    let alpha_row = tree_snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.role() == AccessibilityRole::ListItem && node.name() == "alpha.rs")
+        .ok_or("accessible alpha file row")?;
+    let tree_effect = accessibility::apply_action(
+        &mut app,
+        AccessibilityAction::activate(tree_snapshot.revision(), alpha_row.id()),
+    )?;
+    assert!(tree_effect.document_changed);
+    let active_path = app
+        .tabs
+        .path_at(app.tabs.active_index())
+        .ok_or("active accessible file path")?;
+    assert_eq!(
+        active_path.file_name().and_then(|name| name.to_str()),
+        Some("alpha.rs")
+    );
+    assert_eq!(
+        app.buffer().snapshot().text(),
+        "fn alpha() {}\nsecond line\nthird line\nfourth line\n"
+    );
+
+    let input = app.active_rust_document().ok_or("active Rust document")?;
+    let alpha_path = fs::canonicalize(root.path().join("alpha.rs"))?;
+    let base_diagnostics = rust_diagnostics::tests::diagnostics(&alpha_path, 1);
+    let mut diagnostic_params: serde_json::Value = serde_json::from_str(base_diagnostics.get())?;
+    let mut template = diagnostic_params["diagnostics"][0].clone();
+    template["range"]["start"]["character"] = serde_json::Value::from(0);
+    template["range"]["end"]["character"] = serde_json::Value::from(1);
+    let mut diagnostic_values = Vec::with_capacity(MAX_VISIBLE_DIAGNOSTIC_MARKERS);
+    for index in 0..MAX_VISIBLE_DIAGNOSTIC_MARKERS {
+        let mut diagnostic = template.clone();
+        if index >= MAX_VISIBLE_DIAGNOSTIC_MARKERS - 2 {
+            let ordinal = index - (MAX_VISIBLE_DIAGNOSTIC_MARKERS - 2);
+            diagnostic["range"]["start"]["line"] = serde_json::Value::from(2);
+            diagnostic["range"]["end"]["line"] = serde_json::Value::from(2);
+            diagnostic["range"]["start"]["character"] = serde_json::Value::from(ordinal);
+            diagnostic["range"]["end"]["character"] = serde_json::Value::from(ordinal + 1);
+        }
+        if index % 2 == 0 {
+            diagnostic
+                .as_object_mut()
+                .ok_or("diagnostic object")?
+                .remove("severity");
+        }
+        diagnostic_values.push(diagnostic);
+    }
+    diagnostic_params["diagnostics"] = serde_json::Value::Array(diagnostic_values);
+    let diagnostics =
+        serde_json::value::RawValue::from_string(serde_json::to_string(&diagnostic_params)?)?;
+    app.rust_diagnostics.install_for_test(
+        input,
+        &diagnostics,
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    let _diagnostic_scene = app.try_scene(SceneRevision::new(700), viewport()?)?;
+    let diagnostic_snapshot = app.accessibility_snapshot()?;
+    let diagnostic = diagnostic_snapshot
+        .nodes()
+        .iter()
+        .filter(|node| node.name().contains("diagnostic") && node.supports_activate())
+        .max_by_key(|node| node.id().get())
+        .ok_or("accessible diagnostic")?;
+    let diagnostic_effect = accessibility::apply_action(
+        &mut app,
+        AccessibilityAction::activate(diagnostic_snapshot.revision(), diagnostic.id()),
+    )?;
+    assert!(diagnostic_effect.visual_changed);
+    let line = app.buffer().snapshot().line_byte_range(2)?;
+    assert_eq!(app.selection.anchor().get(), line.start + 1);
+    assert_eq!(app.selection.head().get(), line.start + 2);
+
+    let stale_revision = accessibility::revision(&app);
+    assert!(app.replace_selection("dirty").document_changed);
+    let context = app.command_context();
+    assert!(app.command_palette.open(context)?);
+    let snapshot = app.accessibility_snapshot()?;
+    assert_eq!(
+        snapshot
+            .nodes()
+            .iter()
+            .filter(|node| node.is_focused())
+            .count(),
+        1
+    );
+    assert!(snapshot.nodes().iter().all(|node| {
+        let bounds = node.bounds();
+        [bounds.x(), bounds.y(), bounds.width(), bounds.height()]
+            .into_iter()
+            .all(f32::is_finite)
+    }));
+    let tab = snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.role() == AccessibilityRole::Tab && node.is_selected())
+        .ok_or("tab node")?;
+    assert!(tab.supports_activate());
+    let tab_effect = accessibility::apply_action(
+        &mut app,
+        AccessibilityAction::activate(snapshot.revision(), tab.id()),
+    )?;
+    assert!(!tab_effect.visual_changed);
+    let editor = snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.role() == AccessibilityRole::CodeEditor)
+        .ok_or("editor node")?;
+    let editor_error = accessibility::apply_action(
+        &mut app,
+        AccessibilityAction::activate(snapshot.revision(), editor.id()),
+    );
+    assert!(matches!(
+        editor_error,
+        Err(accessibility::AccessibilityError::Transport(
+            alpine_platform_macos::AccessibilityError::ActionDisabled(id)
+        )) if id == editor.id()
+    ));
+    let close = snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.name() == "File: Close Tab")
+        .ok_or("close command node")?;
+    assert!(close.supports_activate() && close.is_enabled());
+    let revision = snapshot.revision();
+    let close_id = close.id();
+    let before = app.buffer().snapshot().text();
+    let before_utf16 = before.encode_utf16().count();
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    assert!(runtime.frame_if_dirty().is_some());
+    assert!(runtime.frame_if_dirty().is_none());
+
+    let close_request = AccessibilityRequest::action(
+        AccessibilityRequestId::new(80),
+        AccessibilityAction::activate(revision, close_id),
+    )?;
+    let close_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(80),
+        request: close_request,
+    });
+    assert!(close_response.frame().is_some());
+    assert!(runtime.frame_if_dirty().is_none());
+
+    let snapshot_request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(83))?;
+    let current_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(83),
+        request: snapshot_request,
+    });
+    assert!(current_response.frame().is_none());
+    let current = match current_response
+        .accessibility_response()
+        .ok_or("current snapshot response")?
+        .result()
+    {
+        Ok(AccessibilityPayload::Snapshot(snapshot)) => {
+            assert!(snapshot.is_dirty());
+            assert_eq!(snapshot.text_len_utf16(), before_utf16);
+            snapshot.revision()
+        }
+        _ => return Err("current snapshot payload".into()),
+    };
+
+    let stale_request = AccessibilityRequest::action(
+        AccessibilityRequestId::new(81),
+        AccessibilityAction::activate(stale_revision, close_id),
+    )?;
+    let stale_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(81),
+        request: stale_request,
+    });
+    assert!(stale_response.frame().is_none());
+    assert!(matches!(
+        stale_response
+            .accessibility_response()
+            .ok_or("stale action response")?
+            .result(),
+        Err(alpine_platform_macos::AccessibilityError::StaleRevision { .. })
+    ));
+
+    let missing_request = AccessibilityRequest::action(
+        AccessibilityRequestId::new(82),
+        AccessibilityAction::activate(
+            current,
+            alpine_platform_macos::AccessibilityNodeId::new(u64::MAX),
+        ),
+    )?;
+    let missing_response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(82),
+        request: missing_request,
+    });
+    assert!(missing_response.frame().is_none());
+    assert!(matches!(
+        missing_response
+            .accessibility_response()
+            .ok_or("missing action response")?
+            .result(),
+        Err(alpine_platform_macos::AccessibilityError::ActionTargetMissing(id))
+            if *id == alpine_platform_macos::AccessibilityNodeId::new(u64::MAX)
+    ));
+    Ok(())
+}
+
+#[test]
 fn selection_revision_advances_only_for_real_selection_changes() -> Result<(), Box<dyn Error>> {
     let mut app = test_app()?;
     let original = app.selection;

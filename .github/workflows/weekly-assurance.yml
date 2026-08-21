@@ -46,7 +46,7 @@ jobs:
         # Silicon assurance, not by this Linux workspace pass.
         run: |
           mkdir -p target
-          cargo mutants --workspace --exclude alpine-assurance --exclude-re 'native_validation::|native_file_app|run_on_native_surface' --no-shuffle --output target/mutants.out -- --locked
+          cargo mutants --workspace --exclude alpine-assurance --exclude-re 'native_validation::|native_file_app|run_on_native_surface|activation_revision_and_target_identity_are_preserved' --no-shuffle --output target/mutants.out -- --locked
       - name: Upload mutation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

@@ -992,6 +992,20 @@ no GPU, filesystem, language-worker, clipboard, timer, or queue work. Native
 handler revocation clears marked text and leaves input inactive even when no
 application callback remains. See AEP-0268.
 
+Semantic nodes now carry finite view-local rectangles plus explicit enabled and
+activation capability bits. AppKit exposes a stable identifier composed from
+surface, native-element-instance, and semantic identity; unchanged nodes retain
+their native object, while removed, replaced, and surface-revoked instances can
+never become valid again. Rectangle conversion to screen coordinates occurs
+only in the private AppKit adapter. `Activate` carries the exact observed
+document/buffer revision and node identity. Studio rebuilds its bounded current
+projection, rejects stale, missing, unsupported, or disabled targets before
+mutation, and routes only to existing tab, file-row, command, diagnostic,
+save, and dirty-close authorities. Queries remain dirty-neutral and accepted
+actions enter the existing one-frame coalescing path. No `SetFocus`, arbitrary
+text geometry, callback registry, second semantic tree, or generic element
+framework is introduced. See AEP-0270.
+
 ### Pane document ownership (Task #127)
 
 Pane leaves retain a stable document-tab identity and pane-local view state. The global document-tab store remains the sole owner of document payloads and buffers; panes never clone an editor or buffer. Scene construction resolves each pane identity to an immutable snapshot, while focus activates that identity through the existing checked tab transition. Selection state follows the document revision and is synchronized across panes showing the same tab, while scroll remains pane-local. Closing a tab retargets every referencing pane to the replacement active tab before the next scene is admitted.

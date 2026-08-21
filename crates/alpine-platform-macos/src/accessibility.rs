@@ -11,6 +11,8 @@ pub const MAX_ACCESSIBILITY_NODE_NAME_BYTES: usize = 4 * 1024;
 pub const MAX_ACCESSIBILITY_NAME_BYTES: usize = 256 * 1024;
 /// Maximum UTF-8 bytes returned by one text request.
 pub const MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES: usize = 64 * 1024;
+/// Maximum finite view-local coordinate or extent accepted by accessibility.
+pub const MAX_ACCESSIBILITY_COORDINATE: f32 = 1_048_576.0;
 
 /// Stable semantic identity independent of native accessibility objects.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -26,6 +28,67 @@ impl AccessibilityNodeId {
     #[must_use]
     pub const fn get(self) -> u64 {
         self.0
+    }
+}
+
+/// One validated finite rectangle in Alpine view-local coordinates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AccessibilityBounds {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl AccessibilityBounds {
+    /// Creates a bounded rectangle without retaining a platform geometry object.
+    ///
+    /// # Errors
+    /// Rejects non-finite, negative, or out-of-domain coordinates and extents.
+    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Result<Self, AccessibilityError> {
+        let values = [x, y, width, height];
+        if values.into_iter().any(|value| {
+            !value.is_finite() || !(0.0..=MAX_ACCESSIBILITY_COORDINATE).contains(&value)
+        }) || x + width > MAX_ACCESSIBILITY_COORDINATE
+            || y + height > MAX_ACCESSIBILITY_COORDINATE
+        {
+            return Err(AccessibilityError::InvalidBounds);
+        }
+        Ok(Self {
+            x: normalized_bits(x),
+            y: normalized_bits(y),
+            width: normalized_bits(width),
+            height: normalized_bits(height),
+        })
+    }
+
+    /// Returns the view-local x coordinate.
+    #[must_use]
+    pub const fn x(self) -> f32 {
+        f32::from_bits(self.x)
+    }
+    /// Returns the view-local y coordinate.
+    #[must_use]
+    pub const fn y(self) -> f32 {
+        f32::from_bits(self.y)
+    }
+    /// Returns the finite width.
+    #[must_use]
+    pub const fn width(self) -> f32 {
+        f32::from_bits(self.width)
+    }
+    /// Returns the finite height.
+    #[must_use]
+    pub const fn height(self) -> f32 {
+        f32::from_bits(self.height)
+    }
+}
+
+const fn normalized_bits(value: f32) -> u32 {
+    if value == 0.0 {
+        0.0_f32.to_bits()
+    } else {
+        value.to_bits()
     }
 }
 
@@ -48,10 +111,16 @@ pub enum AccessibilityRole {
     Dialog,
     /// Status or announcement value.
     Status,
+    /// One actionable row inside a bounded list or outline.
+    ListItem,
 }
 
 /// One bounded semantic element without a native handle.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent semantic state and action capability must remain explicit"
+)]
 pub struct AccessibilityNode {
     id: AccessibilityNodeId,
     parent: Option<AccessibilityNodeId>,
@@ -60,6 +129,9 @@ pub struct AccessibilityNode {
     focused: bool,
     selected: bool,
     announces: bool,
+    bounds: AccessibilityBounds,
+    enabled: bool,
+    supports_activate: bool,
 }
 
 impl AccessibilityNode {
@@ -93,7 +165,25 @@ impl AccessibilityNode {
             focused,
             selected,
             announces,
+            bounds: AccessibilityBounds::new(0.0, 0.0, 0.0, 0.0)?,
+            enabled: true,
+            supports_activate: false,
         })
+    }
+
+    /// Replaces the node's view-local rectangle after validation.
+    #[must_use]
+    pub fn with_bounds(mut self, bounds: AccessibilityBounds) -> Self {
+        self.bounds = bounds;
+        self
+    }
+
+    /// Marks whether this node admits the closed `Activate` action.
+    #[must_use]
+    pub const fn with_activate(mut self, enabled: bool) -> Self {
+        self.supports_activate = true;
+        self.enabled = enabled;
+        self
     }
 
     /// Returns the stable semantic identity.
@@ -130,6 +220,21 @@ impl AccessibilityNode {
     #[must_use]
     pub const fn announces(&self) -> bool {
         self.announces
+    }
+    /// Returns the finite view-local semantic rectangle.
+    #[must_use]
+    pub const fn bounds(&self) -> AccessibilityBounds {
+        self.bounds
+    }
+    /// Returns whether the current action target is enabled.
+    #[must_use]
+    pub const fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    /// Returns whether this node admits the closed `Activate` action.
+    #[must_use]
+    pub const fn supports_activate(&self) -> bool {
+        self.supports_activate
     }
 }
 
@@ -454,6 +559,13 @@ pub enum AccessibilityAction {
         /// Requested directional selection.
         selection: AccessibilitySelection,
     },
+    /// Activates one current bounded semantic node.
+    Activate {
+        /// Revision observed with the target node.
+        revision: AccessibilityRevision,
+        /// Exact semantic identity observed by assistive technology.
+        node: AccessibilityNodeId,
+    },
 }
 
 impl AccessibilityAction {
@@ -469,11 +581,16 @@ impl AccessibilityAction {
             selection: AccessibilitySelection::new(anchor_utf16, head_utf16),
         }
     }
+    /// Creates one revision-checked activation.
+    #[must_use]
+    pub const fn activate(revision: AccessibilityRevision, node: AccessibilityNodeId) -> Self {
+        Self::Activate { revision, node }
+    }
     /// Returns the exact observed revision.
     #[must_use]
     pub const fn revision(self) -> AccessibilityRevision {
         match self {
-            Self::SetSelection { revision, .. } => revision,
+            Self::SetSelection { revision, .. } | Self::Activate { revision, .. } => revision,
         }
     }
 }
@@ -917,6 +1034,12 @@ pub enum AccessibilityError {
     },
     /// Checked byte or UTF-16 mapping failed.
     TextMappingFailed,
+    /// A requested semantic action target is absent from the current tree.
+    ActionTargetMissing(AccessibilityNodeId),
+    /// A current semantic node does not admit activation.
+    ActionDisabled(AccessibilityNodeId),
+    /// A semantic rectangle was non-finite, negative, or outside the fixed domain.
+    InvalidBounds,
     /// A response was already installed for the dispatch.
     DuplicateResponse,
     /// Request identity, operation, revision, or payload kind did not match.
@@ -959,6 +1082,21 @@ impl fmt::Display for AccessibilityError {
                 "stale accessibility revision {expected:?}; current is {actual:?}"
             ),
             Self::TextMappingFailed => formatter.write_str("accessibility text mapping failed"),
+            Self::ActionTargetMissing(id) => {
+                write!(
+                    formatter,
+                    "accessibility action target {} is missing",
+                    id.get()
+                )
+            }
+            Self::ActionDisabled(id) => {
+                write!(
+                    formatter,
+                    "accessibility action target {} is disabled",
+                    id.get()
+                )
+            }
+            Self::InvalidBounds => formatter.write_str("accessibility bounds are invalid"),
             Self::DuplicateResponse => formatter.write_str("accessibility response is already set"),
             Self::RequestMismatch => {
                 formatter.write_str("accessibility response does not match its request")
@@ -968,6 +1106,78 @@ impl fmt::Display for AccessibilityError {
 }
 
 impl Error for AccessibilityError {}
+
+#[cfg(test)]
+mod bounded_action_tests {
+    use super::*;
+
+    #[test]
+    fn bounds_and_activation_values_fail_closed() -> Result<(), AccessibilityError> {
+        let normalized_zero = AccessibilityBounds::new(-0.0, 2.0, 30.0, 40.0)?;
+        assert_eq!(normalized_zero.x().to_bits(), 0.0_f32.to_bits());
+        let bounds = AccessibilityBounds::new(1.5, 2.0, 30.0, 40.0)?;
+        assert_eq!(
+            (bounds.x(), bounds.y(), bounds.width(), bounds.height()),
+            (1.5, 2.0, 30.0, 40.0)
+        );
+        assert_eq!(
+            AccessibilityBounds::new(f32::NAN, 0.0, 1.0, 1.0),
+            Err(AccessibilityError::InvalidBounds)
+        );
+        assert_eq!(
+            AccessibilityBounds::new(MAX_ACCESSIBILITY_COORDINATE, 0.0, 1.0, 1.0),
+            Err(AccessibilityError::InvalidBounds)
+        );
+        let revision = AccessibilityRevision::new(7, 11);
+        let id = AccessibilityNodeId::new(13);
+        let action = AccessibilityAction::activate(revision, id);
+        assert_eq!(action.revision(), revision);
+        assert_eq!(action, AccessibilityAction::Activate { revision, node: id });
+        let default_node = AccessibilityNode::new(
+            id,
+            None,
+            AccessibilityRole::ListItem,
+            "row".into(),
+            false,
+            false,
+            false,
+        )
+        .unwrap_or_else(|_| unreachable!());
+        assert!(default_node.is_enabled());
+        assert!(!default_node.supports_activate());
+        let node = default_node.with_bounds(bounds).with_activate(false);
+        assert!(node.supports_activate());
+        assert!(!node.is_enabled());
+        assert_eq!(node.bounds(), bounds);
+        assert_eq!(
+            AccessibilityError::ActionTargetMissing(id).to_string(),
+            "accessibility action target 13 is missing"
+        );
+        assert_eq!(
+            AccessibilityError::ActionDisabled(id).to_string(),
+            "accessibility action target 13 is disabled"
+        );
+        assert_eq!(
+            AccessibilityError::InvalidBounds.to_string(),
+            "accessibility bounds are invalid"
+        );
+        Ok(())
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn activation_revision_and_target_identity_are_preserved() {
+    let document = kani::any::<u64>();
+    let buffer = kani::any::<u64>();
+    let target = kani::any::<u64>();
+    kani::assume(target != 0);
+    let revision = AccessibilityRevision::new(document, buffer);
+    let node = AccessibilityNodeId::new(target);
+    let action = AccessibilityAction::activate(revision, node);
+    assert_eq!(action.revision(), revision);
+    assert_eq!(action, AccessibilityAction::Activate { revision, node });
+}
 
 #[cfg(test)]
 mod mapping_protocol_tests {

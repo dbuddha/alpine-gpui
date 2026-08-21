@@ -818,6 +818,11 @@ pub mod native_validation {
         pub(crate) text_selector_scope_valid: bool,
         pub(crate) accepted_selection: crate::AccessibilityTextRange,
         pub(crate) stale_action_rejected: bool,
+        pub(crate) stable_external_identifier: bool,
+        pub(crate) bounded_screen_frame: bool,
+        pub(crate) activate_selector_allowed: bool,
+        pub(crate) accepted_activation: bool,
+        pub(crate) revoked_activation_rejected: bool,
         pub(crate) peak_elements: usize,
         pub(crate) created_elements: u64,
         pub(crate) released_elements: u64,
@@ -913,6 +918,31 @@ pub mod native_validation {
         #[must_use]
         pub const fn stale_action_rejected(&self) -> bool {
             self.stale_action_rejected
+        }
+        /// Returns whether one unchanged native element preserved a non-empty identifier.
+        #[must_use]
+        pub const fn stable_external_identifier(&self) -> bool {
+            self.stable_external_identifier
+        }
+        /// Returns whether view-local bounds became a finite non-empty screen rectangle.
+        #[must_use]
+        pub const fn bounded_screen_frame(&self) -> bool {
+            self.bounded_screen_frame
+        }
+        /// Returns whether AppKit admits press only for an enabled action node.
+        #[must_use]
+        pub const fn activate_selector_allowed(&self) -> bool {
+            self.activate_selector_allowed
+        }
+        /// Returns whether one current press crossed the bounded action transport.
+        #[must_use]
+        pub const fn accepted_activation(&self) -> bool {
+            self.accepted_activation
+        }
+        /// Returns whether the retained element rejected press after adapter revocation.
+        #[must_use]
+        pub const fn revoked_activation_rejected(&self) -> bool {
+            self.revoked_activation_rejected
         }
         /// Returns peak retained native element count.
         #[must_use]

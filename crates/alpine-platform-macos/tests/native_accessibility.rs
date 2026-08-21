@@ -5,12 +5,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::{Arc, Mutex};
 
     use alpine_platform_macos::{
-        AccessibilityAction, AccessibilityActionResult, AccessibilityError, AccessibilityNode,
-        AccessibilityNodeId, AccessibilityPayload, AccessibilityRequest, AccessibilityResponse,
-        AccessibilityRevision, AccessibilityRole, AccessibilitySelection, AccessibilitySnapshot,
-        AccessibilityText, AccessibilityTextRange, ClipboardOperation, ClipboardText,
-        ClipboardWrite, CloseDisposition, SurfaceDescriptor, SurfaceEvent, SurfaceResponse,
-        native_validation,
+        AccessibilityAction, AccessibilityActionResult, AccessibilityBounds, AccessibilityError,
+        AccessibilityNode, AccessibilityNodeId, AccessibilityPayload, AccessibilityRequest,
+        AccessibilityResponse, AccessibilityRevision, AccessibilityRole, AccessibilitySelection,
+        AccessibilitySnapshot, AccessibilityText, AccessibilityTextRange, ClipboardOperation,
+        ClipboardText, ClipboardWrite, CloseDisposition, SurfaceDescriptor, SurfaceEvent,
+        SurfaceResponse, native_validation,
     };
 
     #[derive(Clone)]
@@ -20,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         text: String,
         snapshot_requests: usize,
         include_status: bool,
+        activations: usize,
     }
 
     fn snapshot(state: &State) -> Result<AccessibilitySnapshot, AccessibilityError> {
@@ -32,7 +33,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 false,
                 false,
                 false,
-            )?,
+            )?
+            .with_bounds(AccessibilityBounds::new(0.0, 0.0, 96.0, 64.0)?),
             AccessibilityNode::new(
                 AccessibilityNodeId::new(2),
                 Some(AccessibilityNodeId::new(1)),
@@ -41,7 +43,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 false,
                 false,
                 false,
-            )?,
+            )?
+            .with_bounds(AccessibilityBounds::new(0.0, 0.0, 96.0, 24.0)?),
             AccessibilityNode::new(
                 AccessibilityNodeId::new(3),
                 Some(AccessibilityNodeId::new(2)),
@@ -50,7 +53,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 false,
                 true,
                 false,
-            )?,
+            )?
+            .with_bounds(AccessibilityBounds::new(0.0, 0.0, 48.0, 24.0)?)
+            .with_activate(true),
             AccessibilityNode::new(
                 AccessibilityNodeId::new(4),
                 Some(AccessibilityNodeId::new(1)),
@@ -59,18 +64,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 true,
                 false,
                 false,
-            )?,
+            )?
+            .with_bounds(AccessibilityBounds::new(0.0, 24.0, 96.0, 40.0)?),
         ];
         if state.include_status {
-            nodes.push(AccessibilityNode::new(
-                AccessibilityNodeId::new(5),
-                Some(AccessibilityNodeId::new(1)),
-                AccessibilityRole::Status,
-                "Ready".into(),
-                false,
-                false,
-                true,
-            )?);
+            nodes.push(
+                AccessibilityNode::new(
+                    AccessibilityNodeId::new(5),
+                    Some(AccessibilityNodeId::new(1)),
+                    AccessibilityRole::Status,
+                    "Ready".into(),
+                    false,
+                    false,
+                    true,
+                )?
+                .with_bounds(AccessibilityBounds::new(0.0, 48.0, 96.0, 16.0)?),
+            );
         }
         AccessibilitySnapshot::new(
             state.revision,
@@ -155,6 +164,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     AccessibilityActionResult::Applied,
                 ))
             }
+            alpine_platform_macos::AccessibilityOperation::Action(
+                AccessibilityAction::Activate { revision, .. },
+            ) if *revision == observed => {
+                state.activations = state.activations.saturating_add(1);
+                Ok(AccessibilityPayload::Action(
+                    AccessibilityActionResult::Unchanged,
+                ))
+            }
             _ => Err(AccessibilityError::StaleRevision {
                 expected: request.revision().unwrap_or(observed),
                 actual: observed,
@@ -193,6 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         text: "zero\none two".into(),
         snapshot_requests: 0,
         include_status: true,
+        activations: 0,
     }));
     let callback_state = Arc::clone(&state);
     let evidence = native_validation::replay_native_accessibility_path(&surface, move |event| {
@@ -229,6 +247,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         AccessibilityTextRange::new(2, 2)
     );
     assert!(evidence.stale_action_rejected());
+    assert!(evidence.stable_external_identifier());
+    assert!(evidence.bounded_screen_frame());
+    assert!(evidence.activate_selector_allowed());
+    assert!(evidence.accepted_activation());
+    assert!(evidence.revoked_activation_rejected());
     assert_eq!(evidence.peak_elements(), 5);
     assert_eq!(evidence.created_elements(), 5);
     assert_eq!(evidence.released_elements(), 5);
@@ -240,13 +263,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(evidence.retained_slot_bytes_after_revoke(), 0);
     assert!(evidence.late_selector_rejected());
     assert_eq!(evidence.notification_counts(), [1, 0, 1, 1, 0]);
-    assert_eq!(
-        state
-            .lock()
-            .map_err(|_| "accessibility state lock poisoned")?
-            .snapshot_requests,
-        5
-    );
+    let state_evidence = state
+        .lock()
+        .map_err(|_| "accessibility state lock poisoned")?;
+    assert_eq!(state_evidence.snapshot_requests, 6);
+    assert_eq!(state_evidence.activations, 1);
+    drop(state_evidence);
 
     let rejected_descriptor =
         SurfaceDescriptor::new("Alpine rejected accessibility", 96.0, 64.0, 1.0)?;
@@ -258,6 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         text: "zero\none two".into(),
         snapshot_requests: 0,
         include_status: true,
+        activations: 0,
     }));
     let callback_rejected_state = Arc::clone(&rejected_state);
     let forbidden_write = ClipboardWrite::new(
