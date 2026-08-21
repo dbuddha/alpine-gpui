@@ -66,9 +66,9 @@ use crate::{
     FrameTerminalEvidence, ImeEvent, InputEpoch, InputEpochAdmission, KeyState, Modifiers,
     PointerAction, PointerButton, SURFACE_CLOSING, SURFACE_LIVE, ScrollPhase, SdrColorContract,
     SurfaceConfiguration, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceLifecycle,
-    SurfaceObserver, SurfaceResponse, SurfaceSnapshot, SurfaceStage, SurfaceWakeAdmission,
-    SurfaceWakeCounters, SurfaceWaker, begin_close_observer_state, finish_close_observer_state,
-    new_observer_state, presentation_visible,
+    SurfaceObserver, SurfaceOperation, SurfaceResponse, SurfaceSnapshot, SurfaceStage,
+    SurfaceWakeAdmission, SurfaceWakeCounters, SurfaceWaker, begin_close_observer_state,
+    finish_close_observer_state, new_observer_state, presentation_visible,
 };
 
 type Device = Retained<ProtocolObject<dyn MTLDevice>>;
@@ -566,8 +566,8 @@ impl PresentationDriver {
     ) -> Result<Self, SurfaceError> {
         let mut state = PresentationState::new();
         state.apply(PresentationAction::SetSized(configuration.is_sized()))?;
-        let owner_generation =
-            FrameOwnerGeneration::new(1).ok_or(SurfaceError::DriverUnavailable)?;
+        let owner_generation = FrameOwnerGeneration::new(1)
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
         Ok(Self {
             state,
             lifecycle,
@@ -631,7 +631,7 @@ impl PresentationDriver {
         let prior_link = self.state.display_link();
         let transition = self.state.apply(PresentationAction::Invalidate)?;
         let PresentationEvent::Invalidated(revision) = transition.event() else {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
         };
         self.pending = Some(PendingFrame { scene, clear });
         let directive = self.reconcile_link(prior_link)?;
@@ -727,7 +727,7 @@ impl PresentationDriver {
             .is_some_and(|active| active.observation.observed())
         {
             let Some(active) = self.active.take() else {
-                return Err(SurfaceError::DriverUnavailable);
+                return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
             };
             let token = active.token;
             let presented_time_bits = active.observation.presented_time_bits();
@@ -817,9 +817,12 @@ impl PresentationDriver {
                 self.state.requested_revision(),
                 self.state.surface_epoch(),
             )
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Presentation))?;
         if let Err(error) = result {
-            let active = self.active.take().ok_or(SurfaceError::DriverUnavailable)?;
+            let active = self
+                .active
+                .take()
+                .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
             let error = SurfaceError::from(error);
             let recovery = render_recovery(&error);
             if discards_pending_work(recovery) {
@@ -836,7 +839,7 @@ impl PresentationDriver {
         }
         self.active
             .as_mut()
-            .ok_or(SurfaceError::DriverUnavailable)?
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?
             .command_terminal = true;
         Ok(None)
     }
@@ -848,10 +851,10 @@ impl PresentationDriver {
     ) -> Result<DisplayLinkDirective, SurfaceError> {
         let prepared = self.state.apply(PresentationAction::Prepare)?;
         let PresentationEvent::Prepared(token) = prepared.event() else {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
         };
         let Some(frame) = self.pending.take() else {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
         };
         self.state.apply(PresentationAction::BeginUpdate(token))?;
         let timing = AttemptTiming::from_update(update);
@@ -879,13 +882,13 @@ impl PresentationDriver {
         let admission = self
             .frame_slots
             .acquire(token, self.owner_generation)
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Presentation))?;
         let FrameSlotAdmission::Acquired(lease) = admission else {
             self.pending = Some(frame);
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
         };
         let slot = platform_spi::DrawableSlot::new(lease.slot().get())
-            .ok_or(SurfaceError::DriverUnavailable)?;
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
         let attempt = platform_spi::submit_callback_drawable(
             &mut self.backend,
             slot,
@@ -898,7 +901,7 @@ impl PresentationDriver {
             platform_spi::DrawableSubmitAttempt::Submitted(submission) => {
                 self.frame_slots
                     .mark_submitted(lease)
-                    .map_err(|_| SurfaceError::DriverUnavailable)?;
+                    .map_err(|_| SurfaceError::invariant(SurfaceOperation::Presentation))?;
                 self.state.apply(PresentationAction::Submit(token))?;
                 counters.submissions.fetch_add(1, Ordering::Relaxed);
                 self.state.apply(PresentationAction::CallPresent(token))?;
@@ -932,7 +935,7 @@ impl PresentationDriver {
             platform_spi::DrawableSubmitAttempt::Rejected(attempt) => {
                 self.frame_slots
                     .cancel_encoding(lease)
-                    .map_err(|_| SurfaceError::DriverUnavailable)?;
+                    .map_err(|_| SurfaceError::invariant(SurfaceOperation::Presentation))?;
                 if attempt.committed() {
                     self.state.apply(PresentationAction::Submit(token))?;
                     counters.submissions.fetch_add(1, Ordering::Relaxed);
@@ -958,7 +961,7 @@ impl PresentationDriver {
         counters: &FrameCounters,
     ) -> Result<DisplayLinkDirective, SurfaceError> {
         let PresentationEvent::Terminal(attempt) = transition.event() else {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
         };
         match attempt.outcome() {
             PresentationOutcome::Presented => {
@@ -1018,7 +1021,7 @@ impl PresentationDriver {
                 | PresentationEvent::PresentCalled(_)
                 | PresentationEvent::PendingCancelled(_)
                 | PresentationEvent::Stopped => {
-                    return Err(SurfaceError::DriverUnavailable);
+                    return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
                 }
             }
         }
@@ -1063,7 +1066,7 @@ impl PresentationDriver {
         let control = self
             .post_commit_control
             .take()
-            .ok_or(SurfaceError::DriverUnavailable)?;
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
         let directive = control
             .configuration
             .map_or(Ok(DisplayLinkDirective::None), |configuration| {
@@ -1075,7 +1078,7 @@ impl PresentationDriver {
         let active = self
             .active
             .as_mut()
-            .ok_or(SurfaceError::DriverUnavailable)?;
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
         if control.presented_time_bits != 0 {
             active.observation.inject(control.presented_time_bits);
         }
@@ -1215,7 +1218,10 @@ fn render_recovery(error: &SurfaceError) -> Option<RecoveryClassification> {
         | SurfaceError::NativeUnavailable { .. }
         | SurfaceError::RendererInitialization(_)
         | SurfaceError::Presentation(_)
-        | SurfaceError::DriverUnavailable
+        | SurfaceError::InvariantViolation { .. }
+        | SurfaceError::OwnerConflict { .. }
+        | SurfaceError::InputResponderRejected
+        | SurfaceError::ValidationFailure { .. }
         | SurfaceError::PresentationNotObserved { .. }
         | SurfaceError::PresentationsSkipped { .. }
         | SurfaceError::RunLoopNotRunnable { .. }
@@ -1631,7 +1637,7 @@ impl SurfaceView {
             .borrow_mut()
             .install(Box::new(move |request| {
                 weak.load()
-                    .ok_or(SurfaceError::DriverUnavailable)?
+                    .ok_or(SurfaceError::invariant(SurfaceOperation::Input))?
                     .dispatch_accessibility_request(request)
             }));
     }
@@ -1912,7 +1918,7 @@ fn resolve_input_dispatch(
 ) -> Result<(), SurfaceError> {
     match result {
         Err(error) => Err(error),
-        Ok(()) if input_dispatch_failed => Err(SurfaceError::DriverUnavailable),
+        Ok(()) if input_dispatch_failed => Err(SurfaceError::invariant(SurfaceOperation::Input)),
         Ok(()) => Ok(()),
     }
 }
@@ -2168,7 +2174,7 @@ mod native_input_tests {
         assert_eq!(resolve_input_dispatch(Ok(()), false), Ok(()));
         assert_eq!(
             resolve_input_dispatch(Ok(()), true),
-            Err(SurfaceError::DriverUnavailable)
+            Err(SurfaceError::invariant(SurfaceOperation::Input))
         );
         assert_eq!(
             resolve_input_dispatch(
@@ -2578,7 +2584,9 @@ impl DisplayLinkDelegate {
 
     fn try_synchronize_native_configuration(&self) -> Result<(), SurfaceError> {
         if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(
+                SurfaceOperation::NativeConfiguration,
+            ));
         }
         let (Some(window), Some(view), Some(layer), Some(display_link), Some(driver)) = (
             &self.ivars().window,
@@ -2587,13 +2595,15 @@ impl DisplayLinkDelegate {
             &self.ivars().display_link,
             &self.ivars().driver,
         ) else {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(
+                SurfaceOperation::NativeConfiguration,
+            ));
         };
         let configuration = native_configuration(window, view)?;
         apply_layer_configuration(layer, view, configuration);
         let directive = driver
             .try_borrow_mut()
-            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .map_err(|_| SurfaceError::owner_conflict(SurfaceOperation::NativeConfiguration))?
             .apply_configuration(configuration)?;
         apply_display_link_directive(display_link, directive);
         let extent = crate::SurfaceExtent::new(
@@ -2710,9 +2720,9 @@ impl DisplayLinkDelegate {
             .ivars()
             .event_handler
             .try_borrow_mut()
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::owner_conflict(SurfaceOperation::EventHandler))?;
         if installed.is_some() {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(SurfaceOperation::EventHandler));
         }
         *installed = Some(Box::new(handler));
         Ok(())
@@ -2742,21 +2752,21 @@ impl DisplayLinkDelegate {
                 .ivars()
                 .event_handler
                 .try_borrow_mut()
-                .map_err(|_| SurfaceError::DriverUnavailable)?;
+                .map_err(|_| SurfaceError::owner_conflict(SurfaceOperation::Input))?;
             installed
                 .as_mut()
                 .map_or_else(SurfaceResponse::default, |handler| handler(event))
         };
         let (frame, clipboard_write, close, accessibility) = response.into_channels();
         if accessibility.is_some() {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(SurfaceOperation::Input));
         }
         if close_requested {
             if close == CloseDisposition::NotRequested {
                 return Ok(close);
             }
         } else if close != CloseDisposition::NotRequested {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(SurfaceOperation::Input));
         }
 
         if let Some(frame) = frame {
@@ -2765,28 +2775,30 @@ impl DisplayLinkDelegate {
                 .ivars()
                 .driver
                 .as_ref()
-                .ok_or(SurfaceError::DriverUnavailable)?
+                .ok_or(SurfaceError::invariant(SurfaceOperation::Input))?
                 .try_borrow_mut()
-                .map_err(|_| SurfaceError::DriverUnavailable)?
+                .map_err(|_| SurfaceError::owner_conflict(SurfaceOperation::Input))?
                 .request_frame(scene, clear)?;
             let display_link = self
                 .ivars()
                 .display_link
                 .as_ref()
-                .ok_or(SurfaceError::DriverUnavailable)?;
+                .ok_or(SurfaceError::invariant(SurfaceOperation::Input))?;
             apply_display_link_directive(display_link, directive);
         }
 
         if let Some(write) = clipboard_write {
             if !clipboard_write_allowed {
-                return Err(SurfaceError::DriverUnavailable);
+                return Err(SurfaceError::invariant(SurfaceOperation::Input));
             }
             let operation = write.operation();
             let result = self.write_clipboard(write);
             let event = match operation {
                 ClipboardOperation::Copy => ClipboardEvent::CopyCompleted(result),
                 ClipboardOperation::Cut => ClipboardEvent::CutCompleted(result),
-                ClipboardOperation::Paste => return Err(SurfaceError::DriverUnavailable),
+                ClipboardOperation::Paste => {
+                    return Err(SurfaceError::invariant(SurfaceOperation::Input));
+                }
             };
             let _close = self.dispatch_surface_event_inner(
                 SurfaceEvent::Clipboard {
@@ -2799,7 +2811,7 @@ impl DisplayLinkDelegate {
         self.ivars()
             .view
             .as_ref()
-            .ok_or(SurfaceError::DriverUnavailable)?
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Input))?
             .refresh_accessibility_if_active()?;
         Ok(close)
     }
@@ -2817,19 +2829,20 @@ impl DisplayLinkDelegate {
                 .ivars()
                 .event_handler
                 .try_borrow_mut()
-                .map_err(|_| SurfaceError::DriverUnavailable)?;
+                .map_err(|_| SurfaceError::owner_conflict(SurfaceOperation::Accessibility))?;
             installed
                 .as_mut()
                 .map_or_else(SurfaceResponse::default, |handler| handler(event))
         };
         let (frame, clipboard, close, accessibility) = response.into_channels();
         if frame.is_some() || clipboard.is_some() || close != CloseDisposition::NotRequested {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(SurfaceOperation::Accessibility));
         }
-        let response = accessibility.ok_or(SurfaceError::DriverUnavailable)?;
+        let response =
+            accessibility.ok_or(SurfaceError::invariant(SurfaceOperation::Accessibility))?;
         response
             .validate_for(request)
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Accessibility))?;
         Ok(response)
     }
 
@@ -3664,7 +3677,7 @@ impl NativeSurface {
         if self.window.makeFirstResponder(Some(&self.view)) {
             Ok(())
         } else {
-            Err(SurfaceError::DriverUnavailable)
+            Err(SurfaceError::InputResponderRejected)
         }
     }
 
@@ -3710,7 +3723,7 @@ impl NativeSurface {
             delegate.dispatch_native_input_event(event);
         })) {
             self.delegate.clear_event_handler();
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(SurfaceOperation::RunLoop));
         }
         let (input_epoch, focused) = self.view.input_focus_state();
         if input_epoch != InputEpoch::INITIAL || !focused {
@@ -3765,7 +3778,7 @@ impl NativeSurface {
         let roots: Retained<NSArray<NativeAccessibilityElement>> =
             unsafe { msg_send![&*self.view, accessibilityChildren] };
         let result = if roots.firstObject().is_none() {
-            Err(SurfaceError::DriverUnavailable)
+            Err(SurfaceError::validation(SurfaceOperation::Validation))
         } else {
             self.delegate
                 .dispatch_surface_event(SurfaceEvent::Wake {
@@ -3785,7 +3798,7 @@ impl NativeSurface {
         self.window.setAcceptsMouseMovedEvents(false);
         self.activate_input_responder()?;
         if !self.window.acceptsMouseMovedEvents() {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::validation(SurfaceOperation::Validation));
         }
         self.delegate.install_event_handler(handler)?;
         let delegate = self.delegate.clone();
@@ -3793,7 +3806,7 @@ impl NativeSurface {
             delegate.dispatch_native_input_event(event);
         })) {
             self.delegate.clear_event_handler();
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::validation(SurfaceOperation::Validation));
         }
 
         let characters = NSString::from_str("A");
@@ -3828,10 +3841,10 @@ impl NativeSurface {
             let has_marked: bool = unsafe { msg_send![&*self.view, hasMarkedText] };
             let marked_range: NSRange = unsafe { msg_send![&*self.view, markedRange] };
             if !has_marked {
-                return Err(SurfaceError::DriverUnavailable);
+                return Err(SurfaceError::validation(SurfaceOperation::Validation));
             }
             if marked_range != NSRange::new(0, 2) {
-                return Err(SurfaceError::DriverUnavailable);
+                return Err(SurfaceError::validation(SurfaceOperation::Validation));
             }
             unsafe {
                 let _: () = msg_send![&*self.view, unmarkText];
@@ -3839,10 +3852,10 @@ impl NativeSurface {
             let has_marked: bool = unsafe { msg_send![&*self.view, hasMarkedText] };
             let marked_range: NSRange = unsafe { msg_send![&*self.view, markedRange] };
             if has_marked {
-                return Err(SurfaceError::DriverUnavailable);
+                return Err(SurfaceError::validation(SurfaceOperation::Validation));
             }
             if marked_range != NSRange::new(NSUInteger::MAX, 0) {
-                return Err(SurfaceError::DriverUnavailable);
+                return Err(SurfaceError::validation(SurfaceOperation::Validation));
             }
 
             let stale_epoch = self.view.ivars().input_epoch.get();
@@ -3860,7 +3873,7 @@ impl NativeSurface {
             self.view
                 .emit_ime_at_epoch(stale_epoch, ImeEvent::Committed("stale".into()));
             if self.view.rejected_ime_callbacks() != rejected_before.saturating_add(1) {
-                return Err(SurfaceError::DriverUnavailable);
+                return Err(SurfaceError::validation(SurfaceOperation::Validation));
             }
             self.delegate.publish_input_focus(true);
 
@@ -3869,7 +3882,7 @@ impl NativeSurface {
             self.view
                 .emit_ime_at_epoch(stale_epoch, ImeEvent::Committed("active-stale".into()));
             if self.view.rejected_ime_callbacks() != rejected_before.saturating_add(1) {
-                return Err(SurfaceError::DriverUnavailable);
+                return Err(SurfaceError::validation(SurfaceOperation::Validation));
             }
 
             self.view
@@ -3878,7 +3891,7 @@ impl NativeSurface {
             self.view
                 .emit_ime_at_epoch(current_epoch, ImeEvent::Committed("inactive-current".into()));
             if self.view.rejected_ime_callbacks() != rejected_before.saturating_add(1) {
-                return Err(SurfaceError::DriverUnavailable);
+                return Err(SurfaceError::validation(SurfaceOperation::Validation));
             }
 
             let rejected_before = self.view.rejected_ime_callbacks();
@@ -3892,10 +3905,10 @@ impl NativeSurface {
                 ];
             }
             if self.view.rejected_ime_callbacks() != rejected_before.saturating_add(1) {
-                return Err(SurfaceError::DriverUnavailable);
+                return Err(SurfaceError::validation(SurfaceOperation::Validation));
             }
             if self.view.has_marked_text_value() {
-                return Err(SurfaceError::DriverUnavailable);
+                return Err(SurfaceError::validation(SurfaceOperation::Validation));
             }
             self.view
                 .set_input_focus_state_for_validation(current_epoch, true);
@@ -3938,10 +3951,10 @@ impl NativeSurface {
             event: ImeEvent::Cancelled,
         });
         if !self.view.take_input_dispatch_failure() {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::validation(SurfaceOperation::Validation));
         }
         if self.view.take_input_dispatch_failure() {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::validation(SurfaceOperation::Validation));
         }
         Ok(())
     }
@@ -4022,7 +4035,7 @@ impl NativeSurface {
                     .ivars()
                     .event_handler
                     .try_borrow_mut()
-                    .map_err(|_| SurfaceError::DriverUnavailable)?;
+                    .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?;
                 self.window.performClose(None);
             }
             CloseReplayScenario::Cancel | CloseReplayScenario::Allow => {
@@ -4059,7 +4072,7 @@ impl NativeSurface {
         let (revision, directive) = self
             .driver
             .try_borrow_mut()
-            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .map_err(|_| SurfaceError::owner_conflict(SurfaceOperation::Presentation))?
             .request_frame(scene, clear)?;
         apply_display_link_directive(&self.display_link, directive);
         Ok(revision)
@@ -4309,7 +4322,7 @@ impl NativeSurface {
         Ok(self
             .driver
             .try_borrow_mut()
-            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .map_err(|_| SurfaceError::owner_conflict(SurfaceOperation::Presentation))?
             .take_error())
     }
 
@@ -4327,11 +4340,11 @@ impl NativeSurface {
         presented_time: f64,
     ) -> Result<(), SurfaceError> {
         if !presented_time.is_finite() || presented_time <= 0.0 {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::validation(SurfaceOperation::Validation));
         }
         self.driver
             .try_borrow_mut()
-            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?
             .inject_post_commit_observation(display_identity, presented_time);
         Ok(())
     }
@@ -4379,7 +4392,7 @@ impl NativeSurface {
                 let directive = self
                     .driver
                     .try_borrow_mut()
-                    .map_err(|_| SurfaceError::DriverUnavailable)?
+                    .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?
                     .reject_configuration(error.clone())?;
                 apply_display_link_directive(&self.display_link, directive);
                 return Err(error);
@@ -4389,7 +4402,7 @@ impl NativeSurface {
         let directive = self
             .driver
             .try_borrow_mut()
-            .map_err(|_| SurfaceError::DriverUnavailable)?
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?
             .apply_configuration(configuration)?;
         apply_display_link_directive(&self.display_link, directive);
         Ok(())
@@ -4420,12 +4433,13 @@ impl NativeSurface {
         &self,
         index: usize,
     ) -> Result<crate::native_validation::ValidationScreenConfiguration, SurfaceError> {
-        let mtm = MainThreadMarker::new().ok_or(SurfaceError::DriverUnavailable)?;
+        let mtm = MainThreadMarker::new()
+            .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
         let screens = NSScreen::screens(mtm);
         let screen = screens
             .iter()
             .nth(index)
-            .ok_or(SurfaceError::DriverUnavailable)?;
+            .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
         self.window.setFrameOrigin(centered_window_origin(
             self.window.frame(),
             screen.visibleFrame(),
@@ -4434,19 +4448,19 @@ impl NativeSurface {
             .delegate
             .synchronize_native_configuration_from_callback()
         {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::validation(SurfaceOperation::Validation));
         }
         let current = self
             .window
             .screen()
-            .ok_or(SurfaceError::DriverUnavailable)?;
+            .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
         let current_identity = Retained::as_ptr(&current) as usize;
         let current_index = screens
             .iter()
             .position(|candidate| Retained::as_ptr(&candidate) as usize == current_identity)
-            .ok_or(SurfaceError::DriverUnavailable)?;
+            .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
         if current_index != index {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::validation(SurfaceOperation::Validation));
         }
         Ok(validation_screen_configuration(current_index, &current))
     }
@@ -4471,7 +4485,7 @@ impl NativeSurface {
         let probe = self
             .validation_probe
             .clone()
-            .ok_or(SurfaceError::DriverUnavailable)?;
+            .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
         drop(self);
         Ok(probe.evidence())
     }
@@ -4725,7 +4739,9 @@ pub(crate) fn exercise_initialization_fault(
 ) -> Result<crate::native_validation::NativeOwnerEvidence, SurfaceError> {
     let descriptor = SurfaceDescriptor::new("Alpine initialization stage", 32.0, 24.0, 1.0)?;
     let control = InitializationControl::validation(Some(stage));
-    let probe = control.probe().ok_or(SurfaceError::DriverUnavailable)?;
+    let probe = control
+        .probe()
+        .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
     let failed_at_expected_stage = autoreleasepool(|_| {
         let result = NativeSurface::new_with_control(&descriptor, &control);
         let failed_at_expected_stage = matches!(
@@ -4956,6 +4972,30 @@ mod tests {
     }
 
     #[test]
+    fn ownership_invariant_responder_and_validation_failures_never_recover() {
+        let operations = [
+            SurfaceOperation::Application,
+            SurfaceOperation::Presentation,
+            SurfaceOperation::NativeConfiguration,
+            SurfaceOperation::EventHandler,
+            SurfaceOperation::Input,
+            SurfaceOperation::Clipboard,
+            SurfaceOperation::Accessibility,
+            SurfaceOperation::RunLoop,
+            SurfaceOperation::Validation,
+        ];
+        for operation in operations {
+            assert_eq!(
+                render_recovery(&SurfaceError::owner_conflict(operation)),
+                None
+            );
+            assert_eq!(render_recovery(&SurfaceError::invariant(operation)), None);
+            assert_eq!(render_recovery(&SurfaceError::validation(operation)), None);
+        }
+        assert_eq!(render_recovery(&SurfaceError::InputResponderRejected), None);
+    }
+
+    #[test]
     fn sdr_color_contract_rejects_each_independent_policy_break() {
         assert!(recognizes_sdr_color_contract(
             MTLPixelFormat::BGRA8Unorm_sRGB,
@@ -5117,7 +5157,7 @@ mod tests {
         driver.state.apply(PresentationAction::Resume)?;
         let prepared = driver.state.apply(PresentationAction::Prepare)?;
         let PresentationEvent::Prepared(token) = prepared.event() else {
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
         };
         driver.state.apply(PresentationAction::BeginUpdate(token))?;
         driver.state.apply(PresentationAction::Submit(token))?;
@@ -5140,7 +5180,7 @@ mod tests {
         assert_eq!(counters.cancelled.load(Ordering::Relaxed), 1);
         let evidence = driver
             .last_cancelled
-            .ok_or(SurfaceError::DriverUnavailable)?;
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
         assert_eq!(evidence.target_timestamp_bits(), 137);
         assert_eq!(evidence.target_presentation_timestamp_bits(), 139);
         assert_eq!(evidence.submission_count(), 1);

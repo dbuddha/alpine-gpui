@@ -216,7 +216,7 @@ jobs:
               find target/native-runtime-mutants.out -name unviable.txt -type f -size +0c -exec cat {} \;
               exit 1
             fi
-            cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app' --no-shuffle --output target/native-studio-mutants.out -- --locked
+            cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|initial_scene' --no-shuffle --output target/native-studio-mutants.out -- --locked
           else
             echo "Native mutation activates when alpine-metal is implemented."
           fi

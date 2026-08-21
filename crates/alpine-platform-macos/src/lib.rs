@@ -1652,8 +1652,8 @@ pub mod native_validation {
     ///
     /// # Errors
     ///
-    /// Returns [`SurfaceError::DriverUnavailable`] if validation ownership
-    /// instrumentation is unexpectedly absent.
+    /// Returns [`SurfaceError::ValidationFailure`] if validation ownership
+    /// instrumentation is unexpectedly absent or inconsistent.
     pub fn close_with_owner_evidence(
         surface: NativeSurface,
     ) -> Result<NativeOwnerEvidence, SurfaceError> {
@@ -1943,6 +1943,29 @@ pub enum SurfaceStage {
     RunLoop,
 }
 
+/// Handle-free operation identity for native ownership and invariant failures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceOperation {
+    /// Alpine Studio or runtime application-state construction.
+    Application,
+    /// Frame admission, submission, completion, or presentation state.
+    Presentation,
+    /// Synchronization of window, layer, scale, or display configuration.
+    NativeConfiguration,
+    /// Installation or ownership of the native event callback.
+    EventHandler,
+    /// Keyboard, pointer, scroll, focus, IME, or responder dispatch.
+    Input,
+    /// Native clipboard request or response ownership.
+    Clipboard,
+    /// Native accessibility request, tree, notification, or action dispatch.
+    Accessibility,
+    /// `AppKit` application and run-loop admission or termination.
+    RunLoop,
+    /// Native-only fault injection or qualification instrumentation.
+    Validation,
+}
+
 /// Handle-free identity of Alpine's configured standard-dynamic-range path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SdrColorContract {
@@ -2093,8 +2116,23 @@ pub enum SurfaceError {
     Render(RenderError),
     /// The native owner rejected a portable lifecycle transition.
     Presentation(TransitionError),
-    /// The synchronized callback owner is no longer usable.
-    DriverUnavailable,
+    /// A synchronized native owner was already borrowed or poisoned.
+    OwnerConflict {
+        /// Operation whose owner could not be acquired.
+        operation: SurfaceOperation,
+    },
+    /// An operation reached a state forbidden by its checked contract.
+    InvariantViolation {
+        /// Operation whose invariant failed.
+        operation: SurfaceOperation,
+    },
+    /// `AppKit` rejected Alpine's editor view as the active input responder.
+    InputResponderRejected,
+    /// Native-only qualification instrumentation rejected an observation.
+    ValidationFailure {
+        /// Operation under validation when evidence became invalid.
+        operation: SurfaceOperation,
+    },
     /// Direct presentation was called but no presented timestamp appeared.
     PresentationNotObserved {
         /// Display-link callbacks spent awaiting correlation.
@@ -2117,6 +2155,26 @@ pub enum SurfaceError {
     },
 }
 
+impl SurfaceError {
+    /// Constructs a handle-free synchronized-owner conflict.
+    #[must_use]
+    pub const fn owner_conflict(operation: SurfaceOperation) -> Self {
+        Self::OwnerConflict { operation }
+    }
+
+    /// Constructs a handle-free invariant failure.
+    #[must_use]
+    pub const fn invariant(operation: SurfaceOperation) -> Self {
+        Self::InvariantViolation { operation }
+    }
+
+    /// Constructs a native-validation-only failure.
+    #[must_use]
+    pub const fn validation(operation: SurfaceOperation) -> Self {
+        Self::ValidationFailure { operation }
+    }
+}
+
 impl fmt::Display for SurfaceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -2129,6 +2187,9 @@ impl fmt::Display for SurfaceError {
             ),
             Self::UnsupportedPlatform => formatter
                 .write_str("native Alpine presentation requires Apple Silicon macOS 15 or newer"),
+            Self::NativeUnavailable {
+                stage: SurfaceStage::Device,
+            } => formatter.write_str("Metal device unavailable at Device stage"),
             Self::NativeUnavailable { stage } => {
                 write!(formatter, "native surface unavailable at {stage:?} stage")
             }
@@ -2139,8 +2200,17 @@ impl fmt::Display for SurfaceError {
             Self::Presentation(error) => {
                 write!(formatter, "native presentation state failed: {error}")
             }
-            Self::DriverUnavailable => {
-                formatter.write_str("native presentation driver unavailable")
+            Self::OwnerConflict { operation } => {
+                write!(formatter, "synchronized {operation:?} owner is unavailable")
+            }
+            Self::InvariantViolation { operation } => {
+                write!(formatter, "{operation:?} invariant failed")
+            }
+            Self::InputResponderRejected => {
+                formatter.write_str("AppKit rejected Alpine input responder activation")
+            }
+            Self::ValidationFailure { operation } => {
+                write!(formatter, "native validation failed during {operation:?}")
             }
             Self::PresentationNotObserved { callbacks } => write!(
                 formatter,
@@ -2173,7 +2243,10 @@ impl Error for SurfaceError {
             | Self::PhysicalDimensionOutOfRange { .. }
             | Self::UnsupportedPlatform
             | Self::NativeUnavailable { .. }
-            | Self::DriverUnavailable
+            | Self::OwnerConflict { .. }
+            | Self::InvariantViolation { .. }
+            | Self::InputResponderRejected
+            | Self::ValidationFailure { .. }
             | Self::PresentationNotObserved { .. }
             | Self::PresentationsSkipped { .. }
             | Self::RunLoopNotRunnable { .. }
@@ -2791,8 +2864,8 @@ impl NativeSurface {
     ///
     /// # Errors
     ///
-    /// Returns [`SurfaceError::DriverUnavailable`] if synchronized callback
-    /// state cannot be inspected.
+    /// Returns [`SurfaceError::OwnerConflict`] if synchronized callback state
+    /// cannot be inspected.
     pub fn take_error(&self) -> Result<Option<SurfaceError>, SurfaceError> {
         self.implementation.take_error()
     }
@@ -2972,7 +3045,8 @@ mod tests {
 
         let timestamp = EventTimestamp::new(23);
         let extent = SurfaceExtent::new(40.0, 20.0, 2.0)?;
-        let position = Point::new(3.0, 4.0).ok_or(SurfaceError::DriverUnavailable)?;
+        let position =
+            Point::new(3.0, 4.0).ok_or(SurfaceError::invariant(SurfaceOperation::Application))?;
         let events = [
             SurfaceEvent::Keyboard {
                 timestamp,
@@ -3022,10 +3096,11 @@ mod tests {
 
         let scene = alpine_scene::SceneBuilder::new(
             alpine_scene::SceneRevision::new(5),
-            Size::new(40.0, 20.0).ok_or(SurfaceError::DriverUnavailable)?,
+            Size::new(40.0, 20.0).ok_or(SurfaceError::invariant(SurfaceOperation::Application))?,
         )
         .finish();
-        let clear = LinearRgba::new(0.1, 0.2, 0.3, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+        let clear = LinearRgba::new(0.1, 0.2, 0.3, 1.0)
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Application))?;
         let frame = SurfaceFrame::new(scene.clone(), clear);
         assert_eq!(frame.scene(), &scene);
         assert_eq!(frame.clear(), clear);
@@ -3039,11 +3114,12 @@ mod tests {
     #[test]
     fn clipboard_and_response_values_preserve_public_identity() -> Result<(), SurfaceError> {
         assert_eq!(MAX_CLIPBOARD_TEXT_BYTES, 67_108_864);
-        let text = ClipboardText::new("bounded").map_err(|_| SurfaceError::DriverUnavailable)?;
+        let text = ClipboardText::new("bounded")
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Application))?;
         assert_eq!(text.as_str(), "bounded");
         assert_eq!(text.clone().into_inner().as_ref(), "bounded");
         let write = ClipboardWrite::new(ClipboardOperation::Copy, text.clone())
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Application))?;
         assert_eq!(write.operation(), ClipboardOperation::Copy);
         assert_eq!(write.text(), &text);
         assert_eq!(
@@ -3320,6 +3396,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn errors_are_stable_and_descriptive() {
         assert_eq!(
             SurfaceError::InvalidDimension {
@@ -3354,6 +3431,29 @@ mod tests {
             }
             .to_string(),
             "native surface unavailable at ColorSpace stage"
+        );
+        assert_eq!(
+            SurfaceError::NativeUnavailable {
+                stage: SurfaceStage::Device,
+            }
+            .to_string(),
+            "Metal device unavailable at Device stage"
+        );
+        assert_eq!(
+            SurfaceError::owner_conflict(SurfaceOperation::Presentation).to_string(),
+            "synchronized Presentation owner is unavailable"
+        );
+        assert_eq!(
+            SurfaceError::invariant(SurfaceOperation::Input).to_string(),
+            "Input invariant failed"
+        );
+        assert_eq!(
+            SurfaceError::InputResponderRejected.to_string(),
+            "AppKit rejected Alpine input responder activation"
+        );
+        assert_eq!(
+            SurfaceError::validation(SurfaceOperation::Validation).to_string(),
+            "native validation failed during Validation"
         );
         assert_eq!(
             SurfaceError::RunLoopNotRunnable {
@@ -3400,8 +3500,8 @@ mod tests {
                 true,
             ),
             (
-                SurfaceError::DriverUnavailable,
-                "native presentation driver unavailable",
+                SurfaceError::invariant(SurfaceOperation::Application),
+                "Application invariant failed",
                 false,
             ),
             (
@@ -3713,9 +3813,11 @@ mod tests {
         use alpine_scene::{SceneBuilder, SceneRevision};
 
         let surface = NativeSurface::from_implementation(unsupported::NativeSurface);
-        let viewport = alpine_core::Size::new(1.0, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+        let viewport = alpine_core::Size::new(1.0, 1.0)
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Application))?;
         let scene = SceneBuilder::new(SceneRevision::new(1), viewport).finish();
-        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or(SurfaceError::DriverUnavailable)?;
+        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0)
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Application))?;
 
         assert_eq!(surface.show(), Err(SurfaceError::UnsupportedPlatform));
         assert_eq!(surface.run(), Err(SurfaceError::UnsupportedPlatform));
