@@ -1215,6 +1215,36 @@ pub mod native_validation {
         surface.implementation.run_until_frame_terminal(timeout);
     }
 
+    /// Last display-link directive observed by native pause qualification.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum PauseDirectiveEvidence {
+        /// No callback has been observed.
+        #[default]
+        Unknown,
+        /// The portable transition emitted no native directive.
+        None,
+        /// The portable transition requested pacing resume.
+        Resume,
+        /// The portable transition requested pacing pause.
+        Pause,
+        /// The portable transition invalidated pacing.
+        Invalidate,
+    }
+
+    /// Last portable display-link state observed after callback processing.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum PausePortableStateEvidence {
+        /// No callback has been observed.
+        #[default]
+        Unknown,
+        /// Portable pacing is paused.
+        Paused,
+        /// Portable pacing is running.
+        Running,
+        /// Portable pacing is invalid.
+        Invalid,
+    }
+
     /// Stage-separated evidence for deferred native pause confirmation.
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     pub struct PauseConfirmationEvidence {
@@ -1223,6 +1253,13 @@ pub mod native_validation {
         executed: u64,
         eligible: u64,
         observed: u64,
+        callback_observations: u64,
+        last_directive: PauseDirectiveEvidence,
+        last_portable_state: PausePortableStateEvidence,
+        last_native_paused_before: bool,
+        last_native_paused_after: bool,
+        last_pending: bool,
+        last_active: bool,
     }
 
     impl PauseConfirmationEvidence {
@@ -1232,6 +1269,13 @@ pub mod native_validation {
             executed: u64,
             eligible: u64,
             observed: u64,
+            callback_observations: u64,
+            last_directive: PauseDirectiveEvidence,
+            last_portable_state: PausePortableStateEvidence,
+            last_native_paused_before: bool,
+            last_native_paused_after: bool,
+            last_pending: bool,
+            last_active: bool,
         ) -> Self {
             Self {
                 requested,
@@ -1239,6 +1283,13 @@ pub mod native_validation {
                 executed,
                 eligible,
                 observed,
+                callback_observations,
+                last_directive,
+                last_portable_state,
+                last_native_paused_before,
+                last_native_paused_after,
+                last_pending,
+                last_active,
             }
         }
 
@@ -1270,6 +1321,48 @@ pub mod native_validation {
         #[must_use]
         pub const fn observed(self) -> u64 {
             self.observed
+        }
+
+        /// Returns display-link callbacks whose post-update state was captured.
+        #[must_use]
+        pub const fn callback_observations(self) -> u64 {
+            self.callback_observations
+        }
+
+        /// Returns the last callback's portable-to-native directive.
+        #[must_use]
+        pub const fn last_directive(self) -> PauseDirectiveEvidence {
+            self.last_directive
+        }
+
+        /// Returns the last callback's post-update portable pacing state.
+        #[must_use]
+        pub const fn last_portable_state(self) -> PausePortableStateEvidence {
+            self.last_portable_state
+        }
+
+        /// Returns whether native pacing was paused before directive application.
+        #[must_use]
+        pub const fn last_native_paused_before(self) -> bool {
+            self.last_native_paused_before
+        }
+
+        /// Returns whether native pacing was paused after directive application.
+        #[must_use]
+        pub const fn last_native_paused_after(self) -> bool {
+            self.last_native_paused_after
+        }
+
+        /// Returns whether the last callback retained pending frame work.
+        #[must_use]
+        pub const fn last_pending(self) -> bool {
+            self.last_pending
+        }
+
+        /// Returns whether the last callback retained an active frame.
+        #[must_use]
+        pub const fn last_active(self) -> bool {
+            self.last_active
         }
     }
 

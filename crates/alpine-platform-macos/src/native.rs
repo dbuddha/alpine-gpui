@@ -2132,6 +2132,49 @@ struct PauseConfirmationCounters {
     executed: AtomicU64,
     eligible: AtomicU64,
     observed: AtomicU64,
+    callback_observations: AtomicU64,
+    last_directive: AtomicU8,
+    last_portable_state: AtomicU8,
+    last_native_paused_before: AtomicBool,
+    last_native_paused_after: AtomicBool,
+    last_pending: AtomicBool,
+    last_active: AtomicBool,
+}
+
+#[cfg(alpine_native_validation)]
+impl PauseConfirmationCounters {
+    fn record_callback(
+        &self,
+        directive: DisplayLinkDirective,
+        state: DisplayLinkState,
+        native_paused: bool,
+        ownership: Option<(bool, bool)>,
+    ) {
+        self.callback_observations.fetch_add(1, Ordering::Relaxed);
+        self.last_directive.store(
+            match directive {
+                DisplayLinkDirective::None => 1,
+                DisplayLinkDirective::Resume => 2,
+                DisplayLinkDirective::Pause => 3,
+                DisplayLinkDirective::Invalidate => 4,
+            },
+            Ordering::Release,
+        );
+        self.last_portable_state.store(
+            match state {
+                DisplayLinkState::Paused => 1,
+                DisplayLinkState::Running => 2,
+                DisplayLinkState::Invalid => 3,
+            },
+            Ordering::Release,
+        );
+        self.last_native_paused_before
+            .store(native_paused, Ordering::Release);
+        if let Some((pending, active)) = ownership {
+            self.last_pending.store(pending, Ordering::Release);
+            self.last_active.store(active, Ordering::Release);
+        }
+    }
 }
 
 #[cfg(alpine_native_validation)]
@@ -2246,6 +2289,16 @@ define_class!(
                         (directive, driver.display_link_state())
                     },
                 );
+                #[cfg(alpine_native_validation)]
+                self.ivars().pause_confirmation.record_callback(
+                    directive,
+                    display_link_state,
+                    link.isPaused(),
+                    driver
+                        .try_borrow()
+                        .ok()
+                        .map(|driver| (driver.pending.is_some(), driver.active.is_some())),
+                );
                 if lifecycle == SURFACE_CLOSING
                     && matches!(directive, DisplayLinkDirective::Invalidate)
                 {
@@ -2253,6 +2306,11 @@ define_class!(
                     stop_event_loop(&self.ivars().application);
                 } else {
                     apply_display_link_directive(link, directive);
+                    #[cfg(alpine_native_validation)]
+                    self.ivars()
+                        .pause_confirmation
+                        .last_native_paused_after
+                        .store(link.isPaused(), Ordering::Release);
                     if should_schedule_display_link_pause_confirmation(
                         directive,
                         display_link_state,
@@ -4130,6 +4188,24 @@ impl NativeSurface {
             counters.executed.load(Ordering::Acquire),
             counters.eligible.load(Ordering::Acquire),
             counters.observed.load(Ordering::Acquire),
+            counters.callback_observations.load(Ordering::Acquire),
+            match counters.last_directive.load(Ordering::Acquire) {
+                1 => crate::native_validation::PauseDirectiveEvidence::None,
+                2 => crate::native_validation::PauseDirectiveEvidence::Resume,
+                3 => crate::native_validation::PauseDirectiveEvidence::Pause,
+                4 => crate::native_validation::PauseDirectiveEvidence::Invalidate,
+                _ => crate::native_validation::PauseDirectiveEvidence::Unknown,
+            },
+            match counters.last_portable_state.load(Ordering::Acquire) {
+                1 => crate::native_validation::PausePortableStateEvidence::Paused,
+                2 => crate::native_validation::PausePortableStateEvidence::Running,
+                3 => crate::native_validation::PausePortableStateEvidence::Invalid,
+                _ => crate::native_validation::PausePortableStateEvidence::Unknown,
+            },
+            counters.last_native_paused_before.load(Ordering::Acquire),
+            counters.last_native_paused_after.load(Ordering::Acquire),
+            counters.last_pending.load(Ordering::Acquire),
+            counters.last_active.load(Ordering::Acquire),
         )
     }
 

@@ -169,7 +169,7 @@ mod validation {
         let pause_confirmations = pause_evidence.observed();
         assert!(
             after.display_link_paused(),
-            "display link did not pause within the settlement bound: pause_evidence={pause_evidence:?}, callbacks_before={}, callbacks_after={}",
+            "display link did not pause within the settlement bound: pause_evidence={pause_evidence:?}, callbacks_before={}, callbacks_after={}, before={before:?}, after={after:?}",
             before.callback_count(),
             after.callback_count()
         );
