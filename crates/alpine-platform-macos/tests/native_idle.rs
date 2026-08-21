@@ -62,20 +62,22 @@ mod validation {
         assert_window_state(true, false)?;
         assert_quiescent(&surface, "restored-before-control")?;
 
-        let before_control = surface.snapshot();
-        present(&surface, 3, hosted_direct)?;
-        let after_control = surface.snapshot();
-        assert_eq!(
-            after_control.submission_count(),
-            before_control.submission_count() + 1,
-            "the invalidation control must admit exactly one submission"
-        );
-        assert_eq!(
-            after_control.direct_present_count(),
-            before_control.direct_present_count() + 1,
-            "the invalidation control must issue exactly one direct presentation"
-        );
-        assert_quiescent(&surface, "restored-control")?;
+        for revision in 3..=10 {
+            let before_control = surface.snapshot();
+            present(&surface, revision, hosted_direct)?;
+            let after_control = surface.snapshot();
+            assert_eq!(
+                after_control.submission_count(),
+                before_control.submission_count() + 1,
+                "every invalidation control must admit exactly one submission"
+            );
+            assert_eq!(
+                after_control.direct_present_count(),
+                before_control.direct_present_count() + 1,
+                "every invalidation control must issue exactly one direct presentation"
+            );
+            assert_quiescent(&surface, &format!("restored-control-{revision}"))?;
+        }
 
         let evidence = native_validation::close_with_owner_evidence(surface)?;
         assert_eq!(evidence.active(), [0; 10]);

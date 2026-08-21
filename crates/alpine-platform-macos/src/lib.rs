@@ -1323,12 +1323,6 @@ pub mod native_validation {
             self.observed
         }
 
-        /// Returns display-link callbacks whose post-update state was captured.
-        #[must_use]
-        pub const fn callback_observations(self) -> u64 {
-            self.callback_observations
-        }
-
         /// Returns the last callback's portable-to-native directive.
         #[must_use]
         pub const fn last_directive(self) -> PauseDirectiveEvidence {
@@ -1339,30 +1333,6 @@ pub mod native_validation {
         #[must_use]
         pub const fn last_portable_state(self) -> PausePortableStateEvidence {
             self.last_portable_state
-        }
-
-        /// Returns whether native pacing was paused before directive application.
-        #[must_use]
-        pub const fn last_native_paused_before(self) -> bool {
-            self.last_native_paused_before
-        }
-
-        /// Returns whether native pacing was paused after directive application.
-        #[must_use]
-        pub const fn last_native_paused_after(self) -> bool {
-            self.last_native_paused_after
-        }
-
-        /// Returns whether the last callback retained pending frame work.
-        #[must_use]
-        pub const fn last_pending(self) -> bool {
-            self.last_pending
-        }
-
-        /// Returns whether the last callback retained an active frame.
-        #[must_use]
-        pub const fn last_active(self) -> bool {
-            self.last_active
         }
     }
 
