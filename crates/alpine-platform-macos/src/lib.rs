@@ -491,6 +491,8 @@ mod input_epoch_verification {
     fn checked_epoch_boundaries_never_wrap_or_alias() {
         let value = kani::any::<u64>();
         kani::assume(value != 0);
+        kani::cover!(value == 1, "minimum live epoch");
+        kani::cover!(value == u64::MAX, "exhausted epoch");
         let Some(epoch) = InputEpoch::new(value) else {
             unreachable!();
         };
@@ -1215,10 +1217,137 @@ pub mod native_validation {
         surface.implementation.run_until_frame_terminal(timeout);
     }
 
-    /// Returns post-callback pause reaffirmations completed by the main queue.
+    /// Last display-link directive observed by native pause qualification.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum PauseDirectiveEvidence {
+        /// No callback has been observed.
+        #[default]
+        Unknown,
+        /// The portable transition emitted no native directive.
+        None,
+        /// The portable transition requested pacing resume.
+        Resume,
+        /// The portable transition requested pacing pause.
+        Pause,
+        /// The portable transition invalidated pacing.
+        Invalidate,
+    }
+
+    /// Last portable display-link state observed after callback processing.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum PausePortableStateEvidence {
+        /// No callback has been observed.
+        #[default]
+        Unknown,
+        /// Portable pacing is paused.
+        Paused,
+        /// Portable pacing is running.
+        Running,
+        /// Portable pacing is invalid.
+        Invalid,
+    }
+
+    /// Stage-separated evidence for deferred native pause confirmation.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub struct PauseConfirmationEvidence {
+        requested: u64,
+        enqueued: u64,
+        executed: u64,
+        eligible: u64,
+        observed: u64,
+        callback_observations: u64,
+        last_directive: PauseDirectiveEvidence,
+        last_portable_state: PausePortableStateEvidence,
+        last_native_paused_before: bool,
+        last_native_paused_after: bool,
+        last_pending: bool,
+        last_active: bool,
+    }
+
+    impl PauseConfirmationEvidence {
+        pub(crate) const fn new(
+            requested: u64,
+            enqueued: u64,
+            executed: u64,
+            eligible: u64,
+            observed: u64,
+            callback_observations: u64,
+            last_directive: PauseDirectiveEvidence,
+            last_portable_state: PausePortableStateEvidence,
+            last_native_paused_before: bool,
+            last_native_paused_after: bool,
+            last_pending: bool,
+            last_active: bool,
+        ) -> Self {
+            Self {
+                requested,
+                enqueued,
+                executed,
+                eligible,
+                observed,
+                callback_observations,
+                last_directive,
+                last_portable_state,
+                last_native_paused_before,
+                last_native_paused_after,
+                last_pending,
+                last_active,
+            }
+        }
+
+        /// Returns confirmation requests admitted after a portable pause.
+        #[must_use]
+        pub const fn requested(self) -> u64 {
+            self.requested
+        }
+
+        /// Returns requests copied into the main run loop.
+        #[must_use]
+        pub const fn enqueued(self) -> u64 {
+            self.enqueued
+        }
+
+        /// Returns deferred blocks that began execution.
+        #[must_use]
+        pub const fn executed(self) -> u64 {
+            self.executed
+        }
+
+        /// Returns executed blocks that still observed portable paused state.
+        #[must_use]
+        pub const fn eligible(self) -> u64 {
+            self.eligible
+        }
+
+        /// Returns eligible blocks that observed native paused state.
+        #[must_use]
+        pub const fn observed(self) -> u64 {
+            self.observed
+        }
+
+        /// Returns the last callback's portable-to-native directive.
+        #[must_use]
+        pub const fn last_directive(self) -> PauseDirectiveEvidence {
+            self.last_directive
+        }
+
+        /// Returns the last callback's post-update portable pacing state.
+        #[must_use]
+        pub const fn last_portable_state(self) -> PausePortableStateEvidence {
+            self.last_portable_state
+        }
+    }
+
+    /// Returns stage-separated deferred native pause evidence.
+    #[must_use]
+    pub fn pause_confirmation_evidence(surface: &NativeSurface) -> PauseConfirmationEvidence {
+        surface.implementation.pause_confirmation_evidence()
+    }
+
+    /// Returns post-callback pause reaffirmations observed by the main run loop.
     #[must_use]
     pub fn pause_confirmation_count(surface: &NativeSurface) -> u64 {
-        surface.snapshot().pause_confirmation_count
+        pause_confirmation_evidence(surface).observed()
     }
 
     /// Arms a bounded guard around a subsequent production `run` call.

@@ -274,7 +274,8 @@ jobs:
           mkdir -p target/kani
           mv kani-list.json target/kani/harnesses.json
           set -o pipefail
-          cargo kani --workspace --output-format=terse 2>&1 | tee target/kani/proofs.log
+          cargo kani --workspace 2>&1 | tee target/kani/proofs.log
+          scripts/analyze-kani-effectiveness.sh
       - name: Upload proof evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
