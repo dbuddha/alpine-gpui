@@ -1992,17 +1992,119 @@ mod native_input_tests {
     #[test]
     fn every_pause_directive_schedules_post_callback_confirmation() {
         assert!(should_schedule_display_link_pause_confirmation(
-            DisplayLinkDirective::Pause
+            DisplayLinkDirective::Pause,
+            DisplayLinkState::Paused,
+            true,
+        ));
+        assert!(should_schedule_display_link_pause_confirmation(
+            DisplayLinkDirective::None,
+            DisplayLinkState::Paused,
+            false,
         ));
         assert!(!should_schedule_display_link_pause_confirmation(
-            DisplayLinkDirective::None
+            DisplayLinkDirective::None,
+            DisplayLinkState::Paused,
+            true,
         ));
         assert!(!should_schedule_display_link_pause_confirmation(
-            DisplayLinkDirective::Resume
+            DisplayLinkDirective::None,
+            DisplayLinkState::Running,
+            false,
         ));
         assert!(!should_schedule_display_link_pause_confirmation(
-            DisplayLinkDirective::Invalidate
+            DisplayLinkDirective::Resume,
+            DisplayLinkState::Paused,
+            false,
         ));
+        assert!(!should_schedule_display_link_pause_confirmation(
+            DisplayLinkDirective::Invalidate,
+            DisplayLinkState::Paused,
+            false,
+        ));
+    }
+
+    #[cfg(alpine_native_validation)]
+    #[test]
+    fn pause_diagnostics_record_and_decode_every_state() {
+        let counters = PauseConfirmationCounters::default();
+        counters.record_callback(
+            DisplayLinkDirective::None,
+            DisplayLinkState::Paused,
+            false,
+            Some((true, false)),
+        );
+        assert_eq!(counters.callback_observations.load(Ordering::Acquire), 1);
+        assert_eq!(counters.last_directive.load(Ordering::Acquire), 1);
+        assert_eq!(counters.last_portable_state.load(Ordering::Acquire), 1);
+        assert!(!counters.last_native_paused_before.load(Ordering::Acquire));
+        assert!(counters.last_pending.load(Ordering::Acquire));
+        assert!(!counters.last_active.load(Ordering::Acquire));
+
+        counters.record_callback(
+            DisplayLinkDirective::Resume,
+            DisplayLinkState::Running,
+            true,
+            Some((false, true)),
+        );
+        assert_eq!(counters.callback_observations.load(Ordering::Acquire), 2);
+        assert_eq!(counters.last_directive.load(Ordering::Acquire), 2);
+        assert_eq!(counters.last_portable_state.load(Ordering::Acquire), 2);
+        assert!(counters.last_native_paused_before.load(Ordering::Acquire));
+        assert!(!counters.last_pending.load(Ordering::Acquire));
+        assert!(counters.last_active.load(Ordering::Acquire));
+
+        counters.record_callback(
+            DisplayLinkDirective::Pause,
+            DisplayLinkState::Invalid,
+            false,
+            None,
+        );
+        assert_eq!(counters.callback_observations.load(Ordering::Acquire), 3);
+        assert_eq!(counters.last_directive.load(Ordering::Acquire), 3);
+        assert_eq!(counters.last_portable_state.load(Ordering::Acquire), 3);
+        assert!(!counters.last_pending.load(Ordering::Acquire));
+        assert!(counters.last_active.load(Ordering::Acquire));
+
+        counters.record_callback(
+            DisplayLinkDirective::Invalidate,
+            DisplayLinkState::Paused,
+            true,
+            Some((false, false)),
+        );
+        assert_eq!(counters.callback_observations.load(Ordering::Acquire), 4);
+        assert_eq!(counters.last_directive.load(Ordering::Acquire), 4);
+        assert_eq!(counters.last_portable_state.load(Ordering::Acquire), 1);
+
+        use crate::native_validation::{PauseDirectiveEvidence, PausePortableStateEvidence};
+        assert_eq!(pause_directive_evidence(0), PauseDirectiveEvidence::Unknown);
+        assert_eq!(pause_directive_evidence(1), PauseDirectiveEvidence::None);
+        assert_eq!(pause_directive_evidence(2), PauseDirectiveEvidence::Resume);
+        assert_eq!(pause_directive_evidence(3), PauseDirectiveEvidence::Pause);
+        assert_eq!(
+            pause_directive_evidence(4),
+            PauseDirectiveEvidence::Invalidate
+        );
+        assert_eq!(pause_directive_evidence(5), PauseDirectiveEvidence::Unknown);
+        assert_eq!(
+            pause_portable_state_evidence(0),
+            PausePortableStateEvidence::Unknown
+        );
+        assert_eq!(
+            pause_portable_state_evidence(1),
+            PausePortableStateEvidence::Paused
+        );
+        assert_eq!(
+            pause_portable_state_evidence(2),
+            PausePortableStateEvidence::Running
+        );
+        assert_eq!(
+            pause_portable_state_evidence(3),
+            PausePortableStateEvidence::Invalid
+        );
+        assert_eq!(
+            pause_portable_state_evidence(4),
+            PausePortableStateEvidence::Unknown
+        );
     }
 
     #[test]
@@ -2088,7 +2190,7 @@ struct DisplayLinkDelegateIvars {
     callback_count: Arc<AtomicU64>,
     rejected_callback_count: Arc<AtomicU64>,
     #[cfg(alpine_native_validation)]
-    pause_confirmation_count: Arc<AtomicU64>,
+    pause_confirmation: Arc<PauseConfirmationCounters>,
     counters: Arc<FrameCounters>,
     driver: Option<Rc<RefCell<PresentationDriver>>>,
     application: Retained<NSApplication>,
@@ -2104,6 +2206,82 @@ struct DisplayLinkDelegateIvars {
     clipboard_fault: Cell<Option<ClipboardError>>,
     #[cfg(alpine_native_validation)]
     validation_probe: Option<InitializationProbe>,
+}
+
+#[cfg(alpine_native_validation)]
+#[derive(Default)]
+struct PauseConfirmationCounters {
+    requested: AtomicU64,
+    enqueued: AtomicU64,
+    executed: AtomicU64,
+    eligible: AtomicU64,
+    observed: AtomicU64,
+    callback_observations: AtomicU64,
+    last_directive: AtomicU8,
+    last_portable_state: AtomicU8,
+    last_native_paused_before: AtomicBool,
+    last_native_paused_after: AtomicBool,
+    last_pending: AtomicBool,
+    last_active: AtomicBool,
+}
+
+#[cfg(alpine_native_validation)]
+impl PauseConfirmationCounters {
+    fn record_callback(
+        &self,
+        directive: DisplayLinkDirective,
+        state: DisplayLinkState,
+        native_paused: bool,
+        ownership: Option<(bool, bool)>,
+    ) {
+        self.callback_observations.fetch_add(1, Ordering::Relaxed);
+        self.last_directive.store(
+            match directive {
+                DisplayLinkDirective::None => 1,
+                DisplayLinkDirective::Resume => 2,
+                DisplayLinkDirective::Pause => 3,
+                DisplayLinkDirective::Invalidate => 4,
+            },
+            Ordering::Release,
+        );
+        self.last_portable_state.store(
+            match state {
+                DisplayLinkState::Paused => 1,
+                DisplayLinkState::Running => 2,
+                DisplayLinkState::Invalid => 3,
+            },
+            Ordering::Release,
+        );
+        self.last_native_paused_before
+            .store(native_paused, Ordering::Release);
+        if let Some((pending, active)) = ownership {
+            self.last_pending.store(pending, Ordering::Release);
+            self.last_active.store(active, Ordering::Release);
+        }
+    }
+}
+
+#[cfg(alpine_native_validation)]
+const fn pause_directive_evidence(value: u8) -> crate::native_validation::PauseDirectiveEvidence {
+    match value {
+        1 => crate::native_validation::PauseDirectiveEvidence::None,
+        2 => crate::native_validation::PauseDirectiveEvidence::Resume,
+        3 => crate::native_validation::PauseDirectiveEvidence::Pause,
+        4 => crate::native_validation::PauseDirectiveEvidence::Invalidate,
+        _ => crate::native_validation::PauseDirectiveEvidence::Unknown,
+    }
+}
+
+#[cfg(alpine_native_validation)]
+const fn pause_portable_state_evidence(
+    value: u8,
+) -> crate::native_validation::PausePortableStateEvidence {
+    match value {
+        1 => crate::native_validation::PausePortableStateEvidence::Paused,
+        2 => crate::native_validation::PausePortableStateEvidence::Running,
+        3 => crate::native_validation::PausePortableStateEvidence::Invalid,
+        _ => crate::native_validation::PausePortableStateEvidence::Unknown,
+    }
 }
 
 #[cfg(alpine_native_validation)]
@@ -2204,18 +2382,29 @@ define_class!(
                 return;
             }
             if let Some(driver) = &self.ivars().driver {
-                let directive = driver.try_borrow_mut().map_or_else(
+                let (directive, display_link_state) = driver.try_borrow_mut().map_or_else(
                     |_| {
                         self.ivars().counters.failed.fetch_add(1, Ordering::Relaxed);
-                        DisplayLinkDirective::Pause
+                        (DisplayLinkDirective::Pause, DisplayLinkState::Paused)
                     },
                     |mut driver| {
-                        if lifecycle == SURFACE_CLOSING {
+                        let directive = if lifecycle == SURFACE_CLOSING {
                             driver.drain_shutdown(&self.ivars().counters)
                         } else {
                             driver.update(update, &self.ivars().counters)
-                        }
+                        };
+                        (directive, driver.display_link_state())
                     },
+                );
+                #[cfg(alpine_native_validation)]
+                self.ivars().pause_confirmation.record_callback(
+                    directive,
+                    display_link_state,
+                    link.isPaused(),
+                    driver
+                        .try_borrow()
+                        .ok()
+                        .map(|driver| (driver.pending.is_some(), driver.active.is_some())),
                 );
                 if lifecycle == SURFACE_CLOSING
                     && matches!(directive, DisplayLinkDirective::Invalidate)
@@ -2224,14 +2413,22 @@ define_class!(
                     stop_event_loop(&self.ivars().application);
                 } else {
                     apply_display_link_directive(link, directive);
-                    if should_schedule_display_link_pause_confirmation(directive)
-                        && let Some(display_link) = &self.ivars().display_link
+                    #[cfg(alpine_native_validation)]
+                    self.ivars()
+                        .pause_confirmation
+                        .last_native_paused_after
+                        .store(link.isPaused(), Ordering::Release);
+                    if should_schedule_display_link_pause_confirmation(
+                        directive,
+                        display_link_state,
+                        link.isPaused(),
+                    ) && let Some(display_link) = &self.ivars().display_link
                     {
                         #[cfg(alpine_native_validation)]
                         schedule_display_link_pause_confirmation(
                             display_link,
                             driver,
-                            Arc::clone(&self.ivars().pause_confirmation_count),
+                            Arc::clone(&self.ivars().pause_confirmation),
                         );
                         #[cfg(not(alpine_native_validation))]
                         schedule_display_link_pause_confirmation(display_link, driver);
@@ -2873,15 +3070,24 @@ const fn should_confirm_display_link_pause(state: DisplayLinkState) -> bool {
     matches!(state, DisplayLinkState::Paused)
 }
 
-const fn should_schedule_display_link_pause_confirmation(directive: DisplayLinkDirective) -> bool {
+const fn should_schedule_display_link_pause_confirmation(
+    directive: DisplayLinkDirective,
+    state: DisplayLinkState,
+    native_paused: bool,
+) -> bool {
     matches!(directive, DisplayLinkDirective::Pause)
+        || (matches!(directive, DisplayLinkDirective::None)
+            && matches!(state, DisplayLinkState::Paused)
+            && !native_paused)
 }
 
 fn schedule_display_link_pause_confirmation(
     display_link: &Retained<CAMetalDisplayLink>,
     driver: &Rc<RefCell<PresentationDriver>>,
-    #[cfg(alpine_native_validation)] pause_confirmation_count: Arc<AtomicU64>,
+    #[cfg(alpine_native_validation)] pause_confirmation: Arc<PauseConfirmationCounters>,
 ) {
+    #[cfg(alpine_native_validation)]
+    pause_confirmation.requested.fetch_add(1, Ordering::Relaxed);
     if MainThreadMarker::new().is_none() {
         display_link.setPaused(true);
         return;
@@ -2896,7 +3102,13 @@ fn schedule_display_link_pause_confirmation(
     };
     let display_link = display_link.clone();
     let driver = Rc::downgrade(driver);
+    #[cfg(alpine_native_validation)]
+    let pause_confirmation_for_block = Arc::clone(&pause_confirmation);
     let confirmation: RcBlock<dyn Fn()> = RcBlock::new(move || {
+        #[cfg(alpine_native_validation)]
+        pause_confirmation_for_block
+            .executed
+            .fetch_add(1, Ordering::Relaxed);
         if MainThreadMarker::new().is_none() {
             return;
         }
@@ -2906,10 +3118,16 @@ fn schedule_display_link_pause_confirmation(
                 .is_ok_and(|driver| should_confirm_display_link_pause(driver.display_link_state()))
         });
         if should_pause {
+            #[cfg(alpine_native_validation)]
+            pause_confirmation_for_block
+                .eligible
+                .fetch_add(1, Ordering::Relaxed);
             display_link.setPaused(true);
             #[cfg(alpine_native_validation)]
             if display_link.isPaused() {
-                pause_confirmation_count.fetch_add(1, Ordering::Relaxed);
+                pause_confirmation_for_block
+                    .observed
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
     });
@@ -2919,6 +3137,8 @@ fn schedule_display_link_pause_confirmation(
     unsafe {
         run_loop.perform_block(Some(common_modes), Some(&confirmation));
     }
+    #[cfg(alpine_native_validation)]
+    pause_confirmation.enqueued.fetch_add(1, Ordering::Relaxed);
     run_loop.wake_up();
 }
 
@@ -3367,7 +3587,7 @@ impl NativeSurface {
                 callback_count: Arc::clone(&builder.callback_count),
                 rejected_callback_count: Arc::clone(&builder.rejected_callback_count),
                 #[cfg(alpine_native_validation)]
-                pause_confirmation_count: Arc::new(AtomicU64::new(0)),
+                pause_confirmation: Arc::new(PauseConfirmationCounters::default()),
                 counters: Arc::clone(&builder.counters),
                 driver: Some(driver),
                 application: builder
@@ -4024,7 +4244,8 @@ impl NativeSurface {
             pause_confirmation_count: self
                 .delegate
                 .ivars()
-                .pause_confirmation_count
+                .pause_confirmation
+                .observed
                 .load(Ordering::Acquire),
             visible: self.window.isVisible(),
             callback_count: self.callback_count.load(Ordering::Acquire),
@@ -4061,6 +4282,27 @@ impl NativeSurface {
             last_cancelled,
             last_pending_cancellation,
         }
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn pause_confirmation_evidence(
+        &self,
+    ) -> crate::native_validation::PauseConfirmationEvidence {
+        let counters = &self.delegate.ivars().pause_confirmation;
+        crate::native_validation::PauseConfirmationEvidence::new(
+            counters.requested.load(Ordering::Acquire),
+            counters.enqueued.load(Ordering::Acquire),
+            counters.executed.load(Ordering::Acquire),
+            counters.eligible.load(Ordering::Acquire),
+            counters.observed.load(Ordering::Acquire),
+            counters.callback_observations.load(Ordering::Acquire),
+            pause_directive_evidence(counters.last_directive.load(Ordering::Acquire)),
+            pause_portable_state_evidence(counters.last_portable_state.load(Ordering::Acquire)),
+            counters.last_native_paused_before.load(Ordering::Acquire),
+            counters.last_native_paused_after.load(Ordering::Acquire),
+            counters.last_pending.load(Ordering::Acquire),
+            counters.last_active.load(Ordering::Acquire),
+        )
     }
 
     pub(crate) fn take_error(&self) -> Result<Option<SurfaceError>, SurfaceError> {
