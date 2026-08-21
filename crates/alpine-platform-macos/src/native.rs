@@ -2088,7 +2088,7 @@ struct DisplayLinkDelegateIvars {
     callback_count: Arc<AtomicU64>,
     rejected_callback_count: Arc<AtomicU64>,
     #[cfg(alpine_native_validation)]
-    pause_confirmation_count: Arc<AtomicU64>,
+    pause_confirmation: Arc<PauseConfirmationCounters>,
     counters: Arc<FrameCounters>,
     driver: Option<Rc<RefCell<PresentationDriver>>>,
     application: Retained<NSApplication>,
@@ -2104,6 +2104,16 @@ struct DisplayLinkDelegateIvars {
     clipboard_fault: Cell<Option<ClipboardError>>,
     #[cfg(alpine_native_validation)]
     validation_probe: Option<InitializationProbe>,
+}
+
+#[cfg(alpine_native_validation)]
+#[derive(Default)]
+struct PauseConfirmationCounters {
+    requested: AtomicU64,
+    enqueued: AtomicU64,
+    executed: AtomicU64,
+    eligible: AtomicU64,
+    observed: AtomicU64,
 }
 
 #[cfg(alpine_native_validation)]
@@ -2231,7 +2241,7 @@ define_class!(
                         schedule_display_link_pause_confirmation(
                             display_link,
                             driver,
-                            Arc::clone(&self.ivars().pause_confirmation_count),
+                            Arc::clone(&self.ivars().pause_confirmation),
                         );
                         #[cfg(not(alpine_native_validation))]
                         schedule_display_link_pause_confirmation(display_link, driver);
@@ -2880,8 +2890,10 @@ const fn should_schedule_display_link_pause_confirmation(directive: DisplayLinkD
 fn schedule_display_link_pause_confirmation(
     display_link: &Retained<CAMetalDisplayLink>,
     driver: &Rc<RefCell<PresentationDriver>>,
-    #[cfg(alpine_native_validation)] pause_confirmation_count: Arc<AtomicU64>,
+    #[cfg(alpine_native_validation)] pause_confirmation: Arc<PauseConfirmationCounters>,
 ) {
+    #[cfg(alpine_native_validation)]
+    pause_confirmation.requested.fetch_add(1, Ordering::Relaxed);
     if MainThreadMarker::new().is_none() {
         display_link.setPaused(true);
         return;
@@ -2896,7 +2908,13 @@ fn schedule_display_link_pause_confirmation(
     };
     let display_link = display_link.clone();
     let driver = Rc::downgrade(driver);
+    #[cfg(alpine_native_validation)]
+    let pause_confirmation_for_block = Arc::clone(&pause_confirmation);
     let confirmation: RcBlock<dyn Fn()> = RcBlock::new(move || {
+        #[cfg(alpine_native_validation)]
+        pause_confirmation_for_block
+            .executed
+            .fetch_add(1, Ordering::Relaxed);
         if MainThreadMarker::new().is_none() {
             return;
         }
@@ -2906,10 +2924,16 @@ fn schedule_display_link_pause_confirmation(
                 .is_ok_and(|driver| should_confirm_display_link_pause(driver.display_link_state()))
         });
         if should_pause {
+            #[cfg(alpine_native_validation)]
+            pause_confirmation_for_block
+                .eligible
+                .fetch_add(1, Ordering::Relaxed);
             display_link.setPaused(true);
             #[cfg(alpine_native_validation)]
             if display_link.isPaused() {
-                pause_confirmation_count.fetch_add(1, Ordering::Relaxed);
+                pause_confirmation_for_block
+                    .observed
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
     });
@@ -2919,6 +2943,8 @@ fn schedule_display_link_pause_confirmation(
     unsafe {
         run_loop.perform_block(Some(common_modes), Some(&confirmation));
     }
+    #[cfg(alpine_native_validation)]
+    pause_confirmation.enqueued.fetch_add(1, Ordering::Relaxed);
     run_loop.wake_up();
 }
 
@@ -3367,7 +3393,7 @@ impl NativeSurface {
                 callback_count: Arc::clone(&builder.callback_count),
                 rejected_callback_count: Arc::clone(&builder.rejected_callback_count),
                 #[cfg(alpine_native_validation)]
-                pause_confirmation_count: Arc::new(AtomicU64::new(0)),
+                pause_confirmation: Arc::new(PauseConfirmationCounters::default()),
                 counters: Arc::clone(&builder.counters),
                 driver: Some(driver),
                 application: builder
@@ -4024,7 +4050,8 @@ impl NativeSurface {
             pause_confirmation_count: self
                 .delegate
                 .ivars()
-                .pause_confirmation_count
+                .pause_confirmation
+                .observed
                 .load(Ordering::Acquire),
             visible: self.window.isVisible(),
             callback_count: self.callback_count.load(Ordering::Acquire),
@@ -4061,6 +4088,20 @@ impl NativeSurface {
             last_cancelled,
             last_pending_cancellation,
         }
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn pause_confirmation_evidence(
+        &self,
+    ) -> crate::native_validation::PauseConfirmationEvidence {
+        let counters = &self.delegate.ivars().pause_confirmation;
+        crate::native_validation::PauseConfirmationEvidence::new(
+            counters.requested.load(Ordering::Acquire),
+            counters.enqueued.load(Ordering::Acquire),
+            counters.executed.load(Ordering::Acquire),
+            counters.eligible.load(Ordering::Acquire),
+            counters.observed.load(Ordering::Acquire),
+        )
     }
 
     pub(crate) fn take_error(&self) -> Result<Option<SurfaceError>, SurfaceError> {

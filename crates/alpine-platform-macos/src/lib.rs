@@ -1215,10 +1215,74 @@ pub mod native_validation {
         surface.implementation.run_until_frame_terminal(timeout);
     }
 
-    /// Returns post-callback pause reaffirmations completed by the main queue.
+    /// Stage-separated evidence for deferred native pause confirmation.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub struct PauseConfirmationEvidence {
+        requested: u64,
+        enqueued: u64,
+        executed: u64,
+        eligible: u64,
+        observed: u64,
+    }
+
+    impl PauseConfirmationEvidence {
+        pub(crate) const fn new(
+            requested: u64,
+            enqueued: u64,
+            executed: u64,
+            eligible: u64,
+            observed: u64,
+        ) -> Self {
+            Self {
+                requested,
+                enqueued,
+                executed,
+                eligible,
+                observed,
+            }
+        }
+
+        /// Returns confirmation requests admitted after a portable pause.
+        #[must_use]
+        pub const fn requested(self) -> u64 {
+            self.requested
+        }
+
+        /// Returns requests copied into the main run loop.
+        #[must_use]
+        pub const fn enqueued(self) -> u64 {
+            self.enqueued
+        }
+
+        /// Returns deferred blocks that began execution.
+        #[must_use]
+        pub const fn executed(self) -> u64 {
+            self.executed
+        }
+
+        /// Returns executed blocks that still observed portable paused state.
+        #[must_use]
+        pub const fn eligible(self) -> u64 {
+            self.eligible
+        }
+
+        /// Returns eligible blocks that observed native paused state.
+        #[must_use]
+        pub const fn observed(self) -> u64 {
+            self.observed
+        }
+    }
+
+    /// Returns stage-separated deferred native pause evidence.
+    #[must_use]
+    pub fn pause_confirmation_evidence(surface: &NativeSurface) -> PauseConfirmationEvidence {
+        surface.implementation.pause_confirmation_evidence()
+    }
+
+    /// Returns post-callback pause reaffirmations observed by the main run loop.
     #[must_use]
     pub fn pause_confirmation_count(surface: &NativeSurface) -> u64 {
-        surface.snapshot().pause_confirmation_count
+        pause_confirmation_evidence(surface).observed()
     }
 
     /// Arms a bounded guard around a subsequent production `run` call.
