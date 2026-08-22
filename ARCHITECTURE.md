@@ -44,10 +44,12 @@ current-frame and previous-frame copied line layouts, confirms every streaming
 fingerprint candidate with exact rope-range equality, and materializes text only
 on a shaping miss. The combined layout payload and owned vector-capacity
 metadata have a configurable hard ceiling, with 32 MiB as the default. Its A8
-glyph atlas starts empty, grows geometrically, reserves metadata before
-ownership mutation, removes least-recently-used entries, coalesces returned
-rectangles, exposes exact pixel and metadata capacity, defaults to a 16 MiB hard
-ceiling, and releases all storage under explicit pressure. Its audited Apple
+glyph atlas starts empty, grows geometrically, resolves retained glyphs through
+a deterministic power-of-two open-addressed index at no more than 50 percent
+load, reserves metadata before ownership mutation, removes least-recently-used
+entries, coalesces returned rectangles, accounts exact pixel, entry, free-region,
+and index capacity, defaults to a 16 MiB hard ceiling, and releases all storage
+under explicit pressure. Its audited Apple
 Silicon boundary shapes and rasterizes through CoreText and CoreGraphics while
 returning copied Alpine values. `alpine-scene` stores clips, quads, glyphs, and
 ordered paint operations in separate immutable arrays, and the Metal path

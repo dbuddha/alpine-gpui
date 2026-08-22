@@ -65,6 +65,19 @@ tla_properties = []
 platform_scope = ["macos-metal"]
 required_evidence = ["e2e", "native"]
 
+[[claims]]
+id = "AEP-0141-C07"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0141-bounded-text-layout-atlas.md"
+requirement_issue = 33
+claim_type = "functional"
+risk = "critical"
+kani_applicability = "required"
+tla_properties = []
+platform_scope = ["portable"]
+required_evidence = ["kani", "unit"]
+
 [[evidence]]
 id = "EV-0141-UNIT01A"
 claim = "AEP-0141-C01"
@@ -112,6 +125,27 @@ artifact = "crates/alpine-text-layout/src/embedded_tests.rs#atlas_allocates_on_d
 assertion = "The atlas starts empty, reuses one key, stays below budget, evicts under saturation, and releases all storage under pressure."
 scope = "A8 glyphs in one bounded 256-pixel atlas generation."
 exclusions = ["native glyph rasterization", "GPU texture residency", "concurrent frames"]
+
+[[evidence]]
+id = "EV-0141-UNIT07"
+claim = "AEP-0141-C07"
+kind = "unit"
+artifact = "crates/alpine-text-layout/src/embedded_tests.rs#atlas_index_matches_independent_membership_and_lru_model"
+assertion = "A deterministic mixed-operation model preserves indexed membership, exact use ordering, collision reachability, swap-removal, pressure release, and metadata accounting against an independent bounded reference."
+scope = "Two thousand forty-eight insert, lookup, eviction, and pressure operations across 64 glyph keys."
+exclusions = ["native rasterization", "hash-distribution benchmark", "concurrent atlas mutation", "GPU publication"]
+
+[[evidence]]
+id = "EV-0141-KANI07"
+claim = "AEP-0141-C07"
+kind = "kani"
+artifact = "crates/alpine-text-layout/src/proofs.rs#power_of_two_probe_never_escapes_the_index"
+assertion = "Every bounded start and probe maps inside its nonzero power-of-two index table."
+scope = "Compiled pure probe arithmetic for power-of-two tables through 128 slots."
+bounds = ["complete u8 start and probe domains", "table exponents zero through seven"]
+assumptions = ["slot count is a nonzero power of two"]
+exclusions = ["hash distribution", "entry ownership", "Vec allocation", "unbounded table sizes"]
+companion = "crates/alpine-text-layout/src/embedded_tests.rs#atlas_index_matches_independent_membership_and_lru_model"
 
 [[evidence]]
 id = "EV-0141-UNIT04"

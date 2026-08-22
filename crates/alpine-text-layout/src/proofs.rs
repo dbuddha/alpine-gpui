@@ -1,6 +1,6 @@
 use std::num::NonZeroU32;
 
-use crate::{AtlasRect, merge_rects};
+use crate::{AtlasRect, atlas_probe_slot, merge_rects};
 
 /// AEP-0141-C03, EV-0141-KANI03.
 #[kani::proof]
@@ -31,4 +31,19 @@ fn adjacent_horizontal_rectangles_merge_without_loss() {
     assert_eq!(merged.height(), height);
     kani::cover!(first_width.get() == 1 && second_width.get() == 1);
     kani::cover!(first_width.get() == 256 && second_width.get() == 256);
+}
+
+/// AEP-0141-C07, EV-0141-KANI07.
+#[kani::proof]
+fn power_of_two_probe_never_escapes_the_index() {
+    let exponent = kani::any::<u8>();
+    kani::assume(exponent <= 7);
+    let slot_count = 1_usize << exponent;
+    let start = usize::from(kani::any::<u8>()) % slot_count;
+    let probe = usize::from(kani::any::<u8>()) % slot_count;
+    let slot = atlas_probe_slot(start, probe, slot_count);
+
+    assert!(slot < slot_count);
+    kani::cover!(slot_count == 1);
+    kani::cover!(slot_count == 128 && start == 127 && probe == 127);
 }
