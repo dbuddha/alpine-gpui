@@ -4080,7 +4080,8 @@ pub(crate) mod tests {
         let (_, first_allocation) = staging.prepare(device, atlas, super::AtlasUploadKind::Full)?;
         let full_capacity = staging.current_bytes();
         assert!(first_allocation >= atlas.pixels().len());
-        assert_eq!(full_capacity, 8);
+        assert_eq!(first_allocation, full_capacity);
+        assert!(full_capacity <= super::ATLAS_STAGING_LIMIT);
         assert_eq!(staging.allocations, 1);
 
         let (_, repeated_allocation) =

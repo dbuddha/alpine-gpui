@@ -1002,13 +1002,10 @@ mod tests {
         let base = GlyphAtlasImage::new(4, two, two, Arc::from([0_u8; 4]))?;
         let valid = super::GlyphAtlasRowPatch::new(1, one, Arc::from([1_u8, 2]));
 
-        let Err(revision_error) = base.with_row_patches(3, 5, Arc::from([valid.clone()])) else {
-            return Err(SceneError::InvalidAtlasRevision {
-                base: 4,
-                source: 3,
-                revision: 5,
-            });
-        };
+        let invalid_revision = base.with_row_patches(3, 5, Arc::from([valid.clone()]));
+        let revision_error = invalid_revision
+            .err()
+            .ok_or(SceneError::ArithmeticOverflow)?;
         assert_eq!(
             revision_error.to_string(),
             "scene atlas row revision 3->5 does not descend from base 4"
@@ -1021,17 +1018,12 @@ mod tests {
                 actual: super::MAX_GLYPH_ATLAS_ROW_PATCHES + 1,
             })
         );
-        let Err(range_error) = base.with_row_patches(
+        let invalid_range = base.with_row_patches(
             4,
             5,
             Arc::from([super::GlyphAtlasRowPatch::new(2, one, Arc::from([1_u8, 2]))]),
-        ) else {
-            return Err(SceneError::InvalidAtlasRowRange {
-                start: 2,
-                rows: 1,
-                height: 2,
-            });
-        };
+        );
+        let range_error = invalid_range.err().ok_or(SceneError::ArithmeticOverflow)?;
         assert_eq!(
             range_error.to_string(),
             "scene atlas row patch 2+1 exceeds or overlaps height 2"
@@ -1077,11 +1069,8 @@ mod tests {
         assert!(Arc::ptr_eq(&leading.pixels, &source_pixels));
 
         let base = GlyphAtlasImage::new(10, two, two, Arc::from([0_u8; 4]))?;
-        let first = base.with_row_patches(
-            10,
-            11,
-            Arc::from([super::GlyphAtlasRowPatch::new(0, one, Arc::from([1_u8, 2]))]),
-        )?;
+        let first_patch = super::GlyphAtlasRowPatch::new(0, one, Arc::from([1_u8, 2]));
+        let first = base.with_row_patches(10, 11, Arc::from([first_patch]))?;
         assert!(matches!(
             first.advance_with_row_patches(10, 12, Arc::from([])),
             Err(SceneError::InvalidAtlasRevision {
@@ -1104,12 +1093,8 @@ mod tests {
                 .map_err(|_| SceneError::ArithmeticOverflow)?,
         )
         .ok_or(SceneError::ArithmeticOverflow)?;
-        let limit_base = GlyphAtlasImage::new(
-            20,
-            one,
-            limit_height,
-            Arc::from(vec![0_u8; super::MAX_GLYPH_ATLAS_ROW_PATCHES]),
-        )?;
+        let limit_pixels = Arc::from(vec![0_u8; super::MAX_GLYPH_ATLAS_ROW_PATCHES]);
+        let limit_base = GlyphAtlasImage::new(20, one, limit_height, limit_pixels)?;
         let mut patches = Vec::with_capacity(super::MAX_GLYPH_ATLAS_ROW_PATCHES);
         for row in 0..super::MAX_GLYPH_ATLAS_ROW_PATCHES {
             patches.push(super::GlyphAtlasRowPatch::new(
@@ -1181,11 +1166,9 @@ mod tests {
             Some(255)
         );
 
-        let resumed = resynchronized.advance_with_row_patches(
-            32,
-            33,
-            Arc::from([super::GlyphAtlasRowPatch::new(0, one, Arc::from([9_u8]))]),
-        )?;
+        let resumed_patch = super::GlyphAtlasRowPatch::new(0, one, Arc::from([9_u8]));
+        let resumed =
+            resynchronized.advance_with_row_patches(32, 33, Arc::from([resumed_patch]))?;
         assert!(resynchronized.shares_storage_with(&resumed));
         assert_eq!(resumed.base_revision(), 32);
         assert_eq!(resumed.delta_source_revision(), 32);

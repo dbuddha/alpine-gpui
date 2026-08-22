@@ -311,7 +311,7 @@ fn glyph_geometry_and_atlas_publication_axes_are_exact() -> Result<(), Box<dyn E
     let atlas_dimension =
         NonZeroU32::new(app.glyph_atlas.snapshot().dimension()).ok_or("atlas dimension")?;
     app.published_atlas = Some(GlyphAtlasImage::new(
-        99,
+        source_revision,
         atlas_dimension,
         one,
         Arc::<[u8]>::from(vec![
@@ -330,7 +330,7 @@ fn glyph_geometry_and_atlas_publication_axes_are_exact() -> Result<(), Box<dyn E
 
     app.published_atlas_source_revision = 0;
     app.publish_atlas_if_needed(&pending)?;
-    assert_eq!(app.atlas_revision, 3);
+    assert_eq!(app.atlas_revision, 2);
     assert_eq!(app.published_atlas_source_revision, source_revision);
     Ok(())
 }
@@ -403,6 +403,78 @@ fn atlas_row_publication_retains_the_full_base_and_acknowledges_the_delta()
         .sum::<usize>();
     assert!(published_row_bytes < revised.pixels().len());
     assert_eq!(app.atlas_revision, 2);
+    Ok(())
+}
+
+#[test]
+fn atlas_row_publication_forces_full_resynchronization_for_a_stale_scene_base()
+-> Result<(), Box<dyn Error>> {
+    let mut app = StudioApp::new(GeometryTextSystem)?;
+    let viewport = viewport()?;
+    let mut builder = SceneBuilder::new(SceneRevision::new(1), viewport);
+    let origin = Point::new(0.0, 0.0).ok_or("clip origin")?;
+    let clip = builder.push_clip(Clip::new(Rect::new(origin, viewport)));
+    let font = FontKey::new(
+        FONT_FAMILY,
+        PositiveFinite::new(14.0).ok_or("font size")?,
+        PositiveFinite::new(2.0).ok_or("font scale")?,
+        NonZeroU32::new(4).ok_or("tab columns")?,
+    );
+    let first = LineLayout::new(
+        vec![ShapedGlyph::new_resolved(
+            65,
+            7.0,
+            2.0,
+            8.0,
+            0,
+            FONT_FAMILY,
+        )?],
+        8.0,
+        10.0,
+        2.0,
+        1_024,
+    )?;
+    let first_pending = app.collect_glyphs(&first, font, 11.0, 20.0, clip)?;
+    app.publish_atlas_if_needed(&first_pending)?;
+    let admitted = app.published_atlas.clone().ok_or("admitted atlas")?;
+    let source_revision = admitted.revision();
+    let predecessor = source_revision
+        .checked_sub(1)
+        .ok_or("predecessor revision")?;
+    app.published_atlas = Some(GlyphAtlasImage::new(
+        predecessor,
+        admitted.width(),
+        admitted.height(),
+        Arc::from(admitted.pixels()),
+    )?);
+
+    let second = LineLayout::new(
+        vec![ShapedGlyph::new_resolved(
+            66,
+            7.0,
+            2.0,
+            8.0,
+            0,
+            FONT_FAMILY,
+        )?],
+        8.0,
+        10.0,
+        2.0,
+        1_024,
+    )?;
+    let second_pending = app.collect_glyphs(&second, font, 11.0, 20.0, clip)?;
+    app.publish_atlas_if_needed(&second_pending)?;
+    let recovered = app.published_atlas.as_ref().ok_or("recovered atlas")?;
+
+    assert_eq!(recovered.base_revision(), recovered.revision());
+    assert_eq!(recovered.delta_source_revision(), recovered.revision());
+    assert_eq!(app.published_atlas_source_revision, recovered.revision());
+    assert!(recovered.row_patches().is_empty());
+    assert!(recovered.delta_row_patches().is_empty());
+    assert_eq!(
+        recovered.revision(),
+        app.glyph_atlas.snapshot().pixel_revision()
+    );
     Ok(())
 }
 

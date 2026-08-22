@@ -2552,9 +2552,11 @@ impl StudioApp {
             .published_atlas
             .as_ref()
             .filter(|atlas| atlas.width() == dimension && atlas.height() == dimension)
-            .map_or(u64::MAX, |_| self.published_atlas_source_revision);
+            .map_or(u64::MAX, GlyphAtlasImage::revision);
         match self.glyph_atlas.publication_since(source_revision)? {
-            alpine_text_layout::GlyphAtlasPublication::Unchanged { .. } => {}
+            alpine_text_layout::GlyphAtlasPublication::Unchanged { revision } => {
+                self.published_atlas_source_revision = revision;
+            }
             alpine_text_layout::GlyphAtlasPublication::Full {
                 revision, pixels, ..
             } => {
@@ -2591,11 +2593,8 @@ impl StudioApp {
                     .as_ref()
                     .ok_or(StudioRenderError::Domain)?;
                 let delta = Arc::from(patches);
-                self.published_atlas = Some(if base.revision() == source_revision {
-                    base.advance_with_row_patches(source_revision, revision, delta)?
-                } else {
-                    base.with_row_patches(source_revision, revision, delta)?
-                });
+                self.published_atlas =
+                    Some(base.advance_with_row_patches(source_revision, revision, delta)?);
                 let acknowledged = self.glyph_atlas.acknowledge_publication(revision);
                 debug_assert!(acknowledged);
                 self.published_atlas_source_revision = revision;
