@@ -23,6 +23,12 @@ narrowly featured `objc2-core-graphics` binding to own a standard sRGB color
 space. Its safe application API exposes no native handle,
 remains available on other targets, and returns a structured
 unsupported-platform error without linking Apple frameworks.
+Native event identity is a monotonic sequence, not a clock. Event-driven frames
+separately retain a process-monotonic origin through synchronous application
+handling, latest-wins admission, display-link submission, non-blocking GPU
+terminal observation, and the drawable presented handler. Terminal snapshots
+expose bounded handle-free stage durations while preserving the display link's
+independent target and observed presentation timestamps.
 `alpine-text` owns the local-only text domain behind safe Alpine values. It
 uses exact-version, default-feature-minimized Ropey and Unicode Segmentation
 dependencies selected by [Decision #139](https://github.com/dbuddha/alpine-gpui/issues/139)
