@@ -171,13 +171,14 @@ without claiming native validation. It runs through one `Application` until the
 owned AppKit window closes and has no native handles, collaboration state,
 extension host, telemetry, AI, or general async runtime.
 
-The repository-owned private-dogfood packager copies that same release
-executable into a stable unsigned `Alpine Studio.app`; it adds no second
-application runtime. The bundle declares the Apple Silicon macOS 15 product
-identity and retains a timestamp-free manifest containing the exact source
-revision, workspace version, executable checksum and size, target, profile,
-property-list checksum, and signing state. A separate launcher passes at most
-one absolute file or folder argument through the existing process entry point.
+Under [Decision #146](https://github.com/dbuddha/alpine-gpui/issues/146), the
+repository-owned private-dogfood packager copies that same release executable
+into a stable unsigned `Alpine Studio.app`; it adds no second application
+runtime. The bundle declares the Apple Silicon macOS 15 product identity and
+retains a timestamp-free manifest containing the exact source revision,
+workspace version, executable checksum and size, target, profile, property-list
+checksum, and signing state. A separate launcher passes at most one absolute
+file or folder argument through the existing process entry point.
 
 One optional process path now admits either the existing direct-file journey or
 one canonical local folder. Production folder admission owns only the canonical
