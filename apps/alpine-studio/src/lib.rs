@@ -629,7 +629,6 @@ fn session_fallback(detail: &str) -> Result<StudioApp, SurfaceError> {
     Ok(app)
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[cfg_attr(test, mutants::skip)] // Cross-platform persistence behavior is qualified independently.
 enum ExplicitPathTarget {
     File {
