@@ -813,6 +813,38 @@ pub struct AtlasRect {
     height: NonZeroU32,
 }
 
+/// Cached atlas placement and native raster bearings for one glyph key.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AtlasGlyph {
+    rect: Option<AtlasRect>,
+    left: f32,
+    top: f32,
+}
+
+impl AtlasGlyph {
+    const fn new(rect: Option<AtlasRect>, left: f32, top: f32) -> Self {
+        Self { rect, left, top }
+    }
+
+    /// Returns the atlas rectangle, or `None` for a cached empty glyph.
+    #[must_use]
+    pub const fn rect(self) -> Option<AtlasRect> {
+        self.rect
+    }
+
+    /// Returns the logical left bearing copied from the native rasterizer.
+    #[must_use]
+    pub const fn left(self) -> f32 {
+        self.left
+    }
+
+    /// Returns the logical top bearing copied from the native rasterizer.
+    #[must_use]
+    pub const fn top(self) -> f32 {
+        self.top
+    }
+}
+
 impl AtlasRect {
     fn new(x: u32, y: u32, width: NonZeroU32, height: NonZeroU32) -> Self {
         Self {
@@ -896,7 +928,7 @@ impl GlyphBitmap {
 #[derive(Clone, Copy)]
 struct AtlasEntry {
     key: GlyphKey,
-    rect: AtlasRect,
+    glyph: AtlasGlyph,
     last_used: u64,
 }
 
@@ -904,6 +936,7 @@ struct AtlasEntry {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GlyphAtlasSnapshot {
     dimension: u32,
+    pixel_revision: u64,
     pixel_bytes: usize,
     metadata_bytes: usize,
     peak_bytes: usize,
@@ -920,6 +953,12 @@ impl GlyphAtlasSnapshot {
     #[must_use]
     pub const fn dimension(self) -> u32 {
         self.dimension
+    }
+
+    /// Returns the monotonic identity of the current A8 pixel contents.
+    #[must_use]
+    pub const fn pixel_revision(self) -> u64 {
+        self.pixel_revision
     }
 
     /// Returns owned A8 pixel bytes.
@@ -980,6 +1019,7 @@ impl GlyphAtlasSnapshot {
 /// Demand-allocated, removable, hard-budgeted A8 glyph atlas.
 pub struct GlyphAtlas {
     dimension: u32,
+    pixel_revision: u64,
     pixels: Vec<u8>,
     entries: Vec<AtlasEntry>,
     free: Vec<AtlasRect>,
@@ -998,6 +1038,7 @@ impl GlyphAtlas {
     pub fn new(budget_bytes: NonZeroUsize) -> Self {
         Self {
             dimension: 0,
+            pixel_revision: 0,
             pixels: Vec::new(),
             entries: Vec::new(),
             free: Vec::new(),
@@ -1011,6 +1052,61 @@ impl GlyphAtlas {
         }
     }
 
+    /// Looks up one retained glyph before native rasterization.
+    ///
+    /// A hit refreshes deterministic least-recently-used ownership and hit
+    /// evidence. An absent key does not record a miss until a raster result is
+    /// admitted, so rejected or failed native work cannot inflate the cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured sequence error if use or hit evidence is exhausted.
+    pub fn lookup(&mut self, key: GlyphKey) -> Result<Option<AtlasGlyph>, LayoutError> {
+        let Some(index) = self.entries.iter().position(|entry| entry.key == key) else {
+            return Ok(None);
+        };
+        self.record_hit(index).map(Some)
+    }
+
+    /// Retains one confirmed native raster result, including empty glyphs.
+    ///
+    /// Empty outcomes are metadata-only negative cache entries. They prevent
+    /// whitespace and other non-painting glyphs from re-entering CoreText on a
+    /// warm frame without consuming atlas pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured arithmetic, budget, allocation, bitmap, or
+    /// sequence error.
+    pub fn insert_rasterized(
+        &mut self,
+        key: GlyphKey,
+        rasterized: &RasterizedGlyph,
+    ) -> Result<AtlasGlyph, LayoutError> {
+        if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {
+            return self.record_hit(index);
+        }
+        self.record_miss()?;
+        let left = rasterized.left();
+        let top = rasterized.top();
+        let Some(bitmap) = rasterized.bitmap() else {
+            return self.insert_empty_miss(key, left, top);
+        };
+        let required = bitmap.pixels.len();
+        if required > self.budget_bytes.get() {
+            return Err(LayoutError::GlyphExceedsAtlasBudget {
+                bytes: required,
+                budget: self.budget_bytes.get(),
+            });
+        }
+        let attempts = self
+            .entries
+            .len()
+            .checked_add(u32::BITS as usize)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        self.insert_miss(key, bitmap, left, top, attempts)
+    }
+
     /// Finds or inserts one A8 glyph, evicting least-recently-used entries
     /// deterministically when required.
     ///
@@ -1022,22 +1118,14 @@ impl GlyphAtlas {
         key: GlyphKey,
         bitmap: &GlyphBitmap,
     ) -> Result<AtlasRect, LayoutError> {
-        self.tick = self
-            .tick
-            .checked_add(1)
-            .ok_or(LayoutError::SequenceExhausted)?;
-        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.key == key) {
-            entry.last_used = self.tick;
-            self.hits = self
-                .hits
-                .checked_add(1)
-                .ok_or(LayoutError::SequenceExhausted)?;
-            return Ok(entry.rect);
+        if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {
+            let glyph = self.record_hit(index)?;
+            if let Some(rect) = glyph.rect() {
+                return Ok(rect);
+            }
+            self.entries.remove(index);
         }
-        self.misses = self
-            .misses
-            .checked_add(1)
-            .ok_or(LayoutError::SequenceExhausted)?;
+        self.record_miss()?;
         let required = bitmap.pixels.len();
         if required > self.budget_bytes.get() {
             return Err(LayoutError::GlyphExceedsAtlasBudget {
@@ -1051,15 +1139,72 @@ impl GlyphAtlas {
             .len()
             .checked_add(u32::BITS as usize)
             .ok_or(LayoutError::ArithmeticOverflow)?;
-        self.insert_miss(key, bitmap, attempts)
+        self.insert_miss(key, bitmap, 0.0, 0.0, attempts)?
+            .rect()
+            .ok_or(LayoutError::InvalidShaperOutput)
+    }
+
+    fn record_hit(&mut self, index: usize) -> Result<AtlasGlyph, LayoutError> {
+        let tick = self
+            .tick
+            .checked_add(1)
+            .ok_or(LayoutError::SequenceExhausted)?;
+        let hits = self
+            .hits
+            .checked_add(1)
+            .ok_or(LayoutError::SequenceExhausted)?;
+        let entry = self
+            .entries
+            .get_mut(index)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        entry.last_used = tick;
+        self.tick = tick;
+        self.hits = hits;
+        Ok(entry.glyph)
+    }
+
+    fn record_miss(&mut self) -> Result<(), LayoutError> {
+        let tick = self
+            .tick
+            .checked_add(1)
+            .ok_or(LayoutError::SequenceExhausted)?;
+        let misses = self
+            .misses
+            .checked_add(1)
+            .ok_or(LayoutError::SequenceExhausted)?;
+        self.tick = tick;
+        self.misses = misses;
+        Ok(())
+    }
+
+    fn insert_empty_miss(
+        &mut self,
+        key: GlyphKey,
+        left: f32,
+        top: f32,
+    ) -> Result<AtlasGlyph, LayoutError> {
+        reserve_atlas_entries(&mut self.entries, 1)?;
+        if exceeds_budget(self.current_bytes(), self.budget_bytes.get()) {
+            return Err(LayoutError::AtlasSaturated);
+        }
+        let glyph = AtlasGlyph::new(None, left, top);
+        self.entries.push(AtlasEntry {
+            key,
+            glyph,
+            last_used: self.tick,
+        });
+        self.update_peak()?;
+        Ok(glyph)
     }
 
     fn insert_miss(
         &mut self,
         key: GlyphKey,
         bitmap: &GlyphBitmap,
+        left: f32,
+        top: f32,
         attempts: usize,
-    ) -> Result<AtlasRect, LayoutError> {
+    ) -> Result<AtlasGlyph, LayoutError> {
         for _ in 0..attempts {
             reserve_atlas_entries(&mut self.entries, 1)?;
             reserve_atlas_rects(&mut self.free, 2)?;
@@ -1068,13 +1213,14 @@ impl GlyphAtlas {
             }
             if let Some(rect) = self.allocate_rect(bitmap.width, bitmap.height) {
                 self.copy_bitmap(rect, bitmap)?;
+                let glyph = AtlasGlyph::new(Some(rect), left, top);
                 self.entries.push(AtlasEntry {
                     key,
-                    rect,
+                    glyph,
                     last_used: self.tick,
                 });
                 self.update_peak()?;
-                return Ok(rect);
+                return Ok(glyph);
             }
             if self.grow(bitmap.width.get().max(bitmap.height.get()))? {
                 continue;
@@ -1093,15 +1239,23 @@ impl GlyphAtlas {
     /// Returns a structured sequence or conversion error before releasing any
     /// storage if pressure accounting cannot advance.
     pub fn pressure(&mut self) -> Result<(), LayoutError> {
-        self.pressure_events = self
+        let pressure_events = self
             .pressure_events
             .checked_add(1)
             .ok_or(LayoutError::SequenceExhausted)?;
-        self.evictions = self
+        let evictions = self
             .evictions
             .checked_add(self.entries.len() as u64)
             .ok_or(LayoutError::SequenceExhausted)?;
+        let pixel_revision = if self.pixels.is_empty() {
+            self.pixel_revision
+        } else {
+            self.next_pixel_revision()?
+        };
+        self.pressure_events = pressure_events;
+        self.evictions = evictions;
         self.dimension = 0;
+        self.pixel_revision = pixel_revision;
         self.pixels = Vec::new();
         self.entries = Vec::new();
         self.free = Vec::new();
@@ -1119,6 +1273,7 @@ impl GlyphAtlas {
     pub fn snapshot(&self) -> GlyphAtlasSnapshot {
         GlyphAtlasSnapshot {
             dimension: self.dimension,
+            pixel_revision: self.pixel_revision,
             pixel_bytes: self.pixels.capacity(),
             metadata_bytes: self.metadata_bytes(),
             peak_bytes: self.peak_bytes,
@@ -1190,6 +1345,7 @@ impl GlyphAtlas {
             self.free.shrink_to_fit();
             return Ok(false);
         }
+        let pixel_revision = self.next_pixel_revision()?;
         if self.dimension != 0 {
             let old = usize_from_u32(self.dimension);
             let new = usize_from_u32(next);
@@ -1219,6 +1375,7 @@ impl GlyphAtlas {
             ));
         }
         self.dimension = next;
+        self.pixel_revision = pixel_revision;
         self.pixels = pixels;
         self.update_peak()?;
         Ok(true)
@@ -1230,6 +1387,16 @@ impl GlyphAtlas {
         let height = usize_from_u32(rect.height.get());
         let x = usize_from_u32(rect.x);
         let y = usize_from_u32(rect.y);
+        let final_end = y
+            .checked_add(height.saturating_sub(1))
+            .and_then(|row| row.checked_mul(stride))
+            .and_then(|start| start.checked_add(x))
+            .and_then(|start| start.checked_add(width))
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        if final_end > self.pixels.len() {
+            return Err(LayoutError::ArithmeticOverflow);
+        }
+        let pixel_revision = self.next_pixel_revision()?;
         for row in 0..height {
             let source = row * width..row * width + width;
             let start = (y + row)
@@ -1238,6 +1405,7 @@ impl GlyphAtlas {
                 .ok_or(LayoutError::ArithmeticOverflow)?;
             self.pixels[start..start + width].copy_from_slice(&bitmap.pixels[source]);
         }
+        self.pixel_revision = pixel_revision;
         Ok(())
     }
 
@@ -1250,11 +1418,16 @@ impl GlyphAtlas {
         else {
             return Ok(false);
         };
-        reserve_atlas_rects(&mut self.free, 1)?;
+        let rect = self.entries[index].glyph.rect();
+        if rect.is_some() {
+            reserve_atlas_rects(&mut self.free, 1)?;
+        }
         let removed = self.entries.remove(index);
-        self.clear_rect(removed.rect)?;
-        self.free.push(removed.rect);
-        self.coalesce_free();
+        if let Some(rect) = removed.glyph.rect() {
+            self.clear_rect(rect)?;
+            self.free.push(rect);
+            self.coalesce_free();
+        }
         self.evictions = self
             .evictions
             .checked_add(1)
@@ -1268,6 +1441,16 @@ impl GlyphAtlas {
         let x = usize_from_u32(rect.x);
         let y = usize_from_u32(rect.y);
         let height = usize_from_u32(rect.height.get());
+        let final_end = y
+            .checked_add(height.saturating_sub(1))
+            .and_then(|row| row.checked_mul(stride))
+            .and_then(|start| start.checked_add(x))
+            .and_then(|start| start.checked_add(width))
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        if final_end > self.pixels.len() {
+            return Err(LayoutError::ArithmeticOverflow);
+        }
+        let pixel_revision = self.next_pixel_revision()?;
         for row in 0..height {
             let start = (y + row)
                 .checked_mul(stride)
@@ -1281,7 +1464,14 @@ impl GlyphAtlas {
                 .ok_or(LayoutError::ArithmeticOverflow)?
                 .fill(0);
         }
+        self.pixel_revision = pixel_revision;
         Ok(())
+    }
+
+    fn next_pixel_revision(&self) -> Result<u64, LayoutError> {
+        self.pixel_revision
+            .checked_add(1)
+            .ok_or(LayoutError::SequenceExhausted)
     }
 
     fn coalesce_free(&mut self) {

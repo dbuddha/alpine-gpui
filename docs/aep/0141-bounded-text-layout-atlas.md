@@ -4,6 +4,7 @@
 - Capability: [#28](https://github.com/dbuddha/alpine-gpui/issues/28)
 - Requirement: [#33](https://github.com/dbuddha/alpine-gpui/issues/33)
 - Task: [#126](https://github.com/dbuddha/alpine-gpui/issues/126)
+- Defect: [#294](https://github.com/dbuddha/alpine-gpui/issues/294)
 - Decision: [#141](https://github.com/dbuddha/alpine-gpui/issues/141)
 - Research: [#27](https://github.com/dbuddha/alpine-gpui/issues/27), [#118](https://github.com/dbuddha/alpine-gpui/issues/118)
 
@@ -42,6 +43,11 @@ performance claim from functional and resource-bound evidence alone.
   six and only six monotonically revised immutable frames, leaves no residual
   dirty frame, and atomically persists the expected Unicode document before
   the clipboard and close journey begins.
+- **AEP-0141-C06:** Studio probes the atlas before native rasterization, retains
+  both visible and empty raster outcomes with their copied bearings, and uses a
+  monotonic pixel-content revision for publication. After cold admission, an
+  unchanged viewport performs zero native glyph rasterizations, zero atlas
+  publications, and zero GPU atlas uploads.
 
 ## Ownership and cache generations
 
@@ -53,8 +59,11 @@ generation into previous. A confirmed previous hit moves one entry back to
 current; a miss alone materializes and shapes the line. The combined layout
 payload and Alpine vector-capacity metadata remain below the configured ceiling.
 
-`GlyphAtlas` owns one tightly packed square A8 pixel vector, removable entries,
-free rectangles, a monotonic use sequence, and exact vector-capacity evidence.
+`GlyphAtlas` owns one tightly packed square A8 pixel vector, removable positive
+and metadata-only empty entries, free rectangles, monotonic use and pixel
+sequences, and exact vector-capacity evidence. A lookup hit returns the retained
+rectangle and native bearings before CoreText is entered. An absent lookup is
+counted as a miss only when its native raster outcome is admitted.
 Allocation reserves fallible metadata capacity before mutating free-space or
 entry ownership. Failure therefore cannot consume an untracked tile. Eviction
 clears pixels, returns the exact rectangle, coalesces adjacent free regions, and
@@ -82,13 +91,15 @@ line ceilings prevent document size from directly determining per-frame work.
 Cache snapshots report current bytes, peak bytes, budget, generation entries,
 hits, misses, evictions, and shaped lines. Atlas snapshots separately report
 pixel bytes, metadata bytes, peak, budget, entries, hits, misses, evictions,
-and pressure events.
+pressure events, and exact pixel-content revision.
 
 The default layout ceiling is 32 MiB. The default atlas ceiling is 16 MiB, but
 the atlas starts empty and grows only on demand. These are Alpine policy limits,
 not statements about Zed or Sublime memory behavior.
 
-The native backend retains one current R8 texture independently of the three
+Studio publishes immutable atlas pixels only when the pixel-content revision
+changes; it does not compare or copy the complete image on a warm frame. The
+native backend retains one current R8 texture independently of the three
 bounded presentation slots. Replacement allocates and uploads once, while an
 unchanged frame reports zero atlas upload bytes. A pending command retains its
 own texture reference, so pressure can remove the cache immediately without

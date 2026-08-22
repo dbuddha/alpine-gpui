@@ -3,7 +3,10 @@ use std::{
     fs,
     num::NonZeroU32,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use alpine_platform_macos::{CloseDisposition, EventTimestamp, ScrollPhase};
@@ -121,6 +124,54 @@ impl GlyphRasterizer for TestTextSystem {
     }
 }
 
+struct CountingTextSystem {
+    rasterizations: Arc<AtomicU64>,
+}
+
+struct GeometryTextSystem;
+
+impl TextShaper for GeometryTextSystem {
+    fn shape(&mut self, text: &str, font: FontKey) -> Result<LineLayout, LayoutError> {
+        TestTextSystem.shape(text, font)
+    }
+}
+
+impl GlyphRasterizer for GeometryTextSystem {
+    fn rasterize(
+        &mut self,
+        _font: FontKey,
+        _glyph_id: u32,
+        _subpixel_x: u8,
+    ) -> Result<RasterizedGlyph, LayoutError> {
+        let width = NonZeroU32::new(6).ok_or(LayoutError::InvalidShaperOutput)?;
+        let height = NonZeroU32::new(8).ok_or(LayoutError::InvalidShaperOutput)?;
+        let bitmap = GlyphBitmap::new(width, height, vec![255; 48])?;
+        RasterizedGlyph::new(Some(bitmap), 3.0, 5.0)
+    }
+}
+
+impl TextShaper for CountingTextSystem {
+    fn shape(&mut self, text: &str, font: FontKey) -> Result<LineLayout, LayoutError> {
+        TestTextSystem.shape(text, font)
+    }
+}
+
+impl GlyphRasterizer for CountingTextSystem {
+    fn rasterize(
+        &mut self,
+        font: FontKey,
+        glyph_id: u32,
+        subpixel_x: u8,
+    ) -> Result<RasterizedGlyph, LayoutError> {
+        self.rasterizations.fetch_add(1, Ordering::Relaxed);
+        if glyph_id == u32::from(' ') {
+            RasterizedGlyph::new(None, 0.0, 0.0)
+        } else {
+            TestTextSystem.rasterize(font, glyph_id, subpixel_x)
+        }
+    }
+}
+
 struct UnresolvedEmptyTextSystem;
 
 impl TextShaper for UnresolvedEmptyTextSystem {
@@ -199,6 +250,83 @@ fn viewport() -> Result<Size, SurfaceError> {
     Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::invariant(
         alpine_platform_macos::SurfaceOperation::Application,
     ))
+}
+
+#[test]
+fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_frames()
+-> Result<(), Box<dyn Error>> {
+    let rasterizations = Arc::new(AtomicU64::new(0));
+    let mut app = StudioApp::new(CountingTextSystem {
+        rasterizations: Arc::clone(&rasterizations),
+    })?;
+    let viewport = viewport()?;
+    let _ = app.try_scene(SceneRevision::new(1), viewport)?;
+    let cold_rasterizations = rasterizations.swap(0, Ordering::Relaxed);
+    assert!(cold_rasterizations > 0);
+    let publication_revision = app.atlas_revision;
+    let source_revision = app.published_atlas_source_revision;
+    let pixel_revision = app.glyph_atlas.snapshot().pixel_revision();
+
+    let last_revision = if cfg!(miri) { 11 } else { 10_001 };
+    for revision in 2..=last_revision {
+        let _ = app.try_scene(SceneRevision::new(revision), viewport)?;
+    }
+
+    assert_eq!(rasterizations.load(Ordering::Relaxed), 0);
+    assert_eq!(app.atlas_revision, publication_revision);
+    assert_eq!(app.published_atlas_source_revision, source_revision);
+    assert_eq!(app.glyph_atlas.snapshot().pixel_revision(), pixel_revision);
+    Ok(())
+}
+
+#[test]
+fn glyph_geometry_and_atlas_publication_axes_are_exact() -> Result<(), Box<dyn Error>> {
+    let mut app = StudioApp::new(GeometryTextSystem)?;
+    let viewport = viewport()?;
+    let mut builder = SceneBuilder::new(SceneRevision::new(1), viewport);
+    let origin = Point::new(0.0, 0.0).ok_or("clip origin")?;
+    let clip = builder.push_clip(Clip::new(Rect::new(origin, viewport)));
+    let font = FontKey::new(
+        FONT_FAMILY,
+        PositiveFinite::new(14.0).ok_or("font size")?,
+        PositiveFinite::new(2.0).ok_or("font scale")?,
+        NonZeroU32::new(4).ok_or("tab columns")?,
+    );
+    let glyph = ShapedGlyph::new_resolved(65, 7.0, 2.0, 8.0, 0, FONT_FAMILY)?;
+    let layout = LineLayout::new(vec![glyph], 8.0, 10.0, 2.0, 1_024)?;
+    let pending = app.collect_glyphs(&layout, font, 11.0, 20.0, clip)?;
+    assert_eq!(pending.len(), 1);
+    let bounds = pending[0].bounds;
+    assert!((bounds.origin().x() - 21.0).abs() < f32::EPSILON);
+    assert!((bounds.origin().y() - 17.0).abs() < f32::EPSILON);
+    assert!((bounds.size().width() - 3.0).abs() < f32::EPSILON);
+    assert!((bounds.size().height() - 4.0).abs() < f32::EPSILON);
+
+    app.publish_atlas_if_needed(&pending)?;
+    assert_eq!(app.atlas_revision, 1);
+    let source_revision = app.glyph_atlas.snapshot().pixel_revision();
+    assert_eq!(app.published_atlas_source_revision, source_revision);
+
+    let one = NonZeroU32::new(1).ok_or("one")?;
+    app.published_atlas = Some(GlyphAtlasImage::new(
+        99,
+        one,
+        one,
+        Arc::<[u8]>::from(vec![255]),
+    )?);
+    app.published_atlas_source_revision = source_revision;
+    app.publish_atlas_if_needed(&pending)?;
+    assert_eq!(app.atlas_revision, 2);
+    assert_eq!(
+        app.published_atlas.as_ref().map(GlyphAtlasImage::width),
+        NonZeroU32::new(app.glyph_atlas.snapshot().dimension())
+    );
+
+    app.published_atlas_source_revision = 0;
+    app.publish_atlas_if_needed(&pending)?;
+    assert_eq!(app.atlas_revision, 3);
+    assert_eq!(app.published_atlas_source_revision, source_revision);
+    Ok(())
 }
 
 fn ime(event: ImeEvent) -> SurfaceEvent {

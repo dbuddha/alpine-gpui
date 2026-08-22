@@ -142,7 +142,7 @@ fn fingerprint_candidate_requires_exact_content_confirmation() -> Result<(), Box
 
 #[test]
 fn atlas_allocates_on_demand_reuses_evicts_and_drains() -> Result<(), Box<dyn Error>> {
-    let budget = NonZeroUsize::new(256 * 256 + 4096).ok_or("budget")?;
+    let budget = NonZeroUsize::new(256 * 256 + 8192).ok_or("budget")?;
     let mut atlas = GlyphAtlas::new(budget);
     assert_eq!(atlas.snapshot().pixel_bytes(), 0);
     let eight = NonZeroU32::new(8).ok_or("width")?;
@@ -171,6 +171,39 @@ fn atlas_allocates_on_demand_reuses_evicts_and_drains() -> Result<(), Box<dyn Er
     assert_eq!(atlas.snapshot().pixel_bytes(), 0);
     assert_eq!(atlas.snapshot().entries(), 0);
     assert_eq!(atlas.snapshot().pressure_events(), 1);
+    Ok(())
+}
+
+#[test]
+fn atlas_lookup_retains_raster_bearings_and_empty_outcomes() -> Result<(), Box<dyn Error>> {
+    let budget = NonZeroUsize::new(256 * 256 + 4096).ok_or("budget")?;
+    let mut atlas = GlyphAtlas::new(budget);
+    let two = NonZeroU32::new(2).ok_or("width")?;
+    let bitmap = GlyphBitmap::new(two, two, vec![255; 4])?;
+    let visible_key = GlyphKey::new(font()?, 10, 0);
+    assert_eq!(atlas.lookup(visible_key)?, None);
+    assert_eq!(atlas.snapshot().misses(), 0);
+
+    let rasterized = RasterizedGlyph::new(Some(bitmap), -1.5, 3.25)?;
+    let visible = atlas.insert_rasterized(visible_key, &rasterized)?;
+    assert!(visible.rect().is_some());
+    assert_eq!(visible.left(), -1.5);
+    assert_eq!(visible.top(), 3.25);
+    let visible_revision = atlas.snapshot().pixel_revision();
+    assert_eq!(visible_revision, 2);
+    assert_eq!(atlas.lookup(visible_key)?, Some(visible));
+    assert_eq!(atlas.snapshot().pixel_revision(), visible_revision);
+
+    let empty_key = GlyphKey::new(font()?, 11, 0);
+    let empty = RasterizedGlyph::new(None, 0.5, 1.25)?;
+    let retained_empty = atlas.insert_rasterized(empty_key, &empty)?;
+    assert_eq!(retained_empty.rect(), None);
+    assert_eq!(retained_empty.left(), 0.5);
+    assert_eq!(retained_empty.top(), 1.25);
+    assert_eq!(atlas.snapshot().pixel_revision(), visible_revision);
+    assert_eq!(atlas.lookup(empty_key)?, Some(retained_empty));
+    assert_eq!(atlas.snapshot().misses(), 2);
+    assert_eq!(atlas.snapshot().hits(), 2);
     Ok(())
 }
 
