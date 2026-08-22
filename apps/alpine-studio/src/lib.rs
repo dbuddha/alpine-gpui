@@ -5678,34 +5678,48 @@ pub mod native_validation {
         resolve_recovery_through_save(app)
     }
 
-    /// Verifies the post-process journal retains dirty text and target identity.
+    /// Handle-free evidence decoded from a post-process recovery journal.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct RetainedRecoveryEvidence {
+        /// Number of dirty document payloads retained after the resolved save.
+        pub document_count: usize,
+        /// Whether the retained workspace root matches the requested folder.
+        pub workspace_root_matches: bool,
+        /// Whether a retained tab path matches the requested file.
+        pub tab_path_matches: bool,
+    }
+
+    /// Observes post-process recovery state for independent process assertions.
     ///
     /// # Errors
     ///
     /// Returns a structured recovery error when the retained journal cannot be
-    /// loaded. Contract mismatches remain fatal to the isolated native test.
+    /// loaded or a requested workspace path cannot be resolved.
     pub fn qualify_retained_recovery_journal(
         journal: &Path,
         expected: &Path,
         workspace: bool,
-    ) -> Result<(), StudioError> {
+    ) -> Result<RetainedRecoveryEvidence, StudioError> {
         let state = recovery::load(journal)
             .map_err(|error| recovery_studio_error(expected, journal, error))?;
-        assert!(state.documents.is_empty());
-        if workspace {
+        let workspace_root_matches = if workspace {
             let expected = fs::canonicalize(expected)
                 .map_err(|_| SurfaceError::invariant(SurfaceOperation::Application))?;
-            assert_eq!(state.session.workspace.as_deref(), Some(expected.as_path()));
+            state.session.workspace.as_deref() == Some(expected.as_path())
         } else {
-            assert!(
-                state
-                    .session
-                    .tabs
-                    .iter()
-                    .any(|tab| tab.path.as_deref() == Some(expected))
-            );
-        }
-        Ok(())
+            false
+        };
+        let tab_path_matches = !workspace
+            && state
+                .session
+                .tabs
+                .iter()
+                .any(|tab| tab.path.as_deref() == Some(expected));
+        Ok(RetainedRecoveryEvidence {
+            document_count: state.documents.len(),
+            workspace_root_matches,
+            tab_path_matches,
+        })
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]

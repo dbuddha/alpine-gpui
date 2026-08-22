@@ -1964,6 +1964,34 @@ fn explicit_folder_launch_retargets_workspace_and_retains_dirty_tabs()
 
     dirty_recovery_fixture(&session_path, &recovered_path, "local recovery\n")?;
 
+    #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+    {
+        let journal = recovery::path_for_session(&session_path);
+        let file_evidence =
+            native_validation::qualify_retained_recovery_journal(&journal, &recovered_path, false)?;
+        assert_eq!(file_evidence.document_count, 1);
+        assert!(!file_evidence.workspace_root_matches);
+        assert!(file_evidence.tab_path_matches);
+
+        let missing_file_evidence = native_validation::qualify_retained_recovery_journal(
+            &journal,
+            &requested_workspace,
+            false,
+        )?;
+        assert_eq!(missing_file_evidence.document_count, 1);
+        assert!(!missing_file_evidence.workspace_root_matches);
+        assert!(!missing_file_evidence.tab_path_matches);
+
+        let folder_evidence = native_validation::qualify_retained_recovery_journal(
+            &journal,
+            &requested_workspace,
+            true,
+        )?;
+        assert_eq!(folder_evidence.document_count, 1);
+        assert!(!folder_evidence.workspace_root_matches);
+        assert!(!folder_evidence.tab_path_matches);
+    }
+
     let target = ExplicitPathTarget::open(&requested_workspace, ExplicitPathKind::Any)?;
     let app = compose_explicit_path(TestTextSystem, target, Some(session_path))?;
     assert_eq!(

@@ -174,11 +174,14 @@ fn qualify_recovery_launch_processes(
         "production-recovery-file",
         expected_evidence,
     )?;
-    alpine_studio::native_validation::qualify_retained_recovery_journal(
+    let file_recovery = alpine_studio::native_validation::qualify_retained_recovery_journal(
         &file_journal,
         &requested_file,
         false,
     )?;
+    assert_eq!(file_recovery.document_count, 0);
+    assert!(!file_recovery.workspace_root_matches);
+    assert!(file_recovery.tab_path_matches);
     assert_eq!(
         std::fs::read_to_string(&recovered_file)?,
         "unsaved recovery\n"
@@ -202,11 +205,14 @@ fn qualify_recovery_launch_processes(
         "production-recovery-folder",
         expected_evidence,
     )?;
-    alpine_studio::native_validation::qualify_retained_recovery_journal(
+    let folder_recovery = alpine_studio::native_validation::qualify_retained_recovery_journal(
         &folder_journal,
         &requested_folder,
         true,
     )?;
+    assert_eq!(folder_recovery.document_count, 0);
+    assert!(folder_recovery.workspace_root_matches);
+    assert!(!folder_recovery.tab_path_matches);
     assert_eq!(
         std::fs::read_to_string(&recovered_folder_file)?,
         "unsaved recovery\n"
