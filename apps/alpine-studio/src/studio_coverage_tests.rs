@@ -1903,6 +1903,19 @@ fn explicit_file_launch_composes_dirty_recovery_without_replacing_local_text()
     assert_eq!(app.buffer().snapshot().text(), "requested\n");
     drop(app);
 
+    let empty_session = root.path().join("clean-state").join("session-v1.bin");
+    let mut clean_app = StudioApp::open_file(TestTextSystem, &recovered_path)?;
+    clean_app.configure_persistence(empty_session.clone())?;
+    clean_app.publish_recovery();
+    drop(clean_app);
+    let empty_journal = recovery::path_for_session(&empty_session);
+    assert!(recovery::load(&empty_journal)?.documents.is_empty());
+    let target = ExplicitPathTarget::open(&requested_path, ExplicitPathKind::File)?;
+    let app = compose_explicit_path(TestTextSystem, target, Some(empty_session))?;
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.buffer().snapshot().text(), "requested\n");
+    drop(app);
+
     dirty_recovery_fixture(&session_path, &recovered_path, "local recovery\n")?;
 
     let target = ExplicitPathTarget::open(&requested_path, ExplicitPathKind::File)?;
@@ -4613,6 +4626,21 @@ fn native_file_constructor_rejects_a_missing_file_before_native_setup()
         })) if path == missing && source.kind() == std::io::ErrorKind::NotFound
     ));
     Ok(())
+}
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn native_validation_dispatch_counters_reset_and_report_nonzero_work() {
+    reset_native_validation_dispatch_counts();
+    NATIVE_VALIDATION_EVENT_COUNTS[3].fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+    NATIVE_VALIDATION_FRAME_BUILDS.fetch_add(3, std::sync::atomic::Ordering::Relaxed);
+
+    let (events, frame_builds) = native_validation_dispatch_counts();
+    assert_eq!(events[3], 2);
+    assert_eq!(frame_builds, 3);
+
+    reset_native_validation_dispatch_counts();
+    assert_eq!(native_validation_dispatch_counts(), ([0; 10], 0));
 }
 
 struct SelectiveFailingRasterTextSystem {
