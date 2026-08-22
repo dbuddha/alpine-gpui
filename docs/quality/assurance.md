@@ -42,11 +42,13 @@ and native evidence cannot cover economically.
 
 ## Alpine Studio product boundary
 
-The editor-first build has an exact, versioned Apple Silicon dependency closure
-in `assurance/alpine-studio-dependencies.txt`. The fast repository gate rejects
-any unreviewed direct or transitive package, network-capable shipping source,
-excluded Cargo feature, or excluded subsystem path. This is an allowlist, not a
-claim based only on searching for product names.
+The editor-first build has an exact, versioned Apple Silicon normal and build
+dependency closure in `assurance/alpine-studio-dependencies.txt`. The fast
+repository gate rejects any unreviewed direct or transitive package in either
+class, network-capable shipping source, excluded Cargo feature, or excluded
+subsystem path. Build-only packages remain visible for supply-chain review even
+when Cargo proves they are absent from normal runtime edges. This is an
+allowlist, not a claim based only on searching for product names.
 
 The macOS ARM64 CI lane additionally builds the release executable and rejects
 network imports and embedded endpoint strings. It retains the binary SHA-256,

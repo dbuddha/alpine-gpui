@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use alpine_platform_macos::{CloseDisposition, EventTimestamp, ScrollPhase};
+use alpine_platform_macos::{CloseDisposition, EventTimestamp, ScrollPhase, SurfaceExtent};
 use alpine_text_layout::{GlyphBitmap, RasterizedGlyph, ShapedGlyph};
 
 use super::*;
@@ -276,6 +276,159 @@ fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_
     assert_eq!(app.atlas_revision, publication_revision);
     assert_eq!(app.published_atlas_source_revision, source_revision);
     assert_eq!(app.glyph_atlas.snapshot().pixel_revision(), pixel_revision);
+    Ok(())
+}
+
+#[test]
+fn release_profile_event_kind_vocabulary_is_stable() -> Result<(), Box<dyn Error>> {
+    assert!(!StudioProfiler::disabled().enabled());
+    StudioProfiler::default().record(StudioSignpost::new(
+        StudioSignpostStage::EventDispatchBegin,
+        1,
+        0,
+        1,
+        1,
+        [0; 3],
+    ));
+    let timestamp = EventTimestamp::new(40);
+    let position = Point::new(3.0, 4.0).ok_or("pointer position")?;
+    let extent = SurfaceExtent::new(40.0, 20.0, 2.0)?;
+    let event_kinds = [
+        SurfaceEvent::Pointer {
+            timestamp,
+            action: PointerAction::Moved,
+            position,
+            button: PointerButton::None,
+            modifiers: Modifiers::default(),
+        },
+        SurfaceEvent::Scroll {
+            timestamp,
+            delta_x: 1.0,
+            delta_y: -2.0,
+            phase: ScrollPhase::Changed,
+            precise: true,
+            modifiers: Modifiers::default(),
+        },
+        SurfaceEvent::Focus {
+            timestamp,
+            input_epoch: InputEpoch::INITIAL,
+            focused: true,
+        },
+        SurfaceEvent::Clipboard {
+            timestamp,
+            event: ClipboardEvent::CopyCompleted(Ok(())),
+        },
+        SurfaceEvent::Resize { timestamp, extent },
+    ]
+    .map(|event| surface_event_kind(&event));
+    assert_eq!(event_kinds, [2, 3, 4, 6, 7]);
+    assert_eq!(AtlasPublicationProfile::Unchanged.code(), 0);
+    assert_eq!(AtlasPublicationProfile::Full.code(), 1);
+    assert_eq!(AtlasPublicationProfile::Rows.code(), 2);
+    assert_eq!(usize_to_u64(0), 0);
+    assert_eq!(usize_to_u64(17), 17);
+    Ok(())
+}
+
+#[test]
+fn release_profile_points_preserve_event_frame_stage_order_and_failure_outcome()
+-> Result<(), Box<dyn Error>> {
+    let font = StudioApp::font()?;
+    let mut measured = MeasuredTextSystem::new(TestTextSystem, false);
+    let _layout = measured.shape("x", font)?;
+    let _glyph = measured.rasterize(font, u32::from('x'), 0)?;
+    assert_eq!(measured.snapshot(), TextSystemSnapshot::default());
+    measured.set_enabled(true);
+    let _layout = measured.shape("x", font)?;
+    let _glyph = measured.rasterize(font, u32::from('x'), 0)?;
+    assert_eq!(
+        measured.snapshot(),
+        TextSystemSnapshot {
+            shape_calls: 1,
+            rasterize_calls: 1,
+        }
+    );
+
+    let mut app = test_app()?;
+    let (profiler, records) = StudioProfiler::recording();
+    app.text_system.set_enabled(profiler.enabled());
+    app.profiler = profiler;
+    let mut application = Application::new(
+        app,
+        viewport()?,
+        LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or("clear")?,
+        WorkerConfig::default(),
+    )?;
+    let response = application.dispatch_with_response(&SurfaceEvent::Ime {
+        timestamp: EventTimestamp::new(41),
+        input_epoch: InputEpoch::INITIAL,
+        event: ImeEvent::Committed("x".into()),
+    });
+    assert!(response.frame().is_some());
+
+    let records = records.borrow();
+    let stages: Vec<StudioSignpostStage> =
+        records.iter().copied().map(StudioSignpost::stage).collect();
+    let position = |stage| stages.iter().position(|candidate| *candidate == stage);
+    let event_begin = position(StudioSignpostStage::EventDispatchBegin).ok_or("event begin")?;
+    let mutation = position(StudioSignpostStage::StateMutationComplete).ok_or("mutation")?;
+    let frame_begin = position(StudioSignpostStage::FrameBuildBegin).ok_or("frame begin")?;
+    let layout_begin = position(StudioSignpostStage::VisibleLayoutBegin).ok_or("layout begin")?;
+    let layout_end = position(StudioSignpostStage::VisibleLayoutComplete).ok_or("layout end")?;
+    let atlas_begin = position(StudioSignpostStage::AtlasPublicationBegin).ok_or("atlas begin")?;
+    let atlas_end = position(StudioSignpostStage::AtlasPublicationComplete).ok_or("atlas end")?;
+    let text = position(StudioSignpostStage::TextSummary).ok_or("text summary")?;
+    let frame_end = position(StudioSignpostStage::FrameBuildComplete).ok_or("frame end")?;
+    assert!(event_begin < mutation);
+    assert!(mutation < frame_begin);
+    assert!(frame_begin < layout_begin);
+    assert!(layout_begin < layout_end);
+    assert!(layout_end < atlas_begin);
+    assert!(atlas_begin < atlas_end);
+    assert!(atlas_end < text);
+    assert!(text < frame_end);
+    assert!(records.iter().all(|record| record.event_timestamp() == 41));
+    assert!(
+        records
+            .iter()
+            .filter(|record| record.scene_revision() != 0)
+            .all(|record| record.scene_revision() == 1)
+    );
+    let text_record = records
+        .iter()
+        .find(|record| record.stage() == StudioSignpostStage::TextSummary)
+        .ok_or("text record")?;
+    assert!(text_record.values()[0] > 0);
+    assert!(text_record.values()[1] > 0);
+    drop(records);
+
+    let mut failing = StudioApp::new(FailingTextSystem)?;
+    let (profiler, failed_records) = StudioProfiler::recording();
+    failing.text_system.set_enabled(profiler.enabled());
+    failing.profiler = profiler;
+    assert!(matches!(
+        failing.profile_atlas_publication_result::<()>(Err(LayoutError::ArithmeticOverflow)),
+        Err(StudioRenderError::Layout(LayoutError::ArithmeticOverflow))
+    ));
+    let fallback = failing.scene(SceneRevision::new(7), viewport()?);
+    assert_eq!(fallback.operation_count(), 1);
+    let failed_records = failed_records.borrow();
+    assert!(
+        failed_records
+            .iter()
+            .any(|record| record.stage() == StudioSignpostStage::AtlasPublicationFailed)
+    );
+    let failed = failed_records
+        .iter()
+        .position(|record| record.stage() == StudioSignpostStage::FrameBuildFailed)
+        .ok_or("failed frame")?;
+    let completed = failed_records
+        .iter()
+        .position(|record| {
+            record.stage() == StudioSignpostStage::FrameBuildComplete && record.values()[2] == 1
+        })
+        .ok_or("fallback completion")?;
+    assert!(failed < completed);
     Ok(())
 }
 

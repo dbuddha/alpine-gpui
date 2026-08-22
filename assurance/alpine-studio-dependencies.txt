@@ -12,10 +12,12 @@ alpine-text-layout v0.0.0
 bitflags v2.13.1
 block2 v0.6.2
 bstr v1.13.1
+cc v1.4.4
 crossbeam-deque v0.8.7
 crossbeam-epoch v0.9.20
 crossbeam-utils v0.8.22
 dispatch2 v0.3.0
+find-msvc-tools v0.1.11
 globset v0.4.20
 ignore v0.4.33
 itoa v1.0.18
@@ -37,6 +39,7 @@ same-file v1.0.6
 serde v1.0.229
 serde_core v1.0.229
 serde_json v1.0.151
+shlex v2.0.1
 smallvec v1.15.2
 str_indices v0.4.4
 unicode-segmentation v1.13.3

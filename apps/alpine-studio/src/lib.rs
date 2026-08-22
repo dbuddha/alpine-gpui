@@ -51,6 +51,7 @@ mod lsp_language;
 )]
 mod lsp_process;
 mod panes;
+mod profiling;
 mod project_search;
 mod quick_open;
 mod recovery;
@@ -88,9 +89,9 @@ use alpine_core::{LinearRgba, Point, Rect, Size};
 #[cfg(test)]
 use alpine_platform_macos::{AccessibilityPayload, AccessibilityRequest, AccessibilityRequestId};
 use alpine_platform_macos::{
-    ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite, ImeEvent,
-    InputEpoch, InputEpochAdmission, KeyState, Modifiers, PointerAction, PointerButton,
-    SurfaceError, SurfaceEvent,
+    ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite,
+    EventTimestamp, ImeEvent, InputEpoch, InputEpochAdmission, KeyState, Modifiers, PointerAction,
+    PointerButton, StudioSignpost, StudioSignpostStage, SurfaceError, SurfaceEvent,
 };
 use alpine_runtime::{AppContext, AppDelegate, DocumentRevision, RuntimeError, WindowContext};
 use alpine_scene::{
@@ -118,6 +119,7 @@ use find::{
     MAX_REPLACEMENT_TRANSACTION_BYTES,
 };
 use panes::{MAX_PANES, PaneError, PaneGrid, SplitAxis};
+use profiling::{MeasuredTextSystem, StudioProfiler, TextSystemSnapshot};
 use project_search::{
     ProjectSearchAdmission, ProjectSearchError, ProjectSearchRequest, ProjectSearchState,
     ProjectSearchWorkerOutput, SelectedProjectMatch,
@@ -549,6 +551,30 @@ struct PendingGlyph {
     clip: alpine_scene::ClipId,
     source_utf16: u32,
     color: Option<LinearRgba>,
+}
+
+#[derive(Clone, Copy)]
+struct FrameProfileStart {
+    layout: alpine_text_layout::LayoutCacheSnapshot,
+    atlas: alpine_text_layout::GlyphAtlasSnapshot,
+    text: TextSystemSnapshot,
+}
+
+#[derive(Clone, Copy)]
+enum AtlasPublicationProfile {
+    Unchanged,
+    Full,
+    Rows,
+}
+
+impl AtlasPublicationProfile {
+    const fn code(self) -> u64 {
+        match self {
+            Self::Unchanged => 0,
+            Self::Full => 1,
+            Self::Rows => 2,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1043,7 +1069,10 @@ struct StudioApp {
     published_atlas: Option<GlyphAtlasImage>,
     atlas_revision: u64,
     published_atlas_source_revision: u64,
-    text_system: Box<dyn StudioTextSystem>,
+    text_system: MeasuredTextSystem,
+    profiler: StudioProfiler,
+    profile_event_timestamp: EventTimestamp,
+    profile_scene_revision: SceneRevision,
     rust_diagnostics: RustDiagnostics,
     language_wake_latch: LanguageWakeLatch,
     #[cfg(test)]
@@ -1260,6 +1289,8 @@ impl StudioApp {
             .map_err(|_| APPLICATION_INVARIANT)?;
         let active_tab = tabs.active_id().map_err(|_| APPLICATION_INVARIANT)?;
         let panes = PaneGrid::new(active_tab, DocumentViewState::default());
+        let profiler = StudioProfiler::default();
+        let text_system = MeasuredTextSystem::new(text_system, profiler.enabled());
         Ok(Self {
             settings,
             document,
@@ -1288,7 +1319,10 @@ impl StudioApp {
             published_atlas: None,
             atlas_revision: 0,
             published_atlas_source_revision: 0,
-            text_system: Box::new(text_system),
+            text_system,
+            profiler,
+            profile_event_timestamp: EventTimestamp::new(0),
+            profile_scene_revision: SceneRevision::new(0),
             rust_diagnostics: RustDiagnostics::default(),
             language_wake_latch: LanguageWakeLatch::default(),
             #[cfg(test)]
@@ -1761,15 +1795,112 @@ impl StudioApp {
     }
 
     fn scene(&mut self, revision: SceneRevision, viewport: Size) -> Scene {
+        let profile_start = self.profiler.enabled().then(|| FrameProfileStart {
+            layout: self.layout_cache.snapshot(),
+            atlas: self.glyph_atlas.snapshot(),
+            text: self.text_system.snapshot(),
+        });
+        self.record_profile(
+            StudioSignpostStage::FrameBuildBegin,
+            revision,
+            [
+                u64::from(viewport.width().to_bits()),
+                u64::from(viewport.height().to_bits()),
+                0,
+            ],
+        );
         match self.try_scene(revision, viewport) {
-            Ok(scene) => scene,
+            Ok(scene) => {
+                if let Some(profile_start) = profile_start {
+                    self.record_frame_profile(profile_start, revision);
+                }
+                self.record_profile(
+                    StudioSignpostStage::FrameBuildComplete,
+                    revision,
+                    [
+                        usize_to_u64(scene.operation_count()),
+                        usize_to_u64(scene.glyphs().len()),
+                        0,
+                    ],
+                );
+                scene
+            }
             Err(error) => {
+                if let Some(profile_start) = profile_start {
+                    self.record_frame_profile(profile_start, revision);
+                }
+                self.record_profile(StudioSignpostStage::FrameBuildFailed, revision, [1, 0, 0]);
                 let _error_message = error.to_string();
                 self.render_failures = self.render_failures.saturating_add(1);
                 self.rendered_lines.clear();
-                self.fallback_scene(revision, viewport)
+                let fallback = self.fallback_scene(revision, viewport);
+                self.record_profile(
+                    StudioSignpostStage::FrameBuildComplete,
+                    revision,
+                    [
+                        usize_to_u64(fallback.operation_count()),
+                        usize_to_u64(fallback.glyphs().len()),
+                        1,
+                    ],
+                );
+                fallback
             }
         }
+    }
+
+    fn record_profile(
+        &self,
+        stage: StudioSignpostStage,
+        revision: SceneRevision,
+        values: [u64; 3],
+    ) {
+        if !self.profiler.enabled() {
+            return;
+        }
+        self.profiler.record(StudioSignpost::new(
+            stage,
+            self.profile_event_timestamp.get(),
+            revision.get(),
+            self.runtime_document_revision,
+            self.buffer().revision().get(),
+            values,
+        ));
+    }
+
+    fn record_frame_profile(&self, start: FrameProfileStart, revision: SceneRevision) {
+        let layout = self.layout_cache.snapshot();
+        let atlas = self.glyph_atlas.snapshot();
+        let text = self.text_system.snapshot();
+        self.record_profile(
+            StudioSignpostStage::TextSummary,
+            revision,
+            [
+                text.shape_calls.saturating_sub(start.text.shape_calls),
+                text.rasterize_calls
+                    .saturating_sub(start.text.rasterize_calls),
+                layout
+                    .shaped_lines()
+                    .saturating_sub(start.layout.shaped_lines()),
+            ],
+        );
+        self.record_profile(
+            StudioSignpostStage::LayoutCacheSummary,
+            revision,
+            [
+                layout.hits().saturating_sub(start.layout.hits()),
+                layout.misses().saturating_sub(start.layout.misses()),
+                usize_to_u64(layout.current_bytes()),
+            ],
+        );
+        self.record_profile(
+            StudioSignpostStage::GlyphAtlasSummary,
+            revision,
+            [
+                atlas.hits().saturating_sub(start.atlas.hits()),
+                atlas.misses().saturating_sub(start.atlas.misses()),
+                usize_to_u64(atlas.pixel_bytes().saturating_add(atlas.metadata_bytes())),
+            ],
+        );
     }
 
     fn fallback_scene(&self, revision: SceneRevision, viewport: Size) -> Scene {
@@ -1792,6 +1923,7 @@ impl StudioApp {
         revision: SceneRevision,
         viewport: Size,
     ) -> Result<Scene, StudioRenderError> {
+        self.profile_scene_revision = revision;
         self.last_viewport = viewport;
         self.clamp_scroll();
         self.layout_cache.begin_frame()?;
@@ -1919,6 +2051,7 @@ impl StudioApp {
                 tab_clip,
             )?);
         }
+        self.record_profile(StudioSignpostStage::VisibleLayoutBegin, revision, [0; 3]);
         for (pane_index, pane) in pane_layout.iter().enumerate() {
             let pane_clip = pane_clips[pane_index].ok_or(StudioRenderError::Domain)?;
             let (pane_tab, pane_view) = self
@@ -1956,7 +2089,7 @@ impl StudioApp {
                     line,
                     font,
                     wrap_width,
-                    &mut *self.text_system,
+                    &mut self.text_system,
                 )?;
                 let top = pane.bounds.origin().y() + usize_as_f32(line) * LINE_HEIGHT - pane_scroll;
                 let baseline = top + layout.ascent();
@@ -2056,6 +2189,11 @@ impl StudioApp {
                 }
             }
         }
+        self.record_profile(
+            StudioSignpostStage::VisibleLayoutComplete,
+            revision,
+            [usize_to_u64(rendered_lines.len()), 0, 0],
+        );
 
         let mut composition_underline = None;
         if let Some(composition) = self.composition.clone()
@@ -2543,7 +2681,14 @@ impl StudioApp {
         &mut self,
         pending: &[PendingGlyph],
     ) -> Result<(), StudioRenderError> {
+        let revision = self.profile_scene_revision;
+        self.record_profile(
+            StudioSignpostStage::AtlasPublicationBegin,
+            revision,
+            [usize_to_u64(pending.len()), 0, 0],
+        );
         if pending.is_empty() {
+            self.record_atlas_publication(AtlasPublicationProfile::Unchanged, 0, 0);
             return Ok(());
         }
         let snapshot = self.glyph_atlas.snapshot();
@@ -2553,13 +2698,17 @@ impl StudioApp {
             .as_ref()
             .filter(|atlas| atlas.width() == dimension && atlas.height() == dimension)
             .map_or(u64::MAX, GlyphAtlasImage::revision);
-        match self.glyph_atlas.publication_since(source_revision)? {
+        let atlas_publication = self.glyph_atlas.publication_since(source_revision);
+        let publication = self.profile_atlas_publication_result(atlas_publication)?;
+        match publication {
             alpine_text_layout::GlyphAtlasPublication::Unchanged { revision } => {
                 self.published_atlas_source_revision = revision;
+                self.record_atlas_publication(AtlasPublicationProfile::Unchanged, 0, 0);
             }
             alpine_text_layout::GlyphAtlasPublication::Full {
                 revision, pixels, ..
             } => {
+                let byte_count = pixels.len();
                 self.atlas_revision = self
                     .atlas_revision
                     .checked_add(1)
@@ -2568,13 +2717,16 @@ impl StudioApp {
                 let acknowledged = self.glyph_atlas.acknowledge_publication(revision);
                 debug_assert!(acknowledged);
                 self.published_atlas_source_revision = revision;
+                self.record_atlas_publication(AtlasPublicationProfile::Full, byte_count, 1);
             }
             alpine_text_layout::GlyphAtlasPublication::Rows {
                 source_revision,
                 revision,
                 rows,
+                byte_count,
                 ..
             } => {
+                let row_count = rows.len();
                 let mut patches = Vec::new();
                 patches
                     .try_reserve_exact(rows.len())
@@ -2602,9 +2754,45 @@ impl StudioApp {
                     .atlas_revision
                     .checked_add(1)
                     .ok_or(LayoutError::SequenceExhausted)?;
+                self.record_atlas_publication(AtlasPublicationProfile::Rows, byte_count, row_count);
             }
         }
         Ok(())
+    }
+
+    fn record_atlas_publication(
+        &self,
+        publication: AtlasPublicationProfile,
+        byte_count: usize,
+        group_count: usize,
+    ) {
+        self.record_profile(
+            StudioSignpostStage::AtlasPublicationComplete,
+            self.profile_scene_revision,
+            [
+                publication.code(),
+                usize_to_u64(byte_count),
+                usize_to_u64(group_count),
+            ],
+        );
+    }
+
+    fn record_atlas_publication_failure(&self) {
+        self.record_profile(
+            StudioSignpostStage::AtlasPublicationFailed,
+            self.profile_scene_revision,
+            [1, 0, 0],
+        );
+    }
+
+    fn profile_atlas_publication_result<T>(
+        &self,
+        result: Result<T, LayoutError>,
+    ) -> Result<T, StudioRenderError> {
+        result.map_err(|error| {
+            self.record_atlas_publication_failure();
+            error.into()
+        })
     }
 
     fn full_atlas_image(
@@ -4699,6 +4887,12 @@ impl AppDelegate for StudioApp {
     type WorkerOutput = StudioWorkerOutput;
 
     fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, StudioWorkerOutput>) {
+        self.profile_event_timestamp = event.timestamp();
+        self.record_profile(
+            StudioSignpostStage::EventDispatchBegin,
+            SceneRevision::new(0),
+            [surface_event_kind(event), self.selection_revision, 0],
+        );
         if let SurfaceEvent::Accessibility { request, .. } = event {
             let selection_before = self.selection;
             let (response, effect) = accessibility::respond(self, request);
@@ -4708,6 +4902,11 @@ impl AppDelegate for StudioApp {
             if effect.visual_changed {
                 context.invalidate();
             }
+            self.record_profile(
+                StudioSignpostStage::StateMutationComplete,
+                SceneRevision::new(0),
+                [u64::from(effect.visual_changed), 0, self.selection_revision],
+            );
             return;
         }
         let selection_before = self.selection;
@@ -4772,6 +4971,15 @@ impl AppDelegate for StudioApp {
         self.submit_project_search_request(context);
         self.submit_file_tree_request(context);
         self.publish_recovery();
+        self.record_profile(
+            StudioSignpostStage::StateMutationComplete,
+            SceneRevision::new(0),
+            [
+                u64::from(effect.visual_changed),
+                u64::from(effect.document_changed),
+                self.selection_revision,
+            ],
+        );
     }
 
     fn worker_result(
@@ -4824,6 +5032,25 @@ impl AppDelegate for StudioApp {
     fn frame(&mut self, context: WindowContext) -> Scene {
         self.scene(context.scene_revision(), context.viewport())
     }
+}
+
+const fn surface_event_kind(event: &SurfaceEvent) -> u64 {
+    match event {
+        SurfaceEvent::Keyboard { .. } => 1,
+        SurfaceEvent::Pointer { .. } => 2,
+        SurfaceEvent::Scroll { .. } => 3,
+        SurfaceEvent::Focus { .. } => 4,
+        SurfaceEvent::Ime { .. } => 5,
+        SurfaceEvent::Clipboard { .. } => 6,
+        SurfaceEvent::Resize { .. } => 7,
+        SurfaceEvent::Accessibility { .. } => 8,
+        SurfaceEvent::Wake { .. } => 9,
+        SurfaceEvent::CloseRequested { .. } => 10,
+    }
+}
+
+fn usize_to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 fn accessibility_admission_failures(current: u64, admitted: bool) -> u64 {
