@@ -2265,6 +2265,24 @@ mod atlas_publication_tests {
     }
 
     #[test]
+    fn zero_and_single_range_capacities_remain_bounded() {
+        let mut zero = DirtyAtlasRows::<0>::new();
+        zero.insert(7, 3, 4);
+        assert!(zero.full);
+        assert_eq!(zero.source_revision, 7);
+        assert_eq!(zero.len, 0);
+
+        let mut single = DirtyAtlasRows::<1>::new();
+        single.insert(7, 10, 11);
+        single.insert(7, 30, 31);
+        assert_eq!(single.len, 1);
+        assert_eq!(
+            single.ranges[0],
+            super::DirtyRowRange { start: 10, end: 31 }
+        );
+    }
+
+    #[test]
     fn dirty_ranges_merge_adjacent_boundaries() {
         let mut dirty = DirtyAtlasRows::<4>::new();
         dirty.insert(7, 1, 2);
