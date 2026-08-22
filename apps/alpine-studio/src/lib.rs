@@ -1795,11 +1795,11 @@ impl StudioApp {
     }
 
     fn scene(&mut self, revision: SceneRevision, viewport: Size) -> Scene {
-        let profile_start = FrameProfileStart {
+        let profile_start = self.profiler.enabled().then(|| FrameProfileStart {
             layout: self.layout_cache.snapshot(),
             atlas: self.glyph_atlas.snapshot(),
             text: self.text_system.snapshot(),
-        };
+        });
         self.record_profile(
             StudioSignpostStage::FrameBuildBegin,
             revision,
@@ -1811,7 +1811,9 @@ impl StudioApp {
         );
         match self.try_scene(revision, viewport) {
             Ok(scene) => {
-                self.record_frame_profile(profile_start, revision);
+                if let Some(profile_start) = profile_start {
+                    self.record_frame_profile(profile_start, revision);
+                }
                 self.record_profile(
                     StudioSignpostStage::FrameBuildComplete,
                     revision,
@@ -1824,7 +1826,9 @@ impl StudioApp {
                 scene
             }
             Err(error) => {
-                self.record_frame_profile(profile_start, revision);
+                if let Some(profile_start) = profile_start {
+                    self.record_frame_profile(profile_start, revision);
+                }
                 self.record_profile(StudioSignpostStage::FrameBuildFailed, revision, [1, 0, 0]);
                 let _error_message = error.to_string();
                 self.render_failures = self.render_failures.saturating_add(1);
@@ -1850,6 +1854,9 @@ impl StudioApp {
         revision: SceneRevision,
         values: [u64; 3],
     ) {
+        if !self.profiler.enabled() {
+            return;
+        }
         self.profiler.record(StudioSignpost::new(
             stage,
             self.profile_event_timestamp.get(),
