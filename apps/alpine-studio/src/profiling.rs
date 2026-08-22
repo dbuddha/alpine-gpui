@@ -72,10 +72,16 @@ pub(super) struct StudioProfiler {
     native: StudioSignposts,
     #[cfg(test)]
     records: Option<Rc<RefCell<Vec<StudioSignpost>>>>,
+    #[cfg(test)]
+    enabled_override: Option<bool>,
 }
 
 impl StudioProfiler {
     pub(super) fn enabled(&self) -> bool {
+        #[cfg(test)]
+        if let Some(enabled) = self.enabled_override {
+            return enabled;
+        }
         #[cfg(test)]
         if self.records.is_some() {
             return true;
@@ -89,7 +95,7 @@ impl StudioProfiler {
             records.borrow_mut().push(point);
             return;
         }
-        self.native.emit(point);
+        let _ = self.native.emit(point);
     }
 
     #[cfg(test)]
@@ -99,8 +105,18 @@ impl StudioProfiler {
             Self {
                 native: StudioSignposts::default(),
                 records: Some(Rc::clone(&records)),
+                enabled_override: None,
             },
             records,
         )
+    }
+
+    #[cfg(test)]
+    pub(super) fn disabled() -> Self {
+        Self {
+            native: StudioSignposts::default(),
+            records: None,
+            enabled_override: Some(false),
+        }
     }
 }

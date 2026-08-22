@@ -281,6 +281,7 @@ fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_
 
 #[test]
 fn release_profile_event_kind_vocabulary_is_stable() -> Result<(), Box<dyn Error>> {
+    assert!(!StudioProfiler::disabled().enabled());
     StudioProfiler::default().record(StudioSignpost::new(
         StudioSignpostStage::EventDispatchBegin,
         1,
@@ -321,6 +322,11 @@ fn release_profile_event_kind_vocabulary_is_stable() -> Result<(), Box<dyn Error
     ]
     .map(|event| surface_event_kind(&event));
     assert_eq!(event_kinds, [2, 3, 4, 6, 7]);
+    assert_eq!(AtlasPublicationProfile::Unchanged.code(), 0);
+    assert_eq!(AtlasPublicationProfile::Full.code(), 1);
+    assert_eq!(AtlasPublicationProfile::Rows.code(), 2);
+    assert_eq!(usize_to_u64(0), 0);
+    assert_eq!(usize_to_u64(17), 17);
     Ok(())
 }
 

@@ -125,7 +125,7 @@ impl StudioSignposts {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            enabled: imp::enabled(),
+            enabled: imp::enabled().0,
         }
     }
 
@@ -135,13 +135,18 @@ impl StudioSignposts {
         self.enabled
     }
 
-    /// Emits one point when recording is enabled and otherwise performs no FFI call.
-    pub fn emit(self, point: StudioSignpost) {
+    /// Emits one point and returns its correlation when recording is enabled.
+    #[must_use]
+    pub fn emit(self, point: StudioSignpost) -> Option<u64> {
         if self.enabled {
-            imp::emit(point);
+            Some(imp::emit(point))
+        } else {
+            None
         }
     }
 }
+
+struct DynamicTracingState(bool);
 
 impl Default for StudioSignposts {
     fn default() -> Self {
@@ -149,10 +154,10 @@ impl Default for StudioSignposts {
     }
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod imp {
-    use super::StudioSignpost;
+    use super::{DynamicTracingState, StudioSignpost};
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     unsafe extern "C" {
         fn alpine_studio_signposts_enabled() -> bool;
         fn alpine_studio_signpost_emit(
@@ -168,42 +173,37 @@ mod imp {
         );
     }
 
-    pub(super) fn enabled() -> bool {
+    pub(super) fn enabled() -> DynamicTracingState {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         // SAFETY: The Alpine-owned C shim takes no pointers and initializes its
         // process-lifetime os_log handle through dispatch_once.
-        unsafe { alpine_studio_signposts_enabled() }
+        let enabled = unsafe { alpine_studio_signposts_enabled() };
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let enabled = false;
+        DynamicTracingState(enabled)
     }
 
-    pub(super) fn emit(point: StudioSignpost) {
-        let values = point.values();
-        // SAFETY: Every argument is a copied integer. The stage discriminant is
-        // repr(u8), and the C shim neither retains Rust storage nor calls back.
-        unsafe {
-            alpine_studio_signpost_emit(
-                point.stage() as u8,
-                point.correlation(),
-                point.event_timestamp(),
-                point.scene_revision(),
-                point.document_revision(),
-                point.buffer_revision(),
-                values[0],
-                values[1],
-                values[2],
-            );
+    pub(super) fn emit(point: StudioSignpost) -> u64 {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let values = point.values();
+            // SAFETY: Every argument is a copied integer. The stage discriminant is
+            // repr(u8), and the C shim neither retains Rust storage nor calls back.
+            unsafe {
+                alpine_studio_signpost_emit(
+                    point.stage() as u8,
+                    point.correlation(),
+                    point.event_timestamp(),
+                    point.scene_revision(),
+                    point.document_revision(),
+                    point.buffer_revision(),
+                    values[0],
+                    values[1],
+                    values[2],
+                );
+            }
         }
-    }
-}
-
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-mod imp {
-    use super::StudioSignpost;
-
-    pub(super) const fn enabled() -> bool {
-        false
-    }
-
-    pub(super) fn emit(point: StudioSignpost) {
-        let _ = point.correlation();
+        point.correlation()
     }
 }
 
@@ -234,10 +234,24 @@ mod tests {
         let zero_startup =
             StudioSignpost::new(StudioSignpostStage::FrameBuildBegin, 0, 0, 1, 1, [0; 3]);
         assert_eq!(zero_startup.correlation(), (1_u64 << 63) | 1);
+        let high_bit_startup = StudioSignpost::new(
+            StudioSignpostStage::FrameBuildBegin,
+            0,
+            1_u64 << 63,
+            1,
+            1,
+            [0; 3],
+        );
+        assert_eq!(high_bit_startup.correlation(), 1_u64 << 63);
 
-        if !StudioSignposts::new().enabled() {
-            StudioSignposts::new().emit(point);
-        }
-        StudioSignposts { enabled: true }.emit(point);
+        let disabled = StudioSignposts { enabled: false };
+        assert!(!disabled.enabled());
+        assert_eq!(disabled.emit(point), None);
+        let enabled = StudioSignposts { enabled: true };
+        assert!(enabled.enabled());
+        assert_eq!(enabled.emit(point), Some(17));
+
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        assert!(!StudioSignposts::new().enabled());
     }
 }
