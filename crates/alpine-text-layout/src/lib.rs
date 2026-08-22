@@ -199,6 +199,15 @@ fn reserve_atlas_entries(
         .map_err(|_| LayoutError::AllocationFailed)
 }
 
+fn reserve_atlas_index_slots(
+    values: &mut Vec<Option<AtlasIndexSlot>>,
+    additional: usize,
+) -> Result<(), LayoutError> {
+    values
+        .try_reserve_exact(additional)
+        .map_err(|_| LayoutError::AllocationFailed)
+}
+
 fn reserve_atlas_rects(values: &mut Vec<AtlasRect>, additional: usize) -> Result<(), LayoutError> {
     values
         .try_reserve(additional)
@@ -932,6 +941,14 @@ struct AtlasEntry {
     last_used: u64,
 }
 
+#[derive(Clone, Copy)]
+struct AtlasIndexSlot {
+    key: GlyphKey,
+    entry_index: usize,
+}
+
+const MIN_ATLAS_INDEX_SLOTS: usize = 8;
+
 /// Exact current and peak evidence for the A8 atlas.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GlyphAtlasSnapshot {
@@ -1022,6 +1039,7 @@ pub struct GlyphAtlas {
     pixel_revision: u64,
     pixels: Vec<u8>,
     entries: Vec<AtlasEntry>,
+    index_slots: Vec<Option<AtlasIndexSlot>>,
     free: Vec<AtlasRect>,
     budget_bytes: NonZeroUsize,
     tick: u64,
@@ -1041,6 +1059,7 @@ impl GlyphAtlas {
             pixel_revision: 0,
             pixels: Vec::new(),
             entries: Vec::new(),
+            index_slots: Vec::new(),
             free: Vec::new(),
             budget_bytes,
             tick: 0,
@@ -1062,7 +1081,7 @@ impl GlyphAtlas {
     ///
     /// Returns a structured sequence error if use or hit evidence is exhausted.
     pub fn lookup(&mut self, key: GlyphKey) -> Result<Option<AtlasGlyph>, LayoutError> {
-        let Some(index) = self.entries.iter().position(|entry| entry.key == key) else {
+        let Some(index) = self.index_lookup(key) else {
             return Ok(None);
         };
         self.record_hit(index).map(Some)
@@ -1083,7 +1102,7 @@ impl GlyphAtlas {
         key: GlyphKey,
         rasterized: &RasterizedGlyph,
     ) -> Result<AtlasGlyph, LayoutError> {
-        if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {
+        if let Some(index) = self.index_lookup(key) {
             return self.record_hit(index);
         }
         self.record_miss()?;
@@ -1118,12 +1137,12 @@ impl GlyphAtlas {
         key: GlyphKey,
         bitmap: &GlyphBitmap,
     ) -> Result<AtlasRect, LayoutError> {
-        if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {
+        if let Some(index) = self.index_lookup(key) {
             let glyph = self.record_hit(index)?;
             if let Some(rect) = glyph.rect() {
                 return Ok(rect);
             }
-            self.entries.remove(index);
+            self.remove_indexed_entry(index)?;
         }
         self.record_miss()?;
         let required = bitmap.pixels.len();
@@ -1177,6 +1196,78 @@ impl GlyphAtlas {
         Ok(())
     }
 
+    fn index_lookup(&self, key: GlyphKey) -> Option<usize> {
+        atlas_index_slot(&self.index_slots, key)
+            .and_then(|slot| self.index_slots[slot].map(|entry| entry.entry_index))
+    }
+
+    fn prepare_index_for_insert(&mut self) -> Result<(), LayoutError> {
+        let next_entries = self
+            .entries
+            .len()
+            .checked_add(1)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        let required_slots = atlas_index_slot_count(next_entries)?;
+        if self.index_slots.len() >= required_slots {
+            return Ok(());
+        }
+
+        let mut candidate = Vec::new();
+        reserve_atlas_index_slots(&mut candidate, required_slots)?;
+        candidate.resize(required_slots, None);
+        for (entry_index, entry) in self.entries.iter().enumerate() {
+            let slot = atlas_index_insertion_slot(&candidate, entry.key)
+                .ok_or(LayoutError::ArithmeticOverflow)?;
+            candidate[slot] = Some(AtlasIndexSlot {
+                key: entry.key,
+                entry_index,
+            });
+        }
+        let retained = self
+            .pixels
+            .capacity()
+            .checked_add(self.metadata_without_index_bytes())
+            .and_then(|bytes| {
+                candidate
+                    .capacity()
+                    .checked_mul(size_of::<Option<AtlasIndexSlot>>())
+                    .and_then(|index_bytes| bytes.checked_add(index_bytes))
+            })
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        if exceeds_budget(retained, self.budget_bytes.get()) {
+            return Err(LayoutError::AtlasSaturated);
+        }
+        self.index_slots = candidate;
+        self.update_peak()
+    }
+
+    fn remove_indexed_entry(&mut self, index: usize) -> Result<AtlasEntry, LayoutError> {
+        let last_index = self
+            .entries
+            .len()
+            .checked_sub(1)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        let removed_key = self
+            .entries
+            .get(index)
+            .ok_or(LayoutError::ArithmeticOverflow)?
+            .key;
+        let removed_slot = atlas_index_slot(&self.index_slots, removed_key)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+
+        if index != last_index {
+            let moved_key = self.entries[last_index].key;
+            let moved_slot = atlas_index_slot(&self.index_slots, moved_key)
+                .ok_or(LayoutError::ArithmeticOverflow)?;
+            let moved = self.index_slots[moved_slot]
+                .as_mut()
+                .ok_or(LayoutError::ArithmeticOverflow)?;
+            moved.entry_index = index;
+        }
+        remove_atlas_index_slot(&mut self.index_slots, removed_slot)?;
+        Ok(self.entries.swap_remove(index))
+    }
+
     fn insert_empty_miss(
         &mut self,
         key: GlyphKey,
@@ -1184,15 +1275,20 @@ impl GlyphAtlas {
         top: f32,
     ) -> Result<AtlasGlyph, LayoutError> {
         reserve_atlas_entries(&mut self.entries, 1)?;
+        self.prepare_index_for_insert()?;
         if exceeds_budget(self.current_bytes(), self.budget_bytes.get()) {
             return Err(LayoutError::AtlasSaturated);
         }
+        let entry_index = self.entries.len();
+        let index_slot = atlas_index_insertion_slot(&self.index_slots, key)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
         let glyph = AtlasGlyph::new(None, left, top);
         self.entries.push(AtlasEntry {
             key,
             glyph,
             last_used: self.tick,
         });
+        self.index_slots[index_slot] = Some(AtlasIndexSlot { key, entry_index });
         self.update_peak()?;
         Ok(glyph)
     }
@@ -1208,10 +1304,14 @@ impl GlyphAtlas {
         for _ in 0..attempts {
             reserve_atlas_entries(&mut self.entries, 1)?;
             reserve_atlas_rects(&mut self.free, 2)?;
+            self.prepare_index_for_insert()?;
             if exceeds_budget(self.current_bytes(), self.budget_bytes.get()) {
                 return Err(LayoutError::AtlasSaturated);
             }
             if let Some(rect) = self.allocate_rect(bitmap.width, bitmap.height) {
+                let entry_index = self.entries.len();
+                let index_slot = atlas_index_insertion_slot(&self.index_slots, key)
+                    .ok_or(LayoutError::ArithmeticOverflow)?;
                 self.copy_bitmap(rect, bitmap)?;
                 let glyph = AtlasGlyph::new(Some(rect), left, top);
                 self.entries.push(AtlasEntry {
@@ -1219,6 +1319,7 @@ impl GlyphAtlas {
                     glyph,
                     last_used: self.tick,
                 });
+                self.index_slots[index_slot] = Some(AtlasIndexSlot { key, entry_index });
                 self.update_peak()?;
                 return Ok(glyph);
             }
@@ -1258,6 +1359,7 @@ impl GlyphAtlas {
         self.pixel_revision = pixel_revision;
         self.pixels = Vec::new();
         self.entries = Vec::new();
+        self.index_slots = Vec::new();
         self.free = Vec::new();
         Ok(())
     }
@@ -1422,7 +1524,7 @@ impl GlyphAtlas {
         if rect.is_some() {
             reserve_atlas_rects(&mut self.free, 1)?;
         }
-        let removed = self.entries.remove(index);
+        let removed = self.remove_indexed_entry(index)?;
         if let Some(rect) = removed.glyph.rect() {
             self.clear_rect(rect)?;
             self.free.push(rect);
@@ -1494,6 +1596,14 @@ impl GlyphAtlas {
     }
 
     fn metadata_bytes(&self) -> usize {
+        self.metadata_without_index_bytes().saturating_add(
+            self.index_slots
+                .capacity()
+                .saturating_mul(size_of::<Option<AtlasIndexSlot>>()),
+        )
+    }
+
+    fn metadata_without_index_bytes(&self) -> usize {
         self.entries
             .capacity()
             .saturating_mul(size_of::<AtlasEntry>())
@@ -1512,6 +1622,95 @@ impl GlyphAtlas {
         self.peak_bytes = self.peak_bytes.max(current);
         Ok(())
     }
+}
+
+fn atlas_index_slot_count(entries: usize) -> Result<usize, LayoutError> {
+    entries
+        .checked_mul(2)
+        .map(|slots| slots.max(MIN_ATLAS_INDEX_SLOTS))
+        .and_then(usize::checked_next_power_of_two)
+        .ok_or(LayoutError::ArithmeticOverflow)
+}
+
+const fn atlas_hash_mix(state: u64, value: u64) -> u64 {
+    let mut mixed = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    state ^ mixed ^ (mixed >> 31)
+}
+
+fn glyph_key_hash(key: GlyphKey) -> u64 {
+    let mut state = atlas_hash_mix(0x517c_c1b7_2722_0a95, key.font.family);
+    state = atlas_hash_mix(state, u64::from(key.font.size_bits));
+    state = atlas_hash_mix(state, u64::from(key.font.scale_bits));
+    state = atlas_hash_mix(state, u64::from(key.font.tab_columns.get()));
+    state = atlas_hash_mix(state, u64::from(key.glyph_id));
+    atlas_hash_mix(state, u64::from(key.subpixel_x))
+}
+
+const fn atlas_probe_slot(start: usize, probe: usize, slot_count: usize) -> usize {
+    start.wrapping_add(probe) & (slot_count - 1)
+}
+
+fn atlas_index_start(key: GlyphKey, slot_count: usize) -> Option<usize> {
+    if slot_count == 0 || !slot_count.is_power_of_two() {
+        return None;
+    }
+    let mask = u64::try_from(slot_count.checked_sub(1)?).ok()?;
+    usize::try_from(glyph_key_hash(key) & mask).ok()
+}
+
+fn atlas_index_slot(slots: &[Option<AtlasIndexSlot>], key: GlyphKey) -> Option<usize> {
+    let start = atlas_index_start(key, slots.len())?;
+    for probe in 0..slots.len() {
+        let slot = atlas_probe_slot(start, probe, slots.len());
+        match slots[slot] {
+            Some(indexed) if indexed.key == key => return Some(slot),
+            Some(_) => {}
+            None => return None,
+        }
+    }
+    None
+}
+
+fn atlas_index_insertion_slot(slots: &[Option<AtlasIndexSlot>], key: GlyphKey) -> Option<usize> {
+    let start = atlas_index_start(key, slots.len())?;
+    for probe in 0..slots.len() {
+        let slot = atlas_probe_slot(start, probe, slots.len());
+        match slots[slot] {
+            Some(indexed) if indexed.key == key => return Some(slot),
+            Some(_) => {}
+            None => return Some(slot),
+        }
+    }
+    None
+}
+
+fn remove_atlas_index_slot(
+    slots: &mut [Option<AtlasIndexSlot>],
+    removed: usize,
+) -> Result<(), LayoutError> {
+    let slot_count = slots.len();
+    if slot_count == 0 || !slot_count.is_power_of_two() {
+        return Err(LayoutError::ArithmeticOverflow);
+    }
+    let removed_slot = slots
+        .get_mut(removed)
+        .ok_or(LayoutError::ArithmeticOverflow)?;
+    if removed_slot.take().is_none() {
+        return Err(LayoutError::ArithmeticOverflow);
+    }
+
+    for probe in 1..slot_count {
+        let source = atlas_probe_slot(removed, probe, slot_count);
+        let Some(indexed) = slots[source].take() else {
+            return Ok(());
+        };
+        let destination = atlas_index_insertion_slot(slots, indexed.key)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        slots[destination] = Some(indexed);
+    }
+    Err(LayoutError::ArithmeticOverflow)
 }
 
 fn merge_rects(first: AtlasRect, second: AtlasRect) -> Option<AtlasRect> {

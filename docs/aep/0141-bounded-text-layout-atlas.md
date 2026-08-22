@@ -48,6 +48,11 @@ performance claim from functional and resource-bound evidence alone.
   monotonic pixel-content revision for publication. After cold admission, an
   unchanged viewport performs zero native glyph rasterizations, zero atlas
   publications, and zero GPU atlas uploads.
+- **AEP-0141-C07:** Retained glyph lookup uses a deterministic Alpine-owned
+  power-of-two index at no more than 50 percent load. Index slot capacity is
+  included in the atlas metadata budget, collision probing never scans the
+  atlas entry vector, swap-removal repairs entry identity without allocation,
+  and pressure releases the complete index.
 
 ## Ownership and cache generations
 
@@ -60,14 +65,17 @@ current; a miss alone materializes and shapes the line. The combined layout
 payload and Alpine vector-capacity metadata remain below the configured ceiling.
 
 `GlyphAtlas` owns one tightly packed square A8 pixel vector, removable positive
-and metadata-only empty entries, free rectangles, monotonic use and pixel
-sequences, and exact vector-capacity evidence. A lookup hit returns the retained
-rectangle and native bearings before CoreText is entered. An absent lookup is
-counted as a miss only when its native raster outcome is admitted.
+and metadata-only empty entries, a deterministic open-addressed key index, free
+rectangles, monotonic use and pixel sequences, and exact vector-capacity
+evidence. The index remains at or below 50 percent load and resolves a retained
+key through bounded collision probing without a linear entry scan. A lookup hit
+returns the retained rectangle and native bearings before CoreText is entered.
+An absent lookup is counted as a miss only when its native raster outcome is
+admitted.
 Allocation reserves fallible metadata capacity before mutating free-space or
 entry ownership. Failure therefore cannot consume an untracked tile. Eviction
-clears pixels, returns the exact rectangle, coalesces adjacent free regions, and
-then records the terminal counter.
+repairs the index without allocation, clears pixels, returns the exact rectangle,
+coalesces adjacent free regions, and then records the terminal counter.
 
 ## Correctness and formal applicability
 
@@ -79,9 +87,12 @@ tests require pointer-identical layout reuse and exactly one shaping call.
 The layout cache and atlas are synchronous local owners without independent
 agents, fairness, or temporal progress, so a TLA+ model would be ceremonial.
 Kani instead proves the compiled pure rectangle coalescing rule over all two
-adjacent widths and one height in the bounded `u8 + 1` domain. Dynamic tests
-exercise geometric growth, reuse, eviction, byte ceilings, and pressure drain.
-This is not a proof of `Vec`, Ropey, allocation success, or unbounded geometry.
+adjacent widths and one height in the bounded `u8 + 1` domain, plus index probe
+containment for every start and probe in power-of-two tables through 128 slots.
+A deterministic dynamic model exercises collisions, membership, use ordering,
+swap-removal, eviction, byte ceilings, and pressure drain across mixed
+operations. This is not a proof of hash distribution, `Vec`, Ropey, allocation
+success, or unbounded geometry.
 
 ## Performance and memory
 

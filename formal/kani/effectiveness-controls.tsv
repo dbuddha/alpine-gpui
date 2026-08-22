@@ -12,6 +12,7 @@ proofs::byte_colors_always_normalize_to_valid_channels	2
 proofs::frame_slot_actions_preserve_bounded_unique_ownership	3
 proofs::lifecycle_actions_preserve_invariants	4
 proofs::presentation_actions_preserve_invariants_and_atomicity	5
+proofs::power_of_two_probe_never_escapes_the_index	2
 proofs::readback_capacity_stays_bounded_at_maximum_row	2
 proofs::readback_rows_stay_aligned_and_bounded	2
 proofs::selection_transform_stays_at_or_after_replacement_start	4

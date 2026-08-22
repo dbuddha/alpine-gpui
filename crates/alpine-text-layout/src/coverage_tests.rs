@@ -425,10 +425,29 @@ fn cache_budget_atlas_geometry_and_error_evidence_are_complete() -> Result<(), B
         empty_saturated.insert_rasterized(GlyphKey::new(font()?, 53, 0), &empty),
         Err(LayoutError::AtlasSaturated)
     );
+    let mut empty_post_reservation_saturated = GlyphAtlas::new(tiny_budget);
+    empty_post_reservation_saturated.index_slots = vec![None; MIN_ATLAS_INDEX_SLOTS];
+    assert_eq!(
+        empty_post_reservation_saturated
+            .insert_empty_miss(GlyphKey::new(font()?, 57, 0), 0.0, 0.0,),
+        Err(LayoutError::AtlasSaturated)
+    );
     let exact_raster = RasterizedGlyph::new(Some(pixel.clone()), 0.0, 0.0)?;
     let mut exact_raster_budget = GlyphAtlas::new(tiny_budget);
     assert_eq!(
         exact_raster_budget.insert_rasterized(GlyphKey::new(font()?, 56, 0), &exact_raster),
+        Err(LayoutError::AtlasSaturated)
+    );
+    let mut bitmap_post_reservation_saturated = GlyphAtlas::new(tiny_budget);
+    bitmap_post_reservation_saturated.index_slots = vec![None; MIN_ATLAS_INDEX_SLOTS];
+    assert_eq!(
+        bitmap_post_reservation_saturated.insert_miss(
+            GlyphKey::new(font()?, 58, 0),
+            &pixel,
+            0.0,
+            0.0,
+            1,
+        ),
         Err(LayoutError::AtlasSaturated)
     );
     let mut metadata_saturated = GlyphAtlas::new(tiny_budget);
@@ -574,6 +593,32 @@ fn cache_budget_atlas_geometry_and_error_evidence_are_complete() -> Result<(), B
     ];
     coalescing.coalesce_free();
     assert_eq!(coalescing.free, vec![AtlasRect::new(0, 0, three, one)]);
+
+    let index_font = font()?;
+    let full_index = (0..MIN_ATLAS_INDEX_SLOTS)
+        .map(|index| {
+            u32::try_from(index).map(|glyph_id| {
+                Some(AtlasIndexSlot {
+                    key: GlyphKey::new(index_font, glyph_id, 0),
+                    entry_index: index,
+                })
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let absent_key = GlyphKey::new(font()?, 99, 0);
+    assert_eq!(atlas_index_slot(&full_index, absent_key), None);
+    assert_eq!(atlas_index_insertion_slot(&full_index, absent_key), None);
+
+    let mut empty_index = vec![None; MIN_ATLAS_INDEX_SLOTS];
+    assert_eq!(
+        remove_atlas_index_slot(&mut empty_index, 0),
+        Err(LayoutError::ArithmeticOverflow)
+    );
+    let mut malformed_full_index = full_index;
+    assert_eq!(
+        remove_atlas_index_slot(&mut malformed_full_index, 0),
+        Err(LayoutError::ArithmeticOverflow)
+    );
 
     let text_error = match snapshot("").line_byte_range(9) {
         Ok(_) => return Err("expected text error".into()),

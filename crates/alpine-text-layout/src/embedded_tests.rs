@@ -142,7 +142,7 @@ fn fingerprint_candidate_requires_exact_content_confirmation() -> Result<(), Box
 
 #[test]
 fn atlas_allocates_on_demand_reuses_evicts_and_drains() -> Result<(), Box<dyn Error>> {
-    let budget = NonZeroUsize::new(256 * 256 + 8192).ok_or("budget")?;
+    let budget = NonZeroUsize::new(256 * 256 + 32 * 1024).ok_or("budget")?;
     let mut atlas = GlyphAtlas::new(budget);
     assert_eq!(atlas.snapshot().pixel_bytes(), 0);
     let eight = NonZeroU32::new(8).ok_or("width")?;
@@ -204,6 +204,186 @@ fn atlas_lookup_retains_raster_bearings_and_empty_outcomes() -> Result<(), Box<d
     assert_eq!(atlas.lookup(empty_key)?, Some(retained_empty));
     assert_eq!(atlas.snapshot().misses(), 2);
     assert_eq!(atlas.snapshot().hits(), 2);
+    Ok(())
+}
+
+#[test]
+fn atlas_index_matches_independent_membership_and_lru_model() -> Result<(), Box<dyn Error>> {
+    #[derive(Clone, Copy)]
+    struct ReferenceEntry {
+        key: GlyphKey,
+        last_used: u64,
+    }
+
+    const fn reference_mix(state: u64, value: u64) -> u64 {
+        let mut mixed = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        state ^ mixed ^ (mixed >> 31)
+    }
+
+    fn reference_hash(key: GlyphKey) -> u64 {
+        let mut state = reference_mix(0x517c_c1b7_2722_0a95, key.font.family);
+        state = reference_mix(state, u64::from(key.font.size_bits));
+        state = reference_mix(state, u64::from(key.font.scale_bits));
+        state = reference_mix(state, u64::from(key.font.tab_columns.get()));
+        state = reference_mix(state, u64::from(key.glyph_id));
+        reference_mix(state, u64::from(key.subpixel_x))
+    }
+
+    let budget = NonZeroUsize::new(512 * 512 + 64 * 1024).ok_or("budget")?;
+    let one = NonZeroU32::new(1).ok_or("one")?;
+    let bitmap = GlyphBitmap::new(one, one, vec![255])?;
+    let font = font()?;
+    let keys = (0..64)
+        .map(|glyph_id| GlyphKey::new(font, glyph_id, 0))
+        .collect::<Vec<_>>();
+
+    let contract_key = (1..=u8::MAX)
+        .map(|subpixel| GlyphKey::new(font, 0x5a5a_a5a5, subpixel))
+        .find(|key| reference_hash(*key) & 7 > 1)
+        .ok_or("hash contract key")?;
+    assert_eq!(glyph_key_hash(contract_key), reference_hash(contract_key));
+    assert_eq!(atlas_index_start(contract_key, 0), None);
+    assert_eq!(atlas_index_start(contract_key, 3), None);
+    assert_eq!(
+        atlas_index_start(contract_key, MIN_ATLAS_INDEX_SLOTS),
+        usize::try_from(reference_hash(contract_key) & 7).ok()
+    );
+
+    let mut repeated_slots = vec![None; MIN_ATLAS_INDEX_SLOTS];
+    let repeated_slot = atlas_index_insertion_slot(&repeated_slots, contract_key)
+        .ok_or("initial insertion slot")?;
+    repeated_slots[repeated_slot] = Some(AtlasIndexSlot {
+        key: contract_key,
+        entry_index: 7,
+    });
+    assert_eq!(
+        atlas_index_insertion_slot(&repeated_slots, contract_key),
+        Some(repeated_slot)
+    );
+
+    let mut malformed_slots = vec![
+        Some(AtlasIndexSlot {
+            key: contract_key,
+            entry_index: 0,
+        }),
+        None,
+        None,
+    ];
+    assert_eq!(
+        remove_atlas_index_slot(&mut malformed_slots, 0),
+        Err(LayoutError::ArithmeticOverflow)
+    );
+    assert!(malformed_slots[0].is_some());
+
+    let mut failed_reservation = Vec::<Option<AtlasIndexSlot>>::new();
+    assert_eq!(
+        reserve_atlas_index_slots(&mut failed_reservation, usize::MAX),
+        Err(LayoutError::AllocationFailed)
+    );
+
+    let mut collision = None;
+    for left in 0..keys.len() {
+        for right in (left + 1)..keys.len() {
+            if atlas_index_start(keys[left], MIN_ATLAS_INDEX_SLOTS)
+                == atlas_index_start(keys[right], MIN_ATLAS_INDEX_SLOTS)
+            {
+                collision = Some((keys[left], keys[right]));
+                break;
+            }
+        }
+        if collision.is_some() {
+            break;
+        }
+    }
+    let (first_collision, second_collision) = collision.ok_or("collision fixture")?;
+    let mut collision_atlas = GlyphAtlas::new(budget);
+    collision_atlas.insert(first_collision, &bitmap)?;
+    collision_atlas.insert(second_collision, &bitmap)?;
+    assert!(collision_atlas.index_lookup(first_collision).is_some());
+    assert!(collision_atlas.index_lookup(second_collision).is_some());
+
+    let mut atlas = GlyphAtlas::new(budget);
+    let mut reference = Vec::<ReferenceEntry>::new();
+    let mut reference_tick = 0_u64;
+    let mut random = 0x6a09_e667_f3bc_c909_u64;
+    for _ in 0..2_048 {
+        random = random
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let key = keys[usize::try_from(random % keys.len() as u64)?];
+        match (random >> 32) % 7 {
+            0..=2 => {
+                atlas.insert(key, &bitmap)?;
+                reference_tick = reference_tick.checked_add(1).ok_or("reference tick")?;
+                if let Some(entry) = reference.iter_mut().find(|entry| entry.key == key) {
+                    entry.last_used = reference_tick;
+                } else {
+                    reference.push(ReferenceEntry {
+                        key,
+                        last_used: reference_tick,
+                    });
+                }
+            }
+            3 | 4 => {
+                let expected = reference.iter_mut().find(|entry| entry.key == key);
+                let actual = atlas.lookup(key)?;
+                assert_eq!(actual.is_some(), expected.is_some());
+                if let Some(entry) = expected {
+                    reference_tick = reference_tick.checked_add(1).ok_or("reference tick")?;
+                    entry.last_used = reference_tick;
+                }
+            }
+            5 => {
+                let expected = reference
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(index, entry)| (index, entry.key));
+                assert_eq!(atlas.evict_oldest()?, expected.is_some());
+                if let Some((index, key)) = expected {
+                    assert_eq!(reference.swap_remove(index).key, key);
+                }
+            }
+            6 => {
+                atlas.pressure()?;
+                reference.clear();
+            }
+            _ => return Err("operation escaped bounded selector".into()),
+        }
+
+        assert_eq!(atlas.tick, reference_tick);
+        assert_eq!(atlas.entries.len(), reference.len());
+        assert!(
+            atlas.index_slots.is_empty()
+                || atlas.entries.len().saturating_mul(2) <= atlas.index_slots.len()
+        );
+        for key in &keys {
+            let expected = reference.iter().find(|entry| entry.key == *key);
+            let actual = atlas
+                .index_lookup(*key)
+                .and_then(|index| atlas.entries.get(index));
+            assert_eq!(actual.is_some(), expected.is_some());
+            if let (Some(actual), Some(expected)) = (actual, expected) {
+                assert_eq!(actual.key, expected.key);
+                assert_eq!(actual.last_used, expected.last_used);
+            }
+        }
+        let expected_metadata = atlas
+            .entries
+            .capacity()
+            .saturating_mul(size_of::<AtlasEntry>())
+            .saturating_add(atlas.free.capacity().saturating_mul(size_of::<AtlasRect>()))
+            .saturating_add(
+                atlas
+                    .index_slots
+                    .capacity()
+                    .saturating_mul(size_of::<Option<AtlasIndexSlot>>()),
+            );
+        assert_eq!(atlas.snapshot().metadata_bytes(), expected_metadata);
+        assert!(atlas.current_bytes() <= budget.get());
+    }
     Ok(())
 }
 
