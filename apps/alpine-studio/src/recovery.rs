@@ -51,17 +51,28 @@ pub(crate) struct RecoveryRequest {
     pub(crate) authority_revision: u64,
 }
 
+/// A stable corruption class for a retained Alpine Studio recovery journal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RecoveryCorrupt {
+pub enum RecoveryCorrupt {
+    /// The fixed recovery header is missing or malformed.
     Header,
+    /// The journal uses an unsupported schema version.
     Version(u16),
+    /// A declared or retained byte length violates the recovery budget.
     Length,
+    /// The retained payload does not match its recorded checksum.
     Checksum,
+    /// The journal ends before a required field or payload is complete.
     Truncated,
+    /// A retained path or document payload is not valid UTF-8.
     Utf8,
+    /// More than one recovery document refers to the same tab.
     DuplicateTab,
+    /// A recovery document refers to a tab outside the retained session.
     InvalidTab,
+    /// The embedded session state violates its versioned contract.
     Session,
+    /// Bytes remain after the complete recovery payload.
     TrailingBytes,
 }
 
@@ -91,7 +102,6 @@ pub(crate) enum RecoveryError {
     AllocationFailed,
     Corrupt(RecoveryCorrupt),
     Invalid,
-    PendingDirty,
     Disconnected,
     WorkerPanicked,
     Io {
@@ -106,9 +116,6 @@ impl fmt::Display for RecoveryError {
             Self::AllocationFailed => formatter.write_str("recovery allocation failed"),
             Self::Corrupt(error) => write!(formatter, "recovery is corrupt: {error}"),
             Self::Invalid => formatter.write_str("recovery state is invalid or exceeds its budget"),
-            Self::PendingDirty => {
-                formatter.write_str("an unresolved dirty recovery journal already exists")
-            }
             Self::Disconnected => formatter.write_str("recovery worker is unavailable"),
             Self::WorkerPanicked => formatter.write_str("recovery worker terminated unexpectedly"),
             Self::Io { operation, kind } => {
@@ -300,18 +307,6 @@ pub(crate) fn load(path: &Path) -> Result<RecoveryState, RecoveryError> {
     )?;
     validate_buffered_length(bytes.len())?;
     decode(&bytes).map_err(RecoveryError::Corrupt)
-}
-
-pub(crate) fn ensure_replaceable(path: &Path) -> Result<(), RecoveryError> {
-    match load(path) {
-        Ok(state) if state.documents.is_empty() => Ok(()),
-        Ok(_) => Err(RecoveryError::PendingDirty),
-        Err(RecoveryError::Io {
-            kind: io::ErrorKind::NotFound,
-            ..
-        }) => Ok(()),
-        Err(error) => Err(error),
-    }
 }
 
 fn worker_loop(path: &Path, shared: &Shared, receiver: &Receiver<()>) {
@@ -875,7 +870,6 @@ mod tests {
             RecoveryError::AllocationFailed,
             RecoveryError::Corrupt(RecoveryCorrupt::Checksum),
             RecoveryError::Invalid,
-            RecoveryError::PendingDirty,
             RecoveryError::Disconnected,
             RecoveryError::WorkerPanicked,
             RecoveryError::Io {
@@ -887,7 +881,7 @@ mod tests {
             assert!(!error.to_string().is_empty());
         }
         assert!(RecoveryCorrupt::Version(7).to_string().contains('7'));
-        assert!(errors[6].to_string().contains("read"));
+        assert!(errors[5].to_string().contains("read"));
     }
 
     #[test]
@@ -1094,8 +1088,7 @@ mod tests {
     }
 
     #[test]
-    fn path_load_and_replaceability_preserve_specific_failures()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn path_load_preserves_specific_failures() -> Result<(), Box<dyn std::error::Error>> {
         let root = test_root("load")?;
         #[cfg(unix)]
         assert!(matches!(
@@ -1118,10 +1111,9 @@ mod tests {
                 kind: io::ErrorKind::NotFound
             })
         ));
-        assert_eq!(ensure_replaceable(&path), Ok(()));
         fs::write(&path, b"corrupt")?;
         assert_eq!(
-            ensure_replaceable(&path),
+            load(&path),
             Err(RecoveryError::Corrupt(RecoveryCorrupt::Header))
         );
         let oversized = root.join("oversized.bin");
@@ -1338,29 +1330,6 @@ mod tests {
             local: Buffer::new("other").snapshot(),
         });
         assert_eq!(validate_request(&duplicate), Err(RecoveryError::Invalid));
-        Ok(())
-    }
-
-    #[test]
-    fn unresolved_dirty_recovery_blocks_replacement_but_clean_state_does_not()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = std::env::temp_dir().join(format!(
-            "alpine-recovery-replacement-{}-{}",
-            std::process::id(),
-            TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&root)?;
-        let path = root.join("recovery.bin");
-        atomic_replace(&path, &encode(&request("dirty", 1))?)?;
-        assert_eq!(ensure_replaceable(&path), Err(RecoveryError::PendingDirty));
-        let clean = RecoveryRequest {
-            session: session_state(),
-            documents: Vec::new(),
-            authority_revision: 2,
-        };
-        atomic_replace(&path, &encode(&clean)?)?;
-        assert_eq!(ensure_replaceable(&path), Ok(()));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 

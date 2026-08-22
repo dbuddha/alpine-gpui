@@ -71,6 +71,7 @@ mod syntax;
 use std::path::PathBuf;
 mod workspace;
 
+pub use recovery::RecoveryCorrupt;
 pub use workspace::WorkspaceError;
 
 use std::{
@@ -202,6 +203,33 @@ const APPLICATION_INVARIANT: SurfaceError = SurfaceError::InvariantViolation {
     operation: alpine_platform_macos::SurfaceOperation::Application,
 };
 
+#[cfg(alpine_native_validation)]
+static NATIVE_VALIDATION_EVENT_COUNTS: [std::sync::atomic::AtomicU64; 10] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 10];
+#[cfg(alpine_native_validation)]
+static NATIVE_VALIDATION_FRAME_BUILDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(alpine_native_validation)]
+fn reset_native_validation_dispatch_counts() {
+    for count in &NATIVE_VALIDATION_EVENT_COUNTS {
+        count.store(0, std::sync::atomic::Ordering::Release);
+    }
+    NATIVE_VALIDATION_FRAME_BUILDS.store(0, std::sync::atomic::Ordering::Release);
+}
+
+#[cfg(alpine_native_validation)]
+fn native_validation_dispatch_counts() -> ([u64; 10], u64) {
+    let mut events = [0; 10];
+    for (value, count) in events.iter_mut().zip(&NATIVE_VALIDATION_EVENT_COUNTS) {
+        *value = count.load(std::sync::atomic::Ordering::Acquire);
+    }
+    (
+        events,
+        NATIVE_VALIDATION_FRAME_BUILDS.load(std::sync::atomic::Ordering::Acquire),
+    )
+}
+
 /// A structured Alpine Studio launch failure.
 #[derive(Debug)]
 pub enum StudioError {
@@ -213,6 +241,77 @@ pub enum StudioError {
     Workspace(WorkspaceError),
     /// Native application construction or execution failed.
     Runtime(RuntimeError),
+    /// Existing recovery could not be safely composed with the requested path.
+    Recovery {
+        /// The local file or folder requested by this launch.
+        requested: PathBuf,
+        /// The recovery journal that remains authoritative.
+        journal: PathBuf,
+        /// The exact recovery-launch failure class.
+        source: RecoveryLaunchError,
+    },
+}
+
+/// A structured failure while composing an explicit path with local recovery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryLaunchError {
+    /// Recovery-owned allocation failed before launch state could be admitted.
+    AllocationFailed,
+    /// The retained recovery journal is corrupt.
+    Corrupt(RecoveryCorrupt),
+    /// The recovery or composed application state violates its contract.
+    Invalid,
+    /// Recovery persistence is unavailable.
+    Disconnected,
+    /// The recovery worker terminated unexpectedly.
+    WorkerPanicked,
+    /// Recovery filesystem access failed.
+    Io {
+        /// The bounded recovery operation that failed.
+        operation: &'static str,
+        /// The portable filesystem failure class.
+        kind: std::io::ErrorKind,
+    },
+    /// Native Studio construction failed after recovery was decoded.
+    NativeConstruction,
+    /// The requested target could not be added without replacing recovery.
+    TargetComposition,
+}
+
+impl fmt::Display for RecoveryLaunchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AllocationFailed => formatter.write_str("recovery allocation failed"),
+            Self::Corrupt(error) => write!(formatter, "recovery is corrupt: {error}"),
+            Self::Invalid => formatter.write_str("recovery state is invalid"),
+            Self::Disconnected => formatter.write_str("recovery persistence is unavailable"),
+            Self::WorkerPanicked => formatter.write_str("recovery worker terminated unexpectedly"),
+            Self::Io { operation, kind } => {
+                write!(formatter, "recovery {operation} failed with {kind:?}")
+            }
+            Self::NativeConstruction => {
+                formatter.write_str("native Studio construction failed during recovery")
+            }
+            Self::TargetComposition => {
+                formatter.write_str("requested path could not be composed with recovery")
+            }
+        }
+    }
+}
+
+impl Error for RecoveryLaunchError {}
+
+impl From<recovery::RecoveryError> for RecoveryLaunchError {
+    fn from(error: recovery::RecoveryError) -> Self {
+        match error {
+            recovery::RecoveryError::AllocationFailed => Self::AllocationFailed,
+            recovery::RecoveryError::Corrupt(error) => Self::Corrupt(error),
+            recovery::RecoveryError::Invalid => Self::Invalid,
+            recovery::RecoveryError::Disconnected => Self::Disconnected,
+            recovery::RecoveryError::WorkerPanicked => Self::WorkerPanicked,
+            recovery::RecoveryError::Io { operation, kind } => Self::Io { operation, kind },
+        }
+    }
 }
 
 impl fmt::Display for StudioError {
@@ -222,6 +321,16 @@ impl fmt::Display for StudioError {
             Self::File(error) => write!(formatter, "Studio file failed: {error}"),
             Self::Workspace(error) => write!(formatter, "Studio workspace failed: {error}"),
             Self::Runtime(error) => write!(formatter, "Studio runtime failed: {error}"),
+            Self::Recovery {
+                requested,
+                journal,
+                source,
+            } => write!(
+                formatter,
+                "Studio recovery {} could not open {}: {source}",
+                journal.display(),
+                requested.display()
+            ),
         }
     }
 }
@@ -233,6 +342,7 @@ impl Error for StudioError {
             Self::File(error) => Some(error),
             Self::Workspace(error) => Some(error),
             Self::Runtime(error) => Some(error),
+            Self::Recovery { source, .. } => Some(source),
         }
     }
 }
@@ -314,8 +424,11 @@ pub fn run() -> Result<(), RuntimeError> {
 pub fn run_file(path: impl AsRef<Path>) -> Result<(), StudioError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        run_native(with_default_session(native_file_app(path.as_ref())?)?)
-            .map_err(StudioError::from)
+        run_native(native_explicit_path_app(
+            path.as_ref(),
+            ExplicitPathKind::File,
+        )?)
+        .map_err(StudioError::from)
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -345,25 +458,11 @@ mod entry_point_contract_tests {
 pub fn run_path(path: impl AsRef<Path>) -> Result<(), StudioError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        let path = path.as_ref();
-        let metadata = std::fs::metadata(path)
-            .map_err(|source| WorkspaceError::io("read launch metadata", path, source))?;
-        if metadata.is_file() {
-            run_native(with_default_session(native_file_app(path)?)?).map_err(StudioError::from)
-        } else if metadata.is_dir() {
-            let workspace = Workspace::open_root(path)?;
-            let mut text_system = alpine_text_layout::CoreTextSystem::new();
-            text_system
-                .register_font(FONT_FAMILY, FONT_NAME)
-                .map_err(|_| {
-                    SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-                })?;
-            let mut app = StudioApp::from_workspace(text_system, workspace)?;
-            app.prime_workspace_launch()?;
-            run_native(with_default_session(app)?).map_err(StudioError::from)
-        } else {
-            Err(WorkspaceError::UnsupportedTarget(path.to_path_buf()).into())
-        }
+        run_native(native_explicit_path_app(
+            path.as_ref(),
+            ExplicitPathKind::Any,
+        )?)
+        .map_err(StudioError::from)
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -381,11 +480,40 @@ fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
     #[cfg(not(alpine_native_validation))]
     let app = app;
     #[cfg(alpine_native_validation)]
-    let production_process_validation = std::env::var_os("ALPINE_STUDIO_NATIVE_PROCESS_SCENARIO")
-        .as_deref()
-        == Some(std::ffi::OsStr::new("production-single-window"));
+    let production_process_scenario = std::env::var_os("ALPINE_STUDIO_NATIVE_PROCESS_SCENARIO");
+    #[cfg(alpine_native_validation)]
+    let production_process_validation = matches!(
+        production_process_scenario.as_deref(),
+        Some(value)
+            if value == std::ffi::OsStr::new("production-single-window")
+                || value == std::ffi::OsStr::new("production-recovery-file")
+                || value == std::ffi::OsStr::new("production-recovery-folder")
+    );
     #[cfg(alpine_native_validation)]
     if production_process_validation {
+        reset_native_validation_dispatch_counts();
+        let expected = std::env::var_os("ALPINE_STUDIO_NATIVE_EXPECTED_PATH");
+        match production_process_scenario.as_deref() {
+            Some(value) if value == std::ffi::OsStr::new("production-recovery-file") => {
+                let expected = expected.as_deref().ok_or(SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                ))?;
+                native_validation::qualify_recovery_file_launch_state(
+                    &mut app,
+                    Path::new(expected),
+                )?;
+            }
+            Some(value) if value == std::ffi::OsStr::new("production-recovery-folder") => {
+                let expected = expected.as_deref().ok_or(SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                ))?;
+                native_validation::qualify_recovery_folder_launch_state(
+                    &mut app,
+                    Path::new(expected),
+                )?;
+            }
+            _ => {}
+        }
         app.session_path = None;
     }
     let clear = app.settings.active().theme.clear;
@@ -503,26 +631,166 @@ fn session_fallback(detail: &str) -> Result<StudioApp, SurfaceError> {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[cfg_attr(test, mutants::skip)] // Cross-platform persistence behavior is qualified independently.
-fn with_default_session(mut app: StudioApp) -> Result<StudioApp, SurfaceError> {
-    if let Ok(path) = session::default_path() {
-        recovery::ensure_replaceable(&recovery::path_for_session(&path)).map_err(|_| {
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-        })?;
-        app.configure_persistence(path)?;
+enum ExplicitPathTarget {
+    File {
+        path: PathBuf,
+        document: StudioDocument,
+    },
+    Workspace {
+        path: PathBuf,
+        workspace: Workspace,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum ExplicitPathKind {
+    Any,
+    File,
+}
+
+impl ExplicitPathTarget {
+    fn open(path: &Path, kind: ExplicitPathKind) -> Result<Self, StudioError> {
+        let metadata = std::fs::metadata(path)
+            .map_err(|source| WorkspaceError::io("read launch metadata", path, source))?;
+        if metadata.is_file() {
+            return Ok(Self::File {
+                path: path.to_path_buf(),
+                document: StudioDocument::open(path)?,
+            });
+        }
+        if metadata.is_dir() && matches!(kind, ExplicitPathKind::Any) {
+            return Ok(Self::Workspace {
+                path: path.to_path_buf(),
+                workspace: Workspace::open_root(path)?,
+            });
+        }
+        Err(WorkspaceError::UnsupportedTarget(path.to_path_buf()).into())
     }
+
+    fn requested(&self) -> &Path {
+        match self {
+            Self::File { path, .. } | Self::Workspace { path, .. } => path,
+        }
+    }
+
+    fn into_app(
+        self,
+        text_system: impl StudioTextSystem + 'static,
+    ) -> Result<StudioApp, StudioError> {
+        match self {
+            Self::File { path, document } => {
+                StudioApp::from_document(text_system, document, Some(&path))
+                    .map_err(StudioError::from)
+            }
+            Self::Workspace { workspace, .. } => {
+                let mut app = StudioApp::from_workspace(text_system, workspace)?;
+                app.prime_workspace_launch()?;
+                Ok(app)
+            }
+        }
+    }
+
+    fn compose(self, app: &mut StudioApp) -> Result<(), RecoveryLaunchError> {
+        let recovered_status = app.local_status.clone();
+        match self {
+            Self::File { path, document } => {
+                let effect = if let Some(tab) = app.tabs.index_for_path(&path) {
+                    app.activate_document_tab(tab)
+                } else {
+                    app.insert_project_search_document(&path, document)
+                };
+                effect.map_err(|_| RecoveryLaunchError::TargetComposition)?;
+            }
+            Self::Workspace { workspace, .. } => {
+                app.runtime_workspace_revision = app
+                    .runtime_workspace_revision
+                    .checked_add(1)
+                    .ok_or(RecoveryLaunchError::TargetComposition)?;
+                app.workspace = Some(workspace);
+                app.active_workspace_entry = None;
+                app.file_tree = FileTreeState::default();
+                app.prime_workspace_launch()
+                    .map_err(|_| RecoveryLaunchError::TargetComposition)?;
+            }
+        }
+        if recovered_status.is_some() {
+            app.local_status = recovered_status;
+        }
+        Ok(())
+    }
+}
+
+fn recovery_studio_error(
+    requested: &Path,
+    journal: &Path,
+    source: impl Into<RecoveryLaunchError>,
+) -> StudioError {
+    StudioError::Recovery {
+        requested: requested.to_path_buf(),
+        journal: journal.to_path_buf(),
+        source: source.into(),
+    }
+}
+
+fn compose_explicit_path(
+    text_system: impl StudioTextSystem + 'static,
+    target: ExplicitPathTarget,
+    session_path: Option<PathBuf>,
+) -> Result<StudioApp, StudioError> {
+    let Some(session_path) = session_path else {
+        return target.into_app(text_system);
+    };
+    let requested = target.requested().to_path_buf();
+    let journal = recovery::path_for_session(&session_path);
+    let recovery = match recovery::load(&journal) {
+        Ok(state) if state.documents.is_empty() => None,
+        Ok(state) => Some(state),
+        Err(recovery::RecoveryError::Io {
+            kind: std::io::ErrorKind::NotFound,
+            ..
+        }) => None,
+        Err(error) => return Err(recovery_studio_error(&requested, &journal, error)),
+    };
+    let mut app = if let Some(state) = recovery {
+        let mut app = StudioApp::from_recovery(text_system, state).map_err(|error| {
+            let source = match error {
+                SessionRestoreError::Allocation => RecoveryLaunchError::AllocationFailed,
+                SessionRestoreError::Surface => RecoveryLaunchError::NativeConstruction,
+                _ => RecoveryLaunchError::Invalid,
+            };
+            recovery_studio_error(&requested, &journal, source)
+        })?;
+        target
+            .compose(&mut app)
+            .map_err(|source| recovery_studio_error(&requested, &journal, source))?;
+        app
+    } else {
+        target.into_app(text_system)?
+    };
+    app.configure_recovery_persistence(session_path)
+        .map_err(|error| recovery_studio_error(&requested, &journal, error))?;
     Ok(app)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn native_file_app(path: &Path) -> Result<StudioApp, StudioError> {
-    let document = StudioDocument::open(path)?;
+fn native_explicit_path_app(path: &Path, kind: ExplicitPathKind) -> Result<StudioApp, StudioError> {
+    native_explicit_path_app_with_session(path, kind, session::default_path().ok())
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn native_explicit_path_app_with_session(
+    path: &Path,
+    kind: ExplicitPathKind,
+    session_path: Option<PathBuf>,
+) -> Result<StudioApp, StudioError> {
+    let target = ExplicitPathTarget::open(path, kind)?;
     let mut text_system = alpine_text_layout::CoreTextSystem::new();
     text_system
         .register_font(FONT_FAMILY, FONT_NAME)
         .map_err(|_| {
             SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
         })?;
-    StudioApp::from_document(text_system, document, Some(path)).map_err(StudioError::from)
+    compose_explicit_path(text_system, target, session_path)
 }
 
 trait StudioTextSystem: TextShaper + GlyphRasterizer {}
@@ -1703,11 +1971,17 @@ impl StudioApp {
     }
 
     fn configure_persistence(&mut self, path: PathBuf) -> Result<(), SurfaceError> {
+        self.configure_recovery_persistence(path)
+            .map_err(|_| APPLICATION_INVARIANT)
+    }
+
+    fn configure_recovery_persistence(
+        &mut self,
+        path: PathBuf,
+    ) -> Result<(), recovery::RecoveryError> {
         let recovery_path = recovery::path_for_session(&path);
         self.session_path = Some(path);
-        self.recovery = Some(
-            recovery::RecoveryCoordinator::new(recovery_path).map_err(|_| APPLICATION_INVARIANT)?,
-        );
+        self.recovery = Some(recovery::RecoveryCoordinator::new(recovery_path)?);
         self.publish_recovery();
         Ok(())
     }
@@ -4887,6 +5161,12 @@ impl AppDelegate for StudioApp {
     type WorkerOutput = StudioWorkerOutput;
 
     fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, StudioWorkerOutput>) {
+        #[cfg(alpine_native_validation)]
+        if let Ok(index) = usize::try_from(surface_event_kind(event).saturating_sub(1))
+            && let Some(count) = NATIVE_VALIDATION_EVENT_COUNTS.get(index)
+        {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         self.profile_event_timestamp = event.timestamp();
         self.record_profile(
             StudioSignpostStage::EventDispatchBegin,
@@ -5030,6 +5310,8 @@ impl AppDelegate for StudioApp {
     }
 
     fn frame(&mut self, context: WindowContext) -> Scene {
+        #[cfg(alpine_native_validation)]
+        NATIVE_VALIDATION_FRAME_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.scene(context.scene_revision(), context.viewport())
     }
 }
@@ -5266,15 +5548,16 @@ pub mod native_validation {
         fmt,
         fmt::Write as _,
         fs,
-        path::Path,
+        path::{Path, PathBuf},
         rc::Rc,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use alpine_platform_macos::{
         ClipboardError, ClipboardOperation, EventTimestamp, ImeEvent, InputEpoch, KeyState,
-        Modifiers, NativeSurface, PointerAction, PointerButton, SurfaceDescriptor, SurfaceEvent,
-        SurfaceLifecycle, SurfaceResponse, native_validation as platform_validation,
+        Modifiers, NativeSurface, PointerAction, PointerButton, SurfaceDescriptor, SurfaceError,
+        SurfaceEvent, SurfaceLifecycle, SurfaceOperation, SurfaceResponse,
+        native_validation as platform_validation,
     };
     use alpine_runtime::{Application, WorkerConfig};
     use alpine_text::{ByteOffset, Selection};
@@ -5282,7 +5565,8 @@ pub mod native_validation {
     use super::{
         CONTENT_INSET, DEFAULT_SCALE, FONT_FAMILY, KEY_A, KEY_DOWN, KEY_E, KEY_F, KEY_P,
         KEY_RETURN, KEY_S, KEY_UP, StudioApp, StudioError, TREE_ROW_HEIGHT, WINDOW_HEIGHT,
-        WINDOW_WIDTH, Workspace, native_file_app,
+        WINDOW_WIDTH, Workspace, native_explicit_path_app_with_session,
+        native_validation_dispatch_counts, recovery, recovery_studio_error,
     };
 
     const NATIVE_INPUT_EVENTS: usize = 12;
@@ -5290,6 +5574,128 @@ pub mod native_validation {
     const HOSTED_RUN_TIMEOUT: Duration = Duration::from_secs(6);
     const TREE_TOGGLE_MODIFIER_BITS: u8 = 0x09;
     const COMMAND_SHIFT_MODIFIERS: Modifiers = Modifiers::from_bits(TREE_TOGGLE_MODIFIER_BITS);
+
+    /// Creates and drains one real dirty recovery journal for process E2E.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured file, native-construction, or persistence failure.
+    pub fn retain_pending_recovery_fixture(
+        home: &Path,
+        document_path: &Path,
+        local_text: &str,
+    ) -> Result<PathBuf, StudioError> {
+        let session_path = home
+            .join("Library")
+            .join("Application Support")
+            .join("Alpine Studio")
+            .join("session-v1.bin");
+        let journal = recovery::path_for_session(&session_path);
+        let mut app = native_explicit_path_app_with_session(
+            document_path,
+            super::ExplicitPathKind::File,
+            None,
+        )?;
+        app.configure_persistence(session_path)?;
+        let effect = app.handle_ime(&ImeEvent::Committed(local_text.into()));
+        if !effect.document_changed {
+            return Err(alpine_platform_macos::SurfaceError::invariant(
+                alpine_platform_macos::SurfaceOperation::Application,
+            )
+            .into());
+        }
+        app.publish_recovery();
+        drop(app);
+        Ok(journal)
+    }
+
+    fn resolve_recovery_through_save(app: &mut StudioApp) -> Result<(), SurfaceError> {
+        let request = app
+            .capture_recovery_request()
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Application))?;
+        assert_eq!(request.documents.len(), 1);
+        assert_eq!(request.documents[0].local.text(), "unsaved recovery\n");
+        let recovered_index = usize::from(request.documents[0].tab);
+        let recovered_path = app
+            .tabs
+            .path_at(recovered_index)
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Application))?
+            .to_path_buf();
+        app.activate_document_tab(recovered_index)
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Application))?;
+        let _effect = app.handle_key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND));
+        assert!(app.last_save.is_some());
+        assert!(!app.document.is_dirty());
+        let saved = fs::read_to_string(recovered_path)
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Application))?;
+        assert_eq!(saved, "unsaved recovery\n");
+        let clean = app
+            .capture_recovery_request()
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Application))?;
+        assert!(clean.documents.is_empty());
+        Ok(())
+    }
+
+    pub(super) fn qualify_recovery_file_launch_state(
+        app: &mut StudioApp,
+        expected: &Path,
+    ) -> Result<(), SurfaceError> {
+        let requested = app
+            .tabs
+            .index_for_path(expected)
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Application))?;
+        assert_eq!(app.tabs.active_index(), requested);
+        assert_eq!(app.buffer().snapshot().text(), "requested\n");
+        resolve_recovery_through_save(app)?;
+        app.activate_document_tab(requested)
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Application))?;
+        assert_eq!(app.buffer().snapshot().text(), "requested\n");
+        Ok(())
+    }
+
+    pub(super) fn qualify_recovery_folder_launch_state(
+        app: &mut StudioApp,
+        expected: &Path,
+    ) -> Result<(), SurfaceError> {
+        let expected = fs::canonicalize(expected)
+            .map_err(|_| SurfaceError::invariant(SurfaceOperation::Application))?;
+        assert_eq!(
+            app.workspace.as_ref().map(Workspace::root),
+            Some(expected.as_path())
+        );
+        assert_eq!(app.buffer().snapshot().text(), "unsaved recovery\n");
+        resolve_recovery_through_save(app)
+    }
+
+    /// Verifies the post-process journal retains dirty text and target identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured recovery error when the retained journal cannot be
+    /// loaded. Contract mismatches remain fatal to the isolated native test.
+    pub fn qualify_retained_recovery_journal(
+        journal: &Path,
+        expected: &Path,
+        workspace: bool,
+    ) -> Result<(), StudioError> {
+        let state = recovery::load(journal)
+            .map_err(|error| recovery_studio_error(expected, journal, error))?;
+        assert!(state.documents.is_empty());
+        if workspace {
+            let expected = fs::canonicalize(expected)
+                .map_err(|_| SurfaceError::invariant(SurfaceOperation::Application))?;
+            assert_eq!(state.session.workspace.as_deref(), Some(expected.as_path()));
+        } else {
+            assert!(
+                state
+                    .session
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.path.as_deref() == Some(expected))
+            );
+        }
+        Ok(())
+    }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum PresentationEvidenceMode {
@@ -5392,41 +5798,61 @@ pub mod native_validation {
         let observer = surface.observer();
         let waker = surface.waker();
         let mut timeout = None;
-        let snapshot = application
-            .run_on_native_surface_for_validation(&surface, |surface| {
-                if evidence_mode
-                    .requires_surface_configuration(surface.snapshot().is_presentation_visible())
-                {
-                    platform_validation::inject_surface_configuration(
-                        surface,
-                        f64::from(WINDOW_WIDTH),
-                        f64::from(WINDOW_HEIGHT),
-                        f64::from(DEFAULT_SCALE),
-                        0,
-                        true,
-                    )?;
+        let run_result = application.run_on_native_surface_for_validation(&surface, |surface| {
+            if evidence_mode
+                .requires_surface_configuration(surface.snapshot().is_presentation_visible())
+            {
+                platform_validation::inject_surface_configuration(
+                    surface,
+                    f64::from(WINDOW_WIDTH),
+                    f64::from(WINDOW_HEIGHT),
+                    f64::from(DEFAULT_SCALE),
+                    0,
+                    true,
+                )?;
+            }
+            let run_timeout = match evidence_mode {
+                PresentationEvidenceMode::HostedDirect => HOSTED_RUN_TIMEOUT,
+                PresentationEvidenceMode::Physical => Duration::from_secs(5),
+            };
+            timeout = Some(platform_validation::arm_run_timeout(surface, run_timeout));
+            match evidence_mode {
+                PresentationEvidenceMode::HostedDirect => {
+                    // A headless AppKit host may decline `performClose` despite
+                    // a valid delegate. Exercise the production close-admission
+                    // and teardown delegates directly instead.
+                    platform_validation::arm_programmatic_window_close(surface, Duration::ZERO);
                 }
-                let run_timeout = match evidence_mode {
-                    PresentationEvidenceMode::HostedDirect => HOSTED_RUN_TIMEOUT,
-                    PresentationEvidenceMode::Physical => Duration::from_secs(5),
-                };
-                timeout = Some(platform_validation::arm_run_timeout(surface, run_timeout));
-                match evidence_mode {
-                    PresentationEvidenceMode::HostedDirect => {
-                        // A headless AppKit host may decline `performClose` despite
-                        // a valid delegate. Exercise the production close-admission
-                        // and teardown delegates directly instead.
-                        platform_validation::arm_programmatic_window_close(surface, Duration::ZERO);
-                    }
-                    PresentationEvidenceMode::Physical => {
-                        platform_validation::arm_user_window_close(
-                            surface,
-                            Duration::from_millis(500),
-                        );
-                    }
+                PresentationEvidenceMode::Physical => {
+                    platform_validation::arm_user_window_close(surface, Duration::from_millis(500));
                 }
-                Ok(())
-            })?
+            }
+            Ok(())
+        });
+        let snapshot = match run_result {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let frame = surface.snapshot();
+                let (events, frame_builds) = native_validation_dispatch_counts();
+                eprintln!(
+                    "alpine-native-run-failure callbacks={} submissions={} presented={} skipped={} cancelled={} failed={} qualified={} superseded={} occupied={} submitted={} pending-cancellations={} paused={} frame-builds={} events={events:?}",
+                    observer.callback_count(),
+                    frame.submission_count(),
+                    frame.presented_count(),
+                    frame.skipped_count(),
+                    frame.cancelled_count(),
+                    frame.failed_count(),
+                    frame.qualified_presented_count(),
+                    frame.superseded_count(),
+                    frame.occupied_frame_slots(),
+                    frame.submitted_frame_slots(),
+                    frame.pending_cancellation_count(),
+                    frame.display_link_paused(),
+                    frame_builds,
+                );
+                return Err(error);
+            }
+        }
             .ok_or(alpine_runtime::RuntimeError::Surface(
                 alpine_platform_macos::SurfaceError::invariant(
                     alpine_platform_macos::SurfaceOperation::Application,
@@ -6191,7 +6617,8 @@ pub mod native_validation {
         path: &Path,
         expected_after_input: &str,
     ) -> Result<NativeProcessEvidence, Box<dyn std::error::Error>> {
-        let mut delegate = native_file_app(path)?;
+        let mut delegate =
+            native_explicit_path_app_with_session(path, super::ExplicitPathKind::File, None)?;
         delegate.selection = Selection::new(ByteOffset::new(0), ByteOffset::new(5));
         let clear = alpine_core::LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(
             StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
