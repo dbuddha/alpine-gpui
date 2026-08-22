@@ -5213,23 +5213,54 @@ mod tests {
 
     #[test]
     #[cfg(alpine_native_validation)]
-    fn presentation_observation_requires_a_real_or_injected_signal() {
+    fn presentation_observation_requires_a_real_or_injected_signal() -> Result<(), &'static str> {
         let signal = Arc::new(PresentationSignal::new(None));
         let observation = PresentationObservation::new(Arc::clone(&signal));
         assert!(!observation.observed());
+        assert_eq!(observation.event_to_presented_handler_ns(), None);
 
-        signal.time_bits.store(17_u64, Ordering::Relaxed);
-        signal.observed.store(true, Ordering::Release);
+        signal.publish(17);
         assert!(observation.observed());
         assert_eq!(observation.presented_time_bits(), 17);
+        assert_eq!(observation.event_to_presented_handler_ns(), None);
 
-        let signal = Arc::new(PresentationSignal::new(None));
+        let received_at = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .ok_or("timed presentation origin")?;
+        let timed_signal = Arc::new(PresentationSignal::new(Some(received_at)));
+        let timed_observation = PresentationObservation::new(Arc::clone(&timed_signal));
+        assert_eq!(timed_observation.event_to_presented_handler_ns(), None);
+        timed_signal.publish(19);
+        assert!(timed_observation.observed());
+        assert_eq!(timed_observation.presented_time_bits(), 19);
+        assert!(
+            timed_observation
+                .event_to_presented_handler_ns()
+                .ok_or("timed presentation latency")?
+                >= 1_000_000_000
+        );
+
+        let signal = Arc::new(PresentationSignal::new(Some(received_at)));
         let mut injected = PresentationObservation::new(Arc::clone(&signal));
         injected.inject(23);
+        let injected_latency = injected
+            .event_to_presented_handler_ns()
+            .ok_or("injected presentation latency")?;
+        assert!(injected_latency >= 1_000_000_000);
         signal.publish(29);
         assert!(injected.observed());
         assert_eq!(injected.presented_time_bits(), 23);
-        assert_eq!(injected.event_to_presented_handler_ns(), None);
+        assert_eq!(
+            injected.event_to_presented_handler_ns(),
+            Some(injected_latency)
+        );
+        assert!(
+            signal
+                .event_to_presented_handler_ns()
+                .ok_or("late presentation latency")?
+                >= injected_latency
+        );
+        Ok(())
     }
 
     #[test]
