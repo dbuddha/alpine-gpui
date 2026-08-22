@@ -1042,7 +1042,9 @@ impl<const CAPACITY: usize> DirtyAtlasRows<CAPACITY> {
                 continue;
             }
             if merged.end < current.start {
-                insertion = index;
+                if remove_start == original_len {
+                    insertion = index;
+                }
                 break;
             }
             if remove_start == original_len {
@@ -2312,6 +2314,25 @@ mod atlas_publication_tests {
         assert_eq!(
             &dirty.ranges[dirty.len..],
             &[super::DirtyRowRange::default(); 2]
+        );
+    }
+
+    #[test]
+    fn dirty_range_reinsertion_preserves_the_first_overlap_index() {
+        let mut dirty = DirtyAtlasRows::<4>::new();
+        for (start, end) in [(0, 2), (4, 6), (8, 10)] {
+            dirty.insert(7, start, end);
+        }
+
+        dirty.insert(7, 0, 1);
+
+        assert_eq!(
+            &dirty.ranges[..dirty.len],
+            &[
+                super::DirtyRowRange { start: 0, end: 2 },
+                super::DirtyRowRange { start: 4, end: 6 },
+                super::DirtyRowRange { start: 8, end: 10 },
+            ]
         );
     }
 
