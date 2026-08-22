@@ -4,6 +4,7 @@
 - Capability: [#28](https://github.com/dbuddha/alpine-gpui/issues/28)
 - Requirement: [#33](https://github.com/dbuddha/alpine-gpui/issues/33)
 - Task: [#126](https://github.com/dbuddha/alpine-gpui/issues/126)
+- Follow-up: [#299](https://github.com/dbuddha/alpine-gpui/issues/299)
 - Defect: [#294](https://github.com/dbuddha/alpine-gpui/issues/294)
 - Decision: [#141](https://github.com/dbuddha/alpine-gpui/issues/141)
 - Research: [#27](https://github.com/dbuddha/alpine-gpui/issues/27), [#118](https://github.com/dbuddha/alpine-gpui/issues/118)
@@ -53,6 +54,13 @@ performance claim from functional and resource-bound evidence alone.
   included in the atlas metadata budget, collision probing never scans the
   atlas entry vector, swap-removal repairs entry identity without allocation,
   and pressure releases the complete index.
+- **AEP-0141-C08:** Atlas pixel mutations retain at most 64 sorted, disjoint
+  dirty-row ranges without heap allocation. Overlapping and adjacent ranges
+  coalesce, saturation merges the smallest deterministic gap, and a compatible
+  consumer receives only complete changed rows with exact byte evidence.
+  Initialization, growth, source-revision mismatch, and explicit full-dirty
+  state produce one full replacement. A stale acknowledgement cannot discard
+  newer dirty evidence.
 
 ## Ownership and cache generations
 
@@ -89,6 +97,9 @@ agents, fairness, or temporal progress, so a TLA+ model would be ceremonial.
 Kani instead proves the compiled pure rectangle coalescing rule over all two
 adjacent widths and one height in the bounded `u8 + 1` domain, plus index probe
 containment for every start and probe in power-of-two tables through 128 slots.
+Two additional compiled harnesses prove bounded sorted dirty-row transitions
+and the saturated merge path. Their three required covers distinguish
+multi-range retention, capacity-preserving insertion, and overlap reduction.
 A deterministic dynamic model exercises collisions, membership, use ordering,
 swap-removal, eviction, byte ceilings, and pressure drain across mixed
 operations. This is not a proof of hash distribution, `Vec`, Ropey, allocation
@@ -110,10 +121,12 @@ not statements about Zed or Sublime memory behavior.
 
 Studio publishes immutable atlas pixels only when the pixel-content revision
 changes; it does not compare or copy the complete image on a warm frame. The
-native backend retains one current R8 texture independently of the three
+CPU atlas now emits revision-bound full or dirty-row publication plans; Studio
+and Metal adoption remains tracked by parent task #297. The native backend
+retains one current private A8 buffer independently of the three
 bounded presentation slots. Replacement allocates and uploads once, while an
 unchanged frame reports zero atlas upload bytes. A pending command retains its
-own texture reference, so pressure can remove the cache immediately without
+own buffer reference, so pressure can remove the cache immediately without
 freeing in-flight resources. Native snapshots expose current and peak atlas
 bytes, allocations, uploads, reuses, and pressure releases.
 

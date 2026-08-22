@@ -948,6 +948,187 @@ struct AtlasIndexSlot {
 }
 
 const MIN_ATLAS_INDEX_SLOTS: usize = 8;
+/// Maximum disjoint dirty-row ranges retained between atlas publications.
+pub const MAX_ATLAS_DIRTY_ROW_RANGES: usize = 64;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct DirtyRowRange {
+    start: u32,
+    end: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DirtyAtlasRows<const CAPACITY: usize> {
+    source_revision: u64,
+    ranges: [DirtyRowRange; CAPACITY],
+    len: usize,
+    full: bool,
+}
+
+impl<const CAPACITY: usize> DirtyAtlasRows<CAPACITY> {
+    const fn new() -> Self {
+        Self {
+            source_revision: 0,
+            ranges: [DirtyRowRange { start: 0, end: 0 }; CAPACITY],
+            len: 0,
+            full: false,
+        }
+    }
+
+    const fn is_empty(self) -> bool {
+        self.len == 0 && !self.full
+    }
+
+    fn clear(&mut self, revision: u64) {
+        self.source_revision = revision;
+        self.len = 0;
+        self.full = false;
+    }
+
+    fn mark_full(&mut self, source_revision: u64) {
+        if self.is_empty() {
+            self.source_revision = source_revision;
+        }
+        self.len = 0;
+        self.full = true;
+    }
+
+    fn insert(&mut self, source_revision: u64, start: u32, end: u32) {
+        if start >= end || self.full {
+            return;
+        }
+        if self.is_empty() {
+            self.source_revision = source_revision;
+        }
+        if CAPACITY == 0 {
+            self.mark_full(source_revision);
+            return;
+        }
+
+        let mut merged = DirtyRowRange { start, end };
+        let mut index = self.coalesce_overlaps(&mut merged);
+        if self.len == CAPACITY {
+            if self.len == 1 {
+                merged.start = merged.start.min(self.ranges[0].start);
+                merged.end = merged.end.max(self.ranges[0].end);
+                self.ranges[0] = DirtyRowRange::default();
+                self.len = 0;
+            } else {
+                let merge_at = self.ranges[..self.len]
+                    .windows(2)
+                    .enumerate()
+                    .min_by_key(|(_, pair)| pair[1].start.saturating_sub(pair[0].end))
+                    .map_or(0, |(pair, _)| pair);
+                self.ranges[merge_at].end = self.ranges[merge_at + 1].end;
+                self.remove(merge_at + 1);
+            }
+            index = self.coalesce_overlaps(&mut merged);
+        }
+
+        self.ranges.copy_within(index..self.len, index + 1);
+        self.ranges[index] = merged;
+        self.len += 1;
+    }
+
+    fn coalesce_overlaps(&mut self, merged: &mut DirtyRowRange) -> usize {
+        let original_len = self.len;
+        let mut insertion = original_len;
+        let mut remove_start = original_len;
+        let mut remove_end = original_len;
+
+        for (index, current) in self.ranges[..original_len].iter().copied().enumerate() {
+            if current.end < merged.start {
+                insertion = index + 1;
+                continue;
+            }
+            if merged.end < current.start {
+                if remove_start == original_len {
+                    insertion = index;
+                }
+                break;
+            }
+            if remove_start == original_len {
+                remove_start = index;
+                insertion = index;
+            }
+            remove_end = index + 1;
+            merged.start = merged.start.min(current.start);
+            merged.end = merged.end.max(current.end);
+        }
+
+        self.ranges
+            .copy_within(remove_end..original_len, remove_start);
+        self.len -= remove_end - remove_start;
+        self.ranges[self.len..original_len].fill(DirtyRowRange::default());
+        insertion
+    }
+
+    fn remove(&mut self, index: usize) {
+        self.ranges.copy_within(index + 1..self.len, index);
+        self.len -= 1;
+        self.ranges[self.len] = DirtyRowRange::default();
+    }
+}
+
+/// One tightly packed set of complete changed A8 atlas rows.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlyphAtlasRowUpdate {
+    start_row: u32,
+    row_count: NonZeroU32,
+    pixels: Box<[u8]>,
+}
+
+impl GlyphAtlasRowUpdate {
+    /// Returns the first changed zero-based row.
+    #[must_use]
+    pub const fn start_row(&self) -> u32 {
+        self.start_row
+    }
+
+    /// Returns the number of complete rows in this payload.
+    #[must_use]
+    pub const fn row_count(&self) -> NonZeroU32 {
+        self.row_count
+    }
+
+    /// Returns tightly packed complete row bytes.
+    #[must_use]
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+}
+
+/// One revision-bound CPU atlas publication plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GlyphAtlasPublication {
+    /// The consumer already owns the current atlas pixels.
+    Unchanged {
+        /// Current pixel revision.
+        revision: u64,
+    },
+    /// The consumer must replace all atlas pixels.
+    Full {
+        /// Current square atlas dimension.
+        dimension: NonZeroU32,
+        /// Current pixel revision.
+        revision: u64,
+        /// Tightly packed complete A8 pixels.
+        pixels: Box<[u8]>,
+    },
+    /// The consumer may advance a matching source revision using changed rows.
+    Rows {
+        /// Current square atlas dimension.
+        dimension: NonZeroU32,
+        /// Revision the consumer must already own.
+        source_revision: u64,
+        /// Revision produced after applying every row update.
+        revision: u64,
+        /// Sorted, disjoint changed-row payloads.
+        rows: Box<[GlyphAtlasRowUpdate]>,
+        /// Exact sum of row payload bytes.
+        byte_count: usize,
+    },
+}
 
 /// Exact current and peak evidence for the A8 atlas.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1048,6 +1229,7 @@ pub struct GlyphAtlas {
     misses: u64,
     evictions: u64,
     pressure_events: u64,
+    dirty_rows: DirtyAtlasRows<MAX_ATLAS_DIRTY_ROW_RANGES>,
 }
 
 impl GlyphAtlas {
@@ -1068,7 +1250,87 @@ impl GlyphAtlas {
             misses: 0,
             evictions: 0,
             pressure_events: 0,
+            dirty_rows: DirtyAtlasRows::new(),
         }
+    }
+
+    /// Builds a revision-bound atlas publication without discarding dirty state.
+    ///
+    /// A compatible consumer receives only complete changed rows. Initialization,
+    /// growth, an unknown source revision, or an explicit full-dirty marker returns
+    /// one full replacement. An unchanged consumer performs no allocation or pixel
+    /// traversal.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured conversion, arithmetic, or bounded-allocation error.
+    pub fn publication_since(
+        &self,
+        source_revision: u64,
+    ) -> Result<GlyphAtlasPublication, LayoutError> {
+        if source_revision == self.pixel_revision {
+            return Ok(GlyphAtlasPublication::Unchanged {
+                revision: self.pixel_revision,
+            });
+        }
+        let dimension = NonZeroU32::new(self.dimension).ok_or(LayoutError::ArithmeticOverflow)?;
+        if self.dirty_rows.full || self.dirty_rows.source_revision != source_revision {
+            let mut pixels = Vec::new();
+            reserve_bytes_exact(&mut pixels, self.pixels.len())?;
+            pixels.extend_from_slice(&self.pixels);
+            return Ok(GlyphAtlasPublication::Full {
+                dimension,
+                revision: self.pixel_revision,
+                pixels: pixels.into_boxed_slice(),
+            });
+        }
+
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(self.dirty_rows.len)
+            .map_err(|_| LayoutError::AllocationFailed)?;
+        let stride = usize_from_u32(self.dimension);
+        let mut byte_count = 0usize;
+        for range in &self.dirty_rows.ranges[..self.dirty_rows.len] {
+            let start = usize_from_u32(range.start)
+                .checked_mul(stride)
+                .ok_or(LayoutError::ArithmeticOverflow)?;
+            let end = usize_from_u32(range.end)
+                .checked_mul(stride)
+                .ok_or(LayoutError::ArithmeticOverflow)?;
+            let source = self
+                .pixels
+                .get(start..end)
+                .ok_or(LayoutError::ArithmeticOverflow)?;
+            let mut pixels = Vec::new();
+            reserve_bytes_exact(&mut pixels, source.len())?;
+            pixels.extend_from_slice(source);
+            byte_count = byte_count
+                .checked_add(pixels.len())
+                .ok_or(LayoutError::ArithmeticOverflow)?;
+            rows.push(GlyphAtlasRowUpdate {
+                start_row: range.start,
+                row_count: NonZeroU32::new(range.end - range.start)
+                    .ok_or(LayoutError::ArithmeticOverflow)?,
+                pixels: pixels.into_boxed_slice(),
+            });
+        }
+        Ok(GlyphAtlasPublication::Rows {
+            dimension,
+            source_revision,
+            revision: self.pixel_revision,
+            rows: rows.into_boxed_slice(),
+            byte_count,
+        })
+    }
+
+    /// Discards dirty-row evidence only when the acknowledged revision is current.
+    #[must_use]
+    pub fn acknowledge_publication(&mut self, revision: u64) -> bool {
+        if revision != self.pixel_revision {
+            return false;
+        }
+        self.dirty_rows.clear(revision);
+        true
     }
 
     /// Looks up one retained glyph before native rasterization.
@@ -1361,6 +1623,7 @@ impl GlyphAtlas {
         self.entries = Vec::new();
         self.index_slots = Vec::new();
         self.free = Vec::new();
+        self.dirty_rows.clear(pixel_revision);
         Ok(())
     }
 
@@ -1422,6 +1685,7 @@ impl GlyphAtlas {
     }
 
     fn grow(&mut self, minimum: u32) -> Result<bool, LayoutError> {
+        let source_revision = self.pixel_revision;
         let geometric = NonZeroU32::new(self.dimension).map_or(Ok(256), |dimension| {
             dimension
                 .get()
@@ -1479,6 +1743,7 @@ impl GlyphAtlas {
         self.dimension = next;
         self.pixel_revision = pixel_revision;
         self.pixels = pixels;
+        self.dirty_rows.mark_full(source_revision);
         self.update_peak()?;
         Ok(true)
     }
@@ -1499,6 +1764,13 @@ impl GlyphAtlas {
             return Err(LayoutError::ArithmeticOverflow);
         }
         let pixel_revision = self.next_pixel_revision()?;
+        self.dirty_rows.insert(
+            self.pixel_revision,
+            rect.y,
+            rect.y
+                .checked_add(rect.height.get())
+                .ok_or(LayoutError::ArithmeticOverflow)?,
+        );
         for row in 0..height {
             let source = row * width..row * width + width;
             let start = (y + row)
@@ -1553,6 +1825,13 @@ impl GlyphAtlas {
             return Err(LayoutError::ArithmeticOverflow);
         }
         let pixel_revision = self.next_pixel_revision()?;
+        self.dirty_rows.insert(
+            self.pixel_revision,
+            rect.y,
+            rect.y
+                .checked_add(rect.height.get())
+                .ok_or(LayoutError::ArithmeticOverflow)?,
+        );
         for row in 0..height {
             let start = (y + row)
                 .checked_mul(stride)
@@ -1856,6 +2135,261 @@ impl Error for LayoutError {
 impl From<TextError> for LayoutError {
     fn from(error: TextError) -> Self {
         Self::Text(error)
+    }
+}
+
+#[cfg(test)]
+mod atlas_publication_tests {
+    use std::num::{NonZeroU32, NonZeroUsize};
+
+    use super::{DirtyAtlasRows, GlyphAtlas, GlyphAtlasPublication, MAX_ATLAS_DIRTY_ROW_RANGES};
+
+    fn populated_atlas() -> GlyphAtlas {
+        let mut atlas = GlyphAtlas::new(NonZeroUsize::new(4_096).expect("nonzero test budget"));
+        atlas.dimension = 4;
+        atlas.pixel_revision = 3;
+        atlas.pixels = (0_u8..16).collect();
+        atlas
+    }
+
+    #[test]
+    fn publication_is_revision_bound_and_acknowledgement_is_stale_safe() {
+        let mut atlas = populated_atlas();
+        atlas.dirty_rows.source_revision = 2;
+        atlas.dirty_rows.insert(2, 1, 2);
+
+        assert_eq!(
+            atlas.publication_since(2),
+            Ok(GlyphAtlasPublication::Rows {
+                dimension: NonZeroU32::new(4).expect("dimension"),
+                source_revision: 2,
+                revision: 3,
+                rows: vec![super::GlyphAtlasRowUpdate {
+                    start_row: 1,
+                    row_count: NonZeroU32::new(1).expect("one row"),
+                    pixels: vec![4, 5, 6, 7].into_boxed_slice(),
+                }]
+                .into_boxed_slice(),
+                byte_count: 4,
+            })
+        );
+
+        assert!(!atlas.acknowledge_publication(2));
+        assert!(matches!(
+            atlas.publication_since(2),
+            Ok(GlyphAtlasPublication::Rows { .. })
+        ));
+        assert!(atlas.acknowledge_publication(3));
+        assert_eq!(
+            atlas.publication_since(3),
+            Ok(GlyphAtlasPublication::Unchanged { revision: 3 })
+        );
+    }
+
+    #[test]
+    fn mismatch_and_full_dirty_state_publish_one_complete_image() {
+        let mut atlas = populated_atlas();
+        atlas.dirty_rows.source_revision = 2;
+        atlas.dirty_rows.insert(2, 1, 2);
+        assert_eq!(
+            atlas.publication_since(1),
+            Ok(GlyphAtlasPublication::Full {
+                dimension: NonZeroU32::new(4).expect("dimension"),
+                revision: 3,
+                pixels: (0_u8..16).collect::<Vec<_>>().into_boxed_slice(),
+            })
+        );
+
+        atlas.dirty_rows.mark_full(3);
+        atlas.pixel_revision = 4;
+        assert!(matches!(
+            atlas.publication_since(3),
+            Ok(GlyphAtlasPublication::Full { revision: 4, .. })
+        ));
+    }
+
+    #[test]
+    fn dirty_ranges_coalesce_and_never_exceed_the_fixed_bound() {
+        let mut dirty = DirtyAtlasRows::<MAX_ATLAS_DIRTY_ROW_RANGES>::new();
+        dirty.insert(7, 3, 5);
+        dirty.insert(7, 5, 8);
+        dirty.insert(7, 1, 3);
+        assert_eq!(dirty.len, 1);
+        assert_eq!(dirty.ranges[0].start, 1);
+        assert_eq!(dirty.ranges[0].end, 8);
+
+        dirty.clear(7);
+        dirty.insert(7, 1, 2);
+        dirty.insert(7, 5, 6);
+        dirty.insert(7, 3, 4);
+        assert_eq!(
+            &dirty.ranges[..dirty.len],
+            &[
+                super::DirtyRowRange { start: 1, end: 2 },
+                super::DirtyRowRange { start: 3, end: 4 },
+                super::DirtyRowRange { start: 5, end: 6 },
+            ]
+        );
+
+        dirty.clear(7);
+        for row in 0..MAX_ATLAS_DIRTY_ROW_RANGES {
+            let start = u32::try_from(row * 2).expect("bounded test row");
+            dirty.insert(7, start, start + 1);
+        }
+        dirty.insert(7, 129, 130);
+        assert_eq!(dirty.len, MAX_ATLAS_DIRTY_ROW_RANGES);
+        for pair in dirty.ranges[..dirty.len].windows(2) {
+            assert!(pair[0].end < pair[1].start);
+        }
+        assert_eq!(dirty.ranges[dirty.len - 1].end, 130);
+    }
+
+    #[test]
+    fn dirty_state_rejects_empty_ranges_and_full_state_rejects_insertions() {
+        let mut dirty = DirtyAtlasRows::<4>::new();
+        assert!(dirty.is_empty());
+
+        dirty.insert(7, 5, 5);
+        dirty.insert(7, 9, 3);
+        assert_eq!(dirty, DirtyAtlasRows::new());
+
+        dirty.insert(7, 3, 4);
+        assert!(!dirty.is_empty());
+        dirty.mark_full(99);
+        assert_eq!(dirty.source_revision, 7);
+        assert_eq!(dirty.len, 0);
+        assert!(dirty.full);
+        assert!(!dirty.is_empty());
+
+        let full = dirty;
+        dirty.insert(100, 20, 21);
+        assert_eq!(dirty, full);
+    }
+
+    #[test]
+    fn zero_and_single_range_capacities_remain_bounded() {
+        let mut zero = DirtyAtlasRows::<0>::new();
+        zero.insert(7, 3, 4);
+        assert!(zero.full);
+        assert_eq!(zero.source_revision, 7);
+        assert_eq!(zero.len, 0);
+
+        let mut single = DirtyAtlasRows::<1>::new();
+        single.insert(7, 10, 11);
+        single.insert(7, 30, 31);
+        assert_eq!(single.len, 1);
+        assert_eq!(
+            single.ranges[0],
+            super::DirtyRowRange { start: 10, end: 31 }
+        );
+    }
+
+    #[test]
+    fn dirty_ranges_merge_adjacent_boundaries() {
+        let mut dirty = DirtyAtlasRows::<4>::new();
+        dirty.insert(7, 1, 2);
+        dirty.insert(7, 2, 3);
+        assert_eq!(
+            &dirty.ranges[..dirty.len],
+            &[super::DirtyRowRange { start: 1, end: 3 }]
+        );
+    }
+
+    #[test]
+    fn dirty_ranges_compact_multiple_overlaps_from_a_nonzero_index() {
+        let mut dirty = DirtyAtlasRows::<4>::new();
+        for (start, end) in [(0, 2), (4, 6), (8, 10), (12, 14)] {
+            dirty.insert(7, start, end);
+        }
+
+        dirty.insert(7, 5, 13);
+
+        assert_eq!(
+            &dirty.ranges[..dirty.len],
+            &[
+                super::DirtyRowRange { start: 0, end: 2 },
+                super::DirtyRowRange { start: 4, end: 14 },
+            ]
+        );
+        assert_eq!(
+            &dirty.ranges[dirty.len..],
+            &[super::DirtyRowRange::default(); 2]
+        );
+    }
+
+    #[test]
+    fn dirty_range_reinsertion_preserves_the_first_overlap_index() {
+        let mut dirty = DirtyAtlasRows::<4>::new();
+        for (start, end) in [(0, 2), (4, 6), (8, 10)] {
+            dirty.insert(7, start, end);
+        }
+
+        dirty.insert(7, 0, 1);
+
+        assert_eq!(
+            &dirty.ranges[..dirty.len],
+            &[
+                super::DirtyRowRange { start: 0, end: 2 },
+                super::DirtyRowRange { start: 4, end: 6 },
+                super::DirtyRowRange { start: 8, end: 10 },
+            ]
+        );
+    }
+
+    #[test]
+    fn full_dirty_range_storage_merges_the_smallest_gap() {
+        let mut dirty = DirtyAtlasRows::<4>::new();
+        for (start, end) in [(1, 2), (10, 11), (13, 14), (30, 31)] {
+            dirty.insert(7, start, end);
+        }
+        dirty.insert(7, 40, 41);
+        assert_eq!(
+            &dirty.ranges[..dirty.len],
+            &[
+                super::DirtyRowRange { start: 1, end: 2 },
+                super::DirtyRowRange { start: 10, end: 14 },
+                super::DirtyRowRange { start: 30, end: 31 },
+                super::DirtyRowRange { start: 40, end: 41 },
+            ]
+        );
+    }
+
+    #[test]
+    fn equal_dirty_range_gaps_merge_the_first_pair() {
+        let mut dirty = DirtyAtlasRows::<4>::new();
+        for (start, end) in [(1, 2), (4, 5), (7, 8), (30, 31)] {
+            dirty.insert(7, start, end);
+        }
+        dirty.insert(7, 40, 41);
+        assert_eq!(
+            &dirty.ranges[..dirty.len],
+            &[
+                super::DirtyRowRange { start: 1, end: 5 },
+                super::DirtyRowRange { start: 7, end: 8 },
+                super::DirtyRowRange { start: 30, end: 31 },
+                super::DirtyRowRange { start: 40, end: 41 },
+            ]
+        );
+    }
+
+    #[test]
+    fn row_update_reports_a_nonzero_start_row() {
+        let update = super::GlyphAtlasRowUpdate {
+            start_row: 7,
+            row_count: NonZeroU32::new(2).expect("row count"),
+            pixels: vec![1, 2].into_boxed_slice(),
+        };
+        assert_eq!(update.start_row(), 7);
+    }
+
+    #[test]
+    fn pressure_discards_pending_publication_state() {
+        let mut atlas = populated_atlas();
+        atlas.dirty_rows.source_revision = 2;
+        atlas.dirty_rows.insert(2, 1, 2);
+        atlas.pressure().expect("pressure");
+        assert!(atlas.dirty_rows.is_empty());
+        assert_eq!(atlas.dirty_rows.source_revision, atlas.pixel_revision);
     }
 }
 

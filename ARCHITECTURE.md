@@ -47,9 +47,10 @@ metadata have a configurable hard ceiling, with 32 MiB as the default. Its A8
 glyph atlas starts empty, grows geometrically, resolves retained glyphs through
 a deterministic power-of-two open-addressed index at no more than 50 percent
 load, reserves metadata before ownership mutation, removes least-recently-used
-entries, coalesces returned rectangles, accounts exact pixel, entry, free-region,
-and index capacity, defaults to a 16 MiB hard ceiling, and releases all storage
-under explicit pressure. Its audited Apple
+entries, coalesces returned rectangles, captures pixel mutations in at most 64
+sorted disjoint dirty-row ranges without heap allocation, accounts exact pixel,
+entry, free-region, and index capacity, defaults to a 16 MiB hard ceiling, and
+releases all storage under explicit pressure. Its audited Apple
 Silicon boundary shapes and rasterizes through CoreText and CoreGraphics while
 returning copied Alpine values. `alpine-scene` stores clips, quads, glyphs, and
 ordered paint operations in separate immutable arrays, and the Metal path

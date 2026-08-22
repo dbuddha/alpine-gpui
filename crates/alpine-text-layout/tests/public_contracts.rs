@@ -4,8 +4,8 @@ use std::{error::Error, num::NonZeroU32};
 
 use alpine_text::Buffer;
 use alpine_text_layout::{
-    FontKey, GlyphAtlas, GlyphBitmap, GlyphKey, LayoutError, LineLayout, LineLayoutCache,
-    PositiveFinite, RasterizedGlyph, ShapedGlyph, TextShaper,
+    FontKey, GlyphAtlas, GlyphAtlasPublication, GlyphBitmap, GlyphKey, LayoutError, LineLayout,
+    LineLayoutCache, PositiveFinite, RasterizedGlyph, ShapedGlyph, TextShaper,
 };
 
 struct ConsumerShaper;
@@ -69,5 +69,37 @@ fn public_text_layout_contracts_are_reachable_from_consumers() -> Result<(), Box
     let snapshot = atlas.snapshot();
     assert_eq!(snapshot.dimension(), 256);
     assert_eq!(snapshot.budget_bytes(), budget.get());
+    let GlyphAtlasPublication::Full {
+        dimension,
+        revision,
+        pixels,
+    } = atlas.publication_since(0)?
+    else {
+        return Err("initial atlas publication must be full".into());
+    };
+    assert_eq!(dimension.get(), 256);
+    assert_eq!(revision, snapshot.pixel_revision());
+    assert_eq!(pixels.len(), 256 * 256);
+    assert!(atlas.acknowledge_publication(revision));
+
+    let _ = atlas.insert(GlyphKey::new(font, 2, 0), &bitmap)?;
+    let GlyphAtlasPublication::Rows {
+        dimension,
+        source_revision,
+        revision: row_revision,
+        rows,
+        byte_count,
+    } = atlas.publication_since(revision)?
+    else {
+        return Err("compatible atlas mutation must publish rows".into());
+    };
+    assert_eq!(dimension.get(), 256);
+    assert_eq!(source_revision, revision);
+    assert!(row_revision > source_revision);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].start_row(), 0);
+    assert_eq!(rows[0].row_count().get(), 1);
+    assert_eq!(rows[0].pixels().len(), 256);
+    assert_eq!(byte_count, 256);
     Ok(())
 }
