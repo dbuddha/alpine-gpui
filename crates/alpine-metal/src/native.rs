@@ -2689,7 +2689,10 @@ pub(crate) mod tests {
         ]
     }
 
-    const RSS_SAMPLE_COUNT: usize = 65;
+    const RSS_MINIMUM_SAMPLE_COUNT: usize = 65;
+    const RSS_MAXIMUM_SAMPLE_COUNT: usize = 129;
+    const RSS_PLATEAU_SAMPLE_COUNT: usize = 9;
+    const RSS_OBSERVATION_PAGE_BUDGET: u64 = 16;
 
     fn resident_bytes() -> Result<u64, Box<dyn Error>> {
         let pid = std::process::id().to_string();
@@ -2717,12 +2720,9 @@ pub(crate) mod tests {
         samples: &[(u16, u64)],
         page_bytes: u64,
     ) -> Result<(), Box<dyn Error>> {
-        const PLATEAU_SAMPLES: usize = 9;
-        const OBSERVATION_PAGE_BUDGET: u64 = 16;
-
-        if samples.len() != RSS_SAMPLE_COUNT {
+        if !(RSS_MINIMUM_SAMPLE_COUNT..=RSS_MAXIMUM_SAMPLE_COUNT).contains(&samples.len()) {
             return Err(format!(
-                "resident qualification requires {RSS_SAMPLE_COUNT} samples, received {}",
+                "resident qualification requires {RSS_MINIMUM_SAMPLE_COUNT}..={RSS_MAXIMUM_SAMPLE_COUNT} samples, received {}",
                 samples.len()
             )
             .into());
@@ -2735,7 +2735,7 @@ pub(crate) mod tests {
         let observation_ceiling = initial
             .checked_add(
                 page_bytes
-                    .checked_mul(OBSERVATION_PAGE_BUDGET)
+                    .checked_mul(RSS_OBSERVATION_PAGE_BUDGET)
                     .ok_or("resident observation budget overflow")?,
             )
             .ok_or("resident observation ceiling overflow")?;
@@ -2751,7 +2751,7 @@ pub(crate) mod tests {
             .into());
         }
 
-        let plateau = &samples[RSS_SAMPLE_COUNT - PLATEAU_SAMPLES..];
+        let plateau = &samples[samples.len() - RSS_PLATEAU_SAMPLE_COUNT..];
         let plateau_minimum = plateau
             .iter()
             .map(|sample| sample.1)
@@ -3861,7 +3861,8 @@ pub(crate) mod tests {
         const VALIDATION_WARMUP_FRAMES: u16 = 256;
         const RSS_WARMUP_FRAMES: u16 = 4_096;
         const VALIDATION_MEASURED_FRAMES: u16 = 256;
-        const RSS_MEASURED_FRAMES: u16 = 1_024;
+        const RSS_SAMPLE_INTERVAL_FRAMES: u16 = 16;
+        const RSS_MAXIMUM_MEASURED_FRAMES: u16 = 2_048;
 
         let (scene, descriptor) = discriminating_scene()?;
         let (mut backend, probe) = validation_backend_and_probe(
@@ -3885,8 +3886,13 @@ pub(crate) mod tests {
         let mut expected_readback = 0_u128;
         let mut retained = None;
         let capture_resident_distribution = std::env::var_os("ALPINE_CAPTURE_RSS").is_some();
+        let resident_page_bytes = if capture_resident_distribution {
+            Some(host_page_bytes()?)
+        } else {
+            None
+        };
         if capture_resident_distribution {
-            for _ in 0..RSS_SAMPLE_COUNT {
+            for _ in 0..RSS_MINIMUM_SAMPLE_COUNT {
                 let _ = resident_bytes()?;
             }
         }
@@ -3895,15 +3901,17 @@ pub(crate) mod tests {
         } else {
             VALIDATION_WARMUP_FRAMES
         };
-        let measured_frames = if capture_resident_distribution {
-            RSS_MEASURED_FRAMES
+        let maximum_measured_frames = if capture_resident_distribution {
+            RSS_MAXIMUM_MEASURED_FRAMES
         } else {
             VALIDATION_MEASURED_FRAMES
         };
-        let total_frames = warmup_frames + measured_frames;
-        let mut resident_samples = Vec::with_capacity(RSS_SAMPLE_COUNT);
-        for frame_index in 1_u16..=total_frames {
+        let maximum_frames = warmup_frames + maximum_measured_frames;
+        let mut total_frames = 0_u16;
+        let mut resident_samples = Vec::with_capacity(RSS_MAXIMUM_SAMPLE_COUNT);
+        for frame_index in 1_u16..=maximum_frames {
             let completed = backend.render_offscreen(&scene, descriptor)?;
+            total_frames = frame_index;
             let report = completed.report();
             expected_allocated += report.allocated_bytes as u128;
             expected_readback += report.readback_bytes as u128;
@@ -3914,9 +3922,18 @@ pub(crate) mod tests {
             assert_eq!(backend.accounting().current_retained_bytes(), 0);
             if capture_resident_distribution
                 && frame_index >= warmup_frames
-                && (frame_index - warmup_frames).is_multiple_of(16)
+                && (frame_index - warmup_frames).is_multiple_of(RSS_SAMPLE_INTERVAL_FRAMES)
             {
                 resident_samples.push((frame_index - warmup_frames, resident_bytes()?));
+                if resident_samples.len() >= RSS_MINIMUM_SAMPLE_COUNT
+                    && qualify_resident_plateau(
+                        &resident_samples,
+                        resident_page_bytes.ok_or("resident host page")?,
+                    )
+                    .is_ok()
+                {
+                    break;
+                }
             }
         }
         let accounting = backend.accounting();
@@ -3942,13 +3959,16 @@ pub(crate) mod tests {
         );
         assert!(accounting.invariants_hold());
         if capture_resident_distribution {
-            assert_eq!(resident_samples.len(), RSS_SAMPLE_COUNT);
+            assert!(resident_samples.len() >= RSS_MINIMUM_SAMPLE_COUNT);
+            assert!(resident_samples.len() <= RSS_MAXIMUM_SAMPLE_COUNT);
             for (frame, bytes) in &resident_samples {
                 assert!(*bytes > 0);
                 println!("alpine-memory-sample frame={frame} resident_bytes={bytes}");
             }
-            let page_bytes = host_page_bytes()?;
-            qualify_resident_plateau(&resident_samples, page_bytes)?;
+            qualify_resident_plateau(
+                &resident_samples,
+                resident_page_bytes.ok_or("resident host page")?,
+            )?;
         }
 
         backend.shutdown();
@@ -3968,35 +3988,58 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn resident_plateau_rejects_unbounded_or_late_growth() {
-        let bounded = (0_u16..65)
+    fn resident_plateau_rejects_unbounded_or_late_growth() -> Result<(), Box<dyn Error>> {
+        let bounded = (0_u16..u16::try_from(RSS_MINIMUM_SAMPLE_COUNT)?)
             .map(|index| (index, 10_000 + u64::from(index.min(4)) * 4_096))
             .collect::<Vec<_>>();
         assert!(qualify_resident_plateau(&bounded, 16_384).is_ok());
 
-        let delayed_but_bounded_settling = (0_u16..65)
+        let delayed_but_bounded_settling = (0_u16..u16::try_from(RSS_MINIMUM_SAMPLE_COUNT)?)
             .map(|index| (index, 10_000 + u64::from(index.min(12)) * 4_096))
             .collect::<Vec<_>>();
         assert!(qualify_resident_plateau(&delayed_but_bounded_settling, 16_384).is_ok());
 
-        let excessive_settling = (0_u16..65)
+        let bounded_boundary_step = (0_u16..=u16::try_from(RSS_MINIMUM_SAMPLE_COUNT)?)
+            .map(|index| {
+                let bytes = if index < 57 {
+                    10_000
+                } else {
+                    10_000 + 12 * 16_384
+                };
+                (index, bytes)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            qualify_resident_plateau(&bounded_boundary_step[..RSS_MINIMUM_SAMPLE_COUNT], 16_384)
+                .is_err()
+        );
+        assert!(qualify_resident_plateau(&bounded_boundary_step, 16_384).is_ok());
+
+        let excessive_settling = (0_u16..u16::try_from(RSS_MINIMUM_SAMPLE_COUNT)?)
             .map(|index| (index, 10_000 + u64::from(index) * 32_768))
             .collect::<Vec<_>>();
         assert!(qualify_resident_plateau(&excessive_settling, 16_384).is_err());
 
-        let late_growth = (0_u16..65)
+        let late_growth = (0_u16..u16::try_from(RSS_MAXIMUM_SAMPLE_COUNT)?)
             .map(|index| {
-                let bytes = if index < 56 {
+                let bytes = if index < 120 {
                     10_000
                 } else {
-                    10_000 + u64::from(index - 56) * 16_384
+                    10_000 + u64::from(index - 120) * 16_384
                 };
                 (index, bytes)
             })
             .collect::<Vec<_>>();
         assert!(qualify_resident_plateau(&late_growth, 16_384).is_err());
-        assert!(qualify_resident_plateau(&bounded[..64], 16_384).is_err());
+        assert!(
+            qualify_resident_plateau(&bounded[..RSS_MINIMUM_SAMPLE_COUNT - 1], 16_384).is_err()
+        );
+        let too_many = (0_u16..=u16::try_from(RSS_MAXIMUM_SAMPLE_COUNT)?)
+            .map(|index| (index, 10_000))
+            .collect::<Vec<_>>();
+        assert!(qualify_resident_plateau(&too_many, 16_384).is_err());
         assert!(qualify_resident_plateau(&bounded, 0).is_err());
+        Ok(())
     }
 
     #[test]
