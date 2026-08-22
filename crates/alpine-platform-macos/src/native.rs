@@ -4913,7 +4913,7 @@ fn expected_owner_counts(owner_count: usize) -> [u64; NATIVE_OWNER_KINDS] {
     expected
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
 

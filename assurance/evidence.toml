@@ -228,10 +228,19 @@ exclusions = ["native upload", "concurrent scene consumption", "device recovery"
 id = "EV-0141-UNIT09B"
 claim = "AEP-0141-C09"
 kind = "unit"
-artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#atlas_row_publication_retains_the_full_base_without_acknowledging_it"
-assertion = "A second glyph admission retains the first full base and publishes fewer row bytes than the complete atlas."
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#atlas_row_publication_retains_the_full_base_and_acknowledges_the_delta"
+assertion = "A second glyph admission retains the first full base, publishes fewer row bytes than the complete atlas, and advances the acknowledged source revision."
 scope = "Two distinct glyph admissions through Studio's production atlas publication path."
 exclusions = ["native upload", "typing latency", "atlas growth"]
+
+[[evidence]]
+id = "EV-0141-UNIT09C"
+claim = "AEP-0141-C09"
+kind = "unit"
+artifact = "crates/alpine-scene/src/lib.rs#atlas_row_patch_limit_resynchronizes_one_full_base_and_resumes_deltas"
+assertion = "A sixty-fifth disjoint recovery row materializes one current full base, clears cumulative metadata, and the following revision resumes one shared-base row delta."
+scope = "Exact sixty-four-patch boundary, one rollover row, current-pixel preservation, storage replacement, and one subsequent delta."
+exclusions = ["native upload", "allocation injection", "fixed-hardware latency"]
 
 [[evidence]]
 id = "EV-0141-NATIVE09A"

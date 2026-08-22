@@ -336,7 +336,7 @@ fn glyph_geometry_and_atlas_publication_axes_are_exact() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn atlas_row_publication_retains_the_full_base_without_acknowledging_it()
+fn atlas_row_publication_retains_the_full_base_and_acknowledges_the_delta()
 -> Result<(), Box<dyn Error>> {
     let mut app = StudioApp::new(GeometryTextSystem)?;
     let viewport = viewport()?;
@@ -388,12 +388,14 @@ fn atlas_row_publication_retains_the_full_base_without_acknowledging_it()
 
     assert!(base.shares_storage_with(revised));
     assert_eq!(revised.base_revision(), base_revision);
-    assert_eq!(app.published_atlas_source_revision, base_revision);
+    assert_eq!(revised.delta_source_revision(), base_revision);
+    assert_eq!(app.published_atlas_source_revision, revised.revision());
     assert_eq!(
         revised.revision(),
         app.glyph_atlas.snapshot().pixel_revision()
     );
     assert!(!revised.row_patches().is_empty());
+    assert_eq!(revised.delta_row_patches(), revised.row_patches());
     let published_row_bytes = revised
         .row_patches()
         .iter()

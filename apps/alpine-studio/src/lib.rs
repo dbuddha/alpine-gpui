@@ -2590,8 +2590,15 @@ impl StudioApp {
                     .published_atlas
                     .as_ref()
                     .ok_or(StudioRenderError::Domain)?;
-                self.published_atlas =
-                    Some(base.with_row_patches(source_revision, revision, Arc::from(patches))?);
+                let delta = Arc::from(patches);
+                self.published_atlas = Some(if base.revision() == source_revision {
+                    base.advance_with_row_patches(source_revision, revision, delta)?
+                } else {
+                    base.with_row_patches(source_revision, revision, delta)?
+                });
+                let acknowledged = self.glyph_atlas.acknowledge_publication(revision);
+                debug_assert!(acknowledged);
+                self.published_atlas_source_revision = revision;
                 self.atlas_revision = self
                     .atlas_revision
                     .checked_add(1)

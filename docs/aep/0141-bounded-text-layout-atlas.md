@@ -67,7 +67,9 @@ performance claim from functional and resource-bound evidence alone.
   reconstruct current pixels without application or native handles. Direct
   Metal retains a compatible private atlas allocation and blits only the
   override rows; incompatible ancestry, dimensions, or storage force one
-  checked full replacement.
+  checked full replacement. Exceeding the cumulative patch bound materializes
+  one current full base, resets recovery metadata, and allows the next revision
+  to resume bounded row deltas.
 
 ## Ownership and cache generations
 

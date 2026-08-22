@@ -207,23 +207,68 @@ impl Glyph {
     }
 }
 
+/// Maximum cumulative complete-row patches retained by one immutable scene.
+pub const MAX_GLYPH_ATLAS_ROW_PATCHES: usize = 64;
+
 /// One validated set of complete A8 atlas rows overriding the retained base.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GlyphAtlasRowPatch {
     start_row: u32,
     row_count: NonZeroU32,
     pixels: Arc<[u8]>,
+    pixel_offset: usize,
+    pixel_len: usize,
 }
 
 impl GlyphAtlasRowPatch {
     /// Creates one tightly packed complete-row patch.
     #[must_use]
-    pub const fn new(start_row: u32, row_count: NonZeroU32, pixels: Arc<[u8]>) -> Self {
+    pub fn new(start_row: u32, row_count: NonZeroU32, pixels: Arc<[u8]>) -> Self {
+        let pixel_len = pixels.len();
         Self {
             start_row,
             row_count,
             pixels,
+            pixel_offset: 0,
+            pixel_len,
         }
+    }
+
+    fn view(
+        &self,
+        start_row: u32,
+        row_count: NonZeroU32,
+        width: usize,
+    ) -> Result<Self, SceneError> {
+        let local_row = start_row
+            .checked_sub(self.start_row)
+            .ok_or(SceneError::ArithmeticOverflow)?;
+        let byte_offset = usize::try_from(local_row)
+            .ok()
+            .and_then(|row| row.checked_mul(width))
+            .and_then(|offset| self.pixel_offset.checked_add(offset))
+            .ok_or(SceneError::ArithmeticOverflow)?;
+        let pixel_len = usize::try_from(row_count.get())
+            .ok()
+            .and_then(|rows| rows.checked_mul(width))
+            .ok_or(SceneError::ArithmeticOverflow)?;
+        let end = byte_offset
+            .checked_add(pixel_len)
+            .ok_or(SceneError::ArithmeticOverflow)?;
+        let owned_end = self
+            .pixel_offset
+            .checked_add(self.pixel_len)
+            .ok_or(SceneError::ArithmeticOverflow)?;
+        if end > owned_end {
+            return Err(SceneError::ArithmeticOverflow);
+        }
+        Ok(Self {
+            start_row,
+            row_count,
+            pixels: Arc::clone(&self.pixels),
+            pixel_offset: byte_offset,
+            pixel_len,
+        })
     }
 
     /// Returns the first changed zero-based row.
@@ -241,7 +286,7 @@ impl GlyphAtlasRowPatch {
     /// Returns tightly packed complete-row bytes.
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
-        &self.pixels
+        &self.pixels[self.pixel_offset..self.pixel_offset + self.pixel_len]
     }
 }
 
@@ -249,11 +294,13 @@ impl GlyphAtlasRowPatch {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GlyphAtlasImage {
     base_revision: u64,
+    delta_source_revision: u64,
     revision: u64,
     width: NonZeroU32,
     height: NonZeroU32,
     pixels: Arc<[u8]>,
     row_patches: Arc<[GlyphAtlasRowPatch]>,
+    delta_row_patches: Arc<[GlyphAtlasRowPatch]>,
 }
 
 impl GlyphAtlasImage {
@@ -284,11 +331,13 @@ impl GlyphAtlasImage {
         }
         Ok(Self {
             base_revision: revision,
+            delta_source_revision: revision,
             revision,
             width,
             height,
             pixels,
             row_patches: Arc::from([]),
+            delta_row_patches: Arc::from([]),
         })
     }
 
@@ -312,42 +361,73 @@ impl GlyphAtlasImage {
                 revision,
             });
         }
-        let width =
-            usize::try_from(self.width.get()).map_err(|_| SceneError::ArithmeticOverflow)?;
-        let mut previous_end = 0;
-        for (index, patch) in row_patches.iter().enumerate() {
-            let end = patch
-                .start_row
-                .checked_add(patch.row_count.get())
-                .ok_or(SceneError::ArithmeticOverflow)?;
-            if end > self.height.get() || (index != 0 && patch.start_row < previous_end) {
-                return Err(SceneError::InvalidAtlasRowRange {
-                    start: patch.start_row,
-                    rows: patch.row_count.get(),
-                    height: self.height.get(),
-                });
-            }
-            let expected = width
-                .checked_mul(
-                    usize::try_from(patch.row_count.get())
-                        .map_err(|_| SceneError::ArithmeticOverflow)?,
-                )
-                .ok_or(SceneError::ArithmeticOverflow)?;
-            if patch.pixels.len() != expected {
-                return Err(SceneError::InvalidAtlasLength {
-                    expected,
-                    actual: patch.pixels.len(),
-                });
-            }
-            previous_end = end;
-        }
+        validate_atlas_row_patches(self.width, self.height, &row_patches)?;
         Ok(Self {
             base_revision: self.base_revision,
+            delta_source_revision: source_revision,
+            revision,
+            width: self.width,
+            height: self.height,
+            pixels: Arc::clone(&self.pixels),
+            row_patches: Arc::clone(&row_patches),
+            delta_row_patches: row_patches,
+        })
+    }
+
+    /// Advances this snapshot with one newer delta while retaining a bounded,
+    /// disjoint recovery image over the immutable full base.
+    ///
+    /// Unaffected cumulative patches share their existing byte storage. A
+    /// replacement that intersects an older patch creates only metadata views
+    /// for the surviving rows, never a complete atlas copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured revision, range, length, patch-limit, or arithmetic
+    /// failure.
+    pub fn advance_with_row_patches(
+        &self,
+        source_revision: u64,
+        revision: u64,
+        delta_row_patches: Arc<[GlyphAtlasRowPatch]>,
+    ) -> Result<Self, SceneError> {
+        if source_revision != self.revision || revision <= source_revision {
+            return Err(SceneError::InvalidAtlasRevision {
+                base: self.revision,
+                source: source_revision,
+                revision,
+            });
+        }
+        validate_atlas_row_patches(self.width, self.height, &delta_row_patches)?;
+        let width =
+            usize::try_from(self.width.get()).map_err(|_| SceneError::ArithmeticOverflow)?;
+        let row_patches = match merge_atlas_row_patches(
+            &self.row_patches,
+            &delta_row_patches,
+            width,
+            self.height,
+        ) {
+            Ok(row_patches) => row_patches,
+            Err(SceneError::AtlasRowPatchLimitExceeded { .. }) => {
+                let pixels = materialize_atlas_row_patches(
+                    &self.pixels,
+                    &self.row_patches,
+                    &delta_row_patches,
+                    width,
+                )?;
+                return Self::new(revision, self.width, self.height, pixels);
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(Self {
+            base_revision: self.base_revision,
+            delta_source_revision: source_revision,
             revision,
             width: self.width,
             height: self.height,
             pixels: Arc::clone(&self.pixels),
             row_patches,
+            delta_row_patches,
         })
     }
 
@@ -355,6 +435,11 @@ impl GlyphAtlasImage {
     #[must_use]
     pub const fn base_revision(&self) -> u64 {
         self.base_revision
+    }
+    /// Returns the resident revision from which the latest row delta advances.
+    #[must_use]
+    pub const fn delta_source_revision(&self) -> u64 {
+        self.delta_source_revision
     }
     /// Returns the atlas content revision.
     #[must_use]
@@ -380,6 +465,11 @@ impl GlyphAtlasImage {
     #[must_use]
     pub fn row_patches(&self) -> &[GlyphAtlasRowPatch] {
         &self.row_patches
+    }
+    /// Returns only the latest row delta after `delta_source_revision`.
+    #[must_use]
+    pub fn delta_row_patches(&self) -> &[GlyphAtlasRowPatch] {
+        &self.delta_row_patches
     }
     /// Returns the current A8 value after applying cumulative row overrides.
     #[must_use]
@@ -408,6 +498,120 @@ impl GlyphAtlasImage {
     pub fn shares_storage_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.pixels, &other.pixels)
     }
+}
+
+fn validate_atlas_row_patches(
+    width: NonZeroU32,
+    height: NonZeroU32,
+    row_patches: &[GlyphAtlasRowPatch],
+) -> Result<(), SceneError> {
+    if row_patches.len() > MAX_GLYPH_ATLAS_ROW_PATCHES {
+        return Err(SceneError::AtlasRowPatchLimitExceeded {
+            limit: MAX_GLYPH_ATLAS_ROW_PATCHES,
+            actual: row_patches.len(),
+        });
+    }
+    let width = usize::try_from(width.get()).map_err(|_| SceneError::ArithmeticOverflow)?;
+    let mut previous_end = 0;
+    for (index, patch) in row_patches.iter().enumerate() {
+        let end = patch
+            .start_row
+            .checked_add(patch.row_count.get())
+            .ok_or(SceneError::ArithmeticOverflow)?;
+        if end > height.get() || (index != 0 && patch.start_row < previous_end) {
+            return Err(SceneError::InvalidAtlasRowRange {
+                start: patch.start_row,
+                rows: patch.row_count.get(),
+                height: height.get(),
+            });
+        }
+        let expected = width
+            .checked_mul(
+                usize::try_from(patch.row_count.get())
+                    .map_err(|_| SceneError::ArithmeticOverflow)?,
+            )
+            .ok_or(SceneError::ArithmeticOverflow)?;
+        if patch.pixels().len() != expected {
+            return Err(SceneError::InvalidAtlasLength {
+                expected,
+                actual: patch.pixels().len(),
+            });
+        }
+        previous_end = end;
+    }
+    Ok(())
+}
+
+fn merge_atlas_row_patches(
+    current: &[GlyphAtlasRowPatch],
+    delta: &[GlyphAtlasRowPatch],
+    width: usize,
+    height: NonZeroU32,
+) -> Result<Arc<[GlyphAtlasRowPatch]>, SceneError> {
+    let mut merged = Vec::new();
+    for patch in current {
+        let patch_end = patch
+            .start_row
+            .checked_add(patch.row_count.get())
+            .ok_or(SceneError::ArithmeticOverflow)?;
+        let mut cursor = patch.start_row;
+        for replacement in delta {
+            let replacement_end = replacement
+                .start_row
+                .checked_add(replacement.row_count.get())
+                .ok_or(SceneError::ArithmeticOverflow)?;
+            if replacement.start_row >= patch_end {
+                break;
+            }
+            if replacement.start_row > cursor {
+                merged.push(
+                    patch.view(
+                        cursor,
+                        NonZeroU32::new(replacement.start_row - cursor)
+                            .ok_or(SceneError::ArithmeticOverflow)?,
+                        width,
+                    )?,
+                );
+            }
+            cursor = cursor.max(replacement_end.min(patch_end));
+        }
+        if cursor < patch_end {
+            merged.push(patch.view(
+                cursor,
+                NonZeroU32::new(patch_end - cursor).ok_or(SceneError::ArithmeticOverflow)?,
+                width,
+            )?);
+        }
+    }
+    merged.extend(delta.iter().cloned());
+    merged.sort_unstable_by_key(GlyphAtlasRowPatch::start_row);
+    let width = NonZeroU32::new(u32::try_from(width).map_err(|_| SceneError::ArithmeticOverflow)?)
+        .ok_or(SceneError::ArithmeticOverflow)?;
+    validate_atlas_row_patches(width, height, &merged)?;
+    Ok(Arc::from(merged))
+}
+
+fn materialize_atlas_row_patches(
+    base: &[u8],
+    current: &[GlyphAtlasRowPatch],
+    delta: &[GlyphAtlasRowPatch],
+    width: usize,
+) -> Result<Arc<[u8]>, SceneError> {
+    let mut pixels = base.to_vec();
+    for patch in current.iter().chain(delta) {
+        let start = usize::try_from(patch.start_row)
+            .ok()
+            .and_then(|row| row.checked_mul(width))
+            .ok_or(SceneError::ArithmeticOverflow)?;
+        let end = start
+            .checked_add(patch.pixels().len())
+            .ok_or(SceneError::ArithmeticOverflow)?;
+        let destination = pixels
+            .get_mut(start..end)
+            .ok_or(SceneError::ArithmeticOverflow)?;
+        destination.copy_from_slice(patch.pixels());
+    }
+    Ok(Arc::from(pixels))
 }
 
 /// A primitive accepted by the compatibility builder entry point.
@@ -651,6 +855,13 @@ pub enum SceneError {
         /// Atlas height.
         height: u32,
     },
+    /// An immutable scene attempted to retain too many atlas row patches.
+    AtlasRowPatchLimitExceeded {
+        /// Maximum accepted cumulative patch count.
+        limit: usize,
+        /// Supplied cumulative patch count.
+        actual: usize,
+    },
 }
 
 impl fmt::Display for SceneError {
@@ -684,6 +895,10 @@ impl fmt::Display for SceneError {
             } => write!(
                 formatter,
                 "scene atlas row patch {start}+{rows} exceeds or overlaps height {height}"
+            ),
+            Self::AtlasRowPatchLimitExceeded { limit, actual } => write!(
+                formatter,
+                "scene atlas accepts at most {limit} row patches, found {actual}"
             ),
         }
     }
@@ -751,8 +966,10 @@ mod tests {
 
         assert!(base.shares_storage_with(&revised));
         assert_eq!(revised.base_revision(), 10);
+        assert_eq!(revised.delta_source_revision(), 10);
         assert_eq!(revised.revision(), 11);
         assert_eq!(revised.row_patches(), &[patch]);
+        assert_eq!(revised.delta_row_patches(), revised.row_patches());
         assert_eq!(revised.row_patches()[0].start_row(), 1);
         assert_eq!(revised.row_patches()[0].row_count().get(), 1);
         assert_eq!(revised.row_patches()[0].pixels(), &[30, 40, 50]);
@@ -761,6 +978,20 @@ mod tests {
         assert_eq!(revised.pixel(2, 2), Some(8));
         assert_eq!(revised.pixel(3, 0), None);
         assert_eq!(base.pixel(1, 1), Some(4));
+
+        let latest = super::GlyphAtlasRowPatch::new(
+            2,
+            NonZeroU32::new(1).ok_or(SceneError::ArithmeticOverflow)?,
+            Arc::from([60_u8, 70, 80]),
+        );
+        let advanced = revised.advance_with_row_patches(11, 12, Arc::from([latest.clone()]))?;
+        assert_eq!(advanced.base_revision(), 10);
+        assert_eq!(advanced.delta_source_revision(), 11);
+        assert_eq!(advanced.revision(), 12);
+        assert_eq!(advanced.delta_row_patches(), &[latest]);
+        assert_eq!(advanced.row_patches().len(), 2);
+        assert_eq!(advanced.pixel(1, 1), Some(40));
+        assert_eq!(advanced.pixel(1, 2), Some(70));
         Ok(())
     }
 
@@ -771,20 +1002,36 @@ mod tests {
         let base = GlyphAtlasImage::new(4, two, two, Arc::from([0_u8; 4]))?;
         let valid = super::GlyphAtlasRowPatch::new(1, one, Arc::from([1_u8, 2]));
 
-        let revision_error = base
-            .with_row_patches(3, 5, Arc::from([valid.clone()]))
-            .expect_err("invalid ancestry");
+        let Err(revision_error) = base.with_row_patches(3, 5, Arc::from([valid.clone()])) else {
+            return Err(SceneError::InvalidAtlasRevision {
+                base: 4,
+                source: 3,
+                revision: 5,
+            });
+        };
         assert_eq!(
             revision_error.to_string(),
             "scene atlas row revision 3->5 does not descend from base 4"
         );
-        let range_error = base
-            .with_row_patches(
-                4,
-                5,
-                Arc::from([super::GlyphAtlasRowPatch::new(2, one, Arc::from([1_u8, 2]))]),
-            )
-            .expect_err("invalid row range");
+        let too_many = vec![valid.clone(); super::MAX_GLYPH_ATLAS_ROW_PATCHES + 1];
+        assert_eq!(
+            base.with_row_patches(4, 5, Arc::from(too_many)),
+            Err(SceneError::AtlasRowPatchLimitExceeded {
+                limit: super::MAX_GLYPH_ATLAS_ROW_PATCHES,
+                actual: super::MAX_GLYPH_ATLAS_ROW_PATCHES + 1,
+            })
+        );
+        let Err(range_error) = base.with_row_patches(
+            4,
+            5,
+            Arc::from([super::GlyphAtlasRowPatch::new(2, one, Arc::from([1_u8, 2]))]),
+        ) else {
+            return Err(SceneError::InvalidAtlasRowRange {
+                start: 2,
+                rows: 1,
+                height: 2,
+            });
+        };
         assert_eq!(
             range_error.to_string(),
             "scene atlas row patch 2+1 exceeds or overlaps height 2"
@@ -812,6 +1059,199 @@ mod tests {
             base.with_row_patches(4, 5, Arc::from([first.clone(), first])),
             Err(SceneError::InvalidAtlasRowRange { .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn atlas_row_patch_views_revisions_and_exact_limit_are_discriminating() -> Result<(), SceneError>
+    {
+        let one = NonZeroU32::new(1).ok_or(SceneError::ArithmeticOverflow)?;
+        let two = NonZeroU32::new(2).ok_or(SceneError::ArithmeticOverflow)?;
+        let three = NonZeroU32::new(3).ok_or(SceneError::ArithmeticOverflow)?;
+        let source_pixels: Arc<[u8]> = Arc::from([10_u8, 11, 20, 21, 30, 31]);
+        let source = super::GlyphAtlasRowPatch::new(2, three, Arc::clone(&source_pixels));
+        let leading = source.view(2, one, 2)?;
+        assert_eq!(leading.start_row(), 2);
+        assert_eq!(leading.row_count(), one);
+        assert_eq!(leading.pixels(), &[10, 11]);
+        assert!(Arc::ptr_eq(&leading.pixels, &source_pixels));
+
+        let base = GlyphAtlasImage::new(10, two, two, Arc::from([0_u8; 4]))?;
+        let first = base.with_row_patches(
+            10,
+            11,
+            Arc::from([super::GlyphAtlasRowPatch::new(0, one, Arc::from([1_u8, 2]))]),
+        )?;
+        assert!(matches!(
+            first.advance_with_row_patches(10, 12, Arc::from([])),
+            Err(SceneError::InvalidAtlasRevision {
+                base: 11,
+                source: 10,
+                revision: 12,
+            })
+        ));
+        assert!(matches!(
+            first.advance_with_row_patches(11, 11, Arc::from([])),
+            Err(SceneError::InvalidAtlasRevision {
+                base: 11,
+                source: 11,
+                revision: 11,
+            })
+        ));
+
+        let limit_height = NonZeroU32::new(
+            u32::try_from(super::MAX_GLYPH_ATLAS_ROW_PATCHES)
+                .map_err(|_| SceneError::ArithmeticOverflow)?,
+        )
+        .ok_or(SceneError::ArithmeticOverflow)?;
+        let limit_base = GlyphAtlasImage::new(
+            20,
+            one,
+            limit_height,
+            Arc::from(vec![0_u8; super::MAX_GLYPH_ATLAS_ROW_PATCHES]),
+        )?;
+        let mut patches = Vec::with_capacity(super::MAX_GLYPH_ATLAS_ROW_PATCHES);
+        for row in 0..super::MAX_GLYPH_ATLAS_ROW_PATCHES {
+            patches.push(super::GlyphAtlasRowPatch::new(
+                u32::try_from(row).map_err(|_| SceneError::ArithmeticOverflow)?,
+                one,
+                Arc::from([u8::try_from(row).unwrap_or(u8::MAX)]),
+            ));
+        }
+        let admitted = limit_base.with_row_patches(20, 21, Arc::from(patches))?;
+        assert_eq!(
+            admitted.row_patches().len(),
+            super::MAX_GLYPH_ATLAS_ROW_PATCHES
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn atlas_row_patch_limit_resynchronizes_one_full_base_and_resumes_deltas()
+    -> Result<(), SceneError> {
+        let one = NonZeroU32::new(1).ok_or(SceneError::ArithmeticOverflow)?;
+        let row_count = super::MAX_GLYPH_ATLAS_ROW_PATCHES
+            .checked_add(1)
+            .ok_or(SceneError::ArithmeticOverflow)?;
+        let height =
+            NonZeroU32::new(u32::try_from(row_count).map_err(|_| SceneError::ArithmeticOverflow)?)
+                .ok_or(SceneError::ArithmeticOverflow)?;
+        let base = GlyphAtlasImage::new(30, one, height, Arc::from(vec![0_u8; row_count]))?;
+        let mut patches = Vec::with_capacity(super::MAX_GLYPH_ATLAS_ROW_PATCHES);
+        for row in 0..super::MAX_GLYPH_ATLAS_ROW_PATCHES {
+            patches.push(super::GlyphAtlasRowPatch::new(
+                u32::try_from(row).map_err(|_| SceneError::ArithmeticOverflow)?,
+                one,
+                Arc::from([u8::try_from(row + 1).map_err(|_| SceneError::ArithmeticOverflow)?]),
+            ));
+        }
+        let saturated = base.with_row_patches(30, 31, Arc::from(patches))?;
+        let final_row = super::GlyphAtlasRowPatch::new(
+            u32::try_from(super::MAX_GLYPH_ATLAS_ROW_PATCHES)
+                .map_err(|_| SceneError::ArithmeticOverflow)?,
+            one,
+            Arc::from([255_u8]),
+        );
+
+        let resynchronized = saturated.advance_with_row_patches(31, 32, Arc::from([final_row]))?;
+        assert_eq!(resynchronized.base_revision(), 32);
+        assert_eq!(resynchronized.delta_source_revision(), 32);
+        assert_eq!(resynchronized.revision(), 32);
+        assert!(resynchronized.row_patches().is_empty());
+        assert!(resynchronized.delta_row_patches().is_empty());
+        assert!(!saturated.shares_storage_with(&resynchronized));
+        assert_eq!(resynchronized.pixel(0, 0), Some(1));
+        assert_eq!(
+            resynchronized.pixel(
+                0,
+                u32::try_from(super::MAX_GLYPH_ATLAS_ROW_PATCHES - 1)
+                    .map_err(|_| SceneError::ArithmeticOverflow)?,
+            ),
+            Some(
+                u8::try_from(super::MAX_GLYPH_ATLAS_ROW_PATCHES)
+                    .map_err(|_| SceneError::ArithmeticOverflow)?,
+            )
+        );
+        assert_eq!(
+            resynchronized.pixel(
+                0,
+                u32::try_from(super::MAX_GLYPH_ATLAS_ROW_PATCHES)
+                    .map_err(|_| SceneError::ArithmeticOverflow)?,
+            ),
+            Some(255)
+        );
+
+        let resumed = resynchronized.advance_with_row_patches(
+            32,
+            33,
+            Arc::from([super::GlyphAtlasRowPatch::new(0, one, Arc::from([9_u8]))]),
+        )?;
+        assert!(resynchronized.shares_storage_with(&resumed));
+        assert_eq!(resumed.base_revision(), 32);
+        assert_eq!(resumed.delta_source_revision(), 32);
+        assert_eq!(resumed.revision(), 33);
+        assert_eq!(resumed.row_patches().len(), 1);
+        assert_eq!(resumed.delta_row_patches(), resumed.row_patches());
+        assert_eq!(resumed.pixel(0, 0), Some(9));
+        assert_eq!(
+            resumed.pixel(
+                0,
+                u32::try_from(super::MAX_GLYPH_ATLAS_ROW_PATCHES)
+                    .map_err(|_| SceneError::ArithmeticOverflow)?,
+            ),
+            Some(255)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn atlas_row_patch_merge_preserves_every_boundary_segment() -> Result<(), SceneError> {
+        let one = NonZeroU32::new(1).ok_or(SceneError::ArithmeticOverflow)?;
+        let two = NonZeroU32::new(2).ok_or(SceneError::ArithmeticOverflow)?;
+        let six = NonZeroU32::new(6).ok_or(SceneError::ArithmeticOverflow)?;
+        let height = NonZeroU32::new(10).ok_or(SceneError::ArithmeticOverflow)?;
+        let current = [super::GlyphAtlasRowPatch::new(
+            2,
+            six,
+            Arc::from([20_u8, 21, 22, 23, 24, 25]),
+        )];
+        let delta = [
+            super::GlyphAtlasRowPatch::new(0, one, Arc::from([10_u8])),
+            super::GlyphAtlasRowPatch::new(2, two, Arc::from([30_u8, 31])),
+            super::GlyphAtlasRowPatch::new(6, one, Arc::from([40_u8])),
+            super::GlyphAtlasRowPatch::new(8, one, Arc::from([50_u8])),
+        ];
+
+        let merged = super::merge_atlas_row_patches(&current, &delta, 1, height)?;
+        let actual = merged
+            .iter()
+            .map(|patch| {
+                (
+                    patch.start_row(),
+                    patch.row_count().get(),
+                    patch.pixels().to_vec(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            vec![
+                (0, 1, vec![10]),
+                (2, 2, vec![30, 31]),
+                (4, 2, vec![22, 23]),
+                (6, 1, vec![40]),
+                (7, 1, vec![25]),
+                (8, 1, vec![50]),
+            ]
+        );
+
+        let full_replacement = [super::GlyphAtlasRowPatch::new(
+            2,
+            six,
+            Arc::from([60_u8, 61, 62, 63, 64, 65]),
+        )];
+        let replaced = super::merge_atlas_row_patches(&current, &full_replacement, 1, height)?;
+        assert_eq!(replaced.as_ref(), full_replacement.as_slice());
         Ok(())
     }
 
