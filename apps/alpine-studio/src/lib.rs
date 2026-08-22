@@ -731,6 +731,24 @@ fn recovery_studio_error(
     }
 }
 
+fn classify_recovery_restore_error(error: &SessionRestoreError) -> RecoveryLaunchError {
+    match error {
+        SessionRestoreError::Allocation => RecoveryLaunchError::AllocationFailed,
+        SessionRestoreError::Surface => RecoveryLaunchError::NativeConstruction,
+        _ => RecoveryLaunchError::Invalid,
+    }
+}
+
+fn map_recovery_restore_result<T>(
+    result: Result<T, SessionRestoreError>,
+    requested: &Path,
+    journal: &Path,
+) -> Result<T, StudioError> {
+    result.map_err(|error| {
+        recovery_studio_error(requested, journal, classify_recovery_restore_error(&error))
+    })
+}
+
 fn compose_explicit_path(
     text_system: impl StudioTextSystem + 'static,
     target: ExplicitPathTarget,
@@ -751,14 +769,8 @@ fn compose_explicit_path(
         Err(error) => return Err(recovery_studio_error(&requested, &journal, error)),
     };
     let mut app = if let Some(state) = recovery {
-        let mut app = StudioApp::from_recovery(text_system, state).map_err(|error| {
-            let source = match error {
-                SessionRestoreError::Allocation => RecoveryLaunchError::AllocationFailed,
-                SessionRestoreError::Surface => RecoveryLaunchError::NativeConstruction,
-                _ => RecoveryLaunchError::Invalid,
-            };
-            recovery_studio_error(&requested, &journal, source)
-        })?;
+        let restored = StudioApp::from_recovery(text_system, state);
+        let mut app = map_recovery_restore_result(restored, &requested, &journal)?;
         target
             .compose(&mut app)
             .map_err(|source| recovery_studio_error(&requested, &journal, source))?;

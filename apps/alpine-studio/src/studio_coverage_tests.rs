@@ -1742,6 +1742,88 @@ fn windows_file_save_fails_structurally_without_touching_disk()
     Ok(())
 }
 
+fn qualify_recovery_launch_error_contracts() -> Result<(), Box<dyn std::error::Error>> {
+    let launch_errors = [
+        RecoveryLaunchError::AllocationFailed,
+        RecoveryLaunchError::Corrupt(RecoveryCorrupt::Checksum),
+        RecoveryLaunchError::Invalid,
+        RecoveryLaunchError::Disconnected,
+        RecoveryLaunchError::WorkerPanicked,
+        RecoveryLaunchError::Io {
+            operation: "read",
+            kind: std::io::ErrorKind::PermissionDenied,
+        },
+        RecoveryLaunchError::NativeConstruction,
+        RecoveryLaunchError::TargetComposition,
+    ];
+    for error in launch_errors {
+        assert!(!error.to_string().is_empty());
+    }
+
+    let recovery_errors = [
+        recovery::RecoveryError::AllocationFailed,
+        recovery::RecoveryError::Corrupt(RecoveryCorrupt::Checksum),
+        recovery::RecoveryError::Invalid,
+        recovery::RecoveryError::Disconnected,
+        recovery::RecoveryError::WorkerPanicked,
+        recovery::RecoveryError::Io {
+            operation: "read",
+            kind: std::io::ErrorKind::PermissionDenied,
+        },
+    ];
+    assert_eq!(
+        recovery_errors.map(RecoveryLaunchError::from),
+        [
+            RecoveryLaunchError::AllocationFailed,
+            RecoveryLaunchError::Corrupt(RecoveryCorrupt::Checksum),
+            RecoveryLaunchError::Invalid,
+            RecoveryLaunchError::Disconnected,
+            RecoveryLaunchError::WorkerPanicked,
+            RecoveryLaunchError::Io {
+                operation: "read",
+                kind: std::io::ErrorKind::PermissionDenied,
+            },
+        ]
+    );
+
+    let restore_errors = [
+        (SessionRestoreError::Invalid, RecoveryLaunchError::Invalid),
+        (SessionRestoreError::Workspace, RecoveryLaunchError::Invalid),
+        (SessionRestoreError::File, RecoveryLaunchError::Invalid),
+        (SessionRestoreError::Tabs, RecoveryLaunchError::Invalid),
+        (SessionRestoreError::Panes, RecoveryLaunchError::Invalid),
+        (SessionRestoreError::FileTree, RecoveryLaunchError::Invalid),
+        (
+            SessionRestoreError::Surface,
+            RecoveryLaunchError::NativeConstruction,
+        ),
+        (
+            SessionRestoreError::Allocation,
+            RecoveryLaunchError::AllocationFailed,
+        ),
+    ];
+    for (error, expected) in restore_errors {
+        let Err(error) = map_recovery_restore_result::<()>(
+            Err(error),
+            Path::new("requested.rs"),
+            Path::new("recovery-v1.bin"),
+        ) else {
+            return Err("restore error unexpectedly mapped to success".into());
+        };
+        assert!(matches!(
+            error,
+            StudioError::Recovery {
+                requested,
+                journal,
+                source,
+            } if requested == Path::new("requested.rs")
+                && journal == Path::new("recovery-v1.bin")
+                && source == expected
+        ));
+    }
+    Ok(())
+}
+
 #[test]
 fn file_launch_rejects_invalid_utf8_and_scratch_save_is_isolated()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1779,6 +1861,8 @@ fn file_launch_rejects_invalid_utf8_and_scratch_save_is_isolated()
     assert!(recovery_error.to_string().contains("requested.rs"));
     assert!(recovery_error.to_string().contains("recovery-v1.bin"));
     assert!(recovery_error.source().is_some());
+
+    qualify_recovery_launch_error_contracts()?;
     Ok(())
 }
 
@@ -1807,6 +1891,18 @@ fn explicit_file_launch_composes_dirty_recovery_without_replacing_local_text()
     let session_path = root.path().join("state").join("session-v1.bin");
     fs::write(&recovered_path, "")?;
     fs::write(&requested_path, "requested\n")?;
+
+    let target = ExplicitPathTarget::open(&requested_path, ExplicitPathKind::File)?;
+    let app = compose_explicit_path(TestTextSystem, target, None)?;
+    assert_eq!(app.buffer().snapshot().text(), "requested\n");
+    drop(app);
+
+    let missing_session = root.path().join("missing-state").join("session-v1.bin");
+    let target = ExplicitPathTarget::open(&requested_path, ExplicitPathKind::File)?;
+    let app = compose_explicit_path(TestTextSystem, target, Some(missing_session))?;
+    assert_eq!(app.buffer().snapshot().text(), "requested\n");
+    drop(app);
+
     dirty_recovery_fixture(&session_path, &recovered_path, "local recovery\n")?;
 
     let target = ExplicitPathTarget::open(&requested_path, ExplicitPathKind::File)?;
@@ -1852,6 +1948,20 @@ fn explicit_folder_launch_retargets_workspace_and_retains_dirty_tabs()
     fs::write(&recovered_path, "")?;
     fs::create_dir(&requested_workspace)?;
     fs::write(requested_workspace.join("main.rs"), "fn main() {}\n")?;
+
+    assert!(matches!(
+        ExplicitPathTarget::open(&requested_workspace, ExplicitPathKind::File),
+        Err(StudioError::Workspace(WorkspaceError::UnsupportedTarget(path)))
+            if path == requested_workspace
+    ));
+    let target = ExplicitPathTarget::open(&requested_workspace, ExplicitPathKind::Any)?;
+    let app = compose_explicit_path(TestTextSystem, target, None)?;
+    assert_eq!(
+        app.workspace.as_ref().map(Workspace::root),
+        Some(fs::canonicalize(&requested_workspace)?.as_path())
+    );
+    drop(app);
+
     dirty_recovery_fixture(&session_path, &recovered_path, "local recovery\n")?;
 
     let target = ExplicitPathTarget::open(&requested_workspace, ExplicitPathKind::Any)?;
