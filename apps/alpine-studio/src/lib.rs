@@ -2691,13 +2691,9 @@ impl StudioApp {
             .as_ref()
             .filter(|atlas| atlas.width() == dimension && atlas.height() == dimension)
             .map_or(u64::MAX, GlyphAtlasImage::revision);
-        let publication = match self.glyph_atlas.publication_since(source_revision) {
-            Ok(publication) => publication,
-            Err(error) => {
-                self.record_atlas_publication_failure();
-                return Err(error.into());
-            }
-        };
+        let publication = self.profile_atlas_publication_result(
+            self.glyph_atlas.publication_since(source_revision),
+        )?;
         match publication {
             alpine_text_layout::GlyphAtlasPublication::Unchanged { revision } => {
                 self.published_atlas_source_revision = revision;
@@ -2781,6 +2777,16 @@ impl StudioApp {
             self.profile_scene_revision,
             [1, 0, 0],
         );
+    }
+
+    fn profile_atlas_publication_result<T>(
+        &self,
+        result: Result<T, LayoutError>,
+    ) -> Result<T, StudioRenderError> {
+        result.map_err(|error| {
+            self.record_atlas_publication_failure();
+            error.into()
+        })
     }
 
     fn full_atlas_image(

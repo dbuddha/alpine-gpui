@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use alpine_platform_macos::{CloseDisposition, EventTimestamp, ScrollPhase};
+use alpine_platform_macos::{CloseDisposition, EventTimestamp, ScrollPhase, SurfaceExtent};
 use alpine_text_layout::{GlyphBitmap, RasterizedGlyph, ShapedGlyph};
 
 use super::*;
@@ -280,6 +280,43 @@ fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_
 }
 
 #[test]
+fn release_profile_event_kind_vocabulary_is_stable() -> Result<(), Box<dyn Error>> {
+    let timestamp = EventTimestamp::new(40);
+    let position = Point::new(3.0, 4.0).ok_or("pointer position")?;
+    let extent = SurfaceExtent::new(40.0, 20.0, 2.0)?;
+    let event_kinds = [
+        SurfaceEvent::Pointer {
+            timestamp,
+            action: PointerAction::Moved,
+            position,
+            button: PointerButton::None,
+            modifiers: Modifiers::default(),
+        },
+        SurfaceEvent::Scroll {
+            timestamp,
+            delta_x: 1.0,
+            delta_y: -2.0,
+            phase: ScrollPhase::Changed,
+            precise: true,
+            modifiers: Modifiers::default(),
+        },
+        SurfaceEvent::Focus {
+            timestamp,
+            input_epoch: InputEpoch::INITIAL,
+            focused: true,
+        },
+        SurfaceEvent::Clipboard {
+            timestamp,
+            event: ClipboardEvent::CopyCompleted(Ok(())),
+        },
+        SurfaceEvent::Resize { timestamp, extent },
+    ]
+    .map(|event| surface_event_kind(&event));
+    assert_eq!(event_kinds, [2, 3, 4, 6, 7]);
+    Ok(())
+}
+
+#[test]
 fn release_profile_points_preserve_event_frame_stage_order_and_failure_outcome()
 -> Result<(), Box<dyn Error>> {
     let font = StudioApp::font()?;
@@ -355,9 +392,18 @@ fn release_profile_points_preserve_event_frame_stage_order_and_failure_outcome()
     let (profiler, failed_records) = StudioProfiler::recording();
     failing.text_system.set_enabled(profiler.enabled());
     failing.profiler = profiler;
+    assert!(matches!(
+        failing.profile_atlas_publication_result::<()>(Err(LayoutError::ArithmeticOverflow)),
+        Err(StudioRenderError::Layout(LayoutError::ArithmeticOverflow))
+    ));
     let fallback = failing.scene(SceneRevision::new(7), viewport()?);
     assert_eq!(fallback.operation_count(), 1);
     let failed_records = failed_records.borrow();
+    assert!(
+        failed_records
+            .iter()
+            .any(|record| record.stage() == StudioSignpostStage::AtlasPublicationFailed)
+    );
     let failed = failed_records
         .iter()
         .position(|record| record.stage() == StudioSignpostStage::FrameBuildFailed)

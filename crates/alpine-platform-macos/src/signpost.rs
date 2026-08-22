@@ -229,9 +229,13 @@ mod tests {
 
         let startup = StudioSignpost::new(StudioSignpostStage::FrameBuildBegin, 0, 5, 1, 1, [0; 3]);
         assert_eq!(startup.correlation(), (1_u64 << 63) | 5);
+        let zero_startup =
+            StudioSignpost::new(StudioSignpostStage::FrameBuildBegin, 0, 0, 1, 1, [0; 3]);
+        assert_eq!(zero_startup.correlation(), (1_u64 << 63) | 1);
 
         if !StudioSignposts::new().enabled() {
             StudioSignposts::new().emit(point);
         }
+        StudioSignposts { enabled: true }.emit(point);
     }
 }
