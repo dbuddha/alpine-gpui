@@ -5,13 +5,14 @@ use std::sync::{
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
+    time::Instant,
 };
 use std::{ffi::c_void, ptr::NonNull};
 
 use alpine_core::Point;
 
 #[cfg(alpine_native_validation)]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(alpine_native_validation)]
 use objc2::rc::autoreleasepool;
@@ -63,12 +64,13 @@ use crate::native_accessibility::{NativeAccessibilityAdapter, NativeAccessibilit
 use crate::{
     AccessibilityRequest, AccessibilityResponse, ClipboardError, ClipboardEvent,
     ClipboardOperation, ClipboardText, ClipboardWrite, CloseDisposition, EventTimestamp,
-    FrameTerminalEvidence, ImeEvent, InputEpoch, InputEpochAdmission, KeyState, Modifiers,
-    PointerAction, PointerButton, SURFACE_CLOSING, SURFACE_LIVE, ScrollPhase, SdrColorContract,
-    SurfaceConfiguration, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceLifecycle,
-    SurfaceObserver, SurfaceOperation, SurfaceResponse, SurfaceSnapshot, SurfaceStage,
-    SurfaceWakeAdmission, SurfaceWakeCounters, SurfaceWaker, begin_close_observer_state,
-    finish_close_observer_state, new_observer_state, presentation_visible,
+    FrameLatencyEvidence, FrameTerminalEvidence, ImeEvent, InputEpoch, InputEpochAdmission,
+    KeyState, Modifiers, PointerAction, PointerButton, SURFACE_CLOSING, SURFACE_LIVE, ScrollPhase,
+    SdrColorContract, SurfaceConfiguration, SurfaceDescriptor, SurfaceError, SurfaceEvent,
+    SurfaceLifecycle, SurfaceObserver, SurfaceOperation, SurfaceResponse, SurfaceSnapshot,
+    SurfaceStage, SurfaceWakeAdmission, SurfaceWakeCounters, SurfaceWaker,
+    begin_close_observer_state, finish_close_observer_state, new_observer_state,
+    presentation_visible,
 };
 
 type Device = Retained<ProtocolObject<dyn MTLDevice>>;
@@ -456,20 +458,110 @@ struct FrameCounters {
 struct PendingFrame {
     scene: Scene,
     clear: LinearRgba,
+    event_timing: Option<EventFrameTiming>,
 }
 
 #[derive(Clone, Copy)]
+struct EventFrameTiming {
+    timestamp: EventTimestamp,
+    received_at: Instant,
+    handler_finished_at: Instant,
+    admitted_at: Instant,
+}
+
+#[derive(Clone, Copy, Default)]
 struct AttemptTiming {
     target_timestamp_bits: u64,
     target_presentation_timestamp_bits: u64,
+    event: Option<EventFrameTiming>,
+    submission_started_at: Option<Instant>,
+    submission_finished_at: Option<Instant>,
+    gpu_terminal_observed_at: Option<Instant>,
+    event_to_presented_handler_ns: Option<u64>,
 }
 
 impl AttemptTiming {
-    fn from_update(update: &CAMetalDisplayLinkUpdate) -> Self {
+    fn from_update(update: &CAMetalDisplayLinkUpdate, event: Option<EventFrameTiming>) -> Self {
         Self {
             target_timestamp_bits: update.targetTimestamp().to_bits(),
             target_presentation_timestamp_bits: update.targetPresentationTimestamp().to_bits(),
+            event,
+            submission_started_at: None,
+            submission_finished_at: None,
+            gpu_terminal_observed_at: None,
+            event_to_presented_handler_ns: None,
         }
+    }
+
+    fn latency_evidence(self, terminal_at: Instant) -> Option<FrameLatencyEvidence> {
+        let event = self.event?;
+        Some(FrameLatencyEvidence::new(
+            event.timestamp,
+            elapsed_ns(event.received_at, event.handler_finished_at),
+            self.submission_started_at
+                .map(|started| elapsed_ns(event.admitted_at, started)),
+            self.submission_started_at
+                .zip(self.submission_finished_at)
+                .map(|(started, finished)| elapsed_ns(started, finished)),
+            self.gpu_terminal_observed_at
+                .map(|observed| elapsed_ns(event.received_at, observed)),
+            self.event_to_presented_handler_ns,
+            elapsed_ns(event.received_at, terminal_at),
+        ))
+    }
+}
+
+fn elapsed_ns(start: Instant, end: Instant) -> u64 {
+    u64::try_from(end.saturating_duration_since(start).as_nanos()).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod frame_latency_timing_tests {
+    use std::time::{Duration, Instant};
+
+    use super::{AttemptTiming, EventFrameTiming};
+    use crate::EventTimestamp;
+
+    #[test]
+    fn timeline_preserves_exact_stages_and_absent_endpoints() -> Result<(), &'static str> {
+        let origin = Instant::now();
+        let event = EventFrameTiming {
+            timestamp: EventTimestamp::new(11),
+            received_at: origin,
+            handler_finished_at: origin + Duration::from_nanos(13),
+            admitted_at: origin + Duration::from_nanos(17),
+        };
+        let complete = AttemptTiming {
+            event: Some(event),
+            submission_started_at: Some(origin + Duration::from_nanos(23)),
+            submission_finished_at: Some(origin + Duration::from_nanos(31)),
+            gpu_terminal_observed_at: Some(origin + Duration::from_nanos(37)),
+            event_to_presented_handler_ns: Some(41),
+            ..AttemptTiming::default()
+        }
+        .latency_evidence(origin + Duration::from_nanos(43))
+        .ok_or("event-driven frame evidence")?;
+        assert_eq!(complete.event_timestamp(), EventTimestamp::new(11));
+        assert_eq!(complete.event_handler_ns(), 13);
+        assert_eq!(complete.frame_queue_ns(), Some(6));
+        assert_eq!(complete.submission_ns(), Some(8));
+        assert_eq!(complete.event_to_gpu_terminal_observed_ns(), Some(37));
+        assert_eq!(complete.event_to_presented_handler_ns(), Some(41));
+        assert_eq!(complete.event_to_terminal_record_ns(), 43);
+
+        let absent = AttemptTiming {
+            event: Some(event),
+            ..AttemptTiming::default()
+        }
+        .latency_evidence(origin + Duration::from_nanos(19))
+        .ok_or("cancelled event-driven frame evidence")?;
+        assert_eq!(absent.frame_queue_ns(), None);
+        assert_eq!(absent.submission_ns(), None);
+        assert_eq!(absent.event_to_gpu_terminal_observed_ns(), None);
+        assert_eq!(absent.event_to_presented_handler_ns(), None);
+        assert_eq!(absent.event_to_terminal_record_ns(), 19);
+        assert_eq!(AttemptTiming::default().latency_evidence(origin), None);
+        Ok(())
     }
 }
 
@@ -498,45 +590,65 @@ struct ActiveFrame {
 
 struct PresentationObservation {
     signal: Arc<PresentationSignal>,
-    #[cfg(alpine_native_validation)]
-    injected_presented_time_bits: Option<u64>,
 }
 
 impl PresentationObservation {
     fn new(signal: Arc<PresentationSignal>) -> Self {
-        Self {
-            signal,
-            #[cfg(alpine_native_validation)]
-            injected_presented_time_bits: None,
-        }
+        Self { signal }
     }
 
     fn observed(&self) -> bool {
-        #[cfg(alpine_native_validation)]
-        if self.injected_presented_time_bits.is_some() {
-            return true;
-        }
         self.signal.observed.load(Ordering::Acquire)
     }
 
     fn presented_time_bits(&self) -> u64 {
-        #[cfg(alpine_native_validation)]
-        if let Some(bits) = self.injected_presented_time_bits {
-            return bits;
-        }
         self.signal.time_bits.load(Ordering::Relaxed)
     }
 
+    fn event_to_presented_handler_ns(&self) -> Option<u64> {
+        self.signal.event_to_presented_handler_ns()
+    }
+
     #[cfg(alpine_native_validation)]
-    fn inject(&mut self, presented_time_bits: u64) {
-        self.injected_presented_time_bits = Some(presented_time_bits);
+    fn inject(&self, presented_time_bits: u64) {
+        self.signal.publish(presented_time_bits);
     }
 }
 
-#[derive(Default)]
 struct PresentationSignal {
     observed: AtomicBool,
     time_bits: AtomicU64,
+    event_to_presented_handler_ns: AtomicU64,
+    event_received_at: Option<Instant>,
+}
+
+impl PresentationSignal {
+    const MISSING_LATENCY_NS: u64 = u64::MAX;
+
+    fn new(event_received_at: Option<Instant>) -> Self {
+        Self {
+            observed: AtomicBool::new(false),
+            time_bits: AtomicU64::new(0),
+            event_to_presented_handler_ns: AtomicU64::new(Self::MISSING_LATENCY_NS),
+            event_received_at,
+        }
+    }
+
+    fn publish(&self, presented_time_bits: u64) {
+        if let Some(received_at) = self.event_received_at {
+            let elapsed = elapsed_ns(received_at, Instant::now())
+                .min(Self::MISSING_LATENCY_NS.saturating_sub(1));
+            self.event_to_presented_handler_ns
+                .store(elapsed, Ordering::Relaxed);
+        }
+        self.time_bits.store(presented_time_bits, Ordering::Relaxed);
+        self.observed.store(true, Ordering::Release);
+    }
+
+    fn event_to_presented_handler_ns(&self) -> Option<u64> {
+        let value = self.event_to_presented_handler_ns.load(Ordering::Relaxed);
+        (value != Self::MISSING_LATENCY_NS).then_some(value)
+    }
 }
 
 struct PresentationDriver {
@@ -628,12 +740,25 @@ impl PresentationDriver {
         scene: Scene,
         clear: LinearRgba,
     ) -> Result<(alpine_platform::PresentationRevision, DisplayLinkDirective), SurfaceError> {
+        self.request_frame_with_event(scene, clear, None)
+    }
+
+    fn request_frame_with_event(
+        &mut self,
+        scene: Scene,
+        clear: LinearRgba,
+        event_timing: Option<EventFrameTiming>,
+    ) -> Result<(alpine_platform::PresentationRevision, DisplayLinkDirective), SurfaceError> {
         let prior_link = self.state.display_link();
         let transition = self.state.apply(PresentationAction::Invalidate)?;
         let PresentationEvent::Invalidated(revision) = transition.event() else {
             return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
         };
-        self.pending = Some(PendingFrame { scene, clear });
+        self.pending = Some(PendingFrame {
+            scene,
+            clear,
+            event_timing,
+        });
         let directive = self.reconcile_link(prior_link)?;
         Ok((revision, directive))
     }
@@ -677,7 +802,7 @@ impl PresentationDriver {
                 counters.failed.fetch_add(1, Ordering::Relaxed);
                 let active = self.active.take();
                 let timing = active.as_ref().map_or_else(
-                    || AttemptTiming::from_update(update),
+                    || AttemptTiming::from_update(update, None),
                     |active| active.timing,
                 );
                 let token = active
@@ -740,14 +865,11 @@ impl PresentationDriver {
                 let transition = self
                     .state
                     .apply(PresentationAction::CompletePresentation(token))?;
+                let mut timing = active.timing;
+                timing.event_to_presented_handler_ns =
+                    active.observation.event_to_presented_handler_ns();
                 return self
-                    .record_terminal(
-                        transition,
-                        active.timing,
-                        presented_time_bits,
-                        None,
-                        counters,
-                    )
+                    .record_terminal(transition, timing, presented_time_bits, None, counters)
                     .map(Some);
             }
 
@@ -803,7 +925,13 @@ impl PresentationDriver {
         else {
             return Ok(Some(DisplayLinkDirective::None));
         };
+        let terminal_observed_at = Instant::now();
         let result = attempt.into_result();
+        self.active
+            .as_mut()
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?
+            .timing
+            .gpu_terminal_observed_at = Some(terminal_observed_at);
         let status = if result.is_ok() {
             FrameCompletionStatus::Completed
         } else {
@@ -857,7 +985,7 @@ impl PresentationDriver {
             return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
         };
         self.state.apply(PresentationAction::BeginUpdate(token))?;
-        let timing = AttemptTiming::from_update(update);
+        let mut timing = AttemptTiming::from_update(update, frame.event_timing);
         if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
             return self.cancel_attempt(token, timing, counters);
         }
@@ -877,8 +1005,7 @@ impl PresentationDriver {
         let drawable = update.drawable();
         let texture = drawable.texture();
         let drawable_protocol = ProtocolObject::from_ref(&*drawable);
-        let presentation = Arc::new(PresentationSignal::default());
-        install_presented_handler(drawable_protocol, &presentation, counters);
+        let presentation = install_observation(drawable_protocol, frame.event_timing, counters);
         let admission = self
             .frame_slots
             .acquire(token, self.owner_generation)
@@ -889,6 +1016,7 @@ impl PresentationDriver {
         };
         let slot = platform_spi::DrawableSlot::new(lease.slot().get())
             .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
+        timing.submission_started_at = Some(Instant::now());
         let attempt = platform_spi::submit_callback_drawable(
             &mut self.backend,
             slot,
@@ -897,6 +1025,7 @@ impl PresentationDriver {
             &texture,
             drawable_protocol,
         );
+        timing.submission_finished_at = Some(Instant::now());
         match attempt {
             platform_spi::DrawableSubmitAttempt::Submitted(submission) => {
                 self.frame_slots
@@ -980,6 +1109,7 @@ impl PresentationDriver {
             timing.target_timestamp_bits,
             timing.target_presentation_timestamp_bits,
             observed_presentation_time_bits,
+            timing.latency_evidence(Instant::now()),
             self.backend.accounting().current_retained_bytes(),
             recovery,
         );
@@ -1111,13 +1241,10 @@ impl PresentationDriver {
         if let Ok(transition) = shutdown {
             match transition.event() {
                 PresentationEvent::Terminal(_) => {
-                    let timing = self.active.as_ref().map_or(
-                        AttemptTiming {
-                            target_timestamp_bits: 0,
-                            target_presentation_timestamp_bits: 0,
-                        },
-                        |active| active.timing,
-                    );
+                    let timing = self
+                        .active
+                        .as_ref()
+                        .map_or_else(AttemptTiming::default, |active| active.timing);
                     let _ = self.record_terminal(transition, timing, 0, None, counters);
                 }
                 PresentationEvent::PendingCancelled(evidence) => {
@@ -1246,10 +1373,7 @@ fn install_presented_handler(
             // SAFETY: Metal invokes the registered handler with a valid borrowed
             // drawable for the complete block call. The reference does not escape.
             let drawable = unsafe { drawable.as_ref() };
-            signal
-                .time_bits
-                .store(drawable.presentedTime().to_bits(), Ordering::Relaxed);
-            signal.observed.store(true, Ordering::Release);
+            signal.publish(drawable.presentedTime().to_bits());
         });
     // SAFETY: The generated selector signature matches the retained block.
     // Metal copies the escaping block and keeps its captured Arc alive until
@@ -1260,6 +1384,18 @@ fn install_presented_handler(
     counters
         .installed_presented_handlers
         .fetch_add(1, Ordering::Relaxed);
+}
+
+fn install_observation(
+    drawable: &ProtocolObject<dyn MTLDrawable>,
+    event_timing: Option<EventFrameTiming>,
+    counters: &FrameCounters,
+) -> Arc<PresentationSignal> {
+    let presentation = Arc::new(PresentationSignal::new(
+        event_timing.map(|event| event.received_at),
+    ));
+    install_presented_handler(drawable, &presentation, counters);
+    presentation
 }
 
 pub(crate) type NativeInputHandler = Box<dyn FnMut(NativeInputEvent) + 'static>;
@@ -2643,12 +2779,17 @@ impl DisplayLinkDelegate {
     }
 
     fn dispatch_native_input_event(&self, event: NativeInputEvent) {
-        if let Err(error) = self.try_dispatch_native_input_event(event) {
+        let received_at = Instant::now();
+        if let Err(error) = self.try_dispatch_native_input_event(event, received_at) {
             self.record_dispatch_error(error);
         }
     }
 
-    fn try_dispatch_native_input_event(&self, event: NativeInputEvent) -> Result<(), SurfaceError> {
+    fn try_dispatch_native_input_event(
+        &self,
+        event: NativeInputEvent,
+        received_at: Instant,
+    ) -> Result<(), SurfaceError> {
         let clipboard_operation = clipboard_shortcut(&event);
         let timestamp = self.next_event_timestamp();
         let event = match event {
@@ -2698,7 +2839,7 @@ impl DisplayLinkDelegate {
                 event,
             },
         };
-        let _close = self.dispatch_surface_event(event)?;
+        let _close = self.dispatch_surface_event_at(event, received_at)?;
         if clipboard_operation == Some(ClipboardOperation::Paste) {
             let event = ClipboardEvent::PasteCompleted(self.read_clipboard());
             let _close = self.dispatch_surface_event_inner(
@@ -2707,6 +2848,7 @@ impl DisplayLinkDelegate {
                     event,
                 },
                 false,
+                Instant::now(),
             )?;
         }
         Ok(())
@@ -2738,14 +2880,24 @@ impl DisplayLinkDelegate {
         &self,
         event: SurfaceEvent,
     ) -> Result<CloseDisposition, SurfaceError> {
-        self.dispatch_surface_event_inner(event, true)
+        self.dispatch_surface_event_at(event, Instant::now())
+    }
+
+    fn dispatch_surface_event_at(
+        &self,
+        event: SurfaceEvent,
+        received_at: Instant,
+    ) -> Result<CloseDisposition, SurfaceError> {
+        self.dispatch_surface_event_inner(event, true, received_at)
     }
 
     fn dispatch_surface_event_inner(
         &self,
         event: SurfaceEvent,
         clipboard_write_allowed: bool,
+        received_at: Instant,
     ) -> Result<CloseDisposition, SurfaceError> {
+        let event_timestamp = event.timestamp();
         let close_requested = matches!(event, SurfaceEvent::CloseRequested { .. });
         let response = {
             let mut installed = self
@@ -2757,6 +2909,7 @@ impl DisplayLinkDelegate {
                 .as_mut()
                 .map_or_else(SurfaceResponse::default, |handler| handler(event))
         };
+        let handler_finished_at = Instant::now();
         let (frame, clipboard_write, close, accessibility) = response.into_channels();
         if accessibility.is_some() {
             return Err(SurfaceError::invariant(SurfaceOperation::Input));
@@ -2771,6 +2924,12 @@ impl DisplayLinkDelegate {
 
         if let Some(frame) = frame {
             let (scene, clear) = frame.into_parts();
+            let event_timing = EventFrameTiming {
+                timestamp: event_timestamp,
+                received_at,
+                handler_finished_at,
+                admitted_at: Instant::now(),
+            };
             let (_, directive) = self
                 .ivars()
                 .driver
@@ -2778,7 +2937,7 @@ impl DisplayLinkDelegate {
                 .ok_or(SurfaceError::invariant(SurfaceOperation::Input))?
                 .try_borrow_mut()
                 .map_err(|_| SurfaceError::owner_conflict(SurfaceOperation::Input))?
-                .request_frame(scene, clear)?;
+                .request_frame_with_event(scene, clear, Some(event_timing))?;
             let display_link = self
                 .ivars()
                 .display_link
@@ -2806,6 +2965,7 @@ impl DisplayLinkDelegate {
                     event,
                 },
                 false,
+                Instant::now(),
             )?;
         }
         self.ivars()
@@ -4002,15 +4162,16 @@ impl NativeSurface {
             ClipboardOperation::Cut => "x".into(),
             ClipboardOperation::Paste => "v".into(),
         };
-        let result = self
-            .delegate
-            .try_dispatch_native_input_event(NativeInputEvent::Keyboard {
+        let result = self.delegate.try_dispatch_native_input_event(
+            NativeInputEvent::Keyboard {
                 state: KeyState::Down,
                 physical_key: 0,
                 logical_key,
                 modifiers: Modifiers::from_bits(Modifiers::COMMAND),
                 repeat: false,
-            });
+            },
+            Instant::now(),
+        );
         self.delegate.clear_event_handler();
         result
     }

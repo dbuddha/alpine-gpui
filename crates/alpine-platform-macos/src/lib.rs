@@ -22,18 +22,18 @@ use alpine_scene::Scene;
 mod accessibility;
 pub use accessibility::*;
 
-/// Monotonic timestamp assigned at the native event-dispatch boundary.
+/// Monotonic sequence assigned at the native event-dispatch boundary.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct EventTimestamp(u64);
 
 impl EventTimestamp {
-    /// Creates a timestamp from one monotonic process-local tick value.
+    /// Creates an identity from one monotonic process-local sequence value.
     #[must_use]
     pub const fn new(value: u64) -> Self {
         Self(value)
     }
 
-    /// Returns the process-local tick value.
+    /// Returns the process-local sequence value.
     #[must_use]
     pub const fn get(self) -> u64 {
         self.0
@@ -371,14 +371,14 @@ pub enum ImeEvent {
 pub enum SurfaceEvent {
     /// Synchronous, demand-driven assistive-technology request.
     Accessibility {
-        /// Monotonic event timestamp.
+        /// Monotonic event sequence.
         timestamp: EventTimestamp,
         /// Bounded handle-free request.
         request: AccessibilityRequest,
     },
     /// Keyboard identity, text, modifiers, and repeat state.
     Keyboard {
-        /// Monotonic event timestamp.
+        /// Monotonic event sequence.
         timestamp: EventTimestamp,
         /// Press, release, or modifier transition.
         state: KeyState,
@@ -393,7 +393,7 @@ pub enum SurfaceEvent {
     },
     /// Pointer position and button transition.
     Pointer {
-        /// Monotonic event timestamp.
+        /// Monotonic event sequence.
         timestamp: EventTimestamp,
         /// Movement, press, or release.
         action: PointerAction,
@@ -406,7 +406,7 @@ pub enum SurfaceEvent {
     },
     /// Precision-preserving scroll delta and phase.
     Scroll {
-        /// Monotonic event timestamp.
+        /// Monotonic event sequence.
         timestamp: EventTimestamp,
         /// Horizontal logical delta.
         delta_x: f32,
@@ -421,7 +421,7 @@ pub enum SurfaceEvent {
     },
     /// Key-window focus transition.
     Focus {
-        /// Monotonic event timestamp.
+        /// Monotonic event sequence.
         timestamp: EventTimestamp,
         /// Epoch active after this focus transition.
         input_epoch: InputEpoch,
@@ -430,21 +430,21 @@ pub enum SurfaceEvent {
     },
     /// Validated logical, scale, and physical extent update.
     Resize {
-        /// Monotonic event timestamp.
+        /// Monotonic event sequence.
         timestamp: EventTimestamp,
         /// New validated surface extent.
         extent: SurfaceExtent,
     },
     /// Terminal native clipboard result with bounded owned paste text.
     Clipboard {
-        /// Monotonic event timestamp.
+        /// Monotonic event sequence.
         timestamp: EventTimestamp,
         /// Typed completion that prevents invalid operation/payload pairs.
         event: ClipboardEvent,
     },
     /// Input-method composition transition.
     Ime {
-        /// Monotonic event timestamp.
+        /// Monotonic event sequence.
         timestamp: EventTimestamp,
         /// Native input session that produced this composition value.
         input_epoch: InputEpoch,
@@ -453,12 +453,12 @@ pub enum SurfaceEvent {
     },
     /// Main-loop wake used to publish bounded background results.
     Wake {
-        /// Monotonic event timestamp.
+        /// Monotonic event sequence.
         timestamp: EventTimestamp,
     },
     /// Owned-window close intent before event admission is revoked.
     CloseRequested {
-        /// Monotonic event timestamp.
+        /// Monotonic event sequence.
         timestamp: EventTimestamp,
     },
 }
@@ -1974,6 +1974,86 @@ pub enum SdrColorContract {
     LinearSrgbToBgra8UnormSrgb,
 }
 
+/// Handle-free process-monotonic latency evidence for one event-driven frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameLatencyEvidence {
+    event_timestamp: EventTimestamp,
+    event_handler_ns: u64,
+    frame_queue_ns: Option<u64>,
+    submission_ns: Option<u64>,
+    event_to_gpu_terminal_observed_ns: Option<u64>,
+    event_to_presented_handler_ns: Option<u64>,
+    event_to_terminal_record_ns: u64,
+}
+
+impl FrameLatencyEvidence {
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) const fn new(
+        event_timestamp: EventTimestamp,
+        event_handler_ns: u64,
+        frame_queue_ns: Option<u64>,
+        submission_ns: Option<u64>,
+        event_to_gpu_terminal_observed_ns: Option<u64>,
+        event_to_presented_handler_ns: Option<u64>,
+        event_to_terminal_record_ns: u64,
+    ) -> Self {
+        Self {
+            event_timestamp,
+            event_handler_ns,
+            frame_queue_ns,
+            submission_ns,
+            event_to_gpu_terminal_observed_ns,
+            event_to_presented_handler_ns,
+            event_to_terminal_record_ns,
+        }
+    }
+
+    /// Returns the native event sequence that produced the admitted frame.
+    #[must_use]
+    pub const fn event_timestamp(self) -> EventTimestamp {
+        self.event_timestamp
+    }
+
+    /// Returns nanoseconds spent in application event handling and scene construction.
+    #[must_use]
+    pub const fn event_handler_ns(self) -> u64 {
+        self.event_handler_ns
+    }
+
+    /// Returns nanoseconds from frame admission to its display-link submission attempt.
+    #[must_use]
+    pub const fn frame_queue_ns(self) -> Option<u64> {
+        self.frame_queue_ns
+    }
+
+    /// Returns nanoseconds spent validating, uploading, encoding, committing, and presenting.
+    #[must_use]
+    pub const fn submission_ns(self) -> Option<u64> {
+        self.submission_ns
+    }
+
+    /// Returns nanoseconds from event receipt to main-thread observation of GPU termination.
+    ///
+    /// This is an upper bound because the non-blocking display callback observes an
+    /// already-published Metal completion instead of timestamping inside that handler.
+    #[must_use]
+    pub const fn event_to_gpu_terminal_observed_ns(self) -> Option<u64> {
+        self.event_to_gpu_terminal_observed_ns
+    }
+
+    /// Returns nanoseconds from event receipt to the drawable presented-handler callback.
+    #[must_use]
+    pub const fn event_to_presented_handler_ns(self) -> Option<u64> {
+        self.event_to_presented_handler_ns
+    }
+
+    /// Returns nanoseconds from event receipt to Alpine's correlated terminal record.
+    #[must_use]
+    pub const fn event_to_terminal_record_ns(self) -> u64 {
+        self.event_to_terminal_record_ns
+    }
+}
+
 /// Handle-free terminal evidence correlated across one native frame attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameTerminalEvidence {
@@ -1981,6 +2061,7 @@ pub struct FrameTerminalEvidence {
     target_timestamp_bits: u64,
     target_presentation_timestamp_bits: u64,
     observed_presentation_time_bits: u64,
+    latency: Option<FrameLatencyEvidence>,
     retained_bytes: usize,
     recovery: Option<RecoveryClassification>,
 }
@@ -1992,6 +2073,7 @@ impl FrameTerminalEvidence {
         target_timestamp_bits: u64,
         target_presentation_timestamp_bits: u64,
         observed_presentation_time_bits: u64,
+        latency: Option<FrameLatencyEvidence>,
         retained_bytes: usize,
         recovery: Option<RecoveryClassification>,
     ) -> Self {
@@ -2000,6 +2082,7 @@ impl FrameTerminalEvidence {
             target_timestamp_bits,
             target_presentation_timestamp_bits,
             observed_presentation_time_bits,
+            latency,
             retained_bytes,
             recovery,
         }
@@ -2071,6 +2154,12 @@ impl FrameTerminalEvidence {
     #[must_use]
     pub const fn observed_presentation_time_bits(self) -> u64 {
         self.observed_presentation_time_bits
+    }
+
+    /// Returns process-monotonic stage evidence when an event produced this frame.
+    #[must_use]
+    pub const fn latency(self) -> Option<FrameLatencyEvidence> {
+        self.latency
     }
 
     /// Returns Alpine-owned native frame bytes retained after terminal handling.
@@ -3549,14 +3638,32 @@ mod tests {
             None
         );
         let attempt = terminal_attempt(terminal.event()).ok_or("terminal attempt evidence")?;
+        let latency = FrameLatencyEvidence::new(
+            EventTimestamp::new(67),
+            71,
+            Some(73),
+            Some(79),
+            Some(83),
+            Some(89),
+            97,
+        );
         let terminal = FrameTerminalEvidence::new(
             attempt,
             73,
             79,
             83,
+            Some(latency),
             89,
             Some(RecoveryClassification::RetryFrame),
         );
+        assert_eq!(latency.event_timestamp(), EventTimestamp::new(67));
+        assert_eq!(latency.event_handler_ns(), 71);
+        assert_eq!(latency.frame_queue_ns(), Some(73));
+        assert_eq!(latency.submission_ns(), Some(79));
+        assert_eq!(latency.event_to_gpu_terminal_observed_ns(), Some(83));
+        assert_eq!(latency.event_to_presented_handler_ns(), Some(89));
+        assert_eq!(latency.event_to_terminal_record_ns(), 97);
+        assert_eq!(terminal.latency(), Some(latency));
 
         state.apply(alpine_platform::PresentationAction::Invalidate)?;
         state.apply(alpine_platform::PresentationAction::Resume)?;
@@ -3574,7 +3681,8 @@ mod tests {
         ))?;
         let failed_attempt =
             terminal_attempt(failed_transition.event()).ok_or("failed terminal evidence")?;
-        let failed_terminal = FrameTerminalEvidence::new(failed_attempt, 97, 101, 0, 103, None);
+        let failed_terminal =
+            FrameTerminalEvidence::new(failed_attempt, 97, 101, 0, None, 103, None);
         assert_eq!(
             pending_cancellation(alpine_platform::PresentationEvent::Stopped),
             None
