@@ -202,7 +202,9 @@ mod imp {
         false
     }
 
-    pub(super) const fn emit(_point: StudioSignpost) {}
+    pub(super) fn emit(point: StudioSignpost) {
+        let _ = point.correlation();
+    }
 }
 
 #[cfg(test)]
