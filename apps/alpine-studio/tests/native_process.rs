@@ -141,6 +141,7 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
             line.ends_with("Metal API Validation Enabled")
                 || line.ends_with("Metal GPU Validation Enabled")
         }));
+        qualify_recovery_launch_processes(&root, expected_evidence)?;
         Ok(())
     })();
     let cleanup = std::fs::remove_dir_all(root);
@@ -149,6 +150,135 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
         (Ok(()), Err(error)) => Err(Box::new(error)),
         (Ok(()), Ok(())) => Ok(()),
     }
+}
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+fn qualify_recovery_launch_processes(
+    root: &std::path::Path,
+    expected_evidence: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let file_home = root.join("recovery-file-home");
+    let recovered_file = root.join("recovered-file.rs");
+    let requested_file = root.join("requested-file.rs");
+    std::fs::create_dir_all(&file_home)?;
+    std::fs::write(&recovered_file, "")?;
+    std::fs::write(&requested_file, "requested\n")?;
+    let file_journal = alpine_studio::native_validation::retain_pending_recovery_fixture(
+        &file_home,
+        &recovered_file,
+        "unsaved recovery\n",
+    )?;
+    run_recovery_launch_process(
+        &file_home,
+        &requested_file,
+        "production-recovery-file",
+        expected_evidence,
+    )?;
+    let file_recovery = alpine_studio::native_validation::qualify_retained_recovery_journal(
+        &file_journal,
+        &requested_file,
+        false,
+    )?;
+    assert_eq!(file_recovery.document_count, 0);
+    assert!(!file_recovery.workspace_root_matches);
+    assert!(file_recovery.tab_path_matches);
+    assert_eq!(
+        std::fs::read_to_string(&recovered_file)?,
+        "unsaved recovery\n"
+    );
+
+    let folder_home = root.join("recovery-folder-home");
+    let recovered_folder_file = root.join("recovered-folder.rs");
+    let requested_folder = root.join("requested-folder");
+    std::fs::create_dir_all(&folder_home)?;
+    std::fs::create_dir(&requested_folder)?;
+    std::fs::write(&recovered_folder_file, "")?;
+    std::fs::write(requested_folder.join("main.rs"), "fn main() {}\n")?;
+    let folder_journal = alpine_studio::native_validation::retain_pending_recovery_fixture(
+        &folder_home,
+        &recovered_folder_file,
+        "unsaved recovery\n",
+    )?;
+    run_recovery_launch_process(
+        &folder_home,
+        &requested_folder,
+        "production-recovery-folder",
+        expected_evidence,
+    )?;
+    let folder_recovery = alpine_studio::native_validation::qualify_retained_recovery_journal(
+        &folder_journal,
+        &requested_folder,
+        true,
+    )?;
+    assert_eq!(folder_recovery.document_count, 0);
+    assert!(folder_recovery.workspace_root_matches);
+    assert!(!folder_recovery.tab_path_matches);
+    assert_eq!(
+        std::fs::read_to_string(&recovered_folder_file)?,
+        "unsaved recovery\n"
+    );
+    Ok(())
+}
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+fn run_recovery_launch_process(
+    home: &std::path::Path,
+    requested: &std::path::Path,
+    scenario: &str,
+    expected_evidence: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::{
+        io::Read as _,
+        process::{Command, Stdio},
+        thread,
+        time::{Duration, Instant},
+    };
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_alpine-studio"))
+        .arg(requested)
+        .env("ALPINE_STUDIO_NATIVE_PROCESS_SCENARIO", scenario)
+        .env("ALPINE_STUDIO_NATIVE_EXPECTED_PATH", requested)
+        .env("HOME", home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let timeout = Duration::from_secs(8);
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            let status = child.wait()?;
+            return Err(format!(
+                "recovery launch {scenario} exceeded {timeout:?} and was terminated with {status}"
+            )
+            .into());
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_string(&mut stdout)?;
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_string(&mut stderr)?;
+    }
+    if !status.success() {
+        return Err(format!(
+            "recovery launch {scenario} failed with {status}; stdout={stdout:?}; stderr={stderr:?}"
+        )
+        .into());
+    }
+    assert!(stdout.contains("shutdown=true"));
+    assert!(stdout.contains(&format!("evidence={expected_evidence}")));
+    assert!(stderr.lines().all(|line| {
+        line.ends_with("Metal API Validation Enabled")
+            || line.ends_with("Metal GPU Validation Enabled")
+    }));
+    Ok(())
 }
 
 #[cfg(not(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64")))]

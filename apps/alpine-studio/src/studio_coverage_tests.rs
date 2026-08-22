@@ -1742,6 +1742,88 @@ fn windows_file_save_fails_structurally_without_touching_disk()
     Ok(())
 }
 
+fn qualify_recovery_launch_error_contracts() -> Result<(), Box<dyn std::error::Error>> {
+    let launch_errors = [
+        RecoveryLaunchError::AllocationFailed,
+        RecoveryLaunchError::Corrupt(RecoveryCorrupt::Checksum),
+        RecoveryLaunchError::Invalid,
+        RecoveryLaunchError::Disconnected,
+        RecoveryLaunchError::WorkerPanicked,
+        RecoveryLaunchError::Io {
+            operation: "read",
+            kind: std::io::ErrorKind::PermissionDenied,
+        },
+        RecoveryLaunchError::NativeConstruction,
+        RecoveryLaunchError::TargetComposition,
+    ];
+    for error in launch_errors {
+        assert!(!error.to_string().is_empty());
+    }
+
+    let recovery_errors = [
+        recovery::RecoveryError::AllocationFailed,
+        recovery::RecoveryError::Corrupt(RecoveryCorrupt::Checksum),
+        recovery::RecoveryError::Invalid,
+        recovery::RecoveryError::Disconnected,
+        recovery::RecoveryError::WorkerPanicked,
+        recovery::RecoveryError::Io {
+            operation: "read",
+            kind: std::io::ErrorKind::PermissionDenied,
+        },
+    ];
+    assert_eq!(
+        recovery_errors.map(RecoveryLaunchError::from),
+        [
+            RecoveryLaunchError::AllocationFailed,
+            RecoveryLaunchError::Corrupt(RecoveryCorrupt::Checksum),
+            RecoveryLaunchError::Invalid,
+            RecoveryLaunchError::Disconnected,
+            RecoveryLaunchError::WorkerPanicked,
+            RecoveryLaunchError::Io {
+                operation: "read",
+                kind: std::io::ErrorKind::PermissionDenied,
+            },
+        ]
+    );
+
+    let restore_errors = [
+        (SessionRestoreError::Invalid, RecoveryLaunchError::Invalid),
+        (SessionRestoreError::Workspace, RecoveryLaunchError::Invalid),
+        (SessionRestoreError::File, RecoveryLaunchError::Invalid),
+        (SessionRestoreError::Tabs, RecoveryLaunchError::Invalid),
+        (SessionRestoreError::Panes, RecoveryLaunchError::Invalid),
+        (SessionRestoreError::FileTree, RecoveryLaunchError::Invalid),
+        (
+            SessionRestoreError::Surface,
+            RecoveryLaunchError::NativeConstruction,
+        ),
+        (
+            SessionRestoreError::Allocation,
+            RecoveryLaunchError::AllocationFailed,
+        ),
+    ];
+    for (error, expected) in restore_errors {
+        let Err(error) = map_recovery_restore_result::<()>(
+            Err(error),
+            Path::new("requested.rs"),
+            Path::new("recovery-v1.bin"),
+        ) else {
+            return Err("restore error unexpectedly mapped to success".into());
+        };
+        assert!(matches!(
+            error,
+            StudioError::Recovery {
+                requested,
+                journal,
+                source,
+            } if requested == Path::new("requested.rs")
+                && journal == Path::new("recovery-v1.bin")
+                && source == expected
+        ));
+    }
+    Ok(())
+}
+
 #[test]
 fn file_launch_rejects_invalid_utf8_and_scratch_save_is_isolated()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1771,6 +1853,195 @@ fn file_launch_rejects_invalid_utf8_and_scratch_save_is_isolated()
     let runtime_error = StudioError::from(RuntimeError::Surface(SurfaceError::UnsupportedPlatform));
     assert!(runtime_error.to_string().contains("Studio runtime failed"));
     assert!(runtime_error.source().is_some());
+    let recovery_error = StudioError::Recovery {
+        requested: PathBuf::from("requested.rs"),
+        journal: PathBuf::from("recovery-v1.bin"),
+        source: RecoveryLaunchError::Corrupt(RecoveryCorrupt::Header),
+    };
+    assert!(recovery_error.to_string().contains("requested.rs"));
+    assert!(recovery_error.to_string().contains("recovery-v1.bin"));
+    assert!(recovery_error.source().is_some());
+
+    qualify_recovery_launch_error_contracts()?;
+    Ok(())
+}
+
+fn dirty_recovery_fixture(
+    session_path: &Path,
+    document_path: &Path,
+    local: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = StudioApp::open_file(TestTextSystem, document_path)?;
+    app.configure_persistence(session_path.to_path_buf())?;
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed(local.into())))
+            .document_changed
+    );
+    app.publish_recovery();
+    drop(app);
+    Ok(())
+}
+
+#[test]
+fn explicit_file_launch_composes_dirty_recovery_without_replacing_local_text()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let recovered_path = root.path().join("recovered.rs");
+    let requested_path = root.path().join("requested.rs");
+    let session_path = root.path().join("state").join("session-v1.bin");
+    fs::write(&recovered_path, "")?;
+    fs::write(&requested_path, "requested\n")?;
+
+    let target = ExplicitPathTarget::open(&requested_path, ExplicitPathKind::File)?;
+    let app = compose_explicit_path(TestTextSystem, target, None)?;
+    assert_eq!(app.buffer().snapshot().text(), "requested\n");
+    drop(app);
+
+    let missing_session = root.path().join("missing-state").join("session-v1.bin");
+    let target = ExplicitPathTarget::open(&requested_path, ExplicitPathKind::File)?;
+    let app = compose_explicit_path(TestTextSystem, target, Some(missing_session))?;
+    assert_eq!(app.buffer().snapshot().text(), "requested\n");
+    drop(app);
+
+    let empty_session = root.path().join("clean-state").join("session-v1.bin");
+    let mut clean_app = StudioApp::open_file(TestTextSystem, &recovered_path)?;
+    clean_app.configure_persistence(empty_session.clone())?;
+    clean_app.publish_recovery();
+    drop(clean_app);
+    let empty_journal = recovery::path_for_session(&empty_session);
+    assert!(recovery::load(&empty_journal)?.documents.is_empty());
+    let target = ExplicitPathTarget::open(&requested_path, ExplicitPathKind::File)?;
+    let app = compose_explicit_path(TestTextSystem, target, Some(empty_session))?;
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.buffer().snapshot().text(), "requested\n");
+    drop(app);
+
+    dirty_recovery_fixture(&session_path, &recovered_path, "local recovery\n")?;
+
+    let target = ExplicitPathTarget::open(&requested_path, ExplicitPathKind::File)?;
+    let mut app = compose_explicit_path(TestTextSystem, target, Some(session_path.clone()))?;
+    assert_eq!(app.tabs.len(), 2);
+    assert_eq!(app.tabs.active_index(), 1);
+    assert_eq!(app.buffer().snapshot().text(), "requested\n");
+    assert!(app.activate_document_tab(0)?.document_changed);
+    assert_eq!(app.buffer().snapshot().text(), "local recovery\n");
+    assert!(app.document.is_dirty());
+    drop(app);
+
+    let retained = recovery::load(&recovery::path_for_session(&session_path))?;
+    assert_eq!(retained.documents.len(), 1);
+    assert_eq!(&*retained.documents[0].local, "local recovery\n");
+    Ok(())
+}
+
+#[test]
+fn explicit_duplicate_file_activates_recovery_instead_of_reopening_disk()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let recovered_path = root.path().join("recovered.rs");
+    let session_path = root.path().join("state").join("session-v1.bin");
+    fs::write(&recovered_path, "")?;
+    dirty_recovery_fixture(&session_path, &recovered_path, "local recovery\n")?;
+
+    let target = ExplicitPathTarget::open(&recovered_path, ExplicitPathKind::File)?;
+    let app = compose_explicit_path(TestTextSystem, target, Some(session_path))?;
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.buffer().snapshot().text(), "local recovery\n");
+    assert!(app.document.is_dirty());
+    Ok(())
+}
+
+#[test]
+fn explicit_folder_launch_retargets_workspace_and_retains_dirty_tabs()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let recovered_path = root.path().join("recovered.rs");
+    let requested_workspace = root.path().join("requested-workspace");
+    let session_path = root.path().join("state").join("session-v1.bin");
+    fs::write(&recovered_path, "")?;
+    fs::create_dir(&requested_workspace)?;
+    fs::write(requested_workspace.join("main.rs"), "fn main() {}\n")?;
+
+    assert!(matches!(
+        ExplicitPathTarget::open(&requested_workspace, ExplicitPathKind::File),
+        Err(StudioError::Workspace(WorkspaceError::UnsupportedTarget(path)))
+            if path == requested_workspace
+    ));
+    let target = ExplicitPathTarget::open(&requested_workspace, ExplicitPathKind::Any)?;
+    let app = compose_explicit_path(TestTextSystem, target, None)?;
+    assert_eq!(
+        app.workspace.as_ref().map(Workspace::root),
+        Some(fs::canonicalize(&requested_workspace)?.as_path())
+    );
+    drop(app);
+
+    dirty_recovery_fixture(&session_path, &recovered_path, "local recovery\n")?;
+
+    #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+    {
+        let journal = recovery::path_for_session(&session_path);
+        let file_evidence =
+            native_validation::qualify_retained_recovery_journal(&journal, &recovered_path, false)?;
+        assert_eq!(file_evidence.document_count, 1);
+        assert!(!file_evidence.workspace_root_matches);
+        assert!(file_evidence.tab_path_matches);
+
+        let missing_file_evidence = native_validation::qualify_retained_recovery_journal(
+            &journal,
+            &requested_workspace,
+            false,
+        )?;
+        assert_eq!(missing_file_evidence.document_count, 1);
+        assert!(!missing_file_evidence.workspace_root_matches);
+        assert!(!missing_file_evidence.tab_path_matches);
+
+        let folder_evidence = native_validation::qualify_retained_recovery_journal(
+            &journal,
+            &requested_workspace,
+            true,
+        )?;
+        assert_eq!(folder_evidence.document_count, 1);
+        assert!(!folder_evidence.workspace_root_matches);
+        assert!(!folder_evidence.tab_path_matches);
+    }
+
+    let target = ExplicitPathTarget::open(&requested_workspace, ExplicitPathKind::Any)?;
+    let app = compose_explicit_path(TestTextSystem, target, Some(session_path))?;
+    assert_eq!(
+        app.workspace.as_ref().map(Workspace::root),
+        Some(fs::canonicalize(&requested_workspace)?.as_path())
+    );
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.buffer().snapshot().text(), "local recovery\n");
+    assert!(app.document.is_dirty());
+    Ok(())
+}
+
+#[test]
+fn rejected_recovery_launch_preserves_journal_bytes_and_failure_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let requested_path = root.path().join("requested.rs");
+    let session_path = root.path().join("state").join("session-v1.bin");
+    let journal = recovery::path_for_session(&session_path);
+    fs::write(&requested_path, "requested\n")?;
+    fs::create_dir_all(journal.parent().ok_or("journal parent")?)?;
+    fs::write(&journal, b"corrupt recovery")?;
+    let before = fs::read(&journal)?;
+
+    let target = ExplicitPathTarget::open(&requested_path, ExplicitPathKind::File)?;
+    let Err(error) = compose_explicit_path(TestTextSystem, target, Some(session_path)) else {
+        return Err("corrupt recovery unexpectedly launched".into());
+    };
+    assert!(matches!(
+        error,
+        StudioError::Recovery {
+            requested,
+            journal: rejected_journal,
+            source: RecoveryLaunchError::Corrupt(_),
+        } if requested == requested_path && rejected_journal == journal
+    ));
+    assert_eq!(fs::read(&journal)?, before);
     Ok(())
 }
 
@@ -4345,11 +4616,31 @@ fn run_rejects_an_unsupported_host() {
 fn native_file_constructor_rejects_a_missing_file_before_native_setup()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = TestWorkspace::new()?;
+    let missing = root.path().join("missing.rs");
     assert!(matches!(
-        native_file_app(&root.path().join("missing.rs")),
-        Err(StudioError::File(_))
+        native_explicit_path_app(&missing, ExplicitPathKind::File),
+        Err(StudioError::Workspace(WorkspaceError::Io {
+            operation: "read launch metadata",
+            path,
+            source,
+        })) if path == missing && source.kind() == std::io::ErrorKind::NotFound
     ));
     Ok(())
+}
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn native_validation_dispatch_counters_reset_and_report_nonzero_work() {
+    reset_native_validation_dispatch_counts();
+    NATIVE_VALIDATION_EVENT_COUNTS[3].fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+    NATIVE_VALIDATION_FRAME_BUILDS.fetch_add(3, std::sync::atomic::Ordering::Relaxed);
+
+    let (events, frame_builds) = native_validation_dispatch_counts();
+    assert_eq!(events[3], 2);
+    assert_eq!(frame_builds, 3);
+
+    reset_native_validation_dispatch_counts();
+    assert_eq!(native_validation_dispatch_counts(), ([0; 10], 0));
 }
 
 struct SelectiveFailingRasterTextSystem {
