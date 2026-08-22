@@ -5214,7 +5214,7 @@ mod tests {
     #[test]
     #[cfg(alpine_native_validation)]
     fn presentation_observation_requires_a_real_or_injected_signal() {
-        let signal = Arc::new(PresentationSignal::default());
+        let signal = Arc::new(PresentationSignal::new(None));
         let observation = PresentationObservation::new(Arc::clone(&signal));
         assert!(!observation.observed());
 
@@ -5223,7 +5223,7 @@ mod tests {
         assert!(observation.observed());
         assert_eq!(observation.presented_time_bits(), 17);
 
-        let signal = Arc::new(PresentationSignal::default());
+        let signal = Arc::new(PresentationSignal::new(None));
         let mut injected = PresentationObservation::new(Arc::clone(&signal));
         injected.inject(23);
         signal.publish(29);
@@ -5369,6 +5369,7 @@ mod tests {
             AttemptTiming {
                 target_timestamp_bits: 137,
                 target_presentation_timestamp_bits: 139,
+                ..AttemptTiming::default()
             },
             &counters,
         )?;
