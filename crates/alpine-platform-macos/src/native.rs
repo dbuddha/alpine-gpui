@@ -590,28 +590,56 @@ struct ActiveFrame {
 
 struct PresentationObservation {
     signal: Arc<PresentationSignal>,
+    #[cfg(alpine_native_validation)]
+    injected: Option<InjectedPresentationObservation>,
+}
+
+#[cfg(alpine_native_validation)]
+#[derive(Clone, Copy)]
+struct InjectedPresentationObservation {
+    presented_time_bits: u64,
+    event_to_presented_handler_ns: Option<u64>,
 }
 
 impl PresentationObservation {
     fn new(signal: Arc<PresentationSignal>) -> Self {
-        Self { signal }
+        Self {
+            signal,
+            #[cfg(alpine_native_validation)]
+            injected: None,
+        }
     }
 
     fn observed(&self) -> bool {
+        #[cfg(alpine_native_validation)]
+        if self.injected.is_some() {
+            return true;
+        }
         self.signal.observed.load(Ordering::Acquire)
     }
 
     fn presented_time_bits(&self) -> u64 {
+        #[cfg(alpine_native_validation)]
+        if let Some(injected) = self.injected {
+            return injected.presented_time_bits;
+        }
         self.signal.time_bits.load(Ordering::Relaxed)
     }
 
     fn event_to_presented_handler_ns(&self) -> Option<u64> {
+        #[cfg(alpine_native_validation)]
+        if let Some(injected) = self.injected {
+            return injected.event_to_presented_handler_ns;
+        }
         self.signal.event_to_presented_handler_ns()
     }
 
     #[cfg(alpine_native_validation)]
-    fn inject(&self, presented_time_bits: u64) {
-        self.signal.publish(presented_time_bits);
+    fn inject(&mut self, presented_time_bits: u64) {
+        self.injected = Some(InjectedPresentationObservation {
+            presented_time_bits,
+            event_to_presented_handler_ns: self.signal.elapsed_from_event_now(),
+        });
     }
 }
 
@@ -648,6 +676,13 @@ impl PresentationSignal {
     fn event_to_presented_handler_ns(&self) -> Option<u64> {
         let value = self.event_to_presented_handler_ns.load(Ordering::Relaxed);
         (value != Self::MISSING_LATENCY_NS).then_some(value)
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn elapsed_from_event_now(&self) -> Option<u64> {
+        self.event_received_at.map(|received_at| {
+            elapsed_ns(received_at, Instant::now()).min(Self::MISSING_LATENCY_NS.saturating_sub(1))
+        })
     }
 }
 
@@ -5188,10 +5223,13 @@ mod tests {
         assert!(observation.observed());
         assert_eq!(observation.presented_time_bits(), 17);
 
-        let mut injected = PresentationObservation::new(Arc::new(PresentationSignal::default()));
+        let signal = Arc::new(PresentationSignal::default());
+        let mut injected = PresentationObservation::new(Arc::clone(&signal));
         injected.inject(23);
+        signal.publish(29);
         assert!(injected.observed());
         assert_eq!(injected.presented_time_bits(), 23);
+        assert_eq!(injected.event_to_presented_handler_ns(), None);
     }
 
     #[test]
