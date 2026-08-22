@@ -78,6 +78,19 @@ tla_properties = []
 platform_scope = ["portable"]
 required_evidence = ["kani", "unit"]
 
+[[claims]]
+id = "AEP-0141-C08"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0141-bounded-text-layout-atlas.md"
+requirement_issue = 33
+claim_type = "functional"
+risk = "critical"
+kani_applicability = "required"
+tla_properties = []
+platform_scope = ["portable"]
+required_evidence = ["kani", "unit"]
+
 [[evidence]]
 id = "EV-0141-UNIT01A"
 claim = "AEP-0141-C01"
@@ -146,6 +159,48 @@ bounds = ["complete u8 start and probe domains", "table exponents zero through s
 assumptions = ["slot count is a nonzero power of two"]
 exclusions = ["hash distribution", "entry ownership", "Vec allocation", "unbounded table sizes"]
 companion = "crates/alpine-text-layout/src/embedded_tests.rs#atlas_index_matches_independent_membership_and_lru_model"
+
+[[evidence]]
+id = "EV-0141-UNIT08A"
+claim = "AEP-0141-C08"
+kind = "unit"
+artifact = "crates/alpine-text-layout/src/lib.rs#publication_is_revision_bound_and_acknowledgement_is_stale_safe"
+assertion = "A matching consumer receives exact complete-row bytes, while stale acknowledgement cannot discard the same pending mutation."
+scope = "One four-by-four atlas mutation and one revision-safe acknowledgement sequence."
+exclusions = ["scene publication", "GPU upload", "concurrent mutation"]
+
+[[evidence]]
+id = "EV-0141-UNIT08B"
+claim = "AEP-0141-C08"
+kind = "unit"
+artifact = "crates/alpine-text-layout/src/lib.rs#dirty_ranges_coalesce_and_never_exceed_the_fixed_bound"
+assertion = "Adjacent ranges coalesce and 65 disjoint insertions retain no more than 64 sorted disjoint ranges."
+scope = "The production 64-range capacity, including its deterministic saturation path."
+exclusions = ["pixel copying", "scene publication", "GPU upload"]
+
+[[evidence]]
+id = "EV-0141-KANI08A"
+claim = "AEP-0141-C08"
+kind = "kani"
+artifact = "crates/alpine-text-layout/src/proofs.rs#dirty_row_small_actions_preserve_sorted_disjoint_storage"
+assertion = "Three arbitrary bounded row mutations preserve capacity, sorted order, nonempty ranges, and disjointness."
+scope = "Compiled production transition logic with capacity three and starts zero through seven."
+bounds = ["three actions", "three retained ranges", "one through four rows per action"]
+assumptions = ["one synchronous atlas owner"]
+exclusions = ["production capacity 64", "allocation", "GPU upload"]
+companion = "crates/alpine-text-layout/src/lib.rs#dirty_ranges_coalesce_and_never_exceed_the_fixed_bound"
+
+[[evidence]]
+id = "EV-0141-KANI08B"
+claim = "AEP-0141-C08"
+kind = "kani"
+artifact = "crates/alpine-text-layout/src/proofs.rs#dirty_row_capacity_merge_remains_bounded"
+assertion = "One arbitrary insertion into a full three-range set remains bounded and preserves sorted disjoint output."
+scope = "Compiled production saturation logic with both capacity-preserving and overlap-reduction covers."
+bounds = ["three retained ranges", "one arbitrary insertion", "starts zero through fifteen"]
+assumptions = ["one synchronous atlas owner"]
+exclusions = ["production capacity 64", "allocation", "GPU upload"]
+companion = "crates/alpine-text-layout/src/lib.rs#dirty_ranges_coalesce_and_never_exceed_the_fixed_bound"
 
 [[evidence]]
 id = "EV-0141-UNIT04"

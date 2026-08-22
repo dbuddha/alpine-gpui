@@ -9,6 +9,8 @@ proofs::bounded_sizes_preserve_constructor_contract	2
 proofs::bounded_trace_preserves_operation_order_and_values	2
 proofs::bounded_trace_rejects_noncontiguous_index	2
 proofs::byte_colors_always_normalize_to_valid_channels	2
+proofs::dirty_row_capacity_merge_remains_bounded	2
+proofs::dirty_row_small_actions_preserve_sorted_disjoint_storage	1
 proofs::frame_slot_actions_preserve_bounded_unique_ownership	3
 proofs::lifecycle_actions_preserve_invariants	4
 proofs::presentation_actions_preserve_invariants_and_atomicity	5
