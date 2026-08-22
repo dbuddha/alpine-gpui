@@ -86,7 +86,13 @@ fn atlas_recovery_rejects_corrupt_internal_ranges_without_partial_publication()
             Arc::from([1_u8]),
         ));
     }
-    current.push(GlyphAtlasRowPatch::new(u32::MAX, one, Arc::from([1_u8])));
+    let row_outside_atlas = u32::try_from(MAX_GLYPH_ATLAS_ROW_PATCHES + 1)
+        .map_err(|_| SceneError::ArithmeticOverflow)?;
+    current.push(GlyphAtlasRowPatch::new(
+        row_outside_atlas,
+        one,
+        Arc::from([1_u8]),
+    ));
     rollover.row_patches = Arc::from(current);
     let final_row =
         u32::try_from(MAX_GLYPH_ATLAS_ROW_PATCHES).map_err(|_| SceneError::ArithmeticOverflow)?;
