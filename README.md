@@ -77,6 +77,24 @@ Run the repository acceptance gate:
 scripts/check.sh
 ```
 
+Build the canonical unsigned private-dogfood application from a clean revision:
+
+```sh
+scripts/build-alpine-studio-app.sh
+```
+
+The command creates the release bundle at
+`target/release/Alpine Studio.app`. Launch a scratch editor, file, or folder
+through its stable LaunchServices identity with:
+
+```sh
+scripts/launch-alpine-studio-app.sh
+scripts/launch-alpine-studio-app.sh path/to/file-or-folder
+```
+
+The bundle is local dogfood infrastructure, not a public release artifact.
+Signing, notarization, distribution, and updates remain later release gates.
+
 GitHub is the operational system for this project:
 
 - [Project](https://github.com/users/dbuddha/projects/1) for priority and state;
