@@ -280,6 +280,99 @@ fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_
 }
 
 #[test]
+fn release_profile_points_preserve_event_frame_stage_order_and_failure_outcome()
+-> Result<(), Box<dyn Error>> {
+    let font = StudioApp::font()?;
+    let mut measured = MeasuredTextSystem::new(TestTextSystem, false);
+    let _layout = measured.shape("x", font)?;
+    let _glyph = measured.rasterize(font, u32::from('x'), 0)?;
+    assert_eq!(measured.snapshot(), TextSystemSnapshot::default());
+    measured.set_enabled(true);
+    let _layout = measured.shape("x", font)?;
+    let _glyph = measured.rasterize(font, u32::from('x'), 0)?;
+    assert_eq!(
+        measured.snapshot(),
+        TextSystemSnapshot {
+            shape_calls: 1,
+            rasterize_calls: 1,
+        }
+    );
+
+    let mut app = test_app()?;
+    let (profiler, records) = StudioProfiler::recording();
+    app.text_system.set_enabled(profiler.enabled());
+    app.profiler = profiler;
+    let mut application = Application::new(
+        app,
+        viewport()?,
+        LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or("clear")?,
+        WorkerConfig::default(),
+    )?;
+    let response = application.dispatch_with_response(&SurfaceEvent::Ime {
+        timestamp: EventTimestamp::new(41),
+        input_epoch: InputEpoch::INITIAL,
+        event: ImeEvent::Committed("x".into()),
+    });
+    assert!(response.frame().is_some());
+
+    let records = records.borrow();
+    let stages: Vec<StudioSignpostStage> =
+        records.iter().copied().map(StudioSignpost::stage).collect();
+    let position = |stage| stages.iter().position(|candidate| *candidate == stage);
+    let event_begin = position(StudioSignpostStage::EventDispatchBegin).ok_or("event begin")?;
+    let mutation = position(StudioSignpostStage::StateMutationComplete).ok_or("mutation")?;
+    let frame_begin = position(StudioSignpostStage::FrameBuildBegin).ok_or("frame begin")?;
+    let layout_begin = position(StudioSignpostStage::VisibleLayoutBegin).ok_or("layout begin")?;
+    let layout_end = position(StudioSignpostStage::VisibleLayoutComplete).ok_or("layout end")?;
+    let atlas_begin = position(StudioSignpostStage::AtlasPublicationBegin).ok_or("atlas begin")?;
+    let atlas_end = position(StudioSignpostStage::AtlasPublicationComplete).ok_or("atlas end")?;
+    let text = position(StudioSignpostStage::TextSummary).ok_or("text summary")?;
+    let frame_end = position(StudioSignpostStage::FrameBuildComplete).ok_or("frame end")?;
+    assert!(event_begin < mutation);
+    assert!(mutation < frame_begin);
+    assert!(frame_begin < layout_begin);
+    assert!(layout_begin < layout_end);
+    assert!(layout_end < atlas_begin);
+    assert!(atlas_begin < atlas_end);
+    assert!(atlas_end < text);
+    assert!(text < frame_end);
+    assert!(records.iter().all(|record| record.event_timestamp() == 41));
+    assert!(
+        records
+            .iter()
+            .filter(|record| record.scene_revision() != 0)
+            .all(|record| record.scene_revision() == 1)
+    );
+    let text_record = records
+        .iter()
+        .find(|record| record.stage() == StudioSignpostStage::TextSummary)
+        .ok_or("text record")?;
+    assert!(text_record.values()[0] > 0);
+    assert!(text_record.values()[1] > 0);
+    drop(records);
+
+    let mut failing = StudioApp::new(FailingTextSystem)?;
+    let (profiler, failed_records) = StudioProfiler::recording();
+    failing.text_system.set_enabled(profiler.enabled());
+    failing.profiler = profiler;
+    let fallback = failing.scene(SceneRevision::new(7), viewport()?);
+    assert_eq!(fallback.operation_count(), 1);
+    let failed_records = failed_records.borrow();
+    let failed = failed_records
+        .iter()
+        .position(|record| record.stage() == StudioSignpostStage::FrameBuildFailed)
+        .ok_or("failed frame")?;
+    let completed = failed_records
+        .iter()
+        .position(|record| {
+            record.stage() == StudioSignpostStage::FrameBuildComplete && record.values()[2] == 1
+        })
+        .ok_or("fallback completion")?;
+    assert!(failed < completed);
+    Ok(())
+}
+
+#[test]
 fn glyph_geometry_and_atlas_publication_axes_are_exact() -> Result<(), Box<dyn Error>> {
     let mut app = StudioApp::new(GeometryTextSystem)?;
     let viewport = viewport()?;

@@ -21,6 +21,8 @@ use alpine_scene::Scene;
 
 mod accessibility;
 pub use accessibility::*;
+mod signpost;
+pub use signpost::*;
 
 /// Monotonic sequence assigned at the native event-dispatch boundary.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

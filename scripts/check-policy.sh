@@ -110,6 +110,7 @@ unsafe_source_files=$(find crates -type f -name '*.rs' -print0 \
 expected_unsafe_source_files='crates/alpine-metal/src/native.rs
 crates/alpine-platform-macos/src/native.rs
 crates/alpine-platform-macos/src/native_accessibility.rs
+crates/alpine-platform-macos/src/signpost.rs
 crates/alpine-text-layout/src/native.rs'
 if [ "$unsafe_source_files" != "$expected_unsafe_source_files" ]; then
     fail 'unsafe Rust constructs must remain isolated in audited native boundary files'
