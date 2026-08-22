@@ -414,6 +414,14 @@ terminal state on the owner thread. The AppKit callback uses this split-phase
 path directly. The synchronous compatibility wrapper remains only for narrow
 renderer callers outside the production presentation loop. Offscreen readback
 remains intentionally synchronous.
+Glyph scenes retain one immutable full A8 base plus at most 64 cumulative,
+sorted complete-row overrides. This keeps every latest-wins scene recoverable
+after dropped intermediate frames without cloning the complete atlas on a glyph
+miss. A compatible Metal cache keeps its private atlas buffer and blits only the
+override rows from bounded shared staging storage. Initialization, atlas growth,
+storage or dimension mismatch, older-scene replay, and device recovery rebuild
+one full current image. CPU oracle sampling applies the same row overrides
+directly, preserving renderer-independent pixel evidence.
 Every render call updates a generation-scoped `BackendAccounting` snapshot.
 Validated cancellation performs no native allocation or submission. Shutdown is
 synchronous and closes admission only after the current exclusive call returns.

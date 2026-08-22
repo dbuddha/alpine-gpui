@@ -1096,6 +1096,12 @@ impl GlyphAtlasRowUpdate {
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
+
+    /// Transfers ownership of the tightly packed row bytes without copying.
+    #[must_use]
+    pub fn into_pixels(self) -> Box<[u8]> {
+        self.pixels
+    }
 }
 
 /// One revision-bound CPU atlas publication plan.
@@ -2380,6 +2386,7 @@ mod atlas_publication_tests {
             pixels: vec![1, 2].into_boxed_slice(),
         };
         assert_eq!(update.start_row(), 7);
+        assert_eq!(&*update.into_pixels(), &[1, 2]);
     }
 
     #[test]

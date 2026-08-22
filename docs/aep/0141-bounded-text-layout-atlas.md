@@ -61,6 +61,13 @@ performance claim from functional and resource-bound evidence alone.
   Initialization, growth, source-revision mismatch, and explicit full-dirty
   state produce one full replacement. A stale acknowledgement cannot discard
   newer dirty evidence.
+- **AEP-0141-C09:** Every immutable scene atlas is self-contained as one shared
+  full base plus cumulative, sorted complete-row overrides. A dropped scene
+  therefore cannot break update ancestry, and a new or recovered renderer can
+  reconstruct current pixels without application or native handles. Direct
+  Metal retains a compatible private atlas allocation and blits only the
+  override rows; incompatible ancestry, dimensions, or storage force one
+  checked full replacement.
 
 ## Ownership and cache generations
 
@@ -120,15 +127,18 @@ the atlas starts empty and grows only on demand. These are Alpine policy limits,
 not statements about Zed or Sublime memory behavior.
 
 Studio publishes immutable atlas pixels only when the pixel-content revision
-changes; it does not compare or copy the complete image on a warm frame. The
-CPU atlas now emits revision-bound full or dirty-row publication plans; Studio
-and Metal adoption remains tracked by parent task #297. The native backend
-retains one current private A8 buffer independently of the three
-bounded presentation slots. Replacement allocates and uploads once, while an
-unchanged frame reports zero atlas upload bytes. A pending command retains its
-own buffer reference, so pressure can remove the cache immediately without
-freeing in-flight resources. Native snapshots expose current and peak atlas
-bytes, allocations, uploads, reuses, and pressure releases.
+changes; it does not compare or copy the complete image on a warm frame. It
+acknowledges a full publication as the retained base, then carries cumulative
+bounded row overrides without cloning that base after each glyph miss. Direct
+Metal retains one current private A8 buffer independently of the three bounded
+presentation slots. Compatible revisions allocate only bounded staging bytes
+and encode one blit per changed row range. Initialization, growth, recovery,
+incompatible ancestry, or dimensions allocate and upload one reconstructed full
+image. An unchanged frame reports zero atlas upload bytes. A pending command
+retains its own buffer references, so pressure can remove the cache immediately
+without freeing in-flight resources. Native snapshots expose current and peak
+atlas bytes, allocations, uploads, reuses, and pressure releases. Parent task
+#297 retains physical-device and end-to-end typing qualification.
 
 ## Platform, accessibility, and later integration
 
