@@ -35,7 +35,7 @@ fn bounded_trace_preserves_operation_order_and_values() {
     .decode();
 
     assert!(decoded.is_ok());
-    if let Ok(decoded) = decoded {
+    if let Ok(decoded) = &decoded {
         assert_eq!(decoded.scene().operation_count(), 2);
         assert_eq!(decoded.descriptor().pixel_width(), u32::from(width));
         assert_eq!(decoded.descriptor().pixel_height(), u32::from(height));
@@ -54,6 +54,11 @@ fn bounded_trace_preserves_operation_order_and_values() {
         kani::cover!(red == 0.0 && alpha == 0.0, "transparent boundary");
         kani::cover!(red == 1.0 && alpha == 1.0, "opaque boundary");
     }
+    // This proof owns successful protocol admission and value preservation,
+    // not destruction of its dynamically sized scene fixture. Kani otherwise
+    // spends an unbounded proof budget unwinding the Arc-backed atlas patches;
+    // normal tests and Miri retain teardown coverage.
+    std::mem::forget(decoded);
 }
 
 #[kani::proof]
@@ -79,7 +84,13 @@ fn bounded_trace_rejects_noncontiguous_index() {
         }],
     };
 
-    assert!(input.decode().is_err());
+    let decoded = input.decode();
+    assert!(decoded.is_err());
     kani::cover!(sequence == 1, "nearest invalid sequence");
     kani::cover!(sequence == 256, "bounded maximum invalid sequence");
+    // This proof owns sequence admission, not destruction of the unreachable
+    // success payload. Forgetting the fixture prevents Kani from unwinding
+    // dynamically sized scene resources that no concrete error path owns;
+    // normal tests and Miri retain teardown coverage.
+    std::mem::forget(decoded);
 }

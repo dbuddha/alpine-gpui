@@ -308,11 +308,17 @@ fn glyph_geometry_and_atlas_publication_axes_are_exact() -> Result<(), Box<dyn E
     assert_eq!(app.published_atlas_source_revision, source_revision);
 
     let one = NonZeroU32::new(1).ok_or("one")?;
+    let atlas_dimension =
+        NonZeroU32::new(app.glyph_atlas.snapshot().dimension()).ok_or("atlas dimension")?;
     app.published_atlas = Some(GlyphAtlasImage::new(
-        99,
+        source_revision,
+        atlas_dimension,
         one,
-        one,
-        Arc::<[u8]>::from(vec![255]),
+        Arc::<[u8]>::from(vec![
+            255;
+            usize::try_from(atlas_dimension.get())
+                .map_err(|_| "atlas bytes")?
+        ]),
     )?);
     app.published_atlas_source_revision = source_revision;
     app.publish_atlas_if_needed(&pending)?;
@@ -324,8 +330,158 @@ fn glyph_geometry_and_atlas_publication_axes_are_exact() -> Result<(), Box<dyn E
 
     app.published_atlas_source_revision = 0;
     app.publish_atlas_if_needed(&pending)?;
-    assert_eq!(app.atlas_revision, 3);
+    assert_eq!(app.atlas_revision, 2);
     assert_eq!(app.published_atlas_source_revision, source_revision);
+    Ok(())
+}
+
+#[test]
+fn atlas_row_publication_retains_the_full_base_and_acknowledges_the_delta()
+-> Result<(), Box<dyn Error>> {
+    let mut app = StudioApp::new(GeometryTextSystem)?;
+    let viewport = viewport()?;
+    let mut builder = SceneBuilder::new(SceneRevision::new(1), viewport);
+    let origin = Point::new(0.0, 0.0).ok_or("clip origin")?;
+    let clip = builder.push_clip(Clip::new(Rect::new(origin, viewport)));
+    let font = FontKey::new(
+        FONT_FAMILY,
+        PositiveFinite::new(14.0).ok_or("font size")?,
+        PositiveFinite::new(2.0).ok_or("font scale")?,
+        NonZeroU32::new(4).ok_or("tab columns")?,
+    );
+    let first = LineLayout::new(
+        vec![ShapedGlyph::new_resolved(
+            65,
+            7.0,
+            2.0,
+            8.0,
+            0,
+            FONT_FAMILY,
+        )?],
+        8.0,
+        10.0,
+        2.0,
+        1_024,
+    )?;
+    let first_pending = app.collect_glyphs(&first, font, 11.0, 20.0, clip)?;
+    app.publish_atlas_if_needed(&first_pending)?;
+    let base = app.published_atlas.clone().ok_or("full base")?;
+    let base_revision = app.published_atlas_source_revision;
+
+    let second = LineLayout::new(
+        vec![ShapedGlyph::new_resolved(
+            66,
+            7.0,
+            2.0,
+            8.0,
+            0,
+            FONT_FAMILY,
+        )?],
+        8.0,
+        10.0,
+        2.0,
+        1_024,
+    )?;
+    let second_pending = app.collect_glyphs(&second, font, 11.0, 20.0, clip)?;
+    app.publish_atlas_if_needed(&second_pending)?;
+    let revised = app.published_atlas.as_ref().ok_or("row snapshot")?;
+
+    assert!(base.shares_storage_with(revised));
+    assert_eq!(revised.base_revision(), base_revision);
+    assert_eq!(revised.delta_source_revision(), base_revision);
+    assert_eq!(app.published_atlas_source_revision, revised.revision());
+    assert_eq!(
+        revised.revision(),
+        app.glyph_atlas.snapshot().pixel_revision()
+    );
+    assert!(!revised.row_patches().is_empty());
+    assert_eq!(revised.delta_row_patches(), revised.row_patches());
+    let published_row_bytes = revised
+        .row_patches()
+        .iter()
+        .map(|patch| patch.pixels().len())
+        .sum::<usize>();
+    assert!(published_row_bytes < revised.pixels().len());
+    assert_eq!(app.atlas_revision, 2);
+    Ok(())
+}
+
+#[test]
+fn atlas_row_publication_forces_full_resynchronization_for_a_stale_scene_base()
+-> Result<(), Box<dyn Error>> {
+    let mut app = StudioApp::new(GeometryTextSystem)?;
+    let viewport = viewport()?;
+    let mut builder = SceneBuilder::new(SceneRevision::new(1), viewport);
+    let origin = Point::new(0.0, 0.0).ok_or("clip origin")?;
+    let clip = builder.push_clip(Clip::new(Rect::new(origin, viewport)));
+    let font = FontKey::new(
+        FONT_FAMILY,
+        PositiveFinite::new(14.0).ok_or("font size")?,
+        PositiveFinite::new(2.0).ok_or("font scale")?,
+        NonZeroU32::new(4).ok_or("tab columns")?,
+    );
+    let first = LineLayout::new(
+        vec![ShapedGlyph::new_resolved(
+            65,
+            7.0,
+            2.0,
+            8.0,
+            0,
+            FONT_FAMILY,
+        )?],
+        8.0,
+        10.0,
+        2.0,
+        1_024,
+    )?;
+    let first_pending = app.collect_glyphs(&first, font, 11.0, 20.0, clip)?;
+    app.publish_atlas_if_needed(&first_pending)?;
+    let admitted = app.published_atlas.clone().ok_or("admitted atlas")?;
+    let source_revision = admitted.revision();
+    let predecessor = source_revision
+        .checked_sub(1)
+        .ok_or("predecessor revision")?;
+    app.published_atlas = Some(GlyphAtlasImage::new(
+        predecessor,
+        admitted.width(),
+        admitted.height(),
+        Arc::from(admitted.pixels()),
+    )?);
+
+    let second = LineLayout::new(
+        vec![ShapedGlyph::new_resolved(
+            66,
+            7.0,
+            2.0,
+            8.0,
+            0,
+            FONT_FAMILY,
+        )?],
+        8.0,
+        10.0,
+        2.0,
+        1_024,
+    )?;
+    let second_pending = app.collect_glyphs(&second, font, 11.0, 20.0, clip)?;
+    app.publish_atlas_if_needed(&second_pending)?;
+    let recovered = app.published_atlas.as_ref().ok_or("recovered atlas")?;
+
+    assert_eq!(recovered.base_revision(), recovered.revision());
+    assert_eq!(recovered.delta_source_revision(), recovered.revision());
+    assert_eq!(app.published_atlas_source_revision, recovered.revision());
+    assert!(recovered.row_patches().is_empty());
+    assert!(recovered.delta_row_patches().is_empty());
+    assert_eq!(
+        recovered.revision(),
+        app.glyph_atlas.snapshot().pixel_revision()
+    );
+    Ok(())
+}
+
+#[test]
+fn full_atlas_adaptation_rejects_malformed_bytes() -> Result<(), Box<dyn Error>> {
+    let two = NonZeroU32::new(2).ok_or("dimension")?;
+    assert!(StudioApp::full_atlas_image(1, two, vec![255_u8].into_boxed_slice()).is_err());
     Ok(())
 }
 

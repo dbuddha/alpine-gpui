@@ -94,8 +94,8 @@ use alpine_platform_macos::{
 };
 use alpine_runtime::{AppContext, AppDelegate, DocumentRevision, RuntimeError, WindowContext};
 use alpine_scene::{
-    AtlasBounds, Clip, Glyph, GlyphAtlasImage, Primitive, Quad, Scene, SceneBuilder, SceneError,
-    SceneRevision,
+    AtlasBounds, Clip, Glyph, GlyphAtlasImage, GlyphAtlasRowPatch, Primitive, Quad, Scene,
+    SceneBuilder, SceneError, SceneRevision,
 };
 use alpine_text::{
     Buffer, BufferSnapshot, ByteOffset, Editor, ExternalChange, FileError, SaveReport, Selection,
@@ -2548,21 +2548,76 @@ impl StudioApp {
         }
         let snapshot = self.glyph_atlas.snapshot();
         let dimension = NonZeroU32::new(snapshot.dimension()).ok_or(StudioRenderError::Domain)?;
-        let must_publish = self.published_atlas.as_ref().is_none_or(|atlas| {
-            atlas.width() != dimension
-                || self.published_atlas_source_revision != snapshot.pixel_revision()
-        });
-        if must_publish {
-            self.atlas_revision = self
-                .atlas_revision
-                .checked_add(1)
-                .ok_or(LayoutError::SequenceExhausted)?;
-            let pixels: Arc<[u8]> = self.glyph_atlas.pixels().to_vec().into();
-            let image = GlyphAtlasImage::new(self.atlas_revision, dimension, dimension, pixels);
-            self.published_atlas = Some(image?);
-            self.published_atlas_source_revision = snapshot.pixel_revision();
+        let source_revision = self
+            .published_atlas
+            .as_ref()
+            .filter(|atlas| atlas.width() == dimension && atlas.height() == dimension)
+            .map_or(u64::MAX, GlyphAtlasImage::revision);
+        match self.glyph_atlas.publication_since(source_revision)? {
+            alpine_text_layout::GlyphAtlasPublication::Unchanged { revision } => {
+                self.published_atlas_source_revision = revision;
+            }
+            alpine_text_layout::GlyphAtlasPublication::Full {
+                revision, pixels, ..
+            } => {
+                self.atlas_revision = self
+                    .atlas_revision
+                    .checked_add(1)
+                    .ok_or(LayoutError::SequenceExhausted)?;
+                self.published_atlas = Some(Self::full_atlas_image(revision, dimension, pixels)?);
+                let acknowledged = self.glyph_atlas.acknowledge_publication(revision);
+                debug_assert!(acknowledged);
+                self.published_atlas_source_revision = revision;
+            }
+            alpine_text_layout::GlyphAtlasPublication::Rows {
+                source_revision,
+                revision,
+                rows,
+                ..
+            } => {
+                let mut patches = Vec::new();
+                patches
+                    .try_reserve_exact(rows.len())
+                    .map_err(|_| LayoutError::AllocationFailed)?;
+                for row in rows {
+                    let start_row = row.start_row();
+                    let row_count = row.row_count();
+                    patches.push(GlyphAtlasRowPatch::new(
+                        start_row,
+                        row_count,
+                        Arc::from(row.into_pixels()),
+                    ));
+                }
+                let base = self
+                    .published_atlas
+                    .as_ref()
+                    .ok_or(StudioRenderError::Domain)?;
+                let delta = Arc::from(patches);
+                self.published_atlas =
+                    Some(base.advance_with_row_patches(source_revision, revision, delta)?);
+                let acknowledged = self.glyph_atlas.acknowledge_publication(revision);
+                debug_assert!(acknowledged);
+                self.published_atlas_source_revision = revision;
+                self.atlas_revision = self
+                    .atlas_revision
+                    .checked_add(1)
+                    .ok_or(LayoutError::SequenceExhausted)?;
+            }
         }
         Ok(())
+    }
+
+    fn full_atlas_image(
+        revision: u64,
+        dimension: NonZeroU32,
+        pixels: Box<[u8]>,
+    ) -> Result<GlyphAtlasImage, StudioRenderError> {
+        Ok(GlyphAtlasImage::new(
+            revision,
+            dimension,
+            dimension,
+            Arc::from(pixels),
+        )?)
     }
 
     fn caret_bounds(

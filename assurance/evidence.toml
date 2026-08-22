@@ -79,6 +79,19 @@ platform_scope = ["portable"]
 required_evidence = ["kani", "unit"]
 
 [[claims]]
+id = "AEP-0141-C09"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0141-bounded-text-layout-atlas.md"
+requirement_issue = 33
+claim_type = "functional"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["unit", "native"]
+
+[[claims]]
 id = "AEP-0141-C08"
 mission = "MP-04"
 capability_issue = 28
@@ -201,6 +214,42 @@ bounds = ["three retained ranges", "one arbitrary insertion", "starts zero throu
 assumptions = ["one synchronous atlas owner"]
 exclusions = ["production capacity 64", "allocation", "GPU upload"]
 companion = "crates/alpine-text-layout/src/lib.rs#dirty_ranges_coalesce_and_never_exceed_the_fixed_bound"
+
+[[evidence]]
+id = "EV-0141-UNIT09A"
+claim = "AEP-0141-C09"
+kind = "unit"
+artifact = "crates/alpine-scene/src/lib.rs#atlas_row_patches_share_the_base_and_override_exact_pixels"
+assertion = "A revised immutable atlas shares its full base while exact row overrides change only current sampled pixels."
+scope = "One three-by-three base, one complete-row override, and direct base/current pixel comparisons."
+exclusions = ["native upload", "concurrent scene consumption", "device recovery"]
+
+[[evidence]]
+id = "EV-0141-UNIT09B"
+claim = "AEP-0141-C09"
+kind = "unit"
+artifact = "apps/alpine-studio/src/studio_coverage_tests.rs#atlas_row_publication_retains_the_full_base_and_acknowledges_the_delta"
+assertion = "A second glyph admission retains the first full base, publishes fewer row bytes than the complete atlas, and advances the acknowledged source revision."
+scope = "Two distinct glyph admissions through Studio's production atlas publication path."
+exclusions = ["native upload", "typing latency", "atlas growth"]
+
+[[evidence]]
+id = "EV-0141-UNIT09C"
+claim = "AEP-0141-C09"
+kind = "unit"
+artifact = "crates/alpine-scene/src/lib.rs#atlas_row_patch_limit_resynchronizes_one_full_base_and_resumes_deltas"
+assertion = "A sixty-fifth disjoint recovery row materializes one current full base, clears cumulative metadata, and the following revision resumes one shared-base row delta."
+scope = "Exact sixty-four-patch boundary, one rollover row, current-pixel preservation, storage replacement, and one subsequent delta."
+exclusions = ["native upload", "allocation injection", "fixed-hardware latency"]
+
+[[evidence]]
+id = "EV-0141-NATIVE09A"
+claim = "AEP-0141-C09"
+kind = "native"
+artifact = "crates/alpine-metal/src/native.rs#renders_a8_glyphs_and_reuses_only_identical_atlas_storage"
+assertion = "A compatible row revision uploads three bytes into the retained six-byte private atlas without increasing private allocation count, and output matches the CPU oracle."
+scope = "One full upload, 33 exact reuses, one half-image row update, and one incompatible full replacement on Apple Silicon."
+exclusions = ["fixed-hardware latency", "device loss", "multi-range presentation"]
 
 [[evidence]]
 id = "EV-0141-UNIT04"

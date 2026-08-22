@@ -412,7 +412,7 @@ pub fn release_presentation_uploads_on_pressure(backend: &mut MetalBackend) {
     backend.native.release_presentation_uploads_on_pressure();
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use std::error::Error;
 

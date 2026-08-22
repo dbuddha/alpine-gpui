@@ -26,6 +26,94 @@ fn atlas() -> Result<GlyphAtlasImage, SceneError> {
 }
 
 #[test]
+fn atlas_recovery_rejects_corrupt_internal_ranges_without_partial_publication()
+-> Result<(), Box<dyn Error>> {
+    let one = NonZeroU32::new(1).ok_or(SceneError::ArithmeticOverflow)?;
+    let two = NonZeroU32::new(2).ok_or(SceneError::ArithmeticOverflow)?;
+    let three = NonZeroU32::new(3).ok_or(SceneError::ArithmeticOverflow)?;
+    let source = GlyphAtlasRowPatch::new(0, three, Arc::from([1_u8, 2, 3]));
+    assert_eq!(source.view(2, two, 1), Err(SceneError::ArithmeticOverflow));
+
+    let malformed_prefix = GlyphAtlasRowPatch {
+        start_row: 0,
+        row_count: three,
+        pixels: Arc::from([1_u8]),
+        pixel_offset: 0,
+        pixel_len: 1,
+    };
+    let replace_tail = GlyphAtlasRowPatch::new(2, one, Arc::from([9_u8]));
+    assert_eq!(
+        merge_atlas_row_patches(&[malformed_prefix], &[replace_tail], 1, three),
+        Err(SceneError::ArithmeticOverflow)
+    );
+
+    let malformed_suffix = GlyphAtlasRowPatch {
+        start_row: 0,
+        row_count: three,
+        pixels: Arc::from([1_u8, 2]),
+        pixel_offset: 0,
+        pixel_len: 2,
+    };
+    let replace_head = GlyphAtlasRowPatch::new(0, one, Arc::from([9_u8]));
+    assert_eq!(
+        merge_atlas_row_patches(&[malformed_suffix], &[replace_head], 1, three),
+        Err(SceneError::ArithmeticOverflow)
+    );
+
+    let mut invalid_current = GlyphAtlasImage::new(50, one, two, Arc::from([0_u8, 0]))?;
+    invalid_current.row_patches = Arc::from([GlyphAtlasRowPatch::new(2, one, Arc::from([1_u8]))]);
+    assert!(matches!(
+        invalid_current.advance_with_row_patches(50, 51, Arc::from([])),
+        Err(SceneError::InvalidAtlasRowRange { .. })
+    ));
+
+    let rollover_height = NonZeroU32::new(
+        u32::try_from(MAX_GLYPH_ATLAS_ROW_PATCHES + 1)
+            .map_err(|_| SceneError::ArithmeticOverflow)?,
+    )
+    .ok_or(SceneError::ArithmeticOverflow)?;
+    let mut rollover = GlyphAtlasImage::new(
+        60,
+        one,
+        rollover_height,
+        Arc::from(vec![0_u8; MAX_GLYPH_ATLAS_ROW_PATCHES + 1]),
+    )?;
+    let mut current = Vec::with_capacity(MAX_GLYPH_ATLAS_ROW_PATCHES);
+    for row in 0..MAX_GLYPH_ATLAS_ROW_PATCHES - 1 {
+        current.push(GlyphAtlasRowPatch::new(
+            u32::try_from(row).map_err(|_| SceneError::ArithmeticOverflow)?,
+            one,
+            Arc::from([1_u8]),
+        ));
+    }
+    let row_outside_atlas = u32::try_from(MAX_GLYPH_ATLAS_ROW_PATCHES + 1)
+        .map_err(|_| SceneError::ArithmeticOverflow)?;
+    current.push(GlyphAtlasRowPatch::new(
+        row_outside_atlas,
+        one,
+        Arc::from([1_u8]),
+    ));
+    rollover.row_patches = Arc::from(current);
+    let final_row =
+        u32::try_from(MAX_GLYPH_ATLAS_ROW_PATCHES).map_err(|_| SceneError::ArithmeticOverflow)?;
+    let delta = GlyphAtlasRowPatch::new(final_row, one, Arc::from([2_u8]));
+    assert_eq!(
+        rollover.advance_with_row_patches(60, 61, Arc::from([delta])),
+        Err(SceneError::ArithmeticOverflow)
+    );
+
+    assert_eq!(
+        SceneError::AtlasRowPatchLimitExceeded {
+            limit: MAX_GLYPH_ATLAS_ROW_PATCHES,
+            actual: MAX_GLYPH_ATLAS_ROW_PATCHES + 1,
+        }
+        .to_string(),
+        "scene atlas accepts at most 64 row patches, found 65"
+    );
+    Ok(())
+}
+
+#[test]
 fn public_contracts_and_structured_failures_are_discriminating() -> Result<(), Box<dyn Error>> {
     let viewport = size(8.0, 8.0)?;
     let revision = SceneRevision::new(11);

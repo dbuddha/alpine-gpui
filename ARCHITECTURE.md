@@ -414,6 +414,21 @@ terminal state on the owner thread. The AppKit callback uses this split-phase
 path directly. The synchronous compatibility wrapper remains only for narrow
 renderer callers outside the production presentation loop. Offscreen readback
 remains intentionally synchronous.
+Glyph scenes retain one immutable full A8 base, at most 64 cumulative sorted
+recovery-row overrides, and the latest revision's delta rows. This keeps every
+latest-wins scene recoverable after dropped intermediate frames while a cache at
+the immediately preceding revision uploads only the newest rows. Unaffected
+recovery patches share byte storage and no glyph miss clones the complete atlas.
+A compatible Metal cache keeps its private atlas buffer and blits rows from one
+geometrically grown shared staging buffer per existing frame slot. Cache
+revision publication occurs only after commit; terminal failure invalidates the
+resident image. Terminal ownership prevents staging reuse while commands are in
+flight, and pressure or sustained disuse reclaims capacity. Initialization,
+atlas growth, storage or dimension mismatch, older-scene replay, device
+recovery, and cumulative patch-limit rollover rebuild one full current image.
+The next compatible revision resumes row deltas. CPU oracle sampling applies
+the same row overrides directly, preserving renderer-independent pixel
+evidence.
 Every render call updates a generation-scoped `BackendAccounting` snapshot.
 Validated cancellation performs no native allocation or submission. Shutdown is
 synchronous and closes admission only after the current exclusive call returns.

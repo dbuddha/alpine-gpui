@@ -207,14 +207,12 @@ fn sample_atlas(
     if x >= width || y >= height {
         return 0.0;
     }
-    let index = y
-        .checked_mul(width)
-        .and_then(|row| row.checked_add(x))
-        .unwrap_or(usize::MAX);
     atlas
-        .pixels()
-        .get(index)
-        .map_or(0.0, |coverage| f32::from(*coverage) / 255.0)
+        .pixel(
+            u32::try_from(x).unwrap_or(u32::MAX),
+            u32::try_from(y).unwrap_or(u32::MAX),
+        )
+        .map_or(0.0, |coverage| f32::from(coverage) / 255.0)
 }
 
 fn validate_oracle_pixel_count(pixels: usize) -> Result<(), OffscreenError> {

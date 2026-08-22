@@ -118,6 +118,9 @@ pub(crate) struct NativeBackend {
 const PRESENTATION_SLOT_COUNT: usize = 3;
 #[cfg(feature = "platform-spi")]
 const PRESENTATION_UPLOAD_LIMIT: usize = 8 * 1024 * 1024;
+const ATLAS_STAGING_LIMIT: usize = 16 * 1024 * 1024;
+#[cfg(feature = "platform-spi")]
+const ATLAS_STAGING_TRIM_TERMINALS: u16 = 120;
 #[cfg(feature = "platform-spi")]
 const PRESENTATION_TRIM_TERMINALS: u16 = 120;
 #[cfg(feature = "platform-spi")]
@@ -162,6 +165,12 @@ pub(crate) struct NativePresentationSnapshot {
     pub(crate) atlas_uploads: u64,
     pub(crate) atlas_reuses: u64,
     pub(crate) atlas_pressure_releases: u64,
+    pub(crate) current_atlas_staging_bytes: usize,
+    pub(crate) peak_atlas_staging_bytes: usize,
+    pub(crate) slot_atlas_staging_bytes: [usize; PRESENTATION_SLOT_COUNT],
+    pub(crate) slot_peak_atlas_staging_bytes: [usize; PRESENTATION_SLOT_COUNT],
+    pub(crate) atlas_staging_allocations: u64,
+    pub(crate) atlas_staging_trims: u64,
 }
 
 struct GlyphAtlasCache {
@@ -190,16 +199,25 @@ impl GlyphAtlasCache {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "cache reuse, delta catch-up, full resynchronization, and deferred publication remain one audited residency transaction"
+    )]
     fn prepare(
         &mut self,
         device: &Device,
         image: Option<&alpine_scene::GlyphAtlasImage>,
+        mut staging: Option<&mut AtlasStaging>,
     ) -> Result<AtlasPreparation, RenderError> {
         let Some(image) = image else {
             if let Some(buffer) = &self.buffer {
+                let retained_bytes = self
+                    .current_bytes
+                    .checked_add(staging.as_deref().map_or(0, AtlasStaging::current_bytes))
+                    .ok_or(RenderError::AccountingOverflow)?;
                 return Ok(AtlasPreparation {
                     buffer: Some(buffer.clone()),
-                    retained_bytes: self.current_bytes,
+                    retained_bytes,
                     ..AtlasPreparation::default()
                 });
             }
@@ -214,12 +232,16 @@ impl GlyphAtlasCache {
             self.current_bytes = allocated_bytes;
             self.peak_bytes = self.peak_bytes.max(allocated_bytes);
             self.allocations = next_allocations;
+            let retained_bytes = allocated_bytes
+                .checked_add(staging.as_deref().map_or(0, AtlasStaging::current_bytes))
+                .ok_or(RenderError::AccountingOverflow)?;
             return Ok(AtlasPreparation {
                 buffer: Some(buffer),
                 upload: None,
                 allocated_bytes,
-                retained_bytes: allocated_bytes,
+                retained_bytes,
                 uploaded_bytes: 0,
+                commit: AtlasCacheCommit::None,
             });
         };
         let matches = self.image.as_ref().is_some_and(|cached| {
@@ -229,14 +251,69 @@ impl GlyphAtlasCache {
                 && cached.shares_storage_with(image)
         });
         if matches {
-            self.reuses = self
+            let next_reuses = self
                 .reuses
                 .checked_add(1)
                 .ok_or(RenderError::AccountingOverflow)?;
+            let retained_bytes = self
+                .current_bytes
+                .checked_add(staging.as_deref().map_or(0, AtlasStaging::current_bytes))
+                .ok_or(RenderError::AccountingOverflow)?;
             return Ok(AtlasPreparation {
                 buffer: self.buffer.clone(),
-                retained_bytes: self.current_bytes,
+                retained_bytes,
+                commit: AtlasCacheCommit::Reuse {
+                    reuses: next_reuses,
+                },
                 ..AtlasPreparation::default()
+            });
+        }
+
+        let patchable = self.image.as_ref().is_some_and(|cached| {
+            AtlasPatchCompatibility {
+                base_revision: AtlasMatch::from_equality(
+                    cached.base_revision() == image.base_revision(),
+                ),
+                revision_ordering: cached.revision().cmp(&image.revision()),
+                extent: AtlasMatch::from_equality(
+                    (cached.width(), cached.height()) == (image.width(), image.height()),
+                ),
+                storage: AtlasMatch::from_equality(cached.shares_storage_with(image)),
+                row_patches: AtlasPatchPresence::from_presence(!image.row_patches().is_empty()),
+            }
+            .is_compatible()
+        });
+        if patchable {
+            let next_uploads = self
+                .uploads
+                .checked_add(1)
+                .ok_or(RenderError::AccountingOverflow)?;
+            let kind = if self
+                .image
+                .as_ref()
+                .is_some_and(|cached| cached.revision() == image.delta_source_revision())
+            {
+                AtlasUploadKind::DeltaRows
+            } else {
+                AtlasUploadKind::RecoveryRows
+            };
+            let (upload, allocated_bytes, staging_bytes) =
+                prepare_atlas_upload(device, image, kind, staging.as_deref_mut())?;
+            let retained_bytes = self
+                .current_bytes
+                .checked_add(staging_bytes)
+                .ok_or(RenderError::AccountingOverflow)?;
+            let uploaded_bytes = upload.uploaded_bytes()?;
+            return Ok(AtlasPreparation {
+                buffer: self.buffer.clone(),
+                upload: Some(upload),
+                allocated_bytes,
+                retained_bytes,
+                uploaded_bytes,
+                commit: AtlasCacheCommit::Advance {
+                    image: image.clone(),
+                    uploads: next_uploads,
+                },
             });
         }
 
@@ -248,24 +325,57 @@ impl GlyphAtlasCache {
             .uploads
             .checked_add(1)
             .ok_or(RenderError::AccountingOverflow)?;
-        let (buffer, upload) = create_glyph_atlas(device, image)?;
+        let buffer = create_private_glyph_atlas(device, image.pixels().len())?;
+        let (upload, staging_allocated_bytes, staging_bytes) =
+            prepare_atlas_upload(device, image, AtlasUploadKind::Full, staging)?;
         let buffer_bytes = buffer.allocatedSize();
         let allocated_bytes = buffer_bytes
-            .checked_add(upload.buffer.allocatedSize())
+            .checked_add(staging_allocated_bytes)
             .ok_or(RenderError::AccountingOverflow)?;
-        self.image = Some(image.clone());
-        self.buffer = Some(buffer.clone());
-        self.current_bytes = buffer_bytes;
-        self.peak_bytes = self.peak_bytes.max(buffer_bytes);
-        self.allocations = next_allocations;
-        self.uploads = next_uploads;
+        let retained_bytes = buffer_bytes
+            .checked_add(staging_bytes)
+            .ok_or(RenderError::AccountingOverflow)?;
         Ok(AtlasPreparation {
-            buffer: Some(buffer),
+            buffer: Some(buffer.clone()),
             upload: Some(upload),
             allocated_bytes,
-            retained_bytes: allocated_bytes,
+            retained_bytes,
             uploaded_bytes: image.pixels().len(),
+            commit: AtlasCacheCommit::Replace {
+                image: image.clone(),
+                buffer,
+                current_bytes: buffer_bytes,
+                peak_bytes: self.peak_bytes.max(buffer_bytes),
+                allocations: next_allocations,
+                uploads: next_uploads,
+            },
         })
+    }
+
+    fn commit(&mut self, commit: AtlasCacheCommit) {
+        match commit {
+            AtlasCacheCommit::None => {}
+            AtlasCacheCommit::Reuse { reuses } => self.reuses = reuses,
+            AtlasCacheCommit::Advance { image, uploads } => {
+                self.image = Some(image);
+                self.uploads = uploads;
+            }
+            AtlasCacheCommit::Replace {
+                image,
+                buffer,
+                current_bytes,
+                peak_bytes,
+                allocations,
+                uploads,
+            } => {
+                self.image = Some(image);
+                self.buffer = Some(buffer);
+                self.current_bytes = current_bytes;
+                self.peak_bytes = peak_bytes;
+                self.allocations = allocations;
+                self.uploads = uploads;
+            }
+        }
     }
 
     #[cfg_attr(not(any(test, feature = "platform-spi")), allow(dead_code))]
@@ -285,10 +395,182 @@ struct AtlasPreparation {
     allocated_bytes: usize,
     retained_bytes: usize,
     uploaded_bytes: usize,
+    commit: AtlasCacheCommit,
+}
+
+#[derive(Default)]
+enum AtlasCacheCommit {
+    #[default]
+    None,
+    Reuse {
+        reuses: u64,
+    },
+    Advance {
+        image: alpine_scene::GlyphAtlasImage,
+        uploads: u64,
+    },
+    Replace {
+        image: alpine_scene::GlyphAtlasImage,
+        buffer: Buffer,
+        current_bytes: usize,
+        peak_bytes: usize,
+        allocations: u64,
+        uploads: u64,
+    },
 }
 
 struct AtlasUpload {
     buffer: Buffer,
+    copies: Box<[AtlasCopy]>,
+}
+
+impl AtlasUpload {
+    fn uploaded_bytes(&self) -> Result<usize, RenderError> {
+        self.copies.iter().try_fold(0_usize, |total, copy| {
+            total
+                .checked_add(copy.size)
+                .ok_or(RenderError::AccountingOverflow)
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AtlasCopy {
+    source_offset: usize,
+    destination_offset: usize,
+    size: usize,
+}
+
+#[derive(Clone, Copy)]
+enum AtlasUploadKind {
+    Full,
+    DeltaRows,
+    RecoveryRows,
+}
+
+#[derive(Clone, Copy)]
+enum AtlasMatch {
+    Same,
+    Different,
+}
+
+impl AtlasMatch {
+    const fn from_equality(matches: bool) -> Self {
+        if matches { Self::Same } else { Self::Different }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum AtlasPatchPresence {
+    Present,
+    Empty,
+}
+
+impl AtlasPatchPresence {
+    const fn from_presence(present: bool) -> Self {
+        if present { Self::Present } else { Self::Empty }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AtlasPatchCompatibility {
+    base_revision: AtlasMatch,
+    revision_ordering: std::cmp::Ordering,
+    extent: AtlasMatch,
+    storage: AtlasMatch,
+    row_patches: AtlasPatchPresence,
+}
+
+impl AtlasPatchCompatibility {
+    const fn is_compatible(self) -> bool {
+        matches!(self.base_revision, AtlasMatch::Same)
+            && matches!(self.revision_ordering, std::cmp::Ordering::Less)
+            && matches!(self.extent, AtlasMatch::Same)
+            && matches!(self.storage, AtlasMatch::Same)
+            && matches!(self.row_patches, AtlasPatchPresence::Present)
+    }
+}
+
+#[derive(Default)]
+struct AtlasStaging {
+    buffer: Option<Buffer>,
+    peak_bytes: usize,
+    allocations: u64,
+    #[cfg(feature = "platform-spi")]
+    trims: u64,
+    last_demand: usize,
+    #[cfg(feature = "platform-spi")]
+    underused_terminals: u16,
+}
+
+impl AtlasStaging {
+    fn current_bytes(&self) -> usize {
+        self.buffer.as_deref().map_or(0, MTLResource::allocatedSize)
+    }
+
+    fn prepare(
+        &mut self,
+        device: &Device,
+        atlas: &alpine_scene::GlyphAtlasImage,
+        kind: AtlasUploadKind,
+    ) -> Result<(AtlasUpload, usize), RenderError> {
+        let required = atlas_upload_bytes(atlas, kind)?;
+        let desired = atlas_staging_capacity(required).ok_or(RenderError::ResourceUnavailable {
+            stage: RenderStage::UploadBuffer,
+            requested_bytes: Some(required),
+        })?;
+        let needs_growth = self
+            .buffer
+            .as_deref()
+            .is_none_or(|buffer| buffer.length() < desired);
+        let allocated_bytes = if needs_growth {
+            let buffer = device
+                .newBufferWithLength_options(desired, MTLResourceOptions::StorageModeShared)
+                .ok_or(RenderError::ResourceUnavailable {
+                    stage: RenderStage::UploadBuffer,
+                    requested_bytes: Some(desired),
+                })?;
+            let allocated = buffer.allocatedSize();
+            self.buffer = Some(buffer);
+            self.allocations = self
+                .allocations
+                .checked_add(1)
+                .ok_or(RenderError::AccountingOverflow)?;
+            self.peak_bytes = self.peak_bytes.max(allocated);
+            allocated
+        } else {
+            0
+        };
+        let buffer = self
+            .buffer
+            .as_ref()
+            .ok_or(RenderError::SubmissionInvariantViolated)?;
+        let upload = write_atlas_upload(buffer.clone(), atlas, kind)?;
+        self.last_demand = required;
+        Ok((upload, allocated_bytes))
+    }
+
+    #[cfg(feature = "platform-spi")]
+    fn observe_terminal(&mut self) {
+        let desired = atlas_staging_capacity(self.last_demand).unwrap_or(0);
+        if self.current_bytes() <= desired {
+            self.underused_terminals = 0;
+            return;
+        }
+        self.underused_terminals = self.underused_terminals.saturating_add(1);
+        if self.underused_terminals >= ATLAS_STAGING_TRIM_TERMINALS {
+            self.pressure();
+        }
+    }
+
+    #[cfg(feature = "platform-spi")]
+    fn pressure(&mut self) {
+        if self.buffer.take().is_some() {
+            self.trims = self.trims.saturating_add(1);
+        }
+        self.last_demand = 0;
+        self.underused_terminals = 0;
+    }
 }
 
 #[cfg(feature = "platform-spi")]
@@ -310,6 +592,10 @@ impl PresentationSlots {
         let slot_upload_bytes = std::array::from_fn(|index| self.slots[index].upload_bytes());
         let slot_peak_upload_bytes =
             std::array::from_fn(|index| self.slots[index].peak_upload_bytes);
+        let slot_atlas_staging_bytes =
+            std::array::from_fn(|index| self.slots[index].atlas_staging.current_bytes());
+        let slot_peak_atlas_staging_bytes =
+            std::array::from_fn(|index| self.slots[index].atlas_staging.peak_bytes);
         NativePresentationSnapshot {
             occupied_slots: u8::try_from(
                 self.slots
@@ -330,6 +616,16 @@ impl PresentationSlots {
             atlas_uploads: 0,
             atlas_reuses: 0,
             atlas_pressure_releases: 0,
+            current_atlas_staging_bytes: slot_atlas_staging_bytes.iter().sum(),
+            peak_atlas_staging_bytes: slot_peak_atlas_staging_bytes.iter().sum(),
+            slot_atlas_staging_bytes,
+            slot_peak_atlas_staging_bytes,
+            atlas_staging_allocations: self
+                .slots
+                .iter()
+                .map(|slot| slot.atlas_staging.allocations)
+                .sum(),
+            atlas_staging_trims: self.slots.iter().map(|slot| slot.atlas_staging.trims).sum(),
         }
     }
 
@@ -351,6 +647,7 @@ impl PresentationSlots {
 #[cfg(feature = "platform-spi")]
 struct PresentationSlot {
     upload: Option<Buffer>,
+    atlas_staging: AtlasStaging,
     peak_upload_bytes: usize,
     upload_allocations: u64,
     upload_trims: u64,
@@ -367,6 +664,7 @@ impl PresentationSlot {
     fn new() -> Self {
         Self {
             upload: None,
+            atlas_staging: AtlasStaging::default(),
             peak_upload_bytes: 0,
             upload_allocations: 0,
             upload_trims: 0,
@@ -462,6 +760,7 @@ impl PresentationSlot {
     }
 
     fn observe_terminal(&mut self) {
+        self.atlas_staging.observe_terminal();
         let desired = presentation_upload_capacity(self.last_upload_demand).unwrap_or(0);
         let (underused_terminals, should_trim) = presentation_trim_decision(
             self.upload_bytes(),
@@ -481,6 +780,7 @@ impl PresentationSlot {
         }
         self.underused_terminals = 0;
         self.pressure_pending = false;
+        self.atlas_staging.pressure();
     }
 }
 
@@ -591,6 +891,17 @@ const fn presentation_upload_capacity(required: usize) -> Option<usize> {
     } else {
         match required.checked_next_power_of_two() {
             Some(capacity) if capacity <= PRESENTATION_UPLOAD_LIMIT => Some(capacity),
+            _ => None,
+        }
+    }
+}
+
+const fn atlas_staging_capacity(required: usize) -> Option<usize> {
+    if required == 0 {
+        None
+    } else {
+        match required.checked_next_power_of_two() {
+            Some(capacity) if capacity <= ATLAS_STAGING_LIMIT => Some(capacity),
             _ => None,
         }
     }
@@ -834,6 +1145,12 @@ impl NativeBackend {
         let terminal = injected_terminal_result(self.fault, terminal.0, frame);
         let (result, device_lost) = terminal;
 
+        if result.is_ok() {
+            self.atlas_cache.commit(resources.atlas_commit);
+        } else {
+            self.atlas_cache.pressure();
+        }
+
         NativeRenderAttempt {
             committed: true,
             device_lost,
@@ -894,6 +1211,7 @@ impl NativeBackend {
             frame,
             target.pixel_format(),
             &mut self.atlas_cache,
+            &mut self.presentation.slots[index].atlas_staging,
         ) {
             Ok(resources) => resources,
             Err(failure) => {
@@ -1037,7 +1355,9 @@ impl NativeBackend {
             _atlas: resources.atlas,
             _atlas_upload: resources.atlas_upload,
         });
+        let atlas_commit = resources.atlas_commit;
         command.commit();
+        self.atlas_cache.commit(atlas_commit);
         drawable.present();
         NativeDrawableSubmitAttempt::Submitted(NativeDrawableSubmission { id })
     }
@@ -1060,6 +1380,7 @@ impl NativeBackend {
             return Err(RenderError::SubmissionInvariantViolated);
         };
         slot.observe_terminal();
+        let terminal_failed = terminal.result.is_err();
         let attempt = NativeDrawableAttempt {
             committed: true,
             present_called: true,
@@ -1068,6 +1389,9 @@ impl NativeBackend {
             resources: pending.resources,
             result: terminal.result,
         };
+        if terminal_failed {
+            self.atlas_cache.pressure();
+        }
         if self.atlas_pressure_pending && !self.presentation.has_pending() {
             self.atlas_cache.pressure();
             self.atlas_pressure_pending = false;
@@ -1360,6 +1684,7 @@ struct FrameResources {
     readback: Buffer,
     upload: Option<Buffer>,
     atlas_uploaded_bytes: usize,
+    atlas_commit: AtlasCacheCommit,
     usage: FrameResourceUsage,
     #[cfg(test)]
     _lease: ResourceLease,
@@ -1377,6 +1702,7 @@ struct DrawableResources {
     atlas_uploaded_bytes: usize,
     atlas: Option<Buffer>,
     atlas_upload: Option<AtlasUpload>,
+    atlas_commit: AtlasCacheCommit,
 }
 
 #[cfg(feature = "platform-spi")]
@@ -1387,6 +1713,7 @@ impl DrawableResources {
         frame: &ValidatedFrame,
         expected_pixel_format: MTLPixelFormat,
         atlas_cache: &mut GlyphAtlasCache,
+        atlas_staging: &mut AtlasStaging,
     ) -> Result<Self, ResourceBuildFailure> {
         let descriptor = frame.descriptor();
         if texture.width() != descriptor.pixel_width() as usize
@@ -1415,7 +1742,7 @@ impl DrawableResources {
             AtlasPreparation::default()
         } else {
             atlas_cache
-                .prepare(device, frame.glyph_atlas())
+                .prepare(device, frame.glyph_atlas(), Some(atlas_staging))
                 .map_err(|error| ResourceBuildFailure {
                     error,
                     usage: FrameResourceUsage::default(),
@@ -1434,6 +1761,7 @@ impl DrawableResources {
             atlas_uploaded_bytes: atlas.uploaded_bytes,
             atlas: atlas.buffer,
             atlas_upload: atlas.upload,
+            atlas_commit: atlas.commit,
         })
     }
 }
@@ -1502,7 +1830,7 @@ impl FrameResources {
             AtlasPreparation::default()
         } else {
             atlas_cache
-                .prepare(device, frame.glyph_atlas())
+                .prepare(device, frame.glyph_atlas(), None)
                 .map_err(|error| ResourceBuildFailure {
                     error,
                     usage: FrameResourceUsage {
@@ -1645,6 +1973,7 @@ impl FrameResources {
             readback,
             upload,
             atlas_uploaded_bytes: atlas.uploaded_bytes,
+            atlas_commit: atlas.commit,
             usage,
             #[cfg(test)]
             _lease: lease,
@@ -1742,56 +2071,196 @@ fn encode_atlas_upload(
     upload: &AtlasUpload,
     buffer: &ProtocolObject<dyn MTLBuffer>,
 ) -> Result<(), RenderError> {
-    if upload.buffer.length() != buffer.length() {
+    if upload.copies.is_empty() {
         return Err(RenderError::SubmissionInvariantViolated);
     }
+    validate_atlas_upload_ranges(upload, buffer.length())?;
     let encoder = command
         .blitCommandEncoder()
         .ok_or(RenderError::EncoderUnavailable {
             stage: RenderStage::BlitEncoder,
         })?;
-    // SAFETY: Source and destination have the same checked nonzero length and
-    // both resources remain retained until the command reaches a terminal state.
-    unsafe {
-        encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
-            &upload.buffer,
-            0,
-            buffer,
-            0,
-            buffer.length(),
-        );
+    for copy in &upload.copies {
+        // SAFETY: `validate_atlas_upload_ranges` proved both retained buffer
+        // ranges before the encoder was acquired. The buffers remain alive
+        // through command completion.
+        unsafe {
+            encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+                &upload.buffer,
+                copy.source_offset,
+                buffer,
+                copy.destination_offset,
+                copy.size,
+            );
+        }
     }
     encoder.endEncoding();
     Ok(())
 }
 
-fn create_glyph_atlas(
-    device: &Device,
-    atlas: &alpine_scene::GlyphAtlasImage,
-) -> Result<(Buffer, AtlasUpload), RenderError> {
-    let byte_len = atlas.pixels().len();
+fn validate_atlas_upload_ranges(
+    upload: &AtlasUpload,
+    destination_length: usize,
+) -> Result<(), RenderError> {
+    for copy in &upload.copies {
+        let source_end = copy
+            .source_offset
+            .checked_add(copy.size)
+            .ok_or(RenderError::AccountingOverflow)?;
+        let destination_end = copy
+            .destination_offset
+            .checked_add(copy.size)
+            .ok_or(RenderError::AccountingOverflow)?;
+        if source_end > upload.buffer.length() || destination_end > destination_length {
+            return Err(RenderError::SubmissionInvariantViolated);
+        }
+    }
+    Ok(())
+}
+
+fn create_private_glyph_atlas(device: &Device, byte_len: usize) -> Result<Buffer, RenderError> {
     let buffer = device
         .newBufferWithLength_options(byte_len, MTLResourceOptions::StorageModePrivate)
         .ok_or(RenderError::ResourceUnavailable {
             stage: RenderStage::UploadBuffer,
             requested_bytes: Some(byte_len),
         })?;
-    let source = NonNull::new(atlas.pixels().as_ptr().cast_mut().cast::<c_void>())
-        .ok_or(RenderError::SubmissionInvariantViolated)?;
-    // SAFETY: The immutable atlas allocation contains exactly `byte_len`
-    // initialized bytes and Metal copies them into owned shared storage.
-    let staging = unsafe {
-        device.newBufferWithBytes_length_options(
-            source,
-            byte_len,
-            MTLResourceOptions::StorageModeShared,
-        )
+    Ok(buffer)
+}
+
+fn prepare_atlas_upload(
+    device: &Device,
+    atlas: &alpine_scene::GlyphAtlasImage,
+    kind: AtlasUploadKind,
+    staging: Option<&mut AtlasStaging>,
+) -> Result<(AtlasUpload, usize, usize), RenderError> {
+    if let Some(staging) = staging {
+        let (upload, allocated_bytes) = staging.prepare(device, atlas, kind)?;
+        return Ok((upload, allocated_bytes, staging.current_bytes()));
     }
-    .ok_or(RenderError::ResourceUnavailable {
-        stage: RenderStage::UploadBuffer,
-        requested_bytes: Some(byte_len),
-    })?;
-    Ok((buffer, AtlasUpload { buffer: staging }))
+    let required = atlas_upload_bytes(atlas, kind)?;
+    let buffer = device
+        .newBufferWithLength_options(required, MTLResourceOptions::StorageModeShared)
+        .ok_or(RenderError::ResourceUnavailable {
+            stage: RenderStage::UploadBuffer,
+            requested_bytes: Some(required),
+        })?;
+    let retained_bytes = buffer.allocatedSize();
+    let upload = write_atlas_upload(buffer, atlas, kind)?;
+    Ok((upload, retained_bytes, retained_bytes))
+}
+
+fn atlas_upload_bytes(
+    atlas: &alpine_scene::GlyphAtlasImage,
+    kind: AtlasUploadKind,
+) -> Result<usize, RenderError> {
+    if matches!(kind, AtlasUploadKind::Full) {
+        return Ok(atlas.pixels().len());
+    }
+    let bytes = atlas_upload_patches(atlas, kind)
+        .iter()
+        .try_fold(0_usize, |total, patch| {
+            total
+                .checked_add(patch.pixels().len())
+                .ok_or(RenderError::AccountingOverflow)
+        })?;
+    if bytes == 0 {
+        return Err(RenderError::SubmissionInvariantViolated);
+    }
+    Ok(bytes)
+}
+
+fn atlas_upload_patches(
+    atlas: &alpine_scene::GlyphAtlasImage,
+    kind: AtlasUploadKind,
+) -> &[alpine_scene::GlyphAtlasRowPatch] {
+    match kind {
+        AtlasUploadKind::Full => &[],
+        AtlasUploadKind::DeltaRows => atlas.delta_row_patches(),
+        AtlasUploadKind::RecoveryRows => atlas.row_patches(),
+    }
+}
+
+fn write_atlas_upload(
+    buffer: Buffer,
+    atlas: &alpine_scene::GlyphAtlasImage,
+    kind: AtlasUploadKind,
+) -> Result<AtlasUpload, RenderError> {
+    let required = atlas_upload_bytes(atlas, kind)?;
+    if buffer.length() < required {
+        return Err(RenderError::SubmissionInvariantViolated);
+    }
+    let destination = buffer.contents().cast::<u8>().as_ptr();
+    if matches!(kind, AtlasUploadKind::Full) {
+        // SAFETY: Scene admission proves the immutable base has exactly the
+        // atlas byte length and the shared staging buffer is large enough.
+        unsafe { std::ptr::copy_nonoverlapping(atlas.pixels().as_ptr(), destination, required) };
+        let width =
+            usize::try_from(atlas.width().get()).map_err(|_| RenderError::AccountingOverflow)?;
+        for patch in atlas.row_patches() {
+            let offset = usize::try_from(patch.start_row())
+                .ok()
+                .and_then(|row| row.checked_mul(width))
+                .ok_or(RenderError::AccountingOverflow)?;
+            // SAFETY: Scene admission validates every complete-row patch inside
+            // the full atlas allocation.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    patch.pixels().as_ptr(),
+                    destination.add(offset),
+                    patch.pixels().len(),
+                );
+            };
+        }
+        return Ok(AtlasUpload {
+            buffer,
+            copies: vec![AtlasCopy {
+                source_offset: 0,
+                destination_offset: 0,
+                size: required,
+            }]
+            .into_boxed_slice(),
+        });
+    }
+
+    let patches = atlas_upload_patches(atlas, kind);
+    let mut copies = Vec::new();
+    copies
+        .try_reserve_exact(patches.len())
+        .map_err(|_| RenderError::ResourceUnavailable {
+            stage: RenderStage::UploadBuffer,
+            requested_bytes: Some(patches.len().saturating_mul(size_of::<AtlasCopy>())),
+        })?;
+    let width =
+        usize::try_from(atlas.width().get()).map_err(|_| RenderError::AccountingOverflow)?;
+    let mut source_offset = 0_usize;
+    for patch in patches {
+        let destination_offset = usize::try_from(patch.start_row())
+            .ok()
+            .and_then(|row| row.checked_mul(width))
+            .ok_or(RenderError::AccountingOverflow)?;
+        copies.push(AtlasCopy {
+            source_offset,
+            destination_offset,
+            size: patch.pixels().len(),
+        });
+        // SAFETY: `required` is the checked sum of patch bytes, source offsets
+        // are monotonic, and the shared staging buffer is large enough.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                patch.pixels().as_ptr(),
+                destination.add(source_offset),
+                patch.pixels().len(),
+            );
+        };
+        source_offset = source_offset
+            .checked_add(patch.pixels().len())
+            .ok_or(RenderError::AccountingOverflow)?;
+    }
+    Ok(AtlasUpload {
+        buffer,
+        copies: copies.into_boxed_slice(),
+    })
 }
 
 fn create_solid_binding_atlas(device: &Device) -> Result<Buffer, RenderError> {
@@ -1961,7 +2430,7 @@ fn injected_terminal_result(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 pub(crate) mod tests {
     #[cfg(feature = "platform-spi")]
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1970,7 +2439,8 @@ pub(crate) mod tests {
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_renderer::Renderer;
     use alpine_scene::{
-        AtlasBounds, Glyph, GlyphAtlasImage, Primitive, Scene, SceneBuilder, SceneRevision,
+        AtlasBounds, Glyph, GlyphAtlasImage, GlyphAtlasRowPatch, Primitive, Scene, SceneBuilder,
+        SceneRevision,
     };
     #[cfg(feature = "platform-spi")]
     use objc2::{
@@ -2330,17 +2800,27 @@ pub(crate) mod tests {
         revision: u64,
         pixels: Arc<[u8]>,
     ) -> Result<(Scene, OffscreenDescriptor), Box<dyn Error>> {
+        glyph_scene_with_atlas(
+            revision,
+            GlyphAtlasImage::new(
+                revision,
+                NonZeroU32::new(3).ok_or("atlas width")?,
+                NonZeroU32::new(2).ok_or("atlas height")?,
+                pixels,
+            )?,
+        )
+    }
+
+    fn glyph_scene_with_atlas(
+        revision: u64,
+        atlas: GlyphAtlasImage,
+    ) -> Result<(Scene, OffscreenDescriptor), Box<dyn Error>> {
         let mut builder = SceneBuilder::new(SceneRevision::new(revision), size(3.0, 1.0)?);
         builder.push(Primitive::Quad {
             bounds: Rect::new(point(0.0, 0.0)?, size(3.0, 1.0)?),
             color: color(1.0, 0.0, 0.0, 1.0)?,
         });
-        builder.set_glyph_atlas(GlyphAtlasImage::new(
-            revision,
-            NonZeroU32::new(3).ok_or("atlas width")?,
-            NonZeroU32::new(1).ok_or("atlas height")?,
-            pixels,
-        )?)?;
+        builder.set_glyph_atlas(atlas)?;
         for (source_x, destination_x) in [0_u32, 1, 2].into_iter().zip([0.0_f32, 1.0, 2.0]) {
             builder.push_glyph(Glyph::new(
                 Rect::new(point(destination_x, 0.0)?, size(1.0, 1.0)?),
@@ -2359,7 +2839,7 @@ pub(crate) mod tests {
 
     #[test]
     fn renders_a8_glyphs_and_reuses_only_identical_atlas_storage() -> Result<(), Box<dyn Error>> {
-        let pixels: Arc<[u8]> = Arc::from([0_u8, 128, 255]);
+        let pixels: Arc<[u8]> = Arc::from([0_u8, 128, 255, 0, 0, 0]);
         let (scene, descriptor) = glyph_scene(81, Arc::clone(&pixels))?;
         let expected = ValidatedFrame::new(&scene, descriptor)?.reference_image()?;
         assert_eq!(expected.pixel(0, 0), Some([0, 0, 255, 255]));
@@ -2373,10 +2853,10 @@ pub(crate) mod tests {
             first.report().instance_upload_bytes,
             4 * size_of::<crate::LoweredPaint>()
         );
-        assert_eq!(first.report().atlas_upload_bytes, 3);
+        assert_eq!(first.report().atlas_upload_bytes, 6);
         assert_eq!(
             first.report().uploaded_bytes,
-            first.report().instance_upload_bytes + 3
+            first.report().instance_upload_bytes + 6
         );
 
         let reused = backend.render_offscreen(&scene, descriptor)?;
@@ -2398,12 +2878,62 @@ pub(crate) mod tests {
         assert_eq!(backend.native.atlas_cache.uploads, 1);
         assert_eq!(backend.native.atlas_cache.reuses, 33);
 
-        let (replacement, replacement_descriptor) = glyph_scene(81, Arc::from([255_u8, 128, 0]))?;
-        let replaced = backend.render_offscreen(&replacement, replacement_descriptor)?;
-        assert_eq!(replaced.report().atlas_upload_bytes, 3);
-        assert_eq!(backend.native.atlas_cache.allocations, 2);
+        let row_replacement = scene.glyph_atlas().ok_or("glyph atlas")?.with_row_patches(
+            81,
+            82,
+            Arc::from([GlyphAtlasRowPatch::new(
+                0,
+                NonZeroU32::new(1).ok_or("row count")?,
+                Arc::from([255_u8, 128, 0]),
+            )]),
+        )?;
+        let (row_scene, row_descriptor) = glyph_scene_with_atlas(82, row_replacement.clone())?;
+        let row_expected = ValidatedFrame::new(&row_scene, row_descriptor)?.reference_image()?;
+        let row_updated = backend.render_offscreen(&row_scene, row_descriptor)?;
+        assert_pixels_within(row_updated.image(), &row_expected, 1);
+        assert_eq!(row_updated.report().atlas_upload_bytes, 3);
+        assert_eq!(backend.native.atlas_cache.allocations, 1);
         assert_eq!(backend.native.atlas_cache.uploads, 2);
-        assert!(backend.native.atlas_cache.current_bytes >= 3);
+
+        let second_row = row_replacement.advance_with_row_patches(
+            82,
+            83,
+            Arc::from([GlyphAtlasRowPatch::new(
+                1,
+                NonZeroU32::new(1).ok_or("row count")?,
+                Arc::from([0_u8, 255, 0]),
+            )]),
+        )?;
+        let (second_row_scene, second_row_descriptor) = glyph_scene_with_atlas(83, second_row)?;
+        let second_row_frame = ValidatedFrame::new(&second_row_scene, second_row_descriptor)?;
+        let second_row_expected = second_row_frame.reference_image()?;
+        backend.native.fault = super::NativeFault::BlitEncoder;
+        let rejected = backend.native.render(&second_row_frame);
+        assert!(!rejected.committed);
+        assert_eq!(backend.native.atlas_cache.uploads, 2);
+        assert_eq!(
+            backend
+                .native
+                .atlas_cache
+                .image
+                .as_ref()
+                .map(alpine_scene::GlyphAtlasImage::revision),
+            Some(82)
+        );
+        backend.native.fault = super::NativeFault::None;
+        let retried = backend.render_offscreen(&second_row_scene, second_row_descriptor)?;
+        assert_pixels_within(retried.image(), &second_row_expected, 1);
+        assert_eq!(retried.report().atlas_upload_bytes, 3);
+        assert_eq!(backend.native.atlas_cache.allocations, 1);
+        assert_eq!(backend.native.atlas_cache.uploads, 3);
+
+        let (replacement, replacement_descriptor) =
+            glyph_scene(81, Arc::from([255_u8, 128, 0, 0, 0, 0]))?;
+        let replaced = backend.render_offscreen(&replacement, replacement_descriptor)?;
+        assert_eq!(replaced.report().atlas_upload_bytes, 6);
+        assert_eq!(backend.native.atlas_cache.allocations, 2);
+        assert_eq!(backend.native.atlas_cache.uploads, 4);
+        assert!(backend.native.atlas_cache.current_bytes >= 6);
         assert_eq!(
             backend.native.atlas_cache.peak_bytes,
             backend.native.atlas_cache.current_bytes
@@ -2543,9 +3073,13 @@ pub(crate) mod tests {
 
     #[cfg(feature = "platform-spi")]
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "pressure, in-flight ownership, full resynchronization, and delta reuse form one native lifecycle journey"
+    )]
     fn atlas_pressure_release_preserves_in_flight_drawable_ownership() -> Result<(), Box<dyn Error>>
     {
-        let (scene, descriptor) = glyph_scene(82, Arc::from([0_u8, 128, 255]))?;
+        let (scene, descriptor) = glyph_scene(82, Arc::from([0_u8, 128, 255, 0, 0, 0]))?;
         let frame = ValidatedFrame::new(&scene, descriptor)?;
         let mut backend = validation_backend(BlendConfiguration::PremultipliedSourceOver)?;
         // SAFETY: The dimensions come from a validated frame and the fixture
@@ -2580,11 +3114,14 @@ pub(crate) mod tests {
         assert_eq!(occupied.occupied_slots, 1);
         assert_eq!(occupied.atlas_allocations, 1);
         assert_eq!(occupied.atlas_uploads, 1);
-        assert!(occupied.current_atlas_bytes >= 3);
+        assert!(occupied.current_atlas_bytes >= 6);
+        assert!(occupied.current_atlas_staging_bytes >= 6);
+        assert_eq!(occupied.atlas_staging_allocations, 1);
 
         backend.native.release_presentation_uploads_on_pressure();
         let released = backend.native.presentation_snapshot();
-        assert!(released.current_atlas_bytes >= 3);
+        assert!(released.current_atlas_bytes >= 6);
+        assert!(released.current_atlas_staging_bytes >= 6);
         assert_eq!(released.atlas_pressure_releases, 0);
         assert_eq!(released.occupied_slots, 1);
         assert!(backend.native.wait_drawable(first.id));
@@ -2593,9 +3130,11 @@ pub(crate) mod tests {
             .poll_drawable(first.id)?
             .ok_or("in-flight glyph drawable did not complete after pressure")?;
         assert_eq!(first.result, Ok(()));
-        assert_eq!(first.operations.atlas_upload_bytes, 3);
+        assert_eq!(first.operations.atlas_upload_bytes, 6);
         let drained = backend.native.presentation_snapshot();
         assert_eq!(drained.current_atlas_bytes, 0);
+        assert_eq!(drained.current_atlas_staging_bytes, 0);
+        assert_eq!(drained.atlas_staging_trims, 1);
         assert_eq!(drained.atlas_pressure_releases, 1);
 
         let super::NativeDrawableSubmitAttempt::Submitted(second) = backend.native.submit_drawable(
@@ -2612,11 +3151,47 @@ pub(crate) mod tests {
             .poll_drawable(second.id)?
             .ok_or("replacement glyph drawable did not complete")?;
         assert_eq!(second.result, Ok(()));
-        assert_eq!(second.operations.atlas_upload_bytes, 3);
+        assert_eq!(second.operations.atlas_upload_bytes, 6);
         let replaced = backend.native.presentation_snapshot();
         assert_eq!(replaced.atlas_allocations, 2);
         assert_eq!(replaced.atlas_uploads, 2);
         assert_eq!(replaced.atlas_reuses, 0);
+        assert_eq!(replaced.atlas_staging_allocations, 2);
+
+        let row_replacement = scene.glyph_atlas().ok_or("glyph atlas")?.with_row_patches(
+            82,
+            83,
+            Arc::from([GlyphAtlasRowPatch::new(
+                0,
+                NonZeroU32::new(1).ok_or("row count")?,
+                Arc::from([255_u8, 128, 0]),
+            )]),
+        )?;
+        let (row_scene, row_descriptor) = glyph_scene_with_atlas(83, row_replacement)?;
+        let row_frame = ValidatedFrame::new(&row_scene, row_descriptor)?;
+        let super::NativeDrawableSubmitAttempt::Submitted(row_submission) =
+            backend.native.submit_drawable(
+                0,
+                &row_frame,
+                &texture,
+                ProtocolObject::from_ref(&*drawable),
+            )
+        else {
+            return Err("row glyph drawable was rejected".into());
+        };
+        assert!(backend.native.wait_drawable(row_submission.id));
+        let row_attempt = backend
+            .native
+            .poll_drawable(row_submission.id)?
+            .ok_or("row glyph drawable did not complete")?;
+        assert_eq!(row_attempt.result, Ok(()));
+        assert_eq!(row_attempt.operations.atlas_upload_bytes, 3);
+        let row_reused = backend.native.presentation_snapshot();
+        assert_eq!(row_reused.atlas_allocations, 2);
+        assert_eq!(row_reused.atlas_staging_allocations, 2);
+        assert!(row_reused.slot_atlas_staging_bytes[0] >= 6);
+        assert!(row_reused.slot_peak_atlas_staging_bytes[0] >= 6);
+        assert!(row_reused.peak_atlas_staging_bytes >= 6);
         Ok(())
     }
 
@@ -3012,12 +3587,14 @@ pub(crate) mod tests {
             .device
             .newTextureWithDescriptor(&wrong_extent_descriptor)
             .ok_or("wrong-extent texture")?;
+        let mut extent_staging = super::AtlasStaging::default();
         let extent_failure = DrawableResources::new(
             &initialized.device,
             &wrong_extent,
             &frame,
             MTLPixelFormat::BGRA8Unorm_sRGB,
             &mut super::GlyphAtlasCache::new(),
+            &mut extent_staging,
         )
         .err()
         .ok_or("wrong extent must fail")?;
@@ -3048,12 +3625,14 @@ pub(crate) mod tests {
             .device
             .newTextureWithDescriptor(&wrong_format_descriptor)
             .ok_or("wrong-format texture")?;
+        let mut format_staging = super::AtlasStaging::default();
         let format_failure = DrawableResources::new(
             &initialized.device,
             &wrong_format,
             &frame,
             MTLPixelFormat::BGRA8Unorm_sRGB,
             &mut super::GlyphAtlasCache::new(),
+            &mut format_staging,
         )
         .err()
         .ok_or("wrong format must fail")?;
@@ -3418,6 +3997,163 @@ pub(crate) mod tests {
         assert!(qualify_resident_plateau(&late_growth, 16_384).is_err());
         assert!(qualify_resident_plateau(&bounded[..64], 16_384).is_err());
         assert!(qualify_resident_plateau(&bounded, 0).is_err());
+    }
+
+    #[test]
+    fn atlas_patch_compatibility_and_staging_limit_boundaries_are_exact() {
+        use std::cmp::Ordering;
+
+        use super::{
+            AtlasMatch::{Different, Same},
+            AtlasPatchCompatibility,
+            AtlasPatchPresence::{Empty, Present},
+        };
+
+        let compatible = AtlasPatchCompatibility {
+            base_revision: Same,
+            revision_ordering: Ordering::Less,
+            extent: Same,
+            storage: Same,
+            row_patches: Present,
+        };
+        assert!(compatible.is_compatible());
+        for rejected in [
+            AtlasPatchCompatibility {
+                base_revision: Different,
+                ..compatible
+            },
+            AtlasPatchCompatibility {
+                revision_ordering: Ordering::Equal,
+                ..compatible
+            },
+            AtlasPatchCompatibility {
+                revision_ordering: Ordering::Greater,
+                ..compatible
+            },
+            AtlasPatchCompatibility {
+                extent: Different,
+                ..compatible
+            },
+            AtlasPatchCompatibility {
+                storage: Different,
+                ..compatible
+            },
+            AtlasPatchCompatibility {
+                row_patches: Empty,
+                ..compatible
+            },
+        ] {
+            assert!(!rejected.is_compatible());
+        }
+
+        assert_eq!(super::ATLAS_STAGING_LIMIT, 16_777_216);
+        assert_eq!(super::atlas_staging_capacity(1), Some(1));
+        assert_eq!(
+            super::atlas_staging_capacity(super::ATLAS_STAGING_LIMIT),
+            Some(super::ATLAS_STAGING_LIMIT)
+        );
+        assert_eq!(
+            super::atlas_staging_capacity(super::ATLAS_STAGING_LIMIT + 1),
+            None
+        );
+    }
+
+    #[cfg(feature = "platform-spi")]
+    #[test]
+    fn atlas_staging_reuses_exact_capacity_and_trims_after_sustained_underuse()
+    -> Result<(), Box<dyn Error>> {
+        let (scene, _) = glyph_scene(141, Arc::from([0_u8, 128, 255, 0, 0, 0]))?;
+        let atlas = scene.glyph_atlas().ok_or("glyph atlas")?;
+        let row_atlas = atlas.with_row_patches(
+            141,
+            142,
+            Arc::from([GlyphAtlasRowPatch::new(
+                0,
+                NonZeroU32::new(1).ok_or("row count")?,
+                Arc::from([255_u8, 128, 0]),
+            )]),
+        )?;
+        let backend = validation_backend(BlendConfiguration::PremultipliedSourceOver)?;
+        let device = &backend.native.initialized.device;
+        let mut staging = super::AtlasStaging::default();
+
+        let (_, first_allocation) = staging.prepare(device, atlas, super::AtlasUploadKind::Full)?;
+        let full_capacity = staging.current_bytes();
+        assert!(first_allocation >= atlas.pixels().len());
+        assert_eq!(first_allocation, full_capacity);
+        assert!(full_capacity <= super::ATLAS_STAGING_LIMIT);
+        assert_eq!(staging.allocations, 1);
+
+        let (_, repeated_allocation) =
+            staging.prepare(device, atlas, super::AtlasUploadKind::Full)?;
+        assert_eq!(repeated_allocation, 0);
+        assert_eq!(staging.current_bytes(), full_capacity);
+        assert_eq!(staging.allocations, 1);
+
+        let (_, delta_allocation) =
+            staging.prepare(device, &row_atlas, super::AtlasUploadKind::DeltaRows)?;
+        assert_eq!(delta_allocation, 0);
+        assert_eq!(staging.last_demand, 3);
+        for _ in 1..super::ATLAS_STAGING_TRIM_TERMINALS {
+            staging.observe_terminal();
+        }
+        assert_eq!(staging.current_bytes(), full_capacity);
+        assert_eq!(staging.trims, 0);
+
+        staging.observe_terminal();
+        assert_eq!(staging.current_bytes(), 0);
+        assert_eq!(staging.trims, 1);
+        assert_eq!(staging.underused_terminals, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn atlas_blit_rejects_invalid_ranges_before_encoder_acquisition() -> Result<(), Box<dyn Error>>
+    {
+        use objc2_metal::{MTLCommandQueue as _, MTLDevice as _, MTLResourceOptions};
+
+        let backend = validation_backend(BlendConfiguration::PremultipliedSourceOver)?;
+        let device = &backend.native.initialized.device;
+        let queue = device.newCommandQueue().ok_or("command queue")?;
+        let command = queue.commandBuffer().ok_or("command buffer")?;
+        let source = device
+            .newBufferWithLength_options(1, MTLResourceOptions::StorageModeShared)
+            .ok_or("atlas source")?;
+        let destination = device
+            .newBufferWithLength_options(1, MTLResourceOptions::StorageModePrivate)
+            .ok_or("atlas destination")?;
+        let upload = super::AtlasUpload {
+            buffer: source,
+            copies: vec![super::AtlasCopy {
+                source_offset: 1,
+                destination_offset: 0,
+                size: 1,
+            }]
+            .into_boxed_slice(),
+        };
+
+        assert_eq!(
+            super::encode_atlas_upload(&command, &upload, &destination),
+            Err(RenderError::SubmissionInvariantViolated)
+        );
+
+        let valid_source = device
+            .newBufferWithLength_options(1, MTLResourceOptions::StorageModeShared)
+            .ok_or("valid atlas source")?;
+        let invalid_destination_upload = super::AtlasUpload {
+            buffer: valid_source,
+            copies: vec![super::AtlasCopy {
+                source_offset: 0,
+                destination_offset: 1,
+                size: 1,
+            }]
+            .into_boxed_slice(),
+        };
+        assert_eq!(
+            super::encode_atlas_upload(&command, &invalid_destination_upload, &destination),
+            Err(RenderError::SubmissionInvariantViolated)
+        );
+        Ok(())
     }
 
     #[test]
