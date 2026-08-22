@@ -2698,9 +2698,8 @@ impl StudioApp {
             .as_ref()
             .filter(|atlas| atlas.width() == dimension && atlas.height() == dimension)
             .map_or(u64::MAX, GlyphAtlasImage::revision);
-        let publication = self.profile_atlas_publication_result(
-            self.glyph_atlas.publication_since(source_revision),
-        )?;
+        let atlas_publication = self.glyph_atlas.publication_since(source_revision);
+        let publication = self.profile_atlas_publication_result(atlas_publication)?;
         match publication {
             alpine_text_layout::GlyphAtlasPublication::Unchanged { revision } => {
                 self.published_atlas_source_revision = revision;

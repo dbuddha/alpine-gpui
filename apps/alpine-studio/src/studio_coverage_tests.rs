@@ -281,6 +281,14 @@ fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_
 
 #[test]
 fn release_profile_event_kind_vocabulary_is_stable() -> Result<(), Box<dyn Error>> {
+    StudioProfiler::default().record(StudioSignpost::new(
+        StudioSignpostStage::EventDispatchBegin,
+        1,
+        0,
+        1,
+        1,
+        [0; 3],
+    ));
     let timestamp = EventTimestamp::new(40);
     let position = Point::new(3.0, 4.0).ok_or("pointer position")?;
     let extent = SurfaceExtent::new(40.0, 20.0, 2.0)?;
