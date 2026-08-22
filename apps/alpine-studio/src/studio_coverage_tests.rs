@@ -297,10 +297,10 @@ fn glyph_geometry_and_atlas_publication_axes_are_exact() -> Result<(), Box<dyn E
     let pending = app.collect_glyphs(&layout, font, 11.0, 20.0, clip)?;
     assert_eq!(pending.len(), 1);
     let bounds = pending[0].bounds;
-    assert_eq!(bounds.origin().x(), 21.0);
-    assert_eq!(bounds.origin().y(), 17.0);
-    assert_eq!(bounds.size().width(), 3.0);
-    assert_eq!(bounds.size().height(), 4.0);
+    assert!((bounds.origin().x() - 21.0).abs() < f32::EPSILON);
+    assert!((bounds.origin().y() - 17.0).abs() < f32::EPSILON);
+    assert!((bounds.size().width() - 3.0).abs() < f32::EPSILON);
+    assert!((bounds.size().height() - 4.0).abs() < f32::EPSILON);
 
     app.publish_atlas_if_needed(&pending)?;
     assert_eq!(app.atlas_revision, 1);
