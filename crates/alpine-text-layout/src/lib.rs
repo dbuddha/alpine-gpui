@@ -1000,62 +1000,69 @@ impl<const CAPACITY: usize> DirtyAtlasRows<CAPACITY> {
         if self.is_empty() {
             self.source_revision = source_revision;
         }
-        let pending = DirtyRowRange { start, end };
-        loop {
-            let mut merged = pending;
-            let mut index = 0;
-            while index < self.len {
-                let current = self.ranges[index];
-                if current.end < merged.start {
-                    index += 1;
-                    continue;
-                }
-                if merged.end < current.start {
-                    break;
-                }
-                merged.start = merged.start.min(current.start);
-                merged.end = merged.end.max(current.end);
-                self.remove(index);
-            }
-
-            if self.len < CAPACITY {
-                let mut shifted = self.len;
-                while shifted > index {
-                    self.ranges[shifted] = self.ranges[shifted - 1];
-                    shifted -= 1;
-                }
-                self.ranges[index] = merged;
-                self.len += 1;
-                return;
-            }
-
-            let mut smallest_gap = u32::MAX;
-            let mut merge_at = 0;
-            let mut pair = 0;
-            while pair + 1 < self.len {
-                let gap = self.ranges[pair + 1]
-                    .start
-                    .saturating_sub(self.ranges[pair].end);
-                if gap < smallest_gap {
-                    smallest_gap = gap;
-                    merge_at = pair;
-                }
-                pair += 1;
-            }
-            self.ranges[merge_at] = DirtyRowRange {
-                start: self.ranges[merge_at].start,
-                end: self.ranges[merge_at + 1].end,
-            };
-            self.remove(merge_at + 1);
+        if CAPACITY == 0 {
+            self.mark_full(source_revision);
+            return;
         }
+
+        let mut merged = DirtyRowRange { start, end };
+        let mut index = self.coalesce_overlaps(&mut merged);
+        if self.len == CAPACITY {
+            if self.len == 1 {
+                merged.start = merged.start.min(self.ranges[0].start);
+                merged.end = merged.end.max(self.ranges[0].end);
+                self.ranges[0] = DirtyRowRange::default();
+                self.len = 0;
+            } else {
+                let merge_at = self.ranges[..self.len]
+                    .windows(2)
+                    .enumerate()
+                    .min_by_key(|(_, pair)| pair[1].start.saturating_sub(pair[0].end))
+                    .map_or(0, |(pair, _)| pair);
+                self.ranges[merge_at].end = self.ranges[merge_at + 1].end;
+                self.remove(merge_at + 1);
+            }
+            index = self.coalesce_overlaps(&mut merged);
+        }
+
+        self.ranges.copy_within(index..self.len, index + 1);
+        self.ranges[index] = merged;
+        self.len += 1;
+    }
+
+    fn coalesce_overlaps(&mut self, merged: &mut DirtyRowRange) -> usize {
+        let original_len = self.len;
+        let mut insertion = original_len;
+        let mut remove_start = original_len;
+        let mut remove_end = original_len;
+
+        for (index, current) in self.ranges[..original_len].iter().copied().enumerate() {
+            if current.end < merged.start {
+                insertion = index + 1;
+                continue;
+            }
+            if merged.end < current.start {
+                insertion = index;
+                break;
+            }
+            if remove_start == original_len {
+                remove_start = index;
+                insertion = index;
+            }
+            remove_end = index + 1;
+            merged.start = merged.start.min(current.start);
+            merged.end = merged.end.max(current.end);
+        }
+
+        self.ranges
+            .copy_within(remove_end..original_len, remove_start);
+        self.len -= remove_end - remove_start;
+        self.ranges[self.len..original_len].fill(DirtyRowRange::default());
+        insertion
     }
 
     fn remove(&mut self, index: usize) {
-        let mut shifted = index;
-        while shifted + 1 < self.len {
-            self.ranges[shifted] = self.ranges[shifted + 1];
-            shifted += 1;
-        }
+        self.ranges.copy_within(index + 1..self.len, index);
         self.len -= 1;
         self.ranges[self.len] = DirtyRowRange::default();
     }
@@ -2265,6 +2272,28 @@ mod atlas_publication_tests {
         assert_eq!(
             &dirty.ranges[..dirty.len],
             &[super::DirtyRowRange { start: 1, end: 3 }]
+        );
+    }
+
+    #[test]
+    fn dirty_ranges_compact_multiple_overlaps_from_a_nonzero_index() {
+        let mut dirty = DirtyAtlasRows::<4>::new();
+        for (start, end) in [(0, 2), (4, 6), (8, 10), (12, 14)] {
+            dirty.insert(7, start, end);
+        }
+
+        dirty.insert(7, 5, 13);
+
+        assert_eq!(
+            &dirty.ranges[..dirty.len],
+            &[
+                super::DirtyRowRange { start: 0, end: 2 },
+                super::DirtyRowRange { start: 4, end: 14 },
+            ]
+        );
+        assert_eq!(
+            &dirty.ranges[dirty.len..],
+            &[super::DirtyRowRange::default(); 2]
         );
     }
 
