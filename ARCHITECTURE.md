@@ -1081,16 +1081,18 @@ failed action cannot submit a frame. This closes the fixture-hidden gap where
 Studio mutated correctly but AppKit reported visible actions as rejected.
 
 If a bounded worker result arrives immediately before an accessibility query,
-runtime drains the result but still defers scene construction. Studio advances
-its immediate semantic identity for stale-action rejection while retaining a
-separate last-complete projection identity. A snapshot whose current state is
-newer than its scene-derived projection fails with structured stale-revision
-evidence; the native adapter retains its previous complete tree without
-reconciling elements or posting notifications. The next wake builds one latest
-scene, publishes the projection identity only after `rendered_lines` is final,
-and allows the normal demand-driven refresh. This prevents new revision identity
-from accompanying old geometry or diagnostic markers without retaining another
-Studio tree, attaching a frame to a query, or adding idle redraw.
+runtime leaves it queued so the query observes the last complete state and
+projection without attaching a frame. The already requested wake drains the
+bounded result, builds one latest scene, and publishes projection identity only
+after `rendered_lines` is final. An accessibility action is ordered before a
+concurrent bounded drain, so its revision remains paired with the complete tree
+that supplied the target. The drain then runs and action plus background effects
+coalesce into at most one frame. The state/projection revision guard remains a
+fail-closed recovery boundary, and the native adapter retains its previous
+complete tree on a transient mismatch without reconciliation or notification.
+This prevents new identity from accompanying old geometry, current native
+controls from being rejected by unrelated concurrent publication, query-caused
+frames, extra action frames, and idle redraw.
 
 After the application accepts close, the native owner revokes accessibility
 before publishing final focus loss. Runtime has already rejected new work at

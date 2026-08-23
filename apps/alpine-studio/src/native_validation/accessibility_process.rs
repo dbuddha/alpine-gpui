@@ -1585,6 +1585,8 @@ mod process_contract_tests {
             },
             crate::NativeValidationLanguageEvidence {
                 generation: 0,
+                published_wake_generation: 0,
+                observed_wake_generation: 0,
                 ..valid
             },
             crate::NativeValidationLanguageEvidence {

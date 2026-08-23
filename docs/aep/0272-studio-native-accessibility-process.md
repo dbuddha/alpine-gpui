@@ -200,16 +200,18 @@ fails closed. This rule is consequential: the prior fixture never returned a
 frame, so it hid that real visible Studio actions were being rejected
 after mutation.
 
-Runtime also separates query causality from concurrent worker publication. A
-query may drain a newly completed bounded result, but it does not consume the
-dirty scene. Studio therefore keeps immediate state identity separate from the
-last scene-complete accessibility projection. A snapshot fails closed when
-those identities differ, and the native adapter retains its previous complete
-tree without reconciliation or notification. The next explicit wake emits one
-latest coalesced frame, publishes projection identity only after derived visible
-lines are final, and makes the current snapshot eligible. Portable regressions
-require no query frame, retained dirty state, rejection of a mixed snapshot,
-one wake frame, one complete current snapshot, then zero idle frames.
+Runtime also separates query and action causality from concurrent worker
+publication. A query leaves newly completed bounded results queued and observes
+the last complete state and projection without consuming a frame. The existing
+explicit wake drains those results, emits one latest coalesced frame, and
+publishes projection identity only after derived visible lines are final. An
+action executes against its complete projection before the bounded drain, after
+which foreground and background effects share at most one frame. Studio's
+state/projection guard still rejects any unexpected mixed snapshot, and the
+native adapter retains its previous complete tree without reconciliation or
+notification. Portable regressions require no query drain or frame, one wake
+drain and frame, foreground action ordering, one coalesced action frame, a
+complete current snapshot, then zero idle frames.
 
 Diagnostic readiness uses a separate ten-second child-language correctness
 watchdog rather than the five-second GPU frame-terminal deadline. The exact-head
