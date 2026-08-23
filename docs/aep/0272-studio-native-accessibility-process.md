@@ -63,6 +63,12 @@ wake cannot receive a default response while native accessibility is active.
 The handler is cleared immediately after each bounded drain so the next probe
 must acquire ownership explicitly.
 
+An action's synchronous response may return at most one frame. Background work
+admitted while that frame drains is not attributed to the action, but every
+resulting frame must reach zero slot ownership and paused pacing within eight
+terminal drains. A true no-frame action arms no hosted observation and must
+already be quiescent.
+
 The process inherits the established presentation-evidence mode. Physical mode
 uses compositor observations and may inject only the existing surface
 configuration when AppKit has not yet published visibility. Explicit
@@ -168,10 +174,12 @@ implementation composition evidence and makes no TLA+ refinement claim.
   native mutation, and coverage.
 - **AEP-0272-C02:** File rows, tabs, diagnostics, and command rows route through
   existing Studio authorities; stable queries submit zero frames and successful
-  revision-valid actions submit at most one through the common frame helper.
-  Evidence: native action sequence, frame deltas, keyboard companion journeys,
-  rejected side-effect controls, and viable mutation rejection. This is a
-  functional scheduling invariant, not a timing or renderer-performance claim.
+  revision-valid action responses return at most one frame through the common
+  frame helper. Independently admitted background frames drain to bounded
+  quiescence. Evidence: native action sequence, response-frame counts, keyboard
+  companion journeys, rejected side-effect controls, and viable mutation
+  rejection. This is a functional scheduling invariant, not a timing or
+  renderer-performance claim.
 - **AEP-0272-C03:** Editing, save, dirty-close rejection, second save, and close
   preserve exact fixture bytes and recovery authority. Evidence: filesystem
   assertions, production close delegate, and process watchdog controls.

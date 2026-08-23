@@ -21,6 +21,7 @@ use super::{
 };
 
 const MAX_WORKER_TURNS: u64 = 1_024;
+const MAX_TERMINAL_DRAINS: u8 = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OmittedStep {
@@ -451,11 +452,20 @@ fn dispatch(
     if frame_requested.get() {
         return await_frame_terminal(surface, state, Duration::from_millis(100));
     }
+    require_frame_quiescence(surface)
+}
+
+fn require_frame_quiescence(
+    surface: &NativeSurface,
+) -> Result<(), alpine_platform_macos::SurfaceError> {
     if let Some(error) = surface.take_error()? {
         return Err(error);
     }
     let snapshot = surface.snapshot();
-    if snapshot.occupied_frame_slots() != 0 || snapshot.submitted_frame_slots() != 0 {
+    if snapshot.occupied_frame_slots() != 0
+        || snapshot.submitted_frame_slots() != 0
+        || !snapshot.display_link_paused()
+    {
         return Err(alpine_platform_macos::SurfaceError::validation(
             SurfaceOperation::Validation,
         ));
@@ -468,27 +478,30 @@ fn await_frame_terminal(
     state: &Rc<RefCell<Application<StudioApp>>>,
     timeout: Duration,
 ) -> Result<(), alpine_platform_macos::SurfaceError> {
-    if matches!(
-        presentation_evidence_mode()?,
-        PresentationEvidenceMode::HostedDirect
-    ) {
-        platform_validation::inject_post_commit_observation(surface, None, 1.0)?;
+    let evidence_mode = presentation_evidence_mode()?;
+    for _ in 0..MAX_TERMINAL_DRAINS {
+        if matches!(evidence_mode, PresentationEvidenceMode::HostedDirect) {
+            platform_validation::inject_post_commit_observation(surface, None, 1.0)?;
+        }
+        platform_validation::run_until_frame_terminal_with_handler(
+            surface,
+            timeout,
+            event_handler(state),
+        )?;
+        if let Some(error) = surface.take_error()? {
+            return Err(error);
+        }
+        let snapshot = surface.snapshot();
+        if snapshot.occupied_frame_slots() == 0
+            && snapshot.submitted_frame_slots() == 0
+            && snapshot.display_link_paused()
+        {
+            return Ok(());
+        }
     }
-    platform_validation::run_until_frame_terminal_with_handler(
-        surface,
-        timeout,
-        event_handler(state),
-    )?;
-    if let Some(error) = surface.take_error()? {
-        return Err(error);
-    }
-    let snapshot = surface.snapshot();
-    if snapshot.occupied_frame_slots() != 0 || snapshot.submitted_frame_slots() != 0 {
-        return Err(alpine_platform_macos::SurfaceError::validation(
-            SurfaceOperation::Validation,
-        ));
-    }
-    Ok(())
+    Err(alpine_platform_macos::SurfaceError::validation(
+        SurfaceOperation::Validation,
+    ))
 }
 
 fn presentation_evidence_mode()
@@ -584,9 +597,10 @@ fn activate(
     role: AccessibilityRole,
     label: &str,
 ) -> Result<u64, Box<dyn std::error::Error>> {
-    let before = surface.snapshot().submission_count();
     let response_summary = Rc::new(RefCell::new(String::from("callback not reached")));
     let observed_summary = Rc::clone(&response_summary);
+    let response_frames = Rc::new(Cell::new(0_u64));
+    let observed_frames = Rc::clone(&response_frames);
     let callback_state = Rc::clone(state);
     let evidence = platform_validation::activate_named_native_accessibility_node(
         surface,
@@ -604,6 +618,9 @@ fn activate(
                 response.close_disposition(),
                 response.accessibility_response().map(|value| value.kind())
             );
+            if response.frame().is_some() {
+                observed_frames.set(observed_frames.get().saturating_add(1));
+            }
             response
         },
     )
@@ -613,12 +630,6 @@ fn activate(
             response_summary.borrow()
         )
     })?;
-    await_frame_terminal(surface, state, Duration::from_millis(100)).map_err(|error| {
-        format!(
-            "native accessibility action frame failed for role={role:?} label={label:?}: {error}"
-        )
-    })?;
-    let after = surface.snapshot().submission_count();
     if !evidence.selector_allowed() || !evidence.accepted() || evidence.dispatch_failed() {
         return Err(format!(
             "native accessibility action failed: role={role:?} label={label:?} native_role={:?} native_label={:?} identifier={:?} selector_allowed={} accepted={} current_after={} dispatch_failed={}",
@@ -632,11 +643,29 @@ fn activate(
         )
         .into());
     }
+    let frames = response_frames.get();
+    if frames > 1 {
+        return Err(format!(
+            "native accessibility action returned {frames} frames for role={role:?} label={label:?}"
+        )
+        .into());
+    }
+    if frames == 0 {
+        require_frame_quiescence(surface).map_err(|error| {
+            format!(
+                "native accessibility no-frame action failed for role={role:?} label={label:?}: {error}"
+            )
+        })?;
+    } else {
+        await_frame_terminal(surface, state, Duration::from_millis(100)).map_err(|error| {
+            format!(
+                "native accessibility action frame failed for role={role:?} label={label:?}: {error}"
+            )
+        })?;
+    }
     assert_eq!(evidence.label(), label);
     assert!(!evidence.identifier().is_empty());
     assert_ne!(evidence.semantic_id(), 0);
-    let frames = after.saturating_sub(before);
-    assert!(frames <= 1);
     Ok(frames)
 }
 
