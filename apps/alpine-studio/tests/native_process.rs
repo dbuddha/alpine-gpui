@@ -39,6 +39,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("alpine-native-accessibility-qualified");
         return Ok(());
     }
+    if std::env::var_os("ALPINE_STUDIO_NATIVE_PROCESS_SCOPE").as_deref()
+        == Some(std::ffi::OsStr::new("accessibility"))
+    {
+        qualify_accessibility_child()?;
+        return Ok(());
+    }
     let initial = alpine_studio::initial_scene()?;
     assert_eq!(initial.revision().get(), 1);
     assert!(!initial.operations().is_empty());

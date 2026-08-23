@@ -98,8 +98,9 @@ if [ -n "$workflow_files" ]; then
     done
     if ! printf '%s\n' "$mutation_diff_block" | grep -Fq -- "--exclude 'apps/alpine-studio/src/native_validation/accessibility_process.rs'" \
         || ! printf '%s\n' "$native_mutation_block" | grep -Fq -- '--file apps/alpine-studio/src/native_validation/accessibility_process.rs' \
+        || ! printf '%s\n' "$native_mutation_block" | grep -Fq 'ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility' \
         || ! printf '%s\n' "$native_mutation_block" | grep -Fq 'target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out'; then
-        fail 'Studio accessibility process mutation must transfer explicitly from Linux to retained native shards'
+        fail 'Studio accessibility process mutation must transfer explicitly from Linux to accessibility-scoped retained native shards'
     fi
     if printf '%s\n' "$metal_validation_block" | grep -Fq 'cargo mutants '; then
         fail 'Metal behavior validation must remain independent from native mutation enforcement'
@@ -118,6 +119,7 @@ if [ -n "$workflow_files" ]; then
             || [ "$(grep -Ec '^[[:space:]]+shard: [0-7]/8$' "$nightly_native_workflow")" -ne 16 ] \
             || [ "$(grep -Fc -- '--file crates/alpine-platform-macos/src/native_accessibility.rs' "$nightly_native_workflow")" -ne 1 ] \
             || [ "$(grep -Fc -- '--file apps/alpine-studio/src/native_validation/accessibility_process.rs' "$nightly_native_workflow")" -ne 1 ] \
+            || [ "$(grep -Fc 'ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility' "$nightly_native_workflow")" -ne 1 ] \
             || ! grep -Fq -- '--shard "${{ matrix.shard }}"' "$nightly_native_workflow" \
             || ! grep -Fq 'target/native-accessibility-mutants-${{ matrix.id }}.out' "$nightly_native_workflow" \
             || ! grep -Fq 'target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out' "$nightly_native_workflow"; then

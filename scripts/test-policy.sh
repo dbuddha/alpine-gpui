@@ -139,7 +139,7 @@ if ALPINE_CI_WORKFLOW="$fixture_dir/linux-owned-studio-process-ci.yml" run_polic
     printf 'policy test error: Linux-owned Studio process mutation unexpectedly passed\n' >&2
     exit 1
 fi
-if ! grep -Fq 'Studio accessibility process mutation must transfer explicitly from Linux to retained native shards' "$fixture_dir/linux-owned-studio-process-ci.log"; then
+if ! grep -Fq 'Studio accessibility process mutation must transfer explicitly from Linux to accessibility-scoped retained native shards' "$fixture_dir/linux-owned-studio-process-ci.log"; then
     printf 'policy test error: expected Studio process mutation ownership failure was not reported\n' >&2
     cat "$fixture_dir/linux-owned-studio-process-ci.log" >&2
     exit 1
@@ -151,9 +151,21 @@ if ALPINE_CI_WORKFLOW="$fixture_dir/missing-native-studio-process-ci.yml" run_po
     printf 'policy test error: missing native Studio process mutation unexpectedly passed\n' >&2
     exit 1
 fi
-if ! grep -Fq 'Studio accessibility process mutation must transfer explicitly from Linux to retained native shards' "$fixture_dir/missing-native-studio-process-ci.log"; then
+if ! grep -Fq 'Studio accessibility process mutation must transfer explicitly from Linux to accessibility-scoped retained native shards' "$fixture_dir/missing-native-studio-process-ci.log"; then
     printf 'policy test error: expected missing native Studio process mutation failure was not reported\n' >&2
     cat "$fixture_dir/missing-native-studio-process-ci.log" >&2
+    exit 1
+fi
+
+sed 's/ ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility//' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/unscoped-native-studio-process-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/unscoped-native-studio-process-ci.yml" run_policy > "$fixture_dir/unscoped-native-studio-process-ci.log" 2>&1; then
+    printf 'policy test error: unscoped native Studio process mutation unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'Studio accessibility process mutation must transfer explicitly from Linux to accessibility-scoped retained native shards' "$fixture_dir/unscoped-native-studio-process-ci.log"; then
+    printf 'policy test error: expected unscoped native Studio process mutation failure was not reported\n' >&2
+    cat "$fixture_dir/unscoped-native-studio-process-ci.log" >&2
     exit 1
 fi
 

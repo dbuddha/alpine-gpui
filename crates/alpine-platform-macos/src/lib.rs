@@ -1007,7 +1007,10 @@ pub mod native_validation {
 
     #[cfg(test)]
     mod native_accessibility_evidence_accessor_tests {
-        use super::{NativeAccessibilityActivationEvidence, NativeAccessibilityNodeEvidence};
+        use super::{
+            NativeAccessibilityActivationEvidence, NativeAccessibilityNodeEvidence,
+            NativeAccessibilityTreeEvidence,
+        };
 
         #[test]
         fn handle_free_accessors_preserve_negative_and_nondefault_evidence() {
@@ -1023,6 +1026,13 @@ pub mod native_validation {
                 bounded_screen_frame: false,
             };
             assert!(!node.bounded_screen_frame());
+
+            let tree = NativeAccessibilityTreeEvidence {
+                revision: crate::AccessibilityRevision::new(3, 5),
+                nodes: Box::new([]),
+                focused_nodes: 2,
+            };
+            assert_eq!(tree.focused_nodes(), 2);
 
             let activation = NativeAccessibilityActivationEvidence {
                 semantic_id: 37,

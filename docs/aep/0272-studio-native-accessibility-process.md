@@ -103,8 +103,19 @@ The idle-state companion counts qualified, superseded, skipped, failed, and
 cancelled terminal attempts, requires every admitted submission to reach exactly
 one terminal class, and does not return after a superseded attempt until one
 current qualified presentation and all completion-owned slots are drained.
+Its exact admission control counts one final qualified submission plus one
+replacement for every superseded or skipped attempt. A skipped drawable is a
+terminal attempt that still requires replacement; omitting it from the retry
+identity incorrectly rejects an otherwise fully accounted drain.
 These constants detect hangs and runaway work; they are not latency budgets or
 performance qualification.
+
+Mutation jobs for this module set
+`ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility`. The native process target
+therefore runs the accessibility child and omission controls without also
+running unrelated shipping, recovery, clipboard, file-tree, or search journeys.
+The complete native process remains required by Metal behavior validation. This
+is test-selection ownership, not an exclusion from production-path assurance.
 
 Both probes exist only under `alpine_native_validation`. They do not widen the
 safe shipping surface, retain Studio state, create a callback registry, or

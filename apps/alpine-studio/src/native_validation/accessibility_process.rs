@@ -406,22 +406,21 @@ fn qualify_workspace(
     }
     let (closed, disposition, close_frame) = replay_close(&surface, &state)
         .map_err(|error| format!("final native close replay failed: {error}"))?;
-    if !closed || disposition != CloseDisposition::Allow || close_frame {
+    if !final_close_succeeded(closed, disposition, close_frame) {
         let lifecycle = observer.lifecycle();
-        let status =
-            if lifecycle == SurfaceLifecycle::Live && disposition == CloseDisposition::Cancel {
-                inspect(&surface, &state)
-                    .map(|tree| {
-                        tree.nodes()
-                            .iter()
-                            .filter(|node| node.role() == "AXStaticText")
-                            .map(|node| Box::<str>::from(node.label()))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_else(|error| vec![format!("status query failed: {error}").into()])
-            } else {
-                Vec::new()
-            };
+        let status = if should_inspect_rejected_close(lifecycle, disposition) {
+            inspect(&surface, &state)
+                .map(|tree| {
+                    tree.nodes()
+                        .iter()
+                        .filter(|node| is_close_status_role(node.role()))
+                        .map(|node| Box::<str>::from(node.label()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|error| vec![format!("status query failed: {error}").into()])
+        } else {
+            Vec::new()
+        };
         return Err(format!(
             "final native close rejected: closed={closed} disposition={disposition:?} frame={close_frame} lifecycle={lifecycle:?} status={status:?}"
         )
@@ -442,9 +441,7 @@ fn qualify_workspace(
         )
         .into());
     }
-    if mismatch_control_marker != MISMATCH_CONTROL_MARKER
-        || dispatch_failure_control_marker != DISPATCH_FAILURE_CONTROL_MARKER
-    {
+    if !negative_control_markers_match(mismatch_control_marker, dispatch_failure_control_marker) {
         return Err(format!(
             "native accessibility negative-control mismatch: role_marker={mismatch_control_marker:#x} dispatch_marker={dispatch_failure_control_marker:#x}"
         )
@@ -652,6 +649,29 @@ const fn accessibility_action_succeeded(
     dispatch_failed: bool,
 ) -> bool {
     selector_allowed && accepted && !dispatch_failed
+}
+
+const fn final_close_succeeded(
+    closed: bool,
+    disposition: CloseDisposition,
+    returned_frame: bool,
+) -> bool {
+    closed && matches!(disposition, CloseDisposition::Allow) && !returned_frame
+}
+
+const fn should_inspect_rejected_close(
+    lifecycle: SurfaceLifecycle,
+    disposition: CloseDisposition,
+) -> bool {
+    matches!(lifecycle, SurfaceLifecycle::Live) && matches!(disposition, CloseDisposition::Cancel)
+}
+
+const fn negative_control_markers_match(role_marker: u64, dispatch_marker: u64) -> bool {
+    role_marker == MISMATCH_CONTROL_MARKER && dispatch_marker == DISPATCH_FAILURE_CONTROL_MARKER
+}
+
+fn is_close_status_role(role: &str) -> bool {
+    role == "AXStaticText"
 }
 
 fn presentation_evidence_mode()
@@ -991,6 +1011,48 @@ mod process_contract_tests {
         assert!(!accessibility_action_succeeded(false, true, false));
         assert!(!accessibility_action_succeeded(true, false, false));
         assert!(!accessibility_action_succeeded(true, true, true));
+
+        assert!(final_close_succeeded(true, CloseDisposition::Allow, false));
+        assert!(!final_close_succeeded(
+            false,
+            CloseDisposition::Allow,
+            false
+        ));
+        assert!(!final_close_succeeded(
+            true,
+            CloseDisposition::Cancel,
+            false
+        ));
+        assert!(!final_close_succeeded(true, CloseDisposition::Allow, true));
+
+        assert!(should_inspect_rejected_close(
+            SurfaceLifecycle::Live,
+            CloseDisposition::Cancel
+        ));
+        assert!(!should_inspect_rejected_close(
+            SurfaceLifecycle::Closing,
+            CloseDisposition::Cancel
+        ));
+        assert!(!should_inspect_rejected_close(
+            SurfaceLifecycle::Live,
+            CloseDisposition::Allow
+        ));
+
+        assert!(negative_control_markers_match(
+            MISMATCH_CONTROL_MARKER,
+            DISPATCH_FAILURE_CONTROL_MARKER
+        ));
+        assert!(!negative_control_markers_match(
+            MISMATCH_CONTROL_MARKER + 1,
+            DISPATCH_FAILURE_CONTROL_MARKER
+        ));
+        assert!(!negative_control_markers_match(
+            MISMATCH_CONTROL_MARKER,
+            DISPATCH_FAILURE_CONTROL_MARKER + 1
+        ));
+
+        assert!(is_close_status_role("AXStaticText"));
+        assert!(!is_close_status_role("AXButton"));
     }
 
     #[test]

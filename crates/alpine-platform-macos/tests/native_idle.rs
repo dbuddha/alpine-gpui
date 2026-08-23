@@ -140,12 +140,18 @@ mod validation {
             .superseded_count()
             .checked_sub(before.superseded_count())
             .ok_or("superseded counter regressed")?;
+        let skipped_delta = terminal
+            .skipped_count()
+            .checked_sub(before.skipped_count())
+            .ok_or("skipped counter regressed")?;
         let expected_submissions = superseded_delta
+            .checked_add(skipped_delta)
+            .ok_or("expected retry count exhausted")?
             .checked_add(1)
             .ok_or("expected submission count exhausted")?;
         assert_eq!(
             submission_delta, expected_submissions,
-            "every setup revision must admit one final submission plus exactly one replacement for each superseded attempt: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
+            "every setup revision must admit one final submission plus exactly one replacement for each superseded or skipped attempt: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
         );
         let direct_present_delta = terminal
             .direct_present_count()
