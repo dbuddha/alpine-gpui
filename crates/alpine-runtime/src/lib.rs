@@ -1809,31 +1809,47 @@ mod tests {
         assert!(application.frame_if_dirty().is_some());
         let producer = application.external.producer();
         assert_eq!(producer.submit(89, 0), ExternalAdmission::Admitted);
-        let request = AccessibilityRequest::action(
-            AccessibilityRequestId::new(18),
-            alpine_platform_macos::AccessibilityAction::activate(
-                AccessibilityRevision::new(0, 0),
-                alpine_platform_macos::AccessibilityNodeId::new(7),
+        let mut fixture_executions = 0_u8;
+        for request in [
+            AccessibilityRequest::action(
+                AccessibilityRequestId::new(18),
+                alpine_platform_macos::AccessibilityAction::activate(
+                    AccessibilityRevision::new(0, 0),
+                    alpine_platform_macos::AccessibilityNodeId::new(7),
+                ),
             ),
-        )?;
-        let action = application.dispatch_with_response(&SurfaceEvent::Accessibility {
-            timestamp: EventTimestamp::new(24),
-            request,
-        });
-        assert_eq!(application.delegate.accessibility_result_counts, vec![0]);
-        assert_eq!(application.delegate.results.len(), 1);
-        assert_eq!(application.delegate.results[0].1, 89);
-        assert_eq!(application.snapshot().external().current_items(), 0);
-        assert!(action.frame().is_some());
-        assert!(!application.snapshot().is_dirty());
-        assert!(
-            application
-                .dispatch_with_response(&SurfaceEvent::Wake {
-                    timestamp: EventTimestamp::new(25),
-                })
-                .frame()
-                .is_none()
-        );
+            AccessibilityRequest::action(
+                AccessibilityRequestId::new(0),
+                alpine_platform_macos::AccessibilityAction::activate(
+                    AccessibilityRevision::new(0, 0),
+                    alpine_platform_macos::AccessibilityNodeId::new(7),
+                ),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            fixture_executions = fixture_executions.saturating_add(1);
+            let action = application.dispatch_with_response(&SurfaceEvent::Accessibility {
+                timestamp: EventTimestamp::new(24),
+                request,
+            });
+            assert_eq!(application.delegate.accessibility_result_counts, vec![0]);
+            assert_eq!(application.delegate.results.len(), 1);
+            assert_eq!(application.delegate.results[0].1, 89);
+            assert_eq!(application.snapshot().external().current_items(), 0);
+            assert!(action.frame().is_some());
+            assert!(!application.snapshot().is_dirty());
+            assert!(
+                application
+                    .dispatch_with_response(&SurfaceEvent::Wake {
+                        timestamp: EventTimestamp::new(25),
+                    })
+                    .frame()
+                    .is_none()
+            );
+        }
+        assert_eq!(fixture_executions, 1);
         Ok(())
     }
 

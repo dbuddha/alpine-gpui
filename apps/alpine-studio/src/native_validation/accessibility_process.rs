@@ -844,7 +844,6 @@ fn wait_for_label_prefix(
     prefix: &str,
 ) -> Result<Box<str>, Box<dyn std::error::Error>> {
     let started = Instant::now();
-    let mut first_inspection = true;
     let mut wake_turns = 0_u64;
     let mut frame_wakes = 0_u64;
     let mut tree_inspections = 0_u64;
@@ -874,13 +873,11 @@ fn wait_for_label_prefix(
             false
         };
         if diagnostic_tree_inspection_required(
-            first_inspection,
             frame_requested,
             authority_ready,
             language.semantic_revision,
             inspected_semantic_revision,
         ) {
-            first_inspection = false;
             tree_inspections = tree_inspections.saturating_add(1);
             let tree = inspect(surface, state).map_err(|error| {
                 format!(
@@ -1087,11 +1084,18 @@ fn diagnostic_authority_ready(evidence: crate::NativeValidationLanguageEvidence)
         && evidence.polls > 0
         && evidence.diagnostic_publications > 0
         && evidence.diagnostic_items > 0
-        && evidence.stale_wakes == 0
+        && stale_language_wakes_are_bounded(evidence)
         && evidence.restarts == 0
         && evidence.invalidations > 0
         && evidence.frame_builds > 1
         && evidence.semantic_revision > 0
+}
+
+fn stale_language_wakes_are_bounded(evidence: crate::NativeValidationLanguageEvidence) -> bool {
+    evidence
+        .foreground_results
+        .checked_add(evidence.latch_polls)
+        .is_some_and(|observed_wakes| evidence.stale_wakes <= observed_wakes)
 }
 
 fn language_handoff_recovered(evidence: crate::NativeValidationLanguageEvidence) -> bool {
@@ -1119,15 +1123,12 @@ fn diagnostic_wait_expired(elapsed: Duration) -> bool {
 }
 
 const fn diagnostic_tree_inspection_required(
-    first_inspection: bool,
     frame_requested: bool,
     authority_ready: bool,
     semantic_revision: u64,
     inspected_semantic_revision: u64,
 ) -> bool {
-    first_inspection
-        || frame_requested
-        || (authority_ready && semantic_revision > inspected_semantic_revision)
+    authority_ready && (frame_requested || semantic_revision > inspected_semantic_revision)
 }
 
 fn wait_for_label(
@@ -1396,21 +1397,11 @@ mod process_contract_tests {
             DIAGNOSTIC_READY_TIMEOUT.saturating_add(Duration::from_millis(1))
         ));
 
-        assert!(diagnostic_tree_inspection_required(
-            true, false, false, 0, 0
-        ));
-        assert!(diagnostic_tree_inspection_required(
-            false, true, false, 0, 0
-        ));
-        assert!(diagnostic_tree_inspection_required(
-            false, false, true, 2, 1
-        ));
-        assert!(!diagnostic_tree_inspection_required(
-            false, false, false, 2, 1
-        ));
-        assert!(!diagnostic_tree_inspection_required(
-            false, false, true, 2, 2
-        ));
+        assert!(!diagnostic_tree_inspection_required(false, false, 0, 0));
+        assert!(!diagnostic_tree_inspection_required(true, false, 2, 1));
+        assert!(diagnostic_tree_inspection_required(false, true, 2, 1));
+        assert!(diagnostic_tree_inspection_required(true, true, 2, 2));
+        assert!(!diagnostic_tree_inspection_required(false, true, 2, 2));
     }
 
     #[test]
@@ -1619,7 +1610,12 @@ mod process_contract_tests {
                 ..valid
             },
             crate::NativeValidationLanguageEvidence {
-                stale_wakes: 1,
+                stale_wakes: 2,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                foreground_results: u64::MAX,
+                latch_polls: 1,
                 ..valid
             },
             crate::NativeValidationLanguageEvidence {
@@ -1654,6 +1650,12 @@ mod process_contract_tests {
                 external_full: 1,
                 foreground_results: 0,
                 latch_polls: 1,
+                ..valid
+            }
+        ));
+        assert!(diagnostic_authority_ready(
+            crate::NativeValidationLanguageEvidence {
+                stale_wakes: 1,
                 ..valid
             }
         ));

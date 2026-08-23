@@ -213,6 +213,15 @@ notification. Portable regressions require no query drain or frame, one wake
 drain and frame, foreground action ordering, one coalesced action frame, a
 complete current snapshot, then zero idle frames.
 
+The diagnostic journey must not inspect the native tree before complete
+process-bound language authority is observable. After authority, inspection is
+admitted only for a newer complete semantic revision or a real requested frame.
+Superseded wakes are valid only when their count is bounded by actual foreground
+or latch observations, current published and observed generation identity is
+exact, no wake remains pending, and no restart occurred. This keeps stale work
+non-mutating and qualification deterministic without unconditional inspection,
+timeout widening, or synthetic frames.
+
 Diagnostic readiness uses a separate ten-second child-language correctness
 watchdog rather than the five-second GPU frame-terminal deadline. The exact-head
 eight-shard mutation run proved that five seconds could expire while the generic

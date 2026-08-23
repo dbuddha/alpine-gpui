@@ -1094,6 +1094,15 @@ This prevents new identity from accompanying old geometry, current native
 controls from being rejected by unrelated concurrent publication, query-caused
 frames, extra action frames, and idle redraw.
 
+Native diagnostic validation never inspects the AppKit tree before complete
+process-bound language authority is observable. It inspects only after that
+authority on a newer complete semantic revision or a real requested frame.
+Superseded language wakes are accepted only when their count is bounded by
+actual foreground or latch observations; exact current-generation publication,
+observation, empty pending state, and no restart remain mandatory. This proves
+stale work was rejected without treating valid supersession as a qualification
+failure or adding unconditional tree polling.
+
 After the application accepts close, the native owner revokes accessibility
 before publishing final focus loss. Runtime has already rejected new work at
 that point, so this order prevents a focus callback from synchronously refreshing
