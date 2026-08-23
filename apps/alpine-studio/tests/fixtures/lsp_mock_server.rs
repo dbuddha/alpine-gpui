@@ -38,7 +38,7 @@ pub(crate) fn main() {
 
 fn run() -> io::Result<()> {
     let mut trace = PhaseTrace::from_environment()?;
-    trace.record("process-spawned")?;
+    trace.record(&format!("process-spawned:{}", process::id()))?;
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
     let mut buffered = Vec::new();

@@ -94,7 +94,7 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&root)?;
     std::fs::write(
         &server,
-        "#!/bin/sh\nprintf 'wrapper-invoked\\n' >> \"$ALPINE_STUDIO_NATIVE_LSP_TRACE\"\nexport ALPINE_STUDIO_NATIVE_LSP_SERVER=1\nexec \"$ALPINE_STUDIO_NATIVE_PROCESS_EXE\"\n",
+        "#!/bin/sh\nprintf 'wrapper-invoked:%s\\n' \"$$\" >> \"$ALPINE_STUDIO_NATIVE_LSP_TRACE\"\nexport ALPINE_STUDIO_NATIVE_LSP_SERVER=1\nexec \"$ALPINE_STUDIO_NATIVE_PROCESS_EXE\"\n",
     )?;
     std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o700))?;
     let executable = std::env::current_exe()?;
@@ -237,25 +237,11 @@ fn require_language_trace(
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn require_language_startup_trace(trace: &str) -> Result<(), Box<dyn std::error::Error>> {
-    const REQUIRED: [&str; 8] = [
-        "qualification-child",
-        "wrapper-invoked",
-        "process-spawned",
-        "initialize-received",
-        "initialize-responded",
-        "initialized-received",
-        "did-open-received",
-        "diagnostics-written",
-    ];
-    let observed = trace.lines().collect::<Vec<_>>();
-    if observed == REQUIRED {
-        Ok(())
-    } else {
-        Err(format!(
-            "native language startup trace mismatch: observed={observed:?} expected={REQUIRED:?}"
-        )
-        .into())
-    }
+    alpine_studio::native_validation::validate_native_language_startup_trace(trace).map_err(
+        |error| -> Box<dyn std::error::Error> {
+            Box::new(std::io::Error::other(error.to_string()))
+        },
+    )
 }
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]

@@ -189,6 +189,7 @@ impl From<PlatformAccessibilityError> for AccessibilityError {
 
 pub(super) fn revision(app: &StudioApp) -> AccessibilityRevision {
     AccessibilityRevision::new(app.runtime_document_revision, app.buffer().revision().get())
+        .with_semantic(app.accessibility_semantic_revision)
 }
 
 pub(super) fn snapshot(app: &StudioApp) -> Result<AccessibilitySnapshot, AccessibilityError> {
@@ -1253,9 +1254,17 @@ mod tests {
 
     #[test]
     fn revision_admission_is_exact() {
-        let expected = AccessibilityRevision::new(3, 5);
+        let expected = AccessibilityRevision::new(3, 5).with_semantic(7);
+        assert_eq!(expected.document(), 3);
+        assert_eq!(expected.buffer(), 5);
+        assert_eq!(expected.semantic(), 7);
         assert_eq!(require_revision(expected, expected), Ok(()));
-        let actual = AccessibilityRevision::new(3, 6);
+        let actual = AccessibilityRevision::new(3, 5).with_semantic(8);
+        assert_eq!(
+            require_revision(expected, actual),
+            Err(AccessibilityError::StaleRevision { expected, actual })
+        );
+        let actual = AccessibilityRevision::new(3, 6).with_semantic(7);
         assert_eq!(
             require_revision(expected, actual),
             Err(AccessibilityError::StaleRevision { expected, actual })

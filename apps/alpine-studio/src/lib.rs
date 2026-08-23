@@ -223,7 +223,25 @@ static NATIVE_VALIDATION_LANGUAGE_LATCH_PUBLICATIONS: std::sync::atomic::AtomicU
 static NATIVE_VALIDATION_LANGUAGE_EXTERNAL_ADMISSIONS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 #[cfg(alpine_native_validation)]
-static NATIVE_VALIDATION_LANGUAGE_EXTERNAL_REJECTIONS: std::sync::atomic::AtomicU64 =
+static NATIVE_VALIDATION_LANGUAGE_EXTERNAL_FULL: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(alpine_native_validation)]
+static NATIVE_VALIDATION_LANGUAGE_EXTERNAL_DISCONNECTED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(alpine_native_validation)]
+static NATIVE_VALIDATION_LANGUAGE_EXTERNAL_SHUTTING_DOWN: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(alpine_native_validation)]
+static NATIVE_VALIDATION_LANGUAGE_EXTERNAL_SEQUENCE_EXHAUSTED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(alpine_native_validation)]
+static NATIVE_VALIDATION_LANGUAGE_PUBLISHED_WAKE_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(alpine_native_validation)]
+static NATIVE_VALIDATION_LANGUAGE_OBSERVED_WAKE_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(alpine_native_validation)]
+static NATIVE_VALIDATION_LANGUAGE_PENDING_WAKE_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 #[cfg(alpine_native_validation)]
 static NATIVE_VALIDATION_LANGUAGE_LATCH_POLLS: std::sync::atomic::AtomicU64 =
@@ -273,6 +291,9 @@ static NATIVE_VALIDATION_LANGUAGE_STALE_WAKES: std::sync::atomic::AtomicU64 =
 #[cfg(alpine_native_validation)]
 static NATIVE_VALIDATION_LANGUAGE_RESTARTS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+#[cfg(alpine_native_validation)]
+static NATIVE_VALIDATION_ACCESSIBILITY_SEMANTIC_REVISION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(alpine_native_validation)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -281,7 +302,13 @@ pub(crate) struct NativeValidationLanguageEvidence {
     wake_callbacks: u64,
     latch_publications: u64,
     external_admissions: u64,
-    external_rejections: u64,
+    external_full: u64,
+    external_disconnected: u64,
+    external_shutting_down: u64,
+    external_sequence_exhausted: u64,
+    published_wake_generation: u64,
+    observed_wake_generation: u64,
+    pending_wake_generation: u64,
     latch_polls: u64,
     foreground_results: u64,
     invalidations: u64,
@@ -299,6 +326,7 @@ pub(crate) struct NativeValidationLanguageEvidence {
     stale_wakes: u64,
     restarts: u64,
     frame_builds: u64,
+    semantic_revision: u64,
 }
 
 #[cfg(alpine_native_validation)]
@@ -310,7 +338,13 @@ pub(crate) fn reset_native_validation_language_evidence() {
         &NATIVE_VALIDATION_LANGUAGE_WAKE_CALLBACKS,
         &NATIVE_VALIDATION_LANGUAGE_LATCH_PUBLICATIONS,
         &NATIVE_VALIDATION_LANGUAGE_EXTERNAL_ADMISSIONS,
-        &NATIVE_VALIDATION_LANGUAGE_EXTERNAL_REJECTIONS,
+        &NATIVE_VALIDATION_LANGUAGE_EXTERNAL_FULL,
+        &NATIVE_VALIDATION_LANGUAGE_EXTERNAL_DISCONNECTED,
+        &NATIVE_VALIDATION_LANGUAGE_EXTERNAL_SHUTTING_DOWN,
+        &NATIVE_VALIDATION_LANGUAGE_EXTERNAL_SEQUENCE_EXHAUSTED,
+        &NATIVE_VALIDATION_LANGUAGE_PUBLISHED_WAKE_GENERATION,
+        &NATIVE_VALIDATION_LANGUAGE_OBSERVED_WAKE_GENERATION,
+        &NATIVE_VALIDATION_LANGUAGE_PENDING_WAKE_GENERATION,
         &NATIVE_VALIDATION_LANGUAGE_LATCH_POLLS,
         &NATIVE_VALIDATION_LANGUAGE_FOREGROUND_RESULTS,
         &NATIVE_VALIDATION_LANGUAGE_INVALIDATIONS,
@@ -323,6 +357,7 @@ pub(crate) fn reset_native_validation_language_evidence() {
         &NATIVE_VALIDATION_LANGUAGE_DIAGNOSTIC_PUBLICATIONS,
         &NATIVE_VALIDATION_LANGUAGE_STALE_WAKES,
         &NATIVE_VALIDATION_LANGUAGE_RESTARTS,
+        &NATIVE_VALIDATION_ACCESSIBILITY_SEMANTIC_REVISION,
     ] {
         counter.store(0, Ordering::Release);
     }
@@ -357,15 +392,42 @@ fn record_native_validation_language_snapshot(snapshot: rust_diagnostics::RustDi
 }
 
 #[cfg(alpine_native_validation)]
-fn record_native_validation_language_submission(admitted: bool) {
+fn record_native_validation_language_publication(generation: u64, pending_generation: u64) {
     use std::sync::atomic::Ordering;
 
     NATIVE_VALIDATION_LANGUAGE_LATCH_PUBLICATIONS.fetch_add(1, Ordering::Relaxed);
-    if admitted {
-        NATIVE_VALIDATION_LANGUAGE_EXTERNAL_ADMISSIONS.fetch_add(1, Ordering::Relaxed);
-    } else {
-        NATIVE_VALIDATION_LANGUAGE_EXTERNAL_REJECTIONS.fetch_add(1, Ordering::Relaxed);
-    }
+    NATIVE_VALIDATION_LANGUAGE_PUBLISHED_WAKE_GENERATION.store(generation, Ordering::Release);
+    NATIVE_VALIDATION_LANGUAGE_PENDING_WAKE_GENERATION.store(pending_generation, Ordering::Release);
+}
+
+#[cfg(alpine_native_validation)]
+fn record_native_validation_language_submission(admission: alpine_runtime::ExternalAdmission) {
+    use std::sync::atomic::Ordering;
+
+    let counter = match admission {
+        alpine_runtime::ExternalAdmission::Admitted => {
+            &NATIVE_VALIDATION_LANGUAGE_EXTERNAL_ADMISSIONS
+        }
+        alpine_runtime::ExternalAdmission::Full => &NATIVE_VALIDATION_LANGUAGE_EXTERNAL_FULL,
+        alpine_runtime::ExternalAdmission::Disconnected => {
+            &NATIVE_VALIDATION_LANGUAGE_EXTERNAL_DISCONNECTED
+        }
+        alpine_runtime::ExternalAdmission::ShuttingDown => {
+            &NATIVE_VALIDATION_LANGUAGE_EXTERNAL_SHUTTING_DOWN
+        }
+        alpine_runtime::ExternalAdmission::SequenceExhausted => {
+            &NATIVE_VALIDATION_LANGUAGE_EXTERNAL_SEQUENCE_EXHAUSTED
+        }
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(alpine_native_validation)]
+fn record_native_validation_language_observation(generation: u64, pending_generation: u64) {
+    use std::sync::atomic::Ordering;
+
+    NATIVE_VALIDATION_LANGUAGE_OBSERVED_WAKE_GENERATION.store(generation, Ordering::Release);
+    NATIVE_VALIDATION_LANGUAGE_PENDING_WAKE_GENERATION.store(pending_generation, Ordering::Release);
 }
 
 #[cfg(alpine_native_validation)]
@@ -377,7 +439,19 @@ pub(crate) fn native_validation_language_evidence() -> NativeValidationLanguageE
         wake_callbacks: NATIVE_VALIDATION_LANGUAGE_WAKE_CALLBACKS.load(Ordering::Acquire),
         latch_publications: NATIVE_VALIDATION_LANGUAGE_LATCH_PUBLICATIONS.load(Ordering::Acquire),
         external_admissions: NATIVE_VALIDATION_LANGUAGE_EXTERNAL_ADMISSIONS.load(Ordering::Acquire),
-        external_rejections: NATIVE_VALIDATION_LANGUAGE_EXTERNAL_REJECTIONS.load(Ordering::Acquire),
+        external_full: NATIVE_VALIDATION_LANGUAGE_EXTERNAL_FULL.load(Ordering::Acquire),
+        external_disconnected: NATIVE_VALIDATION_LANGUAGE_EXTERNAL_DISCONNECTED
+            .load(Ordering::Acquire),
+        external_shutting_down: NATIVE_VALIDATION_LANGUAGE_EXTERNAL_SHUTTING_DOWN
+            .load(Ordering::Acquire),
+        external_sequence_exhausted: NATIVE_VALIDATION_LANGUAGE_EXTERNAL_SEQUENCE_EXHAUSTED
+            .load(Ordering::Acquire),
+        published_wake_generation: NATIVE_VALIDATION_LANGUAGE_PUBLISHED_WAKE_GENERATION
+            .load(Ordering::Acquire),
+        observed_wake_generation: NATIVE_VALIDATION_LANGUAGE_OBSERVED_WAKE_GENERATION
+            .load(Ordering::Acquire),
+        pending_wake_generation: NATIVE_VALIDATION_LANGUAGE_PENDING_WAKE_GENERATION
+            .load(Ordering::Acquire),
         latch_polls: NATIVE_VALIDATION_LANGUAGE_LATCH_POLLS.load(Ordering::Acquire),
         foreground_results: NATIVE_VALIDATION_LANGUAGE_FOREGROUND_RESULTS.load(Ordering::Acquire),
         invalidations: NATIVE_VALIDATION_LANGUAGE_INVALIDATIONS.load(Ordering::Acquire),
@@ -397,6 +471,8 @@ pub(crate) fn native_validation_language_evidence() -> NativeValidationLanguageE
         stale_wakes: NATIVE_VALIDATION_LANGUAGE_STALE_WAKES.load(Ordering::Acquire),
         restarts: NATIVE_VALIDATION_LANGUAGE_RESTARTS.load(Ordering::Acquire),
         frame_builds: NATIVE_VALIDATION_FRAME_BUILDS.load(Ordering::Acquire),
+        semantic_revision: NATIVE_VALIDATION_ACCESSIBILITY_SEMANTIC_REVISION
+            .load(Ordering::Acquire),
     }
 }
 
@@ -680,7 +756,7 @@ fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
                 || value == std::ffi::OsStr::new("production-recovery-file")
                 || value == std::ffi::OsStr::new("production-recovery-folder")
     );
-    #[cfg(alpine_native_validation)]
+    #[cfg(all(alpine_native_validation, not(test)))]
     if production_process_validation {
         reset_native_validation_dispatch_counts();
         let expected = std::env::var_os("ALPINE_STUDIO_NATIVE_EXPECTED_PATH");
@@ -1523,6 +1599,7 @@ struct StudioApp {
     runtime_document_revision: u64,
     runtime_workspace_revision: u64,
     selection_revision: u64,
+    accessibility_semantic_revision: u64,
     selection: Selection,
     composition: Option<Composition>,
     input_epoch: InputEpoch,
@@ -1773,6 +1850,7 @@ impl StudioApp {
             runtime_document_revision,
             runtime_workspace_revision: 1,
             selection_revision: 1,
+            accessibility_semantic_revision: 1,
             selection: Selection::caret(ByteOffset::new(0)),
             composition: None,
             input_epoch: InputEpoch::INITIAL,
@@ -5321,21 +5399,23 @@ impl StudioApp {
             let producer = producer.clone();
             let latch = latch.clone();
             Arc::new(move || {
-                #[cfg(alpine_native_validation)]
+                #[cfg(all(alpine_native_validation, not(test)))]
                 NATIVE_VALIDATION_LANGUAGE_WAKE_CALLBACKS
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 latch.publish(wake);
-                let admitted = matches!(
-                    producer.submit(StudioWorkerOutput::Language(wake), 0),
-                    alpine_runtime::ExternalAdmission::Admitted
+                #[cfg(all(alpine_native_validation, not(test)))]
+                record_native_validation_language_publication(
+                    wake.generation(),
+                    latch.pending_generation(),
                 );
-                #[cfg(alpine_native_validation)]
-                record_native_validation_language_submission(admitted);
-                #[cfg(not(alpine_native_validation))]
-                let _ = admitted;
+                let admission = producer.submit(StudioWorkerOutput::Language(wake), 0);
+                #[cfg(all(alpine_native_validation, not(test)))]
+                record_native_validation_language_submission(admission);
+                #[cfg(any(not(alpine_native_validation), test))]
+                let _ = admission;
             })
         });
-        #[cfg(alpine_native_validation)]
+        #[cfg(all(alpine_native_validation, not(test)))]
         {
             NATIVE_VALIDATION_LANGUAGE_SYNC_CALLS
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -5348,10 +5428,15 @@ impl StudioApp {
         let Some(wake) = self.language_wake_latch.take() else {
             return LanguageEffect::default();
         };
-        #[cfg(alpine_native_validation)]
+        #[cfg(all(alpine_native_validation, not(test)))]
+        record_native_validation_language_observation(
+            wake.generation(),
+            self.language_wake_latch.pending_generation(),
+        );
+        #[cfg(all(alpine_native_validation, not(test)))]
         NATIVE_VALIDATION_LANGUAGE_LATCH_POLLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let effect = self.rust_diagnostics.poll(wake);
-        #[cfg(alpine_native_validation)]
+        #[cfg(all(alpine_native_validation, not(test)))]
         record_native_validation_language_snapshot(self.rust_diagnostics.snapshot());
         effect
     }
@@ -5367,6 +5452,23 @@ impl StudioApp {
             .saturating_add(u64::from(self.selection_revision == previous));
     }
 
+    fn advance_accessibility_semantic_revision(&mut self, changed: bool) {
+        if !changed {
+            return;
+        }
+        let previous = self.accessibility_semantic_revision;
+        self.accessibility_semantic_revision =
+            self.accessibility_semantic_revision.saturating_add(1);
+        self.input_failures = self
+            .input_failures
+            .saturating_add(u64::from(self.accessibility_semantic_revision == previous));
+        #[cfg(all(alpine_native_validation, not(test)))]
+        NATIVE_VALIDATION_ACCESSIBILITY_SEMANTIC_REVISION.store(
+            self.accessibility_semantic_revision,
+            std::sync::atomic::Ordering::Release,
+        );
+    }
+
     fn synchronize_language_after_event(
         &mut self,
         context: &mut AppContext<'_, StudioWorkerOutput>,
@@ -5375,16 +5477,18 @@ impl StudioApp {
         let pending = self.poll_latched_language_wake();
         if let Some(continuation) = pending.continuation {
             self.language_wake_latch.publish(continuation);
-            let admitted = matches!(
-                context
-                    .external_producer()
-                    .submit(StudioWorkerOutput::Language(continuation), 0),
-                alpine_runtime::ExternalAdmission::Admitted
+            #[cfg(all(alpine_native_validation, not(test)))]
+            record_native_validation_language_publication(
+                continuation.generation(),
+                self.language_wake_latch.pending_generation(),
             );
-            #[cfg(alpine_native_validation)]
-            record_native_validation_language_submission(admitted);
-            #[cfg(not(alpine_native_validation))]
-            let _ = admitted;
+            let admission = context
+                .external_producer()
+                .submit(StudioWorkerOutput::Language(continuation), 0);
+            #[cfg(all(alpine_native_validation, not(test)))]
+            record_native_validation_language_submission(admission);
+            #[cfg(any(not(alpine_native_validation), test))]
+            let _ = admission;
         }
         visual_change_present(language.visual_changed, pending.visual_changed)
     }
@@ -5410,7 +5514,7 @@ impl AppDelegate for StudioApp {
     type WorkerOutput = StudioWorkerOutput;
 
     fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, StudioWorkerOutput>) {
-        #[cfg(alpine_native_validation)]
+        #[cfg(all(alpine_native_validation, not(test)))]
         if let Ok(index) = usize::try_from(surface_event_kind(event).saturating_sub(1))
             && let Some(count) = NATIVE_VALIDATION_EVENT_COUNTS.get(index)
         {
@@ -5428,6 +5532,7 @@ impl AppDelegate for StudioApp {
             let admitted = context.respond_accessibility(response);
             self.input_failures = accessibility_admission_failures(self.input_failures, admitted);
             self.advance_selection_revision(selection_before);
+            self.advance_accessibility_semantic_revision(effect.visual_changed);
             if effect.visual_changed {
                 context.invalidate();
             }
@@ -5468,9 +5573,10 @@ impl AppDelegate for StudioApp {
         self.advance_selection_revision(selection_before);
         let language_visual_changed = self.synchronize_language_after_event(context);
         effect.visual_changed |= language_visual_changed;
+        self.advance_accessibility_semantic_revision(effect.visual_changed);
         if effect.visual_changed {
             context.invalidate();
-            #[cfg(alpine_native_validation)]
+            #[cfg(all(alpine_native_validation, not(test)))]
             if language_visual_changed {
                 NATIVE_VALIDATION_LANGUAGE_INVALIDATIONS
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -5484,12 +5590,14 @@ impl AppDelegate for StudioApp {
                     .is_err()
                     && self.find.reject_submission(identity)
                 {
+                    self.advance_accessibility_semantic_revision(true);
                     context.invalidate();
                 }
             }
             Ok(None) => {}
             Err(error) => {
                 self.find.record_error(&error);
+                self.advance_accessibility_semantic_revision(true);
                 context.invalidate();
             }
         }
@@ -5515,7 +5623,7 @@ impl AppDelegate for StudioApp {
         context: &mut AppContext<'_, StudioWorkerOutput>,
     ) {
         let language_result = matches!(&result, StudioWorkerOutput::Language(_));
-        #[cfg(alpine_native_validation)]
+        #[cfg(all(alpine_native_validation, not(test)))]
         let mut language_visual_changed = false;
         let mut effect = match result {
             StudioWorkerOutput::Find(result) => self.apply_find_output(result),
@@ -5523,12 +5631,17 @@ impl AppDelegate for StudioApp {
             StudioWorkerOutput::ProjectSearch(result) => self.apply_project_search_output(result),
             StudioWorkerOutput::FileTree(result) => self.apply_file_tree_output(result),
             StudioWorkerOutput::Language(wake) => {
-                #[cfg(alpine_native_validation)]
+                #[cfg(all(alpine_native_validation, not(test)))]
                 NATIVE_VALIDATION_LANGUAGE_FOREGROUND_RESULTS
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.language_wake_latch.clear(wake);
+                #[cfg(all(alpine_native_validation, not(test)))]
+                record_native_validation_language_observation(
+                    wake.generation(),
+                    self.language_wake_latch.pending_generation(),
+                );
                 let language = self.rust_diagnostics.poll(wake);
-                #[cfg(alpine_native_validation)]
+                #[cfg(all(alpine_native_validation, not(test)))]
                 {
                     language_visual_changed =
                         visual_change_present(language_visual_changed, language.visual_changed);
@@ -5536,16 +5649,18 @@ impl AppDelegate for StudioApp {
                 }
                 if let Some(continuation) = language.continuation {
                     self.language_wake_latch.publish(continuation);
-                    let admitted = matches!(
-                        context
-                            .external_producer()
-                            .submit(StudioWorkerOutput::Language(continuation), 0),
-                        alpine_runtime::ExternalAdmission::Admitted
+                    #[cfg(all(alpine_native_validation, not(test)))]
+                    record_native_validation_language_publication(
+                        continuation.generation(),
+                        self.language_wake_latch.pending_generation(),
                     );
-                    #[cfg(alpine_native_validation)]
-                    record_native_validation_language_submission(admitted);
-                    #[cfg(not(alpine_native_validation))]
-                    let _ = admitted;
+                    let admission = context
+                        .external_producer()
+                        .submit(StudioWorkerOutput::Language(continuation), 0);
+                    #[cfg(all(alpine_native_validation, not(test)))]
+                    record_native_validation_language_submission(admission);
+                    #[cfg(any(not(alpine_native_validation), test))]
+                    let _ = admission;
                 }
                 EventEffect {
                     visual_changed: language.visual_changed,
@@ -5556,29 +5671,32 @@ impl AppDelegate for StudioApp {
         };
         if should_poll_latched_after_worker(language_result) {
             let language = self.poll_latched_language_wake();
-            #[cfg(alpine_native_validation)]
+            #[cfg(all(alpine_native_validation, not(test)))]
             {
                 language_visual_changed =
                     visual_change_present(language_visual_changed, language.visual_changed);
             }
             if let Some(continuation) = language.continuation {
                 self.language_wake_latch.publish(continuation);
-                let admitted = matches!(
-                    context
-                        .external_producer()
-                        .submit(StudioWorkerOutput::Language(continuation), 0),
-                    alpine_runtime::ExternalAdmission::Admitted
+                #[cfg(all(alpine_native_validation, not(test)))]
+                record_native_validation_language_publication(
+                    continuation.generation(),
+                    self.language_wake_latch.pending_generation(),
                 );
-                #[cfg(alpine_native_validation)]
-                record_native_validation_language_submission(admitted);
-                #[cfg(not(alpine_native_validation))]
-                let _ = admitted;
+                let admission = context
+                    .external_producer()
+                    .submit(StudioWorkerOutput::Language(continuation), 0);
+                #[cfg(all(alpine_native_validation, not(test)))]
+                record_native_validation_language_submission(admission);
+                #[cfg(any(not(alpine_native_validation), test))]
+                let _ = admission;
             }
             effect.visual_changed |= language.visual_changed;
         }
+        self.advance_accessibility_semantic_revision(effect.visual_changed);
         if effect.visual_changed {
             context.invalidate();
-            #[cfg(alpine_native_validation)]
+            #[cfg(all(alpine_native_validation, not(test)))]
             if language_visual_changed {
                 NATIVE_VALIDATION_LANGUAGE_INVALIDATIONS
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -5591,7 +5709,7 @@ impl AppDelegate for StudioApp {
     }
 
     fn frame(&mut self, context: WindowContext) -> Scene {
-        #[cfg(alpine_native_validation)]
+        #[cfg(all(alpine_native_validation, not(test)))]
         NATIVE_VALIDATION_FRAME_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.scene(context.scene_revision(), context.viewport())
     }
@@ -5995,6 +6113,7 @@ pub mod native_validation {
     mod accessibility_process;
     pub use accessibility_process::{
         NativeStudioAccessibilityEvidence, qualify_studio_accessibility_process,
+        validate_native_language_startup_trace,
     };
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]

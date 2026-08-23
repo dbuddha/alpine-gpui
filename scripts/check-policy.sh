@@ -105,7 +105,9 @@ if [ -n "$workflow_files" ]; then
     for language_evidence_owner in \
         reset_native_validation_language_evidence \
         record_native_validation_language_snapshot \
+        record_native_validation_language_publication \
         record_native_validation_language_submission \
+        record_native_validation_language_observation \
         native_validation_language_evidence; do
         if ! printf '%s\n' "$mutation_diff_block" | grep -Fq "$language_evidence_owner" \
             || ! printf '%s\n' "$native_mutation_block" | grep -Fq "$language_evidence_owner"; then
@@ -130,7 +132,7 @@ if [ -n "$workflow_files" ]; then
             || [ "$(grep -Fc -- '--file crates/alpine-platform-macos/src/native_accessibility.rs' "$nightly_native_workflow")" -ne 1 ] \
             || [ "$(grep -Fc -- '--file apps/alpine-studio/src/native_validation/accessibility_process.rs' "$nightly_native_workflow")" -ne 1 ] \
             || [ "$(grep -Fc 'ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility' "$nightly_native_workflow")" -ne 1 ] \
-            || [ "$(grep -Fc -- "--file apps/alpine-studio/src/lib.rs --re 'reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_submission|native_validation_language_evidence'" "$nightly_native_workflow")" -ne 1 ] \
+            || [ "$(grep -Fc -- "--file apps/alpine-studio/src/lib.rs --re 'reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence'" "$nightly_native_workflow")" -ne 1 ] \
             || ! grep -Fq -- '--shard "${{ matrix.shard }}"' "$nightly_native_workflow" \
             || ! grep -Fq 'target/native-accessibility-mutants-${{ matrix.id }}.out' "$nightly_native_workflow" \
             || ! grep -Fq 'target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out' "$nightly_native_workflow" \

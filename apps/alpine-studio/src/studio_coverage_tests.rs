@@ -4655,8 +4655,17 @@ fn native_validation_dispatch_counters_reset_and_report_nonzero_work() {
         restarts: 18,
         ..rust_diagnostics::RustDiagnosticsSnapshot::default()
     });
-    record_native_validation_language_submission(true);
-    record_native_validation_language_submission(false);
+    for admission in [
+        alpine_runtime::ExternalAdmission::Admitted,
+        alpine_runtime::ExternalAdmission::Full,
+        alpine_runtime::ExternalAdmission::Disconnected,
+        alpine_runtime::ExternalAdmission::ShuttingDown,
+        alpine_runtime::ExternalAdmission::SequenceExhausted,
+    ] {
+        record_native_validation_language_publication(19, 19);
+        record_native_validation_language_submission(admission);
+    }
+    record_native_validation_language_observation(19, 23);
 
     let (events, frame_builds) = native_validation_dispatch_counts();
     assert_eq!(events[3], 2);
@@ -4666,9 +4675,15 @@ fn native_validation_dispatch_counters_reset_and_report_nonzero_work() {
         NativeValidationLanguageEvidence {
             sync_calls: 2,
             wake_callbacks: 3,
-            latch_publications: 2,
+            latch_publications: 5,
             external_admissions: 1,
-            external_rejections: 1,
+            external_full: 1,
+            external_disconnected: 1,
+            external_shutting_down: 1,
+            external_sequence_exhausted: 1,
+            published_wake_generation: 19,
+            observed_wake_generation: 19,
+            pending_wake_generation: 23,
             latch_polls: 4,
             foreground_results: 5,
             invalidations: 6,
@@ -4686,6 +4701,7 @@ fn native_validation_dispatch_counters_reset_and_report_nonzero_work() {
             stale_wakes: 17,
             restarts: 18,
             frame_builds: 3,
+            semantic_revision: 0,
         }
     );
 
@@ -4703,6 +4719,33 @@ fn visual_change_combination_requires_either_independent_source() {
     assert!(visual_change_present(true, false));
     assert!(visual_change_present(false, true));
     assert!(visual_change_present(true, true));
+}
+
+#[test]
+fn accessibility_semantic_revision_advances_only_for_real_changes_and_reports_exhaustion()
+-> Result<(), Box<dyn Error>> {
+    let document = StudioDocument::scratch("semantic revision");
+    let mut app = StudioApp::from_document(TestTextSystem, document, None)?;
+    let initial = app.accessibility_semantic_revision;
+    let initial_failures = app.input_failures;
+    app.advance_accessibility_semantic_revision(false);
+    assert_eq!(app.accessibility_semantic_revision, initial);
+    assert_eq!(app.input_failures, initial_failures);
+    app.advance_accessibility_semantic_revision(true);
+    assert_eq!(
+        app.accessibility_semantic_revision,
+        initial.saturating_add(1)
+    );
+    assert_eq!(app.input_failures, initial_failures);
+    assert_eq!(
+        accessibility::revision(&app).semantic(),
+        app.accessibility_semantic_revision
+    );
+    app.accessibility_semantic_revision = u64::MAX;
+    app.advance_accessibility_semantic_revision(true);
+    assert_eq!(app.accessibility_semantic_revision, u64::MAX);
+    assert_eq!(app.input_failures, initial_failures.saturating_add(1));
+    Ok(())
 }
 
 struct SelectiveFailingRasterTextSystem {

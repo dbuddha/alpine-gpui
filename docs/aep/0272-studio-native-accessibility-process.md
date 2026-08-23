@@ -232,11 +232,15 @@ Successful label discovery is not sufficient by itself. Before the diagnostic
 can qualify, the child requires an active exact-generation language session,
 three submitted and written startup messages, a server wake, latch publication,
 accepted external handoff, foreground poll, admitted nonempty diagnostic batch,
-semantic invalidation, and a post-initial frame build, with no external
-rejection, input saturation, stale wake, or restart. A complete ordered server
-trace is required independently. Pure polarity controls remove each authority
-axis in turn so a seeded, restored, stale, or bypassed diagnostic cannot satisfy
-the production-process claim.
+semantic invalidation, and a post-initial frame build. Every external handoff
+must be classified. A bounded `Full` result is accepted only when that exact
+generation reaches the foreground through an admitted result or the
+latest-generation latch, and the latch is then empty. Disconnect, shutdown, sequence
+exhaustion, incomplete accounting, input saturation, stale wake, or restart
+remain terminal qualification failures. A complete ordered server trace is
+required independently. Pure polarity controls remove each authority axis in
+turn so a seeded, restored, stale, or bypassed diagnostic cannot satisfy the
+production-process claim.
 
 ## Process composition and ownership
 
@@ -245,19 +249,33 @@ child receives an exact executable path to a shell wrapper which launches the
 existing bounded mock Language Server Protocol fixture in a second process.
 No process environment is mutated after threads exist, and no globally
 installed language server is trusted. The parent gives each isolated child a
-unique phase-trace path under that child's temporary home. The server appends
-only six fixed startup phase names after the validation wrapper appends one
-fixed `wrapper-invoked` ownership phase to the parent-provided absolute path.
+unique phase-trace path under that child's temporary home. The wrapper appends
+`wrapper-invoked:<pid>` and the server appends `process-spawned:<pid>` followed
+by six fixed protocol phases. Because the wrapper replaces itself with the
+server executable, matching nonzero process identifiers prove attempt ownership.
 Before runtime construction, the qualification child verifies that its selected
 server file is that wrapper, verifies that the configured process executable
 canonicalizes to its own executable, and appends one fixed
 `qualification-child` phase. The wrapper explicitly exports mock-server mode
 before replacing itself with that executable. The child reads at most 4,096
-bytes on a terminal readiness failure. The parent requires the exact complete
-ordered eight-phase trace on success and includes partial trace evidence in
+bytes on a terminal readiness failure. The parent requires one qualification
+phase, zero or more valid ordered-prefix attempts, and one complete final
+attempt. This admits an interrupted process when a production file switch
+supersedes it without conflating attempts or accepting reordered, malformed,
+PID-mismatched, or incomplete final evidence. Partial trace evidence remains in
 child failure output.
 This validation file is not created by shipping Studio and is removed with the
 fixture after terminal owner drain.
+
+Production validation recording is compiled into the integration-process
+dependency but not executed automatically by `cfg(test)` unit-library builds.
+The atomics and their direct polarity tests remain available there, preventing
+parallel unit tests from contaminating exact process evidence or each other.
+Language handoff evidence records admitted, full, disconnected, shutting-down,
+and sequence-exhausted outcomes separately, plus the last published, observed,
+and pending wake generation. This mirrors the production latch contract: queue
+contention may be recovered without losing the latest generation, but no fatal
+admission state or undrained latch may qualify.
 
 After the complete journey succeeds, five isolated negative children each omit
 exactly one required open, edit, accessibility action, save, or close step. A
@@ -267,7 +285,7 @@ The `open` control rejects before the exact `main.rs` tab can become active and
 before an ordinary event can start Rust diagnostics. Its exact language trace is
 therefore the qualification-child ownership phase only. The edit, accessibility
 action, save, and close controls first pass diagnostic readiness and must retain
-the same complete eight-phase language lifecycle as the successful journey.
+the same PID-bound complete final language lifecycle as the successful journey.
 The parent reports the scenario with every mismatch so a pre-language omission
 cannot be mistaken for a mock-server scheduling or protocol failure.
 Action totals are derived from successful native dispatches rather than encoded
@@ -280,18 +298,23 @@ teardown paths. The fixture directory is removed only after every owner drains.
 
 ## Correctness, performance, and memory
 
-Every native query and action carries the revision returned by the current
-Studio snapshot. Existing stale-action and input-epoch controls remain mandatory
-companions. A stable query compares Metal submission counts before and after and
+Every native query and action carries the document, text-buffer, and non-text
+semantic revision returned by the current Studio snapshot. Studio advances the
+semantic axis on each accessibility-visible state change, including language
+publication, so stale actions cannot cross selection, diagnostic, workspace, or
+overlay changes that leave text unchanged. Existing stale-action and input-epoch
+controls remain mandatory companions. A stable query compares Metal submission counts before and after and
 requires an exact zero delta. Each accepted visible action requires a delta no
 greater than one. File-tree progress remains bounded to 1,024 explicit wake
 turns. Diagnostic child-process admission is serviced by explicit wakes under
 the separate ten-second correctness watchdog because empty polling-turn counts
 vary with scheduler and process-start latency. Native tree inspection occurs
-only initially, after an admitted visual frame, or once after complete semantic
-and server authority becomes observable. A failure retains bounded poll, frame,
-tree-inspection, authority-inspection, surface, worker, and external-queue
-counters. No
+only initially, after an admitted visual frame, or once for each newer semantic
+revision after complete diagnostic and server authority becomes observable. The
+tree-reported semantic revision must be monotonic, and a caught-up tree is not
+queried again without another frame or semantic publication. A failure retains
+bounded poll, frame, tree-inspection, inspected-semantic-revision, surface,
+worker, and external-queue counters. No
 timer poller or continuous frame loop is introduced, and this watchdog is not a
 product latency budget.
 

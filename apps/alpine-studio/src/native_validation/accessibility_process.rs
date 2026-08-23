@@ -848,7 +848,7 @@ fn wait_for_label_prefix(
     let mut wake_turns = 0_u64;
     let mut frame_wakes = 0_u64;
     let mut tree_inspections = 0_u64;
-    let mut authority_inspected = false;
+    let mut inspected_semantic_revision = 0_u64;
     loop {
         let frame_requested = dispatch(
             surface,
@@ -877,18 +877,25 @@ fn wait_for_label_prefix(
             first_inspection,
             frame_requested,
             authority_ready,
-            authority_inspected,
+            language.semantic_revision,
+            inspected_semantic_revision,
         ) {
             first_inspection = false;
-            if authority_ready {
-                authority_inspected = true;
-            }
             tree_inspections = tree_inspections.saturating_add(1);
             let tree = inspect(surface, state).map_err(|error| {
                 format!(
                     "waiting for native label prefix {prefix:?}: native tree refresh after worker wake failed: {error}"
                 )
             })?;
+            let observed_semantic_revision = tree.revision().semantic();
+            if semantic_revision_regressed(observed_semantic_revision, inspected_semantic_revision)
+            {
+                return Err(format!(
+                    "waiting for native label prefix {prefix:?}: semantic revision regressed from {inspected_semantic_revision} to {observed_semantic_revision}"
+                )
+                .into());
+            }
+            inspected_semantic_revision = observed_semantic_revision;
             if let Some(node) = tree
                 .nodes()
                 .iter()
@@ -907,7 +914,7 @@ fn wait_for_label_prefix(
             let completed_server_phases = completed_language_server_phases(&server_trace);
             let next_server_phase = REQUIRED_LANGUAGE_PHASES.get(completed_server_phases);
             return Err(format!(
-                "waiting for native label prefix {prefix:?}: label did not become visible before the {DIAGNOSTIC_READY_TIMEOUT:?} correctness deadline; polling=(wake_turns={wake_turns} frame_wakes={frame_wakes} tree_inspections={tree_inspections} authority_inspected={authority_inspected}) surface=(occupied={} submitted={} paused={} submissions={} terminal={:?}) worker=(queued_requests={} queued_results={} dropped_results={} panicked_jobs={}) external=(current_items={} admitted={} drained={} full={} disconnected={} shutting_down={} sequence_exhausted={}) language={language:?} server=(completed_phases={completed_server_phases}/{} next_phase={next_server_phase:?} trace={server_trace:?})",
+                "waiting for native label prefix {prefix:?}: label did not become visible before the {DIAGNOSTIC_READY_TIMEOUT:?} correctness deadline; polling=(wake_turns={wake_turns} frame_wakes={frame_wakes} tree_inspections={tree_inspections} inspected_semantic_revision={inspected_semantic_revision}) surface=(occupied={} submitted={} paused={} submissions={} terminal={:?}) worker=(queued_requests={} queued_results={} dropped_results={} panicked_jobs={}) external=(current_items={} admitted={} drained={} full={} disconnected={} shutting_down={} sequence_exhausted={}) language={language:?} server=(completed_phases={completed_server_phases}/{} next_phase={next_server_phase:?} trace={server_trace:?})",
                 surface.occupied_frame_slots(),
                 surface.submitted_frame_slots(),
                 surface.display_link_paused(),
@@ -960,12 +967,102 @@ const fn language_trace_size_within_bound(bytes: usize) -> bool {
     bytes <= MAX_LANGUAGE_TRACE_BYTES as usize
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LanguageServerTraceEvidence {
+    attempts: usize,
+    completed_phases: usize,
+}
+
+fn trace_process_id(line: &str, prefix: &str) -> Option<u32> {
+    let value = line.strip_prefix(prefix)?.parse::<u32>().ok()?;
+    (value > 0).then_some(value)
+}
+
+const fn semantic_revision_regressed(observed: u64, previous: u64) -> bool {
+    observed < previous
+}
+
+fn language_server_trace_evidence(trace: &str) -> Result<LanguageServerTraceEvidence, Box<str>> {
+    const ATTEMPT_PHASES: [&str; 7] = [
+        "wrapper-invoked",
+        "process-spawned",
+        "initialize-received",
+        "initialize-responded",
+        "initialized-received",
+        "did-open-received",
+        "diagnostics-written",
+    ];
+    let mut lines = trace.lines();
+    if lines.next() != Some("qualification-child") {
+        return Err("language trace must start with qualification-child".into());
+    }
+    let mut attempts = 0_usize;
+    let mut process_id = 0_u32;
+    let mut completed_attempt_phases = 0_usize;
+    for line in lines {
+        if let Some(next_process_id) = trace_process_id(line, "wrapper-invoked:") {
+            attempts = attempts
+                .checked_add(1)
+                .ok_or_else(|| Box::<str>::from("language trace attempt count overflow"))?;
+            process_id = next_process_id;
+            completed_attempt_phases = 1;
+            continue;
+        }
+        if attempts == 0 {
+            return Err(format!("language trace phase {line:?} has no owning attempt").into());
+        }
+        if completed_attempt_phases >= ATTEMPT_PHASES.len() {
+            return Err(format!("language trace has trailing phase {line:?}").into());
+        }
+        if completed_attempt_phases == 1 {
+            let Some(spawned_process_id) = trace_process_id(line, "process-spawned:") else {
+                return Err(format!(
+                    "language trace expected PID-bound process spawn, observed {line:?}"
+                )
+                .into());
+            };
+            if spawned_process_id != process_id {
+                return Err(format!(
+                    "language trace wrapper PID {process_id} did not own process PID {spawned_process_id}"
+                )
+                .into());
+            }
+        } else if line != ATTEMPT_PHASES[completed_attempt_phases] {
+            return Err(format!(
+                "language trace expected {:?}, observed {line:?}",
+                ATTEMPT_PHASES[completed_attempt_phases]
+            )
+            .into());
+        }
+        completed_attempt_phases = completed_attempt_phases.saturating_add(1);
+    }
+    if attempts == 0 {
+        return Err("language trace contains no process attempt".into());
+    }
+    Ok(LanguageServerTraceEvidence {
+        attempts,
+        completed_phases: completed_attempt_phases.saturating_add(1),
+    })
+}
+
+#[doc(hidden)]
+pub fn validate_native_language_startup_trace(trace: &str) -> Result<(), Box<str>> {
+    let evidence = language_server_trace_evidence(trace)?;
+    if evidence.completed_phases == REQUIRED_LANGUAGE_PHASES.len() {
+        Ok(())
+    } else {
+        Err(format!(
+            "final language attempt was incomplete: attempts={} completed_phases={}/{}",
+            evidence.attempts,
+            evidence.completed_phases,
+            REQUIRED_LANGUAGE_PHASES.len()
+        )
+        .into())
+    }
+}
+
 fn completed_language_server_phases(trace: &str) -> usize {
-    REQUIRED_LANGUAGE_PHASES
-        .iter()
-        .zip(trace.lines())
-        .take_while(|(expected, observed)| **expected == *observed)
-        .count()
+    language_server_trace_evidence(trace).map_or(0, |evidence| evidence.completed_phases)
 }
 
 const fn diagnostic_qualification_ready(
@@ -975,14 +1072,12 @@ const fn diagnostic_qualification_ready(
     authority_ready && completed_server_phases == REQUIRED_LANGUAGE_PHASES.len()
 }
 
-const fn diagnostic_authority_ready(evidence: crate::NativeValidationLanguageEvidence) -> bool {
+fn diagnostic_authority_ready(evidence: crate::NativeValidationLanguageEvidence) -> bool {
     evidence.active
         && evidence.sync_calls > 0
         && evidence.wake_callbacks > 0
-        && evidence.latch_publications > 0
-        && evidence.external_admissions > 0
-        && evidence.external_rejections == 0
-        && evidence.foreground_results > 0
+        && language_handoff_recovered(evidence)
+        && (evidence.foreground_results > 0 || evidence.latch_polls > 0)
         && evidence.generation > 0
         && evidence.process_epoch > 0
         && evidence.lsp_version > 0
@@ -996,6 +1091,27 @@ const fn diagnostic_authority_ready(evidence: crate::NativeValidationLanguageEvi
         && evidence.restarts == 0
         && evidence.invalidations > 0
         && evidence.frame_builds > 1
+        && evidence.semantic_revision > 0
+}
+
+fn language_handoff_recovered(evidence: crate::NativeValidationLanguageEvidence) -> bool {
+    let Some(classified) = evidence
+        .external_admissions
+        .checked_add(evidence.external_full)
+        .and_then(|value| value.checked_add(evidence.external_disconnected))
+        .and_then(|value| value.checked_add(evidence.external_shutting_down))
+        .and_then(|value| value.checked_add(evidence.external_sequence_exhausted))
+    else {
+        return false;
+    };
+    classified != 0
+        && classified == evidence.latch_publications
+        && evidence.external_disconnected == 0
+        && evidence.external_shutting_down == 0
+        && evidence.external_sequence_exhausted == 0
+        && evidence.published_wake_generation == evidence.generation
+        && evidence.observed_wake_generation == evidence.generation
+        && evidence.pending_wake_generation == 0
 }
 
 fn diagnostic_wait_expired(elapsed: Duration) -> bool {
@@ -1006,9 +1122,12 @@ const fn diagnostic_tree_inspection_required(
     first_inspection: bool,
     frame_requested: bool,
     authority_ready: bool,
-    authority_inspected: bool,
+    semantic_revision: u64,
+    inspected_semantic_revision: u64,
 ) -> bool {
-    first_inspection || frame_requested || (authority_ready && !authority_inspected)
+    first_inspection
+        || frame_requested
+        || (authority_ready && semantic_revision > inspected_semantic_revision)
 }
 
 fn wait_for_label(
@@ -1278,39 +1397,64 @@ mod process_contract_tests {
         ));
 
         assert!(diagnostic_tree_inspection_required(
-            true, false, false, false
+            true, false, false, 0, 0
         ));
         assert!(diagnostic_tree_inspection_required(
-            false, true, false, false
+            false, true, false, 0, 0
         ));
         assert!(diagnostic_tree_inspection_required(
-            false, false, true, false
+            false, false, true, 2, 1
         ));
         assert!(!diagnostic_tree_inspection_required(
-            false, false, false, false
+            false, false, false, 2, 1
         ));
         assert!(!diagnostic_tree_inspection_required(
-            false, false, true, true
+            false, false, true, 2, 2
         ));
     }
 
     #[test]
     fn language_server_phase_evidence_requires_the_exact_ordered_prefix() {
-        let mut trace = String::new();
-        for (index, phase) in REQUIRED_LANGUAGE_PHASES.iter().enumerate() {
-            assert_eq!(completed_language_server_phases(&trace), index);
-            trace.push_str(phase);
-            trace.push('\n');
-        }
         assert_eq!(
-            completed_language_server_phases(&trace),
-            REQUIRED_LANGUAGE_PHASES.len()
+            trace_process_id("wrapper-invoked:41", "wrapper-invoked:"),
+            Some(41)
         );
         assert_eq!(
+            trace_process_id("wrapper-invoked:0", "wrapper-invoked:"),
+            None
+        );
+        assert_eq!(
+            trace_process_id("wrapper-invoked:x", "wrapper-invoked:"),
+            None
+        );
+        assert!(!semantic_revision_regressed(2, 1));
+        assert!(!semantic_revision_regressed(2, 2));
+        assert!(semantic_revision_regressed(1, 2));
+        let trace = "qualification-child\nwrapper-invoked:41\nprocess-spawned:41\ninitialize-received\ninitialize-responded\ninitialized-received\ndid-open-received\ndiagnostics-written\n";
+        assert_eq!(
+            completed_language_server_phases(trace),
+            REQUIRED_LANGUAGE_PHASES.len()
+        );
+        assert_eq!(validate_native_language_startup_trace(trace), Ok(()));
+        let switched = "qualification-child\nwrapper-invoked:41\nprocess-spawned:41\ninitialize-received\nwrapper-invoked:73\nprocess-spawned:73\ninitialize-received\ninitialize-responded\ninitialized-received\ndid-open-received\ndiagnostics-written\n";
+        assert_eq!(
+            completed_language_server_phases(switched),
+            REQUIRED_LANGUAGE_PHASES.len()
+        );
+        assert_eq!(validate_native_language_startup_trace(switched), Ok(()));
+        assert_eq!(
             completed_language_server_phases(
-                "qualification-child\nwrapper-invoked\nprocess-spawned\ninitialize-responded\ninitialize-received\n"
+                "qualification-child\nwrapper-invoked:41\nprocess-spawned:73\n"
             ),
-            3
+            0
+        );
+        assert!(validate_native_language_startup_trace(
+            "qualification-child\nwrapper-invoked:41\nprocess-spawned:41\ninitialize-responded\n"
+        )
+        .is_err());
+        assert!(
+            validate_native_language_startup_trace("qualification-child\nwrapper-invoked:41\n")
+                .is_err()
         );
         assert_eq!(completed_language_server_phases("unknown\n"), 0);
     }
@@ -1355,7 +1499,13 @@ mod process_contract_tests {
             wake_callbacks: 1,
             latch_publications: 1,
             external_admissions: 1,
-            external_rejections: 0,
+            external_full: 0,
+            external_disconnected: 0,
+            external_shutting_down: 0,
+            external_sequence_exhausted: 0,
+            published_wake_generation: 1,
+            observed_wake_generation: 1,
+            pending_wake_generation: 0,
             latch_polls: 0,
             foreground_results: 1,
             invalidations: 1,
@@ -1373,6 +1523,7 @@ mod process_contract_tests {
             stale_wakes: 0,
             restarts: 0,
             frame_builds: 2,
+            semantic_revision: 1,
         };
         assert!(diagnostic_authority_ready(valid));
         for invalid in [
@@ -1397,11 +1548,39 @@ mod process_contract_tests {
                 ..valid
             },
             crate::NativeValidationLanguageEvidence {
-                external_rejections: 1,
+                latch_publications: 2,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                external_disconnected: 1,
+                latch_publications: 2,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                external_shutting_down: 1,
+                latch_publications: 2,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                external_sequence_exhausted: 1,
+                latch_publications: 2,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                published_wake_generation: 2,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                observed_wake_generation: 2,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                pending_wake_generation: 1,
                 ..valid
             },
             crate::NativeValidationLanguageEvidence {
                 foreground_results: 0,
+                latch_polls: 0,
                 ..valid
             },
             crate::NativeValidationLanguageEvidence {
@@ -1453,9 +1632,29 @@ mod process_contract_tests {
                 frame_builds: 1,
                 ..valid
             },
+            crate::NativeValidationLanguageEvidence {
+                semantic_revision: 0,
+                ..valid
+            },
         ] {
             assert!(!diagnostic_authority_ready(invalid));
         }
+        assert!(diagnostic_authority_ready(
+            crate::NativeValidationLanguageEvidence {
+                latch_publications: 2,
+                external_full: 1,
+                ..valid
+            }
+        ));
+        assert!(diagnostic_authority_ready(
+            crate::NativeValidationLanguageEvidence {
+                external_admissions: 0,
+                external_full: 1,
+                foreground_results: 0,
+                latch_polls: 1,
+                ..valid
+            }
+        ));
     }
 
     #[test]
