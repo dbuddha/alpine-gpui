@@ -5882,6 +5882,60 @@ fn accessibility_runtime_dispatch_is_exact_dirty_neutral_and_revision_checked()
 }
 
 #[test]
+fn accessibility_document_action_advances_runtime_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "fn alpha() {}\n")?;
+    root.write("beta.rs", "fn beta() {}\n")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = app.workspace.as_ref().ok_or("workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("alpha")?;
+    let beta = workspace.index_named("beta.rs").ok_or("beta")?;
+    app.open_workspace_entry(alpha)?;
+    app.open_workspace_entry(beta)?;
+    let _scene = app.try_scene(SceneRevision::new(1), viewport()?)?;
+    let snapshot = app.accessibility_snapshot()?;
+    let alpha_tab = snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.role() == AccessibilityRole::Tab && node.name() == "alpha.rs")
+        .ok_or("alpha tab")?;
+    let expected_document_revision = app
+        .runtime_document_revision
+        .checked_add(1)
+        .ok_or("document revision")?;
+    let request = AccessibilityRequest::action(
+        AccessibilityRequestId::new(14),
+        AccessibilityAction::activate(snapshot.revision(), alpha_tab.id()),
+    )?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    assert!(runtime.frame_if_dirty().is_some());
+    assert_eq!(runtime.snapshot().document_revision().get(), 0);
+
+    let response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(14),
+        request,
+    });
+    assert!(response.frame().is_some());
+    assert!(matches!(
+        response
+            .accessibility_response()
+            .ok_or("action response")?
+            .result(),
+        Ok(AccessibilityPayload::Action(
+            alpine_platform_macos::AccessibilityActionResult::Applied
+        ))
+    ));
+    assert_eq!(
+        runtime.snapshot().document_revision().get(),
+        expected_document_revision
+    );
+    assert!(runtime.frame_if_dirty().is_none());
+    Ok(())
+}
+
+#[test]
 fn accessibility_runtime_rejects_stale_mapping_and_oversized_text()
 -> Result<(), Box<dyn std::error::Error>> {
     let app = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("a🦀é"), None)?;

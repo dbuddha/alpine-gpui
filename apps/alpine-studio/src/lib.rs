@@ -5505,72 +5505,13 @@ impl StudioApp {
         }
         visual_change_present(language.visual_changed, pending.visual_changed)
     }
-}
 
-const fn visual_change_present(first: bool, second: bool) -> bool {
-    first || second
-}
-
-const fn should_poll_latched_after_worker(language_result: bool) -> bool {
-    !language_result
-}
-
-enum StudioWorkerOutput {
-    Find(FindWorkerOutput),
-    QuickOpen(QuickOpenWorkerOutput),
-    ProjectSearch(ProjectSearchWorkerOutput),
-    FileTree(FileTreeWorkerOutput),
-    Language(LanguageWake),
-}
-
-impl AppDelegate for StudioApp {
-    type WorkerOutput = StudioWorkerOutput;
-
-    fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, StudioWorkerOutput>) {
-        #[cfg(all(alpine_native_validation, not(test)))]
-        if let Ok(index) = usize::try_from(surface_event_kind(event).saturating_sub(1))
-            && let Some(count) = NATIVE_VALIDATION_EVENT_COUNTS.get(index)
-        {
-            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        self.profile_event_timestamp = event.timestamp();
-        self.record_profile(
-            StudioSignpostStage::EventDispatchBegin,
-            SceneRevision::new(0),
-            [surface_event_kind(event), self.selection_revision, 0],
-        );
-        if let SurfaceEvent::Accessibility { request, .. } = event {
-            let selection_before = self.selection;
-            let (response, effect) = accessibility::respond(self, request);
-            let admitted = context.respond_accessibility(response);
-            self.input_failures = accessibility_admission_failures(self.input_failures, admitted);
-            self.advance_selection_revision(selection_before);
-            self.advance_accessibility_semantic_revision(effect.visual_changed);
-            if effect.visual_changed {
-                context.invalidate();
-            }
-            self.record_profile(
-                StudioSignpostStage::StateMutationComplete,
-                SceneRevision::new(0),
-                [u64::from(effect.visual_changed), 0, self.selection_revision],
-            );
-            return;
-        }
-        let selection_before = self.selection;
-        let StudioTransition {
-            mut effect,
-            clipboard_write,
-            cancel_close,
-        } = self.handle_event_with_response(event);
-        if let Some(write) = clipboard_write {
-            let operation = write.operation();
-            let admitted = context.write_clipboard(write);
-            effect = self.resolve_clipboard_admission(effect, operation, admitted);
-        }
-        if cancel_close {
-            let admitted = context.cancel_close();
-            self.resolve_close_admission(true, admitted);
-        }
+    fn finish_event(
+        &mut self,
+        mut effect: EventEffect,
+        selection_before: Selection,
+        context: &mut AppContext<'_, StudioWorkerOutput>,
+    ) {
         if effect.document_changed {
             if effect.document_identity_advanced {
                 self.find.close();
@@ -5580,8 +5521,8 @@ impl AppDelegate for StudioApp {
             }
             self.advance_runtime_document_identity(effect.document_identity_advanced);
             let revision = DocumentRevision::new(self.runtime_document_revision);
-            let rejected = !context.advance_document(revision);
-            self.input_failures = self.input_failures.saturating_add(u64::from(rejected));
+            let admitted = context.advance_document(revision);
+            self.input_failures = accessibility_admission_failures(self.input_failures, admitted);
         }
         self.advance_selection_revision(selection_before);
         let language_visual_changed = self.synchronize_language_after_event(context);
@@ -5627,6 +5568,73 @@ impl AppDelegate for StudioApp {
                 self.selection_revision,
             ],
         );
+    }
+}
+
+const fn visual_change_present(first: bool, second: bool) -> bool {
+    first || second
+}
+
+const fn should_poll_latched_after_worker(language_result: bool) -> bool {
+    !language_result
+}
+
+enum StudioWorkerOutput {
+    Find(FindWorkerOutput),
+    QuickOpen(QuickOpenWorkerOutput),
+    ProjectSearch(ProjectSearchWorkerOutput),
+    FileTree(FileTreeWorkerOutput),
+    Language(LanguageWake),
+}
+
+impl AppDelegate for StudioApp {
+    type WorkerOutput = StudioWorkerOutput;
+
+    fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, StudioWorkerOutput>) {
+        #[cfg(all(alpine_native_validation, not(test)))]
+        if let Ok(index) = usize::try_from(surface_event_kind(event).saturating_sub(1))
+            && let Some(count) = NATIVE_VALIDATION_EVENT_COUNTS.get(index)
+        {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.profile_event_timestamp = event.timestamp();
+        self.record_profile(
+            StudioSignpostStage::EventDispatchBegin,
+            SceneRevision::new(0),
+            [surface_event_kind(event), self.selection_revision, 0],
+        );
+        if let SurfaceEvent::Accessibility { request, .. } = event {
+            let selection_before = self.selection;
+            let (response, effect) = accessibility::respond(self, request);
+            let admitted = context.respond_accessibility(response);
+            self.input_failures = accessibility_admission_failures(self.input_failures, admitted);
+            if effect.visual_changed {
+                self.finish_event(effect, selection_before, context);
+            } else {
+                self.record_profile(
+                    StudioSignpostStage::StateMutationComplete,
+                    SceneRevision::new(0),
+                    [0, 0, self.selection_revision],
+                );
+            }
+            return;
+        }
+        let selection_before = self.selection;
+        let StudioTransition {
+            mut effect,
+            clipboard_write,
+            cancel_close,
+        } = self.handle_event_with_response(event);
+        if let Some(write) = clipboard_write {
+            let operation = write.operation();
+            let admitted = context.write_clipboard(write);
+            effect = self.resolve_clipboard_admission(effect, operation, admitted);
+        }
+        if cancel_close {
+            let admitted = context.cancel_close();
+            self.resolve_close_admission(true, admitted);
+        }
+        self.finish_event(effect, selection_before, context);
     }
 
     fn worker_result(
@@ -6126,7 +6134,7 @@ pub mod native_validation {
     mod accessibility_process;
     pub use accessibility_process::{
         NativeStudioAccessibilityEvidence, qualify_studio_accessibility_process,
-        validate_native_language_startup_trace,
+        validate_native_language_startup_prefix, validate_native_language_startup_trace,
     };
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]

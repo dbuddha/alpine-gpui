@@ -152,7 +152,7 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
             )
             .into());
         }
-        require_language_trace(&trace, &COMPLETE_LANGUAGE_PHASES, "normal")?;
+        require_language_trace(&trace, "normal")?;
         assert_eq!(stdout.trim(), "alpine-native-accessibility-qualified");
         assert!(stderr.lines().all(|line| {
             line.ends_with("Metal API Validation Enabled")
@@ -167,12 +167,11 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .into());
             }
-            let expected_language_phases = if omitted == "open" {
-                &QUALIFICATION_ONLY_PHASES[..]
+            if omitted == "open" {
+                require_language_trace_prefix(&trace, omitted)?;
             } else {
-                &COMPLETE_LANGUAGE_PHASES[..]
-            };
-            require_language_trace(&trace, expected_language_phases, omitted)?;
+                require_language_trace(&trace, omitted)?;
+            }
             assert_eq!(
                 stdout.trim(),
                 format!("alpine-native-accessibility-omission-rejected={omitted}")
@@ -199,40 +198,20 @@ fn read_language_trace(path: &std::path::Path) -> String {
 }
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
-const QUALIFICATION_ONLY_PHASES: [&str; 1] = ["qualification-child"];
+fn require_language_trace(trace: &str, scenario: &str) -> Result<(), Box<dyn std::error::Error>> {
+    require_language_startup_trace(trace).map_err(|error| {
+        format!("language trace mismatch for scenario {scenario:?}: {error}").into()
+    })
+}
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
-const COMPLETE_LANGUAGE_PHASES: [&str; 8] = [
-    "qualification-child",
-    "wrapper-invoked",
-    "process-spawned",
-    "initialize-received",
-    "initialize-responded",
-    "initialized-received",
-    "did-open-received",
-    "diagnostics-written",
-];
-
-#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
-fn require_language_trace(
+fn require_language_trace_prefix(
     trace: &str,
-    expected: &[&str],
     scenario: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if expected == COMPLETE_LANGUAGE_PHASES {
-        return require_language_startup_trace(trace).map_err(|error| {
-            format!("language trace mismatch for scenario {scenario:?}: {error}").into()
-        });
-    }
-    let actual = trace.lines().collect::<Vec<_>>();
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(format!(
-            "language trace mismatch for scenario {scenario:?}: expected={expected:?}; actual={actual:?}"
-        )
-        .into())
-    }
+    alpine_studio::native_validation::validate_native_language_startup_prefix(trace).map_err(
+        |error| format!("language trace prefix mismatch for scenario {scenario:?}: {error}").into(),
+    )
 }
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]

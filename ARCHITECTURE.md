@@ -1034,10 +1034,12 @@ only in the private AppKit adapter. `Activate` carries the exact observed
 document/buffer revision and node identity. Studio rebuilds its bounded current
 projection, rejects stale, missing, unsupported, or disabled targets before
 mutation, and routes only to existing tab, file-row, command, diagnostic,
-save, and dirty-close authorities. Queries remain dirty-neutral and accepted
-actions enter the existing one-frame coalescing path. No `SetFocus`, arbitrary
-text geometry, callback registry, second semantic tree, or generic element
-framework is introduced. See AEP-0270.
+save, and dirty-close authorities. A state-changing action then enters the same
+document-authority advancement, language synchronization, bounded worker,
+recovery publication, semantic-revision, and one-frame coalescing path as
+keyboard and pointer input. Queries and unchanged actions remain dirty-neutral.
+No `SetFocus`, arbitrary text geometry, callback registry, second semantic tree,
+or generic element framework is introduced. See AEP-0270.
 
 Accessibility refresh now returns one bounded native dispatch batch after the
 adapter borrow ends. Removed and semantically replaced instances leave the

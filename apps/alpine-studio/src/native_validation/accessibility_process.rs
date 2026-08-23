@@ -1043,6 +1043,16 @@ fn language_server_trace_evidence(trace: &str) -> Result<LanguageServerTraceEvid
 }
 
 #[doc(hidden)]
+pub fn validate_native_language_startup_prefix(trace: &str) -> Result<(), Box<str>> {
+    let mut phases = trace.lines();
+    if phases.next() == Some("qualification-child") && phases.next().is_none() {
+        return Ok(());
+    }
+    let _evidence = language_server_trace_evidence(trace)?;
+    Ok(())
+}
+
+#[doc(hidden)]
 pub fn validate_native_language_startup_trace(trace: &str) -> Result<(), Box<str>> {
     let evidence = language_server_trace_evidence(trace)?;
     if evidence.completed_phases == REQUIRED_LANGUAGE_PHASES.len() {
@@ -1427,6 +1437,17 @@ mod process_contract_tests {
             REQUIRED_LANGUAGE_PHASES.len()
         );
         assert_eq!(validate_native_language_startup_trace(trace), Ok(()));
+        assert_eq!(validate_native_language_startup_prefix(trace), Ok(()));
+        assert_eq!(
+            validate_native_language_startup_prefix(
+                "qualification-child\nwrapper-invoked:41\nprocess-spawned:41\ninitialize-received\n"
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_native_language_startup_prefix("qualification-child\n"),
+            Ok(())
+        );
         let switched = "qualification-child\nwrapper-invoked:41\nprocess-spawned:41\ninitialize-received\nwrapper-invoked:73\nprocess-spawned:73\ninitialize-received\ninitialize-responded\ninitialized-received\ndid-open-received\ndiagnostics-written\n";
         assert_eq!(
             completed_language_server_phases(switched),
@@ -1443,6 +1464,18 @@ mod process_contract_tests {
             "qualification-child\nwrapper-invoked:41\nprocess-spawned:41\ninitialize-responded\n"
         )
         .is_err());
+        assert!(
+            validate_native_language_startup_prefix(
+                "qualification-child\nwrapper-invoked:41\nprocess-spawned:73\n"
+            )
+            .is_err()
+        );
+        assert!(
+            validate_native_language_startup_prefix(
+                "qualification-child\nwrapper-invoked:41\ninitialize-received\n"
+            )
+            .is_err()
+        );
         assert!(
             validate_native_language_startup_trace("qualification-child\nwrapper-invoked:41\n")
                 .is_err()

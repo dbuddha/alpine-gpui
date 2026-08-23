@@ -206,7 +206,12 @@ the last complete state and projection without consuming a frame. The existing
 explicit wake drains those results, emits one latest coalesced frame, and
 publishes projection identity only after derived visible lines are final. An
 action executes against its complete projection before the bounded drain, after
-which foreground and background effects share at most one frame. Studio's
+which Studio routes every state-changing action through the same document
+authority advancement, active-document language synchronization, bounded worker
+submission, recovery publication, and semantic invalidation used by keyboard
+and pointer input. Foreground and background effects then share at most one
+frame. Read-only queries, unchanged actions, and rejected actions do not enter
+that mutation finalizer. Studio's
 state/projection guard still rejects any unexpected mixed snapshot, and the
 native adapter retains its previous complete tree without reconciliation or
 notification. Portable regressions require no query drain or frame, one wake
@@ -300,8 +305,11 @@ exactly one required open, edit, accessibility action, save, or close step. A
 control is accepted only when the same production journey rejects that omission;
 an omitted step that still reaches qualification fails the parent process test.
 The `open` control rejects before the exact `main.rs` tab can become active and
-before an ordinary event can start Rust diagnostics. Its exact language trace is
-therefore the qualification-child ownership phase only. The edit, accessibility
+before that document can own Rust diagnostics. A preceding state-changing native
+file action may now correctly start diagnostics for the currently active
+`lib.rs` document through the shared production event finalizer. The control
+therefore accepts only an ordered, recognized, same-PID prefix of that process
+lifecycle rather than claiming no process started. The edit, accessibility
 action, save, and close controls first pass diagnostic readiness and must retain
 the same PID-bound complete final language lifecycle as the successful journey.
 The parent reports the scenario with every mismatch so a pre-language omission
