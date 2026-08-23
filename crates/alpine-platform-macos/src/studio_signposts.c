@@ -96,6 +96,24 @@ void alpine_studio_signpost_emit(
         case 12:
             ALPINE_STUDIO_EMIT("Frame Build Failed");
             break;
+        case 13:
+            ALPINE_STUDIO_EMIT("Native Event Handler Latency");
+            break;
+        case 14:
+            ALPINE_STUDIO_EMIT("Native Frame Queue Latency");
+            break;
+        case 15:
+            ALPINE_STUDIO_EMIT("Native Submission Latency");
+            break;
+        case 16:
+            ALPINE_STUDIO_EMIT("Native GPU Terminal Observed Latency");
+            break;
+        case 17:
+            ALPINE_STUDIO_EMIT("Native Presented Handler Latency");
+            break;
+        case 18:
+            ALPINE_STUDIO_EMIT("Native Terminal Record Latency");
+            break;
         default:
             break;
     }

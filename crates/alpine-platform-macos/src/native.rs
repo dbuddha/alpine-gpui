@@ -66,9 +66,9 @@ use crate::{
     ClipboardOperation, ClipboardText, ClipboardWrite, CloseDisposition, EventTimestamp,
     FrameLatencyEvidence, FrameTerminalEvidence, ImeEvent, InputEpoch, InputEpochAdmission,
     KeyState, Modifiers, PointerAction, PointerButton, SURFACE_CLOSING, SURFACE_LIVE, ScrollPhase,
-    SdrColorContract, SurfaceConfiguration, SurfaceDescriptor, SurfaceError, SurfaceEvent,
-    SurfaceLifecycle, SurfaceObserver, SurfaceOperation, SurfaceResponse, SurfaceSnapshot,
-    SurfaceStage, SurfaceWakeAdmission, SurfaceWakeCounters, SurfaceWaker,
+    SdrColorContract, StudioSignposts, SurfaceConfiguration, SurfaceDescriptor, SurfaceError,
+    SurfaceEvent, SurfaceLifecycle, SurfaceObserver, SurfaceOperation, SurfaceResponse,
+    SurfaceSnapshot, SurfaceStage, SurfaceWakeAdmission, SurfaceWakeCounters, SurfaceWaker,
     begin_close_observer_state, finish_close_observer_state, new_observer_state,
     presentation_visible,
 };
@@ -695,6 +695,7 @@ struct PresentationDriver {
     frame_slots: FrameSlotRing,
     owner_generation: FrameOwnerGeneration,
     backend: MetalBackend,
+    latency_signposts: StudioSignposts,
     consecutive_skips: u16,
     last_error: Option<SurfaceError>,
     last_terminal: Option<FrameTerminalEvidence>,
@@ -724,6 +725,7 @@ impl PresentationDriver {
             frame_slots: FrameSlotRing::new(),
             owner_generation,
             backend,
+            latency_signposts: StudioSignposts::new(),
             consecutive_skips: 0,
             last_error: None,
             last_terminal: None,
@@ -1148,6 +1150,9 @@ impl PresentationDriver {
             self.backend.accounting().current_retained_bytes(),
             recovery,
         );
+        if let Some(latency) = evidence.latency() {
+            let _emitted = self.latency_signposts.emit_frame_latency(latency);
+        }
         if matches!(attempt.outcome(), PresentationOutcome::Superseded) {
             self.last_superseded = Some(evidence);
         }

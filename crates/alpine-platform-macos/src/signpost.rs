@@ -30,6 +30,18 @@ pub enum StudioSignpostStage {
     FrameBuildComplete = 11,
     /// Scene construction failed and the fallback path was selected.
     FrameBuildFailed = 12,
+    /// Synchronous native event handling completed; `a` is elapsed nanoseconds.
+    NativeEventHandlerLatency = 13,
+    /// Frame admission waited for the display-link callback; `a` is elapsed nanoseconds.
+    NativeFrameQueueLatency = 14,
+    /// Native validation, upload, encode, commit, and present completed; `a` is nanoseconds.
+    NativeSubmissionLatency = 15,
+    /// GPU terminal state reached the main-thread observer; `a` is an upper-bound nanoseconds.
+    NativeGpuTerminalObservedLatency = 16,
+    /// The drawable presented handler ran; `a` is nanoseconds from event receipt.
+    NativePresentedHandlerLatency = 17,
+    /// Alpine published terminal frame evidence; `a` is nanoseconds from event receipt.
+    NativeTerminalRecordLatency = 18,
 }
 
 /// One numeric, revision-correlated point suitable for a dynamic signpost.
@@ -144,6 +156,81 @@ impl StudioSignposts {
             None
         }
     }
+
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn emit_frame_latency(self, evidence: crate::FrameLatencyEvidence) -> u8 {
+        if !self.enabled {
+            return 0;
+        }
+        let mut emitted = 0_u8;
+        for point in frame_latency_points(evidence).into_iter().flatten() {
+            let _correlation = imp::emit(point);
+            emitted = emitted.saturating_add(1);
+        }
+        emitted
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn frame_latency_point(
+    stage: StudioSignpostStage,
+    evidence: crate::FrameLatencyEvidence,
+    duration_ns: u64,
+) -> StudioSignpost {
+    StudioSignpost::new(
+        stage,
+        evidence.event_timestamp().get(),
+        0,
+        0,
+        0,
+        [duration_ns, 0, 0],
+    )
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn frame_latency_points(evidence: crate::FrameLatencyEvidence) -> [Option<StudioSignpost>; 6] {
+    [
+        Some(frame_latency_point(
+            StudioSignpostStage::NativeEventHandlerLatency,
+            evidence,
+            evidence.event_handler_ns(),
+        )),
+        evidence.frame_queue_ns().map(|duration_ns| {
+            frame_latency_point(
+                StudioSignpostStage::NativeFrameQueueLatency,
+                evidence,
+                duration_ns,
+            )
+        }),
+        evidence.submission_ns().map(|duration_ns| {
+            frame_latency_point(
+                StudioSignpostStage::NativeSubmissionLatency,
+                evidence,
+                duration_ns,
+            )
+        }),
+        evidence
+            .event_to_gpu_terminal_observed_ns()
+            .map(|duration_ns| {
+                frame_latency_point(
+                    StudioSignpostStage::NativeGpuTerminalObservedLatency,
+                    evidence,
+                    duration_ns,
+                )
+            }),
+        evidence.event_to_presented_handler_ns().map(|duration_ns| {
+            frame_latency_point(
+                StudioSignpostStage::NativePresentedHandlerLatency,
+                evidence,
+                duration_ns,
+            )
+        }),
+        Some(frame_latency_point(
+            StudioSignpostStage::NativeTerminalRecordLatency,
+            evidence,
+            evidence.event_to_terminal_record_ns(),
+        )),
+    ]
 }
 
 struct DynamicTracingState(bool);
@@ -210,6 +297,7 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{EventTimestamp, FrameLatencyEvidence};
 
     #[test]
     fn point_identity_and_disabled_contract_are_handle_free() {
@@ -253,5 +341,66 @@ mod tests {
 
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         assert!(!StudioSignposts::new().enabled());
+    }
+
+    #[test]
+    fn native_latency_points_preserve_order_values_omissions_and_boundaries() {
+        let complete = FrameLatencyEvidence::new(
+            EventTimestamp::new(53),
+            0,
+            Some(59),
+            Some(61),
+            Some(67),
+            Some(71),
+            u64::MAX,
+        );
+        let points = frame_latency_points(complete).map(Option::unwrap);
+        assert_eq!(
+            points.map(StudioSignpost::stage),
+            [
+                StudioSignpostStage::NativeEventHandlerLatency,
+                StudioSignpostStage::NativeFrameQueueLatency,
+                StudioSignpostStage::NativeSubmissionLatency,
+                StudioSignpostStage::NativeGpuTerminalObservedLatency,
+                StudioSignpostStage::NativePresentedHandlerLatency,
+                StudioSignpostStage::NativeTerminalRecordLatency,
+            ]
+        );
+        assert_eq!(points.map(StudioSignpost::event_timestamp), [53; 6]);
+        assert_eq!(
+            points.map(|point| point.values()[0]),
+            [0, 59, 61, 67, 71, u64::MAX]
+        );
+        assert_eq!(
+            StudioSignposts { enabled: true }.emit_frame_latency(complete),
+            6
+        );
+        assert!(points.iter().all(|point| point.scene_revision() == 0
+            && point.document_revision() == 0
+            && point.buffer_revision() == 0));
+
+        let omitted =
+            FrameLatencyEvidence::new(EventTimestamp::new(73), 79, None, None, None, None, 83);
+        let [handler, queue, submission, gpu, presented, terminal] = frame_latency_points(omitted);
+        assert_eq!(
+            handler.map(StudioSignpost::stage),
+            Some(StudioSignpostStage::NativeEventHandlerLatency)
+        );
+        assert_eq!(queue, None);
+        assert_eq!(submission, None);
+        assert_eq!(gpu, None);
+        assert_eq!(presented, None);
+        assert_eq!(
+            terminal.map(StudioSignpost::stage),
+            Some(StudioSignpostStage::NativeTerminalRecordLatency)
+        );
+        assert_eq!(
+            StudioSignposts { enabled: true }.emit_frame_latency(omitted),
+            2
+        );
+        assert_eq!(
+            StudioSignposts { enabled: false }.emit_frame_latency(complete),
+            0
+        );
     }
 }
