@@ -5,7 +5,7 @@ use std::{
     fs,
     path::Path,
     rc::Rc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use alpine_platform_macos::{
@@ -37,20 +37,24 @@ enum OmittedStep {
 }
 
 impl OmittedStep {
-    fn from_environment() -> Result<Option<Self>, Box<dyn std::error::Error>> {
-        let Ok(value) = std::env::var("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_OMIT") else {
-            return Ok(None);
-        };
-        match value.as_str() {
-            "open" => Ok(Some(Self::Open)),
-            "edit" => Ok(Some(Self::Edit)),
-            "action" => Ok(Some(Self::Action)),
-            "save" => Ok(Some(Self::Save)),
-            "close" => Ok(Some(Self::Close)),
+    fn from_value(value: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        match value {
+            "open" => Ok(Self::Open),
+            "edit" => Ok(Self::Edit),
+            "action" => Ok(Self::Action),
+            "save" => Ok(Self::Save),
+            "close" => Ok(Self::Close),
             _ => {
                 Err(format!("unsupported native accessibility omission control: {value:?}").into())
             }
         }
+    }
+
+    fn from_environment() -> Result<Option<Self>, Box<dyn std::error::Error>> {
+        let Ok(value) = std::env::var("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_OMIT") else {
+            return Ok(None);
+        };
+        Self::from_value(&value).map(Some)
     }
 }
 
@@ -770,8 +774,60 @@ fn wait_for_label_prefix(
     timestamp: &mut u64,
     prefix: &str,
 ) -> Result<Box<str>, Box<dyn std::error::Error>> {
-    wait_for_label(surface, state, timestamp, |label| label.starts_with(prefix))
-        .map_err(|error| format!("waiting for native label prefix {prefix:?}: {error}").into())
+    let started = Instant::now();
+    loop {
+        dispatch(
+            surface,
+            state,
+            &[SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(*timestamp),
+            }],
+        )
+        .map_err(|error| {
+            format!(
+                "waiting for native label prefix {prefix:?}: worker wake at timestamp {} failed: {error}",
+                *timestamp
+            )
+        })?;
+        *timestamp = timestamp.saturating_add(1);
+        let tree = inspect(surface, state).map_err(|error| {
+            format!(
+                "waiting for native label prefix {prefix:?}: native tree refresh after worker wake failed: {error}"
+            )
+        })?;
+        if let Some(node) = tree
+            .nodes()
+            .iter()
+            .find(|node| node.label().starts_with(prefix))
+        {
+            return Ok(Box::from(node.label()));
+        }
+        if diagnostic_wait_expired(started.elapsed()) {
+            let runtime = state.borrow().snapshot();
+            let worker = runtime.worker();
+            let external = runtime.external();
+            return Err(format!(
+                "waiting for native label prefix {prefix:?}: label did not become visible before the {FRAME_TERMINAL_TIMEOUT:?} correctness deadline; worker=(queued_requests={} queued_results={} dropped_results={} panicked_jobs={}) external=(current_items={} admitted={} drained={} full={} disconnected={} shutting_down={} sequence_exhausted={})",
+                worker.queued_requests(),
+                worker.queued_results(),
+                worker.dropped_results(),
+                worker.panicked_jobs(),
+                external.current_items(),
+                external.admitted(),
+                external.drained(),
+                external.full(),
+                external.disconnected(),
+                external.shutting_down(),
+                external.sequence_exhausted(),
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn diagnostic_wait_expired(elapsed: Duration) -> bool {
+    elapsed >= FRAME_TERMINAL_TIMEOUT
 }
 
 fn wait_for_label(
@@ -991,6 +1047,51 @@ fn require_dispatch_failure(
 #[cfg(test)]
 mod process_contract_tests {
     use super::*;
+
+    #[test]
+    fn omission_values_preserve_every_required_step_and_reject_unknown_values()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(OmittedStep::from_value("open")?, OmittedStep::Open);
+        assert_eq!(OmittedStep::from_value("edit")?, OmittedStep::Edit);
+        assert_eq!(OmittedStep::from_value("action")?, OmittedStep::Action);
+        assert_eq!(OmittedStep::from_value("save")?, OmittedStep::Save);
+        assert_eq!(OmittedStep::from_value("close")?, OmittedStep::Close);
+        assert!(OmittedStep::from_value("unknown").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn process_evidence_accessors_preserve_nondefault_values() {
+        let evidence = NativeStudioAccessibilityEvidence {
+            tree_actions: 2,
+            tab_actions: 3,
+            command_actions: 4,
+            diagnostic_actions: 5,
+            query_frames: 6,
+            maximum_action_frames: 7,
+            persisted_bytes: 8,
+            released_owner_classes: 9,
+            mismatch_control_marker: 10,
+            dispatch_failure_control_marker: 11,
+        };
+        assert_eq!(evidence.tree_actions(), 2);
+        assert_eq!(evidence.tab_actions(), 3);
+        assert_eq!(evidence.command_actions(), 4);
+        assert_eq!(evidence.diagnostic_actions(), 5);
+        assert_eq!(evidence.query_frames(), 6);
+        assert_eq!(evidence.maximum_action_frames(), 7);
+        assert_eq!(evidence.persisted_bytes(), 8);
+        assert_eq!(evidence.released_owner_classes(), 9);
+        assert_eq!(evidence.mismatch_control_marker(), 10);
+        assert_eq!(evidence.dispatch_failure_control_marker(), 11);
+    }
+
+    #[test]
+    fn diagnostic_wait_expires_at_the_exact_correctness_deadline() {
+        assert!(!diagnostic_wait_expired(Duration::from_millis(4_999)));
+        assert!(diagnostic_wait_expired(FRAME_TERMINAL_TIMEOUT));
+        assert!(diagnostic_wait_expired(Duration::from_millis(5_001)));
+    }
 
     #[test]
     fn frame_drain_predicates_require_every_independent_condition() {

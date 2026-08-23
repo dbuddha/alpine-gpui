@@ -1025,7 +1025,20 @@ pub mod native_validation {
                 current: false,
                 bounded_screen_frame: false,
             };
+            assert_eq!(node.semantic_id(), 37);
+            assert_eq!(node.role(), "AXButton");
+            assert_eq!(node.label(), "Action");
+            assert_eq!(node.identifier(), "alpine.ax.1.2.37");
+            assert!(!node.focused());
+            assert!(!node.selected());
+            assert!(!node.activate_allowed());
+            assert!(!node.current());
             assert!(!node.bounded_screen_frame());
+            let current_node = NativeAccessibilityNodeEvidence {
+                current: true,
+                ..node.clone()
+            };
+            assert!(current_node.current());
 
             let tree = NativeAccessibilityTreeEvidence {
                 revision: crate::AccessibilityRevision::new(3, 5),
@@ -1041,12 +1054,16 @@ pub mod native_validation {
                 identifier: Box::from("alpine.ax.1.2.37"),
                 selector_allowed: false,
                 accepted: false,
-                current_after_action: true,
+                current_after_action: false,
                 dispatch_failed: true,
             };
             assert_eq!(activation.semantic_id(), 37);
             assert_eq!(activation.role(), "AXButton");
+            assert_eq!(activation.label(), "Action");
+            assert_eq!(activation.identifier(), "alpine.ax.1.2.37");
             assert!(!activation.selector_allowed());
+            assert!(!activation.accepted());
+            assert!(!activation.current_after_action());
             assert!(activation.dispatch_failed());
 
             let permitted = NativeAccessibilityActivationEvidence {
@@ -1060,6 +1077,9 @@ pub mod native_validation {
                 dispatch_failed: false,
             };
             assert!(permitted.selector_allowed());
+            assert!(permitted.accepted());
+            assert!(permitted.current_after_action());
+            assert!(!permitted.dispatch_failed());
         }
     }
 

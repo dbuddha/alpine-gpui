@@ -68,9 +68,10 @@ the production tree.
 Each negative control returns a distinct nonzero validation marker only after
 its full body succeeds. The child evidence retains both markers and the parent
 process requires their exact values, so replacing either control with a trivial
-successful return cannot qualify. Frame-drain, hosted-observation admission, and
-action admission and frame ceilings are factored into pure predicates with true
-and single-false-condition tests. A platform-native companion fixture pairs the
+successful return cannot qualify. Frame-drain, hosted-observation admission,
+action admission, frame ceilings, omission parsing, and returned process
+evidence are factored into pure contracts with true, false, and nondefault
+controls. A platform-native companion fixture pairs the
 real `main.rs` tab label with an absent `ListItem` role and requires exact
 rejection. The absent role leaves the same-label tab as the sole false-positive
 candidate when conjunction is weakened. A second control pairs the real `Tab`
@@ -222,8 +223,12 @@ Every native query and action carries the revision returned by the current
 Studio snapshot. Existing stale-action and input-epoch controls remain mandatory
 companions. A stable query compares Metal submission counts before and after and
 requires an exact zero delta. Each accepted visible action requires a delta no
-greater than one. Worker progress is bounded to 1,024 explicit wake turns; no
-timer poller or continuous frame loop is introduced.
+greater than one. File-tree progress remains bounded to 1,024 explicit wake
+turns. Diagnostic child-process admission is serviced by explicit wakes under
+the established five-second correctness deadline because empty polling-turn
+counts vary with scheduler and process-start latency. A failure retains bounded
+worker and external-queue counters. No timer poller or continuous frame loop is
+introduced, and this deadline is not a product latency budget.
 
 The native tree cannot exceed the existing 271-node semantic ceiling. Evidence
 copies one bounded role, label, and identifier per current node and is released
@@ -236,8 +241,9 @@ snapshot.
 ## Failure behavior
 
 Missing, duplicate, disabled, revoked, or dispatch-failed native targets return
-the existing structured accessibility validation failure. Worker or diagnostic timeout fails the
-bounded journey. Save failure, dirty-close acceptance, unexpected bytes,
+the existing structured accessibility validation failure. Exhausting the
+file-tree wake bound or diagnostic correctness deadline fails the bounded
+journey. Save failure, dirty-close acceptance, unexpected bytes,
 multiple query frames, more than one action frame, an active owner, or fixture
 cleanup failure rejects qualification. The parent watchdog terminates a child
 that exceeds fifteen seconds and retains stdout and stderr in its error.
@@ -268,8 +274,9 @@ implementation composition evidence and makes no TLA+ refinement claim.
   preserve exact fixture bytes and recovery authority. Evidence: filesystem
   assertions, production close delegate, and process watchdog controls.
 - **AEP-0272-C04:** Language, worker, scene, frame, file, semantic, and native
-  ownership is bounded and terminally drained. Evidence: bounded wake count,
-  isolated server exit, runtime shutdown snapshot, frame evidence, and exact
+  ownership is bounded and terminally drained. Evidence: bounded file-tree wake
+  count, diagnostic correctness deadline with queue evidence, isolated server
+  exit, runtime shutdown snapshot, frame evidence, and exact
   nine-class acquisition/release parity with all ten classes inactive.
 
 ## Risks and reversal conditions
