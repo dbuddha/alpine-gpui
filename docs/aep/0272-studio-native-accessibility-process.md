@@ -24,6 +24,8 @@ close, saves, closes, and drains all ownership.
   authorities compose through one real Studio process journey.
 - Prove stable queries submit no frame and accepted visible actions submit at
   most one latest coalesced frame.
+- Prove exact role-and-label matching and both successful and failed native
+  dispatch polarity through the production AppKit press path.
 - Retain exact saved bytes and terminal native/runtime owner evidence.
 
 ## Non-goals
@@ -51,6 +53,26 @@ and press-admission accessors must each expose both true and false states in the
 complete tree. A constant identifier, semantic ID, focus, selection, or
 press-admission result therefore rejects qualification.
 
+Named activation relates the copied semantic ID back to the terminal component
+of its generation-bound external identifier and requires a nonempty native
+role. A wrong-role control pairs a current label with `CodeEditor` and requires
+exact lookup rejection. A dispatch-failure control admits the initial snapshot
+and real action, then deliberately withholds only the post-action snapshot
+response. The same `accessibilityPerformPress` path must reject the press and
+publish `dispatch_failed=true`; a subsequent normal query must recover the same
+current semantic identity. The valid product tree correctly requires every
+screen frame to be bounded, while an isolated handle-free evidence accessor
+control preserves the false polarity without injecting invalid geometry into
+the production tree.
+
+Each negative control returns a distinct nonzero validation marker only after
+its full body succeeds. The child evidence retains both markers and the parent
+process requires their exact values, so replacing either control with a trivial
+successful return cannot qualify. Frame-drain, hosted-observation admission, and
+action-frame ceilings are factored into pure predicates with true and
+single-false-condition tests; the production journey remains the integration
+proof while boundary mutation does not require another AppKit process.
+
 Sibling file labels from one directory result must be observed together in the
 same native tree after that result's frame terminalizes. The journey does not
 issue a redundant worker wake between accepting those labels. Native
@@ -67,12 +89,24 @@ The process separates a five-second correctness deadline from the eight-frame
 drain bound. It samples the native run loop in bounded 100 ms slices, but a
 slice without a terminal transition does not consume the frame bound. The bound
 counts frames actually submitted while the helper owns terminal observation.
+Success also requires at least one observed submission whenever the caller owns
+an expected frame; empty slots and paused pacing alone cannot prove that frame
+submission occurred.
 These constants detect hangs and runaway work; they are not latency budgets or
 performance qualification.
 
 Both probes exist only under `alpine_native_validation`. They do not widen the
 safe shipping surface, retain Studio state, create a callback registry, or
 permit arbitrary actions.
+
+Linux changed-code mutation explicitly excludes this macOS-only process file
+because its native child cannot execute there. Required Apple Silicon pull
+request mutation owns changed process mutants across the same eight
+deterministic shards as the other native scopes, retains one artifact per shard,
+and feeds aggregate `ci-pass`. A separate nightly eight-shard job exhaustively
+mutates the complete process file. Policy fixtures reject either side of this
+ownership transfer when the Linux exclusion, native command, shard set, or
+retained artifact is missing.
 
 Each probe performs one refresh. A redundant `accessibilityChildren` preflight
 is prohibited because it doubles synchronous main-thread query work and allows
@@ -202,11 +236,12 @@ implementation composition evidence and makes no TLA+ refinement claim.
 - **AEP-0272-C02:** File rows, tabs, diagnostics, and command rows route through
   existing Studio authorities; stable queries submit zero frames and successful
   revision-valid action responses return at most one frame through the common
-  frame helper. Independently admitted background frames drain to bounded
-  quiescence. Evidence: native action sequence, response-frame counts, keyboard
-  companion journeys, rejected side-effect controls, and viable mutation
-  rejection. This is a functional scheduling invariant, not a timing or
-  renderer-performance claim.
+  frame helper. Exact role-and-label mismatches fail, dispatch failure preserves
+  true polarity, and independently admitted background frames drain to bounded
+  quiescence. Evidence: native action sequence, mismatch and failed-refresh
+  controls, response-frame counts, keyboard companion journeys, rejected
+  side-effect controls, and viable mutation rejection. This is a functional
+  scheduling invariant, not a timing or renderer-performance claim.
 - **AEP-0272-C03:** Editing, save, dirty-close rejection, second save, and close
   preserve exact fixture bytes and recovery authority. Evidence: filesystem
   assertions, production close delegate, and process watchdog controls.

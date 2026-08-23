@@ -34,6 +34,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert!(evidence.maximum_action_frames() <= 1);
         assert!(evidence.persisted_bytes() > 32);
         assert_eq!(evidence.released_owner_classes(), 9);
+        assert_eq!(evidence.mismatch_control_marker(), 0xA11C_E551);
+        assert_eq!(evidence.dispatch_failure_control_marker(), 0xD15F_A11E);
         println!("alpine-native-accessibility-qualified");
         return Ok(());
     }

@@ -71,6 +71,11 @@ if [ -n "$workflow_files" ]; then
         /^  [A-Za-z0-9_-]+:/ && $1 != "native-mutation:" && capture { exit }
         capture
     ' "$ci_workflow")
+    mutation_diff_block=$(awk '
+        /^  mutation-diff:/ { capture = 1 }
+        /^  [A-Za-z0-9_-]+:/ && $1 != "mutation-diff:" && capture { exit }
+        capture
+    ' "$ci_workflow")
     metal_validation_block=$(awk '
         /^  metal-validation:/ { capture = 1 }
         /^  [A-Za-z0-9_-]+:/ && $1 != "metal-validation:" && capture { exit }
@@ -82,15 +87,20 @@ if [ -n "$workflow_files" ]; then
     ' "$ci_workflow")
     if [ -z "$native_mutation_block" ] \
         || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec '^[[:space:]]+shard: [0-7]/8$')" -ne 8 ] \
-        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec 'cargo mutants ')" -ne 9 ] \
-        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Fc -- '--shard "${{ matrix.shard }}"')" -ne 9 ]; then
-        fail 'pull-request native mutation must preserve all nine scopes across eight deterministic shards'
+        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec 'cargo mutants ')" -ne 10 ] \
+        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Fc -- '--shard "${{ matrix.shard }}"')" -ne 10 ]; then
+        fail 'pull-request native mutation must preserve all ten scopes across eight deterministic shards'
     fi
     for shard in 0 1 2 3 4 5 6 7; do
         if ! printf '%s\n' "$native_mutation_block" | grep -Fq "shard: $shard/8"; then
             fail "pull-request native mutation is missing shard $shard/8"
         fi
     done
+    if ! printf '%s\n' "$mutation_diff_block" | grep -Fq -- "--exclude 'apps/alpine-studio/src/native_validation/accessibility_process.rs'" \
+        || ! printf '%s\n' "$native_mutation_block" | grep -Fq -- '--file apps/alpine-studio/src/native_validation/accessibility_process.rs' \
+        || ! printf '%s\n' "$native_mutation_block" | grep -Fq 'target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out'; then
+        fail 'Studio accessibility process mutation must transfer explicitly from Linux to retained native shards'
+    fi
     if printf '%s\n' "$metal_validation_block" | grep -Fq 'cargo mutants '; then
         fail 'Metal behavior validation must remain independent from native mutation enforcement'
     fi
@@ -104,15 +114,18 @@ if [ -n "$workflow_files" ]; then
     nightly_native_workflow=.github/workflows/nightly-assurance.yml
     if [ -f "$nightly_native_workflow" ]; then
         if ! grep -Fq 'native-accessibility-mutation:' "$nightly_native_workflow" \
-            || [ "$(grep -Ec '^[[:space:]]+shard: [0-7]/8$' "$nightly_native_workflow")" -ne 8 ] \
+            || ! grep -Fq 'native-studio-accessibility-mutation:' "$nightly_native_workflow" \
+            || [ "$(grep -Ec '^[[:space:]]+shard: [0-7]/8$' "$nightly_native_workflow")" -ne 16 ] \
             || [ "$(grep -Fc -- '--file crates/alpine-platform-macos/src/native_accessibility.rs' "$nightly_native_workflow")" -ne 1 ] \
+            || [ "$(grep -Fc -- '--file apps/alpine-studio/src/native_validation/accessibility_process.rs' "$nightly_native_workflow")" -ne 1 ] \
             || ! grep -Fq -- '--shard "${{ matrix.shard }}"' "$nightly_native_workflow" \
-            || ! grep -Fq 'target/native-accessibility-mutants-${{ matrix.id }}.out' "$nightly_native_workflow"; then
-            fail 'nightly assurance must exhaustively shard and retain native accessibility mutation evidence'
+            || ! grep -Fq 'target/native-accessibility-mutants-${{ matrix.id }}.out' "$nightly_native_workflow" \
+            || ! grep -Fq 'target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out' "$nightly_native_workflow"; then
+            fail 'nightly assurance must exhaustively shard and retain native accessibility and Studio process mutation evidence'
         fi
         for shard in 0 1 2 3 4 5 6 7; do
-            if ! grep -Fq "shard: $shard/8" "$nightly_native_workflow"; then
-                fail "nightly native accessibility mutation is missing shard $shard/8"
+            if [ "$(grep -Fc "shard: $shard/8" "$nightly_native_workflow")" -ne 2 ]; then
+                fail "nightly native accessibility mutation scopes are missing shard $shard/8"
             fi
         done
     fi

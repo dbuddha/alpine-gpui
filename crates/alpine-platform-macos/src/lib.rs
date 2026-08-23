@@ -1005,6 +1005,41 @@ pub mod native_validation {
         }
     }
 
+    #[cfg(test)]
+    mod native_accessibility_evidence_accessor_tests {
+        use super::{NativeAccessibilityActivationEvidence, NativeAccessibilityNodeEvidence};
+
+        #[test]
+        fn handle_free_accessors_preserve_negative_and_nondefault_evidence() {
+            let node = NativeAccessibilityNodeEvidence {
+                semantic_id: 37,
+                role: Box::from("AXButton"),
+                label: Box::from("Action"),
+                identifier: Box::from("alpine.ax.1.2.37"),
+                focused: false,
+                selected: false,
+                activate_allowed: false,
+                current: false,
+                bounded_screen_frame: false,
+            };
+            assert!(!node.bounded_screen_frame());
+
+            let activation = NativeAccessibilityActivationEvidence {
+                semantic_id: 37,
+                role: Box::from("AXButton"),
+                label: Box::from("Action"),
+                identifier: Box::from("alpine.ax.1.2.37"),
+                selector_allowed: true,
+                accepted: false,
+                current_after_action: true,
+                dispatch_failed: true,
+            };
+            assert_eq!(activation.semantic_id(), 37);
+            assert_eq!(activation.role(), "AXButton");
+            assert!(activation.dispatch_failed());
+        }
+    }
+
     /// Handle-free evidence produced by the production AppKit accessibility selectors.
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct NativeAccessibilityEvidence {

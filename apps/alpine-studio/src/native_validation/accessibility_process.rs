@@ -24,6 +24,8 @@ const MAX_WORKER_TURNS: u64 = 1_024;
 const MAX_TERMINAL_DRAINS: u8 = 8;
 const FRAME_TERMINAL_TIMEOUT: Duration = Duration::from_secs(5);
 const FRAME_TERMINAL_POLL: Duration = Duration::from_millis(100);
+const MISMATCH_CONTROL_MARKER: u64 = 0xA11C_E551;
+const DISPATCH_FAILURE_CONTROL_MARKER: u64 = 0xD15F_A11E;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OmittedStep {
@@ -63,6 +65,8 @@ pub struct NativeStudioAccessibilityEvidence {
     maximum_action_frames: u64,
     persisted_bytes: usize,
     released_owner_classes: usize,
+    mismatch_control_marker: u64,
+    dispatch_failure_control_marker: u64,
 }
 
 impl NativeStudioAccessibilityEvidence {
@@ -105,6 +109,16 @@ impl NativeStudioAccessibilityEvidence {
     #[must_use]
     pub const fn released_owner_classes(self) -> usize {
         self.released_owner_classes
+    }
+    /// Returns the completed exact-role mismatch control marker.
+    #[must_use]
+    pub const fn mismatch_control_marker(self) -> u64 {
+        self.mismatch_control_marker
+    }
+    /// Returns the completed failed-refresh dispatch control marker.
+    #[must_use]
+    pub const fn dispatch_failure_control_marker(self) -> u64 {
+        self.dispatch_failure_control_marker
     }
 }
 
@@ -209,6 +223,7 @@ fn qualify_workspace(
     let mut tab_actions = 0_usize;
     let mut command_actions = 0_usize;
     let mut diagnostic_actions = 0_usize;
+    let mut dispatch_failure_control_marker = 0_u64;
     dispatch(
         &surface,
         &state,
@@ -317,6 +332,8 @@ fn qualify_workspace(
             .iter()
             .any(|node| node.label() == diagnostic_label.as_ref())
     );
+    let mismatch_control_marker =
+        reject_mismatched_activation(&surface, &state, &diagnostic_label)?;
 
     if omitted_step != Some(OmittedStep::Action) {
         maximum_action_frames = maximum_action_frames.max(activate(
@@ -326,6 +343,8 @@ fn qualify_workspace(
             &diagnostic_label,
         )?);
         diagnostic_actions = diagnostic_actions.saturating_add(1);
+        dispatch_failure_control_marker =
+            require_dispatch_failure(&surface, &state, &diagnostic_label)?;
     }
     if omitted_step != Some(OmittedStep::Edit) {
         platform_validation::commit_native_text(&surface, "// alpine\n", event_handler(&state))
@@ -423,6 +442,14 @@ fn qualify_workspace(
         )
         .into());
     }
+    if mismatch_control_marker != MISMATCH_CONTROL_MARKER
+        || dispatch_failure_control_marker != DISPATCH_FAILURE_CONTROL_MARKER
+    {
+        return Err(format!(
+            "native accessibility negative-control mismatch: role_marker={mismatch_control_marker:#x} dispatch_marker={dispatch_failure_control_marker:#x}"
+        )
+        .into());
+    }
 
     drop(state);
     let owners = platform_validation::close_with_owner_evidence(surface)
@@ -452,6 +479,8 @@ fn qualify_workspace(
             .iter()
             .filter(|released| **released == 1)
             .count(),
+        mismatch_control_marker,
+        dispatch_failure_control_marker,
     })
 }
 
@@ -546,17 +575,19 @@ fn await_frame_terminal(
                 .submission_count()
                 .saturating_sub(initial.submission_count()),
         );
-        if observed_submissions > u64::from(MAX_TERMINAL_DRAINS) {
+        if frame_drain_bound_exceeded(observed_submissions) {
             return Err(failure(
                 "frame-drain-bound",
                 observed_submissions,
                 &"submitted frame count exceeded the bounded drain contract",
             ));
         }
-        if snapshot.occupied_frame_slots() == 0
-            && snapshot.submitted_frame_slots() == 0
-            && snapshot.display_link_paused()
-        {
+        if frame_terminal_ready(
+            observed_submissions,
+            snapshot.occupied_frame_slots(),
+            snapshot.submitted_frame_slots(),
+            snapshot.display_link_paused(),
+        ) {
             return Ok(());
         }
         let elapsed = started.elapsed();
@@ -567,10 +598,12 @@ fn await_frame_terminal(
                 &"frame ownership did not become terminal before the correctness deadline",
             ));
         }
-        if matches!(evidence_mode, PresentationEvidenceMode::HostedDirect)
-            && snapshot.submitted_frame_slots() == 0
-            && armed_at_submission != Some(snapshot.submission_count())
-        {
+        if should_arm_hosted_observation(
+            evidence_mode,
+            snapshot.submitted_frame_slots(),
+            armed_at_submission,
+            snapshot.submission_count(),
+        ) {
             platform_validation::inject_post_commit_observation(surface, None, 1.0)
                 .map_err(|error| failure("hosted-observation", observed_submissions, &error))?;
             armed_at_submission = Some(snapshot.submission_count());
@@ -583,6 +616,34 @@ fn await_frame_terminal(
         )
         .map_err(|error| failure("event-loop", observed_submissions, &error))?;
     }
+}
+
+const fn frame_drain_bound_exceeded(observed_submissions: u64) -> bool {
+    observed_submissions > MAX_TERMINAL_DRAINS as u64
+}
+
+const fn frame_terminal_ready(
+    observed_submissions: u64,
+    occupied_slots: u8,
+    submitted_slots: u8,
+    display_link_paused: bool,
+) -> bool {
+    observed_submissions > 0 && occupied_slots == 0 && submitted_slots == 0 && display_link_paused
+}
+
+fn should_arm_hosted_observation(
+    evidence_mode: PresentationEvidenceMode,
+    submitted_slots: u8,
+    armed_at_submission: Option<u64>,
+    submission_count: u64,
+) -> bool {
+    matches!(evidence_mode, PresentationEvidenceMode::HostedDirect)
+        && submitted_slots == 0
+        && armed_at_submission != Some(submission_count)
+}
+
+const fn action_frame_bound_exceeded(frames: u64) -> bool {
+    frames > 1
 }
 
 fn presentation_evidence_mode()
@@ -784,9 +845,164 @@ fn activate(
         })?;
     }
     assert_eq!(evidence.label(), label);
+    assert!(!evidence.role().is_empty());
     assert!(!evidence.identifier().is_empty());
     assert_ne!(evidence.semantic_id(), 0);
+    assert_eq!(
+        evidence
+            .identifier()
+            .rsplit_once('.')
+            .and_then(|(_, semantic_id)| semantic_id.parse::<u64>().ok()),
+        Some(evidence.semantic_id())
+    );
     Ok(frames)
+}
+
+fn reject_mismatched_activation(
+    surface: &NativeSurface,
+    state: &Rc<RefCell<Application<StudioApp>>>,
+    label: &str,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let result = platform_validation::activate_named_native_accessibility_node(
+        surface,
+        AccessibilityRole::CodeEditor,
+        label,
+        event_handler(state),
+    );
+    assert!(
+        result.is_err(),
+        "a current label paired with the wrong semantic role must fail exact named activation"
+    );
+    require_frame_quiescence(surface)
+        .map_err(|error| format!("mismatched native activation emitted work: {error}"))?;
+    Ok(MISMATCH_CONTROL_MARKER)
+}
+
+fn require_dispatch_failure(
+    surface: &NativeSurface,
+    state: &Rc<RefCell<Application<StudioApp>>>,
+    label: &str,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let action_observed = Rc::new(Cell::new(false));
+    let callback_action_observed = Rc::clone(&action_observed);
+    let response_frames = Rc::new(Cell::new(0_u64));
+    let callback_response_frames = Rc::clone(&response_frames);
+    let callback_state = Rc::clone(state);
+    let evidence = platform_validation::activate_named_native_accessibility_node(
+        surface,
+        AccessibilityRole::ListItem,
+        label,
+        move |event| {
+            let reject_post_action_refresh = callback_action_observed.get()
+                && matches!(
+                    event,
+                    SurfaceEvent::Accessibility { ref request, .. }
+                        if request.kind()
+                            != alpine_platform_macos::AccessibilityRequestKind::Action
+                );
+            if reject_post_action_refresh {
+                return alpine_platform_macos::SurfaceResponse::default();
+            }
+            let action = matches!(
+                event,
+                SurfaceEvent::Accessibility { ref request, .. }
+                    if request.kind() == alpine_platform_macos::AccessibilityRequestKind::Action
+            );
+            let response = callback_state.try_borrow_mut().map_or_else(
+                |_| alpine_platform_macos::SurfaceResponse::default(),
+                |mut application| application.dispatch_with_response(&event),
+            );
+            if response.frame().is_some() {
+                callback_response_frames.set(callback_response_frames.get().saturating_add(1));
+            }
+            if action {
+                callback_action_observed.set(true);
+            }
+            response
+        },
+    )?;
+    assert!(action_observed.get());
+    assert!(evidence.selector_allowed());
+    assert!(!evidence.accepted());
+    assert!(evidence.dispatch_failed());
+    assert!(evidence.current_after_action());
+    assert_eq!(evidence.label(), label);
+    assert!(!evidence.role().is_empty());
+    assert!(!evidence.identifier().is_empty());
+    assert_ne!(evidence.semantic_id(), 0);
+    assert_eq!(
+        evidence
+            .identifier()
+            .rsplit_once('.')
+            .and_then(|(_, semantic_id)| semantic_id.parse::<u64>().ok()),
+        Some(evidence.semantic_id())
+    );
+    let frames = response_frames.get();
+    if action_frame_bound_exceeded(frames) {
+        return Err(format!(
+            "dispatch-failure control returned {frames} frames for label={label:?}"
+        )
+        .into());
+    }
+    if frames == 0 {
+        require_frame_quiescence(surface)?;
+    } else {
+        await_frame_terminal(surface, state, FRAME_TERMINAL_TIMEOUT)?;
+    }
+    let recovered = inspect(surface, state)?;
+    assert!(recovered.nodes().iter().any(|node| {
+        node.label() == label && node.current() && node.semantic_id() == evidence.semantic_id()
+    }));
+    Ok(DISPATCH_FAILURE_CONTROL_MARKER)
+}
+
+#[cfg(test)]
+mod process_contract_tests {
+    use super::*;
+
+    #[test]
+    fn frame_drain_predicates_require_every_independent_condition() {
+        assert!(!frame_drain_bound_exceeded(8));
+        assert!(frame_drain_bound_exceeded(9));
+
+        assert!(frame_terminal_ready(1, 0, 0, true));
+        assert!(!frame_terminal_ready(0, 0, 0, true));
+        assert!(!frame_terminal_ready(1, 1, 0, true));
+        assert!(!frame_terminal_ready(1, 0, 1, true));
+        assert!(!frame_terminal_ready(1, 0, 0, false));
+
+        assert!(!action_frame_bound_exceeded(0));
+        assert!(!action_frame_bound_exceeded(1));
+        assert!(action_frame_bound_exceeded(2));
+    }
+
+    #[test]
+    fn hosted_observation_requires_mode_empty_slots_and_a_new_submission() {
+        assert!(should_arm_hosted_observation(
+            PresentationEvidenceMode::HostedDirect,
+            0,
+            None,
+            4
+        ));
+        assert!(!should_arm_hosted_observation(
+            PresentationEvidenceMode::Physical,
+            0,
+            None,
+            4
+        ));
+        assert!(!should_arm_hosted_observation(
+            PresentationEvidenceMode::HostedDirect,
+            1,
+            None,
+            4
+        ));
+        assert!(!should_arm_hosted_observation(
+            PresentationEvidenceMode::HostedDirect,
+            0,
+            Some(4),
+            4
+        ));
+    }
 }
 
 fn open_palette_and_activate(

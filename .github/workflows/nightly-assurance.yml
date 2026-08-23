@@ -298,3 +298,56 @@ jobs:
           path: target/native-accessibility-mutants-${{ matrix.id }}.out
           retention-days: 14
           if-no-files-found: error
+
+  native-studio-accessibility-mutation:
+    name: native-studio-accessibility-mutation-${{ matrix.id }}
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: 1
+            shard: 0/8
+          - id: 2
+            shard: 1/8
+          - id: 3
+            shard: 2/8
+          - id: 4
+            shard: 3/8
+          - id: 5
+            shard: 4/8
+          - id: 6
+            shard: 5/8
+          - id: 7
+            shard: 6/8
+          - id: 8
+            shard: 7/8
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
+      RUSTFLAGS: --cfg alpine_native_validation
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install native mutation tooling
+        run: cargo install --locked cargo-mutants --version 27.1.0
+      - name: Install the optional Metal toolchain when absent
+        run: |
+          if ! xcrun --sdk macosx --find metal >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk macosx --find metal
+          xcrun --sdk macosx --find metallib
+      - name: Require exhaustive Studio accessibility process mutants to be killed
+        run: |
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-studio/src/native_validation/accessibility_process.rs --test-package alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out" -- --locked
+      - name: Upload Studio accessibility process mutation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-studio-accessibility-mutation-${{ matrix.id }}-${{ github.sha }}
+          path: target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out
+          retention-days: 14
+          if-no-files-found: error
