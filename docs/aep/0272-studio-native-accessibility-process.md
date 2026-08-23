@@ -43,6 +43,14 @@ probe requires exactly one current node matching role and label, invokes the
 same `accessibilityPerformPress` implementation used by assistive technology,
 and returns action and revocation evidence.
 
+The production journey validates every copied field rather than accepting its
+shape alone. Each external identifier's terminal component must parse to the
+exact semantic ID returned for that element. The focus accessors must reproduce
+the inspector's independently accumulated AppKit focus count, exactly one
+active tab is selected, and the tree must contain both press-admitted and
+non-pressable elements. A constant identifier, semantic ID, focus, selection,
+or press-admission result therefore rejects qualification.
+
 Both probes exist only under `alpine_native_validation`. They do not widen the
 safe shipping surface, retain Studio state, create a callback registry, or
 permit arbitrary actions.

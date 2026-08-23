@@ -282,14 +282,30 @@ fn qualify_workspace(
             .map_err(|error| format!("stable native tree query failed: {error}"))?;
     let stable_after = surface.snapshot().submission_count();
     let query_frames = stable_after.saturating_sub(stable_before);
+    let accessor_focused_nodes = tree.nodes().iter().filter(|node| node.focused()).count();
+    let selected_nodes = tree.nodes().iter().filter(|node| node.selected()).count();
+    let activate_allowed_nodes = tree
+        .nodes()
+        .iter()
+        .filter(|node| node.activate_allowed())
+        .count();
     assert_eq!(query_frames, 0);
+    assert_eq!(accessor_focused_nodes, tree.focused_nodes());
     assert_eq!(tree.focused_nodes(), 1);
+    assert_eq!(selected_nodes, 1);
+    assert!(activate_allowed_nodes > 0);
+    assert!(activate_allowed_nodes < tree.nodes().len());
     assert!(tree.nodes().len() <= alpine_platform_macos::MAX_ACCESSIBILITY_NODES);
     assert!(tree.nodes().iter().all(|node| {
         node.current()
             && node.bounded_screen_frame()
             && !node.identifier().is_empty()
             && node.semantic_id() != 0
+            && node
+                .identifier()
+                .rsplit_once('.')
+                .and_then(|(_, semantic_id)| semantic_id.parse::<u64>().ok())
+                == Some(node.semantic_id())
     }));
     assert!(tree.nodes().iter().any(|node| node.role() == "AXTextArea"));
     assert!(tree.nodes().iter().any(|node| node.label() == "main.rs"));
