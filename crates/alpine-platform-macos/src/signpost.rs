@@ -157,6 +157,7 @@ impl StudioSignposts {
         }
     }
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) fn emit_frame_latency(self, evidence: crate::FrameLatencyEvidence) -> u8 {
         if !self.enabled {
             return 0;
@@ -170,6 +171,7 @@ impl StudioSignposts {
     }
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn frame_latency_point(
     stage: StudioSignpostStage,
     evidence: crate::FrameLatencyEvidence,
@@ -185,6 +187,7 @@ fn frame_latency_point(
     )
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn frame_latency_points(evidence: crate::FrameLatencyEvidence) -> [Option<StudioSignpost>; 6] {
     [
         Some(frame_latency_point(
