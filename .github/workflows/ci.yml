@@ -400,8 +400,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - name: Install native mutation tooling
-        run: cargo install --locked cargo-mutants --version 27.1.0
       - name: Install the optional Metal toolchain when absent
         run: |
           if ! xcrun --sdk macosx --find metal >/dev/null 2>&1; then
@@ -444,42 +442,6 @@ jobs:
             -- --ignored --exact --nocapture
       - name: Run Metal API and shader validation
         run: scripts/check-metal.sh
-      - name: Require changed native Metal mutants to be killed
-        env:
-          RUSTFLAGS: --cfg alpine_native_validation
-        run: |
-          mkdir -p target
-          git diff ${{ needs.classify.outputs.base_sha }}...${{ needs.classify.outputs.head_sha }} > target/alpine.diff
-          cargo mutants --no-config --file crates/alpine-metal/src/native.rs --features platform-spi --no-shuffle --in-diff target/alpine.diff --output target/native-mutants.out -- --locked
-          cargo mutants --no-config --file crates/alpine-metal/src/platform_spi.rs --features platform-spi --no-shuffle --in-diff target/alpine.diff --output target/native-platform-spi-mutants.out -- --locked
-          cargo mutants --no-config --file crates/alpine-metal/src/submission.rs --features platform-spi --re 'MetalBackend::render_callback_drawable|record_drawable_attempt|verify_drawable_attempt_lifecycle|complete_drawable_attempt' --no-shuffle --in-diff target/alpine.diff --output target/native-submission-mutants.out -- --locked
-          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re 'validate_initialization_rollback|native_validation::arm_window_close|native_validation::arm_user_window_close|native_validation::NativeAccessibilityEvidence::' --test-package alpine-platform-macos --test-package alpine-studio --no-shuffle --in-diff target/alpine.diff --output target/native-platform-contract-mutants.out -- --locked
-          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|schedule_validation_user_window_close|NativeSurface::arm_window_close|NativeSurface::arm_user_window_close' --test-package alpine-platform-macos --test-package alpine-studio --no-shuffle --in-diff target/alpine.diff --output target/native-platform-mutants.out -- --locked
-          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/native_accessibility.rs --re 'RefreshOutcome::post|NotificationIntent::kind|NotificationIntent::record|NotificationIntent::retained_bytes|NotificationIntent::post|NativeAccessibilityAdapter::refresh_view_if_active|NativeAccessibilityAdapter::refresh_view|NativeAccessibilityAdapter::reconcile_elements|NativeAccessibilityAdapter::append_notification_intents|NativeAccessibilityAdapter::push_notification|NativeAccessibilityAdapter::push_layout_notification|NativeAccessibilityAdapter::push_announcement|NativeAccessibilityAdapter::record_posted|NativeAccessibilityAdapter::begin_revoke|NativeAccessibilityAdapter::finish_revoke|NativeAccessibilityAdapter::set_selection|NativeAccessibilityAdapter::activate|NativeAccessibilityElement::with_adapter|NativeAccessibilityElement::with_adapter_mut|NativeAccessibilityElement::accessibility_frame_impl|layout_user_info_valid|announcement_user_info_valid|layout_semantics_changed|reusable_semantics|checked_range' --test-package alpine-platform-macos --no-shuffle --in-diff target/alpine.diff --output target/native-accessibility-mutants.out -- --locked --test native_accessibility
-          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/native_accessibility.rs --re 'bounded_screen_frame|NativeAccessibilityAdapter::inspect_view|NativeAccessibilityAdapter::activate_named_view' --test-package alpine-platform-macos --test-package alpine-studio --no-shuffle --in-diff target/alpine.diff --output target/native-studio-accessibility-mutants.out -- --locked
-          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-runtime/src/lib.rs --re 'run_on_native_surface' --test-package alpine-studio --no-shuffle --in-diff target/alpine.diff --output target/native-runtime-mutants.out -- --locked
-          if find target/native-runtime-mutants.out -name unviable.txt -type f -size +0c | grep -q .; then
-            find target/native-runtime-mutants.out -name unviable.txt -type f -size +0c -exec cat {} \;
-            exit 1
-          fi
-          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|initial_scene' --no-shuffle --in-diff target/alpine.diff --output target/native-studio-mutants.out -- --locked
-      - name: Upload native mutation evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: native-mutation-${{ github.sha }}
-          path: |
-            target/native-mutants.out
-            target/native-platform-spi-mutants.out
-            target/native-submission-mutants.out
-            target/native-platform-contract-mutants.out
-            target/native-platform-mutants.out
-            target/native-accessibility-mutants.out
-            target/native-studio-accessibility-mutants.out
-            target/native-runtime-mutants.out
-            target/native-studio-mutants.out
-          retention-days: 7
-          if-no-files-found: warn
       - name: Upload compiled shader evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -509,10 +471,93 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  native-mutation:
+    name: native-mutation-${{ matrix.id }}
+    needs: classify
+    if: needs.classify.outputs.metal == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: 1
+            shard: 0/8
+          - id: 2
+            shard: 1/8
+          - id: 3
+            shard: 2/8
+          - id: 4
+            shard: 3/8
+          - id: 5
+            shard: 4/8
+          - id: 6
+            shard: 5/8
+          - id: 7
+            shard: 6/8
+          - id: 8
+            shard: 7/8
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      ALPINE_VALIDATION_DEPLOYMENT_TARGET: "26.0"
+      ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
+      RUSTFLAGS: --cfg alpine_native_validation
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Install native mutation tooling
+        run: cargo install --locked cargo-mutants --version 27.1.0
+      - name: Install the optional Metal toolchain when absent
+        run: |
+          if ! xcrun --sdk macosx --find metal >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk macosx --find metal
+          xcrun --sdk macosx --find metallib
+      - name: Build changed-native mutation set
+        run: |
+          mkdir -p target
+          git diff ${{ needs.classify.outputs.base_sha }}...${{ needs.classify.outputs.head_sha }} > target/alpine.diff
+      - name: Require changed native mutants to be killed
+        run: |
+          cargo mutants --no-config --file crates/alpine-metal/src/native.rs --features platform-spi --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-mutants-${{ matrix.id }}.out" -- --locked
+          cargo mutants --no-config --file crates/alpine-metal/src/platform_spi.rs --features platform-spi --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-platform-spi-mutants-${{ matrix.id }}.out" -- --locked
+          cargo mutants --no-config --file crates/alpine-metal/src/submission.rs --features platform-spi --re 'MetalBackend::render_callback_drawable|record_drawable_attempt|verify_drawable_attempt_lifecycle|complete_drawable_attempt' --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-submission-mutants-${{ matrix.id }}.out" -- --locked
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re 'validate_initialization_rollback|native_validation::arm_window_close|native_validation::arm_user_window_close|native_validation::NativeAccessibilityEvidence::' --test-package alpine-platform-macos --test-package alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-platform-contract-mutants-${{ matrix.id }}.out" -- --locked
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|schedule_validation_user_window_close|NativeSurface::arm_window_close|NativeSurface::arm_user_window_close' --test-package alpine-platform-macos --test-package alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-platform-mutants-${{ matrix.id }}.out" -- --locked
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/native_accessibility.rs --re 'RefreshOutcome::post|NotificationIntent::kind|NotificationIntent::record|NotificationIntent::retained_bytes|NotificationIntent::post|NativeAccessibilityAdapter::refresh_view_if_active|NativeAccessibilityAdapter::refresh_view|NativeAccessibilityAdapter::reconcile_elements|NativeAccessibilityAdapter::append_notification_intents|NativeAccessibilityAdapter::push_notification|NativeAccessibilityAdapter::push_layout_notification|NativeAccessibilityAdapter::push_announcement|NativeAccessibilityAdapter::record_posted|NativeAccessibilityAdapter::begin_revoke|NativeAccessibilityAdapter::finish_revoke|NativeAccessibilityAdapter::set_selection|NativeAccessibilityAdapter::activate|NativeAccessibilityElement::with_adapter|NativeAccessibilityElement::with_adapter_mut|NativeAccessibilityElement::accessibility_frame_impl|layout_user_info_valid|announcement_user_info_valid|layout_semantics_changed|reusable_semantics|checked_range' --test-package alpine-platform-macos --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-accessibility-mutants-${{ matrix.id }}.out" -- --locked --test native_accessibility
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/native_accessibility.rs --re 'bounded_screen_frame|NativeAccessibilityAdapter::inspect_view|NativeAccessibilityAdapter::activate_named_view' --test-package alpine-platform-macos --test-package alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-studio-accessibility-mutants-${{ matrix.id }}.out" -- --locked
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-runtime/src/lib.rs --re 'run_on_native_surface' --test-package alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-runtime-mutants-${{ matrix.id }}.out" -- --locked
+          if find "target/native-runtime-mutants-${{ matrix.id }}.out" -name unviable.txt -type f -size +0c | grep -q .; then
+            find "target/native-runtime-mutants-${{ matrix.id }}.out" -name unviable.txt -type f -size +0c -exec cat {} \;
+            exit 1
+          fi
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|initial_scene' --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-studio-mutants-${{ matrix.id }}.out" -- --locked
+      - name: Upload native mutation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-mutation-${{ matrix.id }}-${{ github.sha }}
+          path: |
+            target/native-mutants-${{ matrix.id }}.out
+            target/native-platform-spi-mutants-${{ matrix.id }}.out
+            target/native-submission-mutants-${{ matrix.id }}.out
+            target/native-platform-contract-mutants-${{ matrix.id }}.out
+            target/native-platform-mutants-${{ matrix.id }}.out
+            target/native-accessibility-mutants-${{ matrix.id }}.out
+            target/native-studio-accessibility-mutants-${{ matrix.id }}.out
+            target/native-runtime-mutants-${{ matrix.id }}.out
+            target/native-studio-mutants-${{ matrix.id }}.out
+          retention-days: 7
+          if-no-files-found: warn
+
   ci-pass:
     name: ci-pass
     if: always()
-    needs: [classify, quality, native, coverage, mutation-diff, kani, tla, miri, metal-validation]
+    needs: [classify, quality, native, coverage, mutation-diff, kani, tla, miri, metal-validation, native-mutation]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -533,6 +578,7 @@ jobs:
           MIRI_RESULT: ${{ needs.miri.result }}
           METAL_REQUIRED: ${{ needs.classify.outputs.metal }}
           METAL_RESULT: ${{ needs.metal-validation.result }}
+          NATIVE_MUTATION_RESULT: ${{ needs.native-mutation.result }}
         run: |
           require_success() {
             test "$2" = success || {
@@ -557,3 +603,4 @@ jobs:
           require_selected tla "$TLA_REQUIRED" "$TLA_RESULT"
           require_selected miri "$MIRI_REQUIRED" "$MIRI_RESULT"
           require_selected metal-validation "$METAL_REQUIRED" "$METAL_RESULT"
+          require_selected native-mutation "$METAL_REQUIRED" "$NATIVE_MUTATION_RESULT"

@@ -34,6 +34,7 @@ fi
 workflow_files=$(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print)
 
 if [ -n "$workflow_files" ]; then
+    ci_workflow=${ALPINE_CI_WORKFLOW:-.github/workflows/ci.yml}
     action_refs=$(grep -hE '^[[:space:]]*uses:' $workflow_files || true)
     if [ -n "$action_refs" ] && printf '%s\n' "$action_refs" | grep -Ev '@[0-9a-f]{40}([[:space:]]|$)' >/dev/null; then
         fail 'every GitHub Action must be pinned to a full commit SHA'
@@ -50,30 +51,70 @@ if [ -n "$workflow_files" ]; then
         grep -nE 'continue-on-error:[[:space:]]*true' $workflow_files >&2 || true
     fi
 
-    if ! grep -Fq -- "--exclude 'crates/alpine-platform-macos/src/native_accessibility.rs'" .github/workflows/ci.yml; then
+    if ! grep -Fq -- "--exclude 'crates/alpine-platform-macos/src/native_accessibility.rs'" "$ci_workflow"; then
         fail 'Linux changed-code mutation must delegate native accessibility to macOS validation'
     fi
-    if ! grep -Fq -- '--file crates/alpine-platform-macos/src/native_accessibility.rs' .github/workflows/ci.yml; then
+    if ! grep -Fq -- '--file crates/alpine-platform-macos/src/native_accessibility.rs' "$ci_workflow"; then
         fail 'required macOS validation must own changed native accessibility mutation'
     fi
     native_accessibility_pr_scope='RefreshOutcome::post|NotificationIntent::kind|NotificationIntent::record|NotificationIntent::retained_bytes|NotificationIntent::post|NativeAccessibilityAdapter::refresh_view_if_active|NativeAccessibilityAdapter::refresh_view|NativeAccessibilityAdapter::reconcile_elements|NativeAccessibilityAdapter::append_notification_intents|NativeAccessibilityAdapter::push_notification|NativeAccessibilityAdapter::push_layout_notification|NativeAccessibilityAdapter::push_announcement|NativeAccessibilityAdapter::record_posted|NativeAccessibilityAdapter::begin_revoke|NativeAccessibilityAdapter::finish_revoke|NativeAccessibilityAdapter::set_selection|NativeAccessibilityAdapter::activate|NativeAccessibilityElement::with_adapter|NativeAccessibilityElement::with_adapter_mut|NativeAccessibilityElement::accessibility_frame_impl|layout_user_info_valid|announcement_user_info_valid|layout_semantics_changed|reusable_semantics|checked_range'
-    if ! grep -Fq -- "--re '$native_accessibility_pr_scope'" .github/workflows/ci.yml \
-        || ! grep -Fq -- '-- --locked --test native_accessibility' .github/workflows/ci.yml; then
+    if ! grep -Fq -- "--re '$native_accessibility_pr_scope'" "$ci_workflow" \
+        || ! grep -Fq -- '-- --locked --test native_accessibility' "$ci_workflow"; then
         fail 'required macOS validation must mutation-test the bounded native accessibility risk slice through its exact journey'
     fi
-    if ! grep -Fq -- 'native_validation::NativeAccessibilityEvidence::' .github/workflows/ci.yml; then
+    if ! grep -Fq -- 'native_validation::NativeAccessibilityEvidence::' "$ci_workflow"; then
         fail 'validation-only native accessibility evidence getters must not consume the pull-request mutation budget'
+    fi
+
+    native_mutation_block=$(awk '
+        /^  native-mutation:/ { capture = 1 }
+        /^  [A-Za-z0-9_-]+:/ && $1 != "native-mutation:" && capture { exit }
+        capture
+    ' "$ci_workflow")
+    metal_validation_block=$(awk '
+        /^  metal-validation:/ { capture = 1 }
+        /^  [A-Za-z0-9_-]+:/ && $1 != "metal-validation:" && capture { exit }
+        capture
+    ' "$ci_workflow")
+    ci_pass_block=$(awk '
+        /^  ci-pass:/ { capture = 1 }
+        capture
+    ' "$ci_workflow")
+    if [ -z "$native_mutation_block" ] \
+        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec '^[[:space:]]+shard: [0-7]/8$')" -ne 8 ] \
+        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec 'cargo mutants ')" -ne 9 ] \
+        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Fc -- '--shard "${{ matrix.shard }}"')" -ne 9 ]; then
+        fail 'pull-request native mutation must preserve all nine scopes across eight deterministic shards'
+    fi
+    for shard in 0 1 2 3 4 5 6 7; do
+        if ! printf '%s\n' "$native_mutation_block" | grep -Fq "shard: $shard/8"; then
+            fail "pull-request native mutation is missing shard $shard/8"
+        fi
+    done
+    if printf '%s\n' "$metal_validation_block" | grep -Fq 'cargo mutants '; then
+        fail 'Metal behavior validation must remain independent from native mutation enforcement'
+    fi
+    if ! printf '%s\n' "$native_mutation_block" | grep -Fq 'name: native-mutation-${{ matrix.id }}-${{ github.sha }}' \
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'native-mutation]' \
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'NATIVE_MUTATION_RESULT: ${{ needs.native-mutation.result }}' \
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'require_selected native-mutation "$METAL_REQUIRED" "$NATIVE_MUTATION_RESULT"'; then
+        fail 'ci-pass must require and retain exact-head native mutation matrix evidence'
     fi
 
     nightly_native_workflow=.github/workflows/nightly-assurance.yml
     if [ -f "$nightly_native_workflow" ]; then
         if ! grep -Fq 'native-accessibility-mutation:' "$nightly_native_workflow" \
-            || [ "$(grep -Ec '^[[:space:]]+shard: [1-8]/8$' "$nightly_native_workflow")" -ne 8 ] \
+            || [ "$(grep -Ec '^[[:space:]]+shard: [0-7]/8$' "$nightly_native_workflow")" -ne 8 ] \
             || [ "$(grep -Fc -- '--file crates/alpine-platform-macos/src/native_accessibility.rs' "$nightly_native_workflow")" -ne 1 ] \
             || ! grep -Fq -- '--shard "${{ matrix.shard }}"' "$nightly_native_workflow" \
             || ! grep -Fq 'target/native-accessibility-mutants-${{ matrix.id }}.out' "$nightly_native_workflow"; then
             fail 'nightly assurance must exhaustively shard and retain native accessibility mutation evidence'
         fi
+        for shard in 0 1 2 3 4 5 6 7; do
+            if ! grep -Fq "shard: $shard/8" "$nightly_native_workflow"; then
+                fail "nightly native accessibility mutation is missing shard $shard/8"
+            fi
+        done
     fi
 
     weekly_mutation_workflow=.github/workflows/weekly-assurance.yml

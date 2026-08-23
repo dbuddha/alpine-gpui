@@ -118,6 +118,33 @@ run_policy() {
 
 run_policy >/dev/null
 
+cp .github/workflows/ci.yml "$fixture_dir/ci.yml"
+ALPINE_CI_WORKFLOW="$fixture_dir/ci.yml" run_policy >/dev/null
+
+perl -0pe 'if (!$changed) { $changed = s/ --shard "\$\{\{ matrix\.shard \}\}"// }' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/unsharded-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/unsharded-ci.yml" run_policy > "$fixture_dir/unsharded-ci.log" 2>&1; then
+    printf 'policy test error: unsharded native mutation unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'pull-request native mutation must preserve all nine scopes across eight deterministic shards' "$fixture_dir/unsharded-ci.log"; then
+    printf 'policy test error: expected native-mutation sharding failure was not reported\n' >&2
+    cat "$fixture_dir/unsharded-ci.log" >&2
+    exit 1
+fi
+
+sed 's/, native-mutation]/]/' "$fixture_dir/ci.yml" > "$fixture_dir/unrequired-native-mutation-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/unrequired-native-mutation-ci.yml" run_policy > "$fixture_dir/unrequired-native-mutation-ci.log" 2>&1; then
+    printf 'policy test error: unrequired native mutation unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'ci-pass must require and retain exact-head native mutation matrix evidence' "$fixture_dir/unrequired-native-mutation-ci.log"; then
+    printf 'policy test error: expected native-mutation aggregation failure was not reported\n' >&2
+    cat "$fixture_dir/unrequired-native-mutation-ci.log" >&2
+    exit 1
+fi
+unset ALPINE_CI_WORKFLOW
+
 ALPINE_POLICY_REFERENCE_INPUT='docs/research/index.md' run_policy >/dev/null
 
 retired_roadmap='docs/ROAD''MAP.md'
