@@ -43,6 +43,7 @@ superseded but must not erase the earlier claim or evidence state.
 | 2026-08-18 | PRs #213 and #216 admitted bounded external results and woke the main loop | Background work reaches UI without polling | Scheduling latency pending profiling |
 | 2026-08-19 | PRs #245-#249 added production native journey, SDR, resource, soak, and idle evidence lanes | Native assurance improved | Several physical hardware tasks remain open |
 | 2026-08-20 | PRs #254, #256, #264, #274-#276 added accessibility transport, mappings, focus cancellation, actions, and notifications | M4 implementation substantially complete | Physical VoiceOver/AXObserver and real-process gates open |
+| 2026-08-22 | PR #322 composed the real Studio workspace, runtime, AppKit accessibility, Direct Metal frame, local language server, save, close, and owner-drain journey | Production-process accessibility evidence covers current semantic identities, accepted actions, zero-frame queries, coalesced visible frames, exact file bytes, and terminal ownership; explicit hosted-direct presentation remains non-physical | Physical AXObserver and VoiceOver Tasks #273 and #253 remain |
 | 2026-08-21 | PR #287 measured formal-test effectiveness | Assurance controls became observable | Cost/benefit needs continued review |
 | 2026-08-21 | PRs #288-#291 improved native failure, idle, and residency evidence | Better lifecycle diagnostics | Locked/headless session remains a fragile physical lane |
 
@@ -66,6 +67,7 @@ superseded but must not erase the earlier claim or evidence state.
 | 2026-08-22 | PR #313 composed explicit launch and recovery | Release launch enters production recovery path | Visible lag #304 remains the P0 product defect |
 | 2026-08-22 | Research #315 created this lineage package | Origin, implementation, evidence, and history become queryable | Must be updated with every material mechanism or qualification change |
 | 2026-08-22 | Task #314 exposed native terminal latency stages to the release signpost stream | Event-handler, frame-queue, submission, GPU-observation, presented-handler, and terminal-record durations are externally capturable without in-process sample retention | Deterministic implementation evidence only; physical distributions and causal correction remain #304 |
+| 2026-08-22 | Task #303 launched the exact revision-pinned release bundle through Finder, exercised dirty-close refusal, saved, and exited normally | Physical launch evidence retained exact revision, bundle identity, executable digest, OS, and hardware | Launch is qualified only; typing latency, accessibility, signing, packaging, and daily-driver acceptance remain open |
 
 ## Rules for future entries
 

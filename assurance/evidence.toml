@@ -5077,8 +5077,8 @@ id = "EV-0272-NATIVE01"
 claim = "AEP-0272-C01"
 kind = "native"
 artifact = "apps/alpine-studio/tests/native_process.rs#main"
-assertion = "One real Studio workspace exposes current native AppKit roles, labels, focus, selection, generation-bound identifiers, finite frames, and exact semantic node identities through handle-free bounded evidence."
-scope = "One isolated Apple Silicon AppKit process with two Rust files and one bounded mock language server."
+assertion = "One real Studio workspace exposes current native AppKit roles, labels, focus, selection, generation-bound identifiers, finite frames, and exact semantic node identities through handle-free bounded evidence; explicit hosted-direct runs retain their non-physical evidence identity."
+scope = "One isolated Apple Silicon AppKit process with two Rust files, one bounded mock language server, and either physical or explicit non-qualifying hosted-direct presentation observation."
 exclusions = ["physical VoiceOver", "external AX observer", "spoken or braille output"]
 
 [[evidence]]
@@ -5104,7 +5104,7 @@ id = "EV-0272-NATIVE04"
 claim = "AEP-0272-C04"
 kind = "native"
 artifact = "apps/alpine-studio/tests/native_process.rs#qualify_accessibility_child"
-assertion = "The isolated Studio and mock-server processes terminate within the watchdog, the nine exercised native owner classes have exact acquisition/release parity, all ten owner classes end inactive, release ordering remains valid, and fixture ownership is removed after close."
+assertion = "The isolated Studio and mock-server processes terminate within the watchdog, every expected frame terminalizes with no occupied or submitted slot, the nine exercised native owner classes have exact acquisition/release parity, all ten owner classes end inactive, release ordering remains valid, and fixture ownership is removed after close."
 scope = "One fifteen-second-bounded child process and one 1,024-turn-bounded worker journey."
 exclusions = ["long-session physical residency slope", "native framework autorelease timing", "crash recovery"]
 

@@ -57,6 +57,18 @@ state before issuing the next action. This models successive AppKit run-loop
 turns and prevents the test harness itself from exhausting the production
 three-slot frame bound.
 
+The process inherits the established presentation-evidence mode. Physical mode
+uses compositor observations and may inject only the existing surface
+configuration when AppKit has not yet published visibility. Explicit
+`hosted-direct` mode injects one positive post-commit observation for each
+expected frame because hosted CI may provide callback drawables without a
+compositor presentation. The injected observation is armed before the run loop
+turn, but the production presentation driver cannot terminalize it until Metal
+command completion releases the frame slot. Invalid evidence-mode values fail
+closed. Hosted mode proves Direct Metal commit, composition, terminal frame
+ownership, and drain; it is not physical presentation, timing, AX client, or
+VoiceOver evidence.
+
 Document edits in this journey use `NSTextInputClient`'s production
 `insertText:replacementRange:` selector and the live native responder epoch.
 Synthetic `SurfaceEvent::Ime` values are prohibited here because an assumed

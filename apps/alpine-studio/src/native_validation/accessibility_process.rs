@@ -15,8 +15,9 @@ use alpine_platform_macos::{
 use alpine_runtime::{Application, WorkerConfig};
 
 use super::{
-    COMMAND_SHIFT_MODIFIERS, DEFAULT_SCALE, FONT_FAMILY, KEY_E, KEY_P, StudioApp, StudioError,
-    WINDOW_HEIGHT, WINDOW_WIDTH, Workspace, event_handler, keyboard_event,
+    COMMAND_SHIFT_MODIFIERS, DEFAULT_SCALE, FONT_FAMILY, KEY_E, KEY_P, PresentationEvidenceMode,
+    StudioApp, StudioError, WINDOW_HEIGHT, WINDOW_WIDTH, Workspace, event_handler, keyboard_event,
+    parse_presentation_evidence_mode,
 };
 
 const MAX_WORKER_TURNS: u64 = 1_024;
@@ -185,6 +186,17 @@ fn qualify_workspace(
     surface
         .show()
         .map_err(|error| format!("native accessibility surface show failed: {error}"))?;
+    let evidence_mode = presentation_evidence_mode()?;
+    if evidence_mode.requires_surface_configuration(surface.snapshot().is_presentation_visible()) {
+        platform_validation::inject_surface_configuration(
+            &surface,
+            f64::from(WINDOW_WIDTH),
+            f64::from(WINDOW_HEIGHT),
+            f64::from(DEFAULT_SCALE),
+            0,
+            true,
+        )?;
+    }
     await_frame_terminal(&surface, Duration::from_secs(5))
         .map_err(|error| format!("initial native accessibility frame failed: {error}"))?;
 
@@ -436,6 +448,12 @@ fn await_frame_terminal(
     surface: &NativeSurface,
     timeout: Duration,
 ) -> Result<(), alpine_platform_macos::SurfaceError> {
+    if matches!(
+        presentation_evidence_mode()?,
+        PresentationEvidenceMode::HostedDirect
+    ) {
+        platform_validation::inject_post_commit_observation(surface, None, 1.0)?;
+    }
     platform_validation::run_until_frame_terminal(surface, timeout);
     if let Some(error) = surface.take_error()? {
         return Err(error);
@@ -447,6 +465,14 @@ fn await_frame_terminal(
         ));
     }
     Ok(())
+}
+
+fn presentation_evidence_mode()
+-> Result<PresentationEvidenceMode, alpine_platform_macos::SurfaceError> {
+    let value = std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE");
+    parse_presentation_evidence_mode(value.as_deref()).ok_or_else(|| {
+        alpine_platform_macos::SurfaceError::validation(SurfaceOperation::Validation)
+    })
 }
 
 fn replay_close(
