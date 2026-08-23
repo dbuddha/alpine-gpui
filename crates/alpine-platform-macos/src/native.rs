@@ -4287,21 +4287,35 @@ impl NativeSurface {
         let initial_cancelled = counters.cancelled.load(Ordering::Acquire);
         let deadline = Instant::now() + timeout;
         if self.validation_event_loop_started.replace(true) {
-            while counters.presented.load(Ordering::Acquire) == initial_presented
-                && counters.failed.load(Ordering::Acquire) == initial_failed
-                && counters.cancelled.load(Ordering::Acquire) == initial_cancelled
-                && Instant::now() < deadline
-            {
+            while {
+                let terminal_observed = counters.presented.load(Ordering::Acquire)
+                    > initial_presented
+                    || counters.failed.load(Ordering::Acquire) > initial_failed
+                    || counters.cancelled.load(Ordering::Acquire) > initial_cancelled;
+                let frame_slots_drained = self
+                    .driver
+                    .try_borrow()
+                    .is_ok_and(|driver| driver.frame_slots.snapshot().occupied_slots() == 0);
+                (!terminal_observed || !frame_slots_drained) && Instant::now() < deadline
+            } {
                 NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.005));
             }
             return;
         }
+        let driver = Rc::downgrade(&self.driver);
         let timer_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
             RcBlock::new(move |timer: NonNull<NSTimer>| {
-                let terminal = counters.presented.load(Ordering::Acquire) > initial_presented
+                let terminal_observed = counters.presented.load(Ordering::Acquire)
+                    > initial_presented
                     || counters.failed.load(Ordering::Acquire) > initial_failed
-                    || counters.cancelled.load(Ordering::Acquire) > initial_cancelled
-                    || Instant::now() >= deadline;
+                    || counters.cancelled.load(Ordering::Acquire) > initial_cancelled;
+                let frame_slots_drained = driver.upgrade().is_some_and(|driver| {
+                    driver
+                        .try_borrow()
+                        .is_ok_and(|driver| driver.frame_slots.snapshot().occupied_slots() == 0)
+                });
+                let terminal =
+                    (terminal_observed && frame_slots_drained) || Instant::now() >= deadline;
                 if terminal {
                     // SAFETY: Foundation supplies a valid borrowed timer for
                     // the complete callback, and the reference does not escape.
