@@ -156,7 +156,18 @@ if [ -n "$retired_reference_matches" ]; then
 fi
 
 research_files=$(find docs/research -type f -print 2>/dev/null | sort || true)
-expected_research_files='docs/research/alpine-studio-adversarial-review.md
+expected_research_files='docs/research/alpine-lineage/adversarial-review.md
+docs/research/alpine-lineage/alpine-decisions.md
+docs/research/alpine-lineage/evidence-ledger.md
+docs/research/alpine-lineage/experiments.md
+docs/research/alpine-lineage/framework-lineage.md
+docs/research/alpine-lineage/history.md
+docs/research/alpine-lineage/index.md
+docs/research/alpine-lineage/methodology.md
+docs/research/alpine-lineage/references.bib
+docs/research/alpine-lineage/source-map.md
+docs/research/alpine-lineage/studio-lineage.md
+docs/research/alpine-studio-adversarial-review.md
 docs/research/index.md
 docs/research/macos-accessibility-lifecycle/decisions.md
 docs/research/macos-accessibility-lifecycle/experiments.md
@@ -205,6 +216,17 @@ for required_path in \
     scripts/test-research-retention.sh \
     scripts/check-tla.sh \
     docs/research/index.md \
+    docs/research/alpine-lineage/index.md \
+    docs/research/alpine-lineage/methodology.md \
+    docs/research/alpine-lineage/source-map.md \
+    docs/research/alpine-lineage/framework-lineage.md \
+    docs/research/alpine-lineage/studio-lineage.md \
+    docs/research/alpine-lineage/evidence-ledger.md \
+    docs/research/alpine-lineage/history.md \
+    docs/research/alpine-lineage/adversarial-review.md \
+    docs/research/alpine-lineage/experiments.md \
+    docs/research/alpine-lineage/alpine-decisions.md \
+    docs/research/alpine-lineage/references.bib \
     docs/research/alpine-studio-adversarial-review.md \
     docs/research/wgpu/index.md \
     docs/research/wgpu/source-map.md \

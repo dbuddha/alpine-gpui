@@ -3,6 +3,18 @@ set -eu
 
 repo_root=${1:-$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)}
 catalog=$repo_root/docs/research/index.md
+lineage_root=$repo_root/docs/research/alpine-lineage
+lineage_index=$lineage_root/index.md
+lineage_methodology=$lineage_root/methodology.md
+lineage_sources=$lineage_root/source-map.md
+lineage_framework=$lineage_root/framework-lineage.md
+lineage_studio=$lineage_root/studio-lineage.md
+lineage_evidence=$lineage_root/evidence-ledger.md
+lineage_history=$lineage_root/history.md
+lineage_review=$lineage_root/adversarial-review.md
+lineage_experiments=$lineage_root/experiments.md
+lineage_decisions=$lineage_root/alpine-decisions.md
+lineage_references=$lineage_root/references.bib
 review=$repo_root/docs/research/alpine-studio-adversarial-review.md
 comparator=$repo_root/docs/quality/comparator-protocol.md
 studio_path=$repo_root/docs/use-cases/alpine-studio-highfidelity.md
@@ -25,6 +37,17 @@ fail() {
 
 for required in \
     "$catalog" \
+    "$lineage_index" \
+    "$lineage_methodology" \
+    "$lineage_sources" \
+    "$lineage_framework" \
+    "$lineage_studio" \
+    "$lineage_evidence" \
+    "$lineage_history" \
+    "$lineage_review" \
+    "$lineage_experiments" \
+    "$lineage_decisions" \
+    "$lineage_references" \
     "$review" \
     "$comparator" \
     "$studio_path" \
@@ -49,6 +72,7 @@ if [ "$failures" -ne 0 ]; then
 fi
 
 for link in \
+    '(alpine-lineage/index.md)' \
     '(alpine-studio-adversarial-review.md)' \
     '(../case-studies/zed-editor.md)' \
     '(../case-studies/zed-gpui.md)' \
@@ -68,6 +92,16 @@ link_errors=$(mktemp)
 trap 'rm -f "$link_errors"' EXIT HUP INT TERM
 for source in \
     "$catalog" \
+    "$lineage_index" \
+    "$lineage_methodology" \
+    "$lineage_sources" \
+    "$lineage_framework" \
+    "$lineage_studio" \
+    "$lineage_evidence" \
+    "$lineage_history" \
+    "$lineage_review" \
+    "$lineage_experiments" \
+    "$lineage_decisions" \
     "$review" \
     "$comparator" \
     "$studio_path" \
@@ -106,9 +140,40 @@ for requirement in 32 33 34 35 36 37; do
     fi
 done
 
-for issue in 23 99 113 114 115 116 118 132 174 175 202; do
+for issue in 23 99 113 114 115 116 118 132 174 175 202 315; do
     if ! grep -Fq "https://github.com/dbuddha/alpine-gpui/issues/$issue" "$catalog"; then
         fail "research catalog is missing issue anchor #$issue"
+    fi
+done
+
+for pin in \
+    de8cd6397adc81632fe1103f1834214ae6ec6a1a \
+    e17dc4f9d50db73a458b64dcce50ecd4878b98a3 \
+    eb8e1c8b5502b7007465fbbc465f4a736fa39210 \
+    40f4a34ebaf56f9a046231f54125ad046239d3f3 \
+    657169337a19a5b27f9aa7e53811e6f82b7f213c
+do
+    if ! grep -Fq "$pin" "$lineage_sources"; then
+        fail "lineage source map is missing retained revision pin $pin"
+    fi
+done
+
+for classification in \
+    ADAPTED-CONCEPT \
+    INDEPENDENT-CONVERGENCE \
+    ALPINE-ORIGINAL \
+    COMPARATOR-ONLY \
+    REJECTED \
+    DEFERRED
+do
+    if ! grep -Fq "$classification" "$lineage_methodology"; then
+        fail "lineage methodology is missing classification $classification"
+    fi
+done
+
+for mechanism in ALG-001 ALG-016 ALS-001 ALS-011; do
+    if ! grep -Fq "$mechanism" "$lineage_evidence"; then
+        fail "lineage evidence ledger is missing anchor $mechanism"
     fi
 done
 
