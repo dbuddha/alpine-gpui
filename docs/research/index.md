@@ -9,6 +9,7 @@ measurement rules so implementation does not depend on chat history.
 
 | Artifact | Durable purpose | Live record |
 | --- | --- | --- |
+| [Alpine implementation lineage and evidence](alpine-lineage/index.md) | Mechanism-level GPUI, Zed Editor, WGPU, and awesome-gpui origin, modification, history, evidence, and adversarial status | [Research #315](https://github.com/dbuddha/alpine-gpui/issues/315) |
 | [Alpine Studio adversarial review](alpine-studio-adversarial-review.md) | Keep, change, defer, and execution verdict for the current codebase | [Research #118](https://github.com/dbuddha/alpine-gpui/issues/118) |
 | [Alpine Studio daily-driver path](../use-cases/alpine-studio-highfidelity.md) | Accepted product boundary and gate sequence | [Capability #28](https://github.com/dbuddha/alpine-gpui/issues/28) |
 | [Comparator protocol v1](../quality/comparator-protocol.md) | Correctness admission, stage separation, identities, sampling, memory, and claim grammar | [Research #115](https://github.com/dbuddha/alpine-gpui/issues/115) |
@@ -25,6 +26,7 @@ measurement rules so implementation does not depend on chat history.
 | [Zed GPUI and macOS renderer](../case-studies/zed-gpui.md) | Invalidation, render phases, scene organization, batching, caches, atlas ownership, and Metal scheduling | [Research #113](https://github.com/dbuddha/alpine-gpui/issues/113) |
 | [Sublime Text local-speed model](../case-studies/sublime-editor.md) | Official public facts, Alpine inferences, and explicitly unknown proprietary internals | [Research #114](https://github.com/dbuddha/alpine-gpui/issues/114) |
 | [WGPU case study](../case-studies/wgpu.md) and [deep research package](wgpu/index.md) | Pinned architecture, lifecycle, validation, test, memory, experiment, and non-shipping decisions | [Research #23](https://github.com/dbuddha/alpine-gpui/issues/23), [re-evaluation #99](https://github.com/dbuddha/alpine-gpui/issues/99), [Task #202](https://github.com/dbuddha/alpine-gpui/issues/202) |
+| [awesome-gpui workload survey](../case-studies/awesome-gpui.md) | Workload discovery only; never architecture or performance evidence without a pinned project audit | [Research #24](https://github.com/dbuddha/alpine-gpui/issues/24), [re-evaluation #100](https://github.com/dbuddha/alpine-gpui/issues/100) |
 
 ## Qualification records
 
@@ -44,6 +46,8 @@ measurement rules so implementation does not depend on chat history.
 
 - Start here for accepted research, then follow the linked GitHub issue for
   current state and implementation tasks.
+- Use the [lineage package](alpine-lineage/index.md) for current implementation
+  origin, modification, historical changes, evidence level, and missing proof.
 - Treat repository docs and mdBook as authoritative. Wiki pages are generated
   retrieval mirrors and may not contain unique evidence or decisions.
 - Treat immutable revision links and official product sources as evidence.

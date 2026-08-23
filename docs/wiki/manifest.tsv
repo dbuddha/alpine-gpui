@@ -1,6 +1,7 @@
 Home	Alpine GPUI and Alpine Studio	docs/use-cases/alpine-studio-highfidelity.md	https://github.com/dbuddha/alpine-gpui/issues/28,https://github.com/dbuddha/alpine-gpui/issues/175
 Execution-Map	Alpine Studio execution map	docs/research/alpine-studio-adversarial-review.md	https://github.com/dbuddha/alpine-gpui/issues/28,https://github.com/dbuddha/alpine-gpui/issues/175
 Research-Index	Research retrieval index	docs/research/index.md	https://github.com/dbuddha/alpine-gpui/issues/27,https://github.com/dbuddha/alpine-gpui/issues/175
+Research-Lineage	Implementation lineage and evidence	docs/research/alpine-lineage/index.md	https://github.com/dbuddha/alpine-gpui/issues/315,https://github.com/dbuddha/alpine-gpui/issues/175
 Zed	Zed and GPUI findings	docs/case-studies/zed-editor.md	https://github.com/dbuddha/alpine-gpui/issues/113,https://github.com/dbuddha/alpine-gpui/issues/175
 Sublime-Text	Sublime Text findings	docs/case-studies/sublime-editor.md	https://github.com/dbuddha/alpine-gpui/issues/114,https://github.com/dbuddha/alpine-gpui/issues/175
 WGPU	WGPU role and boundary	docs/case-studies/wgpu.md	https://github.com/dbuddha/alpine-gpui/issues/28,https://github.com/dbuddha/alpine-gpui/issues/175

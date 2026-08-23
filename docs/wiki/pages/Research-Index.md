@@ -6,6 +6,8 @@
 The retained research chain separates primary evidence, Alpine inference,
 implementation decisions, and qualification claims.
 
+- [Implementation lineage](Research-Lineage): mechanism origin, Alpine changes,
+  historical log, evidence strength, and missing qualification.
 - [Zed and GPUI](Zed): reusable rendering, invalidation, text, and cache lessons.
 - [Sublime Text](Sublime-Text): publicly supportable local-speed principles.
 - [WGPU](WGPU): pinned source map, detailed findings, experiments, decisions,

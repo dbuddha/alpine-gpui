@@ -12,6 +12,7 @@ development, or marketplace.
 
 - [Execution map](Execution-Map)
 - [Research index](Research-Index)
+- [Implementation lineage and evidence](Research-Lineage)
 - [Zed and GPUI findings](Zed)
 - [Sublime Text findings](Sublime-Text)
 - [WGPU role and boundary](WGPU)
