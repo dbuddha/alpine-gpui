@@ -27,6 +27,10 @@ done
 grep -Fq 'read-only snapshot' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks read-before-write behavior'
 grep -Fq 'burn-up' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks burn-up guidance'
 grep -Fq 'generated, revision-pinned retrieval mirror' "$skills_root/github-documentation-architect/SKILL.md" || fail 'documentation architect lacks Wiki authority rule'
+grep -Fq 'Research lineage' "$skills_root/github-documentation-architect/SKILL.md" || fail 'documentation architect lacks research-lineage contract'
+grep -Fq 'SUMMARY.md' "$skills_root/github-documentation-architect/SKILL.md" || fail 'documentation architect lacks navigation-only boundary'
+grep -Fq 'Evidence Level' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks evidence-level handling'
+grep -Fq 'Separate implementation tasks from qualification tasks' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks implementation-qualification split'
 grep -Fq 'E4 Qualified' "$skills_root/github-deep-researcher/SKILL.md" || fail 'deep researcher lacks qualification evidence level'
 grep -Fq 'benchmark contamination' "$skills_root/github-deep-researcher/references/evidence-standard.md" || fail 'deep researcher lacks contamination analysis'
 if [ "$skills_root" = "$repo_root/skills" ]; then

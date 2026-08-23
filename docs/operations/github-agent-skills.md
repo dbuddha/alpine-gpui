@@ -25,6 +25,13 @@ scripts/install-agent-skills.sh --remove-links
 
 Issues own live work and approval. Projects own views and planning metadata. Repository Markdown and mdBook own durable technical truth. Wiki is generated navigation. Releases own shipped-version facts and assets. Skills cannot lower repository gates.
 
+The [project execution package](../project/README.md) owns the stable
+daily-driver path, milestone gate semantics, operating model, claim readiness,
+and deferred scope. The [lineage package](../research/alpine-lineage/index.md)
+owns mechanism origin, Alpine modifications, historical supersession, and
+evidence ceilings. `docs/SUMMARY.md` only exposes these pages in mdBook
+navigation.
+
 ## Project access preflight
 
 Before reading or changing a GitHub Project, verify the active token can list
@@ -48,6 +55,22 @@ current critical path.
 Deep research states a decision question, pins primary sources, separates facts from inference, seeks contradictory evidence, records validity threats, reproduces consequential behavior, and links findings to requirements. Architecture adoption requires E2, performance design claims E3, and dominance claims E4.
 
 Substantial research uses a frontmatter index plus source map, findings, experiments, decisions, bibliography, and checksummed raw evidence. Alpine's current path policy must change through an approved task before a new package layout is introduced.
+
+## Migrating installed links between Alpine worktrees
+
+The installer refuses to replace a link owned by another checkout. Migrate
+without bypassing that protection:
+
+1. Confirm the old checkout is an Alpine worktree and its skill content has no
+   unique unmerged changes.
+2. Run `scripts/install-agent-skills.sh --remove-links` from the old checkout.
+3. Run `scripts/install-agent-skills.sh --install` from clean current Alpine
+   `main`.
+4. Run `scripts/install-agent-skills.sh --check` from current `main`.
+5. Inspect all three installed link targets before removing the old worktree.
+
+Do not unlink or replace a foreign skill path and do not remove a worktree while
+installed skills still reference it.
 
 ## Validation
 

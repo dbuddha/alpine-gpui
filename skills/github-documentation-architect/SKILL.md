@@ -18,6 +18,9 @@ Design documentation as a versioned product with explicit audiences, authority, 
 
 Read [information architecture](references/information-architecture.md) before restructuring documentation.
 
+Read [project documentation boundaries](references/project-documentation-boundaries.md)
+before adding plans, roadmaps, status, milestone, or evidence pages.
+
 ## Alpine surface contract
 
 - Source and root architecture files own implemented truth.
@@ -28,6 +31,10 @@ Read [information architecture](references/information-architecture.md) before r
 - GitHub Releases own immutable shipped-version notes, assets, checksums, migrations, compatibility, and known issues.
 
 Do not copy the same prose across surfaces. Summarize and link.
+
+For Alpine, `docs/SUMMARY.md` is mdBook navigation only. It never owns project
+status, requirements, milestones, blockers, readiness, or claims. Stable delivery
+paths live under `docs/project/`; mutable planning facts remain in GitHub.
 
 ## Audience architecture
 
@@ -41,6 +48,36 @@ Serve evaluator, new user, daily user, operator, contributor, maintainer, securi
 4. Add exact commands, diagrams, examples, and failure cases where they reduce ambiguity.
 5. Validate links, examples, navigation, generated Wiki output, and release references.
 6. Record supersession instead of silently rewriting historical decisions or research.
+
+## Research lineage and evidence
+
+For architecture, renderer, text, performance, memory, comparator, or product
+mechanisms, preserve origin and change history as part of documentation quality.
+Read [research lineage](references/research-lineage.md) and
+[evidence ledgers](references/evidence-ledgers.md) before changing a case study,
+mechanism matrix, comparative claim, or historical conclusion.
+
+- Separate accepted comparator pins from current-upstream review revisions.
+- Distinguish adapted concepts, independent convergence, original work,
+  comparator-only inputs, rejected scope, and deferred scope.
+- Preserve exact source and license boundaries. Never imply copied code without
+  a source range, destination range, transformation, license, and review record.
+- Record correctness, performance, and memory evidence independently.
+- Append supersession history. Do not rewrite an older conclusion to look as if
+  it always contained later evidence.
+- Link every promoted claim to its implementing issue, pull request, evidence
+  identity, claim state, and next missing experiment.
+
+## Project-path documentation
+
+Stable path documents state the mission, accepted boundary, dependency graph,
+milestone exit semantics, claim rules, and deferred scope. They link live Issues,
+Projects, and Milestones but do not copy owners, status, counts, dates, or
+percentages. A generated Wiki projects the stable path and live retrieval links;
+it is not another planning system.
+
+Read [documentation freshness](references/documentation-freshness.md) before
+publishing status-like material or declaring a page current.
 
 ## Wiki design
 
@@ -61,7 +98,16 @@ Every supported release answers what changed, who is affected, compatibility, in
 - No release asset without identity and integrity evidence.
 - No deprecated page without replacement or terminal status.
 - No documentation promise contradicting tests or shipping behavior.
+- No comparative claim without exact evidence identity and a stated ceiling.
+- No source lineage change without append-only history and provenance review
+  when copied code is alleged.
+- No stable project-path page containing manually maintained live status.
+- No `SUMMARY.md` entry treated as delivery or milestone authority.
 
 ## Output
 
-Produce the authority matrix, audience map, navigation tree, proposed files, migration or redirect plan, validation commands, ownership and review cadence, and unresolved decisions. Distinguish fact from recommendation.
+Produce the authority matrix, audience map, navigation tree, proposed files,
+migration or redirect plan, lineage and evidence impact, validation commands,
+freshness trigger, ownership and review cadence, and unresolved decisions.
+Distinguish fact, inference, recommendation, implemented, reproduced, and
+qualified.

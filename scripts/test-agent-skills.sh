@@ -26,5 +26,11 @@ awk 'NR == 2 { print "name: wrong-name"; next } { print }' "$temporary/bad-skill
 mv "$temporary/malformed-skill.md" "$temporary/bad-skills/github-project-operator/SKILL.md"
 if "$checker" --skills-root "$temporary/bad-skills" >"$temporary/malformed.log" 2>&1; then printf 'agent skill test error: malformed skill unexpectedly passed\n' >&2; exit 1; fi
 grep -Fq 'wrong frontmatter name' "$temporary/malformed.log"
+rm -rf "$temporary/bad-skills"
+cp -R "$repo_root/skills/." "$temporary/bad-skills"
+sed 's/Research lineage/Research origin/' "$temporary/bad-skills/github-documentation-architect/SKILL.md" > "$temporary/missing-lineage.md"
+mv "$temporary/missing-lineage.md" "$temporary/bad-skills/github-documentation-architect/SKILL.md"
+if "$checker" --skills-root "$temporary/bad-skills" >"$temporary/missing-lineage.log" 2>&1; then printf 'agent skill test error: missing lineage contract unexpectedly passed\n' >&2; exit 1; fi
+grep -Fq 'lacks research-lineage contract' "$temporary/missing-lineage.log"
 "$checker" >/dev/null
 printf 'repository agent skill tests passed\n'
