@@ -1,7 +1,7 @@
 //! Real Studio process composition through production AppKit accessibility.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     fs,
     path::Path,
     rc::Rc,
@@ -440,8 +440,27 @@ fn dispatch(
     state: &Rc<RefCell<Application<StudioApp>>>,
     events: &[SurfaceEvent],
 ) -> Result<(), alpine_platform_macos::SurfaceError> {
-    platform_validation::replay_callback_surface_events(surface, events, event_handler(state))?;
-    await_frame_terminal(surface, Duration::from_millis(100))
+    let frame_requested = Rc::new(Cell::new(false));
+    let observed_frame = Rc::clone(&frame_requested);
+    let mut handler = event_handler(state);
+    platform_validation::replay_callback_surface_events(surface, events, move |event| {
+        let response = handler(event);
+        observed_frame.set(observed_frame.get() || response.frame().is_some());
+        response
+    })?;
+    if frame_requested.get() {
+        return await_frame_terminal(surface, Duration::from_millis(100));
+    }
+    if let Some(error) = surface.take_error()? {
+        return Err(error);
+    }
+    let snapshot = surface.snapshot();
+    if snapshot.occupied_frame_slots() != 0 || snapshot.submitted_frame_slots() != 0 {
+        return Err(alpine_platform_macos::SurfaceError::validation(
+            SurfaceOperation::Validation,
+        ));
+    }
+    Ok(())
 }
 
 fn await_frame_terminal(
