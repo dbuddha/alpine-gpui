@@ -34,6 +34,7 @@ mod validation {
         let descriptor = SurfaceDescriptor::new(TITLE, f64::from(WIDTH), f64::from(HEIGHT), 1.0)?;
         let surface = native_validation::new_surface(&descriptor)?;
         surface.show()?;
+        pump_main_run_loop(SETTLEMENT);
         establish_visible_presentation(&surface, hosted_direct)?;
         assert_window_state(true, false)?;
 
