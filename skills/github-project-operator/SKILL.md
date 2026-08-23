@@ -33,11 +33,22 @@ Never infer completion from prose, a parent counter, a merged branch, or an item
 
 Read [the operating model](references/operating-model.md) before changing hierarchy, fields, statuses, milestones, or views.
 
+Read [evidence-aware delivery](references/evidence-aware-delivery.md) before
+closing work or reporting completion. Read
+[qualification projects](references/qualification-projects.md) before planning
+performance, memory, hardware, or comparator claims.
+
 ## Status and field defaults
 
-Use `Backlog`, `Ready`, `In Progress`, `Review`, `Blocked`, and `Done` unless the repository already owns a compatible workflow. Do not encode status again in labels.
+Use the repository's existing workflow. Alpine prefers `Proposed`, `Ready`,
+`In Progress`, `Blocked`, `In Review`, and `Done` when Project configuration
+supports them. Do not encode status again in labels.
 
-Prefer typed fields `Priority`, `Risk`, `Milestone`, `Estimate`, `Confidence`, `Horizon`, `Target`, `Parent`, and `Blocked by` when Project access exists. Use stable estimates `1`, `2`, `3`, `5`, and `8`; they express relative delivery complexity, not hours. A field without a decision or view consumer is dead metadata.
+Prefer typed fields `Type`, `Gate`, `Priority`, `Risk`, `Blocked By`, `Evidence
+Level`, `Claim State`, `Estimate`, and `Acceptance Gate` when Project access
+exists. Use stable estimates `1`, `2`, `3`, `5`, and `8`; they express relative
+delivery complexity, not hours. A field without a decision or view consumer is
+dead metadata.
 
 ## Planning algorithm
 
@@ -50,11 +61,32 @@ Prefer typed fields `Priority`, `Risk`, `Milestone`, `Estimate`, `Confidence`, `
 7. Put a task in Review only when a PR or evidence artifact exists.
 8. Move to Done only when closure semantics and checks are satisfied.
 
+Separate implementation tasks from qualification tasks. A merged mechanism may
+be implemented while physical, residency, statistical, or comparative evidence
+remains open. Separate Research closure from Experiment closure. Read
+[research-to-experiment handoff](references/research-to-experiment-handoff.md)
+before converting findings into measured work.
+
+## Reconciliation and critical path
+
+Before creating work, detect duplicate issues, stale Project fields, merged
+implementation pull requests whose tasks remain open, closed tasks missing named
+evidence, parents counted as delivery, and deferred work leaking into active
+milestones. Read [critical-path reconciliation](references/critical-path-reconciliation.md).
+
+Build milestone dependency graphs from accepted outcome prerequisites rather
+than milestone numbering. Protect deferred paths from entering the current
+critical path without a new approved requirement.
+
 For Alpine, correctness is the first ordering key, then performance, resource efficiency, and delivery speed. Never accelerate delivery by weakening an earlier key.
 
 ## Metrics and forecasts
 
-Use burn-up as the primary historical chart because it exposes completed work and scope growth. Use burn-down only against an explicitly frozen scope snapshot. Pair either chart with scope trend, leaf completion, throughput, cycle time, blocker age, and critical-path status.
+Use accepted-leaf burn-up as the primary historical chart because it exposes
+completed work and scope growth. Use burn-down only against an explicitly frozen
+scope snapshot. Pair either chart with scope trend, accepted leaf completion,
+throughput, cycle time, blocker age, critical-path status, Evidence Level, and
+Claim State.
 
 Read [metrics and reporting](references/metrics-and-reporting.md) before publishing progress, forecasts, or milestone health.
 
@@ -65,9 +97,15 @@ Read [metrics and reporting](references/metrics-and-reporting.md) before publish
 - Make idempotent changes and verify each remote result.
 - Do not create duplicate issues to compensate for missing Project access.
 - Fall back to issue hierarchy when Project permissions are absent.
+- Treat inaccessible Project fields as unknown, never empty.
+- Never promote Evidence Level or Claim State without exact retained identity.
 - Never force-push, delete branches, bypass checks, fabricate dates, or mark inconclusive evidence green.
 - Ask immediately before a push or release when repository policy requires it.
 
 ## Alpine completion report
 
-Report exact capability and requirement, completed leaf tasks, open critical-path tasks, blockers with age and owner, milestone exit criteria, PR and check state, scope changes, and the next smallest uncompromised slice. Distinguish fact, inference, and recommendation.
+Report exact capability and requirement, accepted leaves, open critical-path
+tasks, blockers with age and owner, milestone exit criteria, PR and exact-head
+check state, scope growth, Evidence Level, Claim State, and the next smallest
+uncompromised slice. Distinguish fact, inference, recommendation, implemented,
+reproduced, and qualified.
