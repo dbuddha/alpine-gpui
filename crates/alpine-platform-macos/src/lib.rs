@@ -1363,6 +1363,24 @@ pub mod native_validation {
         surface.implementation.run_until_frame_terminal(timeout);
     }
 
+    /// Runs until one frame terminates while preserving production handler ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured error if the callback handler cannot be installed.
+    pub fn run_until_frame_terminal_with_handler<F>(
+        surface: &NativeSurface,
+        timeout: Duration,
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        surface
+            .implementation
+            .run_until_frame_terminal_with_handler(timeout, handler)
+    }
+
     /// Last display-link directive observed by native pause qualification.
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     pub enum PauseDirectiveEvidence {

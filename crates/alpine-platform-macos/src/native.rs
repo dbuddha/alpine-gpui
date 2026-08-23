@@ -4455,6 +4455,21 @@ impl NativeSurface {
     }
 
     #[cfg(alpine_native_validation)]
+    pub(crate) fn run_until_frame_terminal_with_handler<F>(
+        &self,
+        timeout: Duration,
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        self.delegate.install_event_handler(handler)?;
+        self.run_until_frame_terminal(timeout);
+        self.delegate.clear_event_handler();
+        Ok(())
+    }
+
+    #[cfg(alpine_native_validation)]
     pub(crate) fn arm_run_timeout(
         &self,
         timeout: Duration,

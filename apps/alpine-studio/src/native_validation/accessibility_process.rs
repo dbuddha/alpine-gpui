@@ -197,10 +197,10 @@ fn qualify_workspace(
             true,
         )?;
     }
-    await_frame_terminal(&surface, Duration::from_secs(5))
+    let state = Rc::new(RefCell::new(application));
+    await_frame_terminal(&surface, &state, Duration::from_secs(5))
         .map_err(|error| format!("initial native accessibility frame failed: {error}"))?;
 
-    let state = Rc::new(RefCell::new(application));
     let mut timestamp = 10_u64;
     let mut tree_actions = 0_usize;
     let mut tab_actions = 0_usize;
@@ -310,7 +310,7 @@ fn qualify_workspace(
     if omitted_step != Some(OmittedStep::Edit) {
         platform_validation::commit_native_text(&surface, "// alpine\n", event_handler(&state))
             .map_err(|error| format!("first native editor text commit failed: {error}"))?;
-        await_frame_terminal(&surface, Duration::from_millis(100))
+        await_frame_terminal(&surface, &state, Duration::from_millis(100))
             .map_err(|error| format!("first native editor text frame failed: {error}"))?;
     }
     timestamp = timestamp.saturating_add(1);
@@ -331,7 +331,7 @@ fn qualify_workspace(
 
     platform_validation::commit_native_text(&surface, "dirty", event_handler(&state))
         .map_err(|error| format!("dirty native editor text commit failed: {error}"))?;
-    await_frame_terminal(&surface, Duration::from_millis(100))
+    await_frame_terminal(&surface, &state, Duration::from_millis(100))
         .map_err(|error| format!("dirty native editor text frame failed: {error}"))?;
     timestamp = timestamp.saturating_add(1);
     let observer = surface.observer();
@@ -340,7 +340,7 @@ fn qualify_workspace(
     assert!(!closed);
     assert_eq!(disposition, CloseDisposition::Cancel);
     assert!(close_frame);
-    await_frame_terminal(&surface, Duration::from_millis(100))
+    await_frame_terminal(&surface, &state, Duration::from_millis(100))
         .map_err(|error| format!("dirty-close native frame failed: {error}"))?;
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
     let blocked =
@@ -449,7 +449,7 @@ fn dispatch(
         response
     })?;
     if frame_requested.get() {
-        return await_frame_terminal(surface, Duration::from_millis(100));
+        return await_frame_terminal(surface, state, Duration::from_millis(100));
     }
     if let Some(error) = surface.take_error()? {
         return Err(error);
@@ -465,6 +465,7 @@ fn dispatch(
 
 fn await_frame_terminal(
     surface: &NativeSurface,
+    state: &Rc<RefCell<Application<StudioApp>>>,
     timeout: Duration,
 ) -> Result<(), alpine_platform_macos::SurfaceError> {
     if matches!(
@@ -473,7 +474,11 @@ fn await_frame_terminal(
     ) {
         platform_validation::inject_post_commit_observation(surface, None, 1.0)?;
     }
-    platform_validation::run_until_frame_terminal(surface, timeout);
+    platform_validation::run_until_frame_terminal_with_handler(
+        surface,
+        timeout,
+        event_handler(state),
+    )?;
     if let Some(error) = surface.take_error()? {
         return Err(error);
     }
@@ -608,7 +613,7 @@ fn activate(
             response_summary.borrow()
         )
     })?;
-    await_frame_terminal(surface, Duration::from_millis(100)).map_err(|error| {
+    await_frame_terminal(surface, state, Duration::from_millis(100)).map_err(|error| {
         format!(
             "native accessibility action frame failed for role={role:?} label={label:?}: {error}"
         )

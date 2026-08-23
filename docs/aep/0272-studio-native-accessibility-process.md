@@ -57,6 +57,12 @@ state before issuing the next action. This models successive AppKit run-loop
 turns and prevents the test harness itself from exhausting the production
 three-slot frame bound.
 
+The Studio event handler remains installed for every terminal-drain run-loop
+interval. This matches production ownership and ensures an asynchronous worker
+wake cannot receive a default response while native accessibility is active.
+The handler is cleared immediately after each bounded drain so the next probe
+must acquire ownership explicitly.
+
 The process inherits the established presentation-evidence mode. Physical mode
 uses compositor observations and may inject only the existing surface
 configuration when AppKit has not yet published visibility. Explicit
