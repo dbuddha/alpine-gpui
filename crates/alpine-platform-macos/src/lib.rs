@@ -1029,14 +1029,27 @@ pub mod native_validation {
                 role: Box::from("AXButton"),
                 label: Box::from("Action"),
                 identifier: Box::from("alpine.ax.1.2.37"),
-                selector_allowed: true,
+                selector_allowed: false,
                 accepted: false,
                 current_after_action: true,
                 dispatch_failed: true,
             };
             assert_eq!(activation.semantic_id(), 37);
             assert_eq!(activation.role(), "AXButton");
+            assert!(!activation.selector_allowed());
             assert!(activation.dispatch_failed());
+
+            let permitted = NativeAccessibilityActivationEvidence {
+                semantic_id: 41,
+                role: Box::from("AXButton"),
+                label: Box::from("Permitted action"),
+                identifier: Box::from("alpine.ax.1.2.41"),
+                selector_allowed: true,
+                accepted: true,
+                current_after_action: true,
+                dispatch_failed: false,
+            };
+            assert!(permitted.selector_allowed());
         }
     }
 

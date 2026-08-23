@@ -229,6 +229,9 @@ mod validation {
                 )
                 .into());
             }
+            if frame_drain_complete(initial, initial_terminals, before_drain)? {
+                return Ok(before_drain);
+            }
             if hosted_direct && armed_at_submission != Some(before_drain.submission_count()) {
                 // Hosted runners can expose callback drawables without a
                 // compositor observation. Arm one validation-only observation
@@ -246,31 +249,14 @@ mod validation {
             }
             let terminal = surface.snapshot();
             let terminals_after_drain = terminal_outcome_count(terminal)?;
+            if frame_drain_complete(initial, initial_terminals, terminal)? {
+                return Ok(terminal);
+            }
             if terminals_after_drain <= terminals_before_drain {
                 return Err(format!(
                     "revision {revision} made no terminal progress within the bounded drain: before={before_drain:?}, after={terminal:?}"
                 )
                 .into());
-            }
-            let terminal_delta = terminals_after_drain
-                .checked_sub(initial_terminals)
-                .ok_or("terminal counter regressed during frame drain")?;
-            let submission_delta = terminal
-                .submission_count()
-                .checked_sub(initial.submission_count())
-                .ok_or("submission counter regressed after terminal drain")?;
-            if terminal_delta > submission_delta {
-                return Err(format!(
-                    "revision {revision} observed more terminal outcomes than submissions: initial={initial:?}, terminal={terminal:?}"
-                )
-                .into());
-            }
-            if submission_delta > 0
-                && terminal_delta == submission_delta
-                && terminal.occupied_frame_slots() == 0
-                && terminal.submitted_frame_slots() == 0
-            {
-                return Ok(terminal);
             }
         }
         Err(format!(
@@ -280,12 +266,42 @@ mod validation {
         .into())
     }
 
+    fn frame_drain_complete(
+        initial: SurfaceSnapshot,
+        initial_terminals: u64,
+        current: SurfaceSnapshot,
+    ) -> TestResult<bool> {
+        let terminal_delta = terminal_outcome_count(current)?
+            .checked_sub(initial_terminals)
+            .ok_or("terminal counter regressed during frame drain")?;
+        let submission_delta = current
+            .submission_count()
+            .checked_sub(initial.submission_count())
+            .ok_or("submission counter regressed during frame drain")?;
+        if terminal_delta > submission_delta {
+            return Err(format!(
+                "frame drain observed more terminal outcomes than submissions: initial={initial:?}, current={current:?}"
+            )
+            .into());
+        }
+        let qualified_delta = current
+            .qualified_presented_count()
+            .checked_sub(initial.qualified_presented_count())
+            .ok_or("qualified-presented counter regressed during frame drain")?;
+        Ok(submission_delta > 0
+            && terminal_delta == submission_delta
+            && qualified_delta > 0
+            && current.occupied_frame_slots() == 0
+            && current.submitted_frame_slots() == 0)
+    }
+
     fn terminal_outcome_count(snapshot: SurfaceSnapshot) -> TestResult<u64> {
         snapshot
             .qualified_presented_count()
-            .checked_add(snapshot.failed_count())
+            .checked_add(snapshot.superseded_count())
             .and_then(|count| count.checked_add(snapshot.cancelled_count()))
-            .and_then(|count| count.checked_add(snapshot.superseded_count()))
+            .and_then(|count| count.checked_add(snapshot.skipped_count()))
+            .and_then(|count| count.checked_add(snapshot.failed_count()))
             .ok_or_else(|| "terminal outcome count exhausted".into())
     }
 

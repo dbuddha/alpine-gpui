@@ -69,9 +69,16 @@ Each negative control returns a distinct nonzero validation marker only after
 its full body succeeds. The child evidence retains both markers and the parent
 process requires their exact values, so replacing either control with a trivial
 successful return cannot qualify. Frame-drain, hosted-observation admission, and
-action-frame ceilings are factored into pure predicates with true and
-single-false-condition tests; the production journey remains the integration
-proof while boundary mutation does not require another AppKit process.
+action admission and frame ceilings are factored into pure predicates with true
+and single-false-condition tests. A platform-native companion fixture pairs the
+real `main.rs` tab label with an absent `ListItem` role and requires exact
+rejection. The absent role leaves the same-label tab as the sole false-positive
+candidate when conjunction is weakened. A second control pairs the real `Tab`
+role with an absent label, independently proving the label axis. Together they
+own role equality, label equality, and conjunction mutations even when a
+mutation scope runs only the platform package. The production journey remains
+the composition proof while each lower boundary has an independently executable
+control.
 
 Sibling file labels from one directory result must be observed together in the
 same native tree after that result's frame terminalizes. The journey does not
@@ -92,6 +99,10 @@ counts frames actually submitted while the helper owns terminal observation.
 Success also requires at least one observed submission whenever the caller owns
 an expected frame; empty slots and paused pacing alone cannot prove that frame
 submission occurred.
+The idle-state companion counts qualified, superseded, skipped, failed, and
+cancelled terminal attempts, requires every admitted submission to reach exactly
+one terminal class, and does not return after a superseded attempt until one
+current qualified presentation and all completion-owned slots are drained.
 These constants detect hangs and runaway work; they are not latency budgets or
 performance qualification.
 

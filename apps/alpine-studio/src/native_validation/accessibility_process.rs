@@ -646,6 +646,14 @@ const fn action_frame_bound_exceeded(frames: u64) -> bool {
     frames > 1
 }
 
+const fn accessibility_action_succeeded(
+    selector_allowed: bool,
+    accepted: bool,
+    dispatch_failed: bool,
+) -> bool {
+    selector_allowed && accepted && !dispatch_failed
+}
+
 fn presentation_evidence_mode()
 -> Result<PresentationEvidenceMode, alpine_platform_macos::SurfaceError> {
     let value = std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE");
@@ -811,7 +819,11 @@ fn activate(
             response_summary.borrow()
         )
     })?;
-    if !evidence.selector_allowed() || !evidence.accepted() || evidence.dispatch_failed() {
+    if !accessibility_action_succeeded(
+        evidence.selector_allowed(),
+        evidence.accepted(),
+        evidence.dispatch_failed(),
+    ) {
         return Err(format!(
             "native accessibility action failed: role={role:?} label={label:?} native_role={:?} native_label={:?} identifier={:?} selector_allowed={} accepted={} current_after={} dispatch_failed={}",
             evidence.role(),
@@ -825,7 +837,7 @@ fn activate(
         .into());
     }
     let frames = response_frames.get();
-    if frames > 1 {
+    if action_frame_bound_exceeded(frames) {
         return Err(format!(
             "native accessibility action returned {frames} frames for role={role:?} label={label:?}"
         )
@@ -974,6 +986,11 @@ mod process_contract_tests {
         assert!(!action_frame_bound_exceeded(0));
         assert!(!action_frame_bound_exceeded(1));
         assert!(action_frame_bound_exceeded(2));
+
+        assert!(accessibility_action_succeeded(true, true, false));
+        assert!(!accessibility_action_succeeded(false, true, false));
+        assert!(!accessibility_action_succeeded(true, false, false));
+        assert!(!accessibility_action_succeeded(true, true, true));
     }
 
     #[test]
