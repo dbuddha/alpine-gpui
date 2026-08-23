@@ -1600,6 +1600,7 @@ struct StudioApp {
     runtime_workspace_revision: u64,
     selection_revision: u64,
     accessibility_semantic_revision: u64,
+    accessibility_projection_revision: alpine_platform_macos::AccessibilityRevision,
     selection: Selection,
     composition: Option<Composition>,
     input_epoch: InputEpoch,
@@ -1832,6 +1833,11 @@ impl StudioApp {
         let syntax_cache =
             SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES).map_err(|_| APPLICATION_INVARIANT)?;
         let runtime_document_revision = document.buffer().revision().get();
+        let accessibility_projection_revision = alpine_platform_macos::AccessibilityRevision::new(
+            runtime_document_revision,
+            runtime_document_revision,
+        )
+        .with_semantic(1);
         let tabs = DocumentTabs::new(path, None, DocumentTabLimits::default())
             .map_err(|_| APPLICATION_INVARIANT)?;
         let active_tab = tabs.active_id().map_err(|_| APPLICATION_INVARIANT)?;
@@ -1851,6 +1857,7 @@ impl StudioApp {
             runtime_workspace_revision: 1,
             selection_revision: 1,
             accessibility_semantic_revision: 1,
+            accessibility_projection_revision,
             selection: Selection::caret(ByteOffset::new(0)),
             composition: None,
             input_epoch: InputEpoch::INITIAL,
@@ -2387,6 +2394,7 @@ impl StudioApp {
                 let _error_message = error.to_string();
                 self.render_failures = self.render_failures.saturating_add(1);
                 self.rendered_lines.clear();
+                self.publish_accessibility_projection();
                 let fallback = self.fallback_scene(revision, viewport);
                 self.record_profile(
                     StudioSignpostStage::FrameBuildComplete,
@@ -3108,6 +3116,7 @@ impl StudioApp {
         }
 
         self.rendered_lines = rendered_lines;
+        self.publish_accessibility_projection();
         Ok(builder.finish())
     }
 
@@ -5462,9 +5471,13 @@ impl StudioApp {
         self.input_failures = self
             .input_failures
             .saturating_add(u64::from(self.accessibility_semantic_revision == previous));
+    }
+
+    fn publish_accessibility_projection(&mut self) {
+        self.accessibility_projection_revision = accessibility::revision(self);
         #[cfg(all(alpine_native_validation, not(test)))]
         NATIVE_VALIDATION_ACCESSIBILITY_SEMANTIC_REVISION.store(
-            self.accessibility_semantic_revision,
+            self.accessibility_projection_revision.semantic(),
             std::sync::atomic::Ordering::Release,
         );
     }

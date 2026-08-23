@@ -193,6 +193,7 @@ pub(super) fn revision(app: &StudioApp) -> AccessibilityRevision {
 }
 
 pub(super) fn snapshot(app: &StudioApp) -> Result<AccessibilitySnapshot, AccessibilityError> {
+    require_revision(app.accessibility_projection_revision, revision(app))?;
     let nodes = build_nodes(app)?;
     let text = app.buffer().snapshot();
     let selection = selection_from_snapshot(app, &text)?;
@@ -213,7 +214,7 @@ fn transport_snapshot(
     line_count: usize,
 ) -> Result<PlatformAccessibilitySnapshot, PlatformAccessibilityError> {
     PlatformAccessibilitySnapshot::new(
-        revision(app),
+        app.accessibility_projection_revision,
         WINDOW_NODE,
         nodes,
         selection,

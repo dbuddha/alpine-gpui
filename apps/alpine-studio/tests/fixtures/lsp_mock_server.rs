@@ -26,7 +26,8 @@ impl PhaseTrace {
         let Some(file) = self.file.as_mut() else {
             return Ok(());
         };
-        writeln!(file, "{phase}")
+        let record = format!("{phase}\n");
+        file.write_all(record.as_bytes())
     }
 }
 

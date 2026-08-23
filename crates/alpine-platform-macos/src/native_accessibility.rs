@@ -500,15 +500,14 @@ impl NativeAccessibilityAdapter {
     }
 
     fn refresh(&mut self, view: &SurfaceView) -> Result<RefreshOutcome, SurfaceError> {
-        if self.revoking || self.handler.is_none() {
-            return Err(SurfaceError::invariant(SurfaceOperation::Accessibility));
-        }
+        self.require_refresh_admission()?;
         let request = AccessibilityRequest::snapshot(self.next_id()?)
             .map_err(|_| SurfaceError::invariant(SurfaceOperation::Accessibility))?;
         let response = self.dispatch(&request)?;
-        let snapshot = match response.result() {
-            Ok(AccessibilityPayload::Snapshot(snapshot)) => snapshot.clone(),
-            _ => return Err(SurfaceError::invariant(SurfaceOperation::Accessibility)),
+        let Some(snapshot) = self.classify_snapshot_response(&response)? else {
+            return Ok(RefreshOutcome {
+                notifications: Vec::new(),
+            });
         };
         let previous = self.snapshot.clone();
         let mut notifications = Vec::new();
@@ -525,6 +524,24 @@ impl NativeAccessibilityAdapter {
         self.snapshot = Some(snapshot);
         self.active = true;
         Ok(RefreshOutcome { notifications })
+    }
+
+    fn require_refresh_admission(&self) -> Result<(), SurfaceError> {
+        if self.revoking || self.handler.is_none() {
+            return Err(SurfaceError::invariant(SurfaceOperation::Accessibility));
+        }
+        Ok(())
+    }
+
+    fn classify_snapshot_response(
+        &self,
+        response: &AccessibilityResponse,
+    ) -> Result<Option<AccessibilitySnapshot>, SurfaceError> {
+        match response.result() {
+            Ok(AccessibilityPayload::Snapshot(snapshot)) => Ok(Some(snapshot.clone())),
+            Err(AccessibilityError::StaleRevision { .. }) if self.snapshot.is_some() => Ok(None),
+            _ => Err(SurfaceError::invariant(SurfaceOperation::Accessibility)),
+        }
     }
 
     fn reconcile_elements(
@@ -1858,5 +1875,87 @@ mod bounded_screen_frame_tests {
         assert!(!bounded_screen_frame(frame(1.0, 2.0, -1.0, 3.0)));
         assert!(!bounded_screen_frame(frame(1.0, 2.0, 3.0, 0.0)));
         assert!(!bounded_screen_frame(frame(1.0, 2.0, 3.0, -1.0)));
+    }
+}
+
+#[cfg(test)]
+mod adapter_refresh_tests {
+    use super::*;
+    use crate::AccessibilitySelection;
+
+    fn snapshot(
+        revision: AccessibilityRevision,
+    ) -> Result<AccessibilitySnapshot, AccessibilityError> {
+        let root = AccessibilityNode::new(
+            AccessibilityNodeId::new(1),
+            None,
+            AccessibilityRole::Window,
+            "Alpine Studio".into(),
+            false,
+            false,
+            false,
+        )?;
+        AccessibilitySnapshot::new(
+            revision,
+            AccessibilityNodeId::new(1),
+            vec![root],
+            AccessibilitySelection::new(0, 0),
+            0,
+            1,
+            false,
+        )
+    }
+
+    #[test]
+    fn refresh_admission_requires_an_installed_handler_and_nonrevoking_owner() {
+        let mut adapter = NativeAccessibilityAdapter::new();
+        assert!(adapter.require_refresh_admission().is_err());
+
+        adapter.install(Box::new(|_| {
+            Err(SurfaceError::invariant(SurfaceOperation::Accessibility))
+        }));
+        assert!(adapter.require_refresh_admission().is_ok());
+
+        adapter.revoking = true;
+        assert!(adapter.require_refresh_admission().is_err());
+    }
+
+    #[test]
+    fn stale_projection_retains_only_an_existing_complete_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let revision = AccessibilityRevision::new(7, 11).with_semantic(13);
+        let request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(1))?;
+        let stale = AccessibilityResponse::failure(
+            &request,
+            revision,
+            AccessibilityError::StaleRevision {
+                expected: revision.with_semantic(14),
+                actual: revision,
+            },
+        );
+        let mut adapter = NativeAccessibilityAdapter::new();
+        assert!(adapter.classify_snapshot_response(&stale).is_err());
+
+        let previous = snapshot(revision)?;
+        adapter.snapshot = Some(previous.clone());
+        assert!(adapter.classify_snapshot_response(&stale)?.is_none());
+        assert_eq!(adapter.snapshot.as_ref(), Some(&previous));
+
+        let mismatch =
+            AccessibilityResponse::failure(&request, revision, AccessibilityError::RequestMismatch);
+        assert!(adapter.classify_snapshot_response(&mismatch).is_err());
+
+        let current_revision = revision.with_semantic(14);
+        let current = snapshot(current_revision)?;
+        let response = AccessibilityResponse::success(
+            &request,
+            current_revision,
+            AccessibilityPayload::Snapshot(current.clone()),
+        )?;
+        assert_eq!(
+            adapter.classify_snapshot_response(&response)?,
+            Some(current)
+        );
+        Ok(())
     }
 }

@@ -4741,6 +4741,21 @@ fn accessibility_semantic_revision_advances_only_for_real_changes_and_reports_ex
         accessibility::revision(&app).semantic(),
         app.accessibility_semantic_revision
     );
+    assert!(matches!(
+        app.accessibility_snapshot(),
+        Err(AccessibilityError::StaleRevision { expected, actual })
+            if expected == app.accessibility_projection_revision
+                && actual == accessibility::revision(&app)
+    ));
+    let _scene = app.scene(SceneRevision::new(1), viewport()?);
+    assert_eq!(
+        app.accessibility_projection_revision,
+        accessibility::revision(&app)
+    );
+    assert_eq!(
+        app.accessibility_snapshot()?.revision(),
+        app.accessibility_projection_revision
+    );
     app.accessibility_semantic_revision = u64::MAX;
     app.advance_accessibility_semantic_revision(true);
     assert_eq!(app.accessibility_semantic_revision, u64::MAX);
@@ -6120,6 +6135,7 @@ fn completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact()
     app.rust_diagnostics
         .install_completion_for_test(3, app.language_identity(), &completion)?;
     app.runtime_document_revision += 1;
+    let _identity_scene = app.try_scene(SceneRevision::new(312), viewport()?)?;
     let stale = app.accessibility_snapshot()?;
     assert!(
         !stale
@@ -6329,6 +6345,7 @@ fn accessibility_non_identity_state_and_every_focus_owner_are_exact()
         StudioApp::from_document(TestTextSystem, StudioDocument::scratch("a\nb"), None)?;
     changed.runtime_document_revision = 7;
     assert!(changed.replace_selection("z").document_changed);
+    let _changed_scene = changed.try_scene(SceneRevision::new(330), viewport()?)?;
     let changed_snapshot = changed.accessibility_snapshot()?;
     assert_eq!(changed_snapshot.revision().document(), 7);
     assert_eq!(changed_snapshot.revision().buffer(), 1);
@@ -6566,6 +6583,35 @@ fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
             .is_none()
     );
 
+    let mut projected_app = StudioApp::open_file(TestTextSystem, &rust_path)?;
+    let _initial_projection = projected_app.scene(SceneRevision::new(500), viewport);
+    let projected_before = projected_app.accessibility_projection_revision;
+    let projected_input = projected_app
+        .active_rust_document()
+        .ok_or("projected Rust document")?;
+    let projected_diagnostics = rust_diagnostics::tests::diagnostics(&rust_path, 1);
+    projected_app.rust_diagnostics.install_for_test(
+        projected_input,
+        &projected_diagnostics,
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    projected_app.advance_accessibility_semantic_revision(true);
+    let current = accessibility::revision(&projected_app);
+    assert!(matches!(
+        projected_app.accessibility_snapshot(),
+        Err(AccessibilityError::StaleRevision { expected, actual })
+            if expected == projected_before && actual == current
+    ));
+    let _diagnostic_projection = projected_app.scene(SceneRevision::new(501), viewport);
+    let projected = projected_app.accessibility_snapshot()?;
+    assert_eq!(projected.revision(), current);
+    assert!(
+        projected
+            .nodes()
+            .iter()
+            .any(|node| { node.name().starts_with("diagnostic severity 1 on line 1") })
+    );
+
     let mut latched_app = StudioApp::open_file(TestTextSystem, &rust_path)?;
     let input = latched_app
         .active_rust_document()
@@ -6621,6 +6667,7 @@ fn accessibility_activation_routes_current_commands_and_rejects_stale_targets()
                 .visual_changed
         );
     }
+    let _tree_scene = app.try_scene(SceneRevision::new(699), viewport()?)?;
     let tree_snapshot = app.accessibility_snapshot()?;
     let alpha_row = tree_snapshot
         .nodes()
@@ -6699,6 +6746,7 @@ fn accessibility_activation_routes_current_commands_and_rejects_stale_targets()
     assert!(app.replace_selection("dirty").document_changed);
     let context = app.command_context();
     assert!(app.command_palette.open(context)?);
+    let _current_scene = app.try_scene(SceneRevision::new(701), viewport()?)?;
     let snapshot = app.accessibility_snapshot()?;
     assert_eq!(
         snapshot

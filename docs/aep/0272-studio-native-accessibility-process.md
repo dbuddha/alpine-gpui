@@ -201,11 +201,15 @@ frame, so it hid that real visible Studio actions were being rejected
 after mutation.
 
 Runtime also separates query causality from concurrent worker publication. A
-query may drain a newly completed bounded result so its semantic response is
-current, but it does not consume the dirty scene. The next explicit wake emits
-one latest coalesced frame. A portable regression queues a worker result directly
-before a snapshot query and requires no query frame, retained dirty state, one
-wake frame, then zero idle frames.
+query may drain a newly completed bounded result, but it does not consume the
+dirty scene. Studio therefore keeps immediate state identity separate from the
+last scene-complete accessibility projection. A snapshot fails closed when
+those identities differ, and the native adapter retains its previous complete
+tree without reconciliation or notification. The next explicit wake emits one
+latest coalesced frame, publishes projection identity only after derived visible
+lines are final, and makes the current snapshot eligible. Portable regressions
+require no query frame, retained dirty state, rejection of a mixed snapshot,
+one wake frame, one complete current snapshot, then zero idle frames.
 
 Diagnostic readiness uses a separate ten-second child-language correctness
 watchdog rather than the five-second GPU frame-terminal deadline. The exact-head
@@ -232,7 +236,8 @@ Successful label discovery is not sufficient by itself. Before the diagnostic
 can qualify, the child requires an active exact-generation language session,
 three submitted and written startup messages, a server wake, latch publication,
 accepted external handoff, foreground poll, admitted nonempty diagnostic batch,
-semantic invalidation, and a post-initial frame build. Every external handoff
+semantic invalidation, a scene-complete accessibility projection, and a
+post-initial frame build. Every external handoff
 must be classified. A bounded `Full` result is accepted only when that exact
 generation reaches the foreground through an admitted result or the
 latest-generation latch, and the latch is then empty. Disconnect, shutdown, sequence
@@ -251,7 +256,9 @@ No process environment is mutated after threads exist, and no globally
 installed language server is trusted. The parent gives each isolated child a
 unique phase-trace path under that child's temporary home. The wrapper appends
 `wrapper-invoked:<pid>` and the server appends `process-spawned:<pid>` followed
-by six fixed protocol phases. Because the wrapper replaces itself with the
+by six fixed protocol phases. Each server phase and its newline are assembled
+before one append operation so superseded processes cannot splice two logical
+records at a formatting boundary. Because the wrapper replaces itself with the
 server executable, matching nonzero process identifiers prove attempt ownership.
 Before runtime construction, the qualification child verifies that its selected
 server file is that wrapper, verifies that the configured process executable
@@ -299,11 +306,14 @@ teardown paths. The fixture directory is removed only after every owner drains.
 ## Correctness, performance, and memory
 
 Every native query and action carries the document, text-buffer, and non-text
-semantic revision returned by the current Studio snapshot. Studio advances the
-semantic axis on each accessibility-visible state change, including language
-publication, so stale actions cannot cross selection, diagnostic, workspace, or
-overlay changes that leave text unchanged. Existing stale-action and input-epoch
-controls remain mandatory companions. A stable query compares Metal submission counts before and after and
+semantic revision returned by the last complete Studio projection. Studio
+advances immediate state identity on each accessibility-visible change,
+including language publication, so stale actions cannot cross selection,
+diagnostic, workspace, or overlay changes that leave text unchanged. It
+publishes that identity to snapshots only after scene-derived accessibility
+inputs are complete. Pending queries retain the previous native tree and cannot
+publish a mixed payload. Existing stale-action and input-epoch controls remain
+mandatory companions. A stable query compares Metal submission counts before and after and
 requires an exact zero delta. Each accepted visible action requires a delta no
 greater than one. File-tree progress remains bounded to 1,024 explicit wake
 turns. Diagnostic child-process admission is serviced by explicit wakes under
@@ -346,9 +356,11 @@ implementation composition evidence and makes no TLA+ refinement claim.
 ## Atomic claims and evidence
 
 - **AEP-0272-C01:** One real Studio workspace publishes bounded native roles,
-  labels, focus, selection, identifiers, frames, and actions from its current
-  semantic revision. Evidence: native child process, exact tree assertions,
-  native mutation, and coverage.
+  labels, focus, selection, identifiers, frames, and actions from one
+  scene-complete semantic projection. Immediate state identity rejects stale
+  actions, and a pending projection cannot publish new revision identity with
+  old derived payload. Evidence: native child process, exact tree assertions,
+  pending-projection regression, native mutation, and coverage.
 - **AEP-0272-C02:** File rows, tabs, diagnostics, and command rows route through
   existing Studio authorities; stable queries submit zero frames and successful
   revision-valid action responses return at most one frame through the common

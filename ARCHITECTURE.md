@@ -1081,10 +1081,16 @@ failed action cannot submit a frame. This closes the fixture-hidden gap where
 Studio mutated correctly but AppKit reported visible actions as rejected.
 
 If a bounded worker result arrives immediately before an accessibility query,
-runtime drains and publishes that result to the semantic snapshot but defers
-scene construction. Dirty state remains set, and the next wake builds one latest
-scene. This prevents asynchronous work from attaching a frame to a query while
-preserving current semantics, latest-wins coalescing, and zero idle redraw.
+runtime drains the result but still defers scene construction. Studio advances
+its immediate semantic identity for stale-action rejection while retaining a
+separate last-complete projection identity. A snapshot whose current state is
+newer than its scene-derived projection fails with structured stale-revision
+evidence; the native adapter retains its previous complete tree without
+reconciling elements or posting notifications. The next wake builds one latest
+scene, publishes the projection identity only after `rendered_lines` is final,
+and allows the normal demand-driven refresh. This prevents new revision identity
+from accompanying old geometry or diagnostic markers without retaining another
+Studio tree, attaching a frame to a query, or adding idle redraw.
 
 After the application accepts close, the native owner revokes accessibility
 before publishing final focus loss. Runtime has already rejected new work at
