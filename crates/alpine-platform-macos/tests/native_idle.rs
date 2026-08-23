@@ -148,16 +148,26 @@ mod validation {
             terminal.callback_count() > before.callback_count(),
             "every setup revision must reach at least one display-link callback: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
         );
-        assert!(
-            terminal.submission_count() > before.submission_count(),
-            "every setup revision must admit at least one submission"
+        assert_eq!(
+            terminal.submission_count(),
+            before.submission_count() + 1,
+            "every setup revision must admit exactly one submission: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
         );
-        assert!(
-            terminal.direct_present_count() > before.direct_present_count(),
-            "every setup revision must issue at least one direct presentation"
+        assert_eq!(
+            terminal.direct_present_count(),
+            before.direct_present_count() + 1,
+            "every setup revision must issue exactly one direct presentation: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
         );
-        assert_eq!(terminal.occupied_frame_slots(), 0);
-        assert_eq!(terminal.submitted_frame_slots(), 0);
+        assert_eq!(
+            terminal.occupied_frame_slots(),
+            0,
+            "terminal observation must include completion-owned frame-slot drain: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
+        );
+        assert_eq!(
+            terminal.submitted_frame_slots(),
+            0,
+            "terminal observation must release every submitted frame slot: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
+        );
         let expected_pause_confirmations = before_pause_confirmations
             .checked_add(1)
             .ok_or("pause confirmation count exhausted")?;
