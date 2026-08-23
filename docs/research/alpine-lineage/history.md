@@ -65,6 +65,7 @@ superseded but must not erase the earlier claim or evidence state.
 | 2026-08-22 | PR #312 emitted release signposts | Instruments-compatible signposts exist | Local machine lacks full Instruments tooling in the reviewed environment |
 | 2026-08-22 | PR #313 composed explicit launch and recovery | Release launch enters production recovery path | Visible lag #304 remains the P0 product defect |
 | 2026-08-22 | Research #315 created this lineage package | Origin, implementation, evidence, and history become queryable | Must be updated with every material mechanism or qualification change |
+| 2026-08-22 | Task #314 exposed native terminal latency stages to the release signpost stream | Event-handler, frame-queue, submission, GPU-observation, presented-handler, and terminal-record durations are externally capturable without in-process sample retention | Deterministic implementation evidence only; physical distributions and causal correction remain #304 |
 
 ## Rules for future entries
 

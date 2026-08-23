@@ -29,10 +29,24 @@ revision, buffer revision, and three stage-specific values:
 | Atlas Publication Begin | pending glyphs | reserved | reserved |
 | Atlas Publication Complete | 0 none, 1 full, 2 rows | payload bytes | payload groups |
 | Frame Build Complete | paint operations | glyph instances | 1 for fallback |
+| Native Event Handler Latency | elapsed nanoseconds | reserved | reserved |
+| Native Frame Queue Latency | elapsed nanoseconds | reserved | reserved |
+| Native Submission Latency | elapsed nanoseconds | reserved | reserved |
+| Native GPU Terminal Observed Latency | event-to-observer nanoseconds | reserved | reserved |
+| Native Presented Handler Latency | event-to-callback nanoseconds | reserved | reserved |
+| Native Terminal Record Latency | event-to-record nanoseconds | reserved | reserved |
 
 `Atlas Publication Failed` and `Frame Build Failed` are terminal omission points.
-The existing native frame-terminal evidence remains authoritative for request,
-commit, GPU completion, presented-handler, and actual-presentation timing.
+Native latency points are emitted together when the corresponding frame reaches
+terminal evidence. Their `a` payload contains the process-monotonic duration;
+their trace event timestamp is not substituted for the measured endpoint. Every
+native point uses the producing event identity and zero scene, document, and
+buffer revisions, so it joins to Studio scene points by event identity without
+inventing unavailable revision ownership. Optional native stages are omitted
+when unavailable. `Native GPU Terminal Observed Latency` remains an upper bound
+from main-thread observation, not exact GPU execution time. The native frame
+terminal snapshot remains authoritative for request, commit, actual presentation
+timestamp, outcome, retained bytes, and recovery classification.
 
 ## Capture preflight
 
