@@ -5386,8 +5386,12 @@ impl StudioApp {
             #[cfg(not(alpine_native_validation))]
             let _ = admitted;
         }
-        language.visual_changed || pending.visual_changed
+        visual_change_present(language.visual_changed, pending.visual_changed)
     }
+}
+
+const fn visual_change_present(first: bool, second: bool) -> bool {
+    first || second
 }
 
 const fn should_poll_latched_after_worker(language_result: bool) -> bool {
@@ -5526,7 +5530,8 @@ impl AppDelegate for StudioApp {
                 let language = self.rust_diagnostics.poll(wake);
                 #[cfg(alpine_native_validation)]
                 {
-                    language_visual_changed |= language.visual_changed;
+                    language_visual_changed =
+                        visual_change_present(language_visual_changed, language.visual_changed);
                     record_native_validation_language_snapshot(self.rust_diagnostics.snapshot());
                 }
                 if let Some(continuation) = language.continuation {
@@ -5553,7 +5558,8 @@ impl AppDelegate for StudioApp {
             let language = self.poll_latched_language_wake();
             #[cfg(alpine_native_validation)]
             {
-                language_visual_changed |= language.visual_changed;
+                language_visual_changed =
+                    visual_change_present(language_visual_changed, language.visual_changed);
             }
             if let Some(continuation) = language.continuation {
                 self.language_wake_latch.publish(continuation);

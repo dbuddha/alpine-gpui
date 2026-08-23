@@ -241,7 +241,7 @@ jobs:
       - name: Require changed shipping mutants to be killed
         # Linux cannot execute macOS-only validation entry points. Their
         # mutations are owned by the required Apple Silicon Metal job below.
-        run: cargo mutants --workspace --exclude alpine-assurance --exclude 'crates/alpine-text-layout/src/native.rs' --exclude 'crates/alpine-platform-macos/src/native_accessibility.rs' --exclude 'apps/alpine-studio/src/native_validation/accessibility_process.rs' --exclude-re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|initial_scene|run_on_native_surface|activation_revision_and_target_identity_are_preserved' --no-shuffle --in-diff target/alpine.diff --output target/mutants.out -- --locked
+        run: cargo mutants --workspace --exclude alpine-assurance --exclude 'crates/alpine-text-layout/src/native.rs' --exclude 'crates/alpine-platform-macos/src/native_accessibility.rs' --exclude 'apps/alpine-studio/src/native_validation/accessibility_process.rs' --exclude-re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_submission|native_validation_language_evidence|initial_scene|run_on_native_surface|activation_revision_and_target_identity_are_preserved' --no-shuffle --in-diff target/alpine.diff --output target/mutants.out -- --locked
       - name: Require changed assurance mutants to be killed
         run: cargo mutants -p alpine-assurance --no-shuffle --in-diff target/alpine.diff --output target/assurance-mutants.out -- --locked
       - name: Upload mutation evidence
@@ -536,7 +536,7 @@ jobs:
             find "target/native-runtime-mutants-${{ matrix.id }}.out" -name unviable.txt -type f -size +0c -exec cat {} \;
             exit 1
           fi
-          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|initial_scene' --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-studio-mutants-${{ matrix.id }}.out" -- --locked
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_submission|native_validation_language_evidence|initial_scene' --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-studio-mutants-${{ matrix.id }}.out" -- --locked
       - name: Upload native mutation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

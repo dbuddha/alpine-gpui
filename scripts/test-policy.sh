@@ -169,6 +169,18 @@ if ! grep -Fq 'Studio accessibility process mutation must transfer explicitly fr
     exit 1
 fi
 
+sed 's/|reset_native_validation_language_evidence//g' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/missing-language-evidence-owner-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/missing-language-evidence-owner-ci.yml" run_policy > "$fixture_dir/missing-language-evidence-owner-ci.log" 2>&1; then
+    printf 'policy test error: unowned validation-only language evidence mutation unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'validation-only Studio language evidence mutation must transfer explicitly from Linux to retained Apple native shards' "$fixture_dir/missing-language-evidence-owner-ci.log"; then
+    printf 'policy test error: expected validation-only language evidence mutation ownership failure was not reported\n' >&2
+    cat "$fixture_dir/missing-language-evidence-owner-ci.log" >&2
+    exit 1
+fi
+
 sed 's/, native-mutation]/]/' "$fixture_dir/ci.yml" > "$fixture_dir/unrequired-native-mutation-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/unrequired-native-mutation-ci.yml" run_policy > "$fixture_dir/unrequired-native-mutation-ci.log" 2>&1; then
     printf 'policy test error: unrequired native mutation unexpectedly passed\n' >&2

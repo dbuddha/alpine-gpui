@@ -102,6 +102,16 @@ if [ -n "$workflow_files" ]; then
         || ! printf '%s\n' "$native_mutation_block" | grep -Fq 'target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out'; then
         fail 'Studio accessibility process mutation must transfer explicitly from Linux to accessibility-scoped retained native shards'
     fi
+    for language_evidence_owner in \
+        reset_native_validation_language_evidence \
+        record_native_validation_language_snapshot \
+        record_native_validation_language_submission \
+        native_validation_language_evidence; do
+        if ! printf '%s\n' "$mutation_diff_block" | grep -Fq "$language_evidence_owner" \
+            || ! printf '%s\n' "$native_mutation_block" | grep -Fq "$language_evidence_owner"; then
+            fail 'validation-only Studio language evidence mutation must transfer explicitly from Linux to retained Apple native shards'
+        fi
+    done
     if printf '%s\n' "$metal_validation_block" | grep -Fq 'cargo mutants '; then
         fail 'Metal behavior validation must remain independent from native mutation enforcement'
     fi
@@ -120,9 +130,11 @@ if [ -n "$workflow_files" ]; then
             || [ "$(grep -Fc -- '--file crates/alpine-platform-macos/src/native_accessibility.rs' "$nightly_native_workflow")" -ne 1 ] \
             || [ "$(grep -Fc -- '--file apps/alpine-studio/src/native_validation/accessibility_process.rs' "$nightly_native_workflow")" -ne 1 ] \
             || [ "$(grep -Fc 'ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility' "$nightly_native_workflow")" -ne 1 ] \
+            || [ "$(grep -Fc -- "--file apps/alpine-studio/src/lib.rs --re 'reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_submission|native_validation_language_evidence'" "$nightly_native_workflow")" -ne 1 ] \
             || ! grep -Fq -- '--shard "${{ matrix.shard }}"' "$nightly_native_workflow" \
             || ! grep -Fq 'target/native-accessibility-mutants-${{ matrix.id }}.out' "$nightly_native_workflow" \
-            || ! grep -Fq 'target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out' "$nightly_native_workflow"; then
+            || ! grep -Fq 'target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out' "$nightly_native_workflow" \
+            || ! grep -Fq 'target/native-studio-language-evidence-mutants-${{ matrix.id }}.out' "$nightly_native_workflow"; then
             fail 'nightly assurance must exhaustively shard and retain native accessibility and Studio process mutation evidence'
         fi
         for shard in 0 1 2 3 4 5 6 7; do

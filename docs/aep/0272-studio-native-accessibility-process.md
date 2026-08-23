@@ -134,6 +134,13 @@ mutates the complete process file. Policy fixtures reject either side of this
 ownership transfer when the Linux exclusion, native command, shard set, or
 retained artifact is missing.
 
+The same explicit transfer applies to Studio's validation-only language
+evidence adapters. Cross-platform mutation excludes their exact function names
+because `alpine_native_validation` compiles them out, while Apple pull-request
+and nightly mutation select those names with the validation configuration and
+retain their results. Shipping visual-change composition remains in normal
+changed-code mutation. No viable mutant is omitted from its executable owner.
+
 Each probe performs one refresh. A redundant `accessibilityChildren` preflight
 is prohibited because it doubles synchronous main-thread query work and allows
 an asynchronous result to replace native instances between discovery and the
@@ -205,10 +212,13 @@ watchdog rather than the five-second GPU frame-terminal deadline. The exact-head
 eight-shard mutation run proved that five seconds could expire while the generic
 worker queue was empty and all admitted external results were drained. This is
 a validation-capacity observation, not a product latency target. The wait checks
-the complete native tree once initially and then only after a wake admits a
-visual frame; empty wakes sleep for five milliseconds without rebuilding the
-tree. A terminal failure retains wake, frame, tree-inspection, surface, worker,
-and external-queue counters. It also retains one bounded validation-only
+the complete native tree once initially, after a wake admits a visual frame, or
+once when the complete semantic and ordered server authority first becomes
+observable; empty wakes otherwise sleep for five milliseconds without
+rebuilding the tree. The authority-triggered inspection requests no frame and
+occurs at most once. A terminal failure retains wake, frame, tree-inspection,
+authority-inspection, surface, worker, and external-queue counters. It also
+retains one bounded validation-only
 language phase record. The isolated mock server records process start,
 initialize receipt and response, initialized receipt, did-open receipt, and
 diagnostics write in exact order. Studio separately records language sync,
@@ -278,8 +288,10 @@ greater than one. File-tree progress remains bounded to 1,024 explicit wake
 turns. Diagnostic child-process admission is serviced by explicit wakes under
 the separate ten-second correctness watchdog because empty polling-turn counts
 vary with scheduler and process-start latency. Native tree inspection occurs
-only initially or after an admitted visual frame. A failure retains bounded
-poll, frame, tree-inspection, surface, worker, and external-queue counters. No
+only initially, after an admitted visual frame, or once after complete semantic
+and server authority becomes observable. A failure retains bounded poll, frame,
+tree-inspection, authority-inspection, surface, worker, and external-queue
+counters. No
 timer poller or continuous frame loop is introduced, and this watchdog is not a
 product latency budget.
 
@@ -327,9 +339,10 @@ implementation composition evidence and makes no TLA+ refinement claim.
   preserve exact fixture bytes and recovery authority. Evidence: filesystem
   assertions, production close delegate, and process watchdog controls.
 - **AEP-0272-C04:** Language, worker, scene, frame, file, semantic, and native
-  ownership is bounded and terminally drained. Evidence: bounded file-tree wake
-  count, frame-driven diagnostic readiness with poll, tree, surface, and queue
-  evidence, isolated server exit, runtime shutdown snapshot, frame evidence, and exact
+ownership is bounded and terminally drained. Evidence: bounded file-tree wake
+count, demand-driven diagnostic readiness with poll, tree, semantic-authority,
+surface, and queue evidence, isolated server exit, runtime shutdown snapshot,
+frame evidence, and exact
   nine-class acquisition/release parity with all ten classes inactive.
 
 ## Risks and reversal conditions

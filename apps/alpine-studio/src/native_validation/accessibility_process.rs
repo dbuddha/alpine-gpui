@@ -511,7 +511,7 @@ fn qualify_workspace(
     assert_eq!(owners.active(), [0; 10]);
     assert_eq!(owners.release_order_violations(), 0);
     let expected = [1, 1, 1, 1, 1, 1, 1, 1, 1, 0];
-    if owners.acquired() != expected || owners.released() != expected {
+    if !owner_release_matches(owners.acquired(), owners.released(), expected) {
         return Err(format!(
             "native accessibility owner release mismatch: acquired={:?} released={:?} active={:?}",
             owners.acquired(),
@@ -560,6 +560,7 @@ fn dispatch(
     Ok(frame_requested)
 }
 
+#[cfg_attr(test, mutants::skip)] // Native snapshot I/O is composed in process E2E; the complete policy truth table is tested below.
 fn require_frame_quiescence(
     surface: &NativeSurface,
 ) -> Result<(), alpine_platform_macos::SurfaceError> {
@@ -567,10 +568,11 @@ fn require_frame_quiescence(
         return Err(error);
     }
     let snapshot = surface.snapshot();
-    if snapshot.occupied_frame_slots() != 0
-        || snapshot.submitted_frame_slots() != 0
-        || !snapshot.display_link_paused()
-    {
+    if !frame_quiescent(
+        snapshot.occupied_frame_slots(),
+        snapshot.submitted_frame_slots(),
+        snapshot.display_link_paused(),
+    ) {
         return Err(alpine_platform_macos::SurfaceError::validation(
             SurfaceOperation::Validation,
         ));
@@ -687,6 +689,14 @@ const fn frame_terminal_ready(
     observed_submissions > 0 && occupied_slots == 0 && submitted_slots == 0 && display_link_paused
 }
 
+const fn frame_quiescent(
+    occupied_slots: u8,
+    submitted_slots: u8,
+    display_link_paused: bool,
+) -> bool {
+    occupied_slots == 0 && submitted_slots == 0 && display_link_paused
+}
+
 fn should_arm_hosted_observation(
     evidence_mode: PresentationEvidenceMode,
     submitted_slots: u8,
@@ -727,6 +737,10 @@ const fn should_inspect_rejected_close(
 
 const fn negative_control_markers_match(role_marker: u64, dispatch_marker: u64) -> bool {
     role_marker == MISMATCH_CONTROL_MARKER && dispatch_marker == DISPATCH_FAILURE_CONTROL_MARKER
+}
+
+fn owner_release_matches(acquired: [u64; 10], released: [u64; 10], expected: [u64; 10]) -> bool {
+    acquired == expected && released == expected
 }
 
 fn is_close_status_role(role: &str) -> bool {
@@ -834,6 +848,7 @@ fn wait_for_label_prefix(
     let mut wake_turns = 0_u64;
     let mut frame_wakes = 0_u64;
     let mut tree_inspections = 0_u64;
+    let mut authority_inspected = false;
     loop {
         let frame_requested = dispatch(
             surface,
@@ -851,8 +866,23 @@ fn wait_for_label_prefix(
         wake_turns = wake_turns.saturating_add(1);
         frame_wakes = frame_wakes.saturating_add(u64::from(frame_requested));
         *timestamp = timestamp.saturating_add(1);
-        if diagnostic_tree_inspection_required(first_inspection, frame_requested) {
+        let language = crate::native_validation_language_evidence();
+        let authority_ready = if diagnostic_authority_ready(language) {
+            let server_trace = language_server_phase_trace();
+            diagnostic_qualification_ready(true, completed_language_server_phases(&server_trace))
+        } else {
+            false
+        };
+        if diagnostic_tree_inspection_required(
+            first_inspection,
+            frame_requested,
+            authority_ready,
+            authority_inspected,
+        ) {
             first_inspection = false;
+            if authority_ready {
+                authority_inspected = true;
+            }
             tree_inspections = tree_inspections.saturating_add(1);
             let tree = inspect(surface, state).map_err(|error| {
                 format!(
@@ -877,7 +907,7 @@ fn wait_for_label_prefix(
             let completed_server_phases = completed_language_server_phases(&server_trace);
             let next_server_phase = REQUIRED_LANGUAGE_PHASES.get(completed_server_phases);
             return Err(format!(
-                "waiting for native label prefix {prefix:?}: label did not become visible before the {DIAGNOSTIC_READY_TIMEOUT:?} correctness deadline; polling=(wake_turns={wake_turns} frame_wakes={frame_wakes} tree_inspections={tree_inspections}) surface=(occupied={} submitted={} paused={} submissions={} terminal={:?}) worker=(queued_requests={} queued_results={} dropped_results={} panicked_jobs={}) external=(current_items={} admitted={} drained={} full={} disconnected={} shutting_down={} sequence_exhausted={}) language={language:?} server=(completed_phases={completed_server_phases}/{} next_phase={next_server_phase:?} trace={server_trace:?})",
+                "waiting for native label prefix {prefix:?}: label did not become visible before the {DIAGNOSTIC_READY_TIMEOUT:?} correctness deadline; polling=(wake_turns={wake_turns} frame_wakes={frame_wakes} tree_inspections={tree_inspections} authority_inspected={authority_inspected}) surface=(occupied={} submitted={} paused={} submissions={} terminal={:?}) worker=(queued_requests={} queued_results={} dropped_results={} panicked_jobs={}) external=(current_items={} admitted={} drained={} full={} disconnected={} shutting_down={} sequence_exhausted={}) language={language:?} server=(completed_phases={completed_server_phases}/{} next_phase={next_server_phase:?} trace={server_trace:?})",
                 surface.occupied_frame_slots(),
                 surface.submitted_frame_slots(),
                 surface.display_link_paused(),
@@ -975,8 +1005,10 @@ fn diagnostic_wait_expired(elapsed: Duration) -> bool {
 const fn diagnostic_tree_inspection_required(
     first_inspection: bool,
     frame_requested: bool,
+    authority_ready: bool,
+    authority_inspected: bool,
 ) -> bool {
-    first_inspection || frame_requested
+    first_inspection || frame_requested || (authority_ready && !authority_inspected)
 }
 
 fn wait_for_label(
@@ -1245,10 +1277,21 @@ mod process_contract_tests {
             DIAGNOSTIC_READY_TIMEOUT.saturating_add(Duration::from_millis(1))
         ));
 
-        assert!(diagnostic_tree_inspection_required(true, false));
-        assert!(diagnostic_tree_inspection_required(true, true));
-        assert!(diagnostic_tree_inspection_required(false, true));
-        assert!(!diagnostic_tree_inspection_required(false, false));
+        assert!(diagnostic_tree_inspection_required(
+            true, false, false, false
+        ));
+        assert!(diagnostic_tree_inspection_required(
+            false, true, false, false
+        ));
+        assert!(diagnostic_tree_inspection_required(
+            false, false, true, false
+        ));
+        assert!(!diagnostic_tree_inspection_required(
+            false, false, false, false
+        ));
+        assert!(!diagnostic_tree_inspection_required(
+            false, false, true, true
+        ));
     }
 
     #[test]
@@ -1426,6 +1469,11 @@ mod process_contract_tests {
         assert!(!frame_terminal_ready(1, 0, 1, true));
         assert!(!frame_terminal_ready(1, 0, 0, false));
 
+        assert!(frame_quiescent(0, 0, true));
+        assert!(!frame_quiescent(1, 0, true));
+        assert!(!frame_quiescent(0, 1, true));
+        assert!(!frame_quiescent(0, 0, false));
+
         assert!(!action_frame_bound_exceeded(0));
         assert!(!action_frame_bound_exceeded(1));
         assert!(action_frame_bound_exceeded(2));
@@ -1473,6 +1521,15 @@ mod process_contract_tests {
             MISMATCH_CONTROL_MARKER,
             DISPATCH_FAILURE_CONTROL_MARKER + 1
         ));
+
+        let expected = [1_u64; 10];
+        assert!(owner_release_matches(expected, expected, expected));
+        let mut wrong_acquired = expected;
+        wrong_acquired[0] = 0;
+        assert!(!owner_release_matches(wrong_acquired, expected, expected));
+        let mut wrong_released = expected;
+        wrong_released[9] = 0;
+        assert!(!owner_release_matches(expected, wrong_released, expected));
 
         assert!(is_close_status_role("AXStaticText"));
         assert!(!is_close_status_role("AXButton"));

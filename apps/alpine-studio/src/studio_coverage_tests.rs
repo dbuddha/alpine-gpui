@@ -4634,13 +4634,75 @@ fn native_validation_dispatch_counters_reset_and_report_nonzero_work() {
     reset_native_validation_dispatch_counts();
     NATIVE_VALIDATION_EVENT_COUNTS[3].fetch_add(2, std::sync::atomic::Ordering::Relaxed);
     NATIVE_VALIDATION_FRAME_BUILDS.fetch_add(3, std::sync::atomic::Ordering::Relaxed);
+    NATIVE_VALIDATION_LANGUAGE_SYNC_CALLS.fetch_add(2, Ordering::Relaxed);
+    NATIVE_VALIDATION_LANGUAGE_WAKE_CALLBACKS.fetch_add(3, Ordering::Relaxed);
+    NATIVE_VALIDATION_LANGUAGE_LATCH_POLLS.fetch_add(4, Ordering::Relaxed);
+    NATIVE_VALIDATION_LANGUAGE_FOREGROUND_RESULTS.fetch_add(5, Ordering::Relaxed);
+    NATIVE_VALIDATION_LANGUAGE_INVALIDATIONS.fetch_add(6, Ordering::Relaxed);
+    record_native_validation_language_snapshot(rust_diagnostics::RustDiagnosticsSnapshot {
+        active: true,
+        generation: 7,
+        process_epoch: 8,
+        lsp_version: 9,
+        process_queued_events: 10,
+        process_submitted_inputs: 11,
+        process_written_inputs: 12,
+        process_input_saturations: 13,
+        polls: 14,
+        diagnostic_publications: 15,
+        diagnostic_items: 16,
+        stale_wakes: 17,
+        restarts: 18,
+        ..rust_diagnostics::RustDiagnosticsSnapshot::default()
+    });
+    record_native_validation_language_submission(true);
+    record_native_validation_language_submission(false);
 
     let (events, frame_builds) = native_validation_dispatch_counts();
     assert_eq!(events[3], 2);
     assert_eq!(frame_builds, 3);
+    assert_eq!(
+        native_validation_language_evidence(),
+        NativeValidationLanguageEvidence {
+            sync_calls: 2,
+            wake_callbacks: 3,
+            latch_publications: 2,
+            external_admissions: 1,
+            external_rejections: 1,
+            latch_polls: 4,
+            foreground_results: 5,
+            invalidations: 6,
+            active: true,
+            generation: 7,
+            process_epoch: 8,
+            lsp_version: 9,
+            process_queued_events: 10,
+            submitted_inputs: 11,
+            written_inputs: 12,
+            input_saturations: 13,
+            polls: 14,
+            diagnostic_publications: 15,
+            diagnostic_items: 16,
+            stale_wakes: 17,
+            restarts: 18,
+            frame_builds: 3,
+        }
+    );
 
     reset_native_validation_dispatch_counts();
     assert_eq!(native_validation_dispatch_counts(), ([0; 10], 0));
+    assert_eq!(
+        native_validation_language_evidence(),
+        NativeValidationLanguageEvidence::default()
+    );
+}
+
+#[test]
+fn visual_change_combination_requires_either_independent_source() {
+    assert!(!visual_change_present(false, false));
+    assert!(visual_change_present(true, false));
+    assert!(visual_change_present(false, true));
+    assert!(visual_change_present(true, true));
 }
 
 struct SelectiveFailingRasterTextSystem {
