@@ -18,7 +18,7 @@ mod validation {
         NativeSurface, SurfaceDescriptor, SurfaceSnapshot, native_validation,
     };
     use alpine_scene::{Primitive, SceneBuilder, SceneRevision};
-    use objc2::MainThreadMarker;
+    use objc2::{MainThreadMarker, rc::Retained};
     use objc2_app_kit::NSApplication;
     use objc2_foundation::{NSDate, NSRunLoop};
 
@@ -28,6 +28,14 @@ mod validation {
     const WIDTH: f32 = 320.0;
     const HEIGHT: f32 = 180.0;
     const SETTLEMENT: Duration = Duration::from_millis(150);
+
+    #[derive(Clone, Copy)]
+    struct NativeWindowConfiguration {
+        logical_width: f64,
+        logical_height: f64,
+        scale: f64,
+        display_identity: usize,
+    }
 
     pub(super) fn run() -> TestResult {
         let hosted_direct = hosted_direct_mode()?;
@@ -99,12 +107,13 @@ mod validation {
     fn establish_visible_presentation(surface: &NativeSurface, hosted_direct: bool) -> TestResult {
         assert!(native_validation::inject_configuration_callback(surface));
         if hosted_direct || !surface.snapshot().is_presentation_visible() {
+            let configuration = native_window_configuration()?;
             native_validation::inject_surface_configuration(
                 surface,
-                f64::from(WIDTH),
-                f64::from(HEIGHT),
-                1.0,
-                0,
+                configuration.logical_width,
+                configuration.logical_height,
+                configuration.scale,
+                configuration.display_identity,
                 true,
             )?;
         }
@@ -285,6 +294,23 @@ mod validation {
             .ok_or("native idle AppKit window was not found")?;
         operation(&window);
         Ok(())
+    }
+
+    fn native_window_configuration() -> TestResult<NativeWindowConfiguration> {
+        let mut configuration = None;
+        with_window(|window| {
+            let (Some(view), Some(screen)) = (window.contentView(), window.screen()) else {
+                return;
+            };
+            let size = view.bounds().size;
+            configuration = Some(NativeWindowConfiguration {
+                logical_width: size.width,
+                logical_height: size.height,
+                scale: window.backingScaleFactor(),
+                display_identity: Retained::as_ptr(&screen) as usize,
+            });
+        })?;
+        configuration.ok_or_else(|| "native window configuration was unavailable".into())
     }
 
     fn assert_window_state(visible: bool, miniaturized: bool) -> TestResult {
