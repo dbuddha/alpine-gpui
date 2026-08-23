@@ -3076,20 +3076,29 @@ impl DisplayLinkDelegate {
             .validate_for(request)
             .map_err(|_| SurfaceError::invariant(SurfaceOperation::Accessibility))?;
         if let Some(frame) = frame {
-            let successful_action = request.kind() == crate::AccessibilityRequestKind::Action
-                && matches!(
+            let successful_action = Self::accessibility_frame_admitted(
+                request.kind() == crate::AccessibilityRequestKind::Action,
+                matches!(
                     response.result(),
                     Ok(crate::AccessibilityPayload::Action(
                         crate::AccessibilityActionResult::Applied
                             | crate::AccessibilityActionResult::Unchanged
                     ))
-                );
+                ),
+            );
             if !successful_action {
                 return Err(SurfaceError::invariant(SurfaceOperation::Accessibility));
             }
             self.submit_surface_frame(frame, SurfaceOperation::Accessibility)?;
         }
         Ok(response)
+    }
+
+    const fn accessibility_frame_admitted(
+        action_request: bool,
+        applied_or_unchanged: bool,
+    ) -> bool {
+        action_request && applied_or_unchanged
     }
 
     fn dispatch_callback_event(&self, event: SurfaceEvent) {
@@ -5279,6 +5288,22 @@ fn expected_owner_counts(owner_count: usize) -> [u64; NATIVE_OWNER_KINDS] {
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accessibility_frame_admission_requires_both_action_authorities() {
+        assert!(DisplayLinkDelegate::accessibility_frame_admitted(
+            true, true
+        ));
+        assert!(!DisplayLinkDelegate::accessibility_frame_admitted(
+            false, true
+        ));
+        assert!(!DisplayLinkDelegate::accessibility_frame_admitted(
+            true, false
+        ));
+        assert!(!DisplayLinkDelegate::accessibility_frame_admitted(
+            false, false
+        ));
+    }
 
     #[test]
     fn clipboard_text_byte_limit_accepts_the_limit_and_rejects_overflow() {

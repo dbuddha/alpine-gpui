@@ -24,6 +24,8 @@ const MAX_WORKER_TURNS: u64 = 1_024;
 const MAX_TERMINAL_DRAINS: u8 = 8;
 const FRAME_TERMINAL_TIMEOUT: Duration = Duration::from_secs(5);
 const FRAME_TERMINAL_POLL: Duration = Duration::from_millis(100);
+const DIAGNOSTIC_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const DIAGNOSTIC_READY_POLL: Duration = Duration::from_millis(5);
 const MISMATCH_CONTROL_MARKER: u64 = 0xA11C_E551;
 const DISPATCH_FAILURE_CONTROL_MARKER: u64 = 0xD15F_A11E;
 
@@ -489,7 +491,7 @@ fn dispatch(
     surface: &NativeSurface,
     state: &Rc<RefCell<Application<StudioApp>>>,
     events: &[SurfaceEvent],
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     let frame_requested = Rc::new(Cell::new(false));
     let observed_frame = Rc::clone(&frame_requested);
     let mut handler = event_handler(state);
@@ -498,11 +500,13 @@ fn dispatch(
         observed_frame.set(observed_frame.get() || response.frame().is_some());
         response
     })?;
-    if frame_requested.get() {
-        return await_frame_terminal(surface, state, FRAME_TERMINAL_TIMEOUT);
+    let frame_requested = frame_requested.get();
+    if frame_requested {
+        await_frame_terminal(surface, state, FRAME_TERMINAL_TIMEOUT)?;
+    } else {
+        require_frame_quiescence(surface)?;
     }
-    require_frame_quiescence(surface)?;
-    Ok(())
+    Ok(frame_requested)
 }
 
 fn require_frame_quiescence(
@@ -775,8 +779,12 @@ fn wait_for_label_prefix(
     prefix: &str,
 ) -> Result<Box<str>, Box<dyn std::error::Error>> {
     let started = Instant::now();
+    let mut first_inspection = true;
+    let mut wake_turns = 0_u64;
+    let mut frame_wakes = 0_u64;
+    let mut tree_inspections = 0_u64;
     loop {
-        dispatch(
+        let frame_requested = dispatch(
             surface,
             state,
             &[SurfaceEvent::Wake {
@@ -789,25 +797,37 @@ fn wait_for_label_prefix(
                 *timestamp
             )
         })?;
+        wake_turns = wake_turns.saturating_add(1);
+        frame_wakes = frame_wakes.saturating_add(u64::from(frame_requested));
         *timestamp = timestamp.saturating_add(1);
-        let tree = inspect(surface, state).map_err(|error| {
-            format!(
-                "waiting for native label prefix {prefix:?}: native tree refresh after worker wake failed: {error}"
-            )
-        })?;
-        if let Some(node) = tree
-            .nodes()
-            .iter()
-            .find(|node| node.label().starts_with(prefix))
-        {
-            return Ok(Box::from(node.label()));
+        if diagnostic_tree_inspection_required(first_inspection, frame_requested) {
+            first_inspection = false;
+            tree_inspections = tree_inspections.saturating_add(1);
+            let tree = inspect(surface, state).map_err(|error| {
+                format!(
+                    "waiting for native label prefix {prefix:?}: native tree refresh after worker wake failed: {error}"
+                )
+            })?;
+            if let Some(node) = tree
+                .nodes()
+                .iter()
+                .find(|node| node.label().starts_with(prefix))
+            {
+                return Ok(Box::from(node.label()));
+            }
         }
         if diagnostic_wait_expired(started.elapsed()) {
             let runtime = state.borrow().snapshot();
             let worker = runtime.worker();
             let external = runtime.external();
+            let surface = surface.snapshot();
             return Err(format!(
-                "waiting for native label prefix {prefix:?}: label did not become visible before the {FRAME_TERMINAL_TIMEOUT:?} correctness deadline; worker=(queued_requests={} queued_results={} dropped_results={} panicked_jobs={}) external=(current_items={} admitted={} drained={} full={} disconnected={} shutting_down={} sequence_exhausted={})",
+                "waiting for native label prefix {prefix:?}: label did not become visible before the {DIAGNOSTIC_READY_TIMEOUT:?} correctness deadline; polling=(wake_turns={wake_turns} frame_wakes={frame_wakes} tree_inspections={tree_inspections}) surface=(occupied={} submitted={} paused={} submissions={} terminal={:?}) worker=(queued_requests={} queued_results={} dropped_results={} panicked_jobs={}) external=(current_items={} admitted={} drained={} full={} disconnected={} shutting_down={} sequence_exhausted={})",
+                surface.occupied_frame_slots(),
+                surface.submitted_frame_slots(),
+                surface.display_link_paused(),
+                surface.submission_count(),
+                surface.last_terminal(),
                 worker.queued_requests(),
                 worker.queued_results(),
                 worker.dropped_results(),
@@ -822,12 +842,19 @@ fn wait_for_label_prefix(
             )
             .into());
         }
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::sleep(DIAGNOSTIC_READY_POLL);
     }
 }
 
 fn diagnostic_wait_expired(elapsed: Duration) -> bool {
-    elapsed >= FRAME_TERMINAL_TIMEOUT
+    elapsed >= DIAGNOSTIC_READY_TIMEOUT
+}
+
+const fn diagnostic_tree_inspection_required(
+    first_inspection: bool,
+    frame_requested: bool,
+) -> bool {
+    first_inspection || frame_requested
 }
 
 fn wait_for_label(
@@ -1088,9 +1115,18 @@ mod process_contract_tests {
 
     #[test]
     fn diagnostic_wait_expires_at_the_exact_correctness_deadline() {
-        assert!(!diagnostic_wait_expired(Duration::from_millis(4_999)));
-        assert!(diagnostic_wait_expired(FRAME_TERMINAL_TIMEOUT));
-        assert!(diagnostic_wait_expired(Duration::from_millis(5_001)));
+        assert!(!diagnostic_wait_expired(
+            DIAGNOSTIC_READY_TIMEOUT.saturating_sub(Duration::from_millis(1))
+        ));
+        assert!(diagnostic_wait_expired(DIAGNOSTIC_READY_TIMEOUT));
+        assert!(diagnostic_wait_expired(
+            DIAGNOSTIC_READY_TIMEOUT.saturating_add(Duration::from_millis(1))
+        ));
+
+        assert!(diagnostic_tree_inspection_required(true, false));
+        assert!(diagnostic_tree_inspection_required(true, true));
+        assert!(diagnostic_tree_inspection_required(false, true));
+        assert!(!diagnostic_tree_inspection_required(false, false));
     }
 
     #[test]

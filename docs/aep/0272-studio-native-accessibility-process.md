@@ -71,7 +71,10 @@ process requires their exact values, so replacing either control with a trivial
 successful return cannot qualify. Frame-drain, hosted-observation admission,
 action admission, frame ceilings, omission parsing, and returned process
 evidence are factored into pure contracts with true, false, and nondefault
-controls. A platform-native companion fixture pairs the
+controls. Accessibility frame admission has its own complete truth table: a
+frame requires both an exact action request and an `Applied` or `Unchanged`
+typed action result. This independently rejects a weakened conjunction before
+native composition evidence is considered. A platform-native companion fixture pairs the
 real `main.rs` tab label with an absent `ListItem` role and requires exact
 rejection. The absent role leaves the same-label tab as the sole false-positive
 candidate when conjunction is weakened. A second control pairs the real `Tab`
@@ -197,6 +200,17 @@ one latest coalesced frame. A portable regression queues a worker result directl
 before a snapshot query and requires no query frame, retained dirty state, one
 wake frame, then zero idle frames.
 
+Diagnostic readiness uses a separate ten-second child-language correctness
+watchdog rather than the five-second GPU frame-terminal deadline. The exact-head
+eight-shard mutation run proved that five seconds could expire while the generic
+worker queue was empty and all admitted external results were drained. This is
+a validation-capacity observation, not a product latency target. The wait checks
+the complete native tree once initially and then only after a wake admits a
+visual frame; empty wakes sleep for five milliseconds without rebuilding the
+tree. A terminal failure retains wake, frame, tree-inspection, surface, worker,
+and external-queue counters. Successful readiness remains demand-driven and
+does not add a timer poller or continuous frame loop.
+
 ## Process composition and ownership
 
 The custom native-process test starts an isolated qualification child. That
@@ -225,10 +239,12 @@ companions. A stable query compares Metal submission counts before and after and
 requires an exact zero delta. Each accepted visible action requires a delta no
 greater than one. File-tree progress remains bounded to 1,024 explicit wake
 turns. Diagnostic child-process admission is serviced by explicit wakes under
-the established five-second correctness deadline because empty polling-turn
-counts vary with scheduler and process-start latency. A failure retains bounded
-worker and external-queue counters. No timer poller or continuous frame loop is
-introduced, and this deadline is not a product latency budget.
+the separate ten-second correctness watchdog because empty polling-turn counts
+vary with scheduler and process-start latency. Native tree inspection occurs
+only initially or after an admitted visual frame. A failure retains bounded
+poll, frame, tree-inspection, surface, worker, and external-queue counters. No
+timer poller or continuous frame loop is introduced, and this watchdog is not a
+product latency budget.
 
 The native tree cannot exceed the existing 271-node semantic ceiling. Evidence
 copies one bounded role, label, and identifier per current node and is released
@@ -275,8 +291,8 @@ implementation composition evidence and makes no TLA+ refinement claim.
   assertions, production close delegate, and process watchdog controls.
 - **AEP-0272-C04:** Language, worker, scene, frame, file, semantic, and native
   ownership is bounded and terminally drained. Evidence: bounded file-tree wake
-  count, diagnostic correctness deadline with queue evidence, isolated server
-  exit, runtime shutdown snapshot, frame evidence, and exact
+  count, frame-driven diagnostic readiness with poll, tree, surface, and queue
+  evidence, isolated server exit, runtime shutdown snapshot, frame evidence, and exact
   nine-class acquisition/release parity with all ten classes inactive.
 
 ## Risks and reversal conditions
