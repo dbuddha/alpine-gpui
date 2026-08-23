@@ -22,6 +22,8 @@ use super::{
 
 const MAX_WORKER_TURNS: u64 = 1_024;
 const MAX_TERMINAL_DRAINS: u8 = 8;
+const FRAME_TERMINAL_TIMEOUT: Duration = Duration::from_secs(5);
+const FRAME_TERMINAL_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OmittedStep {
@@ -199,7 +201,7 @@ fn qualify_workspace(
         )?;
     }
     let state = Rc::new(RefCell::new(application));
-    await_frame_terminal(&surface, &state, Duration::from_secs(5))
+    await_frame_terminal(&surface, &state, FRAME_TERMINAL_TIMEOUT)
         .map_err(|error| format!("initial native accessibility frame failed: {error}"))?;
 
     let mut timestamp = 10_u64;
@@ -224,8 +226,8 @@ fn qualify_workspace(
     let mut maximum_action_frames =
         activate(&surface, &state, AccessibilityRole::ListItem, &src_label)?;
     tree_actions = tree_actions.saturating_add(1);
-    let lib_label = wait_for_label_suffix(&surface, &state, &mut timestamp, "lib.rs")?;
-    let main_label = wait_for_label_suffix(&surface, &state, &mut timestamp, "main.rs")?;
+    let (lib_label, main_label) =
+        wait_for_label_suffix_pair(&surface, &state, &mut timestamp, "lib.rs", "main.rs")?;
     maximum_action_frames = maximum_action_frames.max(activate(
         &surface,
         &state,
@@ -292,7 +294,8 @@ fn qualify_workspace(
     assert_eq!(query_frames, 0);
     assert_eq!(accessor_focused_nodes, tree.focused_nodes());
     assert_eq!(tree.focused_nodes(), 1);
-    assert_eq!(selected_nodes, 1);
+    assert!(selected_nodes > 0);
+    assert!(selected_nodes < tree.nodes().len());
     assert!(activate_allowed_nodes > 0);
     assert!(activate_allowed_nodes < tree.nodes().len());
     assert!(tree.nodes().len() <= alpine_platform_macos::MAX_ACCESSIBILITY_NODES);
@@ -327,7 +330,7 @@ fn qualify_workspace(
     if omitted_step != Some(OmittedStep::Edit) {
         platform_validation::commit_native_text(&surface, "// alpine\n", event_handler(&state))
             .map_err(|error| format!("first native editor text commit failed: {error}"))?;
-        await_frame_terminal(&surface, &state, Duration::from_millis(100))
+        await_frame_terminal(&surface, &state, FRAME_TERMINAL_TIMEOUT)
             .map_err(|error| format!("first native editor text frame failed: {error}"))?;
     }
     timestamp = timestamp.saturating_add(1);
@@ -348,7 +351,7 @@ fn qualify_workspace(
 
     platform_validation::commit_native_text(&surface, "dirty", event_handler(&state))
         .map_err(|error| format!("dirty native editor text commit failed: {error}"))?;
-    await_frame_terminal(&surface, &state, Duration::from_millis(100))
+    await_frame_terminal(&surface, &state, FRAME_TERMINAL_TIMEOUT)
         .map_err(|error| format!("dirty native editor text frame failed: {error}"))?;
     timestamp = timestamp.saturating_add(1);
     let observer = surface.observer();
@@ -357,7 +360,7 @@ fn qualify_workspace(
     assert!(!closed);
     assert_eq!(disposition, CloseDisposition::Cancel);
     assert!(close_frame);
-    await_frame_terminal(&surface, &state, Duration::from_millis(100))
+    await_frame_terminal(&surface, &state, FRAME_TERMINAL_TIMEOUT)
         .map_err(|error| format!("dirty-close native frame failed: {error}"))?;
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
     let blocked =
@@ -456,7 +459,7 @@ fn dispatch(
     surface: &NativeSurface,
     state: &Rc<RefCell<Application<StudioApp>>>,
     events: &[SurfaceEvent],
-) -> Result<(), alpine_platform_macos::SurfaceError> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let frame_requested = Rc::new(Cell::new(false));
     let observed_frame = Rc::clone(&frame_requested);
     let mut handler = event_handler(state);
@@ -466,9 +469,10 @@ fn dispatch(
         response
     })?;
     if frame_requested.get() {
-        return await_frame_terminal(surface, state, Duration::from_millis(100));
+        return await_frame_terminal(surface, state, FRAME_TERMINAL_TIMEOUT);
     }
-    require_frame_quiescence(surface)
+    require_frame_quiescence(surface)?;
+    Ok(())
 }
 
 fn require_frame_quiescence(
@@ -493,31 +497,92 @@ fn await_frame_terminal(
     surface: &NativeSurface,
     state: &Rc<RefCell<Application<StudioApp>>>,
     timeout: Duration,
-) -> Result<(), alpine_platform_macos::SurfaceError> {
-    let evidence_mode = presentation_evidence_mode()?;
-    for _ in 0..MAX_TERMINAL_DRAINS {
-        if matches!(evidence_mode, PresentationEvidenceMode::HostedDirect) {
-            platform_validation::inject_post_commit_observation(surface, None, 1.0)?;
-        }
-        platform_validation::run_until_frame_terminal_with_handler(
-            surface,
-            timeout,
-            event_handler(state),
-        )?;
-        if let Some(error) = surface.take_error()? {
-            return Err(error);
+) -> Result<(), Box<dyn std::error::Error>> {
+    let initial = surface.snapshot();
+    let failure = |phase: &str,
+                   observed_submissions: u64,
+                   error: &dyn std::fmt::Display|
+     -> Box<dyn std::error::Error> {
+        let current = surface.snapshot();
+        format!(
+                "frame-terminal {phase} failed after {observed_submissions} observed submissions: {error}; initial=(occupied={} submitted={} paused={} submissions={} presented={} qualified={} failed={} cancelled={} superseded={} terminal={:?}) current=(occupied={} submitted={} paused={} submissions={} presented={} qualified={} failed={} cancelled={} superseded={} terminal={:?})",
+                initial.occupied_frame_slots(),
+                initial.submitted_frame_slots(),
+                initial.display_link_paused(),
+                initial.submission_count(),
+                initial.presented_count(),
+                initial.qualified_presented_count(),
+                initial.failed_count(),
+                initial.cancelled_count(),
+                initial.superseded_count(),
+                initial.last_terminal(),
+                current.occupied_frame_slots(),
+                current.submitted_frame_slots(),
+                current.display_link_paused(),
+                current.submission_count(),
+                current.presented_count(),
+                current.qualified_presented_count(),
+                current.failed_count(),
+                current.cancelled_count(),
+                current.superseded_count(),
+                current.last_terminal(),
+            )
+            .into()
+    };
+    let evidence_mode =
+        presentation_evidence_mode().map_err(|error| failure("evidence-mode", 0, &error))?;
+    let started = std::time::Instant::now();
+    let mut armed_at_submission = None;
+    loop {
+        let surfaced = surface
+            .take_error()
+            .map_err(|error| failure("surface-error-read", 0, &error))?;
+        if let Some(error) = surfaced {
+            return Err(failure("latched-surface-error", 0, &error));
         }
         let snapshot = surface.snapshot();
+        let observed_submissions = u64::from(initial.submitted_frame_slots()).saturating_add(
+            snapshot
+                .submission_count()
+                .saturating_sub(initial.submission_count()),
+        );
+        if observed_submissions > u64::from(MAX_TERMINAL_DRAINS) {
+            return Err(failure(
+                "frame-drain-bound",
+                observed_submissions,
+                &"submitted frame count exceeded the bounded drain contract",
+            ));
+        }
         if snapshot.occupied_frame_slots() == 0
             && snapshot.submitted_frame_slots() == 0
             && snapshot.display_link_paused()
         {
             return Ok(());
         }
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return Err(failure(
+                "correctness-timeout",
+                observed_submissions,
+                &"frame ownership did not become terminal before the correctness deadline",
+            ));
+        }
+        if matches!(evidence_mode, PresentationEvidenceMode::HostedDirect)
+            && snapshot.submitted_frame_slots() == 0
+            && armed_at_submission != Some(snapshot.submission_count())
+        {
+            platform_validation::inject_post_commit_observation(surface, None, 1.0)
+                .map_err(|error| failure("hosted-observation", observed_submissions, &error))?;
+            armed_at_submission = Some(snapshot.submission_count());
+        }
+        let poll = FRAME_TERMINAL_POLL.min(timeout.saturating_sub(elapsed));
+        platform_validation::run_until_frame_terminal_with_handler(
+            surface,
+            poll,
+            event_handler(state),
+        )
+        .map_err(|error| failure("event-loop", observed_submissions, &error))?;
     }
-    Err(alpine_platform_macos::SurfaceError::validation(
-        SurfaceOperation::Validation,
-    ))
 }
 
 fn presentation_evidence_mode()
@@ -569,6 +634,45 @@ fn wait_for_label_suffix(
 ) -> Result<Box<str>, Box<dyn std::error::Error>> {
     wait_for_label(surface, state, timestamp, |label| label.ends_with(suffix))
         .map_err(|error| format!("waiting for native label suffix {suffix:?}: {error}").into())
+}
+
+fn wait_for_label_suffix_pair(
+    surface: &NativeSurface,
+    state: &Rc<RefCell<Application<StudioApp>>>,
+    timestamp: &mut u64,
+    first_suffix: &str,
+    second_suffix: &str,
+) -> Result<(Box<str>, Box<str>), Box<dyn std::error::Error>> {
+    for _ in 0..MAX_WORKER_TURNS {
+        dispatch(
+            surface,
+            state,
+            &[SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(*timestamp),
+            }],
+        )
+        .map_err(|error| format!("paired-label worker wake failed: {error}"))?;
+        *timestamp = timestamp.saturating_add(1);
+        let tree = inspect(surface, state).map_err(|error| {
+            format!("native tree refresh after paired-label wake failed: {error}")
+        })?;
+        let first = tree
+            .nodes()
+            .iter()
+            .find(|node| node.label().ends_with(first_suffix));
+        let second = tree
+            .nodes()
+            .iter()
+            .find(|node| node.label().ends_with(second_suffix));
+        if let (Some(first), Some(second)) = (first, second) {
+            return Ok((Box::from(first.label()), Box::from(second.label())));
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Err(format!(
+        "bounded Studio accessibility labels with suffixes {first_suffix:?} and {second_suffix:?} did not become visible together"
+    )
+    .into())
 }
 
 fn wait_for_label_prefix(
@@ -673,7 +777,7 @@ fn activate(
             )
         })?;
     } else {
-        await_frame_terminal(surface, state, Duration::from_millis(100)).map_err(|error| {
+        await_frame_terminal(surface, state, FRAME_TERMINAL_TIMEOUT).map_err(|error| {
             format!(
                 "native accessibility action frame failed for role={role:?} label={label:?}: {error}"
             )

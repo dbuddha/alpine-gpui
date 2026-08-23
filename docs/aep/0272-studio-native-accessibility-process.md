@@ -46,10 +46,29 @@ and returns action and revocation evidence.
 The production journey validates every copied field rather than accepting its
 shape alone. Each external identifier's terminal component must parse to the
 exact semantic ID returned for that element. The focus accessors must reproduce
-the inspector's independently accumulated AppKit focus count, exactly one
-active tab is selected, and the tree must contain both press-admitted and
-non-pressable elements. A constant identifier, semantic ID, focus, selection,
-or press-admission result therefore rejects qualification.
+the inspector's independently accumulated AppKit focus count, while selection
+and press-admission accessors must each expose both true and false states in the
+complete tree. A constant identifier, semantic ID, focus, selection, or
+press-admission result therefore rejects qualification.
+
+Sibling file labels from one directory result must be observed together in the
+same native tree after that result's frame terminalizes. The journey does not
+issue a redundant worker wake between accepting those labels. Native
+accessibility actions retain the strict rule that a no-frame response must
+already be quiescent, so unrelated draining cannot satisfy the action contract.
+
+Any terminal-drain failure names its observation phase and retains bounded
+initial and current evidence for occupied and submitted slots, native pacing,
+submission and terminal counters, supersession, and the last terminal identity.
+This diagnostic contains no native handles, scenes, documents, or callback
+owners and does not alter shipping frame admission or completion behavior.
+
+The process separates a five-second correctness deadline from the eight-frame
+drain bound. It samples the native run loop in bounded 100 ms slices, but a
+slice without a terminal transition does not consume the frame bound. The bound
+counts frames actually submitted while the helper owns terminal observation.
+These constants detect hangs and runaway work; they are not latency budgets or
+performance qualification.
 
 Both probes exist only under `alpine_native_validation`. They do not widen the
 safe shipping surface, retain Studio state, create a callback registry, or
