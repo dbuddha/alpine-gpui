@@ -34,6 +34,8 @@ mod validation {
         let descriptor = SurfaceDescriptor::new(TITLE, f64::from(WIDTH), f64::from(HEIGHT), 1.0)?;
         let surface = native_validation::new_surface(&descriptor)?;
         surface.show()?;
+        establish_visible_presentation(&surface, hosted_direct)?;
+        assert_window_state(true, false)?;
 
         present(&surface, 1, hosted_direct)?;
         assert_quiescent(&surface, "visible")?;
@@ -45,7 +47,7 @@ mod validation {
 
         surface.show()?;
         pump_main_run_loop(SETTLEMENT);
-        assert!(native_validation::inject_configuration_callback(&surface));
+        establish_visible_presentation(&surface, hosted_direct)?;
         assert_window_state(true, false)?;
         present(&surface, 2, hosted_direct)?;
 
@@ -58,7 +60,7 @@ mod validation {
         with_window(|window| window.deminiaturize(None))?;
         surface.show()?;
         pump_main_run_loop(SETTLEMENT);
-        assert!(native_validation::inject_configuration_callback(&surface));
+        establish_visible_presentation(&surface, hosted_direct)?;
         assert_window_state(true, false)?;
         assert_quiescent(&surface, "restored-before-control")?;
 
@@ -93,6 +95,25 @@ mod validation {
         }
     }
 
+    fn establish_visible_presentation(surface: &NativeSurface, hosted_direct: bool) -> TestResult {
+        assert!(native_validation::inject_configuration_callback(surface));
+        if hosted_direct || !surface.snapshot().is_presentation_visible() {
+            native_validation::inject_surface_configuration(
+                surface,
+                f64::from(WIDTH),
+                f64::from(HEIGHT),
+                1.0,
+                0,
+                true,
+            )?;
+        }
+        assert!(
+            surface.snapshot().is_presentation_visible(),
+            "the hosted setup must establish portable presentation eligibility before requesting a frame"
+        );
+        Ok(())
+    }
+
     fn present(surface: &NativeSurface, revision: u64, hosted_direct: bool) -> TestResult {
         let before = surface.snapshot();
         let before_pause_confirmations = native_validation::pause_confirmation_count(surface);
@@ -120,21 +141,27 @@ mod validation {
         if let Some(error) = surface.take_error()? {
             return Err(error.into());
         }
+        let terminal = surface.snapshot();
+        let pause_evidence = native_validation::pause_confirmation_evidence(surface);
+        assert!(
+            terminal.callback_count() > before.callback_count(),
+            "every setup revision must reach at least one display-link callback: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
+        );
+        assert!(
+            terminal.submission_count() > before.submission_count(),
+            "every setup revision must admit at least one submission"
+        );
+        assert!(
+            terminal.direct_present_count() > before.direct_present_count(),
+            "every setup revision must issue at least one direct presentation"
+        );
+        assert_eq!(terminal.occupied_frame_slots(), 0);
+        assert_eq!(terminal.submitted_frame_slots(), 0);
         let expected_pause_confirmations = before_pause_confirmations
             .checked_add(1)
             .ok_or("pause confirmation count exhausted")?;
         await_display_link_paused(surface, SETTLEMENT, expected_pause_confirmations)?;
         let snapshot = surface.snapshot();
-        assert!(
-            snapshot.submission_count() > before.submission_count(),
-            "every setup revision must admit at least one submission"
-        );
-        assert!(
-            snapshot.direct_present_count() > before.direct_present_count(),
-            "every setup revision must issue at least one direct presentation"
-        );
-        assert_eq!(snapshot.occupied_frame_slots(), 0);
-        assert_eq!(snapshot.submitted_frame_slots(), 0);
         assert!(snapshot.display_link_paused());
         assert_eq!(
             native_validation::pause_confirmation_count(surface),
