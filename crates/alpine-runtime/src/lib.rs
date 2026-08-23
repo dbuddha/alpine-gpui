@@ -1759,8 +1759,12 @@ mod tests {
         assert!(application.frame_if_dirty().is_some());
         let producer = application.external.producer();
         assert_eq!(producer.submit(55, 0), ExternalAdmission::Admitted);
-        let request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(17))
-            .map_err(|_| RuntimeError::Surface(SurfaceError::DriverUnavailable))?;
+        let request =
+            AccessibilityRequest::snapshot(AccessibilityRequestId::new(17)).map_err(|_| {
+                RuntimeError::Surface(SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Accessibility,
+                ))
+            })?;
         let query = application.dispatch_with_response(&SurfaceEvent::Accessibility {
             timestamp: EventTimestamp::new(21),
             request,

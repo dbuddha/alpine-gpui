@@ -4251,7 +4251,7 @@ impl NativeSurface {
             delegate.dispatch_native_input_event(event);
         })) {
             self.delegate.clear_event_handler();
-            return Err(SurfaceError::DriverUnavailable);
+            return Err(SurfaceError::validation(SurfaceOperation::Input));
         }
         if let Err(error) = self.activate_input_responder() {
             self.view.detach_input_handler_for_validation();
@@ -4284,7 +4284,7 @@ impl NativeSurface {
         let replay_result = if self.view.rejected_ime_callbacks() == rejected_before {
             Ok(())
         } else {
-            Err(SurfaceError::DriverUnavailable)
+            Err(SurfaceError::validation(SurfaceOperation::Input))
         };
 
         self.view.detach_input_handler_for_validation();

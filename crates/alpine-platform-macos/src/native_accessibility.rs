@@ -988,7 +988,7 @@ impl NativeAccessibilityAdapter {
                 .snapshot
                 .as_ref()
                 .map(AccessibilitySnapshot::revision)
-                .ok_or(SurfaceError::DriverUnavailable)?;
+                .ok_or(SurfaceError::validation(SurfaceOperation::Accessibility))?;
             let elements = adapter
                 .elements
                 .iter()
@@ -999,7 +999,7 @@ impl NativeAccessibilityAdapter {
         let mut nodes = Vec::new();
         nodes
             .try_reserve_exact(elements.len())
-            .map_err(|_| SurfaceError::DriverUnavailable)?;
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Accessibility))?;
         let mut focused_nodes = 0_usize;
         for (id, element) in elements {
             let role: Retained<NSString> = unsafe { msg_send![&*element, accessibilityRole] };
@@ -1046,18 +1046,20 @@ impl NativeAccessibilityAdapter {
             let snapshot = adapter
                 .snapshot
                 .as_ref()
-                .ok_or(SurfaceError::DriverUnavailable)?;
+                .ok_or(SurfaceError::validation(SurfaceOperation::Accessibility))?;
             let mut matches = snapshot
                 .nodes()
                 .iter()
                 .filter(|node| node.role() == role && node.name() == label);
-            let node = matches.next().ok_or(SurfaceError::DriverUnavailable)?;
+            let node = matches
+                .next()
+                .ok_or(SurfaceError::validation(SurfaceOperation::Accessibility))?;
             if matches.next().is_some() {
-                return Err(SurfaceError::DriverUnavailable);
+                return Err(SurfaceError::validation(SurfaceOperation::Accessibility));
             }
             let element = adapter
                 .element(node.id())
-                .ok_or(SurfaceError::DriverUnavailable)?;
+                .ok_or(SurfaceError::validation(SurfaceOperation::Accessibility))?;
             (node.id(), element)
         };
         let native_role: Retained<NSString> = unsafe { msg_send![&*element, accessibilityRole] };

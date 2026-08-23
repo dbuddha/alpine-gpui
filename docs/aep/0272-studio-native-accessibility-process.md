@@ -97,6 +97,13 @@ existing bounded mock Language Server Protocol fixture in a second process.
 No process environment is mutated after threads exist, and no globally
 installed language server is trusted.
 
+After the complete journey succeeds, five isolated negative children each omit
+exactly one required open, edit, accessibility action, save, or close step. A
+control is accepted only when the same production journey rejects that omission;
+an omitted step that still reaches qualification fails the parent process test.
+Action totals are derived from successful native dispatches rather than encoded
+as expected constants in the returned evidence.
+
 Studio owns one real temporary Cargo workspace and uses its production runtime,
 worker queues, file-tree actions, tab store, Rust diagnostic state, scene
 builder, AppKit adapter, Direct Metal surface, atomic save, close response, and
@@ -122,7 +129,7 @@ snapshot.
 ## Failure behavior
 
 Missing, duplicate, disabled, revoked, or dispatch-failed native targets return
-the existing structured driver failure. Worker or diagnostic timeout fails the
+the existing structured accessibility validation failure. Worker or diagnostic timeout fails the
 bounded journey. Save failure, dirty-close acceptance, unexpected bytes,
 multiple query frames, more than one action frame, an active owner, or fixture
 cleanup failure rejects qualification. The parent watchdog terminates a child

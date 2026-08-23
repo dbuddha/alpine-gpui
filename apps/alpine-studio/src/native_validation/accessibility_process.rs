@@ -10,7 +10,7 @@ use std::{
 
 use alpine_platform_macos::{
     AccessibilityRole, CloseDisposition, EventTimestamp, NativeSurface, SurfaceDescriptor,
-    SurfaceEvent, SurfaceLifecycle, native_validation as platform_validation,
+    SurfaceEvent, SurfaceLifecycle, SurfaceOperation, native_validation as platform_validation,
 };
 use alpine_runtime::{Application, WorkerConfig};
 
@@ -20,6 +20,33 @@ use super::{
 };
 
 const MAX_WORKER_TURNS: u64 = 1_024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OmittedStep {
+    Open,
+    Edit,
+    Action,
+    Save,
+    Close,
+}
+
+impl OmittedStep {
+    fn from_environment() -> Result<Option<Self>, Box<dyn std::error::Error>> {
+        let Ok(value) = std::env::var("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_OMIT") else {
+            return Ok(None);
+        };
+        match value.as_str() {
+            "open" => Ok(Some(Self::Open)),
+            "edit" => Ok(Some(Self::Edit)),
+            "action" => Ok(Some(Self::Action)),
+            "save" => Ok(Some(Self::Save)),
+            "close" => Ok(Some(Self::Close)),
+            _ => {
+                Err(format!("unsupported native accessibility omission control: {value:?}").into())
+            }
+        }
+    }
+}
 
 /// Handle-free evidence from the real Studio native accessibility process journey.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +116,7 @@ pub fn qualify_studio_accessibility_process()
     if std::env::var_os("ALPINE_RUST_ANALYZER").is_none() {
         return Err("ALPINE_RUST_ANALYZER is required for native Studio qualification".into());
     }
+    let omitted_step = OmittedStep::from_environment()?;
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let root = std::env::temp_dir().join(format!(
         "alpine-studio-native-accessibility-{}-{nonce}",
@@ -104,7 +132,7 @@ pub fn qualify_studio_accessibility_process()
     let lib_path = source.join("lib.rs");
     fs::write(&main_path, "fn main() {\n    broken();\n}\n")?;
     fs::write(&lib_path, "pub fn library() {}\n")?;
-    let result = qualify_workspace(&root, &main_path, &lib_path);
+    let result = qualify_workspace(&root, &main_path, &lib_path, omitted_step);
     let cleanup = fs::remove_dir_all(root);
     match (result, cleanup) {
         (Err(error), _) => Err(error),
@@ -121,6 +149,7 @@ fn qualify_workspace(
     root: &Path,
     main_path: &Path,
     _lib_path: &Path,
+    omitted_step: Option<OmittedStep>,
 ) -> Result<NativeStudioAccessibilityEvidence, Box<dyn std::error::Error>> {
     let workspace = Workspace::open_root(root)?;
     let mut text_system = alpine_text_layout::CoreTextSystem::new();
@@ -128,13 +157,13 @@ fn qualify_workspace(
     let mut delegate = StudioApp::from_workspace(text_system, workspace)?;
     delegate.prime_workspace_launch()?;
     let clear = alpine_core::LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(StudioError::Runtime(
-        alpine_runtime::RuntimeError::Surface(
-            alpine_platform_macos::SurfaceError::DriverUnavailable,
-        ),
+        alpine_runtime::RuntimeError::Surface(alpine_platform_macos::SurfaceError::validation(
+            SurfaceOperation::Validation,
+        )),
     ))?;
     let viewport = alpine_core::Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(
         StudioError::Runtime(alpine_runtime::RuntimeError::Surface(
-            alpine_platform_macos::SurfaceError::DriverUnavailable,
+            alpine_platform_macos::SurfaceError::validation(SurfaceOperation::Validation),
         )),
     )?;
     let descriptor = SurfaceDescriptor::new(
@@ -156,16 +185,15 @@ fn qualify_workspace(
     surface
         .show()
         .map_err(|error| format!("native accessibility surface show failed: {error}"))?;
-    platform_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
-    assert_eq!(
-        surface
-            .take_error()
-            .map_err(|error| format!("initial native accessibility frame failed: {error}"))?,
-        None
-    );
+    await_frame_terminal(&surface, Duration::from_secs(5))
+        .map_err(|error| format!("initial native accessibility frame failed: {error}"))?;
 
     let state = Rc::new(RefCell::new(application));
     let mut timestamp = 10_u64;
+    let mut tree_actions = 0_usize;
+    let mut tab_actions = 0_usize;
+    let mut command_actions = 0_usize;
+    let mut diagnostic_actions = 0_usize;
     dispatch(
         &surface,
         &state,
@@ -182,6 +210,7 @@ fn qualify_workspace(
     let src_label = wait_for_label_suffix(&surface, &state, &mut timestamp, "src")?;
     let mut maximum_action_frames =
         activate(&surface, &state, AccessibilityRole::ListItem, &src_label)?;
+    tree_actions = tree_actions.saturating_add(1);
     let lib_label = wait_for_label_suffix(&surface, &state, &mut timestamp, "lib.rs")?;
     let main_label = wait_for_label_suffix(&surface, &state, &mut timestamp, "main.rs")?;
     maximum_action_frames = maximum_action_frames.max(activate(
@@ -190,12 +219,16 @@ fn qualify_workspace(
         AccessibilityRole::ListItem,
         &lib_label,
     )?);
-    maximum_action_frames = maximum_action_frames.max(activate(
-        &surface,
-        &state,
-        AccessibilityRole::ListItem,
-        &main_label,
-    )?);
+    tree_actions = tree_actions.saturating_add(1);
+    if omitted_step != Some(OmittedStep::Open) {
+        maximum_action_frames = maximum_action_frames.max(activate(
+            &surface,
+            &state,
+            AccessibilityRole::ListItem,
+            &main_label,
+        )?);
+        tree_actions = tree_actions.saturating_add(1);
+    }
 
     maximum_action_frames = maximum_action_frames.max(activate(
         &surface,
@@ -203,12 +236,14 @@ fn qualify_workspace(
         AccessibilityRole::Tab,
         "lib.rs",
     )?);
+    tab_actions = tab_actions.saturating_add(1);
     maximum_action_frames = maximum_action_frames.max(activate(
         &surface,
         &state,
         AccessibilityRole::Tab,
         "main.rs",
     )?);
+    tab_actions = tab_actions.saturating_add(1);
     dispatch(
         &surface,
         &state,
@@ -251,29 +286,41 @@ fn qualify_workspace(
             .any(|node| node.label() == diagnostic_label.as_ref())
     );
 
-    maximum_action_frames = maximum_action_frames.max(activate(
-        &surface,
-        &state,
-        AccessibilityRole::ListItem,
-        &diagnostic_label,
-    )?);
-    platform_validation::commit_native_text(&surface, "// alpine\n", event_handler(&state))
-        .map_err(|error| format!("first native editor text commit failed: {error}"))?;
-    platform_validation::run_until_frame_terminal(&surface, Duration::from_millis(100));
+    if omitted_step != Some(OmittedStep::Action) {
+        maximum_action_frames = maximum_action_frames.max(activate(
+            &surface,
+            &state,
+            AccessibilityRole::ListItem,
+            &diagnostic_label,
+        )?);
+        diagnostic_actions = diagnostic_actions.saturating_add(1);
+    }
+    if omitted_step != Some(OmittedStep::Edit) {
+        platform_validation::commit_native_text(&surface, "// alpine\n", event_handler(&state))
+            .map_err(|error| format!("first native editor text commit failed: {error}"))?;
+        await_frame_terminal(&surface, Duration::from_millis(100))
+            .map_err(|error| format!("first native editor text frame failed: {error}"))?;
+    }
     timestamp = timestamp.saturating_add(1);
 
-    maximum_action_frames = maximum_action_frames.max(open_palette_and_activate(
-        &surface,
-        &state,
-        &mut timestamp,
-        "File: Save",
-    )?);
+    if omitted_step != Some(OmittedStep::Save) {
+        maximum_action_frames = maximum_action_frames.max(open_palette_and_activate(
+            &surface,
+            &state,
+            &mut timestamp,
+            "File: Save",
+        )?);
+        command_actions = command_actions.saturating_add(1);
+    }
     let persisted = fs::read(main_path)?;
-    assert!(persisted.starts_with(b"// alpine\n"));
+    if !persisted.starts_with(b"// alpine\n") {
+        return Err("required native edit and save did not preserve the expected prefix".into());
+    }
 
     platform_validation::commit_native_text(&surface, "dirty", event_handler(&state))
         .map_err(|error| format!("dirty native editor text commit failed: {error}"))?;
-    platform_validation::run_until_frame_terminal(&surface, Duration::from_millis(100));
+    await_frame_terminal(&surface, Duration::from_millis(100))
+        .map_err(|error| format!("dirty native editor text frame failed: {error}"))?;
     timestamp = timestamp.saturating_add(1);
     let observer = surface.observer();
     let (closed, disposition, close_frame) = replay_close(&surface, &state)
@@ -281,6 +328,8 @@ fn qualify_workspace(
     assert!(!closed);
     assert_eq!(disposition, CloseDisposition::Cancel);
     assert!(close_frame);
+    await_frame_terminal(&surface, Duration::from_millis(100))
+        .map_err(|error| format!("dirty-close native frame failed: {error}"))?;
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
     let blocked =
         platform_validation::inspect_native_accessibility_tree(&surface, event_handler(&state))
@@ -294,12 +343,16 @@ fn qualify_workspace(
         &mut timestamp,
         "File: Save",
     )?);
+    command_actions = command_actions.saturating_add(1);
     let persisted = fs::read(main_path)?;
     assert!(
         persisted
             .windows("dirty".len())
             .any(|bytes| bytes == b"dirty")
     );
+    if omitted_step == Some(OmittedStep::Close) {
+        return Err("required final native close was omitted".into());
+    }
     let (closed, disposition, close_frame) = replay_close(&surface, &state)
         .map_err(|error| format!("final native close replay failed: {error}"))?;
     if !closed || disposition != CloseDisposition::Allow || close_frame {
@@ -326,6 +379,18 @@ fn qualify_workspace(
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
     assert!(state.borrow().snapshot().is_shutting_down());
     assert!(maximum_action_frames <= 1);
+    let observed_actions = (
+        tree_actions,
+        tab_actions,
+        command_actions,
+        diagnostic_actions,
+    );
+    if observed_actions != (3, 2, 2, 1) {
+        return Err(format!(
+            "native accessibility action count mismatch: observed={observed_actions:?} expected=(3, 2, 2, 1)"
+        )
+        .into());
+    }
 
     drop(state);
     let owners = platform_validation::close_with_owner_evidence(surface)
@@ -343,10 +408,10 @@ fn qualify_workspace(
         .into());
     }
     Ok(NativeStudioAccessibilityEvidence {
-        tree_actions: 3,
-        tab_actions: 2,
-        command_actions: 2,
-        diagnostic_actions: 1,
+        tree_actions,
+        tab_actions,
+        command_actions,
+        diagnostic_actions,
         query_frames,
         maximum_action_frames,
         persisted_bytes: persisted.len(),
@@ -364,7 +429,23 @@ fn dispatch(
     events: &[SurfaceEvent],
 ) -> Result<(), alpine_platform_macos::SurfaceError> {
     platform_validation::replay_callback_surface_events(surface, events, event_handler(state))?;
-    platform_validation::run_until_frame_terminal(surface, Duration::from_millis(100));
+    await_frame_terminal(surface, Duration::from_millis(100))
+}
+
+fn await_frame_terminal(
+    surface: &NativeSurface,
+    timeout: Duration,
+) -> Result<(), alpine_platform_macos::SurfaceError> {
+    platform_validation::run_until_frame_terminal(surface, timeout);
+    if let Some(error) = surface.take_error()? {
+        return Err(error);
+    }
+    let snapshot = surface.snapshot();
+    if snapshot.occupied_frame_slots() != 0 || snapshot.submitted_frame_slots() != 0 {
+        return Err(alpine_platform_macos::SurfaceError::validation(
+            SurfaceOperation::Validation,
+        ));
+    }
     Ok(())
 }
 
@@ -482,7 +563,11 @@ fn activate(
             response_summary.borrow()
         )
     })?;
-    platform_validation::run_until_frame_terminal(surface, Duration::from_millis(100));
+    await_frame_terminal(surface, Duration::from_millis(100)).map_err(|error| {
+        format!(
+            "native accessibility action frame failed for role={role:?} label={label:?}: {error}"
+        )
+    })?;
     let after = surface.snapshot().submission_count();
     if !evidence.selector_allowed() || !evidence.accepted() || evidence.dispatch_failed() {
         return Err(format!(

@@ -11,7 +11,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if std::env::var_os("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_CHILD").is_some() {
-        let evidence = alpine_studio::native_validation::qualify_studio_accessibility_process()?;
+        let omitted = std::env::var("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_OMIT").ok();
+        let result = alpine_studio::native_validation::qualify_studio_accessibility_process();
+        if let Some(omitted) = omitted {
+            return match result {
+                Err(_) => {
+                    println!("alpine-native-accessibility-omission-rejected={omitted}");
+                    Ok(())
+                }
+                Ok(_) => Err(format!(
+                    "native accessibility journey qualified with required step {omitted:?} omitted"
+                )
+                .into()),
+            };
+        }
+        let evidence = result?;
         assert_eq!(evidence.tree_actions(), 3);
         assert_eq!(evidence.tab_actions(), 2);
         assert_eq!(evidence.command_actions(), 2);
@@ -68,9 +82,8 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
         "alpine-studio-native-accessibility-child-{}-{nonce}",
         std::process::id()
     ));
-    let home = root.join("home");
     let server = root.join("rust-analyzer-fixture");
-    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&root)?;
     std::fs::write(
         &server,
         "#!/bin/sh\nALPINE_STUDIO_NATIVE_LSP_SERVER=1 exec \"$ALPINE_STUDIO_NATIVE_PROCESS_EXE\"\n",
@@ -78,38 +91,49 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o700))?;
     let executable = std::env::current_exe()?;
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let mut child = Command::new(&executable)
-            .env("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_CHILD", "1")
-            .env("ALPINE_STUDIO_NATIVE_PROCESS_EXE", &executable)
-            .env("ALPINE_RUST_ANALYZER", &server)
-            .env("HOME", &home)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let timeout = Duration::from_secs(15);
-        let deadline = Instant::now() + timeout;
-        let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
+        let run_child = |omitted: Option<&str>, home: &std::path::Path| {
+            std::fs::create_dir_all(home)?;
+            let mut command = Command::new(&executable);
+            command
+                .env("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_CHILD", "1")
+                .env("ALPINE_STUDIO_NATIVE_PROCESS_EXE", &executable)
+                .env("ALPINE_RUST_ANALYZER", &server)
+                .env("HOME", home)
+                .env_remove("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_OMIT")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if let Some(omitted) = omitted {
+                command.env("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_OMIT", omitted);
             }
-            if Instant::now() >= deadline {
-                child.kill()?;
-                let status = child.wait()?;
-                return Err(format!(
-                    "native Studio accessibility child exceeded {timeout:?} and ended with {status}"
-                )
-                .into());
+            let mut child = command.spawn()?;
+            let timeout = Duration::from_secs(15);
+            let deadline = Instant::now() + timeout;
+            let status = loop {
+                if let Some(status) = child.try_wait()? {
+                    break status;
+                }
+                if Instant::now() >= deadline {
+                    child.kill()?;
+                    let status = child.wait()?;
+                    return Err(format!(
+                        "native Studio accessibility child exceeded {timeout:?} and ended with {status}"
+                    )
+                    .into());
+                }
+                thread::sleep(Duration::from_millis(10));
+            };
+            let mut stdout = String::new();
+            let mut stderr = String::new();
+            if let Some(mut pipe) = child.stdout.take() {
+                pipe.read_to_string(&mut stdout)?;
             }
-            thread::sleep(Duration::from_millis(10));
+            if let Some(mut pipe) = child.stderr.take() {
+                pipe.read_to_string(&mut stderr)?;
+            }
+            Ok::<_, Box<dyn std::error::Error>>((status, stdout, stderr))
         };
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        if let Some(mut pipe) = child.stdout.take() {
-            pipe.read_to_string(&mut stdout)?;
-        }
-        if let Some(mut pipe) = child.stderr.take() {
-            pipe.read_to_string(&mut stderr)?;
-        }
+
+        let (status, stdout, stderr) = run_child(None, &root.join("home-normal"))?;
         if !status.success() {
             return Err(format!(
                 "native Studio accessibility child failed with {status}; stdout={stdout:?}; stderr={stderr:?}"
@@ -121,6 +145,24 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
             line.ends_with("Metal API Validation Enabled")
                 || line.ends_with("Metal GPU Validation Enabled")
         }));
+        for omitted in ["open", "edit", "action", "save", "close"] {
+            let (status, stdout, stderr) =
+                run_child(Some(omitted), &root.join(format!("home-{omitted}")))?;
+            if !status.success() {
+                return Err(format!(
+                    "native Studio accessibility omission control {omitted:?} failed with {status}; stdout={stdout:?}; stderr={stderr:?}"
+                )
+                .into());
+            }
+            assert_eq!(
+                stdout.trim(),
+                format!("alpine-native-accessibility-omission-rejected={omitted}")
+            );
+            assert!(stderr.lines().all(|line| {
+                line.ends_with("Metal API Validation Enabled")
+                    || line.ends_with("Metal GPU Validation Enabled")
+            }));
+        }
         Ok(())
     })();
     let cleanup = std::fs::remove_dir_all(root);
