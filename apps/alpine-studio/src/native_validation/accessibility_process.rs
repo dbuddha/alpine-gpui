@@ -2,7 +2,9 @@
 
 use std::{
     cell::{Cell, RefCell},
+    ffi::OsStr,
     fs,
+    io::{Read as _, Write as _},
     path::Path,
     rc::Rc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -26,6 +28,17 @@ const FRAME_TERMINAL_TIMEOUT: Duration = Duration::from_secs(5);
 const FRAME_TERMINAL_POLL: Duration = Duration::from_millis(100);
 const DIAGNOSTIC_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const DIAGNOSTIC_READY_POLL: Duration = Duration::from_millis(5);
+const MAX_LANGUAGE_TRACE_BYTES: u64 = 4_096;
+const REQUIRED_LANGUAGE_PHASES: [&str; 8] = [
+    "qualification-child",
+    "wrapper-invoked",
+    "process-spawned",
+    "initialize-received",
+    "initialize-responded",
+    "initialized-received",
+    "did-open-received",
+    "diagnostics-written",
+];
 const MISMATCH_CONTROL_MARKER: u64 = 0xA11C_E551;
 const DISPATCH_FAILURE_CONTROL_MARKER: u64 = 0xD15F_A11E;
 
@@ -137,9 +150,10 @@ impl NativeStudioAccessibilityEvidence {
 /// or teardown failure from the production-composed validation process.
 pub fn qualify_studio_accessibility_process()
 -> Result<NativeStudioAccessibilityEvidence, Box<dyn std::error::Error>> {
-    if std::env::var_os("ALPINE_RUST_ANALYZER").is_none() {
-        return Err("ALPINE_RUST_ANALYZER is required for native Studio qualification".into());
-    }
+    let server = std::env::var_os("ALPINE_RUST_ANALYZER")
+        .ok_or("ALPINE_RUST_ANALYZER is required for native Studio qualification")?;
+    record_qualification_child_phase(&server)?;
+    crate::reset_native_validation_language_evidence();
     let omitted_step = OmittedStep::from_environment()?;
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let root = std::env::temp_dir().join(format!(
@@ -163,6 +177,30 @@ pub fn qualify_studio_accessibility_process()
         (Ok(_), Err(error)) => Err(Box::new(error)),
         (Ok(evidence), Ok(())) => Ok(evidence),
     }
+}
+
+fn record_qualification_child_phase(server: &OsStr) -> Result<(), Box<dyn std::error::Error>> {
+    let wrapper = fs::read_to_string(server)?;
+    if !qualification_wrapper_valid(&wrapper) {
+        return Err("native Studio qualification received an unexpected language wrapper".into());
+    }
+    let expected_process = std::env::var_os("ALPINE_STUDIO_NATIVE_PROCESS_EXE")
+        .ok_or("ALPINE_STUDIO_NATIVE_PROCESS_EXE is required for native Studio qualification")?;
+    if fs::canonicalize(expected_process)? != fs::canonicalize(std::env::current_exe()?)? {
+        return Err("native Studio qualification process identity mismatch".into());
+    }
+    let trace = std::env::var_os("ALPINE_STUDIO_NATIVE_LSP_TRACE")
+        .ok_or("ALPINE_STUDIO_NATIVE_LSP_TRACE is required for native Studio qualification")?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(trace)?;
+    writeln!(file, "qualification-child")?;
+    Ok(())
+}
+
+fn qualification_wrapper_valid(wrapper: &str) -> bool {
+    wrapper.contains("wrapper-invoked") && wrapper.contains("ALPINE_STUDIO_NATIVE_LSP_SERVER")
 }
 
 #[allow(
@@ -299,6 +337,19 @@ fn qualify_workspace(
         &mut timestamp,
         "diagnostic severity 1 on line 1",
     )?;
+    let language = crate::native_validation_language_evidence();
+    let server_trace = language_server_phase_trace();
+    let completed_server_phases = completed_language_server_phases(&server_trace);
+    if !diagnostic_qualification_ready(
+        diagnostic_authority_ready(language),
+        completed_server_phases,
+    ) {
+        return Err(format!(
+            "native diagnostic label lacked exact production language authority: language={language:?} server=(completed_phases={completed_server_phases}/{} trace={server_trace:?})",
+            REQUIRED_LANGUAGE_PHASES.len()
+        )
+        .into());
+    }
     let stable_before = surface.snapshot().submission_count();
     let tree =
         platform_validation::inspect_native_accessibility_tree(&surface, event_handler(&state))
@@ -821,8 +872,12 @@ fn wait_for_label_prefix(
             let worker = runtime.worker();
             let external = runtime.external();
             let surface = surface.snapshot();
+            let language = crate::native_validation_language_evidence();
+            let server_trace = language_server_phase_trace();
+            let completed_server_phases = completed_language_server_phases(&server_trace);
+            let next_server_phase = REQUIRED_LANGUAGE_PHASES.get(completed_server_phases);
             return Err(format!(
-                "waiting for native label prefix {prefix:?}: label did not become visible before the {DIAGNOSTIC_READY_TIMEOUT:?} correctness deadline; polling=(wake_turns={wake_turns} frame_wakes={frame_wakes} tree_inspections={tree_inspections}) surface=(occupied={} submitted={} paused={} submissions={} terminal={:?}) worker=(queued_requests={} queued_results={} dropped_results={} panicked_jobs={}) external=(current_items={} admitted={} drained={} full={} disconnected={} shutting_down={} sequence_exhausted={})",
+                "waiting for native label prefix {prefix:?}: label did not become visible before the {DIAGNOSTIC_READY_TIMEOUT:?} correctness deadline; polling=(wake_turns={wake_turns} frame_wakes={frame_wakes} tree_inspections={tree_inspections}) surface=(occupied={} submitted={} paused={} submissions={} terminal={:?}) worker=(queued_requests={} queued_results={} dropped_results={} panicked_jobs={}) external=(current_items={} admitted={} drained={} full={} disconnected={} shutting_down={} sequence_exhausted={}) language={language:?} server=(completed_phases={completed_server_phases}/{} next_phase={next_server_phase:?} trace={server_trace:?})",
                 surface.occupied_frame_slots(),
                 surface.submitted_frame_slots(),
                 surface.display_link_paused(),
@@ -839,11 +894,78 @@ fn wait_for_label_prefix(
                 external.disconnected(),
                 external.shutting_down(),
                 external.sequence_exhausted(),
+                REQUIRED_LANGUAGE_PHASES.len(),
             )
             .into());
         }
         std::thread::sleep(DIAGNOSTIC_READY_POLL);
     }
+}
+
+fn language_server_phase_trace() -> Box<str> {
+    let Some(path) = std::env::var_os("ALPINE_STUDIO_NATIVE_LSP_TRACE") else {
+        return Box::from("<language trace path unavailable>");
+    };
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) => return format!("<language trace unavailable: {error}>").into(),
+    };
+    let mut bytes = Vec::with_capacity(MAX_LANGUAGE_TRACE_BYTES as usize);
+    let read = file
+        .take(MAX_LANGUAGE_TRACE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes);
+    if let Err(error) = read {
+        return format!("<language trace read failed: {error}>").into();
+    }
+    if !language_trace_size_within_bound(bytes.len()) {
+        return Box::from("<language trace exceeded bounded evidence size>");
+    }
+    String::from_utf8(bytes).map_or_else(
+        |error| format!("<language trace was not UTF-8: {error}>").into(),
+        Box::from,
+    )
+}
+
+const fn language_trace_size_within_bound(bytes: usize) -> bool {
+    bytes <= MAX_LANGUAGE_TRACE_BYTES as usize
+}
+
+fn completed_language_server_phases(trace: &str) -> usize {
+    REQUIRED_LANGUAGE_PHASES
+        .iter()
+        .zip(trace.lines())
+        .take_while(|(expected, observed)| **expected == *observed)
+        .count()
+}
+
+const fn diagnostic_qualification_ready(
+    authority_ready: bool,
+    completed_server_phases: usize,
+) -> bool {
+    authority_ready && completed_server_phases == REQUIRED_LANGUAGE_PHASES.len()
+}
+
+const fn diagnostic_authority_ready(evidence: crate::NativeValidationLanguageEvidence) -> bool {
+    evidence.active
+        && evidence.sync_calls > 0
+        && evidence.wake_callbacks > 0
+        && evidence.latch_publications > 0
+        && evidence.external_admissions > 0
+        && evidence.external_rejections == 0
+        && evidence.foreground_results > 0
+        && evidence.generation > 0
+        && evidence.process_epoch > 0
+        && evidence.lsp_version > 0
+        && evidence.submitted_inputs >= 3
+        && evidence.written_inputs >= 3
+        && evidence.input_saturations == 0
+        && evidence.polls > 0
+        && evidence.diagnostic_publications > 0
+        && evidence.diagnostic_items > 0
+        && evidence.stale_wakes == 0
+        && evidence.restarts == 0
+        && evidence.invalidations > 0
+        && evidence.frame_builds > 1
 }
 
 fn diagnostic_wait_expired(elapsed: Duration) -> bool {
@@ -1127,6 +1249,170 @@ mod process_contract_tests {
         assert!(diagnostic_tree_inspection_required(true, true));
         assert!(diagnostic_tree_inspection_required(false, true));
         assert!(!diagnostic_tree_inspection_required(false, false));
+    }
+
+    #[test]
+    fn language_server_phase_evidence_requires_the_exact_ordered_prefix() {
+        let mut trace = String::new();
+        for (index, phase) in REQUIRED_LANGUAGE_PHASES.iter().enumerate() {
+            assert_eq!(completed_language_server_phases(&trace), index);
+            trace.push_str(phase);
+            trace.push('\n');
+        }
+        assert_eq!(
+            completed_language_server_phases(&trace),
+            REQUIRED_LANGUAGE_PHASES.len()
+        );
+        assert_eq!(
+            completed_language_server_phases(
+                "qualification-child\nwrapper-invoked\nprocess-spawned\ninitialize-responded\ninitialize-received\n"
+            ),
+            3
+        );
+        assert_eq!(completed_language_server_phases("unknown\n"), 0);
+    }
+
+    #[test]
+    fn process_language_ownership_requires_every_independent_boundary() {
+        assert!(qualification_wrapper_valid(
+            "wrapper-invoked ALPINE_STUDIO_NATIVE_LSP_SERVER"
+        ));
+        assert!(!qualification_wrapper_valid("wrapper-invoked"));
+        assert!(!qualification_wrapper_valid(
+            "ALPINE_STUDIO_NATIVE_LSP_SERVER"
+        ));
+        assert!(!qualification_wrapper_valid("unrelated wrapper"));
+
+        assert!(diagnostic_qualification_ready(
+            true,
+            REQUIRED_LANGUAGE_PHASES.len()
+        ));
+        assert!(!diagnostic_qualification_ready(
+            false,
+            REQUIRED_LANGUAGE_PHASES.len()
+        ));
+        assert!(!diagnostic_qualification_ready(
+            true,
+            REQUIRED_LANGUAGE_PHASES.len().saturating_sub(1)
+        ));
+
+        assert!(language_trace_size_within_bound(0));
+        assert!(language_trace_size_within_bound(
+            MAX_LANGUAGE_TRACE_BYTES as usize
+        ));
+        assert!(!language_trace_size_within_bound(
+            MAX_LANGUAGE_TRACE_BYTES as usize + 1
+        ));
+    }
+
+    #[test]
+    fn diagnostic_authority_requires_every_independent_production_phase() {
+        let valid = crate::NativeValidationLanguageEvidence {
+            sync_calls: 1,
+            wake_callbacks: 1,
+            latch_publications: 1,
+            external_admissions: 1,
+            external_rejections: 0,
+            latch_polls: 0,
+            foreground_results: 1,
+            invalidations: 1,
+            active: true,
+            generation: 1,
+            process_epoch: 1,
+            lsp_version: 1,
+            process_queued_events: 0,
+            submitted_inputs: 3,
+            written_inputs: 3,
+            input_saturations: 0,
+            polls: 1,
+            diagnostic_publications: 1,
+            diagnostic_items: 1,
+            stale_wakes: 0,
+            restarts: 0,
+            frame_builds: 2,
+        };
+        assert!(diagnostic_authority_ready(valid));
+        for invalid in [
+            crate::NativeValidationLanguageEvidence {
+                active: false,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                sync_calls: 0,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                wake_callbacks: 0,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                latch_publications: 0,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                external_admissions: 0,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                external_rejections: 1,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                foreground_results: 0,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                generation: 0,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                process_epoch: 0,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                lsp_version: 0,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                submitted_inputs: 2,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                written_inputs: 2,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                input_saturations: 1,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence { polls: 0, ..valid },
+            crate::NativeValidationLanguageEvidence {
+                diagnostic_publications: 0,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                diagnostic_items: 0,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                stale_wakes: 1,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                restarts: 1,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                invalidations: 0,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
+                frame_builds: 1,
+                ..valid
+            },
+        ] {
+            assert!(!diagnostic_authority_ready(invalid));
+        }
     }
 
     #[test]

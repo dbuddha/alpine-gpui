@@ -208,8 +208,25 @@ a validation-capacity observation, not a product latency target. The wait checks
 the complete native tree once initially and then only after a wake admits a
 visual frame; empty wakes sleep for five milliseconds without rebuilding the
 tree. A terminal failure retains wake, frame, tree-inspection, surface, worker,
-and external-queue counters. Successful readiness remains demand-driven and
-does not add a timer poller or continuous frame loop.
+and external-queue counters. It also retains one bounded validation-only
+language phase record. The isolated mock server records process start,
+initialize receipt and response, initialized receipt, did-open receipt, and
+diagnostics write in exact order. Studio separately records language sync,
+process input, wake callback, latch publication, external admission, foreground
+poll, diagnostic admission, semantic invalidation, and frame-build counters.
+The two records distinguish server scheduling and protocol progress from
+foreground handoff and native-tree publication without retaining process
+handles, messages, documents, or scenes. Successful readiness remains
+demand-driven and does not add a timer poller or continuous frame loop.
+Successful label discovery is not sufficient by itself. Before the diagnostic
+can qualify, the child requires an active exact-generation language session,
+three submitted and written startup messages, a server wake, latch publication,
+accepted external handoff, foreground poll, admitted nonempty diagnostic batch,
+semantic invalidation, and a post-initial frame build, with no external
+rejection, input saturation, stale wake, or restart. A complete ordered server
+trace is required independently. Pure polarity controls remove each authority
+axis in turn so a seeded, restored, stale, or bypassed diagnostic cannot satisfy
+the production-process claim.
 
 ## Process composition and ownership
 
@@ -217,12 +234,32 @@ The custom native-process test starts an isolated qualification child. That
 child receives an exact executable path to a shell wrapper which launches the
 existing bounded mock Language Server Protocol fixture in a second process.
 No process environment is mutated after threads exist, and no globally
-installed language server is trusted.
+installed language server is trusted. The parent gives each isolated child a
+unique phase-trace path under that child's temporary home. The server appends
+only six fixed startup phase names after the validation wrapper appends one
+fixed `wrapper-invoked` ownership phase to the parent-provided absolute path.
+Before runtime construction, the qualification child verifies that its selected
+server file is that wrapper, verifies that the configured process executable
+canonicalizes to its own executable, and appends one fixed
+`qualification-child` phase. The wrapper explicitly exports mock-server mode
+before replacing itself with that executable. The child reads at most 4,096
+bytes on a terminal readiness failure. The parent requires the exact complete
+ordered eight-phase trace on success and includes partial trace evidence in
+child failure output.
+This validation file is not created by shipping Studio and is removed with the
+fixture after terminal owner drain.
 
 After the complete journey succeeds, five isolated negative children each omit
 exactly one required open, edit, accessibility action, save, or close step. A
 control is accepted only when the same production journey rejects that omission;
 an omitted step that still reaches qualification fails the parent process test.
+The `open` control rejects before the exact `main.rs` tab can become active and
+before an ordinary event can start Rust diagnostics. Its exact language trace is
+therefore the qualification-child ownership phase only. The edit, accessibility
+action, save, and close controls first pass diagnostic readiness and must retain
+the same complete eight-phase language lifecycle as the successful journey.
+The parent reports the scenario with every mismatch so a pre-language omission
+cannot be mistaken for a mock-server scheduling or protocol failure.
 Action totals are derived from successful native dispatches rather than encoded
 as expected constants in the returned evidence.
 

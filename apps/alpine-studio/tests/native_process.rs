@@ -94,18 +94,20 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&root)?;
     std::fs::write(
         &server,
-        "#!/bin/sh\nALPINE_STUDIO_NATIVE_LSP_SERVER=1 exec \"$ALPINE_STUDIO_NATIVE_PROCESS_EXE\"\n",
+        "#!/bin/sh\nprintf 'wrapper-invoked\\n' >> \"$ALPINE_STUDIO_NATIVE_LSP_TRACE\"\nexport ALPINE_STUDIO_NATIVE_LSP_SERVER=1\nexec \"$ALPINE_STUDIO_NATIVE_PROCESS_EXE\"\n",
     )?;
     std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o700))?;
     let executable = std::env::current_exe()?;
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let run_child = |omitted: Option<&str>, home: &std::path::Path| {
             std::fs::create_dir_all(home)?;
+            let language_trace = home.join("language-phases.log");
             let mut command = Command::new(&executable);
             command
                 .env("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_CHILD", "1")
                 .env("ALPINE_STUDIO_NATIVE_PROCESS_EXE", &executable)
                 .env("ALPINE_RUST_ANALYZER", &server)
+                .env("ALPINE_STUDIO_NATIVE_LSP_TRACE", &language_trace)
                 .env("HOME", home)
                 .env_remove("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_OMIT")
                 .stdout(Stdio::piped())
@@ -123,8 +125,9 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
                 if Instant::now() >= deadline {
                     child.kill()?;
                     let status = child.wait()?;
+                    let trace = read_language_trace(&language_trace);
                     return Err(format!(
-                        "native Studio accessibility child exceeded {timeout:?} and ended with {status}"
+                        "native Studio accessibility child exceeded {timeout:?} and ended with {status}; language_trace={trace:?}"
                     )
                     .into());
                 }
@@ -138,30 +141,38 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(mut pipe) = child.stderr.take() {
                 pipe.read_to_string(&mut stderr)?;
             }
-            Ok::<_, Box<dyn std::error::Error>>((status, stdout, stderr))
+            let trace = read_language_trace(&language_trace);
+            Ok::<_, Box<dyn std::error::Error>>((status, stdout, stderr, trace))
         };
 
-        let (status, stdout, stderr) = run_child(None, &root.join("home-normal"))?;
+        let (status, stdout, stderr, trace) = run_child(None, &root.join("home-normal"))?;
         if !status.success() {
             return Err(format!(
-                "native Studio accessibility child failed with {status}; stdout={stdout:?}; stderr={stderr:?}"
+                "native Studio accessibility child failed with {status}; stdout={stdout:?}; stderr={stderr:?}; language_trace={trace:?}"
             )
             .into());
         }
+        require_language_trace(&trace, &COMPLETE_LANGUAGE_PHASES, "normal")?;
         assert_eq!(stdout.trim(), "alpine-native-accessibility-qualified");
         assert!(stderr.lines().all(|line| {
             line.ends_with("Metal API Validation Enabled")
                 || line.ends_with("Metal GPU Validation Enabled")
         }));
         for omitted in ["open", "edit", "action", "save", "close"] {
-            let (status, stdout, stderr) =
+            let (status, stdout, stderr, trace) =
                 run_child(Some(omitted), &root.join(format!("home-{omitted}")))?;
             if !status.success() {
                 return Err(format!(
-                    "native Studio accessibility omission control {omitted:?} failed with {status}; stdout={stdout:?}; stderr={stderr:?}"
+                    "native Studio accessibility omission control {omitted:?} failed with {status}; stdout={stdout:?}; stderr={stderr:?}; language_trace={trace:?}"
                 )
                 .into());
             }
+            let expected_language_phases = if omitted == "open" {
+                &QUALIFICATION_ONLY_PHASES[..]
+            } else {
+                &COMPLETE_LANGUAGE_PHASES[..]
+            };
+            require_language_trace(&trace, expected_language_phases, omitted)?;
             assert_eq!(
                 stdout.trim(),
                 format!("alpine-native-accessibility-omission-rejected={omitted}")
@@ -178,6 +189,72 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
         (Err(error), _) => Err(error),
         (Ok(()), Err(error)) => Err(Box::new(error)),
         (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+fn read_language_trace(path: &std::path::Path) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|error| format!("<language trace unavailable: {error}>"))
+}
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+const QUALIFICATION_ONLY_PHASES: [&str; 1] = ["qualification-child"];
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+const COMPLETE_LANGUAGE_PHASES: [&str; 8] = [
+    "qualification-child",
+    "wrapper-invoked",
+    "process-spawned",
+    "initialize-received",
+    "initialize-responded",
+    "initialized-received",
+    "did-open-received",
+    "diagnostics-written",
+];
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+fn require_language_trace(
+    trace: &str,
+    expected: &[&str],
+    scenario: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if expected == COMPLETE_LANGUAGE_PHASES {
+        return require_language_startup_trace(trace).map_err(|error| {
+            format!("language trace mismatch for scenario {scenario:?}: {error}").into()
+        });
+    }
+    let actual = trace.lines().collect::<Vec<_>>();
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "language trace mismatch for scenario {scenario:?}: expected={expected:?}; actual={actual:?}"
+        )
+        .into())
+    }
+}
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+fn require_language_startup_trace(trace: &str) -> Result<(), Box<dyn std::error::Error>> {
+    const REQUIRED: [&str; 8] = [
+        "qualification-child",
+        "wrapper-invoked",
+        "process-spawned",
+        "initialize-received",
+        "initialize-responded",
+        "initialized-received",
+        "did-open-received",
+        "diagnostics-written",
+    ];
+    let observed = trace.lines().collect::<Vec<_>>();
+    if observed == REQUIRED {
+        Ok(())
+    } else {
+        Err(format!(
+            "native language startup trace mismatch: observed={observed:?} expected={REQUIRED:?}"
+        )
+        .into())
     }
 }
 
