@@ -173,9 +173,7 @@ impl WorkspaceEditProposal {
         if inserted_bytes > MAX_INSERTED_TEXT_BYTES {
             return Err(WorkspaceEditError::InsertedTextTooLarge);
         }
-        if retained_bytes > MAX_RETAINED_BYTES {
-            return Err(WorkspaceEditError::RetentionExceeded);
-        }
+        let retained_bytes = checked_retention(retained_bytes)?;
         Ok(Self {
             workspace_root: root,
             files: files.into_boxed_slice(),
@@ -205,34 +203,17 @@ impl WorkspaceEditProposal {
         for file in &self.files {
             let current = revalidate_local_path(&self.workspace_root, &file.path)
                 .map_err(WorkspaceEditError::LocalPath)?;
-            if current != file.path {
-                return Err(WorkspaceEditError::StaleFile);
-            }
-            let metadata =
-                std::fs::metadata(&current).map_err(|_| WorkspaceEditError::FileUnavailable)?;
-            if metadata.len() > MAX_FILE_TEXT_BYTES as u64 {
-                return Err(WorkspaceEditError::FileTooLarge);
-            }
-            let bytes = std::fs::read(&current).map_err(|_| WorkspaceEditError::FileUnavailable)?;
-            if bytes.len() > MAX_FILE_TEXT_BYTES {
-                return Err(WorkspaceEditError::FileTooLarge);
-            }
-            let original = String::from_utf8(bytes).map_err(|_| WorkspaceEditError::InvalidUtf8)?;
+            require_exact_path(&file.path, &current)?;
+            let original = read_file_text(&current)?;
             let prepared = prepare_file(file, original)?;
-            prepared_text_bytes = prepared_text_bytes
-                .checked_add(prepared.original.len())
-                .and_then(|bytes| bytes.checked_add(prepared.replacement.len()))
-                .ok_or(WorkspaceEditError::RetentionExceeded)?;
-            if prepared_text_bytes > MAX_PREPARED_TEXT_BYTES {
-                return Err(WorkspaceEditError::RetentionExceeded);
-            }
-            retained_bytes = retained_bytes
-                .checked_add(prepared.retained_bytes())
-                .ok_or(WorkspaceEditError::RetentionExceeded)?;
+            (prepared_text_bytes, retained_bytes) = checked_prepared_totals(
+                prepared_text_bytes,
+                retained_bytes,
+                prepared.original.len(),
+                prepared.replacement.len(),
+                prepared.retained_bytes(),
+            )?;
             files.push(prepared);
-        }
-        if retained_bytes > MAX_RETAINED_BYTES {
-            return Err(WorkspaceEditError::RetentionExceeded);
         }
         Ok(PreparedWorkspaceEdit {
             files: files.into_boxed_slice(),
@@ -359,14 +340,7 @@ fn prepare_file(
             bytes.checked_add(edit.new_text.len())
         })
         .ok_or(WorkspaceEditError::RetentionExceeded)?;
-    let output_length = original
-        .len()
-        .checked_sub(removed_bytes)
-        .and_then(|bytes| bytes.checked_add(inserted_bytes))
-        .ok_or(WorkspaceEditError::RetentionExceeded)?;
-    if output_length > MAX_FILE_TEXT_BYTES {
-        return Err(WorkspaceEditError::FileTooLarge);
-    }
+    let output_length = checked_output_length(original.len(), removed_bytes, inserted_bytes)?;
     let mut replacement = String::new();
     replacement
         .try_reserve_exact(output_length)
@@ -400,6 +374,74 @@ fn checked_wire(result: &RawValue) -> Result<(), WorkspaceEditError> {
         Err(WorkspaceEditError::WireTooLarge)
     } else {
         Ok(())
+    }
+}
+
+fn checked_retention(retained_bytes: usize) -> Result<usize, WorkspaceEditError> {
+    if retained_bytes > MAX_RETAINED_BYTES {
+        Err(WorkspaceEditError::RetentionExceeded)
+    } else {
+        Ok(retained_bytes)
+    }
+}
+
+fn require_exact_path(expected: &Path, revalidated: &Path) -> Result<(), WorkspaceEditError> {
+    if expected == revalidated {
+        Ok(())
+    } else {
+        Err(WorkspaceEditError::StaleFile)
+    }
+}
+
+fn checked_file_length(length: u64) -> Result<(), WorkspaceEditError> {
+    if length > MAX_FILE_TEXT_BYTES as u64 {
+        Err(WorkspaceEditError::FileTooLarge)
+    } else {
+        Ok(())
+    }
+}
+
+fn read_file_text(path: &Path) -> Result<String, WorkspaceEditError> {
+    let metadata = std::fs::metadata(path).map_err(|_| WorkspaceEditError::FileUnavailable)?;
+    checked_file_length(metadata.len())?;
+    let bytes = std::fs::read(path).map_err(|_| WorkspaceEditError::FileUnavailable)?;
+    checked_file_length(u64::try_from(bytes.len()).map_err(|_| WorkspaceEditError::FileTooLarge)?)?;
+    String::from_utf8(bytes).map_err(|_| WorkspaceEditError::InvalidUtf8)
+}
+
+fn checked_prepared_totals(
+    prepared_text_bytes: usize,
+    retained_bytes: usize,
+    original_bytes: usize,
+    replacement_bytes: usize,
+    file_retained_bytes: usize,
+) -> Result<(usize, usize), WorkspaceEditError> {
+    let prepared_text_bytes = prepared_text_bytes
+        .checked_add(original_bytes)
+        .and_then(|bytes| bytes.checked_add(replacement_bytes))
+        .ok_or(WorkspaceEditError::RetentionExceeded)?;
+    if prepared_text_bytes > MAX_PREPARED_TEXT_BYTES {
+        return Err(WorkspaceEditError::RetentionExceeded);
+    }
+    let retained_bytes = retained_bytes
+        .checked_add(file_retained_bytes)
+        .ok_or(WorkspaceEditError::RetentionExceeded)?;
+    Ok((prepared_text_bytes, checked_retention(retained_bytes)?))
+}
+
+fn checked_output_length(
+    original_bytes: usize,
+    removed_bytes: usize,
+    inserted_bytes: usize,
+) -> Result<usize, WorkspaceEditError> {
+    let output_length = original_bytes
+        .checked_sub(removed_bytes)
+        .and_then(|bytes| bytes.checked_add(inserted_bytes))
+        .ok_or(WorkspaceEditError::RetentionExceeded)?;
+    if output_length > MAX_FILE_TEXT_BYTES {
+        Err(WorkspaceEditError::FileTooLarge)
+    } else {
+        Ok(output_length)
     }
 }
 
@@ -700,10 +742,12 @@ mod proofs {
 mod tests {
     use std::{
         fs,
+        fs::File,
         path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
     };
 
+    use serde::de::value::{BoolDeserializer, Error as ValueError};
     use serde_json::value::RawValue;
 
     use super::*;
@@ -751,6 +795,29 @@ mod tests {
             r#"{{"range":{{"start":{{"line":0,"character":{start}}},"end":{{"line":0,"character":{end}}}}},"newText":{}}}"#,
             serde_json::to_string(replacement).unwrap_or_else(|_| unreachable!())
         )
+    }
+
+    fn parsed_range(start: usize, end: usize) -> LspRange {
+        parse_range(&serde_json::json!({
+            "start": {"line": 0, "character": start},
+            "end": {"line": 0, "character": end}
+        }))
+        .unwrap_or_else(|_| unreachable!())
+    }
+
+    fn text_edit(start: usize, end: usize, replacement: &str) -> WorkspaceTextEdit {
+        WorkspaceTextEdit {
+            range: parsed_range(start, end),
+            new_text: replacement.into(),
+        }
+    }
+
+    fn file_edit(path: PathBuf, edits: Vec<WorkspaceTextEdit>) -> WorkspaceFileEdit {
+        WorkspaceFileEdit {
+            path,
+            lsp_version: None,
+            edits: edits.into_boxed_slice(),
+        }
     }
 
     #[test]
@@ -941,6 +1008,314 @@ mod tests {
         assert_eq!(
             WorkspaceEditError::Malformed.to_string(),
             "Rust workspace edit rejected input: Malformed"
+        );
+    }
+
+    #[test]
+    fn null_strict_json_and_shape_axes_are_independent() {
+        let fixture = Fixture::new();
+        let path = fixture.write("main.rs", "old\n");
+        let file_uri = uri(&path);
+        assert_eq!(
+            WorkspaceEditProposal::admit_formatting(&raw("null"), &fixture.root, &file_uri, 1)
+                .map(|proposal| proposal.file_count()),
+            Ok(0)
+        );
+        assert_eq!(
+            WorkspaceEditProposal::admit_rename(&raw("null"), &fixture.root)
+                .map(|proposal| proposal.file_count()),
+            Ok(0)
+        );
+        assert_eq!(
+            WorkspaceEditProposal::admit_rename(&raw(r#"{"changeAnnotations":{}}"#), &fixture.root),
+            Err(WorkspaceEditError::UnsupportedAnnotation)
+        );
+        for body in [
+            r#"{"unknown":{}}"#,
+            r"{}",
+            r#"{"changes":{},"documentChanges":[]}"#,
+        ] {
+            assert_eq!(
+                WorkspaceEditProposal::admit_rename(&raw(body), &fixture.root),
+                Err(WorkspaceEditError::UnsupportedShape)
+            );
+        }
+        assert_eq!(
+            WorkspaceEditProposal::admit_rename(&raw(r#"{"changes":[]}"#), &fixture.root),
+            Err(WorkspaceEditError::Malformed)
+        );
+        assert_eq!(
+            WorkspaceEditProposal::admit_rename(&raw(r#"{"documentChanges":{}}"#), &fixture.root),
+            Err(WorkspaceEditError::Malformed)
+        );
+
+        for scalar in ["true", "-1", "1", "1.5", r#""text""#, "null", "[true]"] {
+            assert!(strict_value(&raw(scalar)).is_ok());
+        }
+        assert_eq!(
+            StrictValueVisitor
+                .visit_string::<ValueError>(String::from("owned"))
+                .map(|value| value.0),
+            Ok(Value::String(String::from("owned")))
+        );
+        assert_eq!(
+            StrictValueVisitor
+                .visit_none::<ValueError>()
+                .map(|value| value.0),
+            Ok(Value::Null)
+        );
+        assert_eq!(
+            StrictValueVisitor
+                .visit_unit::<ValueError>()
+                .map(|value| value.0),
+            Ok(Value::Null)
+        );
+        assert_eq!(
+            StrictValueVisitor
+                .visit_some(BoolDeserializer::<ValueError>::new(true))
+                .map(|value| value.0),
+            Ok(Value::Bool(true))
+        );
+        assert!(
+            StrictValueVisitor
+                .visit_f64::<ValueError>(f64::NAN)
+                .is_err()
+        );
+        let expectation =
+            <ValueError as de::Error>::invalid_type(de::Unexpected::Unit, &StrictValueVisitor);
+        assert!(
+            expectation
+                .to_string()
+                .contains("strict JSON without duplicate object keys")
+        );
+    }
+
+    #[test]
+    fn document_change_versions_and_malformed_edits_fail_closed() {
+        let fixture = Fixture::new();
+        let path = fixture.write("main.rs", "old\n");
+        let file_uri = uri(&path);
+        let null_version = raw(&format!(
+            r#"{{"documentChanges":[{{"textDocument":{{"uri":"{file_uri}","version":null}},"edits":[]}}]}}"#
+        ));
+        let proposal = WorkspaceEditProposal::admit_rename(&null_version, &fixture.root)
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(proposal.files[0].lsp_version, None);
+
+        for version in ["-1", "2147483648", "1.5", r#""bad""#] {
+            let result = raw(&format!(
+                r#"{{"documentChanges":[{{"textDocument":{{"uri":"{file_uri}","version":{version}}},"edits":[]}}]}}"#
+            ));
+            assert_eq!(
+                WorkspaceEditProposal::admit_rename(&result, &fixture.root),
+                Err(WorkspaceEditError::Malformed)
+            );
+        }
+        for body in [
+            r#"{"documentChanges":[null]}"#,
+            r#"{"documentChanges":[{"textDocument":null,"edits":[]}] }"#,
+            r#"{"documentChanges":[{"textDocument":{"uri":"file:///tmp/x"},"edits":[]}]}"#,
+            r#"{"documentChanges":[{"textDocument":{"uri":"file:///tmp/x","version":1},"edits":{},"extra":0}]}"#,
+        ] {
+            assert!(WorkspaceEditProposal::admit_rename(&raw(body), &fixture.root).is_err());
+        }
+        assert_eq!(
+            parse_file_edit(&fixture.root, "", None, &[]),
+            Err(WorkspaceEditError::UriTooLong)
+        );
+        assert_eq!(
+            parse_file_edit(&fixture.root, &"x".repeat(MAX_URI_BYTES + 1), None, &[]),
+            Err(WorkspaceEditError::UriTooLong)
+        );
+        for malformed in [
+            Value::Null,
+            serde_json::json!({"range": {}, "newText": "x", "extra": 1}),
+            serde_json::json!({"range": {}, "newText": "x"}),
+            serde_json::json!({
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 1}
+                },
+                "newText": 1
+            }),
+        ] {
+            assert!(parse_file_edit(&fixture.root, &file_uri, None, &[malformed]).is_err());
+        }
+    }
+
+    #[test]
+    fn proposal_aggregate_limits_are_enforced_before_publication() {
+        let fixture = Fixture::new();
+        let too_many_files = (0..=MAX_WORKSPACE_EDIT_FILES)
+            .map(|index| file_edit(fixture.root.join(format!("{index}.rs")), Vec::new()))
+            .collect();
+        assert_eq!(
+            WorkspaceEditProposal::finish(&fixture.root, too_many_files),
+            Err(WorkspaceEditError::TooManyFiles)
+        );
+        let changes = Value::Object(
+            (0..=MAX_WORKSPACE_EDIT_FILES)
+                .map(|index| (format!("file:///{index}"), Value::Array(Vec::new())))
+                .collect(),
+        );
+        assert_eq!(
+            parse_changes(&fixture.root, &changes),
+            Err(WorkspaceEditError::TooManyFiles)
+        );
+        assert_eq!(
+            parse_document_changes(
+                &fixture.root,
+                &Value::Array(vec![Value::Null; MAX_WORKSPACE_EDIT_FILES + 1])
+            ),
+            Err(WorkspaceEditError::TooManyFiles)
+        );
+
+        let one_edit = text_edit(0, 0, "");
+        let too_many_edits = (0..5)
+            .map(|index| {
+                let count = if index == 4 { 1 } else { MAX_FILE_EDITS };
+                file_edit(
+                    fixture.root.join(format!("edit-{index}.rs")),
+                    vec![one_edit.clone(); count],
+                )
+            })
+            .collect();
+        assert_eq!(
+            WorkspaceEditProposal::finish(&fixture.root, too_many_edits),
+            Err(WorkspaceEditError::TooManyEdits)
+        );
+        let inserted = file_edit(
+            fixture.root.join("inserted.rs"),
+            vec![text_edit(0, 0, &"x".repeat(MAX_INSERTED_TEXT_BYTES + 1))],
+        );
+        assert_eq!(
+            WorkspaceEditProposal::finish(&fixture.root, vec![inserted]),
+            Err(WorkspaceEditError::InsertedTextTooLarge)
+        );
+        assert_eq!(
+            checked_retention(MAX_RETAINED_BYTES),
+            Ok(MAX_RETAINED_BYTES)
+        );
+        assert_eq!(
+            checked_retention(MAX_RETAINED_BYTES + 1),
+            Err(WorkspaceEditError::RetentionExceeded)
+        );
+    }
+
+    #[test]
+    fn preparation_identity_file_totals_and_output_axes_are_exact() {
+        let fixture = Fixture::new();
+        let path = fixture.write("main.rs", "abcd\n");
+        assert_eq!(require_exact_path(&path, &path), Ok(()));
+        assert_eq!(
+            require_exact_path(&path, &fixture.root.join("other.rs")),
+            Err(WorkspaceEditError::StaleFile)
+        );
+        assert_eq!(checked_file_length(MAX_FILE_TEXT_BYTES as u64), Ok(()));
+        assert_eq!(
+            checked_file_length(MAX_FILE_TEXT_BYTES as u64 + 1),
+            Err(WorkspaceEditError::FileTooLarge)
+        );
+        assert_eq!(
+            read_file_text(&fixture.root.join("missing.rs")),
+            Err(WorkspaceEditError::FileUnavailable)
+        );
+        assert_eq!(
+            read_file_text(&fixture.root),
+            Err(WorkspaceEditError::FileUnavailable)
+        );
+        let invalid = fixture.write("invalid.rs", "valid");
+        assert!(fs::write(&invalid, [0xff]).is_ok());
+        assert_eq!(
+            read_file_text(&invalid),
+            Err(WorkspaceEditError::InvalidUtf8)
+        );
+        let oversized = fixture.root.join("oversized.rs");
+        let file = File::create(&oversized).unwrap_or_else(|_| unreachable!());
+        assert!(file.set_len(MAX_FILE_TEXT_BYTES as u64 + 1).is_ok());
+        assert_eq!(
+            read_file_text(&oversized),
+            Err(WorkspaceEditError::FileTooLarge)
+        );
+
+        assert_eq!(
+            checked_prepared_totals(MAX_PREPARED_TEXT_BYTES, 0, 0, 1, 0),
+            Err(WorkspaceEditError::RetentionExceeded)
+        );
+        assert_eq!(
+            checked_prepared_totals(0, MAX_RETAINED_BYTES, 0, 0, 1),
+            Err(WorkspaceEditError::RetentionExceeded)
+        );
+        assert_eq!(checked_output_length(4, 2, 1), Ok(3));
+        assert_eq!(
+            checked_output_length(0, 1, 0),
+            Err(WorkspaceEditError::RetentionExceeded)
+        );
+        assert_eq!(
+            checked_output_length(MAX_FILE_TEXT_BYTES, 0, 1),
+            Err(WorkspaceEditError::FileTooLarge)
+        );
+
+        let overlapping = file_edit(path, vec![text_edit(0, 2, "x"), text_edit(1, 3, "y")]);
+        assert_eq!(
+            prepare_file(&overlapping, String::from("abcd\n")),
+            Err(WorkspaceEditError::OverlappingEdits)
+        );
+    }
+
+    #[test]
+    fn workspace_root_identity_failures_are_structured() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new();
+        let file_root = fixture.write("root-file", "x");
+        assert_eq!(
+            canonical_workspace_root(&file_root),
+            Err(WorkspaceEditError::LocalPath(
+                NavigationError::WorkspaceUnavailable
+            ))
+        );
+        assert_eq!(
+            canonical_workspace_root(&fixture.root.join("missing")),
+            Err(WorkspaceEditError::LocalPath(
+                NavigationError::WorkspaceUnavailable
+            ))
+        );
+        let link = fixture.root.with_extension("root-link");
+        let _ = fs::remove_file(&link);
+        assert!(symlink(&fixture.root, &link).is_ok());
+        assert_eq!(
+            canonical_workspace_root(&link),
+            Err(WorkspaceEditError::LocalPath(
+                NavigationError::WorkspaceSymlink
+            ))
+        );
+        assert!(fs::remove_file(link).is_ok());
+    }
+
+    #[cfg(not(miri))]
+    #[test]
+    fn prepared_aggregate_ceiling_rejects_before_publication() {
+        let fixture = Fixture::new();
+        let file_length = MAX_PREPARED_TEXT_BYTES as u64 / 4 + 1;
+        let mut files = Vec::new();
+        for name in ["first.rs", "second.rs"] {
+            let path = fixture.root.join(name);
+            let file = File::create(&path).unwrap_or_else(|_| unreachable!());
+            assert!(file.set_len(file_length).is_ok());
+            files.push(file_edit(
+                fs::canonicalize(path).unwrap_or_else(|_| unreachable!()),
+                Vec::new(),
+            ));
+        }
+        let proposal = WorkspaceEditProposal {
+            workspace_root: fs::canonicalize(&fixture.root).unwrap_or_else(|_| unreachable!()),
+            files: files.into_boxed_slice(),
+            retained_bytes: 0,
+        };
+        assert_eq!(
+            proposal.prepare(),
+            Err(WorkspaceEditError::RetentionExceeded)
         );
     }
 
