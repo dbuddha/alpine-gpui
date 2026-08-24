@@ -2258,8 +2258,12 @@ fn rust_navigation_file_admission_and_document_state_fail_closed()
     let root = TestWorkspace::new()?;
     root.write("main.rs", "fn main() {}\n")?;
     root.write("other.rs", "fn other() {}\n")?;
+    let mut deep_source = String::from("zero\none\ntwo\nfn deep() {}\n");
+    deep_source.push_str(&"tail\n".repeat(40));
+    root.write("deep.rs", &deep_source)?;
     let main = fs::canonicalize(root.path().join("main.rs"))?;
     let other = fs::canonicalize(root.path().join("other.rs"))?;
+    let deep = fs::canonicalize(root.path().join("deep.rs"))?;
     let location = |path: &Path, line: u32| -> Result<SourceLocation, Box<dyn std::error::Error>> {
         let value = serde_json::value::RawValue::from_string(format!(
             r#"{{"uri":"file://{}","range":{{"start":{{"line":{line},"character":0}},"end":{{"line":{line},"character":2}}}}}}"#,
@@ -2291,6 +2295,12 @@ fn rust_navigation_file_admission_and_document_state_fail_closed()
         app.tabs.path_at(app.tabs.active_index()),
         Some(main.as_path())
     );
+    assert!(
+        app.navigate_to_source_location(&location(&deep, 3)?)?
+            .document_identity_advanced
+    );
+    assert_eq!(app.scroll_y.to_bits(), (2.0 * LINE_HEIGHT).to_bits());
+    assert_eq!(app.buffer().snapshot().slice(app.selection.range())?, "fn");
 
     let invalid_range = location(&main, 99)?;
     assert!(matches!(

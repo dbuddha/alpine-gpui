@@ -2882,16 +2882,9 @@ impl StudioApp {
             .hover_visible_line_count(language_identity);
         if hover_row_count > 0 {
             let row_count = hover_row_count;
-            let width = 520.0_f32.min((content_size.width() - CONTENT_INSET * 2.0).max(1.0));
-            let height = usize_as_f32(row_count) * LINE_HEIGHT;
-            let top = (active_pane.bounds.origin().y() + TAB_BAR_HEIGHT + CONTENT_INSET)
-                .min((active_pane.bounds.origin().y() + content_size.height() - height).max(0.0));
-            let left = (editor_origin_x + CONTENT_INSET)
-                .min((editor_origin_x + content_size.width() - width).max(editor_origin_x));
-            let overlay_origin = Point::new(left, top).ok_or(StudioRenderError::Domain)?;
-            let overlay_size =
-                Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
-            let overlay_bounds = Rect::new(overlay_origin, overlay_size);
+            let overlay_bounds = Self::language_overlay_bounds(active_pane.bounds, row_count)?;
+            let left = overlay_bounds.origin().x();
+            let top = overlay_bounds.origin().y();
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
             let background =
                 Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
@@ -2919,16 +2912,10 @@ impl StudioApp {
             .navigation_visible_range(language_identity)
         {
             let row_count = rows.len();
-            let width = 520.0_f32.min((content_size.width() - CONTENT_INSET * 2.0).max(1.0));
-            let height = usize_as_f32(row_count) * LINE_HEIGHT;
-            let top = (active_pane.bounds.origin().y() + TAB_BAR_HEIGHT + CONTENT_INSET)
-                .min((active_pane.bounds.origin().y() + content_size.height() - height).max(0.0));
-            let left = (editor_origin_x + CONTENT_INSET)
-                .min((editor_origin_x + content_size.width() - width).max(editor_origin_x));
-            let overlay_origin = Point::new(left, top).ok_or(StudioRenderError::Domain)?;
-            let overlay_size =
-                Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
-            let overlay_bounds = Rect::new(overlay_origin, overlay_size);
+            let overlay_bounds = Self::language_overlay_bounds(active_pane.bounds, row_count)?;
+            let left = overlay_bounds.origin().x();
+            let top = overlay_bounds.origin().y();
+            let width = overlay_bounds.size().width();
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
             let background =
                 Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
@@ -3209,6 +3196,23 @@ impl StudioApp {
         self.rendered_lines = rendered_lines;
         self.publish_accessibility_projection();
         Ok(builder.finish())
+    }
+
+    fn language_overlay_bounds(
+        pane_bounds: Rect,
+        row_count: usize,
+    ) -> Result<Rect, StudioRenderError> {
+        let content_size = pane_bounds.size();
+        let editor_origin_x = pane_bounds.origin().x();
+        let width = 520.0_f32.min((content_size.width() - CONTENT_INSET * 2.0).max(1.0));
+        let height = usize_as_f32(row_count) * LINE_HEIGHT;
+        let top = (pane_bounds.origin().y() + TAB_BAR_HEIGHT + CONTENT_INSET)
+            .min((pane_bounds.origin().y() + content_size.height() - height).max(0.0));
+        let left = (editor_origin_x + CONTENT_INSET)
+            .min((editor_origin_x + content_size.width() - width).max(editor_origin_x));
+        let origin = Point::new(left, top).ok_or(StudioRenderError::Domain)?;
+        let size = Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
+        Ok(Rect::new(origin, size))
     }
 
     #[allow(

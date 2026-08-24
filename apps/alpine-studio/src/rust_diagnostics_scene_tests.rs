@@ -67,6 +67,48 @@ fn assert_invalid_diagnostic_origin(app: &mut StudioApp, viewport: Size) {
 }
 
 #[test]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact boundary geometry distinguishes every overlay arithmetic mutation"
+)]
+fn language_overlay_geometry_is_exact_at_normal_and_constrained_bounds()
+-> Result<(), StudioRenderError> {
+    let normal = Rect::new(
+        Point::new(20.0, 10.0).ok_or(StudioRenderError::Domain)?,
+        Size::new(400.0, 360.0).ok_or(StudioRenderError::Domain)?,
+    );
+    assert_eq!(
+        StudioApp::language_overlay_bounds(normal, 2)?,
+        Rect::new(
+            Point::new(44.0, 58.0).ok_or(StudioRenderError::Domain)?,
+            Size::new(352.0, 44.0).ok_or(StudioRenderError::Domain)?,
+        )
+    );
+
+    let bottom_limited = Rect::new(
+        Point::new(20.0, 10.0).ok_or(StudioRenderError::Domain)?,
+        Size::new(400.0, 70.0).ok_or(StudioRenderError::Domain)?,
+    );
+    assert_eq!(
+        StudioApp::language_overlay_bounds(bottom_limited, 2)?.origin(),
+        Point::new(44.0, 36.0).ok_or(StudioRenderError::Domain)?
+    );
+
+    let constrained = Rect::new(
+        Point::new(5.0, 0.0).ok_or(StudioRenderError::Domain)?,
+        Size::new(10.0, 20.0).ok_or(StudioRenderError::Domain)?,
+    );
+    assert_eq!(
+        StudioApp::language_overlay_bounds(constrained, 1)?,
+        Rect::new(
+            Point::new(14.0, 0.0).ok_or(StudioRenderError::Domain)?,
+            Size::new(1.0, LINE_HEIGHT).ok_or(StudioRenderError::Domain)?,
+        )
+    );
+    Ok(())
+}
+
+#[test]
 #[cfg(unix)]
 #[allow(
     clippy::too_many_lines,
@@ -110,6 +152,43 @@ fn navigation_overlay_keyboard_and_accessibility_use_validated_product_paths()
     )?;
     let hover_scene = app.scene(SceneRevision::new(2), viewport);
     assert_eq!(hover_scene.quads().len(), baseline.quads().len() + 1);
+    let pane = app
+        .panes
+        .layout(app.editor_region(viewport)?)?
+        .active()
+        .ok_or("active pane")?
+        .bounds;
+    let hover_bounds = StudioApp::language_overlay_bounds(pane, 2)?;
+    let hover_clip = hover_scene
+        .clips()
+        .iter()
+        .position(|clip| clip.bounds() == hover_bounds)
+        .ok_or("hover clip")?;
+    assert!(hover_scene.quads().iter().any(|quad| {
+        quad.bounds() == hover_bounds && quad.clip().is_some_and(|clip| clip.index() == hover_clip)
+    }));
+    for row in 0..2 {
+        let expected = Point::new(
+            hover_bounds.origin().x() + FIND_BAR_INSET,
+            hover_bounds.origin().y() + usize_as_f32(row) * LINE_HEIGHT + 15.0,
+        )
+        .ok_or("hover glyph origin")?;
+        let first = hover_scene
+            .glyphs()
+            .iter()
+            .filter(|glyph| {
+                glyph.clip().is_some_and(|clip| clip.index() == hover_clip)
+                    && glyph.bounds().origin().y().to_bits() == expected.y().to_bits()
+            })
+            .min_by(|left, right| {
+                left.bounds()
+                    .origin()
+                    .x()
+                    .total_cmp(&right.bounds().origin().x())
+            })
+            .ok_or("hover row glyph")?;
+        assert_eq!(first.bounds().origin(), expected);
+    }
     let hover_snapshot = app.accessibility_snapshot()?;
     assert!(hover_snapshot.nodes().iter().any(|node| {
         node.role() == AccessibilityRole::Dialog
@@ -128,6 +207,46 @@ fn navigation_overlay_keyboard_and_accessibility_use_validated_product_paths()
     )?;
     let location_scene = app.scene(SceneRevision::new(3), viewport);
     assert_eq!(location_scene.quads().len(), baseline.quads().len() + 2);
+    let location_bounds = StudioApp::language_overlay_bounds(pane, 2)?;
+    let location_clip = location_scene
+        .clips()
+        .iter()
+        .position(|clip| clip.bounds() == location_bounds)
+        .ok_or("location clip")?;
+    let selected_bounds = Rect::new(
+        location_bounds.origin(),
+        Size::new(location_bounds.size().width(), LINE_HEIGHT).ok_or("selected size")?,
+    );
+    assert!(location_scene.quads().iter().any(|quad| {
+        quad.bounds() == selected_bounds
+            && quad
+                .clip()
+                .is_some_and(|clip| clip.index() == location_clip)
+    }));
+    for row in 0..2 {
+        let expected = Point::new(
+            location_bounds.origin().x() + FIND_BAR_INSET,
+            location_bounds.origin().y() + usize_as_f32(row) * LINE_HEIGHT + 15.0,
+        )
+        .ok_or("location glyph origin")?;
+        let first = location_scene
+            .glyphs()
+            .iter()
+            .filter(|glyph| {
+                glyph
+                    .clip()
+                    .is_some_and(|clip| clip.index() == location_clip)
+                    && glyph.bounds().origin().y().to_bits() == expected.y().to_bits()
+            })
+            .min_by(|left, right| {
+                left.bounds()
+                    .origin()
+                    .x()
+                    .total_cmp(&right.bounds().origin().x())
+            })
+            .ok_or("location row glyph")?;
+        assert_eq!(first.bounds().origin(), expected);
+    }
     let location_snapshot = app.accessibility_snapshot()?;
     let navigation = location_snapshot
         .nodes()
@@ -174,6 +293,18 @@ fn navigation_overlay_keyboard_and_accessibility_use_validated_product_paths()
         app.handle_navigation_key(KEY_ESCAPE, false)
             .is_some_and(|effect| effect.visual_changed)
     );
+    app.rust_diagnostics.install_navigation_for_test(
+        app.language_identity(),
+        NavigationRequestKind::References,
+        &locations,
+    )?;
+    let next_epoch = InputEpoch::INITIAL.checked_next().ok_or("input epoch")?;
+    assert!(app.handle_focus(next_epoch, false).visual_changed);
+    assert!(
+        !app.rust_diagnostics
+            .navigation_is_open(app.language_identity())
+    );
+    assert!(app.handle_focus(next_epoch, true).visual_changed);
     assert_eq!(app.apply_selected_navigation(), EventEffect::default());
     for command in [
         StudioCommand::ShowRustHover,
