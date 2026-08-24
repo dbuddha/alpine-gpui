@@ -312,6 +312,419 @@ fn install_pending_completion(
     Ok(pending)
 }
 
+fn install_pending_navigation(
+    model: &mut RustDiagnostics,
+    request_id: u32,
+    kind: NavigationRequestKind,
+) -> Result<PendingNavigation, Box<dyn Error>> {
+    let session = model.session.as_mut().ok_or("session")?;
+    let pending = PendingNavigation {
+        request_id,
+        stamp: session.identity.request_stamp().ok_or("request stamp")?,
+        kind,
+        identity: session.identity,
+        process_epoch: session.process_epoch,
+        lsp_version: session.lsp_version,
+    };
+    session.pending_navigation = Some(pending);
+    Ok(pending)
+}
+
+fn hover_candidate() -> Result<NavigationCandidate, Box<dyn Error>> {
+    let result = completion_result(r#"{"contents":"bounded hover"}"#)?;
+    Ok(NavigationCandidate::Hover(Ok(Some(
+        HoverContent::admit(&result)?.ok_or("hover")?,
+    ))))
+}
+
+fn location_candidate(count: usize) -> Result<NavigationCandidate, Box<dyn Error>> {
+    let locations = (0..count)
+        .map(|index| {
+            format!(
+                r#"{{"uri":"file:///tmp/source-{index}.rs","range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":1}}}}}}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let result = completion_result(&format!("[{locations}]"))?;
+    Ok(NavigationCandidate::Locations(Ok(SourceLocations::admit(
+        &result,
+    )?)))
+}
+
+#[test]
+fn navigation_request_guards_and_cancellation_errors_accumulate_visual_state()
+-> Result<(), Box<dyn Error>> {
+    let position = LspPosition::new(0, 0)?;
+    let mut absent = RustDiagnostics::default();
+    assert!(
+        absent
+            .request_navigation(NavigationRequestKind::Hover, position)
+            .visual_changed
+    );
+    assert!(absent.status_message().is_some());
+    assert!(
+        !absent
+            .request_navigation(NavigationRequestKind::Hover, position)
+            .visual_changed
+    );
+
+    let (mut starting, _, root) = installed_model()?;
+    starting.session.as_mut().ok_or("session")?.state = SessionState::Starting;
+    assert!(
+        starting
+            .request_navigation(NavigationRequestKind::Definition, position)
+            .visual_changed
+    );
+    assert!(starting.status_message().is_some());
+    assert!(
+        !starting
+            .request_navigation(NavigationRequestKind::Definition, position)
+            .visual_changed
+    );
+
+    let (mut invalid, input, root_three) = installed_model()?;
+    invalid
+        .session
+        .as_mut()
+        .ok_or("session")?
+        .identity
+        .document_revision = 0;
+    assert!(
+        invalid
+            .request_navigation(NavigationRequestKind::References, position)
+            .visual_changed
+    );
+    invalid.session.as_mut().ok_or("session")?.identity = input.identity;
+    assert!(
+        invalid
+            .request_navigation(NavigationRequestKind::References, position)
+            .visual_changed
+    );
+
+    let (mut changed, input, root_four) = installed_model()?;
+    let _ = install_pending_navigation(&mut changed, 31, NavigationRequestKind::Hover)?;
+    let mut newer = input;
+    newer.identity.selection_revision += 1;
+    let _ = changed.sync(Some(newer), |_| Arc::new(|| {}));
+    assert_eq!(changed.snapshot().navigation_cancellations, 1);
+
+    let (mut cancellation_error, _, root_two) = installed_model()?;
+    let _ = install_pending_navigation(
+        &mut cancellation_error,
+        u32::MAX,
+        NavigationRequestKind::Hover,
+    )?;
+    assert!(cancellation_error.cancel_navigation());
+    assert!(cancellation_error.status_message().is_some());
+    assert!(!cancellation_error.snapshot().navigation_pending);
+
+    for model in [
+        &mut starting,
+        &mut invalid,
+        &mut changed,
+        &mut cancellation_error,
+    ] {
+        assert!(!model.shutdown().active);
+    }
+    for directory in [root, root_two, root_three, root_four] {
+        std::fs::remove_dir_all(directory)?;
+    }
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one matrix keeps navigation methods, error admissions, observers, and bounded window edges discriminating"
+)]
+fn navigation_empty_error_observer_and_window_paths_are_discriminating()
+-> Result<(), Box<dyn Error>> {
+    assert_eq!(
+        NavigationRequestKind::from_method("textDocument/hover"),
+        Some(NavigationRequestKind::Hover)
+    );
+    assert_eq!(
+        NavigationRequestKind::from_method("textDocument/definition"),
+        Some(NavigationRequestKind::Definition)
+    );
+    assert_eq!(
+        NavigationRequestKind::from_method("textDocument/references"),
+        Some(NavigationRequestKind::References)
+    );
+    assert_eq!(NavigationRequestKind::from_method("test/echo"), None);
+    assert_eq!(
+        NavigationRequestKind::Hover.empty_status(),
+        "No Rust hover information."
+    );
+    assert_eq!(
+        NavigationRequestKind::References.empty_status(),
+        "No Rust references found."
+    );
+    assert_eq!(NavigationRequestKind::Hover.label(), "Rust hover");
+    assert_eq!(NavigationRequestKind::Definition.label(), "Rust definition");
+    assert!(matches!(
+        navigation_from_response(
+            NavigationRequestKind::Hover,
+            ResponseValue::error_for_test()
+        ),
+        NavigationCandidate::Hover(Err(NavigationError::Malformed))
+    ));
+    assert!(matches!(
+        navigation_from_response(
+            NavigationRequestKind::Definition,
+            ResponseValue::error_for_test()
+        ),
+        NavigationCandidate::Locations(Err(NavigationError::Malformed))
+    ));
+
+    let (_, _, _, identity) = tests::fixture();
+    let stamp = identity.request_stamp().ok_or("request stamp")?;
+    let mut absent = RustDiagnostics::default();
+    assert!(!absent.admit_navigation(1, stamp, NavigationRequestKind::Hover, hover_candidate()?));
+    assert!(!absent.reject_stale_navigation(1));
+    assert!(!absent.navigate_navigation(1));
+
+    let (mut model, input, root) = installed_model()?;
+    assert!(!model.admit_navigation(2, stamp, NavigationRequestKind::Hover, hover_candidate()?));
+    let pending = install_pending_navigation(&mut model, 3, NavigationRequestKind::Hover)?;
+    assert!(model.admit_navigation(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        NavigationCandidate::Hover(Ok(None))
+    ));
+    assert_eq!(
+        model.status_message().as_deref(),
+        Some("No Rust hover information.")
+    );
+    let pending = install_pending_navigation(&mut model, 4, NavigationRequestKind::References)?;
+    assert!(model.admit_navigation(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        location_candidate(0)?
+    ));
+    assert_eq!(
+        model.status_message().as_deref(),
+        Some("No Rust references found.")
+    );
+    for (id, candidate) in [
+        (
+            5,
+            NavigationCandidate::Hover(Err(NavigationError::Malformed)),
+        ),
+        (
+            6,
+            NavigationCandidate::Locations(Err(NavigationError::Malformed)),
+        ),
+    ] {
+        let kind = if id == 5 {
+            NavigationRequestKind::Hover
+        } else {
+            NavigationRequestKind::Definition
+        };
+        let pending = install_pending_navigation(&mut model, id, kind)?;
+        assert_eq!(
+            model.admit_navigation(pending.request_id, pending.stamp, pending.kind, candidate),
+            id == 5
+        );
+        assert!(
+            model
+                .status_message()
+                .is_some_and(|message| message.contains("Navigation"))
+        );
+    }
+
+    let empty_hover = completion_result(r#"{"contents":[]}"#)?;
+    assert_eq!(
+        model.install_navigation_for_test(
+            input.identity,
+            NavigationRequestKind::Hover,
+            &empty_hover
+        ),
+        Err(NavigationError::Malformed)
+    );
+    let empty_locations = completion_result("[]")?;
+    assert_eq!(
+        model.install_navigation_for_test(
+            input.identity,
+            NavigationRequestKind::Definition,
+            &empty_locations
+        ),
+        Err(NavigationError::Malformed)
+    );
+    let mut wrong = input.identity;
+    wrong.selection_revision += 1;
+    assert_eq!(
+        model.install_navigation_for_test(
+            wrong,
+            NavigationRequestKind::Hover,
+            &completion_result(r#"{"contents":"hover"}"#)?
+        ),
+        Err(NavigationError::Malformed)
+    );
+
+    let hover = completion_result(r#"{"contents":"hover"}"#)?;
+    model.install_navigation_for_test(input.identity, NavigationRequestKind::Hover, &hover)?;
+    assert_eq!(model.navigation_visible_range(input.identity), None);
+    assert!(model.navigation_row(input.identity, 0).is_none());
+    assert_eq!(model.selected_source_location(input.identity), None);
+    assert!(!model.navigate_navigation(1));
+
+    let many = location_candidate(crate::rust_navigation::MAX_VISIBLE_SOURCE_LOCATIONS + 2)?;
+    let NavigationCandidate::Locations(Ok(many)) = many else {
+        return Err("locations candidate".into());
+    };
+    model.install_navigation_for_test(
+        input.identity,
+        NavigationRequestKind::Definition,
+        &completion_result(&serde_json::to_string(
+            &(0..crate::rust_navigation::MAX_VISIBLE_SOURCE_LOCATIONS + 2)
+                .map(|index| {
+                    serde_json::json!({
+                        "uri": format!("file:///tmp/window-{index}.rs"),
+                        "range": {
+                            "start": { "line": 0, "character": 0 },
+                            "end": { "line": 0, "character": 1 }
+                        }
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?)?,
+    )?;
+    assert_eq!(
+        many.locations().len(),
+        crate::rust_navigation::MAX_VISIBLE_SOURCE_LOCATIONS + 2
+    );
+    assert!(!model.navigate_navigation(0));
+    assert!(!model.navigate_navigation(-1));
+    for _ in 0..=crate::rust_navigation::MAX_VISIBLE_SOURCE_LOCATIONS {
+        assert!(model.navigate_navigation(1));
+    }
+    assert_eq!(
+        model.navigation_visible_range(input.identity),
+        Some(2..crate::rust_navigation::MAX_VISIBLE_SOURCE_LOCATIONS + 2)
+    );
+    assert!(model.navigate_navigation(isize::MIN));
+    assert_eq!(model.navigation_visible_range(input.identity), Some(0..12));
+
+    let pending = install_pending_navigation(&mut model, 7, NavigationRequestKind::Hover)?;
+    assert!(!model.reject_stale_navigation(pending.request_id));
+    assert!(!model.snapshot().navigation_pending);
+    let _ = model.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn navigation_admission_rejects_each_identity_axis_and_counts_exact_results()
+-> Result<(), Box<dyn Error>> {
+    let (mut model, input, root) = installed_model()?;
+
+    let pending = install_pending_navigation(&mut model, 40, NavigationRequestKind::Hover)?;
+    assert!(!model.admit_navigation(
+        pending.request_id + 1,
+        pending.stamp,
+        pending.kind,
+        hover_candidate()?
+    ));
+
+    let pending = install_pending_navigation(&mut model, 41, NavigationRequestKind::Hover)?;
+    let mut other_identity = pending.identity;
+    other_identity.selection_revision += 1;
+    assert!(!model.admit_navigation(
+        pending.request_id,
+        other_identity.request_stamp().ok_or("other stamp")?,
+        pending.kind,
+        hover_candidate()?
+    ));
+
+    let pending = install_pending_navigation(&mut model, 42, NavigationRequestKind::Hover)?;
+    assert!(!model.admit_navigation(
+        pending.request_id,
+        pending.stamp,
+        NavigationRequestKind::Definition,
+        hover_candidate()?
+    ));
+
+    let mut pending = install_pending_navigation(&mut model, 43, NavigationRequestKind::Hover)?;
+    pending.identity.selection_revision += 1;
+    model.session.as_mut().ok_or("session")?.pending_navigation = Some(pending);
+    assert!(!model.admit_navigation(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        hover_candidate()?
+    ));
+
+    let mut pending = install_pending_navigation(&mut model, 44, NavigationRequestKind::Hover)?;
+    pending.process_epoch += 1;
+    model.session.as_mut().ok_or("session")?.pending_navigation = Some(pending);
+    assert!(!model.admit_navigation(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        hover_candidate()?
+    ));
+
+    let mut pending = install_pending_navigation(&mut model, 45, NavigationRequestKind::Hover)?;
+    pending.lsp_version += 1;
+    model.session.as_mut().ok_or("session")?.pending_navigation = Some(pending);
+    assert!(!model.admit_navigation(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        hover_candidate()?
+    ));
+    assert_eq!(model.snapshot().stale_navigation, 6);
+
+    let pending = install_pending_navigation(&mut model, 46, NavigationRequestKind::Definition)?;
+    assert!(model.admit_navigation(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        location_candidate(0)?
+    ));
+    assert!(!model.navigation_is_open(input.identity));
+    assert_eq!(
+        model.status_message().as_deref(),
+        Some("No Rust definition found.")
+    );
+
+    let pending = install_pending_navigation(&mut model, 47, NavigationRequestKind::Definition)?;
+    assert!(model.admit_navigation(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        location_candidate(1)?
+    ));
+    assert_eq!(model.snapshot().navigation_truncations, 0);
+
+    let pending = install_pending_navigation(&mut model, 48, NavigationRequestKind::References)?;
+    assert!(model.admit_navigation(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        location_candidate(crate::rust_navigation::MAX_SOURCE_LOCATIONS + 1)?
+    ));
+    assert_eq!(model.snapshot().navigation_truncations, 1);
+    assert!(model.reject_stale_navigation(pending.request_id));
+    assert!(!model.navigation_is_open(input.identity));
+
+    let hover = completion_result(r#"{"contents":"identity"}"#)?;
+    model.install_navigation_for_test(input.identity, NavigationRequestKind::Hover, &hover)?;
+    model.session.as_mut().ok_or("session")?.process_epoch += 1;
+    assert!(!model.navigation_is_open(input.identity));
+    model.session.as_mut().ok_or("session")?.process_epoch -= 1;
+    model.session.as_mut().ok_or("session")?.lsp_version += 1;
+    assert!(!model.navigation_is_open(input.identity));
+
+    assert!(!model.shutdown().active);
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 #[test]
 fn completion_guards_navigation_and_admission_are_discriminating() -> Result<(), Box<dyn Error>> {
     let (root, _, snapshot, identity) = tests::fixture();
@@ -499,12 +912,23 @@ fn successful_completion_request_clears_status_and_reports_visual_change()
 -> Result<(), Box<dyn Error>> {
     let (mut model, root) = installed_process_model()?;
     let _wake = wait_for_running_peer(&mut model)?;
+    let identity = model.session.as_ref().ok_or("session")?.identity;
+    let hover = completion_result(r#"{"contents":"completion supersedes hover"}"#)?;
+    model.install_navigation_for_test(identity, NavigationRequestKind::Hover, &hover)?;
+    assert!(model.navigation_is_open(identity));
+    let cancellation = model.request_completion(LspPosition::new(0, 0)?);
+    assert!(cancellation.visual_changed);
+    assert!(!model.navigation_is_open(identity));
+    assert!(model.snapshot().completion_pending);
+    let _ = model.cancel_completion();
+    assert!(!model.snapshot().completion_pending);
+
     model.status = Some(Arc::from("old completion status"));
     let effect = model.request_completion(LspPosition::new(0, 0)?);
     assert!(effect.visual_changed);
     assert_eq!(model.status_message(), None);
     assert!(model.snapshot().completion_pending);
-    assert_eq!(model.snapshot().completion_requests, 1);
+    assert_eq!(model.snapshot().completion_requests, 2);
     let _ = model.shutdown();
     std::fs::remove_dir_all(root)?;
     Ok(())

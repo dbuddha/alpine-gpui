@@ -57,6 +57,7 @@ mod quick_open;
 mod recovery;
 mod rust_completion;
 mod rust_diagnostics;
+mod rust_navigation;
 mod session;
 #[cfg_attr(
     not(test),
@@ -131,7 +132,11 @@ use quick_open::{
 use rust_completion::{MAX_VISIBLE_COMPLETION_ROWS, position_for_byte};
 use rust_diagnostics::{
     CompletionApplication, LanguageEffect, LanguageIdentity, LanguageWake, LanguageWakeLatch,
-    MAX_VISIBLE_DIAGNOSTIC_MARKERS, RustDiagnostics, RustDocumentInput,
+    MAX_VISIBLE_DIAGNOSTIC_MARKERS, NavigationRequestKind, RustDiagnostics, RustDocumentInput,
+};
+use rust_navigation::{
+    MAX_VISIBLE_HOVER_LINES, MAX_VISIBLE_SOURCE_LOCATIONS, NavigationError, ResolvedSourceLocation,
+    SourceLocation,
 };
 #[cfg(all(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
 use settings::FONT_FAMILY;
@@ -1306,6 +1311,7 @@ enum WorkspaceSelectionError {
     File(FileError),
     QuickOpen(QuickOpenError),
     ProjectSearch(ProjectSearchError),
+    RustNavigation(NavigationError),
 }
 
 impl fmt::Display for WorkspaceSelectionError {
@@ -1319,6 +1325,7 @@ impl fmt::Display for WorkspaceSelectionError {
             Self::File(error) => write!(formatter, "workspace file failed: {error}"),
             Self::QuickOpen(error) => write!(formatter, "quick open failed: {error}"),
             Self::ProjectSearch(error) => write!(formatter, "project search failed: {error}"),
+            Self::RustNavigation(error) => write!(formatter, "Rust navigation failed: {error}"),
         }
     }
 }
@@ -1331,6 +1338,7 @@ impl Error for WorkspaceSelectionError {
             Self::Tabs(error) => Some(error),
             Self::QuickOpen(error) => Some(error),
             Self::ProjectSearch(error) => Some(error),
+            Self::RustNavigation(error) => Some(error),
             Self::NoWorkspace | Self::DirtyDocument | Self::RevisionExhausted => None,
         }
     }
@@ -1701,7 +1709,8 @@ fn classify_session_document_error(error: &WorkspaceSelectionError) -> SessionRe
         | WorkspaceSelectionError::RevisionExhausted
         | WorkspaceSelectionError::Workspace(_)
         | WorkspaceSelectionError::QuickOpen(_)
-        | WorkspaceSelectionError::ProjectSearch(_) => SessionRestoreError::Invalid,
+        | WorkspaceSelectionError::ProjectSearch(_)
+        | WorkspaceSelectionError::RustNavigation(_) => SessionRestoreError::Invalid,
     }
 }
 
@@ -2868,6 +2877,75 @@ impl StudioApp {
             }
             debug_assert!(row_count <= MAX_VISIBLE_COMPLETION_ROWS);
         }
+        let hover_row_count = self
+            .rust_diagnostics
+            .hover_visible_line_count(language_identity);
+        if hover_row_count > 0 {
+            let row_count = hover_row_count;
+            let overlay_bounds = Self::language_overlay_bounds(active_pane.bounds, row_count)?;
+            let left = overlay_bounds.origin().x();
+            let top = overlay_bounds.origin().y();
+            let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
+            let background =
+                Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.push_quad(background)?;
+            for row in 0..row_count {
+                let line = self
+                    .rust_diagnostics
+                    .hover_line(language_identity, row)
+                    .ok_or(StudioRenderError::Domain)?;
+                let layout = self.text_system.shape(line, font)?;
+                let baseline = top + usize_as_f32(row) * LINE_HEIGHT + layout.ascent() + 3.0;
+                let glyphs = self.collect_glyphs(
+                    &layout,
+                    font,
+                    left + FIND_BAR_INSET,
+                    baseline,
+                    overlay_clip,
+                )?;
+                pending_glyphs.extend(glyphs);
+            }
+            debug_assert!(row_count <= MAX_VISIBLE_HOVER_LINES);
+        }
+        if let Some(rows) = self
+            .rust_diagnostics
+            .navigation_visible_range(language_identity)
+        {
+            let row_count = rows.len();
+            let overlay_bounds = Self::language_overlay_bounds(active_pane.bounds, row_count)?;
+            let left = overlay_bounds.origin().x();
+            let top = overlay_bounds.origin().y();
+            let width = overlay_bounds.size().width();
+            let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
+            let background =
+                Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.push_quad(background)?;
+            for (visible_row, index) in rows.enumerate() {
+                let row = self
+                    .rust_diagnostics
+                    .navigation_row(language_identity, index)
+                    .ok_or(StudioRenderError::Domain)?;
+                let row_top = top + usize_as_f32(visible_row) * LINE_HEIGHT;
+                if row.selected {
+                    let origin = Point::new(left, row_top).ok_or(StudioRenderError::Domain)?;
+                    let size = Size::new(width, LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
+                    let selected = Quad::new(Rect::new(origin, size), command_palette_selected)
+                        .clipped(overlay_clip);
+                    builder.push_quad(selected)?;
+                }
+                let layout = self.text_system.shape(row.label, font)?;
+                let baseline = row_top + layout.ascent() + 3.0;
+                let glyphs = self.collect_glyphs(
+                    &layout,
+                    font,
+                    left + FIND_BAR_INSET,
+                    baseline,
+                    overlay_clip,
+                )?;
+                pending_glyphs.extend(glyphs);
+            }
+            debug_assert!(row_count <= MAX_VISIBLE_SOURCE_LOCATIONS);
+        }
         if self.find.is_open() {
             let width = FIND_BAR_WIDTH.min(content_size.width());
             let left = (active_pane.bounds.origin().x() + content_size.width() - width)
@@ -3118,6 +3196,23 @@ impl StudioApp {
         self.rendered_lines = rendered_lines;
         self.publish_accessibility_projection();
         Ok(builder.finish())
+    }
+
+    fn language_overlay_bounds(
+        pane_bounds: Rect,
+        row_count: usize,
+    ) -> Result<Rect, StudioRenderError> {
+        let content_size = pane_bounds.size();
+        let editor_origin_x = pane_bounds.origin().x();
+        let width = 520.0_f32.min((content_size.width() - CONTENT_INSET * 2.0).max(1.0));
+        let height = usize_as_f32(row_count) * LINE_HEIGHT;
+        let top = (pane_bounds.origin().y() + TAB_BAR_HEIGHT + CONTENT_INSET)
+            .min((pane_bounds.origin().y() + content_size.height() - height).max(0.0));
+        let left = (editor_origin_x + CONTENT_INSET)
+            .min((editor_origin_x + content_size.width() - width).max(editor_origin_x));
+        let origin = Point::new(left, top).ok_or(StudioRenderError::Domain)?;
+        let size = Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
+        Ok(Rect::new(origin, size))
     }
 
     #[allow(
@@ -3657,6 +3752,46 @@ impl StudioApp {
         }
     }
 
+    fn handle_navigation_key(&mut self, physical_key: u16, command: bool) -> Option<EventEffect> {
+        if !self
+            .rust_diagnostics
+            .navigation_is_open(self.language_identity())
+        {
+            return None;
+        }
+        match physical_key {
+            KEY_ESCAPE => Some(
+                self.rust_diagnostics
+                    .cancel_navigation()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default(),
+            ),
+            KEY_UP if !command => Some(
+                self.rust_diagnostics
+                    .navigate_navigation(-1)
+                    .then(EventEffect::visual)
+                    .unwrap_or_default(),
+            ),
+            KEY_DOWN if !command => Some(
+                self.rust_diagnostics
+                    .navigate_navigation(1)
+                    .then(EventEffect::visual)
+                    .unwrap_or_default(),
+            ),
+            KEY_RETURN if !command => Some(self.apply_selected_navigation()),
+            _ => None,
+        }
+    }
+
+    fn handle_language_overlay_key(
+        &mut self,
+        physical_key: u16,
+        command: bool,
+    ) -> Option<EventEffect> {
+        self.handle_navigation_key(physical_key, command)
+            .or_else(|| self.handle_completion_key(physical_key, command))
+    }
+
     fn handle_key(&mut self, physical_key: u16, modifiers: Modifiers) -> EventEffect {
         let command = modifiers.contains(Modifiers::COMMAND);
         let shift = modifiers.contains(Modifiers::SHIFT);
@@ -3666,7 +3801,7 @@ impl StudioApp {
             .active()
             .keymap
             .resolve(physical_key, modifiers);
-        if let Some(effect) = self.handle_completion_key(physical_key, command) {
+        if let Some(effect) = self.handle_language_overlay_key(physical_key, command) {
             return effect;
         }
         if action == Some(KeyAction::CommandPalette) {
@@ -3854,9 +3989,13 @@ impl StudioApp {
         let completion = (!focused && self.rust_diagnostics.cancel_completion())
             .then(EventEffect::visual)
             .unwrap_or_default();
+        let navigation = (!focused && self.rust_diagnostics.cancel_navigation())
+            .then(EventEffect::visual)
+            .unwrap_or_default();
         effect
             .merge(changed.then(EventEffect::visual).unwrap_or_default())
             .merge(completion)
+            .merge(navigation)
     }
 
     fn cancel_focused_composition(&mut self) -> EventEffect {
@@ -3897,11 +4036,16 @@ impl StudioApp {
         self.quick_open.close();
         self.project_search.close();
         self.file_tree.unfocus();
+        let navigation = self
+            .rust_diagnostics
+            .cancel_navigation()
+            .then(EventEffect::visual)
+            .unwrap_or_default();
         let context = self.command_context();
-        match self.command_palette.open(context) {
+        navigation.merge(match self.command_palette.open(context) {
             Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
             Err(error) => self.record_command_palette_error(&error),
-        }
+        })
     }
 
     fn handle_command_palette_key(&mut self, physical_key: u16, command: bool) -> EventEffect {
@@ -4084,6 +4228,15 @@ impl StudioApp {
                 changed.then(EventEffect::visual).unwrap_or_default()
             }
             StudioCommand::TriggerCompletion => self.trigger_rust_completion(),
+            StudioCommand::ShowRustHover => {
+                self.trigger_rust_navigation(NavigationRequestKind::Hover)
+            }
+            StudioCommand::GoToRustDefinition => {
+                self.trigger_rust_navigation(NavigationRequestKind::Definition)
+            }
+            StudioCommand::FindRustReferences => {
+                self.trigger_rust_navigation(NavigationRequestKind::References)
+            }
             StudioCommand::OpenQuickOpen if self.workspace.is_none() => {
                 self.record_quick_open_error(&QuickOpenError::NoWorkspace)
             }
@@ -5357,6 +5510,126 @@ impl StudioApp {
             .visual_changed
             .then(EventEffect::visual)
             .unwrap_or_default()
+    }
+
+    fn trigger_rust_navigation(&mut self, kind: NavigationRequestKind) -> EventEffect {
+        if self.composition.is_some() {
+            return EventEffect::default();
+        }
+        let snapshot = self.buffer().snapshot();
+        let Ok(position) = position_for_byte(&snapshot, self.selection.head()) else {
+            self.input_failures = self.input_failures.saturating_add(1);
+            return EventEffect::default();
+        };
+        let effect = self.rust_diagnostics.request_navigation(kind, position);
+        effect
+            .visual_changed
+            .then(EventEffect::visual)
+            .unwrap_or_default()
+    }
+
+    fn apply_selected_navigation(&mut self) -> EventEffect {
+        let identity = self.language_identity();
+        let Some(location) = self.rust_diagnostics.selected_source_location(identity) else {
+            return EventEffect::default();
+        };
+        match self.navigate_to_source_location(&location) {
+            Ok(effect) => {
+                let closed = self.rust_diagnostics.cancel_navigation();
+                effect.merge(closed.then(EventEffect::visual).unwrap_or_default())
+            }
+            Err(error) => self.record_workspace_error(&error),
+        }
+    }
+
+    fn navigate_to_source_location(
+        &mut self,
+        location: &SourceLocation,
+    ) -> Result<EventEffect, WorkspaceSelectionError> {
+        let root = self
+            .workspace
+            .as_ref()
+            .map(Workspace::root)
+            .or_else(|| {
+                self.tabs
+                    .path_at(self.tabs.active_index())
+                    .and_then(Path::parent)
+            })
+            .ok_or(WorkspaceSelectionError::NoWorkspace)?;
+        let resolved = location
+            .resolve(root)
+            .map_err(WorkspaceSelectionError::RustNavigation)?;
+        let path = resolved.path().to_path_buf();
+        if let Some(index) = self.tabs.index_for_path(&path) {
+            self.ensure_document_tab_loaded(index)?;
+            let view = {
+                let document = self
+                    .tabs
+                    .document_at(index, &self.document)
+                    .map_err(WorkspaceSelectionError::Tabs)?;
+                Self::validate_navigation_document(document)?;
+                Self::navigation_view(&resolved, &document.buffer().snapshot())?
+            };
+            let effect = self.activate_document_tab(index)?;
+            let view = self.clamp_document_view(view);
+            self.apply_document_view(view);
+            return Ok(effect.merge(EventEffect::visual()));
+        }
+
+        let document = StudioDocument::open(&path).map_err(WorkspaceSelectionError::File)?;
+        Self::validate_navigation_document(&document)?;
+        let view = Self::navigation_view(&resolved, &document.buffer().snapshot())?;
+        let next_revision = self
+            .runtime_document_revision
+            .checked_add(1)
+            .ok_or(WorkspaceSelectionError::RevisionExhausted)?;
+        let current_view = self.active_document_view();
+        self.tabs
+            .insert_and_activate(&path, None, document, &mut self.document, current_view)
+            .map_err(WorkspaceSelectionError::Tabs)?;
+        self.runtime_document_revision = next_revision;
+        self.active_workspace_entry = self.tabs.active_workspace_entry();
+        let view = self.clamp_document_view(view);
+        self.apply_document_view(view);
+        Ok(EventEffect::document_replacement())
+    }
+
+    fn navigation_view(
+        resolved: &ResolvedSourceLocation,
+        snapshot: &BufferSnapshot,
+    ) -> Result<DocumentViewState, WorkspaceSelectionError> {
+        let range = resolved
+            .byte_range(snapshot)
+            .map_err(WorkspaceSelectionError::RustNavigation)?;
+        let line = snapshot
+            .line_of_byte(ByteOffset::new(range.start))
+            .map_err(|_| WorkspaceSelectionError::RustNavigation(NavigationError::InvalidRange))?;
+        Ok(DocumentViewState {
+            selection: Selection::new(ByteOffset::new(range.start), ByteOffset::new(range.end)),
+            scroll_y: usize_as_f32(line.saturating_sub(1)) * LINE_HEIGHT,
+        })
+    }
+
+    fn validate_navigation_document(
+        document: &StudioDocument,
+    ) -> Result<(), WorkspaceSelectionError> {
+        let change = match document {
+            StudioDocument::File { editor, .. } => editor
+                .external_change()
+                .map_err(WorkspaceSelectionError::File)?,
+            StudioDocument::Recovered { conflict, .. }
+            | StudioDocument::Unavailable { conflict, .. } => *conflict,
+            StudioDocument::Scratch { .. } => {
+                return Err(WorkspaceSelectionError::RustNavigation(
+                    NavigationError::TargetUnavailable,
+                ));
+            }
+        };
+        if change == ExternalChange::Unchanged {
+            Ok(())
+        } else {
+            Err(WorkspaceSelectionError::File(FileError::Conflict(change)))
+        }
     }
 
     fn apply_selected_completion(&mut self) -> EventEffect {

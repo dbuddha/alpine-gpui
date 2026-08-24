@@ -265,7 +265,10 @@ fn validate_fallback(
     Ok(fallback)
 }
 
-fn byte_range(snapshot: &BufferSnapshot, range: LspRange) -> Result<Range<usize>, CompletionError> {
+pub(crate) fn byte_range(
+    snapshot: &BufferSnapshot,
+    range: LspRange,
+) -> Result<Range<usize>, CompletionError> {
     let start = byte_for_position(snapshot, range.start())?;
     let end = byte_for_position(snapshot, range.end())?;
     Ok(start..end)

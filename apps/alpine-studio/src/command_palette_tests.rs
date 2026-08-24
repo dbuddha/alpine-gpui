@@ -480,7 +480,7 @@ fn command_palette_scene_geometry_is_exact_at_a_narrow_viewport()
     app.open_workspace_path(&file.path, None)?;
     app.open_workspace_path(&second, None)?;
     assert!(app.open_command_palette().visual_changed);
-    assert_eq!(app.command_palette.visible_commands()?.len(), 10);
+    assert_eq!(app.command_palette.visible_commands()?.len(), 13);
     let shortcut_rows = app
         .command_palette
         .visible_commands()?
@@ -500,7 +500,7 @@ fn command_palette_scene_geometry_is_exact_at_a_narrow_viewport()
     let scene = app.try_scene(SceneRevision::new(906), viewport)?;
     let overlay = Rect::new(
         Point::new(24.0, 48.0).ok_or("overlay origin")?,
-        Size::new(252.0, 274.0).ok_or("overlay size")?,
+        Size::new(252.0, 346.0).ok_or("overlay size")?,
     );
     let selected = Rect::new(
         Point::new(24.0, 82.0).ok_or("selected origin")?,

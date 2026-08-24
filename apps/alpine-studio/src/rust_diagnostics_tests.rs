@@ -502,6 +502,107 @@ fn mock_completion_supersession_rejects_the_late_response_without_restart()
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn mock_navigation_is_bounded_current_only_and_supersedes_interactive_work()
+-> Result<(), Box<dyn Error>> {
+    let (root, path, snapshot, identity) = fixture();
+    let latch = LanguageWakeLatch::default();
+    let mut model = RustDiagnostics::with_server(mock_executable());
+    let input = RustDocumentInput::new(&path, &root, identity, snapshot);
+    let wake_latch = latch.clone();
+    assert!(
+        model
+            .sync(Some(input), move |wake| {
+                let wake_latch = wake_latch.clone();
+                Arc::new(move || wake_latch.publish(wake))
+            })
+            .visual_changed
+    );
+    let _ = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
+
+    model.status = Some(Arc::from("clear before navigation"));
+    assert!(
+        model
+            .request_navigation(NavigationRequestKind::Hover, LspPosition::new(0, 2)?)
+            .visual_changed
+    );
+    assert!(model.status_message().is_none());
+    assert!(model.snapshot().navigation_pending);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while model.snapshot().hover_bytes == 0 {
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("hover timed out: {:?}", model.snapshot()).into());
+        }
+    }
+    assert_eq!(
+        model.hover_content(identity).map(HoverContent::text),
+        Some("`fn main()`\n\nMock hover")
+    );
+    assert!(model.snapshot().hover_bytes <= crate::rust_navigation::MAX_HOVER_RETAINED_BYTES);
+
+    assert!(
+        model
+            .request_navigation(NavigationRequestKind::References, LspPosition::new(0, 2)?)
+            .visual_changed
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while model.snapshot().location_items == 0 {
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("references timed out: {:?}", model.snapshot()).into());
+        }
+    }
+    let references = model.snapshot();
+    assert_eq!(references.location_items, 2);
+    assert!(references.location_bytes <= crate::rust_navigation::MAX_LOCATION_RETAINED_BYTES);
+    assert_eq!(references.navigation_requests, 2);
+    assert!(model.hover_content(identity).is_none());
+
+    let _ = model.request_navigation(NavigationRequestKind::Definition, LspPosition::new(0, 99)?);
+    assert!(model.snapshot().navigation_pending);
+    let _ = model.request_navigation(NavigationRequestKind::Hover, LspPosition::new(0, 2)?);
+    assert_eq!(model.snapshot().navigation_cancellations, 1);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while model.snapshot().hover_bytes == 0 || model.snapshot().stale_navigation == 0 {
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                format!("navigation supersession timed out: {:?}", model.snapshot()).into(),
+            );
+        }
+    }
+    let final_snapshot = model.snapshot();
+    assert_eq!(final_snapshot.navigation_requests, 4);
+    assert_eq!(final_snapshot.stale_navigation, 1);
+    assert_eq!(final_snapshot.restarts, 0);
+    assert!(!model.shutdown().active);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[ignore = "requires the checksum-verified Task #208 rust-analyzer binary"]
 #[allow(
@@ -539,6 +640,58 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
     assert!(opened.peak_diagnostic_items >= opened.diagnostic_items);
     assert!(opened.peak_diagnostic_bytes >= opened.diagnostic_bytes);
     assert!(model.status_message().is_some());
+
+    let initial = buffer.snapshot().text();
+    let navigation_offset = initial
+        .find("deliberately_invalid")
+        .and_then(|offset| offset.checked_add(2))
+        .ok_or("pinned navigation context is missing")?;
+    let navigation_position = crate::rust_completion::position_for_byte(
+        &buffer.snapshot(),
+        alpine_text::ByteOffset::new(navigation_offset),
+    )?;
+    let _ = model.request_navigation(NavigationRequestKind::Hover, navigation_position);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while model.snapshot().hover_bytes == 0 {
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("pinned hover timed out: {:?}", model.snapshot()).into());
+        }
+    }
+    assert!(model.hover_content(identity).is_some());
+
+    for kind in [
+        NavigationRequestKind::Definition,
+        NavigationRequestKind::References,
+    ] {
+        let _ = model.request_navigation(kind, navigation_position);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while model.snapshot().location_items == 0 {
+            if let Some(wake) = latch.take() {
+                let effect = model.poll(wake);
+                if let Some(continuation) = effect.continuation {
+                    latch.publish(continuation);
+                }
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!("pinned {kind:?} timed out: {:?}", model.snapshot()).into());
+            }
+        }
+        let navigation = model.snapshot();
+        assert!(navigation.location_items <= crate::rust_navigation::MAX_SOURCE_LOCATIONS);
+        assert!(navigation.location_bytes <= crate::rust_navigation::MAX_LOCATION_RETAINED_BYTES);
+        assert!(model.navigation_visible_range(identity).is_some());
+    }
+    assert_eq!(model.snapshot().navigation_requests, 3);
 
     let replacement = "pub fn deliberately_invalid() -> u32 {\n";
     let mut transaction = alpine_text::Transaction::new(buffer.revision());

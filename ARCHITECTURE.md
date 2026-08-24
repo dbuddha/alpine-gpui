@@ -179,6 +179,18 @@ document. Focus loss, editor change, restart, and shutdown release pending and
 admitted completion state. The keyboard and accessibility dialog reuse the
 dirty-only frame path, so one admitted result creates no subsequent idle frame.
 
+Task #219 extends that same single-session owner with bounded hover, definition,
+and references. Requests retain the complete workspace, document, buffer,
+selection, process, protocol-version, and request identity; completion and
+navigation supersede one another, and late responses cannot clear a newer
+result. Hover retains at most 32 KiB and paints at most twelve lines. Source
+navigation retains at most 256 locations and 128 KiB, paints at most twelve
+rows, and admits only canonical non-symlinked local files under the current
+workspace. Studio rechecks disk identity and maps the UTF-16 range against the
+exact target snapshot before changing the active tab. Command-palette,
+keyboard, scene, and accessibility paths share that owner and add no network,
+remote URI, plugin, AI, cloud, telemetry, or general framework boundary.
+
 Production typography uses the safe
 CoreText service; deterministic test typography proves portable editor behavior
 without claiming native validation. It runs through one `Application` until the

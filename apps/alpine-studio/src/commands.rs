@@ -25,6 +25,9 @@ pub(crate) enum StudioCommand {
     OpenFind,
     OpenReplace,
     TriggerCompletion,
+    ShowRustHover,
+    GoToRustDefinition,
+    FindRustReferences,
     ToggleFileTree,
     SplitRight,
     SplitDown,
@@ -60,7 +63,10 @@ impl CommandContext {
             | StudioCommand::OpenProjectSearch
             | StudioCommand::ToggleFileTree => self.has_workspace,
             StudioCommand::OpenFind | StudioCommand::OpenReplace => true,
-            StudioCommand::TriggerCompletion => self.can_complete,
+            StudioCommand::TriggerCompletion
+            | StudioCommand::ShowRustHover
+            | StudioCommand::GoToRustDefinition
+            | StudioCommand::FindRustReferences => self.can_complete,
             StudioCommand::SplitRight => self.can_split_right,
             StudioCommand::SplitDown => self.can_split_down,
             StudioCommand::FocusNextPane | StudioCommand::ClosePane => self.can_close_pane,
@@ -75,7 +81,7 @@ struct CommandSpec {
     search_terms: &'static str,
 }
 
-const REGISTRY: [CommandSpec; 14] = [
+const REGISTRY: [CommandSpec; 17] = [
     CommandSpec {
         command: StudioCommand::SaveFile,
         title: "File: Save",
@@ -120,6 +126,21 @@ const REGISTRY: [CommandSpec; 14] = [
         command: StudioCommand::TriggerCompletion,
         title: "Editor: Trigger Rust Completion",
         search_terms: "language rust analyzer suggest",
+    },
+    CommandSpec {
+        command: StudioCommand::ShowRustHover,
+        title: "Navigation: Show Rust Hover",
+        search_terms: "language rust analyzer documentation type",
+    },
+    CommandSpec {
+        command: StudioCommand::GoToRustDefinition,
+        title: "Navigation: Go to Rust Definition",
+        search_terms: "language rust analyzer source jump",
+    },
+    CommandSpec {
+        command: StudioCommand::FindRustReferences,
+        title: "Navigation: Find Rust References",
+        search_terms: "language rust analyzer usages source",
     },
     CommandSpec {
         command: StudioCommand::ToggleFileTree,
@@ -646,7 +667,7 @@ mod tests {
 
     #[test]
     fn locked_registry_query_and_memory_limits_are_exact() -> Result<(), Box<dyn Error>> {
-        assert_eq!(REGISTRY.len(), 14);
+        assert_eq!(REGISTRY.len(), 17);
         assert!(REGISTRY.len() <= MAX_COMMANDS);
         let mut palette = CommandPalette::default();
         assert!(palette.open(all_available())?);

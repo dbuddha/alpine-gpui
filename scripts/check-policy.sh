@@ -96,6 +96,20 @@ if [ -n "$workflow_files" ]; then
             fail "pull-request native mutation is missing shard $shard/8"
         fi
     done
+    if [ -z "$mutation_diff_block" ] \
+        || [ "$(printf '%s\n' "$mutation_diff_block" | grep -Ec '^[[:space:]]+shard: [0-7]/8$')" -ne 8 ] \
+        || [ "$(printf '%s\n' "$mutation_diff_block" | grep -Ec 'cargo mutants ')" -ne 2 ] \
+        || [ "$(printf '%s\n' "$mutation_diff_block" | grep -Fc -- '--shard "${{ matrix.shard }}"')" -ne 2 ] \
+        || ! printf '%s\n' "$mutation_diff_block" | grep -Fq 'name: mutation-${{ matrix.id }}-${{ github.sha }}' \
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'MUTATION_RESULT: ${{ needs.mutation-diff.result }}' \
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'require_selected mutation-diff "$MUTATION_REQUIRED" "$MUTATION_RESULT"'; then
+        fail 'changed-code mutation must preserve shipping and assurance scopes across eight deterministic exact-head shards'
+    fi
+    for shard in 0 1 2 3 4 5 6 7; do
+        if ! printf '%s\n' "$mutation_diff_block" | grep -Fq "shard: $shard/8"; then
+            fail "changed-code mutation is missing shard $shard/8"
+        fi
+    done
     if ! printf '%s\n' "$mutation_diff_block" | grep -Fq -- "--exclude 'apps/alpine-studio/src/native_validation/accessibility_process.rs'" \
         || ! printf '%s\n' "$native_mutation_block" | grep -Fq -- '--file apps/alpine-studio/src/native_validation/accessibility_process.rs' \
         || ! printf '%s\n' "$native_mutation_block" | grep -Fq 'ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility' \

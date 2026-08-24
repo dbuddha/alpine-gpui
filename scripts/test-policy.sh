@@ -121,7 +121,7 @@ run_policy >/dev/null
 cp .github/workflows/ci.yml "$fixture_dir/ci.yml"
 ALPINE_CI_WORKFLOW="$fixture_dir/ci.yml" run_policy >/dev/null
 
-perl -0pe 'if (!$changed) { $changed = s/ --shard "\$\{\{ matrix\.shard \}\}"// }' \
+perl -0pe 's/(  native-mutation:.*?)( --shard "\$\{\{ matrix\.shard \}\}")/$1/s' \
     "$fixture_dir/ci.yml" > "$fixture_dir/unsharded-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/unsharded-ci.yml" run_policy > "$fixture_dir/unsharded-ci.log" 2>&1; then
     printf 'policy test error: unsharded native mutation unexpectedly passed\n' >&2
@@ -130,6 +130,18 @@ fi
 if ! grep -Fq 'pull-request native mutation must preserve all ten scopes across eight deterministic shards' "$fixture_dir/unsharded-ci.log"; then
     printf 'policy test error: expected native-mutation sharding failure was not reported\n' >&2
     cat "$fixture_dir/unsharded-ci.log" >&2
+    exit 1
+fi
+
+perl -0pe 's/(  mutation-diff:.*?)( --shard "\$\{\{ matrix\.shard \}\}")/$1/s' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/unsharded-mutation-diff-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/unsharded-mutation-diff-ci.yml" run_policy > "$fixture_dir/unsharded-mutation-diff-ci.log" 2>&1; then
+    printf 'policy test error: unsharded changed-code mutation unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'changed-code mutation must preserve shipping and assurance scopes across eight deterministic exact-head shards' "$fixture_dir/unsharded-mutation-diff-ci.log"; then
+    printf 'policy test error: expected changed-code mutation sharding failure was not reported\n' >&2
+    cat "$fixture_dir/unsharded-mutation-diff-ci.log" >&2
     exit 1
 fi
 

@@ -175,6 +175,20 @@ impl LspDocument {
         }))
     }
 
+    pub(crate) fn references_params(
+        &self,
+        position: LspPosition,
+    ) -> Result<Box<RawValue>, LanguageProtocolError> {
+        raw_value(&serde_json::json!({
+            "textDocument": { "uri": self.uri },
+            "position": {
+                "line": position.line,
+                "character": position.utf16_character,
+            },
+            "context": { "includeDeclaration": true }
+        }))
+    }
+
     pub(crate) fn text_document_params(&self) -> Result<Box<RawValue>, LanguageProtocolError> {
         raw_value(&serde_json::json!({ "textDocument": { "uri": self.uri } }))
     }
