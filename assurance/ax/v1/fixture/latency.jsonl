@@ -1,0 +1,5 @@
+{"sequence":1,"operation":"query","identifier":"editor","start_ns":100,"end_ns":110,"ax_error":0}
+{"sequence":2,"operation":"action","identifier":"editor","start_ns":120,"end_ns":130,"ax_error":0}
+{"sequence":3,"operation":"notification","identifier":"editor","start_ns":140,"end_ns":150,"ax_error":0}
+{"sequence":4,"operation":"stale-query","identifier":"editor","start_ns":160,"end_ns":170,"ax_error":-25211}
+{"sequence":5,"operation":"close","identifier":"application","start_ns":180,"end_ns":190,"ax_error":0}

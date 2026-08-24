@@ -1,5 +1,6 @@
 //! Validates and reports Alpine's claim-to-evidence graph.
 
+mod ax;
 mod calibration;
 mod lab;
 mod onscreen;
@@ -136,19 +137,19 @@ fn run() -> Result<String, Vec<String>> {
         command.as_str(),
         "validate-zed-lab-evidence" | "zed-lab-evidence-report"
     ) {
-        let Some(path) = arguments.next() else {
-            return Err(vec![format!("{command} requires an evidence path")]);
-        };
-        if arguments.next().is_some() {
-            return Err(vec![format!("{command} accepts exactly one evidence path")]);
-        }
-        return lab::run(&command, Path::new(&path));
+        return run_lab_command(&command, &mut arguments);
     }
     if matches!(
         command.as_str(),
         "validate-onscreen-sdr" | "onscreen-sdr-report"
     ) {
         return run_onscreen_command(&command, &mut arguments);
+    }
+    if matches!(
+        command.as_str(),
+        "validate-ax-fixture" | "validate-ax-evidence" | "ax-evidence-report"
+    ) {
+        return run_ax_command(&command, &mut arguments);
     }
     if matches!(
         command.as_str(),
@@ -224,9 +225,35 @@ fn run() -> Result<String, Vec<String>> {
         )),
         "report" => Ok(render_report(&registry)),
         other => Err(vec![format!(
-            "unknown command {other:?}; expected validate, report, validate-scene-trace, render-scene-reference, render-scene-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, or upstream-radar"
+            "unknown command {other:?}; expected validate, report, validate-scene-trace, render-scene-reference, render-scene-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, or upstream-radar"
         )]),
     }
+}
+
+fn run_lab_command(
+    command: &str,
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<String, Vec<String>> {
+    let Some(path) = arguments.next() else {
+        return Err(vec![format!("{command} requires an evidence path")]);
+    };
+    if arguments.next().is_some() {
+        return Err(vec![format!("{command} accepts exactly one evidence path")]);
+    }
+    lab::run(command, Path::new(&path))
+}
+
+fn run_ax_command(
+    command: &str,
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<String, Vec<String>> {
+    let Some(path) = arguments.next() else {
+        return Err(vec![format!("{command} requires an artifact bundle path")]);
+    };
+    if arguments.next().is_some() {
+        return Err(vec![format!("{command} accepts exactly one bundle path")]);
+    }
+    ax::run(command, Path::new(&path))
 }
 
 fn run_onscreen_command(

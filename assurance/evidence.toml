@@ -5194,3 +5194,199 @@ bounds = ["pull request: three semantic instances", "nightly: five semantic inst
 assumptions = ["close is serialized on the AppKit owner"]
 exclusions = ["Rust refinement", "process termination", "native framework autorelease timing"]
 companion = "crates/alpine-platform-macos/tests/native_accessibility.rs#main"
+
+[[claims]]
+id = "AEP-0273-C01"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0273-physical-accessibility-qualification.md"
+requirement_issue = 37
+claim_type = "accessibility"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["tooling", "macos-metal"]
+required_evidence = ["unit", "integration", "mutation", "coverage"]
+
+[[claims]]
+id = "AEP-0273-C02"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0273-physical-accessibility-qualification.md"
+requirement_issue = 37
+claim_type = "accessibility"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["tooling", "macos-metal"]
+required_evidence = ["unit", "integration", "mutation", "coverage"]
+
+[[claims]]
+id = "AEP-0273-C03"
+mission = "MP-03"
+capability_issue = 28
+aep = "docs/aep/0273-physical-accessibility-qualification.md"
+requirement_issue = 37
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["tooling", "macos-metal"]
+required_evidence = ["unit", "integration", "mutation", "coverage"]
+
+[[claims]]
+id = "AEP-0273-C04"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0273-physical-accessibility-qualification.md"
+requirement_issue = 37
+claim_type = "accessibility"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["tooling", "macos-metal"]
+required_evidence = ["unit", "integration", "mutation", "coverage"]
+
+[[evidence]]
+id = "EV-0273-UNIT01"
+claim = "AEP-0273-C01"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/ax.rs#artifact_paths_reject_symlinked_parent_components"
+assertion = "The structural validator rejects a bundle-relative artifact whose parent component is a symbolic link and independently caps paths, files, aggregate bytes, records, and diagnostics."
+scope = "Non-shipping Task #273 schema and filesystem admission."
+exclusions = ["physical AX attachment", "truth of artifact contents", "hard-link identity"]
+
+[[evidence]]
+id = "EV-0273-INTEGRATION01"
+claim = "AEP-0273-C01"
+kind = "integration"
+artifact = "tools/alpine-assurance/tests/ax_cli.rs#validates_fixture_without_admitting_physical_evidence"
+assertion = "The compiled CLI accepts the exact fixture-only bundle while both physical commands reject the same manifest."
+scope = "Committed bounded structural fixture with exact SHA-256 identities."
+exclusions = ["physical hardware", "Accessibility trust", "external AX delivery"]
+
+[[evidence]]
+id = "EV-0273-UNIT02"
+claim = "AEP-0273-C02"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/ax.rs#events_bind_sources_actions_sleep_wake_and_stale_control"
+assertion = "Event validation requires exact AXObserver, AX action, AX query, NSWorkspace, and process source/detail contracts with ordered sleep, wake, destruction, stale query, and close."
+scope = "Bounded JSON Lines event records over three retained tree identifiers."
+exclusions = ["native callback delivery", "macOS scheduler behavior", "human operation"]
+
+[[evidence]]
+id = "EV-0273-INTEGRATION02"
+claim = "AEP-0273-C02"
+kind = "integration"
+artifact = "tools/alpine-assurance/tests/ax_cli.rs#rejects_tampered_fixture_through_the_binary_boundary"
+assertion = "The public CLI rejects changed AX tree bytes before accepting their semantics because the retained artifact hash no longer matches."
+scope = "One copied structural fixture with a deliberately modified tree artifact."
+exclusions = ["malicious hash collision", "physical observer delivery"]
+
+[[evidence]]
+id = "EV-0273-UNIT03"
+claim = "AEP-0273-C03"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/ax.rs#samples_are_bounded_descriptive_and_require_post_close_zero"
+assertion = "Latency records reject reversed intervals and residency records require bounded live startup and steady observations followed by one dead-process zero-byte post-close record."
+scope = "Five descriptive latency operations and four finite residency phases."
+exclusions = ["latency threshold", "statistical inference", "universal leak absence", "allocator and framework residency"]
+
+[[evidence]]
+id = "EV-0273-INTEGRATION03"
+claim = "AEP-0273-C03"
+kind = "integration"
+artifact = "tools/alpine-assurance/tests/ax_cli.rs#validates_fixture_without_admitting_physical_evidence"
+assertion = "Fixture validation reports no physical or performance claim, while the physical report path rejects fixture substitution."
+scope = "Task #273 public non-shipping CLI boundary."
+exclusions = ["measured latency", "physical footprint truth", "A/A calibration"]
+
+[[evidence]]
+id = "EV-0273-UNIT04"
+claim = "AEP-0273-C04"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/ax.rs#diagnostics_are_bounded_under_invalid_input"
+assertion = "Malformed bounded input cannot create more than the fixed diagnostic ceiling plus one omission record."
+scope = "Structural parsing failure retention for Task #273 artifacts."
+exclusions = ["human attestation truth", "native ownership"]
+
+[[evidence]]
+id = "EV-0273-INTEGRATION04"
+claim = "AEP-0273-C04"
+kind = "integration"
+artifact = "tools/alpine-assurance/tests/ax_cli.rs#validates_fixture_without_admitting_physical_evidence"
+assertion = "The fixture must retain visibly fixture-only scenario, Inspector, and human checklist artifacts and cannot render a physical report."
+scope = "Committed structural fixture and compiled CLI command separation."
+exclusions = ["VoiceOver output", "Accessibility Inspector capture", "post-close physical drain"]
+
+[[evidence]]
+id = "EV-0273-MUTATION01"
+claim = "AEP-0273-C01"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#mutation-diff"
+assertion = "Every viable changed-code mutation in bounded AX bundle, path, byte, record, and fixture-separation validation must be killed before ci-pass succeeds."
+scope = "Changed host-executable alpine-assurance Rust selected from the exact pull-request diff."
+exclusions = ["compile-unviable substitutions", "physical AX attachment", "macOS framework behavior"]
+
+[[evidence]]
+id = "EV-0273-COVERAGE01"
+claim = "AEP-0273-C01"
+kind = "coverage"
+artifact = ".github/workflows/ci.yml#coverage"
+assertion = "The assurance package coverage floor exercises the bounded AX bundle validator and its public fixture command."
+scope = "Host-executable alpine-assurance Rust and compiled CLI tests."
+exclusions = ["semantic proof", "physical AX attachment", "external framework delivery"]
+
+[[evidence]]
+id = "EV-0273-MUTATION02"
+claim = "AEP-0273-C02"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#mutation-diff"
+assertion = "Every viable changed source, detail, result, ordering, stale-identity, and event-admission mutation must be killed before ci-pass succeeds."
+scope = "Changed Task #273 event protocol validation and table-driven negative controls."
+exclusions = ["compile-unviable substitutions", "real AXObserver delivery", "NSWorkspace scheduler behavior"]
+
+[[evidence]]
+id = "EV-0273-COVERAGE02"
+claim = "AEP-0273-C02"
+kind = "coverage"
+artifact = ".github/workflows/ci.yml#coverage"
+assertion = "The assurance package coverage floor exercises every accepted AX event class and independent contract field."
+scope = "Host-executable event parsing, ordering, source binding, and stale-element validation."
+exclusions = ["semantic proof", "native callback delivery", "human operation"]
+
+[[evidence]]
+id = "EV-0273-MUTATION03"
+claim = "AEP-0273-C03"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#mutation-diff"
+assertion = "Every viable changed latency interval, result, residency phase, byte, timestamp, and post-close mutation must be killed before ci-pass succeeds."
+scope = "Finite descriptive Task #273 sample validation with no active threshold."
+exclusions = ["compile-unviable substitutions", "performance inference", "universal leak absence"]
+
+[[evidence]]
+id = "EV-0273-COVERAGE03"
+claim = "AEP-0273-C03"
+kind = "coverage"
+artifact = ".github/workflows/ci.yml#coverage"
+assertion = "The assurance package coverage floor exercises descriptive latency and residency success and independent failure boundaries."
+scope = "Host-executable sample parsing, finite phase ordering, and post-close zero-byte controls."
+exclusions = ["latency budget", "fixed-hardware measurement", "allocator or framework residency"]
+
+[[evidence]]
+id = "EV-0273-MUTATION04"
+claim = "AEP-0273-C04"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#mutation-diff"
+assertion = "Every viable changed attestation separation, diagnostic bound, and physical-report routing mutation must be killed before ci-pass succeeds."
+scope = "Changed host-executable human-artifact structure and command-separation validation."
+exclusions = ["compile-unviable substitutions", "truth of human attestation", "VoiceOver output"]
+
+[[evidence]]
+id = "EV-0273-COVERAGE04"
+claim = "AEP-0273-C04"
+kind = "coverage"
+artifact = ".github/workflows/ci.yml#coverage"
+assertion = "The assurance package coverage floor exercises fixture and physical attestation separation, bounded diagnostics, and distinct command outputs."
+scope = "Host-executable Task #273 validator and compiled CLI boundary."
+exclusions = ["human attestation truth", "Accessibility Inspector capture", "post-close physical drain"]

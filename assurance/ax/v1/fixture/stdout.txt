@@ -1,0 +1,1 @@
+fixture stdout only; no process was launched

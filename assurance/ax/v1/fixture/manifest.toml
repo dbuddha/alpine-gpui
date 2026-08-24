@@ -1,0 +1,77 @@
+schema = "alpine-ax-evidence/v1"
+task_issue = 273
+fixture_only = true
+scenario_id = "fixture-editor-journey"
+attestation_id = "fixture-attestation"
+repository_revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+repository_clean = true
+started_unix_ns = 1000000
+ended_unix_ns = 2000000
+studio_pid = 100
+harness_pid = 101
+studio_exit_status = 0
+macos_build = "fixture-macos-build"
+sdk_build = "fixture-sdk-build"
+rustc_version = "fixture-rustc"
+hardware_model = "fixture-apple-silicon"
+architecture = "arm64"
+locale = "en-US"
+input_source = "com.apple.keylayout.US"
+display_description = "fixture 120 Hz display"
+power_source = "ac"
+thermal_state = "nominal"
+ax_trusted = true
+actual_sleep_wake = true
+voiceover_attested = true
+inspector_attested = true
+post_close_drain_attested = true
+latency_budget_active = false
+performance_claim = false
+tree_node_count = 3
+event_count = 16
+latency_sample_count = 5
+residency_sample_count = 4
+
+[artifacts.studio_binary]
+path = "studio.bin"
+sha256 = "4cc0abf648ef233f1aaf44bf0b26396804d0b45e1d050a4c30b1ce042699579b"
+
+[artifacts.harness_binary]
+path = "harness.bin"
+sha256 = "5ff1a36ad7ceb19cb4b8188ad56cb956a54eff9866826c54c3ad69fcb5d75fc5"
+
+[artifacts.scenario]
+path = "scenario.md"
+sha256 = "2df21ae836cc324edefb1200adc74cc37c6cb024686a3d652cfa581dc2f26d9d"
+
+[artifacts.tree]
+path = "tree.jsonl"
+sha256 = "a57d3758f76a40fbcaa1f96781d3c6fff1cdc978f32a7fbd915704d1d8c161d2"
+
+[artifacts.events]
+path = "events.jsonl"
+sha256 = "b7c8e19b580ef13ed668e519d73dd7c2e3b63211a7113ea484eaf6d524471677"
+
+[artifacts.latency]
+path = "latency.jsonl"
+sha256 = "51e6283b60d0cbb4f9541792213eaccee730a0e46c74da58c11e6844f87fe9de"
+
+[artifacts.residency]
+path = "residency.jsonl"
+sha256 = "3a21c44bdf5080268ff2d6bbf9a9bb18a5f5868d6cd147f3c5eb8354b3cff623"
+
+[artifacts.stdout]
+path = "stdout.txt"
+sha256 = "c0dff6c9c41bcdbfa5ac8f92ff9a570915bd1ad57cee22f9c6441fc7f8106de2"
+
+[artifacts.stderr]
+path = "stderr.txt"
+sha256 = "3b5bf8866cf411ecdafa0e36de0828314820c65c6e701e6ff8ee9c3c4e1e908b"
+
+[artifacts.inspector_capture]
+path = "inspector.txt"
+sha256 = "5a04f826cbdccbcea9cd06dc240d2fceb555685c7747bfb92494caaf66b13fe4"
+
+[artifacts.human_checklist]
+path = "human-checklist.md"
+sha256 = "5d18349192390d17f8e0c58c02008d434beb76ae66e026dc296a1e74177b8add"

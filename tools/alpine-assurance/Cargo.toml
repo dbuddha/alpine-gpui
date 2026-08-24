@@ -11,6 +11,7 @@ license-file.workspace = true
 alpine-metal = { path = "../../crates/alpine-metal", version = "=0.0.0" }
 alpine-trace = { path = "../alpine-trace", version = "=0.0.0" }
 serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
 toml = "=1.1.4"
 
 [lints]
