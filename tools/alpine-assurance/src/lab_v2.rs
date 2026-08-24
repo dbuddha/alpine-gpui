@@ -929,12 +929,14 @@ mod tests {
 
     #[test]
     fn rejects_physical_axes_independently() -> Result<(), toml::de::Error> {
+        let changed = VALID.replacen("state = \"equivalent\"", "state = \"rejected\"", 2);
+        assert!(
+            errors_for(&changed)?
+                .iter()
+                .any(|error| error.contains("physical state"))
+        );
         replacements_fail(
             &[
-                (
-                    "[physical]\nstate = \"equivalent\"",
-                    "[physical]\nstate = \"rejected\"",
-                ),
                 ("model = \"Mac16,1\"", "model = \"Mac0,0\""),
                 ("chip = \"Apple M4\"", "chip = \"unknown\""),
                 ("os_version = \"26.6.2\"", "os_version = \"26.6.1\""),
