@@ -1,4 +1,7 @@
-use super::{TraceClip, TraceInput, TraceQuad, TraceViewport};
+use super::{
+    PreparedTraceInput, PreparedTraceOperation, PreparedTraceQuad, TraceClip, TraceInput,
+    TraceQuad, TraceViewport,
+};
 
 #[kani::proof]
 fn bounded_trace_preserves_operation_order_and_values() {
@@ -92,5 +95,36 @@ fn bounded_trace_rejects_noncontiguous_index() {
     // success payload. Forgetting the fixture prevents Kani from unwinding
     // dynamically sized scene resources that no concrete error path owns;
     // normal tests and Miri retain teardown coverage.
+    std::mem::forget(decoded);
+}
+
+#[kani::proof]
+fn prepared_trace_rejects_every_bounded_invalid_clip_reference() {
+    let invalid_clip = if kani::any::<bool>() { 1 } else { usize::MAX };
+    let input = PreparedTraceInput {
+        revision: 1,
+        viewport: TraceViewport {
+            logical_width: 1.0,
+            logical_height: 1.0,
+            scale_factor: 1.0,
+            pixel_width: 1,
+            pixel_height: 1,
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+        },
+        clips: vec![TraceClip {
+            bounds: [0.0, 0.0, 1.0, 1.0],
+        }],
+        atlas: None,
+        operations: vec![PreparedTraceOperation::Quad(PreparedTraceQuad {
+            sequence: 0,
+            bounds: [0.0, 0.0, 1.0, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
+            clip: Some(invalid_clip),
+        })],
+    };
+    let decoded = input.decode();
+    assert!(decoded.is_err());
+    kani::cover!(invalid_clip == 1, "nearest invalid clip index");
+    kani::cover!(invalid_clip == usize::MAX, "maximum invalid clip index");
     std::mem::forget(decoded);
 }

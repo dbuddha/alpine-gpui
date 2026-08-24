@@ -1,0 +1,100 @@
+schema = "alpine-scene-trace/v2"
+id = "monochrome-glyph-grid"
+workload_hash = "9acc0f250209c54000e308f92050f33bda0f5b426455b93c2f932594220bd93c"
+revision = 1
+clear_color = [0.055, 0.063, 0.075, 1.0]
+
+[viewport]
+width = 16.0
+height = 12.0
+scale_factor = 1.0
+pixel_width = 16
+pixel_height = 12
+
+[[resources]]
+id = "editor-atlas"
+kind = "a8-atlas"
+content_hash = "af9183e19506cf64dfc8c0d4de20d8659b98ed06a980305ff5979fcc26edd961"
+revision = 1
+width = 8
+height = 8
+pixels = [255, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 255, 255, 0, 0, 0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 255, 255, 0, 255, 255, 255, 255, 255, 0, 0, 255]
+
+[[clips]]
+id = "viewport"
+x = 0.0
+y = 0.0
+width = 16.0
+height = 12.0
+
+[[operations]]
+sequence = 0
+kind = "monochrome-glyph"
+resource = "editor-atlas"
+clip = "viewport"
+x = 1.0
+y = 1.0
+width = 4.0
+height = 4.0
+red = 0.82
+green = 0.86
+blue = 0.91
+alpha = 1.0
+atlas_x = 0
+atlas_y = 0
+atlas_width = 4
+atlas_height = 4
+
+[[operations]]
+sequence = 1
+kind = "monochrome-glyph"
+resource = "editor-atlas"
+clip = "viewport"
+x = 6.0
+y = 1.0
+width = 4.0
+height = 4.0
+red = 0.82
+green = 0.86
+blue = 0.91
+alpha = 1.0
+atlas_x = 4
+atlas_y = 0
+atlas_width = 4
+atlas_height = 4
+
+[[operations]]
+sequence = 2
+kind = "monochrome-glyph"
+resource = "editor-atlas"
+clip = "viewport"
+x = 1.0
+y = 6.0
+width = 4.0
+height = 4.0
+red = 0.82
+green = 0.86
+blue = 0.91
+alpha = 1.0
+atlas_x = 0
+atlas_y = 4
+atlas_width = 4
+atlas_height = 4
+
+[[operations]]
+sequence = 3
+kind = "monochrome-glyph"
+resource = "editor-atlas"
+clip = "viewport"
+x = 6.0
+y = 6.0
+width = 4.0
+height = 4.0
+red = 0.82
+green = 0.86
+blue = 0.91
+alpha = 1.0
+atlas_x = 4
+atlas_y = 4
+atlas_width = 4
+atlas_height = 4

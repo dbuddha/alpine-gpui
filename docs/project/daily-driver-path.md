@@ -113,7 +113,7 @@ The stable sequence is:
 
 1. Measure and correct release typing latency through
    [Defect #304](https://github.com/dbuddha/alpine-gpui/issues/304) and
-   [Experiment #314](https://github.com/dbuddha/alpine-gpui/issues/314) before
+   [Experiment #331](https://github.com/dbuddha/alpine-gpui/issues/331) before
    changing the runtime or renderer architecture.
 2. Finish native input, IME, focus, accessibility, lifecycle, and physical
    behavior required by [Requirement #37](https://github.com/dbuddha/alpine-gpui/issues/37).
@@ -122,8 +122,10 @@ The stable sequence is:
    [#36](https://github.com/dbuddha/alpine-gpui/issues/36).
 4. Run sustained private dogfood and residency journeys; promote each incident
    to a reproduced defect with a production-path regression.
-5. Expand the GPUI lab from its control workload to semantically matched glyph,
-   code viewport, scroll, resize, atlas, and recovery traces.
+5. Expand the GPUI lab from its control workload through
+   [Task #334](https://github.com/dbuddha/alpine-gpui/issues/334) and then #61
+   to semantically matched glyph, code viewport, scroll, resize, atlas, and
+   recovery traces.
 6. Qualify scoped renderer and product claims, then enter M7 release work.
 
 These links are entry points, not copied status. The issue timeline and Project

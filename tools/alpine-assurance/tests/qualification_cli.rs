@@ -116,6 +116,52 @@ fn decodes_and_renders_the_committed_scene_trace() {
 }
 
 #[test]
+fn validates_and_renders_every_realistic_prepared_scene_fixture() {
+    let binary = env!("CARGO_BIN_EXE_alpine-assurance");
+    assert!(fs::create_dir_all(repository_root().join("target")).is_ok());
+    for fixture in [
+        "clipped-grid.toml",
+        "glyph-grid.toml",
+        "code-viewport.toml",
+        "scroll-before.toml",
+        "scroll-after.toml",
+        "resize-before.toml",
+        "resize-after.toml",
+    ] {
+        let manifest = format!("assurance/qualification/v2/{fixture}");
+        let validation = Command::new(binary)
+            .current_dir(repository_root())
+            .args(["validate-scene-trace", &manifest])
+            .output();
+        assert!(validation.is_ok(), "{fixture}");
+        if let Ok(validation) = validation {
+            assert!(
+                validation.status.success(),
+                "{fixture}: {}",
+                String::from_utf8_lossy(&validation.stderr)
+            );
+        }
+        let output_path = repository_root()
+            .join("target")
+            .join(format!("{fixture}.bgra"));
+        let render = Command::new(binary)
+            .current_dir(repository_root())
+            .args(["render-scene-reference", &manifest])
+            .arg(&output_path)
+            .output();
+        assert!(render.is_ok(), "{fixture}");
+        if let Ok(render) = render {
+            assert!(
+                render.status.success(),
+                "{fixture}: {}",
+                String::from_utf8_lossy(&render.stderr)
+            );
+            assert!(fs::metadata(output_path).is_ok_and(|metadata| metadata.len() > 0));
+        }
+    }
+}
+
+#[test]
 fn rejects_an_invalid_fixture_through_the_binary_boundary() {
     let output = Command::new(env!("CARGO_BIN_EXE_alpine-assurance"))
         .current_dir(repository_root())

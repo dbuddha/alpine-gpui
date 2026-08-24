@@ -2787,6 +2787,36 @@ artifact = "scripts/test-qualification.sh"
 assertion = "The repository command accepts the executable trace, rejects an unsupported primitive instead of silently dropping it, and removes stale output before a failed render."
 scope = "CLI protocol boundary used by the isolated Zed lab."
 exclusions = ["lab build", "hardware reproduction"]
+
+[[evidence]]
+id = "EV-0028-UNIT03D"
+claim = "AEP-0028-C03"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/qualification.rs#realistic_v2_fixtures_decode_and_render_through_the_cpu_oracle"
+assertion = "Every committed version 2 clipped-grid, glyph-grid, code-viewport, scroll-pair, and resize-pair prepared scene decodes and reaches the independent CPU oracle without shaping or native adaptation."
+scope = "Non-shipping alpine-scene-trace/v2 prepared-scene semantics under Decision #333 and Task #334."
+bounds = ["4,096 clips", "65,536 operations", "16,777,216 A8 pixels", "one atlas resource", "two-step scroll or resize pairs"]
+exclusions = ["GPUI adapter", "Direct Metal physical result", "timing", "memory superiority"]
+
+[[evidence]]
+id = "EV-0028-INTEGRATION03D"
+claim = "AEP-0028-C03"
+kind = "integration"
+artifact = "tools/alpine-assurance/tests/qualification_cli.rs#validates_and_renders_every_realistic_prepared_scene_fixture"
+assertion = "The public non-shipping CLI validates and renders every committed version 2 fixture to a nonempty compact BGRA8 CPU-oracle artifact."
+scope = "Repository-root executable qualification boundary for Task #334."
+exclusions = ["pinned Zed GPUI", "native hardware", "performance qualification"]
+
+[[evidence]]
+id = "EV-0025-KANI05D"
+claim = "AEP-0025-C05"
+kind = "kani"
+artifact = "tools/alpine-trace/src/proofs.rs#prepared_trace_rejects_every_bounded_invalid_clip_reference"
+assertion = "The version 2 semantic decoder rejects both the nearest and maximum invalid prepared clip identities before scene admission."
+scope = "One bounded prepared quad and one valid stored clip."
+bounds = ["one operation", "one stored clip", "invalid index one or usize maximum"]
+exclusions = ["TOML parsing", "native rendering", "elapsed time"]
+companion = "tools/alpine-trace/src/lib.rs#prepared_scene_rejects_clip_atlas_and_glyph_contract_breaks"
 [[evidence]]
 id = "EV-0137-TLA01"
 claim = "AEP-0137-C01"
