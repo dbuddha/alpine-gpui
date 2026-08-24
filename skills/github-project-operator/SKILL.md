@@ -16,8 +16,10 @@ Treat GitHub as an execution control plane, not a task graveyard. Preserve one c
 5. Present intended mutations and consequences as a dry run.
 6. Apply only approved mutations, in dependency order, using stable identifiers.
 7. Re-read affected remote state and report exact deltas, unresolved blockers, and next critical-path work.
+8. Before merge or closure, bind the PR source head, hosted run source head, required job set, aggregate gate, and retained artifact identities. Record a synthetic merge-test revision separately when GitHub uses one.
 
 Never infer completion from prose, a parent counter, a merged branch, or an item moved to Done. Completion requires accepted evidence and closure rules.
+Never treat a successful command that selected or executed zero required tests as evidence.
 
 ## Canonical ownership
 
@@ -99,6 +101,8 @@ Read [metrics and reporting](references/metrics-and-reporting.md) before publish
 - Fall back to issue hierarchy when Project permissions are absent.
 - Treat inaccessible Project fields as unknown, never empty.
 - Never promote Evidence Level or Claim State without exact retained identity.
+- Never accept a re-run of an older workflow as exact-head evidence for a newer source revision.
+- Treat source-head identity, synthetic merge-test identity, and final merge identity as separate facts.
 - Never force-push, delete branches, bypass checks, fabricate dates, or mark inconclusive evidence green.
 - Ask immediately before a push or release when repository policy requires it.
 

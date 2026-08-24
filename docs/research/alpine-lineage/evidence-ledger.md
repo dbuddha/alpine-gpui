@@ -40,9 +40,10 @@
 | ALS-006 | Static command and settings schema | Zed settings lessons, `ADAPTED-CONCEPT`, E2 | Compile-time commands, no plugin registration, deterministic layers | Unit/mutation and no-bloat policy tests; Alpine E3 | Core implemented; safe reload/migration #222 open |
 | ALS-007 | Built-in syntax cohort | Zed language behavior, `ADAPTED-CONCEPT`, E2 | Fixed Rust/Markdown/TOML/JSON/plain-text set, no extension API | Syntax and product-boundary tests; Alpine E3 | Cohort behavior supported; accuracy and large-file profile pending |
 | ALS-008 | Bounded local LSP transport | LSP/JSON-RPC and Zed project behavior, `INDEPENDENT-CONVERGENCE`, E2 | One local child process, bounded framing/state, revision-tagged results | Mock protocol, malformed input, lifecycle, pinned rust-analyzer tests; Alpine E3 | Diagnostics/completion implemented; #219-#221 remain |
-| ALS-009 | Native accessibility transport | AppKit/AX requirement, `INDEPENDENT-CONVERGENCE`, E2 | Bounded semantics, text mappings, actions, notifications, destruction | Snapshot/native model tests plus PR #322 real Studio process composition; Alpine E3 after merge | Physical VoiceOver and AXObserver evidence #253/#273 remain open |
+| ALS-009 | Native accessibility transport | AppKit/AX requirement, `INDEPENDENT-CONVERGENCE`, E2 | Bounded semantics, text mappings, actions, notifications, destruction | Snapshot/native model tests plus PR #322 exact-head real Studio process composition and hosted run `32675083043`; Alpine E3 | Production-process transport is supported for the accepted journey; physical VoiceOver and AXObserver evidence #253/#273 remain open |
 | ALS-010 | Stable local app bundle | macOS product requirement, `INDEPENDENT-CONVERGENCE`, E1 | Revision-pinned assembly and explicit recovery launch | PR #306, PR #313, and Task #303 Finder launch evidence | Finder launch, dirty-close protection, save, and normal exit qualified; daily-driver, signing, and public release remain open |
 | ALS-011 | No-bloat boundary | Sublime-like product decision, `ALPINE-ORIGINAL`, E2 | CI rejects GPUI, WGPU, Tokio, AI, collaboration, plugin, cloud, telemetry dependencies | Product-boundary CI, Alpine E3 | Dependency absence supported; speed and memory effect pending measurement |
+| ALS-012 | Unified Studio event finalization | Studio document, language, recovery, semantic, and frame authority requirement, `ALPINE-ORIGINAL`, E2 | Ordinary input and state-changing accessibility actions share one finalizer; document authority advances before active-document language synchronization; read-only, unchanged, rejected, and stale actions remain mutation- and frame-neutral | PR #322 source head `c5cd78779e33bbbf7ea6296f50d63d08b7f727de`, focused regressions, 4 of 4 current event-finalizer mutants, 3 of 3 startup-prefix mutants, and hosted run `32675083043`; Alpine E3 | Scoped production-process authority and coalescing behavior supported; physical observer, latency, residency, and dogfood evidence remain open |
 
 ## Explicit non-evidence
 
@@ -65,5 +66,5 @@ The next valid advances are:
 - ALG-014: solid quad E3 to glyph grid and realistic code viewport E3, then E4 paired GPUI comparison.
 - ALG-015: diagnostic-only to E3 physical event-to-photon reproduction, then E4 matched product comparison.
 - ALG-008 through ALG-010: deterministic avoided work to physical CPU/GPU/upload/residency E3.
-- ALS-001 through ALS-010: production implementation to sustained revision-pinned dogfood E3.
+- ALS-001 through ALS-010 and ALS-012: production implementation to sustained revision-pinned dogfood E3, with ALS-009 and ALS-012 first requiring physical #273/#253 evidence.
 - ALS-011: boundary evidence to normalized and stock-product memory/startup E4.

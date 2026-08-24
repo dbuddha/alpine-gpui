@@ -65,6 +65,10 @@ mechanism matrix, comparative claim, or historical conclusion.
 - Record correctness, performance, and memory evidence independently.
 - Append supersession history. Do not rewrite an older conclusion to look as if
   it always contained later evidence.
+- Retain invalid selectors, zero-selected tests, failed controls, and other
+  superseded evidence with the reason they support no claim.
+- Distinguish the reviewed source head, any hosted synthetic merge-test
+  revision, the final merge revision, and the artifact identity.
 - Link every promoted claim to its implementing issue, pull request, evidence
   identity, claim state, and next missing experiment.
 
