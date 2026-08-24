@@ -1,0 +1,683 @@
+[{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Frame Build Begin correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.348370-0700",
+  "machTimestamp" : 4459770122240,
+  "eventMessage" : "stage=Frame Build Begin correlation=9223372036854775809 event=0 scene=1 document=0 buffer=0 a=1148190720 b=1141309440 c=0",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8816403956236292,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Visible Layout Begin correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.349167-0700",
+  "machTimestamp" : 4459770141375,
+  "eventMessage" : "stage=Visible Layout Begin correlation=9223372036854775809 event=0 scene=1 document=0 buffer=0 a=0 b=0 c=0",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8817241474859012,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Visible Layout Complete correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.349649-0700",
+  "machTimestamp" : 4459770152948,
+  "eventMessage" : "stage=Visible Layout Complete correlation=9223372036854775809 event=0 scene=1 document=0 buffer=0 a=30 b=0 c=0",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8818104763285508,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Atlas Publication Begin correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.349695-0700",
+  "machTimestamp" : 4459770154054,
+  "eventMessage" : "stage=Atlas Publication Begin correlation=9223372036854775809 event=0 scene=1 document=0 buffer=0 a=1354 b=0 c=0",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8821454837776388,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Atlas Publication Complete correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.349704-0700",
+  "machTimestamp" : 4459770154259,
+  "eventMessage" : "stage=Atlas Publication Complete correlation=9223372036854775809 event=0 scene=1 document=0 buffer=0 a=1 b=65536 c=1",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8822343896006660,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Text Summary correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.349727-0700",
+  "machTimestamp" : 4459770154818,
+  "eventMessage" : "stage=Text Summary correlation=9223372036854775809 event=0 scene=1 document=0 buffer=0 a=26 b=57 c=23",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8818933691973636,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Layout Cache Summary correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.349728-0700",
+  "machTimestamp" : 4459770154834,
+  "eventMessage" : "stage=Layout Cache Summary correlation=9223372036854775809 event=0 scene=1 document=0 buffer=0 a=7 b=23 c=49088",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8819749735759876,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Glyph Atlas Summary correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.349728-0700",
+  "machTimestamp" : 4459770154836,
+  "eventMessage" : "stage=Glyph Atlas Summary correlation=9223372036854775809 event=0 scene=1 document=0 buffer=0 a=1494 b=57 c=75264",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8820595844317188,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Frame Build Complete correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.349728-0700",
+  "machTimestamp" : 4459770154841,
+  "eventMessage" : "stage=Frame Build Complete correlation=9223372036854775809 event=0 scene=1 document=0 buffer=0 a=1360 b=1354 c=0",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8824104832598020,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Event Dispatch Begin correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.360029-0700",
+  "machTimestamp" : 4459770402070,
+  "eventMessage" : "stage=Event Dispatch Begin correlation=2 event=2 scene=0 document=0 buffer=0 a=9 b=1 c=0",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8814690264285188,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=State Mutation Complete correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.360049-0700",
+  "machTimestamp" : 4459770402537,
+  "eventMessage" : "stage=State Mutation Complete correlation=2 event=2 scene=0 document=0 buffer=0 a=0 b=0 c=1",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8815553552711684,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Event Dispatch Begin correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.381963-0700",
+  "machTimestamp" : 4459770928472,
+  "eventMessage" : "stage=Event Dispatch Begin correlation=3 event=3 scene=0 document=0 buffer=0 a=9 b=1 c=0",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8814690264285188,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=State Mutation Complete correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.381965-0700",
+  "machTimestamp" : 4459770928538,
+  "eventMessage" : "stage=State Mutation Complete correlation=3 event=3 scene=0 document=0 buffer=0 a=0 b=0 c=1",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8815553552711684,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Frame Build Begin correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.381966-0700",
+  "machTimestamp" : 4459770928547,
+  "eventMessage" : "stage=Frame Build Begin correlation=3 event=3 scene=2 document=0 buffer=0 a=1148190720 b=1141309440 c=0",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8816403956236292,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Visible Layout Begin correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.382097-0700",
+  "machTimestamp" : 4459770931686,
+  "eventMessage" : "stage=Visible Layout Begin correlation=3 event=3 scene=2 document=0 buffer=0 a=0 b=0 c=0",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8817241474859012,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Visible Layout Complete correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.382174-0700",
+  "machTimestamp" : 4459770933545,
+  "eventMessage" : "stage=Visible Layout Complete correlation=3 event=3 scene=2 document=0 buffer=0 a=30 b=0 c=0",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8818104763285508,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Atlas Publication Begin correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.382183-0700",
+  "machTimestamp" : 4459770933773,
+  "eventMessage" : "stage=Atlas Publication Begin correlation=3 event=3 scene=2 document=0 buffer=0 a=1557 b=0 c=0",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8821454837776388,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Atlas Publication Complete correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.382187-0700",
+  "machTimestamp" : 4459770933852,
+  "eventMessage" : "stage=Atlas Publication Complete correlation=3 event=3 scene=2 document=0 buffer=0 a=2 b=5632 c=1",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8822343896006660,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Text Summary correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.382202-0700",
+  "machTimestamp" : 4459770934227,
+  "eventMessage" : "stage=Text Summary correlation=3 event=3 scene=2 document=0 buffer=0 a=26 b=2 c=0",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8818933691973636,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Layout Cache Summary correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.382203-0700",
+  "machTimestamp" : 4459770934231,
+  "eventMessage" : "stage=Layout Cache Summary correlation=3 event=3 scene=2 document=0 buffer=0 a=30 b=0 c=52416",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8819749735759876,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Glyph Atlas Summary correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.382203-0700",
+  "machTimestamp" : 4459770934233,
+  "eventMessage" : "stage=Glyph Atlas Summary correlation=3 event=3 scene=2 document=0 buffer=0 a=1752 b=2 c=75264",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8820595844317188,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+},{
+  "timezoneName" : "",
+  "messageType" : "Default",
+  "eventType" : "logEvent",
+  "source" : null,
+  "formatString" : "stage=Frame Build Complete correlation=%{public}llu event=%{public}llu scene=%{public}llu document=%{public}llu buffer=%{public}llu a=%{public}llu b=%{public}llu c=%{public}llu",
+  "userID" : 501,
+  "activityIdentifier" : 0,
+  "subsystem" : "com.dbuddha.alpine-studio",
+  "category" : "PersistedProfile",
+  "threadID" : 18866213,
+  "senderImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "backtrace" : {
+    "frames" : [
+      {
+        "imageOffset" : 1810796,
+        "imageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+      }
+    ]
+  },
+  "bootUUID" : "416F4867-6031-40D7-9771-0A68673C0FC1",
+  "processImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "senderImagePath" : "\/Users\/deepak\/dev\/personal\/alpine-gpui-defect-304-typing-latency-v2\/target\/release\/alpine-studio",
+  "timestamp" : "2026-08-24 00:38:45.382203-0700",
+  "machTimestamp" : 4459770934236,
+  "eventMessage" : "stage=Frame Build Complete correlation=3 event=3 scene=2 document=0 buffer=0 a=1563 b=1557 c=0",
+  "processImageUUID" : "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9",
+  "traceID" : 8824104832598020,
+  "processID" : 40345,
+  "senderProgramCounter" : 1810796,
+  "parentActivityIdentifier" : 0
+}]
