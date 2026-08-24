@@ -34,6 +34,7 @@ fn assert_invalid_diagnostic_origin(app: &mut StudioApp, viewport: Size) {
 }
 
 #[test]
+#[cfg(unix)]
 fn navigation_overlay_keyboard_and_accessibility_use_validated_product_paths()
 -> Result<(), Box<dyn Error>> {
     let root = std::env::temp_dir().join(format!(

@@ -301,8 +301,9 @@ fn decode_file_uri(uri: &str) -> Result<PathBuf, NavigationError> {
     if decoded.contains('\0') {
         return Err(NavigationError::InvalidUtf8);
     }
+    let is_absolute_uri_path = decoded.starts_with('/');
     let path = PathBuf::from(decoded);
-    if !path.is_absolute()
+    if !is_absolute_uri_path
         || path
             .components()
             .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
