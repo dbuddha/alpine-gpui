@@ -1,0 +1,56 @@
+schema = "alpine-studio-profile-route/v1"
+task_issue = 328
+parent_defect = 304
+evidence_level = "physical-route-smoke"
+repository_revision = "5c24b9c911c7a2a6a4a823af62f2ad1d0db4106e"
+repository_clean = true
+build_command = "scripts/build-alpine-studio-app.sh"
+executable_sha256 = "143f7ce8a253b4da5cba736756089b663cdcffe81075567cf8084446a1020d8f"
+sender_image_uuid = "7A8F3CF5-AC6D-3B61-9121-DCFC93CA6CA9"
+boot_uuid = "416F4867-6031-40D7-9771-0A68673C0FC1"
+started_utc = "2026-08-24T07:38:44Z"
+ended_utc = "2026-08-24T07:38:49Z"
+started_local = "2026-08-24 00:38:44"
+ended_local = "2026-08-24 00:38:49"
+studio_pid = 40345
+studio_exit_status = 0
+termination = "NSRunningApplication.terminate"
+opt_in = "ALPINE_STUDIO_PERSISTED_PROFILE=1"
+subsystem = "com.dbuddha.alpine-studio"
+category = "PersistedProfile"
+log_style = "json"
+record_count = 22
+distinct_stage_count = 11
+workload_id = "startup-folder-open-route-smoke"
+workload_repository_revision = "5c24b9c911c7a2a6a4a823af62f2ad1d0db4106e"
+macos_version = "26.6.2"
+macos_build = "25G83"
+hardware_model = "Mac16,1"
+chip = "Apple M4"
+memory_bytes = 25769803776
+architecture = "arm64"
+display_resolution = "3024 x 1964"
+display_refresh_hz = "unreported"
+power_source = "AC Power"
+developer_directory = "/Library/Developer/CommandLineTools"
+rustc_version = "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+xcode_available = false
+xctrace_available = false
+accessibility_automation_enabled = false
+observer_cost_calibrated = false
+typing_workload = false
+latency_distribution = false
+root_cause_claim = false
+performance_claim = false
+memory_claim = false
+gpu_claim = false
+accessibility_claim = false
+comparison_claim = false
+
+[artifacts.records]
+path = "records.json"
+sha256 = "a5daa5dd4a6d22a1a99628746a61d0de627af0f3f4bf7473568c056a5c1a6a95"
+byte_count = 30429
+
+[exclusions]
+reason = "This package proves only that an exact opt-in canonical release process can emit and recover the existing numeric stage vocabulary through macOS unified logging. It contains no accepted typing interaction, A/A observer-cost window, Instruments stack, System Trace, Metal System Trace, GPU execution duration, optical latency, memory distribution, accessibility journey, or comparator evidence."

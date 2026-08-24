@@ -29,7 +29,8 @@ handling, latest-wins admission, display-link submission, non-blocking GPU
 terminal observation, and the drawable presented handler. Terminal snapshots
 expose bounded handle-free stage durations while preserving the display link's
 independent target and observed presentation timestamps.
-Release profiling normally emits these identities through allocation-free
+As accepted by [Decision #329](https://github.com/dbuddha/alpine-gpui/issues/329),
+release profiling normally emits these identities through allocation-free
 dynamic Instruments signposts. An exact process-start opt-in may additionally
 mirror the same copied numeric points to a lazily created macOS unified-log
 `PersistedProfile` category when Instruments is unavailable. The default route
