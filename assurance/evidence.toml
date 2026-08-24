@@ -1558,6 +1558,61 @@ assumptions = ["The retained GitHub artifact archive hash binds the recorded cov
 exclusions = ["Proof of correctness", "Zed code outside the adapter", "Alpine shipping code"]
 
 [[evidence]]
+id = "EV-0028-UNIT04B"
+claim = "AEP-0028-C04"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/lab_v2.rs"
+assertion = "The version 2 composed-record validator binds exact revisions, fixture and pair identities, output hashes, adaptation accounting, assurance counts, retention, shader modes, and claim exclusions."
+scope = "Eight-fixture renderer-only trace ladder for Task #61."
+exclusions = ["Re-execution of Zed or Metal", "timing", "memory", "product behavior"]
+
+[[evidence]]
+id = "EV-0028-INTEGRATION04B"
+claim = "AEP-0028-C04"
+kind = "integration"
+artifact = "scripts/test-zed-lab-evidence.sh"
+assertion = "The repository command accepts immutable version 1 and version 2 records and rejects count drift, missed mutants, output divergence, insufficient retention, and unqualified claims."
+scope = "Versioned cross-repository evidence validation for renderer-only Task #61."
+exclusions = ["Network re-download during ordinary pull-request validation", "GPL source in Alpine shipping crates"]
+
+[[evidence]]
+id = "EV-0028-E2E04B"
+claim = "AEP-0028-C04"
+kind = "e2e"
+artifact = "assurance/lab/v2/task-61-realistic-scenes.toml#task-61-realistic-scenes"
+assertion = "Eight immutable traces identify solid-quad, clipping, glyph-atlas, realistic code-viewport, scroll, and resize semantics across the CPU oracle, Alpine Direct Metal, and pinned GPUI Metal."
+scope = "Lab 13fade6, Zed e17dc4, Alpine 1b6d16, trace manifest afa696, and exact hosted run 32733054956."
+assumptions = ["The GitHub artifact digest and retained source manifests identify the recorded hosted execution."]
+exclusions = ["Application scene construction", "presentation", "timing", "memory", "latency", "dominance"]
+
+[[evidence]]
+id = "EV-0028-NATIVE04B"
+claim = "AEP-0028-C04"
+kind = "native"
+artifact = "assurance/lab/v2/task-61-realistic-scenes.toml#physical"
+assertion = "On physical Apple M4, Alpine Direct Metal and pinned GPUI Metal produced exact matching compact BGRA8 identities for every fixture and remained within the independent CPU-oracle tolerance."
+scope = "Mac16,1 on macOS 26.6.2 arm64 with runtime-source GPUI shaders explicitly marked unqualified."
+exclusions = ["Offline shader compilation on the physical run", "onscreen presentation", "fixed-hardware timing", "memory"]
+
+[[evidence]]
+id = "EV-0028-MUTATION04B"
+claim = "AEP-0028-C04"
+kind = "mutation"
+artifact = "assurance/lab/v2/task-61-realistic-scenes.toml#mutants_missed = 0"
+assertion = "Merged-main hosted analysis classified all 154 adapter mutants as 139 caught and 15 compiler-unviable with none missed or timed out."
+scope = "Pinned Alpine Trace Adapter in Alpine Zed Lab run 32733054956."
+exclusions = ["Alpine shipping code", "future trace operations", "proof of semantic completeness"]
+
+[[evidence]]
+id = "EV-0028-COVERAGE04B"
+claim = "AEP-0028-C04"
+kind = "coverage"
+artifact = "assurance/lab/v2/task-61-realistic-scenes.toml#coverage_lines_covered = 1142"
+assertion = "Merged-main hosted execution covered 1142 of 1184 adapter lines and 122 of 134 functions, above the accepted ratchets."
+scope = "Pinned Alpine Trace Adapter in Alpine Zed Lab run 32733054956."
+exclusions = ["Proof of correctness", "Zed code outside the adapter", "Alpine shipping code"]
+
+[[evidence]]
 id = "EV-0025-TLA02A"
 claim = "AEP-0025-C02"
 kind = "tla"

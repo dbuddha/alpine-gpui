@@ -24,7 +24,7 @@
 | ALG-011 | Local CoreText service | Apple platform requirement, `INDEPENDENT-CONVERGENCE`, E1 | Safe Alpine-owned shape/raster interface and top-down A8 orientation | Native text tests and orientation defect regression #293; Alpine E3 | Correct orientation supported; scratch allocation and fallback-cache profile pending |
 | ALG-012 | Bounded runtime queues | No GPUI executor adaptation, `ALPINE-ORIGINAL`, E2 | Standard threads, fixed admission, external wake, stale-result rejection | Runtime model/property/mutation tests; Alpine E3 | Queue bounds supported; scheduling latency and wake cost pending |
 | ALG-013 | Handle-free frame evidence | No reviewed equivalent guarantee, `ALPINE-ORIGINAL`, E2 | Submitted/completed snapshots cannot retain scenes or native handles | API and lifecycle tests; Alpine E3 | Ownership claim supported; instrumentation overhead pending |
-| ALG-014 | CPU oracle and versioned trace | Comparator methodology, `ALPINE-ORIGINAL`, E2 | Immutable v1 solid-quad control plus v2 prepared clips, quads, A8 atlas, glyphs, and identity-bound scroll/resize pairs | Solid-quad Alpine and Zed lab reproduction plus Task #334 Alpine CPU-oracle fixtures; E3 only for executed Alpine workloads | V2 GPUI adaptation, physical timing, memory, and E4 comparison remain open in #61/#53 |
+| ALG-014 | CPU oracle and versioned trace | Comparator methodology, `ALPINE-ORIGINAL`, E2 | Immutable v1 solid-quad control plus v2 prepared clips, quads, A8 atlas, glyphs, and identity-bound scroll/resize pairs | PR #343, Alpine Zed Lab PR #5, and the exact hosted plus physical `assurance/lab/v2` record; composed E3 across eight fixtures | Prepared renderer semantic equivalence supported; atlas recovery, timing, memory, and E4 qualification remain #53 |
 | ALG-015 | Event-to-present correlation | Apple timestamps and profiling practice, `INDEPENDENT-CONVERGENCE`, E2 | Event, submission, completion, presented-handler stages plus opt-in native terminal signposts | PR #307 and #312 plus Task #314 deterministic evidence; external capture not retained | Diagnostic-only; defect #304 physical distributions and causal correction block latency claims |
 | ALG-016 | TLA+, Kani, mutation risk gates | Formal and mutation methods, `ALPINE-ORIGINAL` composition, E2 | State-machine models, bounded Rust checks, viable-mutant enforcement by risk | CI and formal effectiveness report; Alpine E3 for modeled properties | Does not replace production journey, hardware, fuzz, or performance evidence |
 
@@ -63,7 +63,7 @@ The following observations must never be promoted automatically:
 
 The next valid advances are:
 
-- ALG-014: solid quad E3 to glyph grid and realistic code viewport E3, then E4 paired GPUI comparison.
+- ALG-014: eight-fixture prepared-scene E3 to atlas lifecycle and recovery, then calibrated E4 paired GPUI comparison under #53.
 - ALG-015: diagnostic-only to E3 physical event-to-photon reproduction, then E4 matched product comparison.
 - ALG-008 through ALG-010: deterministic avoided work to physical CPU/GPU/upload/residency E3.
 - ALS-001 through ALS-010 and ALS-012: production implementation to sustained revision-pinned dogfood E3, with ALS-009 and ALS-012 first requiring physical #273/#253 evidence.

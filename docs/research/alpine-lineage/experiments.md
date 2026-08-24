@@ -5,7 +5,7 @@
 | Priority | Experiment | Blocks | Current level | Exit evidence |
 | --- | --- | --- | --- | --- |
 | P0 | Physical typing latency root cause | #304, private dogfood, 120 Hz claim | Diagnostic-only | Reproduced stage distribution, causal fix, regression, external trace |
-| P0 | Realistic code-viewport trace semantics | #53, #61, every renderer claim | E1/E2 | Independent oracle and GPUI/Alpine semantic equivalence |
+| P0 | Realistic code-viewport trace semantics | #53 and every renderer claim | E3 composed correctness | Atlas recovery semantics and calibrated E4 GPUI comparison |
 | P1 | Physical VoiceOver and AX process journey | M4 | E3 modeled | External AX/VoiceOver evidence on production bundle |
 | P1 | Warm text CPU/GPU profile | Atlas performance claim | E3 deterministic | Zero raster/upload plus measured scene, shaping, allocation, upload, GPU stages |
 | P1 | Sustained Alpine repository dogfood | M5 | Implementation evidence | Revision-pinned sessions, incidents, no data loss, accepted defect window |
@@ -60,6 +60,11 @@ Add traces in this order:
 5. One-line scroll delta with mostly reused text.
 6. Resize and scale transition.
 7. Atlas miss, growth, eviction, and recovery.
+
+As of 2026-08-24, the immutable control plus clipped grid, glyph grid,
+realistic code viewport, scroll pair, and resize pair pass composed E3 CPU,
+Alpine Direct Metal, and pinned GPUI Metal admission. Atlas miss, growth,
+eviction, recovery, timing, and memory remain Requirement #53 work.
 
 For each trace retain semantic input hash, decoded normalized scene hash, output
 oracle, tolerance, adapter allocation bytes, adapter time, scene-build time,

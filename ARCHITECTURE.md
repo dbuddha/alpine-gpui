@@ -921,6 +921,19 @@ with verified raw samples and qualified environments; its report remains
 non-inferential until physical data supports a later statistical decision. No
 shipping crate depends on either boundary.
 
+The immutable version 1 solid-quad control is not widened or replaced. The
+prepared `alpine-scene-trace/v2` boundary adds bounded clips, solid quads, one
+immutable A8 atlas, monochrome glyphs, and identity-bound scroll and resize
+pairs. `alpine-zed-lab-evidence/v2` composes an exact merged-main hosted
+offline-metallib GPUI run with an exact physical runtime-source run. It binds
+eight trace, workload, output, pair, adaptation, coverage, mutation, artifact,
+shader, build, and environment identities. Alpine Direct Metal and GPUI Metal
+must match exactly for every fixture; the independent CPU oracle admits at most
+one channel value of declared tolerance. Runtime-source shader evidence is
+supporting correctness evidence only. Adaptation timing, renderer timing,
+memory, latency, and performance qualification remain false, so this boundary
+admits E3 semantic equivalence but cannot produce an E4 comparison claim.
+
 ### Bounded static command discovery
 
 Alpine Studio owns a closed compile-time command registry and a private bounded

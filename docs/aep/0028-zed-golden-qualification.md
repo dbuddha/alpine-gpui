@@ -46,7 +46,7 @@ benchmark result, set a performance budget, or claim daily-driver parity.
 - **AEP-0028-C03:** Mismatched workload identities, unsupported operations,
   incomplete evidence, and invalid reproduction counts fail closed and cannot
   produce a qualified report.
-- **AEP-0028-C04:** The future GPL lab preserves separate upstream-GPUI and
+- **AEP-0028-C04:** The isolated GPL lab preserves separate upstream-GPUI and
   Alpine-adapter variants and accounts for adaptation outside renderer-only
   timing.
 - **AEP-0028-C05:** Fixed-hardware dominance requires calibrated equivalence
@@ -59,18 +59,20 @@ benchmark result, set a performance budget, or claim daily-driver parity.
   timestamps cannot be reported as photon evidence.
 
 Claims C01 through C03 are implemented by the foundation Requirement. C04 is
-implemented for the first solid-quad renderer-only slice by Requirement #31 and
-task #61, with its composed hosted and physical evidence registered in Alpine.
-C05 through C07 remain approved design direction and unimplemented until their
-Requirements receive owner approval and evidence.
+implemented for the immutable solid-quad control and the eight-fixture prepared
+renderer ladder by Requirement #31 and Task #61, with exact hosted and physical
+evidence registered in Alpine. This is E3 semantic equivalence, not timing,
+memory, latency, or dominance evidence. C05 through C07 remain approved design
+direction and unimplemented until their Requirements receive owner approval and
+evidence.
 
 [Decision #333](https://github.com/dbuddha/alpine-gpui/issues/333) preserves the
 version 1 solid-quad slice as an immutable control and accepts
 `alpine-scene-trace/v2` for prepared clips, quads, one immutable A8 atlas, and
 monochrome glyphs. Task #334 owns Alpine decoding and oracle fixtures. Task #61
-remains responsible for the isolated GPUI adapter. Version 2 implementation is
-E3 correctness evidence only until the GPUI path and fixed-hardware protocol
-qualify it.
+owns the isolated GPUI adapter and its composed E3 record. Requirement #53
+retains atlas lifecycle, recovery, calibrated timing, memory, and fixed-hardware
+E4 qualification.
 
 ## Formal model
 
