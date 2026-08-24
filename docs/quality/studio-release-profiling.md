@@ -86,6 +86,27 @@ zero. The persisted fallback does not provide Time Profiler stacks, System
 Trace scheduling, Metal System Trace, exact GPU execution duration, or optical
 latency, so those requirements remain open.
 
+Validate and summarize each raw capture before interpreting it. Record the
+capture host's exact `mach_timebase_info` numerator and denominator; they are
+required to convert unified-log `machTimestamp` differences into nanoseconds.
+
+```sh
+scripts/analyze-studio-profile.sh \
+  persisted-profile.json \
+  target/qualification/studio-profile-analysis \
+  MACH_TIMEBASE_NUMER \
+  MACH_TIMEBASE_DENOM
+```
+
+The analyzer rejects mixed process identity, unknown or duplicate stages,
+malformed static messages, correlation drift, decreasing timestamps, and
+invalid revision ownership. It emits byte-preserved record identity,
+`samples.tsv`, `summary.tsv`, `counters.tsv`, and `omissions.tsv`. Percentiles
+use deterministic nearest-rank selection. The report always records
+`observer_cost_calibrated=false`, `causal_attribution_allowed=false`, and
+`threshold_activation_allowed=false`; a separate accepted calibration package
+must change those claim boundaries rather than editing analyzer output.
+
 Unified logging has observer cost. Run matched capture-off and capture-on A/A
 windows before using persisted distributions to attribute a stall. Reject the
 fallback for causal analysis when its confidence interval shows material
