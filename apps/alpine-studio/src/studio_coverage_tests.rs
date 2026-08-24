@@ -4634,13 +4634,133 @@ fn native_validation_dispatch_counters_reset_and_report_nonzero_work() {
     reset_native_validation_dispatch_counts();
     NATIVE_VALIDATION_EVENT_COUNTS[3].fetch_add(2, std::sync::atomic::Ordering::Relaxed);
     NATIVE_VALIDATION_FRAME_BUILDS.fetch_add(3, std::sync::atomic::Ordering::Relaxed);
+    NATIVE_VALIDATION_LANGUAGE_SYNC_CALLS.fetch_add(2, Ordering::Relaxed);
+    NATIVE_VALIDATION_LANGUAGE_WAKE_CALLBACKS.fetch_add(3, Ordering::Relaxed);
+    NATIVE_VALIDATION_LANGUAGE_LATCH_POLLS.fetch_add(4, Ordering::Relaxed);
+    NATIVE_VALIDATION_LANGUAGE_FOREGROUND_RESULTS.fetch_add(5, Ordering::Relaxed);
+    NATIVE_VALIDATION_LANGUAGE_INVALIDATIONS.fetch_add(6, Ordering::Relaxed);
+    record_native_validation_language_snapshot(rust_diagnostics::RustDiagnosticsSnapshot {
+        active: true,
+        generation: 7,
+        process_epoch: 8,
+        lsp_version: 9,
+        process_queued_events: 10,
+        process_submitted_inputs: 11,
+        process_written_inputs: 12,
+        process_input_saturations: 13,
+        polls: 14,
+        diagnostic_publications: 15,
+        diagnostic_items: 16,
+        stale_wakes: 17,
+        restarts: 18,
+        ..rust_diagnostics::RustDiagnosticsSnapshot::default()
+    });
+    for admission in [
+        alpine_runtime::ExternalAdmission::Admitted,
+        alpine_runtime::ExternalAdmission::Full,
+        alpine_runtime::ExternalAdmission::Disconnected,
+        alpine_runtime::ExternalAdmission::ShuttingDown,
+        alpine_runtime::ExternalAdmission::SequenceExhausted,
+    ] {
+        record_native_validation_language_publication(19, 19);
+        record_native_validation_language_submission(admission);
+    }
+    record_native_validation_language_observation(19, 23);
 
     let (events, frame_builds) = native_validation_dispatch_counts();
     assert_eq!(events[3], 2);
     assert_eq!(frame_builds, 3);
+    assert_eq!(
+        native_validation_language_evidence(),
+        NativeValidationLanguageEvidence {
+            sync_calls: 2,
+            wake_callbacks: 3,
+            latch_publications: 5,
+            external_admissions: 1,
+            external_full: 1,
+            external_disconnected: 1,
+            external_shutting_down: 1,
+            external_sequence_exhausted: 1,
+            published_wake_generation: 19,
+            observed_wake_generation: 19,
+            pending_wake_generation: 23,
+            latch_polls: 4,
+            foreground_results: 5,
+            invalidations: 6,
+            active: true,
+            generation: 7,
+            process_epoch: 8,
+            lsp_version: 9,
+            process_queued_events: 10,
+            submitted_inputs: 11,
+            written_inputs: 12,
+            input_saturations: 13,
+            polls: 14,
+            diagnostic_publications: 15,
+            diagnostic_items: 16,
+            stale_wakes: 17,
+            restarts: 18,
+            frame_builds: 3,
+            semantic_revision: 0,
+        }
+    );
 
     reset_native_validation_dispatch_counts();
     assert_eq!(native_validation_dispatch_counts(), ([0; 10], 0));
+    assert_eq!(
+        native_validation_language_evidence(),
+        NativeValidationLanguageEvidence::default()
+    );
+}
+
+#[test]
+fn visual_change_combination_requires_either_independent_source() {
+    assert!(!visual_change_present(false, false));
+    assert!(visual_change_present(true, false));
+    assert!(visual_change_present(false, true));
+    assert!(visual_change_present(true, true));
+}
+
+#[test]
+fn accessibility_semantic_revision_advances_only_for_real_changes_and_reports_exhaustion()
+-> Result<(), Box<dyn Error>> {
+    let document = StudioDocument::scratch("semantic revision");
+    let mut app = StudioApp::from_document(TestTextSystem, document, None)?;
+    let initial = app.accessibility_semantic_revision;
+    let initial_failures = app.input_failures;
+    app.advance_accessibility_semantic_revision(false);
+    assert_eq!(app.accessibility_semantic_revision, initial);
+    assert_eq!(app.input_failures, initial_failures);
+    app.advance_accessibility_semantic_revision(true);
+    assert_eq!(
+        app.accessibility_semantic_revision,
+        initial.saturating_add(1)
+    );
+    assert_eq!(app.input_failures, initial_failures);
+    assert_eq!(
+        accessibility::revision(&app).semantic(),
+        app.accessibility_semantic_revision
+    );
+    assert!(matches!(
+        app.accessibility_snapshot(),
+        Err(AccessibilityError::StaleRevision { expected, actual })
+            if expected == app.accessibility_projection_revision
+                && actual == accessibility::revision(&app)
+    ));
+    let _scene = app.scene(SceneRevision::new(1), viewport()?);
+    assert_eq!(
+        app.accessibility_projection_revision,
+        accessibility::revision(&app)
+    );
+    assert_eq!(
+        app.accessibility_snapshot()?.revision(),
+        app.accessibility_projection_revision
+    );
+    app.accessibility_semantic_revision = u64::MAX;
+    app.advance_accessibility_semantic_revision(true);
+    assert_eq!(app.accessibility_semantic_revision, u64::MAX);
+    assert_eq!(app.input_failures, initial_failures.saturating_add(1));
+    Ok(())
 }
 
 struct SelectiveFailingRasterTextSystem {
@@ -5762,6 +5882,60 @@ fn accessibility_runtime_dispatch_is_exact_dirty_neutral_and_revision_checked()
 }
 
 #[test]
+fn accessibility_document_action_advances_runtime_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "fn alpha() {}\n")?;
+    root.write("beta.rs", "fn beta() {}\n")?;
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = app.workspace.as_ref().ok_or("workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("alpha")?;
+    let beta = workspace.index_named("beta.rs").ok_or("beta")?;
+    app.open_workspace_entry(alpha)?;
+    app.open_workspace_entry(beta)?;
+    let _scene = app.try_scene(SceneRevision::new(1), viewport()?)?;
+    let snapshot = app.accessibility_snapshot()?;
+    let alpha_tab = snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.role() == AccessibilityRole::Tab && node.name() == "alpha.rs")
+        .ok_or("alpha tab")?;
+    let expected_document_revision = app
+        .runtime_document_revision
+        .checked_add(1)
+        .ok_or("document revision")?;
+    let request = AccessibilityRequest::action(
+        AccessibilityRequestId::new(14),
+        AccessibilityAction::activate(snapshot.revision(), alpha_tab.id()),
+    )?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    assert!(runtime.frame_if_dirty().is_some());
+    assert_eq!(runtime.snapshot().document_revision().get(), 0);
+
+    let response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(14),
+        request,
+    });
+    assert!(response.frame().is_some());
+    assert!(matches!(
+        response
+            .accessibility_response()
+            .ok_or("action response")?
+            .result(),
+        Ok(AccessibilityPayload::Action(
+            alpine_platform_macos::AccessibilityActionResult::Applied
+        ))
+    ));
+    assert_eq!(
+        runtime.snapshot().document_revision().get(),
+        expected_document_revision
+    );
+    assert!(runtime.frame_if_dirty().is_none());
+    Ok(())
+}
+
+#[test]
 fn accessibility_runtime_rejects_stale_mapping_and_oversized_text()
 -> Result<(), Box<dyn std::error::Error>> {
     let app = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("a🦀é"), None)?;
@@ -6015,6 +6189,7 @@ fn completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact()
     app.rust_diagnostics
         .install_completion_for_test(3, app.language_identity(), &completion)?;
     app.runtime_document_revision += 1;
+    let _identity_scene = app.try_scene(SceneRevision::new(312), viewport()?)?;
     let stale = app.accessibility_snapshot()?;
     assert!(
         !stale
@@ -6224,6 +6399,7 @@ fn accessibility_non_identity_state_and_every_focus_owner_are_exact()
         StudioApp::from_document(TestTextSystem, StudioDocument::scratch("a\nb"), None)?;
     changed.runtime_document_revision = 7;
     assert!(changed.replace_selection("z").document_changed);
+    let _changed_scene = changed.try_scene(SceneRevision::new(330), viewport()?)?;
     let changed_snapshot = changed.accessibility_snapshot()?;
     assert_eq!(changed_snapshot.revision().document(), 7);
     assert_eq!(changed_snapshot.revision().buffer(), 1);
@@ -6461,6 +6637,35 @@ fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
             .is_none()
     );
 
+    let mut projected_app = StudioApp::open_file(TestTextSystem, &rust_path)?;
+    let _initial_projection = projected_app.scene(SceneRevision::new(500), viewport);
+    let projected_before = projected_app.accessibility_projection_revision;
+    let projected_input = projected_app
+        .active_rust_document()
+        .ok_or("projected Rust document")?;
+    let projected_diagnostics = rust_diagnostics::tests::diagnostics(&rust_path, 1);
+    projected_app.rust_diagnostics.install_for_test(
+        projected_input,
+        &projected_diagnostics,
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    projected_app.advance_accessibility_semantic_revision(true);
+    let current = accessibility::revision(&projected_app);
+    assert!(matches!(
+        projected_app.accessibility_snapshot(),
+        Err(AccessibilityError::StaleRevision { expected, actual })
+            if expected == projected_before && actual == current
+    ));
+    let _diagnostic_projection = projected_app.scene(SceneRevision::new(501), viewport);
+    let projected = projected_app.accessibility_snapshot()?;
+    assert_eq!(projected.revision(), current);
+    assert!(
+        projected
+            .nodes()
+            .iter()
+            .any(|node| { node.name().starts_with("diagnostic severity 1 on line 1") })
+    );
+
     let mut latched_app = StudioApp::open_file(TestTextSystem, &rust_path)?;
     let input = latched_app
         .active_rust_document()
@@ -6516,6 +6721,7 @@ fn accessibility_activation_routes_current_commands_and_rejects_stale_targets()
                 .visual_changed
         );
     }
+    let _tree_scene = app.try_scene(SceneRevision::new(699), viewport()?)?;
     let tree_snapshot = app.accessibility_snapshot()?;
     let alpha_row = tree_snapshot
         .nodes()
@@ -6594,6 +6800,7 @@ fn accessibility_activation_routes_current_commands_and_rejects_stale_targets()
     assert!(app.replace_selection("dirty").document_changed);
     let context = app.command_context();
     assert!(app.command_palette.open(context)?);
+    let _current_scene = app.try_scene(SceneRevision::new(701), viewport()?)?;
     let snapshot = app.accessibility_snapshot()?;
     assert_eq!(
         snapshot

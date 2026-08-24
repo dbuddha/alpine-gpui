@@ -85,6 +85,11 @@ pub(crate) struct LanguageWake {
 }
 
 impl LanguageWake {
+    #[cfg(any(test, alpine_native_validation))]
+    pub(crate) const fn generation(self) -> u64 {
+        self.generation
+    }
+
     #[cfg(test)]
     pub(crate) const fn successor_for_test(self) -> Self {
         Self {
@@ -115,6 +120,11 @@ impl LanguageWakeLatch {
     pub(crate) fn take(&self) -> Option<LanguageWake> {
         let generation = self.generation.swap(0, Ordering::AcqRel);
         (generation != 0).then_some(LanguageWake { generation })
+    }
+
+    #[cfg(any(test, alpine_native_validation))]
+    pub(crate) fn pending_generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 }
 

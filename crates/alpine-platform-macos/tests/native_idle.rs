@@ -28,6 +28,7 @@ mod validation {
     const WIDTH: f32 = 320.0;
     const HEIGHT: f32 = 180.0;
     const SETTLEMENT: Duration = Duration::from_millis(150);
+    const MAX_FRAME_ATTEMPTS: u64 = 3;
 
     #[derive(Clone, Copy)]
     struct NativeWindowConfiguration {
@@ -74,19 +75,7 @@ mod validation {
         assert_quiescent(&surface, "restored-before-control")?;
 
         for revision in 3..=10 {
-            let before_control = surface.snapshot();
             present(&surface, revision, hosted_direct)?;
-            let after_control = surface.snapshot();
-            assert_eq!(
-                after_control.submission_count(),
-                before_control.submission_count() + 1,
-                "every invalidation control must admit exactly one submission"
-            );
-            assert_eq!(
-                after_control.direct_present_count(),
-                before_control.direct_present_count() + 1,
-                "every invalidation control must issue exactly one direct presentation"
-            );
             assert_quiescent(&surface, &format!("restored-control-{revision}"))?;
         }
 
@@ -137,35 +126,64 @@ mod validation {
             surface.request_frame(builder.finish(), clear)?.get(),
             revision
         );
-        if hosted_direct {
-            // A hosted runner can supply a callback drawable without ever
-            // reporting compositor presentation. The validation-only
-            // observation terminalizes real submitted work so this test can
-            // qualify idle ownership. Only the independently counted direct
-            // present call is evidence; this observation is not physical
-            // presentation evidence.
-            let presented_time = 1.0 + f64::from(u32::try_from(revision)?);
-            native_validation::inject_post_commit_observation(surface, None, presented_time)?;
-        }
-        native_validation::run_until_frame_terminal(surface, Duration::from_secs(30));
-        if let Some(error) = surface.take_error()? {
-            return Err(error.into());
-        }
-        let terminal = surface.snapshot();
+        let terminal = drain_presented_frame(surface, before, revision, hosted_direct)?;
         let pause_evidence = native_validation::pause_confirmation_evidence(surface);
         assert!(
             terminal.callback_count() > before.callback_count(),
             "every setup revision must reach at least one display-link callback: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
         );
+        let submission_delta = terminal
+            .submission_count()
+            .checked_sub(before.submission_count())
+            .ok_or("submission counter regressed")?;
+        let superseded_delta = terminal
+            .superseded_count()
+            .checked_sub(before.superseded_count())
+            .ok_or("superseded counter regressed")?;
+        let skipped_delta = terminal
+            .skipped_count()
+            .checked_sub(before.skipped_count())
+            .ok_or("skipped counter regressed")?;
+        let expected_submissions = superseded_delta
+            .checked_add(skipped_delta)
+            .ok_or("expected retry count exhausted")?
+            .checked_add(1)
+            .ok_or("expected submission count exhausted")?;
         assert_eq!(
-            terminal.submission_count(),
-            before.submission_count() + 1,
-            "every setup revision must admit exactly one submission: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
+            submission_delta, expected_submissions,
+            "every setup revision must admit one final submission plus exactly one replacement for each superseded or skipped attempt: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
+        );
+        let direct_present_delta = terminal
+            .direct_present_count()
+            .checked_sub(before.direct_present_count())
+            .ok_or("direct-present counter regressed")?;
+        assert_eq!(
+            direct_present_delta, submission_delta,
+            "every admitted submission must issue exactly one direct presentation: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
         );
         assert_eq!(
-            terminal.direct_present_count(),
-            before.direct_present_count() + 1,
-            "every setup revision must issue exactly one direct presentation: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
+            terminal
+                .qualified_presented_count()
+                .checked_sub(before.qualified_presented_count())
+                .ok_or("qualified-presented counter regressed")?,
+            1,
+            "every setup revision must finish with exactly one current presented attempt: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
+        );
+        assert_eq!(
+            terminal
+                .failed_count()
+                .checked_sub(before.failed_count())
+                .ok_or("failed counter regressed")?,
+            0,
+            "a setup revision must not terminalize as failed"
+        );
+        assert_eq!(
+            terminal
+                .cancelled_count()
+                .checked_sub(before.cancelled_count())
+                .ok_or("cancelled counter regressed")?,
+            0,
+            "a setup revision must not terminalize as cancelled"
         );
         assert_eq!(
             terminal.occupied_frame_slots(),
@@ -195,6 +213,102 @@ mod validation {
         assert_eq!(pause_evidence.eligible(), expected_pause_confirmations);
         assert_eq!(pause_evidence.observed(), expected_pause_confirmations);
         Ok(())
+    }
+
+    fn drain_presented_frame(
+        surface: &NativeSurface,
+        initial: SurfaceSnapshot,
+        revision: u64,
+        hosted_direct: bool,
+    ) -> TestResult<SurfaceSnapshot> {
+        let initial_terminals = terminal_outcome_count(initial)?;
+        let mut armed_at_submission = None;
+        for _ in 0..MAX_FRAME_ATTEMPTS {
+            let before_drain = surface.snapshot();
+            let submissions = before_drain
+                .submission_count()
+                .checked_sub(initial.submission_count())
+                .ok_or("submission counter regressed during terminal drain")?;
+            if submissions > MAX_FRAME_ATTEMPTS {
+                return Err(format!(
+                    "revision {revision} exceeded the bounded frame-attempt contract: initial={initial:?}, current={before_drain:?}"
+                )
+                .into());
+            }
+            if frame_drain_complete(initial, initial_terminals, before_drain)? {
+                return Ok(before_drain);
+            }
+            if hosted_direct && armed_at_submission != Some(before_drain.submission_count()) {
+                // Hosted runners can expose callback drawables without a
+                // compositor observation. Arm one validation-only observation
+                // for each distinct admitted submission, including a
+                // replacement after native configuration supersedes an older
+                // attempt. This remains non-physical evidence.
+                let presented_time = 1.0 + f64::from(u32::try_from(revision)?);
+                native_validation::inject_post_commit_observation(surface, None, presented_time)?;
+                armed_at_submission = Some(before_drain.submission_count());
+            }
+            let terminals_before_drain = terminal_outcome_count(before_drain)?;
+            native_validation::run_until_frame_terminal(surface, Duration::from_secs(30));
+            if let Some(error) = surface.take_error()? {
+                return Err(error.into());
+            }
+            let terminal = surface.snapshot();
+            let terminals_after_drain = terminal_outcome_count(terminal)?;
+            if frame_drain_complete(initial, initial_terminals, terminal)? {
+                return Ok(terminal);
+            }
+            if terminals_after_drain <= terminals_before_drain {
+                return Err(format!(
+                    "revision {revision} made no terminal progress within the bounded drain: before={before_drain:?}, after={terminal:?}"
+                )
+                .into());
+            }
+        }
+        Err(format!(
+            "revision {revision} did not terminalize every bounded frame attempt: initial={initial:?}, current={:?}",
+            surface.snapshot()
+        )
+        .into())
+    }
+
+    fn frame_drain_complete(
+        initial: SurfaceSnapshot,
+        initial_terminals: u64,
+        current: SurfaceSnapshot,
+    ) -> TestResult<bool> {
+        let terminal_delta = terminal_outcome_count(current)?
+            .checked_sub(initial_terminals)
+            .ok_or("terminal counter regressed during frame drain")?;
+        let submission_delta = current
+            .submission_count()
+            .checked_sub(initial.submission_count())
+            .ok_or("submission counter regressed during frame drain")?;
+        if terminal_delta > submission_delta {
+            return Err(format!(
+                "frame drain observed more terminal outcomes than submissions: initial={initial:?}, current={current:?}"
+            )
+            .into());
+        }
+        let qualified_delta = current
+            .qualified_presented_count()
+            .checked_sub(initial.qualified_presented_count())
+            .ok_or("qualified-presented counter regressed during frame drain")?;
+        Ok(submission_delta > 0
+            && terminal_delta == submission_delta
+            && qualified_delta > 0
+            && current.occupied_frame_slots() == 0
+            && current.submitted_frame_slots() == 0)
+    }
+
+    fn terminal_outcome_count(snapshot: SurfaceSnapshot) -> TestResult<u64> {
+        snapshot
+            .qualified_presented_count()
+            .checked_add(snapshot.superseded_count())
+            .and_then(|count| count.checked_add(snapshot.cancelled_count()))
+            .and_then(|count| count.checked_add(snapshot.skipped_count()))
+            .and_then(|count| count.checked_add(snapshot.failed_count()))
+            .ok_or_else(|| "terminal outcome count exhausted".into())
     }
 
     fn await_display_link_paused(

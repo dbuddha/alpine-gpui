@@ -1034,10 +1034,12 @@ only in the private AppKit adapter. `Activate` carries the exact observed
 document/buffer revision and node identity. Studio rebuilds its bounded current
 projection, rejects stale, missing, unsupported, or disabled targets before
 mutation, and routes only to existing tab, file-row, command, diagnostic,
-save, and dirty-close authorities. Queries remain dirty-neutral and accepted
-actions enter the existing one-frame coalescing path. No `SetFocus`, arbitrary
-text geometry, callback registry, second semantic tree, or generic element
-framework is introduced. See AEP-0270.
+save, and dirty-close authorities. A state-changing action then enters the same
+document-authority advancement, language synchronization, bounded worker,
+recovery publication, semantic-revision, and one-frame coalescing path as
+keyboard and pointer input. Queries and unchanged actions remain dirty-neutral.
+No `SetFocus`, arbitrary text geometry, callback registry, second semantic tree,
+or generic element framework is introduced. See AEP-0270.
 
 Accessibility refresh now returns one bounded native dispatch batch after the
 adapter borrow ends. Removed and semantically replaced instances leave the
@@ -1054,6 +1056,66 @@ omissions, invalid user-info, and post-after-revocation violations. These values
 prove AppKit call shape, not delivery to assistive technology. Notification work
 requests no frame and touches no GPU, worker, timer, channel, or filesystem
 authority. See AEP-0271.
+
+The non-shipping native validation boundary can now inspect one complete current
+AppKit element set and press one exact role-and-label target while returning
+only bounded, handle-free evidence. The real Studio process journey uses that
+boundary over one local workspace to expand the lazy file tree, open two Rust
+files, navigate tabs, admit and activate a mock-server diagnostic, edit, execute
+the existing save command, reject dirty close, save, close, and drain every
+native and runtime owner. Stable accessibility queries submit no frame; each
+accepted visible action enters the existing latest-frame coalescing path at most
+once. The deterministic language fixture runs in a separate child process and
+does not enter shipping code, startup, discovery, or dependencies. See AEP-0272.
+
+Each validation query or named action performs one semantic refresh. It does not
+preflight through `accessibilityChildren` and then refresh the same tree again.
+This avoids redundant main-thread work and removes an artificial generation
+race between target discovery and activation.
+
+The production native accessibility request bridge rejects every clipboard and
+close side effect. Snapshot, text, selection, and mapping queries must also
+return no frame. One revision-valid action may carry one frame when its typed
+result is `Applied` or `Unchanged`; that frame enters the same latest-scene
+admission and display-link directive path as keyboard and pointer input. An
+`Unchanged` action may only expose dirty work that was already pending, while a
+failed action cannot submit a frame. This closes the fixture-hidden gap where
+Studio mutated correctly but AppKit reported visible actions as rejected.
+
+If a bounded worker result arrives immediately before an accessibility query,
+runtime leaves it queued so the query observes the last complete state and
+projection without attaching a frame. The already requested wake drains the
+bounded result, builds one latest scene, and publishes projection identity only
+after `rendered_lines` is final. An accessibility action is ordered before a
+concurrent bounded drain, so its revision remains paired with the complete tree
+that supplied the target. The drain then runs and action plus background effects
+coalesce into at most one frame. The state/projection revision guard remains a
+fail-closed recovery boundary, and the native adapter retains its previous
+complete tree on a transient mismatch without reconciliation or notification.
+This prevents new identity from accompanying old geometry, current native
+controls from being rejected by unrelated concurrent publication, query-caused
+frames, extra action frames, and idle redraw.
+
+Native diagnostic validation never inspects the AppKit tree before complete
+process-bound language authority is observable. It inspects only after that
+authority on a newer complete semantic revision or a real requested frame.
+Superseded language wakes are accepted only when their count is bounded by
+actual foreground or latch observations; exact current-generation publication,
+observation, empty pending state, and no restart remain mandatory. This proves
+stale work was rejected without treating valid supersession as a qualification
+failure or adding unconditional tree polling.
+
+After the application accepts close, the native owner revokes accessibility
+before publishing final focus loss. Runtime has already rejected new work at
+that point, so this order prevents a focus callback from synchronously refreshing
+an active semantic adapter against a shutting-down application.
+The accepted close response itself also skips semantic refresh before returning
+to `windowShouldClose`; a cancelled close still refreshes so its blocking status
+is observable. This preserves `Allow` until AppKit enters `windowWillClose`.
+Hosted validation invokes the same idempotent native close authority directly
+after `windowShouldClose` accepts because headless AppKit may terminate its run
+loop without delivering `windowWillClose`. Physical qualification still requires
+the real AppKit callback.
 
 ### Pane document ownership (Task #127)
 

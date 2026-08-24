@@ -38,6 +38,7 @@ Accepted AEPs:
 - [AEP 0268: Bounded native input and accessibility lifecycle](0268-bounded-native-input-accessibility-lifecycle.md)
 - [AEP 0270: Bounded accessibility actions and geometry](0270-bounded-accessibility-actions.md)
 - [AEP 0271: Bounded accessibility notifications and destruction](0271-bounded-accessibility-notifications.md)
+- [AEP 0272: Real Studio native accessibility process journey](0272-studio-native-accessibility-process.md)
 
 Proposed AEPs:
 

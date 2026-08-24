@@ -500,15 +500,14 @@ impl NativeAccessibilityAdapter {
     }
 
     fn refresh(&mut self, view: &SurfaceView) -> Result<RefreshOutcome, SurfaceError> {
-        if self.revoking || self.handler.is_none() {
-            return Err(SurfaceError::invariant(SurfaceOperation::Accessibility));
-        }
+        self.require_refresh_admission()?;
         let request = AccessibilityRequest::snapshot(self.next_id()?)
             .map_err(|_| SurfaceError::invariant(SurfaceOperation::Accessibility))?;
         let response = self.dispatch(&request)?;
-        let snapshot = match response.result() {
-            Ok(AccessibilityPayload::Snapshot(snapshot)) => snapshot.clone(),
-            _ => return Err(SurfaceError::invariant(SurfaceOperation::Accessibility)),
+        let Some(snapshot) = self.classify_snapshot_response(&response)? else {
+            return Ok(RefreshOutcome {
+                notifications: Vec::new(),
+            });
         };
         let previous = self.snapshot.clone();
         let mut notifications = Vec::new();
@@ -525,6 +524,24 @@ impl NativeAccessibilityAdapter {
         self.snapshot = Some(snapshot);
         self.active = true;
         Ok(RefreshOutcome { notifications })
+    }
+
+    fn require_refresh_admission(&self) -> Result<(), SurfaceError> {
+        if self.revoking || self.handler.is_none() {
+            return Err(SurfaceError::invariant(SurfaceOperation::Accessibility));
+        }
+        Ok(())
+    }
+
+    fn classify_snapshot_response(
+        &self,
+        response: &AccessibilityResponse,
+    ) -> Result<Option<AccessibilitySnapshot>, SurfaceError> {
+        match response.result() {
+            Ok(AccessibilityPayload::Snapshot(snapshot)) => Ok(Some(snapshot.clone())),
+            Err(AccessibilityError::StaleRevision { .. }) if self.snapshot.is_some() => Ok(None),
+            _ => Err(SurfaceError::invariant(SurfaceOperation::Accessibility)),
+        }
     }
 
     fn reconcile_elements(
@@ -978,6 +995,114 @@ impl NativeAccessibilityAdapter {
     }
 
     #[cfg(alpine_native_validation)]
+    pub(crate) fn inspect_view(
+        view: &Retained<SurfaceView>,
+    ) -> Result<crate::native_validation::NativeAccessibilityTreeEvidence, SurfaceError> {
+        Self::refresh_view(view)?;
+        let (revision, elements) = {
+            let adapter = view.ivars().accessibility.borrow();
+            let revision = adapter
+                .snapshot
+                .as_ref()
+                .map(AccessibilitySnapshot::revision)
+                .ok_or(SurfaceError::validation(SurfaceOperation::Accessibility))?;
+            let elements = adapter
+                .elements
+                .iter()
+                .map(|cached| (cached.id, cached.element.clone()))
+                .collect::<Vec<_>>();
+            (revision, elements)
+        };
+        let mut nodes = Vec::new();
+        nodes
+            .try_reserve_exact(elements.len())
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Accessibility))?;
+        let mut focused_nodes = 0_usize;
+        for (id, element) in elements {
+            let role: Retained<NSString> = unsafe { msg_send![&*element, accessibilityRole] };
+            let label: Retained<NSString> = unsafe { msg_send![&*element, accessibilityLabel] };
+            let identifier: Retained<NSString> =
+                unsafe { msg_send![&*element, accessibilityIdentifier] };
+            let focused: bool = unsafe { msg_send![&*element, isAccessibilityFocused] };
+            let selected: bool = unsafe { msg_send![&*element, isAccessibilitySelected] };
+            let activate_allowed: bool = unsafe {
+                msg_send![&*element, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
+            };
+            let current: bool = unsafe { msg_send![&*element, isAccessibilityElement] };
+            let frame: NSRect = unsafe { msg_send![&*element, accessibilityFrame] };
+            let bounded_screen_frame = bounded_screen_frame(frame);
+            focused_nodes = focused_nodes.saturating_add(usize::from(focused));
+            nodes.push(crate::native_validation::NativeAccessibilityNodeEvidence {
+                semantic_id: id.get(),
+                role: role.to_string().into_boxed_str(),
+                label: label.to_string().into_boxed_str(),
+                identifier: identifier.to_string().into_boxed_str(),
+                focused,
+                selected,
+                activate_allowed,
+                current,
+                bounded_screen_frame,
+            });
+        }
+        Ok(crate::native_validation::NativeAccessibilityTreeEvidence {
+            revision,
+            nodes: nodes.into_boxed_slice(),
+            focused_nodes,
+        })
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn activate_named_view(
+        view: &Retained<SurfaceView>,
+        role: AccessibilityRole,
+        label: &str,
+    ) -> Result<crate::native_validation::NativeAccessibilityActivationEvidence, SurfaceError> {
+        Self::refresh_view(view)?;
+        let (id, element) = {
+            let adapter = view.ivars().accessibility.borrow();
+            let snapshot = adapter
+                .snapshot
+                .as_ref()
+                .ok_or(SurfaceError::validation(SurfaceOperation::Accessibility))?;
+            let mut matches = snapshot
+                .nodes()
+                .iter()
+                .filter(|node| node.role() == role && node.name() == label);
+            let node = matches
+                .next()
+                .ok_or(SurfaceError::validation(SurfaceOperation::Accessibility))?;
+            if matches.next().is_some() {
+                return Err(SurfaceError::validation(SurfaceOperation::Accessibility));
+            }
+            let element = adapter
+                .element(node.id())
+                .ok_or(SurfaceError::validation(SurfaceOperation::Accessibility))?;
+            (node.id(), element)
+        };
+        let native_role: Retained<NSString> = unsafe { msg_send![&*element, accessibilityRole] };
+        let native_label: Retained<NSString> = unsafe { msg_send![&*element, accessibilityLabel] };
+        let identifier: Retained<NSString> =
+            unsafe { msg_send![&*element, accessibilityIdentifier] };
+        let selector_allowed: bool = unsafe {
+            msg_send![&*element, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
+        };
+        let accepted: bool = unsafe { msg_send![&*element, accessibilityPerformPress] };
+        let current_after_action: bool = unsafe { msg_send![&*element, isAccessibilityElement] };
+        Ok(
+            crate::native_validation::NativeAccessibilityActivationEvidence {
+                semantic_id: id.get(),
+                role: native_role.to_string().into_boxed_str(),
+                label: native_label.to_string().into_boxed_str(),
+                identifier: identifier.to_string().into_boxed_str(),
+                selector_allowed,
+                accepted,
+                current_after_action,
+                dispatch_failed: element.ivars().dispatch_failed.get(),
+            },
+        )
+    }
+
+    #[cfg(alpine_native_validation)]
     pub(crate) fn validate_view(
         view: &Retained<SurfaceView>,
     ) -> Result<crate::native_validation::NativeAccessibilityEvidence, SurfaceError> {
@@ -1039,12 +1164,7 @@ impl NativeAccessibilityAdapter {
         let stable_external_identifier = !identifier.to_string().is_empty()
             && identifier.to_string() == repeated_identifier.to_string();
         let frame: NSRect = unsafe { msg_send![&*tab, accessibilityFrame] };
-        let bounded_screen_frame = frame.origin.x.is_finite()
-            && frame.origin.y.is_finite()
-            && frame.size.width.is_finite()
-            && frame.size.height.is_finite()
-            && frame.size.width > 0.0
-            && frame.size.height > 0.0;
+        let bounded_screen_frame = bounded_screen_frame(frame);
         let tab_activate_selector_allowed: bool = unsafe {
             msg_send![&*tab, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
         };
@@ -1714,6 +1834,128 @@ fn checked_range(range: NSRange, text_length: usize) -> Option<AccessibilityText
     Some(AccessibilityTextRange::new(range.location, range.length))
 }
 
+#[cfg(any(test, alpine_native_validation))]
+fn bounded_screen_frame(frame: NSRect) -> bool {
+    frame.origin.x.is_finite()
+        && frame.origin.y.is_finite()
+        && frame.size.width.is_finite()
+        && frame.size.height.is_finite()
+        && frame.size.width > 0.0
+        && frame.size.height > 0.0
+}
+
 const fn not_found_range() -> NSRange {
     NSRange::new(usize::MAX, 0)
+}
+
+#[cfg(test)]
+mod bounded_screen_frame_tests {
+    use super::*;
+
+    fn frame(x: f64, y: f64, width: f64, height: f64) -> NSRect {
+        NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
+    }
+
+    #[test]
+    fn every_finite_and_nonempty_axis_is_required_independently() {
+        assert!(bounded_screen_frame(frame(-20.0, -10.0, 40.0, 30.0)));
+
+        assert!(!bounded_screen_frame(frame(f64::NAN, 1.0, 2.0, 3.0)));
+        assert!(!bounded_screen_frame(frame(1.0, f64::NAN, 2.0, 3.0)));
+        assert!(!bounded_screen_frame(frame(1.0, 2.0, f64::NAN, 3.0)));
+        assert!(!bounded_screen_frame(frame(1.0, 2.0, 3.0, f64::NAN)));
+        assert!(!bounded_screen_frame(frame(f64::INFINITY, 1.0, 2.0, 3.0)));
+        assert!(!bounded_screen_frame(frame(
+            1.0,
+            f64::NEG_INFINITY,
+            2.0,
+            3.0
+        )));
+        assert!(!bounded_screen_frame(frame(1.0, 2.0, 0.0, 3.0)));
+        assert!(!bounded_screen_frame(frame(1.0, 2.0, -1.0, 3.0)));
+        assert!(!bounded_screen_frame(frame(1.0, 2.0, 3.0, 0.0)));
+        assert!(!bounded_screen_frame(frame(1.0, 2.0, 3.0, -1.0)));
+    }
+}
+
+#[cfg(test)]
+mod adapter_refresh_tests {
+    use super::*;
+    use crate::AccessibilitySelection;
+
+    fn snapshot(
+        revision: AccessibilityRevision,
+    ) -> Result<AccessibilitySnapshot, AccessibilityError> {
+        let root = AccessibilityNode::new(
+            AccessibilityNodeId::new(1),
+            None,
+            AccessibilityRole::Window,
+            "Alpine Studio".into(),
+            false,
+            false,
+            false,
+        )?;
+        AccessibilitySnapshot::new(
+            revision,
+            AccessibilityNodeId::new(1),
+            vec![root],
+            AccessibilitySelection::new(0, 0),
+            0,
+            1,
+            false,
+        )
+    }
+
+    #[test]
+    fn refresh_admission_requires_an_installed_handler_and_nonrevoking_owner() {
+        let mut adapter = NativeAccessibilityAdapter::new();
+        assert!(adapter.require_refresh_admission().is_err());
+
+        adapter.install(Box::new(|_| {
+            Err(SurfaceError::invariant(SurfaceOperation::Accessibility))
+        }));
+        assert!(adapter.require_refresh_admission().is_ok());
+
+        adapter.revoking = true;
+        assert!(adapter.require_refresh_admission().is_err());
+    }
+
+    #[test]
+    fn stale_projection_retains_only_an_existing_complete_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let revision = AccessibilityRevision::new(7, 11).with_semantic(13);
+        let request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(1))?;
+        let stale = AccessibilityResponse::failure(
+            &request,
+            revision,
+            AccessibilityError::StaleRevision {
+                expected: revision.with_semantic(14),
+                actual: revision,
+            },
+        );
+        let mut adapter = NativeAccessibilityAdapter::new();
+        assert!(adapter.classify_snapshot_response(&stale).is_err());
+
+        let previous = snapshot(revision)?;
+        adapter.snapshot = Some(previous.clone());
+        assert!(adapter.classify_snapshot_response(&stale)?.is_none());
+        assert_eq!(adapter.snapshot.as_ref(), Some(&previous));
+
+        let mismatch =
+            AccessibilityResponse::failure(&request, revision, AccessibilityError::RequestMismatch);
+        assert!(adapter.classify_snapshot_response(&mismatch).is_err());
+
+        let current_revision = revision.with_semantic(14);
+        let current = snapshot(current_revision)?;
+        let response = AccessibilityResponse::success(
+            &request,
+            current_revision,
+            AccessibilityPayload::Snapshot(current.clone()),
+        )?;
+        assert_eq!(
+            adapter.classify_snapshot_response(&response)?,
+            Some(current)
+        );
+        Ok(())
+    }
 }

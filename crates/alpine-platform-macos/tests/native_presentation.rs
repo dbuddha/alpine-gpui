@@ -7,12 +7,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 mod validation {
-    use std::{error::Error, ffi::OsStr, time::Duration};
+    use std::{cell::Cell, error::Error, ffi::OsStr, rc::Rc, time::Duration};
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_metal::RenderError;
     use alpine_platform_macos::{
-        NativeSurface, SurfaceDescriptor, SurfaceError, SurfaceSnapshot, native_validation,
+        NativeSurface, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceResponse,
+        SurfaceSnapshot, SurfaceWakeAdmission, native_validation,
     };
     use alpine_scene::{Primitive, SceneBuilder, SceneRevision};
 
@@ -76,7 +77,16 @@ mod validation {
             native_validation::inject_surface_configuration(surface, 96.0, 64.0, 1.0, 0, true)?;
         }
         let timeout = Duration::from_secs(if hosted_direct { 2 } else { 5 });
-        native_validation::run_until_frame_terminal(surface, timeout);
+        let observed_wakes = Rc::new(Cell::new(0_u64));
+        let callback_wakes = Rc::clone(&observed_wakes);
+        assert_eq!(surface.waker().wake(), SurfaceWakeAdmission::Scheduled);
+        native_validation::run_until_frame_terminal_with_handler(surface, timeout, move |event| {
+            if matches!(event, SurfaceEvent::Wake { .. }) {
+                callback_wakes.set(callback_wakes.get().saturating_add(1));
+            }
+            SurfaceResponse::default()
+        })?;
+        assert_eq!(observed_wakes.get(), 1);
 
         let first_error = surface.take_error()?;
         let snapshot = surface.snapshot();

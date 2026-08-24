@@ -1165,6 +1165,12 @@ impl<D: AppDelegate + 'static> Application<D> {
         if self.shutting_down {
             return SurfaceResponse::default();
         }
+        let accessibility_kind = match event {
+            SurfaceEvent::Accessibility { request, .. } => Some(request.kind()),
+            _ => None,
+        };
+        let defer_accessibility_query_frame = accessibility_kind
+            .is_some_and(|kind| kind != alpine_platform_macos::AccessibilityRequestKind::Action);
         let mut clipboard_write = None;
         let mut accessibility_response = None;
         let mut close_disposition = if matches!(event, SurfaceEvent::CloseRequested { .. }) {
@@ -1172,7 +1178,9 @@ impl<D: AppDelegate + 'static> Application<D> {
         } else {
             CloseDisposition::NotRequested
         };
-        self.drain_worker_results();
+        if accessibility_kind.is_none() {
+            self.drain_worker_results();
+        }
         if let SurfaceEvent::Resize { extent, .. } = event
             && let Some(viewport) = extent.logical_size()
             && viewport != self.viewport
@@ -1193,6 +1201,9 @@ impl<D: AppDelegate + 'static> Application<D> {
             };
             self.delegate.event(event, &mut context);
         }
+        if accessibility_kind == Some(alpine_platform_macos::AccessibilityRequestKind::Action) {
+            self.drain_worker_results();
+        }
         if close_disposition == CloseDisposition::Allow {
             self.external.close();
             self.shutting_down = true;
@@ -1204,8 +1215,13 @@ impl<D: AppDelegate + 'static> Application<D> {
                 accessibility_response,
             );
         }
+        let frame = if defer_accessibility_query_frame {
+            None
+        } else {
+            self.frame_if_dirty()
+        };
         SurfaceResponse::from_channels(
-            self.frame_if_dirty(),
+            frame,
             clipboard_write,
             close_disposition,
             accessibility_response,
@@ -1468,9 +1484,11 @@ mod tests {
     struct TestDelegate {
         events: Vec<SurfaceEvent>,
         results: Vec<(WorkToken, u64)>,
+        accessibility_result_counts: Vec<usize>,
         invalid_scene: bool,
         cancel_close: bool,
         clipboard_write: Option<ClipboardWrite>,
+        respond_accessibility: bool,
     }
 
     impl AppDelegate for TestDelegate {
@@ -1478,11 +1496,25 @@ mod tests {
 
         fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, u64>) {
             self.events.push(event.clone());
+            if matches!(event, SurfaceEvent::Accessibility { .. }) {
+                self.accessibility_result_counts.push(self.results.len());
+            }
             if let Some(write) = self.clipboard_write.take() {
                 assert!(context.write_clipboard(write));
             }
             if self.cancel_close && matches!(event, SurfaceEvent::CloseRequested { .. }) {
                 assert!(context.cancel_close());
+            }
+            if self.respond_accessibility
+                && let SurfaceEvent::Accessibility { request, .. } = event
+            {
+                assert!(
+                    context.respond_accessibility(AccessibilityResponse::failure(
+                        request,
+                        AccessibilityRevision::new(0, 0),
+                        AccessibilityError::InvalidTree,
+                    ))
+                );
             }
         }
 
@@ -1724,6 +1756,100 @@ mod tests {
         assert_eq!(application.delegate.results.len(), 1);
         assert_eq!(application.delegate.results[0].1, 55);
         assert_eq!(application.snapshot().worker().queued_results(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn accessibility_query_preserves_complete_projection_until_next_wake()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut application = runtime(TestDelegate {
+            respond_accessibility: true,
+            ..TestDelegate::default()
+        })?;
+        assert!(application.frame_if_dirty().is_some());
+        let producer = application.external.producer();
+        assert_eq!(producer.submit(55, 0), ExternalAdmission::Admitted);
+        let request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(17))?;
+        let query = application.dispatch_with_response(&SurfaceEvent::Accessibility {
+            timestamp: EventTimestamp::new(21),
+            request,
+        });
+        assert!(query.frame().is_none());
+        assert!(application.delegate.results.is_empty());
+        assert_eq!(application.delegate.accessibility_result_counts, vec![0]);
+        assert_eq!(application.snapshot().external().current_items(), 1);
+        assert!(!application.snapshot().is_dirty());
+
+        let wake = application.dispatch_with_response(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(22),
+        });
+        assert!(wake.frame().is_some());
+        assert_eq!(application.delegate.results.len(), 1);
+        assert_eq!(application.delegate.results[0].1, 55);
+        assert_eq!(application.snapshot().external().current_items(), 0);
+        assert!(!application.snapshot().is_dirty());
+        assert!(
+            application
+                .dispatch_with_response(&SurfaceEvent::Wake {
+                    timestamp: EventTimestamp::new(23),
+                })
+                .frame()
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accessibility_action_precedes_concurrent_result_and_coalesces_one_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut application = runtime(TestDelegate {
+            respond_accessibility: true,
+            ..TestDelegate::default()
+        })?;
+        assert!(application.frame_if_dirty().is_some());
+        let producer = application.external.producer();
+        assert_eq!(producer.submit(89, 0), ExternalAdmission::Admitted);
+        let mut fixture_executions = 0_u8;
+        for request in [
+            AccessibilityRequest::action(
+                AccessibilityRequestId::new(18),
+                alpine_platform_macos::AccessibilityAction::activate(
+                    AccessibilityRevision::new(0, 0),
+                    alpine_platform_macos::AccessibilityNodeId::new(7),
+                ),
+            ),
+            AccessibilityRequest::action(
+                AccessibilityRequestId::new(0),
+                alpine_platform_macos::AccessibilityAction::activate(
+                    AccessibilityRevision::new(0, 0),
+                    alpine_platform_macos::AccessibilityNodeId::new(7),
+                ),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            fixture_executions = fixture_executions.saturating_add(1);
+            let action = application.dispatch_with_response(&SurfaceEvent::Accessibility {
+                timestamp: EventTimestamp::new(24),
+                request,
+            });
+            assert_eq!(application.delegate.accessibility_result_counts, vec![0]);
+            assert_eq!(application.delegate.results.len(), 1);
+            assert_eq!(application.delegate.results[0].1, 89);
+            assert_eq!(application.snapshot().external().current_items(), 0);
+            assert!(action.frame().is_some());
+            assert!(!application.snapshot().is_dirty());
+            assert!(
+                application
+                    .dispatch_with_response(&SurfaceEvent::Wake {
+                        timestamp: EventTimestamp::new(25),
+                    })
+                    .frame()
+                    .is_none()
+            );
+        }
+        assert_eq!(fixture_executions, 1);
         Ok(())
     }
 

@@ -1,17 +1,45 @@
 use std::{
+    env,
+    fs::{File, OpenOptions},
     io::{self, Read, Write},
-    process,
-    thread,
+    path::PathBuf,
+    process, thread,
     time::Duration,
 };
 
-fn main() {
+const TRACE_ENVIRONMENT: &str = "ALPINE_STUDIO_NATIVE_LSP_TRACE";
+
+struct PhaseTrace {
+    file: Option<File>,
+}
+
+impl PhaseTrace {
+    fn from_environment() -> io::Result<Self> {
+        let Some(path) = env::var_os(TRACE_ENVIRONMENT).map(PathBuf::from) else {
+            return Ok(Self { file: None });
+        };
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Self { file: Some(file) })
+    }
+
+    fn record(&mut self, phase: &str) -> io::Result<()> {
+        let Some(file) = self.file.as_mut() else {
+            return Ok(());
+        };
+        let record = format!("{phase}\n");
+        file.write_all(record.as_bytes())
+    }
+}
+
+pub(crate) fn main() {
     if run().is_err() {
         process::exit(2);
     }
 }
 
 fn run() -> io::Result<()> {
+    let mut trace = PhaseTrace::from_environment()?;
+    trace.record(&format!("process-spawned:{}", process::id()))?;
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
     let mut buffered = Vec::new();
@@ -30,6 +58,7 @@ fn run() -> io::Result<()> {
             let method = json_string(message, "method");
             match method {
                 Some("initialize") => {
+                    trace.record("initialize-received")?;
                     let id = json_id(message)?;
                     write_frame(
                         &mut output,
@@ -37,10 +66,16 @@ fn run() -> io::Result<()> {
                             r#"{{"jsonrpc":"2.0","id":{id},"result":{{"capabilities":{{}}}}}}"#
                         ),
                     )?;
+                    trace.record("initialize-responded")?;
                 }
-                Some("initialized") => initialized = true,
+                Some("initialized") => {
+                    trace.record("initialized-received")?;
+                    initialized = true;
+                }
                 Some("textDocument/didOpen") if initialized => {
+                    trace.record("did-open-received")?;
                     write_diagnostics(&mut output, message, false)?;
+                    trace.record("diagnostics-written")?;
                     write_frame(
                         &mut output,
                         r#"{"jsonrpc":"2.0","method":"test/unrelated-notification"}"#,
@@ -129,11 +164,7 @@ fn run() -> io::Result<()> {
                     )?;
                 }
                 Some("exit") if initialized => return Ok(()),
-                None
-                    if initialized
-                        && message
-                            == r#"{"jsonrpc":"2.0","id":0,"result":null}"# =>
-                {
+                None if initialized && message == r#"{"jsonrpc":"2.0","id":0,"result":null}"# => {
                     write_frame(
                         &mut output,
                         r#"{"jsonrpc":"2.0","method":"test/server-request-acknowledged"}"#,

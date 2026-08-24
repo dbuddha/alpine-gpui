@@ -5020,6 +5020,94 @@ assumptions = ["one serialized AppKit owner", "synchronous notification post cal
 exclusions = ["Rust refinement", "Objective-C allocation", "external delivery"]
 companion = "crates/alpine-platform-macos/tests/native_accessibility.rs#main"
 
+[[claims]]
+id = "AEP-0272-C01"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0272-studio-native-accessibility-process.md"
+requirement_issue = 37
+claim_type = "accessibility"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["macos-metal"]
+required_evidence = ["native"]
+
+[[claims]]
+id = "AEP-0272-C02"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0272-studio-native-accessibility-process.md"
+requirement_issue = 37
+claim_type = "functional"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["macos-metal"]
+required_evidence = ["native"]
+
+[[claims]]
+id = "AEP-0272-C03"
+mission = "MP-03"
+capability_issue = 28
+aep = "docs/aep/0272-studio-native-accessibility-process.md"
+requirement_issue = 37
+claim_type = "functional"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["macos-metal"]
+required_evidence = ["native"]
+
+[[claims]]
+id = "AEP-0272-C04"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0272-studio-native-accessibility-process.md"
+requirement_issue = 37
+claim_type = "memory"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["macos-metal"]
+required_evidence = ["native"]
+
+[[evidence]]
+id = "EV-0272-NATIVE01"
+claim = "AEP-0272-C01"
+kind = "native"
+artifact = "apps/alpine-studio/tests/native_process.rs#main"
+assertion = "One real Studio workspace exposes current native AppKit roles, labels, focus, selection, generation-bound identifiers, finite frames, and exact semantic node identities through handle-free bounded evidence; explicit hosted-direct runs retain their non-physical evidence identity."
+scope = "One isolated Apple Silicon AppKit process with two Rust files, one bounded mock language server, and either physical or explicit non-qualifying hosted-direct presentation observation."
+exclusions = ["physical VoiceOver", "external AX observer", "spoken or braille output"]
+
+[[evidence]]
+id = "EV-0272-NATIVE02"
+claim = "AEP-0272-C02"
+kind = "native"
+artifact = "apps/alpine-studio/src/native_validation/accessibility_process.rs#qualify_studio_accessibility_process"
+assertion = "Production AppKit presses expand the file tree, open files, navigate tabs, activate a diagnostic, and execute save through existing authorities; a stable query submits zero frames and every accepted visible action submits at most one."
+scope = "Three file-tree actions, two tab actions, one diagnostic action, two command actions, and one stable complete-tree query."
+exclusions = ["input-to-photon latency", "physical accessibility client scheduling", "multi-window"]
+
+[[evidence]]
+id = "EV-0272-NATIVE03"
+claim = "AEP-0272-C03"
+kind = "native"
+artifact = "apps/alpine-studio/src/native_validation/accessibility_process.rs#qualify_studio_accessibility_process"
+assertion = "The real Studio journey edits, atomically saves, rejects dirty close, saves the dirty bytes, and then closes while preserving exact fixture contents."
+scope = "One temporary local Cargo workspace and one active Rust document."
+exclusions = ["disk-full injection", "machine power loss", "recovery after process kill"]
+
+[[evidence]]
+id = "EV-0272-NATIVE04"
+claim = "AEP-0272-C04"
+kind = "native"
+artifact = "apps/alpine-studio/tests/native_process.rs#qualify_accessibility_child"
+assertion = "The isolated Studio and mock-server processes terminate within the watchdog, every expected frame terminalizes with no occupied or submitted slot, the nine exercised native owner classes have exact acquisition/release parity, all ten owner classes end inactive, release ordering remains valid, and fixture ownership is removed after close."
+scope = "One fifteen-second-bounded child process and one 1,024-turn-bounded worker journey."
+exclusions = ["long-session physical residency slope", "native framework autorelease timing", "crash recovery"]
+
 [[evidence]]
 id = "EV-0271-TLA02"
 claim = "AEP-0271-C03"

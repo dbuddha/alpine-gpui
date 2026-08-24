@@ -213,6 +213,64 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         status: Some("Ready".into()),
         activations: 0,
     }));
+    let wrong_role_state = Arc::clone(&state);
+    let wrong_role = native_validation::activate_named_native_accessibility_node(
+        &surface,
+        AccessibilityRole::ListItem,
+        "main.rs",
+        move |event| {
+            let SurfaceEvent::Accessibility { request, .. } = event else {
+                return SurfaceResponse::default();
+            };
+            let mut state = match wrong_role_state.lock() {
+                Ok(state) => state,
+                Err(_) => return SurfaceResponse::default(),
+            };
+            surface_response(&mut state, &request, None)
+        },
+    );
+    assert!(matches!(
+        wrong_role,
+        Err(alpine_platform_macos::SurfaceError::ValidationFailure {
+            operation: alpine_platform_macos::SurfaceOperation::Accessibility
+        })
+    ));
+    assert_eq!(
+        state
+            .lock()
+            .map_err(|_| "accessibility state lock poisoned")?
+            .activations,
+        0
+    );
+    let wrong_label_state = Arc::clone(&state);
+    let wrong_label = native_validation::activate_named_native_accessibility_node(
+        &surface,
+        AccessibilityRole::Tab,
+        "absent.rs",
+        move |event| {
+            let SurfaceEvent::Accessibility { request, .. } = event else {
+                return SurfaceResponse::default();
+            };
+            let mut state = match wrong_label_state.lock() {
+                Ok(state) => state,
+                Err(_) => return SurfaceResponse::default(),
+            };
+            surface_response(&mut state, &request, None)
+        },
+    );
+    assert!(matches!(
+        wrong_label,
+        Err(alpine_platform_macos::SurfaceError::ValidationFailure {
+            operation: alpine_platform_macos::SurfaceOperation::Accessibility
+        })
+    ));
+    assert_eq!(
+        state
+            .lock()
+            .map_err(|_| "accessibility state lock poisoned")?
+            .activations,
+        0
+    );
     let callback_state = Arc::clone(&state);
     let evidence = native_validation::replay_native_accessibility_path(&surface, move |event| {
         let SurfaceEvent::Accessibility { request, .. } = event else {
@@ -306,7 +364,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_evidence = state
         .lock()
         .map_err(|_| "accessibility state lock poisoned")?;
-    assert_eq!(state_evidence.snapshot_requests, 6);
+    assert_eq!(state_evidence.snapshot_requests, 8);
     assert_eq!(state_evidence.activations, 1);
     drop(state_evidence);
 

@@ -185,14 +185,22 @@ fn wake_latch_preserves_the_latest_generation_until_foreground_admission() {
     let latch = LanguageWakeLatch::default();
     let first = LanguageWake { generation: 1 };
     let second = LanguageWake { generation: 2 };
+    assert_eq!(first.generation(), 1);
+    assert_eq!(second.generation(), 2);
+    assert_eq!(latch.pending_generation(), 0);
     assert_eq!(latch.take(), None);
     latch.publish(first);
     latch.publish(second);
+    assert_eq!(latch.pending_generation(), 2);
     latch.clear(first);
+    assert_eq!(latch.pending_generation(), 2);
     assert_eq!(latch.take(), Some(second));
+    assert_eq!(latch.pending_generation(), 0);
     assert_eq!(latch.take(), None);
     latch.publish(first);
+    assert_eq!(latch.pending_generation(), 1);
     latch.clear(first);
+    assert_eq!(latch.pending_generation(), 0);
     assert_eq!(latch.take(), None);
 }
 

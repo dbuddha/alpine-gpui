@@ -189,9 +189,11 @@ impl From<PlatformAccessibilityError> for AccessibilityError {
 
 pub(super) fn revision(app: &StudioApp) -> AccessibilityRevision {
     AccessibilityRevision::new(app.runtime_document_revision, app.buffer().revision().get())
+        .with_semantic(app.accessibility_semantic_revision)
 }
 
 pub(super) fn snapshot(app: &StudioApp) -> Result<AccessibilitySnapshot, AccessibilityError> {
+    require_revision(app.accessibility_projection_revision, revision(app))?;
     let nodes = build_nodes(app)?;
     let text = app.buffer().snapshot();
     let selection = selection_from_snapshot(app, &text)?;
@@ -212,7 +214,7 @@ fn transport_snapshot(
     line_count: usize,
 ) -> Result<PlatformAccessibilitySnapshot, PlatformAccessibilityError> {
     PlatformAccessibilitySnapshot::new(
-        revision(app),
+        app.accessibility_projection_revision,
         WINDOW_NODE,
         nodes,
         selection,
@@ -594,9 +596,15 @@ fn activate_node(
                     .id_at(index)
                     .is_some_and(|tab| TAB_NODE_BASE.checked_add(tab.0) == Some(target.get()))
                 {
-                    return Ok(app
-                        .activate_document_tab(index)
-                        .unwrap_or_else(|error| app.record_workspace_error(&error)));
+                    let focus = app
+                        .file_tree
+                        .unfocus()
+                        .then(EventEffect::visual)
+                        .unwrap_or_default();
+                    return Ok(focus.merge(
+                        app.activate_document_tab(index)
+                            .unwrap_or_else(|error| app.record_workspace_error(&error)),
+                    ));
                 }
             }
         }
@@ -1130,7 +1138,12 @@ fn activate_diagnostic(
         .ok_or(AccessibilityError::ArithmeticOverflow)?;
     let start = text.byte_of_appkit_utf16(start_utf16)?;
     let end = text.byte_of_appkit_utf16(end_utf16)?;
-    Ok(app.set_selection(Selection::new(start, end)))
+    let focus = app
+        .file_tree
+        .unfocus()
+        .then(EventEffect::visual)
+        .unwrap_or_default();
+    Ok(focus.merge(app.set_selection(Selection::new(start, end))))
 }
 
 #[cfg(test)]
@@ -1242,9 +1255,17 @@ mod tests {
 
     #[test]
     fn revision_admission_is_exact() {
-        let expected = AccessibilityRevision::new(3, 5);
+        let expected = AccessibilityRevision::new(3, 5).with_semantic(7);
+        assert_eq!(expected.document(), 3);
+        assert_eq!(expected.buffer(), 5);
+        assert_eq!(expected.semantic(), 7);
         assert_eq!(require_revision(expected, expected), Ok(()));
-        let actual = AccessibilityRevision::new(3, 6);
+        let actual = AccessibilityRevision::new(3, 5).with_semantic(8);
+        assert_eq!(
+            require_revision(expected, actual),
+            Err(AccessibilityError::StaleRevision { expected, actual })
+        );
+        let actual = AccessibilityRevision::new(3, 6).with_semantic(7);
         assert_eq!(
             require_revision(expected, actual),
             Err(AccessibilityError::StaleRevision { expected, actual })

@@ -245,18 +245,28 @@ impl AccessibilityNode {
     }
 }
 
-/// Exact Studio document and buffer identity observed by accessibility.
+/// Exact Studio document, buffer, and non-text semantic identity observed by accessibility.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AccessibilityRevision {
     document: u64,
     buffer: u64,
+    semantic: u64,
 }
 
 impl AccessibilityRevision {
     /// Creates an exact semantic revision.
     #[must_use]
     pub const fn new(document: u64, buffer: u64) -> Self {
-        Self { document, buffer }
+        Self {
+            document,
+            buffer,
+            semantic: 0,
+        }
+    }
+    /// Adds the exact revision of non-text semantic state.
+    #[must_use]
+    pub const fn with_semantic(self, semantic: u64) -> Self {
+        Self { semantic, ..self }
     }
     /// Returns the Studio document identity.
     #[must_use]
@@ -267,6 +277,11 @@ impl AccessibilityRevision {
     #[must_use]
     pub const fn buffer(self) -> u64 {
         self.buffer
+    }
+    /// Returns the non-text semantic revision.
+    #[must_use]
+    pub const fn semantic(self) -> u64 {
+        self.semantic
     }
 }
 
@@ -1117,6 +1132,19 @@ impl Error for AccessibilityError {}
 #[cfg(test)]
 mod bounded_action_tests {
     use super::*;
+
+    #[test]
+    fn semantic_revision_axis_is_exact_and_independent() {
+        let base = AccessibilityRevision::new(7, 11);
+        assert_eq!(base.document(), 7);
+        assert_eq!(base.buffer(), 11);
+        assert_eq!(base.semantic(), 0);
+        let semantic = base.with_semantic(13);
+        assert_eq!(semantic.document(), 7);
+        assert_eq!(semantic.buffer(), 11);
+        assert_eq!(semantic.semantic(), 13);
+        assert_ne!(semantic, base);
+    }
 
     #[test]
     fn bounds_and_activation_values_fail_closed() -> Result<(), AccessibilityError> {
