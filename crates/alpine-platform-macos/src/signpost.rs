@@ -1,5 +1,9 @@
 //! Handle-free Alpine Studio points for externally retained Instruments traces.
 
+use std::{env, ffi::OsStr};
+
+const PERSISTED_PROFILE_ENVIRONMENT: &str = "ALPINE_STUDIO_PERSISTED_PROFILE";
+
 /// Stable stage vocabulary emitted by the Alpine Studio release hot path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -129,29 +133,37 @@ impl StudioSignpost {
 /// Process-lifetime dynamic signpost writer with no retained sample storage.
 #[derive(Clone, Copy, Debug)]
 pub struct StudioSignposts {
-    enabled: bool,
+    dynamic_enabled: bool,
+    persisted_enabled: bool,
 }
 
 impl StudioSignposts {
     /// Initializes the static dynamic-tracing category before the event loop starts.
     #[must_use]
     pub fn new() -> Self {
+        let persisted_enabled = cfg!(all(target_os = "macos", target_arch = "aarch64"))
+            && persisted_profile_requested(env::var_os(PERSISTED_PROFILE_ENVIRONMENT).as_deref());
         Self {
-            enabled: imp::enabled().0,
+            dynamic_enabled: imp::enabled().0,
+            persisted_enabled,
         }
     }
 
-    /// Returns whether Instruments enabled dynamic signposts at construction.
+    /// Returns whether either opt-in profile route was enabled at construction.
     #[must_use]
     pub const fn enabled(self) -> bool {
-        self.enabled
+        self.dynamic_enabled || self.persisted_enabled
     }
 
     /// Emits one point and returns its correlation when recording is enabled.
     #[must_use]
     pub fn emit(self, point: StudioSignpost) -> Option<u64> {
-        if self.enabled {
-            Some(imp::emit(point))
+        if self.enabled() {
+            Some(imp::emit(
+                point,
+                self.dynamic_enabled,
+                self.persisted_enabled,
+            ))
         } else {
             None
         }
@@ -159,16 +171,20 @@ impl StudioSignposts {
 
     #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) fn emit_frame_latency(self, evidence: crate::FrameLatencyEvidence) -> u8 {
-        if !self.enabled {
+        if !self.enabled() {
             return 0;
         }
         let mut emitted = 0_u8;
         for point in frame_latency_points(evidence).into_iter().flatten() {
-            let _correlation = imp::emit(point);
+            let _correlation = imp::emit(point, self.dynamic_enabled, self.persisted_enabled);
             emitted = emitted.saturating_add(1);
         }
         emitted
     }
+}
+
+fn persisted_profile_requested(value: Option<&OsStr>) -> bool {
+    value == Some(OsStr::new("1"))
 }
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
@@ -247,6 +263,7 @@ mod imp {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     unsafe extern "C" {
         fn alpine_studio_signposts_enabled() -> bool;
+        #[cfg(not(test))]
         fn alpine_studio_signpost_emit(
             stage: u8,
             correlation: u64,
@@ -257,6 +274,8 @@ mod imp {
             value_a: u64,
             value_b: u64,
             value_c: u64,
+            emit_dynamic: bool,
+            emit_persisted: bool,
         );
     }
 
@@ -270,8 +289,12 @@ mod imp {
         DynamicTracingState(enabled)
     }
 
-    pub(super) fn emit(point: StudioSignpost) -> u64 {
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn emit(
+        point: StudioSignpost,
+        dynamic_enabled: bool,
+        persisted_enabled: bool,
+    ) -> u64 {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64", not(test)))]
         {
             let values = point.values();
             // SAFETY: Every argument is a copied integer. The stage discriminant is
@@ -287,9 +310,13 @@ mod imp {
                     values[0],
                     values[1],
                     values[2],
+                    dynamic_enabled,
+                    persisted_enabled,
                 );
             }
         }
+        #[cfg(any(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
+        let _ = (dynamic_enabled, persisted_enabled);
         point.correlation()
     }
 }
@@ -332,12 +359,34 @@ mod tests {
         );
         assert_eq!(high_bit_startup.correlation(), 1_u64 << 63);
 
-        let disabled = StudioSignposts { enabled: false };
+        let disabled = StudioSignposts {
+            dynamic_enabled: false,
+            persisted_enabled: false,
+        };
         assert!(!disabled.enabled());
         assert_eq!(disabled.emit(point), None);
-        let enabled = StudioSignposts { enabled: true };
-        assert!(enabled.enabled());
-        assert_eq!(enabled.emit(point), Some(17));
+        for enabled in [
+            StudioSignposts {
+                dynamic_enabled: true,
+                persisted_enabled: false,
+            },
+            StudioSignposts {
+                dynamic_enabled: false,
+                persisted_enabled: true,
+            },
+            StudioSignposts {
+                dynamic_enabled: true,
+                persisted_enabled: true,
+            },
+        ] {
+            assert!(enabled.enabled());
+            assert_eq!(enabled.emit(point), Some(17));
+        }
+
+        for rejected in [None, Some(""), Some("0"), Some("01"), Some("true")] {
+            assert!(!persisted_profile_requested(rejected.map(OsStr::new)));
+        }
+        assert!(persisted_profile_requested(Some(OsStr::new("1"))));
 
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         assert!(!StudioSignposts::new().enabled());
@@ -372,7 +421,11 @@ mod tests {
             [0, 59, 61, 67, 71, u64::MAX]
         );
         assert_eq!(
-            StudioSignposts { enabled: true }.emit_frame_latency(complete),
+            StudioSignposts {
+                dynamic_enabled: true,
+                persisted_enabled: false,
+            }
+            .emit_frame_latency(complete),
             6
         );
         assert!(points.iter().all(|point| point.scene_revision() == 0
@@ -395,12 +448,52 @@ mod tests {
             Some(StudioSignpostStage::NativeTerminalRecordLatency)
         );
         assert_eq!(
-            StudioSignposts { enabled: true }.emit_frame_latency(omitted),
+            StudioSignposts {
+                dynamic_enabled: false,
+                persisted_enabled: true,
+            }
+            .emit_frame_latency(omitted),
             2
         );
         assert_eq!(
-            StudioSignposts { enabled: false }.emit_frame_latency(complete),
+            StudioSignposts {
+                dynamic_enabled: false,
+                persisted_enabled: false,
+            }
+            .emit_frame_latency(complete),
             0
         );
+    }
+
+    #[test]
+    fn persisted_c_route_is_lazy_static_and_vocabulary_complete() {
+        let source = include_str!("studio_signposts.c");
+        assert!(source.contains("\"PersistedProfile\""));
+        assert!(source.contains("OS_LOG_TYPE_DEFAULT"));
+        assert!(source.contains("if (emit_persisted)"));
+        assert!(source.contains("alpine_studio_get_persisted_log()"));
+        for stage in [
+            "Event Dispatch Begin",
+            "State Mutation Complete",
+            "Frame Build Begin",
+            "Visible Layout Begin",
+            "Visible Layout Complete",
+            "Text Summary",
+            "Layout Cache Summary",
+            "Glyph Atlas Summary",
+            "Atlas Publication Begin",
+            "Atlas Publication Complete",
+            "Atlas Publication Failed",
+            "Frame Build Complete",
+            "Frame Build Failed",
+            "Native Event Handler Latency",
+            "Native Frame Queue Latency",
+            "Native Submission Latency",
+            "Native GPU Terminal Observed Latency",
+            "Native Presented Handler Latency",
+            "Native Terminal Record Latency",
+        ] {
+            assert!(source.contains(&format!("ALPINE_STUDIO_ROUTE(\"{stage}\")")));
+        }
     }
 }

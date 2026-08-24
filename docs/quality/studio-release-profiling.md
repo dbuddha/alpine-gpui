@@ -48,6 +48,53 @@ from main-thread observation, not exact GPU execution time. The native frame
 terminal snapshot remains authoritative for request, commit, actual presentation
 timestamp, outcome, retained bytes, and recovery classification.
 
+## Opt-in persisted fallback
+
+When full Xcode is unavailable, the exact process-start opt-in
+`ALPINE_STUDIO_PERSISTED_PROFILE=1` mirrors the same points into macOS unified
+logging under subsystem `com.dbuddha.alpine-studio` and category
+`PersistedProfile`. The dynamic Instruments route remains unchanged and can run
+at the same time. Alpine samples the opt-in once, creates the persisted log
+handle lazily on first emission, uses static format strings and copied integers,
+and retains no profile history or file handle. Absent, empty, non-Unicode, and
+non-`1` values leave the fallback disabled.
+
+Use the canonical release bundle and record the exact start and end wall-clock
+times before interacting with Studio:
+
+```sh
+scripts/build-alpine-studio-app.sh
+APP="$PWD/target/release/Alpine Studio.app/Contents/MacOS/alpine-studio"
+START_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+START_LOCAL=$(date '+%Y-%m-%d %H:%M:%S')
+ALPINE_STUDIO_PERSISTED_PROFILE=1 "$APP" WORKLOAD_PATH
+# Perform exactly one accepted workload, close Studio, then record both end times.
+END_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+END_LOCAL=$(date '+%Y-%m-%d %H:%M:%S')
+log show \
+  --start "$START_LOCAL" \
+  --end "$END_LOCAL" \
+  --style json \
+  --predicate 'subsystem == "com.dbuddha.alpine-studio" && category == "PersistedProfile"' \
+  > persisted-profile.json
+```
+
+Retain the unmodified JSON output with the capture manifest. A valid record has
+the static stage name plus correlation, event, scene, document, buffer, and
+three numeric values. Missing stages remain omissions and are never filled with
+zero. The persisted fallback does not provide Time Profiler stacks, System
+Trace scheduling, Metal System Trace, exact GPU execution duration, or optical
+latency, so those requirements remain open.
+
+Unified logging has observer cost. Run matched capture-off and capture-on A/A
+windows before using persisted distributions to attribute a stall. Reject the
+fallback for causal analysis when its confidence interval shows material
+latency, queue, frame-deadline, CPU, memory, or energy distortion. Even after a
+clean A/A result, persisted samples remain diagnostic until the physical
+release workload, environment identity, raw log, executable hash, revision,
+and invalidation checks are retained. The fallback alone does not activate a
+threshold or close Defect #304.
+
 ## Capture preflight
 
 Use a clean revision and the canonical release bundle. Full Xcode must be the

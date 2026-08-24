@@ -29,6 +29,13 @@ handling, latest-wins admission, display-link submission, non-blocking GPU
 terminal observation, and the drawable presented handler. Terminal snapshots
 expose bounded handle-free stage durations while preserving the display link's
 independent target and observed presentation timestamps.
+Release profiling normally emits these identities through allocation-free
+dynamic Instruments signposts. An exact process-start opt-in may additionally
+mirror the same copied numeric points to a lazily created macOS unified-log
+`PersistedProfile` category when Instruments is unavailable. The default route
+emits and retains nothing, and the persisted route is diagnostic-only until its
+observer cost is calibrated; neither route changes invalidation, frame pacing,
+native ownership, or presentation evidence.
 `alpine-text` owns the local-only text domain behind safe Alpine values. It
 uses exact-version, default-feature-minimized Ropey and Unicode Segmentation
 dependencies selected by [Decision #139](https://github.com/dbuddha/alpine-gpui/issues/139)
