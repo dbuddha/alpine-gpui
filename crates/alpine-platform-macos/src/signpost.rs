@@ -141,8 +141,11 @@ impl StudioSignposts {
     /// Initializes the static dynamic-tracing category before the event loop starts.
     #[must_use]
     pub fn new() -> Self {
-        let persisted_enabled = cfg!(all(target_os = "macos", target_arch = "aarch64"))
-            && persisted_profile_requested(env::var_os(PERSISTED_PROFILE_ENVIRONMENT).as_deref());
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let persisted_enabled =
+            persisted_profile_requested(env::var_os(PERSISTED_PROFILE_ENVIRONMENT).as_deref());
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let persisted_enabled = false;
         Self {
             dynamic_enabled: imp::enabled().0,
             persisted_enabled,
