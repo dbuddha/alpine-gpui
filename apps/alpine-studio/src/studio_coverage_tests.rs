@@ -12,6 +12,8 @@ use std::{
 use alpine_platform_macos::{CloseDisposition, EventTimestamp, ScrollPhase, SurfaceExtent};
 use alpine_text_layout::{GlyphBitmap, RasterizedGlyph, ShapedGlyph};
 
+use crate::rust_navigation::SourceLocations;
+
 use super::*;
 
 static NEXT_TEST_FILE: AtomicU64 = AtomicU64::new(1);
@@ -2219,6 +2221,13 @@ fn workspace_errors_and_statuses_preserve_exact_sources_and_messages()
         .ok_or("invalid UTF-8 file unexpectedly opened")?;
     let file_selection = WorkspaceSelectionError::File(file_error);
     assert!(std::error::Error::source(&file_selection).is_some());
+    let navigation_selection = WorkspaceSelectionError::RustNavigation(NavigationError::Malformed);
+    assert!(
+        navigation_selection
+            .to_string()
+            .contains("Rust navigation failed")
+    );
+    assert!(std::error::Error::source(&navigation_selection).is_some());
     for error in [
         WorkspaceSelectionError::NoWorkspace,
         WorkspaceSelectionError::DirtyDocument,
@@ -2235,6 +2244,102 @@ fn workspace_errors_and_statuses_preserve_exact_sources_and_messages()
         LocalStatus::Workspace(Arc::from("workspace status")).message(),
         "workspace status"
     );
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn rust_navigation_file_admission_and_document_state_fail_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn main() {}\n")?;
+    root.write("other.rs", "fn other() {}\n")?;
+    let main = fs::canonicalize(root.path().join("main.rs"))?;
+    let other = fs::canonicalize(root.path().join("other.rs"))?;
+    let location = |path: &Path, line: u32| -> Result<SourceLocation, Box<dyn std::error::Error>> {
+        let value = serde_json::value::RawValue::from_string(format!(
+            r#"{{"uri":"file://{}","range":{{"start":{{"line":{line},"character":0}},"end":{{"line":{line},"character":2}}}}}}"#,
+            path.display()
+        ))?;
+        let locations = SourceLocations::admit(&value)?;
+        locations
+            .locations()
+            .first()
+            .cloned()
+            .ok_or_else(|| "source location".into())
+    };
+
+    let mut app = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let other_location = location(&other, 0)?;
+    assert!(
+        app.navigate_to_source_location(&other_location)?
+            .document_identity_advanced
+    );
+    assert_eq!(
+        app.tabs.path_at(app.tabs.active_index()),
+        Some(other.as_path())
+    );
+    assert!(
+        app.navigate_to_source_location(&location(&main, 0)?)?
+            .visual_changed
+    );
+    assert_eq!(
+        app.tabs.path_at(app.tabs.active_index()),
+        Some(main.as_path())
+    );
+
+    let invalid_range = location(&main, 99)?;
+    assert!(matches!(
+        app.navigate_to_source_location(&invalid_range),
+        Err(WorkspaceSelectionError::RustNavigation(
+            NavigationError::InvalidRange
+        ))
+    ));
+
+    let scratch = StudioDocument::scratch("scratch");
+    assert!(matches!(
+        StudioApp::validate_navigation_document(&scratch),
+        Err(WorkspaceSelectionError::RustNavigation(
+            NavigationError::TargetUnavailable
+        ))
+    ));
+    let recovered_buffer = Buffer::new("recovered");
+    let recovered = StudioDocument::Recovered {
+        recovery_base: recovered_buffer.snapshot(),
+        buffer: recovered_buffer,
+        conflict: ExternalChange::Modified,
+    };
+    assert!(matches!(
+        StudioApp::validate_navigation_document(&recovered),
+        Err(WorkspaceSelectionError::File(FileError::Conflict(
+            ExternalChange::Modified
+        )))
+    ));
+    let unavailable_buffer = Buffer::new("");
+    let unavailable = StudioDocument::Unavailable {
+        clean_revision: unavailable_buffer.revision().get(),
+        recovery_base: unavailable_buffer.snapshot(),
+        buffer: unavailable_buffer,
+        conflict: ExternalChange::Deleted,
+    };
+    assert!(matches!(
+        StudioApp::validate_navigation_document(&unavailable),
+        Err(WorkspaceSelectionError::File(FileError::Conflict(
+            ExternalChange::Deleted
+        )))
+    ));
+
+    let mut scratch_app = StudioApp::new(TestTextSystem)?;
+    assert!(matches!(
+        scratch_app.navigate_to_source_location(&other_location),
+        Err(WorkspaceSelectionError::NoWorkspace)
+    ));
+    scratch_app.runtime_document_revision = u64::MAX;
+    scratch_app.workspace = app.workspace.take();
+    assert!(matches!(
+        scratch_app.navigate_to_source_location(&other_location),
+        Err(WorkspaceSelectionError::RevisionExhausted)
+    ));
     Ok(())
 }
 

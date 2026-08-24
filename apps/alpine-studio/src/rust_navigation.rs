@@ -378,9 +378,7 @@ fn validate_local_path(workspace_root: &Path, path: &Path) -> Result<(), Navigat
     }
     let canonical_target =
         fs::canonicalize(path).map_err(|_| NavigationError::TargetUnavailable)?;
-    if !canonical_target.starts_with(&canonical_root) {
-        return Err(NavigationError::OutsideWorkspace);
-    }
+    ensure_within_workspace(&canonical_root, &canonical_target)?;
     if !fs::metadata(&canonical_target)
         .map_err(|_| NavigationError::TargetUnavailable)?
         .is_file()
@@ -388,6 +386,14 @@ fn validate_local_path(workspace_root: &Path, path: &Path) -> Result<(), Navigat
         return Err(NavigationError::TargetNotFile);
     }
     Ok(())
+}
+
+fn ensure_within_workspace(root: &Path, target: &Path) -> Result<(), NavigationError> {
+    if target.starts_with(root) {
+        Ok(())
+    } else {
+        Err(NavigationError::OutsideWorkspace)
+    }
 }
 
 #[cfg(test)]
@@ -419,6 +425,19 @@ mod tests {
         assert!(hover.retained_bytes() <= MAX_HOVER_RETAINED_BYTES);
         assert_eq!(hover.visible_lines().count(), 3);
         assert_eq!(HoverContent::admit(&raw("null")), Ok(None));
+        assert_eq!(HoverContent::admit(&raw(r#"{"contents":[]}"#)), Ok(None));
+        assert_eq!(
+            HoverContent::admit(&raw(r#"{"contents":7}"#)),
+            Err(NavigationError::Malformed)
+        );
+        assert_eq!(
+            HoverContent::admit(&raw(r#"{"contents":{"kind":"markdown"}}"#)),
+            Err(NavigationError::Malformed)
+        );
+        assert_eq!(
+            NavigationError::Malformed.to_string(),
+            "Rust navigation rejected input: Malformed"
+        );
 
         let too_many = (0..=MAX_HOVER_LINES)
             .map(|_| "line")
@@ -566,6 +585,26 @@ mod tests {
             Err(NavigationError::InvalidPercentEncoding)
         );
         assert_eq!(
+            decode_file_uri("file:///tmp/main.rs?query"),
+            Err(NavigationError::UnsupportedUri)
+        );
+        assert_eq!(
+            decode_file_uri("file:///tmp/main.rs#fragment"),
+            Err(NavigationError::UnsupportedUri)
+        );
+        assert_eq!(
+            decode_file_uri("file:///tmp/%00.rs"),
+            Err(NavigationError::InvalidUtf8)
+        );
+        assert_eq!(
+            decode_file_uri("file:///tmp/%ff.rs"),
+            Err(NavigationError::InvalidUtf8)
+        );
+        assert_eq!(
+            decode_file_uri("file:///tmp/%a"),
+            Err(NavigationError::InvalidPercentEncoding)
+        );
+        assert_eq!(
             decode_file_uri("file:///tmp/a%20b.rs"),
             Ok(PathBuf::from("/tmp/a b.rs"))
         );
@@ -608,6 +647,10 @@ mod tests {
             Err(NavigationError::OutsideWorkspace)
         );
         assert_eq!(
+            validate_local_path(&root, &root.join("src/../src/main.rs")),
+            Err(NavigationError::OutsideWorkspace)
+        );
+        assert_eq!(
             validate_local_path(&root, &root.join("missing.rs")),
             Err(NavigationError::TargetUnavailable)
         );
@@ -620,7 +663,42 @@ mod tests {
             validate_local_path(&root, &root.join("linked.rs")),
             Err(NavigationError::TargetSymlink)
         );
+        let root_link = root.with_extension("workspace-link");
+        let _ = fs::remove_file(&root_link);
+        symlink(&root, &root_link)?;
+        assert_eq!(
+            validate_local_path(&root_link, &accepted),
+            Err(NavigationError::WorkspaceSymlink)
+        );
+        fs::remove_file(root_link)?;
+        assert_eq!(ensure_within_workspace(&root, &accepted), Ok(()));
+        assert_eq!(
+            ensure_within_workspace(&root, Path::new("/outside/main.rs")),
+            Err(NavigationError::OutsideWorkspace)
+        );
+        let adjusted =
+            locations_with_retained_bytes(MAX_LOCATION_URI_BYTES + size_of::<SourceLocation>() + 1);
+        assert_eq!(adjusted.len(), 2);
         fs::remove_dir_all(&root)?;
         Ok(())
+    }
+
+    #[test]
+    fn malformed_location_shapes_are_rejected() {
+        for value in [
+            "true",
+            r#"{"uri":7,"range":{}}"#,
+            r#"{"targetUri":7,"targetRange":{}}"#,
+            r#"{"targetUri":"file:///tmp/main.rs"}"#,
+        ] {
+            assert_eq!(
+                SourceLocations::admit(&raw(value)),
+                Err(NavigationError::Malformed)
+            );
+        }
+        assert_eq!(
+            SourceLocations::admit(&raw(r#"{"uri":"file:///tmp/main.rs","range":7}"#)),
+            Err(NavigationError::InvalidRange)
+        );
     }
 }

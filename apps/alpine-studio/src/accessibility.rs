@@ -961,12 +961,9 @@ fn navigation_node(
     let editor = app
         .active_pane_bounds()
         .map_err(|_| AccessibilityError::InvalidTree)?;
-    let node_bounds = bounds(
-        editor.origin().x(),
-        editor.origin().y(),
-        editor.size().width().min(520.0),
-        264.0_f32.min(editor.size().height()),
-    )?;
+    let width = editor.size().width().min(520.0);
+    let height = 264.0_f32.min(editor.size().height());
+    let node_bounds = bounds(editor.origin().x(), editor.origin().y(), width, height)?;
     node(
         NAVIGATION_NODE,
         Some(WINDOW_NODE),

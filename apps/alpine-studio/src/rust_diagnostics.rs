@@ -170,6 +170,15 @@ pub(crate) enum NavigationRequestKind {
 }
 
 impl NavigationRequestKind {
+    fn from_method(method: &str) -> Option<Self> {
+        match method {
+            "textDocument/hover" => Some(Self::Hover),
+            "textDocument/definition" => Some(Self::Definition),
+            "textDocument/references" => Some(Self::References),
+            _ => None,
+        }
+    }
+
     const fn method(self) -> &'static str {
         match self {
             Self::Hover => "textDocument/hover",
@@ -646,19 +655,11 @@ impl RustDiagnostics {
                 method,
                 stamp,
                 value,
-            } if matches!(
-                method.as_ref(),
-                "textDocument/hover" | "textDocument/definition" | "textDocument/references"
-            ) =>
-            {
-                let kind = match method.as_ref() {
-                    "textDocument/hover" => NavigationRequestKind::Hover,
-                    "textDocument/definition" => NavigationRequestKind::Definition,
-                    "textDocument/references" => NavigationRequestKind::References,
-                    _ => unreachable!(),
-                };
-                candidates.navigation =
-                    Some((id, stamp, kind, navigation_from_response(kind, value)));
+            } => {
+                if let Some(kind) = NavigationRequestKind::from_method(method.as_ref()) {
+                    candidates.navigation =
+                        Some((id, stamp, kind, navigation_from_response(kind, value)));
+                }
             }
             PeerEvent::StaleResponse { id } => candidates.stale_response = Some(id),
             _ => {}

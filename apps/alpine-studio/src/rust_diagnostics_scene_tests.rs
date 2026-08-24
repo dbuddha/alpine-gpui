@@ -1,13 +1,46 @@
 use std::{
     fs,
+    num::NonZeroU32,
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use alpine_text_layout::{GlyphBitmap, RasterizedGlyph};
 use serde_json::value::RawValue;
 
 use super::*;
 
 static NEXT_SCENE: AtomicU64 = AtomicU64::new(1);
+
+struct NavigationFailingRasterTextSystem {
+    glyph_id: u32,
+}
+
+impl TextShaper for NavigationFailingRasterTextSystem {
+    fn shape(&mut self, text: &str, font: FontKey) -> Result<LineLayout, LayoutError> {
+        tests::TestTextSystem.shape(text, font)
+    }
+}
+
+impl GlyphRasterizer for NavigationFailingRasterTextSystem {
+    fn rasterize(
+        &mut self,
+        font: FontKey,
+        glyph_id: u32,
+        subpixel_x: u8,
+    ) -> Result<RasterizedGlyph, LayoutError> {
+        if glyph_id == self.glyph_id {
+            Err(LayoutError::NativeFailure(
+                "injected navigation raster failure",
+            ))
+        } else {
+            let width = NonZeroU32::new(2).ok_or(LayoutError::InvalidShaperOutput)?;
+            let height = NonZeroU32::new(3).ok_or(LayoutError::InvalidShaperOutput)?;
+            let bitmap = GlyphBitmap::new(width, height, vec![255; 6])?;
+            let _ = (font, subpixel_x);
+            RasterizedGlyph::new(Some(bitmap), 0.0, 3.0)
+        }
+    }
+}
 
 fn bounded_diagnostics(uri: &str) -> Result<Box<RawValue>, serde_json::Error> {
     let mut diagnostic_items = vec![format!(
@@ -35,6 +68,10 @@ fn assert_invalid_diagnostic_origin(app: &mut StudioApp, viewport: Size) {
 
 #[test]
 #[cfg(unix)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one production-path journey keeps overlay rendering, keyboard, accessibility, command, and path rejection behavior connected"
+)]
 fn navigation_overlay_keyboard_and_accessibility_use_validated_product_paths()
 -> Result<(), Box<dyn Error>> {
     let root = std::env::temp_dir().join(format!(
@@ -110,6 +147,14 @@ fn navigation_overlay_keyboard_and_accessibility_use_validated_product_paths()
         NavigationRequestKind::References,
         &locations,
     )?;
+    assert_eq!(
+        app.handle_navigation_key(KEY_UP, false),
+        Some(EventEffect::default())
+    );
+    for key in [KEY_UP, KEY_DOWN, KEY_RETURN] {
+        assert_eq!(app.handle_navigation_key(key, true), None);
+    }
+    assert_eq!(app.handle_navigation_key(KEY_TAB, false), None);
     assert!(
         app.handle_key(KEY_DOWN, Modifiers::from_bits(0))
             .visual_changed
@@ -119,6 +164,130 @@ fn navigation_overlay_keyboard_and_accessibility_use_validated_product_paths()
             .visual_changed
     );
     assert_eq!(app.selection.range(), 3..9);
+
+    app.rust_diagnostics.install_navigation_for_test(
+        app.language_identity(),
+        NavigationRequestKind::Hover,
+        &hover,
+    )?;
+    assert!(
+        app.handle_navigation_key(KEY_ESCAPE, false)
+            .is_some_and(|effect| effect.visual_changed)
+    );
+    assert_eq!(app.apply_selected_navigation(), EventEffect::default());
+    for command in [
+        StudioCommand::ShowRustHover,
+        StudioCommand::GoToRustDefinition,
+        StudioCommand::FindRustReferences,
+    ] {
+        let _ = app.dispatch_command(command);
+    }
+    app.composition = Some(Composition {
+        replacement: app.selection.range(),
+        text: Box::default(),
+        selected_start_utf16: 0,
+        selected_length_utf16: 0,
+    });
+    for kind in [
+        NavigationRequestKind::Hover,
+        NavigationRequestKind::Definition,
+        NavigationRequestKind::References,
+    ] {
+        assert_eq!(app.trigger_rust_navigation(kind), EventEffect::default());
+    }
+    app.composition = None;
+    let original = app.selection;
+    app.selection = Selection::caret(ByteOffset::new(app.buffer().snapshot().len_bytes() + 1));
+    let failures = app.input_failures;
+    assert_eq!(
+        app.trigger_rust_navigation(NavigationRequestKind::Hover),
+        EventEffect::default()
+    );
+    assert_eq!(app.input_failures, failures + 1);
+    app.selection = original;
+
+    let outside: Box<RawValue> = serde_json::from_str(
+        r#"[{"uri":"file:///etc/passwd","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}]"#,
+    )?;
+    app.rust_diagnostics.install_navigation_for_test(
+        app.language_identity(),
+        NavigationRequestKind::Definition,
+        &outside,
+    )?;
+    assert!(app.apply_selected_navigation().visual_changed);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn navigation_overlay_raster_failures_preserve_scene_atomicity() -> Result<(), Box<dyn Error>> {
+    let root = std::env::temp_dir().join(format!(
+        "alpine-navigation-raster-{}-{}",
+        std::process::id(),
+        NEXT_SCENE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&root)?;
+    let path = root.join("main.rs");
+    fs::write(&path, "fn main() {}\n")?;
+    let path = fs::canonicalize(path)?;
+    let install = |app: &mut StudioApp| {
+        let input = app.active_rust_document().ok_or("Rust document")?;
+        app.rust_diagnostics.install_for_test(
+            input,
+            &rust_diagnostics::tests::diagnostics(&path, 1),
+            rust_diagnostics::tests::mock_executable(),
+        )?;
+        Ok::<_, Box<dyn Error>>(())
+    };
+
+    let mut hover_app = StudioApp::open_file(
+        NavigationFailingRasterTextSystem {
+            glyph_id: u32::from('Ω'),
+        },
+        &path,
+    )?;
+    install(&mut hover_app)?;
+    let hover: Box<RawValue> = serde_json::from_str(r#"{"contents":"Ω"}"#)?;
+    hover_app.rust_diagnostics.install_navigation_for_test(
+        hover_app.language_identity(),
+        NavigationRequestKind::Hover,
+        &hover,
+    )?;
+    assert!(matches!(
+        hover_app.try_scene(
+            SceneRevision::new(20),
+            Size::new(640.0, 360.0).ok_or("viewport")?
+        ),
+        Err(StudioRenderError::Layout(LayoutError::NativeFailure(
+            "injected navigation raster failure"
+        )))
+    ));
+
+    let mut location_app = StudioApp::open_file(
+        NavigationFailingRasterTextSystem {
+            glyph_id: u32::from('§'),
+        },
+        &path,
+    )?;
+    install(&mut location_app)?;
+    let location: Box<RawValue> = serde_json::from_str(
+        r#"[{"uri":"file:///tmp/§.rs","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}]"#,
+    )?;
+    location_app.rust_diagnostics.install_navigation_for_test(
+        location_app.language_identity(),
+        NavigationRequestKind::Definition,
+        &location,
+    )?;
+    assert!(matches!(
+        location_app.try_scene(
+            SceneRevision::new(21),
+            Size::new(640.0, 360.0).ok_or("viewport")?
+        ),
+        Err(StudioRenderError::Layout(LayoutError::NativeFailure(
+            "injected navigation raster failure"
+        )))
+    ));
     fs::remove_dir_all(root)?;
     Ok(())
 }

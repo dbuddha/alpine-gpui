@@ -2893,9 +2893,9 @@ impl StudioApp {
                 Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
             let overlay_bounds = Rect::new(overlay_origin, overlay_size);
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
-            builder.push_quad(
-                Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip),
-            )?;
+            let background =
+                Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.push_quad(background)?;
             for row in 0..row_count {
                 let line = self
                     .rust_diagnostics
@@ -2903,13 +2903,14 @@ impl StudioApp {
                     .ok_or(StudioRenderError::Domain)?;
                 let layout = self.text_system.shape(line, font)?;
                 let baseline = top + usize_as_f32(row) * LINE_HEIGHT + layout.ascent() + 3.0;
-                pending_glyphs.extend(self.collect_glyphs(
+                let glyphs = self.collect_glyphs(
                     &layout,
                     font,
                     left + FIND_BAR_INSET,
                     baseline,
                     overlay_clip,
-                )?);
+                )?;
+                pending_glyphs.extend(glyphs);
             }
             debug_assert!(row_count <= MAX_VISIBLE_HOVER_LINES);
         }
@@ -2929,9 +2930,9 @@ impl StudioApp {
                 Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
             let overlay_bounds = Rect::new(overlay_origin, overlay_size);
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
-            builder.push_quad(
-                Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip),
-            )?;
+            let background =
+                Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.push_quad(background)?;
             for (visible_row, index) in rows.enumerate() {
                 let row = self
                     .rust_diagnostics
@@ -2941,20 +2942,20 @@ impl StudioApp {
                 if row.selected {
                     let origin = Point::new(left, row_top).ok_or(StudioRenderError::Domain)?;
                     let size = Size::new(width, LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
-                    builder.push_quad(
-                        Quad::new(Rect::new(origin, size), command_palette_selected)
-                            .clipped(overlay_clip),
-                    )?;
+                    let selected = Quad::new(Rect::new(origin, size), command_palette_selected)
+                        .clipped(overlay_clip);
+                    builder.push_quad(selected)?;
                 }
                 let layout = self.text_system.shape(row.label, font)?;
                 let baseline = row_top + layout.ascent() + 3.0;
-                pending_glyphs.extend(self.collect_glyphs(
+                let glyphs = self.collect_glyphs(
                     &layout,
                     font,
                     left + FIND_BAR_INSET,
                     baseline,
                     overlay_clip,
-                )?);
+                )?;
+                pending_glyphs.extend(glyphs);
             }
             debug_assert!(row_count <= MAX_VISIBLE_SOURCE_LOCATIONS);
         }
