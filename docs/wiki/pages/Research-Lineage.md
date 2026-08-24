@@ -18,8 +18,9 @@ The canonical lineage package records:
 
 Current claim boundary: deterministic bounded-resource and avoided-work
 invariants exist, but comparative GPUI, Zed, and Sublime dominance is not yet
-qualified. Visible release typing latency and realistic code-viewport traces
-remain critical blockers.
+qualified. Visible release typing latency remains a critical blocker. The
+realistic prepared-scene ladder has composed E3 semantic admission; atlas
+recovery, timing, memory, and E4 comparison remain open.
 
 - [Research index](Research-Index)
 - [Execution map](Execution-Map)

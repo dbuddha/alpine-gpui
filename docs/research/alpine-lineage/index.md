@@ -1,7 +1,8 @@
 # Alpine implementation lineage and evidence
 
 - Research record: [#315](https://github.com/dbuddha/alpine-gpui/issues/315)
-- Alpine snapshot: [`de8cd6397adc81632fe1103f1834214ae6ec6a1a`](https://github.com/dbuddha/alpine-gpui/tree/de8cd6397adc81632fe1103f1834214ae6ec6a1a)
+- Historical audit baseline: [`de8cd6397adc81632fe1103f1834214ae6ec6a1a`](https://github.com/dbuddha/alpine-gpui/tree/de8cd6397adc81632fe1103f1834214ae6ec6a1a)
+- Current reconciliation revision: [`7db5e18f6da8e02cd171668d4714c745c55d7eda`](https://github.com/dbuddha/alpine-gpui/tree/7db5e18f6da8e02cd171668d4714c745c55d7eda)
 - Comparator pin: Zed [`v1.15.0`](https://github.com/zed-industries/zed/tree/e17dc4f9d50db73a458b64dcce50ecd4878b98a3)
 - Current-upstream review: Zed [`v1.16.1`](https://github.com/zed-industries/zed/tree/eb8e1c8b5502b7007465fbbc465f4a736fa39210), WGPU [`v30.0.1`](https://github.com/gfx-rs/wgpu/tree/40f4a34ebaf56f9a046231f54125ad046239d3f3), awesome-gpui [`6571693`](https://github.com/zed-industries/awesome-gpui/tree/657169337a19a5b27f9aa7e53811e6f82b7f213c)
 - Reviewed: 2026-08-22
@@ -27,11 +28,16 @@ adds stricter value validation, bounded queues and caches, lifecycle generation
 identity, structured failure evidence, deterministic CPU oracles, formal model
 checks, and a local-only editor boundary.
 
-The project is not yet qualified as faster than GPUI, Zed, or Sublime. The Zed
-lab currently proves semantic agreement for one solid-quad trace only. The most
-important product defect is visible typing latency in [#304](https://github.com/dbuddha/alpine-gpui/issues/304).
-Physical accessibility qualification, realistic renderer traces, sustained
-dogfood, residency measurement, and the remaining Rust intelligence are open.
+The project is not yet qualified as faster than GPUI, Zed, or Sublime. PR
+[#344](https://github.com/dbuddha/alpine-gpui/pull/344) advances the pinned Zed
+lab to composed E3 semantic agreement for the immutable control, clipped grid,
+glyph grid, realistic code viewport, scroll, and resize fixture ladder. Atlas
+recovery, timing, memory, latency, and E4 dominance remain open under
+[#53](https://github.com/dbuddha/alpine-gpui/issues/53). The most important
+product defect is visible typing latency in
+[#304](https://github.com/dbuddha/alpine-gpui/issues/304). Physical
+accessibility qualification, sustained dogfood, residency measurement, Rust
+rename and formatting, symbols, and settings reload and migration remain open.
 
 ## Capability accounting
 
@@ -55,13 +61,19 @@ six large GPUI families are absent. This count is a scope map, not a complexity,
 quality, or LOC percentage.
 
 The [Studio matrix](studio-lineage.md) audits 24 private daily-driver families.
-Nineteen have a production implementation on the pinned Alpine snapshot and
-five remain incomplete or unqualified. The unweighted 19/24 count must not be
-reported as "79% ready": typing smoothness, data safety, accessibility, and
-sustained dogfood are blocking gates whose importance is greater than a feature
-count.
+At the current reconciliation revision, nineteen are implemented for their
+selected behavior, two have implementation but incomplete qualification or
+configuration behavior, and three remain incomplete. Twenty-one therefore have
+some production implementation. Neither the unweighted inventory nor a
+partial-credit score is daily-driver readiness: typing smoothness, data safety,
+accessibility, and sustained dogfood are blocking gates whose importance is
+greater than a feature count.
 
-## Current project state
+## Original audit project snapshot
+
+The counts below are retained as the 2026-08-22 audit snapshot. GitHub Issues,
+Milestones, and the Project own live state; this historical package must not be
+used as a current burn-up report.
 
 | Milestone | State at review | Evidence-based interpretation |
 | --- | --- | --- |

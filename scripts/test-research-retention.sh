@@ -111,4 +111,29 @@ fi
 grep -Fq 'WGPU findings are missing evidence classification' \
     "$fixture_dir/missing-wgpu-classification.log"
 
+copy_fixture "$fixture_dir/missing-post-baseline-pin"
+sed '/7db5e18f6da8e02cd171668d4714c745c55d7eda/d' \
+    "$fixture_dir/missing-post-baseline-pin/docs/research/alpine-lineage/source-map.md" \
+    > "$fixture_dir/missing-post-baseline-pin/source-map.md"
+mv "$fixture_dir/missing-post-baseline-pin/source-map.md" \
+    "$fixture_dir/missing-post-baseline-pin/docs/research/alpine-lineage/source-map.md"
+if scripts/check-research-retention.sh "$fixture_dir/missing-post-baseline-pin" \
+    > "$fixture_dir/missing-post-baseline-pin.log" 2>&1; then
+    printf 'research retention test error: missing post-baseline pin unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'lineage source map is missing retained revision pin' \
+    "$fixture_dir/missing-post-baseline-pin.log"
+
+copy_fixture "$fixture_dir/stale-current-state"
+printf '\nOpen [#219](https://github.com/dbuddha/alpine-gpui/issues/219)\n' \
+    >> "$fixture_dir/stale-current-state/docs/research/alpine-lineage/studio-lineage.md"
+if scripts/check-research-retention.sh "$fixture_dir/stale-current-state" \
+    > "$fixture_dir/stale-current-state.log" 2>&1; then
+    printf 'research retention test error: stale current state unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'lineage package retains superseded current-state claim' \
+    "$fixture_dir/stale-current-state.log"
+
 printf 'research retention tests passed\n'
