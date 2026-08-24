@@ -794,13 +794,31 @@ fn require(errors: &mut Vec<String>, condition: bool, message: impl Into<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{Evidence, render_report, validate};
+    use super::{Evidence, is_v2_evidence, render_report, run, validate};
+    use std::{fs, path::Path, time::SystemTime};
 
     const VALID: &str = include_str!("../../../assurance/lab/v2/task-61-realistic-scenes.toml");
 
     fn errors_for(source: &str) -> Result<Vec<String>, toml::de::Error> {
         let evidence: Evidence = toml::from_str(source)?;
         Ok(validate(&evidence))
+    }
+
+    fn replacements_fail(
+        replacements: &[(&str, &str)],
+        expected_error: &str,
+    ) -> Result<(), toml::de::Error> {
+        for (from, to) in replacements {
+            let changed = VALID.replacen(from, to, 1);
+            assert_ne!(changed, VALID, "control must change the fixture");
+            assert!(
+                errors_for(&changed)?
+                    .iter()
+                    .any(|error| error.contains(expected_error)),
+                "replacement {from:?} -> {to:?} did not produce {expected_error:?}"
+            );
+        }
+        Ok(())
     }
 
     #[test]
@@ -817,6 +835,39 @@ mod tests {
         assert!(report.contains(
             "No timing, memory, latency, presentation, product, or performance claim is present"
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn dispatch_identifies_valid_v2_and_propagates_validation_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let path = repository.join("assurance/lab/v2/task-61-realistic-scenes.toml");
+        assert!(is_v2_evidence(&path));
+        assert!(!is_v2_evidence(
+            &repository.join("assurance/lab/v1/task-61-solid-quad.toml")
+        ));
+        assert_eq!(
+            run("validate-zed-lab-evidence", &path),
+            Ok("validated task #61 with hosted offline GPUI and physical Direct Metal across 8 fixtures".to_owned())
+        );
+
+        let nonce = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let invalid_path = std::env::temp_dir().join(format!(
+            "alpine-zed-lab-v2-invalid-{}-{nonce}.toml",
+            std::process::id()
+        ));
+        let changed = VALID.replacen(
+            "performance_qualified = false",
+            "performance_qualified = true",
+            1,
+        );
+        fs::write(&invalid_path, changed)?;
+        let result = run("validate-zed-lab-evidence", &invalid_path);
+        fs::remove_file(&invalid_path)?;
+        assert!(result.is_err());
         Ok(())
     }
 
@@ -844,6 +895,62 @@ mod tests {
                 .any(|error| error.contains("exactly 90 days"))
         );
         Ok(())
+    }
+
+    #[test]
+    fn rejects_fixture_count_axes_independently() -> Result<(), toml::de::Error> {
+        replacements_fail(
+            &[("fixture_count = 8", "fixture_count = 7")],
+            "fixture_count must equal",
+        )
+    }
+
+    #[test]
+    fn rejects_coverage_axes_independently() -> Result<(), toml::de::Error> {
+        replacements_fail(
+            &[
+                (
+                    "coverage_lines_covered = 1142",
+                    "coverage_lines_covered = 1141",
+                ),
+                ("coverage_lines_total = 1184", "coverage_lines_total = 1185"),
+                (
+                    "coverage_functions_covered = 122",
+                    "coverage_functions_covered = 121",
+                ),
+                (
+                    "coverage_functions_total = 134",
+                    "coverage_functions_total = 135",
+                ),
+            ],
+            "coverage counts must match",
+        )
+    }
+
+    #[test]
+    fn rejects_physical_axes_independently() -> Result<(), toml::de::Error> {
+        replacements_fail(
+            &[
+                (
+                    "[physical]\nstate = \"equivalent\"",
+                    "[physical]\nstate = \"rejected\"",
+                ),
+                ("model = \"Mac16,1\"", "model = \"Mac0,0\""),
+                ("chip = \"Apple M4\"", "chip = \"unknown\""),
+                ("os_version = \"26.6.2\"", "os_version = \"26.6.1\""),
+                ("os_build = \"25G83\"", "os_build = \"unknown\""),
+                (
+                    "direct_metal_performed = true",
+                    "direct_metal_performed = false",
+                ),
+                ("coverage_performed = false", "coverage_performed = true"),
+            ],
+            "physical",
+        )?;
+        replacements_fail(
+            &[("mutation_performed = false", "mutation_performed = true")],
+            "physical",
+        )
     }
 
     #[test]
@@ -881,6 +988,162 @@ mod tests {
                 .any(|error| error.contains("output identities"))
         );
         Ok(())
+    }
+
+    #[test]
+    fn rejects_every_fixture_identity_axis_independently() -> Result<(), toml::de::Error> {
+        replacements_fail(
+            &[
+                (
+                    "id = \"solid-quad-editor-surface\"",
+                    "id = \"solid-quad-editor-surface-drift\"",
+                ),
+                (
+                    "trace_schema = \"alpine-scene-trace/v1\"",
+                    "trace_schema = \"alpine-scene-trace/v9\"",
+                ),
+                (
+                    "trace_path = \"assurance/qualification/v1/scene.toml\"",
+                    "trace_path = \"assurance/qualification/v1/drift.toml\"",
+                ),
+                (
+                    "scene_trace_sha256 = \"c59c1d7d27abfb2bd6327db236c41934f2da34c9b82d25a6522421c1d38dbe8e\"",
+                    "scene_trace_sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"",
+                ),
+                (
+                    "workload_hash = \"3dbf181350ed2283ce9daa427af5d674cebcceb4dada5abf2a1c1e1f5c156bda\"",
+                    "workload_hash = \"0000000000000000000000000000000000000000000000000000000000000000\"",
+                ),
+                ("pair_id = \"none\"", "pair_id = \"drift\""),
+                ("pair_kind = \"none\"", "pair_kind = \"drift\""),
+                (
+                    "pair_sequence_hash = \"none\"",
+                    "pair_sequence_hash = \"drift\"",
+                ),
+                ("pair_step = \"none\"", "pair_step = \"0\""),
+                ("pair_steps = \"none\"", "pair_steps = \"1\""),
+                ("pixel_width = 8", "pixel_width = 9"),
+                ("pixel_height = 4", "pixel_height = 5"),
+            ],
+            "canonical trace",
+        )
+    }
+
+    #[test]
+    fn rejects_every_fixture_output_axis_independently() -> Result<(), toml::de::Error> {
+        replacements_fail(
+            &[
+                (
+                    "hosted_cpu_oracle_sha256 = \"074cadbffac89c52b3d03f54208ee2cd419828855233d0263941404c1026e8c2\"",
+                    concat!(
+                        "hosted_cpu_oracle_sha256 = \"",
+                        "0000000000000000000000000000000000000000000000000000000000000000",
+                        "\""
+                    ),
+                ),
+                (
+                    "hosted_gpui_metal_sha256 = \"074cadbffac89c52b3d03f54208ee2cd419828855233d0263941404c1026e8c2\"",
+                    concat!(
+                        "hosted_gpui_metal_sha256 = \"",
+                        "0000000000000000000000000000000000000000000000000000000000000000",
+                        "\""
+                    ),
+                ),
+                (
+                    "physical_cpu_oracle_sha256 = \"074cadbffac89c52b3d03f54208ee2cd419828855233d0263941404c1026e8c2\"",
+                    concat!(
+                        "physical_cpu_oracle_sha256 = \"",
+                        "0000000000000000000000000000000000000000000000000000000000000000",
+                        "\""
+                    ),
+                ),
+                (
+                    "physical_alpine_metal_sha256 = \"074cadbffac89c52b3d03f54208ee2cd419828855233d0263941404c1026e8c2\"",
+                    concat!(
+                        "physical_alpine_metal_sha256 = \"",
+                        "0000000000000000000000000000000000000000000000000000000000000000",
+                        "\""
+                    ),
+                ),
+                (
+                    "physical_gpui_metal_sha256 = \"074cadbffac89c52b3d03f54208ee2cd419828855233d0263941404c1026e8c2\"",
+                    concat!(
+                        "physical_gpui_metal_sha256 = \"",
+                        "0000000000000000000000000000000000000000000000000000000000000000",
+                        "\""
+                    ),
+                ),
+                (
+                    "physical_manifest_sha256 = \"06b06cf0dcbd92cc5a688932e7baa192c28ad6054604bb503159513fa233a879\"",
+                    concat!(
+                        "physical_manifest_sha256 = \"",
+                        "0000000000000000000000000000000000000000000000000000000000000000",
+                        "\""
+                    ),
+                ),
+            ],
+            "output identities",
+        )
+    }
+
+    #[test]
+    fn rejects_every_fixture_tolerance_axis_independently() -> Result<(), toml::de::Error> {
+        replacements_fail(
+            &[
+                (
+                    "hosted_cpu_oracle_max_observed_channel_delta = 0",
+                    "hosted_cpu_oracle_max_observed_channel_delta = 1",
+                ),
+                (
+                    "physical_cpu_oracle_max_observed_channel_delta = 0",
+                    "physical_cpu_oracle_max_observed_channel_delta = 1",
+                ),
+                (
+                    "hosted_cpu_oracle_equivalence_within_tolerance = true",
+                    "hosted_cpu_oracle_equivalence_within_tolerance = false",
+                ),
+                (
+                    "physical_cpu_oracle_equivalence_within_tolerance = true",
+                    "physical_cpu_oracle_equivalence_within_tolerance = false",
+                ),
+            ],
+            "one-channel CPU tolerance",
+        )?;
+        replacements_fail(
+            &[
+                (
+                    "exact_pixel_equivalence = true",
+                    "exact_pixel_equivalence = false",
+                ),
+                (
+                    "exact_metal_equivalence = true",
+                    "exact_metal_equivalence = false",
+                ),
+            ],
+            "exact-equivalence declarations",
+        )
+    }
+
+    #[test]
+    fn rejects_every_fixture_adaptation_axis_independently() -> Result<(), toml::de::Error> {
+        replacements_fail(
+            &[
+                ("adaptation_clips = 1", "adaptation_clips = 2"),
+                ("adaptation_operations = 3", "adaptation_operations = 4"),
+                ("adaptation_quads = 3", "adaptation_quads = 4"),
+                ("adaptation_glyphs = 0", "adaptation_glyphs = 1"),
+                ("adaptation_resources = 0", "adaptation_resources = 1"),
+                (
+                    "adaptation_resource_bytes = 0",
+                    "adaptation_resource_bytes = 1",
+                ),
+                (
+                    "adaptation_atlas_allocations = 0",
+                    "adaptation_atlas_allocations = 1",
+                ),
+            ],
+            "adaptation accounting",
+        )
     }
 
     #[test]
