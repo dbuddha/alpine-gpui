@@ -18,6 +18,7 @@ dependencies = [
  "alpine-metal",
  "alpine-trace",
  "serde",
+ "serde_json",
  "toml",
 ]
 

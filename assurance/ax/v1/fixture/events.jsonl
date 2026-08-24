@@ -1,0 +1,16 @@
+{"sequence":1,"monotonic_ns":100,"source":"process","kind":"launch","identifier":"application","detail":"process-start","ax_error":0}
+{"sequence":2,"monotonic_ns":110,"source":"ax-observer","kind":"focus","identifier":"editor","detail":"AXFocusedUIElementChanged","ax_error":0}
+{"sequence":3,"monotonic_ns":120,"source":"ax-action","kind":"action","identifier":"editor","detail":"AXPress","ax_error":0}
+{"sequence":4,"monotonic_ns":130,"source":"ax-observer","kind":"value","identifier":"editor","detail":"AXValueChanged","ax_error":0}
+{"sequence":5,"monotonic_ns":140,"source":"ax-observer","kind":"selection","identifier":"editor","detail":"AXSelectedTextChanged","ax_error":0}
+{"sequence":6,"monotonic_ns":150,"source":"ax-observer","kind":"layout","identifier":"window","detail":"AXLayoutChanged","ax_error":0}
+{"sequence":7,"monotonic_ns":160,"source":"ax-observer","kind":"announcement","identifier":"application","detail":"AXAnnouncementRequested","ax_error":0}
+{"sequence":8,"monotonic_ns":170,"source":"workspace","kind":"hidden","identifier":"application","detail":"NSWorkspaceDidHideApplicationNotification","ax_error":0}
+{"sequence":9,"monotonic_ns":180,"source":"workspace","kind":"shown","identifier":"application","detail":"NSWorkspaceDidUnhideApplicationNotification","ax_error":0}
+{"sequence":10,"monotonic_ns":190,"source":"ax-observer","kind":"minimized","identifier":"window","detail":"AXWindowMiniaturized","ax_error":0}
+{"sequence":11,"monotonic_ns":200,"source":"ax-observer","kind":"restored","identifier":"window","detail":"AXWindowDeminiaturized","ax_error":0}
+{"sequence":12,"monotonic_ns":210,"source":"workspace","kind":"sleep","identifier":"application","detail":"NSWorkspaceWillSleepNotification","ax_error":0}
+{"sequence":13,"monotonic_ns":220,"source":"workspace","kind":"wake","identifier":"application","detail":"NSWorkspaceDidWakeNotification","ax_error":0}
+{"sequence":14,"monotonic_ns":230,"source":"ax-observer","kind":"destroyed","identifier":"editor","detail":"AXUIElementDestroyed","ax_error":0}
+{"sequence":15,"monotonic_ns":240,"source":"ax-query","kind":"stale-control","identifier":"editor","detail":"kAXErrorInvalidUIElement","ax_error":-25211}
+{"sequence":16,"monotonic_ns":250,"source":"process","kind":"close","identifier":"application","detail":"exit:0","ax_error":0}

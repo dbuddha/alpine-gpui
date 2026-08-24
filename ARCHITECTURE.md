@@ -279,6 +279,12 @@ The same non-shipping tool validates trusted-machine accessibility bundles
 without widening Studio or platform APIs. A bundle binds exact repository,
 Studio binary, harness, scenario, environment, AX tree, notification stream,
 latency, residency, Inspector, VoiceOver, and post-close evidence by SHA-256.
+Bounded JSON Lines preserve Unicode labels and bind each event to its external
+source: AXObserver, AX action, AX query, NSWorkspace, or process observation.
+Artifact traversal rejects symbolic links at every bundle-relative component,
+and each text class has an independent byte and record ceiling. A separate
+fixture-only command exercises the validator while physical commands reject
+fixture manifests.
 Physical latency and residency samples remain descriptive until separately
 accepted A/A calibration activates a budget. The validator cannot grant or
 bypass macOS Accessibility trust, automate human VoiceOver attestation, or

@@ -1,0 +1,3 @@
+{"sequence":1,"depth":0,"identifier":"application","parent_identifier":null,"role":"AXApplication","label":"Alpine Studio","focused":false}
+{"sequence":2,"depth":1,"identifier":"window","parent_identifier":"application","role":"AXWindow","label":"Alpine, Studio\nWindow","focused":false}
+{"sequence":3,"depth":2,"identifier":"editor","parent_identifier":"window","role":"AXTextArea","label":"Editor","focused":true}

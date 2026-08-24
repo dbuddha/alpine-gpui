@@ -1,0 +1,4 @@
+{"sequence":1,"monotonic_ns":100,"phase":"startup","process_alive":true,"physical_footprint_bytes":1048576,"private_dirty_bytes":524288}
+{"sequence":2,"monotonic_ns":200,"phase":"steady","process_alive":true,"physical_footprint_bytes":1179648,"private_dirty_bytes":589824}
+{"sequence":3,"monotonic_ns":300,"phase":"steady","process_alive":true,"physical_footprint_bytes":1114112,"private_dirty_bytes":557056}
+{"sequence":4,"monotonic_ns":400,"phase":"post-close","process_alive":false,"physical_footprint_bytes":0,"private_dirty_bytes":0}
