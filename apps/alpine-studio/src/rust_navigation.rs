@@ -155,8 +155,7 @@ impl SourceLocation {
         &self,
         workspace_root: &Path,
     ) -> Result<ResolvedSourceLocation, NavigationError> {
-        let path = decode_file_uri(&self.uri)?;
-        validate_local_path(workspace_root, &path)?;
+        let path = resolve_local_file_uri(workspace_root, &self.uri)?;
         Ok(ResolvedSourceLocation {
             path,
             range: self.range,
@@ -350,7 +349,18 @@ const fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn validate_local_path(workspace_root: &Path, path: &Path) -> Result<(), NavigationError> {
+pub(crate) fn resolve_local_file_uri(
+    workspace_root: &Path,
+    uri: &str,
+) -> Result<PathBuf, NavigationError> {
+    let path = decode_file_uri(uri)?;
+    revalidate_local_path(workspace_root, &path)
+}
+
+pub(crate) fn revalidate_local_path(
+    workspace_root: &Path,
+    path: &Path,
+) -> Result<PathBuf, NavigationError> {
     let root_metadata =
         fs::symlink_metadata(workspace_root).map_err(|_| NavigationError::WorkspaceUnavailable)?;
     if root_metadata.file_type().is_symlink() {
@@ -358,11 +368,11 @@ fn validate_local_path(workspace_root: &Path, path: &Path) -> Result<(), Navigat
     }
     let canonical_root =
         fs::canonicalize(workspace_root).map_err(|_| NavigationError::WorkspaceUnavailable)?;
-    if !path.starts_with(&canonical_root) {
+    if !workspace_root.is_absolute() || !path.starts_with(workspace_root) {
         return Err(NavigationError::OutsideWorkspace);
     }
     let relative = path
-        .strip_prefix(&canonical_root)
+        .strip_prefix(workspace_root)
         .map_err(|_| NavigationError::OutsideWorkspace)?;
     let mut current = canonical_root.clone();
     for component in relative.components() {
@@ -385,7 +395,12 @@ fn validate_local_path(workspace_root: &Path, path: &Path) -> Result<(), Navigat
     {
         return Err(NavigationError::TargetNotFile);
     }
-    Ok(())
+    Ok(canonical_target)
+}
+
+#[cfg(test)]
+fn validate_local_path(workspace_root: &Path, path: &Path) -> Result<(), NavigationError> {
+    revalidate_local_path(workspace_root, path).map(|_| ())
 }
 
 fn ensure_within_workspace(root: &Path, target: &Path) -> Result<(), NavigationError> {

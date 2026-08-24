@@ -58,6 +58,14 @@ mod recovery;
 mod rust_completion;
 mod rust_diagnostics;
 mod rust_navigation;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Task #220 stages bounded workspace-edit admission before command publication"
+    )
+)]
+mod rust_workspace_edit;
 mod session;
 #[cfg_attr(
     not(test),

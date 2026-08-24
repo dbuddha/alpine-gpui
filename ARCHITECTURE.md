@@ -946,6 +946,26 @@ supporting correctness evidence only. Adaptation timing, renderer timing,
 memory, latency, and performance qualification remain false, so this boundary
 admits E3 semantic equivalence but cannot produce an E4 comparison claim.
 
+### Bounded Rust workspace-edit preparation
+
+Task #220 now owns a private, non-published preparation boundary for local
+rust-analyzer formatting and rename results. Strict JSON admission rejects
+duplicate object keys, unsupported resource operations, annotations, remote
+URIs, malformed or overlapping UTF-16 ranges, duplicate canonical paths, and
+every declared file, edit, inserted-text, file-text, and retained-byte excess.
+Rename names and formatting options are bounded before request serialization.
+The initialize payload does not advertise workspace-edit, rename, or formatting
+support until accepted edits can traverse the complete publication path.
+
+Preparation revalidates each canonical workspace path, reads only regular
+existing UTF-8 files, converts UTF-16 ranges against immutable copy-on-write
+snapshots, and constructs both a checked Alpine text transaction and an
+independent forward-built String result. This work is not wired to a command or
+foreground event path yet, so it adds no startup work, idle redraw, file
+mutation, or performance claim. Background request ownership, preview,
+all-or-nothing foreground publication, recovery evidence, and production-path
+rust-analyzer qualification remain required before Task #220 can close.
+
 ### Bounded static command discovery
 
 Alpine Studio owns a closed compile-time command registry and a private bounded
