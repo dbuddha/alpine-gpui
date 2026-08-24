@@ -22,6 +22,7 @@ scripts/test-studio-residency.sh
 scripts/test-alpine-studio-app-bundle.sh
 scripts/test-zed-lab-evidence.sh
 scripts/test-calibration.sh
+scripts/test-studio-profile.sh
 scripts/test-core-contracts.sh
 scripts/test-metal-contracts.sh
 scripts/verify-metal-library.sh
