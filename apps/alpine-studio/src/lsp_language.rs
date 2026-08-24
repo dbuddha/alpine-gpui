@@ -543,6 +543,17 @@ mod tests {
         assert!(positioned.get().contains(r#""character":11"#));
         let rename = document.rename_params(LspPosition::new(3, 11)?, "new_name")?;
         assert!(rename.get().contains(r#""newName":"new_name""#));
+        assert!(
+            document
+                .rename_params(LspPosition::new(0, 0)?, &"x".repeat(256))
+                .is_ok()
+        );
+        assert_eq!(
+            document
+                .rename_params(LspPosition::new(0, 0)?, &"x".repeat(257))
+                .err(),
+            Some(LanguageProtocolError::InvalidRename)
+        );
         assert_eq!(document.uri(), "file:///tmp/a%20b.rs");
         assert_eq!(
             document.rename_params(LspPosition::new(0, 0)?, "").err(),

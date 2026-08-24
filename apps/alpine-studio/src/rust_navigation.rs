@@ -695,6 +695,18 @@ mod tests {
             locations_with_retained_bytes(MAX_LOCATION_URI_BYTES + size_of::<SourceLocation>() + 1);
         assert_eq!(adjusted.len(), 2);
         fs::remove_dir_all(&root)?;
+
+        let relative_root = PathBuf::from("target")
+            .join(format!("alpine-navigation-relative-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&relative_root);
+        fs::create_dir_all(&relative_root)?;
+        let relative_file = relative_root.join("main.rs");
+        fs::write(&relative_file, "fn main() {}")?;
+        assert_eq!(
+            revalidate_local_path(&relative_root, &relative_file),
+            Err(NavigationError::OutsideWorkspace)
+        );
+        fs::remove_dir_all(relative_root)?;
         Ok(())
     }
 

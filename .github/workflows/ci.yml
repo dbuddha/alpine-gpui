@@ -389,7 +389,15 @@ jobs:
             miri_flags: -Zmiri-disable-isolation
           - partition: text
             miri_flags: ""
-          - partition: text-layout
+          - partition: text-layout-publication
+            miri_flags: ""
+          - partition: text-layout-coverage
+            miri_flags: ""
+          - partition: text-layout-atlas-basic
+            miri_flags: ""
+          - partition: text-layout-atlas-model
+            miri_flags: ""
+          - partition: text-layout-cache
             miri_flags: ""
     steps:
       - name: Check out source

@@ -1,0 +1,10 @@
+atlas_publication_tests::	text-layout-publication
+coverage_tests::	text-layout-coverage
+tests::atlas_allocates_on_demand_reuses_evicts_and_drains	text-layout-atlas-basic
+tests::atlas_lookup_retains_raster_bearings_and_empty_outcomes	text-layout-atlas-basic
+tests::atlas_index_matches_independent_membership_and_lru_model	text-layout-atlas-model
+tests::changed_line_misses_but_equal_content_across_snapshots_hits	text-layout-cache
+tests::fingerprint_candidate_requires_exact_content_confirmation	text-layout-cache
+tests::invalid_bitmap_and_line_limits_fail_structurally	text-layout-cache
+tests::previous_frame_hit_avoids_materialization_and_shaping	text-layout-cache
+tests::visible_mapping_bounds_layout_to_overscan	text-layout-cache

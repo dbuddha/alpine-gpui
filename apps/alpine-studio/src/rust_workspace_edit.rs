@@ -138,9 +138,7 @@ impl WorkspaceEditProposal {
         workspace_root: &Path,
         mut files: Vec<WorkspaceFileEdit>,
     ) -> Result<Self, WorkspaceEditError> {
-        if files.len() > MAX_WORKSPACE_EDIT_FILES {
-            return Err(WorkspaceEditError::TooManyFiles);
-        }
+        checked_workspace_file_count(files.len())?;
         files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
         if files.windows(2).any(|pair| pair[0].path == pair[1].path) {
             return Err(WorkspaceEditError::DuplicatePath);
@@ -153,9 +151,7 @@ impl WorkspaceEditProposal {
             edit_count = edit_count
                 .checked_add(file.edits.len())
                 .ok_or(WorkspaceEditError::TooManyEdits)?;
-            if edit_count > MAX_WORKSPACE_EDIT_EDITS {
-                return Err(WorkspaceEditError::TooManyEdits);
-            }
+            checked_workspace_edit_count(edit_count)?;
             retained_bytes = retained_bytes
                 .checked_add(size_of::<WorkspaceFileEdit>())
                 .and_then(|bytes| bytes.checked_add(file.path.as_os_str().len()))
@@ -170,9 +166,7 @@ impl WorkspaceEditProposal {
                     .ok_or(WorkspaceEditError::RetentionExceeded)?;
             }
         }
-        if inserted_bytes > MAX_INSERTED_TEXT_BYTES {
-            return Err(WorkspaceEditError::InsertedTextTooLarge);
-        }
+        checked_inserted_text_bytes(inserted_bytes)?;
         let retained_bytes = checked_retention(retained_bytes)?;
         Ok(Self {
             workspace_root: root,
@@ -377,6 +371,54 @@ fn checked_wire(result: &RawValue) -> Result<(), WorkspaceEditError> {
     }
 }
 
+fn checked_workspace_file_count(count: usize) -> Result<(), WorkspaceEditError> {
+    if count > MAX_WORKSPACE_EDIT_FILES {
+        Err(WorkspaceEditError::TooManyFiles)
+    } else {
+        Ok(())
+    }
+}
+
+fn checked_workspace_edit_count(count: usize) -> Result<(), WorkspaceEditError> {
+    if count > MAX_WORKSPACE_EDIT_EDITS {
+        Err(WorkspaceEditError::TooManyEdits)
+    } else {
+        Ok(())
+    }
+}
+
+fn checked_file_edit_count(count: usize) -> Result<(), WorkspaceEditError> {
+    if count > MAX_FILE_EDITS {
+        Err(WorkspaceEditError::TooManyEdits)
+    } else {
+        Ok(())
+    }
+}
+
+fn checked_edit_text_bytes(bytes: usize) -> Result<(), WorkspaceEditError> {
+    if bytes > MAX_EDIT_TEXT_BYTES {
+        Err(WorkspaceEditError::EditTextTooLong)
+    } else {
+        Ok(())
+    }
+}
+
+fn checked_inserted_text_bytes(bytes: usize) -> Result<(), WorkspaceEditError> {
+    if bytes > MAX_INSERTED_TEXT_BYTES {
+        Err(WorkspaceEditError::InsertedTextTooLarge)
+    } else {
+        Ok(())
+    }
+}
+
+fn valid_uri_length(uri: &str) -> bool {
+    !uri.is_empty() && uri.len() <= MAX_URI_BYTES
+}
+
+fn has_exact_keys(object: &Map<String, Value>, keys: &[&str]) -> bool {
+    object.len() == keys.len() && keys.iter().all(|key| object.contains_key(*key))
+}
+
 fn checked_retention(retained_bytes: usize) -> Result<usize, WorkspaceEditError> {
     if retained_bytes > MAX_RETAINED_BYTES {
         Err(WorkspaceEditError::RetentionExceeded)
@@ -456,9 +498,7 @@ fn parse_changes(
     value: &Value,
 ) -> Result<Vec<WorkspaceFileEdit>, WorkspaceEditError> {
     let object = value.as_object().ok_or(WorkspaceEditError::Malformed)?;
-    if object.len() > MAX_WORKSPACE_EDIT_FILES {
-        return Err(WorkspaceEditError::TooManyFiles);
-    }
+    checked_workspace_file_count(object.len())?;
     let mut files = Vec::new();
     files
         .try_reserve_exact(object.len())
@@ -475,9 +515,7 @@ fn parse_document_changes(
     value: &Value,
 ) -> Result<Vec<WorkspaceFileEdit>, WorkspaceEditError> {
     let changes = value.as_array().ok_or(WorkspaceEditError::Malformed)?;
-    if changes.len() > MAX_WORKSPACE_EDIT_FILES {
-        return Err(WorkspaceEditError::TooManyFiles);
-    }
+    checked_workspace_file_count(changes.len())?;
     let mut files = Vec::new();
     files
         .try_reserve_exact(changes.len())
@@ -486,17 +524,13 @@ fn parse_document_changes(
         let object = change
             .as_object()
             .ok_or(WorkspaceEditError::UnsupportedResourceOperation)?;
-        if object.len() != 2
-            || !object.contains_key("textDocument")
-            || !object.contains_key("edits")
-        {
+        if !has_exact_keys(object, &["textDocument", "edits"]) {
             return Err(WorkspaceEditError::UnsupportedResourceOperation);
         }
         let document = object["textDocument"]
             .as_object()
             .ok_or(WorkspaceEditError::Malformed)?;
-        if document.len() != 2 || !document.contains_key("uri") || !document.contains_key("version")
-        {
+        if !has_exact_keys(document, &["uri", "version"]) {
             return Err(WorkspaceEditError::Malformed);
         }
         let uri = document["uri"]
@@ -527,12 +561,10 @@ fn parse_file_edit(
     lsp_version: Option<i32>,
     values: &[Value],
 ) -> Result<WorkspaceFileEdit, WorkspaceEditError> {
-    if uri.is_empty() || uri.len() > MAX_URI_BYTES {
+    if !valid_uri_length(uri) {
         return Err(WorkspaceEditError::UriTooLong);
     }
-    if values.len() > MAX_FILE_EDITS {
-        return Err(WorkspaceEditError::TooManyEdits);
-    }
+    checked_file_edit_count(values.len())?;
     let path =
         resolve_local_file_uri(workspace_root, uri).map_err(WorkspaceEditError::LocalPath)?;
     let mut edits = Vec::new();
@@ -544,16 +576,14 @@ fn parse_file_edit(
         if object.contains_key("annotationId") {
             return Err(WorkspaceEditError::UnsupportedAnnotation);
         }
-        if object.len() != 2 || !object.contains_key("range") || !object.contains_key("newText") {
+        if !has_exact_keys(object, &["range", "newText"]) {
             return Err(WorkspaceEditError::Malformed);
         }
         let range = parse_range(&object["range"]).map_err(|_| WorkspaceEditError::InvalidRange)?;
         let new_text = object["newText"]
             .as_str()
             .ok_or(WorkspaceEditError::Malformed)?;
-        if new_text.len() > MAX_EDIT_TEXT_BYTES {
-            return Err(WorkspaceEditError::EditTextTooLong);
-        }
+        checked_edit_text_bytes(new_text.len())?;
         edits.push(WorkspaceTextEdit {
             range,
             new_text: new_text.into(),
@@ -611,6 +641,7 @@ fn lsp_ranges_conflict(left: LspRange, right: LspRange) -> bool {
 }
 
 #[cfg(kani)]
+#[cfg_attr(test, mutants::skip)] // The dedicated Kani gate executes this predicate.
 const fn bounded_ranges_conflict(left_start: u8, left_end: u8, right_start: u8) -> bool {
     right_start < left_end || right_start == left_start
 }
@@ -831,6 +862,7 @@ mod tests {
                 .unwrap_or_else(|_| unreachable!());
         assert_eq!(proposal.file_count(), 1);
         assert_eq!(proposal.edit_count(), 2);
+        assert!(proposal.retained_bytes() > 1);
         assert!(proposal.retained_bytes() <= MAX_RETAINED_BYTES);
         let prepared = proposal.prepare().unwrap_or_else(|_| unreachable!());
         assert_eq!(prepared.files().len(), 1);
@@ -840,12 +872,14 @@ mod tests {
         );
         assert_eq!(prepared.files()[0].lsp_version(), Some(7));
         assert_eq!(prepared.files()[0].replacement(), "fn main() {}\n");
+        assert!(prepared.files()[0].retained_bytes() > 1);
         let mut buffer = Buffer::new(prepared.files()[0].original());
         let transaction = prepared.files()[0]
             .transaction_for(&buffer.snapshot())
             .unwrap_or_else(|_| unreachable!());
         assert!(buffer.apply(transaction).is_ok());
         assert_eq!(buffer.snapshot().text(), prepared.files()[0].replacement());
+        assert!(prepared.retained_bytes() > 1);
         assert!(prepared.retained_bytes() <= MAX_RETAINED_BYTES);
     }
 
@@ -1006,6 +1040,11 @@ mod tests {
             WorkspaceEditProposal::admit_rename(&oversized_wire, &fixture.root),
             Err(WorkspaceEditError::WireTooLarge)
         );
+        let exact_wire = raw(&format!(
+            "\"{}\"",
+            "x".repeat(MAX_WORKSPACE_EDIT_WIRE_BYTES - 2)
+        ));
+        assert_eq!(checked_wire(&exact_wire), Ok(()));
         assert_eq!(
             WorkspaceEditError::Malformed.to_string(),
             "Rust workspace edit rejected input: Malformed"
@@ -1102,6 +1141,12 @@ mod tests {
         let proposal = WorkspaceEditProposal::admit_rename(&null_version, &fixture.root)
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(proposal.files[0].lsp_version, None);
+        let zero_version = raw(&format!(
+            r#"{{"documentChanges":[{{"textDocument":{{"uri":"{file_uri}","version":0}},"edits":[]}}]}}"#
+        ));
+        let proposal = WorkspaceEditProposal::admit_rename(&zero_version, &fixture.root)
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(proposal.files[0].lsp_version, Some(0));
 
         for version in ["-1", "2147483648", "1.5", r#""bad""#] {
             let result = raw(&format!(
@@ -1142,6 +1187,15 @@ mod tests {
         ] {
             assert!(parse_file_edit(&fixture.root, &file_uri, None, &[malformed]).is_err());
         }
+
+        let exact = serde_json::json!({"first": 1, "second": 2});
+        let exact = exact.as_object().unwrap_or_else(|| unreachable!());
+        assert!(has_exact_keys(exact, &["first", "second"]));
+        assert!(!has_exact_keys(exact, &["first"]));
+        assert!(!has_exact_keys(exact, &["first", "missing"]));
+        assert!(valid_uri_length(&"x".repeat(MAX_URI_BYTES)));
+        assert!(!valid_uri_length(""));
+        assert!(!valid_uri_length(&"x".repeat(MAX_URI_BYTES + 1)));
     }
 
     #[test]
@@ -1201,6 +1255,58 @@ mod tests {
             checked_retention(MAX_RETAINED_BYTES + 1),
             Err(WorkspaceEditError::RetentionExceeded)
         );
+        assert_eq!(
+            checked_workspace_file_count(MAX_WORKSPACE_EDIT_FILES),
+            Ok(())
+        );
+        assert_eq!(
+            checked_workspace_file_count(MAX_WORKSPACE_EDIT_FILES + 1),
+            Err(WorkspaceEditError::TooManyFiles)
+        );
+        assert_eq!(
+            checked_workspace_edit_count(MAX_WORKSPACE_EDIT_EDITS),
+            Ok(())
+        );
+        assert_eq!(
+            checked_workspace_edit_count(MAX_WORKSPACE_EDIT_EDITS + 1),
+            Err(WorkspaceEditError::TooManyEdits)
+        );
+        assert_eq!(checked_file_edit_count(MAX_FILE_EDITS), Ok(()));
+        assert_eq!(
+            checked_file_edit_count(MAX_FILE_EDITS + 1),
+            Err(WorkspaceEditError::TooManyEdits)
+        );
+        assert_eq!(checked_edit_text_bytes(MAX_EDIT_TEXT_BYTES), Ok(()));
+        assert_eq!(
+            checked_edit_text_bytes(MAX_EDIT_TEXT_BYTES + 1),
+            Err(WorkspaceEditError::EditTextTooLong)
+        );
+        assert_eq!(checked_inserted_text_bytes(MAX_INSERTED_TEXT_BYTES), Ok(()));
+        assert_eq!(
+            checked_inserted_text_bytes(MAX_INSERTED_TEXT_BYTES + 1),
+            Err(WorkspaceEditError::InsertedTextTooLarge)
+        );
+    }
+
+    #[test]
+    fn range_order_and_conflict_boundaries_are_exact() {
+        let exact = parse_range(&serde_json::json!({
+            "start": {"line": 2, "character": 3},
+            "end": {"line": 4, "character": 5}
+        }))
+        .unwrap_or_else(|_| unreachable!());
+        assert_eq!(range_key(exact), (2, 3, 4, 5));
+
+        let left = parsed_range(1, 3);
+        assert!(lsp_ranges_conflict(left, parsed_range(1, 1)));
+        assert!(lsp_ranges_conflict(left, parsed_range(2, 4)));
+        assert!(!lsp_ranges_conflict(left, parsed_range(3, 4)));
+        assert!(!lsp_ranges_conflict(left, parsed_range(4, 5)));
+
+        assert!(byte_ranges_conflict(&(1..3), &(1..1)));
+        assert!(byte_ranges_conflict(&(1..3), &(2..4)));
+        assert!(!byte_ranges_conflict(&(1..3), &(3..4)));
+        assert!(!byte_ranges_conflict(&(1..3), &(4..5)));
     }
 
     #[test]
@@ -1244,10 +1350,18 @@ mod tests {
             Err(WorkspaceEditError::RetentionExceeded)
         );
         assert_eq!(
+            checked_prepared_totals(MAX_PREPARED_TEXT_BYTES, 0, 0, 0, 0),
+            Ok((MAX_PREPARED_TEXT_BYTES, 0))
+        );
+        assert_eq!(
             checked_prepared_totals(0, MAX_RETAINED_BYTES, 0, 0, 1),
             Err(WorkspaceEditError::RetentionExceeded)
         );
         assert_eq!(checked_output_length(4, 2, 1), Ok(3));
+        assert_eq!(
+            checked_output_length(MAX_FILE_TEXT_BYTES, 0, 0),
+            Ok(MAX_FILE_TEXT_BYTES)
+        );
         assert_eq!(
             checked_output_length(0, 1, 0),
             Err(WorkspaceEditError::RetentionExceeded)
