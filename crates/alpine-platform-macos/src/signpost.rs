@@ -1,7 +1,11 @@
 //! Handle-free Alpine Studio points for externally retained Instruments traces.
 
-use std::{env, ffi::OsStr};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use std::env;
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+use std::ffi::OsStr;
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const PERSISTED_PROFILE_ENVIRONMENT: &str = "ALPINE_STUDIO_PERSISTED_PROFILE";
 
 /// Stable stage vocabulary emitted by the Alpine Studio release hot path.
@@ -186,6 +190,7 @@ impl StudioSignposts {
     }
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn persisted_profile_requested(value: Option<&OsStr>) -> bool {
     value == Some(OsStr::new("1"))
 }
