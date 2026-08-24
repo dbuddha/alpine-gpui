@@ -597,6 +597,7 @@ fn navigation_empty_error_observer_and_window_paths_are_discriminating()
         many.locations().len(),
         crate::rust_navigation::MAX_VISIBLE_SOURCE_LOCATIONS + 2
     );
+    assert!(!model.navigate_navigation(0));
     assert!(!model.navigate_navigation(-1));
     for _ in 0..=crate::rust_navigation::MAX_VISIBLE_SOURCE_LOCATIONS {
         assert!(model.navigate_navigation(1));

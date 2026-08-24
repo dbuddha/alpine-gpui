@@ -908,7 +908,7 @@ impl RustDiagnostics {
         *selected = selected
             .saturating_add_signed(delta)
             .min(batch.locations().len().saturating_sub(1));
-        if *selected < *first_visible {
+        if (*selected).cmp(&*first_visible).is_lt() {
             *first_visible = *selected;
         } else if *selected
             >= first_visible.saturating_add(crate::rust_navigation::MAX_VISIBLE_SOURCE_LOCATIONS)
