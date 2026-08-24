@@ -2249,6 +2249,10 @@ fn workspace_errors_and_statuses_preserve_exact_sources_and_messages()
 
 #[test]
 #[cfg(unix)]
+#[cfg_attr(
+    miri,
+    ignore = "the native filesystem and document-replacement journey is covered outside Miri"
+)]
 fn rust_navigation_file_admission_and_document_state_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = TestWorkspace::new()?;
