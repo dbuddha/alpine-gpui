@@ -180,8 +180,10 @@ large-project corpora, and revise bounds from retained workload evidence.
 
 1. Treat #304 and #314 as the first execution line.
 2. Finish #253, #272, and #273 on physical hardware.
-3. Reconcile #303 and other stale implementation-complete issues.
-4. Finish #219 through #222 in thin behavior slices.
+3. Keep #303 and other implementation-complete issues reconciled with their
+   retained evidence.
+4. Finish #220 through #222 in thin behavior slices; #219 merged through PR
+   #345.
 5. Execute #238 through #242 as the daily-driver acceptance chain.
 6. Use #61's retained E3 trace ladder as admission and finish #53 recovery,
    timing, memory, and E4 work before claims.

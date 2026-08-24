@@ -148,6 +148,8 @@ done
 
 for pin in \
     de8cd6397adc81632fe1103f1834214ae6ec6a1a \
+    c98c22f1d3ea0c2deef5c1d082d4518cb5e91ee9 \
+    7db5e18f6da8e02cd171668d4714c745c55d7eda \
     e17dc4f9d50db73a458b64dcce50ecd4878b98a3 \
     eb8e1c8b5502b7007465fbbc465f4a736fa39210 \
     40f4a34ebaf56f9a046231f54125ad046239d3f3 \
@@ -155,6 +157,35 @@ for pin in \
 do
     if ! grep -Fq "$pin" "$lineage_sources"; then
         fail "lineage source map is missing retained revision pin $pin"
+    fi
+done
+
+for stale in \
+    'one solid-quad trace only' \
+    'Open [#219' \
+    '#219-#221 remain'
+do
+    if grep -Fq "$stale" \
+        "$lineage_index" \
+        "$lineage_studio" \
+        "$lineage_evidence"
+    then
+        fail "lineage package retains superseded current-state claim: $stale"
+    fi
+done
+
+for required_evidence in \
+    'https://github.com/dbuddha/alpine-gpui/pull/344' \
+    'https://github.com/dbuddha/alpine-gpui/pull/345' \
+    '32762895848'
+do
+    if ! grep -Fq "$required_evidence" \
+        "$lineage_index" \
+        "$lineage_studio" \
+        "$lineage_evidence" \
+        "$lineage_history"
+    then
+        fail "lineage package is missing post-baseline evidence $required_evidence"
     fi
 done
 

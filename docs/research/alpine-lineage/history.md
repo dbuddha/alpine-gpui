@@ -77,6 +77,13 @@ superseded but must not erase the earlier claim or evidence state.
 | --- | --- | --- | --- |
 | 2026-08-23 to 2026-08-24 | PR #322 unified state-changing accessibility actions with Studio's ordinary event finalizer after Defect #323 showed that tab and file actions could bypass document-authority advancement, active-document language synchronization, bounded worker submission, recovery publication, semantic invalidation, and one coalesced frame | A test selector without the `tests::` prefix selected zero tests; a process-contract selector without `alpine_native_validation` selected zero tests; the original `open` omission assumed no language process could start; one initial document-admission polarity mutant survived until the duplicated negation was replaced by the independently tested admission helper; the first complete gate exposed missing Miri ownership | Exact source head `c5cd78779e33bbbf7ea6296f50d63d08b7f727de` passed local production-path tests, 4 of 4 event-finalizer mutants, 3 of 3 startup-prefix mutants, and hosted run `32675083043` with 44 of 44 jobs green before squash merge `2836416b14e4b54172c1fe617e40e3e86611921c`. This advances only scoped production-process correctness to E3; physical AXObserver, VoiceOver, 60/120 Hz latency, residency, dogfood, and comparison remain open in #273 and #253. |
 
+## Post-baseline reconciliation history
+
+| Date | Change | Evidence change | Current gap |
+| --- | --- | --- | --- |
+| 2026-08-24 | PR #344 retained the realistic prepared-scene checkpoint from Alpine PR #343 and Alpine Zed Lab PR #5 | Exact PR-head run `32742558131`, merge `c98c22f1d3ea0c2deef5c1d082d4518cb5e91ee9`, and merged-main run `32743614996` advance ALG-014 to composed E3 across the control, clipped grid, glyph grid, code viewport, scroll, and resize fixture ladder | Atlas lifecycle and recovery, timing, memory, and E4 qualification remain #53; no dominance claim is permitted |
+| 2026-08-24 | PR #345 added bounded Rust hover, definition, and references | Exact PR-head `caaec3b705a5e40024b013da4316e76199ca3657` passed hosted run `32762895848` with 51 green jobs before merge `7db5e18f6da8e02cd171668d4714c745c55d7eda`; revision, process, request, workspace, canonical path, scene, and accessibility paths are covered | Rename and formatting #220, symbols #221, physical latency, residency, and dogfood remain open |
+
 ## Rules for future entries
 
 - Append the merge date, PR, mechanism IDs, and evidence level transition.

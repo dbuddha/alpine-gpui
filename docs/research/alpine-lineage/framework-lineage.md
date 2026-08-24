@@ -57,7 +57,7 @@ primitive set, or cross-platform backends.
 | Lifecycle generations and frame tokens | Completion may free stale resources but cannot publish stale success | Model, unit, mutation, and native lifecycle tests | No comparative latency claim |
 | Hard three-slot frame admission | Queue and ownership cannot grow without bound | Deterministic accounting and failure-path tests | Physical residency and driver footprint remain open |
 | Handle-free terminal evidence | Reports cannot retain scenes or native resources | API and lifecycle tests | Report overhead needs profiling |
-| CPU pixel oracle plus versioned traces | Semantic admission is independent of Metal and comparator adapters | Solid-quad lab reproduction | Glyph and realistic viewport traces missing |
+| CPU pixel oracle plus versioned traces | Semantic admission is independent of Metal and comparator adapters | Eight-fixture composed E3 CPU, Alpine Direct Metal, and pinned GPUI Metal admission through PR #344 | Atlas lifecycle and recovery, timing, memory, and E4 qualification remain |
 | Collision-confirmed line reuse | Reuse checks content in addition to range identity | Text-layout tests | Real editor cache-hit cost not physically profiled |
 | Lookup-before-rasterize atlas admission | Warm glyphs avoid CoreText rasterization | 10,000-frame deterministic regression | CPU/GPU superiority over GPUI unqualified |
 | Row-delta atlas publication and upload | Warm frames publish nothing; misses upload affected rows | Deterministic atlas and Metal regressions | Driver upload cost and texture alternative unqualified |
