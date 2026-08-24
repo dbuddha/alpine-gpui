@@ -69,10 +69,18 @@ superseded but must not erase the earlier claim or evidence state.
 | 2026-08-22 | Task #314 exposed native terminal latency stages to the release signpost stream | Event-handler, frame-queue, submission, GPU-observation, presented-handler, and terminal-record durations are externally capturable without in-process sample retention | Deterministic implementation evidence only; physical distributions and causal correction remain #304 |
 | 2026-08-22 | Task #303 launched the exact revision-pinned release bundle through Finder, exercised dirty-close refusal, saved, and exited normally | Physical launch evidence retained exact revision, bundle identity, executable digest, OS, and hardware | Launch is qualified only; typing latency, accessibility, signing, packaging, and daily-driver acceptance remain open |
 
+## Native accessibility correction history
+
+| Date | Defect or correction | Invalid or superseded evidence retained | Accepted evidence and claim ceiling |
+| --- | --- | --- | --- |
+| 2026-08-23 to 2026-08-24 | PR #322 unified state-changing accessibility actions with Studio's ordinary event finalizer after Defect #323 showed that tab and file actions could bypass document-authority advancement, active-document language synchronization, bounded worker submission, recovery publication, semantic invalidation, and one coalesced frame | A test selector without the `tests::` prefix selected zero tests; a process-contract selector without `alpine_native_validation` selected zero tests; the original `open` omission assumed no language process could start; one initial document-admission polarity mutant survived until the duplicated negation was replaced by the independently tested admission helper; the first complete gate exposed missing Miri ownership | Exact source head `c5cd78779e33bbbf7ea6296f50d63d08b7f727de` passed local production-path tests, 4 of 4 event-finalizer mutants, 3 of 3 startup-prefix mutants, and hosted run `32675083043` with 44 of 44 jobs green before squash merge `2836416b14e4b54172c1fe617e40e3e86611921c`. This advances only scoped production-process correctness to E3; physical AXObserver, VoiceOver, 60/120 Hz latency, residency, dogfood, and comparison remain open in #273 and #253. |
+
 ## Rules for future entries
 
 - Append the merge date, PR, mechanism IDs, and evidence level transition.
 - Mark the previous mechanism superseded when behavior changes.
 - Retain failed or invalidated experiments with the invalidation reason.
+- Record the selected and executed test count; zero-selected commands are invalid evidence even when the command exits successfully.
+- Distinguish the source head under review from any synthetic merge-test revision used to name hosted artifacts.
 - Never rewrite an E2 design observation as if it had always been E4.
 - Link raw evidence identities rather than pasting benchmark headlines.

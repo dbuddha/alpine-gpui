@@ -19,6 +19,7 @@ Deep research is not a long summary. It is a traversable argument from a decisio
 8. Reproduce important behavior or measurement when the decision depends on it.
 9. Convert findings into include, exclude, experiment, defer, or reject decisions.
 10. Link decisions to requirements and preserve raw evidence identities.
+11. Retain the exact command, selector, discovered count, executed count, controls, source head, hosted run, and artifact identity for reproduced evidence. A zero-selected command is invalid even when it exits successfully.
 
 Read [the evidence standard](references/evidence-standard.md) before a case study or comparator claim.
 
@@ -34,7 +35,7 @@ Architecture adoption needs E2. Performance design claims need E3. Dominance cla
 
 ## GitHub retention
 
-Use a research issue for live question, owner, status, review, disposition, and implementing links. Store durable narrative in versioned Markdown. Store raw samples, manifests, checksums, traces, and reports under accepted assurance policy or immutable release assets when size requires it.
+Use a research issue for live question, owner, status, review, disposition, and implementing links. Store durable narrative in versioned Markdown. Store raw samples, manifests, checksums, traces, and reports under accepted assurance policy or immutable release assets when size requires it. When hosted systems build a synthetic merge-test revision, record it separately from the reviewed source head and final merge revision; none may silently stand in for another.
 
 For substantial topics, use a frontmatter summary and retrieval page plus separate source map, findings, experiments, decisions, and bibliography. Read [the package schema](references/package-schema.md). If policy restricts research paths, change policy through an approved task first.
 
