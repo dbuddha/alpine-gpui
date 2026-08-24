@@ -4,6 +4,7 @@ set -eu
 partition=${1:-}
 toolchain=${MIRI_TOOLCHAIN:-nightly-2026-08-01}
 manifest=assurance/miri-studio-partitions.tsv
+text_layout_manifest=assurance/miri-text-layout-partitions.tsv
 
 run_packages() {
     cargo "+$toolchain" miri test "$@" --lib --locked -- --test-threads=1
@@ -29,6 +30,17 @@ run_studio() {
     done
 }
 
+run_text_layout() {
+    filters=$(awk -F '\t' -v partition="$partition" '$2 == partition { print $1 }' "$text_layout_manifest")
+    if [ -z "$filters" ]; then
+        printf 'unknown or empty text-layout Miri partition: %s\n' "$partition" >&2
+        exit 1
+    fi
+    for filter in $filters; do
+        cargo "+$toolchain" miri test -p alpine-text-layout --lib --locked -- "$filter" --test-threads=1
+    done
+}
+
 case "$partition" in
     foundation)
         run_packages \
@@ -47,8 +59,8 @@ case "$partition" in
     text)
         run_packages -p alpine-text
         ;;
-    text-layout)
-        run_packages -p alpine-text-layout
+    text-layout-*)
+        run_text_layout
         ;;
     *)
         printf 'unknown Miri partition: %s\n' "$partition" >&2

@@ -24,6 +24,8 @@ pub(crate) enum LanguageProtocolError {
     InvalidVersion,
     InvalidPosition,
     InvalidRange,
+    InvalidRename,
+    InvalidFormatting,
     MalformedDiagnostics,
     DiagnosticWireTooLarge,
     TooManyDiagnostics,
@@ -187,6 +189,48 @@ impl LspDocument {
             },
             "context": { "includeDeclaration": true }
         }))
+    }
+
+    pub(crate) fn rename_params(
+        &self,
+        position: LspPosition,
+        new_name: &str,
+    ) -> Result<Box<RawValue>, LanguageProtocolError> {
+        if new_name.is_empty() || new_name.len() > 256 || new_name.chars().any(char::is_control) {
+            return Err(LanguageProtocolError::InvalidRename);
+        }
+        raw_value(&serde_json::json!({
+            "textDocument": { "uri": self.uri },
+            "position": {
+                "line": position.line,
+                "character": position.utf16_character,
+            },
+            "newName": new_name,
+        }))
+    }
+
+    pub(crate) fn formatting_params(
+        &self,
+        tab_size: u8,
+        insert_spaces: bool,
+    ) -> Result<Box<RawValue>, LanguageProtocolError> {
+        if !(1..=16).contains(&tab_size) {
+            return Err(LanguageProtocolError::InvalidFormatting);
+        }
+        raw_value(&serde_json::json!({
+            "textDocument": { "uri": self.uri },
+            "options": {
+                "tabSize": tab_size,
+                "insertSpaces": insert_spaces,
+                "trimTrailingWhitespace": true,
+                "insertFinalNewline": true,
+                "trimFinalNewlines": true,
+            },
+        }))
+    }
+
+    pub(crate) fn uri(&self) -> &str {
+        &self.uri
     }
 
     pub(crate) fn text_document_params(&self) -> Result<Box<RawValue>, LanguageProtocolError> {
@@ -497,6 +541,41 @@ mod tests {
         );
         let positioned = document.position_params(LspPosition::new(3, 11)?)?;
         assert!(positioned.get().contains(r#""character":11"#));
+        let rename = document.rename_params(LspPosition::new(3, 11)?, "new_name")?;
+        assert!(rename.get().contains(r#""newName":"new_name""#));
+        assert!(
+            document
+                .rename_params(LspPosition::new(0, 0)?, &"x".repeat(256))
+                .is_ok()
+        );
+        assert_eq!(
+            document
+                .rename_params(LspPosition::new(0, 0)?, &"x".repeat(257))
+                .err(),
+            Some(LanguageProtocolError::InvalidRename)
+        );
+        assert_eq!(document.uri(), "file:///tmp/a%20b.rs");
+        assert_eq!(
+            document.rename_params(LspPosition::new(0, 0)?, "").err(),
+            Some(LanguageProtocolError::InvalidRename)
+        );
+        assert_eq!(
+            document
+                .rename_params(LspPosition::new(0, 0)?, "bad\nname")
+                .err(),
+            Some(LanguageProtocolError::InvalidRename)
+        );
+        let formatting = document.formatting_params(4, true)?;
+        assert!(formatting.get().contains(r#""tabSize":4"#));
+        assert!(
+            formatting
+                .get()
+                .contains(r#""trimTrailingWhitespace":true"#)
+        );
+        assert_eq!(
+            document.formatting_params(0, true).err(),
+            Some(LanguageProtocolError::InvalidFormatting)
+        );
         assert_eq!(
             LspPosition::new(MAX_POSITION_LINE + 1, 0),
             Err(LanguageProtocolError::InvalidPosition)
