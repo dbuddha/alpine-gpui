@@ -28,6 +28,17 @@ grep -Fq 'with 3 operations and 8x4 reference pixels' \
     "$output_dir/scene-validation.txt"
 test "$(wc -c < "$output_dir/reference.bgra" | tr -d ' ')" -eq 128
 
+for fixture in assurance/qualification/v2/*.toml; do
+    name=$(basename "$fixture" .toml)
+    cargo run --quiet --locked -p alpine-assurance -- \
+        validate-scene-trace "$fixture" \
+        > "$output_dir/$name-validation.txt"
+    cargo run --quiet --locked -p alpine-assurance -- \
+        render-scene-reference "$fixture" "$output_dir/$name.bgra" \
+        > "$output_dir/$name-render.txt"
+    test -s "$output_dir/$name.bgra"
+done
+
 sed 's/alpha = 0.5/alpha = 0.25/' \
     assurance/qualification/v1/scene.toml \
     > "$output_dir/tampered-scene.toml"

@@ -64,6 +64,14 @@ task #61, with its composed hosted and physical evidence registered in Alpine.
 C05 through C07 remain approved design direction and unimplemented until their
 Requirements receive owner approval and evidence.
 
+[Decision #333](https://github.com/dbuddha/alpine-gpui/issues/333) preserves the
+version 1 solid-quad slice as an immutable control and accepts
+`alpine-scene-trace/v2` for prepared clips, quads, one immutable A8 atlas, and
+monochrome glyphs. Task #334 owns Alpine decoding and oracle fixtures. Task #61
+remains responsible for the isolated GPUI adapter. Version 2 implementation is
+E3 correctness evidence only until the GPUI path and fixed-hardware protocol
+qualify it.
+
 ## Formal model
 
 [`GoldenQualification.tla`](../../formal/tla/aep-0028/GoldenQualification.tla)

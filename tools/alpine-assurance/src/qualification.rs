@@ -1,6 +1,10 @@
 //! Validates versioned golden-workload and qualification manifests.
 
-use alpine_trace::{DecodedTrace, TraceClip, TraceInput, TraceQuad, TraceViewport};
+use alpine_trace::{
+    DecodedTrace, MAX_TRACE_ATLAS_PIXELS, MAX_TRACE_CLIPS, PreparedTraceInput,
+    PreparedTraceOperation, PreparedTraceQuad, TraceAtlas, TraceClip, TraceGlyph, TraceInput,
+    TraceQuad, TraceViewport,
+};
 use serde::{Deserialize, de::DeserializeOwned};
 use std::{
     collections::BTreeSet,
@@ -11,9 +15,11 @@ use std::{
 };
 
 const SCENE_SCHEMA: &str = "alpine-scene-trace/v1";
+const PREPARED_SCENE_SCHEMA: &str = "alpine-scene-trace/v2";
 const JOURNEY_SCHEMA: &str = "alpine-journey/v1";
 const QUALIFICATION_SCHEMA: &str = "alpine-qualification/v1";
 const SUPPORTED_OPERATIONS: &[&str] = &["solid-quad"];
+const PREPARED_OPERATIONS: &[&str] = &["solid-quad", "monochrome-glyph"];
 const SUPPORTED_ACTIONS: &[&str] = &[
     "open-project",
     "render-frame",
@@ -46,6 +52,7 @@ struct SceneTrace {
     #[serde(default)]
     clips: Vec<Clip>,
     operations: Vec<Operation>,
+    pair: Option<ScenePair>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +71,10 @@ struct Resource {
     id: String,
     kind: String,
     content_hash: String,
+    revision: Option<u64>,
+    width: Option<u32>,
+    height: Option<u32>,
+    pixels: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +102,20 @@ struct Operation {
     green: Option<f32>,
     blue: Option<f32>,
     alpha: Option<f32>,
+    atlas_x: Option<u32>,
+    atlas_y: Option<u32>,
+    atlas_width: Option<u32>,
+    atlas_height: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScenePair {
+    id: String,
+    kind: String,
+    sequence_hash: String,
+    step: u32,
+    steps: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -357,8 +382,8 @@ fn validate_identity(
         format!("qualification schema must be {QUALIFICATION_SCHEMA}"),
     );
     diagnostics.require(
-        scene.schema == SCENE_SCHEMA,
-        format!("scene schema must be {SCENE_SCHEMA}"),
+        matches!(scene.schema.as_str(), SCENE_SCHEMA | PREPARED_SCENE_SCHEMA),
+        format!("scene schema must be {SCENE_SCHEMA} or {PREPARED_SCENE_SCHEMA}"),
     );
     diagnostics.require(
         journey.schema == JOURNEY_SCHEMA,
@@ -431,9 +456,10 @@ fn validate_scene(scene: &SceneTrace, diagnostics: &mut Diagnostics) {
         "scene viewport dimensions and scale factor must be finite and positive",
     );
 
-    validate_scene_resources(scene, diagnostics);
+    let resources = validate_scene_resources(scene, diagnostics);
     let clips = validate_scene_clips(scene, diagnostics);
-    validate_scene_operations(scene, &clips, diagnostics);
+    validate_scene_pair(scene, diagnostics);
+    validate_scene_operations(scene, &clips, &resources, diagnostics);
     if diagnostics.errors.is_empty() {
         match decode_scene(scene) {
             Ok(decoded) => {
@@ -448,11 +474,21 @@ fn validate_scene(scene: &SceneTrace, diagnostics: &mut Diagnostics) {
     }
 }
 
-fn validate_scene_resources(scene: &SceneTrace, diagnostics: &mut Diagnostics) {
-    diagnostics.require(
-        scene.resources.is_empty(),
-        "solid-quad trace slice does not support resources",
-    );
+fn validate_scene_resources<'a>(
+    scene: &'a SceneTrace,
+    diagnostics: &mut Diagnostics,
+) -> BTreeSet<&'a str> {
+    if scene.schema == SCENE_SCHEMA {
+        diagnostics.require(
+            scene.resources.is_empty(),
+            "solid-quad trace slice does not support resources",
+        );
+    } else {
+        diagnostics.require(
+            scene.resources.len() <= 1,
+            "prepared scene supports at most one A8 atlas resource",
+        );
+    }
     let mut resources = BTreeSet::new();
     for resource in &scene.resources {
         diagnostics.require(
@@ -471,7 +507,35 @@ fn validate_scene_resources(scene: &SceneTrace, diagnostics: &mut Diagnostics) {
             valid_sha256(&resource.content_hash),
             format!("resource {} has invalid content hash", resource.id),
         );
+        if scene.schema == PREPARED_SCENE_SCHEMA {
+            diagnostics.require(
+                resource.kind == "a8-atlas",
+                format!("resource {} must be an a8-atlas", resource.id),
+            );
+            let expected = resource
+                .width
+                .and_then(|width| resource.height.and_then(|height| width.checked_mul(height)))
+                .and_then(|pixels| usize::try_from(pixels).ok());
+            diagnostics.require(
+                resource.revision.is_some_and(|revision| revision > 0),
+                format!("resource {} requires a positive revision", resource.id),
+            );
+            diagnostics.require(
+                resource.width.is_some_and(|width| width > 0)
+                    && resource.height.is_some_and(|height| height > 0),
+                format!("resource {} requires positive dimensions", resource.id),
+            );
+            diagnostics.require(
+                expected.is_some_and(|pixels| pixels <= MAX_TRACE_ATLAS_PIXELS),
+                format!("resource {} exceeds the A8 atlas pixel limit", resource.id),
+            );
+            diagnostics.require(
+                expected == resource.pixels.as_ref().map(Vec::len),
+                format!("resource {} has an invalid A8 pixel length", resource.id),
+            );
+        }
     }
+    resources
 }
 
 fn validate_scene_clips<'a>(
@@ -496,16 +560,50 @@ fn validate_scene_clips<'a>(
             format!("clip {} must contain finite positive geometry", clip.id),
         );
     }
-    diagnostics.require(
-        scene.clips.len() == 1,
-        "solid-quad trace slice requires exactly one viewport clip",
-    );
+    if scene.schema == SCENE_SCHEMA {
+        diagnostics.require(
+            scene.clips.len() == 1,
+            "solid-quad trace slice requires exactly one viewport clip",
+        );
+    } else {
+        diagnostics.require(
+            scene.clips.len() <= MAX_TRACE_CLIPS,
+            "prepared scene clip limit exceeded",
+        );
+    }
     clips
+}
+
+fn validate_scene_pair(scene: &SceneTrace, diagnostics: &mut Diagnostics) {
+    if scene.schema == SCENE_SCHEMA {
+        diagnostics.require(
+            scene.pair.is_none(),
+            "version 1 scene cannot declare a pair",
+        );
+        return;
+    }
+    if let Some(pair) = &scene.pair {
+        diagnostics.require(valid_slug(&pair.id), "scene pair identifier must be a slug");
+        diagnostics.require(
+            matches!(pair.kind.as_str(), "scroll" | "resize"),
+            format!("unsupported scene pair kind {}", pair.kind),
+        );
+        diagnostics.require(
+            valid_sha256(&pair.sequence_hash),
+            "scene pair sequence hash must be a SHA-256",
+        );
+        diagnostics.require(pair.steps == 2, "scene pair must contain exactly two steps");
+        diagnostics.require(
+            pair.step < pair.steps,
+            "scene pair step is outside its sequence",
+        );
+    }
 }
 
 fn validate_scene_operations(
     scene: &SceneTrace,
     clips: &BTreeSet<&str>,
+    resources: &BTreeSet<&str>,
     diagnostics: &mut Diagnostics,
 ) {
     diagnostics.require(
@@ -517,8 +615,13 @@ fn validate_scene_operations(
             operation.sequence == expected as u64,
             format!("scene operation sequence must be contiguous at {expected}"),
         );
+        let supported = if scene.schema == SCENE_SCHEMA {
+            SUPPORTED_OPERATIONS
+        } else {
+            PREPARED_OPERATIONS
+        };
         diagnostics.require(
-            SUPPORTED_OPERATIONS.contains(&operation.kind.as_str()),
+            supported.contains(&operation.kind.as_str()),
             format!("unsupported scene operation {}", operation.kind),
         );
         if let Some(clip) = &operation.clip {
@@ -528,10 +631,12 @@ fn validate_scene_operations(
             );
         }
         if operation.kind == "solid-quad" {
-            diagnostics.require(
-                operation.clip.is_some(),
-                format!("solid-quad operation {expected} requires a clip"),
-            );
+            if scene.schema == SCENE_SCHEMA {
+                diagnostics.require(
+                    operation.clip.is_some(),
+                    format!("solid-quad operation {expected} requires a clip"),
+                );
+            }
             diagnostics.require(
                 operation_payload(operation).is_some(),
                 format!("solid-quad operation {expected} requires complete bounds and color"),
@@ -539,6 +644,26 @@ fn validate_scene_operations(
             diagnostics.require(
                 operation.resource.is_none(),
                 format!("solid-quad operation {expected} cannot reference a resource"),
+            );
+            diagnostics.require(
+                !operation_has_any_atlas_field(operation),
+                format!("solid-quad operation {expected} cannot contain atlas bounds"),
+            );
+        } else if operation.kind == "monochrome-glyph" {
+            diagnostics.require(
+                operation_payload(operation).is_some(),
+                format!("monochrome-glyph operation {expected} requires complete bounds and color"),
+            );
+            diagnostics.require(
+                operation_atlas_payload(operation).is_some(),
+                format!("monochrome-glyph operation {expected} requires complete atlas bounds"),
+            );
+            diagnostics.require(
+                operation
+                    .resource
+                    .as_deref()
+                    .is_some_and(|resource| resources.contains(resource)),
+                format!("monochrome-glyph operation {expected} requires a known resource"),
             );
         }
     }
@@ -551,6 +676,9 @@ fn validate_scene_errors_all(scene: &SceneTrace) -> Vec<String> {
 }
 
 fn decode_scene(scene: &SceneTrace) -> Result<DecodedTrace, String> {
+    if scene.schema == PREPARED_SCENE_SCHEMA {
+        return decode_prepared_scene(scene);
+    }
     let clips = scene
         .clips
         .iter()
@@ -615,6 +743,116 @@ fn decode_scene(scene: &SceneTrace) -> Result<DecodedTrace, String> {
     }
 }
 
+fn decode_prepared_scene(scene: &SceneTrace) -> Result<DecodedTrace, String> {
+    let clips = scene
+        .clips
+        .iter()
+        .enumerate()
+        .map(|(index, clip)| (clip.id.as_str(), index))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let atlas = decode_trace_atlas(scene.resources.first())?;
+    let mut operations = Vec::new();
+    operations
+        .try_reserve_exact(scene.operations.len())
+        .map_err(|_| "prepared scene operation allocation failed".to_owned())?;
+    for operation in &scene.operations {
+        let clip = operation
+            .clip
+            .as_deref()
+            .map(|clip| {
+                clips.get(clip).copied().ok_or_else(|| {
+                    format!(
+                        "operation {} references unknown clip {clip}",
+                        operation.sequence
+                    )
+                })
+            })
+            .transpose()?;
+        let (bounds, color) = operation_payload(operation).ok_or_else(|| {
+            format!(
+                "operation {} requires complete bounds and color",
+                operation.sequence
+            )
+        })?;
+        match operation.kind.as_str() {
+            "solid-quad" => operations.push(PreparedTraceOperation::Quad(PreparedTraceQuad {
+                sequence: operation.sequence,
+                bounds,
+                color,
+                clip,
+            })),
+            "monochrome-glyph" => {
+                let expected_resource =
+                    scene.resources.first().map(|resource| resource.id.as_str());
+                if operation.resource.as_deref() != expected_resource {
+                    return Err(format!(
+                        "monochrome-glyph operation {} references the wrong resource",
+                        operation.sequence
+                    ));
+                }
+                let atlas_bounds = operation_atlas_payload(operation).ok_or_else(|| {
+                    format!(
+                        "monochrome-glyph operation {} requires complete atlas bounds",
+                        operation.sequence
+                    )
+                })?;
+                operations.push(PreparedTraceOperation::Glyph(TraceGlyph {
+                    sequence: operation.sequence,
+                    bounds,
+                    atlas_bounds,
+                    color,
+                    clip,
+                }));
+            }
+            other => return Err(format!("unsupported scene operation {other}")),
+        }
+    }
+    PreparedTraceInput {
+        revision: scene.revision,
+        viewport: TraceViewport {
+            logical_width: scene.viewport.width,
+            logical_height: scene.viewport.height,
+            scale_factor: scene.viewport.scale_factor,
+            pixel_width: scene.viewport.pixel_width,
+            pixel_height: scene.viewport.pixel_height,
+            clear_color: scene.clear_color,
+        },
+        clips: scene
+            .clips
+            .iter()
+            .map(|clip| TraceClip {
+                bounds: [clip.x, clip.y, clip.width, clip.height],
+            })
+            .collect(),
+        atlas,
+        operations,
+    }
+    .decode()
+    .map_err(|error| format!("scene trace semantic decoding failed: {error}"))
+}
+
+fn decode_trace_atlas(resource: Option<&Resource>) -> Result<Option<TraceAtlas>, String> {
+    resource
+        .map(|resource| {
+            Ok(TraceAtlas {
+                revision: resource
+                    .revision
+                    .ok_or_else(|| format!("resource {} is missing a revision", resource.id))?,
+                width: resource
+                    .width
+                    .ok_or_else(|| format!("resource {} is missing a width", resource.id))?,
+                height: resource
+                    .height
+                    .ok_or_else(|| format!("resource {} is missing a height", resource.id))?,
+                pixels: resource
+                    .pixels
+                    .clone()
+                    .ok_or_else(|| format!("resource {} is missing A8 pixels", resource.id))?,
+            })
+        })
+        .transpose()
+}
+
 fn operation_payload(operation: &Operation) -> Option<([f32; 4], [f32; 4])> {
     Some((
         [
@@ -630,6 +868,22 @@ fn operation_payload(operation: &Operation) -> Option<([f32; 4], [f32; 4])> {
             operation.alpha?,
         ],
     ))
+}
+
+fn operation_atlas_payload(operation: &Operation) -> Option<[u32; 4]> {
+    Some([
+        operation.atlas_x?,
+        operation.atlas_y?,
+        operation.atlas_width?,
+        operation.atlas_height?,
+    ])
+}
+
+fn operation_has_any_atlas_field(operation: &Operation) -> bool {
+    operation.atlas_x.is_some()
+        || operation.atlas_y.is_some()
+        || operation.atlas_width.is_some()
+        || operation.atlas_height.is_some()
 }
 
 fn validate_journey(
@@ -1018,9 +1272,9 @@ fn render_report(qualification: &Qualification, scene: &SceneTrace, journey: &Jo
 #[cfg(test)]
 mod tests {
     use super::{
-        Journey, Qualification, SceneTrace, finite_positive, load_toml, render_report,
-        render_scene, resolve_repository_path, run, run_scene, valid_git_sha, valid_sha256,
-        valid_slug, validate,
+        Journey, Qualification, SceneTrace, decode_scene, finite_positive, load_toml,
+        render_report, render_scene, resolve_repository_path, run, run_scene, valid_git_sha,
+        valid_sha256, valid_slug, validate, validate_scene_errors,
     };
     use std::{
         fs,
@@ -1029,6 +1283,13 @@ mod tests {
 
     fn repository_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    fn reference_bytes(scene: &SceneTrace) -> Option<Vec<u8>> {
+        let decoded = decode_scene(scene).ok()?;
+        let frame = decoded.validated_frame().ok()?;
+        let image = frame.reference_image().ok()?;
+        Some(image.bytes().to_vec())
     }
 
     #[test]
@@ -1269,6 +1530,10 @@ mod tests {
                 id: "unexpected-resource".to_owned(),
                 kind: "image".to_owned(),
                 content_hash: "a".repeat(64),
+                revision: None,
+                width: None,
+                height: None,
+                pixels: None,
             });
             if let Some(operation) = scene.operations.first_mut() {
                 operation.resource = Some("unexpected-resource".to_owned());
@@ -1299,6 +1564,237 @@ mod tests {
                 "{source}\nunexpected_protocol_field = true\n"
             ));
             assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    fn realistic_v2_fixtures_decode_and_render_through_the_cpu_oracle() {
+        let root = repository_root();
+        for fixture in [
+            "clipped-grid.toml",
+            "glyph-grid.toml",
+            "code-viewport.toml",
+            "scroll-before.toml",
+            "scroll-after.toml",
+            "resize-before.toml",
+            "resize-after.toml",
+        ] {
+            let scene = root.join("assurance/qualification/v2").join(fixture);
+            let result = run_scene(&scene, &root);
+            assert!(result.is_ok(), "{fixture}: {result:#?}");
+        }
+    }
+
+    #[test]
+    fn realistic_v2_rejects_atlas_resource_and_pair_contract_breaks() {
+        let root = repository_root();
+        let scene: Result<SceneTrace, _> =
+            load_toml(&root.join("assurance/qualification/v2/glyph-grid.toml"));
+        assert!(scene.is_ok());
+        if let Ok(mut scene) = scene {
+            if let Some(resource) = scene.resources.first_mut()
+                && let Some(pixels) = &mut resource.pixels
+            {
+                pixels.pop();
+            }
+            let errors = validate_scene_errors(&scene);
+            assert!(
+                errors.iter().any(|error| error.contains("pixel length")),
+                "{errors:#?}"
+            );
+        }
+
+        let paired: Result<SceneTrace, _> =
+            load_toml(&root.join("assurance/qualification/v2/scroll-before.toml"));
+        assert!(paired.is_ok());
+        if let Ok(mut paired) = paired {
+            if let Some(pair) = &mut paired.pair {
+                pair.step = pair.steps;
+            }
+            let errors = validate_scene_errors(&paired);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("outside its sequence")),
+                "{errors:#?}"
+            );
+        }
+
+        let quad: Result<SceneTrace, _> =
+            load_toml(&root.join("assurance/qualification/v2/clipped-grid.toml"));
+        assert!(quad.is_ok());
+        if let Ok(mut quad) = quad {
+            if let Some(operation) = quad.operations.first_mut() {
+                operation.atlas_x = Some(0);
+            }
+            let errors = validate_scene_errors(&quad);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("cannot contain atlas bounds")),
+                "{errors:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn realistic_v2_enforces_each_atlas_resource_boundary() {
+        let root = repository_root();
+        let scene: Result<SceneTrace, _> =
+            load_toml(&root.join("assurance/qualification/v2/glyph-grid.toml"));
+        assert!(scene.is_ok());
+        if let Ok(mut scene) = scene {
+            assert!(super::validate_scene_errors_all(&scene).is_empty());
+
+            let original_revision = scene.resources[0].revision;
+            scene.resources[0].revision = Some(0);
+            let errors = super::validate_scene_errors_all(&scene);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("requires a positive revision")),
+                "{errors:#?}"
+            );
+            scene.resources[0].revision = original_revision;
+
+            let original_width = scene.resources[0].width;
+            let original_height = scene.resources[0].height;
+            let original_pixels = scene.resources[0].pixels.clone();
+            scene.resources[0].width = Some(0);
+            scene.resources[0].pixels = Some(Vec::new());
+            let errors = super::validate_scene_errors_all(&scene);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("requires positive dimensions")),
+                "{errors:#?}"
+            );
+
+            scene.resources[0].width = original_width;
+            scene.resources[0].height = Some(0);
+            scene.resources[0].pixels = Some(Vec::new());
+            let errors = super::validate_scene_errors_all(&scene);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("requires positive dimensions")),
+                "{errors:#?}"
+            );
+
+            scene.resources[0].height = original_height;
+            scene.resources[0].pixels = original_pixels;
+            let exact_atlas_side = 4_096_u32;
+            assert_eq!(
+                usize::try_from(exact_atlas_side)
+                    .ok()
+                    .and_then(|side| side.checked_mul(side)),
+                Some(super::MAX_TRACE_ATLAS_PIXELS)
+            );
+            scene.resources[0].width = Some(exact_atlas_side);
+            scene.resources[0].height = Some(exact_atlas_side);
+            scene.resources[0].pixels = Some(vec![0; super::MAX_TRACE_ATLAS_PIXELS]);
+            let errors = super::validate_scene_errors_all(&scene);
+            assert!(errors.is_empty(), "{errors:#?}");
+        }
+    }
+
+    #[test]
+    fn realistic_v2_distinguishes_operation_kind_and_each_atlas_field() {
+        let root = repository_root();
+        let glyph_scene: Result<SceneTrace, _> =
+            load_toml(&root.join("assurance/qualification/v2/glyph-grid.toml"));
+        assert!(glyph_scene.is_ok());
+        if let Ok(mut glyph_scene) = glyph_scene {
+            let errors = super::validate_scene_errors_all(&glyph_scene);
+            assert!(errors.is_empty(), "{errors:#?}");
+            let mut found_glyph = false;
+            if let Some(glyph) = glyph_scene
+                .operations
+                .iter_mut()
+                .find(|operation| operation.kind == "monochrome-glyph")
+            {
+                found_glyph = true;
+                glyph.atlas_x = Some(2);
+                glyph.atlas_y = Some(3);
+                glyph.atlas_width = Some(4);
+                glyph.atlas_height = Some(5);
+                assert_eq!(super::operation_atlas_payload(glyph), Some([2, 3, 4, 5]));
+                glyph.atlas_height = None;
+            }
+            assert!(found_glyph, "glyph-grid fixture must contain a glyph");
+            let clips = glyph_scene
+                .clips
+                .iter()
+                .map(|clip| clip.id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let resources = glyph_scene
+                .resources
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let mut diagnostics = super::Diagnostics::default();
+            super::validate_scene_operations(&glyph_scene, &clips, &resources, &mut diagnostics);
+            let errors = diagnostics.finish();
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("requires complete atlas bounds")),
+                "{errors:#?}"
+            );
+        }
+
+        let quad_scene: Result<SceneTrace, _> =
+            load_toml(&root.join("assurance/qualification/v2/clipped-grid.toml"));
+        assert!(quad_scene.is_ok());
+        if let Ok(mut quad_scene) = quad_scene
+            && let Some(quad) = quad_scene.operations.first_mut()
+        {
+            quad.atlas_x = None;
+            quad.atlas_y = None;
+            quad.atlas_width = None;
+            quad.atlas_height = None;
+            assert!(!super::operation_has_any_atlas_field(quad));
+
+            quad.atlas_x = Some(1);
+            assert!(super::operation_has_any_atlas_field(quad));
+            quad.atlas_x = None;
+
+            quad.atlas_y = Some(1);
+            assert!(super::operation_has_any_atlas_field(quad));
+            quad.atlas_y = None;
+
+            quad.atlas_width = Some(1);
+            assert!(super::operation_has_any_atlas_field(quad));
+            quad.atlas_width = None;
+
+            quad.atlas_height = Some(1);
+            assert!(super::operation_has_any_atlas_field(quad));
+        }
+    }
+
+    #[test]
+    fn realistic_v2_clip_identifiers_do_not_change_declared_clip_order() {
+        let root = repository_root();
+        let scene: Result<SceneTrace, _> =
+            load_toml(&root.join("assurance/qualification/v2/clipped-grid.toml"));
+        assert!(scene.is_ok());
+        if let Ok(mut scene) = scene {
+            let expected = reference_bytes(&scene);
+            assert!(expected.is_some());
+            if scene.clips.len() >= 2 {
+                let first = scene.clips[0].id.clone();
+                let second = scene.clips[1].id.clone();
+                scene.clips[0].id = "z-first-declared-clip".to_owned();
+                scene.clips[1].id = "a-second-declared-clip".to_owned();
+                for operation in &mut scene.operations {
+                    if operation.clip.as_deref() == Some(first.as_str()) {
+                        operation.clip = Some("z-first-declared-clip".to_owned());
+                    } else if operation.clip.as_deref() == Some(second.as_str()) {
+                        operation.clip = Some("a-second-declared-clip".to_owned());
+                    }
+                }
+            }
+            assert_eq!(reference_bytes(&scene), expected);
         }
     }
 

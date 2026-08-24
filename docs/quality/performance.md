@@ -10,18 +10,21 @@ hardware. TLA+ and Kani may establish structural properties such as bounded
 queue depth, no idle submission, or logical capacity, but they cannot establish
 elapsed time, GPU throughput, energy, allocation count, or resident memory.
 
-Zed-relative results use `alpine-scene-trace/v1`, `alpine-journey/v1`, and
+Zed-relative results use versioned `alpine-scene-trace` inputs,
+`alpine-journey/v1`, and
 `alpine-qualification/v1`. Renderer-only, full-Zed-path, and product-journey
 comparisons are reported separately. The assurance tool rejects measurement
 before required equivalence and environment qualification. A qualified state
 records raw artifacts and at least three independent hardware windows; fixture
 data validates this protocol but is not production benchmark evidence.
 
-The current renderer-only trace slice is deliberately narrow and executable. A
-trace names its logical viewport, physical target, scale, clear color,
-full-viewport clip, and painter-ordered solid quads. The decoder rejects every
-other primitive or clip until both compared renderers support it. The assurance
-CLI validates the trace and emits compact BGRA8 from the independent CPU oracle;
+The retained version 1 renderer-only control is deliberately limited to one
+full-viewport clip and painter-ordered solid quads. Version 2 prepared scenes
+add bounded axis-aligned clips, one immutable A8 atlas, solid quads, and
+monochrome glyphs without placing shaping, rasterization, or adaptation inside
+renderer timing. Scroll and resize are identity-bound scene pairs. The decoder
+rejects every other primitive or resource until both compared renderers support
+it. The assurance CLI validates each trace and emits compact BGRA8 from the independent CPU oracle;
 on a supported physical Mac it can emit the same artifact through Alpine Direct
 Metal. Scene parsing, adaptation, validation, encoding, completion, and readback
 remain distinct measurement stages. A future paired runner cannot place parsing

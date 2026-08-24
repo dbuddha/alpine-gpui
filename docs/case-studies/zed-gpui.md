@@ -129,10 +129,10 @@ and caused visible jank
 not wait in its normal present path
 ([metal_renderer.rs lines 480-487](https://github.com/zed-industries/zed/blob/e17dc4f9d50db73a458b64dcce50ecd4878b98a3/crates/gpui_macos/src/metal_renderer.rs#L480-L487)).
 
-Alpine's current drawable callback still waits for GPU completion. Replacing it
-with a bounded three-slot asynchronous completion ring is the next performance
-foundation, but requires an approved AEP because it changes concurrency,
-ownership, accounting, and error publication.
+Alpine historically waited for GPU completion in the drawable callback. PRs
+#135 and #136 replaced that path with a bounded three-slot asynchronous
+completion ring. The source finding remains relevant as a regression guard;
+physical latency and residency qualification remain open.
 
 ### ZED-GPUI-008: submission is not completion or presentation
 

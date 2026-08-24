@@ -14,6 +14,7 @@ superseded but must not erase the earlier claim or evidence state.
 | 2026-08 | PR #112 shipped the first real application executable | Independent product work | Production launch path existed | Superseded by richer app bundle and recovery launch |
 | 2026-08 | PRs #135 and #136 replaced blocking presentation with bounded async slots | `ADAPTED-CONCEPT` from completion-owned rendering | Main-thread `waitUntilCompleted` removed from normal presentation | Retained, physical latency pending |
 | 2026-08 | PR #138 added the bounded single-window runtime | `ALPINE-ORIGINAL` narrowing | Runtime transition and queue evidence | Retained, no GPUI entity graph |
+| 2026-08-24 | Decision #333, Task #334, and PR #343 versioned realistic prepared renderer scenes without widening v1 | `ALPINE-ORIGINAL` comparator protocol | Alpine CPU-oracle fixtures add clips, glyph atlas sampling, code viewport, scroll, and resize semantics | GPUI adapter, physical comparison, timing, and memory remain #61/#53 |
 
 ## Editor vertical-slice history
 

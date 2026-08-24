@@ -1,0 +1,211 @@
+schema = "alpine-scene-trace/v2"
+id = "code-scroll-after"
+workload_hash = "9c6f52c4e604999675a27e72af032d2c24012155780c6cc43f6838cab8d26f53"
+revision = 1
+clear_color = [0.055, 0.063, 0.075, 1.0]
+
+[viewport]
+width = 64.0
+height = 32.0
+scale_factor = 1.0
+pixel_width = 64
+pixel_height = 32
+
+[[resources]]
+id = "editor-atlas"
+kind = "a8-atlas"
+content_hash = "af9183e19506cf64dfc8c0d4de20d8659b98ed06a980305ff5979fcc26edd961"
+revision = 1
+width = 8
+height = 8
+pixels = [255, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 255, 255, 0, 0, 0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 255, 255, 0, 255, 255, 255, 255, 255, 0, 0, 255]
+
+[[clips]]
+id = "content"
+x = 8.0
+y = 2.0
+width = 54.0
+height = 28.0
+
+[[operations]]
+sequence = 0
+kind = "solid-quad"
+x = 0.0
+y = 0.0
+width = 64.0
+height = 32.0
+red = 0.055
+green = 0.063
+blue = 0.075
+alpha = 1.0
+
+[[operations]]
+sequence = 1
+kind = "solid-quad"
+x = 0.0
+y = 0.0
+width = 7.0
+height = 32.0
+red = 0.09
+green = 0.105
+blue = 0.125
+alpha = 1.0
+
+[[operations]]
+sequence = 2
+kind = "solid-quad"
+clip = "content"
+x = 8.0
+y = 2.0
+width = 30.0
+height = 5.0
+red = 0.15
+green = 0.29
+blue = 0.43
+alpha = 0.8
+
+[[operations]]
+sequence = 3
+kind = "monochrome-glyph"
+resource = "editor-atlas"
+clip = "content"
+x = 9.0
+y = -3.0
+width = 4.0
+height = 4.0
+red = 0.82
+green = 0.86
+blue = 0.91
+alpha = 1.0
+atlas_x = 0
+atlas_y = 0
+atlas_width = 4
+atlas_height = 4
+
+[[operations]]
+sequence = 4
+kind = "monochrome-glyph"
+resource = "editor-atlas"
+clip = "content"
+x = 14.0
+y = -3.0
+width = 4.0
+height = 4.0
+red = 0.82
+green = 0.86
+blue = 0.91
+alpha = 1.0
+atlas_x = 4
+atlas_y = 0
+atlas_width = 4
+atlas_height = 4
+
+[[operations]]
+sequence = 5
+kind = "monochrome-glyph"
+resource = "editor-atlas"
+clip = "content"
+x = 19.0
+y = -3.0
+width = 4.0
+height = 4.0
+red = 0.82
+green = 0.86
+blue = 0.91
+alpha = 1.0
+atlas_x = 0
+atlas_y = 4
+atlas_width = 4
+atlas_height = 4
+
+[[operations]]
+sequence = 6
+kind = "monochrome-glyph"
+resource = "editor-atlas"
+clip = "content"
+x = 24.0
+y = -3.0
+width = 4.0
+height = 4.0
+red = 0.82
+green = 0.86
+blue = 0.91
+alpha = 1.0
+atlas_x = 4
+atlas_y = 4
+atlas_width = 4
+atlas_height = 4
+
+[[operations]]
+sequence = 7
+kind = "monochrome-glyph"
+resource = "editor-atlas"
+clip = "content"
+x = 9.0
+y = 3.0
+width = 4.0
+height = 4.0
+red = 0.82
+green = 0.86
+blue = 0.91
+alpha = 1.0
+atlas_x = 4
+atlas_y = 0
+atlas_width = 4
+atlas_height = 4
+
+[[operations]]
+sequence = 8
+kind = "monochrome-glyph"
+resource = "editor-atlas"
+clip = "content"
+x = 14.0
+y = 3.0
+width = 4.0
+height = 4.0
+red = 0.82
+green = 0.86
+blue = 0.91
+alpha = 1.0
+atlas_x = 0
+atlas_y = 0
+atlas_width = 4
+atlas_height = 4
+
+[[operations]]
+sequence = 9
+kind = "monochrome-glyph"
+resource = "editor-atlas"
+clip = "content"
+x = 19.0
+y = 3.0
+width = 4.0
+height = 4.0
+red = 0.82
+green = 0.86
+blue = 0.91
+alpha = 1.0
+atlas_x = 4
+atlas_y = 4
+atlas_width = 4
+atlas_height = 4
+
+[[operations]]
+sequence = 10
+kind = "solid-quad"
+clip = "content"
+x = 29.0
+y = 3.0
+width = 1.0
+height = 5.0
+red = 0.92
+green = 0.76
+blue = 0.31
+alpha = 1.0
+
+[pair]
+id = "code-scroll"
+kind = "scroll"
+sequence_hash = "2a075e0709f1e3266ea1ec96dd427d5d00f35ee2b117779e59ba7fcffbfce9bf"
+step = 1
+steps = 2

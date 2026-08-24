@@ -1,0 +1,78 @@
+schema = "alpine-scene-trace/v2"
+id = "clipped-quad-grid"
+workload_hash = "921875c7910b753cd3e1201f3576f126fc75a627e95e2521f7d48d874a189981"
+revision = 1
+clear_color = [0.055, 0.063, 0.075, 1.0]
+
+[viewport]
+width = 16.0
+height = 12.0
+scale_factor = 1.0
+pixel_width = 16
+pixel_height = 12
+
+[[clips]]
+id = "left"
+x = 1.0
+y = 1.0
+width = 6.0
+height = 10.0
+
+[[clips]]
+id = "right"
+x = 9.0
+y = 1.0
+width = 6.0
+height = 10.0
+
+[[operations]]
+sequence = 0
+kind = "solid-quad"
+clip = "left"
+x = 0.0
+y = 0.0
+width = 9.0
+height = 6.0
+red = 0.1
+green = 0.45
+blue = 0.8
+alpha = 1.0
+
+[[operations]]
+sequence = 1
+kind = "solid-quad"
+clip = "left"
+x = 3.0
+y = 5.0
+width = 7.0
+height = 6.0
+red = 0.9
+green = 0.35
+blue = 0.2
+alpha = 0.75
+
+[[operations]]
+sequence = 2
+kind = "solid-quad"
+clip = "right"
+x = 7.0
+y = 2.0
+width = 9.0
+height = 5.0
+red = 0.2
+green = 0.75
+blue = 0.4
+alpha = 1.0
+
+[[operations]]
+sequence = 3
+kind = "solid-quad"
+clip = "right"
+x = 10.0
+y = 6.0
+width = 4.0
+height = 7.0
+red = 0.8
+green = 0.75
+blue = 0.2
+alpha = 0.8
