@@ -432,12 +432,11 @@ impl PreparedTraceInput {
                             .ok_or(TraceDecodeError::InvalidClipReference { sequence, index })?;
                         primitive = primitive.clipped(clip);
                     }
-                    builder.push_quad(primitive).map_err(|_| {
-                        TraceDecodeError::InvalidClipReference {
-                            sequence,
-                            index: quad.clip.unwrap_or(usize::MAX),
-                        }
-                    })?;
+                    let scene_error = TraceDecodeError::InvalidClipReference {
+                        sequence,
+                        index: quad.clip.unwrap_or(usize::MAX),
+                    };
+                    builder.push_quad(primitive).or(Err(scene_error))?;
                 }
                 PreparedTraceOperation::Glyph(glyph) => {
                     let bounds = decode_rect(glyph.bounds)
@@ -456,9 +455,8 @@ impl PreparedTraceInput {
                             .ok_or(TraceDecodeError::InvalidClipReference { sequence, index })?;
                         primitive = primitive.clipped(clip);
                     }
-                    builder
-                        .push_glyph(primitive)
-                        .map_err(|_| TraceDecodeError::InvalidGlyphAtlasBounds { sequence })?;
+                    let scene_error = TraceDecodeError::InvalidGlyphAtlasBounds { sequence };
+                    builder.push_glyph(primitive).or(Err(scene_error))?;
                 }
             }
         }
@@ -544,9 +542,9 @@ fn float_arrays_match(left: [f32; 4], right: [f32; 4]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_TRACE_OPERATIONS, PreparedTraceInput, PreparedTraceOperation, PreparedTraceQuad,
-        TraceAtlas, TraceClip, TraceDecodeError, TraceGlyph, TraceInput, TraceQuad, TraceViewport,
-        physical_matches,
+        MAX_TRACE_ATLAS_PIXELS, MAX_TRACE_CLIPS, MAX_TRACE_OPERATIONS, PreparedTraceInput,
+        PreparedTraceOperation, PreparedTraceQuad, TraceAtlas, TraceClip, TraceDecodeError,
+        TraceGlyph, TraceInput, TraceQuad, TraceViewport, decode_atlas_bounds, physical_matches,
     };
 
     fn viewport() -> TraceViewport {
@@ -764,6 +762,31 @@ mod tests {
                 TraceDecodeError::UnsupportedClip { sequence: 7 },
                 "trace quad 7 uses a clip unsupported by this protocol slice",
             ),
+            (TraceDecodeError::TooManyClips, "trace clip limit exceeded"),
+            (
+                TraceDecodeError::InvalidClipBounds { index: 9 },
+                "trace clip 9 has invalid bounds",
+            ),
+            (
+                TraceDecodeError::InvalidClipReference {
+                    sequence: 10,
+                    index: 11,
+                },
+                "trace operation 10 references invalid clip index 11",
+            ),
+            (TraceDecodeError::InvalidAtlas, "trace A8 atlas is invalid"),
+            (
+                TraceDecodeError::MissingAtlas { sequence: 12 },
+                "trace glyph 12 requires an A8 atlas",
+            ),
+            (
+                TraceDecodeError::InvalidGlyphBounds { sequence: 13 },
+                "trace glyph 13 has invalid destination bounds",
+            ),
+            (
+                TraceDecodeError::InvalidGlyphAtlasBounds { sequence: 14 },
+                "trace glyph 14 has invalid atlas bounds",
+            ),
         ];
         for (error, message) in cases {
             assert_eq!(error.to_string(), message);
@@ -807,30 +830,165 @@ mod tests {
     #[test]
     fn prepared_scene_preserves_clips_atlas_glyphs_and_painter_order() {
         let decoded = prepared_trace().decode();
-        assert!(decoded.is_ok());
-        if let Ok(decoded) = decoded {
-            assert_eq!(decoded.scene().clips().len(), 1);
-            assert_eq!(decoded.scene().quads().len(), 1);
-            assert_eq!(decoded.scene().glyphs().len(), 1);
-            assert_eq!(decoded.scene().operation_count(), 2);
-            assert_eq!(
+        assert_eq!(
+            decoded.as_ref().map(|decoded| (
+                decoded.scene().clips().len(),
+                decoded.scene().quads().len(),
+                decoded.scene().glyphs().len(),
+                decoded.scene().operation_count(),
                 decoded
                     .scene()
                     .glyph_atlas()
                     .map(alpine_scene::GlyphAtlasImage::pixels),
-                Some(&[255, 0, 0, 255][..])
-            );
-            assert_eq!(
+            )),
+            Ok((1, 1, 1, 2, Some(&[255, 0, 0, 255][..])))
+        );
+        assert_eq!(
+            decoded.as_ref().map(|decoded| {
                 decoded
                     .validated_frame()
-                    .map(|frame| (frame.consumed_primitives(), frame.omitted_primitives(),)),
-                Ok((2, 0))
-            );
+                    .map(|frame| (frame.consumed_primitives(), frame.omitted_primitives()))
+            }),
+            Ok(Ok((2, 0)))
+        );
+    }
+
+    #[test]
+    fn prepared_scene_enforces_exact_collection_limits() {
+        let clip = TraceClip {
+            bounds: [0.0, 0.0, 4.0, 2.0],
+        };
+        let exact_clips = PreparedTraceInput {
+            clips: vec![clip; MAX_TRACE_CLIPS],
+            atlas: None,
+            operations: Vec::new(),
+            ..prepared_trace()
+        };
+        assert!(exact_clips.clone().decode().is_ok());
+        let mut too_many_clips = exact_clips;
+        too_many_clips.clips.push(clip);
+        assert_eq!(too_many_clips.decode(), Err(TraceDecodeError::TooManyClips));
+
+        let operations = (0..MAX_TRACE_OPERATIONS)
+            .map(|sequence| {
+                PreparedTraceOperation::Quad(PreparedTraceQuad {
+                    sequence: sequence as u64,
+                    bounds: [0.0, 0.0, 1.0, 1.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    clip: None,
+                })
+            })
+            .collect::<Vec<_>>();
+        let exact_operations = PreparedTraceInput {
+            clips: Vec::new(),
+            atlas: None,
+            operations: operations.clone(),
+            ..prepared_trace()
+        };
+        assert_eq!(
+            exact_operations
+                .decode()
+                .map(|decoded| decoded.scene().operation_count()),
+            Ok(MAX_TRACE_OPERATIONS)
+        );
+        let mut too_many_operations = operations;
+        too_many_operations.push(PreparedTraceOperation::Quad(PreparedTraceQuad {
+            sequence: MAX_TRACE_OPERATIONS as u64,
+            bounds: [0.0, 0.0, 1.0, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
+            clip: None,
+        }));
+        assert_eq!(
+            PreparedTraceInput {
+                clips: Vec::new(),
+                atlas: None,
+                operations: too_many_operations,
+                ..prepared_trace()
+            }
+            .decode(),
+            Err(TraceDecodeError::TooManyOperations)
+        );
+    }
+
+    #[test]
+    fn prepared_scene_enforces_atlas_limit_and_independent_conditions() {
+        let exact_pixels = MAX_TRACE_ATLAS_PIXELS;
+        let exact = PreparedTraceInput {
+            clips: Vec::new(),
+            atlas: Some(TraceAtlas {
+                revision: 1,
+                width: u32::try_from(exact_pixels).unwrap_or(u32::MAX),
+                height: 1,
+                pixels: vec![0; exact_pixels],
+            }),
+            operations: Vec::new(),
+            ..prepared_trace()
+        };
+        assert!(exact.decode().is_ok());
+
+        let over_limit = MAX_TRACE_ATLAS_PIXELS + 1;
+        assert_eq!(
+            PreparedTraceInput {
+                clips: Vec::new(),
+                atlas: Some(TraceAtlas {
+                    revision: 1,
+                    width: u32::try_from(over_limit).unwrap_or(u32::MAX),
+                    height: 1,
+                    pixels: vec![0; over_limit],
+                }),
+                operations: Vec::new(),
+                ..prepared_trace()
+            }
+            .decode(),
+            Err(TraceDecodeError::InvalidAtlas)
+        );
+
+        let mut zero_revision = prepared_trace();
+        if let Some(atlas) = &mut zero_revision.atlas {
+            atlas.revision = 0;
         }
+        assert_eq!(zero_revision.decode(), Err(TraceDecodeError::InvalidAtlas));
+    }
+
+    #[test]
+    fn prepared_scene_covers_unclipped_and_noncontiguous_operations() {
+        let unclipped_quad = PreparedTraceInput {
+            clips: Vec::new(),
+            atlas: None,
+            operations: vec![PreparedTraceOperation::Quad(PreparedTraceQuad {
+                sequence: 0,
+                bounds: [0.0, 0.0, 1.0, 1.0],
+                color: [1.0, 1.0, 1.0, 1.0],
+                clip: None,
+            })],
+            ..prepared_trace()
+        };
+        assert!(unclipped_quad.decode().is_ok());
+
+        let mut unclipped_glyph = prepared_trace();
+        if let PreparedTraceOperation::Glyph(glyph) = &mut unclipped_glyph.operations[1] {
+            glyph.clip = None;
+        }
+        assert!(unclipped_glyph.decode().is_ok());
+
+        let mut noncontiguous = prepared_trace();
+        if let PreparedTraceOperation::Glyph(glyph) = &mut noncontiguous.operations[1] {
+            glyph.sequence = 3;
+        }
+        assert_eq!(
+            noncontiguous.decode(),
+            Err(TraceDecodeError::NoncontiguousSequence {
+                expected: 1,
+                actual: 3,
+            })
+        );
     }
 
     #[test]
     fn prepared_scene_rejects_clip_atlas_and_glyph_contract_breaks() {
+        assert!(decode_atlas_bounds([1, 0, 2, 2], 2, 2).is_none());
+        assert!(decode_atlas_bounds([0, 1, 2, 2], 2, 2).is_none());
+
         let mut invalid_clip = prepared_trace();
         if let PreparedTraceOperation::Quad(quad) = &mut invalid_clip.operations[0] {
             quad.clip = Some(1);
@@ -855,6 +1013,24 @@ mod tests {
         }
         assert_eq!(
             invalid_source.decode(),
+            Err(TraceDecodeError::InvalidGlyphAtlasBounds { sequence: 1 })
+        );
+
+        let mut horizontal_overflow = prepared_trace();
+        if let PreparedTraceOperation::Glyph(glyph) = &mut horizontal_overflow.operations[1] {
+            glyph.atlas_bounds = [1, 0, 2, 2];
+        }
+        assert_eq!(
+            horizontal_overflow.decode(),
+            Err(TraceDecodeError::InvalidGlyphAtlasBounds { sequence: 1 })
+        );
+
+        let mut vertical_overflow = prepared_trace();
+        if let PreparedTraceOperation::Glyph(glyph) = &mut vertical_overflow.operations[1] {
+            glyph.atlas_bounds = [0, 1, 2, 2];
+        }
+        assert_eq!(
+            vertical_overflow.decode(),
             Err(TraceDecodeError::InvalidGlyphAtlasBounds { sequence: 1 })
         );
     }
