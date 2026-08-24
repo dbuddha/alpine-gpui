@@ -694,7 +694,9 @@ mod proofs {
     }
 }
 
-#[cfg(test)]
+// Local workspace URI resolution is intentionally POSIX-only for Alpine's
+// Apple-first product boundary. Windows CI still compiles the shipping module.
+#[cfg(all(test, unix))]
 mod tests {
     use std::{
         fs,
