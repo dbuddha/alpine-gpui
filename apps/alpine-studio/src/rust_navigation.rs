@@ -84,9 +84,6 @@ impl HoverContent {
         let retained_bytes = size_of::<Self>()
             .checked_add(text.len())
             .ok_or(NavigationError::RetentionExceeded)?;
-        if retained_bytes > MAX_HOVER_RETAINED_BYTES {
-            return Err(NavigationError::HoverTooLarge);
-        }
         Ok(Some(Self {
             text: text.into_boxed_str(),
             retained_bytes,
@@ -333,7 +330,7 @@ fn percent_decode(encoded: &[u8]) -> Result<Vec<u8>, NavigationError> {
                 .copied()
                 .and_then(hex_value)
                 .ok_or(NavigationError::InvalidPercentEncoding)?;
-            decoded.push((high << 4) | low);
+            decoded.push(high.saturating_mul(16).saturating_add(low));
             index = index.saturating_add(3);
         } else {
             decoded.push(encoded[index]);
@@ -433,6 +430,44 @@ mod tests {
     }
 
     #[test]
+    fn hover_line_byte_and_wire_boundaries_are_exact() {
+        let exact_lines = (0..MAX_HOVER_LINES)
+            .map(|_| "line")
+            .collect::<Vec<_>>()
+            .join("\\n");
+        assert!(HoverContent::admit(&raw(&format!(r#"{{"contents":"{exact_lines}"}}"#))).is_ok());
+
+        let exact_text = "x".repeat(MAX_HOVER_RETAINED_BYTES - size_of::<HoverContent>());
+        let exact = raw(&serde_json::json!({ "contents": exact_text }).to_string());
+        let hover = HoverContent::admit(&exact)
+            .unwrap_or_else(|_| unreachable!())
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!(hover.retained_bytes(), MAX_HOVER_RETAINED_BYTES);
+
+        let oversized_text = "x".repeat(MAX_HOVER_RETAINED_BYTES - size_of::<HoverContent>() + 1);
+        let oversized = raw(&serde_json::json!({ "contents": oversized_text }).to_string());
+        assert_eq!(
+            HoverContent::admit(&oversized),
+            Err(NavigationError::HoverTooLarge)
+        );
+
+        let exact_wire = raw(&format!(
+            "\"{}\"",
+            "x".repeat(MAX_NAVIGATION_WIRE_BYTES - 2)
+        ));
+        assert_eq!(exact_wire.get().len(), MAX_NAVIGATION_WIRE_BYTES);
+        assert_eq!(checked_wire(&exact_wire), Ok(()));
+        let oversized_wire = raw(&format!(
+            "\"{}\"",
+            "x".repeat(MAX_NAVIGATION_WIRE_BYTES - 1)
+        ));
+        assert_eq!(
+            checked_wire(&oversized_wire),
+            Err(NavigationError::WireTooLarge)
+        );
+    }
+
+    #[test]
     fn location_and_link_shapes_retain_exact_bounded_values() {
         let direct = location("file:///tmp/work/main.rs");
         let link = r#"{"targetUri":"file:///tmp/work/lib.rs","targetRange":{"start":{"line":0,"character":0},"end":{"line":1,"character":0}},"targetSelectionRange":{"start":{"line":0,"character":2},"end":{"line":0,"character":4}}}"#;
@@ -443,6 +478,72 @@ mod tests {
         assert!(batch.retained_bytes() <= MAX_LOCATION_RETAINED_BYTES);
         assert_eq!(batch.omitted(), 0);
         assert_eq!(batch.visible_range(0), 0..2);
+        assert_eq!(
+            SourceLocations::admit(&raw("null")),
+            Ok(SourceLocations {
+                locations: Box::new([]),
+                retained_bytes: 0,
+                omitted: 0,
+            })
+        );
+    }
+
+    fn locations_with_retained_bytes(target: usize) -> Vec<Value> {
+        let item_bytes = size_of::<SourceLocation>();
+        let mut remaining = target;
+        let mut values = Vec::new();
+        while remaining > 0 {
+            assert!(remaining > item_bytes);
+            let mut uri_bytes = (remaining - item_bytes).min(MAX_LOCATION_URI_BYTES);
+            let leftover = remaining - item_bytes - uri_bytes;
+            if leftover > 0 && leftover <= item_bytes {
+                uri_bytes -= item_bytes + 1 - leftover;
+            }
+            assert!(uri_bytes > 0);
+            values.push(serde_json::json!({
+                "uri": "x".repeat(uri_bytes),
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                }
+            }));
+            remaining -= item_bytes + uri_bytes;
+        }
+        values
+    }
+
+    #[test]
+    fn location_uri_and_aggregate_retention_boundaries_are_exact() {
+        let exact_uri = "x".repeat(MAX_LOCATION_URI_BYTES);
+        let exact_uri_batch =
+            SourceLocations::admit(&raw(&location(&exact_uri))).unwrap_or_else(|_| unreachable!());
+        assert_eq!(exact_uri_batch.locations().len(), 1);
+        assert_eq!(exact_uri_batch.locations()[0].uri(), exact_uri);
+
+        assert_eq!(
+            SourceLocations::admit(&raw(&location(""))),
+            Err(NavigationError::UriTooLong)
+        );
+        let oversized_uri = "x".repeat(MAX_LOCATION_URI_BYTES + 1);
+        assert_eq!(
+            SourceLocations::admit(&raw(&location(&oversized_uri))),
+            Err(NavigationError::UriTooLong)
+        );
+
+        let exact = raw(
+            &Value::Array(locations_with_retained_bytes(MAX_LOCATION_RETAINED_BYTES)).to_string(),
+        );
+        let exact_batch = SourceLocations::admit(&exact).unwrap_or_else(|_| unreachable!());
+        assert_eq!(exact_batch.retained_bytes(), MAX_LOCATION_RETAINED_BYTES);
+        assert_eq!(exact_batch.omitted(), 0);
+
+        let oversized = raw(&Value::Array(locations_with_retained_bytes(
+            MAX_LOCATION_RETAINED_BYTES + 1,
+        ))
+        .to_string());
+        let bounded = SourceLocations::admit(&oversized).unwrap_or_else(|_| unreachable!());
+        assert!(bounded.retained_bytes() <= MAX_LOCATION_RETAINED_BYTES);
+        assert!(bounded.omitted() > 0);
     }
 
     #[test]
@@ -467,6 +568,15 @@ mod tests {
             decode_file_uri("file:///tmp/a%20b.rs"),
             Ok(PathBuf::from("/tmp/a b.rs"))
         );
+        assert_eq!(percent_decode(b"%aF"), Ok(vec![0xaf]));
+        assert_eq!(percent_decode(b"%Fa"), Ok(vec![0xfa]));
+        assert_eq!(hex_value(b'a'), Some(10));
+        assert_eq!(hex_value(b'f'), Some(15));
+        assert_eq!(hex_value(b'A'), Some(10));
+        assert_eq!(hex_value(b'F'), Some(15));
+        assert_eq!(hex_value(b'0'), Some(0));
+        assert_eq!(hex_value(b'9'), Some(9));
+        assert_eq!(hex_value(b'g'), None);
     }
 
     #[cfg(unix)]

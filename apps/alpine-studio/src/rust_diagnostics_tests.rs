@@ -520,7 +520,13 @@ fn mock_navigation_is_bounded_current_only_and_supersedes_interactive_work()
     );
     let _ = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
 
-    let _ = model.request_navigation(NavigationRequestKind::Hover, LspPosition::new(0, 2)?);
+    model.status = Some(Arc::from("clear before navigation"));
+    assert!(
+        model
+            .request_navigation(NavigationRequestKind::Hover, LspPosition::new(0, 2)?)
+            .visual_changed
+    );
+    assert!(model.status_message().is_none());
     assert!(model.snapshot().navigation_pending);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while model.snapshot().hover_bytes == 0 {
@@ -542,7 +548,11 @@ fn mock_navigation_is_bounded_current_only_and_supersedes_interactive_work()
     );
     assert!(model.snapshot().hover_bytes <= crate::rust_navigation::MAX_HOVER_RETAINED_BYTES);
 
-    let _ = model.request_navigation(NavigationRequestKind::References, LspPosition::new(0, 2)?);
+    assert!(
+        model
+            .request_navigation(NavigationRequestKind::References, LspPosition::new(0, 2)?)
+            .visual_changed
+    );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while model.snapshot().location_items == 0 {
         if let Some(wake) = latch.take() {
