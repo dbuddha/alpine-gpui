@@ -1171,20 +1171,35 @@ fn read_bounded_text(
 }
 
 fn hash_file(path: &Path) -> Result<String, String> {
-    let output = Command::new("shasum")
-        .args(["-a", "256"])
-        .arg(path)
-        .output()
-        .map_err(|error| format!("cannot launch shasum for {}: {error}", path.display()))?;
-    if !output.status.success() {
-        return Err(format!("shasum failed for {}", path.display()));
+    let attempts: &[(&str, &[&str])] = &[
+        ("sha256sum", &[]),
+        ("shasum", &["-a", "256"]),
+        ("certutil", &["-hashfile"]),
+    ];
+    for (program, prefix) in attempts {
+        let mut command = Command::new(program);
+        command.args(*prefix).arg(path);
+        if *program == "certutil" {
+            command.arg("SHA256");
+        }
+        let Ok(output) = command.output() else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+        if let Some(hash) = stdout
+            .split(|character: char| !character.is_ascii_hexdigit())
+            .find(|word| valid_hash(word, 64))
+        {
+            return Ok(hash.to_owned());
+        }
     }
-    let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
-    stdout
-        .split_whitespace()
-        .find(|word| valid_hash(word, 64))
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| format!("shasum returned no SHA-256 for {}", path.display()))
+    Err(format!(
+        "cannot calculate SHA-256 for {}; sha256sum, shasum, or certutil is required",
+        path.display()
+    ))
 }
 
 fn valid_hash(value: &str, length: usize) -> bool {
