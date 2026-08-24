@@ -29,9 +29,16 @@ Required correction:
 
 ### P0: no realistic comparator supports the stated framework ambition
 
-The Zed lab has one solid-quad correctness workload. Timing and memory are
-intentionally disabled. It cannot support glyph, text viewport, clipping,
-scroll, resize, latency, residency, or framework dominance statements.
+At the time of this review, the Zed lab had one solid-quad correctness workload.
+Timing and memory were intentionally disabled, so it could not support glyph,
+text viewport, clipping, scroll, resize, latency, residency, or framework
+dominance statements.
+
+Status update, 2026-08-24: PR #343 and Alpine Zed Lab PR #5 now provide
+composed E3 correctness for an eight-fixture ladder covering the immutable
+control, clipping, glyph atlas sampling, a realistic code viewport, scroll, and
+resize. Timing, memory, latency, atlas recovery, and dominance remain open under
+Requirement #53.
 
 Required correction:
 
@@ -39,7 +46,8 @@ Required correction:
   small scroll delta, resize, and recovery traces.
 - Establish semantic equivalence before timing.
 - Measure adaptation separately from framework scene build and renderer stages.
-- Keep Requirement #53 and Task #61 open until retained E4 evidence exists.
+- Close Task #61 only after its exact E3 record is retained; keep Requirement
+  #53 open until recovery and retained E4 evidence exist.
 
 ### P1: M4 physical correctness is not closed
 
@@ -175,7 +183,8 @@ large-project corpora, and revise bounds from retained workload evidence.
 3. Reconcile #303 and other stale implementation-complete issues.
 4. Finish #219 through #222 in thin behavior slices.
 5. Execute #238 through #242 as the daily-driver acceptance chain.
-6. Expand #61 from solid quad to realistic code traces before claims.
+6. Use #61's retained E3 trace ladder as admission and finish #53 recovery,
+   timing, memory, and E4 work before claims.
 7. Run WGPU experiments only after those trace semantics stabilize.
 8. Update this ledger in every material architecture/performance PR.
 

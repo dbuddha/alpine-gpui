@@ -4,8 +4,9 @@
 
 | ID | Source | Revision | License and boundary | Role |
 | --- | --- | --- | --- | --- |
-| ALP-S001 | [Alpine GPUI](https://github.com/dbuddha/alpine-gpui/tree/de8cd6397adc81632fe1103f1834214ae6ec6a1a) | `de8cd6397adc81632fe1103f1834214ae6ec6a1a` | Alpine repository | Current implementation under review |
-| LAB-S001 | [alpine-zed-lab](https://github.com/dbuddha/alpine-zed-lab/tree/e25639c728ff50a9774f2cfb754063e6c80d4999) | `e25639c728ff50a9774f2cfb754063e6c80d4999` | Isolated GPL laboratory | Comparator adaptation and correctness evidence |
+| ALP-S001 | [Alpine GPUI lineage baseline](https://github.com/dbuddha/alpine-gpui/tree/de8cd6397adc81632fe1103f1834214ae6ec6a1a) | `de8cd6397adc81632fe1103f1834214ae6ec6a1a` | Alpine repository | Original lineage audit baseline |
+| ALP-S002 | [Alpine realistic trace baseline](https://github.com/dbuddha/alpine-gpui/tree/1b6d16e6ddc120a7670fc225913dad9908dd482c) | `1b6d16e6ddc120a7670fc225913dad9908dd482c` | Alpine repository | Exact source of the accepted eight-fixture trace ladder |
+| LAB-S001 | [alpine-zed-lab](https://github.com/dbuddha/alpine-zed-lab/tree/13fade6ac4c344a6bf40295544c49971ddfecb96) | `13fade6ac4c344a6bf40295544c49971ddfecb96` | Isolated GPL laboratory | Exact merged adapter and correctness-evidence generator |
 | ZED-S001 | [Zed comparator pin](https://github.com/zed-industries/zed/tree/e17dc4f9d50db73a458b64dcce50ecd4878b98a3) | `v1.15.0`, `e17dc4f...` | GPUI crate is Apache-2.0; Zed application source is GPL-3.0-or-later | Immutable accepted comparator |
 | ZED-S002 | [Zed current stable review](https://github.com/zed-industries/zed/tree/eb8e1c8b5502b7007465fbbc465f4a736fa39210) | `v1.16.1`, `eb8e1c8...` | Same split boundary | Drift review only; does not change comparator pin |
 | WGPU-S001 | [WGPU accepted study](https://github.com/gfx-rs/wgpu/tree/8ee190c6f151c731a4f8cfd9a102d6ee5903460a) | `8ee190c...` | MIT OR Apache-2.0 | E2 architecture and experiment source |

@@ -15,6 +15,7 @@ superseded but must not erase the earlier claim or evidence state.
 | 2026-08 | PRs #135 and #136 replaced blocking presentation with bounded async slots | `ADAPTED-CONCEPT` from completion-owned rendering | Main-thread `waitUntilCompleted` removed from normal presentation | Retained, physical latency pending |
 | 2026-08 | PR #138 added the bounded single-window runtime | `ALPINE-ORIGINAL` narrowing | Runtime transition and queue evidence | Retained, no GPUI entity graph |
 | 2026-08-24 | Decision #333, Task #334, and PR #343 versioned realistic prepared renderer scenes without widening v1 | `ALPINE-ORIGINAL` comparator protocol | Alpine CPU-oracle fixtures add clips, glyph atlas sampling, code viewport, scroll, and resize semantics | GPUI adapter, physical comparison, timing, and memory remain #61/#53 |
+| 2026-08-24 | Alpine Zed Lab PR #5 and the version 2 Alpine evidence record executed the prepared trace ladder | Isolated `ADAPTED-CONCEPT` comparator with Alpine-owned protocol | Merged-main offline GPUI and physical CPU, Alpine Metal, and GPUI Metal evidence compose across eight exact fixtures; all Metal outputs match | Task #61 reaches E3 semantic equivalence; recovery, timing, memory, and E4 claims remain #53 |
 
 ## Editor vertical-slice history
 

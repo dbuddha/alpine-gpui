@@ -122,10 +122,9 @@ The stable sequence is:
    [#36](https://github.com/dbuddha/alpine-gpui/issues/36).
 4. Run sustained private dogfood and residency journeys; promote each incident
    to a reproduced defect with a production-path regression.
-5. Expand the GPUI lab from its control workload through
-   [Task #334](https://github.com/dbuddha/alpine-gpui/issues/334) and then #61
-   to semantically matched glyph, code viewport, scroll, resize, atlas, and
-   recovery traces.
+5. Preserve the E3 GPUI admission established by
+   [Task #334](https://github.com/dbuddha/alpine-gpui/issues/334) and #61, then
+   complete #53 atlas recovery, calibrated timing, memory, and E4 evidence.
 6. Qualify scoped renderer and product claims, then enter M7 release work.
 
 These links are entry points, not copied status. The issue timeline and Project

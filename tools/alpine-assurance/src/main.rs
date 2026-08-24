@@ -3,6 +3,7 @@
 mod ax;
 mod calibration;
 mod lab;
+mod lab_v2;
 mod onscreen;
 mod qualification;
 
@@ -240,7 +241,12 @@ fn run_lab_command(
     if arguments.next().is_some() {
         return Err(vec![format!("{command} accepts exactly one evidence path")]);
     }
-    lab::run(command, Path::new(&path))
+    let path = Path::new(&path);
+    if lab_v2::is_v2_evidence(path) {
+        lab_v2::run(command, path)
+    } else {
+        lab::run(command, path)
+    }
 }
 
 fn run_ax_command(
