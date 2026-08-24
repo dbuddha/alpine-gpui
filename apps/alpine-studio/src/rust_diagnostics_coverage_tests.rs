@@ -911,12 +911,23 @@ fn successful_completion_request_clears_status_and_reports_visual_change()
 -> Result<(), Box<dyn Error>> {
     let (mut model, root) = installed_process_model()?;
     let _wake = wait_for_running_peer(&mut model)?;
+    let identity = model.session.as_ref().ok_or("session")?.identity;
+    let hover = completion_result(r#"{"contents":"completion supersedes hover"}"#)?;
+    model.install_navigation_for_test(identity, NavigationRequestKind::Hover, &hover)?;
+    assert!(model.navigation_is_open(identity));
+    let cancellation = model.request_completion(LspPosition::new(0, 0)?);
+    assert!(cancellation.visual_changed);
+    assert!(!model.navigation_is_open(identity));
+    assert!(model.snapshot().completion_pending);
+    let _ = model.cancel_completion();
+    assert!(!model.snapshot().completion_pending);
+
     model.status = Some(Arc::from("old completion status"));
     let effect = model.request_completion(LspPosition::new(0, 0)?);
     assert!(effect.visual_changed);
     assert_eq!(model.status_message(), None);
     assert!(model.snapshot().completion_pending);
-    assert_eq!(model.snapshot().completion_requests, 1);
+    assert_eq!(model.snapshot().completion_requests, 2);
     let _ = model.shutdown();
     std::fs::remove_dir_all(root)?;
     Ok(())
