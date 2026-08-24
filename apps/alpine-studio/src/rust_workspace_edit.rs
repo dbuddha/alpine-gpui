@@ -715,6 +715,7 @@ mod proofs {
     use super::bounded_ranges_conflict;
 
     /// Task #220: sorted admitted ranges are strictly disjoint.
+    #[cfg_attr(test, mutants::skip)] // The dedicated Kani gate executes this proof.
     #[kani::proof]
     fn accepted_sorted_ranges_are_strictly_disjoint() {
         let left_start = kani::any::<u8>();
@@ -1291,6 +1292,16 @@ mod tests {
             ))
         );
         assert!(fs::remove_file(link).is_ok());
+    }
+
+    #[test]
+    fn fixture_drop_removes_owned_storage() {
+        let root = {
+            let fixture = Fixture::new();
+            let _ = fixture.write("owned.rs", "x");
+            fixture.root.clone()
+        };
+        assert!(!root.exists());
     }
 
     #[cfg(not(miri))]
