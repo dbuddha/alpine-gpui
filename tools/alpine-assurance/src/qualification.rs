@@ -1638,6 +1638,141 @@ mod tests {
     }
 
     #[test]
+    fn realistic_v2_enforces_each_atlas_resource_boundary() {
+        let root = repository_root();
+        let scene: Result<SceneTrace, _> =
+            load_toml(&root.join("assurance/qualification/v2/glyph-grid.toml"));
+        assert!(scene.is_ok());
+        if let Ok(mut scene) = scene {
+            assert!(super::validate_scene_errors_all(&scene).is_empty());
+
+            let original_revision = scene.resources[0].revision;
+            scene.resources[0].revision = Some(0);
+            let errors = super::validate_scene_errors_all(&scene);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("requires a positive revision")),
+                "{errors:#?}"
+            );
+            scene.resources[0].revision = original_revision;
+
+            let original_width = scene.resources[0].width;
+            let original_height = scene.resources[0].height;
+            let original_pixels = scene.resources[0].pixels.clone();
+            scene.resources[0].width = Some(0);
+            scene.resources[0].pixels = Some(Vec::new());
+            let errors = super::validate_scene_errors_all(&scene);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("requires positive dimensions")),
+                "{errors:#?}"
+            );
+
+            scene.resources[0].width = original_width;
+            scene.resources[0].height = Some(0);
+            scene.resources[0].pixels = Some(Vec::new());
+            let errors = super::validate_scene_errors_all(&scene);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("requires positive dimensions")),
+                "{errors:#?}"
+            );
+
+            scene.resources[0].height = original_height;
+            scene.resources[0].pixels = original_pixels;
+            let exact_atlas_side = 4_096_u32;
+            assert_eq!(
+                usize::try_from(exact_atlas_side)
+                    .ok()
+                    .and_then(|side| side.checked_mul(side)),
+                Some(super::MAX_TRACE_ATLAS_PIXELS)
+            );
+            scene.resources[0].width = Some(exact_atlas_side);
+            scene.resources[0].height = Some(exact_atlas_side);
+            scene.resources[0].pixels = Some(vec![0; super::MAX_TRACE_ATLAS_PIXELS]);
+            let errors = super::validate_scene_errors_all(&scene);
+            assert!(errors.is_empty(), "{errors:#?}");
+        }
+    }
+
+    #[test]
+    fn realistic_v2_distinguishes_operation_kind_and_each_atlas_field() {
+        let root = repository_root();
+        let glyph_scene: Result<SceneTrace, _> =
+            load_toml(&root.join("assurance/qualification/v2/glyph-grid.toml"));
+        assert!(glyph_scene.is_ok());
+        if let Ok(mut glyph_scene) = glyph_scene {
+            let errors = super::validate_scene_errors_all(&glyph_scene);
+            assert!(errors.is_empty(), "{errors:#?}");
+            let mut found_glyph = false;
+            if let Some(glyph) = glyph_scene
+                .operations
+                .iter_mut()
+                .find(|operation| operation.kind == "monochrome-glyph")
+            {
+                found_glyph = true;
+                glyph.atlas_x = Some(2);
+                glyph.atlas_y = Some(3);
+                glyph.atlas_width = Some(4);
+                glyph.atlas_height = Some(5);
+                assert_eq!(super::operation_atlas_payload(glyph), Some([2, 3, 4, 5]));
+                glyph.atlas_height = None;
+            }
+            assert!(found_glyph, "glyph-grid fixture must contain a glyph");
+            let clips = glyph_scene
+                .clips
+                .iter()
+                .map(|clip| clip.id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let resources = glyph_scene
+                .resources
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let mut diagnostics = super::Diagnostics::default();
+            super::validate_scene_operations(&glyph_scene, &clips, &resources, &mut diagnostics);
+            let errors = diagnostics.finish();
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("requires complete atlas bounds")),
+                "{errors:#?}"
+            );
+        }
+
+        let quad_scene: Result<SceneTrace, _> =
+            load_toml(&root.join("assurance/qualification/v2/clipped-grid.toml"));
+        assert!(quad_scene.is_ok());
+        if let Ok(mut quad_scene) = quad_scene
+            && let Some(quad) = quad_scene.operations.first_mut()
+        {
+            quad.atlas_x = None;
+            quad.atlas_y = None;
+            quad.atlas_width = None;
+            quad.atlas_height = None;
+            assert!(!super::operation_has_any_atlas_field(quad));
+
+            quad.atlas_x = Some(1);
+            assert!(super::operation_has_any_atlas_field(quad));
+            quad.atlas_x = None;
+
+            quad.atlas_y = Some(1);
+            assert!(super::operation_has_any_atlas_field(quad));
+            quad.atlas_y = None;
+
+            quad.atlas_width = Some(1);
+            assert!(super::operation_has_any_atlas_field(quad));
+            quad.atlas_width = None;
+
+            quad.atlas_height = Some(1);
+            assert!(super::operation_has_any_atlas_field(quad));
+        }
+    }
+
+    #[test]
     fn realistic_v2_clip_identifiers_do_not_change_declared_clip_order() {
         let root = repository_root();
         let scene: Result<SceneTrace, _> =
