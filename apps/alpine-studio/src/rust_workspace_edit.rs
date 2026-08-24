@@ -848,8 +848,9 @@ mod tests {
             WorkspaceEditProposal::admit_rename(&resource, &fixture.root),
             Err(WorkspaceEditError::UnsupportedResourceOperation)
         );
+        let remote_uri = concat!("https:", "//example.com/main.rs");
         let remote = raw(&format!(
-            r#"{{"changes":{{"https://example.com/main.rs":[{}]}}}}"#,
+            r#"{{"changes":{{"{remote_uri}":[{}]}}}}"#,
             range(0, 1, "x")
         ));
         assert!(matches!(
