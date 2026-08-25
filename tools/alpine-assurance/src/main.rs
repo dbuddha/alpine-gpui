@@ -955,10 +955,14 @@ fn display_list(items: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        artifact_anchor, artifact_path, load_registry, registry_path, render_report,
-        valid_identifier, validate_registry,
+        artifact_anchor, artifact_path, discover_kani_file, load_registry, registry_path,
+        render_report, valid_identifier, validate_registry,
     };
-    use std::path::{Path, PathBuf};
+    use std::{
+        collections::BTreeSet,
+        fs,
+        path::{Path, PathBuf},
+    };
 
     fn repository_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -986,6 +990,35 @@ mod tests {
             .join("src")
             .join("proofs.rs");
         assert_eq!(registry_path(&path), "crates/alpine-core/src/proofs.rs");
+    }
+
+    #[test]
+    fn discovers_kani_proofs_across_only_supported_trivia() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = repository_root();
+        let path = root.join("target").join(format!(
+            "assurance-kani-discovery-{}.rs",
+            std::process::id()
+        ));
+        fs::create_dir_all(path.parent().ok_or("temporary proof parent")?)?;
+        fs::write(
+            &path,
+            "#[kani::proof]\n/// documented proof\nfn documented() {}\n\
+             #[kani::proof]\n\nfn separated() {}\n\
+             #[kani::proof]\n#[cfg(any())]\nfn attributed_is_not_supported() {}\n",
+        )?;
+
+        let mut harnesses = BTreeSet::new();
+        discover_kani_file(&path, &root, &mut harnesses);
+        fs::remove_file(&path)?;
+        let relative = path.strip_prefix(&root)?;
+        let prefix = registry_path(relative);
+        let expected = BTreeSet::from([
+            format!("{prefix}#documented"),
+            format!("{prefix}#separated"),
+        ]);
+        assert_eq!(harnesses, expected);
+        Ok(())
     }
 
     #[test]

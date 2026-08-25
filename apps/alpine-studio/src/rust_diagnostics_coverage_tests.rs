@@ -1646,12 +1646,14 @@ fn symbol_admission_rejects_stale_invalid_empty_truncated_and_oversized_results(
         "file:///tmp/main.rs",
     )?;
     assert_eq!(truncated.omitted(), 2);
+    let truncations_before = model.snapshot().symbol_truncations;
     assert!(model.admit_symbols(
         pending.request_id,
         pending.stamp,
         pending.kind,
         Ok(truncated)
     ));
+    assert_eq!(model.snapshot().symbol_truncations, truncations_before + 1);
     assert!(
         model
             .status_message()

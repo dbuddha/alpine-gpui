@@ -857,7 +857,7 @@ mod tests {
             Err(SymbolError::WireTooLarge)
         );
         let exact_wire = raw(&format!(
-            "{}[]",
+            "[{}]",
             " ".repeat(MAX_SYMBOL_WIRE_BYTES.saturating_sub(2))
         ));
         assert!(
