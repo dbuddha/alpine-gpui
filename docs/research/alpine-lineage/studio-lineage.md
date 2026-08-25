@@ -14,7 +14,7 @@ The comparison therefore has two views:
 
 ## Accepted daily-driver capability accounting
 
-| ID | Capability | Zed source boundary | Alpine state through `7db5e18` | Lineage verdict |
+| ID | Capability | Zed source boundary | Alpine state through `e256405` | Lineage verdict |
 | --- | --- | --- | --- | --- |
 | S01 | Stable application launch | Zed app and platform crates | `.app` assembly, explicit launch/recovery composition, and revision-pinned Finder journey accepted in [#303](https://github.com/dbuddha/alpine-gpui/issues/303) | Independent product implementation; daily-driver and public release gates remain separate |
 | S02 | Native keyboard, pointer, scroll, focus, clipboard, IME | GPUI platform plus editor event routing | Production AppKit events and focus-epoch IME exist | Shared platform requirement; Alpine adds narrow identity and caps |
@@ -35,8 +35,8 @@ The comparison therefore has two views:
 | S17 | Diagnostics | Zed editor/project language integration | Revision-safe bounded Rust diagnostics | Behavioral subset implemented |
 | S18 | Completion | Zed editor completion and language stores | Revision-safe bounded Rust completion | Behavioral subset implemented |
 | S19 | Hover and source navigation | Zed editor hover and navigation | Bounded hover, definition, references, local-path admission, revision-safe supersession, overlays, and accessibility merged in [PR #345](https://github.com/dbuddha/alpine-gpui/pull/345) | Behavioral subset implemented with stricter local path and result bounds |
-| S20 | Rename and formatting | Zed project transactions and editor edits | Bounded validation and preparation merged through PR #348; publication, preview, recovery, commands, and real-server E2E remain [#220](https://github.com/dbuddha/alpine-gpui/issues/220) | Partial independent local implementation |
-| S21 | Document and workspace symbols | Zed project symbol search | Bounded current-only document and workspace requests, ranking, keyboard and IME picker, scene, accessibility, and checked local navigation implemented under [#221](https://github.com/dbuddha/alpine-gpui/issues/221) | Behavioral subset with explicit result, hierarchy, label, query, retained-byte, and visible-row bounds |
+| S20 | Rename and formatting | Zed project transactions and editor edits | Strict bounded response admission and immutable off-thread preparation merged in [PR #348](https://github.com/dbuddha/alpine-gpui/pull/348); production preview is staged under [#220](https://github.com/dbuddha/alpine-gpui/issues/220), while publication and recovery remain open | Partial implementation; no filesystem mutation or completion claim |
+| S21 | Document and workspace symbols | Zed project symbol search | Bounded current-only requests, ranking, keyboard and IME picker, scene, accessibility, and checked local navigation merged in [PR #350](https://github.com/dbuddha/alpine-gpui/pull/350) | Behavioral subset with explicit result, hierarchy, label, query, retained-byte, and visible-row bounds |
 | S22 | Native accessibility | GPUI accessibility plus editor semantics | Snapshot, AppKit transport, text mappings, actions, notifications | Implementation present; physical VoiceOver/AX proof remains open |
 | S23 | Local diagnostic evidence | Zed diagnostics/profiling facilities | Frame, cache, residency tools, event-to-present correlation and signposts | Alpine-specific claim discipline; external physical capture pending |
 | S24 | Sustained repository dogfood | Zed is a mature production editor | Open #224 and #238 through #242; visible typing defect #304 | Blocking qualification, not a polish item |

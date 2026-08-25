@@ -31,6 +31,7 @@ rust_diagnostics_scene_tests::	studio-language-diagnostics
 rust_navigation::	studio-language-navigation
 rust_symbols::	studio-language-symbols
 rust_workspace_edit::	studio-language-workspace-edit
+rust_workspace_ui::	studio-language-workspace-edit
 session::	studio-persistence
 session_integration_tests::	studio-persistence
 settings::	studio-model

@@ -28,6 +28,33 @@ const MAX_FILE_TEXT_BYTES: usize = 33_554_432;
 const MAX_PREPARED_TEXT_BYTES: usize = 67_108_864;
 const MAX_RETAINED_BYTES: usize = 67_371_008;
 
+#[derive(Debug)]
+pub(crate) struct WorkspaceEditWire {
+    result: Box<RawValue>,
+    retained_bytes: usize,
+}
+
+impl WorkspaceEditWire {
+    pub(crate) fn capture(result: &RawValue) -> Result<Self, WorkspaceEditError> {
+        checked_wire(result)?;
+        let retained_bytes = result.get().len();
+        let result = RawValue::from_string(result.get().to_owned())
+            .map_err(|_| WorkspaceEditError::Malformed)?;
+        Ok(Self {
+            result,
+            retained_bytes,
+        })
+    }
+
+    pub(crate) fn result(&self) -> &RawValue {
+        &self.result
+    }
+
+    pub(crate) const fn retained_bytes(&self) -> usize {
+        self.retained_bytes
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WorkspaceEditError {
     WireTooLarge,
@@ -248,6 +275,10 @@ impl PreparedFileEdit {
         &self.replacement
     }
 
+    pub(crate) fn edit_count(&self) -> usize {
+        self.edits.len()
+    }
+
     pub(crate) fn transaction_for(
         &self,
         snapshot: &BufferSnapshot,
@@ -291,6 +322,14 @@ impl PreparedWorkspaceEdit {
 
     pub(crate) const fn retained_bytes(&self) -> usize {
         self.retained_bytes
+    }
+
+    pub(crate) fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
+    pub(crate) fn edit_count(&self) -> usize {
+        self.files.iter().map(PreparedFileEdit::edit_count).sum()
     }
 }
 

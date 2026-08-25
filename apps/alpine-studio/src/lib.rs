@@ -67,6 +67,7 @@ mod rust_symbols;
     )
 )]
 mod rust_workspace_edit;
+mod rust_workspace_ui;
 mod session;
 #[cfg_attr(
     not(test),
@@ -142,12 +143,14 @@ use rust_completion::{MAX_VISIBLE_COMPLETION_ROWS, position_for_byte};
 use rust_diagnostics::{
     CompletionApplication, LanguageEffect, LanguageIdentity, LanguageWake, LanguageWakeLatch,
     MAX_VISIBLE_DIAGNOSTIC_MARKERS, NavigationRequestKind, RustDiagnostics, RustDocumentInput,
+    WorkspaceEditKind, WorkspaceEditPreparationOutput,
 };
 use rust_navigation::{
     MAX_VISIBLE_HOVER_LINES, MAX_VISIBLE_SOURCE_LOCATIONS, NavigationError, ResolvedSourceLocation,
     SourceLocation,
 };
 use rust_symbols::{MAX_VISIBLE_SYMBOL_ROWS, SymbolRequestKind};
+use rust_workspace_ui::{WorkspaceEditPanel, WorkspaceEditPanelError, WorkspaceEditPanelOutcome};
 #[cfg(all(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
 use settings::FONT_FAMILY;
 #[cfg(all(
@@ -1678,6 +1681,7 @@ struct StudioApp {
     profile_scene_revision: SceneRevision,
     rust_diagnostics: RustDiagnostics,
     language_wake_latch: LanguageWakeLatch,
+    workspace_edits: WorkspaceEditPanel,
     #[cfg(test)]
     diagnostic_clip_override: Option<alpine_scene::ClipId>,
     #[cfg(test)]
@@ -1936,6 +1940,7 @@ impl StudioApp {
             profile_scene_revision: SceneRevision::new(0),
             rust_diagnostics: RustDiagnostics::default(),
             language_wake_latch: LanguageWakeLatch::default(),
+            workspace_edits: WorkspaceEditPanel::default(),
             #[cfg(test)]
             diagnostic_clip_override: None,
             #[cfg(test)]
@@ -3049,6 +3054,31 @@ impl StudioApp {
             }
             debug_assert!(row_count <= MAX_VISIBLE_SYMBOL_ROWS);
         }
+        if self.workspace_edits.is_open() {
+            let row_count = self.workspace_edits.line_count();
+            let overlay_bounds = Self::language_overlay_bounds(active_pane.bounds, row_count)?;
+            let left = overlay_bounds.origin().x();
+            let top = overlay_bounds.origin().y();
+            let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
+            builder.push_quad(
+                Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip),
+            )?;
+            for row in 0..row_count {
+                let line = self
+                    .workspace_edits
+                    .line(row)
+                    .ok_or(StudioRenderError::Domain)?;
+                let layout = self.text_system.shape(line, font)?;
+                let baseline = top + usize_as_f32(row) * LINE_HEIGHT + layout.ascent() + 3.0;
+                pending_glyphs.extend(self.collect_glyphs(
+                    &layout,
+                    font,
+                    left + FIND_BAR_INSET,
+                    baseline,
+                    overlay_clip,
+                )?);
+            }
+        }
         if self.find.is_open() {
             let width = FIND_BAR_WIDTH.min(content_size.width());
             let left = (active_pane.bounds.origin().x() + content_size.width() - width)
@@ -3287,6 +3317,7 @@ impl StudioApp {
             builder.push_quad(Quad::new(bounds, caret_color).clipped(active_clip))?;
         }
         if self.focused
+            && !self.workspace_edits.is_open()
             && !self.find.is_open()
             && !self.quick_open.is_open()
             && !self.project_search.is_open()
@@ -3928,6 +3959,57 @@ impl StudioApp {
         }
     }
 
+    fn handle_workspace_edit_key(
+        &mut self,
+        physical_key: u16,
+        command: bool,
+    ) -> Option<EventEffect> {
+        if !self.workspace_edits.is_open() {
+            return None;
+        }
+        let effect = if self.workspace_edits.is_rename_input() {
+            match physical_key {
+                KEY_ESCAPE => self.cancel_workspace_edit_panel(),
+                KEY_DELETE_BACKWARD if !command => match self.workspace_edits.delete_backward() {
+                    Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+                    Err(error) => self.record_workspace_edit_panel_error(error),
+                },
+                KEY_RETURN if !command => self.submit_rust_rename(),
+                _ => EventEffect::default(),
+            }
+        } else {
+            match physical_key {
+                KEY_ESCAPE => self.cancel_workspace_edit_panel(),
+                KEY_RETURN if !command => self.set_local_status(LocalStatus::Command(Arc::from(
+                    "Rust workspace edit publication is not enabled until crash recovery is approved.",
+                ))),
+                _ => EventEffect::default(),
+            }
+        };
+        Some(effect)
+    }
+
+    fn toggle_file_tree(&mut self) -> EventEffect {
+        self.find.close();
+        self.find_needs_search = false;
+        self.quick_open.close();
+        self.project_search.close();
+        if self.workspace.is_none() {
+            return self.record_file_tree_error(&FileTreeError::NoWorkspace);
+        }
+        if self.file_tree.is_visible() && self.file_tree.is_focused() {
+            return self
+                .file_tree
+                .hide()
+                .then(EventEffect::visual)
+                .unwrap_or_default();
+        }
+        match self.file_tree.activate(1) {
+            Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+            Err(error) => self.record_file_tree_error(&error),
+        }
+    }
+
     fn handle_key(&mut self, physical_key: u16, modifiers: Modifiers) -> EventEffect {
         let command = modifiers.contains(Modifiers::COMMAND);
         let shift = modifiers.contains(Modifiers::SHIFT);
@@ -3937,6 +4019,9 @@ impl StudioApp {
             .active()
             .keymap
             .resolve(physical_key, modifiers);
+        if let Some(effect) = self.handle_workspace_edit_key(physical_key, command) {
+            return effect;
+        }
         if let Some(effect) = self.handle_language_overlay_key(physical_key, command) {
             return effect;
         }
@@ -3953,24 +4038,7 @@ impl StudioApp {
             return self.handle_project_search_key(physical_key, command);
         }
         if action == Some(KeyAction::Command(StudioCommand::ToggleFileTree)) {
-            self.find.close();
-            self.find_needs_search = false;
-            self.quick_open.close();
-            self.project_search.close();
-            if self.workspace.is_none() {
-                return self.record_file_tree_error(&FileTreeError::NoWorkspace);
-            }
-            if self.file_tree.is_visible() && self.file_tree.is_focused() {
-                return self
-                    .file_tree
-                    .hide()
-                    .then(EventEffect::visual)
-                    .unwrap_or_default();
-            }
-            return match self.file_tree.activate(1) {
-                Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
-                Err(error) => self.record_file_tree_error(&error),
-            };
+            return self.toggle_file_tree();
         }
         if action == Some(KeyAction::Command(StudioCommand::OpenQuickOpen)) {
             if self.workspace.is_none() {
@@ -4031,6 +4099,9 @@ impl StudioApp {
     }
 
     fn handle_ime(&mut self, event: &ImeEvent) -> EventEffect {
+        if self.workspace_edits.is_open() {
+            return self.handle_workspace_edit_ime(event);
+        }
         let identity = self.language_identity();
         if self.rust_diagnostics.symbols_are_open(identity) {
             return match event {
@@ -4132,6 +4203,42 @@ impl StudioApp {
         }
     }
 
+    fn handle_workspace_edit_ime(&mut self, event: &ImeEvent) -> EventEffect {
+        if !self.workspace_edits.is_rename_input() {
+            return EventEffect::default();
+        }
+        let result = match event {
+            ImeEvent::Started => {
+                return self
+                    .workspace_edits
+                    .begin_composition()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
+            ImeEvent::Updated {
+                text,
+                selected_start_utf16,
+                selected_length_utf16,
+            } => self.workspace_edits.update_composition(
+                text,
+                *selected_start_utf16,
+                *selected_length_utf16,
+            ),
+            ImeEvent::Committed(text) => self.workspace_edits.commit_text(text),
+            ImeEvent::Cancelled => {
+                return self
+                    .workspace_edits
+                    .cancel_composition()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
+        };
+        match result {
+            Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+            Err(error) => self.record_workspace_edit_panel_error(error),
+        }
+    }
+
     fn handle_epoch_ime(&mut self, input_epoch: InputEpoch, event: &ImeEvent) -> EventEffect {
         match self.input_epoch.classify(input_epoch) {
             InputEpochAdmission::Current if self.focused => self.handle_ime(event),
@@ -4173,14 +4280,31 @@ impl StudioApp {
         let symbols = (!focused && self.rust_diagnostics.cancel_symbols())
             .then(EventEffect::visual)
             .unwrap_or_default();
+        let workspace_edit = if focused {
+            EventEffect::default()
+        } else {
+            let cancelled = self.rust_diagnostics.cancel_workspace_edit();
+            let panel = self.workspace_edits.cancel();
+            (cancelled || panel)
+                .then(EventEffect::visual)
+                .unwrap_or_default()
+        };
         effect
             .merge(changed.then(EventEffect::visual).unwrap_or_default())
             .merge(completion)
             .merge(navigation)
             .merge(symbols)
+            .merge(workspace_edit)
     }
 
     fn cancel_focused_composition(&mut self) -> EventEffect {
+        if self.workspace_edits.is_open() {
+            return self
+                .workspace_edits
+                .cancel_composition()
+                .then(EventEffect::visual)
+                .unwrap_or_default();
+        }
         let identity = self.language_identity();
         if self.rust_diagnostics.symbols_are_open(identity) {
             return self
@@ -4433,6 +4557,8 @@ impl StudioApp {
             StudioCommand::ShowRustWorkspaceSymbols => {
                 self.trigger_rust_symbols(SymbolRequestKind::Workspace)
             }
+            StudioCommand::PreviewRustRename => self.open_rust_rename(),
+            StudioCommand::PreviewRustFormatting => self.trigger_rust_formatting(),
             StudioCommand::OpenQuickOpen if self.workspace.is_none() => {
                 self.record_quick_open_error(&QuickOpenError::NoWorkspace)
             }
@@ -5740,6 +5866,96 @@ impl StudioApp {
             .unwrap_or_default()
     }
 
+    fn open_rust_rename(&mut self) -> EventEffect {
+        if self.composition.is_some() || self.active_rust_document().is_none() {
+            return EventEffect::default();
+        }
+        let completion = self.rust_diagnostics.cancel_completion();
+        let navigation = self.rust_diagnostics.cancel_navigation();
+        let symbols = self.rust_diagnostics.cancel_symbols();
+        let pending = self.rust_diagnostics.cancel_workspace_edit();
+        match self.workspace_edits.open_rename() {
+            Ok(changed) => (changed || completion || navigation || symbols || pending)
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            Err(error) => self.record_workspace_edit_panel_error(error),
+        }
+    }
+
+    fn submit_rust_rename(&mut self) -> EventEffect {
+        let snapshot = self.buffer().snapshot();
+        let Ok(position) = position_for_byte(&snapshot, self.selection.head()) else {
+            self.input_failures = self.input_failures.saturating_add(1);
+            return EventEffect::default();
+        };
+        let name = match self.workspace_edits.take_rename_for_request() {
+            Ok(name) => name,
+            Err(error) => return self.record_workspace_edit_panel_error(error),
+        };
+        let effect = self.rust_diagnostics.request_rename(position, &name);
+        if !self.rust_diagnostics.snapshot().workspace_edit_pending {
+            let _ = self.workspace_edits.cancel();
+        }
+        (effect.visual_changed || self.workspace_edits.is_open())
+            .then(EventEffect::visual)
+            .unwrap_or_default()
+    }
+
+    fn trigger_rust_formatting(&mut self) -> EventEffect {
+        if self.composition.is_some() || self.active_rust_document().is_none() {
+            return EventEffect::default();
+        }
+        let effect = self.rust_diagnostics.request_formatting(4, true);
+        if self.rust_diagnostics.snapshot().workspace_edit_pending {
+            match self.workspace_edits.wait(WorkspaceEditKind::Formatting) {
+                Ok(_) => EventEffect::visual(),
+                Err(error) => self.record_workspace_edit_panel_error(error),
+            }
+        } else {
+            effect
+                .visual_changed
+                .then(EventEffect::visual)
+                .unwrap_or_default()
+        }
+    }
+
+    fn cancel_workspace_edit_panel(&mut self) -> EventEffect {
+        let request = self.rust_diagnostics.cancel_workspace_edit();
+        let panel = self.workspace_edits.cancel();
+        (request || panel)
+            .then(EventEffect::visual)
+            .unwrap_or_default()
+    }
+
+    fn record_workspace_edit_panel_error(&mut self, error: WorkspaceEditPanelError) -> EventEffect {
+        self.input_failures = self.input_failures.saturating_add(1);
+        let _ = self.workspace_edits.cancel();
+        self.set_local_status(LocalStatus::Command(Arc::from(error.to_string())))
+    }
+
+    fn apply_workspace_edit_output(
+        &mut self,
+        output: WorkspaceEditPreparationOutput,
+    ) -> EventEffect {
+        let wire_bytes = output.wire_bytes;
+        let current = self.language_identity();
+        let language = self.rust_diagnostics.snapshot();
+        match self.workspace_edits.complete(output, current, &language) {
+            Ok(WorkspaceEditPanelOutcome::Ignored) => EventEffect::default(),
+            Ok(WorkspaceEditPanelOutcome::Empty(kind)) => self.set_local_status(
+                LocalStatus::Command(Arc::from(format!("{} returned no edits.", kind.label()))),
+            ),
+            Ok(WorkspaceEditPanelOutcome::Preview { kind, files, edits }) => {
+                let status = self.set_local_status(LocalStatus::Command(Arc::from(format!(
+                    "{} preview ready: {files} file(s), {edits} edit(s), {wire_bytes} wire byte(s).",
+                    kind.label(),
+                ))));
+                EventEffect::visual().merge(status)
+            }
+            Err(error) => self.record_workspace_edit_panel_error(error),
+        }
+    }
+
     fn apply_selected_navigation(&mut self) -> EventEffect {
         let identity = self.language_identity();
         let Some(location) = self.rust_diagnostics.selected_source_location(identity) else {
@@ -6002,7 +6218,11 @@ impl StudioApp {
             #[cfg(any(not(alpine_native_validation), test))]
             let _ = admission;
         }
-        visual_change_present(language.visual_changed, pending.visual_changed)
+        let workspace_edit = self.submit_workspace_edit_preparation(context);
+        visual_change_present(
+            visual_change_present(language.visual_changed, pending.visual_changed),
+            workspace_edit,
+        )
     }
 
     fn finish_event(
@@ -6084,6 +6304,7 @@ enum StudioWorkerOutput {
     ProjectSearch(ProjectSearchWorkerOutput),
     FileTree(FileTreeWorkerOutput),
     Language(LanguageWake),
+    WorkspaceEdit(WorkspaceEditPreparationOutput),
 }
 
 impl AppDelegate for StudioApp {
@@ -6188,6 +6409,7 @@ impl AppDelegate for StudioApp {
                     document_identity_advanced: false,
                 }
             }
+            StudioWorkerOutput::WorkspaceEdit(output) => self.apply_workspace_edit_output(output),
         };
         if should_poll_latched_after_worker(language_result) {
             let language = self.poll_latched_language_wake();
@@ -6213,6 +6435,7 @@ impl AppDelegate for StudioApp {
             }
             effect.visual_changed |= language.visual_changed;
         }
+        effect.visual_changed |= self.submit_workspace_edit_preparation(context);
         self.advance_accessibility_semantic_revision(effect.visual_changed);
         if effect.visual_changed {
             context.invalidate();
@@ -6259,6 +6482,31 @@ fn accessibility_admission_failures(current: u64, admitted: bool) -> u64 {
 }
 
 impl StudioApp {
+    fn submit_workspace_edit_preparation(
+        &mut self,
+        context: &mut AppContext<'_, StudioWorkerOutput>,
+    ) -> bool {
+        let Some(request) = self.rust_diagnostics.take_workspace_edit_preparation() else {
+            return false;
+        };
+        let identity = request.identity();
+        let mut changed = self
+            .workspace_edits
+            .preparation_started(identity)
+            .unwrap_or(false);
+        if context
+            .spawn(move || StudioWorkerOutput::WorkspaceEdit(request.execute()))
+            .is_err()
+        {
+            changed |= self.workspace_edits.preparation_failed(identity);
+            let status = self.set_local_status(LocalStatus::Command(Arc::from(
+                "Rust workspace edit preparation queue is saturated.",
+            )));
+            changed |= status.visual_changed;
+        }
+        changed
+    }
+
     fn submit_file_tree_request(&mut self, context: &mut AppContext<'_, StudioWorkerOutput>) {
         match self.prepare_file_tree_request() {
             Ok(Some(request)) => {

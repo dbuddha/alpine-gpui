@@ -701,6 +701,107 @@ fn mock_symbols_are_bounded_query_safe_and_release_on_shutdown() -> Result<(), B
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn mock_workspace_edits_are_revision_bound_and_prepared_off_the_poll_path()
+-> Result<(), Box<dyn Error>> {
+    let (root, path, snapshot, identity) = fixture();
+    let latch = LanguageWakeLatch::default();
+    let mut model = RustDiagnostics::with_server(mock_executable());
+    let input = RustDocumentInput::new(&path, &root, identity, snapshot);
+    let wake_latch = latch.clone();
+    assert!(
+        model
+            .sync(Some(input), move |wake| {
+                let wake_latch = wake_latch.clone();
+                Arc::new(move || wake_latch.publish(wake))
+            })
+            .visual_changed
+    );
+    let _ = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
+
+    let _ = model.request_formatting(4, true);
+    assert!(model.snapshot().workspace_edit_pending);
+    let formatting = wait_for_workspace_edit(&mut model, &latch)?;
+    assert_eq!(formatting.identity().kind(), WorkspaceEditKind::Formatting);
+    let formatting = formatting.execute();
+    assert!(formatting.wire_bytes > 0);
+    let prepared = formatting.result?;
+    assert_eq!(prepared.file_count(), 1);
+    assert_eq!(prepared.edit_count(), 1);
+    assert_eq!(prepared.files()[0].replacement(), "pub fn main() {}\n");
+
+    let _ = model.request_rename(LspPosition::new(0, 4)?, "renamed");
+    let rename = wait_for_workspace_edit(&mut model, &latch)?;
+    assert_eq!(rename.identity().kind(), WorkspaceEditKind::Rename);
+    let rename = rename.execute().result?;
+    assert_eq!(rename.file_count(), 1);
+    assert_eq!(rename.edit_count(), 1);
+    assert_eq!(rename.files()[0].replacement(), "fn renamed() {}\n");
+
+    let snapshot = model.snapshot();
+    assert_eq!(snapshot.workspace_edit_requests, 2);
+    assert!(!snapshot.workspace_edit_pending);
+    assert!(!snapshot.workspace_edit_preparing);
+    assert!(snapshot.peak_workspace_edit_wire_bytes > 0);
+    assert!(!model.shutdown().active);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn superseded_workspace_edit_cannot_publish_over_the_newer_request() -> Result<(), Box<dyn Error>> {
+    let (root, path, snapshot, identity) = fixture();
+    let latch = LanguageWakeLatch::default();
+    let mut model = RustDiagnostics::with_server(mock_executable());
+    let input = RustDocumentInput::new(&path, &root, identity, snapshot);
+    let wake_latch = latch.clone();
+    assert!(
+        model
+            .sync(Some(input), move |wake| {
+                let wake_latch = wake_latch.clone();
+                Arc::new(move || wake_latch.publish(wake))
+            })
+            .visual_changed
+    );
+    let _ = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
+    let _ = model.request_rename(LspPosition::new(0, 4)?, "never_respond");
+    assert!(model.snapshot().workspace_edit_pending);
+    let _ = model.request_formatting(4, true);
+    assert_eq!(model.snapshot().workspace_edit_cancellations, 1);
+    let request = wait_for_workspace_edit(&mut model, &latch)?;
+    assert_eq!(request.identity().kind(), WorkspaceEditKind::Formatting);
+    assert!(request.execute().result.is_ok());
+    assert!(model.snapshot().stale_workspace_edits >= 1);
+    assert!(!model.shutdown().active);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+fn wait_for_workspace_edit(
+    model: &mut RustDiagnostics,
+    latch: &LanguageWakeLatch,
+) -> Result<WorkspaceEditPreparationRequest, Box<dyn Error>> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(request) = model.take_workspace_edit_preparation() {
+            return Ok(request);
+        }
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("workspace edit timed out: {:?}", model.snapshot()).into());
+        }
+    }
+}
+
+#[test]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[ignore = "requires the checksum-verified Task #208 rust-analyzer binary"]
 #[allow(
