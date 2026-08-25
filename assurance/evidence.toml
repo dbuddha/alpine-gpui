@@ -4806,6 +4806,166 @@ assumptions = ["Checked Rust coordinate conversion succeeds before the modeled a
 exclusions = ["transaction byte semantics", "undo implementation", "Rust refinement"]
 companion = "apps/alpine-studio/src/studio_coverage_tests.rs#completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact"
 [[claims]]
+id = "AEP-0221-C01"
+mission = "MP-02"
+capability_issue = 28
+aep = "docs/aep/0221-bounded-rust-symbols.md"
+requirement_issue = 34
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["PublishedIsCurrent", "ClosedOwnsNoSymbols"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "unit", "e2e", "native"]
+
+[[claims]]
+id = "AEP-0221-C02"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0221-bounded-rust-symbols.md"
+requirement_issue = 34
+claim_type = "memory"
+risk = "high"
+kani_applicability = "required"
+tla_properties = ["ResultsAreBounded", "SelectionIsBounded"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit", "kani"]
+
+[[claims]]
+id = "AEP-0221-C03"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0221-bounded-rust-symbols.md"
+requirement_issue = 34
+claim_type = "accessibility"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = ["NavigationRequiresCurrent"]
+platform_scope = ["portable"]
+required_evidence = ["tla", "unit"]
+
+[[evidence]]
+id = "EV-0221-UNIT01"
+claim = "AEP-0221-C01"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_symbols.rs#hierarchical_document_symbols_flatten_in_source_order_with_depth"
+assertion = "Hierarchical document symbols flatten in source order with exact bounded depth and current document URI identity."
+scope = "One in-memory hierarchical document-symbol response."
+exclusions = ["process scheduling", "filesystem navigation", "native input"]
+
+[[evidence]]
+id = "EV-0221-E2E01"
+claim = "AEP-0221-C01"
+kind = "e2e"
+artifact = "apps/alpine-studio/src/rust_diagnostics_tests.rs#mock_symbols_are_bounded_query_safe_and_release_on_shutdown"
+assertion = "The production process, framing, JSON-RPC, request cancellation, parser, query, picker, and shutdown path admits current document and workspace symbols and releases all retained ownership."
+scope = "One portable mock process, one active Rust document, both symbol methods, query supersession, and shutdown."
+bounds = ["512 items", "512 KiB retained bytes", "five-second hang ceiling"]
+exclusions = ["real rust-analyzer semantics", "AppKit delivery", "fixed-hardware latency"]
+
+[[evidence]]
+id = "EV-0221-NATIVE01"
+claim = "AEP-0221-C01"
+kind = "native"
+artifact = "apps/alpine-studio/src/rust_diagnostics_tests.rs#pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission"
+assertion = "The checksum-provisioned Apple Silicon rust-analyzer returns bounded current document symbols and a query-matched workspace symbol through the production local process path."
+scope = "One deterministic local Rust workspace and the pinned Task #208 server."
+bounds = ["512 items", "512 KiB retained bytes", "ten-second hang ceiling"]
+assumptions = ["CI verifies the release asset SHA-256 and exact server version before this test"]
+exclusions = ["AppKit keyboard delivery", "comparative latency", "network acquisition by Studio"]
+
+[[evidence]]
+id = "EV-0221-UNIT02"
+claim = "AEP-0221-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_symbols.rs#item_truncation_and_unicode_subsequence_matching_are_exact"
+assertion = "Symbol admission retains exactly the item ceiling, reports omissions, stays within the retained-byte budget, and performs Unicode-safe subsequence matching."
+scope = "One in-memory workspace-symbol response and compact picker."
+bounds = ["512 retained items", "three omitted items", "512 KiB retained bytes"]
+exclusions = ["allocator physical footprint", "JSON framing", "scene construction"]
+
+[[evidence]]
+id = "EV-0221-KANI02"
+claim = "AEP-0221-C02"
+kind = "kani"
+artifact = "apps/alpine-studio/src/rust_symbols.rs#symbol_selection_window_remains_bounded"
+assertion = "Every symbolic item count, current selection, and navigation delta returns an empty selection or an index strictly inside the configured item bound."
+scope = "Compiled bounded picker index transition."
+bounds = ["0 through 512 items", "symbolic usize and isize inputs"]
+exclusions = ["vector allocation", "query ranking", "unbounded traces"]
+companion = "apps/alpine-studio/src/rust_symbols.rs#picker_ranking_query_composition_and_visible_rows_are_bounded"
+
+[[evidence]]
+id = "EV-0221-UNIT03"
+claim = "AEP-0221-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_diagnostics_scene_tests.rs#symbol_overlay_accessibility_and_checked_navigation_are_exact"
+assertion = "The production Studio composition projects one bounded focused symbol dialog, navigates by keyboard, activates through current accessibility identity, and reaches the checked local source range."
+scope = "One local Rust document, two symbols, one scene, keyboard selection, accessibility activation, and local navigation."
+bounds = ["two symbol rows", "one dialog node", "one selected local range"]
+exclusions = ["native VoiceOver publication", "real display latency", "fixed-hardware memory"]
+
+[[evidence]]
+id = "EV-0221-TLA01A"
+claim = "AEP-0221-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0221/SymbolAdmission.tla#PublishedIsCurrent"
+assertion = "An admitted finite symbol result is empty or belongs to the exact current request, identity, and query; the faulty stale publication violates the invariant."
+scope = "Finite request, query, identity, response, selection, focus, and close interleavings."
+bounds = ["pull request: four identities, requests, and queries", "nightly: eight identities, requests, and queries"]
+assumptions = ["One foreground symbol owner", "monotonic finite identities"]
+exclusions = ["Rust refinement", "process scheduling", "JSON parsing"]
+companion = "apps/alpine-studio/src/rust_diagnostics_tests.rs#mock_symbols_are_bounded_query_safe_and_release_on_shutdown"
+
+[[evidence]]
+id = "EV-0221-TLA01B"
+claim = "AEP-0221-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0221/SymbolAdmission.tla#ClosedOwnsNoSymbols"
+assertion = "Closed finite state owns no pending or admitted symbol request or item state."
+scope = "Finite active and closed symbol ownership."
+bounds = ["pull request: four identities and requests", "nightly: eight identities and requests"]
+assumptions = ["Close maps to production language-session shutdown."]
+exclusions = ["child-process join latency", "allocator behavior", "Rust refinement"]
+companion = "apps/alpine-studio/src/rust_diagnostics_tests.rs#mock_symbols_are_bounded_query_safe_and_release_on_shutdown"
+
+[[evidence]]
+id = "EV-0221-TLA02"
+claim = "AEP-0221-C02"
+kind = "tla"
+artifact = "formal/tla/aep-0221/SymbolAdmission.tla#ResultsAreBounded"
+assertion = "Finite admitted item ownership and selection remain within the configured model ceiling."
+scope = "Finite current response admission and picker selection."
+bounds = ["pull request: eight items", "nightly: sixteen items"]
+assumptions = ["The parser returns no more than the implementation ceiling."]
+exclusions = ["byte accounting", "allocation", "JSON parsing"]
+companion = "apps/alpine-studio/src/rust_symbols.rs#item_truncation_and_unicode_subsequence_matching_are_exact"
+
+[[evidence]]
+id = "EV-0221-TLA02B"
+claim = "AEP-0221-C02"
+kind = "tla"
+artifact = "formal/tla/aep-0221/SymbolAdmission.tla#SelectionIsBounded"
+assertion = "Finite selection is zero for an empty result or strictly inside the admitted nonempty result count."
+scope = "Finite current response admission and repeated forward picker selection."
+bounds = ["pull request: eight items", "nightly: sixteen items"]
+assumptions = ["The implementation clamps every navigation transition to the current result count."]
+exclusions = ["Rust refinement", "vector indexing outside picker navigation", "elapsed time"]
+companion = "apps/alpine-studio/src/rust_symbols.rs#picker_ranking_query_composition_and_visible_rows_are_bounded"
+
+[[evidence]]
+id = "EV-0221-TLA03"
+claim = "AEP-0221-C03"
+kind = "tla"
+artifact = "formal/tla/aep-0221/SymbolAdmission.tla#NavigationRequiresCurrent"
+assertion = "A finite navigation is empty or belongs to the current identity; the faulty stale navigation violates the invariant."
+scope = "Finite response, identity, query, selection, navigation, focus, and close interleavings."
+bounds = ["pull request: four identities and requests", "nightly: eight identities and requests"]
+assumptions = ["Checked Rust path and coordinate conversion succeeds before modeled navigation."]
+exclusions = ["filesystem identity", "UTF-16 conversion", "Rust refinement"]
+companion = "apps/alpine-studio/src/rust_diagnostics_scene_tests.rs#symbol_overlay_accessibility_and_checked_navigation_are_exact"
+
+[[claims]]
 id = "AEP-0268-C01"
 mission = "MP-02"
 capability_issue = 28

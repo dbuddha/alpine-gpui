@@ -824,6 +824,12 @@ fn validate_kani_inventory(registry: &Registry, root: &Path, diagnostics: &mut D
         &mut discovered,
         diagnostics,
     );
+    for artifact in registered
+        .iter()
+        .filter(|artifact| artifact_path(artifact).starts_with("apps/"))
+    {
+        discover_kani_file(&root.join(artifact_path(artifact)), root, &mut discovered);
+    }
 
     for harness in discovered.difference(&registered) {
         diagnostics
@@ -854,28 +860,33 @@ fn discover_kani_harnesses(
         let path = entry.path();
         if path.is_dir() {
             discover_kani_harnesses(&path, root, harnesses, diagnostics);
-        } else if path.extension().is_some_and(|extension| extension == "rs")
-            && let Ok(source) = fs::read_to_string(&path)
-        {
-            let mut expects_harness = false;
-            for line in source.lines() {
-                let trimmed = line.trim();
-                if trimmed == "#[kani::proof]" {
-                    expects_harness = true;
-                } else if expects_harness && trimmed.starts_with("fn ") {
-                    let name = trimmed
-                        .trim_start_matches("fn ")
-                        .split('(')
-                        .next()
-                        .unwrap_or_default();
-                    if let Ok(relative) = path.strip_prefix(root) {
-                        harnesses.insert(format!("{}#{name}", registry_path(relative)));
-                    }
-                    expects_harness = false;
-                } else if !trimmed.is_empty() && !trimmed.starts_with("///") {
-                    expects_harness = false;
-                }
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            discover_kani_file(&path, root, harnesses);
+        }
+    }
+}
+
+fn discover_kani_file(path: &Path, root: &Path, harnesses: &mut BTreeSet<String>) {
+    let Ok(source) = fs::read_to_string(path) else {
+        return;
+    };
+    let mut expects_harness = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed == "#[kani::proof]" {
+            expects_harness = true;
+        } else if expects_harness && trimmed.starts_with("fn ") {
+            let name = trimmed
+                .trim_start_matches("fn ")
+                .split('(')
+                .next()
+                .unwrap_or_default();
+            if let Ok(relative) = path.strip_prefix(root) {
+                harnesses.insert(format!("{}#{name}", registry_path(relative)));
             }
+            expects_harness = false;
+        } else if !trimmed.is_empty() && !trimmed.starts_with("///") {
+            expects_harness = false;
         }
     }
 }
@@ -944,10 +955,14 @@ fn display_list(items: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        artifact_anchor, artifact_path, load_registry, registry_path, render_report,
-        valid_identifier, validate_registry,
+        artifact_anchor, artifact_path, discover_kani_file, load_registry, registry_path,
+        render_report, valid_identifier, validate_registry,
     };
-    use std::path::{Path, PathBuf};
+    use std::{
+        collections::BTreeSet,
+        fs,
+        path::{Path, PathBuf},
+    };
 
     fn repository_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -975,6 +990,35 @@ mod tests {
             .join("src")
             .join("proofs.rs");
         assert_eq!(registry_path(&path), "crates/alpine-core/src/proofs.rs");
+    }
+
+    #[test]
+    fn discovers_kani_proofs_across_only_supported_trivia() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = repository_root();
+        let path = root.join("target").join(format!(
+            "assurance-kani-discovery-{}.rs",
+            std::process::id()
+        ));
+        fs::create_dir_all(path.parent().ok_or("temporary proof parent")?)?;
+        fs::write(
+            &path,
+            "#[kani::proof]\n/// documented proof\nfn documented() {}\n\
+             #[kani::proof]\n\nfn separated() {}\n\
+             #[kani::proof]\n#[cfg(any())]\nfn attributed_is_not_supported() {}\n",
+        )?;
+
+        let mut harnesses = BTreeSet::new();
+        discover_kani_file(&path, &root, &mut harnesses);
+        fs::remove_file(&path)?;
+        let relative = path.strip_prefix(&root)?;
+        let prefix = registry_path(relative);
+        let expected = BTreeSet::from([
+            format!("{prefix}#documented"),
+            format!("{prefix}#separated"),
+        ]);
+        assert_eq!(harnesses, expected);
+        Ok(())
     }
 
     #[test]

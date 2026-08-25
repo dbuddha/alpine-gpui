@@ -191,6 +191,19 @@ exact target snapshot before changing the active tab. Command-palette,
 keyboard, scene, and accessibility paths share that owner and add no network,
 remote URI, plugin, AI, cloud, telemetry, or general framework boundary.
 
+Task #221 adds one private document and workspace symbol picker to that same
+session. Requests retain exact workspace, document, buffer, selection, process,
+protocol-version, request, and query-revision identity, and query supersession
+cancels prior protocol ownership before resubmission. One response admits at
+most 512 symbols, 32 hierarchy levels, 1 KiB labels, and 512 KiB of
+symbol-owned state, while one frame projects at most twelve rows. Hierarchical
+document symbols flatten in source order; workspace symbols require resolved
+locations. Keyboard, IME, command, scene, and accessibility paths share the
+same picker, and activation reuses canonical workspace-local path and checked
+UTF-16 range validation. Focus loss, document change, restart, and shutdown
+release the owner without startup work, idle redraw, a new process, network,
+plugin, AI, cloud, telemetry, or public framework API.
+
 Production typography uses the safe
 CoreText service; deterministic test typography proves portable editor behavior
 without claiming native validation. It runs through one `Application` until the

@@ -139,6 +139,27 @@ fn run() -> io::Result<()> {
                         &format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{result}}}"#),
                     )?;
                 }
+                Some("textDocument/documentSymbol") if initialized => {
+                    let id = json_id(message)?;
+                    write_frame(
+                        &mut output,
+                        &format!(
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":[{{"name":"main","detail":"fn()","kind":12,"range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":12}}}},"selectionRange":{{"start":{{"line":0,"character":3}},"end":{{"line":0,"character":7}}}},"children":[{{"name":"inner","kind":13,"range":{{"start":{{"line":0,"character":3}},"end":{{"line":0,"character":8}}}},"selectionRange":{{"start":{{"line":0,"character":3}},"end":{{"line":0,"character":8}}}}}}]}}]}}"#
+                        ),
+                    )?;
+                }
+                Some("workspace/symbol") if initialized => {
+                    if message.contains(r#""query":"""#) {
+                        continue;
+                    }
+                    let id = json_id(message)?;
+                    write_frame(
+                        &mut output,
+                        &format!(
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":[{{"name":"main","kind":12,"location":{{"uri":"file:///tmp/alpine/mock.rs","range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":4}}}}}},"containerName":"mock"}}]}}"#
+                        ),
+                    )?;
+                }
                 Some("test/echo") if initialized => {
                     let id = json_id(message)?;
                     write_frame(

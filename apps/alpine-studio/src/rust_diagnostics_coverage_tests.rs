@@ -330,6 +330,31 @@ fn install_pending_navigation(
     Ok(pending)
 }
 
+fn install_pending_symbols(
+    model: &mut RustDiagnostics,
+    request_id: u32,
+    kind: SymbolRequestKind,
+) -> Result<PendingSymbols, Box<dyn Error>> {
+    let session = model.session.as_mut().ok_or("session")?;
+    let query_revision = session
+        .symbols
+        .as_ref()
+        .ok_or_else(|| format!("symbols for pending request {request_id}"))?
+        .picker
+        .query_revision();
+    let pending = PendingSymbols {
+        request_id,
+        stamp: session.identity.request_stamp().ok_or("request stamp")?,
+        kind,
+        identity: session.identity,
+        process_epoch: session.process_epoch,
+        lsp_version: session.lsp_version,
+        query_revision,
+    };
+    session.pending_symbols = Some(pending);
+    Ok(pending)
+}
+
 fn hover_candidate() -> Result<NavigationCandidate, Box<dyn Error>> {
     let result = completion_result(r#"{"contents":"bounded hover"}"#)?;
     Ok(NavigationCandidate::Hover(Ok(Some(
@@ -417,7 +442,7 @@ fn navigation_request_guards_and_cancellation_errors_accumulate_visual_state()
     )?;
     assert!(cancellation_error.cancel_navigation());
     assert!(cancellation_error.status_message().is_some());
-    assert!(!cancellation_error.snapshot().navigation_pending);
+    assert!(!cancellation_error.snapshot().navigation_pending());
 
     for model in [
         &mut starting,
@@ -611,7 +636,7 @@ fn navigation_empty_error_observer_and_window_paths_are_discriminating()
 
     let pending = install_pending_navigation(&mut model, 7, NavigationRequestKind::Hover)?;
     assert!(!model.reject_stale_navigation(pending.request_id));
-    assert!(!model.snapshot().navigation_pending);
+    assert!(!model.snapshot().navigation_pending());
     let _ = model.shutdown();
     std::fs::remove_dir_all(root)?;
     Ok(())
@@ -862,12 +887,12 @@ fn completion_cancellation_and_request_failures_are_bounded() -> Result<(), Box<
     let _ = install_pending_completion(&mut cancellation_error, u32::MAX)?;
     assert!(cancellation_error.cancel_completion());
     assert!(cancellation_error.status_message().is_some());
-    assert!(!cancellation_error.snapshot().completion_pending);
+    assert!(!cancellation_error.snapshot().completion_pending());
 
     let (mut saturated, _, root_three) = installed_model()?;
     assert!(saturated.request_completion(position).visual_changed);
     assert!(saturated.status_message().is_some());
-    assert!(!saturated.snapshot().completion_pending);
+    assert!(!saturated.snapshot().completion_pending());
 
     for model in [&mut changed, &mut cancellation_error, &mut saturated] {
         assert!(!model.shutdown().active);
@@ -919,15 +944,15 @@ fn successful_completion_request_clears_status_and_reports_visual_change()
     let cancellation = model.request_completion(LspPosition::new(0, 0)?);
     assert!(cancellation.visual_changed);
     assert!(!model.navigation_is_open(identity));
-    assert!(model.snapshot().completion_pending);
+    assert!(model.snapshot().completion_pending());
     let _ = model.cancel_completion();
-    assert!(!model.snapshot().completion_pending);
+    assert!(!model.snapshot().completion_pending());
 
     model.status = Some(Arc::from("old completion status"));
     let effect = model.request_completion(LspPosition::new(0, 0)?);
     assert!(effect.visual_changed);
     assert_eq!(model.status_message(), None);
-    assert!(model.snapshot().completion_pending);
+    assert!(model.snapshot().completion_pending());
     assert_eq!(model.snapshot().completion_requests, 2);
     let _ = model.shutdown();
     std::fs::remove_dir_all(root)?;
@@ -1141,6 +1166,504 @@ fn completion_navigation_window_edges_and_truncation_counts_are_exact() -> Resul
         )?)?)
     ));
     assert_eq!(model.snapshot().completion_truncations, 1);
+    let _ = model.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+fn absent_symbol_guards_and_error_statuses_are_explicit() -> Result<(), Box<dyn Error>> {
+    let (empty_root, _, _, empty_identity) = tests::fixture();
+    let error_value = ResponseValue::error_for_test();
+    assert_eq!(
+        symbols_from_response(
+            SymbolRequestKind::Document,
+            error_value,
+            "file:///tmp/main.rs"
+        ),
+        Err(SymbolError::Malformed)
+    );
+    let mut empty = RustDiagnostics::default();
+    assert!(!empty.snapshot().symbol_pending());
+    assert!(
+        empty
+            .open_symbols(SymbolRequestKind::Document)
+            .visual_changed
+    );
+    assert_eq!(
+        empty.open_symbols(SymbolRequestKind::Document),
+        LanguageEffect::default()
+    );
+    assert_eq!(empty.issue_symbol_request(), LanguageEffect::default());
+    assert!(!empty.cancel_symbols());
+    assert_eq!(
+        empty.commit_symbol_text(empty_identity, "x"),
+        LanguageEffect::default()
+    );
+    assert_eq!(
+        empty.delete_symbol_backward(empty_identity),
+        LanguageEffect::default()
+    );
+    assert!(!empty.begin_symbol_composition(empty_identity));
+    assert_eq!(
+        empty.update_symbol_composition(empty_identity, "x", 0, 0),
+        Err(SymbolError::InvalidComposition)
+    );
+    assert!(!empty.cancel_symbol_composition(empty_identity));
+    assert!(
+        empty
+            .record_symbol_error(SymbolError::Malformed)
+            .visual_changed
+    );
+    assert!(
+        !empty
+            .record_symbol_error(SymbolError::Malformed)
+            .visual_changed
+    );
+    assert!(!empty.reject_stale_symbols(1));
+    std::fs::remove_dir_all(empty_root)?;
+    Ok(())
+}
+
+#[test]
+fn symbol_guards_composition_and_error_statuses_are_explicit() -> Result<(), Box<dyn Error>> {
+    absent_symbol_guards_and_error_statuses_are_explicit()?;
+    let (mut model, input, root) = installed_model()?;
+    model.session.as_mut().ok_or("session")?.state = SessionState::Starting;
+    assert!(
+        model
+            .open_symbols(SymbolRequestKind::Document)
+            .visual_changed
+    );
+    assert_eq!(
+        model.open_symbols(SymbolRequestKind::Document),
+        LanguageEffect::default()
+    );
+    model.session.as_mut().ok_or("session")?.state = SessionState::Open;
+    model.session.as_mut().ok_or("session")?.symbols = None;
+    assert_eq!(model.issue_symbol_request(), LanguageEffect::default());
+
+    let result = completion_result(
+        r#"[{"name":"main","kind":12,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}},"selectionRange":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}}}]"#,
+    )?;
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    assert!(model.begin_symbol_composition(input.identity));
+    assert!(!model.begin_symbol_composition(input.identity));
+    assert_eq!(
+        model.update_symbol_composition(input.identity, "x", 1, 0),
+        Ok(true)
+    );
+    assert_eq!(
+        model.update_symbol_composition(input.identity, "x", 1, 0),
+        Ok(false)
+    );
+    assert!(model.cancel_symbol_composition(input.identity));
+    assert!(!model.cancel_symbol_composition(input.identity));
+    assert_eq!(
+        model.commit_symbol_text(input.identity, ""),
+        LanguageEffect::default()
+    );
+    assert!(
+        model
+            .commit_symbol_text(input.identity, "\n")
+            .visual_changed
+    );
+    assert!(model.status_message().is_some());
+    assert_eq!(
+        model.delete_symbol_backward(input.identity),
+        LanguageEffect::default()
+    );
+
+    let _pending = install_pending_symbols(&mut model, 900, SymbolRequestKind::Document)?;
+    assert!(model.cancel_symbols());
+    assert!(model.snapshot().symbol_cancellations <= 1);
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    let pending = install_pending_symbols(&mut model, 901, SymbolRequestKind::Document)?;
+    let _ = model.issue_symbol_request();
+    assert!(model.snapshot().symbol_cancellations <= 2);
+    assert_ne!(pending.request_id, 0);
+
+    let mut wrong_identity = input.identity;
+    wrong_identity.selection_revision += 1;
+    assert_eq!(
+        model.install_symbols_for_test(wrong_identity, SymbolRequestKind::Document, &result),
+        Err(SymbolError::Malformed)
+    );
+    let _ = model.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn symbol_request_failure_cancellation_and_sync_paths_are_exact() -> Result<(), Box<dyn Error>> {
+    let (mut failed, _, failed_root) = installed_model()?;
+    let _ = failed
+        .session
+        .as_mut()
+        .ok_or("failed session")?
+        .client
+        .shutdown();
+    assert!(
+        failed
+            .open_symbols(SymbolRequestKind::Document)
+            .visual_changed
+    );
+    assert!(failed.status_message().is_some());
+
+    let (mut cancelling, _, cancelling_root) = installed_model()?;
+    cancelling
+        .session
+        .as_mut()
+        .ok_or("cancelling session")?
+        .client
+        .initialize_inert_for_test();
+    assert!(
+        cancelling
+            .open_symbols(SymbolRequestKind::Document)
+            .visual_changed
+    );
+    assert!(cancelling.snapshot().symbol_pending());
+    assert!(cancelling.cancel_symbols());
+    assert!(!cancelling.snapshot().symbol_pending());
+    assert_eq!(cancelling.snapshot().symbol_cancellations, 1);
+
+    let (mut syncing, input, syncing_root) = installed_model()?;
+    syncing
+        .session
+        .as_mut()
+        .ok_or("syncing session")?
+        .client
+        .initialize_inert_for_test();
+    assert!(
+        syncing
+            .open_symbols(SymbolRequestKind::Document)
+            .visual_changed
+    );
+    let mut changed = input;
+    changed.identity.selection_revision = changed.identity.selection_revision.saturating_add(1);
+    assert!(
+        syncing
+            .sync(Some(changed), |_| Arc::new(|| {}))
+            .visual_changed
+    );
+    assert_eq!(syncing.snapshot().symbol_cancellations, 1);
+
+    let _ = failed.shutdown();
+    let _ = cancelling.shutdown();
+    let _ = syncing.shutdown();
+    std::fs::remove_dir_all(failed_root)?;
+    std::fs::remove_dir_all(cancelling_root)?;
+    std::fs::remove_dir_all(syncing_root)?;
+    Ok(())
+}
+
+#[test]
+fn symbol_cancellation_sources_and_error_merge_are_independent() -> Result<(), Box<dyn Error>> {
+    let (mut model, input, root) = installed_model()?;
+    model.install_completion_for_test(
+        1,
+        input.identity,
+        &completion_result(r#"[{"label":"item"}]"#)?,
+    )?;
+    model.session.as_mut().ok_or("session")?.state = SessionState::Starting;
+    model.status = Some(Arc::from("Rust analysis is not ready for navigation."));
+    assert!(
+        model
+            .request_navigation(NavigationRequestKind::Hover, LspPosition::new(0, 0)?)
+            .visual_changed
+    );
+
+    model.session.as_mut().ok_or("session")?.state = SessionState::Open;
+    model.install_navigation_for_test(
+        input.identity,
+        NavigationRequestKind::Hover,
+        &completion_result(r#"{"contents":"hover"}"#)?,
+    )?;
+    model.session.as_mut().ok_or("session")?.state = SessionState::Starting;
+    model.status = Some(Arc::from("Rust analysis is not ready for symbols."));
+    assert!(
+        model
+            .open_symbols(SymbolRequestKind::Document)
+            .visual_changed
+    );
+
+    let symbols = completion_result(
+        r#"[{"name":"main","kind":12,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}},"selectionRange":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}}}]"#,
+    )?;
+    model.session.as_mut().ok_or("session")?.state = SessionState::Open;
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &symbols)?;
+    model.session.as_mut().ok_or("session")?.state = SessionState::Starting;
+    assert!(
+        model
+            .open_symbols(SymbolRequestKind::Document)
+            .visual_changed
+    );
+
+    model.session.as_mut().ok_or("session")?.state = SessionState::Open;
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &symbols)?;
+    let _ = install_pending_symbols(&mut model, 777, SymbolRequestKind::Document)?;
+    model.session.as_mut().ok_or("session")?.symbols = None;
+    model.status = Some(Arc::from("before cancellation failure"));
+    assert!(model.cancel_symbols());
+    let _ = model.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn symbol_identity_query_and_delete_observers_are_independent() -> Result<(), Box<dyn Error>> {
+    let (mut model, input, root) = installed_model()?;
+    let result = completion_result(
+        r#"[{"name":"main","kind":12,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}},"selectionRange":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}}}]"#,
+    )?;
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    let mut wrong_identity = input.identity;
+    wrong_identity.selection_revision = wrong_identity.selection_revision.saturating_add(1);
+    assert_eq!(model.symbol_display_text(wrong_identity), Ok(None));
+    assert!(!model.begin_symbol_composition(wrong_identity));
+    model
+        .session
+        .as_mut()
+        .and_then(|session| session.symbols.as_mut())
+        .ok_or("symbols")?
+        .picker
+        .commit_text("xy")?;
+    assert_eq!(
+        model.symbol_display_text(input.identity),
+        Ok(Some("xy".to_owned()))
+    );
+    model
+        .session
+        .as_mut()
+        .ok_or("session")?
+        .client
+        .initialize_inert_for_test();
+    assert!(model.delete_symbol_backward(input.identity).visual_changed);
+    assert_eq!(
+        model.symbol_display_text(input.identity),
+        Ok(Some("x".to_owned()))
+    );
+    let _ = model.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn navigation_snapshot_preserves_pending_and_residency_by_result_kind() -> Result<(), Box<dyn Error>>
+{
+    let (mut model, input, root) = installed_model()?;
+    let hover = completion_result(r#"{"contents":"retained hover"}"#)?;
+    model.install_navigation_for_test(input.identity, NavigationRequestKind::Hover, &hover)?;
+    let _ = install_pending_navigation(&mut model, 801, NavigationRequestKind::Hover)?;
+    let hover_snapshot = model.snapshot();
+    assert!(hover_snapshot.navigation_pending());
+    assert!(hover_snapshot.hover_bytes > 0);
+    assert_eq!(hover_snapshot.location_items, 0);
+    assert_eq!(hover_snapshot.location_bytes, 0);
+
+    let locations = completion_result(
+        r#"[{"uri":"file:///tmp/main.rs","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}]"#,
+    )?;
+    model.install_navigation_for_test(
+        input.identity,
+        NavigationRequestKind::Definition,
+        &locations,
+    )?;
+    let _ = install_pending_navigation(&mut model, 802, NavigationRequestKind::Definition)?;
+    let location_snapshot = model.snapshot();
+    assert!(location_snapshot.navigation_pending());
+    assert_eq!(location_snapshot.hover_bytes, 0);
+    assert_eq!(location_snapshot.location_items, 1);
+    assert!(location_snapshot.location_bytes > 0);
+    let _ = model.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+// One stateful sequence proves that each stale axis consumes exactly one pending request.
+#[allow(clippy::too_many_lines)]
+fn symbol_admission_rejects_stale_invalid_empty_truncated_and_oversized_results()
+-> Result<(), Box<dyn Error>> {
+    let (mut model, input, root) = installed_model()?;
+    let result = completion_result(
+        r#"[{"name":"main","kind":12,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}},"selectionRange":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}}}]"#,
+    )?;
+    let batch = SymbolBatch::admit(SymbolRequestKind::Document, &result, "file:///tmp/main.rs")?;
+    let mut absent = RustDiagnostics::default();
+    assert!(!absent.admit_symbols(
+        1,
+        input.identity.request_stamp().ok_or("absent stamp")?,
+        SymbolRequestKind::Document,
+        Ok(batch.clone())
+    ));
+
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    let pending = install_pending_symbols(&mut model, 9, SymbolRequestKind::Document)?;
+    let truncations = model.snapshot().symbol_truncations;
+    assert!(model.admit_symbols(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        Ok(batch.clone())
+    ));
+    assert_eq!(model.snapshot().symbol_truncations, truncations);
+    assert_eq!(model.status_message(), None);
+
+    assert!(!model.admit_symbols(
+        1,
+        input.identity.request_stamp().ok_or("stamp")?,
+        SymbolRequestKind::Document,
+        Ok(batch.clone())
+    ));
+
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    let pending = install_pending_symbols(&mut model, 10, SymbolRequestKind::Document)?;
+    assert!(!model.admit_symbols(11, pending.stamp, pending.kind, Ok(batch.clone())));
+
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    let pending = install_pending_symbols(&mut model, 18, SymbolRequestKind::Document)?;
+    assert!(!model.admit_symbols(
+        pending.request_id,
+        pending.stamp,
+        SymbolRequestKind::Workspace,
+        Ok(batch.clone())
+    ));
+
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    let pending = install_pending_symbols(&mut model, 19, SymbolRequestKind::Document)?;
+    model
+        .session
+        .as_mut()
+        .ok_or("session")?
+        .identity
+        .selection_revision += 1;
+    assert!(!model.admit_symbols(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        Ok(batch.clone())
+    ));
+    model.session.as_mut().ok_or("session")?.identity = input.identity;
+
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    let pending = install_pending_symbols(&mut model, 20, SymbolRequestKind::Document)?;
+    model.session.as_mut().ok_or("session")?.process_epoch += 1;
+    assert!(!model.admit_symbols(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        Ok(batch.clone())
+    ));
+    model.session.as_mut().ok_or("session")?.process_epoch -= 1;
+
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    let pending = install_pending_symbols(&mut model, 21, SymbolRequestKind::Document)?;
+    model.session.as_mut().ok_or("session")?.lsp_version += 1;
+    assert!(!model.admit_symbols(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        Ok(batch.clone())
+    ));
+    model.session.as_mut().ok_or("session")?.lsp_version -= 1;
+
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    let pending = install_pending_symbols(&mut model, 22, SymbolRequestKind::Document)?;
+    model
+        .session
+        .as_mut()
+        .and_then(|session| session.symbols.as_mut())
+        .ok_or("symbols before query mutation")?
+        .picker
+        .commit_text("m")?;
+    assert!(!model.admit_symbols(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        Ok(batch.clone())
+    ));
+
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    let pending = install_pending_symbols(&mut model, 12, SymbolRequestKind::Document)?;
+    model.session.as_mut().ok_or("session")?.symbols = None;
+    assert!(!model.admit_symbols(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        Ok(batch.clone())
+    ));
+
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    let pending = install_pending_symbols(&mut model, 13, SymbolRequestKind::Document)?;
+    assert!(model.admit_symbols(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        Err(SymbolError::Malformed)
+    ));
+
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    let pending = install_pending_symbols(&mut model, 14, SymbolRequestKind::Document)?;
+    assert!(model.admit_symbols(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        Ok(SymbolBatch::oversized_for_test())
+    ));
+
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    model
+        .session
+        .as_mut()
+        .and_then(|session| session.symbols.as_mut())
+        .ok_or("symbols before empty-match admission")?
+        .picker
+        .commit_text("absent")?;
+    let pending = install_pending_symbols(&mut model, 15, SymbolRequestKind::Document)?;
+    assert!(model.admit_symbols(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        Ok(batch.clone())
+    ));
+    assert!(matches!(
+        model.status_message().as_deref(),
+        Some("No Rust document symbols.")
+    ));
+
+    let values = (0..=(crate::rust_symbols::MAX_SYMBOL_ITEMS + 1))
+        .map(|index| format!(
+            r#"{{"name":"item-{index}","kind":12,"location":{{"uri":"file:///tmp/main.rs","range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":1}}}}}}}}"#
+        ))
+        .collect::<Vec<_>>()
+        .join(",");
+    let workspace = completion_result(&format!("[{values}]"))?;
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Workspace, &workspace)?;
+    let pending = install_pending_symbols(&mut model, 16, SymbolRequestKind::Workspace)?;
+    let truncated = SymbolBatch::admit(
+        SymbolRequestKind::Workspace,
+        &workspace,
+        "file:///tmp/main.rs",
+    )?;
+    assert_eq!(truncated.omitted(), 2);
+    let truncations_before = model.snapshot().symbol_truncations;
+    assert!(model.admit_symbols(
+        pending.request_id,
+        pending.stamp,
+        pending.kind,
+        Ok(truncated)
+    ));
+    assert_eq!(model.snapshot().symbol_truncations, truncations_before + 1);
+    assert!(
+        model
+            .status_message()
+            .is_some_and(|message| message.contains("truncated"))
+    );
+
+    model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
+    let pending = install_pending_symbols(&mut model, 17, SymbolRequestKind::Document)?;
+    assert!(!model.reject_stale_symbols(pending.request_id));
+    assert!(!model.snapshot().symbol_pending());
     let _ = model.shutdown();
     std::fs::remove_dir_all(root)?;
     Ok(())

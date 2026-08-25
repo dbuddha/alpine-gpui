@@ -151,6 +151,16 @@ pub(crate) struct SourceLocation {
 }
 
 impl SourceLocation {
+    pub(crate) fn new(uri: &str, range: LspRange) -> Result<Self, NavigationError> {
+        if uri.is_empty() || uri.len() > MAX_LOCATION_URI_BYTES {
+            return Err(NavigationError::UriTooLong);
+        }
+        Ok(Self {
+            uri: uri.into(),
+            range,
+        })
+    }
+
     pub(crate) fn resolve(
         &self,
         workspace_root: &Path,
@@ -270,14 +280,8 @@ fn parse_location(value: &Value) -> Result<SourceLocation, NavigationError> {
                 .ok_or(NavigationError::Malformed)?,
         )
     };
-    if uri.is_empty() || uri.len() > MAX_LOCATION_URI_BYTES {
-        return Err(NavigationError::UriTooLong);
-    }
     let range = parse_range(range).map_err(|_| NavigationError::InvalidRange)?;
-    Ok(SourceLocation {
-        uri: uri.into(),
-        range,
-    })
+    SourceLocation::new(uri, range)
 }
 
 fn checked_wire(result: &RawValue) -> Result<(), NavigationError> {

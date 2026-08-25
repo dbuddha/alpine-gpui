@@ -37,7 +37,9 @@ recovery, timing, memory, latency, and E4 dominance remain open under
 product defect is visible typing latency in
 [#304](https://github.com/dbuddha/alpine-gpui/issues/304). Physical
 accessibility qualification, sustained dogfood, residency measurement, Rust
-rename and formatting, symbols, and settings reload and migration remain open.
+rename and formatting publication, and settings reload and migration remain
+open. Bounded document and workspace symbols are implemented under Task #221,
+with exact hosted evidence pending the implementation pull request.
 
 ## Capability accounting
 

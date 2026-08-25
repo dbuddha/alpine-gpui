@@ -378,7 +378,7 @@ fn portable_mock_completion_is_bounded_revision_safe_and_undoable() -> Result<()
     let position = LspPosition::new(0, 2)?;
     let _ = model.request_completion(position);
     assert!(
-        model.snapshot().completion_pending,
+        model.snapshot().completion_pending(),
         "completion request was rejected: status={:?}, snapshot={:?}",
         model.status_message(),
         model.snapshot()
@@ -472,7 +472,7 @@ fn mock_completion_supersession_rejects_the_late_response_without_restart()
     let _ = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
 
     let _ = model.request_completion(LspPosition::new(0, 99)?);
-    assert!(model.snapshot().completion_pending);
+    assert!(model.snapshot().completion_pending());
     let _ = model.request_completion(LspPosition::new(0, 2)?);
     assert_eq!(model.snapshot().completion_cancellations, 1);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -493,7 +493,7 @@ fn mock_completion_supersession_rejects_the_late_response_without_restart()
     }
     let actual = model.snapshot();
     assert_eq!(actual.completion_items, 2);
-    assert!(!actual.completion_pending);
+    assert!(!actual.completion_pending());
     assert_eq!(actual.stale_completions, 1);
     assert_eq!(actual.restarts, 0);
     assert!(!model.shutdown().active);
@@ -527,7 +527,7 @@ fn mock_navigation_is_bounded_current_only_and_supersedes_interactive_work()
             .visual_changed
     );
     assert!(model.status_message().is_none());
-    assert!(model.snapshot().navigation_pending);
+    assert!(model.snapshot().navigation_pending());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while model.snapshot().hover_bytes == 0 {
         if let Some(wake) = latch.take() {
@@ -574,7 +574,7 @@ fn mock_navigation_is_bounded_current_only_and_supersedes_interactive_work()
     assert!(model.hover_content(identity).is_none());
 
     let _ = model.request_navigation(NavigationRequestKind::Definition, LspPosition::new(0, 99)?);
-    assert!(model.snapshot().navigation_pending);
+    assert!(model.snapshot().navigation_pending());
     let _ = model.request_navigation(NavigationRequestKind::Hover, LspPosition::new(0, 2)?);
     assert_eq!(model.snapshot().navigation_cancellations, 1);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -598,6 +598,104 @@ fn mock_navigation_is_bounded_current_only_and_supersedes_interactive_work()
     assert_eq!(final_snapshot.stale_navigation, 1);
     assert_eq!(final_snapshot.restarts, 0);
     assert!(!model.shutdown().active);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn mock_symbols_are_bounded_query_safe_and_release_on_shutdown() -> Result<(), Box<dyn Error>> {
+    let (root, path, snapshot, identity) = fixture();
+    let latch = LanguageWakeLatch::default();
+    let mut model = RustDiagnostics::with_server(mock_executable());
+    let input = RustDocumentInput::new(&path, &root, identity, snapshot);
+    let wake_latch = latch.clone();
+    assert!(
+        model
+            .sync(Some(input), move |wake| {
+                let wake_latch = wake_latch.clone();
+                Arc::new(move || wake_latch.publish(wake))
+            })
+            .visual_changed
+    );
+    let _ = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
+
+    assert!(
+        model
+            .open_symbols(SymbolRequestKind::Document)
+            .visual_changed
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while model.snapshot().symbol_items == 0 {
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("document symbols timed out: {:?}", model.snapshot()).into());
+        }
+    }
+    assert_eq!(model.snapshot().symbol_items, 2);
+    assert_eq!(model.snapshot().symbol_matches, 2);
+    assert_eq!(
+        model.symbol_row(identity, 0).map(|row| row.label),
+        Some("main  fn()")
+    );
+    assert!(model.commit_symbol_text(identity, "inner").visual_changed);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while model.snapshot().symbol_matches != 1 {
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("filtered symbols timed out: {:?}", model.snapshot()).into());
+        }
+    }
+    assert_eq!(
+        model.symbol_row(identity, 0).map(|row| row.label),
+        Some("  inner")
+    );
+
+    assert!(
+        model
+            .open_symbols(SymbolRequestKind::Workspace)
+            .visual_changed
+    );
+    assert!(model.commit_symbol_text(identity, "main").visual_changed);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while model.snapshot().symbol_matches != 1 {
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("workspace symbols timed out: {:?}", model.snapshot()).into());
+        }
+    }
+    let symbols = model.snapshot();
+    assert!(symbols.symbol_items <= crate::rust_symbols::MAX_SYMBOL_ITEMS);
+    assert!(symbols.symbol_bytes <= crate::rust_symbols::MAX_SYMBOL_RETAINED_BYTES);
+    assert!(symbols.symbol_requests >= 4);
+    assert!(symbols.symbol_cancellations >= 1);
+    assert!(model.symbol_visible_range(identity).is_some());
+
+    let drained = model.shutdown();
+    assert!(!drained.active);
+    assert_eq!(drained.symbol_items, 0);
+    assert_eq!(drained.symbol_bytes, 0);
     fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -758,7 +856,7 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
         alpine_text::ByteOffset::new(completion_offset),
     )?;
     let _ = model.request_completion(completion_position);
-    assert!(model.snapshot().completion_pending);
+    assert!(model.snapshot().completion_pending());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while model.snapshot().completion_items == 0 {
         if let Some(wake) = latch.take() {
@@ -772,7 +870,7 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
         let snapshot = model.snapshot();
         if snapshot.completion_items == 0
             && snapshot.completion_requests > 0
-            && !snapshot.completion_pending
+            && !snapshot.completion_pending()
         {
             return Err(format!(
                 "pinned completion returned no items: snapshot={snapshot:?}, raw={:?}",
@@ -790,6 +888,69 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
     assert!(completion.completion_bytes <= crate::rust_completion::MAX_COMPLETION_RETAINED_BYTES);
     assert_eq!(completion.completion_requests, 1);
     assert!(model.completion_visible_range(identity).is_some());
+
+    assert!(
+        model
+            .open_symbols(SymbolRequestKind::Document)
+            .visual_changed
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while model.snapshot().symbol_items == 0 {
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let snapshot = model.snapshot();
+        if snapshot.symbol_items == 0 && snapshot.symbol_requests > 0 && !snapshot.symbol_pending()
+        {
+            return Err(format!("pinned document symbols returned no items: {snapshot:?}").into());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("pinned document symbols timed out: {snapshot:?}").into());
+        }
+    }
+    let document_symbols = model.snapshot();
+    assert!(document_symbols.symbol_items <= crate::rust_symbols::MAX_SYMBOL_ITEMS);
+    assert!(document_symbols.symbol_bytes <= crate::rust_symbols::MAX_SYMBOL_RETAINED_BYTES);
+
+    assert!(
+        model
+            .open_symbols(SymbolRequestKind::Workspace)
+            .visual_changed
+    );
+    assert!(
+        model
+            .commit_symbol_text(identity, "deliberately_invalid")
+            .visual_changed
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while model.snapshot().symbol_matches == 0 {
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let snapshot = model.snapshot();
+        if snapshot.symbol_matches == 0
+            && snapshot.symbol_requests > document_symbols.symbol_requests
+            && !snapshot.symbol_pending()
+        {
+            return Err(
+                format!("pinned workspace symbols returned no matches: {snapshot:?}").into(),
+            );
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("pinned workspace symbols timed out: {snapshot:?}").into());
+        }
+    }
+    assert!(model.selected_symbol_location(identity).is_some());
 
     let drained = model.shutdown();
     assert!(!drained.active);

@@ -33,6 +33,7 @@ const COMMAND_PALETTE_NODE: AccessibilityNodeId = AccessibilityNodeId::new(8);
 const STATUS_NODE: AccessibilityNodeId = AccessibilityNodeId::new(9);
 const COMPLETION_NODE: AccessibilityNodeId = AccessibilityNodeId::new(10);
 const NAVIGATION_NODE: AccessibilityNodeId = AccessibilityNodeId::new(11);
+const SYMBOL_NODE: AccessibilityNodeId = AccessibilityNodeId::new(12);
 const TAB_NODE_BASE: u64 = 1_024;
 const FILE_ROW_NODE_BASE: u64 = 1 << 20;
 const COMMAND_ROW_NODE_BASE: u64 = 2 << 20;
@@ -389,6 +390,8 @@ fn build_nodes(app: &StudioApp) -> Result<Vec<AccessibilityNode>, AccessibilityE
             .completion_is_open(app.language_identity()),
         app.rust_diagnostics
             .navigation_is_open(app.language_identity()),
+        app.rust_diagnostics
+            .symbols_are_open(app.language_identity()),
     ];
     let node_count = required_node_count(app.tabs.len(), overlays, app.local_status.is_some())?;
     let focus_owner = focus_owner(app);
@@ -419,7 +422,7 @@ fn build_nodes(app: &StudioApp) -> Result<Vec<AccessibilityNode>, AccessibilityE
 
 fn required_node_count(
     tab_count: usize,
-    overlays: [bool; 7],
+    overlays: [bool; 8],
     has_status: bool,
 ) -> Result<usize, AccessibilityError> {
     let overlay_count = overlays
@@ -456,6 +459,11 @@ fn focus_owner(app: &StudioApp) -> Option<AccessibilityNodeId> {
         None
     } else if app.command_palette.is_open() {
         Some(COMMAND_PALETTE_NODE)
+    } else if app
+        .rust_diagnostics
+        .symbols_are_open(app.language_identity())
+    {
+        Some(SYMBOL_NODE)
     } else if app
         .rust_diagnostics
         .navigation_is_open(app.language_identity())
@@ -561,6 +569,17 @@ fn push_overlays(
             .navigation_has_target(app.language_identity());
         nodes.push(navigation_node(app, label, focused, activate)?);
     }
+    if let Some(label) = app
+        .rust_diagnostics
+        .symbol_accessibility_label(app.language_identity())
+    {
+        let focused = focus_owner == Some(SYMBOL_NODE);
+        let activate = app
+            .rust_diagnostics
+            .selected_symbol_location(app.language_identity())
+            .is_some();
+        nodes.push(symbol_node(app, label, focused, activate)?);
+    }
     Ok(())
 }
 
@@ -608,6 +627,9 @@ fn activate_node(
 ) -> Result<EventEffect, AccessibilityError> {
     if target == NAVIGATION_NODE {
         return Ok(app.apply_selected_navigation());
+    }
+    if target == SYMBOL_NODE {
+        return Ok(app.apply_selected_symbol());
     }
     match parent {
         Some(TAB_LIST_NODE) => {
@@ -977,6 +999,31 @@ fn navigation_node(
     )
 }
 
+fn symbol_node(
+    app: &StudioApp,
+    name: Arc<str>,
+    focused: bool,
+    activate: bool,
+) -> Result<AccessibilityNode, AccessibilityError> {
+    let editor = app
+        .active_pane_bounds()
+        .map_err(|_| AccessibilityError::InvalidTree)?;
+    let width = editor.size().width().min(520.0);
+    let height = 286.0_f32.min(editor.size().height());
+    let node_bounds = bounds(editor.origin().x(), editor.origin().y(), width, height)?;
+    node(
+        SYMBOL_NODE,
+        Some(WINDOW_NODE),
+        AccessibilityRole::Dialog,
+        name,
+        focused,
+        true,
+        true,
+        node_bounds,
+        activate.then_some(true),
+    )
+}
+
 fn push_conditional_node(
     app: &StudioApp,
     nodes: &mut Vec<AccessibilityNode>,
@@ -1267,17 +1314,17 @@ mod tests {
 
     #[test]
     fn node_count_and_tree_shape_boundaries_are_exact() {
-        assert_eq!(required_node_count(0, [false; 7], false), Ok(3));
+        assert_eq!(required_node_count(0, [false; 8], false), Ok(3));
         assert_eq!(
-            required_node_count(260, [true; 7], true),
+            required_node_count(259, [true; 8], true),
             Ok(MAX_ACCESSIBILITY_NODES)
         );
         assert_eq!(
-            required_node_count(261, [true; 7], true),
+            required_node_count(260, [true; 8], true),
             Err(AccessibilityError::InvalidTree)
         );
         assert_eq!(
-            required_node_count(usize::MAX, [false; 7], false),
+            required_node_count(usize::MAX, [false; 8], false),
             Err(AccessibilityError::ArithmeticOverflow)
         );
         assert_eq!(validate_tree_shape(4, 4, 1, true), Ok(()));

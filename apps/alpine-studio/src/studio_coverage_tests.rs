@@ -6165,7 +6165,7 @@ fn assert_completion_shutdown_and_idle_are_bounded(
     );
     let shutdown = app.rust_diagnostics.shutdown();
     assert!(!shutdown.active);
-    assert!(!shutdown.completion_pending);
+    assert!(!shutdown.completion_pending());
     assert_eq!(shutdown.completion_items, 0);
     assert_eq!(shutdown.completion_bytes, 0);
 
@@ -6202,7 +6202,7 @@ fn assert_completion_trigger_guards(app: &mut StudioApp) {
         app.dispatch_command(StudioCommand::TriggerCompletion)
             .visual_changed
     );
-    assert!(!app.rust_diagnostics.snapshot().completion_pending);
+    assert!(!app.rust_diagnostics.snapshot().completion_pending());
     assert!(!app.rust_diagnostics.cancel_completion());
 
     let original_selection = app.selection;

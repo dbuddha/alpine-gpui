@@ -147,6 +147,19 @@ impl LspClient {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn initialize_inert_for_test(&mut self) {
+        assert!(self.begin_initialize().is_ok());
+        assert!(
+            self.peer
+                .receive(
+                    br#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}"#,
+                    None,
+                )
+                .is_ok()
+        );
+    }
+
     pub(crate) fn begin_initialize(&mut self) -> Result<SubmittedRequest, LspClientError> {
         self.require_started()?;
         let outbound = self.peer.begin_initialize()?;
