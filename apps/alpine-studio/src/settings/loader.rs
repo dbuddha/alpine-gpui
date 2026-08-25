@@ -1279,6 +1279,244 @@ mod tests {
     }
 
     #[test]
+    fn complete_v1_schema_decodes_every_owned_editor_theme_and_command_field()
+    -> Result<(), Box<dyn Error>> {
+        let actions = [
+            "command_palette",
+            "select_all",
+            "undo",
+            "redo",
+            "save_file",
+            "close_tab",
+            "navigate_back",
+            "navigate_forward",
+            "open_quick_open",
+            "open_project_search",
+            "open_find",
+            "open_replace",
+            "trigger_completion",
+            "show_rust_hover",
+            "go_to_rust_definition",
+            "find_rust_references",
+            "show_rust_document_symbols",
+            "show_rust_workspace_symbols",
+            "reload_settings",
+            "toggle_file_tree",
+            "split_right",
+            "split_down",
+            "focus_next_pane",
+            "close_pane",
+        ];
+        let bindings = actions
+            .iter()
+            .enumerate()
+            .map(|(index, action)| {
+                serde_json::json!({
+                    "physical_key": index,
+                    "modifiers": ["command", "shift", "option", "control"],
+                    "action": action,
+                    "label": format!("binding-{index}"),
+                })
+            })
+            .collect::<Vec<_>>();
+        let document = serde_json::json!({
+            "version": 1,
+            "editor": {
+                "font_name": FONT_NAME,
+                "font_size": 17.0,
+                "font_scale": 2.0,
+                "line_height": 21.0,
+                "tab_columns": 2,
+            },
+            "theme": {
+                "clear": [0.1, 0.2, 0.3, 1.0],
+                "background": [0.1, 0.2, 0.3, 1.0],
+                "editor_background": [0.1, 0.2, 0.3, 1.0],
+                "selection": [0.1, 0.2, 0.3, 1.0],
+                "text": [0.1, 0.2, 0.3, 1.0],
+                "caret": [0.1, 0.2, 0.3, 1.0],
+                "status_background": [0.1, 0.2, 0.3, 1.0],
+                "sidebar_background": [0.1, 0.2, 0.3, 1.0],
+                "active_row": [0.1, 0.2, 0.3, 1.0],
+                "tab_background": [0.1, 0.2, 0.3, 1.0],
+                "active_tab": [0.1, 0.2, 0.3, 1.0],
+                "find_match": [0.1, 0.2, 0.3, 1.0],
+                "find_background": [0.1, 0.2, 0.3, 1.0],
+                "quick_open_background": [0.1, 0.2, 0.3, 1.0],
+                "quick_open_selected": [0.1, 0.2, 0.3, 1.0],
+                "project_search_background": [0.1, 0.2, 0.3, 1.0],
+                "project_search_selected": [0.1, 0.2, 0.3, 1.0],
+                "command_palette_background": [0.1, 0.2, 0.3, 1.0],
+                "command_palette_selected": [0.1, 0.2, 0.3, 1.0],
+                "syntax": {
+                    "comment": [0.1, 0.2, 0.3, 1.0],
+                    "keyword": [0.1, 0.2, 0.3, 1.0],
+                    "string": [0.1, 0.2, 0.3, 1.0],
+                    "number": [0.1, 0.2, 0.3, 1.0],
+                    "type": [0.1, 0.2, 0.3, 1.0],
+                    "property": [0.1, 0.2, 0.3, 1.0],
+                    "heading": [0.1, 0.2, 0.3, 1.0],
+                    "code": [0.1, 0.2, 0.3, 1.0],
+                },
+            },
+            "keymap": { "bindings": bindings },
+        });
+        let bytes = serde_json::to_vec(&document)?;
+        let (layer, report) = decode_layer(&bytes, &StudioTheme::compiled()?)?;
+        assert_eq!(layer.editor.font_name.as_deref(), Some(FONT_NAME));
+        assert_eq!(layer.editor.font_size, Some(17.0));
+        assert_eq!(layer.editor.font_scale, Some(2.0));
+        assert_eq!(layer.editor.line_height, Some(21.0));
+        assert_eq!(layer.editor.tab_columns, Some(2));
+        assert!(layer.theme.is_some());
+        assert_eq!(
+            layer.keymap.as_ref().map(|keymap| keymap.bindings.len()),
+            Some(actions.len())
+        );
+        assert!(report.parsed_values > actions.len());
+        assert!(report.string_bytes > 0);
+        assert_eq!(decode_command("not-an-alpine-command"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn every_loader_diagnostic_is_observable() {
+        let diagnostics = [
+            (
+                SettingsLoadError::PathTooLong,
+                format!("settings path exceeds its {MAX_SETTINGS_PATH_BYTES}-byte limit"),
+            ),
+            (
+                SettingsLoadError::NotRegularFile,
+                "settings path is not a regular file".to_owned(),
+            ),
+            (
+                SettingsLoadError::FileTooLarge,
+                format!("settings file exceeds its {MAX_SETTINGS_FILE_BYTES}-byte limit"),
+            ),
+            (
+                SettingsLoadError::ConcurrentEdit,
+                "settings file changed while it was being read".to_owned(),
+            ),
+            (
+                SettingsLoadError::Io {
+                    operation: "read",
+                    kind: io::ErrorKind::PermissionDenied,
+                },
+                "settings read failed with PermissionDenied".to_owned(),
+            ),
+            (
+                SettingsLoadError::InvalidJson,
+                "settings JSON is malformed".to_owned(),
+            ),
+            (
+                SettingsLoadError::JsonTooDeep,
+                format!("settings JSON exceeds its {MAX_SETTINGS_JSON_DEPTH}-level depth limit"),
+            ),
+            (
+                SettingsLoadError::TooManyValues,
+                format!("settings JSON exceeds its {MAX_SETTINGS_JSON_VALUES}-value limit"),
+            ),
+            (
+                SettingsLoadError::TooManyStringBytes,
+                format!("settings JSON exceeds its {MAX_SETTINGS_STRING_BYTES}-byte string limit"),
+            ),
+            (
+                SettingsLoadError::MissingVersion,
+                "settings version is missing".to_owned(),
+            ),
+            (
+                SettingsLoadError::UnknownVersion(9),
+                "settings version 9 is unsupported".to_owned(),
+            ),
+            (
+                SettingsLoadError::UnknownField,
+                "settings contain an unknown field".to_owned(),
+            ),
+            (
+                SettingsLoadError::MissingField("keymap.bindings"),
+                "settings field keymap.bindings is missing".to_owned(),
+            ),
+            (
+                SettingsLoadError::InvalidValue("editor.font_size"),
+                "settings field editor.font_size is invalid".to_owned(),
+            ),
+            (
+                SettingsLoadError::AllocationFailed,
+                "settings allocation failed".to_owned(),
+            ),
+        ];
+        for (error, expected) in diagnostics {
+            assert_eq!(error.to_string(), expected);
+        }
+        assert_eq!(
+            SettingsReloadError::GenerationExhausted.to_string(),
+            "settings generation exhausted"
+        );
+        assert_eq!(
+            SettingsReloadError::SubmissionFailed.to_string(),
+            "settings worker queue rejected reload"
+        );
+    }
+
+    #[test]
+    fn independent_loader_bounds_fail_closed() {
+        let too_long = PathBuf::from("x".repeat(MAX_SETTINGS_PATH_BYTES + 1));
+        assert_eq!(
+            SettingsPaths::explicit(Some(too_long), None).global,
+            Err(SettingsLoadFailure {
+                source: SettingsSource::Global,
+                error: SettingsLoadError::PathTooLong,
+            })
+        );
+        assert_eq!(
+            DecodeReport {
+                file_bytes: usize::MAX,
+                ..DecodeReport::default()
+            }
+            .merge(DecodeReport {
+                file_bytes: 1,
+                ..DecodeReport::default()
+            }),
+            Err(SettingsLoadFailure {
+                source: SettingsSource::Runtime,
+                error: SettingsLoadError::AllocationFailed,
+            })
+        );
+        let mut values = DecodeReport {
+            parsed_values: MAX_SETTINGS_JSON_VALUES,
+            ..DecodeReport::default()
+        };
+        assert_eq!(
+            inspect_json(&Value::Null, 0, &mut values),
+            Err(SettingsLoadError::TooManyValues)
+        );
+        let mut strings = DecodeReport::default();
+        assert_eq!(
+            add_string_bytes(MAX_SETTINGS_STRING_BYTES + 1, &mut strings),
+            Err(SettingsLoadError::TooManyStringBytes)
+        );
+        assert_eq!(
+            decode_modifiers(&serde_json::json!([
+                "command", "shift", "option", "control", "command"
+            ])),
+            Err(SettingsLoadError::InvalidValue("key binding modifiers"))
+        );
+        assert_eq!(
+            decode_modifiers(&serde_json::json!(["command", "command"])),
+            Err(SettingsLoadError::InvalidValue("key binding modifiers"))
+        );
+        assert_eq!(
+            decode_modifiers(&serde_json::json!(["invalid"])),
+            Err(SettingsLoadError::InvalidValue("key binding modifiers"))
+        );
+        assert_eq!(
+            decode_color(&serde_json::json!([0.0, 1.0]), "short"),
+            Err(SettingsLoadError::InvalidValue("theme color"))
+        );
+    }
+
+    #[test]
     fn stale_completion_and_rejected_candidate_preserve_state() -> Result<(), Box<dyn Error>> {
         let root = TestRoot::new()?;
         let global = root.path().join("settings.json");

@@ -108,7 +108,14 @@ fn command_reload_announces_but_startup_keymap_only_does_not_redraw() -> Result<
         app.apply_settings_output(palette_update.execute()),
         EventEffect::visual()
     );
-    assert_eq!(app.request_settings_reload(), EventEffect::visual());
+    fs::write(
+        &path,
+        br#"{"version":1,"editor":{"font_size":20},"keymap":{"bindings":[{"physical_key":2,"modifiers":["command"],"action":"reload_settings","label":"Cmd+R"}]}}"#,
+    )?;
+    assert_eq!(
+        app.dispatch_command(StudioCommand::ReloadSettings),
+        EventEffect::visual()
+    );
     let manual = app
         .settings_reload
         .take_request()
