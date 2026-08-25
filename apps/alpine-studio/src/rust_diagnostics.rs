@@ -25,6 +25,10 @@ use crate::{
     lsp_process::{ConfigError, ProcessIdentity, ProcessSpec, ProcessWake, StopReason},
     rust_completion::{CompletionBatch, CompletionError, CompletionItem},
     rust_navigation::{HoverContent, NavigationError, SourceLocation, SourceLocations},
+    rust_symbols::{
+        SymbolBatch, SymbolError, SymbolPicker, SymbolPickerReport, SymbolRequestKind, SymbolRow,
+        workspace_symbol_params,
+    },
 };
 
 const MAX_POLLS_PER_TURN: usize = 8;
@@ -207,6 +211,7 @@ impl NavigationRequestKind {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) active: bool,
+    pending: RustDiagnosticsPending,
     pub(crate) generation: u64,
     pub(crate) process_epoch: u64,
     pub(crate) lsp_version: i32,
@@ -216,7 +221,6 @@ pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) diagnostic_bytes: usize,
     pub(crate) peak_diagnostic_items: usize,
     pub(crate) peak_diagnostic_bytes: usize,
-    pub(crate) completion_pending: bool,
     pub(crate) completion_items: usize,
     pub(crate) completion_bytes: usize,
     pub(crate) peak_completion_items: usize,
@@ -225,7 +229,6 @@ pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) completion_cancellations: u64,
     pub(crate) stale_completions: u64,
     pub(crate) completion_truncations: u64,
-    pub(crate) navigation_pending: bool,
     pub(crate) hover_bytes: usize,
     pub(crate) location_items: usize,
     pub(crate) location_bytes: usize,
@@ -236,6 +239,15 @@ pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) navigation_cancellations: u64,
     pub(crate) stale_navigation: u64,
     pub(crate) navigation_truncations: u64,
+    pub(crate) symbol_items: usize,
+    pub(crate) symbol_matches: usize,
+    pub(crate) symbol_bytes: usize,
+    pub(crate) peak_symbol_items: usize,
+    pub(crate) peak_symbol_bytes: usize,
+    pub(crate) symbol_requests: u64,
+    pub(crate) symbol_cancellations: u64,
+    pub(crate) stale_symbols: u64,
+    pub(crate) symbol_truncations: u64,
     pub(crate) process_retained_bytes: usize,
     pub(crate) process_queued_events: usize,
     pub(crate) process_submitted_inputs: u64,
@@ -245,6 +257,42 @@ pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) stale_wakes: u64,
     pub(crate) stale_diagnostics: u64,
     pub(crate) restarts: u64,
+}
+
+#[cfg(test)]
+impl RustDiagnosticsSnapshot {
+    pub(crate) const fn completion_pending(&self) -> bool {
+        self.pending.completion
+    }
+
+    pub(crate) const fn navigation_pending(&self) -> bool {
+        self.pending.navigation
+    }
+
+    pub(crate) const fn symbol_pending(&self) -> bool {
+        self.pending.symbols
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct RustDiagnosticsPending {
+    completion: bool,
+    navigation: bool,
+    symbols: bool,
+}
+
+#[derive(Default)]
+struct CurrentNavigationSnapshot {
+    pending: bool,
+    hover_bytes: usize,
+    location_items: usize,
+    location_bytes: usize,
+}
+
+#[derive(Default)]
+struct CurrentSymbolSnapshot {
+    pending: bool,
+    report: SymbolPickerReport,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -317,6 +365,25 @@ struct AdmittedNavigation {
     result: NavigationResult,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingSymbols {
+    request_id: u32,
+    stamp: RequestStamp,
+    kind: SymbolRequestKind,
+    identity: LanguageIdentity,
+    process_epoch: u64,
+    lsp_version: i32,
+    query_revision: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AdmittedSymbols {
+    identity: LanguageIdentity,
+    process_epoch: u64,
+    lsp_version: i32,
+    picker: SymbolPicker,
+}
+
 enum NavigationCandidate {
     Hover(Result<Option<HoverContent>, NavigationError>),
     Locations(Result<SourceLocations, NavigationError>),
@@ -332,6 +399,12 @@ struct PollCandidates {
         RequestStamp,
         NavigationRequestKind,
         NavigationCandidate,
+    )>,
+    symbols: Option<(
+        u32,
+        RequestStamp,
+        SymbolRequestKind,
+        Result<SymbolBatch, SymbolError>,
     )>,
     stale_response: Option<u32>,
 }
@@ -381,6 +454,17 @@ fn navigation_from_response(
     }
 }
 
+fn symbols_from_response(
+    kind: SymbolRequestKind,
+    value: ResponseValue<'_>,
+    document_uri: &str,
+) -> Result<SymbolBatch, SymbolError> {
+    match value {
+        ResponseValue::Result(result) => SymbolBatch::admit(kind, result, document_uri),
+        ResponseValue::Error(_) => Err(SymbolError::Malformed),
+    }
+}
+
 struct RustSession {
     target: Target,
     identity: LanguageIdentity,
@@ -399,6 +483,8 @@ struct RustSession {
     completion: Option<AdmittedCompletion>,
     pending_navigation: Option<PendingNavigation>,
     navigation: Option<AdmittedNavigation>,
+    pending_symbols: Option<PendingSymbols>,
+    symbols: Option<AdmittedSymbols>,
     client: LspClient,
 }
 
@@ -413,6 +499,7 @@ pub(crate) enum RustDiagnosticsError {
     Client(LspClientError),
     Completion(CompletionError),
     Navigation(NavigationError),
+    Symbols(SymbolError),
 }
 
 impl fmt::Display for RustDiagnosticsError {
@@ -445,6 +532,12 @@ pub(crate) struct RustDiagnostics {
     navigation_cancellations: u64,
     stale_navigation: u64,
     navigation_truncations: u64,
+    peak_symbol_items: usize,
+    peak_symbol_bytes: usize,
+    symbol_requests: u64,
+    symbol_cancellations: u64,
+    stale_symbols: u64,
+    symbol_truncations: u64,
     polls: u64,
     stale_wakes: u64,
     stale_diagnostics: u64,
@@ -477,6 +570,12 @@ impl Default for RustDiagnostics {
             navigation_cancellations: 0,
             stale_navigation: 0,
             navigation_truncations: 0,
+            peak_symbol_items: 0,
+            peak_symbol_bytes: 0,
+            symbol_requests: 0,
+            symbol_cancellations: 0,
+            stale_symbols: 0,
+            symbol_truncations: 0,
             polls: 0,
             stale_wakes: 0,
             stale_diagnostics: 0,
@@ -524,6 +623,7 @@ impl RustDiagnostics {
         if input.identity != session.identity {
             merge_visual_changed(&mut visual_changed, session.completion.take().is_some());
             merge_visual_changed(&mut visual_changed, session.navigation.take().is_some());
+            merge_visual_changed(&mut visual_changed, session.symbols.take().is_some());
             if let Some(pending) = session.pending_completion.take() {
                 let _ = session.client.cancel(pending.request_id);
                 self.completion_cancellations = self.completion_cancellations.saturating_add(1);
@@ -531,6 +631,10 @@ impl RustDiagnostics {
             if let Some(pending) = session.pending_navigation.take() {
                 let _ = session.client.cancel(pending.request_id);
                 self.navigation_cancellations = self.navigation_cancellations.saturating_add(1);
+            }
+            if let Some(pending) = session.pending_symbols.take() {
+                let _ = session.client.cancel(pending.request_id);
+                self.symbol_cancellations = self.symbol_cancellations.saturating_add(1);
             }
         }
         if input.identity.buffer_revision != session.identity.buffer_revision {
@@ -589,6 +693,7 @@ impl RustDiagnostics {
             if let Some(id) = candidates.stale_response {
                 merge_visual_changed(&mut visual_changed, self.reject_stale_completion(id));
                 merge_visual_changed(&mut visual_changed, self.reject_stale_navigation(id));
+                merge_visual_changed(&mut visual_changed, self.reject_stale_symbols(id));
             }
             if let Some((id, stamp, batch)) = candidates.completion {
                 merge_visual_changed(&mut visual_changed, self.admit_completion(id, stamp, batch));
@@ -597,6 +702,12 @@ impl RustDiagnostics {
                 merge_visual_changed(
                     &mut visual_changed,
                     self.admit_navigation(id, stamp, kind, candidate),
+                );
+            }
+            if let Some((id, stamp, kind, candidate)) = candidates.symbols {
+                merge_visual_changed(
+                    &mut visual_changed,
+                    self.admit_symbols(id, stamp, kind, candidate),
                 );
             }
             if self.apply_poll(poll, &mut visual_changed) {
@@ -632,8 +743,9 @@ impl RustDiagnostics {
         let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
         let expected = &session.document;
         let current = session
-            .pending_navigation
+            .pending_symbols
             .map(|pending| pending.stamp)
+            .or_else(|| session.pending_navigation.map(|pending| pending.stamp))
             .or_else(|| session.pending_completion.map(|pending| pending.stamp));
         let mut candidates = PollCandidates::default();
         let poll = session.client.poll(current, |event| match event {
@@ -656,7 +768,14 @@ impl RustDiagnostics {
                 stamp,
                 value,
             } => {
-                if let Some(kind) = NavigationRequestKind::from_method(method.as_ref()) {
+                if let Some(kind) = SymbolRequestKind::from_method(method.as_ref()) {
+                    candidates.symbols = Some((
+                        id,
+                        stamp,
+                        kind,
+                        symbols_from_response(kind, value, expected.uri()),
+                    ));
+                } else if let Some(kind) = NavigationRequestKind::from_method(method.as_ref()) {
                     candidates.navigation =
                         Some((id, stamp, kind, navigation_from_response(kind, value)));
                 }
@@ -671,8 +790,19 @@ impl RustDiagnostics {
         self.status.clone()
     }
 
+    pub(crate) fn record_symbol_error(&mut self, error: SymbolError) -> LanguageEffect {
+        LanguageEffect {
+            visual_changed: replace_status(
+                &mut self.status,
+                Some(Arc::from(RustDiagnosticsError::Symbols(error).to_string())),
+            ),
+            continuation: None,
+        }
+    }
+
     pub(crate) fn request_completion(&mut self, position: LspPosition) -> LanguageEffect {
-        let mut visual_changed = self.cancel_navigation();
+        let mut visual_changed = self.cancel_symbols();
+        visual_changed |= self.cancel_navigation();
         visual_changed |= self.cancel_completion();
         let Some(session) = self.session.as_mut() else {
             return LanguageEffect {
@@ -730,7 +860,8 @@ impl RustDiagnostics {
         kind: NavigationRequestKind,
         position: LspPosition,
     ) -> LanguageEffect {
-        let mut visual_changed = self.cancel_completion();
+        let mut visual_changed = self.cancel_symbols();
+        visual_changed |= self.cancel_completion();
         visual_changed |= self.cancel_navigation();
         let Some(session) = self.session.as_mut() else {
             return LanguageEffect {
@@ -838,6 +969,235 @@ impl RustDiagnostics {
             }
         }
         changed
+    }
+
+    pub(crate) fn open_symbols(&mut self, kind: SymbolRequestKind) -> LanguageEffect {
+        let mut visual_changed = self.cancel_completion();
+        visual_changed |= self.cancel_navigation();
+        visual_changed |= self.cancel_symbols();
+        let Some(session) = self.session.as_mut() else {
+            return LanguageEffect {
+                visual_changed: replace_status(
+                    &mut self.status,
+                    Some(Arc::from("Rust analysis is not ready for symbols.")),
+                ) || visual_changed,
+                continuation: None,
+            };
+        };
+        if session.state != SessionState::Open {
+            return LanguageEffect {
+                visual_changed: replace_status(
+                    &mut self.status,
+                    Some(Arc::from("Rust analysis is not ready for symbols.")),
+                ) || visual_changed,
+                continuation: None,
+            };
+        }
+        session.symbols = Some(AdmittedSymbols {
+            identity: session.identity,
+            process_epoch: session.process_epoch,
+            lsp_version: session.lsp_version,
+            picker: SymbolPicker::new(kind),
+        });
+        visual_changed = true;
+        let mut effect = self.issue_symbol_request();
+        effect.visual_changed |= visual_changed;
+        effect
+    }
+
+    fn issue_symbol_request(&mut self) -> LanguageEffect {
+        let Some(session) = self.session.as_mut() else {
+            return LanguageEffect::default();
+        };
+        if let Some(pending) = session.pending_symbols.take() {
+            match session.client.cancel(pending.request_id) {
+                Ok(_) => {
+                    self.symbol_cancellations = self.symbol_cancellations.saturating_add(1);
+                }
+                Err(error) => return self.fail(RustDiagnosticsError::Client(error)),
+            }
+        }
+        let Some(symbols) = session.symbols.as_ref() else {
+            return LanguageEffect::default();
+        };
+        let Some(stamp) = session.identity.request_stamp() else {
+            return self.fail(RustDiagnosticsError::InvalidIdentity);
+        };
+        let kind = symbols.picker.kind();
+        let query_revision = symbols.picker.query_revision();
+        let params = match kind {
+            SymbolRequestKind::Document => session
+                .document
+                .text_document_params()
+                .map_err(RustDiagnosticsError::Language),
+            SymbolRequestKind::Workspace => workspace_symbol_params(symbols.picker.query())
+                .map_err(RustDiagnosticsError::Symbols),
+        };
+        let result = params.and_then(|params| {
+            session
+                .client
+                .begin_request(kind.method(), Some(&params), stamp)
+                .map_err(RustDiagnosticsError::Client)
+        });
+        match result {
+            Ok(request) => {
+                session.pending_symbols = Some(PendingSymbols {
+                    request_id: request.request_id,
+                    stamp,
+                    kind,
+                    identity: session.identity,
+                    process_epoch: session.process_epoch,
+                    lsp_version: session.lsp_version,
+                    query_revision,
+                });
+                self.symbol_requests = self.symbol_requests.saturating_add(1);
+                LanguageEffect {
+                    visual_changed: replace_status(&mut self.status, None),
+                    continuation: None,
+                }
+            }
+            Err(error) => self.fail(error),
+        }
+    }
+
+    pub(crate) fn cancel_symbols(&mut self) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let mut changed = session.symbols.take().is_some();
+        if let Some(pending) = session.pending_symbols.take() {
+            match session.client.cancel(pending.request_id) {
+                Ok(_) => {
+                    self.symbol_cancellations = self.symbol_cancellations.saturating_add(1);
+                }
+                Err(error) => {
+                    changed |= replace_status(
+                        &mut self.status,
+                        Some(Arc::from(RustDiagnosticsError::Client(error).to_string())),
+                    );
+                }
+            }
+        }
+        changed
+    }
+
+    pub(crate) fn symbols_are_open(&self, identity: LanguageIdentity) -> bool {
+        self.symbols(identity).is_some()
+    }
+
+    pub(crate) fn commit_symbol_text(
+        &mut self,
+        identity: LanguageIdentity,
+        text: &str,
+    ) -> LanguageEffect {
+        let changed = match self.symbols_mut(identity) {
+            Some(symbols) => symbols.picker.commit_text(text),
+            None => return LanguageEffect::default(),
+        };
+        self.finish_symbol_query_change(changed)
+    }
+
+    pub(crate) fn delete_symbol_backward(&mut self, identity: LanguageIdentity) -> LanguageEffect {
+        let changed = match self.symbols_mut(identity) {
+            Some(symbols) => symbols.picker.delete_backward(),
+            None => return LanguageEffect::default(),
+        };
+        self.finish_symbol_query_change(changed)
+    }
+
+    fn finish_symbol_query_change(&mut self, changed: Result<bool, SymbolError>) -> LanguageEffect {
+        match changed {
+            Ok(false) => LanguageEffect::default(),
+            Ok(true) => {
+                if let Some(symbols) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.symbols.as_mut())
+                {
+                    let _ = symbols.picker.clear_results();
+                }
+                let mut effect = self.issue_symbol_request();
+                effect.visual_changed = true;
+                effect
+            }
+            Err(error) => LanguageEffect {
+                visual_changed: replace_status(
+                    &mut self.status,
+                    Some(Arc::from(RustDiagnosticsError::Symbols(error).to_string())),
+                ),
+                continuation: None,
+            },
+        }
+    }
+
+    pub(crate) fn begin_symbol_composition(&mut self, identity: LanguageIdentity) -> bool {
+        self.symbols_mut(identity)
+            .is_some_and(|symbols| symbols.picker.begin_composition())
+    }
+
+    pub(crate) fn update_symbol_composition(
+        &mut self,
+        identity: LanguageIdentity,
+        text: &str,
+        selected_start_utf16: u32,
+        selected_length_utf16: u32,
+    ) -> Result<bool, SymbolError> {
+        self.symbols_mut(identity)
+            .ok_or(SymbolError::InvalidComposition)?
+            .picker
+            .update_composition(text, selected_start_utf16, selected_length_utf16)
+    }
+
+    pub(crate) fn cancel_symbol_composition(&mut self, identity: LanguageIdentity) -> bool {
+        self.symbols_mut(identity)
+            .is_some_and(|symbols| symbols.picker.cancel_composition())
+    }
+
+    pub(crate) fn symbol_display_text(
+        &self,
+        identity: LanguageIdentity,
+    ) -> Result<Option<String>, SymbolError> {
+        self.symbols(identity)
+            .map(|symbols| symbols.picker.display_text())
+            .transpose()
+    }
+
+    pub(crate) fn symbol_visible_range(&self, identity: LanguageIdentity) -> Option<Range<usize>> {
+        Some(self.symbols(identity)?.picker.visible_range())
+    }
+
+    pub(crate) fn symbol_row(
+        &self,
+        identity: LanguageIdentity,
+        index: usize,
+    ) -> Option<SymbolRow<'_>> {
+        self.symbols(identity)?.picker.row(index)
+    }
+
+    pub(crate) fn navigate_symbols(&mut self, delta: isize) -> bool {
+        self.session
+            .as_mut()
+            .and_then(|session| session.symbols.as_mut())
+            .is_some_and(|symbols| symbols.picker.navigate(delta))
+    }
+
+    pub(crate) fn selected_symbol_location(
+        &self,
+        identity: LanguageIdentity,
+    ) -> Option<SourceLocation> {
+        self.symbols(identity)?.picker.selected_location()
+    }
+
+    pub(crate) fn symbol_accessibility_label(
+        &self,
+        identity: LanguageIdentity,
+    ) -> Option<Arc<str>> {
+        Some(self.symbols(identity)?.picker.accessibility_label())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn symbol_report(&self, identity: LanguageIdentity) -> Option<SymbolPickerReport> {
+        Some(self.symbols(identity)?.picker.report())
     }
 
     pub(crate) fn navigation_is_open(&self, identity: LanguageIdentity) -> bool {
@@ -1155,6 +1515,45 @@ impl RustDiagnostics {
         Ok(count)
     }
 
+    fn current_navigation_snapshot(&self) -> CurrentNavigationSnapshot {
+        let Some(session) = self.session.as_ref() else {
+            return CurrentNavigationSnapshot::default();
+        };
+        let pending = session.pending_navigation.is_some();
+        match session.navigation.as_ref().map(|value| &value.result) {
+            Some(NavigationResult::Hover(hover)) => CurrentNavigationSnapshot {
+                pending,
+                hover_bytes: hover.retained_bytes(),
+                ..CurrentNavigationSnapshot::default()
+            },
+            Some(NavigationResult::Locations { batch, .. }) => CurrentNavigationSnapshot {
+                pending,
+                location_items: batch.locations().len(),
+                location_bytes: batch.retained_bytes(),
+                ..CurrentNavigationSnapshot::default()
+            },
+            None => CurrentNavigationSnapshot {
+                pending,
+                ..CurrentNavigationSnapshot::default()
+            },
+        }
+    }
+
+    fn current_symbol_snapshot(&self) -> CurrentSymbolSnapshot {
+        let Some(session) = self.session.as_ref() else {
+            return CurrentSymbolSnapshot::default();
+        };
+        CurrentSymbolSnapshot {
+            pending: session.pending_symbols.is_some(),
+            report: session
+                .symbols
+                .as_ref()
+                .map_or(SymbolPickerReport::default(), |symbols| {
+                    symbols.picker.report()
+                }),
+        }
+    }
+
     pub(crate) fn snapshot(&self) -> RustDiagnosticsSnapshot {
         let (
             generation,
@@ -1184,24 +1583,8 @@ impl RustDiagnostics {
                     completion.map_or(0, |value| value.batch.retained_bytes()),
                 )
             });
-        let (navigation_pending, hover_bytes, location_items, location_bytes) =
-            self.session.as_ref().map_or((false, 0, 0, 0), |session| {
-                match session.navigation.as_ref().map(|value| &value.result) {
-                    Some(NavigationResult::Hover(hover)) => (
-                        session.pending_navigation.is_some(),
-                        hover.retained_bytes(),
-                        0,
-                        0,
-                    ),
-                    Some(NavigationResult::Locations { batch, .. }) => (
-                        session.pending_navigation.is_some(),
-                        0,
-                        batch.locations().len(),
-                        batch.retained_bytes(),
-                    ),
-                    None => (session.pending_navigation.is_some(), 0, 0, 0),
-                }
-            });
+        let navigation = self.current_navigation_snapshot();
+        let symbols = self.current_symbol_snapshot();
         let process = self
             .session
             .as_ref()
@@ -1209,6 +1592,11 @@ impl RustDiagnostics {
             .unwrap_or_default();
         RustDiagnosticsSnapshot {
             active: self.session.is_some(),
+            pending: RustDiagnosticsPending {
+                completion: completion_pending,
+                navigation: navigation.pending,
+                symbols: symbols.pending,
+            },
             generation,
             process_epoch,
             lsp_version,
@@ -1218,7 +1606,6 @@ impl RustDiagnostics {
             diagnostic_bytes,
             peak_diagnostic_items: self.peak_diagnostic_items,
             peak_diagnostic_bytes: self.peak_diagnostic_bytes,
-            completion_pending,
             completion_items,
             completion_bytes,
             peak_completion_items: self.peak_completion_items,
@@ -1227,10 +1614,9 @@ impl RustDiagnostics {
             completion_cancellations: self.completion_cancellations,
             stale_completions: self.stale_completions,
             completion_truncations: self.completion_truncations,
-            navigation_pending,
-            hover_bytes,
-            location_items,
-            location_bytes,
+            hover_bytes: navigation.hover_bytes,
+            location_items: navigation.location_items,
+            location_bytes: navigation.location_bytes,
             peak_hover_bytes: self.peak_hover_bytes,
             peak_location_items: self.peak_location_items,
             peak_location_bytes: self.peak_location_bytes,
@@ -1238,6 +1624,15 @@ impl RustDiagnostics {
             navigation_cancellations: self.navigation_cancellations,
             stale_navigation: self.stale_navigation,
             navigation_truncations: self.navigation_truncations,
+            symbol_items: symbols.report.items,
+            symbol_matches: symbols.report.matches,
+            symbol_bytes: symbols.report.retained_bytes,
+            peak_symbol_items: self.peak_symbol_items,
+            peak_symbol_bytes: self.peak_symbol_bytes,
+            symbol_requests: self.symbol_requests,
+            symbol_cancellations: self.symbol_cancellations,
+            stale_symbols: self.stale_symbols,
+            symbol_truncations: self.symbol_truncations,
             process_retained_bytes: process.retained_bytes,
             process_queued_events: process.queued_events,
             process_submitted_inputs: process.submitted_inputs,
@@ -1310,6 +1705,8 @@ impl RustDiagnostics {
             completion: None,
             pending_navigation: None,
             navigation: None,
+            pending_symbols: None,
+            symbols: None,
             client,
         });
         Ok(())
@@ -1589,6 +1986,108 @@ impl RustDiagnostics {
         admitted_matches
     }
 
+    fn admit_symbols(
+        &mut self,
+        id: u32,
+        stamp: RequestStamp,
+        kind: SymbolRequestKind,
+        candidate: Result<SymbolBatch, SymbolError>,
+    ) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let Some(pending) = session.pending_symbols.take() else {
+            self.stale_symbols = self.stale_symbols.saturating_add(1);
+            return false;
+        };
+        let current_query_revision = session
+            .symbols
+            .as_ref()
+            .map(|symbols| symbols.picker.query_revision());
+        if pending.request_id != id
+            || pending.stamp != stamp
+            || pending.kind != kind
+            || pending.identity != session.identity
+            || pending.process_epoch != session.process_epoch
+            || pending.lsp_version != session.lsp_version
+            || current_query_revision != Some(pending.query_revision)
+        {
+            self.stale_symbols = self.stale_symbols.saturating_add(1);
+            return false;
+        }
+        let Some(symbols) = session.symbols.as_mut() else {
+            self.stale_symbols = self.stale_symbols.saturating_add(1);
+            return false;
+        };
+        let batch = match candidate {
+            Ok(batch) => batch,
+            Err(error) => {
+                let _ = symbols.picker.clear_results();
+                return replace_status(
+                    &mut self.status,
+                    Some(Arc::from(RustDiagnosticsError::Symbols(error).to_string())),
+                );
+            }
+        };
+        let omitted = batch.omitted();
+        if let Err(error) = symbols.picker.admit(batch) {
+            let _ = symbols.picker.clear_results();
+            return replace_status(
+                &mut self.status,
+                Some(Arc::from(RustDiagnosticsError::Symbols(error).to_string())),
+            );
+        }
+        let report = symbols.picker.report();
+        self.peak_symbol_items = self.peak_symbol_items.max(report.items);
+        self.peak_symbol_bytes = self.peak_symbol_bytes.max(report.retained_bytes);
+        self.symbol_truncations = self
+            .symbol_truncations
+            .saturating_add(u64::from(omitted > 0));
+        let status = if report.matches == 0 {
+            Some(Arc::from(kind.empty_status()))
+        } else if omitted > 0 {
+            Some(Arc::from(format!(
+                "Rust symbols truncated: {omitted} result(s) omitted."
+            )))
+        } else {
+            None
+        };
+        let _ = replace_status(&mut self.status, status);
+        true
+    }
+
+    fn reject_stale_symbols(&mut self, id: u32) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let pending_matches = session
+            .pending_symbols
+            .is_some_and(|pending| pending.request_id == id);
+        if pending_matches {
+            session.pending_symbols = None;
+        }
+        self.stale_symbols = self.stale_symbols.saturating_add(1);
+        false
+    }
+
+    fn symbols(&self, identity: LanguageIdentity) -> Option<&AdmittedSymbols> {
+        let session = self.session.as_ref()?;
+        let symbols = session.symbols.as_ref()?;
+        (symbols.identity == identity
+            && symbols.process_epoch == session.process_epoch
+            && symbols.lsp_version == session.lsp_version)
+            .then_some(symbols)
+    }
+
+    fn symbols_mut(&mut self, identity: LanguageIdentity) -> Option<&mut AdmittedSymbols> {
+        let session = self.session.as_mut()?;
+        let symbols = session.symbols.as_mut()?;
+        (symbols.identity == identity
+            && symbols.process_epoch == session.process_epoch
+            && symbols.lsp_version == session.lsp_version)
+            .then_some(symbols)
+    }
+
     fn navigation(&self, identity: LanguageIdentity) -> Option<&AdmittedNavigation> {
         let session = self.session.as_ref()?;
         let navigation = session.navigation.as_ref()?;
@@ -1634,6 +2133,29 @@ impl RustDiagnostics {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn install_symbols_for_test(
+        &mut self,
+        identity: LanguageIdentity,
+        kind: SymbolRequestKind,
+        result: &RawValue,
+    ) -> Result<(), SymbolError> {
+        let session = self.session.as_mut().ok_or(SymbolError::Malformed)?;
+        if session.identity != identity {
+            return Err(SymbolError::Malformed);
+        }
+        let batch = SymbolBatch::admit(kind, result, session.document.uri())?;
+        let mut picker = SymbolPicker::new(kind);
+        let _ = picker.admit(batch)?;
+        session.symbols = Some(AdmittedSymbols {
+            identity,
+            process_epoch: session.process_epoch,
+            lsp_version: session.lsp_version,
+            picker,
+        });
+        Ok(())
+    }
+
     fn restart_or_fail(&mut self, error: RustDiagnosticsError) -> bool {
         let Some(session) = self.session.as_mut() else {
             return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
@@ -1644,6 +2166,8 @@ impl RustDiagnostics {
             session.completion = None;
             session.pending_navigation = None;
             session.navigation = None;
+            session.pending_symbols = None;
+            session.symbols = None;
             return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
         }
         let Some(generation) = session.process_generation.checked_add(1) else {
@@ -1674,6 +2198,8 @@ impl RustDiagnostics {
         session.completion = None;
         session.pending_navigation = None;
         session.navigation = None;
+        session.pending_symbols = None;
+        session.symbols = None;
         self.restarts = self.restarts.saturating_add(1);
         replace_status(
             &mut self.status,
@@ -1688,6 +2214,8 @@ impl RustDiagnostics {
             session.completion = None;
             session.pending_navigation = None;
             session.navigation = None;
+            session.pending_symbols = None;
+            session.symbols = None;
         }
         LanguageEffect {
             visual_changed: replace_status(&mut self.status, Some(Arc::from(error.to_string()))),
@@ -1861,6 +2389,8 @@ fn test_session(
         completion: None,
         pending_navigation: None,
         navigation: None,
+        pending_symbols: None,
+        symbols: None,
         client,
     }
 }

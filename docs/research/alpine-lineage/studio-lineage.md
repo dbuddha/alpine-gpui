@@ -35,17 +35,18 @@ The comparison therefore has two views:
 | S17 | Diagnostics | Zed editor/project language integration | Revision-safe bounded Rust diagnostics | Behavioral subset implemented |
 | S18 | Completion | Zed editor completion and language stores | Revision-safe bounded Rust completion | Behavioral subset implemented |
 | S19 | Hover and source navigation | Zed editor hover and navigation | Bounded hover, definition, references, local-path admission, revision-safe supersession, overlays, and accessibility merged in [PR #345](https://github.com/dbuddha/alpine-gpui/pull/345) | Behavioral subset implemented with stricter local path and result bounds |
-| S20 | Rename and formatting | Zed project transactions and editor edits | Open [#220](https://github.com/dbuddha/alpine-gpui/issues/220) | Incomplete |
-| S21 | Document and workspace symbols | Zed project symbol search | Open [#221](https://github.com/dbuddha/alpine-gpui/issues/221) | Incomplete |
+| S20 | Rename and formatting | Zed project transactions and editor edits | Bounded validation and preparation merged through PR #348; publication, preview, recovery, commands, and real-server E2E remain [#220](https://github.com/dbuddha/alpine-gpui/issues/220) | Partial independent local implementation |
+| S21 | Document and workspace symbols | Zed project symbol search | Bounded current-only document and workspace requests, ranking, keyboard and IME picker, scene, accessibility, and checked local navigation implemented under [#221](https://github.com/dbuddha/alpine-gpui/issues/221) | Behavioral subset with explicit result, hierarchy, label, query, retained-byte, and visible-row bounds |
 | S22 | Native accessibility | GPUI accessibility plus editor semantics | Snapshot, AppKit transport, text mappings, actions, notifications | Implementation present; physical VoiceOver/AX proof remains open |
 | S23 | Local diagnostic evidence | Zed diagnostics/profiling facilities | Frame, cache, residency tools, event-to-present correlation and signposts | Alpine-specific claim discipline; external physical capture pending |
 | S24 | Sustained repository dogfood | Zed is a mature production editor | Open #224 and #238 through #242; visible typing defect #304 | Blocking qualification, not a polish item |
 
-Nineteen rows implement their selected behavior. S15 and S22 have production
-implementation but incomplete reload/migration or physical qualification, and
-S20, S21, and S24 remain incomplete. Twenty-one rows therefore have some
-production implementation. These counts are an inventory, not readiness; the
-verdict remains "working prototype, not trusted daily driver."
+Twenty rows implement their selected behavior. S15, S20, and S22 have
+production implementation but incomplete reload/migration, edit publication,
+or physical qualification, and S24 remains incomplete. Twenty-three rows
+therefore have some production implementation. These counts are an inventory,
+not readiness; the verdict remains "working prototype, not trusted daily
+driver."
 
 ## Intentionally excluded Zed scope
 
@@ -100,9 +101,9 @@ Zed has a mature project/language architecture supporting many servers,
 languages, dynamic registrations, remote projects, worktrees, and richer editor
 features. Alpine has one bounded local JSON-RPC/LSP transport and qualifies only
 rust-analyzer. This is directionally correct for delivery and memory. Hover,
-definition, and references are implemented; rename, formatting, symbols,
-restart behavior, and sustained real-server use must complete before
-daily-driver acceptance.
+definition, references, and bounded symbols are implemented; rename and
+formatting publication, restart behavior, and sustained real-server use must
+complete before daily-driver acceptance.
 
 ### Settings and extensibility
 

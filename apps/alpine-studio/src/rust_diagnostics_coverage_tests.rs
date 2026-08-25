@@ -417,7 +417,7 @@ fn navigation_request_guards_and_cancellation_errors_accumulate_visual_state()
     )?;
     assert!(cancellation_error.cancel_navigation());
     assert!(cancellation_error.status_message().is_some());
-    assert!(!cancellation_error.snapshot().navigation_pending);
+    assert!(!cancellation_error.snapshot().navigation_pending());
 
     for model in [
         &mut starting,
@@ -611,7 +611,7 @@ fn navigation_empty_error_observer_and_window_paths_are_discriminating()
 
     let pending = install_pending_navigation(&mut model, 7, NavigationRequestKind::Hover)?;
     assert!(!model.reject_stale_navigation(pending.request_id));
-    assert!(!model.snapshot().navigation_pending);
+    assert!(!model.snapshot().navigation_pending());
     let _ = model.shutdown();
     std::fs::remove_dir_all(root)?;
     Ok(())
@@ -862,12 +862,12 @@ fn completion_cancellation_and_request_failures_are_bounded() -> Result<(), Box<
     let _ = install_pending_completion(&mut cancellation_error, u32::MAX)?;
     assert!(cancellation_error.cancel_completion());
     assert!(cancellation_error.status_message().is_some());
-    assert!(!cancellation_error.snapshot().completion_pending);
+    assert!(!cancellation_error.snapshot().completion_pending());
 
     let (mut saturated, _, root_three) = installed_model()?;
     assert!(saturated.request_completion(position).visual_changed);
     assert!(saturated.status_message().is_some());
-    assert!(!saturated.snapshot().completion_pending);
+    assert!(!saturated.snapshot().completion_pending());
 
     for model in [&mut changed, &mut cancellation_error, &mut saturated] {
         assert!(!model.shutdown().active);
@@ -919,15 +919,15 @@ fn successful_completion_request_clears_status_and_reports_visual_change()
     let cancellation = model.request_completion(LspPosition::new(0, 0)?);
     assert!(cancellation.visual_changed);
     assert!(!model.navigation_is_open(identity));
-    assert!(model.snapshot().completion_pending);
+    assert!(model.snapshot().completion_pending());
     let _ = model.cancel_completion();
-    assert!(!model.snapshot().completion_pending);
+    assert!(!model.snapshot().completion_pending());
 
     model.status = Some(Arc::from("old completion status"));
     let effect = model.request_completion(LspPosition::new(0, 0)?);
     assert!(effect.visual_changed);
     assert_eq!(model.status_message(), None);
-    assert!(model.snapshot().completion_pending);
+    assert!(model.snapshot().completion_pending());
     assert_eq!(model.snapshot().completion_requests, 2);
     let _ = model.shutdown();
     std::fs::remove_dir_all(root)?;

@@ -824,6 +824,12 @@ fn validate_kani_inventory(registry: &Registry, root: &Path, diagnostics: &mut D
         &mut discovered,
         diagnostics,
     );
+    for artifact in registered
+        .iter()
+        .filter(|artifact| artifact_path(artifact).starts_with("apps/"))
+    {
+        discover_kani_file(&root.join(artifact_path(artifact)), root, &mut discovered);
+    }
 
     for harness in discovered.difference(&registered) {
         diagnostics
@@ -854,28 +860,33 @@ fn discover_kani_harnesses(
         let path = entry.path();
         if path.is_dir() {
             discover_kani_harnesses(&path, root, harnesses, diagnostics);
-        } else if path.extension().is_some_and(|extension| extension == "rs")
-            && let Ok(source) = fs::read_to_string(&path)
-        {
-            let mut expects_harness = false;
-            for line in source.lines() {
-                let trimmed = line.trim();
-                if trimmed == "#[kani::proof]" {
-                    expects_harness = true;
-                } else if expects_harness && trimmed.starts_with("fn ") {
-                    let name = trimmed
-                        .trim_start_matches("fn ")
-                        .split('(')
-                        .next()
-                        .unwrap_or_default();
-                    if let Ok(relative) = path.strip_prefix(root) {
-                        harnesses.insert(format!("{}#{name}", registry_path(relative)));
-                    }
-                    expects_harness = false;
-                } else if !trimmed.is_empty() && !trimmed.starts_with("///") {
-                    expects_harness = false;
-                }
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            discover_kani_file(&path, root, harnesses);
+        }
+    }
+}
+
+fn discover_kani_file(path: &Path, root: &Path, harnesses: &mut BTreeSet<String>) {
+    let Ok(source) = fs::read_to_string(path) else {
+        return;
+    };
+    let mut expects_harness = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed == "#[kani::proof]" {
+            expects_harness = true;
+        } else if expects_harness && trimmed.starts_with("fn ") {
+            let name = trimmed
+                .trim_start_matches("fn ")
+                .split('(')
+                .next()
+                .unwrap_or_default();
+            if let Ok(relative) = path.strip_prefix(root) {
+                harnesses.insert(format!("{}#{name}", registry_path(relative)));
             }
+            expects_harness = false;
+        } else if !trimmed.is_empty() && !trimmed.starts_with("///") {
+            expects_harness = false;
         }
     }
 }

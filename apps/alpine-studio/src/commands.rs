@@ -28,6 +28,8 @@ pub(crate) enum StudioCommand {
     ShowRustHover,
     GoToRustDefinition,
     FindRustReferences,
+    ShowRustDocumentSymbols,
+    ShowRustWorkspaceSymbols,
     ToggleFileTree,
     SplitRight,
     SplitDown,
@@ -66,7 +68,9 @@ impl CommandContext {
             StudioCommand::TriggerCompletion
             | StudioCommand::ShowRustHover
             | StudioCommand::GoToRustDefinition
-            | StudioCommand::FindRustReferences => self.can_complete,
+            | StudioCommand::FindRustReferences
+            | StudioCommand::ShowRustDocumentSymbols
+            | StudioCommand::ShowRustWorkspaceSymbols => self.can_complete,
             StudioCommand::SplitRight => self.can_split_right,
             StudioCommand::SplitDown => self.can_split_down,
             StudioCommand::FocusNextPane | StudioCommand::ClosePane => self.can_close_pane,
@@ -81,7 +85,7 @@ struct CommandSpec {
     search_terms: &'static str,
 }
 
-const REGISTRY: [CommandSpec; 17] = [
+const REGISTRY: [CommandSpec; 19] = [
     CommandSpec {
         command: StudioCommand::SaveFile,
         title: "File: Save",
@@ -141,6 +145,16 @@ const REGISTRY: [CommandSpec; 17] = [
         command: StudioCommand::FindRustReferences,
         title: "Navigation: Find Rust References",
         search_terms: "language rust analyzer usages source",
+    },
+    CommandSpec {
+        command: StudioCommand::ShowRustDocumentSymbols,
+        title: "Navigation: Rust Document Symbols",
+        search_terms: "language rust analyzer outline functions types",
+    },
+    CommandSpec {
+        command: StudioCommand::ShowRustWorkspaceSymbols,
+        title: "Navigation: Rust Workspace Symbols",
+        search_terms: "language rust analyzer project functions types",
     },
     CommandSpec {
         command: StudioCommand::ToggleFileTree,
@@ -667,7 +681,7 @@ mod tests {
 
     #[test]
     fn locked_registry_query_and_memory_limits_are_exact() -> Result<(), Box<dyn Error>> {
-        assert_eq!(REGISTRY.len(), 17);
+        assert_eq!(REGISTRY.len(), 19);
         assert!(REGISTRY.len() <= MAX_COMMANDS);
         let mut palette = CommandPalette::default();
         assert!(palette.open(all_available())?);

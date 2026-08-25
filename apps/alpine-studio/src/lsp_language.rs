@@ -432,8 +432,10 @@ pub(crate) fn initialize_params(workspace: &Path) -> Result<Box<RawValue>, Langu
                         "documentationFormat": ["plaintext", "markdown"],
                         "insertReplaceSupport": true
                     }
-                }
-            }
+                },
+                "documentSymbol": { "hierarchicalDocumentSymbolSupport": true }
+            },
+            "workspace": { "symbol": {} }
         },
         "workspaceFolders": [{ "uri": uri, "name": name }]
     }))

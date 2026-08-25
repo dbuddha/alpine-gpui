@@ -83,6 +83,7 @@ superseded but must not erase the earlier claim or evidence state.
 | --- | --- | --- | --- |
 | 2026-08-24 | PR #344 retained the realistic prepared-scene checkpoint from Alpine PR #343 and Alpine Zed Lab PR #5 | Exact PR-head run `32742558131`, merge `c98c22f1d3ea0c2deef5c1d082d4518cb5e91ee9`, and merged-main run `32743614996` advance ALG-014 to composed E3 across the control, clipped grid, glyph grid, code viewport, scroll, and resize fixture ladder | Atlas lifecycle and recovery, timing, memory, and E4 qualification remain #53; no dominance claim is permitted |
 | 2026-08-24 | PR #345 added bounded Rust hover, definition, and references | Exact PR-head `caaec3b705a5e40024b013da4316e76199ca3657` passed hosted run `32762895848` with 51 green jobs before merge `7db5e18f6da8e02cd171668d4714c745c55d7eda`; revision, process, request, workspace, canonical path, scene, and accessibility paths are covered | Rename and formatting #220, symbols #221, physical latency, residency, and dogfood remain open |
+| 2026-08-24 | Task #221 implementation adds bounded Rust document and workspace symbols | Current-only request and query identity, parser and ranking ceilings, mock and pinned-server paths, keyboard, IME, scene, accessibility, checked local navigation, TLA+ faulty controls, and Kani selection bounds are implemented on the review branch | Exact PR head, hosted `ci-pass`, merge identity, dogfood quality, physical latency, and residency remain to be appended after acceptance |
 
 ## Rules for future entries
 

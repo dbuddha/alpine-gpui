@@ -58,6 +58,7 @@ mod recovery;
 mod rust_completion;
 mod rust_diagnostics;
 mod rust_navigation;
+mod rust_symbols;
 #[cfg_attr(
     not(test),
     expect(
@@ -146,6 +147,7 @@ use rust_navigation::{
     MAX_VISIBLE_HOVER_LINES, MAX_VISIBLE_SOURCE_LOCATIONS, NavigationError, ResolvedSourceLocation,
     SourceLocation,
 };
+use rust_symbols::{MAX_VISIBLE_SYMBOL_ROWS, SymbolRequestKind};
 #[cfg(all(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
 use settings::FONT_FAMILY;
 #[cfg(all(
@@ -2954,6 +2956,62 @@ impl StudioApp {
             }
             debug_assert!(row_count <= MAX_VISIBLE_SOURCE_LOCATIONS);
         }
+        if let Some(rows) = self
+            .rust_diagnostics
+            .symbol_visible_range(language_identity)
+        {
+            let row_count = rows.len();
+            let overlay_bounds =
+                Self::language_overlay_bounds(active_pane.bounds, row_count.saturating_add(1))?;
+            let left = overlay_bounds.origin().x();
+            let top = overlay_bounds.origin().y();
+            let width = overlay_bounds.size().width();
+            let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
+            let background =
+                Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.push_quad(background)?;
+            let query = self
+                .rust_diagnostics
+                .symbol_display_text(language_identity)
+                .map_err(|_| StudioRenderError::Domain)?
+                .ok_or(StudioRenderError::Domain)?;
+            let query_text = if query.is_empty() {
+                "Search Rust symbols"
+            } else {
+                query.as_str()
+            };
+            let query_layout = self.text_system.shape(query_text, font)?;
+            pending_glyphs.extend(self.collect_glyphs(
+                &query_layout,
+                font,
+                left + FIND_BAR_INSET,
+                top + query_layout.ascent() + 3.0,
+                overlay_clip,
+            )?);
+            for (visible_row, index) in rows.enumerate() {
+                let row = self
+                    .rust_diagnostics
+                    .symbol_row(language_identity, index)
+                    .ok_or(StudioRenderError::Domain)?;
+                let row_top = top + usize_as_f32(visible_row.saturating_add(1)) * LINE_HEIGHT;
+                if row.selected {
+                    let origin = Point::new(left, row_top).ok_or(StudioRenderError::Domain)?;
+                    let size = Size::new(width, LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
+                    let selected = Quad::new(Rect::new(origin, size), command_palette_selected)
+                        .clipped(overlay_clip);
+                    builder.push_quad(selected)?;
+                }
+                let layout = self.text_system.shape(row.label, font)?;
+                pending_glyphs.extend(self.collect_glyphs(
+                    &layout,
+                    font,
+                    left + FIND_BAR_INSET,
+                    row_top + layout.ascent() + 3.0,
+                    overlay_clip,
+                )?);
+            }
+            debug_assert!(row_count <= MAX_VISIBLE_SYMBOL_ROWS);
+        }
         if self.find.is_open() {
             let width = FIND_BAR_WIDTH.min(content_size.width());
             let left = (active_pane.bounds.origin().x() + content_size.width() - width)
@@ -3796,8 +3854,47 @@ impl StudioApp {
         physical_key: u16,
         command: bool,
     ) -> Option<EventEffect> {
-        self.handle_navigation_key(physical_key, command)
+        self.handle_symbol_key(physical_key, command)
+            .or_else(|| self.handle_navigation_key(physical_key, command))
             .or_else(|| self.handle_completion_key(physical_key, command))
+    }
+
+    fn handle_symbol_key(&mut self, physical_key: u16, command: bool) -> Option<EventEffect> {
+        let identity = self.language_identity();
+        if !self.rust_diagnostics.symbols_are_open(identity) {
+            return None;
+        }
+        match physical_key {
+            KEY_ESCAPE => Some(
+                self.rust_diagnostics
+                    .cancel_symbols()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default(),
+            ),
+            KEY_UP if !command => Some(
+                self.rust_diagnostics
+                    .navigate_symbols(-1)
+                    .then(EventEffect::visual)
+                    .unwrap_or_default(),
+            ),
+            KEY_DOWN if !command => Some(
+                self.rust_diagnostics
+                    .navigate_symbols(1)
+                    .then(EventEffect::visual)
+                    .unwrap_or_default(),
+            ),
+            KEY_DELETE_BACKWARD if !command => {
+                let effect = self.rust_diagnostics.delete_symbol_backward(identity);
+                Some(
+                    effect
+                        .visual_changed
+                        .then(EventEffect::visual)
+                        .unwrap_or_default(),
+                )
+            }
+            KEY_RETURN | KEY_TAB if !command => Some(self.apply_selected_symbol()),
+            _ => Some(EventEffect::default()),
+        }
     }
 
     fn handle_key(&mut self, physical_key: u16, modifiers: Modifiers) -> EventEffect {
@@ -3903,6 +4000,48 @@ impl StudioApp {
     }
 
     fn handle_ime(&mut self, event: &ImeEvent) -> EventEffect {
+        let identity = self.language_identity();
+        if self.rust_diagnostics.symbols_are_open(identity) {
+            return match event {
+                ImeEvent::Started => self
+                    .rust_diagnostics
+                    .begin_symbol_composition(identity)
+                    .then(EventEffect::visual)
+                    .unwrap_or_default(),
+                ImeEvent::Updated {
+                    text,
+                    selected_start_utf16,
+                    selected_length_utf16,
+                } => match self.rust_diagnostics.update_symbol_composition(
+                    identity,
+                    text,
+                    *selected_start_utf16,
+                    *selected_length_utf16,
+                ) {
+                    Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+                    Err(error) => {
+                        self.input_failures = self.input_failures.saturating_add(1);
+                        let effect = self.rust_diagnostics.record_symbol_error(error);
+                        effect
+                            .visual_changed
+                            .then(EventEffect::visual)
+                            .unwrap_or_default()
+                    }
+                },
+                ImeEvent::Committed(text) => {
+                    let effect = self.rust_diagnostics.commit_symbol_text(identity, text);
+                    effect
+                        .visual_changed
+                        .then(EventEffect::visual)
+                        .unwrap_or_default()
+                }
+                ImeEvent::Cancelled => self
+                    .rust_diagnostics
+                    .cancel_symbol_composition(identity)
+                    .then(EventEffect::visual)
+                    .unwrap_or_default(),
+            };
+        }
         if self.command_palette.is_open() {
             return self.handle_command_palette_ime(event);
         }
@@ -4000,13 +4139,25 @@ impl StudioApp {
         let navigation = (!focused && self.rust_diagnostics.cancel_navigation())
             .then(EventEffect::visual)
             .unwrap_or_default();
+        let symbols = (!focused && self.rust_diagnostics.cancel_symbols())
+            .then(EventEffect::visual)
+            .unwrap_or_default();
         effect
             .merge(changed.then(EventEffect::visual).unwrap_or_default())
             .merge(completion)
             .merge(navigation)
+            .merge(symbols)
     }
 
     fn cancel_focused_composition(&mut self) -> EventEffect {
+        let identity = self.language_identity();
+        if self.rust_diagnostics.symbols_are_open(identity) {
+            return self
+                .rust_diagnostics
+                .cancel_symbol_composition(identity)
+                .then(EventEffect::visual)
+                .unwrap_or_default();
+        }
         if self.command_palette.is_open() {
             return self
                 .command_palette
@@ -4244,6 +4395,12 @@ impl StudioApp {
             }
             StudioCommand::FindRustReferences => {
                 self.trigger_rust_navigation(NavigationRequestKind::References)
+            }
+            StudioCommand::ShowRustDocumentSymbols => {
+                self.trigger_rust_symbols(SymbolRequestKind::Document)
+            }
+            StudioCommand::ShowRustWorkspaceSymbols => {
+                self.trigger_rust_symbols(SymbolRequestKind::Workspace)
             }
             StudioCommand::OpenQuickOpen if self.workspace.is_none() => {
                 self.record_quick_open_error(&QuickOpenError::NoWorkspace)
@@ -5536,6 +5693,22 @@ impl StudioApp {
             .unwrap_or_default()
     }
 
+    fn trigger_rust_symbols(&mut self, kind: SymbolRequestKind) -> EventEffect {
+        if self.composition.is_some() {
+            return EventEffect::default();
+        }
+        self.find.close();
+        self.find_needs_search = false;
+        self.quick_open.close();
+        self.project_search.close();
+        self.command_palette.cancel();
+        let effect = self.rust_diagnostics.open_symbols(kind);
+        effect
+            .visual_changed
+            .then(EventEffect::visual)
+            .unwrap_or_default()
+    }
+
     fn apply_selected_navigation(&mut self) -> EventEffect {
         let identity = self.language_identity();
         let Some(location) = self.rust_diagnostics.selected_source_location(identity) else {
@@ -5544,6 +5717,20 @@ impl StudioApp {
         match self.navigate_to_source_location(&location) {
             Ok(effect) => {
                 let closed = self.rust_diagnostics.cancel_navigation();
+                effect.merge(closed.then(EventEffect::visual).unwrap_or_default())
+            }
+            Err(error) => self.record_workspace_error(&error),
+        }
+    }
+
+    fn apply_selected_symbol(&mut self) -> EventEffect {
+        let identity = self.language_identity();
+        let Some(location) = self.rust_diagnostics.selected_symbol_location(identity) else {
+            return EventEffect::default();
+        };
+        match self.navigate_to_source_location(&location) {
+            Ok(effect) => {
+                let closed = self.rust_diagnostics.cancel_symbols();
                 effect.merge(closed.then(EventEffect::visual).unwrap_or_default())
             }
             Err(error) => self.record_workspace_error(&error),

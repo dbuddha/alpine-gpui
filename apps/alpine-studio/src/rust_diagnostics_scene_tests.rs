@@ -352,6 +352,104 @@ fn navigation_overlay_keyboard_and_accessibility_use_validated_product_paths()
 
 #[test]
 #[cfg(unix)]
+fn symbol_overlay_keyboard_accessibility_and_checked_navigation_are_exact()
+-> Result<(), Box<dyn Error>> {
+    let root = std::env::temp_dir().join(format!(
+        "alpine-symbol-scene-{}-{}",
+        std::process::id(),
+        NEXT_SCENE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&root)?;
+    let path = root.join("main.rs");
+    fs::write(&path, "fn alpha() {}\nfn beta() {}\n")?;
+    let path = fs::canonicalize(path)?;
+    let mut app = StudioApp::open_file(tests::TestTextSystem, &path)?;
+    let input = app.active_rust_document().ok_or("Rust document")?;
+    let identity = app.language_identity();
+    app.rust_diagnostics.install_for_test(
+        input,
+        &rust_diagnostics::tests::diagnostics(&path, 1),
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    let document = lsp_language::LspDocument::from_file_path(&path, "rust", 1)?;
+    let uri = document.uri();
+    let symbols: Box<RawValue> = serde_json::from_str(&format!(
+        r#"[{{"name":"alpha","kind":12,"location":{{"uri":"{uri}","range":{{"start":{{"line":0,"character":3}},"end":{{"line":0,"character":8}}}}}}}},{{"name":"beta","kind":12,"location":{{"uri":"{uri}","range":{{"start":{{"line":1,"character":3}},"end":{{"line":1,"character":7}}}}}}}}]"#
+    ))?;
+    app.rust_diagnostics.install_symbols_for_test(
+        identity,
+        SymbolRequestKind::Workspace,
+        &symbols,
+    )?;
+    let viewport = Size::new(640.0, 360.0).ok_or("viewport")?;
+    let baseline = app.scene(SceneRevision::new(40), viewport);
+    let report = app
+        .rust_diagnostics
+        .symbol_report(identity)
+        .ok_or("symbol report")?;
+    assert_eq!(report.items, 2);
+    assert_eq!(report.matches, 2);
+    assert!(report.retained_bytes <= crate::rust_symbols::MAX_SYMBOL_RETAINED_BYTES);
+    assert!(baseline.clips().len() > 1);
+
+    let snapshot = app.accessibility_snapshot()?;
+    let symbol_node = snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.name().starts_with("Rust workspace symbols:"))
+        .ok_or("symbol accessibility node")?;
+    assert!(symbol_node.is_focused());
+    assert!(symbol_node.supports_activate());
+    assert!(
+        app.handle_key(KEY_DOWN, Modifiers::from_bits(0))
+            .visual_changed
+    );
+    assert!(
+        app.rust_diagnostics
+            .symbol_accessibility_label(identity)
+            .is_some_and(|label| label.contains("beta"))
+    );
+    assert!(
+        app.handle_key(KEY_UP, Modifiers::from_bits(0))
+            .visual_changed
+    );
+    let effect = app.handle_accessibility_action(AccessibilityAction::activate(
+        snapshot.revision(),
+        symbol_node.id(),
+    ))?;
+    assert!(effect.visual_changed);
+    assert_eq!(app.selection.range(), 3..8);
+    assert!(
+        !app.rust_diagnostics
+            .symbols_are_open(app.language_identity())
+    );
+
+    app.rust_diagnostics.install_symbols_for_test(
+        app.language_identity(),
+        SymbolRequestKind::Workspace,
+        &symbols,
+    )?;
+    assert!(
+        app.handle_symbol_key(KEY_ESCAPE, false)
+            .is_some_and(|effect| effect.visual_changed)
+    );
+    for command in [
+        StudioCommand::ShowRustDocumentSymbols,
+        StudioCommand::ShowRustWorkspaceSymbols,
+    ] {
+        assert!(app.dispatch_command(command).visual_changed);
+        assert!(
+            !app.rust_diagnostics
+                .symbols_are_open(app.language_identity())
+        );
+        assert!(app.rust_diagnostics.status_message().is_some());
+    }
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
 fn navigation_overlay_raster_failures_preserve_scene_atomicity() -> Result<(), Box<dyn Error>> {
     let root = std::env::temp_dir().join(format!(
         "alpine-navigation-raster-{}-{}",
