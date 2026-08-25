@@ -30,6 +30,7 @@ pub(crate) enum StudioCommand {
     FindRustReferences,
     ShowRustDocumentSymbols,
     ShowRustWorkspaceSymbols,
+    ReloadSettings,
     ToggleFileTree,
     SplitRight,
     SplitDown,
@@ -64,7 +65,9 @@ impl CommandContext {
             StudioCommand::OpenQuickOpen
             | StudioCommand::OpenProjectSearch
             | StudioCommand::ToggleFileTree => self.has_workspace,
-            StudioCommand::OpenFind | StudioCommand::OpenReplace => true,
+            StudioCommand::OpenFind
+            | StudioCommand::OpenReplace
+            | StudioCommand::ReloadSettings => true,
             StudioCommand::TriggerCompletion
             | StudioCommand::ShowRustHover
             | StudioCommand::GoToRustDefinition
@@ -85,7 +88,7 @@ struct CommandSpec {
     search_terms: &'static str,
 }
 
-const REGISTRY: [CommandSpec; 19] = [
+const REGISTRY: [CommandSpec; 20] = [
     CommandSpec {
         command: StudioCommand::SaveFile,
         title: "File: Save",
@@ -155,6 +158,11 @@ const REGISTRY: [CommandSpec; 19] = [
         command: StudioCommand::ShowRustWorkspaceSymbols,
         title: "Navigation: Rust Workspace Symbols",
         search_terms: "language rust analyzer project functions types",
+    },
+    CommandSpec {
+        command: StudioCommand::ReloadSettings,
+        title: "Preferences: Reload Settings",
+        search_terms: "configuration theme keymap refresh",
     },
     CommandSpec {
         command: StudioCommand::ToggleFileTree,
@@ -681,7 +689,7 @@ mod tests {
 
     #[test]
     fn locked_registry_query_and_memory_limits_are_exact() -> Result<(), Box<dyn Error>> {
-        assert_eq!(REGISTRY.len(), 19);
+        assert_eq!(REGISTRY.len(), 20);
         assert!(REGISTRY.len() <= MAX_COMMANDS);
         let mut palette = CommandPalette::default();
         assert!(palette.open(all_available())?);
@@ -762,14 +770,14 @@ mod tests {
             ..CommandContext::default()
         };
         palette.open(save_only)?;
-        assert_eq!(palette.visible_commands()?.len(), 3);
+        assert_eq!(palette.visible_commands()?.len(), 4);
         let unavailable = CommandContext::default();
         assert!(matches!(
             palette.execute_selected(unavailable),
             Err(CommandPaletteError::Unavailable(StudioCommand::SaveFile))
         ));
         assert!(palette.is_open());
-        assert_eq!(palette.report().retained_matches, 2);
+        assert_eq!(palette.report().retained_matches, 3);
         Ok(())
     }
 

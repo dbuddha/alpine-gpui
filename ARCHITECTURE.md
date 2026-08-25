@@ -191,6 +191,18 @@ exact target snapshot before changing the active tab. Command-palette,
 keyboard, scene, and accessibility paths share that owner and add no network,
 remote URI, plugin, AI, cloud, telemetry, or general framework boundary.
 
+Task #222 keeps configuration local, static, and off the input and render path.
+One optional global JSON file and one optional project JSON file load through
+the existing bounded worker pool. The coalescing owner permits one in-flight
+generation; only the exact submitted and latest requested generation can
+publish. The closed versioned decoder caps files, paths, depth, values, strings,
+bindings, font names, and retained settings. Active state changes only after a
+complete compiled-then-global-then-project candidate validates, so parse,
+migration, concurrent-edit, stale-result, allocation, and settings-validation
+failure preserve the previous snapshot and all document and workspace state.
+No dynamic registry, watcher, timer, plugin, extension, executable config,
+network, AI, cloud, account, or telemetry boundary exists.
+
 Task #221 adds one private document and workspace symbol picker to that same
 session. Requests retain exact workspace, document, buffer, selection, process,
 protocol-version, request, and query-revision identity, and query supersession

@@ -68,13 +68,6 @@ mod rust_symbols;
 )]
 mod rust_workspace_edit;
 mod session;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Task #129 stages typed reload admission before the approved parser and watcher slice"
-    )
-)]
 mod settings;
 mod syntax;
 
@@ -1000,6 +993,14 @@ impl ExplicitPathTarget {
                     .checked_add(1)
                     .ok_or(RecoveryLaunchError::TargetComposition)?;
                 app.workspace = Some(workspace);
+                if let Err(error) = app
+                    .settings_reload
+                    .replace_project(app.workspace.as_ref().map(Workspace::root))
+                {
+                    app.local_status = Some(LocalStatus::Command(Arc::from(format!(
+                        "Settings project override failed: {error}"
+                    ))));
+                }
                 app.active_workspace_entry = None;
                 app.file_tree = FileTreeState::default();
                 app.prime_workspace_launch()
@@ -1644,6 +1645,7 @@ macro_rules! force_project_search_submission_failure {
 
 struct StudioApp {
     settings: SettingsState,
+    settings_reload: settings::SettingsReload,
     document: StudioDocument,
     tabs: DocumentTabs<StudioDocument>,
     workspace: Option<Workspace>,
@@ -1717,6 +1719,10 @@ struct StudioApp {
     force_command_clip_failure: Option<()>,
     #[cfg(test)]
     force_empty_navigation_result: Option<()>,
+}
+
+fn settings_reload_for(workspace: Option<&Workspace>) -> settings::SettingsReload {
+    settings::SettingsReload::new(std::env::var_os("HOME"), workspace.map(Workspace::root))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1881,6 +1887,7 @@ impl StudioApp {
         workspace: Option<Workspace>,
     ) -> Result<Self, SurfaceError> {
         let settings = SettingsState::compiled().map_err(|_| APPLICATION_INVARIANT)?;
+        let settings_reload = settings_reload_for(workspace.as_ref());
         let last_viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(APPLICATION_INVARIANT)?;
         let layout_budget =
             NonZeroUsize::new(DEFAULT_LAYOUT_BUDGET_BYTES).ok_or(APPLICATION_INVARIANT)?;
@@ -1902,6 +1909,7 @@ impl StudioApp {
         let text_system = MeasuredTextSystem::new(text_system, profiler.enabled());
         Ok(Self {
             settings,
+            settings_reload,
             document,
             tabs,
             workspace,
@@ -4404,6 +4412,7 @@ impl StudioApp {
     fn dispatch_command(&mut self, command: StudioCommand) -> EventEffect {
         match command {
             StudioCommand::SaveFile => self.save_document(),
+            StudioCommand::ReloadSettings => self.request_settings_reload(),
             StudioCommand::CloseTab => self.close_active_tab_or_record(),
             StudioCommand::NavigateBack => self.navigate_document_history(false),
             StudioCommand::NavigateForward => self.navigate_document_history(true),
@@ -4550,6 +4559,60 @@ impl StudioApp {
             format!("Command palette failed: {error}").into(),
         ))
         .merge(EventEffect::visual())
+    }
+
+    fn request_settings_reload(&mut self) -> EventEffect {
+        match self.settings_reload.request(true) {
+            Ok(_) => self.set_local_status(LocalStatus::Command(Arc::from("Reloading settings."))),
+            Err(error) => self.set_local_status(LocalStatus::Command(Arc::from(format!(
+                "Settings reload failed: {error}"
+            )))),
+        }
+    }
+
+    fn apply_settings_output(&mut self, output: settings::SettingsLoadOutput) -> EventEffect {
+        match self.settings_reload.admit(output, &mut self.settings) {
+            settings::SettingsReloadAdmission::Applied {
+                effect,
+                revision,
+                migrations,
+                announce,
+            } => {
+                let mut visual_changed = effect.typography
+                    || effect.theme
+                    || (effect.keymap && self.command_palette.is_open());
+                if announce {
+                    self.local_status = Some(LocalStatus::Command(Arc::from(format!(
+                        "Settings reloaded at revision {revision} ({migrations} migrations)."
+                    ))));
+                    visual_changed = true;
+                }
+                visual_changed.then(EventEffect::visual).unwrap_or_default()
+            }
+            settings::SettingsReloadAdmission::Unchanged {
+                revision,
+                migrations,
+                announce,
+            } => {
+                if announce {
+                    self.set_local_status(LocalStatus::Command(Arc::from(format!(
+                        "Settings unchanged at revision {revision} ({migrations} migrations)."
+                    ))))
+                } else {
+                    EventEffect::default()
+                }
+            }
+            settings::SettingsReloadAdmission::Stale => EventEffect::default(),
+            settings::SettingsReloadAdmission::Failed(failure) => self.set_local_status(
+                LocalStatus::Command(Arc::from(format!("Settings reload failed: {failure}"))),
+            ),
+            settings::SettingsReloadAdmission::Rejected(failure) => {
+                self.set_local_status(LocalStatus::Command(Arc::from(format!(
+                    "Settings reload rejected ({:?}): {}",
+                    failure.source, failure.error
+                ))))
+            }
+        }
     }
 
     fn record_project_search_error(&mut self, error: &ProjectSearchError) -> EventEffect {
@@ -6057,6 +6120,7 @@ impl StudioApp {
         self.submit_quick_open_request(context);
         self.submit_project_search_request(context);
         self.submit_file_tree_request(context);
+        self.submit_settings_request(context);
         self.publish_recovery();
         self.record_profile(
             StudioSignpostStage::StateMutationComplete,
@@ -6083,6 +6147,7 @@ enum StudioWorkerOutput {
     QuickOpen(QuickOpenWorkerOutput),
     ProjectSearch(ProjectSearchWorkerOutput),
     FileTree(FileTreeWorkerOutput),
+    Settings(Box<settings::SettingsLoadOutput>),
     Language(LanguageWake),
 }
 
@@ -6150,6 +6215,7 @@ impl AppDelegate for StudioApp {
             StudioWorkerOutput::QuickOpen(result) => self.apply_quick_open_output(result),
             StudioWorkerOutput::ProjectSearch(result) => self.apply_project_search_output(result),
             StudioWorkerOutput::FileTree(result) => self.apply_file_tree_output(result),
+            StudioWorkerOutput::Settings(result) => self.apply_settings_output(*result),
             StudioWorkerOutput::Language(wake) => {
                 #[cfg(all(alpine_native_validation, not(test)))]
                 NATIVE_VALIDATION_LANGUAGE_FOREGROUND_RESULTS
@@ -6225,6 +6291,7 @@ impl AppDelegate for StudioApp {
         self.submit_quick_open_request(context);
         self.submit_project_search_request(context);
         self.submit_file_tree_request(context);
+        self.submit_settings_request(context);
         self.publish_recovery();
     }
 
@@ -6259,6 +6326,24 @@ fn accessibility_admission_failures(current: u64, admitted: bool) -> u64 {
 }
 
 impl StudioApp {
+    fn submit_settings_request(&mut self, context: &mut AppContext<'_, StudioWorkerOutput>) {
+        let Some(request) = self.settings_reload.take_request() else {
+            return;
+        };
+        let generation = request.generation();
+        let announce = request.announce();
+        if context
+            .spawn(move || StudioWorkerOutput::Settings(Box::new(request.execute())))
+            .is_err()
+            && let Err(error) = self.settings_reload.reject_submission(generation, announce)
+        {
+            self.local_status = Some(LocalStatus::Command(Arc::from(format!(
+                "Settings reload failed: {error}"
+            ))));
+            context.invalidate();
+        }
+    }
+
     fn submit_file_tree_request(&mut self, context: &mut AppContext<'_, StudioWorkerOutput>) {
         match self.prepare_file_tree_request() {
             Ok(Some(request)) => {
@@ -7804,6 +7889,10 @@ mod project_search_tests;
 #[cfg(test)]
 #[path = "studio_coverage_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "settings_reload_tests.rs"]
+mod settings_reload_tests;
 
 #[cfg(test)]
 #[path = "rust_diagnostics_scene_tests.rs"]

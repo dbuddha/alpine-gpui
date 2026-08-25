@@ -1,5 +1,9 @@
 //! Compiled, validated Studio settings without runtime registration.
 
+mod loader;
+
+pub(crate) use loader::{SettingsLoadOutput, SettingsReload, SettingsReloadAdmission};
+
 use std::{borrow::Cow, error::Error, fmt, mem::size_of};
 
 use alpine_core::LinearRgba;

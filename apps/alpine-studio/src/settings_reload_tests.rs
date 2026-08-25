@@ -1,0 +1,132 @@
+use std::{
+    error::Error,
+    fs,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+use super::*;
+
+static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+struct TestRoot(PathBuf);
+
+impl TestRoot {
+    fn new() -> std::io::Result<Self> {
+        let id = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("alpine-settings-app-{}-{id}", std::process::id()));
+        fs::create_dir_all(&path)?;
+        Ok(Self(path))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TestRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn production_application_admission_preserves_editor_and_workspace_state()
+-> Result<(), Box<dyn Error>> {
+    let root = TestRoot::new()?;
+    fs::write(root.path().join("main.rs"), "fn main() {}\n")?;
+    let settings_path = root.path().join(".alpine/settings.json");
+    fs::create_dir_all(settings_path.parent().ok_or("missing settings parent")?)?;
+    fs::write(
+        &settings_path,
+        br#"{"version":1,"editor":{"font_size":19,"tab_columns":2},"theme":{"caret":[0.2,0.4,0.6,1.0]}}"#,
+    )?;
+    let mut app = StudioApp::open_workspace(tests::TestTextSystem, root.path())?;
+    app.settings_reload = settings::SettingsReload::explicit(None, Some(settings_path));
+    let document_revision = app.runtime_document_revision;
+    let workspace_revision = app.runtime_workspace_revision;
+    let selection = app.selection;
+    let active_tab = app.tabs.active_id()?;
+    let workspace_root = app
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.root().to_path_buf());
+    let request = app
+        .settings_reload
+        .take_request()
+        .ok_or("missing settings request")?;
+    let effect = app.apply_settings_output(request.execute());
+    assert!(effect.visual_changed);
+    assert!((app.settings.active().editor.font_size - 19.0).abs() < f32::EPSILON);
+    assert_eq!(app.settings.active().editor.tab_columns, 2);
+    assert_eq!(app.runtime_document_revision, document_revision);
+    assert_eq!(app.runtime_workspace_revision, workspace_revision);
+    assert_eq!(app.selection, selection);
+    assert_eq!(app.tabs.active_id()?, active_tab);
+    assert_eq!(
+        app.workspace
+            .as_ref()
+            .map(|workspace| workspace.root().to_path_buf()),
+        workspace_root
+    );
+    assert_eq!(app.local_status, None);
+    Ok(())
+}
+
+#[test]
+fn command_reload_announces_but_startup_keymap_only_does_not_redraw() -> Result<(), Box<dyn Error>>
+{
+    let root = TestRoot::new()?;
+    let path = root.path().join("settings.json");
+    fs::write(
+        &path,
+        br#"{"version":1,"keymap":{"bindings":[{"physical_key":1,"modifiers":["command"],"action":"save_file","label":"Cmd+S"}]}}"#,
+    )?;
+    let mut app = StudioApp::new(tests::TestTextSystem)?;
+    app.settings_reload = settings::SettingsReload::explicit(Some(path), None);
+    let startup = app
+        .settings_reload
+        .take_request()
+        .ok_or("missing startup request")?;
+    assert_eq!(
+        app.apply_settings_output(startup.execute()),
+        EventEffect::default()
+    );
+    assert_eq!(app.request_settings_reload(), EventEffect::visual());
+    let manual = app
+        .settings_reload
+        .take_request()
+        .ok_or("missing manual request")?;
+    assert_eq!(
+        app.apply_settings_output(manual.execute()),
+        EventEffect::visual()
+    );
+    assert!(matches!(app.local_status, Some(LocalStatus::Command(_))));
+    Ok(())
+}
+
+#[test]
+fn failed_application_reload_keeps_the_previous_settings_snapshot() -> Result<(), Box<dyn Error>> {
+    let root = TestRoot::new()?;
+    let path = root.path().join("settings.json");
+    fs::write(&path, br#"{"version":1,"editor":{"font_size":17}}"#)?;
+    let mut app = StudioApp::new(tests::TestTextSystem)?;
+    app.settings_reload = settings::SettingsReload::explicit(Some(path.clone()), None);
+    let accepted = app
+        .settings_reload
+        .take_request()
+        .ok_or("missing accepted request")?;
+    assert!(app.apply_settings_output(accepted.execute()).visual_changed);
+    let previous = app.settings.active().clone();
+    fs::write(&path, br#"{"version":99}"#)?;
+    app.settings_reload.request(true)?;
+    let rejected = app
+        .settings_reload
+        .take_request()
+        .ok_or("missing rejected request")?;
+    assert!(app.apply_settings_output(rejected.execute()).visual_changed);
+    assert_eq!(app.settings.active(), &previous);
+    assert!(matches!(app.local_status, Some(LocalStatus::Command(_))));
+    Ok(())
+}

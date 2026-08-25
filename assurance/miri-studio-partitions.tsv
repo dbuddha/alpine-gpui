@@ -34,6 +34,7 @@ rust_workspace_edit::	studio-language-workspace-edit
 session::	studio-persistence
 session_integration_tests::	studio-persistence
 settings::	studio-model
+settings_reload_tests::	studio-model
 syntax::	studio-model
 tests::accessibility_non_identity_state_and_every_focus_owner_are_exact	studio-app-01
 tests::accessibility_document_action_advances_runtime_authority	studio-app-01
