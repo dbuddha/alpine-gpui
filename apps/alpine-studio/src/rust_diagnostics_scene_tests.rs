@@ -350,10 +350,16 @@ fn navigation_overlay_keyboard_and_accessibility_use_validated_product_paths()
     Ok(())
 }
 
-#[test]
 #[cfg(unix)]
-fn symbol_overlay_keyboard_accessibility_and_checked_navigation_are_exact()
--> Result<(), Box<dyn Error>> {
+struct SymbolSceneFixture {
+    root: PathBuf,
+    app: StudioApp,
+    identity: LanguageIdentity,
+    symbols: Box<RawValue>,
+}
+
+#[cfg(unix)]
+fn installed_symbol_scene() -> Result<SymbolSceneFixture, Box<dyn Error>> {
     let root = std::env::temp_dir().join(format!(
         "alpine-symbol-scene-{}-{}",
         std::process::id(),
@@ -381,6 +387,23 @@ fn symbol_overlay_keyboard_accessibility_and_checked_navigation_are_exact()
         SymbolRequestKind::Workspace,
         &symbols,
     )?;
+    Ok(SymbolSceneFixture {
+        root,
+        app,
+        identity,
+        symbols,
+    })
+}
+
+#[test]
+#[cfg(unix)]
+fn symbol_overlay_scene_ime_and_key_guards_are_exact() -> Result<(), Box<dyn Error>> {
+    let SymbolSceneFixture {
+        root,
+        mut app,
+        identity,
+        symbols,
+    } = installed_symbol_scene()?;
     let viewport = Size::new(640.0, 360.0).ok_or("viewport")?;
     let baseline = app.scene(SceneRevision::new(40), viewport);
     let report = app
@@ -392,6 +415,61 @@ fn symbol_overlay_keyboard_accessibility_and_checked_navigation_are_exact()
     assert!(report.retained_bytes <= crate::rust_symbols::MAX_SYMBOL_RETAINED_BYTES);
     assert!(baseline.clips().len() > 1);
 
+    assert!(app.handle_ime(&ImeEvent::Started).visual_changed);
+    assert!(
+        app.handle_ime(&ImeEvent::Updated {
+            text: "a".into(),
+            selected_start_utf16: 1,
+            selected_length_utf16: 0,
+        })
+        .visual_changed
+    );
+    let queried = app.scene(SceneRevision::new(41), viewport);
+    assert!(!queried.glyphs().is_empty());
+    let failures = app.input_failures;
+    assert!(
+        app.handle_ime(&ImeEvent::Updated {
+            text: "x".into(),
+            selected_start_utf16: 2,
+            selected_length_utf16: 0,
+        })
+        .visual_changed
+    );
+    assert_eq!(app.input_failures, failures + 1);
+    assert!(app.handle_ime(&ImeEvent::Cancelled).visual_changed);
+    assert!(app.handle_ime(&ImeEvent::Started).visual_changed);
+    assert!(app.cancel_focused_composition().visual_changed);
+    assert!(app.handle_ime(&ImeEvent::Started).visual_changed);
+    assert!(
+        app.handle_ime(&ImeEvent::Committed("b".into()))
+            .visual_changed
+    );
+    app.rust_diagnostics.install_symbols_for_test(
+        identity,
+        SymbolRequestKind::Workspace,
+        &symbols,
+    )?;
+    assert_eq!(
+        app.handle_symbol_key(KEY_DELETE_BACKWARD, false),
+        Some(EventEffect::default())
+    );
+    assert_eq!(
+        app.handle_symbol_key(KEY_HOME, false),
+        Some(EventEffect::default())
+    );
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn symbol_overlay_accessibility_and_checked_navigation_are_exact() -> Result<(), Box<dyn Error>> {
+    let SymbolSceneFixture {
+        root,
+        mut app,
+        identity,
+        symbols,
+    } = installed_symbol_scene()?;
     let snapshot = app.accessibility_snapshot()?;
     let symbol_node = snapshot
         .nodes()
@@ -422,6 +500,42 @@ fn symbol_overlay_keyboard_accessibility_and_checked_navigation_are_exact()
     assert!(
         !app.rust_diagnostics
             .symbols_are_open(app.language_identity())
+    );
+
+    app.composition = Some(Composition {
+        replacement: app.selection.range(),
+        text: Box::default(),
+        selected_start_utf16: 0,
+        selected_length_utf16: 0,
+    });
+    assert_eq!(
+        app.trigger_rust_symbols(SymbolRequestKind::Document),
+        EventEffect::default()
+    );
+    app.composition = None;
+
+    let empty: Box<RawValue> = serde_json::from_str("[]")?;
+    app.rust_diagnostics.install_symbols_for_test(
+        app.language_identity(),
+        SymbolRequestKind::Workspace,
+        &empty,
+    )?;
+    assert_eq!(
+        app.handle_symbol_key(KEY_RETURN, false),
+        Some(EventEffect::default())
+    );
+
+    let outside: Box<RawValue> = serde_json::from_str(
+        r#"[{"name":"outside","kind":12,"location":{"uri":"file:///outside.rs","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}}]"#,
+    )?;
+    app.rust_diagnostics.install_symbols_for_test(
+        app.language_identity(),
+        SymbolRequestKind::Workspace,
+        &outside,
+    )?;
+    assert!(
+        app.handle_symbol_key(KEY_RETURN, false)
+            .is_some_and(|effect| effect.visual_changed)
     );
 
     app.rust_diagnostics.install_symbols_for_test(

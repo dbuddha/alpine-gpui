@@ -149,6 +149,15 @@ impl SymbolBatch {
     pub(crate) fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
+
+    #[cfg(test)]
+    pub(crate) fn oversized_for_test() -> Self {
+        Self {
+            items: Box::new([]),
+            retained_bytes: MAX_SYMBOL_RETAINED_BYTES.saturating_add(1),
+            omitted: 0,
+        }
+    }
 }
 
 struct SymbolCollector {
@@ -498,11 +507,10 @@ impl SymbolPicker {
 
     pub(crate) fn display_text(&self) -> Result<String, SymbolError> {
         let composition = self.composition.as_deref().unwrap_or_default();
-        let bytes = self
-            .query
-            .len()
-            .checked_add(composition.len())
-            .ok_or(SymbolError::QueryTooLong)?;
+        let bytes = self.query.len().saturating_add(composition.len());
+        if bytes > MAX_SYMBOL_QUERY_BYTES {
+            return Err(SymbolError::QueryTooLong);
+        }
         let mut value = bounded_string(bytes)?;
         value.push_str(&self.query);
         value.push_str(composition);
@@ -908,5 +916,148 @@ mod tests {
             workspace_symbol_params("main").map(|value| value.get().to_owned()),
             Ok(r#"{"query":"main"}"#.to_owned())
         );
+    }
+
+    #[test]
+    fn defensive_labels_errors_and_wire_edges_are_explicit() {
+        assert_eq!(SymbolRequestKind::Document.label(), "Rust document symbols");
+        assert_eq!(
+            SymbolRequestKind::Workspace.label(),
+            "Rust workspace symbols"
+        );
+        assert_eq!(
+            SymbolRequestKind::Document.empty_status(),
+            "No Rust document symbols."
+        );
+        assert_eq!(
+            SymbolRequestKind::Workspace.empty_status(),
+            "No Rust workspace symbols."
+        );
+        assert_eq!(
+            SymbolBatch::admit(SymbolRequestKind::Document, &raw("null"), URI),
+            Ok(SymbolBatch::empty())
+        );
+        assert_eq!(optional_label(None), Ok(None));
+        assert_eq!(
+            optional_label(Some(&Value::String(String::new()))),
+            Ok(None)
+        );
+        assert_eq!(
+            display_label(1, &"x".repeat(MAX_SYMBOL_LABEL_BYTES), None),
+            Err(SymbolError::LabelTooLong)
+        );
+        for error in [
+            SymbolError::WireTooLarge,
+            SymbolError::Malformed,
+            SymbolError::InvalidKind,
+            SymbolError::InvalidRange,
+            SymbolError::HierarchyTooDeep,
+            SymbolError::LabelTooLong,
+            SymbolError::QueryTooLong,
+            SymbolError::InvalidComposition,
+            SymbolError::RevisionExhausted,
+            SymbolError::RetentionExceeded,
+            SymbolError::AllocationFailed,
+            SymbolError::Navigation(NavigationError::InvalidUtf8),
+        ] {
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("Rust symbols rejected input:")
+            );
+        }
+    }
+
+    #[test]
+    fn picker_defensive_state_transitions_are_atomic() {
+        let mut picker = SymbolPicker::new(SymbolRequestKind::Workspace);
+        assert!(!picker.clear_results());
+        assert_eq!(
+            picker.admit(SymbolBatch::oversized_for_test()),
+            Err(SymbolError::RetentionExceeded)
+        );
+        assert_eq!(picker.commit_text(""), Ok(false));
+        assert_eq!(picker.commit_text("\n"), Err(SymbolError::QueryTooLong));
+        assert_eq!(
+            picker.commit_text(&"x".repeat(MAX_SYMBOL_QUERY_BYTES + 1)),
+            Err(SymbolError::QueryTooLong)
+        );
+        assert_eq!(picker.delete_backward(), Ok(false));
+        assert!(!picker.navigate(1));
+        assert!(picker.begin_composition());
+        assert!(!picker.begin_composition());
+        assert_eq!(
+            picker.update_composition("x", u32::MAX, 1),
+            Err(SymbolError::InvalidComposition)
+        );
+        assert_eq!(
+            picker.update_composition("x", 2, 0),
+            Err(SymbolError::InvalidComposition)
+        );
+        assert_eq!(
+            picker.update_composition("\n", 0, 0),
+            Err(SymbolError::InvalidComposition)
+        );
+        assert_eq!(picker.update_composition("x", 1, 0), Ok(true));
+        assert_eq!(picker.update_composition("x", 1, 0), Ok(false));
+        picker.query = "x".repeat(MAX_SYMBOL_QUERY_BYTES);
+        assert_eq!(
+            picker.update_composition("y", 1, 0),
+            Err(SymbolError::InvalidComposition)
+        );
+        assert_eq!(picker.display_text(), Err(SymbolError::QueryTooLong));
+        picker.query.clear();
+        assert!(picker.cancel_composition());
+        assert!(!picker.cancel_composition());
+
+        picker.query_revision = u64::MAX;
+        assert_eq!(picker.commit_text("x"), Err(SymbolError::RevisionExhausted));
+        picker.query_revision = 1;
+        picker.batch = SymbolBatch::oversized_for_test();
+        assert_eq!(picker.commit_text("x"), Err(SymbolError::RetentionExceeded));
+        assert!(picker.query().is_empty());
+        assert_eq!(
+            bounded_string(usize::MAX),
+            Err(SymbolError::AllocationFailed)
+        );
+    }
+
+    #[test]
+    fn picker_scrolling_matching_and_parameter_edges_are_discriminating() {
+        let values = (0..20)
+            .map(|index| format!(
+                r#"{{"name":"item-{index:02}","kind":12,"location":{{"uri":"{URI}","range":{{"start":{{"line":{index},"character":0}},"end":{{"line":{index},"character":1}}}}}}}}"#
+            ))
+            .collect::<Vec<_>>()
+            .join(",");
+        let batch = SymbolBatch::admit(
+            SymbolRequestKind::Workspace,
+            &raw(&format!("[{values}]")),
+            URI,
+        )
+        .unwrap_or_else(|_| unreachable!());
+        let mut picker = SymbolPicker::new(SymbolRequestKind::Workspace);
+        picker.admit(batch).unwrap_or_else(|_| unreachable!());
+        assert!(picker.navigate(isize::MAX));
+        assert_eq!(picker.visible_range(), 8..20);
+        assert!(picker.navigate(isize::MIN));
+        assert_eq!(picker.visible_range(), 0..12);
+        assert_eq!(bounded_index(9, 0, -1), 0);
+        assert_eq!(match_score("  Alpha", "alpha"), Some((0, 0)));
+        assert_eq!(match_score("alphabet", "alp"), Some((1, 0)));
+        assert_eq!(match_score("xxalpha", "alpha"), Some((2, 2)));
+        assert_eq!(match_score("alphaBeta", "aB"), Some((2, 4)));
+        assert_eq!(ascii_find("short", "longer"), None);
+        assert_eq!(ascii_find("éa", "a"), Some(2));
+        assert!(symbol_character_equal('A', 'a'));
+        assert!(!symbol_character_equal('é', 'É'));
+        assert!(matches!(
+            workspace_symbol_params("\n"),
+            Err(SymbolError::QueryTooLong)
+        ));
+        assert!(matches!(
+            workspace_symbol_params(&"x".repeat(MAX_SYMBOL_QUERY_BYTES + 1)),
+            Err(SymbolError::QueryTooLong)
+        ));
     }
 }

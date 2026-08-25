@@ -4899,7 +4899,7 @@ companion = "apps/alpine-studio/src/rust_symbols.rs#picker_ranking_query_composi
 id = "EV-0221-UNIT03"
 claim = "AEP-0221-C03"
 kind = "unit"
-artifact = "apps/alpine-studio/src/rust_diagnostics_scene_tests.rs#symbol_overlay_keyboard_accessibility_and_checked_navigation_are_exact"
+artifact = "apps/alpine-studio/src/rust_diagnostics_scene_tests.rs#symbol_overlay_accessibility_and_checked_navigation_are_exact"
 assertion = "The production Studio composition projects one bounded focused symbol dialog, navigates by keyboard, activates through current accessibility identity, and reaches the checked local source range."
 scope = "One local Rust document, two symbols, one scene, keyboard selection, accessibility activation, and local navigation."
 bounds = ["two symbol rows", "one dialog node", "one selected local range"]
@@ -4963,7 +4963,7 @@ scope = "Finite response, identity, query, selection, navigation, focus, and clo
 bounds = ["pull request: four identities and requests", "nightly: eight identities and requests"]
 assumptions = ["Checked Rust path and coordinate conversion succeeds before modeled navigation."]
 exclusions = ["filesystem identity", "UTF-16 conversion", "Rust refinement"]
-companion = "apps/alpine-studio/src/rust_diagnostics_scene_tests.rs#symbol_overlay_keyboard_accessibility_and_checked_navigation_are_exact"
+companion = "apps/alpine-studio/src/rust_diagnostics_scene_tests.rs#symbol_overlay_accessibility_and_checked_navigation_are_exact"
 
 [[claims]]
 id = "AEP-0268-C01"

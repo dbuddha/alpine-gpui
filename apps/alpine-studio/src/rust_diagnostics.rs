@@ -2000,25 +2000,21 @@ impl RustDiagnostics {
             self.stale_symbols = self.stale_symbols.saturating_add(1);
             return false;
         };
-        let current_query_revision = session
-            .symbols
-            .as_ref()
-            .map(|symbols| symbols.picker.query_revision());
+        let Some(symbols) = session.symbols.as_mut() else {
+            self.stale_symbols = self.stale_symbols.saturating_add(1);
+            return false;
+        };
         if pending.request_id != id
             || pending.stamp != stamp
             || pending.kind != kind
             || pending.identity != session.identity
             || pending.process_epoch != session.process_epoch
             || pending.lsp_version != session.lsp_version
-            || current_query_revision != Some(pending.query_revision)
+            || symbols.picker.query_revision() != pending.query_revision
         {
             self.stale_symbols = self.stale_symbols.saturating_add(1);
             return false;
         }
-        let Some(symbols) = session.symbols.as_mut() else {
-            self.stale_symbols = self.stale_symbols.saturating_add(1);
-            return false;
-        };
         let batch = match candidate {
             Ok(batch) => batch,
             Err(error) => {
