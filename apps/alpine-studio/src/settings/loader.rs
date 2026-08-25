@@ -1211,6 +1211,29 @@ mod tests {
         assert_eq!(loaded.update.global, None);
         assert_eq!(loaded.update.project, None);
         assert_eq!(loaded.report, DecodeReport::default());
+        let mut transitions = SettingsPaths::new(None, None);
+        assert!(!transitions.replace_project(None));
+        assert!(transitions.replace_project(Some(Path::new("/tmp/alpine-project"))));
+        assert!(!transitions.replace_project(Some(Path::new("/tmp/alpine-project"))));
+        assert!(transitions.replace_project(Some(Path::new("/tmp/alpine-other-project"))));
+        assert_eq!(
+            transitions.project?,
+            Some(PathBuf::from(
+                "/tmp/alpine-other-project/.alpine/settings.json"
+            ))
+        );
+        assert_eq!(
+            SettingsLoadError::InvalidValue("editor.font_size").to_string(),
+            "settings field editor.font_size is invalid"
+        );
+        assert_eq!(
+            SettingsLoadFailure {
+                source: SettingsSource::Project,
+                error: SettingsLoadError::UnknownVersion(9),
+            }
+            .to_string(),
+            "Project settings: settings version 9 is unsupported"
+        );
         Ok(())
     }
 

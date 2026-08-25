@@ -84,7 +84,7 @@ fn command_reload_announces_but_startup_keymap_only_does_not_redraw() -> Result<
         br#"{"version":1,"keymap":{"bindings":[{"physical_key":1,"modifiers":["command"],"action":"save_file","label":"Cmd+S"}]}}"#,
     )?;
     let mut app = StudioApp::new(tests::TestTextSystem)?;
-    app.settings_reload = settings::SettingsReload::explicit(Some(path), None);
+    app.settings_reload = settings::SettingsReload::explicit(Some(path.clone()), None);
     let startup = app
         .settings_reload
         .take_request()
@@ -92,6 +92,21 @@ fn command_reload_announces_but_startup_keymap_only_does_not_redraw() -> Result<
     assert_eq!(
         app.apply_settings_output(startup.execute()),
         EventEffect::default()
+    );
+    let command_context = app.command_context();
+    assert!(app.command_palette.open(command_context)?);
+    fs::write(
+        &path,
+        br#"{"version":1,"keymap":{"bindings":[{"physical_key":2,"modifiers":["command"],"action":"reload_settings","label":"Cmd+R"}]}}"#,
+    )?;
+    app.settings_reload.request(false)?;
+    let palette_update = app
+        .settings_reload
+        .take_request()
+        .ok_or("missing palette settings request")?;
+    assert_eq!(
+        app.apply_settings_output(palette_update.execute()),
+        EventEffect::visual()
     );
     assert_eq!(app.request_settings_reload(), EventEffect::visual());
     let manual = app
@@ -103,6 +118,42 @@ fn command_reload_announces_but_startup_keymap_only_does_not_redraw() -> Result<
         EventEffect::visual()
     );
     assert!(matches!(app.local_status, Some(LocalStatus::Command(_))));
+    Ok(())
+}
+
+#[test]
+fn runtime_dispatch_submits_and_publishes_the_startup_settings_request()
+-> Result<(), Box<dyn Error>> {
+    let root = TestRoot::new()?;
+    let path = root.path().join("settings.json");
+    fs::write(&path, br#"{"version":1,"editor":{"font_size":19}}"#)?;
+    let mut app = StudioApp::new(tests::TestTextSystem)?;
+    app.settings_reload = settings::SettingsReload::explicit(Some(path), None);
+    let viewport = Size::new(800.0, 600.0).ok_or("invalid viewport")?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("invalid clear color")?;
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    assert!(runtime.frame_if_dirty().is_some());
+    assert!(runtime.frame_if_dirty().is_none());
+    let _ = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(1),
+    });
+    assert_eq!(runtime.snapshot().worker().peak_queued_requests(), 1);
+    let mut published = false;
+    for timestamp in 2..514 {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        if runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(timestamp),
+            })
+            .is_some()
+        {
+            published = true;
+            break;
+        }
+    }
+    assert!(published);
+    assert_eq!(runtime.snapshot().worker().queued_requests(), 0);
+    assert_eq!(runtime.snapshot().worker().queued_results(), 0);
     Ok(())
 }
 
