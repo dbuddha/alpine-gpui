@@ -523,7 +523,7 @@ impl SymbolPicker {
         }
         let previous = self.selected;
         self.selected = bounded_index(self.selected, self.matches.len(), delta);
-        if self.selected < self.first_visible {
+        if selection_precedes_visible(self.selected, self.first_visible) {
             self.first_visible = self.selected;
         } else if self.selected >= self.first_visible.saturating_add(MAX_VISIBLE_SYMBOL_ROWS) {
             self.first_visible = self
@@ -623,6 +623,10 @@ impl SymbolPicker {
     fn update_peak(&mut self) {
         self.peak_retained_bytes = self.peak_retained_bytes.max(self.retained_bytes());
     }
+}
+
+const fn selection_precedes_visible(selected: usize, first_visible: usize) -> bool {
+    selected < first_visible
 }
 
 fn bounded_string(capacity: usize) -> Result<String, SymbolError> {
@@ -741,6 +745,7 @@ pub(crate) fn workspace_symbol_params(query: &str) -> Result<Box<RawValue>, Symb
 mod proofs {
     use super::*;
 
+    #[cfg_attr(test, mutants::skip)] // The dedicated Kani gate executes this proof and its faulty controls.
     #[kani::proof]
     fn symbol_selection_window_remains_bounded() {
         let count: usize = kani::any();
@@ -851,6 +856,14 @@ mod tests {
             SymbolBatch::admit(SymbolRequestKind::Document, &oversized, URI),
             Err(SymbolError::WireTooLarge)
         );
+        let exact_wire = raw(&format!(
+            "{}[]",
+            " ".repeat(MAX_SYMBOL_WIRE_BYTES.saturating_sub(2))
+        ));
+        assert!(
+            SymbolBatch::admit(SymbolRequestKind::Document, &exact_wire, URI)
+                .is_ok_and(|batch| batch.is_empty())
+        );
         let long_label = raw(&format!(
             r#"[{{"name":"{}","kind":12,"range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":1}}}},"selectionRange":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":1}}}}}}]"#,
             "x".repeat(MAX_SYMBOL_LABEL_BYTES + 1)
@@ -872,6 +885,11 @@ mod tests {
         .unwrap_or_else(|_| unreachable!());
         let mut collector = SymbolCollector::new().unwrap_or_else(|_| unreachable!());
         assert_eq!(
+            collector.visit_document(&value, URI, MAX_SYMBOL_DEPTH),
+            Ok(())
+        );
+        assert_eq!(collector.items.len(), 1);
+        assert_eq!(
             collector.visit_document(&value, URI, MAX_SYMBOL_DEPTH + 1),
             Err(SymbolError::HierarchyTooDeep)
         );
@@ -891,6 +909,7 @@ mod tests {
             URI,
         )
         .unwrap_or_else(|_| unreachable!());
+        assert!(!batch.is_empty());
         assert_eq!(batch.len(), MAX_SYMBOL_ITEMS);
         assert_eq!(batch.omitted(), 3);
         assert!(batch.retained_bytes() <= MAX_SYMBOL_BATCH_RETAINED_BYTES);
@@ -920,6 +939,15 @@ mod tests {
 
     #[test]
     fn defensive_labels_errors_and_wire_edges_are_explicit() {
+        assert_eq!(MAX_SYMBOL_ITEMS, 512);
+        assert_eq!(MAX_SYMBOL_QUERY_BYTES, 256);
+        assert_eq!(MAX_SYMBOL_RETAINED_BYTES, 512 * 1_024);
+        assert_eq!(
+            MAX_SYMBOL_BATCH_RETAINED_BYTES
+                + MAX_SYMBOL_ITEMS * size_of::<SymbolMatch>()
+                + 2 * MAX_SYMBOL_QUERY_BYTES,
+            MAX_SYMBOL_RETAINED_BYTES
+        );
         assert_eq!(SymbolRequestKind::Document.label(), "Rust document symbols");
         assert_eq!(
             SymbolRequestKind::Workspace.label(),
@@ -942,10 +970,44 @@ mod tests {
             optional_label(Some(&Value::String(String::new()))),
             Ok(None)
         );
+        assert_eq!(validate_label(""), Err(SymbolError::LabelTooLong));
+        assert_eq!(validate_label(&"x".repeat(MAX_SYMBOL_LABEL_BYTES)), Ok(()));
+        assert_eq!(
+            validate_label(&"x".repeat(MAX_SYMBOL_LABEL_BYTES + 1)),
+            Err(SymbolError::LabelTooLong)
+        );
+        assert_eq!(validate_label("x\n"), Err(SymbolError::LabelTooLong));
+        assert_eq!(
+            display_label(0, &"x".repeat(MAX_SYMBOL_LABEL_BYTES), None).map(|label| label.len()),
+            Ok(MAX_SYMBOL_LABEL_BYTES)
+        );
         assert_eq!(
             display_label(1, &"x".repeat(MAX_SYMBOL_LABEL_BYTES), None),
             Err(SymbolError::LabelTooLong)
         );
+
+        let one = raw(
+            r#"[{"name":"x","kind":12,"location":{"uri":"file:///tmp/x.rs","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}}]"#,
+        );
+        let batch = SymbolBatch::admit(SymbolRequestKind::Workspace, &one, URI)
+            .unwrap_or_else(|_| unreachable!());
+        let item = batch.items[0].clone();
+        let retained = size_of::<SymbolItem>() + item.label.len() + item.location.uri().len();
+        let mut exact = SymbolCollector::new().unwrap_or_else(|_| unreachable!());
+        exact.retained_bytes = MAX_SYMBOL_BATCH_RETAINED_BYTES - retained;
+        exact
+            .push(item.label.clone(), item.location.clone(), 0)
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(exact.items.len(), 1);
+        assert_eq!(exact.omitted, 0);
+        assert_eq!(exact.retained_bytes, MAX_SYMBOL_BATCH_RETAINED_BYTES);
+
+        let mut over = SymbolCollector::new().unwrap_or_else(|_| unreachable!());
+        over.retained_bytes = MAX_SYMBOL_BATCH_RETAINED_BYTES - retained + 1;
+        over.push(item.label, item.location, 0)
+            .unwrap_or_else(|_| unreachable!());
+        assert!(over.items.is_empty());
+        assert_eq!(over.omitted, 1);
         for error in [
             SymbolError::WireTooLarge,
             SymbolError::Malformed,
@@ -969,14 +1031,60 @@ mod tests {
     }
 
     #[test]
+    // One stateful sequence proves atomic rollback across every picker resource boundary.
+    #[allow(clippy::too_many_lines)]
     fn picker_defensive_state_transitions_are_atomic() {
         let mut picker = SymbolPicker::new(SymbolRequestKind::Workspace);
+        assert_eq!(
+            picker.update_composition("x", 1, 0),
+            Err(SymbolError::InvalidComposition)
+        );
         assert!(!picker.clear_results());
         assert_eq!(
             picker.admit(SymbolBatch::oversized_for_test()),
             Err(SymbolError::RetentionExceeded)
         );
+        let mut exact_admission = SymbolPicker::new(SymbolRequestKind::Workspace);
+        assert_eq!(
+            exact_admission.admit(SymbolBatch {
+                items: Box::new([]),
+                retained_bytes: MAX_SYMBOL_RETAINED_BYTES,
+                omitted: 0,
+            }),
+            Ok(true)
+        );
+        assert_eq!(
+            exact_admission.report().retained_bytes,
+            MAX_SYMBOL_RETAINED_BYTES
+        );
+
+        let one = raw(
+            r#"[{"name":"x","kind":12,"location":{"uri":"file:///tmp/x.rs","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}}]"#,
+        );
+        let mut batch_only = SymbolPicker::new(SymbolRequestKind::Workspace);
+        batch_only
+            .admit(
+                SymbolBatch::admit(SymbolRequestKind::Workspace, &one, URI)
+                    .unwrap_or_else(|_| unreachable!()),
+            )
+            .unwrap_or_else(|_| unreachable!());
+        batch_only.matches.clear();
+        assert!(batch_only.clear_results());
+        let mut matches_only = SymbolPicker::new(SymbolRequestKind::Workspace);
+        matches_only.matches.push(SymbolMatch {
+            item: 0,
+            rank: 0,
+            gaps: 0,
+        });
+        assert!(matches_only.clear_results());
+
         assert_eq!(picker.commit_text(""), Ok(false));
+        let exact_query = "q".repeat(MAX_SYMBOL_QUERY_BYTES);
+        assert_eq!(picker.commit_text(&exact_query), Ok(true));
+        assert_eq!(picker.query_revision(), 2);
+        assert_eq!(picker.display_text(), Ok(exact_query));
+        picker.query.clear();
+        picker.query.shrink_to_fit();
         assert_eq!(picker.commit_text("\n"), Err(SymbolError::QueryTooLong));
         assert_eq!(
             picker.commit_text(&"x".repeat(MAX_SYMBOL_QUERY_BYTES + 1)),
@@ -1010,12 +1118,73 @@ mod tests {
         assert!(picker.cancel_composition());
         assert!(!picker.cancel_composition());
 
+        let mut exact_composed_query = SymbolPicker::new(SymbolRequestKind::Workspace);
+        assert_eq!(
+            exact_composed_query.commit_text(&"q".repeat(MAX_SYMBOL_QUERY_BYTES - 1)),
+            Ok(true)
+        );
+        assert!(exact_composed_query.begin_composition());
+        assert_eq!(exact_composed_query.update_composition("x", 1, 0), Ok(true));
+        assert_eq!(
+            exact_composed_query.display_text().map(|text| text.len()),
+            Ok(MAX_SYMBOL_QUERY_BYTES)
+        );
+
+        let one_byte_capacity = bounded_string(1)
+            .unwrap_or_else(|_| unreachable!())
+            .capacity();
+        let mut exact_retention = SymbolPicker::new(SymbolRequestKind::Workspace);
+        assert!(exact_retention.begin_composition());
+        let fixed_bytes = exact_retention.retained_bytes();
+        exact_retention.batch.retained_bytes = MAX_SYMBOL_RETAINED_BYTES
+            .saturating_sub(fixed_bytes)
+            .saturating_sub(one_byte_capacity);
+        assert_eq!(exact_retention.update_composition("x", 1, 0), Ok(true));
+        assert_eq!(exact_retention.retained_bytes(), MAX_SYMBOL_RETAINED_BYTES);
+
+        let two_byte_capacity = bounded_string(2)
+            .unwrap_or_else(|_| unreachable!())
+            .capacity();
+        let mut over_retention = SymbolPicker::new(SymbolRequestKind::Workspace);
+        assert!(over_retention.begin_composition());
+        let fixed_bytes = over_retention.retained_bytes();
+        over_retention.batch.retained_bytes = MAX_SYMBOL_RETAINED_BYTES
+            .saturating_sub(fixed_bytes)
+            .saturating_sub(two_byte_capacity)
+            .saturating_add(1);
+        assert_eq!(
+            over_retention.update_composition("xy", 2, 0),
+            Err(SymbolError::RetentionExceeded)
+        );
+        assert_eq!(over_retention.composition.as_deref(), Some(""));
+
         picker.query_revision = u64::MAX;
         assert_eq!(picker.commit_text("x"), Err(SymbolError::RevisionExhausted));
         picker.query_revision = 1;
         picker.batch = SymbolBatch::oversized_for_test();
         assert_eq!(picker.commit_text("x"), Err(SymbolError::RetentionExceeded));
         assert!(picker.query().is_empty());
+        assert!(picker.begin_composition());
+        assert_eq!(
+            picker.update_composition("x", 1, 0),
+            Err(SymbolError::RetentionExceeded)
+        );
+        assert_eq!(picker.composition.as_deref(), Some(""));
+        assert!(picker.cancel_composition());
+        picker.batch = SymbolBatch {
+            items: Box::new([]),
+            retained_bytes: MAX_SYMBOL_RETAINED_BYTES,
+            omitted: 0,
+        };
+        picker.matches.clear();
+        picker.matches.shrink_to_fit();
+        picker.query.clear();
+        picker.query.shrink_to_fit();
+        assert_eq!(picker.replace_query(String::new()), Ok(()));
+        assert_eq!(
+            picker.report().peak_retained_bytes,
+            MAX_SYMBOL_RETAINED_BYTES
+        );
         assert_eq!(
             bounded_string(usize::MAX),
             Err(SymbolError::AllocationFailed)
@@ -1038,16 +1207,21 @@ mod tests {
         .unwrap_or_else(|_| unreachable!());
         let mut picker = SymbolPicker::new(SymbolRequestKind::Workspace);
         picker.admit(batch).unwrap_or_else(|_| unreachable!());
+        assert!(picker.row(0).is_some_and(|row| row.selected));
+        assert!(picker.row(1).is_some_and(|row| !row.selected));
         assert!(picker.navigate(isize::MAX));
         assert_eq!(picker.visible_range(), 8..20);
         assert!(picker.navigate(isize::MIN));
         assert_eq!(picker.visible_range(), 0..12);
         assert_eq!(bounded_index(9, 0, -1), 0);
+        assert!(selection_precedes_visible(0, 1));
+        assert!(!selection_precedes_visible(1, 1));
         assert_eq!(match_score("  Alpha", "alpha"), Some((0, 0)));
         assert_eq!(match_score("alphabet", "alp"), Some((1, 0)));
         assert_eq!(match_score("xxalpha", "alpha"), Some((2, 2)));
         assert_eq!(match_score("alphaBeta", "aB"), Some((2, 4)));
         assert_eq!(ascii_find("short", "longer"), None);
+        assert_eq!(ascii_find("equal", "equal"), Some(0));
         assert_eq!(ascii_find("éa", "a"), Some(2));
         assert!(symbol_character_equal('A', 'a'));
         assert!(!symbol_character_equal('é', 'É'));
@@ -1059,5 +1233,6 @@ mod tests {
             workspace_symbol_params(&"x".repeat(MAX_SYMBOL_QUERY_BYTES + 1)),
             Err(SymbolError::QueryTooLong)
         ));
+        assert!(workspace_symbol_params(&"x".repeat(MAX_SYMBOL_QUERY_BYTES)).is_ok());
     }
 }

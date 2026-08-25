@@ -11,17 +11,17 @@ use super::*;
 
 static NEXT_SCENE: AtomicU64 = AtomicU64::new(1);
 
-struct NavigationFailingRasterTextSystem {
+struct FailingRasterTextSystem {
     glyph_id: u32,
 }
 
-impl TextShaper for NavigationFailingRasterTextSystem {
+impl TextShaper for FailingRasterTextSystem {
     fn shape(&mut self, text: &str, font: FontKey) -> Result<LineLayout, LayoutError> {
         tests::TestTextSystem.shape(text, font)
     }
 }
 
-impl GlyphRasterizer for NavigationFailingRasterTextSystem {
+impl GlyphRasterizer for FailingRasterTextSystem {
     fn rasterize(
         &mut self,
         font: FontKey,
@@ -414,6 +414,15 @@ fn symbol_overlay_scene_ime_and_key_guards_are_exact() -> Result<(), Box<dyn Err
     assert_eq!(report.matches, 2);
     assert!(report.retained_bytes <= crate::rust_symbols::MAX_SYMBOL_RETAINED_BYTES);
     assert!(baseline.clips().len() > 1);
+    assert_eq!(symbol_overlay_text_x(13.0).to_bits(), 21.0_f32.to_bits());
+    assert_eq!(
+        symbol_overlay_baseline(17.0, 5.0).to_bits(),
+        25.0_f32.to_bits()
+    );
+    assert_eq!(
+        symbol_overlay_row_top(17.0, 2).to_bits(),
+        (17.0 + 3.0 * LINE_HEIGHT).to_bits()
+    );
 
     assert!(app.handle_ime(&ImeEvent::Started).visual_changed);
     assert!(
@@ -457,6 +466,83 @@ fn symbol_overlay_scene_ime_and_key_guards_are_exact() -> Result<(), Box<dyn Err
         app.handle_symbol_key(KEY_HOME, false),
         Some(EventEffect::default())
     );
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn symbol_overlay_command_and_focus_guards_preserve_picker() -> Result<(), Box<dyn Error>> {
+    let SymbolSceneFixture {
+        root,
+        mut app,
+        identity,
+        ..
+    } = installed_symbol_scene()?;
+    assert_eq!(
+        classify_symbol_key(KEY_ESCAPE, false),
+        SymbolKeyAction::Cancel
+    );
+    assert_eq!(
+        classify_symbol_key(KEY_ESCAPE, true),
+        SymbolKeyAction::Cancel
+    );
+    assert_eq!(
+        classify_symbol_key(KEY_UP, false),
+        SymbolKeyAction::Navigate(-1)
+    );
+    assert_eq!(
+        classify_symbol_key(KEY_DOWN, false),
+        SymbolKeyAction::Navigate(1)
+    );
+    assert_eq!(
+        classify_symbol_key(KEY_DELETE_BACKWARD, false),
+        SymbolKeyAction::DeleteBackward
+    );
+    assert_eq!(
+        classify_symbol_key(KEY_RETURN, false),
+        SymbolKeyAction::Apply
+    );
+    assert_eq!(classify_symbol_key(KEY_TAB, false), SymbolKeyAction::Apply);
+    assert_eq!(
+        classify_symbol_key(KEY_HOME, false),
+        SymbolKeyAction::Ignore
+    );
+    for key in [KEY_UP, KEY_DOWN, KEY_DELETE_BACKWARD, KEY_RETURN, KEY_TAB] {
+        assert_eq!(classify_symbol_key(key, true), SymbolKeyAction::Ignore);
+    }
+    let selected = app
+        .rust_diagnostics
+        .symbol_accessibility_label(identity)
+        .ok_or("selected symbol")?;
+    for key in [KEY_UP, KEY_DOWN] {
+        assert_eq!(
+            app.handle_symbol_key(key, true),
+            Some(EventEffect::default())
+        );
+        assert_eq!(
+            app.rust_diagnostics.symbol_accessibility_label(identity),
+            Some(selected.clone())
+        );
+    }
+    assert_eq!(
+        app.handle_symbol_key(KEY_DELETE_BACKWARD, true),
+        Some(EventEffect::default())
+    );
+    for key in [KEY_RETURN, KEY_TAB] {
+        assert_eq!(
+            app.handle_symbol_key(key, true),
+            Some(EventEffect::default())
+        );
+        assert!(app.rust_diagnostics.symbols_are_open(identity));
+    }
+    let _ = app.handle_focus(app.input_epoch, true);
+    assert!(app.rust_diagnostics.symbols_are_open(identity));
+    assert!(
+        app.handle_symbol_key(KEY_RETURN, false)
+            .is_some_and(|effect| effect.visual_changed)
+    );
+    assert!(!app.rust_diagnostics.symbols_are_open(identity));
     fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -585,7 +671,7 @@ fn navigation_overlay_raster_failures_preserve_scene_atomicity() -> Result<(), B
     };
 
     let mut hover_app = StudioApp::open_file(
-        NavigationFailingRasterTextSystem {
+        FailingRasterTextSystem {
             glyph_id: u32::from('Ω'),
         },
         &path,
@@ -608,7 +694,7 @@ fn navigation_overlay_raster_failures_preserve_scene_atomicity() -> Result<(), B
     ));
 
     let mut location_app = StudioApp::open_file(
-        NavigationFailingRasterTextSystem {
+        FailingRasterTextSystem {
             glyph_id: u32::from('§'),
         },
         &path,
@@ -627,6 +713,84 @@ fn navigation_overlay_raster_failures_preserve_scene_atomicity() -> Result<(), B
             SceneRevision::new(21),
             Size::new(640.0, 360.0).ok_or("viewport")?
         ),
+        Err(StudioRenderError::Layout(LayoutError::NativeFailure(
+            "injected navigation raster failure"
+        )))
+    ));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn symbol_overlay_raster_failures_preserve_query_and_row_atomicity() -> Result<(), Box<dyn Error>> {
+    let root = std::env::temp_dir().join(format!(
+        "alpine-symbol-raster-{}-{}",
+        std::process::id(),
+        NEXT_SCENE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&root)?;
+    let path = root.join("main.rs");
+    fs::write(&path, "fn alpha() {}\n")?;
+    let path = fs::canonicalize(path)?;
+    let document = lsp_language::LspDocument::from_file_path(&path, "rust", 1)?;
+    let uri = document.uri();
+    let symbols = |name: &str| {
+        serde_json::from_str::<Box<RawValue>>(&format!(
+            r#"[{{"name":"{name}","kind":12,"location":{{"uri":"{uri}","range":{{"start":{{"line":0,"character":3}},"end":{{"line":0,"character":8}}}}}}}}]"#
+        ))
+    };
+    let install = |app: &mut StudioApp, values: &RawValue| {
+        let input = app.active_rust_document().ok_or("Rust document")?;
+        app.rust_diagnostics.install_for_test(
+            input,
+            &rust_diagnostics::tests::diagnostics(&path, 1),
+            rust_diagnostics::tests::mock_executable(),
+        )?;
+        app.rust_diagnostics.install_symbols_for_test(
+            app.language_identity(),
+            SymbolRequestKind::Workspace,
+            values,
+        )?;
+        Ok::<_, Box<dyn Error>>(())
+    };
+    let viewport = Size::new(640.0, 360.0).ok_or("viewport")?;
+
+    let mut query_app = StudioApp::open_file(
+        FailingRasterTextSystem {
+            glyph_id: u32::from('Ω'),
+        },
+        &path,
+    )?;
+    install(&mut query_app, &symbols("alpha")?)?;
+    let identity = query_app.language_identity();
+    assert!(
+        query_app
+            .rust_diagnostics
+            .begin_symbol_composition(identity)
+    );
+    assert_eq!(
+        query_app
+            .rust_diagnostics
+            .update_symbol_composition(identity, "Ω", 1, 0),
+        Ok(true)
+    );
+    assert!(matches!(
+        query_app.try_scene(SceneRevision::new(42), viewport),
+        Err(StudioRenderError::Layout(LayoutError::NativeFailure(
+            "injected navigation raster failure"
+        )))
+    ));
+
+    let mut row_app = StudioApp::open_file(
+        FailingRasterTextSystem {
+            glyph_id: u32::from('§'),
+        },
+        &path,
+    )?;
+    install(&mut row_app, &symbols("§")?)?;
+    assert!(matches!(
+        row_app.try_scene(SceneRevision::new(43), viewport),
         Err(StudioRenderError::Layout(LayoutError::NativeFailure(
             "injected navigation raster failure"
         )))

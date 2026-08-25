@@ -200,6 +200,18 @@ const TAB_OVERSCAN: usize = 2;
 const FIND_BAR_WIDTH: f32 = 420.0;
 const FIND_BAR_HEIGHT: f32 = 30.0;
 const FIND_BAR_INSET: f32 = 8.0;
+
+fn symbol_overlay_text_x(left: f32) -> f32 {
+    left + FIND_BAR_INSET
+}
+
+fn symbol_overlay_baseline(top: f32, ascent: f32) -> f32 {
+    top + ascent + 3.0
+}
+
+fn symbol_overlay_row_top(top: f32, visible_row: usize) -> f32 {
+    top + usize_as_f32(visible_row.saturating_add(1)) * LINE_HEIGHT
+}
 const QUICK_OPEN_WIDTH: f32 = 620.0;
 const QUICK_OPEN_QUERY_HEIGHT: f32 = 34.0;
 const QUICK_OPEN_ROW_HEIGHT: f32 = 24.0;
@@ -1135,6 +1147,31 @@ impl AtlasPublicationProfile {
             Self::Full => 1,
             Self::Rows => 2,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SymbolKeyAction {
+    Cancel,
+    Navigate(isize),
+    DeleteBackward,
+    Apply,
+    Ignore,
+}
+
+fn classify_symbol_key(physical_key: u16, command: bool) -> SymbolKeyAction {
+    if physical_key == KEY_ESCAPE {
+        return SymbolKeyAction::Cancel;
+    }
+    if command {
+        return SymbolKeyAction::Ignore;
+    }
+    match physical_key {
+        KEY_UP => SymbolKeyAction::Navigate(-1),
+        KEY_DOWN => SymbolKeyAction::Navigate(1),
+        KEY_DELETE_BACKWARD => SymbolKeyAction::DeleteBackward,
+        KEY_RETURN | KEY_TAB => SymbolKeyAction::Apply,
+        _ => SymbolKeyAction::Ignore,
     }
 }
 
@@ -2984,8 +3021,8 @@ impl StudioApp {
             pending_glyphs.extend(self.collect_glyphs(
                 &query_layout,
                 font,
-                left + FIND_BAR_INSET,
-                top + query_layout.ascent() + 3.0,
+                symbol_overlay_text_x(left),
+                symbol_overlay_baseline(top, query_layout.ascent()),
                 overlay_clip,
             )?);
             for (visible_row, index) in rows.enumerate() {
@@ -2993,7 +3030,7 @@ impl StudioApp {
                     .rust_diagnostics
                     .symbol_row(language_identity, index)
                     .ok_or(StudioRenderError::Domain)?;
-                let row_top = top + usize_as_f32(visible_row.saturating_add(1)) * LINE_HEIGHT;
+                let row_top = symbol_overlay_row_top(top, visible_row);
                 if row.selected {
                     let origin = Point::new(left, row_top).ok_or(StudioRenderError::Domain)?;
                     let size = Size::new(width, LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
@@ -3005,8 +3042,8 @@ impl StudioApp {
                 pending_glyphs.extend(self.collect_glyphs(
                     &layout,
                     font,
-                    left + FIND_BAR_INSET,
-                    row_top + layout.ascent() + 3.0,
+                    symbol_overlay_text_x(left),
+                    symbol_overlay_baseline(row_top, layout.ascent()),
                     overlay_clip,
                 )?);
             }
@@ -3864,26 +3901,20 @@ impl StudioApp {
         if !self.rust_diagnostics.symbols_are_open(identity) {
             return None;
         }
-        match physical_key {
-            KEY_ESCAPE => Some(
+        match classify_symbol_key(physical_key, command) {
+            SymbolKeyAction::Cancel => Some(
                 self.rust_diagnostics
                     .cancel_symbols()
                     .then(EventEffect::visual)
                     .unwrap_or_default(),
             ),
-            KEY_UP if !command => Some(
+            SymbolKeyAction::Navigate(delta) => Some(
                 self.rust_diagnostics
-                    .navigate_symbols(-1)
+                    .navigate_symbols(delta)
                     .then(EventEffect::visual)
                     .unwrap_or_default(),
             ),
-            KEY_DOWN if !command => Some(
-                self.rust_diagnostics
-                    .navigate_symbols(1)
-                    .then(EventEffect::visual)
-                    .unwrap_or_default(),
-            ),
-            KEY_DELETE_BACKWARD if !command => {
+            SymbolKeyAction::DeleteBackward => {
                 let effect = self.rust_diagnostics.delete_symbol_backward(identity);
                 Some(
                     effect
@@ -3892,8 +3923,8 @@ impl StudioApp {
                         .unwrap_or_default(),
                 )
             }
-            KEY_RETURN | KEY_TAB if !command => Some(self.apply_selected_symbol()),
-            _ => Some(EventEffect::default()),
+            SymbolKeyAction::Apply => Some(self.apply_selected_symbol()),
+            SymbolKeyAction::Ignore => Some(EventEffect::default()),
         }
     }
 
