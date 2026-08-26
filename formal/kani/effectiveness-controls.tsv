@@ -21,3 +21,4 @@ proofs::readback_rows_stay_aligned_and_bounded	2
 proofs::selection_transform_stays_at_or_after_replacement_start	4
 rust_workspace_edit::proofs::accepted_sorted_ranges_are_strictly_disjoint	3
 rust_symbols::proofs::symbol_selection_window_remains_bounded	3
+settings::loader::proofs::only_the_current_submitted_generation_can_publish	2

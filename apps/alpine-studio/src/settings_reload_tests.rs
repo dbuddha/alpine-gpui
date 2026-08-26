@@ -145,20 +145,27 @@ fn runtime_dispatch_submits_and_publishes_the_startup_settings_request()
         timestamp: EventTimestamp::new(1),
     });
     assert_eq!(runtime.snapshot().worker().peak_queued_requests(), 1);
-    let mut published = false;
-    for timestamp in 2..514 {
-        std::thread::sleep(std::time::Duration::from_millis(1));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut timestamp = 2;
+    loop {
         if runtime
             .dispatch(&SurfaceEvent::Wake {
                 timestamp: EventTimestamp::new(timestamp),
             })
             .is_some()
         {
-            published = true;
             break;
         }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for settings worker frame: {:?}",
+                runtime.snapshot().worker()
+            )
+            .into());
+        }
+        timestamp = timestamp.checked_add(1).ok_or("wake timestamp exhausted")?;
+        std::thread::yield_now();
     }
-    assert!(published);
     assert_eq!(runtime.snapshot().worker().queued_requests(), 0);
     assert_eq!(runtime.snapshot().worker().queued_results(), 0);
     Ok(())
@@ -185,6 +192,58 @@ fn failed_application_reload_keeps_the_previous_settings_snapshot() -> Result<()
         .ok_or("missing rejected request")?;
     assert!(app.apply_settings_output(rejected.execute()).visual_changed);
     assert_eq!(app.settings.active(), &previous);
+    assert!(matches!(app.local_status, Some(LocalStatus::Command(_))));
+    Ok(())
+}
+
+#[test]
+fn application_settings_admission_reports_every_terminal_result() -> Result<(), Box<dyn Error>> {
+    let root = TestRoot::new()?;
+    let path = root.path().join("settings.json");
+    fs::write(&path, br#"{"version":1,"editor":{"font_size":17}}"#)?;
+    let mut app = StudioApp::new(tests::TestTextSystem)?;
+    app.settings_reload = settings::SettingsReload::explicit(Some(path.clone()), None);
+    let accepted = app
+        .settings_reload
+        .take_request()
+        .ok_or("missing accepted request")?;
+    assert!(app.apply_settings_output(accepted.execute()).visual_changed);
+
+    app.settings_reload.request(true)?;
+    let unchanged = app
+        .settings_reload
+        .take_request()
+        .ok_or("missing unchanged request")?;
+    assert!(
+        app.apply_settings_output(unchanged.execute())
+            .visual_changed
+    );
+    assert!(matches!(app.local_status, Some(LocalStatus::Command(_))));
+
+    app.settings_reload.request(false)?;
+    let stale = app
+        .settings_reload
+        .take_request()
+        .ok_or("missing stale request")?;
+    app.settings_reload.request(false)?;
+    assert_eq!(
+        app.apply_settings_output(stale.execute()),
+        EventEffect::default()
+    );
+
+    let rejected = app
+        .settings_reload
+        .take_request()
+        .ok_or("missing rejected request")?;
+    fs::write(&path, br#"{"version":1,"editor":{"font_size":0}}"#)?;
+    assert!(app.apply_settings_output(rejected.execute()).visual_changed);
+    assert!(matches!(app.local_status, Some(LocalStatus::Command(_))));
+
+    app.settings_reload.exhaust_generation();
+    assert!(app.request_settings_reload().visual_changed);
+    assert!(matches!(app.local_status, Some(LocalStatus::Command(_))));
+
+    record_project_settings_result(&mut app, Err::<bool, _>("settings generation exhausted"));
     assert!(matches!(app.local_status, Some(LocalStatus::Command(_))));
     Ok(())
 }

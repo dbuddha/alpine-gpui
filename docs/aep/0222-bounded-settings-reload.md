@@ -1,6 +1,7 @@
 # AEP 0222: Bounded settings reload and migration
 
 - Status: Accepted
+- Decision: [#354](https://github.com/dbuddha/alpine-gpui/issues/354)
 - Task: [#222](https://github.com/dbuddha/alpine-gpui/issues/222)
 - Requirement: [#36](https://github.com/dbuddha/alpine-gpui/issues/36)
 - Parent task: [#129](https://github.com/dbuddha/alpine-gpui/issues/129)

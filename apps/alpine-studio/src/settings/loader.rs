@@ -28,6 +28,23 @@ pub(crate) const MAX_SETTINGS_JSON_DEPTH: usize = 8;
 pub(crate) const MAX_SETTINGS_JSON_VALUES: usize = 512;
 pub(crate) const MAX_SETTINGS_STRING_BYTES: usize = 32 * 1_024;
 const MAX_SETTINGS_READ_BYTES: usize = MAX_SETTINGS_FILE_BYTES + 1;
+const LEGACY_FIELDS: &[&str] = &[
+    "version",
+    "font_size",
+    "font_scale",
+    "line_height",
+    "tab_columns",
+];
+const EDITOR_FIELDS: &[&str] = &[
+    "font_name",
+    "font_size",
+    "font_scale",
+    "line_height",
+    "tab_columns",
+];
+const SYNTAX_FIELDS: &[&str] = &[
+    "comment", "keyword", "string", "number", "type", "property", "heading", "code",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SettingsLoadError {
@@ -337,6 +354,11 @@ impl SettingsReload {
         Self::from_paths(SettingsPaths::explicit(global, project))
     }
 
+    #[cfg(test)]
+    pub(crate) fn exhaust_generation(&mut self) {
+        self.requested_generation = u64::MAX;
+    }
+
     fn from_paths(paths: SettingsPaths) -> Self {
         let path_bytes = paths.retained_bytes();
         Self {
@@ -505,10 +527,7 @@ fn load_settings(
 ) -> Result<LoadedSettings, SettingsLoadFailure> {
     let global_path = paths.global.clone()?;
     let project_path = paths.project.clone()?;
-    let compiled = StudioSettings::compiled().map_err(|_| SettingsLoadFailure {
-        source: SettingsSource::Compiled,
-        error: SettingsLoadError::InvalidValue("compiled settings"),
-    })?;
+    let compiled = StudioSettings::compiled().map_err(|_| compiled_settings_failure())?;
     let (global, global_report) = load_layer(
         global_path.as_deref(),
         SettingsSource::Global,
@@ -518,11 +537,8 @@ fn load_settings(
         .as_ref()
         .and_then(|layer| layer.theme)
         .unwrap_or(compiled.theme);
-    let (project, project_report) = load_layer(
-        project_path.as_deref(),
-        SettingsSource::Project,
-        &project_base,
-    )?;
+    let source = SettingsSource::Project;
+    let (project, project_report) = load_layer(project_path.as_deref(), source, &project_base)?;
     Ok(LoadedSettings {
         update: SettingsUpdate {
             generation,
@@ -531,6 +547,13 @@ fn load_settings(
         },
         report: global_report.merge(project_report)?,
     })
+}
+
+fn compiled_settings_failure() -> SettingsLoadFailure {
+    SettingsLoadFailure {
+        source: SettingsSource::Compiled,
+        error: SettingsLoadError::InvalidValue("compiled settings"),
+    }
 }
 
 fn load_layer(
@@ -553,11 +576,12 @@ fn load_layer(
 }
 
 fn read_file(path: &Path) -> Result<Option<Vec<u8>>, SettingsLoadError> {
-    read_file_with(path, || {})
+    read_file_with(path, || {}, || {})
 }
 
 fn read_file_with(
     path: &Path,
+    before_read: impl FnOnce(),
     after_read: impl FnOnce(),
 ) -> Result<Option<Vec<u8>>, SettingsLoadError> {
     if path.as_os_str().as_encoded_bytes().len() > MAX_SETTINGS_PATH_BYTES {
@@ -578,9 +602,8 @@ fn read_file_with(
     let opened = file
         .metadata()
         .map_err(|error| map_io("metadata", &error))?;
-    if !same_file(&before, &opened) {
-        return Err(SettingsLoadError::ConcurrentEdit);
-    }
+    require_same_file(&before, &opened)?;
+    before_read();
     let mut bytes = Vec::new();
     let reserve = usize::try_from(before.len()).unwrap_or(MAX_SETTINGS_FILE_BYTES);
     bytes
@@ -618,6 +641,14 @@ fn same_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
         return false;
     }
     same_platform_file(left, right)
+}
+
+fn require_same_file(left: &fs::Metadata, right: &fs::Metadata) -> Result<(), SettingsLoadError> {
+    if same_file(left, right) {
+        Ok(())
+    } else {
+        Err(SettingsLoadError::ConcurrentEdit)
+    }
 }
 
 #[cfg(unix)]
@@ -704,16 +735,7 @@ fn add_string_bytes(bytes: usize, report: &mut DecodeReport) -> Result<(), Setti
 }
 
 fn decode_legacy(object: &Map<String, Value>) -> Result<SettingsLayer, SettingsLoadError> {
-    reject_unknown(
-        object,
-        &[
-            "version",
-            "font_size",
-            "font_scale",
-            "line_height",
-            "tab_columns",
-        ],
-    )?;
+    reject_unknown(object, LEGACY_FIELDS)?;
     Ok(SettingsLayer {
         editor: EditorSettingsPatch {
             font_size: optional_f32(object, "font_size")?,
@@ -749,16 +771,7 @@ fn decode_editor(value: &Value) -> Result<EditorSettingsPatch, SettingsLoadError
     let object = value
         .as_object()
         .ok_or(SettingsLoadError::InvalidValue("editor"))?;
-    reject_unknown(
-        object,
-        &[
-            "font_name",
-            "font_size",
-            "font_scale",
-            "line_height",
-            "tab_columns",
-        ],
-    )?;
+    reject_unknown(object, EDITOR_FIELDS)?;
     let font_name = object
         .get("font_name")
         .map(|value| {
@@ -797,77 +810,58 @@ fn decode_theme(value: &Value, base_theme: &StudioTheme) -> Result<StudioTheme, 
     let mut theme = *base_theme;
     set_color(object, "clear", "clear", &mut theme.clear)?;
     set_color(object, "background", "background", &mut theme.background)?;
-    set_color(
-        object,
-        "editor_background",
-        "editor background",
-        &mut theme.editor_background,
-    )?;
+    let target = &mut theme.editor_background;
+    set_color(object, "editor_background", "editor background", target)?;
     set_color(object, "selection", "selection", &mut theme.selection)?;
     set_color(object, "text", "text", &mut theme.text)?;
     set_color(object, "caret", "caret", &mut theme.caret)?;
-    set_color(
-        object,
-        "status_background",
-        "status background",
-        &mut theme.status_background,
-    )?;
-    set_color(
-        object,
-        "sidebar_background",
-        "sidebar background",
-        &mut theme.sidebar_background,
-    )?;
+    let target = &mut theme.status_background;
+    set_color(object, "status_background", "status background", target)?;
+    let target = &mut theme.sidebar_background;
+    set_color(object, "sidebar_background", "sidebar background", target)?;
     set_color(object, "active_row", "active row", &mut theme.active_row)?;
-    set_color(
-        object,
-        "tab_background",
-        "tab background",
-        &mut theme.tab_background,
-    )?;
+    let target = &mut theme.tab_background;
+    set_color(object, "tab_background", "tab background", target)?;
     set_color(object, "active_tab", "active tab", &mut theme.active_tab)?;
     set_color(object, "find_match", "find match", &mut theme.find_match)?;
-    set_color(
-        object,
-        "find_background",
-        "find background",
-        &mut theme.find_background,
-    )?;
+    let target = &mut theme.find_background;
+    set_color(object, "find_background", "find background", target)?;
+    let target = &mut theme.quick_open_background;
     set_color(
         object,
         "quick_open_background",
         "quick open background",
-        &mut theme.quick_open_background,
+        target,
     )?;
-    set_color(
-        object,
-        "quick_open_selected",
-        "quick open selected",
-        &mut theme.quick_open_selected,
-    )?;
+    let target = &mut theme.quick_open_selected;
+    set_color(object, "quick_open_selected", "quick open selected", target)?;
+    let target = &mut theme.project_search_background;
     set_color(
         object,
         "project_search_background",
         "project search background",
-        &mut theme.project_search_background,
+        target,
     )?;
+    let target = &mut theme.project_search_selected;
     set_color(
         object,
         "project_search_selected",
         "project search selected",
-        &mut theme.project_search_selected,
+        target,
     )?;
+    let target = &mut theme.command_palette_background;
     set_color(
         object,
         "command_palette_background",
         "command palette background",
-        &mut theme.command_palette_background,
+        target,
     )?;
+    let target = &mut theme.command_palette_selected;
     set_color(
         object,
         "command_palette_selected",
         "command palette selected",
-        &mut theme.command_palette_selected,
+        target,
     )?;
     if let Some(syntax) = object.get("syntax") {
         theme.syntax = decode_syntax(syntax, theme.syntax)?;
@@ -907,12 +901,7 @@ fn decode_syntax(value: &Value, mut syntax: SyntaxTheme) -> Result<SyntaxTheme, 
     let object = value
         .as_object()
         .ok_or(SettingsLoadError::InvalidValue("theme.syntax"))?;
-    reject_unknown(
-        object,
-        &[
-            "comment", "keyword", "string", "number", "type", "property", "heading", "code",
-        ],
-    )?;
+    reject_unknown(object, SYNTAX_FIELDS)?;
     set_color(object, "comment", "syntax comment", &mut syntax.comment)?;
     set_color(object, "keyword", "syntax keyword", &mut syntax.keyword)?;
     set_color(object, "string", "syntax string", &mut syntax.string)?;
@@ -994,11 +983,10 @@ fn decode_binding(value: &Value) -> Result<KeyBinding, SettingsLoadError> {
         .and_then(Value::as_u64)
         .and_then(|value| u16::try_from(value).ok())
         .ok_or(SettingsLoadError::InvalidValue("key binding physical_key"))?;
-    let modifiers = decode_modifiers(
-        object
-            .get("modifiers")
-            .ok_or(SettingsLoadError::MissingField("key binding modifiers"))?,
-    )?;
+    let modifiers = object
+        .get("modifiers")
+        .ok_or(SettingsLoadError::MissingField("key binding modifiers"))?;
+    let modifiers = decode_modifiers(modifiers)?;
     let action = object
         .get("action")
         .and_then(Value::as_str)
@@ -1179,9 +1167,6 @@ mod tests {
     }
 
     fn write(path: &Path, contents: &[u8]) -> io::Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         fs::write(path, contents)
     }
 
@@ -1243,10 +1228,8 @@ mod tests {
         let global = root.path().join("global.json");
         let project = root.path().join("project.json");
         write(&global, br#"{"version":0,"font_size":16,"tab_columns":2}"#)?;
-        write(
-            &project,
-            br#"{"version":1,"editor":{"font_size":18},"theme":{"caret":[0.1,0.2,0.3,1.0]},"keymap":{"bindings":[{"physical_key":1,"modifiers":["command"],"action":"reload_settings","label":"Cmd+S"}]}}"#,
-        )?;
+        let project_settings = br#"{"version":1,"editor":{"font_size":18},"theme":{"caret":[0.1,0.2,0.3,1.0]},"keymap":{"bindings":[{"physical_key":1,"modifiers":["command"],"action":"reload_settings","label":"Cmd+S"}]}}"#;
+        write(&project, project_settings)?;
         let mut reload = SettingsReload::explicit(Some(global), Some(project));
         let request = reload.take_request().ok_or("missing startup request")?;
         let mut state = SettingsState::compiled()?;
@@ -1514,6 +1497,81 @@ mod tests {
             decode_color(&serde_json::json!([0.0, 1.0]), "short"),
             Err(SettingsLoadError::InvalidValue("theme color"))
         );
+        assert_eq!(
+            decode_layer(
+                serde_json::to_string(&serde_json::json!({
+                    "version": 1,
+                    "editor": { "font_name": "x".repeat(MAX_FONT_NAME_BYTES + 1) }
+                }))
+                .expect("bounded JSON")
+                .as_bytes(),
+                &StudioTheme::compiled().expect("compiled theme"),
+            ),
+            Err(SettingsLoadError::InvalidValue("editor.font_name"))
+        );
+        let bindings = vec![
+            serde_json::json!({
+                "physical_key": 1,
+                "modifiers": ["command"],
+                "action": "save_file",
+                "label": "Cmd+S"
+            });
+            MAX_KEY_BINDINGS + 1
+        ];
+        assert_eq!(
+            decode_keymap(&serde_json::json!({ "bindings": bindings })),
+            Err(SettingsLoadError::InvalidValue("keymap.bindings"))
+        );
+    }
+
+    #[test]
+    fn reload_identity_and_loader_failures_are_explicit() -> Result<(), Box<dyn Error>> {
+        let mut unchanged_project = SettingsReload::explicit(None, None);
+        assert!(!unchanged_project.replace_project(None)?);
+        assert_eq!(unchanged_project.reject_submission(99, false), Ok(()));
+        unchanged_project.exhaust_generation();
+        assert_eq!(
+            unchanged_project.request(false),
+            Err(SettingsReloadError::GenerationExhausted)
+        );
+
+        let mut stale_reload = SettingsReload::explicit(None, None);
+        let stale_request = stale_reload.take_request().ok_or("missing request")?;
+        let mut state = SettingsState::compiled()?;
+        assert!(matches!(
+            state.admit(&SettingsUpdate {
+                generation: 2,
+                global: None,
+                project: None,
+            }),
+            SettingsAdmission::Unchanged { revision: 1 }
+        ));
+        assert_eq!(
+            stale_reload.admit(stale_request.execute(), &mut state),
+            SettingsReloadAdmission::Stale
+        );
+        assert_eq!(stale_reload.report().stale_results, 1);
+        assert_eq!(
+            compiled_settings_failure(),
+            SettingsLoadFailure {
+                source: SettingsSource::Compiled,
+                error: SettingsLoadError::InvalidValue("compiled settings"),
+            }
+        );
+
+        let root = TestRoot::new()?;
+        let global = root.path().join("global.json");
+        let project = root.path().join("project.json");
+        write(&global, br#"{"version":1}"#)?;
+        write(&project, b"{")?;
+        assert_eq!(
+            load_settings(1, &SettingsPaths::explicit(Some(global), Some(project))),
+            Err(SettingsLoadFailure {
+                source: SettingsSource::Project,
+                error: SettingsLoadError::InvalidJson,
+            })
+        );
+        Ok(())
     }
 
     #[test]
@@ -1589,9 +1647,13 @@ mod tests {
         let path = root.path().join("settings.json");
         write(&path, br#"{"version":1}"#)?;
         assert_eq!(
-            read_file_with(&path, || {
-                let _ = fs::write(&path, br#"{"version":1,"editor":{}}"#);
-            }),
+            read_file_with(
+                &path,
+                || {},
+                || {
+                    let _ = fs::write(&path, br#"{"version":1,"editor":{}}"#);
+                }
+            ),
             Err(SettingsLoadError::ConcurrentEdit)
         );
         #[cfg(unix)]
@@ -1605,13 +1667,56 @@ mod tests {
     }
 
     #[test]
+    fn file_identity_growth_and_io_failures_are_bounded() -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        let long_path = PathBuf::from("x".repeat(MAX_SETTINGS_PATH_BYTES + 1));
+        assert_eq!(read_file(&long_path), Err(SettingsLoadError::PathTooLong));
+
+        let parent_file = root.path().join("parent-file");
+        write(&parent_file, b"not a directory")?;
+        assert!(matches!(
+            read_file(&parent_file.join("settings.json")),
+            Err(SettingsLoadError::Io {
+                operation: "metadata",
+                ..
+            })
+        ));
+
+        let left = root.path().join("left.json");
+        let right = root.path().join("right.json");
+        write(&left, b"same")?;
+        write(&right, b"same")?;
+        let left_metadata = fs::metadata(&left)?;
+        let right_metadata = fs::metadata(&right)?;
+        assert_eq!(
+            require_same_file(&left_metadata, &right_metadata),
+            Err(SettingsLoadError::ConcurrentEdit)
+        );
+
+        let growing = root.path().join("growing.json");
+        write(&growing, &vec![b' '; MAX_SETTINGS_FILE_BYTES])?;
+        assert_eq!(
+            read_file_with(
+                &growing,
+                || {
+                    let _ = fs::OpenOptions::new()
+                        .append(true)
+                        .open(&growing)
+                        .and_then(|mut file| std::io::Write::write_all(&mut file, b"x"));
+                },
+                || {},
+            ),
+            Err(SettingsLoadError::FileTooLarge)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn duplicate_bindings_and_submission_failure_remain_bounded() -> Result<(), Box<dyn Error>> {
         let root = TestRoot::new()?;
         let path = root.path().join("settings.json");
-        write(
-            &path,
-            br#"{"version":1,"keymap":{"bindings":[{"physical_key":1,"modifiers":["command"],"action":"save_file","label":"Cmd+S"},{"physical_key":1,"modifiers":["command"],"action":"reload_settings","label":"Cmd+R"}]}}"#,
-        )?;
+        let duplicate_settings = br#"{"version":1,"keymap":{"bindings":[{"physical_key":1,"modifiers":["command"],"action":"save_file","label":"Cmd+S"},{"physical_key":1,"modifiers":["command"],"action":"reload_settings","label":"Cmd+R"}]}}"#;
+        write(&path, duplicate_settings)?;
         let mut reload = SettingsReload::explicit(Some(path), None);
         let request = reload.take_request().ok_or("missing request")?;
         let mut state = SettingsState::compiled()?;

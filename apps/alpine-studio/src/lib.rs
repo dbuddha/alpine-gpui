@@ -993,14 +993,10 @@ impl ExplicitPathTarget {
                     .checked_add(1)
                     .ok_or(RecoveryLaunchError::TargetComposition)?;
                 app.workspace = Some(workspace);
-                if let Err(error) = app
+                let result = app
                     .settings_reload
-                    .replace_project(app.workspace.as_ref().map(Workspace::root))
-                {
-                    app.local_status = Some(LocalStatus::Command(Arc::from(format!(
-                        "Settings project override failed: {error}"
-                    ))));
-                }
+                    .replace_project(app.workspace.as_ref().map(Workspace::root));
+                record_project_settings_result(app, result);
                 app.active_workspace_entry = None;
                 app.file_tree = FileTreeState::default();
                 app.prime_workspace_launch()
@@ -1011,6 +1007,17 @@ impl ExplicitPathTarget {
             app.local_status = recovered_status;
         }
         Ok(())
+    }
+}
+
+fn record_project_settings_result(
+    app: &mut StudioApp,
+    result: Result<bool, impl std::fmt::Display>,
+) {
+    if let Err(error) = result {
+        app.local_status = Some(LocalStatus::Command(Arc::from(format!(
+            "Settings project override failed: {error}"
+        ))));
     }
 }
 
