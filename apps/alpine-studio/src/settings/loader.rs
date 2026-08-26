@@ -653,16 +653,31 @@ fn require_same_file(left: &fs::Metadata, right: &fs::Metadata) -> Result<(), Se
     }
 }
 
-#[cfg(unix)]
 fn same_platform_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt as _;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
 
-    left.dev() == right.dev() && left.ino() == right.ino()
+        left.dev() == right.dev() && left.ino() == right.ino()
+    }
+    #[cfg(windows)]
+    {
+        same_windows_file(left, right)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (left, right);
+        true
+    }
 }
 
-#[cfg(not(unix))]
-const fn same_platform_file(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
-    true
+#[cfg(windows)]
+#[cfg_attr(test, mutants::skip)]
+fn same_windows_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+
+    left.volume_serial_number() == right.volume_serial_number()
+        && left.file_index() == right.file_index()
 }
 
 fn decode_layer(
@@ -1116,6 +1131,8 @@ mod proofs {
         let completed: u64 = kani::any();
         let in_flight: bool = kani::any();
         let admitted = completion_is_current(requested, submitted, completed, in_flight);
+        kani::cover!(admitted);
+        kani::cover!(!admitted);
         assert!(!admitted || (in_flight && completed == requested && completed == submitted));
     }
 }
@@ -1430,7 +1447,16 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one boundary table keeps the loader's independent resource ceilings together"
+    )]
     fn independent_loader_bounds_fail_closed() -> Result<(), Box<dyn Error>> {
+        let exact_path = PathBuf::from("x".repeat(MAX_SETTINGS_PATH_BYTES));
+        assert_eq!(
+            SettingsPaths::explicit(Some(exact_path.clone()), None).global,
+            Ok(Some(exact_path))
+        );
         let too_long = PathBuf::from("x".repeat(MAX_SETTINGS_PATH_BYTES + 1));
         assert_eq!(
             SettingsPaths::explicit(Some(too_long), None).global,
@@ -1461,6 +1487,53 @@ mod tests {
             inspect_json(&Value::Null, 0, &mut values),
             Err(SettingsLoadError::TooManyValues)
         );
+        let mut exact_values = DecodeReport::default();
+        let exact_value_tree =
+            Value::Array(std::iter::repeat_n(Value::Null, MAX_SETTINGS_JSON_VALUES - 1).collect());
+        assert_eq!(
+            inspect_json(&exact_value_tree, 1, &mut exact_values),
+            Ok(())
+        );
+        assert_eq!(exact_values.parsed_values, MAX_SETTINGS_JSON_VALUES);
+
+        let mut exact_depth = DecodeReport::default();
+        assert_eq!(
+            inspect_json(&Value::Null, MAX_SETTINGS_JSON_DEPTH, &mut exact_depth),
+            Ok(())
+        );
+        let mut excessive_depth = DecodeReport::default();
+        assert_eq!(
+            inspect_json(
+                &Value::Null,
+                MAX_SETTINGS_JSON_DEPTH + 1,
+                &mut excessive_depth
+            ),
+            Err(SettingsLoadError::JsonTooDeep)
+        );
+
+        let nested_array =
+            (0..MAX_SETTINGS_JSON_DEPTH).fold(Value::Null, |value, _| Value::Array(vec![value]));
+        let mut nested_array_report = DecodeReport::default();
+        assert_eq!(
+            inspect_json(&nested_array, 1, &mut nested_array_report),
+            Err(SettingsLoadError::JsonTooDeep)
+        );
+        let nested_object = (0..MAX_SETTINGS_JSON_DEPTH).fold(Value::Null, |value, index| {
+            Value::Object(Map::from_iter([(format!("k{index}"), value)]))
+        });
+        let mut nested_object_report = DecodeReport::default();
+        assert_eq!(
+            inspect_json(&nested_object, 1, &mut nested_object_report),
+            Err(SettingsLoadError::JsonTooDeep)
+        );
+
+        let mut exact_report = DecodeReport::default();
+        assert_eq!(
+            inspect_json(&serde_json::json!({ "ab": "xyz" }), 1, &mut exact_report),
+            Ok(())
+        );
+        assert_eq!(exact_report.parsed_values, 2);
+        assert_eq!(exact_report.string_bytes, 5);
         let mut strings = DecodeReport::default();
         assert_eq!(
             add_string_bytes(MAX_SETTINGS_STRING_BYTES + 1, &mut strings),
@@ -1507,6 +1580,63 @@ mod tests {
             decode_keymap(&serde_json::json!({ "bindings": bindings })),
             Err(SettingsLoadError::InvalidValue("keymap.bindings"))
         );
+        let legacy = serde_json::json!({
+            "version": LEGACY_SETTINGS_VERSION,
+            "font_size": 17.0,
+            "font_scale": 1.5,
+            "line_height": 22.0,
+            "tab_columns": 2,
+        });
+        let legacy_bytes = serde_json::to_vec(&legacy)?;
+        let (legacy_layer, _) = decode_layer(&legacy_bytes, &StudioTheme::compiled()?)?;
+        assert_eq!(legacy_layer.editor.font_size, Some(17.0));
+        assert_eq!(legacy_layer.editor.font_scale, Some(1.5));
+        assert_eq!(legacy_layer.editor.line_height, Some(22.0));
+        assert_eq!(legacy_layer.editor.tab_columns, Some(2));
+
+        assert_eq!(
+            checked_f32(&Value::from(f64::from(f32::MAX)), "maximum"),
+            Ok(f32::MAX)
+        );
+        assert_eq!(
+            checked_f32(&Value::from(f64::from(f32::MIN)), "minimum"),
+            Ok(f32::MIN)
+        );
+        assert_eq!(
+            checked_f32(&Value::from(f64::MAX), "maximum"),
+            Err(SettingsLoadError::InvalidValue("maximum"))
+        );
+        assert_eq!(
+            checked_f32(&Value::from(f64::MIN), "minimum"),
+            Err(SettingsLoadError::InvalidValue("minimum"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn initial_report_and_announced_request_are_exact() -> Result<(), Box<dyn Error>> {
+        let global = PathBuf::from("global.json");
+        let project = PathBuf::from("project.json");
+        let expected_path_bytes = global.as_os_str().as_encoded_bytes().len()
+            + project.as_os_str().as_encoded_bytes().len();
+        let mut reload = SettingsReload::explicit(Some(global), Some(project));
+        assert_eq!(
+            reload.report(),
+            SettingsReloadReport {
+                requested_generation: 1,
+                pending: true,
+                path_bytes: expected_path_bytes,
+                reloads: 1,
+                ..SettingsReloadReport::default()
+            }
+        );
+        let mut startup = SettingsReload::explicit(None, None);
+        let startup_request = startup.take_request().ok_or("missing startup request")?;
+        assert!(!startup_request.announce());
+        reload.request(true)?;
+        let request = reload.take_request().ok_or("missing announced request")?;
+        assert_eq!(request.generation(), 2);
+        assert!(request.announce());
         Ok(())
     }
 
@@ -1656,6 +1786,7 @@ mod tests {
 
         let parent_file = root.path().join("parent-file");
         write(&parent_file, b"not a directory")?;
+        #[cfg(unix)]
         assert!(matches!(
             read_file(&parent_file.join("settings.json")),
             Err(SettingsLoadError::Io {
@@ -1663,6 +1794,8 @@ mod tests {
                 ..
             })
         ));
+        #[cfg(windows)]
+        assert_eq!(read_file(&parent_file.join("settings.json")), Ok(None));
 
         let left = root.path().join("left.json");
         let right = root.path().join("right.json");
@@ -1670,6 +1803,8 @@ mod tests {
         write(&right, b"same")?;
         let left_metadata = fs::metadata(&left)?;
         let right_metadata = fs::metadata(&right)?;
+        assert_eq!(require_same_file(&left_metadata, &left_metadata), Ok(()));
+        assert!(!same_platform_file(&left_metadata, &right_metadata));
         assert_eq!(
             require_same_file(&left_metadata, &right_metadata),
             Err(SettingsLoadError::ConcurrentEdit)

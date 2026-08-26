@@ -1170,25 +1170,23 @@ fn runtime_find_worker_admits_current_results_and_schedules_replacement()
         .ok_or("query frame")?;
     let pending_quads = pending.scene().quads().len();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut timestamp = 10;
-    let admitted = loop {
-        if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
-            timestamp: EventTimestamp::new(timestamp),
-        }) && frame.scene().quads().len() > pending_quads
-        {
-            break frame;
-        }
+    while runtime.snapshot().worker().queued_results() == 0 {
         if std::time::Instant::now() >= deadline {
             return Err(format!(
-                "timed out waiting for find worker frame: {:?}",
+                "timed out waiting for find worker result: {:?}",
                 runtime.snapshot().worker()
             )
             .into());
         }
-        timestamp = timestamp.checked_add(1).ok_or("wake timestamp exhausted")?;
-        std::thread::yield_now();
-    };
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let admitted = runtime
+        .dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(10),
+        })
+        .ok_or("admitted find worker frame")?;
     assert!(admitted.scene().quads().len() > pending_quads);
+    assert_eq!(runtime.snapshot().worker().queued_results(), 0);
 
     runtime
         .dispatch(&key(KEY_F, command_option))
