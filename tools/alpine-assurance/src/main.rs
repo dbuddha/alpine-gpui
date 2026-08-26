@@ -244,6 +244,25 @@ fn run_lab_command(
     }
 }
 
+fn run_qualification_command(
+    command: &str,
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<String, Vec<String>> {
+    let Some(path) = arguments.next() else {
+        return Err(vec![format!("{command} requires a manifest path")]);
+    };
+    if arguments.next().is_some() {
+        return Err(vec![format!("{command} accepts exactly one manifest path")]);
+    }
+    if matches!(command, "validate-aa-calibration" | "aa-calibration-report") {
+        return calibration::run(command, Path::new(&path), Path::new("."));
+    }
+    if command == "validate-scene-trace" {
+        return qualification::run_scene(Path::new(&path), Path::new("."));
+    }
+    qualification::run(command, Path::new(&path), Path::new("."))
+}
+
 fn run_dogfood_command(
     command: &str,
     arguments: &mut impl Iterator<Item = String>,
