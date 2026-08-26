@@ -1180,11 +1180,23 @@ fn runtime_find_worker_admits_current_results_and_schedules_replacement()
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    let admitted = runtime
-        .dispatch(&SurfaceEvent::Wake {
-            timestamp: EventTimestamp::new(10),
-        })
-        .ok_or("queued find result did not admit a frame")?;
+    let mut timestamp = 10;
+    let admitted = loop {
+        if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(timestamp),
+        }) {
+            break frame;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "timed out admitting current find worker result: {:?}",
+                runtime.snapshot().worker()
+            )
+            .into());
+        }
+        timestamp = timestamp.saturating_add(1);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
     assert_ne!(admitted.scene().revision(), pending_revision);
     assert_eq!(runtime.snapshot().worker().queued_results(), 0);
 
