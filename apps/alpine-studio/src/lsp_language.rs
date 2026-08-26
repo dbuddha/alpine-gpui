@@ -433,9 +433,18 @@ pub(crate) fn initialize_params(workspace: &Path) -> Result<Box<RawValue>, Langu
                         "insertReplaceSupport": true
                     }
                 },
-                "documentSymbol": { "hierarchicalDocumentSymbolSupport": true }
+                "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
+                "rename": { "prepareSupport": false },
+                "formatting": { "dynamicRegistration": false }
             },
-            "workspace": { "symbol": {} }
+            "workspace": {
+                "symbol": {},
+                "applyEdit": true,
+                "workspaceEdit": {
+                    "documentChanges": true,
+                    "failureHandling": "transactional"
+                }
+            }
         },
         "workspaceFolders": [{ "uri": uri, "name": name }]
     }))

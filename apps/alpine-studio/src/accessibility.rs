@@ -353,6 +353,12 @@ pub(super) fn respond(
             }),
             EventEffect::default(),
         ),
+        AccessibilityOperation::Action(_) if app.workspace_edits.is_publication_pending() => (
+            Ok(AccessibilityPayload::Action(
+                AccessibilityActionResult::Unchanged,
+            )),
+            EventEffect::default(),
+        ),
         AccessibilityOperation::Action(action) => match apply_action(app, *action) {
             Ok(effect) => {
                 let result = if effect.visual_changed {

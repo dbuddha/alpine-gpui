@@ -106,6 +106,19 @@ fn errors_documents_and_initialization_preserve_exact_contracts()
     );
     assert!(initialize.get().contains(r#""name":"alpine workspace""#));
     assert!(initialize.get().contains("alpine%20workspace"));
+    assert!(initialize.get().contains(r#""applyEdit":true"#));
+    assert!(initialize.get().contains(r#""documentChanges":true"#));
+    assert!(
+        initialize
+            .get()
+            .contains(r#""failureHandling":"transactional""#)
+    );
+    assert!(initialize.get().contains(r#""prepareSupport":false"#));
+    assert!(
+        initialize
+            .get()
+            .contains(r#""formatting":{"dynamicRegistration":false}"#)
+    );
     assert_eq!(
         initialize_params(root_path()).err(),
         Some(LanguageProtocolError::InvalidPath)

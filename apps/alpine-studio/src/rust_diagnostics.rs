@@ -227,6 +227,31 @@ impl WorkspaceEditIdentity {
             && self.lsp_version == snapshot.lsp_version
             && snapshot.active
     }
+
+    pub(crate) const fn matches_document(self, language: LanguageIdentity) -> bool {
+        self.language.workspace_id == language.workspace_id
+            && self.language.workspace_revision == language.workspace_revision
+            && self.language.document_id == language.document_id
+            && self.language.document_revision == language.document_revision
+            && self.language.buffer_revision == language.buffer_revision
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(
+        language: LanguageIdentity,
+        process_epoch: u64,
+        lsp_version: i32,
+        request_id: u32,
+        kind: WorkspaceEditKind,
+    ) -> Self {
+        Self {
+            language,
+            process_epoch,
+            lsp_version,
+            request_id,
+            kind,
+        }
+    }
 }
 
 pub(crate) struct WorkspaceEditPreparationRequest {

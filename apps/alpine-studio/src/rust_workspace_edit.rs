@@ -331,6 +331,24 @@ impl PreparedWorkspaceEdit {
     pub(crate) fn edit_count(&self) -> usize {
         self.files.iter().map(PreparedFileEdit::edit_count).sum()
     }
+
+    #[cfg(test)]
+    pub(crate) fn publication_fixture_for_test(
+        &self,
+        file_count: usize,
+        retain_edits: bool,
+    ) -> Self {
+        let mut file = self.files[0].clone();
+        if !retain_edits {
+            file.edits = Box::new([]);
+        }
+        Self {
+            files: std::iter::repeat_n(file, file_count)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            retained_bytes: self.retained_bytes,
+        }
+    }
 }
 
 fn prepare_file(
@@ -1049,6 +1067,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "multi-megabyte JSON ceilings are covered natively; Miri exercises the same parser with bounded fixtures"
+    )]
     fn exact_wire_and_collection_ceilings_are_enforced() {
         let fixture = Fixture::new();
         let path = fixture.write("main.rs", "x\n");

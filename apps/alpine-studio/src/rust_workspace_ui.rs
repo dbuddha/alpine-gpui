@@ -61,6 +61,11 @@ enum PanelState {
         identity: WorkspaceEditIdentity,
         prepared: PreparedWorkspaceEdit,
     },
+    Queued {
+        identity: WorkspaceEditIdentity,
+        prepared: PreparedWorkspaceEdit,
+    },
+    Publishing(WorkspaceEditIdentity),
 }
 
 #[derive(Default)]
@@ -78,6 +83,13 @@ impl WorkspaceEditPanel {
 
     pub(crate) fn is_rename_input(&self) -> bool {
         matches!(self.state, PanelState::Rename(_))
+    }
+
+    pub(crate) fn is_publication_pending(&self) -> bool {
+        matches!(
+            self.state,
+            PanelState::Queued { .. } | PanelState::Publishing(_)
+        )
     }
 
     pub(crate) fn open_rename(&mut self) -> Result<bool, WorkspaceEditPanelError> {
@@ -251,7 +263,7 @@ impl WorkspaceEditPanel {
         }
         let lines = preview_lines(kind, &prepared)?;
         let label = Arc::from(format!(
-            "{} preview: {files} file(s), {edits} edit(s). Publication is not enabled.",
+            "{} preview: {files} file(s), {edits} edit(s). Enter applies atomically.",
             kind.label()
         ));
         self.state = PanelState::Preview {
@@ -262,8 +274,83 @@ impl WorkspaceEditPanel {
         Ok(WorkspaceEditPanelOutcome::Preview { kind, files, edits })
     }
 
+    pub(crate) fn queue_publication(
+        &mut self,
+        current: LanguageIdentity,
+        language: &RustDiagnosticsSnapshot,
+    ) -> Result<bool, WorkspaceEditPanelError> {
+        let state = mem::take(&mut self.state);
+        let PanelState::Preview { identity, prepared } = state else {
+            self.state = state;
+            return Ok(false);
+        };
+        if !identity.matches(current, language) {
+            self.release();
+            return Err(WorkspaceEditPanelError::StaleResponse);
+        }
+        let kind = identity.kind();
+        self.state = PanelState::Queued { identity, prepared };
+        self.replace_lines(
+            vec![format!("{} publication queued...", kind.label()).into_boxed_str()],
+            Arc::from(format!("{} publication queued", kind.label())),
+        )?;
+        Ok(true)
+    }
+
+    pub(crate) fn take_queued_publication(
+        &mut self,
+    ) -> Option<(WorkspaceEditIdentity, PreparedWorkspaceEdit)> {
+        let state = mem::take(&mut self.state);
+        let PanelState::Queued { identity, prepared } = state else {
+            self.state = state;
+            return None;
+        };
+        self.state = PanelState::Publishing(identity);
+        Some((identity, prepared))
+    }
+
+    pub(crate) fn publication_matches(
+        &self,
+        identity: WorkspaceEditIdentity,
+        current: LanguageIdentity,
+    ) -> bool {
+        matches!(self.state, PanelState::Publishing(active) if active == identity)
+            && identity.matches_document(current)
+    }
+
+    pub(crate) fn publication_failed(
+        &mut self,
+        identity: WorkspaceEditIdentity,
+        prepared: PreparedWorkspaceEdit,
+    ) -> Result<bool, WorkspaceEditPanelError> {
+        if !matches!(self.state, PanelState::Publishing(active) if active == identity) {
+            return Ok(false);
+        }
+        let kind = identity.kind();
+        let lines = preview_lines(kind, &prepared)?;
+        let files = prepared.file_count();
+        let edits = prepared.edit_count();
+        self.state = PanelState::Preview { identity, prepared };
+        self.replace_lines(
+            lines,
+            Arc::from(format!(
+                "{} publication failed; preview retained for {files} file(s), {edits} edit(s)",
+                kind.label()
+            )),
+        )?;
+        Ok(true)
+    }
+
+    pub(crate) fn publication_succeeded(&mut self, identity: WorkspaceEditIdentity) -> bool {
+        if !matches!(self.state, PanelState::Publishing(active) if active == identity) {
+            return false;
+        }
+        self.release();
+        true
+    }
+
     pub(crate) fn cancel(&mut self) -> bool {
-        if !self.is_open() {
+        if !self.is_open() || self.is_publication_pending() {
             return false;
         }
         self.release();
@@ -337,12 +424,17 @@ impl WorkspaceEditPanel {
 
     fn current_retained_bytes(&self) -> usize {
         let state_bytes = match &self.state {
-            PanelState::Closed | PanelState::Waiting(_) | PanelState::Preparing(_) => 0,
+            PanelState::Closed
+            | PanelState::Waiting(_)
+            | PanelState::Preparing(_)
+            | PanelState::Publishing(_) => 0,
             PanelState::Rename(input) => input
                 .text
                 .capacity()
                 .saturating_add(input.composition.as_ref().map_or(0, String::capacity)),
-            PanelState::Preview { prepared, .. } => prepared.retained_bytes(),
+            PanelState::Preview { prepared, .. } | PanelState::Queued { prepared, .. } => {
+                prepared.retained_bytes()
+            }
         };
         state_bytes
             .saturating_add(
@@ -421,9 +513,7 @@ fn preview_lines(
         }
         lines.push(line.into_boxed_str());
     }
-    lines.push(Box::from(
-        "Preview only. Escape closes; publication awaits crash-recovery approval.",
-    ));
+    lines.push(Box::from("Enter applies atomically; Escape closes."));
     Ok(lines)
 }
 
@@ -437,7 +527,18 @@ fn floor_char_boundary(value: &str, mut index: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use serde_json::value::RawValue;
+
     use super::*;
+    use crate::{
+        rust_diagnostics::{
+            RustDiagnostics, RustDocumentInput,
+            tests::{diagnostics, fixture, mock_executable},
+        },
+        rust_workspace_edit::WorkspaceEditProposal,
+    };
 
     #[test]
     fn rename_input_is_ime_safe_bounded_and_releases_storage() -> Result<(), Box<dyn Error>> {
@@ -496,5 +597,64 @@ mod tests {
         let boundary = floor_char_boundary(&value, MAX_PREVIEW_LINE_BYTES - 4);
         assert!(value.is_char_boundary(boundary));
         assert!(boundary <= MAX_PREVIEW_LINE_BYTES - 4);
+    }
+
+    #[test]
+    fn publication_queue_is_identity_bound_non_cancellable_and_retryable()
+    -> Result<(), Box<dyn Error>> {
+        let (root, path, snapshot, language_identity) = fixture();
+        let mut diagnostics_model = RustDiagnostics::default();
+        diagnostics_model.install_for_test(
+            RustDocumentInput::new(&path, &root, language_identity, snapshot),
+            &diagnostics(&path, 1),
+            mock_executable(),
+        )?;
+        let language = diagnostics_model.snapshot();
+        let identity = WorkspaceEditIdentity::for_test(
+            language_identity,
+            language.process_epoch,
+            language.lsp_version,
+            7,
+            WorkspaceEditKind::Rename,
+        );
+        let uri = format!("file://{}", path.display());
+        let raw = RawValue::from_string(
+            serde_json::json!({
+                "changes": {
+                    (uri): [{
+                        "range": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 0}
+                        },
+                        "newText": "renamed_"
+                    }]
+                }
+            })
+            .to_string(),
+        )?;
+        let prepared = WorkspaceEditProposal::admit_rename(&raw, &root)?.prepare()?;
+        let mut panel = WorkspaceEditPanel {
+            state: PanelState::Preview { identity, prepared },
+            ..WorkspaceEditPanel::default()
+        };
+        assert!(panel.queue_publication(language_identity, &language)?);
+        assert!(panel.is_publication_pending());
+        assert!(!panel.cancel());
+        let (queued_identity, prepared) = panel.take_queued_publication().ok_or("queued")?;
+        assert_eq!(queued_identity, identity);
+        assert!(panel.publication_matches(identity, language_identity));
+        assert!(!panel.cancel());
+        assert!(panel.publication_failed(identity, prepared)?);
+        assert!(!panel.is_publication_pending());
+        assert!(panel.preview().is_some());
+        assert!(panel.queue_publication(language_identity, &language)?);
+        let (_, prepared) = panel.take_queued_publication().ok_or("queued retry")?;
+        drop(prepared);
+        assert!(panel.publication_succeeded(identity));
+        assert!(!panel.is_open());
+        assert_eq!(panel.retained_bytes(), 0);
+        assert!(!diagnostics_model.shutdown().active);
+        fs::remove_dir_all(root)?;
+        Ok(())
     }
 }

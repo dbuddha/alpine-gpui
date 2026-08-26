@@ -402,6 +402,13 @@ impl<T> DocumentTabs<T> {
             .and_then(|tab| tab.document.as_ref())
     }
 
+    pub(crate) fn inactive_document_mut_for_path(&mut self, path: &Path) -> Option<&mut T> {
+        self.tabs
+            .iter_mut()
+            .find(|tab| tab.path.as_deref() == Some(path))
+            .and_then(|tab| tab.document.as_mut())
+    }
+
     #[cfg(test)]
     pub(crate) fn clear_inactive_document_for_test(&mut self, path: &Path) -> bool {
         let Some(tab) = self
