@@ -888,6 +888,18 @@ mod tests {
         Ok((capture, snapshot))
     }
 
+    fn has_error(capture: &Capture, snapshot: &Snapshot, needle: &str) -> bool {
+        validate(capture, snapshot)
+            .iter()
+            .any(|error| error.contains(needle))
+    }
+
+    fn temporary_path(label: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        let sequence = RECORD_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        root.join(format!("dogfood-{label}-{}-{sequence}", std::process::id()))
+    }
+
     #[test]
     fn canonical_bundle_validates_and_reports_no_claim() {
         let (manifest, _) = fixture_paths();
@@ -919,7 +931,46 @@ mod tests {
                 .as_ref()
                 .is_err_and(|errors| errors.iter().any(|error| error.contains("already exists")))
         );
+        let snapshot_path = destination.join("snapshot.toml");
+        let mut tampered = fs::read_to_string(&snapshot_path).map_err(|error| error.to_string())?;
+        tampered.push('\n');
+        fs::write(&snapshot_path, tampered).map_err(|error| error.to_string())?;
+        assert!(
+            run("validate-studio-dogfood", &destination.join("session.toml")).is_err_and(
+                |errors| errors
+                    .iter()
+                    .any(|error| error.contains("snapshot SHA-256 mismatch"))
+            )
+        );
         fs::remove_dir_all(destination).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    #[test]
+    fn file_size_and_bundle_path_boundaries_are_independent() -> Result<(), String> {
+        let path = temporary_path("size-boundary.toml");
+        let source = "answer = 1\n";
+        let limit = 32_u64;
+        let padding = usize::try_from(limit).map_err(|error| error.to_string())? - source.len();
+        fs::write(&path, format!("{source}{}", " ".repeat(padding)))
+            .map_err(|error| error.to_string())?;
+        assert!(load_toml::<toml::Value>(&path, limit).is_ok());
+        fs::write(&path, format!("{source}{}", " ".repeat(padding + 1)))
+            .map_err(|error| error.to_string())?;
+        assert!(
+            load_toml::<toml::Value>(&path, limit)
+                .is_err_and(|errors| { errors.iter().any(|error| error.contains("limit is 32")) })
+        );
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+
+        let bundle = Path::new("bundle");
+        assert_eq!(
+            resolve_bundle_file(bundle, "snapshot.toml"),
+            Ok(bundle.join("snapshot.toml"))
+        );
+        assert!(resolve_bundle_file(bundle, "").is_err());
+        assert!(resolve_bundle_file(bundle, "/snapshot.toml").is_err());
+        assert!(resolve_bundle_file(bundle, "../snapshot.toml").is_err());
         Ok(())
     }
 
@@ -957,6 +1008,58 @@ mod tests {
     }
 
     #[test]
+    fn manifest_scalar_and_text_bounds_are_independent() -> Result<(), String> {
+        let (mut capture, snapshot) = fixture()?;
+        capture.workload_version = 0;
+        assert!(has_error(&capture, &snapshot, "workload version"));
+
+        let (mut capture, mut snapshot) = fixture()?;
+        capture.duration_ms = 0;
+        snapshot.duration_ms = 0;
+        assert!(has_error(&capture, &snapshot, "seven days"));
+        capture.duration_ms = MAX_DURATION_MS + 1;
+        snapshot.duration_ms = MAX_DURATION_MS + 1;
+        assert!(has_error(&capture, &snapshot, "seven days"));
+
+        let (mut capture, snapshot) = fixture()?;
+        capture.workspace_fixture.clear();
+        assert!(has_error(
+            &capture,
+            &snapshot,
+            "workspace fixture must contain"
+        ));
+        capture.workspace_fixture = "x".repeat(MAX_TEXT_BYTES + 1);
+        assert!(has_error(
+            &capture,
+            &snapshot,
+            "workspace fixture must contain"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn capture_lists_reject_empty_oversized_and_invalid_items() -> Result<(), String> {
+        let (mut capture, snapshot) = fixture()?;
+        capture.coverage.clear();
+        assert!(has_error(&capture, &snapshot, "coverage must contain"));
+        capture.coverage = vec!["launch".to_owned(); MAX_LIST_ITEMS + 1];
+        assert!(has_error(&capture, &snapshot, "coverage must contain"));
+        capture.coverage = vec!["invalid".to_owned()];
+        assert!(has_error(&capture, &snapshot, "unsupported value"));
+
+        let (mut capture, snapshot) = fixture()?;
+        capture.assumptions.clear();
+        assert!(has_error(&capture, &snapshot, "assumptions must contain"));
+        capture.assumptions = vec!["bounded".to_owned(); MAX_LIST_ITEMS + 1];
+        assert!(has_error(&capture, &snapshot, "assumptions must contain"));
+        capture.assumptions = vec![String::new()];
+        assert!(has_error(&capture, &snapshot, "assumptions item"));
+        capture.assumptions = vec!["x".repeat(MAX_TEXT_BYTES + 1)];
+        assert!(has_error(&capture, &snapshot, "assumptions item"));
+        Ok(())
+    }
+
+    #[test]
     fn passed_snapshot_rejects_idle_frames_leaks_and_unclean_close() -> Result<(), String> {
         let (capture, mut snapshot) = fixture()?;
         snapshot.frames.idle_submissions = 1;
@@ -979,6 +1082,34 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("post-close"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn frame_language_and_accessibility_orders_are_independent() -> Result<(), String> {
+        let (capture, mut snapshot) = fixture()?;
+        snapshot.frames.presented = snapshot.frames.completed + 1;
+        assert!(has_error(&capture, &snapshot, "frame counters"));
+        let (_, mut snapshot) = fixture()?;
+        snapshot.frames.completed = snapshot.frames.submitted + 1;
+        assert!(has_error(&capture, &snapshot, "frame counters"));
+        let (_, mut snapshot) = fixture()?;
+        snapshot.frames.submitted = snapshot.frames.requested + 1;
+        assert!(has_error(&capture, &snapshot, "frame counters"));
+
+        let (_, mut snapshot) = fixture()?;
+        snapshot.language.current_retained_bytes = snapshot.language.peak_retained_bytes + 1;
+        assert!(has_error(&capture, &snapshot, "language retained bytes"));
+        let (_, mut snapshot) = fixture()?;
+        snapshot.language.peak_retained_bytes = snapshot.language.budget_bytes + 1;
+        assert!(has_error(&capture, &snapshot, "language retained bytes"));
+
+        let (_, mut snapshot) = fixture()?;
+        snapshot.accessibility.retained_nodes = snapshot.accessibility.peak_retained_nodes + 1;
+        assert!(has_error(&capture, &snapshot, "accessibility nodes"));
+        let (_, mut snapshot) = fixture()?;
+        snapshot.accessibility.peak_retained_nodes = 272;
+        assert!(has_error(&capture, &snapshot, "accessibility nodes"));
         Ok(())
     }
 
@@ -1009,6 +1140,75 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("non-contiguous"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn stage_timing_and_process_sample_axes_are_independent() -> Result<(), String> {
+        let (capture, mut snapshot) = fixture()?;
+        let stage = snapshot.stages.first_mut().ok_or("missing stage")?;
+        stage.samples = 0;
+        stage.total_ns = 0;
+        stage.peak_ns = 0;
+        assert!(!has_error(
+            &capture,
+            &snapshot,
+            "inconsistent total and peak"
+        ));
+        let (_, mut snapshot) = fixture()?;
+        let stage = snapshot.stages.first_mut().ok_or("missing stage")?;
+        stage.samples = 0;
+        stage.total_ns = 1;
+        stage.peak_ns = 0;
+        assert!(has_error(
+            &capture,
+            &snapshot,
+            "inconsistent total and peak"
+        ));
+        let (_, mut snapshot) = fixture()?;
+        let stage = snapshot.stages.first_mut().ok_or("missing stage")?;
+        stage.samples = 0;
+        stage.total_ns = 0;
+        stage.peak_ns = 1;
+        assert!(has_error(
+            &capture,
+            &snapshot,
+            "inconsistent total and peak"
+        ));
+        let (_, mut snapshot) = fixture()?;
+        let stage = snapshot.stages.first_mut().ok_or("missing stage")?;
+        stage.samples = 1;
+        stage.total_ns = 0;
+        stage.peak_ns = 1;
+        assert!(has_error(
+            &capture,
+            &snapshot,
+            "inconsistent total and peak"
+        ));
+
+        let (_, mut snapshot) = fixture()?;
+        snapshot.samples.clear();
+        assert!(has_error(&capture, &snapshot, "1 to 4096 process samples"));
+        let (_, mut snapshot) = fixture()?;
+        snapshot.samples = (0..=MAX_SAMPLES)
+            .map(|sequence| ProcessSample {
+                sequence: u32::try_from(sequence).unwrap_or(u32::MAX),
+                elapsed_ms: snapshot.duration_ms,
+                physical_footprint_bytes: 1,
+                private_dirty_bytes: 1,
+                gpu_bytes: 0,
+                alpine_retained_bytes: 0,
+            })
+            .collect();
+        assert!(has_error(&capture, &snapshot, "1 to 4096 process samples"));
+
+        let (_, mut snapshot) = fixture()?;
+        snapshot.samples[0].elapsed_ms = 1;
+        snapshot.samples[1].elapsed_ms = 0;
+        assert!(has_error(&capture, &snapshot, "invalid elapsed time"));
+        let (_, mut snapshot) = fixture()?;
+        snapshot.samples[0].elapsed_ms = snapshot.duration_ms + 1;
+        assert!(has_error(&capture, &snapshot, "invalid elapsed time"));
         Ok(())
     }
 

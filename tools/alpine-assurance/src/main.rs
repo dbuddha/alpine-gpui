@@ -1013,7 +1013,8 @@ fn display_list(items: &[String]) -> String {
 mod tests {
     use super::{
         artifact_anchor, artifact_path, discover_kani_file, load_registry, registry_path,
-        render_report, valid_identifier, validate_registry,
+        render_report, run_dogfood_command, run_dogfood_record_command, valid_identifier,
+        validate_registry,
     };
     use std::{
         collections::BTreeSet,
@@ -1031,6 +1032,31 @@ mod tests {
         assert!(valid_identifier("EV-0016-KANI01", "EV-", "-"));
         assert!(!valid_identifier("AEP-16", "AEP-", "-C"));
         assert!(!valid_identifier("EV-0016-lower", "EV-", "-"));
+    }
+
+    #[test]
+    fn dogfood_cli_dispatch_preserves_validation_and_argument_errors() {
+        let manifest = repository_root().join("assurance/dogfood/v1/session.toml");
+        let mut validation_arguments = [manifest.display().to_string()].into_iter();
+        let validation = run_dogfood_command("validate-studio-dogfood", &mut validation_arguments);
+        assert!(validation.is_ok_and(|message| {
+            message.starts_with("validated Studio dogfood capture fixture-dogfood-session")
+        }));
+
+        let mut missing_validation_arguments = std::iter::empty();
+        assert!(
+            run_dogfood_command(
+                "validate-studio-dogfood",
+                &mut missing_validation_arguments,
+            )
+            .is_err_and(|errors| errors == ["validate-studio-dogfood requires a manifest path"])
+        );
+        let mut missing_record_arguments = std::iter::empty();
+        assert!(
+            run_dogfood_record_command(&mut missing_record_arguments).is_err_and(|errors| {
+                errors == ["record-studio-dogfood requires a draft, snapshot, and destination"]
+            })
+        );
     }
 
     #[test]
