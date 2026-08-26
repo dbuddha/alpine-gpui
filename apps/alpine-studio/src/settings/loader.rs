@@ -1430,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn independent_loader_bounds_fail_closed() {
+    fn independent_loader_bounds_fail_closed() -> Result<(), Box<dyn Error>> {
         let too_long = PathBuf::from("x".repeat(MAX_SETTINGS_PATH_BYTES + 1));
         assert_eq!(
             SettingsPaths::explicit(Some(too_long), None).global,
@@ -1484,16 +1484,14 @@ mod tests {
             decode_color(&serde_json::json!([0.0, 1.0]), "short"),
             Err(SettingsLoadError::InvalidValue("theme color"))
         );
+        let document = serde_json::json!({
+            "version": 1,
+            "editor": { "font_name": "x".repeat(MAX_FONT_NAME_BYTES + 1) }
+        })
+        .to_string();
+        let theme = StudioTheme::compiled()?;
         assert_eq!(
-            decode_layer(
-                serde_json::to_string(&serde_json::json!({
-                    "version": 1,
-                    "editor": { "font_name": "x".repeat(MAX_FONT_NAME_BYTES + 1) }
-                }))
-                .expect("bounded JSON")
-                .as_bytes(),
-                &StudioTheme::compiled().expect("compiled theme"),
-            ),
+            decode_layer(document.as_bytes(), &theme),
             Err(SettingsLoadError::InvalidValue("editor.font_name"))
         );
         let bindings = vec![
@@ -1509,6 +1507,7 @@ mod tests {
             decode_keymap(&serde_json::json!({ "bindings": bindings })),
             Err(SettingsLoadError::InvalidValue("keymap.bindings"))
         );
+        Ok(())
     }
 
     #[test]
