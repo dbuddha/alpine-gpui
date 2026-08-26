@@ -1174,6 +1174,15 @@ mod tests {
             Err(WorkspaceEditPublicationError::PathTooLong)
         );
 
+        Ok(())
+    }
+
+    #[cfg_attr(
+        miri,
+        ignore = "the 512 KiB journal ceiling is covered natively; Miri exercises bounded codec and checksum semantics"
+    )]
+    #[test]
+    fn exact_journal_size_limit_is_rejected_as_corrupt() -> Result<(), Box<dyn std::error::Error>> {
         let root = fixture()?;
         let exact_size = root.join("exact-size.bin");
         fs::write(&exact_size, vec![0_u8; MAX_JOURNAL_BYTES])?;

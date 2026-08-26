@@ -390,6 +390,26 @@ impl WorkspaceEditPanel {
         self.peak_retained_bytes
     }
 
+    #[cfg(test)]
+    pub(crate) fn install_preview_for_test(
+        &mut self,
+        identity: WorkspaceEditIdentity,
+        prepared: PreparedWorkspaceEdit,
+    ) -> Result<(), WorkspaceEditPanelError> {
+        let kind = identity.kind();
+        let files = prepared.file_count();
+        let edits = prepared.edit_count();
+        let lines = preview_lines(kind, &prepared)?;
+        self.state = PanelState::Preview { identity, prepared };
+        self.replace_lines(
+            lines,
+            Arc::from(format!(
+                "{} preview: {files} file(s), {edits} edit(s). Enter applies atomically.",
+                kind.label()
+            )),
+        )
+    }
+
     fn rebuild_rename_lines(&mut self) -> Result<(), WorkspaceEditPanelError> {
         let PanelState::Rename(input) = &self.state else {
             return Ok(());
@@ -654,6 +674,194 @@ mod tests {
         assert!(!panel.is_open());
         assert_eq!(panel.retained_bytes(), 0);
         assert!(!diagnostics_model.shutdown().active);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_panel_transitions_are_atomic_and_bounded() -> Result<(), Box<dyn Error>> {
+        let mut panel = WorkspaceEditPanel::default();
+        assert!(!panel.is_open());
+        assert!(!panel.begin_composition());
+        assert!(!panel.cancel_composition());
+        assert!(!panel.delete_backward()?);
+        assert!(!panel.commit_text("ignored")?);
+        assert!(!panel.update_composition("ignored", 0, 0)?);
+        assert_eq!(
+            panel.take_rename_for_request(),
+            Err(WorkspaceEditPanelError::InvalidName)
+        );
+        assert!(!panel.cancel());
+        assert!(panel.line(0).is_none());
+        assert!(panel.accessibility_label().is_none());
+        assert_eq!(
+            checked_input_length(usize::MAX, 1),
+            Err(WorkspaceEditPanelError::InputTooLong)
+        );
+        assert_eq!(
+            validate_composition("x", u32::MAX, 1),
+            Err(WorkspaceEditPanelError::InvalidComposition)
+        );
+        assert_eq!(
+            validate_composition("x", 0, 2),
+            Err(WorkspaceEditPanelError::InvalidComposition)
+        );
+
+        assert!(panel.open_rename()?);
+        assert!(!panel.delete_backward()?);
+        assert!(!panel.cancel_composition());
+        assert!(!panel.commit_text("")?);
+        assert!(panel.begin_composition());
+        assert!(!panel.begin_composition());
+        assert!(panel.update_composition("name", 1, 2)?);
+        assert!(!panel.update_composition("name", 1, 2)?);
+        assert_eq!(
+            panel.update_composition("bad\nname", 0, 0),
+            Err(WorkspaceEditPanelError::InvalidName)
+        );
+        assert_eq!(
+            panel.take_rename_for_request(),
+            Err(WorkspaceEditPanelError::InvalidName)
+        );
+        assert!(panel.cancel_composition());
+        assert!(panel.commit_text("name")?);
+        assert!(panel.accessibility_label().is_some());
+        assert!(panel.cancel());
+        assert!(!panel.is_open());
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered panel state-machine journey keeps each authority transition visible"
+    )]
+    fn preparation_empty_stale_and_terminal_states_fail_closed() -> Result<(), Box<dyn Error>> {
+        let (root, path, snapshot, language_identity) = fixture();
+        let mut diagnostics_model = RustDiagnostics::default();
+        diagnostics_model.install_for_test(
+            RustDocumentInput::new(&path, &root, language_identity, snapshot),
+            &diagnostics(&path, 1),
+            mock_executable(),
+        )?;
+        let language = diagnostics_model.snapshot();
+        let identity = WorkspaceEditIdentity::for_test(
+            language_identity,
+            language.process_epoch,
+            language.lsp_version,
+            17,
+            WorkspaceEditKind::Formatting,
+        );
+        let other = WorkspaceEditIdentity::for_test(
+            language_identity,
+            language.process_epoch,
+            language.lsp_version,
+            18,
+            WorkspaceEditKind::Rename,
+        );
+        let uri = format!("file://{}", path.display());
+        let raw = RawValue::from_string(
+            serde_json::json!({
+                "changes": {
+                    (uri): [{
+                        "range": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 0}
+                        },
+                        "newText": "formatted_"
+                    }]
+                }
+            })
+            .to_string(),
+        )?;
+        let prepared = WorkspaceEditProposal::admit_rename(&raw, &root)?.prepare()?;
+        let empty = prepared.publication_fixture_for_test(0, true);
+        let mut panel = WorkspaceEditPanel::default();
+
+        assert!(!panel.preparation_started(identity)?);
+        assert!(!panel.preparation_failed(identity));
+        assert!(!panel.queue_publication(language_identity, &language)?);
+        assert!(panel.take_queued_publication().is_none());
+        assert!(!panel.publication_matches(identity, language_identity));
+        assert!(!panel.publication_failed(identity, prepared.clone())?);
+        assert!(!panel.publication_succeeded(identity));
+
+        panel.wait(WorkspaceEditKind::Formatting)?;
+        assert!(!panel.preparation_started(other)?);
+        assert!(panel.preparation_started(identity)?);
+        assert_eq!(
+            panel.complete(
+                WorkspaceEditPreparationOutput {
+                    identity: other,
+                    wire_bytes: 0,
+                    result: Ok(prepared.clone()),
+                },
+                language_identity,
+                &language,
+            )?,
+            WorkspaceEditPanelOutcome::Ignored
+        );
+        assert!(panel.preparation_failed(identity));
+
+        panel.wait(WorkspaceEditKind::Formatting)?;
+        panel.preparation_started(identity)?;
+        assert_eq!(
+            panel.complete(
+                WorkspaceEditPreparationOutput {
+                    identity,
+                    wire_bytes: 0,
+                    result: Err(WorkspaceEditError::Malformed),
+                },
+                language_identity,
+                &language,
+            ),
+            Err(WorkspaceEditPanelError::Preparation(
+                WorkspaceEditError::Malformed
+            ))
+        );
+        assert!(!panel.is_open());
+
+        panel.wait(WorkspaceEditKind::Formatting)?;
+        panel.preparation_started(identity)?;
+        assert_eq!(
+            panel.complete(
+                WorkspaceEditPreparationOutput {
+                    identity,
+                    wire_bytes: 0,
+                    result: Ok(empty),
+                },
+                language_identity,
+                &language,
+            )?,
+            WorkspaceEditPanelOutcome::Empty(WorkspaceEditKind::Formatting)
+        );
+
+        panel.wait(WorkspaceEditKind::Formatting)?;
+        panel.preparation_started(identity)?;
+        assert_eq!(
+            panel.complete(
+                WorkspaceEditPreparationOutput {
+                    identity,
+                    wire_bytes: 23,
+                    result: Ok(prepared.clone()),
+                },
+                language_identity,
+                &language,
+            )?,
+            WorkspaceEditPanelOutcome::Preview {
+                kind: WorkspaceEditKind::Formatting,
+                files: 1,
+                edits: 1,
+            }
+        );
+        assert_eq!(panel.line_count(), 3);
+        assert!(panel.line(0).is_some_and(|line| line.contains("preview")));
+        let stopped = diagnostics_model.shutdown();
+        assert_eq!(
+            panel.queue_publication(language_identity, &stopped),
+            Err(WorkspaceEditPanelError::StaleResponse)
+        );
+        assert!(!panel.is_open());
         fs::remove_dir_all(root)?;
         Ok(())
     }

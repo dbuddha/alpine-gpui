@@ -67,6 +67,8 @@ mod rust_symbols;
     )
 )]
 mod rust_workspace_edit;
+#[cfg(test)]
+mod rust_workspace_publication_tests;
 mod rust_workspace_publish;
 mod rust_workspace_ui;
 mod session;
