@@ -769,39 +769,42 @@ impl<'a> JournalReader<'a> {
     }
 }
 
-#[cfg(unix)]
 fn path_bytes(path: &Path) -> Result<Vec<u8>, WorkspaceEditPublicationError> {
-    use std::os::unix::ffi::OsStrExt;
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.is_empty() {
-        Err(WorkspaceEditPublicationError::InvalidPath)
-    } else {
-        Ok(bytes.to_vec())
+    if path.as_os_str().is_empty() {
+        return Err(WorkspaceEditPublicationError::InvalidPath);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        Ok(path.as_os_str().as_bytes().to_vec())
+    }
+    #[cfg(not(unix))]
+    {
+        path.to_str()
+            .map(|value| value.as_bytes().to_vec())
+            .ok_or(WorkspaceEditPublicationError::InvalidPath)
     }
 }
 
-#[cfg(not(unix))]
-fn path_bytes(path: &Path) -> Result<Vec<u8>, WorkspaceEditPublicationError> {
-    path.to_str()
-        .map(|value| value.as_bytes().to_vec())
-        .ok_or(WorkspaceEditPublicationError::InvalidPath)
-}
-
-#[cfg(unix)]
 fn path_from_bytes(bytes: &[u8]) -> Result<PathBuf, WorkspaceEditPublicationError> {
-    use std::os::unix::ffi::OsStringExt;
-    if bytes.is_empty() {
-        Err(WorkspaceEditPublicationError::CorruptJournal)
-    } else {
-        Ok(PathBuf::from(OsString::from_vec(bytes.to_vec())))
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        if bytes.is_empty() {
+            Err(WorkspaceEditPublicationError::CorruptJournal)
+        } else {
+            Ok(PathBuf::from(OsString::from_vec(bytes.to_vec())))
+        }
     }
-}
-
-#[cfg(not(unix))]
-fn path_from_bytes(bytes: &[u8]) -> Result<PathBuf, WorkspaceEditPublicationError> {
-    String::from_utf8(bytes.to_vec())
-        .map(PathBuf::from)
-        .map_err(|_| WorkspaceEditPublicationError::CorruptJournal)
+    #[cfg(not(unix))]
+    {
+        if bytes.is_empty() {
+            return Err(WorkspaceEditPublicationError::CorruptJournal);
+        }
+        String::from_utf8(bytes.to_vec())
+            .map(PathBuf::from)
+            .map_err(|_| WorkspaceEditPublicationError::CorruptJournal)
+    }
 }
 
 fn sync_parent(path: &Path) -> Result<(), WorkspaceEditPublicationError> {
@@ -865,6 +868,14 @@ fn crc32(bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn empty_path_bytes_are_rejected_before_journal_ownership() {
+        assert_eq!(
+            super::path_bytes(std::path::Path::new("")),
+            Err(super::WorkspaceEditPublicationError::InvalidPath)
+        );
+    }
+
     use std::{
         fs,
         path::Path,
@@ -877,11 +888,12 @@ mod tests {
         Journal, JournalOpenDisposition, JournalPhase, MAX_JOURNAL_BYTES, MAX_PATH_BYTES,
         PublicationStep, WorkspaceEditPublicationError, cleanup_committed, cleanup_preparing,
         crc32, decode_journal, encode_journal, entries_for, journal_open_disposition,
-        journal_temporary_path, load_journal, next_journal, next_journal_with_sequence, preflight,
-        publish_with_hook, recover_pending, rollback_from_error, stage_all, validate_prepared,
-        validate_target_path, write_journal, write_journal_with_sequence,
+        journal_temporary_path, load_journal, next_journal, next_journal_with_sequence, path_bytes,
+        path_from_bytes, preflight, publish_with_hook, recover_pending, remove_if_exists,
+        rollback_from_error, stage_all, sync_parent, validate_prepared, validate_target_path,
+        write_journal, write_journal_with_sequence,
     };
-    use crate::rust_workspace_edit::WorkspaceEditProposal;
+    use crate::{rust_navigation::local_file_uri, rust_workspace_edit::WorkspaceEditProposal};
 
     static FIXTURE: AtomicU64 = AtomicU64::new(1);
 
@@ -902,7 +914,7 @@ mod tests {
         let mut changes = serde_json::Map::new();
         for (path, original, replacement) in files {
             fs::write(path, original)?;
-            let uri = format!("file://{}", path.display());
+            let uri = local_file_uri(path);
             changes.insert(
                 uri,
                 serde_json::json!([{
@@ -981,9 +993,17 @@ mod tests {
             validate_target_path(Path::new("/..")),
             Err(WorkspaceEditPublicationError::InvalidPath)
         );
-        let exact = Path::new("/").join("x".repeat(MAX_PATH_BYTES - 1));
+        let prefix_bytes = path_bytes(&root)?.len().saturating_add(1);
+        let exact = root.join("x".repeat(MAX_PATH_BYTES.saturating_sub(prefix_bytes)));
+        assert_eq!(path_bytes(&exact)?.len(), MAX_PATH_BYTES);
         assert_eq!(validate_target_path(&exact), Ok(()));
-        let oversized = Path::new("/").join("x".repeat(MAX_PATH_BYTES));
+        let oversized = root.join(
+            "x".repeat(
+                MAX_PATH_BYTES
+                    .saturating_sub(prefix_bytes)
+                    .saturating_add(1),
+            ),
+        );
         assert_eq!(
             validate_target_path(&oversized),
             Err(WorkspaceEditPublicationError::PathTooLong)
@@ -1113,7 +1133,12 @@ mod tests {
     #[test]
     fn codec_boundaries_error_mapping_and_checksum_are_exact()
     -> Result<(), Box<dyn std::error::Error>> {
+        let root = fixture()?;
         assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
+        assert_eq!(
+            WorkspaceEditPublicationError::StaleFile.to_string(),
+            "Rust workspace edit publication failed: StaleFile"
+        );
         assert_eq!(
             journal_open_disposition(std::io::ErrorKind::AlreadyExists),
             JournalOpenDisposition::Retry
@@ -1150,30 +1175,54 @@ mod tests {
         );
 
         let exact_targets = (0..32)
-            .map(|index| std::path::PathBuf::from(format!("/{index:02}")))
+            .map(|index| root.join(format!("{index:02}")))
             .collect::<Vec<_>>();
         let exact = journal_with_targets(exact_targets);
         assert_eq!(decode_journal(&encode_journal(&exact)?)?, exact);
         let excessive_targets = (0..33)
-            .map(|index| std::path::PathBuf::from(format!("/{index:02}")))
+            .map(|index| root.join(format!("{index:02}")))
             .collect::<Vec<_>>();
         assert_eq!(
             decode_journal(&encode_journal(&journal_with_targets(excessive_targets))?),
             Err(WorkspaceEditPublicationError::TooManyFiles)
         );
 
-        let exact_path = std::path::PathBuf::from(format!("/{}", "x".repeat(MAX_PATH_BYTES - 1)));
+        let prefix_bytes = path_bytes(&root)?.len().saturating_add(1);
+        let exact_path = root.join("x".repeat(MAX_PATH_BYTES.saturating_sub(prefix_bytes)));
         let exact_path_journal = journal_with_targets(vec![exact_path]);
         assert_eq!(
             decode_journal(&encode_journal(&exact_path_journal)?)?,
             exact_path_journal
         );
-        let long_path = std::path::PathBuf::from(format!("/{}", "x".repeat(MAX_PATH_BYTES)));
+        let long_path = root.join(
+            "x".repeat(
+                MAX_PATH_BYTES
+                    .saturating_sub(prefix_bytes)
+                    .saturating_add(1),
+            ),
+        );
         assert_eq!(
             encode_journal(&journal_with_targets(vec![long_path])),
             Err(WorkspaceEditPublicationError::PathTooLong)
         );
 
+        let round_trip = root.join("round-trip.rs");
+        let encoded_path = path_bytes(&round_trip)?;
+        assert_eq!(path_from_bytes(&encoded_path)?, round_trip);
+        assert_eq!(
+            path_bytes(Path::new("")),
+            Err(WorkspaceEditPublicationError::InvalidPath)
+        );
+        assert_eq!(
+            path_from_bytes(&[]),
+            Err(WorkspaceEditPublicationError::CorruptJournal)
+        );
+        assert_eq!(
+            sync_parent(Path::new("")),
+            Err(WorkspaceEditPublicationError::InvalidPath)
+        );
+        assert!(remove_if_exists(&root).is_err());
+        fs::remove_dir_all(root)?;
         Ok(())
     }
 

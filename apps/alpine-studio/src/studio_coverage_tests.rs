@@ -4758,22 +4758,21 @@ fn native_validation_dispatch_counters_reset_and_report_nonzero_work() {
     NATIVE_VALIDATION_LANGUAGE_LATCH_POLLS.fetch_add(4, Ordering::Relaxed);
     NATIVE_VALIDATION_LANGUAGE_FOREGROUND_RESULTS.fetch_add(5, Ordering::Relaxed);
     NATIVE_VALIDATION_LANGUAGE_INVALIDATIONS.fetch_add(6, Ordering::Relaxed);
-    record_native_validation_language_snapshot(rust_diagnostics::RustDiagnosticsSnapshot {
-        active: true,
-        generation: 7,
-        process_epoch: 8,
-        lsp_version: 9,
-        process_queued_events: 10,
-        process_submitted_inputs: 11,
-        process_written_inputs: 12,
-        process_input_saturations: 13,
-        polls: 14,
-        diagnostic_publications: 15,
-        diagnostic_items: 16,
-        stale_wakes: 17,
-        restarts: 18,
-        ..rust_diagnostics::RustDiagnosticsSnapshot::default()
-    });
+    let mut language = rust_diagnostics::RustDiagnosticsSnapshot::default();
+    language.active = true;
+    language.generation = 7;
+    language.process_epoch = 8;
+    language.lsp_version = 9;
+    language.process_queued_events = 10;
+    language.process_submitted_inputs = 11;
+    language.process_written_inputs = 12;
+    language.process_input_saturations = 13;
+    language.polls = 14;
+    language.diagnostic_publications = 15;
+    language.diagnostic_items = 16;
+    language.stale_wakes = 17;
+    language.restarts = 18;
+    record_native_validation_language_snapshot(language);
     for admission in [
         alpine_runtime::ExternalAdmission::Admitted,
         alpine_runtime::ExternalAdmission::Full,

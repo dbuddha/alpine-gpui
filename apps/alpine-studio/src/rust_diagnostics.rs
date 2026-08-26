@@ -1156,9 +1156,11 @@ impl RustDiagnostics {
         kind: WorkspaceEditKind,
         params: &serde_json::value::RawValue,
     ) -> LanguageEffect {
-        let mut visual_changed = self.cancel_completion();
-        visual_changed |= self.cancel_navigation();
-        visual_changed |= self.cancel_workspace_edit();
+        let visual_changed = crate::any_workspace_edit_change([
+            self.cancel_completion(),
+            self.cancel_navigation(),
+            self.cancel_workspace_edit(),
+        ]);
         let Some(session) = self.session.as_mut() else {
             return self.workspace_edit_not_ready();
         };
@@ -1184,12 +1186,12 @@ impl RustDiagnostics {
             lsp_version: session.lsp_version,
         });
         self.workspace_edit_requests = self.workspace_edit_requests.saturating_add(1);
-        visual_changed |= replace_status(
+        let status_changed = replace_status(
             &mut self.status,
             Some(Arc::from(format!("{} requested.", kind.label()))),
         );
         LanguageEffect {
-            visual_changed,
+            visual_changed: crate::any_workspace_edit_change([visual_changed, status_changed]),
             continuation: None,
         }
     }
@@ -1216,7 +1218,7 @@ impl RustDiagnostics {
             Ok(_) => {
                 self.workspace_edit_cancellations =
                     self.workspace_edit_cancellations.saturating_add(1);
-                false
+                true
             }
             Err(error) => replace_status(
                 &mut self.status,
@@ -2674,6 +2676,23 @@ impl RustDiagnostics {
         self.peak_diagnostic_items = batch.diagnostics().len();
         self.peak_diagnostic_bytes = batch.retained_bytes();
         self.session = Some(test_session(input, document, batch, executable));
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stage_workspace_edit_preparation_for_test(
+        &mut self,
+        identity: WorkspaceEditIdentity,
+        workspace_root: &Path,
+        document_uri: &str,
+        result: &serde_json::value::RawValue,
+    ) -> Result<(), WorkspaceEditError> {
+        self.workspace_edit_preparation = Some(WorkspaceEditPreparationRequest {
+            identity,
+            workspace_root: workspace_root.to_path_buf(),
+            document_uri: Box::from(document_uri),
+            wire: WorkspaceEditWire::capture(result)?,
+        });
         Ok(())
     }
 

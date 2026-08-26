@@ -1,19 +1,23 @@
 use std::fs;
 
+use alpine_core::{LinearRgba, Size};
 use alpine_platform_macos::{
     AccessibilityAction, AccessibilityActionResult, AccessibilityPayload, AccessibilityRequest,
-    AccessibilityRequestId, EventTimestamp, KeyState, Modifiers, ScrollPhase, SurfaceEvent,
+    AccessibilityRequestId, EventTimestamp, ImeEvent, KeyState, Modifiers, ScrollPhase,
+    SurfaceEvent,
 };
+use alpine_runtime::{Application, WorkerConfig};
 use alpine_text::Transaction;
 use serde_json::value::RawValue;
 
 use super::{
-    KEY_DELETE_BACKWARD, KEY_ESCAPE, KEY_RETURN, StudioApp, WorkspaceEditKind,
-    WorkspaceEditPublicationRequest, accessibility, journal_path_for_session,
+    KEY_DELETE_BACKWARD, KEY_ESCAPE, KEY_RETURN, StudioApp, WorkspaceEditApplicationError,
+    WorkspaceEditKind, WorkspaceEditPublicationRequest, accessibility, journal_path_for_session,
     rust_diagnostics::{
         RustDocumentInput, WorkspaceEditIdentity, WorkspaceEditPreparationOutput,
         tests::{diagnostics, fixture, mock_executable},
     },
+    rust_navigation::local_file_uri,
     rust_workspace_edit::{PreparedWorkspaceEdit, WorkspaceEditError, WorkspaceEditProposal},
     tests::TestTextSystem,
 };
@@ -23,7 +27,7 @@ fn prepared_insert(
     root: &std::path::Path,
     text: &str,
 ) -> Result<PreparedWorkspaceEdit, Box<dyn std::error::Error>> {
-    let uri = format!("file://{}", path.display());
+    let uri = local_file_uri(path);
     let raw = RawValue::from_string(
         serde_json::json!({
             "changes": {
@@ -68,7 +72,7 @@ fn production_publication_queues_commits_admits_and_undoes_active_document()
         71,
         WorkspaceEditKind::Rename,
     );
-    let uri = format!("file://{}", path.display());
+    let uri = local_file_uri(&path);
     let raw = RawValue::from_string(
         serde_json::json!({
             "changes": {
@@ -87,7 +91,15 @@ fn production_publication_queues_commits_admits_and_undoes_active_document()
     app.workspace_edits
         .install_preview_for_test(identity, prepared)?;
 
-    assert!(app.queue_workspace_edit_publication().visual_changed);
+    assert!(
+        app.handle_workspace_edit_key(KEY_RETURN, true)
+            .is_some_and(|effect| !effect.visual_changed)
+    );
+    assert!(app.workspace_edits.preview().is_some());
+    assert!(
+        app.handle_workspace_edit_key(KEY_RETURN, false)
+            .is_some_and(|effect| effect.visual_changed)
+    );
     let (queued_identity, prepared) = app
         .workspace_edits
         .take_queued_publication()
@@ -338,15 +350,41 @@ fn rust_rename_and_format_commands_use_bounded_workspace_edit_lifecycle()
     assert!(app.open_rust_rename().visual_changed);
     assert!(app.workspace_edits.is_rename_input());
     assert!(
+        app.handle_workspace_edit_ime(&ImeEvent::Started)
+            .visual_changed
+    );
+    assert!(
+        app.handle_workspace_edit_ime(&ImeEvent::Updated {
+            text: "ré".into(),
+            selected_start_utf16: 1,
+            selected_length_utf16: 1,
+        })
+        .visual_changed
+    );
+    assert!(
+        app.handle_workspace_edit_ime(&ImeEvent::Cancelled)
+            .visual_changed
+    );
+    assert!(
         app.handle_workspace_edit_key(0, false)
             .is_some_and(|effect| !effect.visual_changed)
     );
     assert!(app.workspace_edits.commit_text("renamed")?);
     assert!(
+        app.handle_workspace_edit_key(KEY_DELETE_BACKWARD, true)
+            .is_some_and(|effect| !effect.visual_changed)
+    );
+    assert!(app.workspace_edits.is_rename_input());
+    assert!(
         app.handle_workspace_edit_key(KEY_DELETE_BACKWARD, false)
             .is_some_and(|effect| effect.visual_changed)
     );
     assert!(app.workspace_edits.commit_text("d")?);
+    assert!(
+        app.handle_workspace_edit_key(KEY_RETURN, true)
+            .is_some_and(|effect| !effect.visual_changed)
+    );
+    assert!(app.workspace_edits.is_rename_input());
     assert!(
         app.handle_workspace_edit_key(KEY_RETURN, false)
             .is_some_and(|effect| effect.visual_changed)
@@ -362,10 +400,28 @@ fn rust_rename_and_format_commands_use_bounded_workspace_edit_lifecycle()
 
     assert!(app.open_rust_rename().visual_changed);
     assert!(
-        app.handle_workspace_edit_key(KEY_ESCAPE, false)
+        app.handle_workspace_edit_key(KEY_ESCAPE, true)
             .is_some_and(|effect| effect.visual_changed)
     );
     assert!(!app.workspace_edits.is_open());
+    assert!(
+        !app.handle_workspace_edit_ime(&ImeEvent::Started)
+            .visual_changed
+    );
+    assert!(
+        !WorkspaceEditApplicationError::MissingPersistence
+            .to_string()
+            .is_empty()
+    );
+    let mut formatting_app = StudioApp::open_file(TestTextSystem, &path)?;
+    let formatting_snapshot = formatting_app.buffer().snapshot();
+    let formatting_identity = formatting_app.language_identity();
+    formatting_app.rust_diagnostics.install_for_test(
+        RustDocumentInput::new(&path, &root, formatting_identity, formatting_snapshot),
+        &diagnostics(&path, 1),
+        mock_executable(),
+    )?;
+    assert!(formatting_app.trigger_rust_formatting().visual_changed);
     drop(app);
     fs::remove_dir_all(root)?;
     Ok(())
@@ -420,7 +476,10 @@ fn preparation_outcomes_publish_only_current_nonempty_previews()
     });
     assert!(preview.visual_changed);
     assert!(app.workspace_edits.preview().is_some());
-    assert!(app.cancel_workspace_edit_panel().visual_changed);
+    assert!(
+        app.handle_workspace_edit_key(KEY_ESCAPE, true)
+            .is_some_and(|effect| effect.visual_changed)
+    );
 
     app.workspace_edits.wait(WorkspaceEditKind::Rename)?;
     app.workspace_edits.preparation_started(identity)?;
@@ -442,6 +501,125 @@ fn preparation_outcomes_publish_only_current_nonempty_previews()
     assert!(malformed.visual_changed);
     assert!(!app.workspace_edits.is_open());
     drop(app);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "Studio construction reaches macOS signpost FFI unsupported by Miri; lower workspace-edit layers remain interpreted"
+)]
+#[allow(clippy::too_many_lines)]
+fn runtime_workspace_edit_handoffs_invalidate_and_admit_production_frames()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (root, path, _, _) = fixture();
+    let viewport = Size::new(900.0, 600.0).ok_or("viewport")?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear")?;
+
+    let mut preparation_app = StudioApp::open_file(TestTextSystem, &path)?;
+    let snapshot = preparation_app.buffer().snapshot();
+    let language_identity = preparation_app.language_identity();
+    preparation_app.rust_diagnostics.install_for_test(
+        RustDocumentInput::new(&path, &root, language_identity, snapshot),
+        &diagnostics(&path, 1),
+        mock_executable(),
+    )?;
+    let language = preparation_app.rust_diagnostics.snapshot();
+    let preparation_identity = WorkspaceEditIdentity::for_test(
+        language_identity,
+        language.process_epoch,
+        language.lsp_version,
+        81,
+        WorkspaceEditKind::Rename,
+    );
+    let uri = local_file_uri(&path);
+    let raw = RawValue::from_string(
+        serde_json::json!({
+            "changes": {
+                (uri.clone()): [{
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 0}
+                    },
+                    "newText": "runtime_"
+                }]
+            }
+        })
+        .to_string(),
+    )?;
+    preparation_app
+        .workspace_edits
+        .wait(WorkspaceEditKind::Rename)?;
+    preparation_app
+        .rust_diagnostics
+        .stage_workspace_edit_preparation_for_test(preparation_identity, &root, &uri, &raw)?;
+    let mut preparation_runtime =
+        Application::new(preparation_app, viewport, clear, WorkerConfig::default())?;
+    preparation_runtime
+        .frame_if_dirty()
+        .ok_or("initial preparation frame")?;
+    assert!(
+        preparation_runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(80),
+            })
+            .is_some()
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while preparation_runtime.snapshot().worker().queued_results() == 0 {
+        if std::time::Instant::now() >= deadline {
+            return Err("workspace edit preparation worker timed out".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(
+        preparation_runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(81),
+            })
+            .is_some()
+    );
+    drop(preparation_runtime);
+
+    let mut publication_app = StudioApp::open_file(TestTextSystem, &path)?;
+    let snapshot = publication_app.buffer().snapshot();
+    let language_identity = publication_app.language_identity();
+    publication_app.rust_diagnostics.install_for_test(
+        RustDocumentInput::new(&path, &root, language_identity, snapshot),
+        &diagnostics(&path, 1),
+        mock_executable(),
+    )?;
+    let language = publication_app.rust_diagnostics.snapshot();
+    let publication_identity = WorkspaceEditIdentity::for_test(
+        language_identity,
+        language.process_epoch,
+        language.lsp_version,
+        82,
+        WorkspaceEditKind::Rename,
+    );
+    publication_app.workspace_edits.install_preview_for_test(
+        publication_identity,
+        prepared_insert(&path, &root, "publish_")?,
+    )?;
+    assert!(
+        publication_app
+            .workspace_edits
+            .queue_publication(language_identity, &language)?
+    );
+    let mut publication_runtime =
+        Application::new(publication_app, viewport, clear, WorkerConfig::default())?;
+    publication_runtime
+        .frame_if_dirty()
+        .ok_or("initial publication frame")?;
+    assert!(
+        publication_runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(82),
+            })
+            .is_some()
+    );
+    drop(publication_runtime);
     fs::remove_dir_all(root)?;
     Ok(())
 }

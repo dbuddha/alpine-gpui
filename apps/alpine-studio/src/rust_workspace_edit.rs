@@ -829,6 +829,18 @@ mod proofs {
 // Apple-first product boundary. Windows CI still compiles the shipping module.
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn wire_retention_matches_the_exact_owned_json_bytes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let raw = serde_json::value::RawValue::from_string(
+            serde_json::json!({"changes": {}}).to_string(),
+        )?;
+        let wire = super::WorkspaceEditWire::capture(&raw)?;
+        assert_eq!(wire.retained_bytes(), raw.get().len());
+        assert_eq!(wire.result().get(), raw.get());
+        Ok(())
+    }
+
     use std::{
         fs,
         fs::File,

@@ -257,7 +257,7 @@ impl WorkspaceEditPanel {
         let kind = output.identity.kind();
         let files = prepared.file_count();
         let edits = prepared.edit_count();
-        if files == 0 || edits == 0 {
+        if edits == 0 {
             self.release();
             return Ok(WorkspaceEditPanelOutcome::Empty(kind));
         }
@@ -416,8 +416,6 @@ impl WorkspaceEditPanel {
         };
         let composition = input.composition.as_deref().unwrap_or_default();
         let mut line = String::new();
-        line.try_reserve("Rename Rust symbol: ".len() + input.text.len() + composition.len() + 16)
-            .map_err(|_| WorkspaceEditPanelError::AllocationFailed)?;
         line.push_str("Rename Rust symbol: ");
         line.push_str(&input.text);
         line.push_str(composition);
@@ -539,10 +537,13 @@ fn preview_lines(
 
 fn floor_char_boundary(value: &str, mut index: usize) -> usize {
     index = index.min(value.len());
-    while !value.is_char_boundary(index) {
+    for _ in 0..=3 {
+        if value.is_char_boundary(index) {
+            return index;
+        }
         index = index.saturating_sub(1);
     }
-    index
+    0
 }
 
 #[cfg(test)]
@@ -557,6 +558,7 @@ mod tests {
             RustDiagnostics, RustDocumentInput,
             tests::{diagnostics, fixture, mock_executable},
         },
+        rust_navigation::local_file_uri,
         rust_workspace_edit::WorkspaceEditProposal,
     };
 
@@ -637,7 +639,7 @@ mod tests {
             7,
             WorkspaceEditKind::Rename,
         );
-        let uri = format!("file://{}", path.display());
+        let uri = local_file_uri(&path);
         let raw = RawValue::from_string(
             serde_json::json!({
                 "changes": {
@@ -680,6 +682,12 @@ mod tests {
 
     #[test]
     fn invalid_panel_transitions_are_atomic_and_bounded() -> Result<(), Box<dyn Error>> {
+        assert_eq!(
+            WorkspaceEditPanelError::InvalidName.to_string(),
+            "Rust workspace edit unavailable: InvalidName"
+        );
+        assert_eq!(WorkspaceEditKind::Rename.label(), "Rust rename");
+        assert_eq!(WorkspaceEditKind::Formatting.label(), "Rust formatting");
         let mut panel = WorkspaceEditPanel::default();
         assert!(!panel.is_open());
         assert!(!panel.begin_composition());
@@ -708,6 +716,10 @@ mod tests {
         );
 
         assert!(panel.open_rename()?);
+        assert_eq!(
+            panel.take_rename_for_request(),
+            Err(WorkspaceEditPanelError::InvalidName)
+        );
         assert!(!panel.delete_backward()?);
         assert!(!panel.cancel_composition());
         assert!(!panel.commit_text("")?);
@@ -728,6 +740,61 @@ mod tests {
         assert!(panel.accessibility_label().is_some());
         assert!(panel.cancel());
         assert!(!panel.is_open());
+
+        let short_lines =
+            std::iter::repeat_n(Box::<str>::from("x"), MAX_PREVIEW_LINES).collect::<Vec<_>>();
+        assert!(panel.replace_lines(short_lines, Arc::from("exact")).is_ok());
+        assert!(
+            panel
+                .replace_lines(
+                    vec!["x".repeat(MAX_PREVIEW_LINE_BYTES).into_boxed_str()],
+                    Arc::from("exact line"),
+                )
+                .is_ok()
+        );
+        let too_many =
+            std::iter::repeat_n(Box::<str>::from("x"), MAX_PREVIEW_LINES + 1).collect::<Vec<_>>();
+        assert_eq!(
+            panel.replace_lines(too_many, Arc::from("too many")),
+            Err(WorkspaceEditPanelError::AllocationFailed)
+        );
+        assert_eq!(
+            panel.replace_lines(
+                vec!["x".repeat(MAX_PREVIEW_LINE_BYTES + 1).into_boxed_str()],
+                Arc::from("too long"),
+            ),
+            Err(WorkspaceEditPanelError::AllocationFailed)
+        );
+        assert_eq!(floor_char_boundary("aé", 3), 3);
+        assert_eq!(floor_char_boundary("aé", 2), 1);
+        assert_eq!(floor_char_boundary("🙂", 1), 0);
+        assert_eq!(floor_char_boundary("🙂", 2), 0);
+        assert_eq!(floor_char_boundary("🙂", 3), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn preview_path_uses_ellipsis_only_when_bytes_are_omitted() -> Result<(), Box<dyn Error>> {
+        let (root, path, _, _) = fixture();
+        let uri = local_file_uri(&path);
+        let raw = RawValue::from_string(
+            serde_json::json!({
+                "changes": {
+                    (uri): [{
+                        "range": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 0}
+                        },
+                        "newText": "preview_"
+                    }]
+                }
+            })
+            .to_string(),
+        )?;
+        let prepared = WorkspaceEditProposal::admit_rename(&raw, &root)?.prepare()?;
+        let lines = preview_lines(WorkspaceEditKind::Rename, &prepared)?;
+        assert_eq!(lines[1].as_ref(), format!("- {}", path.to_string_lossy()));
+        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -759,7 +826,7 @@ mod tests {
             18,
             WorkspaceEditKind::Rename,
         );
-        let uri = format!("file://{}", path.display());
+        let uri = local_file_uri(&path);
         let raw = RawValue::from_string(
             serde_json::json!({
                 "changes": {

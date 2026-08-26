@@ -304,9 +304,13 @@ fn decode_file_uri(uri: &str) -> Result<PathBuf, NavigationError> {
     if decoded.contains('\0') {
         return Err(NavigationError::InvalidUtf8);
     }
-    let is_absolute_uri_path = decoded.starts_with('/');
+    decoded_file_uri_path(&decoded)
+}
+
+#[cfg(not(windows))]
+fn decoded_file_uri_path(decoded: &str) -> Result<PathBuf, NavigationError> {
     let path = PathBuf::from(decoded);
-    if !is_absolute_uri_path
+    if !decoded.starts_with('/')
         || path
             .components()
             .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
@@ -314,6 +318,38 @@ fn decode_file_uri(uri: &str) -> Result<PathBuf, NavigationError> {
         return Err(NavigationError::OutsideWorkspace);
     }
     Ok(path)
+}
+
+#[cfg(windows)]
+fn decoded_file_uri_path(decoded: &str) -> Result<PathBuf, NavigationError> {
+    let drive_path = decoded
+        .strip_prefix('/')
+        .filter(|path| path.as_bytes().get(1) == Some(&b':'))
+        .ok_or(NavigationError::OutsideWorkspace)?;
+    let path = PathBuf::from(drive_path);
+    if !path.is_absolute()
+        || path.components().any(|component| {
+            !matches!(
+                component,
+                Component::Prefix(_) | Component::RootDir | Component::Normal(_)
+            )
+        })
+    {
+        return Err(NavigationError::OutsideWorkspace);
+    }
+    Ok(path)
+}
+
+#[cfg(test)]
+pub(crate) fn local_file_uri(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!("file:///{}", path.to_string_lossy().replace('\\', "/"))
+    }
+    #[cfg(not(windows))]
+    {
+        format!("file://{}", path.display())
+    }
 }
 
 fn percent_decode(encoded: &[u8]) -> Result<Vec<u8>, NavigationError> {

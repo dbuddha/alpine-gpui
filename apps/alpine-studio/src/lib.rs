@@ -3135,11 +3135,11 @@ impl StudioApp {
                     .line(row)
                     .ok_or(StudioRenderError::Domain)?;
                 let layout = self.text_system.shape(line, font)?;
-                let baseline = top + usize_as_f32(row) * LINE_HEIGHT + layout.ascent() + 3.0;
+                let baseline = workspace_edit_line_baseline(top, row, layout.ascent());
                 pending_glyphs.extend(self.collect_glyphs(
                     &layout,
                     font,
-                    left + FIND_BAR_INSET,
+                    workspace_edit_text_x(left),
                     baseline,
                     overlay_clip,
                 )?);
@@ -4362,7 +4362,7 @@ impl StudioApp {
         } else {
             let cancelled = self.rust_diagnostics.cancel_workspace_edit();
             let panel = self.workspace_edits.cancel();
-            (cancelled || panel)
+            any_workspace_edit_change([cancelled, panel])
                 .then(EventEffect::visual)
                 .unwrap_or_default()
         };
@@ -5948,7 +5948,10 @@ impl StudioApp {
     }
 
     fn open_rust_rename(&mut self) -> EventEffect {
-        if self.composition.is_some() || self.active_rust_document().is_none() {
+        if rust_workspace_command_blocked(
+            self.composition.is_some(),
+            self.active_rust_document().is_some(),
+        ) {
             return EventEffect::default();
         }
         let completion = self.rust_diagnostics.cancel_completion();
@@ -5956,9 +5959,11 @@ impl StudioApp {
         let symbols = self.rust_diagnostics.cancel_symbols();
         let pending = self.rust_diagnostics.cancel_workspace_edit();
         match self.workspace_edits.open_rename() {
-            Ok(changed) => (changed || completion || navigation || symbols || pending)
-                .then(EventEffect::visual)
-                .unwrap_or_default(),
+            Ok(changed) => {
+                any_workspace_edit_change([changed, completion, navigation, symbols, pending])
+                    .then(EventEffect::visual)
+                    .unwrap_or_default()
+            }
             Err(error) => self.record_workspace_edit_panel_error(error),
         }
     }
@@ -5983,7 +5988,10 @@ impl StudioApp {
     }
 
     fn trigger_rust_formatting(&mut self) -> EventEffect {
-        if self.composition.is_some() || self.active_rust_document().is_none() {
+        if rust_workspace_command_blocked(
+            self.composition.is_some(),
+            self.active_rust_document().is_some(),
+        ) {
             return EventEffect::default();
         }
         let effect = self.rust_diagnostics.request_formatting(4, true);
@@ -6686,6 +6694,22 @@ const fn surface_event_kind(event: &SurfaceEvent) -> u64 {
     }
 }
 
+fn any_workspace_edit_change<const N: usize>(changes: [bool; N]) -> bool {
+    changes.contains(&true)
+}
+
+fn rust_workspace_command_blocked(composing: bool, has_rust_document: bool) -> bool {
+    any_workspace_edit_change([composing, !has_rust_document])
+}
+
+fn workspace_edit_line_baseline(top: f32, row: usize, ascent: f32) -> f32 {
+    top + usize_as_f32(row) * LINE_HEIGHT + ascent + 3.0
+}
+
+fn workspace_edit_text_x(left: f32) -> f32 {
+    left + FIND_BAR_INSET
+}
+
 fn usize_to_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
@@ -6703,7 +6727,7 @@ impl StudioApp {
             return false;
         };
         let identity = request.identity();
-        let mut changed = self
+        let preparation_started = self
             .workspace_edits
             .preparation_started(identity)
             .unwrap_or(false);
@@ -6711,13 +6735,17 @@ impl StudioApp {
             .spawn(move || StudioWorkerOutput::WorkspaceEdit(request.execute()))
             .is_err()
         {
-            changed |= self.workspace_edits.preparation_failed(identity);
+            let preparation_failed = self.workspace_edits.preparation_failed(identity);
             let status = self.set_local_status(LocalStatus::Command(Arc::from(
                 "Rust workspace edit preparation queue is saturated.",
             )));
-            changed |= status.visual_changed;
+            return any_workspace_edit_change([
+                preparation_started,
+                preparation_failed,
+                status.visual_changed,
+            ]);
         }
-        changed
+        preparation_started
     }
 
     fn submit_workspace_edit_publication(

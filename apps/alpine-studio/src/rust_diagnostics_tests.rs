@@ -778,6 +778,144 @@ fn superseded_workspace_edit_cannot_publish_over_the_newer_request() -> Result<(
     Ok(())
 }
 
+#[test]
+fn workspace_edit_identity_and_reduction_axes_are_independently_discriminating() {
+    let language = LanguageIdentity {
+        workspace_id: 1,
+        workspace_revision: 2,
+        document_id: 3,
+        document_revision: 4,
+        buffer_revision: 5,
+        selection_revision: 6,
+    };
+    let mut snapshot = RustDiagnosticsSnapshot {
+        active: true,
+        process_epoch: 7,
+        lsp_version: 8,
+        ..RustDiagnosticsSnapshot::default()
+    };
+    let identity = WorkspaceEditIdentity::for_test(
+        language,
+        snapshot.process_epoch,
+        snapshot.lsp_version,
+        9,
+        WorkspaceEditKind::Rename,
+    );
+    assert!(identity.matches(language, &snapshot));
+    assert!(identity.matches_document(language));
+    assert_eq!(identity.kind().label(), "Rust rename");
+    for axis in 0..6 {
+        let mut changed = language;
+        match axis {
+            0 => changed.workspace_id += 1,
+            1 => changed.workspace_revision += 1,
+            2 => changed.document_id += 1,
+            3 => changed.document_revision += 1,
+            4 => changed.buffer_revision += 1,
+            _ => changed.selection_revision += 1,
+        }
+        assert!(!identity.matches(changed, &snapshot), "match axis {axis}");
+        if axis < 5 {
+            assert!(!identity.matches_document(changed), "document axis {axis}");
+        }
+    }
+    snapshot.process_epoch += 1;
+    assert!(!identity.matches(language, &snapshot));
+    snapshot.process_epoch -= 1;
+    snapshot.lsp_version += 1;
+    assert!(!identity.matches(language, &snapshot));
+    snapshot.lsp_version -= 1;
+    snapshot.active = false;
+    assert!(!identity.matches(language, &snapshot));
+    for true_index in 0..5 {
+        let mut changes = [false; 5];
+        changes[true_index] = true;
+        assert!(crate::any_workspace_edit_change(changes));
+    }
+    assert!(!crate::any_workspace_edit_change([false; 5]));
+    assert!(crate::rust_workspace_command_blocked(true, true));
+    assert!(crate::rust_workspace_command_blocked(false, false));
+    assert!(!crate::rust_workspace_command_blocked(false, true));
+    assert!((crate::workspace_edit_line_baseline(10.0, 2, 7.0) - 64.0).abs() < f32::EPSILON);
+    assert!((crate::workspace_edit_text_x(11.0) - 19.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn workspace_edit_not_ready_and_admission_axes_are_observable() -> Result<(), Box<dyn Error>> {
+    let mut unavailable = RustDiagnostics::default();
+    assert!(unavailable.request_formatting(4, true).visual_changed);
+    assert!(!unavailable.request_formatting(4, true).visual_changed);
+    let (root, path, snapshot, language) = fixture();
+    let mut model = RustDiagnostics::default();
+    model.install_for_test(
+        RustDocumentInput::new(&path, &root, language, snapshot),
+        &diagnostics(&path, 1),
+        mock_executable(),
+    )?;
+    let session = model.session.as_ref().ok_or("session")?;
+    let current_identity = session.identity;
+    let current_epoch = session.process_epoch;
+    let current_version = session.lsp_version;
+    let template = PendingWorkspaceEdit {
+        request_id: 41,
+        stamp: current_identity.request_stamp().ok_or("request stamp")?,
+        kind: WorkspaceEditKind::Formatting,
+        identity: current_identity,
+        process_epoch: current_epoch,
+        lsp_version: current_version,
+    };
+    model
+        .session
+        .as_mut()
+        .ok_or("session")?
+        .pending_workspace_edit = Some(template);
+    assert!(model.cancel_workspace_edit());
+    assert!(!model.snapshot().workspace_edit_pending);
+    let wrong_stamp = LanguageIdentity {
+        workspace_id: current_identity.workspace_id + 1,
+        ..current_identity
+    }
+    .request_stamp()
+    .ok_or("wrong stamp")?;
+    for axis in 0..6 {
+        let mut pending = template;
+        let mut id = template.request_id;
+        let mut stamp = template.stamp;
+        let mut kind = template.kind;
+        match axis {
+            0 => id += 1,
+            1 => stamp = wrong_stamp,
+            2 => kind = WorkspaceEditKind::Rename,
+            3 => pending.identity.workspace_id += 1,
+            4 => pending.process_epoch += 1,
+            _ => pending.lsp_version += 1,
+        }
+        let session = model.session.as_mut().ok_or("session")?;
+        session.identity = current_identity;
+        session.process_epoch = current_epoch;
+        session.lsp_version = current_version;
+        session.pending_workspace_edit = Some(pending);
+        let stale_before = model.stale_workspace_edits;
+        assert!(!model.admit_workspace_edit(id, stamp, kind, Err(WorkspaceEditError::Malformed),));
+        assert_eq!(model.stale_workspace_edits, stale_before + 1, "axis {axis}");
+    }
+    let session = model.session.as_mut().ok_or("session")?;
+    session.identity = current_identity;
+    session.process_epoch = current_epoch;
+    session.lsp_version = current_version;
+    session.pending_workspace_edit = Some(template);
+    assert!(model.admit_workspace_edit(
+        template.request_id,
+        template.stamp,
+        template.kind,
+        Err(WorkspaceEditError::Malformed),
+    ));
+    assert!(model.take_workspace_edit_preparation().is_none());
+    assert!(!model.shutdown().active);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 fn wait_for_workspace_edit(
     model: &mut RustDiagnostics,
     latch: &LanguageWakeLatch,
