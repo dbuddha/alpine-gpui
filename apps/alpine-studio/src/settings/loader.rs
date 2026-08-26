@@ -576,8 +576,10 @@ fn load_layer(
 }
 
 fn read_file(path: &Path) -> Result<Option<Vec<u8>>, SettingsLoadError> {
-    read_file_with(path, || {}, || {})
+    read_file_with(path, no_op, no_op)
 }
+
+fn no_op() {}
 
 fn read_file_with(
     path: &Path,
@@ -827,42 +829,27 @@ fn decode_theme(value: &Value, base_theme: &StudioTheme) -> Result<StudioTheme, 
     let target = &mut theme.find_background;
     set_color(object, "find_background", "find background", target)?;
     let target = &mut theme.quick_open_background;
-    set_color(
-        object,
-        "quick_open_background",
-        "quick open background",
-        target,
-    )?;
+    let field = "quick_open_background";
+    let diagnostic = "quick open background";
+    set_color(object, field, diagnostic, target)?;
     let target = &mut theme.quick_open_selected;
     set_color(object, "quick_open_selected", "quick open selected", target)?;
     let target = &mut theme.project_search_background;
-    set_color(
-        object,
-        "project_search_background",
-        "project search background",
-        target,
-    )?;
+    let field = "project_search_background";
+    let diagnostic = "project search background";
+    set_color(object, field, diagnostic, target)?;
     let target = &mut theme.project_search_selected;
-    set_color(
-        object,
-        "project_search_selected",
-        "project search selected",
-        target,
-    )?;
+    let field = "project_search_selected";
+    let diagnostic = "project search selected";
+    set_color(object, field, diagnostic, target)?;
     let target = &mut theme.command_palette_background;
-    set_color(
-        object,
-        "command_palette_background",
-        "command palette background",
-        target,
-    )?;
+    let field = "command_palette_background";
+    let diagnostic = "command palette background";
+    set_color(object, field, diagnostic, target)?;
     let target = &mut theme.command_palette_selected;
-    set_color(
-        object,
-        "command_palette_selected",
-        "command palette selected",
-        target,
-    )?;
+    let field = "command_palette_selected";
+    let diagnostic = "command palette selected";
+    set_color(object, field, diagnostic, target)?;
     if let Some(syntax) = object.get("syntax") {
         theme.syntax = decode_syntax(syntax, theme.syntax)?;
     }
@@ -1647,13 +1634,9 @@ mod tests {
         let path = root.path().join("settings.json");
         write(&path, br#"{"version":1}"#)?;
         assert_eq!(
-            read_file_with(
-                &path,
-                || {},
-                || {
-                    let _ = fs::write(&path, br#"{"version":1,"editor":{}}"#);
-                }
-            ),
+            read_file_with(&path, no_op, || {
+                let _ = fs::write(&path, br#"{"version":1,"editor":{}}"#);
+            }),
             Err(SettingsLoadError::ConcurrentEdit)
         );
         #[cfg(unix)]
@@ -1704,7 +1687,7 @@ mod tests {
                         .open(&growing)
                         .and_then(|mut file| std::io::Write::write_all(&mut file, b"x"));
                 },
-                || {},
+                no_op,
             ),
             Err(SettingsLoadError::FileTooLarge)
         );
