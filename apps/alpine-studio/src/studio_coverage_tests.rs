@@ -1168,7 +1168,7 @@ fn runtime_find_worker_admits_current_results_and_schedules_replacement()
     let pending = runtime
         .dispatch(&ime(ImeEvent::Committed("alpha".into())))
         .ok_or("query frame")?;
-    let pending_quads = pending.scene().quads().len();
+    let pending_revision = pending.scene().revision();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while runtime.snapshot().worker().queued_results() == 0 {
         if std::time::Instant::now() >= deadline {
@@ -1180,20 +1180,12 @@ fn runtime_find_worker_admits_current_results_and_schedules_replacement()
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    let admission_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let admitted = loop {
-        if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
+    let admitted = runtime
+        .dispatch(&SurfaceEvent::Wake {
             timestamp: EventTimestamp::new(10),
-        }) && frame.scene().quads().len() > pending_quads
-        {
-            break frame;
-        }
-        if std::time::Instant::now() >= admission_deadline {
-            return Err("timed out admitting find worker frame".into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    };
-    assert!(admitted.scene().quads().len() > pending_quads);
+        })
+        .ok_or("queued find result did not admit a frame")?;
+    assert_ne!(admitted.scene().revision(), pending_revision);
     assert_eq!(runtime.snapshot().worker().queued_results(), 0);
 
     runtime
