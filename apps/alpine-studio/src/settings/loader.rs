@@ -676,8 +676,10 @@ fn same_platform_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
 fn same_windows_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt as _;
 
-    left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index() == right.file_index()
+    left.creation_time() == right.creation_time()
+        && left.last_write_time() == right.last_write_time()
+        && left.file_attributes() == right.file_attributes()
+        && left.file_size() == right.file_size()
 }
 
 fn decode_layer(
@@ -1536,7 +1538,12 @@ mod tests {
         assert_eq!(exact_report.string_bytes, 5);
         let mut strings = DecodeReport::default();
         assert_eq!(
-            add_string_bytes(MAX_SETTINGS_STRING_BYTES + 1, &mut strings),
+            add_string_bytes(MAX_SETTINGS_STRING_BYTES, &mut strings),
+            Ok(())
+        );
+        let mut excessive_strings = DecodeReport::default();
+        assert_eq!(
+            add_string_bytes(MAX_SETTINGS_STRING_BYTES + 1, &mut excessive_strings),
             Err(SettingsLoadError::TooManyStringBytes)
         );
         assert_eq!(

@@ -1180,11 +1180,18 @@ fn runtime_find_worker_admits_current_results_and_schedules_replacement()
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    let admitted = runtime
-        .dispatch(&SurfaceEvent::Wake {
+    let admitted = loop {
+        if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
             timestamp: EventTimestamp::new(10),
-        })
-        .ok_or("admitted find worker frame")?;
+        }) && frame.scene().quads().len() > pending_quads
+        {
+            break frame;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("timed out admitting find worker frame".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
     assert!(admitted.scene().quads().len() > pending_quads);
     assert_eq!(runtime.snapshot().worker().queued_results(), 0);
 
