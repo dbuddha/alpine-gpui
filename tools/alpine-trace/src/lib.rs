@@ -629,7 +629,7 @@ impl TraceSequenceInput {
             TraceSequenceTransition::Teardown,
             TraceSequenceTransition::FullResynchronization,
         ];
-        if self.steps.len() != ORDER.len() || self.steps.len() > MAX_TRACE_SEQUENCE_STEPS {
+        if self.steps.len() != ORDER.len() {
             return Err(TraceSequenceError::InvalidStepCount);
         }
         for (index, step) in self.steps.iter().enumerate() {
@@ -697,7 +697,6 @@ impl TraceSequenceInput {
 
         let resync = self.visible_step(5)?;
         if resync.renderer_generation != initial.renderer_generation.saturating_add(1)
-            || resync.renderer_generation == initial.renderer_generation
             || resync.workload_hash != capacity.workload_hash
             || resync.atlas != capacity.atlas
             || resync.expected_atlas_upload_bytes != atlas_bytes(resync.atlas)?
@@ -770,9 +769,22 @@ fn atlas_bytes(atlas: TraceSequenceAtlas) -> Result<usize, TraceSequenceError> {
 #[cfg(test)]
 mod sequence_tests {
     use super::{
-        TraceSequenceAtlas, TraceSequenceError, TraceSequenceInput, TraceSequenceStep,
-        TraceSequenceTransition,
+        MAX_TRACE_ATLAS_PIXELS, TraceSequenceAtlas, TraceSequenceError, TraceSequenceInput,
+        TraceSequenceStep, TraceSequenceTransition,
     };
+
+    fn reject(mutate: impl FnOnce(&mut TraceSequenceInput), expected: TraceSequenceError) {
+        let mut value = sequence();
+        mutate(&mut value);
+        assert_eq!(value.validate(), Err(expected));
+    }
+
+    fn atlas(value: &mut TraceSequenceInput, index: usize) -> &mut TraceSequenceAtlas {
+        value.steps[index]
+            .atlas
+            .as_mut()
+            .unwrap_or_else(|| unreachable!())
+    }
 
     fn sequence() -> TraceSequenceInput {
         let initial = TraceSequenceAtlas {
@@ -884,32 +896,283 @@ mod sequence_tests {
             retained.validate(),
             Err(TraceSequenceError::TerminalRetention)
         );
+
+        let mut height_only_capacity = sequence();
+        atlas(&mut height_only_capacity, 3).width = 2;
+        atlas(&mut height_only_capacity, 3).height = 4;
+        height_only_capacity.steps[5].atlas = height_only_capacity.steps[3].atlas;
+        assert!(height_only_capacity.validate().is_ok());
     }
 
     #[test]
     fn lifecycle_sequence_rejects_every_identity_and_order_break() {
+        reject(
+            |value| {
+                let _ = value.steps.pop();
+            },
+            TraceSequenceError::InvalidStepCount,
+        );
+        reject(
+            |value| value.steps.push(value.steps[5]),
+            TraceSequenceError::InvalidStepCount,
+        );
+        reject(
+            |value| value.steps[1].sequence = 2,
+            TraceSequenceError::NoncontiguousStep,
+        );
+        reject(
+            |value| value.steps[2].transition = TraceSequenceTransition::CompatibleReuse,
+            TraceSequenceError::InvalidTransition,
+        );
+        reject(
+            |value| value.steps[0].renderer_generation = 0,
+            TraceSequenceError::InvalidRendererGeneration,
+        );
+        reject(
+            |value| value.steps[0].expected_atlas_upload_bytes = 3,
+            TraceSequenceError::InvalidRendererGeneration,
+        );
+    }
+
+    #[test]
+    fn lifecycle_sequence_rejects_every_visible_identity_axis() {
+        let exact = TraceSequenceAtlas {
+            identity: 1,
+            revision: 1,
+            width: u32::try_from(MAX_TRACE_ATLAS_PIXELS).unwrap_or_else(|_| unreachable!()),
+            height: 1,
+            content_hash: [1; 32],
+        };
+        assert_eq!(super::validate_sequence_atlas(exact), Ok(()));
+
+        reject(
+            |value| value.steps[0].workload_hash = None,
+            TraceSequenceError::InvalidWorkloadIdentity,
+        );
+        reject(
+            |value| value.steps[0].workload_hash = Some([0; 32]),
+            TraceSequenceError::InvalidWorkloadIdentity,
+        );
+        reject(
+            |value| value.steps[0].atlas = None,
+            TraceSequenceError::InvalidAtlasIdentity,
+        );
+        reject(
+            |value| atlas(value, 0).identity = 0,
+            TraceSequenceError::InvalidAtlasIdentity,
+        );
+        reject(
+            |value| atlas(value, 0).revision = 0,
+            TraceSequenceError::InvalidAtlasIdentity,
+        );
+        reject(
+            |value| atlas(value, 0).width = 0,
+            TraceSequenceError::InvalidAtlasIdentity,
+        );
+        reject(
+            |value| atlas(value, 0).height = 0,
+            TraceSequenceError::InvalidAtlasIdentity,
+        );
+        reject(
+            |value| atlas(value, 0).content_hash = [0; 32],
+            TraceSequenceError::InvalidAtlasIdentity,
+        );
+        reject(
+            |value| {
+                atlas(value, 0).width =
+                    u32::try_from(MAX_TRACE_ATLAS_PIXELS + 1).unwrap_or_else(|_| unreachable!());
+                atlas(value, 0).height = 1;
+            },
+            TraceSequenceError::InvalidAtlasIdentity,
+        );
+    }
+
+    #[test]
+    fn lifecycle_sequence_rejects_each_reuse_and_content_replacement_axis() {
+        reject(
+            |value| value.steps[1].renderer_generation = 2,
+            TraceSequenceError::InvalidCompatibleReuse,
+        );
+        reject(
+            |value| value.steps[1].workload_hash = Some([9; 32]),
+            TraceSequenceError::InvalidCompatibleReuse,
+        );
+        reject(
+            |value| atlas(value, 1).identity = 2,
+            TraceSequenceError::InvalidCompatibleReuse,
+        );
+        reject(
+            |value| value.steps[1].expected_atlas_upload_bytes = 4,
+            TraceSequenceError::InvalidCompatibleReuse,
+        );
+
+        reject(
+            |value| value.steps[2].renderer_generation = 2,
+            TraceSequenceError::InvalidContentReplacement,
+        );
+        reject(
+            |value| atlas(value, 2).identity = 2,
+            TraceSequenceError::InvalidContentReplacement,
+        );
+        reject(
+            |value| {
+                atlas(value, 2).width = 3;
+                value.steps[2].expected_atlas_upload_bytes = 6;
+            },
+            TraceSequenceError::InvalidContentReplacement,
+        );
+        reject(
+            |value| {
+                atlas(value, 2).height = 3;
+                value.steps[2].expected_atlas_upload_bytes = 6;
+            },
+            TraceSequenceError::InvalidContentReplacement,
+        );
+        reject(
+            |value| atlas(value, 2).revision = 1,
+            TraceSequenceError::InvalidContentReplacement,
+        );
+        reject(
+            |value| atlas(value, 2).content_hash = [1; 32],
+            TraceSequenceError::InvalidContentReplacement,
+        );
+        reject(
+            |value| value.steps[2].workload_hash = Some([1; 32]),
+            TraceSequenceError::InvalidContentReplacement,
+        );
+        reject(
+            |value| value.steps[2].expected_atlas_upload_bytes = 3,
+            TraceSequenceError::InvalidContentReplacement,
+        );
+    }
+
+    #[test]
+    fn lifecycle_sequence_rejects_each_capacity_teardown_and_resync_axis() {
+        reject(
+            |value| value.steps[3].renderer_generation = 2,
+            TraceSequenceError::InvalidCapacityReplacement,
+        );
+        reject(
+            |value| atlas(value, 3).identity = 2,
+            TraceSequenceError::InvalidCapacityReplacement,
+        );
+        reject(
+            |value| {
+                atlas(value, 3).width = 2;
+                value.steps[3].expected_atlas_upload_bytes = 4;
+            },
+            TraceSequenceError::InvalidCapacityReplacement,
+        );
+        reject(
+            |value| atlas(value, 3).revision = 2,
+            TraceSequenceError::InvalidCapacityReplacement,
+        );
+        reject(
+            |value| atlas(value, 3).content_hash = [2; 32],
+            TraceSequenceError::InvalidCapacityReplacement,
+        );
+        reject(
+            |value| value.steps[3].workload_hash = Some([2; 32]),
+            TraceSequenceError::InvalidCapacityReplacement,
+        );
+        reject(
+            |value| value.steps[3].expected_atlas_upload_bytes = 7,
+            TraceSequenceError::InvalidCapacityReplacement,
+        );
+
+        reject(
+            |value| value.steps[4].renderer_generation = 2,
+            TraceSequenceError::InvalidTeardown,
+        );
+        reject(
+            |value| value.steps[4].workload_hash = Some([4; 32]),
+            TraceSequenceError::InvalidTeardown,
+        );
+        reject(
+            |value| value.steps[4].atlas = value.steps[3].atlas,
+            TraceSequenceError::InvalidTeardown,
+        );
+        reject(
+            |value| value.steps[4].expected_atlas_upload_bytes = 1,
+            TraceSequenceError::InvalidTeardown,
+        );
+
+        reject(
+            |value| value.steps[5].renderer_generation = 3,
+            TraceSequenceError::InvalidResynchronization,
+        );
+        reject(
+            |value| value.steps[5].workload_hash = Some([4; 32]),
+            TraceSequenceError::InvalidResynchronization,
+        );
+        reject(
+            |value| atlas(value, 5).revision = 4,
+            TraceSequenceError::InvalidResynchronization,
+        );
+        reject(
+            |value| value.steps[5].expected_atlas_upload_bytes = 7,
+            TraceSequenceError::InvalidResynchronization,
+        );
+    }
+
+    #[test]
+    fn lifecycle_sequence_errors_have_exact_diagnostics() {
         let cases = [
-            (0, TraceSequenceError::InvalidStepCount),
-            (1, TraceSequenceError::NoncontiguousStep),
-            (2, TraceSequenceError::InvalidTransition),
-            (3, TraceSequenceError::InvalidRendererGeneration),
-            (4, TraceSequenceError::InvalidTeardown),
-            (5, TraceSequenceError::InvalidResynchronization),
+            (
+                TraceSequenceError::InvalidStepCount,
+                "trace sequence must contain exactly six lifecycle steps",
+            ),
+            (
+                TraceSequenceError::NoncontiguousStep,
+                "trace sequence steps must be contiguous from zero",
+            ),
+            (
+                TraceSequenceError::InvalidTransition,
+                "trace sequence transition order is invalid",
+            ),
+            (
+                TraceSequenceError::InvalidRendererGeneration,
+                "trace sequence renderer generation is invalid",
+            ),
+            (
+                TraceSequenceError::InvalidWorkloadIdentity,
+                "trace sequence workload identity is invalid",
+            ),
+            (
+                TraceSequenceError::InvalidAtlasIdentity,
+                "trace sequence atlas identity is invalid",
+            ),
+            (
+                TraceSequenceError::InvalidCompatibleReuse,
+                "trace sequence compatible reuse is invalid",
+            ),
+            (
+                TraceSequenceError::InvalidContentReplacement,
+                "trace sequence content replacement is invalid",
+            ),
+            (
+                TraceSequenceError::InvalidCapacityReplacement,
+                "trace sequence capacity replacement is invalid",
+            ),
+            (
+                TraceSequenceError::InvalidTeardown,
+                "trace sequence teardown identity is invalid",
+            ),
+            (
+                TraceSequenceError::InvalidResynchronization,
+                "trace sequence full resynchronization is invalid",
+            ),
+            (
+                TraceSequenceError::TerminalRetention,
+                "trace sequence terminal retention must be zero",
+            ),
+            (
+                TraceSequenceError::UploadByteOverflow,
+                "trace sequence upload-byte arithmetic overflowed",
+            ),
         ];
-        for (axis, expected) in cases {
-            let mut value = sequence();
-            match axis {
-                0 => {
-                    let _ = value.steps.pop();
-                }
-                1 => value.steps[1].sequence = 2,
-                2 => value.steps[2].transition = TraceSequenceTransition::CompatibleReuse,
-                3 => value.steps[0].renderer_generation = 0,
-                4 => value.steps[4].workload_hash = Some([4; 32]),
-                5 => value.steps[5].renderer_generation = 1,
-                _ => unreachable!(),
-            }
-            assert_eq!(value.validate(), Err(expected));
+        for (error, message) in cases {
+            assert_eq!(error.to_string(), message);
         }
     }
 }
