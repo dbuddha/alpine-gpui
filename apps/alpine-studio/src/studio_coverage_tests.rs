@@ -1180,6 +1180,7 @@ fn runtime_find_worker_admits_current_results_and_schedules_replacement()
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+    let admission_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let admitted = loop {
         if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
             timestamp: EventTimestamp::new(10),
@@ -1187,7 +1188,7 @@ fn runtime_find_worker_admits_current_results_and_schedules_replacement()
         {
             break frame;
         }
-        if std::time::Instant::now() >= deadline {
+        if std::time::Instant::now() >= admission_deadline {
             return Err("timed out admitting find worker frame".into());
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
