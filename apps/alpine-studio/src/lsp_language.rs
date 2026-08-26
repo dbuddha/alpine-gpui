@@ -502,30 +502,35 @@ pub(crate) fn file_uri(path: &Path) -> Result<String, LanguageProtocolError> {
         return Err(LanguageProtocolError::InvalidPath);
     }
     let path = path.to_str().ok_or(LanguageProtocolError::InvalidPath)?;
-    #[cfg(windows)]
-    let path = path.strip_prefix(r"\\?\").unwrap_or(path);
-    #[cfg(windows)]
-    if path.starts_with(r"UNC\")
-        || path.starts_with(r"\\")
-        || !path
-            .as_bytes()
-            .first()
-            .copied()
-            .is_some_and(|byte| byte.is_ascii_alphabetic())
-        || path.as_bytes().get(1) != Some(&b':')
-        || !path
+    file_uri_from_utf8_path(path, cfg!(windows))
+}
+
+fn file_uri_from_utf8_path(path: &str, windows: bool) -> Result<String, LanguageProtocolError> {
+    let path = if windows {
+        path.strip_prefix(r"\\?\").unwrap_or(path)
+    } else {
+        path
+    };
+    let windows_drive_path = path
+        .as_bytes()
+        .first()
+        .copied()
+        .is_some_and(|byte| byte.is_ascii_alphabetic())
+        && path.as_bytes().get(1) == Some(&b':')
+        && path
             .as_bytes()
             .get(2)
             .copied()
-            .is_some_and(|byte| matches!(byte, b'/' | b'\\'))
-    {
+            .is_some_and(|byte| matches!(byte, b'/' | b'\\'));
+    if windows && !windows_drive_path {
         return Err(LanguageProtocolError::InvalidPath);
     }
     let mut uri = String::from("file://");
-    #[cfg(windows)]
-    uri.push('/');
+    if windows {
+        uri.push('/');
+    }
     for byte in path.bytes() {
-        if cfg!(windows) && byte == b'\\' {
+        if windows && byte == b'\\' {
             uri.push('/');
         } else if byte.is_ascii_alphanumeric()
             || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':')

@@ -1,24 +1,27 @@
 use std::fs;
 
-use alpine_core::{LinearRgba, Size};
+use alpine_core::{LinearRgba, Point, Size};
 use alpine_platform_macos::{
     AccessibilityAction, AccessibilityActionResult, AccessibilityPayload, AccessibilityRequest,
-    AccessibilityRequestId, EventTimestamp, ImeEvent, KeyState, Modifiers, ScrollPhase,
-    SurfaceEvent,
+    AccessibilityRequestId, EventTimestamp, ImeEvent, KeyState, Modifiers, PointerAction,
+    PointerButton, ScrollPhase, SurfaceEvent,
 };
 use alpine_runtime::{Application, WorkerConfig};
-use alpine_text::Transaction;
+use alpine_text::{ByteOffset, Selection, Transaction};
 use serde_json::value::RawValue;
 
 use super::{
-    KEY_DELETE_BACKWARD, KEY_ESCAPE, KEY_RETURN, StudioApp, WorkspaceEditApplicationError,
-    WorkspaceEditKind, WorkspaceEditPublicationRequest, accessibility, journal_path_for_session,
+    KEY_DELETE_BACKWARD, KEY_ESCAPE, KEY_RETURN, LocalStatus, StudioApp, StudioCommand,
+    WorkspaceEditApplicationError, WorkspaceEditKind, WorkspaceEditPublicationError,
+    WorkspaceEditPublicationOutput, WorkspaceEditPublicationRequest, accessibility,
+    journal_path_for_session, recover_explicit_workspace_edit, recover_workspace_edit_for_session,
     rust_diagnostics::{
         RustDocumentInput, WorkspaceEditIdentity, WorkspaceEditPreparationOutput,
         tests::{diagnostics, fixture, mock_executable},
     },
     rust_navigation::local_file_uri,
     rust_workspace_edit::{PreparedWorkspaceEdit, WorkspaceEditError, WorkspaceEditProposal},
+    rust_workspace_publish::WorkspaceEditPublicationReport,
     tests::TestTextSystem,
 };
 
@@ -53,6 +56,7 @@ fn prepared_insert(
 fn production_publication_queues_commits_admits_and_undoes_active_document()
 -> Result<(), Box<dyn std::error::Error>> {
     let (root, path, _, _) = fixture();
+    recover_workspace_edit_for_session(&root.join("recover-session-v2.json"))?;
     let mut app = StudioApp::open_file(TestTextSystem, &path)?;
     let snapshot = app.buffer().snapshot();
     let original = snapshot.text();
@@ -130,6 +134,177 @@ fn production_publication_queues_commits_admits_and_undoes_active_document()
     miri,
     ignore = "Studio construction reaches macOS signpost FFI unsupported by Miri; lower workspace-edit layers remain interpreted"
 )]
+fn application_recovery_and_publication_guards_fail_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (root, path, _, _) = fixture();
+    assert!(
+        recover_workspace_edit_for_session(std::path::Path::new(std::path::MAIN_SEPARATOR_STR,))
+            .is_err()
+    );
+    let corrupt_session = root.join("corrupt-session-v2.json");
+    let corrupt_journal = journal_path_for_session(&corrupt_session)?;
+    fs::write(&corrupt_journal, "corrupt")?;
+    assert!(recover_workspace_edit_for_session(&corrupt_session).is_err());
+    assert!(recover_explicit_workspace_edit(&path, &corrupt_session).is_err());
+    fs::remove_file(corrupt_journal)?;
+    let mut app = StudioApp::open_file(TestTextSystem, &path)?;
+    let snapshot = app.buffer().snapshot();
+    let language_identity = app.language_identity();
+    app.rust_diagnostics.install_for_test(
+        RustDocumentInput::new(&path, &root, language_identity, snapshot),
+        &diagnostics(&path, 1),
+        mock_executable(),
+    )?;
+    let language = app.rust_diagnostics.snapshot();
+    let identity = WorkspaceEditIdentity::for_test(
+        language_identity,
+        language.process_epoch,
+        language.lsp_version,
+        91,
+        WorkspaceEditKind::Rename,
+    );
+    let prepared = prepared_insert(&path, &root, "guarded_")?;
+    app.workspace_edits
+        .install_preview_for_test(identity, prepared.clone())?;
+
+    assert!(app.queue_workspace_edit_publication().visual_changed);
+    assert!(app.workspace_edits.preview().is_some());
+    app.session_path = Some(std::path::PathBuf::from(std::path::MAIN_SEPARATOR_STR));
+    let _ = app.queue_workspace_edit_publication();
+    assert!(app.workspace_edits.preview().is_some());
+
+    app.session_path = Some(root.join("session-v2.json"));
+    app.workspace_edits.cancel();
+    let mut stale_language = language_identity;
+    stale_language.selection_revision += 1;
+    let stale_identity = WorkspaceEditIdentity::for_test(
+        stale_language,
+        language.process_epoch,
+        language.lsp_version,
+        92,
+        WorkspaceEditKind::Rename,
+    );
+    app.workspace_edits
+        .install_preview_for_test(stale_identity, prepared.clone())?;
+    assert!(app.queue_workspace_edit_publication().visual_changed);
+    assert!(!app.workspace_edits.is_open());
+
+    let stale_output = WorkspaceEditPublicationOutput {
+        identity,
+        prepared: prepared.clone(),
+        result: Err(WorkspaceEditPublicationError::StaleFile),
+    };
+    assert!(
+        app.apply_workspace_edit_publication_output(stale_output)
+            .visual_changed
+    );
+
+    app.workspace_edits
+        .install_preview_for_test(identity, prepared.clone())?;
+    assert!(
+        app.workspace_edits
+            .queue_publication(language_identity, &language)?
+    );
+    let (publishing_identity, publishing_prepared) = app
+        .workspace_edits
+        .take_queued_publication()
+        .ok_or("publication authority")?;
+    app.force_workspace_edit_admission_failure = Some(());
+    let rejected_output = WorkspaceEditPublicationOutput {
+        identity: publishing_identity,
+        prepared: publishing_prepared,
+        result: Ok(WorkspaceEditPublicationReport {
+            files: 1,
+            edits: 1,
+            bytes_written: 8,
+            cleanup_deferred: false,
+        }),
+    };
+    let failures_before_rejection = app.input_failures;
+    let rejected_effect = app.apply_workspace_edit_publication_output(rejected_output);
+    assert!(!rejected_effect.document_changed);
+    assert_eq!(app.input_failures, failures_before_rejection + 1);
+    assert!(!app.workspace_edits.is_open());
+    drop(app);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "Studio construction reaches macOS signpost FFI unsupported by Miri; lower workspace-edit layers remain interpreted"
+)]
+fn post_commit_admission_and_scratch_failures_release_workspace_edit_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (root, path, _, _) = fixture();
+    let mut admitted = StudioApp::open_file(TestTextSystem, &path)?;
+    let snapshot = admitted.buffer().snapshot();
+    let admitted_language_identity = admitted.language_identity();
+    admitted.rust_diagnostics.install_for_test(
+        RustDocumentInput::new(&path, &root, admitted_language_identity, snapshot),
+        &diagnostics(&path, 1),
+        mock_executable(),
+    )?;
+    let admitted_language = admitted.rust_diagnostics.snapshot();
+    let admitted_identity = WorkspaceEditIdentity::for_test(
+        admitted_language_identity,
+        admitted_language.process_epoch,
+        admitted_language.lsp_version,
+        93,
+        WorkspaceEditKind::Formatting,
+    );
+    let admitted_prepared = prepared_insert(&path, &root, "deferred_")?;
+    admitted
+        .workspace_edits
+        .install_preview_for_test(admitted_identity, admitted_prepared.clone())?;
+    assert!(
+        admitted
+            .workspace_edits
+            .queue_publication(admitted_language_identity, &admitted_language)?
+    );
+    let (admitted_identity, admitted_prepared) = admitted
+        .workspace_edits
+        .take_queued_publication()
+        .ok_or("admitted publication authority")?;
+    fs::write(&path, admitted_prepared.files()[0].replacement())?;
+    let admitted_output = WorkspaceEditPublicationOutput {
+        identity: admitted_identity,
+        prepared: admitted_prepared,
+        result: Ok(WorkspaceEditPublicationReport {
+            files: 1,
+            edits: 1,
+            bytes_written: 9,
+            cleanup_deferred: true,
+        }),
+    };
+    assert!(
+        admitted
+            .apply_workspace_edit_publication_output(admitted_output)
+            .document_changed
+    );
+    assert!(matches!(
+        admitted.local_status,
+        Some(LocalStatus::Command(ref message)) if message.contains("cleanup deferred")
+    ));
+    drop(admitted);
+    let mut scratch = StudioApp::new(TestTextSystem)?;
+    let scratch_prepared = prepared_insert(&path, &root, "scratch_")?;
+    assert_eq!(
+        scratch
+            .document
+            .admit_persisted_edit(&scratch_prepared.files()[0]),
+        Err(WorkspaceEditApplicationError::StaleLoadedDocument)
+    );
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "Studio construction reaches macOS signpost FFI unsupported by Miri; lower workspace-edit layers remain interpreted"
+)]
 fn failed_publication_retains_preview_and_freezes_every_mutating_input()
 -> Result<(), Box<dyn std::error::Error>> {
     let (root, path, _, _) = fixture();
@@ -162,6 +337,17 @@ fn failed_publication_retains_preview_and_freezes_every_mutating_input()
         .ok_or("publication was not queued")?;
 
     let before = app.buffer().snapshot().text();
+    let pointer = Point::new(40.0, 40.0).ok_or("pointer")?;
+    assert!(
+        !app.handle_pointer(
+            PointerAction::Down,
+            pointer,
+            PointerButton::Primary,
+            Modifiers::default(),
+        )
+        .visual_changed
+    );
+    assert!(!app.pointer_selecting);
     assert!(
         app.handle_workspace_edit_key(KEY_RETURN, false)
             .is_some_and(|effect| !effect.document_changed)
@@ -335,7 +521,7 @@ fn locally_diverged_inactive_tab_rejects_publication_before_disk_mutation()
     miri,
     ignore = "Studio construction reaches macOS signpost FFI unsupported by Miri; lower workspace-edit layers remain interpreted"
 )]
-fn rust_rename_and_format_commands_use_bounded_workspace_edit_lifecycle()
+fn rust_rename_input_uses_bounded_workspace_edit_lifecycle()
 -> Result<(), Box<dyn std::error::Error>> {
     let (root, path, _, _) = fixture();
     let mut app = StudioApp::open_file(TestTextSystem, &path)?;
@@ -347,24 +533,31 @@ fn rust_rename_and_format_commands_use_bounded_workspace_edit_lifecycle()
         mock_executable(),
     )?;
 
-    assert!(app.open_rust_rename().visual_changed);
-    assert!(app.workspace_edits.is_rename_input());
+    assert!(app.handle_ime(&ImeEvent::Started).visual_changed);
+    assert!(!app.open_rust_rename().visual_changed);
+    assert!(!app.trigger_rust_formatting().visual_changed);
+    assert!(app.handle_ime(&ImeEvent::Cancelled).visual_changed);
     assert!(
-        app.handle_workspace_edit_ime(&ImeEvent::Started)
+        app.dispatch_command(StudioCommand::PreviewRustRename)
             .visual_changed
     );
+    assert!(app.workspace_edits.is_rename_input());
     assert!(
-        app.handle_workspace_edit_ime(&ImeEvent::Updated {
+        app.handle_ime(&ImeEvent::Committed("r".into()))
+            .visual_changed
+    );
+    assert!(app.handle_ime(&ImeEvent::Started).visual_changed);
+    assert!(
+        app.handle_ime(&ImeEvent::Updated {
             text: "ré".into(),
             selected_start_utf16: 1,
             selected_length_utf16: 1,
         })
         .visual_changed
     );
-    assert!(
-        app.handle_workspace_edit_ime(&ImeEvent::Cancelled)
-            .visual_changed
-    );
+    assert!(app.cancel_focused_composition().visual_changed);
+    assert!(app.handle_ime(&ImeEvent::Started).visual_changed);
+    assert!(app.handle_ime(&ImeEvent::Cancelled).visual_changed);
     assert!(
         app.handle_workspace_edit_key(0, false)
             .is_some_and(|effect| !effect.visual_changed)
@@ -393,6 +586,63 @@ fn rust_rename_and_format_commands_use_bounded_workspace_edit_lifecycle()
     assert!(!app.workspace_edits.is_open());
     assert!(!app.cancel_workspace_edit_panel().visual_changed);
     assert!(!app.rust_diagnostics.snapshot().workspace_edit_pending);
+    drop(app);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "Studio construction reaches macOS signpost FFI unsupported by Miri; lower workspace-edit layers remain interpreted"
+)]
+fn rust_rename_failure_paths_close_without_mutation() -> Result<(), Box<dyn std::error::Error>> {
+    let (root, path, _, _) = fixture();
+    let mut app = StudioApp::open_file(TestTextSystem, &path)?;
+    let snapshot = app.buffer().snapshot();
+    let language_identity = app.language_identity();
+    app.rust_diagnostics.install_for_test(
+        RustDocumentInput::new(&path, &root, language_identity, snapshot),
+        &diagnostics(&path, 1),
+        mock_executable(),
+    )?;
+    assert!(app.submit_rust_rename().visual_changed);
+    app.workspace_edits.force_replace_lines_failure_once();
+    assert!(app.open_rust_rename().visual_changed);
+    assert!(!app.workspace_edits.is_open());
+
+    assert!(app.open_rust_rename().visual_changed);
+    assert!(app.workspace_edits.commit_text("invalid_position")?);
+    let valid_selection = app.selection;
+    app.selection = Selection::caret(ByteOffset::new(usize::MAX));
+    assert!(!app.submit_rust_rename().document_changed);
+    app.selection = valid_selection;
+    assert!(app.cancel_workspace_edit_panel().visual_changed);
+
+    assert!(app.open_rust_rename().visual_changed);
+    assert!(app.workspace_edits.commit_text("x")?);
+    app.workspace_edits.force_replace_lines_failure_once();
+    let failures_before_delete = app.input_failures;
+    assert!(
+        app.handle_workspace_edit_key(KEY_DELETE_BACKWARD, false)
+            .is_some()
+    );
+    assert_eq!(app.input_failures, failures_before_delete + 1);
+    assert!(!app.workspace_edits.is_open());
+
+    assert!(app.open_rust_rename().visual_changed);
+    let failures_before_invalid_ime = app.input_failures;
+    let invalid_ime = app.handle_ime(&ImeEvent::Committed("bad\nname".into()));
+    assert!(!invalid_ime.document_changed);
+    assert_eq!(app.input_failures, failures_before_invalid_ime + 1);
+    assert!(!app.workspace_edits.is_open());
+
+    assert!(app.open_rust_rename().visual_changed);
+    assert!(
+        app.handle_key(KEY_ESCAPE, Modifiers::default())
+            .visual_changed
+    );
+    assert!(!app.workspace_edits.is_open());
 
     let _ = app.trigger_rust_formatting();
     assert!(!app.rust_diagnostics.snapshot().workspace_edit_pending);
@@ -413,6 +663,19 @@ fn rust_rename_and_format_commands_use_bounded_workspace_edit_lifecycle()
             .to_string()
             .is_empty()
     );
+    drop(app);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "Studio construction reaches macOS signpost FFI unsupported by Miri; lower workspace-edit layers remain interpreted"
+)]
+fn rust_format_commands_use_bounded_workspace_edit_lifecycle()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (root, path, _, _) = fixture();
     let mut formatting_app = StudioApp::open_file(TestTextSystem, &path)?;
     let formatting_snapshot = formatting_app.buffer().snapshot();
     let formatting_identity = formatting_app.language_identity();
@@ -422,7 +685,25 @@ fn rust_rename_and_format_commands_use_bounded_workspace_edit_lifecycle()
         mock_executable(),
     )?;
     assert!(formatting_app.trigger_rust_formatting().visual_changed);
-    drop(app);
+    let formatting_command = formatting_app.dispatch_command(StudioCommand::PreviewRustFormatting);
+    assert!(!formatting_command.document_changed);
+    assert!(
+        formatting_app
+            .finish_rust_formatting(true, false)
+            .visual_changed
+    );
+    assert!(formatting_app.cancel_workspace_edit_panel().visual_changed);
+    formatting_app
+        .workspace_edits
+        .force_replace_lines_failure_once();
+    let failures_before_formatting = formatting_app.input_failures;
+    let formatting_failure = formatting_app.finish_rust_formatting(true, false);
+    assert!(!formatting_failure.document_changed);
+    assert_eq!(
+        formatting_app.input_failures,
+        failures_before_formatting + 1
+    );
+    drop(formatting_app);
     fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -583,6 +864,7 @@ fn runtime_workspace_edit_handoffs_invalidate_and_admit_production_frames()
     drop(preparation_runtime);
 
     let mut publication_app = StudioApp::open_file(TestTextSystem, &path)?;
+    publication_app.session_path = Some(root.join("session-v2.json"));
     let snapshot = publication_app.buffer().snapshot();
     let language_identity = publication_app.language_identity();
     publication_app.rust_diagnostics.install_for_test(
@@ -619,7 +901,180 @@ fn runtime_workspace_edit_handoffs_invalidate_and_admit_production_frames()
             })
             .is_some()
     );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while publication_runtime.snapshot().worker().queued_results() == 0 {
+        if std::time::Instant::now() >= deadline {
+            return Err("workspace edit publication worker timed out".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(
+        publication_runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(83),
+            })
+            .is_some()
+    );
+    assert!(fs::read_to_string(&path)?.starts_with("publish_"));
     drop(publication_runtime);
+
+    let mut rejected_preparation_app = StudioApp::open_file(TestTextSystem, &path)?;
+    let snapshot = rejected_preparation_app.buffer().snapshot();
+    let language_identity = rejected_preparation_app.language_identity();
+    rejected_preparation_app.rust_diagnostics.install_for_test(
+        RustDocumentInput::new(&path, &root, language_identity, snapshot),
+        &diagnostics(&path, 1),
+        mock_executable(),
+    )?;
+    let language = rejected_preparation_app.rust_diagnostics.snapshot();
+    let rejected_preparation_identity = WorkspaceEditIdentity::for_test(
+        language_identity,
+        language.process_epoch,
+        language.lsp_version,
+        83,
+        WorkspaceEditKind::Rename,
+    );
+    rejected_preparation_app
+        .workspace_edits
+        .wait(WorkspaceEditKind::Rename)?;
+    rejected_preparation_app
+        .rust_diagnostics
+        .stage_workspace_edit_preparation_for_test(
+            rejected_preparation_identity,
+            &root,
+            &uri,
+            &raw,
+        )?;
+    rejected_preparation_app.force_workspace_edit_preparation_submission_failure = Some(());
+    let mut rejected_preparation_runtime = Application::new(
+        rejected_preparation_app,
+        viewport,
+        clear,
+        WorkerConfig::default(),
+    )?;
+    rejected_preparation_runtime
+        .frame_if_dirty()
+        .ok_or("initial rejected preparation frame")?;
+    assert!(
+        rejected_preparation_runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(84),
+            })
+            .is_some()
+    );
+    assert_eq!(
+        rejected_preparation_runtime
+            .snapshot()
+            .worker()
+            .peak_queued_requests(),
+        0
+    );
+    drop(rejected_preparation_runtime);
+
+    let mut rejected_publication_app = StudioApp::open_file(TestTextSystem, &path)?;
+    rejected_publication_app.session_path = Some(root.join("rejected-session-v2.json"));
+    let snapshot = rejected_publication_app.buffer().snapshot();
+    let language_identity = rejected_publication_app.language_identity();
+    rejected_publication_app.rust_diagnostics.install_for_test(
+        RustDocumentInput::new(&path, &root, language_identity, snapshot),
+        &diagnostics(&path, 1),
+        mock_executable(),
+    )?;
+    let language = rejected_publication_app.rust_diagnostics.snapshot();
+    let rejected_publication_identity = WorkspaceEditIdentity::for_test(
+        language_identity,
+        language.process_epoch,
+        language.lsp_version,
+        84,
+        WorkspaceEditKind::Rename,
+    );
+    rejected_publication_app
+        .workspace_edits
+        .install_preview_for_test(
+            rejected_publication_identity,
+            prepared_insert(&path, &root, "rejected_")?,
+        )?;
+    assert!(
+        rejected_publication_app
+            .workspace_edits
+            .queue_publication(language_identity, &language,)?
+    );
+    rejected_publication_app.force_workspace_edit_publication_submission_failure = Some(());
+    let mut rejected_publication_runtime = Application::new(
+        rejected_publication_app,
+        viewport,
+        clear,
+        WorkerConfig::default(),
+    )?;
+    rejected_publication_runtime
+        .frame_if_dirty()
+        .ok_or("initial rejected publication frame")?;
+    assert!(
+        rejected_publication_runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(85),
+            })
+            .is_some()
+    );
+    assert_eq!(
+        rejected_publication_runtime
+            .snapshot()
+            .worker()
+            .peak_queued_requests(),
+        0
+    );
+    assert!(!fs::read_to_string(&path)?.starts_with("rejected_"));
+    drop(rejected_publication_runtime);
+
+    let mut missing_persistence_app = StudioApp::open_file(TestTextSystem, &path)?;
+    let snapshot = missing_persistence_app.buffer().snapshot();
+    let language_identity = missing_persistence_app.language_identity();
+    missing_persistence_app.rust_diagnostics.install_for_test(
+        RustDocumentInput::new(&path, &root, language_identity, snapshot),
+        &diagnostics(&path, 1),
+        mock_executable(),
+    )?;
+    let language = missing_persistence_app.rust_diagnostics.snapshot();
+    let missing_identity = WorkspaceEditIdentity::for_test(
+        language_identity,
+        language.process_epoch,
+        language.lsp_version,
+        85,
+        WorkspaceEditKind::Rename,
+    );
+    missing_persistence_app
+        .workspace_edits
+        .install_preview_for_test(missing_identity, prepared_insert(&path, &root, "missing_")?)?;
+    assert!(
+        missing_persistence_app
+            .workspace_edits
+            .queue_publication(language_identity, &language)?
+    );
+    let mut missing_persistence_runtime = Application::new(
+        missing_persistence_app,
+        viewport,
+        clear,
+        WorkerConfig::default(),
+    )?;
+    missing_persistence_runtime
+        .frame_if_dirty()
+        .ok_or("initial missing-persistence frame")?;
+    assert!(
+        missing_persistence_runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(86),
+            })
+            .is_some()
+    );
+    assert_eq!(
+        missing_persistence_runtime
+            .snapshot()
+            .worker()
+            .peak_queued_requests(),
+        0
+    );
+    assert!(!fs::read_to_string(&path)?.starts_with("missing_"));
+    drop(missing_persistence_runtime);
     fs::remove_dir_all(root)?;
     Ok(())
 }

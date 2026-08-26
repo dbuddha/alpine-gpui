@@ -845,25 +845,51 @@ fn workspace_edit_not_ready_and_admission_axes_are_observable() -> Result<(), Bo
     let mut unavailable = RustDiagnostics::default();
     assert!(unavailable.request_formatting(4, true).visual_changed);
     assert!(!unavailable.request_formatting(4, true).visual_changed);
-    let (root, path, snapshot, language) = fixture();
-    let mut model = RustDiagnostics::default();
-    model.install_for_test(
-        RustDocumentInput::new(&path, &root, language, snapshot),
-        &diagnostics(&path, 1),
-        mock_executable(),
-    )?;
-    let session = model.session.as_ref().ok_or("session")?;
-    let current_identity = session.identity;
-    let current_epoch = session.process_epoch;
-    let current_version = session.lsp_version;
-    let template = PendingWorkspaceEdit {
-        request_id: 41,
-        stamp: current_identity.request_stamp().ok_or("request stamp")?,
-        kind: WorkspaceEditKind::Formatting,
-        identity: current_identity,
-        process_epoch: current_epoch,
-        lsp_version: current_version,
-    };
+    assert!(
+        !unavailable
+            .request_rename(LspPosition::new(0, 0)?, "renamed")
+            .visual_changed
+    );
+    let WorkspaceEditAdmissionFixture {
+        root,
+        mut model,
+        pending: template,
+        ..
+    } = workspace_edit_admission_fixture()?;
+    let stamp = template.stamp;
+    assert!(!unavailable.admit_workspace_edit(
+        1,
+        stamp,
+        WorkspaceEditKind::Rename,
+        Err(WorkspaceEditError::Malformed),
+    ));
+    assert!(!unavailable.reject_stale_workspace_edit(1));
+    assert!(matches!(
+        workspace_edit_wire(ResponseValue::error_for_test()),
+        Err(WorkspaceEditError::Malformed)
+    ));
+    let params = RawValue::from_string(String::from("{}"))?;
+    assert!(
+        !unavailable
+            .request_workspace_edit(WorkspaceEditKind::Rename, &params)
+            .visual_changed
+    );
+    let current_identity = template.identity;
+    let current_epoch = template.process_epoch;
+    let current_version = template.lsp_version;
+    assert!(!model.admit_workspace_edit(
+        template.request_id,
+        template.stamp,
+        template.kind,
+        Err(WorkspaceEditError::Malformed),
+    ));
+    model
+        .session
+        .as_mut()
+        .ok_or("session")?
+        .pending_workspace_edit = Some(template);
+    assert!(!model.reject_stale_workspace_edit(template.request_id));
+    assert!(!model.snapshot().workspace_edit_pending);
     model
         .session
         .as_mut()
@@ -911,6 +937,111 @@ fn workspace_edit_not_ready_and_admission_axes_are_observable() -> Result<(), Bo
         Err(WorkspaceEditError::Malformed),
     ));
     assert!(model.take_workspace_edit_preparation().is_none());
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+struct WorkspaceEditAdmissionFixture {
+    root: PathBuf,
+    path: PathBuf,
+    model: RustDiagnostics,
+    pending: PendingWorkspaceEdit,
+}
+
+fn workspace_edit_admission_fixture() -> Result<WorkspaceEditAdmissionFixture, Box<dyn Error>> {
+    let (root, path, snapshot, language) = fixture();
+    let mut model = RustDiagnostics::default();
+    model.install_for_test(
+        RustDocumentInput::new(&path, &root, language, snapshot),
+        &diagnostics(&path, 1),
+        mock_executable(),
+    )?;
+    let _ = model.request_rename(LspPosition::new(0, 0)?, "");
+    let _ = model.request_formatting(0, true);
+    let session = model.session.as_ref().ok_or("session")?;
+    let identity = session.identity;
+    let pending = PendingWorkspaceEdit {
+        request_id: 41,
+        stamp: identity.request_stamp().ok_or("request stamp")?,
+        kind: WorkspaceEditKind::Formatting,
+        identity,
+        process_epoch: session.process_epoch,
+        lsp_version: session.lsp_version,
+    };
+    Ok(WorkspaceEditAdmissionFixture {
+        root,
+        path,
+        model,
+        pending,
+    })
+}
+
+#[test]
+fn workspace_edit_success_sync_and_terminal_failures_are_observable() -> Result<(), Box<dyn Error>>
+{
+    let WorkspaceEditAdmissionFixture {
+        root,
+        path,
+        mut model,
+        pending: template,
+    } = workspace_edit_admission_fixture()?;
+    let current_identity = template.identity;
+    let wire_raw = RawValue::from_string(String::from(r#"{"changes":{}}"#))?;
+    let wire = workspace_edit_wire(ResponseValue::Result(&wire_raw))?;
+    model
+        .session
+        .as_mut()
+        .ok_or("session")?
+        .pending_workspace_edit = Some(template);
+    assert!(model.admit_workspace_edit(
+        template.request_id,
+        template.stamp,
+        template.kind,
+        Ok(wire),
+    ));
+    assert!(model.take_workspace_edit_preparation().is_some());
+
+    let session = model.session.as_mut().ok_or("session")?;
+    session.pending_workspace_edit = Some(template);
+    let synchronized_snapshot = session.snapshot.clone();
+    let mut synchronized_identity = current_identity;
+    synchronized_identity.document_revision += 1;
+    let cancellations_before_sync = model.snapshot().workspace_edit_cancellations;
+    let effect = model.sync(
+        Some(RustDocumentInput::new(
+            &path,
+            &root,
+            synchronized_identity,
+            synchronized_snapshot,
+        )),
+        |_| Arc::new(|| {}),
+    );
+    assert!(!effect.visual_changed);
+    assert_eq!(
+        model.snapshot().workspace_edit_cancellations,
+        cancellations_before_sync + 1
+    );
+
+    let session = model.session.as_mut().ok_or("session")?;
+    session.state = SessionState::Initializing;
+    assert!(model.request_formatting(4, true).visual_changed);
+    let params = RawValue::from_string(String::from("{}"))?;
+    let session = model.session.as_mut().ok_or("session")?;
+    session.state = SessionState::Open;
+    session.identity.workspace_id = 0;
+    assert!(
+        model
+            .request_workspace_edit(WorkspaceEditKind::Formatting, &params)
+            .visual_changed
+    );
+    let session = model.session.as_mut().ok_or("session")?;
+    session.identity = synchronized_identity;
+    let _ = session.client.shutdown();
+    assert!(
+        model
+            .request_workspace_edit(WorkspaceEditKind::Formatting, &params)
+            .visual_changed
+    );
     assert!(!model.shutdown().active);
     fs::remove_dir_all(root)?;
     Ok(())

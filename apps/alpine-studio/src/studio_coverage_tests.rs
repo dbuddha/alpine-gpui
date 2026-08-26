@@ -4744,6 +4744,14 @@ fn native_file_constructor_rejects_a_missing_file_before_native_setup()
             source,
         })) if path == missing && source.kind() == std::io::ErrorKind::NotFound
     ));
+    let file = root.path().join("main.rs");
+    std::fs::write(&file, "fn main() {}\n")?;
+    let app = native_explicit_path_app_with_session(
+        &file,
+        ExplicitPathKind::File,
+        Some(root.path().join("session-v2.json")),
+    )?;
+    drop(app);
     Ok(())
 }
 

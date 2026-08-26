@@ -178,6 +178,8 @@ fn publish(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PublicationStep {
+    Stage,
+    PreparedMarker,
     Backup(usize),
     Install(usize),
     CommitMarker,
@@ -197,20 +199,26 @@ fn publish_with_hook(
     let entries = entries_for(&journal)?;
     preflight(prepared, &entries)?;
     write_journal(journal_path, &journal)?;
-    if let Err(error) = stage_all(prepared, &entries) {
-        return match cleanup_preparing(journal_path, &entries) {
-            Ok(()) => Err(error),
-            Err(rollback) => Err(rollback),
-        };
+    let stage_result = hook(PublicationStep::Stage)
+        .map_err(|error| io_error("stage-hook", &error))
+        .and_then(|()| stage_all(prepared, &entries));
+    if let Err(error) = stage_result {
+        return Err(primary_or_cleanup_error(
+            error,
+            cleanup_preparing(journal_path, &entries),
+        ));
     }
 
     let mut prepared_journal = journal.clone();
     prepared_journal.phase = JournalPhase::Prepared;
-    if let Err(error) = write_journal(journal_path, &prepared_journal) {
-        return match cleanup_preparing(journal_path, &entries) {
-            Ok(()) => Err(error),
-            Err(rollback) => Err(rollback),
-        };
+    let prepared_result = hook(PublicationStep::PreparedMarker)
+        .map_err(|error| io_error("prepared-hook", &error))
+        .and_then(|()| write_journal(journal_path, &prepared_journal));
+    if let Err(error) = prepared_result {
+        return Err(primary_or_cleanup_error(
+            error,
+            cleanup_preparing(journal_path, &entries),
+        ));
     }
 
     let apply_result = apply_entries(prepared, &entries, hook).and_then(|()| {
@@ -220,14 +228,10 @@ fn publish_with_hook(
         write_journal(journal_path, &committed)
     });
     if let Err(error) = apply_result {
-        return match rollback(journal_path, &entries) {
-            Ok(()) => Err(error),
-            Err(
-                WorkspaceEditPublicationError::Io { operation, kind }
-                | WorkspaceEditPublicationError::RollbackIncomplete { operation, kind },
-            ) => Err(WorkspaceEditPublicationError::RollbackIncomplete { operation, kind }),
-            Err(other) => Err(other),
-        };
+        return Err(primary_or_rollback_error(
+            error,
+            rollback(journal_path, &entries),
+        ));
     }
 
     let cleanup_deferred = hook(PublicationStep::Cleanup)
@@ -245,6 +249,30 @@ fn publish_with_hook(
         bytes_written,
         cleanup_deferred,
     })
+}
+
+fn primary_or_cleanup_error(
+    primary: WorkspaceEditPublicationError,
+    cleanup: Result<(), WorkspaceEditPublicationError>,
+) -> WorkspaceEditPublicationError {
+    match cleanup {
+        Ok(()) => primary,
+        Err(cleanup) => cleanup,
+    }
+}
+
+fn primary_or_rollback_error(
+    primary: WorkspaceEditPublicationError,
+    rollback: Result<(), WorkspaceEditPublicationError>,
+) -> WorkspaceEditPublicationError {
+    match rollback {
+        Ok(()) => primary,
+        Err(
+            WorkspaceEditPublicationError::Io { operation, kind }
+            | WorkspaceEditPublicationError::RollbackIncomplete { operation, kind },
+        ) => WorkspaceEditPublicationError::RollbackIncomplete { operation, kind },
+        Err(other) => other,
+    }
 }
 
 fn validate_prepared(
@@ -333,7 +361,8 @@ fn entries_for(
             journal.sequence,
             index,
             "backup",
-        )?;
+        );
+        let backup = backup?;
         entries.push(PublicationEntry {
             target: target.clone(),
             stage,
@@ -462,8 +491,7 @@ fn rollback(
     for entry in entries.iter().rev() {
         if entry.backup.exists() {
             if entry.target.exists() {
-                fs::remove_file(&entry.target)
-                    .map_err(|error| rollback_error("remove-installed", &error))?;
+                remove_installed(&entry.target)?;
             }
             fs::rename(&entry.backup, &entry.target)
                 .map_err(|error| rollback_error("restore-backup", &error))?;
@@ -478,6 +506,10 @@ fn rollback(
     }
     remove_if_exists(journal_path).map_err(|error| rollback_error("remove-journal", &error))?;
     sync_parent(journal_path).map_err(|error| rollback_from_error("sync-journal", &error))
+}
+
+fn remove_installed(path: &Path) -> Result<(), WorkspaceEditPublicationError> {
+    fs::remove_file(path).map_err(|error| rollback_error("remove-installed", &error))
 }
 
 fn cleanup_preparing(
@@ -547,15 +579,10 @@ fn write_journal_with_sequence(
         }
         let mut file = match options.open(&temporary) {
             Ok(file) => file,
-            Err(error) => match journal_open_disposition(error.kind()) {
-                JournalOpenDisposition::Retry => continue,
-                JournalOpenDisposition::Fail(kind) => {
-                    return Err(WorkspaceEditPublicationError::Io {
-                        operation: "create-journal",
-                        kind,
-                    });
-                }
-            },
+            Err(error) => {
+                journal_open_error(error.kind())?;
+                continue;
+            }
         };
         let result = (|| {
             file.write_all(&bytes)
@@ -574,6 +601,16 @@ fn write_journal_with_sequence(
         return result;
     }
     Err(WorkspaceEditPublicationError::ArtifactCollision)
+}
+
+fn journal_open_error(kind: io::ErrorKind) -> Result<(), WorkspaceEditPublicationError> {
+    match journal_open_disposition(kind) {
+        JournalOpenDisposition::Retry => Ok(()),
+        JournalOpenDisposition::Fail(kind) => Err(WorkspaceEditPublicationError::Io {
+            operation: "create-journal",
+            kind,
+        }),
+    }
 }
 
 fn journal_temporary_path(
@@ -753,15 +790,15 @@ impl<'a> JournalReader<'a> {
     }
 
     fn u32(&mut self) -> Result<u32, WorkspaceEditPublicationError> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().map_err(
-            |_| WorkspaceEditPublicationError::CorruptJournal,
-        )?))
+        let bytes = self.take(4)?;
+        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
     fn u64(&mut self) -> Result<u64, WorkspaceEditPublicationError> {
-        Ok(u64::from_le_bytes(self.take(8)?.try_into().map_err(
-            |_| WorkspaceEditPublicationError::CorruptJournal,
-        )?))
+        let bytes = self.take(8)?;
+        Ok(u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
     }
 
     const fn is_empty(&self) -> bool {
@@ -886,10 +923,12 @@ mod tests {
 
     use super::{
         Journal, JournalOpenDisposition, JournalPhase, MAX_JOURNAL_BYTES, MAX_PATH_BYTES,
-        PublicationStep, WorkspaceEditPublicationError, cleanup_committed, cleanup_preparing,
-        crc32, decode_journal, encode_journal, entries_for, journal_open_disposition,
+        PublicationEntry, PublicationStep, TEMPORARY_ATTEMPTS, WorkspaceEditPublicationError,
+        cleanup_committed, cleanup_preparing, crc32, decode_journal, encode_journal,
+        ensure_encoded_journal_size, entries_for, journal_open_disposition, journal_open_error,
         journal_temporary_path, load_journal, next_journal, next_journal_with_sequence, path_bytes,
-        path_from_bytes, preflight, publish_with_hook, recover_pending, remove_if_exists,
+        path_from_bytes, preflight, primary_or_cleanup_error, primary_or_rollback_error,
+        publish_with_hook, recover_pending, remove_if_exists, rollback, rollback_error,
         rollback_from_error, stage_all, sync_parent, validate_prepared, validate_target_path,
         write_journal, write_journal_with_sequence,
     };
@@ -932,18 +971,116 @@ mod tests {
     }
 
     #[test]
+    fn phase_failures_cleanup_and_recovery_error_precedence_are_exact()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = fixture()?;
+        let target = root.join("a.rs");
+        let edit = prepared(&root, &[(&target, "old\n", "new\n")])?;
+        let journal = root.join("journal.bin");
+
+        for (step, operation) in [
+            (PublicationStep::Stage, "stage-hook"),
+            (PublicationStep::PreparedMarker, "prepared-hook"),
+        ] {
+            let result = publish_with_hook(&journal, &edit, &mut |observed| {
+                if observed == step {
+                    Err(std::io::Error::other("injected phase failure"))
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(
+                result,
+                Err(WorkspaceEditPublicationError::Io {
+                    operation,
+                    kind: std::io::ErrorKind::Other,
+                })
+            );
+            assert_eq!(fs::read_to_string(&target)?, "old\n");
+            assert!(!journal.exists());
+        }
+
+        assert_eq!(
+            primary_or_cleanup_error(WorkspaceEditPublicationError::Empty, Ok(())),
+            WorkspaceEditPublicationError::Empty
+        );
+        assert_eq!(
+            primary_or_cleanup_error(
+                WorkspaceEditPublicationError::Empty,
+                Err(WorkspaceEditPublicationError::StaleFile),
+            ),
+            WorkspaceEditPublicationError::StaleFile
+        );
+        assert_eq!(
+            primary_or_rollback_error(WorkspaceEditPublicationError::Empty, Ok(())),
+            WorkspaceEditPublicationError::Empty
+        );
+        for (rollback, expected) in [
+            (
+                WorkspaceEditPublicationError::Io {
+                    operation: "io-rollback",
+                    kind: std::io::ErrorKind::StorageFull,
+                },
+                WorkspaceEditPublicationError::RollbackIncomplete {
+                    operation: "io-rollback",
+                    kind: std::io::ErrorKind::StorageFull,
+                },
+            ),
+            (
+                WorkspaceEditPublicationError::RollbackIncomplete {
+                    operation: "partial-rollback",
+                    kind: std::io::ErrorKind::PermissionDenied,
+                },
+                WorkspaceEditPublicationError::RollbackIncomplete {
+                    operation: "partial-rollback",
+                    kind: std::io::ErrorKind::PermissionDenied,
+                },
+            ),
+        ] {
+            assert_eq!(
+                primary_or_rollback_error(WorkspaceEditPublicationError::Empty, Err(rollback),),
+                expected
+            );
+        }
+        assert_eq!(
+            primary_or_rollback_error(
+                WorkspaceEditPublicationError::Empty,
+                Err(WorkspaceEditPublicationError::StaleFile),
+            ),
+            WorkspaceEditPublicationError::StaleFile
+        );
+
+        let installed_directory = root.join("installed-directory");
+        let installed_backup = root.join("installed.backup");
+        fs::create_dir(&installed_directory)?;
+        fs::write(&installed_backup, "original\n")?;
+        let installed_entries = [PublicationEntry {
+            target: installed_directory,
+            stage: root.join("installed.stage"),
+            backup: installed_backup,
+        }];
+        assert!(matches!(
+            rollback(&root.join("installed-journal"), &installed_entries),
+            Err(WorkspaceEditPublicationError::RollbackIncomplete {
+                operation: "remove-installed",
+                ..
+            })
+        ));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn two_file_publication_is_durable_and_cleans_every_artifact()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = fixture()?;
         let first = root.join("a.rs");
         let second = root.join("b.rs");
-        let edit = prepared(
-            &root,
-            &[
-                (&first, "old_a\n", "new_a\n"),
-                (&second, "old_b\n", "new_b\n"),
-            ],
-        )?;
+        let files = [
+            (first.as_path(), "old_a\n", "new_a\n"),
+            (second.as_path(), "old_b\n", "new_b\n"),
+        ];
+        let edit = prepared(&root, &files)?;
         let journal = root.join("journal.bin");
         let report = publish_with_hook(&journal, &edit, &mut |_| Ok(()))?;
         assert_eq!(report.files, 2);
@@ -1041,6 +1178,22 @@ mod tests {
         assert_eq!(selected.sequence, 700_001);
         fs::remove_file(&collided_entries[0].stage)?;
 
+        let exhausted_sequence = AtomicU64::new(710_000);
+        for offset in 0..TEMPORARY_ATTEMPTS {
+            let collision = Journal {
+                phase: JournalPhase::Preparing,
+                process_id: std::process::id(),
+                sequence: 710_000 + u64::try_from(offset)?,
+                targets: vec![target.clone()].into_boxed_slice(),
+            };
+            let collision_entries = entries_for(&collision)?;
+            fs::write(&collision_entries[0].stage, "collision")?;
+        }
+        assert_eq!(
+            next_journal_with_sequence(&edit, &exhausted_sequence),
+            Err(WorkspaceEditPublicationError::ArtifactCollision)
+        );
+
         assert_eq!(
             entries_for(&journal_with_targets(Vec::new())),
             Err(WorkspaceEditPublicationError::CorruptJournal)
@@ -1068,6 +1221,30 @@ mod tests {
         write_journal_with_sequence(&journal_path, &selected, &temporary_sequence)?;
         assert_eq!(load_journal(&journal_path)?, selected);
         assert_eq!(fs::read_to_string(&collision)?, "occupied");
+
+        let exhausted_path = root.join("exhausted-journal.bin");
+        let exhausted_temporary_sequence = AtomicU64::new(810_000);
+        for offset in 0..TEMPORARY_ATTEMPTS {
+            let temporary =
+                journal_temporary_path(&exhausted_path, 810_000 + u64::try_from(offset)?)?;
+            fs::write(temporary, "occupied")?;
+        }
+        assert_eq!(
+            write_journal_with_sequence(&exhausted_path, &selected, &exhausted_temporary_sequence,),
+            Err(WorkspaceEditPublicationError::ArtifactCollision)
+        );
+
+        let directory_destination = root.join("directory-journal");
+        fs::create_dir(&directory_destination)?;
+        assert!(
+            write_journal_with_sequence(
+                &directory_destination,
+                &selected,
+                &AtomicU64::new(820_000),
+            )
+            .is_err()
+        );
+        assert!(!journal_temporary_path(&directory_destination, 820_000)?.exists());
         fs::remove_dir_all(root)?;
         Ok(())
     }
@@ -1113,6 +1290,21 @@ mod tests {
             })
         ));
 
+        fs::write(&target, "old\n")?;
+        let redundant = root.join("redundant");
+        fs::create_dir(&redundant)?;
+        let noncanonical = redundant.join("..").join("a.rs");
+        let noncanonical_entries = [super::PublicationEntry {
+            target: noncanonical,
+            stage: root.join("noncanonical.stage"),
+            backup: root.join("noncanonical.backup"),
+        }];
+        assert_eq!(
+            preflight(&edit, &noncanonical_entries),
+            Err(WorkspaceEditPublicationError::StaleFile)
+        );
+        fs::remove_file(&target)?;
+
         let real = root.join("real.rs");
         fs::write(&real, "old\n")?;
         symlink(&real, &target)?;
@@ -1131,9 +1323,7 @@ mod tests {
     }
 
     #[test]
-    fn codec_boundaries_error_mapping_and_checksum_are_exact()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = fixture()?;
+    fn publication_error_mapping_and_checksum_are_exact() {
         assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
         assert_eq!(
             WorkspaceEditPublicationError::StaleFile.to_string(),
@@ -1146,6 +1336,34 @@ mod tests {
         assert_eq!(
             journal_open_disposition(std::io::ErrorKind::PermissionDenied),
             JournalOpenDisposition::Fail(std::io::ErrorKind::PermissionDenied)
+        );
+        assert_eq!(
+            journal_open_error(std::io::ErrorKind::AlreadyExists),
+            Ok(())
+        );
+        assert_eq!(
+            journal_open_error(std::io::ErrorKind::PermissionDenied),
+            Err(WorkspaceEditPublicationError::Io {
+                operation: "create-journal",
+                kind: std::io::ErrorKind::PermissionDenied,
+            })
+        );
+        assert_eq!(ensure_encoded_journal_size(MAX_JOURNAL_BYTES), Ok(()));
+        assert_eq!(
+            ensure_encoded_journal_size(MAX_JOURNAL_BYTES + 1),
+            Err(WorkspaceEditPublicationError::JournalTooLarge)
+        );
+        assert_eq!(
+            decode_journal(&vec![0_u8; MAX_JOURNAL_BYTES + 1]),
+            Err(WorkspaceEditPublicationError::JournalTooLarge)
+        );
+        let rollback_source = std::io::Error::from(std::io::ErrorKind::StorageFull);
+        assert_eq!(
+            rollback_error("direct-rollback", &rollback_source),
+            WorkspaceEditPublicationError::RollbackIncomplete {
+                operation: "direct-rollback",
+                kind: std::io::ErrorKind::StorageFull,
+            }
         );
         for length in 0..4 {
             assert_eq!(
@@ -1173,12 +1391,43 @@ mod tests {
                 kind: std::io::ErrorKind::Other,
             }
         );
+        assert_eq!(
+            rollback_from_error(
+                "mapped",
+                &WorkspaceEditPublicationError::RollbackIncomplete {
+                    operation: "source",
+                    kind: std::io::ErrorKind::PermissionDenied,
+                },
+            ),
+            WorkspaceEditPublicationError::RollbackIncomplete {
+                operation: "mapped",
+                kind: std::io::ErrorKind::PermissionDenied,
+            }
+        );
+    }
 
+    #[test]
+    fn codec_boundaries_and_paths_are_exact() -> Result<(), Box<dyn std::error::Error>> {
+        let root = fixture()?;
         let exact_targets = (0..32)
             .map(|index| root.join(format!("{index:02}")))
             .collect::<Vec<_>>();
         let exact = journal_with_targets(exact_targets);
         assert_eq!(decode_journal(&encode_journal(&exact)?)?, exact);
+        let mut invalid_magic = encode_journal(&exact)?;
+        invalid_magic[0] ^= 1;
+        resign(&mut invalid_magic);
+        assert_eq!(
+            decode_journal(&invalid_magic),
+            Err(WorkspaceEditPublicationError::CorruptJournal)
+        );
+        let mut zero_path = encode_journal(&exact)?;
+        zero_path[29..33].copy_from_slice(&0_u32.to_le_bytes());
+        resign(&mut zero_path);
+        assert_eq!(
+            decode_journal(&zero_path),
+            Err(WorkspaceEditPublicationError::CorruptJournal)
+        );
         let excessive_targets = (0..33)
             .map(|index| root.join(format!("{index:02}")))
             .collect::<Vec<_>>();
@@ -1272,13 +1521,11 @@ mod tests {
         let root = fixture()?;
         let first = root.join("a.rs");
         let second = root.join("b.rs");
-        let edit = prepared(
-            &root,
-            &[
-                (&first, "old_a\n", "new_a\n"),
-                (&second, "old_b\n", "new_b\n"),
-            ],
-        )?;
+        let files = [
+            (first.as_path(), "old_a\n", "new_a\n"),
+            (second.as_path(), "old_b\n", "new_b\n"),
+        ];
+        let edit = prepared(&root, &files)?;
         let journal = root.join("journal.bin");
         let failure = publish_with_hook(&journal, &edit, &mut |step| {
             if step == PublicationStep::Install(0) {
@@ -1352,13 +1599,11 @@ mod tests {
         let root = fixture()?;
         let first = root.join("a.rs");
         let second = root.join("b.rs");
-        let edit = prepared(
-            &root,
-            &[
-                (&first, "old_a\n", "new_a\n"),
-                (&second, "old_b\n", "new_b\n"),
-            ],
-        )?;
+        let files = [
+            (first.as_path(), "old_a\n", "new_a\n"),
+            (second.as_path(), "old_b\n", "new_b\n"),
+        ];
+        let edit = prepared(&root, &files)?;
         let journal = root.join("journal.bin");
         let failure = publish_with_hook(&journal, &edit, &mut |step| {
             if step == PublicationStep::Install(0) {

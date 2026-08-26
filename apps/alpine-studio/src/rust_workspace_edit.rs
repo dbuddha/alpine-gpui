@@ -834,7 +834,8 @@ mod tests {
     {
         let raw = serde_json::value::RawValue::from_string(
             serde_json::json!({"changes": {}}).to_string(),
-        )?;
+        )
+        .unwrap_or_else(|_| unreachable!());
         let wire = super::WorkspaceEditWire::capture(&raw)?;
         assert_eq!(wire.retained_bytes(), raw.get().len());
         assert_eq!(wire.result().get(), raw.get());

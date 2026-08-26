@@ -74,6 +74,8 @@ pub(crate) struct WorkspaceEditPanel {
     lines: Box<[Box<str>]>,
     accessibility_label: Option<Arc<str>>,
     peak_retained_bytes: usize,
+    #[cfg(test)]
+    force_replace_lines_failure: bool,
 }
 
 impl WorkspaceEditPanel {
@@ -203,10 +205,9 @@ impl WorkspaceEditPanel {
         kind: WorkspaceEditKind,
     ) -> Result<bool, WorkspaceEditPanelError> {
         self.state = PanelState::Waiting(kind);
-        self.replace_lines(
-            vec![format!("{} requested. Escape cancels.", kind.label()).into_boxed_str()],
-            Arc::from(format!("{} requested", kind.label())),
-        )?;
+        let lines = vec![format!("{} requested. Escape cancels.", kind.label()).into_boxed_str()];
+        let label = Arc::from(format!("{} requested", kind.label()));
+        self.replace_lines(lines, label)?;
         Ok(true)
     }
 
@@ -219,10 +220,10 @@ impl WorkspaceEditPanel {
             return Ok(false);
         }
         self.state = PanelState::Preparing(identity);
-        self.replace_lines(
-            vec![format!("Preparing {} preview...", identity.kind().label()).into_boxed_str()],
-            Arc::from(format!("Preparing {} preview", identity.kind().label())),
-        )?;
+        let lines =
+            vec![format!("Preparing {} preview...", identity.kind().label()).into_boxed_str()];
+        let label = Arc::from(format!("Preparing {} preview", identity.kind().label()));
+        self.replace_lines(lines, label)?;
         Ok(true)
     }
 
@@ -290,10 +291,9 @@ impl WorkspaceEditPanel {
         }
         let kind = identity.kind();
         self.state = PanelState::Queued { identity, prepared };
-        self.replace_lines(
-            vec![format!("{} publication queued...", kind.label()).into_boxed_str()],
-            Arc::from(format!("{} publication queued", kind.label())),
-        )?;
+        let lines = vec![format!("{} publication queued...", kind.label()).into_boxed_str()];
+        let label = Arc::from(format!("{} publication queued", kind.label()));
+        self.replace_lines(lines, label)?;
         Ok(true)
     }
 
@@ -331,13 +331,11 @@ impl WorkspaceEditPanel {
         let files = prepared.file_count();
         let edits = prepared.edit_count();
         self.state = PanelState::Preview { identity, prepared };
-        self.replace_lines(
-            lines,
-            Arc::from(format!(
-                "{} publication failed; preview retained for {files} file(s), {edits} edit(s)",
-                kind.label()
-            )),
-        )?;
+        let label = Arc::from(format!(
+            "{} publication failed; preview retained for {files} file(s), {edits} edit(s)",
+            kind.label()
+        ));
+        self.replace_lines(lines, label)?;
         Ok(true)
     }
 
@@ -410,6 +408,11 @@ impl WorkspaceEditPanel {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn force_replace_lines_failure_once(&mut self) {
+        self.force_replace_lines_failure = true;
+    }
+
     fn rebuild_rename_lines(&mut self) -> Result<(), WorkspaceEditPanelError> {
         let PanelState::Rename(input) = &self.state else {
             return Ok(());
@@ -429,6 +432,10 @@ impl WorkspaceEditPanel {
         lines: Vec<Box<str>>,
         label: Arc<str>,
     ) -> Result<(), WorkspaceEditPanelError> {
+        #[cfg(test)]
+        if mem::take(&mut self.force_replace_lines_failure) {
+            return Err(WorkspaceEditPanelError::AllocationFailed);
+        }
         if lines.len() > MAX_PREVIEW_LINES
             || lines.iter().any(|line| line.len() > MAX_PREVIEW_LINE_BYTES)
         {
@@ -519,31 +526,31 @@ fn preview_lines(
     );
     for file in prepared.files().iter().take(visible) {
         let path = file.path().to_string_lossy();
-        let mut line = String::new();
-        let admitted = path.len().min(MAX_PREVIEW_LINE_BYTES.saturating_sub(4));
-        let admitted = floor_char_boundary(&path, admitted);
-        line.try_reserve(admitted.saturating_add(4))
-            .map_err(|_| WorkspaceEditPanelError::AllocationFailed)?;
-        line.push_str("- ");
-        line.push_str(&path[..admitted]);
-        if admitted != path.len() {
-            line.push_str("..");
-        }
-        lines.push(line.into_boxed_str());
+        lines.push(preview_path_line(&path)?);
     }
     lines.push(Box::from("Enter applies atomically; Escape closes."));
     Ok(lines)
 }
 
-fn floor_char_boundary(value: &str, mut index: usize) -> usize {
-    index = index.min(value.len());
-    for _ in 0..=3 {
-        if value.is_char_boundary(index) {
-            return index;
-        }
-        index = index.saturating_sub(1);
+fn preview_path_line(path: &str) -> Result<Box<str>, WorkspaceEditPanelError> {
+    let mut line = String::new();
+    let admitted = path.len().min(MAX_PREVIEW_LINE_BYTES.saturating_sub(4));
+    let admitted = floor_char_boundary(path, admitted);
+    line.try_reserve(admitted.saturating_add(4))
+        .map_err(|_| WorkspaceEditPanelError::AllocationFailed)?;
+    line.push_str("- ");
+    line.push_str(&path[..admitted]);
+    if admitted != path.len() {
+        line.push_str("..");
     }
-    0
+    Ok(line.into_boxed_str())
+}
+
+fn floor_char_boundary(value: &str, index: usize) -> usize {
+    (0..=index.min(value.len()))
+        .rev()
+        .find(|index| value.is_char_boundary(*index))
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -626,11 +633,13 @@ mod tests {
     -> Result<(), Box<dyn Error>> {
         let (root, path, snapshot, language_identity) = fixture();
         let mut diagnostics_model = RustDiagnostics::default();
-        diagnostics_model.install_for_test(
-            RustDocumentInput::new(&path, &root, language_identity, snapshot),
-            &diagnostics(&path, 1),
-            mock_executable(),
-        )?;
+        diagnostics_model
+            .install_for_test(
+                RustDocumentInput::new(&path, &root, language_identity, snapshot),
+                &diagnostics(&path, 1),
+                mock_executable(),
+            )
+            .unwrap_or_else(|_| unreachable!());
         let language = diagnostics_model.snapshot();
         let identity = WorkspaceEditIdentity::for_test(
             language_identity,
@@ -653,7 +662,8 @@ mod tests {
                 }
             })
             .to_string(),
-        )?;
+        )
+        .unwrap_or_else(|_| unreachable!());
         let prepared = WorkspaceEditProposal::admit_rename(&raw, &root)?.prepare()?;
         let mut panel = WorkspaceEditPanel {
             state: PanelState::Preview { identity, prepared },
@@ -770,6 +780,16 @@ mod tests {
         assert_eq!(floor_char_boundary("🙂", 1), 0);
         assert_eq!(floor_char_boundary("🙂", 2), 0);
         assert_eq!(floor_char_boundary("🙂", 3), 0);
+        panel.force_replace_lines_failure_once();
+        assert_eq!(
+            panel.replace_lines(vec![Box::from("retry")], Arc::from("retry")),
+            Err(WorkspaceEditPanelError::AllocationFailed)
+        );
+        assert!(
+            panel
+                .replace_lines(vec![Box::from("retry")], Arc::from("retry"))
+                .is_ok()
+        );
         Ok(())
     }
 
@@ -790,10 +810,15 @@ mod tests {
                 }
             })
             .to_string(),
-        )?;
+        )
+        .unwrap_or_else(|_| unreachable!());
         let prepared = WorkspaceEditProposal::admit_rename(&raw, &root)?.prepare()?;
         let lines = preview_lines(WorkspaceEditKind::Rename, &prepared)?;
         assert_eq!(lines[1].as_ref(), format!("- {}", path.to_string_lossy()));
+        let long = format!("{}tail", "🙂".repeat(MAX_PREVIEW_LINE_BYTES));
+        let shortened = preview_path_line(&long)?;
+        assert!(shortened.ends_with(".."));
+        assert!(shortened.len() <= MAX_PREVIEW_LINE_BYTES);
         fs::remove_dir_all(root)?;
         Ok(())
     }
@@ -806,11 +831,13 @@ mod tests {
     fn preparation_empty_stale_and_terminal_states_fail_closed() -> Result<(), Box<dyn Error>> {
         let (root, path, snapshot, language_identity) = fixture();
         let mut diagnostics_model = RustDiagnostics::default();
-        diagnostics_model.install_for_test(
-            RustDocumentInput::new(&path, &root, language_identity, snapshot),
-            &diagnostics(&path, 1),
-            mock_executable(),
-        )?;
+        diagnostics_model
+            .install_for_test(
+                RustDocumentInput::new(&path, &root, language_identity, snapshot),
+                &diagnostics(&path, 1),
+                mock_executable(),
+            )
+            .unwrap_or_else(|_| unreachable!());
         let language = diagnostics_model.snapshot();
         let identity = WorkspaceEditIdentity::for_test(
             language_identity,
@@ -840,10 +867,12 @@ mod tests {
                 }
             })
             .to_string(),
-        )?;
+        )
+        .unwrap_or_else(|_| unreachable!());
         let prepared = WorkspaceEditProposal::admit_rename(&raw, &root)?.prepare()?;
         let empty = prepared.publication_fixture_for_test(0, true);
         let mut panel = WorkspaceEditPanel::default();
+        assert!(panel.rebuild_rename_lines().is_ok());
 
         assert!(!panel.preparation_started(identity)?);
         assert!(!panel.preparation_failed(identity));
@@ -854,10 +883,27 @@ mod tests {
         assert!(!panel.publication_succeeded(identity));
 
         panel.wait(WorkspaceEditKind::Formatting)?;
-        assert!(!panel.preparation_started(other)?);
-        assert!(panel.preparation_started(identity)?);
+        panel.preparation_started(identity)?;
+        let mut stale_identity = language_identity;
+        stale_identity.selection_revision += 1;
         assert_eq!(
             panel.complete(
+                WorkspaceEditPreparationOutput {
+                    identity,
+                    wire_bytes: 0,
+                    result: Ok(prepared.clone()),
+                },
+                stale_identity,
+                &language,
+            ),
+            Err(WorkspaceEditPanelError::StaleResponse)
+        );
+
+        panel.wait(WorkspaceEditKind::Formatting)?;
+        assert!(!panel.preparation_started(other)?);
+        assert!(panel.preparation_started(identity)?);
+        let ignored = panel
+            .complete(
                 WorkspaceEditPreparationOutput {
                     identity: other,
                     wire_bytes: 0,
@@ -865,9 +911,9 @@ mod tests {
                 },
                 language_identity,
                 &language,
-            )?,
-            WorkspaceEditPanelOutcome::Ignored
-        );
+            )
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(ignored, WorkspaceEditPanelOutcome::Ignored);
         assert!(panel.preparation_failed(identity));
 
         panel.wait(WorkspaceEditKind::Formatting)?;
@@ -890,8 +936,8 @@ mod tests {
 
         panel.wait(WorkspaceEditKind::Formatting)?;
         panel.preparation_started(identity)?;
-        assert_eq!(
-            panel.complete(
+        let empty_outcome = panel
+            .complete(
                 WorkspaceEditPreparationOutput {
                     identity,
                     wire_bytes: 0,
@@ -899,14 +945,17 @@ mod tests {
                 },
                 language_identity,
                 &language,
-            )?,
+            )
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            empty_outcome,
             WorkspaceEditPanelOutcome::Empty(WorkspaceEditKind::Formatting)
         );
 
         panel.wait(WorkspaceEditKind::Formatting)?;
         panel.preparation_started(identity)?;
-        assert_eq!(
-            panel.complete(
+        let preview_outcome = panel
+            .complete(
                 WorkspaceEditPreparationOutput {
                     identity,
                     wire_bytes: 23,
@@ -914,7 +963,10 @@ mod tests {
                 },
                 language_identity,
                 &language,
-            )?,
+            )
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            preview_outcome,
             WorkspaceEditPanelOutcome::Preview {
                 kind: WorkspaceEditKind::Formatting,
                 files: 1,

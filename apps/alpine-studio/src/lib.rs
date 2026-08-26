@@ -860,19 +860,23 @@ fn with_session_path(
     app
 }
 
+fn recover_workspace_edit_for_session(path: &Path) -> Result<(), SurfaceError> {
+    let journal = rust_workspace_publish::journal_path_for_session(path).map_err(|_| {
+        SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+    })?;
+    rust_workspace_publish::recover_pending(&journal).map_err(|_| {
+        SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
+    })?;
+    Ok(())
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[cfg_attr(test, mutants::skip)] // Linux cannot type-check this Apple-only composition boundary.
 fn native_restored_app() -> Result<StudioApp, SurfaceError> {
     let Ok(path) = session::default_path() else {
         return native_app();
     };
-    let workspace_edit_journal =
-        rust_workspace_publish::journal_path_for_session(&path).map_err(|_| {
-            SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-        })?;
-    rust_workspace_publish::recover_pending(&workspace_edit_journal).map_err(|_| {
-        SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
-    })?;
+    recover_workspace_edit_for_session(&path)?;
     let recovery_warning = match recovery::load(&recovery::path_for_session(&path)) {
         Ok(state) => {
             let availability = RestoreAvailability::for_recovery(state.documents.len());
@@ -1106,12 +1110,10 @@ fn native_explicit_path_app_with_session(
     kind: ExplicitPathKind,
     session_path: Option<PathBuf>,
 ) -> Result<StudioApp, StudioError> {
-    if let Some(session_path) = session_path.as_deref() {
-        let journal = rust_workspace_publish::journal_path_for_session(session_path)
-            .map_err(|_| recovery_studio_error(path, session_path, RecoveryLaunchError::Invalid))?;
-        rust_workspace_publish::recover_pending(&journal)
-            .map_err(|_| recovery_studio_error(path, &journal, RecoveryLaunchError::Invalid))?;
-    }
+    let recovery = session_path
+        .as_deref()
+        .map(|session_path| recover_explicit_workspace_edit(path, session_path));
+    recovery.transpose()?;
     let target = ExplicitPathTarget::open(path, kind)?;
     let mut text_system = alpine_text_layout::CoreTextSystem::new();
     text_system
@@ -1120,6 +1122,18 @@ fn native_explicit_path_app_with_session(
             SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application)
         })?;
     compose_explicit_path(text_system, target, session_path)
+}
+
+fn recover_explicit_workspace_edit(
+    launch_path: &Path,
+    session_path: &Path,
+) -> Result<(), StudioError> {
+    let journal = rust_workspace_publish::journal_path_for_session(session_path).map_err(|_| {
+        recovery_studio_error(launch_path, session_path, RecoveryLaunchError::Invalid)
+    })?;
+    rust_workspace_publish::recover_pending(&journal)
+        .map_err(|_| recovery_studio_error(launch_path, &journal, RecoveryLaunchError::Invalid))?;
+    Ok(())
 }
 
 trait StudioTextSystem: TextShaper + GlyphRasterizer {}
@@ -1690,6 +1704,24 @@ macro_rules! force_file_tree_submission_failure {
     };
 }
 
+#[cfg(test)]
+macro_rules! force_workspace_edit_preparation_submission_failure {
+    ($app:expr) => {
+        $app.force_workspace_edit_preparation_submission_failure
+            .take()
+            .is_some()
+    };
+}
+
+#[cfg(test)]
+macro_rules! force_workspace_edit_publication_submission_failure {
+    ($app:expr) => {
+        $app.force_workspace_edit_publication_submission_failure
+            .take()
+            .is_some()
+    };
+}
+
 #[cfg(not(test))]
 macro_rules! force_file_tree_submission_failure {
     ($app:expr) => {
@@ -1706,6 +1738,20 @@ macro_rules! force_quick_open_submission_failure {
 
 #[cfg(not(test))]
 macro_rules! force_project_search_submission_failure {
+    ($app:expr) => {
+        false
+    };
+}
+
+#[cfg(not(test))]
+macro_rules! force_workspace_edit_preparation_submission_failure {
+    ($app:expr) => {
+        false
+    };
+}
+
+#[cfg(not(test))]
+macro_rules! force_workspace_edit_publication_submission_failure {
     ($app:expr) => {
         false
     };
@@ -1783,6 +1829,12 @@ struct StudioApp {
     force_project_search_clip_failure: Option<()>,
     #[cfg(test)]
     force_file_tree_submission_failure: Option<()>,
+    #[cfg(test)]
+    force_workspace_edit_preparation_submission_failure: Option<()>,
+    #[cfg(test)]
+    force_workspace_edit_publication_submission_failure: Option<()>,
+    #[cfg(test)]
+    force_workspace_edit_admission_failure: Option<()>,
     #[cfg(test)]
     force_command_clip_failure: Option<()>,
     #[cfg(test)]
@@ -1944,6 +1996,14 @@ impl StudioApp {
         Ok(())
     }
 
+    fn initial_accessibility_projection_revision(
+        document: &StudioDocument,
+    ) -> alpine_platform_macos::AccessibilityRevision {
+        let document_revision = document.buffer().revision().get();
+        alpine_platform_macos::AccessibilityRevision::new(document_revision, document_revision)
+            .with_semantic(1)
+    }
+
     fn from_parts(
         text_system: impl StudioTextSystem + 'static,
         document: StudioDocument,
@@ -1959,11 +2019,8 @@ impl StudioApp {
         let syntax_cache =
             SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES).map_err(|_| APPLICATION_INVARIANT)?;
         let runtime_document_revision = document.buffer().revision().get();
-        let accessibility_projection_revision = alpine_platform_macos::AccessibilityRevision::new(
-            runtime_document_revision,
-            runtime_document_revision,
-        )
-        .with_semantic(1);
+        let accessibility_projection_revision =
+            Self::initial_accessibility_projection_revision(&document);
         let tabs = DocumentTabs::new(path, None, DocumentTabLimits::default())
             .map_err(|_| APPLICATION_INVARIANT)?;
         let active_tab = tabs.active_id().map_err(|_| APPLICATION_INVARIANT)?;
@@ -2042,6 +2099,12 @@ impl StudioApp {
             force_project_search_clip_failure: None,
             #[cfg(test)]
             force_file_tree_submission_failure: None,
+            #[cfg(test)]
+            force_workspace_edit_preparation_submission_failure: None,
+            #[cfg(test)]
+            force_workspace_edit_publication_submission_failure: None,
+            #[cfg(test)]
+            force_workspace_edit_admission_failure: None,
             #[cfg(test)]
             force_command_clip_failure: None,
             #[cfg(test)]
@@ -3020,7 +3083,8 @@ impl StudioApp {
                     left + FIND_BAR_INSET,
                     baseline,
                     overlay_clip,
-                )?;
+                );
+                let glyphs = glyphs?;
                 pending_glyphs.extend(glyphs);
             }
             debug_assert!(row_count <= MAX_VISIBLE_HOVER_LINES);
@@ -3126,9 +3190,9 @@ impl StudioApp {
             let left = overlay_bounds.origin().x();
             let top = overlay_bounds.origin().y();
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
-            builder.push_quad(
-                Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip),
-            )?;
+            let background =
+                Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.push_quad(background)?;
             for row in 0..row_count {
                 let line = self
                     .workspace_edits
@@ -3136,13 +3200,14 @@ impl StudioApp {
                     .ok_or(StudioRenderError::Domain)?;
                 let layout = self.text_system.shape(line, font)?;
                 let baseline = workspace_edit_line_baseline(top, row, layout.ascent());
-                pending_glyphs.extend(self.collect_glyphs(
+                let glyphs = self.collect_glyphs(
                     &layout,
                     font,
                     workspace_edit_text_x(left),
                     baseline,
                     overlay_clip,
-                )?);
+                )?;
+                pending_glyphs.extend(glyphs);
             }
         }
         if self.find.is_open() {
@@ -5995,16 +6060,18 @@ impl StudioApp {
             return EventEffect::default();
         }
         let effect = self.rust_diagnostics.request_formatting(4, true);
-        if self.rust_diagnostics.snapshot().workspace_edit_pending {
+        let pending = self.rust_diagnostics.snapshot().workspace_edit_pending;
+        self.finish_rust_formatting(pending, effect.visual_changed)
+    }
+
+    fn finish_rust_formatting(&mut self, pending: bool, visual_changed: bool) -> EventEffect {
+        if pending {
             match self.workspace_edits.wait(WorkspaceEditKind::Formatting) {
                 Ok(_) => EventEffect::visual(),
                 Err(error) => self.record_workspace_edit_panel_error(error),
             }
         } else {
-            effect
-                .visual_changed
-                .then(EventEffect::visual)
-                .unwrap_or_default()
+            visual_changed.then(EventEffect::visual).unwrap_or_default()
         }
     }
 
@@ -6050,8 +6117,7 @@ impl StudioApp {
         let current = self.language_identity();
         let language = self.rust_diagnostics.snapshot();
         match self.workspace_edits.queue_publication(current, &language) {
-            Ok(true) => EventEffect::visual(),
-            Ok(false) => EventEffect::default(),
+            Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
             Err(error) => self.record_workspace_edit_panel_error(error),
         }
     }
@@ -6079,6 +6145,10 @@ impl StudioApp {
         prepared: &PreparedWorkspaceEdit,
     ) -> Result<EventEffect, WorkspaceEditApplicationError> {
         self.validate_loaded_workspace_edit(prepared)?;
+        #[cfg(test)]
+        if self.force_workspace_edit_admission_failure.take().is_some() {
+            return Err(WorkspaceEditApplicationError::StaleLoadedDocument);
+        }
         let active_path = self
             .tabs
             .path_at(self.tabs.active_index())
@@ -6088,7 +6158,8 @@ impl StudioApp {
             if active_path.as_deref() == Some(file.path()) {
                 active_report = Some(self.document.admit_persisted_edit(file)?);
             } else if let Some(document) = self.tabs.inactive_document_mut_for_path(file.path()) {
-                let _ = document.admit_persisted_edit(file)?;
+                let admission = document.admit_persisted_edit(file)?;
+                let _ = admission;
             }
         }
         if let Some(report) = active_report {
@@ -6112,6 +6183,7 @@ impl StudioApp {
             .workspace_edits
             .publication_matches(output.identity, current)
         {
+            let _ = self.workspace_edits.publication_succeeded(output.identity);
             return self.record_workspace_edit_application_error(
                 &WorkspaceEditApplicationError::StaleIdentity,
             );
@@ -6128,7 +6200,10 @@ impl StudioApp {
             Ok(report) => {
                 let effect = match self.apply_persisted_workspace_edit(&output.prepared) {
                     Ok(effect) => effect,
-                    Err(error) => return self.record_workspace_edit_application_error(&error),
+                    Err(error) => {
+                        let _ = self.workspace_edits.publication_succeeded(output.identity);
+                        return self.record_workspace_edit_application_error(&error);
+                    }
                 };
                 let _ = self.workspace_edits.publication_succeeded(output.identity);
                 let suffix = if report.cleanup_deferred {
@@ -6731,9 +6806,10 @@ impl StudioApp {
             .workspace_edits
             .preparation_started(identity)
             .unwrap_or(false);
-        if context
-            .spawn(move || StudioWorkerOutput::WorkspaceEdit(request.execute()))
-            .is_err()
+        if force_workspace_edit_preparation_submission_failure!(self)
+            || context
+                .spawn(move || StudioWorkerOutput::WorkspaceEdit(request.execute()))
+                .is_err()
         {
             let preparation_failed = self.workspace_edits.preparation_failed(identity);
             let status = self.set_local_status(LocalStatus::Command(Arc::from(
@@ -6766,12 +6842,14 @@ impl StudioApp {
             );
             return true;
         };
+        let retry = prepared.clone();
         let request = WorkspaceEditPublicationRequest::new(identity, journal_path, prepared);
-        if context
-            .spawn(move || StudioWorkerOutput::WorkspaceEditPublication(request.execute()))
-            .is_err()
+        if force_workspace_edit_publication_submission_failure!(self)
+            || context
+                .spawn(move || StudioWorkerOutput::WorkspaceEditPublication(request.execute()))
+                .is_err()
         {
-            let _ = self.workspace_edits.publication_succeeded(identity);
+            let _ = self.workspace_edits.publication_failed(identity, retry);
             let _ = self.set_local_status(LocalStatus::Command(Arc::from(
                 "Rust workspace edit publication queue is saturated.",
             )));
