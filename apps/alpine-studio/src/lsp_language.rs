@@ -497,14 +497,39 @@ fn raw_value(value: &Value) -> Result<Box<RawValue>, LanguageProtocolError> {
     RawValue::from_string(value.to_string()).map_err(|_| LanguageProtocolError::AllocationFailed)
 }
 
-fn file_uri(path: &Path) -> Result<String, LanguageProtocolError> {
+pub(crate) fn file_uri(path: &Path) -> Result<String, LanguageProtocolError> {
     if !path.is_absolute() {
         return Err(LanguageProtocolError::InvalidPath);
     }
     let path = path.to_str().ok_or(LanguageProtocolError::InvalidPath)?;
+    #[cfg(windows)]
+    let path = path.strip_prefix(r"\\?\").unwrap_or(path);
+    #[cfg(windows)]
+    if path.starts_with(r"UNC\")
+        || path.starts_with(r"\\")
+        || !path
+            .as_bytes()
+            .first()
+            .copied()
+            .is_some_and(|byte| byte.is_ascii_alphabetic())
+        || path.as_bytes().get(1) != Some(&b':')
+        || !path
+            .as_bytes()
+            .get(2)
+            .copied()
+            .is_some_and(|byte| matches!(byte, b'/' | b'\\'))
+    {
+        return Err(LanguageProtocolError::InvalidPath);
+    }
     let mut uri = String::from("file://");
+    #[cfg(windows)]
+    uri.push('/');
     for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':') {
+        if cfg!(windows) && byte == b'\\' {
+            uri.push('/');
+        } else if byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':')
+        {
             uri.push(char::from(byte));
         } else {
             const HEX: &[u8; 16] = b"0123456789ABCDEF";
