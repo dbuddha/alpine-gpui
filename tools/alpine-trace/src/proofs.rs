@@ -1,6 +1,7 @@
 use super::{
     PreparedTraceInput, PreparedTraceOperation, PreparedTraceQuad, TraceClip, TraceInput,
-    TraceQuad, TraceViewport,
+    TraceQuad, TraceSequenceAtlas, TraceSequenceInput, TraceSequenceStep, TraceSequenceTransition,
+    TraceViewport,
 };
 
 #[kani::proof]
@@ -127,4 +128,93 @@ fn prepared_trace_rejects_every_bounded_invalid_clip_reference() {
     kani::cover!(invalid_clip == 1, "nearest invalid clip index");
     kani::cover!(invalid_clip == usize::MAX, "maximum invalid clip index");
     std::mem::forget(decoded);
+}
+
+#[kani::proof]
+fn lifecycle_sequence_rejects_symbolic_incompatible_reuse() {
+    let faulty_reuse = kani::any::<bool>();
+    let initial = TraceSequenceAtlas {
+        identity: 1,
+        revision: 1,
+        width: 2,
+        height: 2,
+        content_hash: [1; 32],
+    };
+    let reused = TraceSequenceAtlas {
+        content_hash: if faulty_reuse { [9; 32] } else { [1; 32] },
+        ..initial
+    };
+    let content = TraceSequenceAtlas {
+        revision: 2,
+        content_hash: [2; 32],
+        ..initial
+    };
+    let capacity = TraceSequenceAtlas {
+        revision: 3,
+        width: 4,
+        content_hash: [3; 32],
+        ..content
+    };
+    let input = TraceSequenceInput {
+        steps: vec![
+            TraceSequenceStep {
+                sequence: 0,
+                transition: TraceSequenceTransition::FullAdmission,
+                workload_hash: Some([1; 32]),
+                renderer_generation: 1,
+                atlas: Some(initial),
+                expected_atlas_upload_bytes: 4,
+                expected_terminal_retained_bytes: 0,
+            },
+            TraceSequenceStep {
+                sequence: 1,
+                transition: TraceSequenceTransition::CompatibleReuse,
+                workload_hash: Some([1; 32]),
+                renderer_generation: 1,
+                atlas: Some(reused),
+                expected_atlas_upload_bytes: 0,
+                expected_terminal_retained_bytes: 0,
+            },
+            TraceSequenceStep {
+                sequence: 2,
+                transition: TraceSequenceTransition::ContentReplacement,
+                workload_hash: Some([2; 32]),
+                renderer_generation: 1,
+                atlas: Some(content),
+                expected_atlas_upload_bytes: 4,
+                expected_terminal_retained_bytes: 0,
+            },
+            TraceSequenceStep {
+                sequence: 3,
+                transition: TraceSequenceTransition::CapacityReplacement,
+                workload_hash: Some([3; 32]),
+                renderer_generation: 1,
+                atlas: Some(capacity),
+                expected_atlas_upload_bytes: 8,
+                expected_terminal_retained_bytes: 0,
+            },
+            TraceSequenceStep {
+                sequence: 4,
+                transition: TraceSequenceTransition::Teardown,
+                workload_hash: None,
+                renderer_generation: 1,
+                atlas: None,
+                expected_atlas_upload_bytes: 0,
+                expected_terminal_retained_bytes: 0,
+            },
+            TraceSequenceStep {
+                sequence: 5,
+                transition: TraceSequenceTransition::FullResynchronization,
+                workload_hash: Some([3; 32]),
+                renderer_generation: 2,
+                atlas: Some(capacity),
+                expected_atlas_upload_bytes: 8,
+                expected_terminal_retained_bytes: 0,
+            },
+        ],
+    };
+    assert_eq!(input.validate().is_err(), faulty_reuse);
+    kani::cover!(faulty_reuse, "incompatible reuse is rejected");
+    kani::cover!(!faulty_reuse, "exact compatible reuse is accepted");
+    std::mem::forget(input);
 }

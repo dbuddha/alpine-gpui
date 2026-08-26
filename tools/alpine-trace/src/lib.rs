@@ -24,6 +24,9 @@ pub const MAX_TRACE_CLIPS: usize = 4_096;
 /// Maximum A8 pixels retained by one prepared-scene workload.
 pub const MAX_TRACE_ATLAS_PIXELS: usize = 16_777_216;
 
+/// Maximum steps accepted by one renderer lifecycle sequence.
+pub const MAX_TRACE_SEQUENCE_STEPS: usize = 16;
+
 /// Raw logical and physical target identity from a scene trace.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TraceViewport {
@@ -134,6 +137,146 @@ pub struct PreparedTraceInput {
     /// Painter-ordered prepared operations.
     pub operations: Vec<PreparedTraceOperation>,
 }
+
+/// One accepted transition in the renderer atlas lifecycle protocol.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TraceSequenceTransition {
+    /// Admit one atlas into a newly owned renderer.
+    FullAdmission,
+    /// Reuse an exactly compatible atlas without another upload.
+    CompatibleReuse,
+    /// Replace content while retaining the same dimensions and resource identity.
+    ContentReplacement,
+    /// Replace storage after atlas dimensions change.
+    CapacityReplacement,
+    /// Stop and release the current renderer owner.
+    Teardown,
+    /// Reconstruct an owner and fully resynchronize the latest atlas.
+    FullResynchronization,
+}
+
+/// Exact atlas identity carried by one lifecycle step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TraceSequenceAtlas {
+    /// Serialization-boundary identity for the atlas resource.
+    pub identity: u64,
+    /// Positive content revision.
+    pub revision: u64,
+    /// Positive pixel width.
+    pub width: u32,
+    /// Positive pixel height.
+    pub height: u32,
+    /// Exact SHA-256 content identity admitted by the serialization boundary.
+    pub content_hash: [u8; 32],
+}
+
+/// One identity-bound step in a renderer lifecycle sequence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TraceSequenceStep {
+    /// Zero-based contiguous step identity.
+    pub sequence: u64,
+    /// Required lifecycle transition.
+    pub transition: TraceSequenceTransition,
+    /// Scene workload identity, absent only during teardown.
+    pub workload_hash: Option<[u8; 32]>,
+    /// Logical renderer-owner generation.
+    pub renderer_generation: u64,
+    /// Atlas identity, absent only during teardown.
+    pub atlas: Option<TraceSequenceAtlas>,
+    /// Exact atlas bytes expected to be uploaded by this step.
+    pub expected_atlas_upload_bytes: usize,
+    /// Bytes permitted to remain retained after the terminal step result.
+    pub expected_terminal_retained_bytes: usize,
+}
+
+/// Serialization-neutral `alpine-scene-trace-sequence/v1` semantics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TraceSequenceInput {
+    /// Ordered lifecycle steps.
+    pub steps: Vec<TraceSequenceStep>,
+}
+
+/// Validated bounded lifecycle summary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TraceSequenceSummary {
+    visible_steps: usize,
+    renderer_generations: u64,
+    atlas_upload_bytes: usize,
+}
+
+impl TraceSequenceSummary {
+    /// Returns steps that produce visible output.
+    #[must_use]
+    pub const fn visible_steps(self) -> usize {
+        self.visible_steps
+    }
+
+    /// Returns the number of logical renderer-owner generations.
+    #[must_use]
+    pub const fn renderer_generations(self) -> u64 {
+        self.renderer_generations
+    }
+
+    /// Returns exact atlas upload bytes required by the sequence.
+    #[must_use]
+    pub const fn atlas_upload_bytes(self) -> usize {
+        self.atlas_upload_bytes
+    }
+}
+
+/// Fail-closed lifecycle-sequence admission errors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TraceSequenceError {
+    /// The sequence must contain the six canonical lifecycle steps.
+    InvalidStepCount,
+    /// A step identity is not contiguous from zero.
+    NoncontiguousStep,
+    /// A step does not use the transition required at its position.
+    InvalidTransition,
+    /// A renderer-owner generation is zero or drifts unexpectedly.
+    InvalidRendererGeneration,
+    /// A visible step is missing a nonzero workload identity.
+    InvalidWorkloadIdentity,
+    /// Atlas identity, revision, extent, content, or size is invalid.
+    InvalidAtlasIdentity,
+    /// Compatible reuse changed an identity or requested another upload.
+    InvalidCompatibleReuse,
+    /// Content replacement changed capacity or failed to advance content identity.
+    InvalidContentReplacement,
+    /// Capacity replacement did not advance to distinct bounded storage.
+    InvalidCapacityReplacement,
+    /// Teardown retained scene or atlas identity.
+    InvalidTeardown,
+    /// Reconstruction did not fully resynchronize the latest accepted atlas.
+    InvalidResynchronization,
+    /// A terminal step permits retained ownership.
+    TerminalRetention,
+    /// Exact upload-byte arithmetic overflowed.
+    UploadByteOverflow,
+}
+
+impl fmt::Display for TraceSequenceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::InvalidStepCount => "trace sequence must contain exactly six lifecycle steps",
+            Self::NoncontiguousStep => "trace sequence steps must be contiguous from zero",
+            Self::InvalidTransition => "trace sequence transition order is invalid",
+            Self::InvalidRendererGeneration => "trace sequence renderer generation is invalid",
+            Self::InvalidWorkloadIdentity => "trace sequence workload identity is invalid",
+            Self::InvalidAtlasIdentity => "trace sequence atlas identity is invalid",
+            Self::InvalidCompatibleReuse => "trace sequence compatible reuse is invalid",
+            Self::InvalidContentReplacement => "trace sequence content replacement is invalid",
+            Self::InvalidCapacityReplacement => "trace sequence capacity replacement is invalid",
+            Self::InvalidTeardown => "trace sequence teardown identity is invalid",
+            Self::InvalidResynchronization => "trace sequence full resynchronization is invalid",
+            Self::TerminalRetention => "trace sequence terminal retention must be zero",
+            Self::UploadByteOverflow => "trace sequence upload-byte arithmetic overflowed",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl Error for TraceSequenceError {}
 
 /// A serialization-neutral `alpine-scene-trace/v1` workload.
 #[derive(Clone, Debug, PartialEq)]
@@ -465,6 +608,309 @@ impl PreparedTraceInput {
             scene: builder.finish(),
             descriptor,
         })
+    }
+}
+
+impl TraceSequenceInput {
+    /// Validates the canonical atlas admission, reuse, replacement, teardown,
+    /// and reconstruction sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured error for identity drift, invalid transition
+    /// ordering, incompatible resource reuse, nonzero terminal ownership, or
+    /// overflow.
+    pub fn validate(&self) -> Result<TraceSequenceSummary, TraceSequenceError> {
+        const ORDER: [TraceSequenceTransition; 6] = [
+            TraceSequenceTransition::FullAdmission,
+            TraceSequenceTransition::CompatibleReuse,
+            TraceSequenceTransition::ContentReplacement,
+            TraceSequenceTransition::CapacityReplacement,
+            TraceSequenceTransition::Teardown,
+            TraceSequenceTransition::FullResynchronization,
+        ];
+        if self.steps.len() != ORDER.len() || self.steps.len() > MAX_TRACE_SEQUENCE_STEPS {
+            return Err(TraceSequenceError::InvalidStepCount);
+        }
+        for (index, step) in self.steps.iter().enumerate() {
+            if step.sequence != index as u64 {
+                return Err(TraceSequenceError::NoncontiguousStep);
+            }
+            if step.transition != ORDER[index] {
+                return Err(TraceSequenceError::InvalidTransition);
+            }
+            if step.expected_terminal_retained_bytes != 0 {
+                return Err(TraceSequenceError::TerminalRetention);
+            }
+        }
+
+        let initial = self.visible_step(0)?;
+        if initial.renderer_generation == 0
+            || initial.expected_atlas_upload_bytes != atlas_bytes(initial.atlas)?
+        {
+            return Err(TraceSequenceError::InvalidRendererGeneration);
+        }
+
+        let reused = self.visible_step(1)?;
+        if reused.renderer_generation != initial.renderer_generation
+            || reused.workload_hash != initial.workload_hash
+            || reused.atlas != initial.atlas
+            || reused.expected_atlas_upload_bytes != 0
+        {
+            return Err(TraceSequenceError::InvalidCompatibleReuse);
+        }
+
+        let content = self.visible_step(2)?;
+        if content.renderer_generation != initial.renderer_generation
+            || content.atlas.identity != reused.atlas.identity
+            || content.atlas.width != reused.atlas.width
+            || content.atlas.height != reused.atlas.height
+            || content.atlas.revision <= reused.atlas.revision
+            || content.atlas.content_hash == reused.atlas.content_hash
+            || content.workload_hash == reused.workload_hash
+            || content.expected_atlas_upload_bytes != atlas_bytes(content.atlas)?
+        {
+            return Err(TraceSequenceError::InvalidContentReplacement);
+        }
+
+        let capacity = self.visible_step(3)?;
+        if capacity.renderer_generation != initial.renderer_generation
+            || capacity.atlas.identity != content.atlas.identity
+            || (capacity.atlas.width == content.atlas.width
+                && capacity.atlas.height == content.atlas.height)
+            || capacity.atlas.revision <= content.atlas.revision
+            || capacity.atlas.content_hash == content.atlas.content_hash
+            || capacity.workload_hash == content.workload_hash
+            || capacity.expected_atlas_upload_bytes != atlas_bytes(capacity.atlas)?
+        {
+            return Err(TraceSequenceError::InvalidCapacityReplacement);
+        }
+
+        let teardown = self.steps[4];
+        if teardown.renderer_generation != initial.renderer_generation
+            || teardown.workload_hash.is_some()
+            || teardown.atlas.is_some()
+            || teardown.expected_atlas_upload_bytes != 0
+        {
+            return Err(TraceSequenceError::InvalidTeardown);
+        }
+
+        let resync = self.visible_step(5)?;
+        if resync.renderer_generation != initial.renderer_generation.saturating_add(1)
+            || resync.renderer_generation == initial.renderer_generation
+            || resync.workload_hash != capacity.workload_hash
+            || resync.atlas != capacity.atlas
+            || resync.expected_atlas_upload_bytes != atlas_bytes(resync.atlas)?
+        {
+            return Err(TraceSequenceError::InvalidResynchronization);
+        }
+
+        let atlas_upload_bytes = self.steps.iter().try_fold(0_usize, |total, step| {
+            total.checked_add(step.expected_atlas_upload_bytes)
+        });
+        Ok(TraceSequenceSummary {
+            visible_steps: 5,
+            renderer_generations: 2,
+            atlas_upload_bytes: atlas_upload_bytes.ok_or(TraceSequenceError::UploadByteOverflow)?,
+        })
+    }
+
+    fn visible_step(&self, index: usize) -> Result<VisibleTraceSequenceStep, TraceSequenceError> {
+        let step = self.steps[index];
+        let workload_hash = step
+            .workload_hash
+            .filter(|hash| *hash != [0; 32])
+            .ok_or(TraceSequenceError::InvalidWorkloadIdentity)?;
+        let atlas = step.atlas.ok_or(TraceSequenceError::InvalidAtlasIdentity)?;
+        validate_sequence_atlas(atlas)?;
+        Ok(VisibleTraceSequenceStep {
+            renderer_generation: step.renderer_generation,
+            workload_hash,
+            atlas,
+            expected_atlas_upload_bytes: step.expected_atlas_upload_bytes,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct VisibleTraceSequenceStep {
+    renderer_generation: u64,
+    workload_hash: [u8; 32],
+    atlas: TraceSequenceAtlas,
+    expected_atlas_upload_bytes: usize,
+}
+
+fn validate_sequence_atlas(atlas: TraceSequenceAtlas) -> Result<(), TraceSequenceError> {
+    if atlas.identity == 0
+        || atlas.revision == 0
+        || atlas.width == 0
+        || atlas.height == 0
+        || atlas.content_hash == [0; 32]
+    {
+        return Err(TraceSequenceError::InvalidAtlasIdentity);
+    }
+    let bytes = atlas_bytes(atlas)?;
+    if bytes > MAX_TRACE_ATLAS_PIXELS {
+        return Err(TraceSequenceError::InvalidAtlasIdentity);
+    }
+    Ok(())
+}
+
+fn atlas_bytes(atlas: TraceSequenceAtlas) -> Result<usize, TraceSequenceError> {
+    usize::try_from(atlas.width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(atlas.height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .ok_or(TraceSequenceError::UploadByteOverflow)
+}
+
+#[cfg(test)]
+mod sequence_tests {
+    use super::{
+        TraceSequenceAtlas, TraceSequenceError, TraceSequenceInput, TraceSequenceStep,
+        TraceSequenceTransition,
+    };
+
+    fn sequence() -> TraceSequenceInput {
+        let initial = TraceSequenceAtlas {
+            identity: 1,
+            revision: 1,
+            width: 2,
+            height: 2,
+            content_hash: [1; 32],
+        };
+        let content = TraceSequenceAtlas {
+            revision: 2,
+            content_hash: [2; 32],
+            ..initial
+        };
+        let capacity = TraceSequenceAtlas {
+            revision: 3,
+            width: 4,
+            content_hash: [3; 32],
+            ..content
+        };
+        TraceSequenceInput {
+            steps: vec![
+                TraceSequenceStep {
+                    sequence: 0,
+                    transition: TraceSequenceTransition::FullAdmission,
+                    workload_hash: Some([1; 32]),
+                    renderer_generation: 1,
+                    atlas: Some(initial),
+                    expected_atlas_upload_bytes: 4,
+                    expected_terminal_retained_bytes: 0,
+                },
+                TraceSequenceStep {
+                    sequence: 1,
+                    transition: TraceSequenceTransition::CompatibleReuse,
+                    workload_hash: Some([1; 32]),
+                    renderer_generation: 1,
+                    atlas: Some(initial),
+                    expected_atlas_upload_bytes: 0,
+                    expected_terminal_retained_bytes: 0,
+                },
+                TraceSequenceStep {
+                    sequence: 2,
+                    transition: TraceSequenceTransition::ContentReplacement,
+                    workload_hash: Some([2; 32]),
+                    renderer_generation: 1,
+                    atlas: Some(content),
+                    expected_atlas_upload_bytes: 4,
+                    expected_terminal_retained_bytes: 0,
+                },
+                TraceSequenceStep {
+                    sequence: 3,
+                    transition: TraceSequenceTransition::CapacityReplacement,
+                    workload_hash: Some([3; 32]),
+                    renderer_generation: 1,
+                    atlas: Some(capacity),
+                    expected_atlas_upload_bytes: 8,
+                    expected_terminal_retained_bytes: 0,
+                },
+                TraceSequenceStep {
+                    sequence: 4,
+                    transition: TraceSequenceTransition::Teardown,
+                    workload_hash: None,
+                    renderer_generation: 1,
+                    atlas: None,
+                    expected_atlas_upload_bytes: 0,
+                    expected_terminal_retained_bytes: 0,
+                },
+                TraceSequenceStep {
+                    sequence: 5,
+                    transition: TraceSequenceTransition::FullResynchronization,
+                    workload_hash: Some([3; 32]),
+                    renderer_generation: 2,
+                    atlas: Some(capacity),
+                    expected_atlas_upload_bytes: 8,
+                    expected_terminal_retained_bytes: 0,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn lifecycle_sequence_accepts_only_bounded_reuse_replacement_and_resynchronization() {
+        let valid = sequence().validate();
+        assert_eq!(valid.map(super::TraceSequenceSummary::visible_steps), Ok(5));
+        assert_eq!(
+            valid.map(super::TraceSequenceSummary::renderer_generations),
+            Ok(2)
+        );
+        assert_eq!(
+            valid.map(super::TraceSequenceSummary::atlas_upload_bytes),
+            Ok(24)
+        );
+
+        let mut reuse_upload = sequence();
+        reuse_upload.steps[1].expected_atlas_upload_bytes = 4;
+        assert_eq!(
+            reuse_upload.validate(),
+            Err(TraceSequenceError::InvalidCompatibleReuse)
+        );
+        let mut stale_content = sequence();
+        stale_content.steps[2].atlas = stale_content.steps[1].atlas;
+        assert_eq!(
+            stale_content.validate(),
+            Err(TraceSequenceError::InvalidContentReplacement)
+        );
+        let mut retained = sequence();
+        retained.steps[5].expected_terminal_retained_bytes = 1;
+        assert_eq!(
+            retained.validate(),
+            Err(TraceSequenceError::TerminalRetention)
+        );
+    }
+
+    #[test]
+    fn lifecycle_sequence_rejects_every_identity_and_order_break() {
+        let cases = [
+            (0, TraceSequenceError::InvalidStepCount),
+            (1, TraceSequenceError::NoncontiguousStep),
+            (2, TraceSequenceError::InvalidTransition),
+            (3, TraceSequenceError::InvalidRendererGeneration),
+            (4, TraceSequenceError::InvalidTeardown),
+            (5, TraceSequenceError::InvalidResynchronization),
+        ];
+        for (axis, expected) in cases {
+            let mut value = sequence();
+            match axis {
+                0 => {
+                    let _ = value.steps.pop();
+                }
+                1 => value.steps[1].sequence = 2,
+                2 => value.steps[2].transition = TraceSequenceTransition::CompatibleReuse,
+                3 => value.steps[0].renderer_generation = 0,
+                4 => value.steps[4].workload_hash = Some([4; 32]),
+                5 => value.steps[5].renderer_generation = 1,
+                _ => unreachable!(),
+            }
+            assert_eq!(value.validate(), Err(expected));
+        }
     }
 }
 

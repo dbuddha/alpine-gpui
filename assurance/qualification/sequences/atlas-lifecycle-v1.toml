@@ -1,0 +1,90 @@
+schema = "alpine-scene-trace-sequence/v1"
+id = "editor-atlas-lifecycle"
+task = 353
+comparison_level = "renderer-only"
+cpu_oracle_channel_tolerance = 1
+renderer_timing_performed = false
+memory_claim_performed = false
+
+[[steps]]
+sequence = 0
+transition = "full-admission"
+renderer_generation = 1
+scene = "assurance/qualification/v2/atlas-lifecycle-initial.toml"
+workload_hash = "ef8b3db734b9b4ecd58f3db5a0da3a74916b64219fe6577c226cfba7955e5267"
+resource_id = "editor-atlas"
+resource_revision = 1
+atlas_width = 2
+atlas_height = 2
+content_hash = "34aaa746c25a0f105c4316bbb1f009aa359f49582656ee97d73c58132d563423"
+expected_atlas_upload_bytes = 4
+expected_terminal_retained_bytes = 0
+expected_cpu_bytes = 256
+
+[[steps]]
+sequence = 1
+transition = "compatible-reuse"
+renderer_generation = 1
+scene = "assurance/qualification/v2/atlas-lifecycle-initial.toml"
+workload_hash = "ef8b3db734b9b4ecd58f3db5a0da3a74916b64219fe6577c226cfba7955e5267"
+resource_id = "editor-atlas"
+resource_revision = 1
+atlas_width = 2
+atlas_height = 2
+content_hash = "34aaa746c25a0f105c4316bbb1f009aa359f49582656ee97d73c58132d563423"
+expected_atlas_upload_bytes = 0
+expected_terminal_retained_bytes = 0
+expected_cpu_bytes = 256
+
+[[steps]]
+sequence = 2
+transition = "content-replacement"
+renderer_generation = 1
+scene = "assurance/qualification/v2/atlas-lifecycle-content.toml"
+workload_hash = "59e7c8fa9b9110ddb6acf3406ffd02fbc39f84ba9b93f53a3a985710b72d4337"
+resource_id = "editor-atlas"
+resource_revision = 2
+atlas_width = 2
+atlas_height = 2
+content_hash = "5fc1f3b5dfc3af9f4a3c54c77f448216c82908ce3953813f1e12695bb71271c8"
+expected_atlas_upload_bytes = 4
+expected_terminal_retained_bytes = 0
+expected_cpu_bytes = 256
+
+[[steps]]
+sequence = 3
+transition = "capacity-replacement"
+renderer_generation = 1
+scene = "assurance/qualification/v2/atlas-lifecycle-capacity.toml"
+workload_hash = "7c00ce39a7bc6896658cd1502b8083a28d85fea475dc6545da8a3791c14c7b05"
+resource_id = "editor-atlas"
+resource_revision = 3
+atlas_width = 4
+atlas_height = 2
+content_hash = "09e6cced61870f908749a0aa75cd341a9a812097e2ce7198c0bc2cc87e5f2da8"
+expected_atlas_upload_bytes = 8
+expected_terminal_retained_bytes = 0
+expected_cpu_bytes = 256
+
+[[steps]]
+sequence = 4
+transition = "teardown"
+renderer_generation = 1
+expected_atlas_upload_bytes = 0
+expected_terminal_retained_bytes = 0
+expected_cpu_bytes = 0
+
+[[steps]]
+sequence = 5
+transition = "full-resynchronization"
+renderer_generation = 2
+scene = "assurance/qualification/v2/atlas-lifecycle-capacity.toml"
+workload_hash = "7c00ce39a7bc6896658cd1502b8083a28d85fea475dc6545da8a3791c14c7b05"
+resource_id = "editor-atlas"
+resource_revision = 3
+atlas_width = 4
+atlas_height = 2
+content_hash = "09e6cced61870f908749a0aa75cd341a9a812097e2ce7198c0bc2cc87e5f2da8"
+expected_atlas_upload_bytes = 8
+expected_terminal_retained_bytes = 0
+expected_cpu_bytes = 256
