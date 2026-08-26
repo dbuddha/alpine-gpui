@@ -391,6 +391,8 @@ mod tests {
     use crate::lsp_language::{
         DiagnosticBatch, LspDocument, LspPosition, initialize_params, pinned_server_version,
     };
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    use crate::rust_workspace_edit::WorkspaceEditProposal;
     use crate::{
         lsp_json::{PeerLifecycle, ResponseValue},
         lsp_process::{ConfigError, FailureKind, ProcessStage},
@@ -890,6 +892,91 @@ mod tests {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn wait_for_real_result(
+        client: &mut LspClient,
+        request_id: u32,
+        current: RequestStamp,
+        message: &'static str,
+    ) -> Result<Box<RawValue>, Box<dyn Error>> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            let mut response = None;
+            let poll = client.poll(Some(current), |event| {
+                if let PeerEvent::Response { id, value, .. } = event
+                    && id == request_id
+                {
+                    response = Some(match value {
+                        ResponseValue::Result(value) => Ok(value.get().to_owned()),
+                        ResponseValue::Error(_) => Err(message),
+                    });
+                }
+            });
+            assert!(poll.is_ok(), "workspace-edit poll failed: {poll:?}");
+            if let Some(response) = response {
+                return Ok(RawValue::from_string(response?)?);
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        Err(message.into())
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn qualify_real_workspace_edits(
+        client: &mut LspClient,
+        document: &LspDocument,
+        workspace: &Path,
+        document_path: &Path,
+        document_text: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let current = stamp(1);
+        let new_name = "renamed_for_qualification";
+        let rename_params = document.rename_params(LspPosition::new(0, 7)?, new_name)?;
+        let rename = client.begin_request("textDocument/rename", Some(&rename_params), current)?;
+        let rename_response = wait_for_real_result(
+            client,
+            rename.request_id,
+            current,
+            "real rust-analyzer returned no rename workspace edit",
+        )?;
+        let rename = WorkspaceEditProposal::admit_rename(&rename_response, workspace)?.prepare()?;
+        assert_eq!(rename.file_count(), 1);
+        assert!(rename.edit_count() > 0);
+        let rename_file = &rename.files()[0];
+        assert_eq!(rename_file.path(), document_path);
+        assert_eq!(rename_file.original(), document_text);
+        assert!(rename_file.replacement().contains(new_name));
+
+        let formatting_params = document.formatting_params(4, true)?;
+        let formatting =
+            client.begin_request("textDocument/formatting", Some(&formatting_params), current)?;
+        let formatting_response = wait_for_real_result(
+            client,
+            formatting.request_id,
+            current,
+            "real rust-analyzer returned no formatting edits",
+        )?;
+        let formatting = WorkspaceEditProposal::admit_formatting(
+            &formatting_response,
+            workspace,
+            document.uri(),
+            document.version(),
+        )?
+        .prepare()?;
+        assert_eq!(formatting.file_count(), 1);
+        assert!(formatting.edit_count() > 0);
+        let formatting_file = &formatting.files()[0];
+        assert_eq!(formatting_file.path(), document_path);
+        assert_eq!(formatting_file.original(), document_text);
+        assert_ne!(formatting_file.replacement(), document_text);
+        assert!(
+            formatting_file
+                .replacement()
+                .contains("pub fn deliberately_invalid() -> u32 {")
+        );
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn qualify_real_request_admission(
         client: &mut LspClient,
         document: &LspDocument,
@@ -1007,6 +1094,13 @@ mod tests {
         assert!(!diagnostics.is_empty());
         assert_eq!(diagnostics.document_version(), Some(1));
         assert!(diagnostics.retained_bytes() <= 262_144);
+        qualify_real_workspace_edits(
+            &mut client,
+            &document,
+            &workspace,
+            &document_path,
+            &document_text,
+        )?;
         qualify_real_request_admission(&mut client, &document)?;
         restart_and_shutdown_real(&mut client, process_id, &initialize)?;
         let snapshot = client.shutdown();
