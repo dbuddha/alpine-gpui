@@ -4,8 +4,8 @@
 - Historical audit baseline: [`de8cd6397adc81632fe1103f1834214ae6ec6a1a`](https://github.com/dbuddha/alpine-gpui/tree/de8cd6397adc81632fe1103f1834214ae6ec6a1a)
 - Current reconciliation revision: [`e2564055622dce3a7d1f277d52fc53e34c16e916`](https://github.com/dbuddha/alpine-gpui/tree/e2564055622dce3a7d1f277d52fc53e34c16e916)
 - Comparator pin: Zed [`v1.15.0`](https://github.com/zed-industries/zed/tree/e17dc4f9d50db73a458b64dcce50ecd4878b98a3)
-- Current-upstream review: Zed [`v1.16.1`](https://github.com/zed-industries/zed/tree/eb8e1c8b5502b7007465fbbc465f4a736fa39210), WGPU [`v30.0.1`](https://github.com/gfx-rs/wgpu/tree/40f4a34ebaf56f9a046231f54125ad046239d3f3), awesome-gpui [`6571693`](https://github.com/zed-industries/awesome-gpui/tree/657169337a19a5b27f9aa7e53811e6f82b7f213c)
-- Reviewed: 2026-08-22
+- Current-upstream review: Zed [`v1.17.2`](https://github.com/zed-industries/zed/tree/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a), WGPU [`v30.0.1`](https://github.com/gfx-rs/wgpu/tree/40f4a34ebaf56f9a046231f54125ad046239d3f3), awesome-gpui [`f3889e7`](https://github.com/zed-industries/awesome-gpui/tree/f3889e71920ffbe8affa0f133c3db6ce6b06af76)
+- Reviewed: 2026-08-27
 - Evidence ceiling: E3 for selected Alpine invariants; E4 has not been reached
 
 ## Decision question

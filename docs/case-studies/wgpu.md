@@ -5,7 +5,9 @@ reviewed: 2026-08-18
 historical_revision: ee5cfb074fd0c4e318b5f8608df504678e4e17ac
 reviewed_revision: 8ee190c6f151c731a4f8cfd9a102d6ee5903460a
 release_context: v30.0.0
-research_issues: [23, 99]
+current_release_revision: 40f4a34ebaf56f9a046231f54125ad046239d3f3
+current_release_context: v30.0.1
+research_issues: [23, 99, 302]
 implementation_task: 202
 ---
 
@@ -27,6 +29,7 @@ portability problem into the Apple-first v1 renderer?
 | Release context | [`v30.0.0`](https://github.com/gfx-rs/wgpu/releases/tag/v30.0.0), published 2026-07-01 |
 | Upstream records | [Research #23](https://github.com/dbuddha/alpine-gpui/issues/23), [re-evaluation #99](https://github.com/dbuddha/alpine-gpui/issues/99) |
 | Implementing record | [Task #202](https://github.com/dbuddha/alpine-gpui/issues/202) |
+| Current stable delta | [`v30.0.1`](https://github.com/gfx-rs/wgpu/tree/40f4a34ebaf56f9a046231f54125ad046239d3f3), reviewed under [#302](https://github.com/dbuddha/alpine-gpui/issues/302) on 2026-08-27 |
 | License | Apache-2.0 or MIT by repository policy; file-level review remains mandatory before adaptation |
 | Evidence grade | Source-verified architecture and contract analysis. No Alpine-to-WGPU performance experiment has yet run. |
 
@@ -65,6 +68,28 @@ Alpine v1 solves one controlled native editor workload on Metal.
 | CS-WGPU-010 | The reviewed four-day upstream delta moved IDs, registries, and `Global` into `wgpu-core-remote` and changed synchronization primitives, while Metal presentation behavior barely changed. | Record the delta, but add no Alpine task. These changes serve remote and generalized execution concerns outside the v1 boundary. |
 | CS-WGPU-011 | WGPU v30 moved presentation ownership to `Queue::present`, added structured surface capabilities such as color spaces, and added automatic staging recall tied to submission. | Treat queue-owned present as a useful ownership comparison, not an API target. Revisit HDR only after SDR editor qualification. |
 | CS-WGPU-012 | WGPU's published architecture acknowledges that `wgpu-hal` safety requirements are complex and not fully documented. | Do not use `wgpu-hal` as a shortcut around Alpine's reviewed Metal boundary. Any experimental oracle should use safe `wgpu`, not HAL internals. |
+| CS-WGPU-013 | The v30.0.1 stable branch diverges from the radar baseline by 180 baseline-only and five release-only commits. Its sole release-only Metal patch backports dynamic CoreGraphics color-space symbol lookup already present, with a later guard, in the baseline. | Keep stable-release and upstream-main identities separate. Add no Alpine implementation or performance claim from branch divergence. |
+
+## v30.0.1 branch-topology review
+
+The exact merge base between radar baseline
+`ee5cfb074fd0c4e318b5f8608df504678e4e17ac` and stable release
+`40f4a34ebaf56f9a046231f54125ad046239d3f3` is
+`8bf3e5ff4ab45e2c150e0d6c70d01d25f5b126c1`. The baseline has 180 unique
+commits and the release has five. Therefore a direct tree diff is an artifact
+comparison, not a chronological upgrade range.
+
+The sole release-only Metal commit,
+[`5e1084c3`](https://github.com/gfx-rs/wgpu/commit/5e1084c3e33763c5495dfd1262fc0482c4f3f444),
+dynamically resolves Extended Display P3 and BT.2100 CoreGraphics symbols to
+avoid old-OS link errors. The baseline already contains the upstream version
+plus a later availability correction. The other release-only commits cover
+generated WebGPU bindings, Vulkan, an example warning, and release metadata.
+No release-only change improves editor frame pacing, drawable ownership,
+upload reuse, glyph residency, allocation, or memory accounting.
+
+This is E2 source evidence. It is not a reproduced WGPU renderer experiment or
+an Alpine performance claim.
 
 ## Correctness impact
 

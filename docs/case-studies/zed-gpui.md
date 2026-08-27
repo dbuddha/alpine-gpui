@@ -38,6 +38,37 @@ waiting
 ([metal_renderer.rs lines 557-605](https://github.com/zed-industries/zed/blob/e17dc4f9d50db73a458b64dcce50ecd4878b98a3/crates/gpui_macos/src/metal_renderer.rs#L557-L605),
 [lines 643-648](https://github.com/zed-industries/zed/blob/e17dc4f9d50db73a458b64dcce50ecd4878b98a3/crates/gpui_macos/src/metal_renderer.rs#L643-L648)).
 
+## Current-stable delta review at v1.17.2
+
+Research [#95](https://github.com/dbuddha/alpine-gpui/issues/95) reviewed Zed
+[`v1.17.2`](https://github.com/zed-industries/zed/tree/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a)
+without changing the immutable v1.15.0 comparator.
+
+- The current [scene](https://github.com/zed-industries/zed/blob/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a/crates/gpui/src/scene.rs)
+  and [line-layout cache](https://github.com/zed-industries/zed/blob/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a/crates/gpui/src/text_system/line_layout.rs)
+  have the exact comparator blob identities `ea0f5d7e...` and `5e85cefb...`.
+- The Metal sources moved from `gpui_macos` to `gpui_apple`. The current
+  [renderer](https://github.com/zed-industries/zed/blob/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a/crates/gpui_apple/src/metal_renderer.rs)
+  differs by five `pub(crate)` to `pub` visibility changes, and the current
+  [atlas](https://github.com/zed-industries/zed/blob/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a/crates/gpui_apple/src/metal_atlas.rs)
+  differs by one. No audited batching, completion, or atlas behavior changed.
+- The current [profiler](https://github.com/zed-industries/zed/blob/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a/crates/gpui/src/profiler.rs)
+  has separate 16 MiB caps for the global frame-event deque and each thread's
+  task-timing deque. The [debug overlay](https://github.com/zed-industries/zed/blob/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a/crates/gpui/src/debug_overlay.rs)
+  retains 1,000 draw-duration samples and paints directly into the scene to
+  avoid self-invalidating.
+- `record_present` runs immediately after `platform_window.draw` returns. Its
+  timestamp is a useful framework endpoint, but it is not compositor-observed
+  presentation or optical latency.
+- Current frame demand explicitly re-arms the platform after dirty work,
+  next-frame callbacks, throttling, and present-only demand. This corroborates
+  Alpine's existing wake and coalescing contracts. It does not authorize a
+  continuous loop or a present-only tail without physical latency and energy
+  evidence.
+
+Decision: adopt no source and add no shipping dependency. Carry the endpoint
+distinction into the existing profiler and present-tail experiments only.
+
 ## Stable finding registry
 
 These identifiers are immutable because accepted AEP claims reference them.
