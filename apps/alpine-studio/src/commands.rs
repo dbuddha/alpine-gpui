@@ -819,7 +819,8 @@ mod tests {
         let mut palette = CommandPalette::default();
         palette.open(all_available())?;
         let mut state = 0x6a09_e667_f3bc_c909_u64;
-        for _ in 0..4_096 {
+        let steps = if cfg!(miri) { 256 } else { 4_096 };
+        for _ in 0..steps {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
