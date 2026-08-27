@@ -304,9 +304,22 @@ fn decode_file_uri(uri: &str) -> Result<PathBuf, NavigationError> {
     if decoded.contains('\0') {
         return Err(NavigationError::InvalidUtf8);
     }
-    let is_absolute_uri_path = decoded.starts_with('/');
+    decoded_file_uri_path(&decoded)
+}
+
+fn decoded_file_uri_path(decoded: &str) -> Result<PathBuf, NavigationError> {
+    decoded_file_uri_path_for_host(decoded, cfg!(windows))
+}
+
+fn decoded_file_uri_path_for_host(
+    decoded: &str,
+    windows: bool,
+) -> Result<PathBuf, NavigationError> {
+    if windows {
+        return Ok(PathBuf::from(windows_drive_uri_path(decoded)?));
+    }
     let path = PathBuf::from(decoded);
-    if !is_absolute_uri_path
+    if !decoded.starts_with('/')
         || path
             .components()
             .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
@@ -314,6 +327,51 @@ fn decode_file_uri(uri: &str) -> Result<PathBuf, NavigationError> {
         return Err(NavigationError::OutsideWorkspace);
     }
     Ok(path)
+}
+
+fn windows_drive_uri_path(decoded: &str) -> Result<&str, NavigationError> {
+    let drive_path = decoded
+        .strip_prefix('/')
+        .ok_or(NavigationError::OutsideWorkspace)?;
+    let bytes = drive_path.as_bytes();
+    if bytes.len() < 3
+        || !bytes[0].is_ascii_alphabetic()
+        || bytes[1] != b':'
+        || bytes[2] != b'/'
+        || drive_path.contains('\\')
+    {
+        return Err(NavigationError::OutsideWorkspace);
+    }
+    let tail = &drive_path[3..];
+    if !tail.is_empty()
+        && tail
+            .split('/')
+            .any(|component| component.is_empty() || matches!(component, "." | ".."))
+    {
+        return Err(NavigationError::OutsideWorkspace);
+    }
+    Ok(drive_path)
+}
+
+#[cfg(test)]
+pub(crate) fn local_file_uri(path: &Path) -> String {
+    crate::lsp_language::file_uri(path).unwrap_or_else(|_| unreachable!())
+}
+
+#[cfg_attr(
+    not(any(windows, test)),
+    expect(
+        dead_code,
+        reason = "compiled cross-host so Linux mutation shards exercise Windows path validation"
+    )
+)]
+fn normalized_local_drive_path(path: &Path) -> Result<PathBuf, NavigationError> {
+    let path = path.to_str().ok_or(NavigationError::InvalidUtf8)?;
+    let path = path.strip_prefix(r"\\?\").unwrap_or(path);
+    if path.starts_with(r"UNC\") || path.starts_with(r"\\") {
+        return Err(NavigationError::UnsupportedUri);
+    }
+    Ok(PathBuf::from(path))
 }
 
 fn percent_decode(encoded: &[u8]) -> Result<Vec<u8>, NavigationError> {
@@ -365,6 +423,12 @@ pub(crate) fn revalidate_local_path(
     workspace_root: &Path,
     path: &Path,
 ) -> Result<PathBuf, NavigationError> {
+    #[cfg(windows)]
+    let normalized_root = normalized_local_drive_path(workspace_root)?;
+    #[cfg(windows)]
+    let normalized_path = normalized_local_drive_path(path)?;
+    #[cfg(windows)]
+    let (workspace_root, path) = (normalized_root.as_path(), normalized_path.as_path());
     let root_metadata =
         fs::symlink_metadata(workspace_root).map_err(|_| NavigationError::WorkspaceUnavailable)?;
     if root_metadata.file_type().is_symlink() {
@@ -623,9 +687,15 @@ mod tests {
             decode_file_uri("file:///tmp/%a"),
             Err(NavigationError::InvalidPercentEncoding)
         );
+        #[cfg(not(windows))]
         assert_eq!(
             decode_file_uri("file:///tmp/a%20b.rs"),
             Ok(PathBuf::from("/tmp/a b.rs"))
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            decode_file_uri("file:///C:/tmp/a%20b.rs"),
+            Ok(PathBuf::from(r"C:\tmp\a b.rs"))
         );
         assert_eq!(percent_decode(b"%aF"), Ok(vec![0xaf]));
         assert_eq!(percent_decode(b"%Fa"), Ok(vec![0xfa]));
@@ -636,6 +706,22 @@ mod tests {
         assert_eq!(hex_value(b'0'), Some(0));
         assert_eq!(hex_value(b'9'), Some(9));
         assert_eq!(hex_value(b'g'), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_verbatim_drive_path_round_trips_through_local_file_uri() {
+        let root = std::env::temp_dir().join(format!("alpine-local-uri-{}", std::process::id()));
+        assert!(fs::create_dir_all(&root).is_ok());
+        let root = fs::canonicalize(root).unwrap_or_else(|_| unreachable!());
+        let path = root.join("main.rs");
+        assert!(fs::write(&path, "fn main() {}\n").is_ok());
+        let resolved = resolve_local_file_uri(&root, &local_file_uri(&path));
+        assert_eq!(
+            resolved,
+            fs::canonicalize(&path).map_err(|_| NavigationError::TargetUnavailable)
+        );
+        assert!(fs::remove_dir_all(root).is_ok());
     }
 
     #[cfg(unix)]
@@ -731,5 +817,60 @@ mod tests {
             SourceLocations::admit(&raw(r#"{"uri":"file:///tmp/main.rs","range":7}"#)),
             Err(NavigationError::InvalidRange)
         );
+    }
+
+    #[test]
+    fn windows_file_uri_lexical_axes_are_host_independent() -> Result<(), NavigationError> {
+        let local = PathBuf::from("C:/repo/main.rs");
+        assert_eq!(
+            decoded_file_uri_path_for_host("/C:/repo/main.rs", true)?,
+            local
+        );
+        assert_eq!(
+            decoded_file_uri_path_for_host("/C:/", true)?,
+            PathBuf::from("C:/")
+        );
+        for invalid in [
+            "",
+            "/",
+            "/C",
+            "/C:",
+            "/1:/repo/main.rs",
+            "/C?/repo/main.rs",
+            "/C:relative",
+            "/C:/repo/../secret.rs",
+            "/C:/repo/./secret.rs",
+            "/C:/repo//secret.rs",
+            "/C:/repo\\secret.rs",
+        ] {
+            assert_eq!(
+                decoded_file_uri_path_for_host(invalid, true),
+                Err(NavigationError::OutsideWorkspace)
+            );
+        }
+
+        assert_eq!(
+            normalized_local_drive_path(Path::new(r"\\?\C:\repo\main.rs"))?,
+            PathBuf::from(r"C:\repo\main.rs")
+        );
+        assert_eq!(
+            normalized_local_drive_path(Path::new(r"\\?\UNC\server\share")),
+            Err(NavigationError::UnsupportedUri)
+        );
+        assert_eq!(
+            normalized_local_drive_path(Path::new(r"\\server\share")),
+            Err(NavigationError::UnsupportedUri)
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_uri_uses_native_host_selection() -> Result<(), NavigationError> {
+        assert_eq!(
+            decode_file_uri("file:///C:/repo/main.rs")?,
+            PathBuf::from(r"C:\repo\main.rs")
+        );
+        Ok(())
     }
 }

@@ -106,6 +106,19 @@ fn errors_documents_and_initialization_preserve_exact_contracts()
     );
     assert!(initialize.get().contains(r#""name":"alpine workspace""#));
     assert!(initialize.get().contains("alpine%20workspace"));
+    assert!(initialize.get().contains(r#""applyEdit":true"#));
+    assert!(initialize.get().contains(r#""documentChanges":true"#));
+    assert!(
+        initialize
+            .get()
+            .contains(r#""failureHandling":"transactional""#)
+    );
+    assert!(initialize.get().contains(r#""prepareSupport":false"#));
+    assert!(
+        initialize
+            .get()
+            .contains(r#""formatting":{"dynamicRegistration":false}"#)
+    );
     assert_eq!(
         initialize_params(root_path()).err(),
         Some(LanguageProtocolError::InvalidPath)
@@ -247,9 +260,10 @@ fn file_uri_encoding_and_length_are_bounded() {
     assert!(encoded.contains("a%20b%23%C3%A9.rs"));
 
     let exact_prefix = if cfg!(windows) { "C:/" } else { "/" };
+    let scheme_prefix = if cfg!(windows) { "file:///" } else { "file://" };
     let exact = format!(
         "{exact_prefix}{}",
-        "x".repeat(MAX_URI_BYTES - "file://".len() - exact_prefix.len())
+        "x".repeat(MAX_URI_BYTES - scheme_prefix.len() - exact_prefix.len())
     );
     let exact_uri = file_uri(Path::new(&exact)).unwrap_or_else(|_| unreachable!());
     assert_eq!(exact_uri.len(), MAX_URI_BYTES);
@@ -264,6 +278,31 @@ fn file_uri_encoding_and_length_are_bounded() {
         file_uri(Path::new(&oversized)).err(),
         Some(LanguageProtocolError::UriTooLong)
     );
+}
+
+#[test]
+fn windows_file_uri_policy_is_host_testable() {
+    assert_eq!(
+        file_uri_from_utf8_path(r"C:\work\a b.rs", true),
+        Ok(String::from("file:///C:/work/a%20b.rs"))
+    );
+    assert_eq!(
+        file_uri_from_utf8_path(r"\\?\C:\work\main.rs", true),
+        Ok(String::from("file:///C:/work/main.rs"))
+    );
+    for rejected in [
+        r"\\server\share\main.rs",
+        r"\\?\UNC\server\share\main.rs",
+        r"relative\main.rs",
+        r"1:\work\main.rs",
+        r"C-\work\main.rs",
+        r"C:work\main.rs",
+    ] {
+        assert_eq!(
+            file_uri_from_utf8_path(rejected, true),
+            Err(LanguageProtocolError::InvalidPath)
+        );
+    }
 }
 
 #[cfg(unix)]

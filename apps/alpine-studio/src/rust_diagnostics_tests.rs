@@ -701,6 +701,376 @@ fn mock_symbols_are_bounded_query_safe_and_release_on_shutdown() -> Result<(), B
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn mock_workspace_edits_are_revision_bound_and_prepared_off_the_poll_path()
+-> Result<(), Box<dyn Error>> {
+    let (root, path, snapshot, identity) = fixture();
+    let latch = LanguageWakeLatch::default();
+    let mut model = RustDiagnostics::with_server(mock_executable());
+    let input = RustDocumentInput::new(&path, &root, identity, snapshot);
+    let wake_latch = latch.clone();
+    assert!(
+        model
+            .sync(Some(input), move |wake| {
+                let wake_latch = wake_latch.clone();
+                Arc::new(move || wake_latch.publish(wake))
+            })
+            .visual_changed
+    );
+    let _ = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
+
+    let _ = model.request_formatting(4, true);
+    assert!(model.snapshot().workspace_edit_pending);
+    let formatting = wait_for_workspace_edit(&mut model, &latch)?;
+    assert_eq!(formatting.identity().kind(), WorkspaceEditKind::Formatting);
+    let formatting = formatting.execute();
+    assert!(formatting.wire_bytes > 0);
+    let prepared = formatting.result?;
+    assert_eq!(prepared.file_count(), 1);
+    assert_eq!(prepared.edit_count(), 1);
+    assert_eq!(prepared.files()[0].replacement(), "pub fn main() {}\n");
+
+    let _ = model.request_rename(LspPosition::new(0, 4)?, "renamed");
+    let rename = wait_for_workspace_edit(&mut model, &latch)?;
+    assert_eq!(rename.identity().kind(), WorkspaceEditKind::Rename);
+    let rename = rename.execute().result?;
+    assert_eq!(rename.file_count(), 1);
+    assert_eq!(rename.edit_count(), 1);
+    assert_eq!(rename.files()[0].replacement(), "fn renamed() {}\n");
+
+    let snapshot = model.snapshot();
+    assert_eq!(snapshot.workspace_edit_requests, 2);
+    assert!(!snapshot.workspace_edit_pending);
+    assert!(!snapshot.workspace_edit_preparing);
+    assert!(snapshot.peak_workspace_edit_wire_bytes > 0);
+    assert!(!model.shutdown().active);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn superseded_workspace_edit_cannot_publish_over_the_newer_request() -> Result<(), Box<dyn Error>> {
+    let (root, path, snapshot, identity) = fixture();
+    let latch = LanguageWakeLatch::default();
+    let mut model = RustDiagnostics::with_server(mock_executable());
+    let input = RustDocumentInput::new(&path, &root, identity, snapshot);
+    let wake_latch = latch.clone();
+    assert!(
+        model
+            .sync(Some(input), move |wake| {
+                let wake_latch = wake_latch.clone();
+                Arc::new(move || wake_latch.publish(wake))
+            })
+            .visual_changed
+    );
+    let _ = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
+    let _ = model.request_rename(LspPosition::new(0, 4)?, "never_respond");
+    assert!(model.snapshot().workspace_edit_pending);
+    let _ = model.request_formatting(4, true);
+    assert_eq!(model.snapshot().workspace_edit_cancellations, 1);
+    let request = wait_for_workspace_edit(&mut model, &latch)?;
+    assert_eq!(request.identity().kind(), WorkspaceEditKind::Formatting);
+    assert!(request.execute().result.is_ok());
+    assert!(model.snapshot().stale_workspace_edits >= 1);
+    assert!(!model.shutdown().active);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn workspace_edit_identity_and_reduction_axes_are_independently_discriminating() {
+    let language = LanguageIdentity {
+        workspace_id: 1,
+        workspace_revision: 2,
+        document_id: 3,
+        document_revision: 4,
+        buffer_revision: 5,
+        selection_revision: 6,
+    };
+    let mut snapshot = RustDiagnosticsSnapshot {
+        active: true,
+        process_epoch: 7,
+        lsp_version: 8,
+        ..RustDiagnosticsSnapshot::default()
+    };
+    let identity = WorkspaceEditIdentity::for_test(
+        language,
+        snapshot.process_epoch,
+        snapshot.lsp_version,
+        9,
+        WorkspaceEditKind::Rename,
+    );
+    assert!(identity.matches(language, &snapshot));
+    assert!(identity.matches_document(language));
+    assert_eq!(identity.kind().label(), "Rust rename");
+    for axis in 0..6 {
+        let mut changed = language;
+        match axis {
+            0 => changed.workspace_id += 1,
+            1 => changed.workspace_revision += 1,
+            2 => changed.document_id += 1,
+            3 => changed.document_revision += 1,
+            4 => changed.buffer_revision += 1,
+            _ => changed.selection_revision += 1,
+        }
+        assert!(!identity.matches(changed, &snapshot), "match axis {axis}");
+        if axis < 5 {
+            assert!(!identity.matches_document(changed), "document axis {axis}");
+        }
+    }
+    snapshot.process_epoch += 1;
+    assert!(!identity.matches(language, &snapshot));
+    snapshot.process_epoch -= 1;
+    snapshot.lsp_version += 1;
+    assert!(!identity.matches(language, &snapshot));
+    snapshot.lsp_version -= 1;
+    snapshot.active = false;
+    assert!(!identity.matches(language, &snapshot));
+    for true_index in 0..5 {
+        let mut changes = [false; 5];
+        changes[true_index] = true;
+        assert!(crate::any_workspace_edit_change(changes));
+    }
+    assert!(!crate::any_workspace_edit_change([false; 5]));
+    assert!(crate::rust_workspace_command_blocked(true, true));
+    assert!(crate::rust_workspace_command_blocked(false, false));
+    assert!(!crate::rust_workspace_command_blocked(false, true));
+    assert!((crate::workspace_edit_line_baseline(10.0, 2, 7.0) - 64.0).abs() < f32::EPSILON);
+    assert!((crate::workspace_edit_text_x(11.0) - 19.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn workspace_edit_not_ready_and_admission_axes_are_observable() -> Result<(), Box<dyn Error>> {
+    let mut unavailable = RustDiagnostics::default();
+    assert!(unavailable.request_formatting(4, true).visual_changed);
+    assert!(!unavailable.request_formatting(4, true).visual_changed);
+    assert!(
+        !unavailable
+            .request_rename(LspPosition::new(0, 0)?, "renamed")
+            .visual_changed
+    );
+    let WorkspaceEditAdmissionFixture {
+        root,
+        mut model,
+        pending: template,
+        ..
+    } = workspace_edit_admission_fixture()?;
+    let stamp = template.stamp;
+    assert!(!unavailable.admit_workspace_edit(
+        1,
+        stamp,
+        WorkspaceEditKind::Rename,
+        Err(WorkspaceEditError::Malformed),
+    ));
+    assert!(!unavailable.reject_stale_workspace_edit(1));
+    assert!(matches!(
+        workspace_edit_wire(ResponseValue::error_for_test()),
+        Err(WorkspaceEditError::Malformed)
+    ));
+    let params = RawValue::from_string(String::from("{}"))?;
+    assert!(
+        !unavailable
+            .request_workspace_edit(WorkspaceEditKind::Rename, &params)
+            .visual_changed
+    );
+    let current_identity = template.identity;
+    let current_epoch = template.process_epoch;
+    let current_version = template.lsp_version;
+    assert!(!model.admit_workspace_edit(
+        template.request_id,
+        template.stamp,
+        template.kind,
+        Err(WorkspaceEditError::Malformed),
+    ));
+    model
+        .session
+        .as_mut()
+        .ok_or("session")?
+        .pending_workspace_edit = Some(template);
+    assert!(!model.reject_stale_workspace_edit(template.request_id));
+    assert!(!model.snapshot().workspace_edit_pending);
+    model
+        .session
+        .as_mut()
+        .ok_or("session")?
+        .pending_workspace_edit = Some(template);
+    assert!(model.cancel_workspace_edit());
+    assert!(!model.snapshot().workspace_edit_pending);
+    let wrong_stamp = LanguageIdentity {
+        workspace_id: current_identity.workspace_id + 1,
+        ..current_identity
+    }
+    .request_stamp()
+    .ok_or("wrong stamp")?;
+    for axis in 0..6 {
+        let mut pending = template;
+        let mut id = template.request_id;
+        let mut stamp = template.stamp;
+        let mut kind = template.kind;
+        match axis {
+            0 => id += 1,
+            1 => stamp = wrong_stamp,
+            2 => kind = WorkspaceEditKind::Rename,
+            3 => pending.identity.workspace_id += 1,
+            4 => pending.process_epoch += 1,
+            _ => pending.lsp_version += 1,
+        }
+        let session = model.session.as_mut().ok_or("session")?;
+        session.identity = current_identity;
+        session.process_epoch = current_epoch;
+        session.lsp_version = current_version;
+        session.pending_workspace_edit = Some(pending);
+        let stale_before = model.stale_workspace_edits;
+        assert!(!model.admit_workspace_edit(id, stamp, kind, Err(WorkspaceEditError::Malformed),));
+        assert_eq!(model.stale_workspace_edits, stale_before + 1, "axis {axis}");
+    }
+    let session = model.session.as_mut().ok_or("session")?;
+    session.identity = current_identity;
+    session.process_epoch = current_epoch;
+    session.lsp_version = current_version;
+    session.pending_workspace_edit = Some(template);
+    assert!(model.admit_workspace_edit(
+        template.request_id,
+        template.stamp,
+        template.kind,
+        Err(WorkspaceEditError::Malformed),
+    ));
+    assert!(model.take_workspace_edit_preparation().is_none());
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+struct WorkspaceEditAdmissionFixture {
+    root: PathBuf,
+    path: PathBuf,
+    model: RustDiagnostics,
+    pending: PendingWorkspaceEdit,
+}
+
+fn workspace_edit_admission_fixture() -> Result<WorkspaceEditAdmissionFixture, Box<dyn Error>> {
+    let (root, path, snapshot, language) = fixture();
+    let mut model = RustDiagnostics::default();
+    model.install_for_test(
+        RustDocumentInput::new(&path, &root, language, snapshot),
+        &diagnostics(&path, 1),
+        mock_executable(),
+    )?;
+    let _ = model.request_rename(LspPosition::new(0, 0)?, "");
+    let _ = model.request_formatting(0, true);
+    let session = model.session.as_ref().ok_or("session")?;
+    let identity = session.identity;
+    let pending = PendingWorkspaceEdit {
+        request_id: 41,
+        stamp: identity.request_stamp().ok_or("request stamp")?,
+        kind: WorkspaceEditKind::Formatting,
+        identity,
+        process_epoch: session.process_epoch,
+        lsp_version: session.lsp_version,
+    };
+    Ok(WorkspaceEditAdmissionFixture {
+        root,
+        path,
+        model,
+        pending,
+    })
+}
+
+#[test]
+fn workspace_edit_success_sync_and_terminal_failures_are_observable() -> Result<(), Box<dyn Error>>
+{
+    let WorkspaceEditAdmissionFixture {
+        root,
+        path,
+        mut model,
+        pending: template,
+    } = workspace_edit_admission_fixture()?;
+    let current_identity = template.identity;
+    let wire_raw = RawValue::from_string(String::from(r#"{"changes":{}}"#))?;
+    let wire = workspace_edit_wire(ResponseValue::Result(&wire_raw))?;
+    model
+        .session
+        .as_mut()
+        .ok_or("session")?
+        .pending_workspace_edit = Some(template);
+    assert!(model.admit_workspace_edit(
+        template.request_id,
+        template.stamp,
+        template.kind,
+        Ok(wire),
+    ));
+    assert!(model.take_workspace_edit_preparation().is_some());
+
+    let session = model.session.as_mut().ok_or("session")?;
+    session.pending_workspace_edit = Some(template);
+    let synchronized_snapshot = session.snapshot.clone();
+    let mut synchronized_identity = current_identity;
+    synchronized_identity.document_revision += 1;
+    let cancellations_before_sync = model.snapshot().workspace_edit_cancellations;
+    let effect = model.sync(
+        Some(RustDocumentInput::new(
+            &path,
+            &root,
+            synchronized_identity,
+            synchronized_snapshot,
+        )),
+        |_| Arc::new(|| {}),
+    );
+    assert!(!effect.visual_changed);
+    assert_eq!(
+        model.snapshot().workspace_edit_cancellations,
+        cancellations_before_sync + 1
+    );
+
+    let session = model.session.as_mut().ok_or("session")?;
+    session.state = SessionState::Initializing;
+    assert!(model.request_formatting(4, true).visual_changed);
+    let params = RawValue::from_string(String::from("{}"))?;
+    let session = model.session.as_mut().ok_or("session")?;
+    session.state = SessionState::Open;
+    session.identity.workspace_id = 0;
+    assert!(
+        model
+            .request_workspace_edit(WorkspaceEditKind::Formatting, &params)
+            .visual_changed
+    );
+    let session = model.session.as_mut().ok_or("session")?;
+    session.identity = synchronized_identity;
+    let _ = session.client.shutdown();
+    assert!(
+        model
+            .request_workspace_edit(WorkspaceEditKind::Formatting, &params)
+            .visual_changed
+    );
+    assert!(!model.shutdown().active);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+fn wait_for_workspace_edit(
+    model: &mut RustDiagnostics,
+    latch: &LanguageWakeLatch,
+) -> Result<WorkspaceEditPreparationRequest, Box<dyn Error>> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(request) = model.take_workspace_edit_preparation() {
+            return Ok(request);
+        }
+        if let Some(wake) = latch.take() {
+            let effect = model.poll(wake);
+            if let Some(continuation) = effect.continuation {
+                latch.publish(continuation);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("workspace edit timed out: {:?}", model.snapshot()).into());
+        }
+    }
+}
+
+#[test]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[ignore = "requires the checksum-verified Task #208 rust-analyzer binary"]
 #[allow(
