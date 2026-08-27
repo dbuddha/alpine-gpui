@@ -269,6 +269,15 @@ pub(crate) fn run_scene(manifest: &Path, _root: &Path) -> Result<String, Vec<Str
     ))
 }
 
+pub(crate) fn decode_scene_file(manifest: &Path) -> Result<DecodedTrace, Vec<String>> {
+    let scene: SceneTrace = load_toml(manifest)?;
+    let errors = validate_scene_errors_all(&scene);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    decode_scene(&scene).map_err(|error| vec![error])
+}
+
 pub(crate) fn render_scene(
     native: bool,
     manifest: &Path,

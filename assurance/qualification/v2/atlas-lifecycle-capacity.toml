@@ -1,0 +1,46 @@
+schema = "alpine-scene-trace/v2"
+id = "atlas-lifecycle-capacity"
+workload_hash = "7c00ce39a7bc6896658cd1502b8083a28d85fea475dc6545da8a3791c14c7b05"
+revision = 3
+clear_color = [0.055, 0.063, 0.075, 1.0]
+
+[viewport]
+width = 8.0
+height = 8.0
+scale_factor = 1.0
+pixel_width = 8
+pixel_height = 8
+
+[[resources]]
+id = "editor-atlas"
+kind = "a8-atlas"
+content_hash = "09e6cced61870f908749a0aa75cd341a9a812097e2ce7198c0bc2cc87e5f2da8"
+revision = 3
+width = 4
+height = 2
+pixels = [255, 255, 0, 0, 0, 255, 0, 0]
+
+[[clips]]
+id = "viewport"
+x = 0.0
+y = 0.0
+width = 8.0
+height = 8.0
+
+[[operations]]
+sequence = 0
+kind = "monochrome-glyph"
+resource = "editor-atlas"
+clip = "viewport"
+x = 1.0
+y = 1.0
+width = 4.0
+height = 4.0
+red = 0.82
+green = 0.86
+blue = 0.91
+alpha = 1.0
+atlas_x = 0
+atlas_y = 0
+atlas_width = 2
+atlas_height = 2
