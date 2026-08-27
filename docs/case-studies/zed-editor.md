@@ -38,6 +38,32 @@ remote development, telemetry services, public marketplace compatibility,
 debugging, Zed branding, and exact visual duplication from Alpine Studio's
 initial daily-driver target.
 
+## Included vs excluded evidence boundaries
+
+- Included for parity design and requirement shaping: local project shell behavior and
+  workspace navigation; editor and text behavior including cursor selection and undo
+  groups; virtualized rendering and large-file behavior; language workflows
+  (syntax, symbols, diagnostics, completion) under local adapter constraints;
+  terminal/task and local Git workflow slices; settings, keymaps, command palette
+  behavior, and accessibility scaffolding; macOS lifecycle effects for resize,
+  focus, sleep/wake, surface loss, and shutdown.
+- Not copied into Alpine implementation: direct source, assets, or upstream
+  application code; hosted AI, collaboration, cloud-account, debugger, or
+  marketplace claims; visual identity and raster duplication; behavior outside
+  parent-approved requirements.
+
+## Performance and memory research takeaways from Zed
+
+- Zed offers a complete daily-driver workload shape across text, IME, accessibility,
+  and long-running lifecycle operations; it is a strong comparator for parity stress.
+- Zed benchmark paths are useful for harnessing, not a proof of user-visible latency.
+  Headless submission and proxy budgets do not establish display-path timing.
+- Alpine needs separate scene-level, full-path, and comparator-level measurement.
+- Adaptation/adapter cost must be measured separately from core editor behavior to
+  avoid false performance claims.
+- Memory direction should track retained resources, allocation growth, readback
+  behavior, and post-shutdown drain under soak.
+
 ## Findings
 
 - **CS-ZED-006:** A faster editor comparison is invalid until document state,

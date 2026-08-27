@@ -5,6 +5,9 @@ Its GitHub Research issue owns investigation history and re-evaluation. Stable
 finding IDs may motivate AEP claims and Requirements, but a finding is never
 proof that Alpine implements or satisfies a behavior.
 
+Use [docs/research/index.md](../research/index.md) as the canonical evidence
+catalog for active comparator research and requirement-to-research anchors.
+
 An upstream-radar workflow compares reviewed revisions with current upstream
 heads and opens one deduplicated Research issue when re-evaluation is needed.
 Existing snapshots are not silently rewritten. Source adaptation remains

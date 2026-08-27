@@ -6,6 +6,7 @@ scripts/test-policy.sh
 scripts/test-classifier.sh
 scripts/test-hierarchy.sh
 scripts/test-assurance.sh
+scripts/check-research-links.sh
 scripts/test-qualification.sh
 scripts/test-core-contracts.sh
 scripts/test-metal-contracts.sh

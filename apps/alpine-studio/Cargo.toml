@@ -1,0 +1,12 @@
+[package]
+name = "alpine-studio"
+version.workspace = true
+description = "Owned native surface and runtime contracts for first-mile Alpine Studio execution"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[lints]
+workspace = true
+
