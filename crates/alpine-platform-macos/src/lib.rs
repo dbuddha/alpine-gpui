@@ -1647,13 +1647,15 @@ pub mod native_validation {
 
     /// Schedules one deterministic presented-handler observation immediately
     /// after the next callback drawable commits and receives direct present.
+    /// Zero models Apple's terminal dropped/not-presented drawable result.
     ///
     /// An optional display identity change advances the native surface epoch
     /// at that exact post-commit boundary.
     ///
     /// # Errors
     ///
-    /// Returns a driver error for an invalid time or unavailable callback owner.
+    /// Returns a driver error for a negative/non-finite time or unavailable
+    /// callback owner.
     pub fn inject_post_commit_observation(
         surface: &NativeSurface,
         display_identity: Option<usize>,

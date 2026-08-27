@@ -1,4 +1,4 @@
-//! Post-commit supersession and native device-loss validation.
+//! Dropped presentation, post-commit supersession, and native device-loss validation.
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,8 +30,85 @@ mod validation {
             Some(_) => return Err("unsupported presentation evidence mode".into()),
         };
         let (scene, clear) = validation_scene()?;
+        validate_dropped_presentation(scene.clone(), clear, hosted_direct)?;
         validate_supersession(scene.clone(), clear, hosted_direct)?;
         validate_device_loss(scene, clear, hosted_direct)
+    }
+
+    fn validate_dropped_presentation(
+        scene: Scene,
+        clear: LinearRgba,
+        hosted_direct: bool,
+    ) -> TestResult {
+        let descriptor = SurfaceDescriptor::new("Alpine dropped presentation", 96.0, 64.0, 1.0)?;
+        let surface = native_validation::new_surface(&descriptor)?;
+        let _backing_scale = prepare_visible_surface(&surface, hosted_direct)?;
+
+        assert_eq!(surface.request_frame(scene.clone(), clear)?.get(), 1);
+        native_validation::inject_post_commit_observation(&surface, None, 0.0)?;
+        native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+
+        assert_eq!(surface.take_error()?, None);
+        let dropped = surface.snapshot();
+        let terminal = dropped.last_terminal().ok_or_else(|| {
+            format!(
+                "dropped-presentation terminal evidence: callbacks={}, submissions={}, presented={}, skipped={}, failed={}, paused={}",
+                dropped.callback_count(),
+                dropped.submission_count(),
+                dropped.presented_count(),
+                dropped.skipped_count(),
+                dropped.failed_count(),
+                dropped.display_link_paused()
+            )
+        })?;
+        assert_eq!(terminal.attempt(), 1);
+        assert_eq!(terminal.requested_revision().get(), 1);
+        assert_eq!(terminal.frame_revision().get(), 1);
+        assert_eq!(terminal.outcome(), PresentationOutcome::Failed);
+        assert_eq!(terminal.submission_count(), 1);
+        assert_eq!(terminal.present_call_count(), 1);
+        assert!(terminal.eligible_at_commit());
+        assert_eq!(terminal.observed_presentation_time_bits(), 0);
+        assert_eq!(terminal.retained_bytes(), 0);
+        assert_eq!(terminal.recovery(), None);
+        assert_eq!(dropped.submission_count(), 1);
+        assert_eq!(dropped.direct_present_count(), 1);
+        assert_eq!(dropped.presented_count(), 0);
+        assert_eq!(dropped.qualified_presented_count(), 0);
+        assert_eq!(dropped.skipped_count(), 1);
+        assert_eq!(dropped.failed_count(), 1);
+        assert_eq!(dropped.occupied_frame_slots(), 0);
+        assert_eq!(dropped.submitted_frame_slots(), 0);
+        assert!(dropped.display_link_paused());
+
+        assert_eq!(surface.request_frame(scene, clear)?.get(), 2);
+        native_validation::inject_post_commit_observation(&surface, None, 2.0)?;
+        native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+
+        assert_eq!(surface.take_error()?, None);
+        let recovered = surface.snapshot();
+        let terminal = recovered
+            .last_terminal()
+            .ok_or("post-drop recovery terminal evidence")?;
+        assert_eq!(terminal.attempt(), 2);
+        assert_eq!(terminal.requested_revision().get(), 2);
+        assert_eq!(terminal.frame_revision().get(), 2);
+        assert_eq!(terminal.outcome(), PresentationOutcome::Presented);
+        assert_eq!(
+            terminal.observed_presentation_time_bits(),
+            2.0_f64.to_bits()
+        );
+        assert_eq!(terminal.recovery(), None);
+        assert_eq!(recovered.submission_count(), 2);
+        assert_eq!(recovered.presented_count(), 1);
+        assert_eq!(recovered.qualified_presented_count(), 1);
+        assert_eq!(recovered.skipped_count(), 1);
+        assert_eq!(recovered.failed_count(), 1);
+        assert_eq!(recovered.occupied_frame_slots(), 0);
+        assert_eq!(recovered.submitted_frame_slots(), 0);
+        assert!(recovered.display_link_paused());
+        surface.close();
+        Ok(())
     }
 
     fn validate_supersession(scene: Scene, clear: LinearRgba, hosted_direct: bool) -> TestResult {
@@ -41,7 +118,7 @@ mod validation {
         assert!(
             native_validation::inject_post_commit_observation(&surface, None, f64::NAN).is_err()
         );
-        assert!(native_validation::inject_post_commit_observation(&surface, None, 0.0).is_err());
+        assert!(native_validation::inject_post_commit_observation(&surface, None, -1.0).is_err());
         let before = surface.snapshot();
         assert_eq!(surface.request_frame(scene, clear)?.get(), 1);
         native_validation::inject_post_commit_observation(&surface, Some(usize::MAX), 1.25)?;

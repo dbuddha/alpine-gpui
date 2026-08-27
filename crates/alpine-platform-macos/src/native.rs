@@ -716,7 +716,6 @@ struct PresentationDriver {
     owner_generation: FrameOwnerGeneration,
     backend: MetalBackend,
     latency_signposts: StudioSignposts,
-    consecutive_skips: u16,
     last_error: Option<SurfaceError>,
     last_terminal: Option<FrameTerminalEvidence>,
     last_superseded: Option<FrameTerminalEvidence>,
@@ -746,7 +745,6 @@ impl PresentationDriver {
             owner_generation,
             backend,
             latency_signposts: StudioSignposts::new(),
-            consecutive_skips: 0,
             last_error: None,
             last_terminal: None,
             last_superseded: None,
@@ -914,7 +912,6 @@ impl PresentationDriver {
             let token = active.token;
             let presented_time_bits = active.observation.presented_time_bits();
             if presented_time_bits != 0 {
-                self.consecutive_skips = 0;
                 counters
                     .last_presented_time_bits
                     .store(presented_time_bits, Ordering::Relaxed);
@@ -931,27 +928,22 @@ impl PresentationDriver {
             }
 
             counters.skipped.fetch_add(1, Ordering::Relaxed);
-            self.consecutive_skips = self.consecutive_skips.saturating_add(1);
-            if self.pending.is_none() {
-                self.pending = active.frame;
-            }
+            counters.failed.fetch_add(1, Ordering::Relaxed);
             let transition = self.state.apply(PresentationAction::FailActive(token))?;
-            let _ = self.record_terminal(
-                transition,
-                active.timing,
-                0,
-                Some(RecoveryClassification::RetryFrame),
-                counters,
-            )?;
-            if self.consecutive_skips >= MAX_PRESENTATION_POLLS {
-                return Err(SurfaceError::PresentationsSkipped {
-                    attempts: self.consecutive_skips,
-                });
+            let directive = self.record_terminal(transition, active.timing, 0, None, counters)?;
+            if self.pending.is_some() {
+                // A newer immutable frame is genuine work, not a replay of the
+                // dropped attempt. The physical link is still running in this
+                // callback, so reconcile the portable pause before allowing
+                // that newer frame to enter on the next callback.
+                self.state.apply(PresentationAction::Resume)?;
+                return Ok(Some(DisplayLinkDirective::None));
             }
-            // The physical link never paused during this callback. Reconcile
-            // the portable fail-and-resume pair, then consume this update
-            // rather than wasting one refresh before retrying.
-            self.state.apply(PresentationAction::Resume)?;
+            // Apple defines a zero presentedTime as a terminal drawable that
+            // was not presented. Release it and pause rather than replaying the
+            // same frame and event correlation indefinitely. A later genuine
+            // invalidation starts a new revision and resumes demand normally.
+            return Ok(Some(directive));
         }
         if let Some(active) = &mut self.active {
             active.presentation_polls = active.presentation_polls.saturating_add(1);
@@ -1269,7 +1261,7 @@ impl PresentationDriver {
             .active
             .as_mut()
             .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
-        if control.presented_time_bits != 0 {
+        if !control.close_generation {
             active.observation.inject(control.presented_time_bits);
         }
         Ok(if control.close_generation {
@@ -4773,7 +4765,7 @@ impl NativeSurface {
         display_identity: Option<usize>,
         presented_time: f64,
     ) -> Result<(), SurfaceError> {
-        if !presented_time.is_finite() || presented_time <= 0.0 {
+        if !presented_time.is_finite() || presented_time < 0.0 {
             return Err(SurfaceError::validation(SurfaceOperation::Validation));
         }
         self.driver
