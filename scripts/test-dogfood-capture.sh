@@ -7,6 +7,14 @@ recorded_dir="$output_dir/recorded"
 mkdir -p "$bundle_dir"
 rm -rf "$recorded_dir"
 
+for artifact in \
+    assurance/dogfood/v1/session.toml \
+    assurance/dogfood/v1/snapshot.toml; do
+    attributes=$(git check-attr text eol -- "$artifact")
+    printf '%s\n' "$attributes" | grep -Fq "$artifact: text: set"
+    printf '%s\n' "$attributes" | grep -Fq "$artifact: eol: lf"
+done
+
 cargo run --quiet --locked -p alpine-assurance -- \
     validate-studio-dogfood assurance/dogfood/v1/session.toml \
     > "$output_dir/validation.txt"
