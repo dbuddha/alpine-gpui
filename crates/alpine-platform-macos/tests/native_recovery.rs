@@ -7,7 +7,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 mod validation {
-    use std::{error::Error, ffi::OsStr, time::Duration};
+    use std::{
+        error::Error,
+        ffi::OsStr,
+        time::{Duration, Instant},
+    };
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_metal::{BackendState, RecoveryClassification, RenderError};
@@ -16,12 +20,14 @@ mod validation {
         NativeSurface, SurfaceDescriptor, SurfaceError, native_validation,
     };
     use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
+    use objc2_foundation::{NSDate, NSRunLoop};
 
     type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
     const MAX_RETRY_ATTEMPTS: u8 = 4;
     const LOGICAL_WIDTH: f64 = 96.0;
     const LOGICAL_HEIGHT: f64 = 64.0;
+    const PAUSE_SETTLEMENT: Duration = Duration::from_millis(150);
 
     pub(super) fn run() -> TestResult {
         let hosted_direct = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
@@ -31,6 +37,7 @@ mod validation {
         };
         let (scene, clear) = validation_scene()?;
         validate_dropped_presentation(scene.clone(), clear, hosted_direct)?;
+        validate_missing_presentation(scene.clone(), clear, hosted_direct)?;
         validate_supersession(scene.clone(), clear, hosted_direct)?;
         validate_device_loss(scene, clear, hosted_direct)
     }
@@ -79,7 +86,6 @@ mod validation {
         assert_eq!(dropped.failed_count(), 1);
         assert_eq!(dropped.occupied_frame_slots(), 0);
         assert_eq!(dropped.submitted_frame_slots(), 0);
-        assert!(dropped.display_link_paused());
 
         assert_eq!(surface.request_frame(scene, clear)?.get(), 2);
         native_validation::inject_post_commit_observation(&surface, None, 2.0)?;
@@ -104,6 +110,111 @@ mod validation {
         assert_eq!(recovered.qualified_presented_count(), 1);
         assert_eq!(recovered.skipped_count(), 1);
         assert_eq!(recovered.failed_count(), 1);
+        assert_eq!(recovered.occupied_frame_slots(), 0);
+        assert_eq!(recovered.submitted_frame_slots(), 0);
+        assert!(recovered.display_link_paused());
+        surface.close();
+        Ok(())
+    }
+
+    fn await_display_link_paused(surface: &NativeSurface) -> TestResult {
+        let deadline = Instant::now() + PAUSE_SETTLEMENT;
+        while !surface.snapshot().display_link_paused() && Instant::now() < deadline {
+            let turn = NSDate::dateWithTimeIntervalSinceNow(0.005);
+            NSRunLoop::mainRunLoop().runUntilDate(&turn);
+        }
+        let snapshot = surface.snapshot();
+        assert!(
+            snapshot.display_link_paused(),
+            "missing-presentation display link did not pause: {snapshot:?}"
+        );
+        assert_eq!(snapshot.occupied_frame_slots(), 0);
+        assert_eq!(snapshot.submitted_frame_slots(), 0);
+        Ok(())
+    }
+
+    fn validate_missing_presentation(
+        scene: Scene,
+        clear: LinearRgba,
+        hosted_direct: bool,
+    ) -> TestResult {
+        let descriptor = SurfaceDescriptor::new("Alpine missing presentation", 96.0, 64.0, 1.0)?;
+        let surface = native_validation::new_surface(&descriptor)?;
+        let _backing_scale = prepare_visible_surface(&surface, hosted_direct)?;
+
+        assert_eq!(surface.request_frame(scene.clone(), clear)?.get(), 1);
+        native_validation::inject_post_commit_omission(&surface);
+        native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+
+        assert_eq!(surface.take_error()?, None);
+        let first = surface.snapshot();
+        let terminal = first
+            .last_terminal()
+            .ok_or("missing-presentation terminal evidence")?;
+        assert_eq!(terminal.attempt(), 1);
+        assert_eq!(terminal.frame_revision().get(), 1);
+        assert_eq!(terminal.outcome(), PresentationOutcome::Failed);
+        assert_eq!(terminal.submission_count(), 1);
+        assert_eq!(terminal.present_call_count(), 1);
+        assert!(terminal.eligible_at_commit());
+        assert_eq!(terminal.observed_presentation_time_bits(), 0);
+        assert_eq!(terminal.retained_bytes(), 0);
+        assert_eq!(terminal.recovery(), None);
+        assert_eq!(first.submission_count(), 1);
+        assert_eq!(first.direct_present_count(), 1);
+        assert_eq!(first.presented_count(), 0);
+        assert_eq!(first.qualified_presented_count(), 0);
+        assert_eq!(first.skipped_count(), 0);
+        assert_eq!(first.failed_count(), 1);
+        assert_eq!(first.occupied_frame_slots(), 0);
+        assert_eq!(first.submitted_frame_slots(), 0);
+
+        await_display_link_paused(&surface)?;
+        assert_eq!(surface.take_error()?, None);
+        let settled = surface.snapshot();
+        assert!((1..=2).contains(&settled.submission_count()));
+        assert_eq!(settled.direct_present_count(), settled.submission_count());
+        assert!((1..=2).contains(&settled.failed_count()));
+        assert!(settled.skipped_count() <= settled.submission_count().saturating_sub(1));
+        assert!(settled.skipped_count() <= settled.failed_count());
+        assert_eq!(settled.occupied_frame_slots(), 0);
+        assert_eq!(settled.submitted_frame_slots(), 0);
+        assert!(settled.display_link_paused());
+        let turn = NSDate::dateWithTimeIntervalSinceNow(PAUSE_SETTLEMENT.as_secs_f64());
+        NSRunLoop::mainRunLoop().runUntilDate(&turn);
+        let quiescent = surface.snapshot();
+        assert_eq!(quiescent.callback_count(), settled.callback_count());
+        assert_eq!(quiescent.submission_count(), settled.submission_count());
+        assert_eq!(
+            quiescent.direct_present_count(),
+            settled.direct_present_count()
+        );
+
+        let recovery_revision = surface.request_frame(scene, clear)?;
+        native_validation::inject_post_commit_observation(&surface, None, 2.5)?;
+        native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+
+        assert_eq!(surface.take_error()?, None);
+        let recovered = surface.snapshot();
+        let terminal = recovered
+            .last_terminal()
+            .ok_or("post-omission recovery terminal evidence")?;
+        assert_eq!(terminal.requested_revision(), recovery_revision);
+        assert_eq!(terminal.frame_revision(), recovery_revision);
+        assert_eq!(terminal.outcome(), PresentationOutcome::Presented);
+        assert_eq!(
+            terminal.observed_presentation_time_bits(),
+            2.5_f64.to_bits()
+        );
+        assert_eq!(terminal.recovery(), None);
+        assert_eq!(recovered.submission_count(), settled.submission_count() + 1);
+        assert_eq!(recovered.presented_count(), settled.presented_count() + 1);
+        assert_eq!(
+            recovered.qualified_presented_count(),
+            settled.qualified_presented_count() + 1
+        );
+        assert_eq!(recovered.skipped_count(), settled.skipped_count());
+        assert_eq!(recovered.failed_count(), settled.failed_count());
         assert_eq!(recovered.occupied_frame_slots(), 0);
         assert_eq!(recovered.submitted_frame_slots(), 0);
         assert!(recovered.display_link_paused());

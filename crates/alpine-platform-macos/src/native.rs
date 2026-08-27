@@ -436,9 +436,19 @@ impl Drop for InitializationLease {
     }
 }
 
-// A 120 Hz display can produce roughly 600 callbacks during the five-second
-// terminal-observation budget used by native qualification.
-const MAX_PRESENTATION_POLLS: u16 = 600;
+// Command completion owns reusable GPU resources. Presentation telemetry gets
+// one additional display turn after the completion-observing callback, but it
+// must never hold editor progress for a human-visible interval.
+const MAX_POST_COMMAND_PRESENTATION_POLLS: u8 = 2;
+
+const fn missing_presentation_is_terminal(
+    command_terminal: bool,
+    presentation_polls: u8,
+    newer_frame_pending: bool,
+) -> bool {
+    command_terminal
+        && (newer_frame_pending || presentation_polls >= MAX_POST_COMMAND_PRESENTATION_POLLS)
+}
 
 #[derive(Default)]
 struct FrameCounters {
@@ -590,6 +600,7 @@ struct PostCommitControl {
     configuration: Option<SurfaceConfiguration>,
     presented_time_bits: u64,
     close_generation: bool,
+    suppress_observation: bool,
 }
 
 struct ActiveFrame {
@@ -604,7 +615,7 @@ struct ActiveFrame {
     frame: Option<PendingFrame>,
     observation: PresentationObservation,
     command_terminal: bool,
-    presentation_polls: u16,
+    presentation_polls: u8,
     timing: AttemptTiming,
 }
 
@@ -612,6 +623,8 @@ struct PresentationObservation {
     signal: Arc<PresentationSignal>,
     #[cfg(alpine_native_validation)]
     injected: Option<InjectedPresentationObservation>,
+    #[cfg(alpine_native_validation)]
+    suppressed: bool,
 }
 
 #[cfg(alpine_native_validation)]
@@ -627,10 +640,16 @@ impl PresentationObservation {
             signal,
             #[cfg(alpine_native_validation)]
             injected: None,
+            #[cfg(alpine_native_validation)]
+            suppressed: false,
         }
     }
 
     fn observed(&self) -> bool {
+        #[cfg(alpine_native_validation)]
+        if self.suppressed {
+            return false;
+        }
         #[cfg(alpine_native_validation)]
         if self.injected.is_some() {
             return true;
@@ -660,6 +679,12 @@ impl PresentationObservation {
             presented_time_bits,
             event_to_presented_handler_ns: self.signal.elapsed_from_event_now(),
         });
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn suppress(&mut self) {
+        self.injected = None;
+        self.suppressed = true;
     }
 }
 
@@ -945,16 +970,34 @@ impl PresentationDriver {
             // invalidation starts a new revision and resumes demand normally.
             return Ok(Some(directive));
         }
+        let newer_frame_pending = self.pending.is_some();
         if let Some(active) = &mut self.active {
             active.presentation_polls = active.presentation_polls.saturating_add(1);
-            if active.presentation_polls >= MAX_PRESENTATION_POLLS {
-                return Err(SurfaceError::PresentationNotObserved {
-                    callbacks: active.presentation_polls,
-                });
+            if !missing_presentation_is_terminal(
+                active.command_terminal,
+                active.presentation_polls,
+                newer_frame_pending,
+            ) {
+                return Ok(Some(DisplayLinkDirective::None));
             }
+        } else {
+            return Ok(None);
+        }
+
+        let active = self
+            .active
+            .take()
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
+        counters.failed.fetch_add(1, Ordering::Relaxed);
+        let transition = self
+            .state
+            .apply(PresentationAction::FailActive(active.token))?;
+        let directive = self.record_terminal(transition, active.timing, 0, None, counters)?;
+        if self.pending.is_some() {
+            self.state.apply(PresentationAction::Resume)?;
             return Ok(Some(DisplayLinkDirective::None));
         }
-        Ok(None)
+        Ok(Some(directive))
     }
 
     fn poll_active_command(
@@ -1014,10 +1057,12 @@ impl PresentationDriver {
                 .record_terminal(transition, active.timing, 0, recovery, counters)
                 .map(Some);
         }
-        self.active
+        let active = self
+            .active
             .as_mut()
-            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?
-            .command_terminal = true;
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
+        active.command_terminal = true;
+        active.presentation_polls = 0;
         Ok(None)
     }
 
@@ -1225,12 +1270,29 @@ impl PresentationDriver {
         display_identity: Option<usize>,
         presented_time: f64,
     ) {
+        if display_identity.is_none()
+            && let Some(active) = self.active.as_mut()
+        {
+            active.observation.inject(presented_time.to_bits());
+            return;
+        }
         let configuration = display_identity
             .map(|identity| configuration_with_display_identity(self.configuration, identity));
         self.post_commit_control = Some(PostCommitControl {
             configuration,
             presented_time_bits: presented_time.to_bits(),
             close_generation: false,
+            suppress_observation: false,
+        });
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn inject_post_commit_omission(&mut self) {
+        self.post_commit_control = Some(PostCommitControl {
+            configuration: None,
+            presented_time_bits: 0,
+            close_generation: false,
+            suppress_observation: true,
         });
     }
 
@@ -1240,6 +1302,7 @@ impl PresentationDriver {
             configuration: None,
             presented_time_bits: 0,
             close_generation: true,
+            suppress_observation: false,
         });
     }
 
@@ -1261,7 +1324,9 @@ impl PresentationDriver {
             .active
             .as_mut()
             .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
-        if !control.close_generation {
+        if control.suppress_observation {
+            active.observation.suppress();
+        } else if !control.close_generation {
             active.observation.inject(control.presented_time_bits);
         }
         Ok(if control.close_generation {
@@ -4776,6 +4841,13 @@ impl NativeSurface {
     }
 
     #[cfg(alpine_native_validation)]
+    pub(crate) fn inject_post_commit_omission(&self) {
+        if let Ok(mut driver) = self.driver.try_borrow_mut() {
+            driver.inject_post_commit_omission();
+        }
+    }
+
+    #[cfg(alpine_native_validation)]
     pub(crate) fn inject_post_commit_close(&self) {
         if let Ok(mut driver) = self.driver.try_borrow_mut() {
             driver.inject_post_commit_close();
@@ -5507,6 +5579,23 @@ mod tests {
                 >= injected_latency
         );
         Ok(())
+    }
+
+    #[test]
+    fn missing_presentation_wait_is_post_command_bounded_and_latest_first() {
+        assert!(!missing_presentation_is_terminal(false, u8::MAX, true));
+        assert!(!missing_presentation_is_terminal(true, 0, false));
+        assert!(!missing_presentation_is_terminal(
+            true,
+            MAX_POST_COMMAND_PRESENTATION_POLLS - 1,
+            false
+        ));
+        assert!(missing_presentation_is_terminal(
+            true,
+            MAX_POST_COMMAND_PRESENTATION_POLLS,
+            false
+        ));
+        assert!(missing_presentation_is_terminal(true, 0, true));
     }
 
     #[test]

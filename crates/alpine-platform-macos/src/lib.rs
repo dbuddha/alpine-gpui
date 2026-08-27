@@ -1645,12 +1645,12 @@ pub mod native_validation {
         surface.implementation.inject_driver_error(error);
     }
 
-    /// Schedules one deterministic presented-handler observation immediately
-    /// after the next callback drawable commits and receives direct present.
+    /// Installs one deterministic presented-handler observation on the current
+    /// committed drawable, or on the next commit when no drawable is active.
     /// Zero models Apple's terminal dropped/not-presented drawable result.
     ///
-    /// An optional display identity change advances the native surface epoch
-    /// at that exact post-commit boundary.
+    /// An optional display identity change always targets the next commit and
+    /// advances the native surface epoch at that exact boundary.
     ///
     /// # Errors
     ///
@@ -1664,6 +1664,14 @@ pub mod native_validation {
         surface
             .implementation
             .inject_post_commit_observation(display_identity, presented_time)
+    }
+
+    /// Suppresses the next drawable's presentation callback after commit.
+    ///
+    /// This validation-only fault proves that optional presentation telemetry
+    /// cannot retain completed GPU resources or stall later editor frames.
+    pub fn inject_post_commit_omission(surface: &NativeSurface) {
+        surface.implementation.inject_post_commit_omission();
     }
 
     /// Revokes the native owner generation at the next post-commit boundary.
