@@ -14,9 +14,9 @@ use alpine_platform_macos::Modifiers;
 use serde_json::{Map, Value};
 
 use super::{
-    EditorSettingsPatch, FONT_NAME, KeyAction, KeyBinding, Keymap, MAX_FONT_NAME_BYTES,
-    MAX_KEY_BINDINGS, SettingsAdmission, SettingsEffect, SettingsFailure, SettingsLayer,
-    SettingsSource, SettingsState, SettingsUpdate, StudioSettings, StudioTheme, SyntaxTheme, color,
+    EditorSettingsPatch, FONT_NAME, KeyAction, KeyBinding, Keymap, MAX_KEY_BINDINGS,
+    SettingsAdmission, SettingsEffect, SettingsFailure, SettingsLayer, SettingsSource,
+    SettingsState, SettingsUpdate, StudioSettings, StudioTheme, SyntaxTheme, color,
 };
 use crate::commands::StudioCommand;
 
@@ -639,10 +639,24 @@ fn map_io(operation: &'static str, error: &io::Error) -> SettingsLoadError {
 }
 
 fn same_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    if left.len() != right.len() || left.modified().ok() != right.modified().ok() {
+    if !same_file_observation(
+        left.len(),
+        right.len(),
+        left.modified().ok(),
+        right.modified().ok(),
+    ) {
         return false;
     }
     same_platform_file(left, right)
+}
+
+fn same_file_observation(
+    left_len: u64,
+    right_len: u64,
+    left_modified: Option<std::time::SystemTime>,
+    right_modified: Option<std::time::SystemTime>,
+) -> bool {
+    left_len == right_len && left_modified == right_modified
 }
 
 fn require_same_file(left: &fs::Metadata, right: &fs::Metadata) -> Result<(), SettingsLoadError> {
@@ -797,9 +811,6 @@ fn decode_editor(value: &Value) -> Result<EditorSettingsPatch, SettingsLoadError
             let value = value
                 .as_str()
                 .ok_or(SettingsLoadError::InvalidValue("editor.font_name"))?;
-            if value.len() > MAX_FONT_NAME_BYTES {
-                return Err(SettingsLoadError::InvalidValue("editor.font_name"));
-            }
             if value != FONT_NAME {
                 return Err(SettingsLoadError::InvalidValue("editor.font_name"));
             }
@@ -936,12 +947,7 @@ fn decode_color(value: &Value, diagnostic: &'static str) -> Result<LinearRgba, S
     if channels.len() != 4 {
         return Err(SettingsLoadError::InvalidValue("theme color"));
     }
-    let channel = |index: usize| {
-        checked_f32(&channels[index], "theme color")
-            .ok()
-            .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
-            .ok_or(SettingsLoadError::InvalidValue("theme color"))
-    };
+    let channel = |index: usize| checked_f32(&channels[index], "theme color");
     color(
         diagnostic,
         channel(0)?,
@@ -1147,6 +1153,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::settings::MAX_FONT_NAME_BYTES;
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -1564,6 +1571,10 @@ mod tests {
             decode_color(&serde_json::json!([0.0, 1.0]), "short"),
             Err(SettingsLoadError::InvalidValue("theme color"))
         );
+        assert_eq!(
+            decode_color(&serde_json::json!([0.0, 1.0, 2.0, 1.0]), "range"),
+            Err(SettingsLoadError::InvalidValue("theme color"))
+        );
         let document = serde_json::json!({
             "version": 1,
             "editor": { "font_name": "x".repeat(MAX_FONT_NAME_BYTES + 1) }
@@ -1573,6 +1584,22 @@ mod tests {
         assert_eq!(
             decode_layer(document.as_bytes(), &theme),
             Err(SettingsLoadError::InvalidValue("editor.font_name"))
+        );
+        let bindings = (0..MAX_KEY_BINDINGS)
+            .map(|index| {
+                serde_json::json!({
+                    "physical_key": index + 1,
+                    "modifiers": ["command"],
+                    "action": "save_file",
+                    "label": format!("binding-{index}")
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decode_keymap(&serde_json::json!({ "bindings": bindings }))?
+                .bindings
+                .len(),
+            MAX_KEY_BINDINGS
         );
         let bindings = vec![
             serde_json::json!({
@@ -1751,6 +1778,13 @@ mod tests {
         );
         assert_eq!(
             decode_layer(
+                br#"{"version":1,"theme":{"unknown":[0.0,0.0,0.0,1.0]}}"#,
+                &StudioTheme::compiled()?
+            ),
+            Err(SettingsLoadError::UnknownField)
+        );
+        assert_eq!(
+            decode_layer(
                 br#"{"version":1,"editor":{"font_name":"Unregistered-Mono"}}"#,
                 &StudioTheme::compiled()?
             ),
@@ -1820,6 +1854,11 @@ mod tests {
         write(&right, b"same")?;
         let left_metadata = fs::metadata(&left)?;
         let right_metadata = fs::metadata(&right)?;
+        let modified = std::time::SystemTime::UNIX_EPOCH;
+        let later = modified + std::time::Duration::from_secs(1);
+        assert!(same_file_observation(4, 4, Some(modified), Some(modified)));
+        assert!(!same_file_observation(4, 5, Some(modified), Some(modified)));
+        assert!(!same_file_observation(4, 4, Some(modified), Some(later)));
         assert_eq!(require_same_file(&left_metadata, &left_metadata), Ok(()));
         assert!(!same_platform_file(&left_metadata, &right_metadata));
         assert_eq!(

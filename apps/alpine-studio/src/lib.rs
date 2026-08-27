@@ -121,8 +121,8 @@ use file_tree::{
     FileTreeWorkerOutput,
 };
 use find::{
-    FindAdmission, FindError, FindNavigation, FindRequest, FindState, FindWorkerOutput,
-    MAX_REPLACEMENT_TRANSACTION_BYTES,
+    FindAdmission, FindError, FindIdentity, FindNavigation, FindRequest, FindState,
+    FindWorkerOutput, MAX_REPLACEMENT_TRANSACTION_BYTES,
 };
 use panes::{MAX_PANES, PaneError, PaneGrid, SplitAxis};
 use profiling::{MeasuredTextSystem, StudioProfiler, TextSystemSnapshot};
@@ -4904,6 +4904,26 @@ impl StudioApp {
             .request(self.runtime_document_revision, self.buffer().snapshot())
     }
 
+    fn resolve_find_submission_error(
+        &mut self,
+        identity: FindIdentity,
+        error: SubmitError,
+    ) -> EventEffect {
+        match error {
+            SubmitError::Saturated => {
+                if self.find.defer_submission(identity) {
+                    self.find_needs_search = true;
+                }
+                EventEffect::default()
+            }
+            SubmitError::Closed | SubmitError::SequenceExhausted => self
+                .find
+                .reject_submission(identity)
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+        }
+    }
+
     fn prepare_quick_open_request(&mut self) -> Result<Option<QuickOpenRequest>, QuickOpenError> {
         let Some(workspace) = &self.workspace else {
             return if self.quick_open.is_open() {
@@ -6098,6 +6118,22 @@ impl StudioApp {
         self.advance_selection_revision(selection_before);
         let language_visual_changed = self.synchronize_language_after_event(context);
         effect.visual_changed |= language_visual_changed;
+        match self.prepare_find_request() {
+            Ok(Some(request)) => {
+                let identity = request.identity();
+                match context.spawn(move || StudioWorkerOutput::Find(request.execute())) {
+                    Ok(_) => {}
+                    Err(error) => {
+                        effect = effect.merge(self.resolve_find_submission_error(identity, error));
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.find.record_error(&error);
+                effect.visual_changed = true;
+            }
+        }
         self.advance_accessibility_semantic_revision(effect.visual_changed);
         if effect.visual_changed {
             context.invalidate();
@@ -6105,31 +6141,6 @@ impl StudioApp {
             if language_visual_changed {
                 NATIVE_VALIDATION_LANGUAGE_INVALIDATIONS
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-        match self.prepare_find_request() {
-            Ok(Some(request)) => {
-                let identity = request.identity();
-                match context.spawn(move || StudioWorkerOutput::Find(request.execute())) {
-                    Ok(_) => {}
-                    Err(SubmitError::Saturated) => {
-                        if self.find.defer_submission(identity) {
-                            self.find_needs_search = true;
-                        }
-                    }
-                    Err(SubmitError::Closed | SubmitError::SequenceExhausted) => {
-                        if self.find.reject_submission(identity) {
-                            self.advance_accessibility_semantic_revision(true);
-                            context.invalidate();
-                        }
-                    }
-                }
-            }
-            Ok(None) => {}
-            Err(error) => {
-                self.find.record_error(&error);
-                self.advance_accessibility_semantic_revision(true);
-                context.invalidate();
             }
         }
         self.submit_quick_open_request(context);

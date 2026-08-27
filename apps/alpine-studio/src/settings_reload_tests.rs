@@ -243,7 +243,20 @@ fn application_settings_admission_reports_every_terminal_result() -> Result<(), 
     assert!(app.request_settings_reload().visual_changed);
     assert!(matches!(app.local_status, Some(LocalStatus::Command(_))));
 
+    app.local_status = None;
     record_project_settings_result(&mut app, Err::<bool, _>("settings generation exhausted"));
-    assert!(matches!(app.local_status, Some(LocalStatus::Command(_))));
+    assert_eq!(
+        app.local_status,
+        Some(LocalStatus::Command(Arc::from(
+            "Settings project override failed: settings generation exhausted"
+        )))
+    );
+    record_project_settings_result(&mut app, Ok::<bool, &str>(false));
+    assert_eq!(
+        app.local_status,
+        Some(LocalStatus::Command(Arc::from(
+            "Settings project override failed: settings generation exhausted"
+        )))
+    );
     Ok(())
 }

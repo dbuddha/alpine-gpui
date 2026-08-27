@@ -1412,6 +1412,48 @@ fn runtime_find_failures_are_bounded_and_visible() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn find_submission_errors_retry_only_saturation_and_reject_terminal_failures()
+-> Result<(), Box<dyn std::error::Error>> {
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let mut app = test_app()?;
+    *app.buffer_mut() = Buffer::new("alpha beta alpha");
+    app.handle_event(&key(KEY_F, command));
+    app.handle_event(&ime(ImeEvent::Committed("alpha".into())));
+
+    let saturated = app
+        .prepare_find_request()?
+        .ok_or("missing saturated find request")?;
+    assert_eq!(
+        app.resolve_find_submission_error(saturated.identity(), SubmitError::Saturated),
+        EventEffect::default()
+    );
+    assert!(app.find_needs_search);
+    assert_eq!(app.find.failures(), 0);
+
+    let closed = app
+        .prepare_find_request()?
+        .ok_or("missing closed find request")?;
+    assert_eq!(
+        app.resolve_find_submission_error(closed.identity(), SubmitError::Closed),
+        EventEffect::visual()
+    );
+    assert!(!app.find_needs_search);
+    assert_eq!(app.find.failures(), 1);
+
+    app.find_needs_search = true;
+    let exhausted = app
+        .prepare_find_request()?
+        .ok_or("missing exhausted find request")?;
+    assert_eq!(
+        app.resolve_find_submission_error(exhausted.identity(), SubmitError::SequenceExhausted),
+        EventEffect::visual()
+    );
+    assert!(!app.find_needs_search);
+    assert_eq!(app.find.failures(), 2);
+    Ok(())
+}
+
+#[test]
 fn find_scroll_and_replacement_budget_boundaries_are_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut scrolling = test_app()?;
