@@ -6,6 +6,7 @@ mod lab;
 mod lab_v2;
 mod onscreen;
 mod qualification;
+mod trace_sequence;
 
 use serde::Deserialize;
 use std::{
@@ -128,6 +129,10 @@ fn main() -> ExitCode {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the bounded CLI keeps one exhaustive dispatch boundary with exact argument ownership"
+)]
 fn run() -> Result<String, Vec<String>> {
     let mut arguments = env::args().skip(1);
     let command = arguments.next().unwrap_or_else(|| "validate".to_owned());
@@ -151,6 +156,35 @@ fn run() -> Result<String, Vec<String>> {
         "validate-ax-fixture" | "validate-ax-evidence" | "ax-evidence-report"
     ) {
         return run_ax_command(&command, &mut arguments);
+    }
+    if command == "validate-trace-sequence" {
+        let Some(path) = arguments.next() else {
+            return Err(vec![format!("{command} requires a manifest path")]);
+        };
+        if arguments.next().is_some() {
+            return Err(vec![format!("{command} accepts exactly one manifest path")]);
+        }
+        return trace_sequence::validate(Path::new(&path), Path::new("."));
+    }
+    if command == "render-trace-sequence-native" {
+        let Some(manifest) = arguments.next() else {
+            return Err(vec![format!(
+                "{command} requires a manifest and output path"
+            )]);
+        };
+        let Some(output) = arguments.next() else {
+            return Err(vec![format!(
+                "{command} requires a manifest and output path"
+            )]);
+        };
+        if arguments.next().is_some() {
+            return Err(vec![format!("{command} accepts exactly two paths")]);
+        }
+        return trace_sequence::render_native(
+            Path::new(&manifest),
+            Path::new(&output),
+            Path::new("."),
+        );
     }
     if matches!(
         command.as_str(),
@@ -226,7 +260,7 @@ fn run() -> Result<String, Vec<String>> {
         )),
         "report" => Ok(render_report(&registry)),
         other => Err(vec![format!(
-            "unknown command {other:?}; expected validate, report, validate-scene-trace, render-scene-reference, render-scene-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, or upstream-radar"
+            "unknown command {other:?}; expected validate, report, validate-scene-trace, validate-trace-sequence, render-scene-reference, render-scene-native, render-trace-sequence-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, or upstream-radar"
         )]),
     }
 }

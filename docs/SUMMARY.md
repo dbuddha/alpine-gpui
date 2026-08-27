@@ -47,6 +47,7 @@
   - [Alpine Studio release profiling](quality/studio-release-profiling.md)
   - [Alpine Studio residency protocol](quality/studio-residency.md)
   - [Comparator protocol v1](quality/comparator-protocol.md)
+  - [Renderer atlas lifecycle qualification](quality/renderer-atlas-lifecycle.md)
   - [Onscreen SDR qualification](quality/onscreen-sdr.md)
   - [Native idle wakeup and energy protocol](quality/native-idle-energy.md)
 - [Platform strategy](platforms/README.md)

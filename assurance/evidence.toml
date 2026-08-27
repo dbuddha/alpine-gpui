@@ -2863,6 +2863,45 @@ scope = "Repository-root executable qualification boundary for Task #334."
 exclusions = ["pinned Zed GPUI", "native hardware", "performance qualification"]
 
 [[evidence]]
+id = "EV-0028-PROPERTY03E"
+claim = "AEP-0028-C03"
+kind = "property"
+artifact = "tools/alpine-trace/src/lib.rs#lifecycle_sequence_accepts_only_bounded_reuse_replacement_and_resynchronization"
+assertion = "The bounded companion accepts only full admission, exact zero-upload reuse, revisioned content replacement, capacity replacement, zero-retention teardown, and full resynchronization under the next logical owner generation."
+scope = "Serialization-neutral alpine-scene-trace-sequence/v1 semantics for Task #353."
+bounds = ["exactly six steps", "at most 16 admitted steps", "one atlas identity", "16,777,216 atlas pixels", "two logical renderer generations"]
+exclusions = ["TOML parsing", "native resource handles", "timing", "memory superiority", "device-loss simulation"]
+
+[[evidence]]
+id = "EV-0028-KANI03E"
+claim = "AEP-0028-C03"
+kind = "kani"
+artifact = "tools/alpine-trace/src/proofs.rs#lifecycle_sequence_rejects_symbolic_incompatible_reuse"
+assertion = "A bounded symbolic content-identity fault is rejected exactly when compatible reuse drifts from the admitted atlas."
+scope = "Six-step pure Rust lifecycle admission under Task #353."
+bounds = ["one two-by-two initial atlas", "one four-by-two capacity replacement", "one symbolic reuse-content fault"]
+exclusions = ["serialization", "allocation failure", "Metal", "GPUI", "elapsed time"]
+companion = "tools/alpine-trace/src/lib.rs#lifecycle_sequence_accepts_only_bounded_reuse_replacement_and_resynchronization"
+
+[[evidence]]
+id = "EV-0028-UNIT03E"
+claim = "AEP-0028-C03"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/trace_sequence.rs#canonical_sequence_reaches_every_cpu_oracle_without_claiming_performance"
+assertion = "The strict companion manifest binds five visible v2 scenes and one teardown to exact atlas and workload identities, then reaches every independent CPU oracle with timing and memory claims disabled."
+scope = "Canonical Task #353 Alpine sequence fixture."
+exclusions = ["Direct Metal physical output", "GPUI", "allocation identity", "performance"]
+
+[[evidence]]
+id = "EV-0028-INTEGRATION03E"
+claim = "AEP-0028-C03"
+kind = "integration"
+artifact = "tools/alpine-assurance/tests/qualification_cli.rs#validates_the_atlas_lifecycle_sequence_through_the_binary_boundary"
+assertion = "The public non-shipping CLI validates all five visible lifecycle scenes, two logical owner generations, and 24 exact atlas upload bytes before native execution."
+scope = "Repository-root Task #353 sequence command."
+exclusions = ["physical renderer execution", "GPUI adapter", "timing", "memory claim"]
+
+[[evidence]]
 id = "EV-0025-KANI05D"
 claim = "AEP-0025-C05"
 kind = "kani"
