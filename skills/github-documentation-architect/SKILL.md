@@ -88,6 +88,19 @@ from a clean exact `origin/main` checkout. Local source validation and rendering
 prove only the repository templates; they do not prove that the fetched Wiki
 remote contains the same bounded pages or source revision.
 
+## Publication state
+
+Report documentation state using the narrowest exact stage: local candidate,
+pushed branch, open pull request, merged repository source, published Wiki, or
+audited live Wiki. Preserve the commit, branch, pull request, merge revision, and
+Wiki revision identities that exist at that stage.
+
+Never collapse these stages. An Issue comment can make a local candidate
+discoverable, but it does not publish the files. A green local gate does not
+prove hosted CI. A merged repository document does not prove the Wiki was
+published. A Wiki push does not prove freshness until the fetched-remote audit
+passes from clean exact `origin/main`.
+
 ## Wiki design
 
 Use the AWS ParallelCluster Wiki as an information-architecture example, not content to copy. Its useful pattern is task and audience grouping, clear troubleshooting and known-issues routes, and explicit deprecated areas. Alpine improves it by generating every Wiki page from reviewed repository sources and pinning the source revision.
@@ -113,6 +126,7 @@ Every supported release answers what changed, who is affected, compatibility, in
 - No stable project-path page containing manually maintained live status.
 - No `SUMMARY.md` entry treated as delivery or milestone authority.
 - No live Wiki freshness claim without a successful fetched-remote audit.
+- No local candidate or pushed branch described as merged or published.
 
 ## Output
 

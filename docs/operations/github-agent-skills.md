@@ -44,6 +44,16 @@ owns mechanism origin, Alpine modifications, historical supersession, and
 evidence ceilings. `docs/SUMMARY.md` only exposes these pages in mdBook
 navigation.
 
+## Publication-state reporting
+
+Name the exact state when bridging local work to GitHub: local commit, pushed
+branch, open pull request, merged repository source, published Wiki, or audited
+live Wiki. Include the corresponding commit, pull request, merge, and Wiki
+revision identities when they exist. An Issue comment can retain the location
+of a local candidate, but it does not make that candidate published. Likewise,
+merged templates do not make the live Wiki current until publication and the
+fetched-remote audit both succeed.
+
 ## Project access preflight
 
 Before reading or changing a GitHub Project, verify the active token can list
