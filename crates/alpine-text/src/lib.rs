@@ -887,6 +887,13 @@ struct HistoryEntry {
     changed_bytes: usize,
 }
 
+struct PreparedTransaction {
+    next_rope: Rope,
+    next_selections: SelectionSet,
+    history: HistoryEntry,
+    changes: ChangeSet,
+}
+
 fn is_grapheme_boundary(slice: ropey::RopeSlice<'_>, byte: usize) -> Result<bool, TextError> {
     let (chunk, chunk_start, _, _) = slice.chunk_at_byte(byte);
     let mut cursor = GraphemeCursor::new(byte, slice.len_bytes(), true);
@@ -1069,7 +1076,15 @@ impl Buffer {
     ///
     /// Rejects stale revisions, invalid or overlapping ranges, invalid
     /// selections, and revision exhaustion without changing buffer state.
-    pub fn apply(&mut self, mut transaction: Transaction) -> Result<ChangeSet, TextError> {
+    pub fn apply(&mut self, transaction: Transaction) -> Result<ChangeSet, TextError> {
+        let prepared = self.prepare_transaction(transaction)?;
+        Ok(self.commit_transaction(prepared))
+    }
+
+    fn prepare_transaction(
+        &self,
+        mut transaction: Transaction,
+    ) -> Result<PreparedTransaction, TextError> {
         if transaction.base_revision != self.revision {
             return Err(TextError::StaleRevision {
                 expected: self.revision,
@@ -1134,22 +1149,31 @@ impl Buffer {
             rope: next_rope.clone(),
             selections: next_selections.clone(),
         };
-        self.rope = next_rope;
-        self.selections = next_selections;
-        self.revision = next_revision;
-        self.clear_redo();
-        self.retain_history(HistoryEntry {
-            before,
-            after,
-            changed_bytes: removed_bytes.saturating_add(inserted_bytes),
-        });
-        Ok(ChangeSet {
-            before: transaction.base_revision,
-            after: next_revision,
-            replacements: transaction.edits.len(),
-            removed_bytes,
-            inserted_bytes,
+        Ok(PreparedTransaction {
+            next_rope,
+            next_selections,
+            history: HistoryEntry {
+                before,
+                after,
+                changed_bytes: removed_bytes.saturating_add(inserted_bytes),
+            },
+            changes: ChangeSet {
+                before: transaction.base_revision,
+                after: next_revision,
+                replacements: transaction.edits.len(),
+                removed_bytes,
+                inserted_bytes,
+            },
         })
+    }
+
+    fn commit_transaction(&mut self, prepared: PreparedTransaction) -> ChangeSet {
+        self.rope = prepared.next_rope;
+        self.selections = prepared.next_selections;
+        self.revision = prepared.changes.after;
+        self.clear_redo();
+        self.retain_history(prepared.history);
+        prepared.changes
     }
 
     /// Restores the state before the newest retained transaction while
@@ -1271,6 +1295,9 @@ pub enum FileError {
     Conflict(ExternalChange),
     /// Atomic replacement is not implemented on the current shipping target.
     UnsupportedAtomicReplace,
+    /// A caller tried to admit a transaction that does not produce the exact
+    /// bytes already committed by its reviewed persistence boundary.
+    InvalidPersistedTransaction,
 }
 
 impl fmt::Display for FileError {
@@ -1418,6 +1445,44 @@ impl Editor {
                 bytes_written: snapshot.len_bytes(),
             })
         }
+    }
+
+    /// Admits one revision-bound transaction whose exact resulting bytes were
+    /// already committed by an external crash-recoverable persistence boundary.
+    ///
+    /// This preserves the transaction in local undo history while advancing
+    /// the accepted fingerprint and saved revision without performing I/O.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale or invalid transaction and any transaction whose result
+    /// differs from `persisted`.
+    pub fn admit_persisted_transaction(
+        &mut self,
+        transaction: Transaction,
+        persisted: &str,
+    ) -> Result<(ChangeSet, SaveReport), FileError> {
+        let prepared = self
+            .buffer
+            .prepare_transaction(transaction)
+            .map_err(|_| FileError::InvalidPersistedTransaction)?;
+        let snapshot = BufferSnapshot {
+            rope: prepared.next_rope.clone(),
+            revision: prepared.changes.after,
+        };
+        if snapshot.text() != persisted {
+            return Err(FileError::InvalidPersistedTransaction);
+        }
+        let changes = self.buffer.commit_transaction(prepared);
+        self.accepted_fingerprint = fingerprint(persisted.as_bytes());
+        self.saved_revision = snapshot.revision;
+        Ok((
+            changes,
+            SaveReport {
+                revision: snapshot.revision,
+                bytes_written: persisted.len(),
+            },
+        ))
     }
 }
 
@@ -1884,6 +1949,52 @@ mod tests {
             Err(FileError::Conflict(ExternalChange::Modified))
         );
         assert_eq!(fs::read_to_string(&path)?, "external");
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[cfg(not(target_family = "windows"))]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    fn persisted_transaction_rejections_leave_editor_history_and_authority_unchanged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _file_test = lock_file_tests();
+        let directory = test_directory()?;
+        let path = directory.join("document.txt");
+        fs::write(&path, "before")?;
+        let mut editor = Editor::open(&path)?;
+        let original_revision = editor.buffer().revision();
+
+        let mismatch = transaction(editor.buffer(), 0..6, "after");
+        assert_eq!(
+            editor.admit_persisted_transaction(mismatch, "different"),
+            Err(FileError::InvalidPersistedTransaction)
+        );
+        assert_eq!(editor.buffer().snapshot().text(), "before");
+        assert_eq!(editor.buffer().revision(), original_revision);
+        assert!(!editor.is_dirty());
+        assert!(!editor.buffer_mut().undo()?);
+        assert!(!editor.buffer_mut().redo()?);
+
+        let stale = transaction(editor.buffer(), 0..6, "stale");
+        let local = transaction(editor.buffer(), 6..6, " local");
+        editor.buffer_mut().apply(local)?;
+        let local_revision = editor.buffer().revision();
+        assert_eq!(
+            editor.admit_persisted_transaction(stale, "stale"),
+            Err(FileError::InvalidPersistedTransaction)
+        );
+        assert_eq!(editor.buffer().snapshot().text(), "before local");
+        assert_eq!(editor.buffer().revision(), local_revision);
+        assert!(editor.is_dirty());
+
+        let invalid = transaction(editor.buffer(), 0..usize::MAX, "invalid");
+        assert_eq!(
+            editor.admit_persisted_transaction(invalid, "invalid"),
+            Err(FileError::InvalidPersistedTransaction)
+        );
+        assert_eq!(editor.buffer().snapshot().text(), "before local");
+        assert_eq!(editor.buffer().revision(), local_revision);
         fs::remove_dir_all(directory)?;
         Ok(())
     }

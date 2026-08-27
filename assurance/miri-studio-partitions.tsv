@@ -15,6 +15,7 @@ lsp_language::coverage_tests::did_change_document_limit_is_exact	studio-language
 lsp_language::coverage_tests::did_open_document_limit_is_exact	studio-language-protocol-04
 lsp_language::coverage_tests::errors_documents_and_initialization_preserve_exact_contracts	studio-language-protocol-04
 lsp_language::coverage_tests::file_uri_encoding_and_length_are_bounded	studio-language-protocol-05
+lsp_language::coverage_tests::windows_file_uri_policy_is_host_testable	studio-language-protocol-05
 lsp_language::coverage_tests::non_utf8_file_path_is_rejected_before_uri_allocation	studio-language-protocol-06
 lsp_language::tests::diagnostics_are_revision_checked_and_byte_accounted	studio-language-protocol-07
 lsp_language::tests::diagnostics_fail_closed_at_every_independent_bound	studio-language-protocol-08
@@ -31,6 +32,9 @@ rust_diagnostics_scene_tests::	studio-language-diagnostics
 rust_navigation::	studio-language-navigation
 rust_symbols::	studio-language-symbols
 rust_workspace_edit::	studio-language-workspace-edit
+rust_workspace_ui::	studio-language-workspace-edit
+rust_workspace_publish::	studio-language-workspace-edit
+rust_workspace_publication_tests::	studio-language-workspace-edit
 session::	studio-persistence
 session_integration_tests::	studio-persistence
 settings::	studio-model

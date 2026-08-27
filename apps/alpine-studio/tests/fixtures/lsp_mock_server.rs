@@ -160,6 +160,30 @@ fn run() -> io::Result<()> {
                         ),
                     )?;
                 }
+                Some("textDocument/formatting") if initialized => {
+                    let id = json_id(message)?;
+                    write_frame(
+                        &mut output,
+                        &format!(
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":[{{"range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":2}}}},"newText":"pub fn"}}]}}"#
+                        ),
+                    )?;
+                }
+                Some("textDocument/rename") if initialized => {
+                    if message.contains(r#""newName":"never_respond""#) {
+                        continue;
+                    }
+                    let id = json_id(message)?;
+                    let uri = json_string(message, "uri").ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "missing document URI")
+                    })?;
+                    write_frame(
+                        &mut output,
+                        &format!(
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"changes":{{"{uri}":[{{"range":{{"start":{{"line":0,"character":3}},"end":{{"line":0,"character":7}}}},"newText":"renamed"}}]}}}}}}"#
+                        ),
+                    )?;
+                }
                 Some("test/echo") if initialized => {
                     let id = json_id(message)?;
                     write_frame(
