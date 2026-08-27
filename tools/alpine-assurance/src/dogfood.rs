@@ -799,17 +799,37 @@ fn calculate_sha256(path: &Path) -> Result<String, String> {
         if !output.status.success() {
             continue;
         }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Some(candidate) = stdout.split_ascii_whitespace().next()
-            && valid_sha256(candidate)
-        {
-            return Ok(candidate.to_owned());
+        if let Some(digest) = sha256_from_output(&output.stdout) {
+            return Ok(digest);
         }
     }
+
+    #[cfg(windows)]
+    {
+        let output = Command::new("certutil")
+            .arg("-hashfile")
+            .arg(path)
+            .arg("SHA256")
+            .output();
+        if let Ok(output) = output
+            && output.status.success()
+            && let Some(digest) = sha256_from_output(&output.stdout)
+        {
+            return Ok(digest);
+        }
+    }
+
     Err(format!(
-        "cannot calculate SHA-256 for {}; sha256sum or shasum is required",
+        "cannot calculate SHA-256 for {}; sha256sum, shasum, or certutil is required",
         path.display()
     ))
+}
+
+fn sha256_from_output(output: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(output)
+        .split_ascii_whitespace()
+        .map(str::to_ascii_lowercase)
+        .find(|candidate| valid_sha256(candidate))
 }
 
 fn render_report(capture: &Capture, snapshot: &Snapshot) -> String {
@@ -911,6 +931,26 @@ mod tests {
             assert!(report.contains("Idle submissions: 0"));
             assert!(report.contains("`glyph-atlas-gpu`"));
         }
+    }
+
+    #[test]
+    fn sha256_command_output_accepts_unix_and_windows_shapes() {
+        let digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert_eq!(
+            sha256_from_output(format!("{digest}  snapshot.toml\n").as_bytes()),
+            Some(digest.to_owned())
+        );
+        assert_eq!(
+            sha256_from_output(
+                format!(
+                    "SHA256 hash of snapshot.toml:\r\n{}\r\nCertUtil: completed successfully.\r\n",
+                    digest.to_ascii_uppercase()
+                )
+                .as_bytes()
+            ),
+            Some(digest.to_owned())
+        );
+        assert_eq!(sha256_from_output(b"not-a-digest"), None);
     }
 
     #[test]
