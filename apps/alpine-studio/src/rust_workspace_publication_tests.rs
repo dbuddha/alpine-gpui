@@ -158,6 +158,7 @@ fn application_recovery_and_publication_guards_fail_closed()
     assert!(recover_workspace_edit_for_session(&corrupt_session).is_err());
     assert!(recover_explicit_workspace_edit(&path, &corrupt_session).is_err());
     fs::remove_file(corrupt_journal)?;
+    recover_explicit_workspace_edit(&path, &corrupt_session)?;
     let mut app = StudioApp::open_file(TestTextSystem, &path)?;
     let snapshot = app.buffer().snapshot();
     let language_identity = app.language_identity();
