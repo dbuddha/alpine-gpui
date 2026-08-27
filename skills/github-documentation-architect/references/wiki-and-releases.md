@@ -6,6 +6,18 @@ A Wiki supports high-discovery onboarding, troubleshooting, known issues, and cu
 
 For Alpine, author templates in the main repository, link every page to a canonical source, render an exact main revision, validate the manifest and internal links, publish only from clean exact `origin/main`, and reject unknown pages or unique claims.
 
+Local validation does not prove live publication. From a clean checkout whose
+`HEAD` equals `origin/main`, run:
+
+```sh
+scripts/wiki.sh audit-remote /path/to/alpine-gpui-wiki
+```
+
+The command fetches the Wiki's `origin/master` into a local remote-tracking ref,
+rejects unknown remote files, renders the exact repository revision, and
+byte-compares all approved pages. It never commits or pushes. A failed fetch is
+unknown freshness, not evidence that the Wiki is empty or current.
+
 Recommended routes are Home, Getting Started, Daily Driver Status, Architecture, Developer Guide, Direct Metal, Editor, Performance, Research, Troubleshooting, Known Issues, Releases and Upgrades, Deprecated, and Contributing. Add a route only when its canonical source exists.
 
 AWS ParallelCluster demonstrates useful audience and task grouping plus troubleshooting, known issues, and deprecated-page visibility: https://github.com/aws/aws-parallelcluster/wiki

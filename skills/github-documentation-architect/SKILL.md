@@ -83,6 +83,11 @@ it is not another planning system.
 Read [documentation freshness](references/documentation-freshness.md) before
 publishing status-like material or declaring a page current.
 
+Before describing the live GitHub Wiki as current, run the live remote drift audit
+from a clean exact `origin/main` checkout. Local source validation and rendering
+prove only the repository templates; they do not prove that the fetched Wiki
+remote contains the same bounded pages or source revision.
+
 ## Wiki design
 
 Use the AWS ParallelCluster Wiki as an information-architecture example, not content to copy. Its useful pattern is task and audience grouping, clear troubleshooting and known-issues routes, and explicit deprecated areas. Alpine improves it by generating every Wiki page from reviewed repository sources and pinning the source revision.
@@ -107,6 +112,7 @@ Every supported release answers what changed, who is affected, compatibility, in
   when copied code is alleged.
 - No stable project-path page containing manually maintained live status.
 - No `SUMMARY.md` entry treated as delivery or milestone authority.
+- No live Wiki freshness claim without a successful fetched-remote audit.
 
 ## Output
 

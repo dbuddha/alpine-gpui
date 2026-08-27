@@ -20,6 +20,8 @@ navigation, review tooling, or publication.
 
 - Reject links to missing canonical sources.
 - Reject generated pages whose revision differs from their source checkout.
+- Distinguish a locally valid mirror template from a fetched live remote. Only
+  an exact remote inventory and byte comparison proves live Wiki freshness.
 - Reject mutable version claims without a revision or release identity.
 - Detect implementation inventories whose stated review revision is obsolete.
 - Preserve superseded pages outside the happy path with a replacement link.
@@ -27,3 +29,7 @@ navigation, review tooling, or publication.
 
 Do not create busywork review dates for timeless reference pages. Prefer
 event-driven triggers and automated identity checks.
+
+Run the live Wiki audit after a canonical source change, Wiki publication,
+failed publication, worktree migration, or before reporting documentation state.
+Keep it outside offline CI so network availability cannot break source checks.
