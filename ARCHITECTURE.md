@@ -959,25 +959,63 @@ supporting correctness evidence only. Adaptation timing, renderer timing,
 memory, latency, and performance qualification remain false, so this boundary
 admits E3 semantic equivalence but cannot produce an E4 comparison claim.
 
-### Bounded Rust workspace-edit preparation
+### Bounded Rust workspace-edit preparation, preview, and publication
 
-Task #220 now owns a private, non-published preparation boundary for local
-rust-analyzer formatting and rename results. Strict JSON admission rejects
+Task #220 owns a private preparation and preview boundary for local
+rust-analyzer formatting and rename results. The existing single Rust session
+captures exact workspace, document, buffer, selection, process epoch, LSP
+version, request, and operation identity. A command can request formatting or
+open a bounded keyboard and IME rename field. Supersession, focus loss, editor
+change, restart, and shutdown cancel the request before publication.
+
+The foreground poll copies only the size-bounded raw response into one owned
+wire value. Strict parsing, canonical file reads, UTF-16 mapping, independent
+replacement construction, and prepared-edit retention run through the bounded
+runtime worker rather than the AppKit event handler. Strict JSON admission rejects
 duplicate object keys, unsupported resource operations, annotations, remote
 URIs, malformed or overlapping UTF-16 ranges, duplicate canonical paths, and
 every declared file, edit, inserted-text, file-text, and retained-byte excess.
 Rename names and formatting options are bounded before request serialization.
-The initialize payload does not advertise workspace-edit, rename, or formatting
-support until accepted edits can traverse the complete publication path.
+The initialize payload advertises only the implemented static subset: rename
+without prepare support, formatting without dynamic registration, document
+changes without resource operations, and transactional workspace-edit failure
+handling. Server-initiated `workspace/applyEdit` remains unsupported; Alpine
+applies only the exact response to its own current rename or formatting request.
 
 Preparation revalidates each canonical workspace path, reads only regular
 existing UTF-8 files, converts UTF-16 ranges against immutable copy-on-write
 snapshots, and constructs both a checked Alpine text transaction and an
-independent forward-built String result. This work is not wired to a command or
-foreground event path yet, so it adds no startup work, idle redraw, file
-mutation, or performance claim. Background request ownership, preview,
-all-or-nothing foreground publication, recovery evidence, and production-path
-rust-analyzer qualification remain required before Task #220 can close.
+independent forward-built String result. One current response produces one
+revision-bound preview panel with at most eight visible paths and exact file and
+edit counts. The panel is keyboard and IME exclusive, has one accessibility
+dialog identity, creates one dirty frame per state transition, and retains no
+timer or idle polling. Enter queues one prepared transaction on the existing
+bounded worker. While publication owns that transaction, document mutation,
+pointer and scroll mutation, accessibility actions, cancellation, and close are
+refused; read-only accessibility queries remain available.
+
+Publication revalidates every loaded target tab as clean and byte-exact, then
+uses one bounded, checksummed Preparing/Prepared/Committed journal beside the
+session state. Preparing is durable before adjacent stages are created;
+Prepared is durable only after every stage is synced. Every replacement is
+admitted against the exact original bytes immediately before rename. Before the
+durable Committed marker, any failure rolls all targets back from adjacent
+backups. A Preparing journal removes only tracked stages, a Prepared journal
+rolls back installed files, and a Committed journal preserves the new files and
+completes cleanup. Impossible artifact combinations retain the journal and fail
+closed instead of guessing a recovery direction. Corrupt or oversized journals
+also preserve target files. The protocol is capped at 32 files, 512 KiB of
+journal storage, and 4 KiB per path, and creates no executor, timer, or
+unbounded queue.
+
+After disk commit, loaded active and inactive documents admit their checked
+transactions without rereading or rewriting the files. The active document
+retains one normal Alpine Text undo entry while becoming clean at the committed
+revision. Exact persisted-byte mismatch is rejected before clean-state
+publication. Local unit and recovery tests support the implementation on this
+branch; hosted exact-head CI, pinned production-path rust-analyzer rename and
+formatting, fault-injection breadth, mutation, and coverage evidence remain
+required before Task #220 can close or this behavior can be classified E3.
 
 ### Bounded static command discovery
 

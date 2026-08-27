@@ -2,7 +2,7 @@
 
 - Research record: [#315](https://github.com/dbuddha/alpine-gpui/issues/315)
 - Historical audit baseline: [`de8cd6397adc81632fe1103f1834214ae6ec6a1a`](https://github.com/dbuddha/alpine-gpui/tree/de8cd6397adc81632fe1103f1834214ae6ec6a1a)
-- Current reconciliation revision: [`7db5e18f6da8e02cd171668d4714c745c55d7eda`](https://github.com/dbuddha/alpine-gpui/tree/7db5e18f6da8e02cd171668d4714c745c55d7eda)
+- Current reconciliation revision: [`e2564055622dce3a7d1f277d52fc53e34c16e916`](https://github.com/dbuddha/alpine-gpui/tree/e2564055622dce3a7d1f277d52fc53e34c16e916)
 - Comparator pin: Zed [`v1.15.0`](https://github.com/zed-industries/zed/tree/e17dc4f9d50db73a458b64dcce50ecd4878b98a3)
 - Current-upstream review: Zed [`v1.16.1`](https://github.com/zed-industries/zed/tree/eb8e1c8b5502b7007465fbbc465f4a736fa39210), WGPU [`v30.0.1`](https://github.com/gfx-rs/wgpu/tree/40f4a34ebaf56f9a046231f54125ad046239d3f3), awesome-gpui [`6571693`](https://github.com/zed-industries/awesome-gpui/tree/657169337a19a5b27f9aa7e53811e6f82b7f213c)
 - Reviewed: 2026-08-22
@@ -64,8 +64,8 @@ quality, or LOC percentage.
 
 The [Studio matrix](studio-lineage.md) audits 24 private daily-driver families.
 At the current reconciliation revision, nineteen are implemented for their
-selected behavior, two have implementation but incomplete qualification or
-configuration behavior, and three remain incomplete. Twenty-one therefore have
+selected behavior, three have implementation but incomplete qualification,
+publication, or configuration behavior, and two remain incomplete. Twenty-two therefore have
 some production implementation. Neither the unweighted inventory nor a
 partial-credit score is daily-driver readiness: typing smoothness, data safety,
 accessibility, and sustained dogfood are blocking gates whose importance is

@@ -433,9 +433,18 @@ pub(crate) fn initialize_params(workspace: &Path) -> Result<Box<RawValue>, Langu
                         "insertReplaceSupport": true
                     }
                 },
-                "documentSymbol": { "hierarchicalDocumentSymbolSupport": true }
+                "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
+                "rename": { "prepareSupport": false },
+                "formatting": { "dynamicRegistration": false }
             },
-            "workspace": { "symbol": {} }
+            "workspace": {
+                "symbol": {},
+                "applyEdit": true,
+                "workspaceEdit": {
+                    "documentChanges": true,
+                    "failureHandling": "transactional"
+                }
+            }
         },
         "workspaceFolders": [{ "uri": uri, "name": name }]
     }))
@@ -488,14 +497,44 @@ fn raw_value(value: &Value) -> Result<Box<RawValue>, LanguageProtocolError> {
     RawValue::from_string(value.to_string()).map_err(|_| LanguageProtocolError::AllocationFailed)
 }
 
-fn file_uri(path: &Path) -> Result<String, LanguageProtocolError> {
+pub(crate) fn file_uri(path: &Path) -> Result<String, LanguageProtocolError> {
     if !path.is_absolute() {
         return Err(LanguageProtocolError::InvalidPath);
     }
     let path = path.to_str().ok_or(LanguageProtocolError::InvalidPath)?;
+    file_uri_from_utf8_path(path, cfg!(windows))
+}
+
+fn file_uri_from_utf8_path(path: &str, windows: bool) -> Result<String, LanguageProtocolError> {
+    let path = if windows {
+        path.strip_prefix(r"\\?\").unwrap_or(path)
+    } else {
+        path
+    };
+    let windows_drive_path = path
+        .as_bytes()
+        .first()
+        .copied()
+        .is_some_and(|byte| byte.is_ascii_alphabetic())
+        && path.as_bytes().get(1) == Some(&b':')
+        && path
+            .as_bytes()
+            .get(2)
+            .copied()
+            .is_some_and(|byte| matches!(byte, b'/' | b'\\'));
+    if windows && !windows_drive_path {
+        return Err(LanguageProtocolError::InvalidPath);
+    }
     let mut uri = String::from("file://");
+    if windows {
+        uri.push('/');
+    }
     for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':') {
+        if windows && byte == b'\\' {
+            uri.push('/');
+        } else if byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':')
+        {
             uri.push(char::from(byte));
         } else {
             const HEX: &[u8; 16] = b"0123456789ABCDEF";

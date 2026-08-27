@@ -28,6 +28,33 @@ const MAX_FILE_TEXT_BYTES: usize = 33_554_432;
 const MAX_PREPARED_TEXT_BYTES: usize = 67_108_864;
 const MAX_RETAINED_BYTES: usize = 67_371_008;
 
+#[derive(Debug)]
+pub(crate) struct WorkspaceEditWire {
+    result: Box<RawValue>,
+    retained_bytes: usize,
+}
+
+impl WorkspaceEditWire {
+    pub(crate) fn capture(result: &RawValue) -> Result<Self, WorkspaceEditError> {
+        checked_wire(result)?;
+        let retained_bytes = result.get().len();
+        let result = RawValue::from_string(result.get().to_owned())
+            .map_err(|_| WorkspaceEditError::Malformed)?;
+        Ok(Self {
+            result,
+            retained_bytes,
+        })
+    }
+
+    pub(crate) fn result(&self) -> &RawValue {
+        &self.result
+    }
+
+    pub(crate) const fn retained_bytes(&self) -> usize {
+        self.retained_bytes
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WorkspaceEditError {
     WireTooLarge,
@@ -248,6 +275,10 @@ impl PreparedFileEdit {
         &self.replacement
     }
 
+    pub(crate) fn edit_count(&self) -> usize {
+        self.edits.len()
+    }
+
     pub(crate) fn transaction_for(
         &self,
         snapshot: &BufferSnapshot,
@@ -291,6 +322,32 @@ impl PreparedWorkspaceEdit {
 
     pub(crate) const fn retained_bytes(&self) -> usize {
         self.retained_bytes
+    }
+
+    pub(crate) fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
+    pub(crate) fn edit_count(&self) -> usize {
+        self.files.iter().map(PreparedFileEdit::edit_count).sum()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publication_fixture_for_test(
+        &self,
+        file_count: usize,
+        retain_edits: bool,
+    ) -> Self {
+        let mut file = self.files[0].clone();
+        if !retain_edits {
+            file.edits = Box::new([]);
+        }
+        Self {
+            files: std::iter::repeat_n(file, file_count)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            retained_bytes: self.retained_bytes,
+        }
     }
 }
 
@@ -772,6 +829,19 @@ mod proofs {
 // Apple-first product boundary. Windows CI still compiles the shipping module.
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn wire_retention_matches_the_exact_owned_json_bytes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let raw = serde_json::value::RawValue::from_string(
+            serde_json::json!({"changes": {}}).to_string(),
+        )
+        .unwrap_or_else(|_| unreachable!());
+        let wire = super::WorkspaceEditWire::capture(&raw)?;
+        assert_eq!(wire.retained_bytes(), raw.get().len());
+        assert_eq!(wire.result().get(), raw.get());
+        Ok(())
+    }
+
     use std::{
         fs,
         fs::File,
@@ -1010,6 +1080,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "multi-megabyte JSON ceilings are covered natively; Miri exercises the same parser with bounded fixtures"
+    )]
     fn exact_wire_and_collection_ceilings_are_enforced() {
         let fixture = Fixture::new();
         let path = fixture.write("main.rs", "x\n");

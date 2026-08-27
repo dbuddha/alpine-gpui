@@ -29,6 +29,9 @@ use crate::{
         SymbolBatch, SymbolError, SymbolPicker, SymbolPickerReport, SymbolRequestKind, SymbolRow,
         workspace_symbol_params,
     },
+    rust_workspace_edit::{
+        PreparedWorkspaceEdit, WorkspaceEditError, WorkspaceEditProposal, WorkspaceEditWire,
+    },
 };
 
 const MAX_POLLS_PER_TURN: usize = 8;
@@ -173,6 +176,124 @@ pub(crate) enum NavigationRequestKind {
     References,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkspaceEditKind {
+    Rename,
+    Formatting,
+}
+
+impl WorkspaceEditKind {
+    const fn method(self) -> &'static str {
+        match self {
+            Self::Rename => "textDocument/rename",
+            Self::Formatting => "textDocument/formatting",
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Rename => "Rust rename",
+            Self::Formatting => "Rust formatting",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WorkspaceEditIdentity {
+    language: LanguageIdentity,
+    process_epoch: u64,
+    lsp_version: i32,
+    request_id: u32,
+    kind: WorkspaceEditKind,
+}
+
+impl WorkspaceEditIdentity {
+    pub(crate) const fn kind(self) -> WorkspaceEditKind {
+        self.kind
+    }
+
+    pub(crate) const fn matches(
+        self,
+        language: LanguageIdentity,
+        snapshot: &RustDiagnosticsSnapshot,
+    ) -> bool {
+        self.language.workspace_id == language.workspace_id
+            && self.language.workspace_revision == language.workspace_revision
+            && self.language.document_id == language.document_id
+            && self.language.document_revision == language.document_revision
+            && self.language.buffer_revision == language.buffer_revision
+            && self.language.selection_revision == language.selection_revision
+            && self.process_epoch == snapshot.process_epoch
+            && self.lsp_version == snapshot.lsp_version
+            && snapshot.active
+    }
+
+    pub(crate) const fn matches_document(self, language: LanguageIdentity) -> bool {
+        self.language.workspace_id == language.workspace_id
+            && self.language.workspace_revision == language.workspace_revision
+            && self.language.document_id == language.document_id
+            && self.language.document_revision == language.document_revision
+            && self.language.buffer_revision == language.buffer_revision
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(
+        language: LanguageIdentity,
+        process_epoch: u64,
+        lsp_version: i32,
+        request_id: u32,
+        kind: WorkspaceEditKind,
+    ) -> Self {
+        Self {
+            language,
+            process_epoch,
+            lsp_version,
+            request_id,
+            kind,
+        }
+    }
+}
+
+pub(crate) struct WorkspaceEditPreparationRequest {
+    identity: WorkspaceEditIdentity,
+    workspace_root: PathBuf,
+    document_uri: Box<str>,
+    wire: WorkspaceEditWire,
+}
+
+impl WorkspaceEditPreparationRequest {
+    pub(crate) const fn identity(&self) -> WorkspaceEditIdentity {
+        self.identity
+    }
+
+    pub(crate) fn execute(self) -> WorkspaceEditPreparationOutput {
+        let wire_bytes = self.wire.retained_bytes();
+        let proposal = match self.identity.kind {
+            WorkspaceEditKind::Rename => {
+                WorkspaceEditProposal::admit_rename(self.wire.result(), &self.workspace_root)
+            }
+            WorkspaceEditKind::Formatting => WorkspaceEditProposal::admit_formatting(
+                self.wire.result(),
+                &self.workspace_root,
+                &self.document_uri,
+                self.identity.lsp_version,
+            ),
+        };
+        let result = proposal.and_then(|proposal| proposal.prepare());
+        WorkspaceEditPreparationOutput {
+            identity: self.identity,
+            wire_bytes,
+            result,
+        }
+    }
+}
+
+pub(crate) struct WorkspaceEditPreparationOutput {
+    pub(crate) identity: WorkspaceEditIdentity,
+    pub(crate) wire_bytes: usize,
+    pub(crate) result: Result<PreparedWorkspaceEdit, WorkspaceEditError>,
+}
+
 impl NavigationRequestKind {
     fn from_method(method: &str) -> Option<Self> {
         match method {
@@ -208,6 +329,10 @@ impl NavigationRequestKind {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the independent flags are a flat handle-free diagnostic snapshot, not mutable state"
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) active: bool,
@@ -248,6 +373,13 @@ pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) symbol_cancellations: u64,
     pub(crate) stale_symbols: u64,
     pub(crate) symbol_truncations: u64,
+    pub(crate) workspace_edit_pending: bool,
+    pub(crate) workspace_edit_preparing: bool,
+    pub(crate) workspace_edit_requests: u64,
+    pub(crate) workspace_edit_cancellations: u64,
+    pub(crate) stale_workspace_edits: u64,
+    pub(crate) workspace_edit_wire_bytes: usize,
+    pub(crate) peak_workspace_edit_wire_bytes: usize,
     pub(crate) process_retained_bytes: usize,
     pub(crate) process_queued_events: usize,
     pub(crate) process_submitted_inputs: u64,
@@ -345,6 +477,16 @@ struct PendingNavigation {
     lsp_version: i32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingWorkspaceEdit {
+    request_id: u32,
+    stamp: RequestStamp,
+    kind: WorkspaceEditKind,
+    identity: LanguageIdentity,
+    process_epoch: u64,
+    lsp_version: i32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum NavigationResult {
     Hover(HoverContent),
@@ -405,6 +547,12 @@ struct PollCandidates {
         RequestStamp,
         SymbolRequestKind,
         Result<SymbolBatch, SymbolError>,
+    )>,
+    workspace_edit: Option<(
+        u32,
+        RequestStamp,
+        WorkspaceEditKind,
+        Result<WorkspaceEditWire, WorkspaceEditError>,
     )>,
     stale_response: Option<u32>,
 }
@@ -485,6 +633,7 @@ struct RustSession {
     navigation: Option<AdmittedNavigation>,
     pending_symbols: Option<PendingSymbols>,
     symbols: Option<AdmittedSymbols>,
+    pending_workspace_edit: Option<PendingWorkspaceEdit>,
     client: LspClient,
 }
 
@@ -500,6 +649,7 @@ pub(crate) enum RustDiagnosticsError {
     Completion(CompletionError),
     Navigation(NavigationError),
     Symbols(SymbolError),
+    WorkspaceEdit(WorkspaceEditError),
 }
 
 impl fmt::Display for RustDiagnosticsError {
@@ -538,6 +688,12 @@ pub(crate) struct RustDiagnostics {
     symbol_cancellations: u64,
     stale_symbols: u64,
     symbol_truncations: u64,
+    workspace_edit_preparation: Option<WorkspaceEditPreparationRequest>,
+    workspace_edit_requests: u64,
+    workspace_edit_cancellations: u64,
+    stale_workspace_edits: u64,
+    workspace_edit_wire_bytes: usize,
+    peak_workspace_edit_wire_bytes: usize,
     polls: u64,
     stale_wakes: u64,
     stale_diagnostics: u64,
@@ -576,6 +732,12 @@ impl Default for RustDiagnostics {
             symbol_cancellations: 0,
             stale_symbols: 0,
             symbol_truncations: 0,
+            workspace_edit_preparation: None,
+            workspace_edit_requests: 0,
+            workspace_edit_cancellations: 0,
+            stale_workspace_edits: 0,
+            workspace_edit_wire_bytes: 0,
+            peak_workspace_edit_wire_bytes: 0,
             polls: 0,
             stale_wakes: 0,
             stale_diagnostics: 0,
@@ -636,6 +798,12 @@ impl RustDiagnostics {
                 let _ = session.client.cancel(pending.request_id);
                 self.symbol_cancellations = self.symbol_cancellations.saturating_add(1);
             }
+            if let Some(pending) = session.pending_workspace_edit.take() {
+                let _ = session.client.cancel(pending.request_id);
+                self.workspace_edit_cancellations =
+                    self.workspace_edit_cancellations.saturating_add(1);
+            }
+            self.workspace_edit_preparation = None;
         }
         if input.identity.buffer_revision != session.identity.buffer_revision {
             let Some(version) = session.lsp_version.checked_add(1) else {
@@ -694,6 +862,7 @@ impl RustDiagnostics {
                 merge_visual_changed(&mut visual_changed, self.reject_stale_completion(id));
                 merge_visual_changed(&mut visual_changed, self.reject_stale_navigation(id));
                 merge_visual_changed(&mut visual_changed, self.reject_stale_symbols(id));
+                merge_visual_changed(&mut visual_changed, self.reject_stale_workspace_edit(id));
             }
             if let Some((id, stamp, batch)) = candidates.completion {
                 merge_visual_changed(&mut visual_changed, self.admit_completion(id, stamp, batch));
@@ -708,6 +877,12 @@ impl RustDiagnostics {
                 merge_visual_changed(
                     &mut visual_changed,
                     self.admit_symbols(id, stamp, kind, candidate),
+                );
+            }
+            if let Some((id, stamp, kind, candidate)) = candidates.workspace_edit {
+                merge_visual_changed(
+                    &mut visual_changed,
+                    self.admit_workspace_edit(id, stamp, kind, candidate),
                 );
             }
             if self.apply_poll(poll, &mut visual_changed) {
@@ -743,8 +918,9 @@ impl RustDiagnostics {
         let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
         let expected = &session.document;
         let current = session
-            .pending_symbols
+            .pending_workspace_edit
             .map(|pending| pending.stamp)
+            .or_else(|| session.pending_symbols.map(|pending| pending.stamp))
             .or_else(|| session.pending_navigation.map(|pending| pending.stamp))
             .or_else(|| session.pending_completion.map(|pending| pending.stamp));
         let mut candidates = PollCandidates::default();
@@ -761,6 +937,32 @@ impl RustDiagnostics {
                 value,
             } if method.as_ref() == "textDocument/completion" => {
                 candidates.completion = Some((id, stamp, completion_batch_from_response(value)));
+            }
+            PeerEvent::Response {
+                id,
+                method,
+                stamp,
+                value,
+            } if method.as_ref() == WorkspaceEditKind::Rename.method() => {
+                candidates.workspace_edit = Some((
+                    id,
+                    stamp,
+                    WorkspaceEditKind::Rename,
+                    workspace_edit_wire(value),
+                ));
+            }
+            PeerEvent::Response {
+                id,
+                method,
+                stamp,
+                value,
+            } if method.as_ref() == WorkspaceEditKind::Formatting.method() => {
+                candidates.workspace_edit = Some((
+                    id,
+                    stamp,
+                    WorkspaceEditKind::Formatting,
+                    workspace_edit_wire(value),
+                ));
             }
             PeerEvent::Response {
                 id,
@@ -917,6 +1119,118 @@ impl RustDiagnostics {
             }
             Err(error) => self.fail(error),
         }
+    }
+
+    pub(crate) fn request_rename(
+        &mut self,
+        position: LspPosition,
+        new_name: &str,
+    ) -> LanguageEffect {
+        let Some(session) = self.session.as_ref() else {
+            return self.workspace_edit_not_ready();
+        };
+        let params = match session.document.rename_params(position, new_name) {
+            Ok(params) => params,
+            Err(error) => return self.fail(RustDiagnosticsError::Language(error)),
+        };
+        self.request_workspace_edit(WorkspaceEditKind::Rename, params.as_ref())
+    }
+
+    pub(crate) fn request_formatting(
+        &mut self,
+        tab_size: u8,
+        insert_spaces: bool,
+    ) -> LanguageEffect {
+        let Some(session) = self.session.as_ref() else {
+            return self.workspace_edit_not_ready();
+        };
+        let params = match session.document.formatting_params(tab_size, insert_spaces) {
+            Ok(params) => params,
+            Err(error) => return self.fail(RustDiagnosticsError::Language(error)),
+        };
+        self.request_workspace_edit(WorkspaceEditKind::Formatting, params.as_ref())
+    }
+
+    fn request_workspace_edit(
+        &mut self,
+        kind: WorkspaceEditKind,
+        params: &serde_json::value::RawValue,
+    ) -> LanguageEffect {
+        let visual_changed = crate::any_workspace_edit_change([
+            self.cancel_completion(),
+            self.cancel_navigation(),
+            self.cancel_workspace_edit(),
+        ]);
+        let Some(session) = self.session.as_mut() else {
+            return self.workspace_edit_not_ready();
+        };
+        if session.state != SessionState::Open {
+            return self.workspace_edit_not_ready();
+        }
+        let Some(stamp) = session.identity.request_stamp() else {
+            return self.fail(RustDiagnosticsError::InvalidIdentity);
+        };
+        let request = match session
+            .client
+            .begin_request(kind.method(), Some(params), stamp)
+        {
+            Ok(request) => request,
+            Err(error) => return self.fail(RustDiagnosticsError::Client(error)),
+        };
+        session.pending_workspace_edit = Some(PendingWorkspaceEdit {
+            request_id: request.request_id,
+            stamp,
+            kind,
+            identity: session.identity,
+            process_epoch: session.process_epoch,
+            lsp_version: session.lsp_version,
+        });
+        self.workspace_edit_requests = self.workspace_edit_requests.saturating_add(1);
+        let status_changed = replace_status(
+            &mut self.status,
+            Some(Arc::from(format!("{} requested.", kind.label()))),
+        );
+        LanguageEffect {
+            visual_changed: crate::any_workspace_edit_change([visual_changed, status_changed]),
+            continuation: None,
+        }
+    }
+
+    fn workspace_edit_not_ready(&mut self) -> LanguageEffect {
+        LanguageEffect {
+            visual_changed: replace_status(
+                &mut self.status,
+                Some(Arc::from("Rust analysis is not ready for workspace edits.")),
+            ),
+            continuation: None,
+        }
+    }
+
+    pub(crate) fn cancel_workspace_edit(&mut self) -> bool {
+        self.workspace_edit_preparation = None;
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let Some(pending) = session.pending_workspace_edit.take() else {
+            return false;
+        };
+        match session.client.cancel(pending.request_id) {
+            Ok(_) => {
+                self.workspace_edit_cancellations =
+                    self.workspace_edit_cancellations.saturating_add(1);
+                true
+            }
+            Err(error) => replace_status(
+                &mut self.status,
+                Some(Arc::from(RustDiagnosticsError::Client(error).to_string())),
+            ),
+        }
+    }
+
+    pub(crate) fn take_workspace_edit_preparation(
+        &mut self,
+    ) -> Option<WorkspaceEditPreparationRequest> {
+        self.workspace_edit_preparation.take()
     }
 
     pub(crate) fn completion_is_open(&self, identity: LanguageIdentity) -> bool {
@@ -1633,6 +1947,13 @@ impl RustDiagnostics {
             symbol_cancellations: self.symbol_cancellations,
             stale_symbols: self.stale_symbols,
             symbol_truncations: self.symbol_truncations,
+            workspace_edit_pending: self.workspace_edit_pending(),
+            workspace_edit_preparing: self.workspace_edit_preparation.is_some(),
+            workspace_edit_requests: self.workspace_edit_requests,
+            workspace_edit_cancellations: self.workspace_edit_cancellations,
+            stale_workspace_edits: self.stale_workspace_edits,
+            workspace_edit_wire_bytes: self.workspace_edit_wire_bytes,
+            peak_workspace_edit_wire_bytes: self.peak_workspace_edit_wire_bytes,
             process_retained_bytes: process.retained_bytes,
             process_queued_events: process.queued_events,
             process_submitted_inputs: process.submitted_inputs,
@@ -1645,6 +1966,12 @@ impl RustDiagnostics {
         }
     }
 
+    fn workspace_edit_pending(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.pending_workspace_edit.is_some())
+    }
+
     pub(crate) fn shutdown(&mut self) -> RustDiagnosticsSnapshot {
         if let Some(session) = self.session.as_mut() {
             let _ = session.client.shutdown();
@@ -1652,6 +1979,7 @@ impl RustDiagnostics {
         self.session = None;
         self.target = None;
         self.status = None;
+        self.workspace_edit_preparation = None;
         self.snapshot()
     }
 
@@ -1707,6 +2035,7 @@ impl RustDiagnostics {
             navigation: None,
             pending_symbols: None,
             symbols: None,
+            pending_workspace_edit: None,
             client,
         });
         Ok(())
@@ -2084,6 +2413,77 @@ impl RustDiagnostics {
             .then_some(symbols)
     }
 
+    fn admit_workspace_edit(
+        &mut self,
+        id: u32,
+        stamp: RequestStamp,
+        kind: WorkspaceEditKind,
+        candidate: Result<WorkspaceEditWire, WorkspaceEditError>,
+    ) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let Some(pending) = session.pending_workspace_edit.take() else {
+            self.stale_workspace_edits = self.stale_workspace_edits.saturating_add(1);
+            return false;
+        };
+        if pending.request_id != id
+            || pending.stamp != stamp
+            || pending.kind != kind
+            || pending.identity != session.identity
+            || pending.process_epoch != session.process_epoch
+            || pending.lsp_version != session.lsp_version
+        {
+            self.stale_workspace_edits = self.stale_workspace_edits.saturating_add(1);
+            return false;
+        }
+        let wire = match candidate {
+            Ok(wire) => wire,
+            Err(error) => {
+                return replace_status(
+                    &mut self.status,
+                    Some(Arc::from(
+                        RustDiagnosticsError::WorkspaceEdit(error).to_string(),
+                    )),
+                );
+            }
+        };
+        self.workspace_edit_wire_bytes = wire.retained_bytes();
+        self.peak_workspace_edit_wire_bytes = self
+            .peak_workspace_edit_wire_bytes
+            .max(self.workspace_edit_wire_bytes);
+        self.workspace_edit_preparation = Some(WorkspaceEditPreparationRequest {
+            identity: WorkspaceEditIdentity {
+                language: pending.identity,
+                process_epoch: pending.process_epoch,
+                lsp_version: pending.lsp_version,
+                request_id: pending.request_id,
+                kind,
+            },
+            workspace_root: session.target.workspace_root.clone(),
+            document_uri: session.document.uri().into(),
+            wire,
+        });
+        replace_status(
+            &mut self.status,
+            Some(Arc::from(format!("Preparing {} preview.", kind.label()))),
+        )
+    }
+
+    fn reject_stale_workspace_edit(&mut self, id: u32) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let matches = session
+            .pending_workspace_edit
+            .is_some_and(|pending| pending.request_id == id);
+        if matches {
+            session.pending_workspace_edit = None;
+        }
+        self.stale_workspace_edits = self.stale_workspace_edits.saturating_add(1);
+        false
+    }
+
     fn navigation(&self, identity: LanguageIdentity) -> Option<&AdmittedNavigation> {
         let session = self.session.as_ref()?;
         let navigation = session.navigation.as_ref()?;
@@ -2164,6 +2564,8 @@ impl RustDiagnostics {
             session.navigation = None;
             session.pending_symbols = None;
             session.symbols = None;
+            session.pending_workspace_edit = None;
+            self.workspace_edit_preparation = None;
             return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
         }
         let Some(generation) = session.process_generation.checked_add(1) else {
@@ -2196,6 +2598,8 @@ impl RustDiagnostics {
         session.navigation = None;
         session.pending_symbols = None;
         session.symbols = None;
+        session.pending_workspace_edit = None;
+        self.workspace_edit_preparation = None;
         self.restarts = self.restarts.saturating_add(1);
         replace_status(
             &mut self.status,
@@ -2212,7 +2616,9 @@ impl RustDiagnostics {
             session.navigation = None;
             session.pending_symbols = None;
             session.symbols = None;
+            session.pending_workspace_edit = None;
         }
+        self.workspace_edit_preparation = None;
         LanguageEffect {
             visual_changed: replace_status(&mut self.status, Some(Arc::from(error.to_string()))),
             continuation: None,
@@ -2227,6 +2633,7 @@ impl RustDiagnostics {
         self.session = None;
         self.target = None;
         self.status = None;
+        self.workspace_edit_preparation = None;
         changed
     }
 
@@ -2269,6 +2676,23 @@ impl RustDiagnostics {
         self.peak_diagnostic_items = batch.diagnostics().len();
         self.peak_diagnostic_bytes = batch.retained_bytes();
         self.session = Some(test_session(input, document, batch, executable));
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stage_workspace_edit_preparation_for_test(
+        &mut self,
+        identity: WorkspaceEditIdentity,
+        workspace_root: &Path,
+        document_uri: &str,
+        result: &serde_json::value::RawValue,
+    ) -> Result<(), WorkspaceEditError> {
+        self.workspace_edit_preparation = Some(WorkspaceEditPreparationRequest {
+            identity,
+            workspace_root: workspace_root.to_path_buf(),
+            document_uri: Box::from(document_uri),
+            wire: WorkspaceEditWire::capture(result)?,
+        });
         Ok(())
     }
 
@@ -2387,7 +2811,15 @@ fn test_session(
         navigation: None,
         pending_symbols: None,
         symbols: None,
+        pending_workspace_edit: None,
         client,
+    }
+}
+
+fn workspace_edit_wire(value: ResponseValue<'_>) -> Result<WorkspaceEditWire, WorkspaceEditError> {
+    match value {
+        ResponseValue::Result(result) => WorkspaceEditWire::capture(result),
+        ResponseValue::Error(_) => Err(WorkspaceEditError::Malformed),
     }
 }
 
