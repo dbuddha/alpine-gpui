@@ -162,6 +162,28 @@ fn validates_and_renders_every_realistic_prepared_scene_fixture() {
 }
 
 #[test]
+fn validates_the_atlas_lifecycle_sequence_through_the_binary_boundary() {
+    let output = Command::new(env!("CARGO_BIN_EXE_alpine-assurance"))
+        .current_dir(repository_root())
+        .args([
+            "validate-trace-sequence",
+            "assurance/qualification/sequences/atlas-lifecycle-v1.toml",
+        ])
+        .output();
+    assert!(output.is_ok());
+    if let Ok(output) = output {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("5 visible steps, 2 renderer generations"));
+        assert!(stdout.contains("24 atlas upload bytes"));
+    }
+}
+
+#[test]
 fn rejects_an_invalid_fixture_through_the_binary_boundary() {
     let output = Command::new(env!("CARGO_BIN_EXE_alpine-assurance"))
         .current_dir(repository_root())

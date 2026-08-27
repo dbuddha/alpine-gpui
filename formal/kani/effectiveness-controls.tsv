@@ -13,6 +13,7 @@ proofs::dirty_row_capacity_merge_remains_bounded	2
 proofs::dirty_row_small_actions_preserve_sorted_disjoint_storage	1
 proofs::frame_slot_actions_preserve_bounded_unique_ownership	3
 proofs::lifecycle_actions_preserve_invariants	4
+proofs::lifecycle_sequence_rejects_symbolic_incompatible_reuse	2
 proofs::presentation_actions_preserve_invariants_and_atomicity	5
 proofs::prepared_trace_rejects_every_bounded_invalid_clip_reference	2
 proofs::power_of_two_probe_never_escapes_the_index	2

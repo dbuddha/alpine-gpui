@@ -86,6 +86,8 @@ superseded but must not erase the earlier claim or evidence state.
 | 2026-08-24 | [PR #350](https://github.com/dbuddha/alpine-gpui/pull/350) merged bounded Rust document and workspace symbols | Exact head `4419355837c16fc86c340f6e1e715f8e266bddb5` passed all 58 hosted jobs before squash merge `bce93b5dbec334a0b9c50d00aeb04d1cb7aad3ac`; current-only request/query identity, parser/ranking ceilings, mock and pinned-server paths, keyboard, IME, scene, accessibility, checked local navigation, TLA+ controls, and Kani bounds are retained | Dogfood quality, physical latency, and residency remain open |
 | 2026-08-25 | Task #222 implements bounded settings reload and v0-to-v1 migration | Closed JSON schema, exact file/path/value/string/binding/state ceilings, regular-file and concurrent-edit checks, current-generation coalescing, atomic global/project admission, command discovery, state-preservation tests, TLA+ faulty control, and Kani refinement are retained | Hosted PR identity and sustained dogfood usability remain to be appended after acceptance |
 
+| 2026-08-25 | Task #353 adds the versioned atlas lifecycle companion in Alpine | Six exact transitions now bind workload, atlas content, capacity, revision, logical generation, upload, CPU-oracle, and terminal-ownership identities without changing v1 or v2 scene controls | Alpine protocol, Kani, and CPU-oracle evidence are implementation-stage only; physical Direct Metal, pinned GPUI resource identity, retained artifacts, and lifecycle E3 remain open |
+
 ## Rules for future entries
 
 - Append the merge date, PR, mechanism IDs, and evidence level transition.
