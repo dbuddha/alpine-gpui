@@ -19,7 +19,7 @@ use crate::qualification;
 const SCHEMA: &str = "alpine-scene-trace-sequence/v1";
 const EVIDENCE_SCHEMA: &str = "alpine-scene-trace-sequence-evidence/v1";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024;
-const MAX_PATH_BYTES: usize = 4 * 1024;
+const MAX_PATH_BYTES: usize = 4_096;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -87,6 +87,103 @@ struct ValidatedStep {
     reference: Option<alpine_metal::Bgra8Image>,
 }
 
+const fn transition_is_teardown(transition: TraceSequenceTransition) -> bool {
+    matches!(transition, TraceSequenceTransition::Teardown)
+}
+
+const fn transition_starts_renderer_generation(transition: TraceSequenceTransition) -> bool {
+    matches!(
+        transition,
+        TraceSequenceTransition::FullAdmission | TraceSequenceTransition::FullResynchronization
+    )
+}
+
+const fn owns_exactly_one_atlas(resource_count: usize) -> bool {
+    resource_count == 1
+}
+
+fn atlas_pixels_match_dimensions(width: u32, height: u32, pixel_count: usize) -> bool {
+    usize::try_from(width).ok().and_then(|width| {
+        usize::try_from(height)
+            .ok()
+            .and_then(|height| width.checked_mul(height))
+    }) == Some(pixel_count)
+}
+
+fn ownership_is_drained(
+    state: BackendState,
+    retained_bytes: usize,
+    expected_retained_bytes: usize,
+    invariants_hold: bool,
+) -> bool {
+    state == BackendState::Stopped && retained_bytes == expected_retained_bytes && invariants_hold
+}
+
+fn require_drained_ownership(
+    state: BackendState,
+    retained_bytes: usize,
+    expected_retained_bytes: usize,
+    invariants_hold: bool,
+    error: &str,
+) -> Result<(), Vec<String>> {
+    if ownership_is_drained(
+        state,
+        retained_bytes,
+        expected_retained_bytes,
+        invariants_hold,
+    ) {
+        Ok(())
+    } else {
+        Err(vec![error.to_owned()])
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one immutable frame observation keeps every compared evidence axis explicit"
+)]
+fn frame_observation_error(
+    sequence: u64,
+    channel_delta: u8,
+    tolerance: u8,
+    uploaded_bytes: usize,
+    expected_uploaded_bytes: usize,
+    retained_bytes: usize,
+    expected_retained_bytes: usize,
+    invariants_hold: bool,
+) -> Option<String> {
+    if channel_delta > tolerance {
+        return Some(format!(
+            "trace sequence step {sequence} exceeds CPU oracle tolerance: {channel_delta} > {tolerance}"
+        ));
+    }
+    if uploaded_bytes != expected_uploaded_bytes {
+        return Some(format!(
+            "trace sequence step {sequence} uploaded {uploaded_bytes} atlas bytes, expected {expected_uploaded_bytes}"
+        ));
+    }
+    if retained_bytes != expected_retained_bytes || !invariants_hold {
+        return Some(format!(
+            "trace sequence step {sequence} did not reach balanced terminal ownership"
+        ));
+    }
+    None
+}
+
+fn reserve_step_storage(
+    count: usize,
+) -> Result<(Vec<TraceSequenceStep>, Vec<ValidatedStep>), Vec<String>> {
+    let mut semantic = Vec::new();
+    semantic
+        .try_reserve_exact(count)
+        .map_err(|_| vec!["trace sequence step allocation failed".to_owned()])?;
+    let mut validated = Vec::new();
+    validated
+        .try_reserve_exact(count)
+        .map_err(|_| vec!["trace sequence step allocation failed".to_owned()])?;
+    Ok((semantic, validated))
+}
+
 pub(crate) fn validate(manifest: &Path, root: &Path) -> Result<String, Vec<String>> {
     let validated = load_validated(manifest, root)?;
     Ok(format!(
@@ -116,20 +213,19 @@ pub(crate) fn render_native(
     );
 
     for step in &validated.steps {
-        if step.transition == TraceSequenceTransition::Teardown {
+        if transition_is_teardown(step.transition) {
             let mut owned = backend
                 .take()
                 .ok_or_else(|| vec!["trace sequence teardown has no renderer owner".to_owned()])?;
             owned.shutdown();
             let accounting = owned.accounting();
-            if accounting.state() != BackendState::Stopped
-                || accounting.current_retained_bytes() != step.expected_terminal_retained_bytes
-                || !accounting.invariants_hold()
-            {
-                return Err(vec![
-                    "trace sequence teardown did not drain renderer ownership".to_owned(),
-                ]);
-            }
+            require_drained_ownership(
+                accounting.state(),
+                accounting.current_retained_bytes(),
+                step.expected_terminal_retained_bytes,
+                accounting.invariants_hold(),
+                "trace sequence teardown did not drain renderer ownership",
+            )?;
             let _ = write!(
                 evidence,
                 "\n[[steps]]\nsequence = {}\ntransition = \"teardown\"\nlogical_renderer_generation = {}\nterminal_retained_bytes = {}\n",
@@ -140,10 +236,7 @@ pub(crate) fn render_native(
             continue;
         }
 
-        if matches!(
-            step.transition,
-            TraceSequenceTransition::FullAdmission | TraceSequenceTransition::FullResynchronization
-        ) {
+        if transition_starts_renderer_generation(step.transition) {
             if backend.is_some() {
                 return Err(vec![
                     "trace sequence attempted renderer construction while an owner was live"
@@ -176,25 +269,17 @@ pub(crate) fn render_native(
         let delta = max_channel_delta(reference.bytes(), frame.image().bytes())
             .ok_or_else(|| vec!["trace sequence Metal image length mismatch".to_owned()])?;
         let accounting = owner.accounting();
-        if delta > validated.tolerance {
-            return Err(vec![format!(
-                "trace sequence step {} exceeds CPU oracle tolerance: {delta} > {}",
-                step.sequence, validated.tolerance
-            )]);
-        }
-        if report.atlas_upload_bytes != step.expected_atlas_upload_bytes {
-            return Err(vec![format!(
-                "trace sequence step {} uploaded {} atlas bytes, expected {}",
-                step.sequence, report.atlas_upload_bytes, step.expected_atlas_upload_bytes
-            )]);
-        }
-        if accounting.current_retained_bytes() != step.expected_terminal_retained_bytes
-            || !accounting.invariants_hold()
-        {
-            return Err(vec![format!(
-                "trace sequence step {} did not reach balanced terminal ownership",
-                step.sequence
-            )]);
+        if let Some(error) = frame_observation_error(
+            step.sequence,
+            delta,
+            validated.tolerance,
+            report.atlas_upload_bytes,
+            step.expected_atlas_upload_bytes,
+            accounting.current_retained_bytes(),
+            step.expected_terminal_retained_bytes,
+            accounting.invariants_hold(),
+        ) {
+            return Err(vec![error]);
         }
         let _ = write!(
             evidence,
@@ -213,12 +298,13 @@ pub(crate) fn render_native(
     }
     if let Some(mut owner) = backend {
         owner.shutdown();
-        if owner.accounting().current_retained_bytes() != 0 || !owner.accounting().invariants_hold()
-        {
-            return Err(vec![
-                "trace sequence final renderer owner did not drain".to_owned(),
-            ]);
-        }
+        require_drained_ownership(
+            owner.accounting().state(),
+            owner.accounting().current_retained_bytes(),
+            0,
+            owner.accounting().invariants_hold(),
+            "trace sequence final renderer owner did not drain",
+        )?;
     }
     fs::write(output, evidence)
         .map_err(|error| vec![format!("cannot write {}: {error}", output.display())])?;
@@ -272,19 +358,9 @@ fn load_validated(manifest: &Path, root: &Path) -> Result<ValidatedSequence, Vec
         "trace sequence cannot contain a memory claim",
     );
 
-    let mut semantic_steps = Vec::new();
-    let mut validated_steps = Vec::new();
+    let (mut semantic_steps, mut validated_steps) = reserve_step_storage(manifest.steps.len())?;
     let mut decoded_scenes = HashMap::<PathBuf, Arc<DecodedTrace>>::new();
     let mut resource_id: Option<&str> = None;
-    if semantic_steps
-        .try_reserve_exact(manifest.steps.len())
-        .is_err()
-        || validated_steps
-            .try_reserve_exact(manifest.steps.len())
-            .is_err()
-    {
-        return Err(vec!["trace sequence step allocation failed".to_owned()]);
-    }
     for step in &manifest.steps {
         let transition = parse_transition(&step.transition)?;
         let is_teardown = transition == TraceSequenceTransition::Teardown;
@@ -330,7 +406,7 @@ fn load_validated(manifest: &Path, root: &Path) -> Result<ValidatedSequence, Vec
             semantic_workload = Some(parse_sha256(workload)?);
             require(
                 &mut errors,
-                projection.resources.len() == 1,
+                owns_exactly_one_atlas(projection.resources.len()),
                 format!("step {} must own exactly one atlas resource", step.sequence),
             );
             let resource = projection
@@ -385,11 +461,7 @@ fn load_validated(manifest: &Path, root: &Path) -> Result<ValidatedSequence, Vec
             let pixels = resource.pixels.as_ref().map_or(0, Vec::len);
             require(
                 &mut errors,
-                usize::try_from(width).ok().and_then(|width| {
-                    usize::try_from(height)
-                        .ok()
-                        .and_then(|height| width.checked_mul(height))
-                }) == Some(pixels),
+                atlas_pixels_match_dimensions(width, height, pixels),
                 format!("step {} atlas pixels are partial", step.sequence),
             );
             semantic_atlas = Some(TraceSequenceAtlas {
@@ -485,10 +557,9 @@ fn resolve_repository_path(root: &Path, value: &str) -> Result<PathBuf, Vec<Stri
         ]);
     }
     let relative = Path::new(value);
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
+    if relative
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
     {
         return Err(vec![format!(
             "trace sequence scene path {value:?} is invalid"
@@ -566,7 +637,7 @@ fn parse_sha256(value: &str) -> Result<[u8; 32], Vec<String>> {
             .ok_or_else(|| vec![format!("invalid SHA-256 identity {value:?}")])?;
         let low = hex_nibble(pair[1])
             .ok_or_else(|| vec![format!("invalid SHA-256 identity {value:?}")])?;
-        output[index] = (high << 4) | low;
+        output[index] = high * 16 + low;
     }
     Ok(output)
 }
@@ -615,13 +686,155 @@ fn valid_slug(value: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::manual_let_else,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "isolated fixture construction and negative-path extraction must fail the owning test immediately"
+)]
 mod tests {
-    use std::path::Path;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
-    use super::{SequenceManifest, load_validated, parse_sha256};
+    use alpine_metal::BackendState;
+    use alpine_trace::TraceSequenceTransition;
+    use toml::Value;
+
+    use super::{
+        MAX_MANIFEST_BYTES, MAX_PATH_BYTES, SequenceManifest, atlas_pixels_match_dimensions,
+        frame_observation_error, invalidate_output, load_toml, load_validated, max_channel_delta,
+        ownership_is_drained, owns_exactly_one_atlas, parse_sha256, parse_transition,
+        render_native, require, reserve_step_storage, resolve_repository_path,
+        transition_is_teardown, transition_name, transition_starts_renderer_generation, valid_slug,
+        validate,
+    };
 
     const VALID: &str =
         include_str!("../../../assurance/qualification/sequences/atlas-lifecycle-v1.toml");
+    const INITIAL: &str =
+        include_str!("../../../assurance/qualification/v2/atlas-lifecycle-initial.toml");
+    const CONTENT: &str =
+        include_str!("../../../assurance/qualification/v2/atlas-lifecycle-content.toml");
+    const CAPACITY: &str =
+        include_str!("../../../assurance/qualification/v2/atlas-lifecycle-capacity.toml");
+    const MANIFEST_RELATIVE: &str = "assurance/qualification/sequences/atlas-lifecycle-v1.toml";
+    const INITIAL_RELATIVE: &str = "assurance/qualification/v2/atlas-lifecycle-initial.toml";
+    const CONTENT_RELATIVE: &str = "assurance/qualification/v2/atlas-lifecycle-content.toml";
+    const CAPACITY_RELATIVE: &str = "assurance/qualification/v2/atlas-lifecycle-capacity.toml";
+    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    struct FixtureRepository {
+        root: PathBuf,
+    }
+
+    impl FixtureRepository {
+        fn new() -> Self {
+            loop {
+                let identity = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+                let root = std::env::temp_dir().join(format!(
+                    "alpine-trace-sequence-{}-{identity}",
+                    std::process::id()
+                ));
+                match fs::create_dir(&root) {
+                    Ok(()) => {
+                        let fixture = Self { root };
+                        fixture.reset();
+                        return fixture;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => panic!("cannot create fixture repository: {error}"),
+                }
+            }
+        }
+
+        fn manifest(&self) -> PathBuf {
+            self.root.join(MANIFEST_RELATIVE)
+        }
+
+        fn reset(&self) {
+            self.write(MANIFEST_RELATIVE, VALID);
+            self.write(INITIAL_RELATIVE, INITIAL);
+            self.write(CONTENT_RELATIVE, CONTENT);
+            self.write(CAPACITY_RELATIVE, CAPACITY);
+        }
+
+        fn write(&self, relative: &str, source: &str) {
+            let path = self.root.join(relative);
+            fs::create_dir_all(path.parent().unwrap_or(&self.root))
+                .unwrap_or_else(|error| panic!("cannot create fixture parents: {error}"));
+            fs::write(&path, source)
+                .unwrap_or_else(|error| panic!("cannot write {}: {error}", path.display()));
+        }
+
+        fn write_manifest(&self, value: &Value) {
+            let source = toml::to_string(value)
+                .unwrap_or_else(|error| panic!("cannot serialize manifest: {error}"));
+            self.write(MANIFEST_RELATIVE, &source);
+        }
+
+        fn rejection(&self) -> Vec<String> {
+            match load_validated(&self.manifest(), &self.root) {
+                Ok(_) => panic!("fixture unexpectedly passed validation"),
+                Err(errors) => errors,
+            }
+        }
+    }
+
+    impl Drop for FixtureRepository {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn manifest_value() -> Value {
+        toml::from_str(VALID).unwrap_or_else(|error| panic!("invalid canonical manifest: {error}"))
+    }
+
+    fn steps_mut(value: &mut Value) -> &mut Vec<Value> {
+        value
+            .get_mut("steps")
+            .and_then(Value::as_array_mut)
+            .unwrap_or_else(|| panic!("canonical manifest has no steps"))
+    }
+
+    fn set_step(value: &mut Value, index: usize, key: &str, replacement: Option<Value>) {
+        let table = steps_mut(value)[index]
+            .as_table_mut()
+            .unwrap_or_else(|| panic!("step {index} is not a table"));
+        if let Some(replacement) = replacement {
+            table.insert(key.to_owned(), replacement);
+        } else {
+            table.remove(key);
+        }
+    }
+
+    fn assert_rejects(errors: &[String], expected: &str) {
+        assert!(
+            errors.iter().any(|error| error.contains(expected)),
+            "expected {expected:?} in {errors:?}"
+        );
+    }
+
+    fn reject_source(repository: &FixtureRepository, source: &str, expected: &str) {
+        repository.write(MANIFEST_RELATIVE, source);
+        assert_rejects(&repository.rejection(), expected);
+    }
+
+    fn reject_step(
+        repository: &FixtureRepository,
+        index: usize,
+        key: &str,
+        replacement: Option<Value>,
+        expected: &str,
+    ) {
+        let mut value = manifest_value();
+        set_step(&mut value, index, key, replacement);
+        repository.write_manifest(&value);
+        assert_rejects(&repository.rejection(), expected);
+    }
 
     #[test]
     fn canonical_sequence_reaches_every_cpu_oracle_without_claiming_performance() {
@@ -639,14 +852,519 @@ mod tests {
             assert_eq!(validated.summary.renderer_generations(), 2);
             assert_eq!(validated.summary.atlas_upload_bytes(), 24);
         }
+        assert_eq!(
+            validate(
+                &root.join("assurance/qualification/sequences/atlas-lifecycle-v1.toml"),
+                root
+            ),
+            Ok("validated trace sequence editor-atlas-lifecycle with 5 visible steps, 2 renderer generations, and 24 atlas upload bytes".to_owned())
+        );
     }
 
     #[test]
     fn sequence_parser_rejects_unknown_fields_and_invalid_hashes() {
         let unknown = VALID.replacen("task = 353", "task = 353\nunknown = true", 1);
         assert!(toml::from_str::<SequenceManifest>(&unknown).is_err());
-        assert!(parse_sha256(&"0".repeat(64)).is_ok());
+        assert_eq!(parse_sha256(&"0".repeat(64)), Ok([0; 32]));
+        assert_eq!(
+            parse_sha256(&"09af".repeat(16)),
+            Ok([
+                0x09, 0xaf, 0x09, 0xaf, 0x09, 0xaf, 0x09, 0xaf, 0x09, 0xaf, 0x09, 0xaf, 0x09, 0xaf,
+                0x09, 0xaf, 0x09, 0xaf, 0x09, 0xaf, 0x09, 0xaf, 0x09, 0xaf, 0x09, 0xaf, 0x09, 0xaf,
+                0x09, 0xaf, 0x09, 0xaf,
+            ])
+        );
+        assert!(parse_sha256(&"A".repeat(64)).is_err());
         assert!(parse_sha256(&"g".repeat(64)).is_err());
         assert!(parse_sha256("00").is_err());
+    }
+
+    #[test]
+    fn manifest_identity_and_claim_axes_are_independently_rejected() {
+        let repository = FixtureRepository::new();
+        let cases = [
+            (
+                "schema = \"alpine-scene-trace-sequence/v1\"",
+                "schema = \"wrong\"",
+                "schema must be exact",
+            ),
+            (
+                "id = \"editor-atlas-lifecycle\"",
+                "id = \"Editor\"",
+                "id must be a slug",
+            ),
+            ("task = 353", "task = 352", "must bind Task #353"),
+            (
+                "comparison_level = \"renderer-only\"",
+                "comparison_level = \"journey\"",
+                "comparison level must be renderer-only",
+            ),
+            (
+                "cpu_oracle_channel_tolerance = 1",
+                "cpu_oracle_channel_tolerance = 2",
+                "tolerance must be at most one",
+            ),
+            (
+                "renderer_timing_performed = false",
+                "renderer_timing_performed = true",
+                "cannot contain renderer timing",
+            ),
+            (
+                "memory_claim_performed = false",
+                "memory_claim_performed = true",
+                "cannot contain a memory claim",
+            ),
+        ];
+        for (from, to, expected) in cases {
+            reject_source(&repository, &VALID.replacen(from, to, 1), expected);
+        }
+    }
+
+    #[test]
+    fn required_step_fields_and_teardown_omissions_fail_closed() {
+        let repository = FixtureRepository::new();
+        let string = |value: &str| Some(Value::String(value.to_owned()));
+        reject_step(
+            &repository,
+            0,
+            "transition",
+            string("unknown"),
+            "unsupported",
+        );
+        reject_step(&repository, 0, "scene", None, "requires a scene");
+        reject_step(
+            &repository,
+            0,
+            "workload_hash",
+            None,
+            "requires a workload hash",
+        );
+        reject_step(
+            &repository,
+            0,
+            "resource_id",
+            None,
+            "requires a resource id",
+        );
+        reject_step(
+            &repository,
+            0,
+            "resource_revision",
+            None,
+            "requires a resource revision",
+        );
+        reject_step(
+            &repository,
+            0,
+            "atlas_width",
+            None,
+            "requires an atlas width",
+        );
+        reject_step(
+            &repository,
+            0,
+            "atlas_height",
+            None,
+            "requires an atlas height",
+        );
+        reject_step(
+            &repository,
+            0,
+            "content_hash",
+            None,
+            "requires a content hash",
+        );
+        reject_step(
+            &repository,
+            0,
+            "expected_cpu_bytes",
+            Some(Value::Integer(255)),
+            "CPU image byte count drifted",
+        );
+        reject_step(
+            &repository,
+            4,
+            "scene",
+            string(INITIAL_RELATIVE),
+            "teardown cannot reference a scene",
+        );
+        reject_step(
+            &repository,
+            4,
+            "expected_cpu_bytes",
+            Some(Value::Integer(1)),
+            "teardown cannot retain CPU image bytes",
+        );
+    }
+
+    #[test]
+    fn scene_identity_and_each_metadata_axis_are_independently_bound() {
+        let repository = FixtureRepository::new();
+
+        let mut identity = manifest_value();
+        for index in [0, 1, 2, 3, 5] {
+            set_step(
+                &mut identity,
+                index,
+                "resource_id",
+                Some(Value::String("other-atlas".to_owned())),
+            );
+        }
+        repository.write_manifest(&identity);
+        assert_rejects(&repository.rejection(), "atlas resource identity drifted");
+
+        let mut revisions = manifest_value();
+        for (index, revision) in [(0, 11), (1, 11), (2, 12), (3, 13), (5, 13)] {
+            set_step(
+                &mut revisions,
+                index,
+                "resource_revision",
+                Some(Value::Integer(revision)),
+            );
+        }
+        repository.write_manifest(&revisions);
+        assert_rejects(&repository.rejection(), "atlas metadata drifted");
+
+        let mut widths = manifest_value();
+        for (index, width, upload) in [(0, 3, 6), (1, 3, 0), (2, 3, 6), (3, 6, 12), (5, 6, 12)] {
+            set_step(
+                &mut widths,
+                index,
+                "atlas_width",
+                Some(Value::Integer(width)),
+            );
+            set_step(
+                &mut widths,
+                index,
+                "expected_atlas_upload_bytes",
+                Some(Value::Integer(upload)),
+            );
+        }
+        repository.write_manifest(&widths);
+        assert_rejects(&repository.rejection(), "atlas metadata drifted");
+
+        let mut heights = manifest_value();
+        for (index, height, upload) in [(0, 3, 6), (1, 3, 0), (2, 3, 6), (3, 3, 12), (5, 3, 12)] {
+            set_step(
+                &mut heights,
+                index,
+                "atlas_height",
+                Some(Value::Integer(height)),
+            );
+            set_step(
+                &mut heights,
+                index,
+                "expected_atlas_upload_bytes",
+                Some(Value::Integer(upload)),
+            );
+        }
+        repository.write_manifest(&heights);
+        assert_rejects(&repository.rejection(), "atlas metadata drifted");
+
+        let mut hashes = manifest_value();
+        for (index, byte) in [(0, '1'), (1, '1'), (2, '2'), (3, '3'), (5, '3')] {
+            set_step(
+                &mut hashes,
+                index,
+                "content_hash",
+                Some(Value::String(byte.to_string().repeat(64))),
+            );
+        }
+        repository.write_manifest(&hashes);
+        assert_rejects(&repository.rejection(), "atlas metadata drifted");
+    }
+
+    #[test]
+    fn scene_projection_resource_count_pixels_and_workload_are_checked() {
+        let repository = FixtureRepository::new();
+
+        let mut workload = manifest_value();
+        set_step(
+            &mut workload,
+            0,
+            "workload_hash",
+            Some(Value::String("0".repeat(64))),
+        );
+        repository.write_manifest(&workload);
+        assert_rejects(&repository.rejection(), "workload hash drifted");
+
+        repository.reset();
+        let mut no_resource: Value = toml::from_str(INITIAL)
+            .unwrap_or_else(|error| panic!("invalid initial fixture: {error}"));
+        no_resource
+            .as_table_mut()
+            .and_then(|table| table.get_mut("resources"))
+            .and_then(Value::as_array_mut)
+            .unwrap_or_else(|| panic!("initial fixture has no resources"))
+            .clear();
+        repository.write(
+            INITIAL_RELATIVE,
+            &toml::to_string(&no_resource)
+                .unwrap_or_else(|error| panic!("cannot serialize scene: {error}")),
+        );
+        assert_rejects(&repository.rejection(), "has no atlas resource");
+
+        repository.reset();
+        let mut duplicate: Value = toml::from_str(INITIAL)
+            .unwrap_or_else(|error| panic!("invalid initial fixture: {error}"));
+        let resources = duplicate
+            .as_table_mut()
+            .and_then(|table| table.get_mut("resources"))
+            .and_then(Value::as_array_mut)
+            .unwrap_or_else(|| panic!("initial fixture has no resources"));
+        resources.push(resources[0].clone());
+        repository.write(
+            INITIAL_RELATIVE,
+            &toml::to_string(&duplicate)
+                .unwrap_or_else(|error| panic!("cannot serialize scene: {error}")),
+        );
+        assert_rejects(&repository.rejection(), "at most one A8 atlas resource");
+
+        repository.reset();
+        let mut partial: Value = toml::from_str(INITIAL)
+            .unwrap_or_else(|error| panic!("invalid initial fixture: {error}"));
+        partial
+            .get_mut("resources")
+            .and_then(Value::as_array_mut)
+            .and_then(|resources| resources.first_mut())
+            .and_then(Value::as_table_mut)
+            .and_then(|resource| resource.get_mut("pixels"))
+            .and_then(Value::as_array_mut)
+            .unwrap_or_else(|| panic!("initial fixture has no pixels"))
+            .pop();
+        repository.write(
+            INITIAL_RELATIVE,
+            &toml::to_string(&partial)
+                .unwrap_or_else(|error| panic!("cannot serialize scene: {error}")),
+        );
+        assert_rejects(&repository.rejection(), "invalid A8 pixel length");
+    }
+
+    #[test]
+    fn path_resolution_is_relative_bounded_symlink_free_and_file_only() {
+        let repository = FixtureRepository::new();
+        assert_eq!(
+            resolve_repository_path(&repository.root, INITIAL_RELATIVE),
+            fs::canonicalize(repository.root.join(INITIAL_RELATIVE))
+                .map_err(|error| vec![error.to_string()])
+        );
+        assert_rejects(
+            &resolve_repository_path(&repository.root, "/tmp/scene.toml").unwrap_err(),
+            "is invalid",
+        );
+        assert_rejects(
+            &resolve_repository_path(&repository.root, "../scene.toml").unwrap_err(),
+            "is invalid",
+        );
+        assert_rejects(
+            &resolve_repository_path(&repository.root, "./scene.toml").unwrap_err(),
+            "is invalid",
+        );
+        assert_rejects(
+            &resolve_repository_path(&repository.root, &"x".repeat(MAX_PATH_BYTES + 1))
+                .unwrap_err(),
+            "exceeds the byte limit",
+        );
+        let boundary = resolve_repository_path(&repository.root, &"x".repeat(MAX_PATH_BYTES));
+        assert!(
+            boundary
+                .as_ref()
+                .err()
+                .is_some_and(|errors| !errors.iter().any(|error| error.contains("byte limit")))
+        );
+        assert_rejects(
+            &resolve_repository_path(&repository.root, "missing/scene.toml").unwrap_err(),
+            "cannot inspect trace sequence path",
+        );
+        assert_rejects(
+            &resolve_repository_path(&repository.root, "assurance").unwrap_err(),
+            "is not a file",
+        );
+        let missing_root = repository.root.join("missing-root");
+        assert_rejects(
+            &resolve_repository_path(&missing_root, "scene.toml").unwrap_err(),
+            "cannot canonicalize",
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let link = repository.root.join("linked");
+            symlink(repository.root.join("assurance"), &link)
+                .unwrap_or_else(|error| panic!("cannot create symlink fixture: {error}"));
+            assert_rejects(
+                &resolve_repository_path(&repository.root, "linked/qualification").unwrap_err(),
+                "contains a symlink",
+            );
+        }
+    }
+
+    #[test]
+    fn toml_loader_distinguishes_io_size_utf8_and_syntax_failures() {
+        let repository = FixtureRepository::new();
+        let missing = repository.root.join("missing.toml");
+        assert_rejects(
+            &load_toml::<SequenceManifest>(&missing).unwrap_err(),
+            "cannot read",
+        );
+
+        let oversized = repository.root.join("oversized.toml");
+        fs::write(&oversized, vec![b' '; MAX_MANIFEST_BYTES + 1])
+            .unwrap_or_else(|error| panic!("cannot write oversized fixture: {error}"));
+        assert_rejects(
+            &load_toml::<SequenceManifest>(&oversized).unwrap_err(),
+            "exceeds the manifest byte limit",
+        );
+
+        let boundary = repository.root.join("boundary.toml");
+        fs::write(&boundary, vec![b' '; MAX_MANIFEST_BYTES])
+            .unwrap_or_else(|error| panic!("cannot write boundary fixture: {error}"));
+        let boundary_error = load_toml::<SequenceManifest>(&boundary).unwrap_err();
+        assert!(
+            boundary_error
+                .iter()
+                .all(|error| !error.contains("manifest byte limit"))
+        );
+
+        let invalid_utf8 = repository.root.join("invalid-utf8.toml");
+        fs::write(&invalid_utf8, [0xff])
+            .unwrap_or_else(|error| panic!("cannot write UTF-8 fixture: {error}"));
+        assert_rejects(
+            &load_toml::<SequenceManifest>(&invalid_utf8).unwrap_err(),
+            "is not UTF-8",
+        );
+
+        let syntax = repository.root.join("syntax.toml");
+        fs::write(&syntax, "[")
+            .unwrap_or_else(|error| panic!("cannot write syntax fixture: {error}"));
+        assert_rejects(
+            &load_toml::<SequenceManifest>(&syntax).unwrap_err(),
+            "cannot parse",
+        );
+    }
+
+    #[test]
+    fn transitions_names_deltas_slugs_requirements_and_reservation_are_exact() {
+        let transitions = [
+            ("full-admission", TraceSequenceTransition::FullAdmission),
+            ("compatible-reuse", TraceSequenceTransition::CompatibleReuse),
+            (
+                "content-replacement",
+                TraceSequenceTransition::ContentReplacement,
+            ),
+            (
+                "capacity-replacement",
+                TraceSequenceTransition::CapacityReplacement,
+            ),
+            ("teardown", TraceSequenceTransition::Teardown),
+            (
+                "full-resynchronization",
+                TraceSequenceTransition::FullResynchronization,
+            ),
+        ];
+        for (name, transition) in transitions {
+            assert_eq!(parse_transition(name), Ok(transition));
+            assert_eq!(transition_name(transition), name);
+            assert_eq!(transition_is_teardown(transition), name == "teardown");
+            assert_eq!(
+                transition_starts_renderer_generation(transition),
+                matches!(name, "full-admission" | "full-resynchronization")
+            );
+        }
+        assert_rejects(&parse_transition("replace").unwrap_err(), "unsupported");
+        assert!(!owns_exactly_one_atlas(0));
+        assert!(owns_exactly_one_atlas(1));
+        assert!(!owns_exactly_one_atlas(2));
+        assert!(atlas_pixels_match_dimensions(2, 2, 4));
+        assert!(!atlas_pixels_match_dimensions(2, 2, 3));
+
+        assert_eq!(max_channel_delta(&[], &[]), Some(0));
+        assert_eq!(max_channel_delta(&[1, 9, 3], &[4, 2, 3]), Some(7));
+        assert_eq!(max_channel_delta(&[1], &[1, 2]), None);
+
+        let mut errors = Vec::new();
+        require(&mut errors, true, "not retained");
+        require(&mut errors, false, "retained");
+        assert_eq!(errors, vec!["retained".to_owned()]);
+
+        for valid in ["a", "atlas-2", "2-atlas"] {
+            assert!(valid_slug(valid));
+        }
+        for invalid in ["", "Atlas", "atlas_2", "atlas."] {
+            assert!(!valid_slug(invalid));
+        }
+
+        assert!(reserve_step_storage(2).is_ok());
+        let allocation_error = match reserve_step_storage(usize::MAX) {
+            Ok(_) => panic!("maximum reservation unexpectedly succeeded"),
+            Err(errors) => errors,
+        };
+        assert_rejects(&allocation_error, "step allocation failed");
+    }
+
+    #[test]
+    fn renderer_observations_discriminate_every_terminal_contract_axis() {
+        assert!(ownership_is_drained(BackendState::Stopped, 0, 0, true));
+        for state in [BackendState::Ready, BackendState::DeviceLost] {
+            assert!(!ownership_is_drained(state, 0, 0, true));
+        }
+        assert!(!ownership_is_drained(BackendState::Stopped, 1, 0, true));
+        assert!(!ownership_is_drained(BackendState::Stopped, 0, 0, false));
+        assert_eq!(
+            super::require_drained_ownership(BackendState::Stopped, 0, 0, true, "drain failed"),
+            Ok(())
+        );
+        assert_eq!(
+            super::require_drained_ownership(BackendState::Ready, 0, 0, true, "drain failed"),
+            Err(vec!["drain failed".to_owned()])
+        );
+
+        assert_eq!(frame_observation_error(7, 1, 1, 4, 4, 0, 0, true), None);
+        assert_eq!(
+            frame_observation_error(7, 2, 1, 4, 4, 0, 0, true),
+            Some("trace sequence step 7 exceeds CPU oracle tolerance: 2 > 1".to_owned())
+        );
+        assert_eq!(
+            frame_observation_error(7, 1, 1, 3, 4, 0, 0, true),
+            Some("trace sequence step 7 uploaded 3 atlas bytes, expected 4".to_owned())
+        );
+        assert_eq!(
+            frame_observation_error(7, 1, 1, 4, 4, 1, 0, true),
+            Some("trace sequence step 7 did not reach balanced terminal ownership".to_owned())
+        );
+        assert_eq!(
+            frame_observation_error(7, 1, 1, 4, 4, 0, 0, false),
+            Some("trace sequence step 7 did not reach balanced terminal ownership".to_owned())
+        );
+    }
+
+    #[test]
+    fn native_render_entry_invalidates_stale_output_and_preserves_io_errors() {
+        let repository = FixtureRepository::new();
+        let output = repository.root.join("evidence.toml");
+        fs::write(&output, "stale")
+            .unwrap_or_else(|error| panic!("cannot write stale output: {error}"));
+        let missing_manifest = repository.root.join("missing.toml");
+        assert_rejects(
+            &render_native(&missing_manifest, &output, &repository.root).unwrap_err(),
+            "cannot read",
+        );
+        assert!(!output.exists());
+
+        fs::create_dir(&output)
+            .unwrap_or_else(|error| panic!("cannot create output directory: {error}"));
+        assert_rejects(
+            &render_native(&repository.manifest(), &output, &repository.root).unwrap_err(),
+            "cannot invalidate prior output",
+        );
+        assert!(output.is_dir());
+
+        assert_eq!(invalidate_output(&repository.root.join("absent")), Ok(()));
+        let removable = repository.root.join("removable");
+        fs::write(&removable, "old")
+            .unwrap_or_else(|error| panic!("cannot write removable output: {error}"));
+        assert_eq!(invalidate_output(&removable), Ok(()));
+        assert!(!removable.exists());
     }
 }
