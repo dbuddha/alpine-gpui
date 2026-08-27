@@ -1,0 +1,176 @@
+schema = "alpine-studio-diagnostic/v1"
+workload_id = "fixture-edit-session"
+duration_ms = 1000
+outcome = "passed"
+status = "fixture capture completed"
+
+[frames]
+requested = 4
+submitted = 4
+completed = 4
+presented = 4
+omitted = 0
+idle_submissions = 0
+peak_in_flight = 2
+
+[language]
+requests = 2
+responses = 2
+stale_responses = 0
+restarts = 0
+current_retained_bytes = 0
+peak_retained_bytes = 4096
+budget_bytes = 16777216
+
+[accessibility]
+queries = 2
+actions = 1
+stale_actions = 0
+retained_nodes = 4
+peak_retained_nodes = 4
+
+[lifecycle]
+close_requests = 1
+close_completions = 1
+clean_shutdown = true
+post_close_bytes = 0
+post_close_limit_bytes = 4096
+
+[[stages]]
+name = "scene-build"
+samples = 4
+total_ns = 4000
+peak_ns = 1200
+omitted = 0
+
+[[stages]]
+name = "adaptation"
+samples = 4
+total_ns = 0
+peak_ns = 0
+omitted = 0
+
+[[stages]]
+name = "atlas-upload"
+samples = 1
+total_ns = 500
+peak_ns = 500
+omitted = 3
+
+[[stages]]
+name = "encode"
+samples = 4
+total_ns = 2000
+peak_ns = 600
+omitted = 0
+
+[[stages]]
+name = "commit"
+samples = 4
+total_ns = 800
+peak_ns = 250
+omitted = 0
+
+[[stages]]
+name = "gpu-completion"
+samples = 4
+total_ns = 3200
+peak_ns = 900
+omitted = 0
+
+[[stages]]
+name = "presentation"
+samples = 4
+total_ns = 3600
+peak_ns = 1000
+omitted = 0
+
+[[stages]]
+name = "input-to-present"
+samples = 1
+total_ns = 1800
+peak_ns = 1800
+omitted = 0
+
+[[stages]]
+name = "shutdown-drain"
+samples = 1
+total_ns = 2000
+peak_ns = 2000
+omitted = 0
+
+[[resources]]
+name = "layout-cache"
+current_bytes = 1024
+peak_bytes = 2048
+budget_bytes = 33554432
+
+[[resources]]
+name = "syntax-cache"
+current_bytes = 512
+peak_bytes = 1024
+budget_bytes = 4194304
+
+[[resources]]
+name = "glyph-atlas-cpu"
+current_bytes = 4096
+peak_bytes = 4096
+budget_bytes = 16777216
+
+[[resources]]
+name = "glyph-atlas-gpu"
+current_bytes = 4096
+peak_bytes = 4096
+budget_bytes = 16777216
+
+[[resources]]
+name = "font-cache"
+current_bytes = 512
+peak_bytes = 1024
+budget_bytes = 1048576
+
+[[resources]]
+name = "fallback-cache"
+current_bytes = 0
+peak_bytes = 0
+budget_bytes = 1048576
+
+[[resources]]
+name = "language-process"
+current_bytes = 0
+peak_bytes = 4096
+budget_bytes = 16777216
+
+[[resources]]
+name = "foreground-queue"
+current_bytes = 0
+peak_bytes = 256
+budget_bytes = 1048576
+
+[[resources]]
+name = "background-queue"
+current_bytes = 0
+peak_bytes = 512
+budget_bytes = 1048576
+
+[[resources]]
+name = "upload-staging"
+current_bytes = 4096
+peak_bytes = 8192
+budget_bytes = 16777216
+
+[[samples]]
+sequence = 0
+elapsed_ms = 0
+physical_footprint_bytes = 104857600
+private_dirty_bytes = 52428800
+gpu_bytes = 4096
+alpine_retained_bytes = 8192
+
+[[samples]]
+sequence = 1
+elapsed_ms = 1000
+physical_footprint_bytes = 105906176
+private_dirty_bytes = 53477376
+gpu_bytes = 4096
+alpine_retained_bytes = 8192

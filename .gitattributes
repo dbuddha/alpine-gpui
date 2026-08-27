@@ -1,4 +1,5 @@
 /assurance/calibration/**/*.csv text eol=lf
+/assurance/dogfood/**/*.toml text eol=lf
 /assurance/ax/v1/fixture/** -text
 /assurance/studio-profile/**/*.json -text
 /assurance/onscreen-sdr/**/*.scene -text

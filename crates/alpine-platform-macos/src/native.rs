@@ -515,12 +515,23 @@ fn elapsed_ns(start: Instant, end: Instant) -> u64 {
     u64::try_from(end.saturating_duration_since(start).as_nanos()).unwrap_or(u64::MAX)
 }
 
+fn profile_latency_for_terminal(
+    latency: Option<FrameLatencyEvidence>,
+    recovery: Option<RecoveryClassification>,
+) -> Option<FrameLatencyEvidence> {
+    if matches!(recovery, Some(RecoveryClassification::RetryFrame)) {
+        None
+    } else {
+        latency
+    }
+}
+
 #[cfg(test)]
 mod frame_latency_timing_tests {
     use std::time::{Duration, Instant};
 
-    use super::{AttemptTiming, EventFrameTiming};
-    use crate::EventTimestamp;
+    use super::{AttemptTiming, EventFrameTiming, profile_latency_for_terminal};
+    use crate::{EventTimestamp, RecoveryClassification};
 
     #[test]
     fn timeline_preserves_exact_stages_and_absent_endpoints() -> Result<(), &'static str> {
@@ -561,6 +572,15 @@ mod frame_latency_timing_tests {
         assert_eq!(absent.event_to_presented_handler_ns(), None);
         assert_eq!(absent.event_to_terminal_record_ns(), 19);
         assert_eq!(AttemptTiming::default().latency_evidence(origin), None);
+        assert_eq!(
+            profile_latency_for_terminal(Some(complete), Some(RecoveryClassification::RetryFrame)),
+            None
+        );
+        assert_eq!(
+            profile_latency_for_terminal(Some(complete), None),
+            Some(complete)
+        );
+        assert_eq!(profile_latency_for_terminal(None, None), None);
         Ok(())
     }
 }
@@ -1150,7 +1170,7 @@ impl PresentationDriver {
             self.backend.accounting().current_retained_bytes(),
             recovery,
         );
-        if let Some(latency) = evidence.latency() {
+        if let Some(latency) = profile_latency_for_terminal(evidence.latency(), recovery) {
             let _emitted = self.latency_signposts.emit_frame_latency(latency);
         }
         if matches!(attempt.outcome(), PresentationOutcome::Superseded) {
