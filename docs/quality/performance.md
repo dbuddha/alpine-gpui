@@ -34,6 +34,13 @@ An optimization is acceptable only if its correctness, accessibility, and
 memory constraints still pass. Benchmark evidence is revision-scoped and is
 attached to release qualification rather than copied into standing prose.
 
+Local Studio sessions first use the
+[dogfood capture protocol](studio-dogfood-capture.md). That protocol binds
+revision, workload, environment, stage, resource, process, and shutdown
+evidence without making a performance claim. Its synthetic fixture is a schema
+control, not a baseline. Physical latency distributions and residency slopes
+remain separate Task #240 and #241 evidence before any Zed-relative comparison.
+
 The first accepted Zed-lab record qualifies no performance. It binds one
 solid-quad trace across a retained hosted offline-shader GPUI artifact and a
 physical Apple Silicon run of GPUI Metal, Alpine Direct Metal, and the CPU

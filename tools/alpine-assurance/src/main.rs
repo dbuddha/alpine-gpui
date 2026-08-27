@@ -2,6 +2,7 @@
 
 mod ax;
 mod calibration;
+mod dogfood;
 mod lab;
 mod lab_v2;
 mod onscreen;
@@ -151,6 +152,9 @@ fn run() -> Result<String, Vec<String>> {
     ) {
         return run_onscreen_command(&command, &mut arguments);
     }
+    if command == "record-studio-dogfood" {
+        return run_dogfood_record_command(&mut arguments);
+    }
     if matches!(
         command.as_str(),
         "validate-ax-fixture" | "validate-ax-evidence" | "ax-evidence-report"
@@ -188,28 +192,19 @@ fn run() -> Result<String, Vec<String>> {
     }
     if matches!(
         command.as_str(),
+        "validate-studio-dogfood" | "studio-dogfood-report"
+    ) {
+        return run_dogfood_command(&command, &mut arguments);
+    }
+    if matches!(
+        command.as_str(),
         "validate-qualification"
             | "qualification-report"
             | "validate-aa-calibration"
             | "aa-calibration-report"
             | "validate-scene-trace"
     ) {
-        let Some(path) = arguments.next() else {
-            return Err(vec![format!("{command} requires a manifest path")]);
-        };
-        if arguments.next().is_some() {
-            return Err(vec![format!("{command} accepts exactly one manifest path")]);
-        }
-        if matches!(
-            command.as_str(),
-            "validate-aa-calibration" | "aa-calibration-report"
-        ) {
-            return calibration::run(&command, Path::new(&path), Path::new("."));
-        }
-        if command == "validate-scene-trace" {
-            return qualification::run_scene(Path::new(&path), Path::new("."));
-        }
-        return qualification::run(&command, Path::new(&path), Path::new("."));
+        return run_qualification_command(&command, &mut arguments);
     }
     if matches!(
         command.as_str(),
@@ -260,7 +255,7 @@ fn run() -> Result<String, Vec<String>> {
         )),
         "report" => Ok(render_report(&registry)),
         other => Err(vec![format!(
-            "unknown command {other:?}; expected validate, report, validate-scene-trace, validate-trace-sequence, render-scene-reference, render-scene-native, render-trace-sequence-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, or upstream-radar"
+            "unknown command {other:?}; expected validate, report, validate-scene-trace, validate-trace-sequence, render-scene-reference, render-scene-native, render-trace-sequence-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, record-studio-dogfood, validate-studio-dogfood, studio-dogfood-report, or upstream-radar"
         )]),
     }
 }
@@ -281,6 +276,68 @@ fn run_lab_command(
     } else {
         lab::run(command, path)
     }
+}
+
+fn run_qualification_command(
+    command: &str,
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<String, Vec<String>> {
+    let Some(path) = arguments.next() else {
+        return Err(vec![format!("{command} requires a manifest path")]);
+    };
+    if arguments.next().is_some() {
+        return Err(vec![format!("{command} accepts exactly one manifest path")]);
+    }
+    if matches!(command, "validate-aa-calibration" | "aa-calibration-report") {
+        return calibration::run(command, Path::new(&path), Path::new("."));
+    }
+    if command == "validate-scene-trace" {
+        return qualification::run_scene(Path::new(&path), Path::new("."));
+    }
+    qualification::run(command, Path::new(&path), Path::new("."))
+}
+
+fn run_dogfood_command(
+    command: &str,
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<String, Vec<String>> {
+    let Some(path) = arguments.next() else {
+        return Err(vec![format!("{command} requires a manifest path")]);
+    };
+    if arguments.next().is_some() {
+        return Err(vec![format!("{command} accepts exactly one manifest path")]);
+    }
+    dogfood::run(command, Path::new(&path))
+}
+
+fn run_dogfood_record_command(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<String, Vec<String>> {
+    let Some(draft) = arguments.next() else {
+        return Err(vec![
+            "record-studio-dogfood requires a draft, snapshot, and destination".to_owned(),
+        ]);
+    };
+    let Some(snapshot) = arguments.next() else {
+        return Err(vec![
+            "record-studio-dogfood requires a snapshot and destination".to_owned(),
+        ]);
+    };
+    let Some(destination) = arguments.next() else {
+        return Err(vec![
+            "record-studio-dogfood requires a destination".to_owned(),
+        ]);
+    };
+    if arguments.next().is_some() {
+        return Err(vec![
+            "record-studio-dogfood accepts exactly three paths".to_owned(),
+        ]);
+    }
+    dogfood::record(
+        Path::new(&draft),
+        Path::new(&snapshot),
+        Path::new(&destination),
+    )
 }
 
 fn run_ax_command(
@@ -990,7 +1047,8 @@ fn display_list(items: &[String]) -> String {
 mod tests {
     use super::{
         artifact_anchor, artifact_path, discover_kani_file, load_registry, registry_path,
-        render_report, valid_identifier, validate_registry,
+        render_report, run_dogfood_command, run_dogfood_record_command, run_qualification_command,
+        valid_identifier, validate_registry,
     };
     use std::{
         collections::BTreeSet,
@@ -1008,6 +1066,38 @@ mod tests {
         assert!(valid_identifier("EV-0016-KANI01", "EV-", "-"));
         assert!(!valid_identifier("AEP-16", "AEP-", "-C"));
         assert!(!valid_identifier("EV-0016-lower", "EV-", "-"));
+    }
+
+    #[test]
+    fn dogfood_cli_dispatch_preserves_validation_and_argument_errors() {
+        let manifest = repository_root().join("assurance/dogfood/v1/session.toml");
+        let mut validation_arguments = [manifest.display().to_string()].into_iter();
+        let validation = run_dogfood_command("validate-studio-dogfood", &mut validation_arguments);
+        assert!(validation.is_ok_and(|message| {
+            message.starts_with("validated Studio dogfood capture fixture-dogfood-session")
+        }));
+
+        let mut missing_validation_arguments = std::iter::empty();
+        assert!(
+            run_dogfood_command(
+                "validate-studio-dogfood",
+                &mut missing_validation_arguments,
+            )
+            .is_err_and(|errors| errors == ["validate-studio-dogfood requires a manifest path"])
+        );
+        let mut missing_record_arguments = std::iter::empty();
+        assert!(
+            run_dogfood_record_command(&mut missing_record_arguments).is_err_and(|errors| {
+                errors == ["record-studio-dogfood requires a draft, snapshot, and destination"]
+            })
+        );
+        let mut missing_arguments = std::iter::empty();
+        assert_eq!(
+            run_qualification_command("validate-qualification", &mut missing_arguments),
+            Err(vec![
+                "validate-qualification requires a manifest path".to_owned()
+            ])
+        );
     }
 
     #[test]

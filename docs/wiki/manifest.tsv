@@ -5,7 +5,7 @@ Research-Lineage	Implementation lineage and evidence	docs/research/alpine-lineag
 Zed	Zed and GPUI findings	docs/case-studies/zed-editor.md	https://github.com/dbuddha/alpine-gpui/issues/113,https://github.com/dbuddha/alpine-gpui/issues/175
 Sublime-Text	Sublime Text findings	docs/case-studies/sublime-editor.md	https://github.com/dbuddha/alpine-gpui/issues/114,https://github.com/dbuddha/alpine-gpui/issues/175
 WGPU	WGPU role and boundary	docs/case-studies/wgpu.md	https://github.com/dbuddha/alpine-gpui/issues/28,https://github.com/dbuddha/alpine-gpui/issues/175
-Comparator-Qualification	Comparator and qualification protocol	docs/quality/comparator-protocol.md	https://github.com/dbuddha/alpine-gpui/issues/116,https://github.com/dbuddha/alpine-gpui/issues/175
+Comparator-Qualification	Comparator and qualification protocol	docs/quality/comparator-protocol.md	https://github.com/dbuddha/alpine-gpui/issues/116,https://github.com/dbuddha/alpine-gpui/issues/175,https://github.com/dbuddha/alpine-gpui/issues/238
 Agent-Operations	GitHub agent operations	docs/operations/github-agent-skills.md	https://github.com/dbuddha/alpine-gpui/issues/184,https://github.com/dbuddha/alpine-gpui/issues/185
 Documentation-Policy	Documentation authority and Wiki policy	docs/wiki/README.md	https://github.com/dbuddha/alpine-gpui/issues/174,https://github.com/dbuddha/alpine-gpui/issues/175
 _Sidebar	Navigation	docs/SUMMARY.md	https://github.com/dbuddha/alpine-gpui/issues/175
