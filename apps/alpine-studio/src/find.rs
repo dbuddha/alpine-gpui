@@ -676,6 +676,14 @@ impl FindState {
         true
     }
 
+    pub(crate) fn defer_submission(&mut self, identity: FindIdentity) -> bool {
+        if self.pending != Some(identity) {
+            return false;
+        }
+        self.pending = None;
+        true
+    }
+
     pub(crate) fn admit(
         &mut self,
         output: FindWorkerOutput,
@@ -1020,6 +1028,23 @@ mod tests {
         assert_eq!(state.generation(), 2);
         assert!(state.close());
         assert!(!state.document_changed()?);
+        Ok(())
+    }
+
+    #[test]
+    fn saturated_submission_defers_only_the_exact_pending_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let buffer = Buffer::new("alpha");
+        let mut state = FindState::default();
+        state.open(false);
+        state.commit_text("alpha")?;
+        let request = state.request(7, buffer.snapshot())?.ok_or("request")?;
+        assert!(!state.defer_submission(FindIdentity::new(9, 9, 9)));
+        assert_eq!(state.pending, Some(request.identity()));
+        assert!(state.defer_submission(request.identity()));
+        assert!(state.pending.is_none());
+        assert_eq!(state.failures(), 0);
+        assert!(!state.defer_submission(request.identity()));
         Ok(())
     }
 }

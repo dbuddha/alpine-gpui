@@ -1791,6 +1791,16 @@ mod tests {
         let long_path = PathBuf::from("x".repeat(MAX_SETTINGS_PATH_BYTES + 1));
         assert_eq!(read_file(&long_path), Err(SettingsLoadError::PathTooLong));
 
+        let exact_path = PathBuf::from("x".repeat(MAX_SETTINGS_PATH_BYTES));
+        assert!(!matches!(
+            read_file(&exact_path),
+            Err(SettingsLoadError::PathTooLong)
+        ));
+        assert_eq!(
+            read_file(root.path()),
+            Err(SettingsLoadError::NotRegularFile)
+        );
+
         let parent_file = root.path().join("parent-file");
         write(&parent_file, b"not a directory")?;
         #[cfg(unix)]
@@ -1816,6 +1826,20 @@ mod tests {
             require_same_file(&left_metadata, &right_metadata),
             Err(SettingsLoadError::ConcurrentEdit)
         );
+
+        #[cfg(unix)]
+        {
+            let replaced = root.path().join("replaced.json");
+            let archived = root.path().join("archived.json");
+            write(&replaced, br#"{"version":1}"#)?;
+            assert_eq!(
+                read_file_with(&replaced, no_op, || {
+                    let _ = fs::rename(&replaced, &archived);
+                    let _ = fs::write(&replaced, br#"{"version":1}"#);
+                }),
+                Err(SettingsLoadError::ConcurrentEdit)
+            );
+        }
 
         let growing = root.path().join("growing.json");
         write(&growing, &vec![b' '; MAX_SETTINGS_FILE_BYTES])?;
@@ -1857,9 +1881,41 @@ mod tests {
             reload.reject_submission(request.generation(), request.announce()),
             Err(SettingsReloadError::SubmissionFailed)
         );
-        assert!(reload.take_request().is_some());
+        let retry = reload.take_request().ok_or("missing rejected retry")?;
+        assert!(retry.announce());
         assert!(reload.report().path_bytes <= MAX_SETTINGS_PATH_BYTES * 2);
         assert_eq!(reload.report().failures, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn reload_identity_and_project_replacement_transitions_are_independent()
+    -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        let project = root.path().join(".alpine").join("settings.json");
+        let mut reload = SettingsReload::explicit(None, None);
+        assert!(reload.replace_project(Some(root.path()))?);
+        assert!(!reload.replace_project(Some(root.path()))?);
+        let request = reload.take_request().ok_or("missing project request")?;
+
+        assert_eq!(
+            reload.reject_submission(request.generation().saturating_add(1), false),
+            Ok(())
+        );
+        assert!(reload.report().in_flight);
+
+        let mut stale = request.execute();
+        stale.generation = stale.generation.saturating_add(1);
+        assert_eq!(
+            reload.admit(stale, &mut SettingsState::compiled()?),
+            SettingsReloadAdmission::Stale
+        );
+        assert!(reload.report().in_flight);
+        assert_eq!(reload.report().path_bytes, project.as_os_str().len());
+
+        let mut idle = SettingsReload::explicit(None, None);
+        assert_eq!(idle.reject_submission(0, false), Ok(()));
+        assert_eq!(idle.report().stale_results, 1);
         Ok(())
     }
 }

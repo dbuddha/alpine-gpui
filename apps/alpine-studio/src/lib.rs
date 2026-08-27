@@ -97,7 +97,9 @@ use alpine_platform_macos::{
     EventTimestamp, ImeEvent, InputEpoch, InputEpochAdmission, KeyState, Modifiers, PointerAction,
     PointerButton, StudioSignpost, StudioSignpostStage, SurfaceError, SurfaceEvent,
 };
-use alpine_runtime::{AppContext, AppDelegate, DocumentRevision, RuntimeError, WindowContext};
+use alpine_runtime::{
+    AppContext, AppDelegate, DocumentRevision, RuntimeError, SubmitError, WindowContext,
+};
 use alpine_scene::{
     AtlasBounds, Clip, Glyph, GlyphAtlasImage, GlyphAtlasRowPatch, Primitive, Quad, Scene,
     SceneBuilder, SceneError, SceneRevision,
@@ -6108,13 +6110,19 @@ impl StudioApp {
         match self.prepare_find_request() {
             Ok(Some(request)) => {
                 let identity = request.identity();
-                if context
-                    .spawn(move || StudioWorkerOutput::Find(request.execute()))
-                    .is_err()
-                    && self.find.reject_submission(identity)
-                {
-                    self.advance_accessibility_semantic_revision(true);
-                    context.invalidate();
+                match context.spawn(move || StudioWorkerOutput::Find(request.execute())) {
+                    Ok(_) => {}
+                    Err(SubmitError::Saturated) => {
+                        if self.find.defer_submission(identity) {
+                            self.find_needs_search = true;
+                        }
+                    }
+                    Err(SubmitError::Closed | SubmitError::SequenceExhausted) => {
+                        if self.find.reject_submission(identity) {
+                            self.advance_accessibility_semantic_revision(true);
+                            context.invalidate();
+                        }
+                    }
                 }
             }
             Ok(None) => {}
