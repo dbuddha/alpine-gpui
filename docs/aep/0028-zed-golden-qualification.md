@@ -74,6 +74,13 @@ owns the isolated GPUI adapter and its composed E3 record. Requirement #53
 retains atlas lifecycle, recovery, calibrated timing, memory, and fixed-hardware
 E4 qualification.
 
+Task [#353](https://github.com/dbuddha/alpine-gpui/issues/353) adds the
+compatible `alpine-scene-trace-sequence/v1` companion. It binds full atlas
+admission, exact reuse, content replacement, capacity replacement, teardown,
+and clean full resynchronization without changing any retained v1 or v2 scene
+byte. The protocol and CPU-oracle path are implemented in Alpine; physical
+Direct Metal and pinned GPUI lifecycle evidence remain required before E3.
+
 ## Formal model
 
 [`GoldenQualification.tla`](../../formal/tla/aep-0028/GoldenQualification.tla)
@@ -96,11 +103,12 @@ The validator accepts only repository-relative normal artifact paths. It does
 not execute workload code, interpret Zed source, or calculate statistics. Those
 owners arrive through later approved Requirements.
 
-Kani is not applicable to the implemented claims. The boundary is TOML parsing,
-filesystem evidence, strings, and dynamically sized records rather than a small
-bounded pure Rust algorithm. TLA+ checks abstract ordering; Rust unit and
-integration tests check the concrete validator. Bounded scene decoders or
-resource indices added later receive a new Kani review.
+Kani does not model TOML parsing, filesystem evidence, native rendering, or
+elapsed time. It now checks the small bounded sequence state contract and proves
+that a symbolic compatible-reuse content drift is rejected while exact reuse is
+admitted. TLA+ checks qualification ordering; Rust unit and integration tests
+check the concrete parser, CPU oracle, and native execution boundary. No formal
+refinement is claimed.
 
 ## Correctness, performance, memory, and accessibility
 

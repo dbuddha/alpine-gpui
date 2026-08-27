@@ -87,6 +87,8 @@ superseded but must not erase the earlier claim or evidence state.
 | 2026-08-24 | Task #221 implementation adds bounded Rust document and workspace symbols | Current-only request and query identity, parser and ranking ceilings, mock and pinned-server paths, keyboard, IME, scene, accessibility, checked local navigation, TLA+ faulty controls, and Kani selection bounds are implemented on the review branch | Exact PR head, hosted `ci-pass`, merge identity, dogfood quality, physical latency, and residency remain to be appended after acceptance |
 | 2026-08-25 | Task #220 local qualification adds real rename and formatting to the pinned rust-analyzer journey | Exact release `2026-08-17.4`, version `0.3.3016-standalone`, and SHA-256 `ece932daf2f077be87bf745d2eb0a62cbc550f4b1e2e31ca76dfafdd0cc599b3` passed `lsp_client::tests::pinned_rust_analyzer_qualifies_real_document_lifecycle`; raw server workspace edits are admitted and prepared through Alpine's production boundary | Hosted exact-head `ci-pass`, PR and merge identity, and retained final evidence remain before Task #220 advances to E3 |
 
+| 2026-08-25 | Task #353 adds the versioned atlas lifecycle companion in Alpine | Six exact transitions now bind workload, atlas content, capacity, revision, logical generation, upload, CPU-oracle, and terminal-ownership identities without changing v1 or v2 scene controls | Alpine protocol, Kani, and CPU-oracle evidence are implementation-stage only; physical Direct Metal, pinned GPUI resource identity, retained artifacts, and lifecycle E3 remain open |
+
 ## Rules for future entries
 
 - Append the merge date, PR, mechanism IDs, and evidence level transition.
