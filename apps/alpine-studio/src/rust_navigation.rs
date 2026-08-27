@@ -799,4 +799,39 @@ mod tests {
             Err(NavigationError::InvalidRange)
         );
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_uri_and_drive_normalization_axes_are_independent() -> Result<(), NavigationError>
+    {
+        let local = PathBuf::from(r"C:\repo\main.rs");
+        assert_eq!(decoded_file_uri_path("/C:/repo/main.rs")?, local);
+        assert_eq!(decode_file_uri("file:///C:/repo/main.rs")?, local);
+        assert_eq!(
+            decoded_file_uri_path("/C?repo/main.rs"),
+            Err(NavigationError::OutsideWorkspace)
+        );
+        assert_eq!(
+            decoded_file_uri_path("/C:relative"),
+            Err(NavigationError::OutsideWorkspace)
+        );
+        assert_eq!(
+            decoded_file_uri_path("/C:/repo/../secret.rs"),
+            Err(NavigationError::OutsideWorkspace)
+        );
+
+        assert_eq!(
+            normalized_local_drive_path(Path::new(r"\\?\C:\repo\main.rs"))?,
+            local
+        );
+        assert_eq!(
+            normalized_local_drive_path(Path::new(r"\\?\UNC\server\share")),
+            Err(NavigationError::UnsupportedUri)
+        );
+        assert_eq!(
+            normalized_local_drive_path(Path::new(r"\\server\share")),
+            Err(NavigationError::UnsupportedUri)
+        );
+        Ok(())
+    }
 }

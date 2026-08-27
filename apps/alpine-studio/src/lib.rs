@@ -3200,13 +3200,9 @@ impl StudioApp {
                     .ok_or(StudioRenderError::Domain)?;
                 let layout = self.text_system.shape(line, font)?;
                 let baseline = workspace_edit_line_baseline(top, row, layout.ascent());
-                let glyphs = self.collect_glyphs(
-                    &layout,
-                    font,
-                    workspace_edit_text_x(left),
-                    baseline,
-                    overlay_clip,
-                )?;
+                let x = workspace_edit_text_x(left);
+                let clip = overlay_clip;
+                let glyphs = self.collect_glyphs(&layout, font, x, baseline, clip)?;
                 pending_glyphs.extend(glyphs);
             }
         }
@@ -6157,9 +6153,12 @@ impl StudioApp {
         for file in prepared.files() {
             if active_path.as_deref() == Some(file.path()) {
                 active_report = Some(self.document.admit_persisted_edit(file)?);
-            } else if let Some(document) = self.tabs.inactive_document_mut_for_path(file.path()) {
-                let admission = document.admit_persisted_edit(file)?;
-                let _ = admission;
+            } else {
+                let document = self
+                    .tabs
+                    .inactive_document_mut_for_path(file.path())
+                    .ok_or(WorkspaceEditApplicationError::StaleLoadedDocument)?;
+                document.admit_persisted_edit(file)?;
             }
         }
         if let Some(report) = active_report {

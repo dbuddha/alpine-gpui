@@ -1475,6 +1475,46 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn rollback_replaces_an_installed_target_with_its_exact_backup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = fixture()?;
+        let target = root.join("installed.rs");
+        let journal_path = root.join("journal.bin");
+        let journal = journal_with_targets(vec![target.clone()]);
+        let entries = entries_for(&journal)?;
+        let entry = &entries[0];
+        fs::write(&entry.target, "installed")?;
+        fs::write(&entry.backup, "original")?;
+        fs::write(&entry.stage, "staged")?;
+        fs::write(&journal_path, "journal")?;
+
+        rollback(&journal_path, &entries)?;
+
+        assert_eq!(fs::read_to_string(&target)?, "original");
+        assert!(!entry.stage.exists());
+        assert!(!entry.backup.exists());
+        assert!(!journal_path.exists());
+
+        let absent_target = root.join("absent.rs");
+        let absent_journal_path = root.join("absent-journal.bin");
+        let absent_journal = journal_with_targets(vec![absent_target.clone()]);
+        let absent_entries = entries_for(&absent_journal)?;
+        let absent_entry = &absent_entries[0];
+        fs::write(&absent_entry.backup, "absent-original")?;
+        fs::write(&absent_entry.stage, "absent-staged")?;
+        fs::write(&absent_journal_path, "absent-journal")?;
+
+        rollback(&absent_journal_path, &absent_entries)?;
+
+        assert_eq!(fs::read_to_string(absent_target)?, "absent-original");
+        assert!(!absent_entry.stage.exists());
+        assert!(!absent_entry.backup.exists());
+        assert!(!absent_journal_path.exists());
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
     #[cfg_attr(
         miri,
         ignore = "the 512 KiB journal ceiling is covered natively; Miri exercises bounded codec and checksum semantics"

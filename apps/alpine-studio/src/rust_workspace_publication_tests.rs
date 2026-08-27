@@ -7,6 +7,7 @@ use alpine_platform_macos::{
     PointerButton, ScrollPhase, SurfaceEvent,
 };
 use alpine_runtime::{Application, WorkerConfig};
+use alpine_scene::SceneRevision;
 use alpine_text::{ByteOffset, Selection, Transaction};
 use serde_json::value::RawValue;
 
@@ -94,6 +95,12 @@ fn production_publication_queues_commits_admits_and_undoes_active_document()
     let prepared = WorkspaceEditProposal::admit_rename(&raw, &root)?.prepare()?;
     app.workspace_edits
         .install_preview_for_test(identity, prepared)?;
+    let viewport = Size::new(800.0, 600.0).ok_or("viewport")?;
+    let _ = app.scene(SceneRevision::new(1), viewport);
+    let render_failures = app.render_failures;
+    app.workspace_edits.force_line_lookup_failure_for_test();
+    let _ = app.scene(SceneRevision::new(2), viewport);
+    assert_eq!(app.render_failures, render_failures + 1);
 
     assert!(
         app.handle_workspace_edit_key(KEY_RETURN, true)
@@ -139,6 +146,10 @@ fn application_recovery_and_publication_guards_fail_closed()
     let (root, path, _, _) = fixture();
     assert!(
         recover_workspace_edit_for_session(std::path::Path::new(std::path::MAIN_SEPARATOR_STR,))
+            .is_err()
+    );
+    assert!(
+        recover_explicit_workspace_edit(&path, std::path::Path::new(std::path::MAIN_SEPARATOR_STR))
             .is_err()
     );
     let corrupt_session = root.join("corrupt-session-v2.json");
@@ -372,7 +383,7 @@ fn failed_publication_retains_preview_and_freezes_every_mutating_input()
     assert!(!app.handle_event(&scroll).visual_changed);
     assert!(app.handle_close_request().cancel_close);
     let observed = app.accessibility_snapshot()?.revision();
-    let action = AccessibilityAction::set_selection(observed, 0, 0);
+    let action = AccessibilityAction::set_selection(observed, 1, 1);
     let request = AccessibilityRequest::action(AccessibilityRequestId::new(1), action)?;
     let (response, effect) = accessibility::respond(&mut app, &request);
     assert!(!effect.visual_changed);

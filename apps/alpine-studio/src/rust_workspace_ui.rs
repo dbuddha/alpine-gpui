@@ -76,6 +76,8 @@ pub(crate) struct WorkspaceEditPanel {
     peak_retained_bytes: usize,
     #[cfg(test)]
     force_replace_lines_failure: bool,
+    #[cfg(test)]
+    force_line_lookup_failure: bool,
 }
 
 impl WorkspaceEditPanel {
@@ -360,6 +362,10 @@ impl WorkspaceEditPanel {
     }
 
     pub(crate) fn line(&self, index: usize) -> Option<&str> {
+        #[cfg(test)]
+        if self.force_line_lookup_failure {
+            return None;
+        }
         self.lines.get(index).map(AsRef::as_ref)
     }
 
@@ -411,6 +417,11 @@ impl WorkspaceEditPanel {
     #[cfg(test)]
     pub(crate) fn force_replace_lines_failure_once(&mut self) {
         self.force_replace_lines_failure = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_line_lookup_failure_for_test(&mut self) {
+        self.force_line_lookup_failure = true;
     }
 
     fn rebuild_rename_lines(&mut self) -> Result<(), WorkspaceEditPanelError> {
@@ -692,6 +703,7 @@ mod tests {
 
     #[test]
     fn invalid_panel_transitions_are_atomic_and_bounded() -> Result<(), Box<dyn Error>> {
+        assert_eq!(MAX_PREVIEW_LINES, 10);
         assert_eq!(
             WorkspaceEditPanelError::InvalidName.to_string(),
             "Rust workspace edit unavailable: InvalidName"
