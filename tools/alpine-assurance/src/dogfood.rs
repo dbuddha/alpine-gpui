@@ -1011,6 +1011,12 @@ mod tests {
         assert!(resolve_bundle_file(bundle, "").is_err());
         assert!(resolve_bundle_file(bundle, "/snapshot.toml").is_err());
         assert!(resolve_bundle_file(bundle, "../snapshot.toml").is_err());
+        assert_eq!(
+            staging_path(Path::new("")),
+            Err(vec![
+                "dogfood capture destination needs a UTF-8 file name".to_owned()
+            ])
+        );
         Ok(())
     }
 

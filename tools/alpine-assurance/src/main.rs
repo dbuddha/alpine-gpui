@@ -1047,8 +1047,8 @@ fn display_list(items: &[String]) -> String {
 mod tests {
     use super::{
         artifact_anchor, artifact_path, discover_kani_file, load_registry, registry_path,
-        render_report, run_dogfood_command, run_dogfood_record_command, valid_identifier,
-        validate_registry,
+        render_report, run_dogfood_command, run_dogfood_record_command, run_qualification_command,
+        valid_identifier, validate_registry,
     };
     use std::{
         collections::BTreeSet,
@@ -1090,6 +1090,13 @@ mod tests {
             run_dogfood_record_command(&mut missing_record_arguments).is_err_and(|errors| {
                 errors == ["record-studio-dogfood requires a draft, snapshot, and destination"]
             })
+        );
+        let mut missing_arguments = std::iter::empty();
+        assert_eq!(
+            run_qualification_command("validate-qualification", &mut missing_arguments),
+            Err(vec![
+                "validate-qualification requires a manifest path".to_owned()
+            ])
         );
     }
 
