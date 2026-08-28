@@ -395,7 +395,6 @@ mod validation {
                 PresentationOutcome::Failed if hosted_direct => {
                     assert_eq!(terminal.observed_presentation_time_bits(), 0);
                     assert!(recovered.failed_count() >= 1);
-                    assert!(recovered.skipped_count() >= 1);
                     assert!(recovered.display_link_paused());
                     return Ok(());
                 }

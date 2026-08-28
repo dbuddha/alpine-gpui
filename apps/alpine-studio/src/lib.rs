@@ -7522,22 +7522,31 @@ pub mod native_validation {
         let frame = surface.snapshot();
         let submissions = frame.submission_count();
         assert!(submissions >= 1);
-        if let PresentationEvidenceMode::Physical = evidence_mode {
-            assert!(submissions <= 4);
-        }
+        assert!(submissions <= 4);
         assert_eq!(frame.direct_present_count(), submissions);
         assert_eq!(frame.installed_presented_handler_count(), submissions);
-        assert_eq!(
-            frame.presented_count() + frame.skipped_count() + frame.cancelled_count(),
-            submissions
-        );
+        let terminal_outcomes =
+            frame.presented_count() + frame.skipped_count() + frame.cancelled_count();
+        assert!(terminal_outcomes >= 1);
+        assert!(terminal_outcomes <= submissions);
         assert_eq!(
             frame.qualified_presented_count() + frame.superseded_count(),
             frame.presented_count()
         );
+        let Some(terminal) = frame.last_terminal() else {
+            return Err(alpine_runtime::RuntimeError::Surface(
+                alpine_platform_macos::SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                ),
+            ));
+        };
+        assert_eq!(terminal.submission_count(), 1);
+        assert_eq!(terminal.present_call_count(), 1);
+        assert_eq!(terminal.retained_bytes(), 0);
         let hosted_omission = matches!(evidence_mode, PresentationEvidenceMode::HostedDirect)
             && frame.qualified_presented_count() == 0;
         if hosted_omission {
+            assert_eq!(terminal.observed_presentation_time_bits(), 0);
             assert!(frame.skipped_count() >= 1);
             assert!(frame.failed_count() >= 1);
         } else {

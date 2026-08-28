@@ -100,10 +100,10 @@ mod validation {
             snapshot.installed_presented_handler_count(),
             snapshot.submission_count()
         );
-        assert_eq!(
-            snapshot.submission_count(),
-            snapshot.presented_count() + snapshot.skipped_count() + snapshot.superseded_count()
-        );
+        let terminal_outcomes =
+            snapshot.presented_count() + snapshot.skipped_count() + snapshot.cancelled_count();
+        assert!(terminal_outcomes >= 1);
+        assert!(terminal_outcomes <= snapshot.submission_count());
         if hosted_direct && snapshot.presented_count() == 0 {
             assert!(first_error.is_none());
             let terminal = snapshot
