@@ -730,6 +730,20 @@ pub mod native_validation {
         }
     }
 
+    /// Evidence that one marker crossed the native main run loop.
+    #[derive(Debug)]
+    pub struct RunLoopDrainEvidence {
+        executed: Arc<AtomicBool>,
+    }
+
+    impl RunLoopDrainEvidence {
+        /// Returns whether AppKit executed the marker on the main run loop.
+        #[must_use]
+        pub fn executed(&self) -> bool {
+            self.executed.load(Ordering::Acquire)
+        }
+    }
+
     /// Validation-only close path selected for one production delegate replay.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub enum CloseReplayScenario {
@@ -1608,6 +1622,19 @@ pub mod native_validation {
             Arc::clone(&cancelled),
         );
         RunTimeoutEvidence { expired, cancelled }
+    }
+
+    /// Schedules one validation marker on the native main run loop.
+    ///
+    /// A teardown test can pump AppKit while native owners remain alive, then
+    /// require this marker before releasing those owners.
+    #[must_use]
+    pub fn arm_run_loop_drain_marker(surface: &NativeSurface) -> RunLoopDrainEvidence {
+        let executed = Arc::new(AtomicBool::new(false));
+        surface
+            .implementation
+            .arm_run_loop_drain_marker(Arc::clone(&executed));
+        RunLoopDrainEvidence { executed }
     }
 
     /// Schedules a production close request after a bounded validation delay.

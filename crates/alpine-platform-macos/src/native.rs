@@ -4676,6 +4676,23 @@ impl NativeSurface {
     }
 
     #[cfg(alpine_native_validation)]
+    pub(crate) fn arm_run_loop_drain_marker(&self, executed: Arc<std::sync::atomic::AtomicBool>) {
+        let marker_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
+            RcBlock::new(move |timer: NonNull<NSTimer>| {
+                // SAFETY: Foundation supplies a valid borrowed timer for the
+                // complete callback, and the reference does not escape.
+                unsafe { timer.as_ref() }.invalidate();
+                executed.store(true, Ordering::Release);
+            });
+        // SAFETY: The block is scheduled on the process main run loop,
+        // Foundation copies it for the timer lifetime, and the callback
+        // receives a valid NSTimer. The scheduled timer retains itself.
+        let _timer = unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.0, false, &marker_block)
+        };
+    }
+
+    #[cfg(alpine_native_validation)]
     pub(crate) fn arm_window_close(&self, delay: Duration) {
         schedule_validation_window_close(&self.window, delay);
     }
