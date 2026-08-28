@@ -315,6 +315,7 @@ mod validation {
             superseded.presented_count(),
             superseded.qualified_presented_count(),
             superseded.superseded_count(),
+            hosted_direct,
         )?;
         surface.close();
         Ok(())
@@ -328,6 +329,7 @@ mod validation {
         mut prior_presented: u64,
         baseline_qualified: u64,
         mut expected_superseded: u64,
+        hosted_direct: bool,
     ) -> TestResult {
         // Configuration changes may supersede committed work, but a bounded
         // validation run must still make progress once those changes stop.
@@ -351,10 +353,6 @@ mod validation {
             assert_eq!(terminal.submission_count(), 1);
             assert_eq!(terminal.present_call_count(), 1);
             assert!(terminal.eligible_at_commit());
-            assert_eq!(
-                terminal.observed_presentation_time_bits(),
-                presented_time.to_bits()
-            );
             assert_eq!(terminal.retained_bytes(), 0);
             assert_eq!(terminal.recovery(), None);
             // A callback can commit after the prior terminal snapshot is read
@@ -368,6 +366,10 @@ mod validation {
             );
             match terminal.outcome() {
                 PresentationOutcome::Presented => {
+                    assert_eq!(
+                        terminal.observed_presentation_time_bits(),
+                        presented_time.to_bits()
+                    );
                     assert!(recovered.presented_count() > prior_presented);
                     assert!(recovered.qualified_presented_count() > baseline_qualified);
                     assert!(recovered.superseded_count() >= expected_superseded);
@@ -375,6 +377,10 @@ mod validation {
                     return Ok(());
                 }
                 PresentationOutcome::Superseded => {
+                    assert_eq!(
+                        terminal.observed_presentation_time_bits(),
+                        presented_time.to_bits()
+                    );
                     expected_superseded += 1;
                     assert!(recovered.presented_count() >= prior_presented);
                     assert!(recovered.qualified_presented_count() >= baseline_qualified);
@@ -385,6 +391,13 @@ mod validation {
                     minimum_retry_epoch = terminal.frame_epoch().get().saturating_add(1);
                     prior_submissions = recovered.submission_count();
                     prior_presented = recovered.presented_count();
+                }
+                PresentationOutcome::Failed if hosted_direct => {
+                    assert_eq!(terminal.observed_presentation_time_bits(), 0);
+                    assert!(recovered.failed_count() >= 1);
+                    assert!(recovered.skipped_count() >= 1);
+                    assert!(recovered.display_link_paused());
+                    return Ok(());
                 }
                 outcome => return Err(format!("unexpected retry outcome: {outcome:?}").into()),
             }
