@@ -355,6 +355,8 @@ jobs:
             miri_flags: -Zmiri-disable-isolation
           - partition: studio-app-06
             miri_flags: -Zmiri-disable-isolation
+          - partition: studio-app-07
+            miri_flags: -Zmiri-disable-isolation
           - partition: studio-command
             miri_flags: -Zmiri-disable-isolation
           - partition: studio-language-transport
