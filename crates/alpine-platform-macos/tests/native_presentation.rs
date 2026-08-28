@@ -77,7 +77,7 @@ mod validation {
             // Hosted runners may expose no compositor-visible occlusion bit.
             native_validation::inject_surface_configuration(surface, 96.0, 64.0, 1.0, 0, true)?;
         }
-        let timeout = Duration::from_secs(if hosted_direct { 2 } else { 5 });
+        let timeout = Duration::from_secs(5);
         let observed_wakes = Rc::new(Cell::new(0_u64));
         let callback_wakes = Rc::clone(&observed_wakes);
         assert_eq!(surface.waker().wake(), SurfaceWakeAdmission::Scheduled);

@@ -28,6 +28,7 @@ mod validation {
     const LOGICAL_WIDTH: f64 = 96.0;
     const LOGICAL_HEIGHT: f64 = 64.0;
     const PAUSE_SETTLEMENT: Duration = Duration::from_millis(150);
+    const HOSTED_PAUSE_SETTLEMENT: Duration = Duration::from_secs(5);
 
     pub(super) fn run() -> TestResult {
         let hosted_direct = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
@@ -91,8 +92,10 @@ mod validation {
         // cumulative surface failure count.
         assert!(dropped.skipped_count() > baseline.skipped_count());
         assert!(dropped.failed_count() > baseline.failed_count());
-        if !hosted_direct {
-            await_display_link_paused(&surface)?;
+        if hosted_direct {
+            await_display_link_paused(&surface, HOSTED_PAUSE_SETTLEMENT)?;
+        } else {
+            await_display_link_paused(&surface, PAUSE_SETTLEMENT)?;
         }
         let settled = surface.snapshot();
         if hosted_direct {
@@ -150,8 +153,8 @@ mod validation {
         Ok(())
     }
 
-    fn await_display_link_paused(surface: &NativeSurface) -> TestResult {
-        let deadline = Instant::now() + PAUSE_SETTLEMENT;
+    fn await_display_link_paused(surface: &NativeSurface, timeout: Duration) -> TestResult {
+        let deadline = Instant::now() + timeout;
         while !surface.snapshot().display_link_paused() && Instant::now() < deadline {
             let turn = NSDate::dateWithTimeIntervalSinceNow(0.005);
             NSRunLoop::mainRunLoop().runUntilDate(&turn);
@@ -205,8 +208,10 @@ mod validation {
         assert!(first.qualified_presented_count() >= baseline.qualified_presented_count());
         assert!(first.skipped_count() >= baseline.skipped_count());
         assert!(first.failed_count() > baseline.failed_count());
-        if !hosted_direct {
-            await_display_link_paused(&surface)?;
+        if hosted_direct {
+            await_display_link_paused(&surface, HOSTED_PAUSE_SETTLEMENT)?;
+        } else {
+            await_display_link_paused(&surface, PAUSE_SETTLEMENT)?;
         }
         assert_eq!(surface.take_error()?, None);
         let settled = surface.snapshot();
