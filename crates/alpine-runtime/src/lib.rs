@@ -2039,20 +2039,19 @@ mod tests {
     fn worker_loop_backpressures_results_and_counts_disconnect_and_poison()
     -> Result<(), Box<dyn std::error::Error>> {
         let (request_sender, request_receiver) = sync_channel(1);
-        let (result_sender, result_receiver) = sync_channel(1);
+        let (result_sender, result_receiver) = sync_channel(0);
+        let (started_sender, started_receiver) = sync_channel(1);
+        let (done_sender, done_receiver) = sync_channel(1);
         let counters = Arc::new(WorkerCounters::default());
         counters.queued_requests.store(1, Ordering::Release);
-        counters.queued_results.store(1, Ordering::Release);
-        let occupied = WorkerCompletion {
-            token: token(1),
-            outcome: WorkerOutcome::Completed(1_u64),
-        };
-        assert!(result_sender.try_send(occupied).is_ok());
         assert!(
             request_sender
                 .try_send(WorkerRequest {
                     token: token(2),
-                    job: Box::new(|| 2),
+                    job: Box::new(move || {
+                        let _ = started_sender.send(());
+                        2
+                    }),
                 })
                 .is_ok()
         );
@@ -2065,21 +2064,25 @@ mod tests {
                 &worker_counters,
                 &Mutex::new(None),
             );
+            let _ = done_sender.send(());
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while counters.queued_results.load(Ordering::Acquire) != 2 {
-            assert!(std::time::Instant::now() < deadline);
-            thread::yield_now();
-        }
-        assert!(result_receiver.recv_timeout(Duration::from_secs(1)).is_ok());
-        counters.queued_results.fetch_sub(1, Ordering::AcqRel);
+        assert_eq!(
+            started_receiver.recv_timeout(Duration::from_secs(1)),
+            Ok(())
+        );
+        assert_eq!(
+            done_receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
         let completion = result_receiver.recv_timeout(Duration::from_secs(1))?;
         counters.queued_results.fetch_sub(1, Ordering::AcqRel);
         assert_eq!(completion.token.sequence(), 2);
         assert!(matches!(completion.outcome, WorkerOutcome::Completed(2)));
+        assert_eq!(done_receiver.recv_timeout(Duration::from_secs(1)), Ok(()));
         assert!(worker.join().is_ok());
         assert_eq!(counters.dropped_results.load(Ordering::Acquire), 0);
         assert_eq!(counters.queued_results.load(Ordering::Acquire), 0);
+        assert_eq!(counters.peak_queued_results.load(Ordering::Acquire), 1);
 
         let (request_sender, request_receiver) = sync_channel(1);
         let (result_sender, result_receiver) = sync_channel(1);
