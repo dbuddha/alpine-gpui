@@ -40,3 +40,4 @@ run_exact_test() {
 
 run_exact_test 'tests::runtime_find_worker_admits_current_results_and_schedules_replacement'
 run_exact_test 'project_search_tests::runtime_project_search_admits_workers_and_rolls_back_submission_failures'
+run_exact_test 'tests::runtime_quick_open_worker_admits_inventory_and_ranked_results'
