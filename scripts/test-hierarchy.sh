@@ -21,6 +21,11 @@ if [ "$1" = api ]; then
         close-parent:*/issues/90/sub_issues?*) printf '[{"state":"closed"},{"state":"closed"}]\n' ;;
         reject-parent-close:*/issues/90/sub_issues?*) printf '[{"state":"closed"},{"state":"open"}]\n' ;;
         reopen-parent:*/issues/100/parent) printf '90\n' ;;
+        registered-parent:*/issues/104/sub_issues?*) printf '[]\n' ;;
+        registered-parent:*/issues/104/parent) printf '184\n' ;;
+        registered-parent:*/issues/184/sub_issues?*) printf '[{"state":"closed"},{"state":"open"}]\n' ;;
+        unregistered-parent:*/issues/105/sub_issues?*) printf '[]\n' ;;
+        unregistered-parent:*/issues/105/parent) printf '999\n' ;;
         defect-parent-closed:*/issues/103/sub_issues?*) printf '[]\n' ;;
         defect-parent-closed:*/issues/103/parent) printf '304\n' ;;
         defect-parent-reopened:*/issues/103/parent) printf '304\n' ;;
@@ -44,6 +49,10 @@ if [ "$command" = view ]; then
         close-parent:100:*labels*) printf 'kind:task\n' ;;
         reject-parent-close:90:*labels*) printf 'kind:requirement\nowner:approved\n' ;;
         reopen-parent:100:*labels*) printf 'kind:task\n' ;;
+        registered-parent:104:*labels*) printf 'kind:task\n' ;;
+        registered-parent:184:*labels*) printf 'kind:requirement\nowner:approved\n' ;;
+        unregistered-parent:105:*labels*) printf 'kind:task\n' ;;
+        unregistered-parent:999:*labels*) printf 'kind:requirement\nowner:approved\n' ;;
         defect-parent-closed:103:*labels* | defect-parent-reopened:103:*labels*)
             printf 'kind:task\n'
             ;;
@@ -73,7 +82,7 @@ run_fixture() {
     ALPINE_ISSUE_ACTION=$action \
     ALPINE_HIERARCHY_FIXTURE=$fixture \
     ALPINE_HIERARCHY_LOG=$log \
-    ALPINE_ENFORCE_EVIDENCE=false \
+    ALPINE_ENFORCE_EVIDENCE=${ALPINE_ENFORCE_EVIDENCE:-false} \
     scripts/reconcile-issue-hierarchy.sh
 }
 
@@ -85,6 +94,17 @@ grep -Fxq 'reopen 90' "$fixture_dir/reject-parent-close.log"
 
 run_fixture reopen-parent 100 reopened
 grep -Fxq 'reopen 90' "$fixture_dir/reopen-parent.log"
+
+ALPINE_ENFORCE_EVIDENCE=true run_fixture registered-parent 104 closed
+test ! -s "$fixture_dir/registered-parent.log"
+
+if ALPINE_ENFORCE_EVIDENCE=true run_fixture unregistered-parent 105 closed \
+    > "$fixture_dir/unregistered-parent.out" 2>&1; then
+    printf 'hierarchy test error: unregistered parent unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'parent #999 has no registered assurance claims' \
+    "$fixture_dir/unregistered-parent.out"
 
 run_fixture rootless 93 reopened
 test ! -s "$fixture_dir/rootless.log"

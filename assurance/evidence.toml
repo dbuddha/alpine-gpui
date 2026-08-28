@@ -5844,3 +5844,100 @@ artifact = ".github/workflows/ci.yml#coverage"
 assertion = "Studio coverage exercises parser, migration, bounds, precedence, stale, failure, and state-preservation paths."
 scope = "Host-executable Alpine Studio settings code."
 exclusions = ["semantic proof", "physical macOS process"]
+
+[[claims]]
+id = "AEP-0184-C01"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0184-evidence-first-github-operations.md"
+requirement_issue = 184
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable"]
+required_evidence = ["integration"]
+
+[[claims]]
+id = "AEP-0184-C02"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0184-evidence-first-github-operations.md"
+requirement_issue = 184
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable"]
+required_evidence = ["integration"]
+
+[[claims]]
+id = "AEP-0184-C03"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0184-evidence-first-github-operations.md"
+requirement_issue = 184
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable"]
+required_evidence = ["integration"]
+
+[[claims]]
+id = "AEP-0184-C04"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0184-evidence-first-github-operations.md"
+requirement_issue = 184
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable"]
+required_evidence = ["integration"]
+
+[[evidence]]
+id = "EV-0184-INTEGRATION01"
+claim = "AEP-0184-C01"
+kind = "integration"
+artifact = "scripts/test-agent-skills.sh"
+assertion = "Repository-owned skill metadata, references, installation, check mode, removal, and overwrite refusal pass deterministic success and failure fixtures."
+scope = "The three Alpine GitHub skills and repository-owned symlink installer."
+exclusions = ["Codex runtime behavior", "third-party skills", "live GitHub mutations"]
+
+[[evidence]]
+id = "EV-0184-INTEGRATION02"
+claim = "AEP-0184-C02"
+kind = "integration"
+artifact = "scripts/test-wiki.sh"
+assertion = "The Wiki audit distinguishes exact synchronization, stale revision, mixed revision, unknown page, missing page, and content drift against local fake remotes."
+scope = "The bounded generated Alpine Wiki page manifest and read-only remote audit."
+exclusions = ["GitHub availability", "authentication", "unreviewed handwritten Wiki pages"]
+
+[[evidence]]
+id = "EV-0184-INTEGRATION03"
+claim = "AEP-0184-C03"
+kind = "integration"
+artifact = "scripts/test-research-retention.sh"
+assertion = "Research packages fail when canonical anchors, source identities, evidence classes, comparator assumptions, or retrieval links are missing."
+scope = "Versioned Alpine research and comparator-retention contracts."
+exclusions = ["source truthfulness beyond retained evidence", "experimental reproduction", "comparative qualification"]
+
+[[evidence]]
+id = "EV-0184-INTEGRATION04A"
+claim = "AEP-0184-C04"
+kind = "integration"
+artifact = "scripts/test-hierarchy.sh"
+assertion = "Issue hierarchy fixtures reject invalid parents and unregistered approved Requirements while admitting registered approved Requirement parents."
+scope = "Capability, Requirement, and Task reconciliation preconditions."
+exclusions = ["GitHub service availability", "Project fields", "performance qualification"]
+
+[[evidence]]
+id = "EV-0184-INTEGRATION04B"
+claim = "AEP-0184-C04"
+kind = "integration"
+artifact = "scripts/test-worktrees.sh"
+assertion = "Worktree fixtures refuse active pull requests, dirty state, unknown pull-request state, detached or missing registrations, unarchived unique commits, and excessive inventory."
+scope = "Read-only local Git worktree inventory and explicit removal planning."
+exclusions = ["automatic removal", "branch deletion", "remote archive publication"]
