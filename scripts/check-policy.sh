@@ -140,6 +140,16 @@ if [ -n "$workflow_files" ]; then
 
     nightly_native_workflow=.github/workflows/nightly-assurance.yml
     if [ -f "$nightly_native_workflow" ]; then
+        nightly_accessibility_block=$(awk '
+            /^  native-accessibility-mutation:/ { capture = 1 }
+            /^  [A-Za-z0-9_-]+:/ && $1 != "native-accessibility-mutation:" && capture { exit }
+            capture
+        ' "$nightly_native_workflow")
+        nightly_studio_accessibility_block=$(awk '
+            /^  native-studio-accessibility-mutation:/ { capture = 1 }
+            /^  [A-Za-z0-9_-]+:/ && $1 != "native-studio-accessibility-mutation:" && capture { exit }
+            capture
+        ' "$nightly_native_workflow")
         if ! grep -Fq 'native-accessibility-mutation:' "$nightly_native_workflow" \
             || ! grep -Fq 'native-studio-accessibility-mutation:' "$nightly_native_workflow" \
             || [ "$(grep -Ec '^[[:space:]]+shard: [0-7]/8$' "$nightly_native_workflow")" -ne 16 ] \
@@ -156,6 +166,18 @@ if [ -n "$workflow_files" ]; then
         for shard in 0 1 2 3 4 5 6 7; do
             if [ "$(grep -Fc "shard: $shard/8" "$nightly_native_workflow")" -ne 2 ]; then
                 fail "nightly native accessibility mutation scopes are missing shard $shard/8"
+            fi
+        done
+        for mutation_block in \
+            "$nightly_accessibility_block" \
+            "$nightly_studio_accessibility_block"; do
+            output_parent_line=$(printf '%s\n' "$mutation_block" \
+                | grep -nF 'mkdir -p target' | head -n 1 | cut -d: -f1 || true)
+            mutation_line=$(printf '%s\n' "$mutation_block" \
+                | grep -nF 'cargo mutants ' | head -n 1 | cut -d: -f1 || true)
+            if [ -z "$output_parent_line" ] || [ -z "$mutation_line" ] \
+                || [ "$output_parent_line" -ge "$mutation_line" ]; then
+                fail 'nightly native accessibility mutation must prepare its target output parent before cargo-mutants starts'
             fi
         done
     fi
