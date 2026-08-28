@@ -21,6 +21,9 @@ if [ "$1" = api ]; then
         close-parent:*/issues/90/sub_issues?*) printf '[{"state":"closed"},{"state":"closed"}]\n' ;;
         reject-parent-close:*/issues/90/sub_issues?*) printf '[{"state":"closed"},{"state":"open"}]\n' ;;
         reopen-parent:*/issues/100/parent) printf '90\n' ;;
+        defect-parent-closed:*/issues/103/sub_issues?*) printf '[]\n' ;;
+        defect-parent-closed:*/issues/103/parent) printf '304\n' ;;
+        defect-parent-reopened:*/issues/103/parent) printf '304\n' ;;
         missing-parent:*/issues/101/parent)
             printf '{"message":"No parent issue found","status":"404"}\n'
             exit 1
@@ -41,7 +44,14 @@ if [ "$command" = view ]; then
         close-parent:100:*labels*) printf 'kind:task\n' ;;
         reject-parent-close:90:*labels*) printf 'kind:requirement\nowner:approved\n' ;;
         reopen-parent:100:*labels*) printf 'kind:task\n' ;;
+        defect-parent-closed:103:*labels* | defect-parent-reopened:103:*labels*)
+            printf 'kind:task\n'
+            ;;
+        defect-parent-closed:304:*labels* | defect-parent-reopened:304:*labels*)
+            printf 'kind:defect\nowner:approved\n'
+            ;;
         close-parent:90:*labels*) printf 'kind:requirement\nowner:approved\n' ;;
+        reopen-parent:90:*labels*) printf 'kind:requirement\nowner:approved\n' ;;
         reopen-parent:90:*state*) printf 'CLOSED\n' ;;
         *) exit 1 ;;
     esac
@@ -78,6 +88,16 @@ grep -Fxq 'reopen 90' "$fixture_dir/reopen-parent.log"
 
 run_fixture rootless 93 reopened
 test ! -s "$fixture_dir/rootless.log"
+
+run_fixture defect-parent-closed 103 closed > "$fixture_dir/defect-parent-closed.out"
+test ! -s "$fixture_dir/defect-parent-closed.log"
+grep -Fq 'Parent #304 is outside automatic requirement/capability reconciliation' \
+    "$fixture_dir/defect-parent-closed.out"
+
+run_fixture defect-parent-reopened 103 reopened > "$fixture_dir/defect-parent-reopened.out"
+test ! -s "$fixture_dir/defect-parent-reopened.log"
+grep -Fq 'Parent #304 is outside automatic requirement/capability reconciliation' \
+    "$fixture_dir/defect-parent-reopened.out"
 
 if run_fixture missing-parent 101 reopened > "$fixture_dir/missing-parent.out" 2>&1; then
     printf 'hierarchy test error: missing task parent unexpectedly passed\n' >&2
