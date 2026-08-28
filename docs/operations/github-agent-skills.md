@@ -94,6 +94,11 @@ without bypassing that protection:
 Do not unlink or replace a foreign skill path and do not remove a worktree while
 installed skills still reference it.
 
+Use the [worktree inventory and cleanup guide](worktrees.md) before creating or
+retiring a checkout. `scripts/check-worktrees.sh --plan-remove PATH` is a
+read-only safety decision, not a removal command. It refuses dirty, detached,
+active-PR, unknown-PR, missing, ambiguous, and unarchived unique candidates.
+
 ## Validation
 
 ```sh

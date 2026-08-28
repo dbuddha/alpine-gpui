@@ -7,6 +7,7 @@
   - [Alpine Studio daily-driver path](use-cases/alpine-studio-highfidelity.md)
 - [Knowledge and requirements](concepts/traceability.md)
 - [GitHub agent operations](operations/github-agent-skills.md)
+  - [Worktree inventory and cleanup](operations/worktrees.md)
 - [Project execution](project/README.md)
   - [Private daily-driver path](project/daily-driver-path.md)
   - [Milestone gates](project/milestone-gates.md)
