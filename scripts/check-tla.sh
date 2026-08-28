@@ -9,6 +9,16 @@ output_dir=target/tla
 jar=$tool_dir/tla2tools-$version.jar
 
 mkdir -p "$tool_dir" "$output_dir"
+if ! java_version=$(java -version 2>&1); then
+    printf 'TLA+ model checking requires a working Java 17 runtime.\n%s\n' \
+        "$java_version" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$java_version" | grep -Eq 'version "17([.+-]|\")'; then
+    printf 'TLA+ model checking requires Java 17; detected:\n%s\n' \
+        "$java_version" >&2
+    exit 1
+fi
 if [ ! -f "$jar" ]; then
     curl --fail --location --retry 3 \
         --output "$jar" \
@@ -35,11 +45,14 @@ for model_dir in formal/tla/aep-*; do
     model_output=$output_dir/$(basename "$model_dir")
     mkdir -p "$model_output"
 
-    (
+    if ! (
         cd "$model_dir"
         java -XX:+UseParallelGC -cp "../../../$jar" tlc2.TLC \
             -cleanup -deadlock -workers auto -config "$config" "$model_name"
-    ) >"$model_output/$config.log" 2>&1
+    ) >"$model_output/$config.log" 2>&1; then
+        cat "$model_output/$config.log" >&2
+        exit 1
+    fi
 
     for faulty_path in "$model_dir"/Faulty*.cfg; do
         faulty_config=$(basename "$faulty_path")

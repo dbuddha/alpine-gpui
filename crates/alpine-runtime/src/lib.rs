@@ -551,7 +551,7 @@ impl WorkerSnapshot {
         self.request_saturations
     }
 
-    /// Returns completed results omitted by the result bound.
+    /// Returns completed results omitted after foreground disconnection.
     #[must_use]
     pub const fn dropped_results(self) -> usize {
         self.dropped_results
@@ -566,7 +566,7 @@ impl WorkerSnapshot {
 
 struct WorkerPool<T> {
     request_sender: Option<SyncSender<WorkerRequest<T>>>,
-    result_receiver: Receiver<WorkerCompletion<T>>,
+    result_receiver: Option<Receiver<WorkerCompletion<T>>>,
     workers: Vec<JoinHandle<()>>,
     counters: Arc<WorkerCounters>,
     next_sequence: u64,
@@ -698,7 +698,7 @@ impl<T: Send + 'static> WorkerPool<T> {
 
         Ok(Self {
             request_sender: Some(request_sender),
-            result_receiver,
+            result_receiver: Some(result_receiver),
             workers,
             counters,
             next_sequence: 0,
@@ -766,7 +766,8 @@ impl<T: Send + 'static> WorkerPool<T> {
     }
 
     fn try_completion(&self) -> Option<WorkerCompletion<T>> {
-        match self.result_receiver.try_recv() {
+        let result_receiver = self.result_receiver.as_ref()?;
+        match result_receiver.try_recv() {
             Ok(completion) => {
                 self.counters.queued_results.fetch_sub(1, Ordering::AcqRel);
                 Some(completion)
@@ -790,6 +791,7 @@ impl<T: Send + 'static> WorkerPool<T> {
     #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     fn shutdown(&mut self) {
         self.request_sender.take();
+        self.result_receiver.take();
         for worker in self.workers.drain(..) {
             if worker.join().is_err() {
                 self.counters.panicked_jobs.fetch_add(1, Ordering::Relaxed);
@@ -801,6 +803,7 @@ impl<T: Send + 'static> WorkerPool<T> {
 impl<T> Drop for WorkerPool<T> {
     fn drop(&mut self) {
         self.request_sender.take();
+        self.result_receiver.take();
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
@@ -832,21 +835,21 @@ fn worker_loop<T: Send + 'static>(
             );
         let queued = counters.queued_results.fetch_add(1, Ordering::AcqRel) + 1;
         update_peak(&counters.peak_queued_results, queued);
-        match results.try_send(WorkerCompletion {
-            token: request.token,
-            outcome,
-        }) {
-            Ok(()) => {
-                if let Ok(installed) = wake.lock()
-                    && let Some(wake) = installed.as_ref()
-                {
-                    wake();
-                }
+        if results
+            .send(WorkerCompletion {
+                token: request.token,
+                outcome,
+            })
+            .is_ok()
+        {
+            if let Ok(installed) = wake.lock()
+                && let Some(wake) = installed.as_ref()
+            {
+                wake();
             }
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                counters.queued_results.fetch_sub(1, Ordering::AcqRel);
-                counters.dropped_results.fetch_add(1, Ordering::Relaxed);
-            }
+        } else {
+            counters.queued_results.fetch_sub(1, Ordering::AcqRel);
+            counters.dropped_results.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -1966,7 +1969,7 @@ mod tests {
         drop(result_sender);
         let mut disconnected = WorkerPool::<u64> {
             request_sender: Some(request_sender),
-            result_receiver,
+            result_receiver: Some(result_receiver),
             workers: Vec::new(),
             counters: Arc::new(WorkerCounters::default()),
             next_sequence: 0,
@@ -2033,12 +2036,13 @@ mod tests {
     }
 
     #[test]
-    fn worker_loop_counts_bounded_result_omission_and_poison() {
+    fn worker_loop_backpressures_results_and_counts_disconnect_and_poison()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (request_sender, request_receiver) = sync_channel(1);
         let (result_sender, result_receiver) = sync_channel(1);
-        let counters = WorkerCounters::default();
+        let counters = Arc::new(WorkerCounters::default());
         counters.queued_requests.store(1, Ordering::Release);
-        let wake: Mutex<Option<WorkerWake>> = Mutex::new(None);
+        counters.queued_results.store(1, Ordering::Release);
         let occupied = WorkerCompletion {
             token: token(1),
             outcome: WorkerOutcome::Completed(1_u64),
@@ -2053,15 +2057,56 @@ mod tests {
                 .is_ok()
         );
         drop(request_sender);
+        let worker_counters = Arc::clone(&counters);
+        let worker = thread::spawn(move || {
+            worker_loop(
+                &Mutex::new(request_receiver),
+                &result_sender,
+                &worker_counters,
+                &Mutex::new(None),
+            );
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while counters.queued_results.load(Ordering::Acquire) != 2 {
+            assert!(std::time::Instant::now() < deadline);
+            thread::yield_now();
+        }
+        assert!(result_receiver.recv_timeout(Duration::from_secs(1)).is_ok());
+        counters.queued_results.fetch_sub(1, Ordering::AcqRel);
+        let completion = result_receiver.recv_timeout(Duration::from_secs(1))?;
+        counters.queued_results.fetch_sub(1, Ordering::AcqRel);
+        assert_eq!(completion.token.sequence(), 2);
+        let WorkerOutcome::Completed(value) = completion.outcome else {
+            return Err("worker unexpectedly panicked".into());
+        };
+        assert_eq!(value, 2);
+        assert!(worker.join().is_ok());
+        assert_eq!(counters.dropped_results.load(Ordering::Acquire), 0);
+        assert_eq!(counters.queued_results.load(Ordering::Acquire), 0);
+
+        let (request_sender, request_receiver) = sync_channel(1);
+        let (result_sender, result_receiver) = sync_channel(1);
+        let disconnected = WorkerCounters::default();
+        disconnected.queued_requests.store(1, Ordering::Release);
+        assert!(
+            request_sender
+                .try_send(WorkerRequest {
+                    token: token(3),
+                    job: Box::new(|| 3),
+                })
+                .is_ok()
+        );
+        drop(request_sender);
+        drop(result_receiver);
+        let wake: Mutex<Option<WorkerWake>> = Mutex::new(None);
         worker_loop(
             &Mutex::new(request_receiver),
             &result_sender,
-            &counters,
+            &disconnected,
             &wake,
         );
-        assert_eq!(counters.dropped_results.load(Ordering::Acquire), 1);
-        assert_eq!(counters.queued_results.load(Ordering::Acquire), 0);
-        drop(result_receiver);
+        assert_eq!(disconnected.dropped_results.load(Ordering::Acquire), 1);
+        assert_eq!(disconnected.queued_results.load(Ordering::Acquire), 0);
 
         let (_sender, receiver) = sync_channel::<WorkerRequest<u64>>(1);
         let poisoned = Mutex::new(receiver);
@@ -2074,6 +2119,7 @@ mod tests {
         assert!(fault.is_err());
         let (results, _results_receiver) = sync_channel(1);
         worker_loop(&poisoned, &results, &WorkerCounters::default(), &wake);
+        Ok(())
     }
 
     struct DefaultResultDelegate;
@@ -2283,7 +2329,7 @@ mod tests {
         let wake_counter = Arc::clone(&wakes);
         application.workers = WorkerPool {
             request_sender: Some(request_sender),
-            result_receiver,
+            result_receiver: Some(result_receiver),
             workers: Vec::new(),
             counters: Arc::clone(&counters),
             next_sequence: 0,
