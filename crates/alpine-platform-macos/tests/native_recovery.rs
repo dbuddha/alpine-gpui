@@ -68,7 +68,8 @@ mod validation {
                 dropped.display_link_paused()
             )
         })?;
-        assert_eq!(terminal.attempt(), 1);
+        let dropped_attempt = terminal.attempt();
+        assert!(dropped_attempt >= 1);
         assert_eq!(terminal.requested_revision().get(), 1);
         assert_eq!(terminal.frame_revision().get(), 1);
         assert_eq!(terminal.outcome(), PresentationOutcome::Failed);
@@ -78,14 +79,29 @@ mod validation {
         assert_eq!(terminal.observed_presentation_time_bits(), 0);
         assert_eq!(terminal.retained_bytes(), 0);
         assert_eq!(terminal.recovery(), None);
-        assert_eq!(dropped.submission_count(), 1);
-        assert_eq!(dropped.direct_present_count(), 1);
+        let dropped_submissions = dropped.submission_count();
+        assert!(dropped_submissions >= 1);
+        assert_eq!(dropped.direct_present_count(), dropped_submissions);
         assert_eq!(dropped.presented_count(), 0);
         assert_eq!(dropped.qualified_presented_count(), 0);
+        // A superseded post-commit attempt is terminal without being presented or
+        // skipped. Only the injected dropped terminal contributes here.
         assert_eq!(dropped.skipped_count(), 1);
         assert_eq!(dropped.failed_count(), 1);
         assert_eq!(dropped.occupied_frame_slots(), 0);
         assert_eq!(dropped.submitted_frame_slots(), 0);
+
+        await_display_link_paused(&surface)?;
+        let settled = surface.snapshot();
+        let turn = NSDate::dateWithTimeIntervalSinceNow(PAUSE_SETTLEMENT.as_secs_f64());
+        NSRunLoop::mainRunLoop().runUntilDate(&turn);
+        let quiescent = surface.snapshot();
+        assert_eq!(quiescent.callback_count(), settled.callback_count());
+        assert_eq!(quiescent.submission_count(), settled.submission_count());
+        assert_eq!(
+            quiescent.direct_present_count(),
+            settled.direct_present_count()
+        );
 
         assert_eq!(surface.request_frame(scene, clear)?.get(), 2);
         native_validation::inject_post_commit_observation(&surface, None, 2.0)?;
@@ -96,7 +112,7 @@ mod validation {
         let terminal = recovered
             .last_terminal()
             .ok_or("post-drop recovery terminal evidence")?;
-        assert_eq!(terminal.attempt(), 2);
+        assert!(terminal.attempt() > dropped_attempt);
         assert_eq!(terminal.requested_revision().get(), 2);
         assert_eq!(terminal.frame_revision().get(), 2);
         assert_eq!(terminal.outcome(), PresentationOutcome::Presented);
@@ -105,11 +121,15 @@ mod validation {
             2.0_f64.to_bits()
         );
         assert_eq!(terminal.recovery(), None);
-        assert_eq!(recovered.submission_count(), 2);
+        assert!(recovered.submission_count() > dropped_submissions);
+        assert_eq!(
+            recovered.direct_present_count(),
+            recovered.submission_count()
+        );
         assert_eq!(recovered.presented_count(), 1);
         assert_eq!(recovered.qualified_presented_count(), 1);
-        assert_eq!(recovered.skipped_count(), 1);
-        assert_eq!(recovered.failed_count(), 1);
+        assert_eq!(recovered.skipped_count(), dropped.skipped_count());
+        assert_eq!(recovered.failed_count(), dropped.failed_count());
         assert_eq!(recovered.occupied_frame_slots(), 0);
         assert_eq!(recovered.submitted_frame_slots(), 0);
         assert!(recovered.display_link_paused());
