@@ -39,5 +39,6 @@ if [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
         cargo check --locked -p alpine-studio --test native_process
 fi
 cargo test --workspace --all-targets --all-features --locked
+scripts/test-studio-concurrency-stress.sh
 cargo test --workspace --doc --all-features --locked
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked

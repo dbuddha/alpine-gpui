@@ -58,6 +58,9 @@ assert_every_gate "$kani_setup"
 kani_setup_tests=$(run_fixture scripts/test-setup-kani.sh)
 assert_every_gate "$kani_setup_tests"
 
+studio_concurrency_stress=$(run_fixture scripts/test-studio-concurrency-stress.sh)
+assert_every_gate "$studio_concurrency_stress"
+
 coverage_checker=$(run_fixture scripts/check-coverage.sh)
 assert_every_gate "$coverage_checker"
 
