@@ -1,0 +1,41 @@
+schema = "alpine-studio-dogfood/v1"
+id = "fixture-dogfood-session"
+captured_at_utc = "2026-08-20T12:00:00Z"
+alpine_revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+workload_id = "fixture-edit-session"
+workload_version = 1
+duration_ms = 1000
+workspace_fixture = "synthetic-rust-workspace-v1"
+workspace_fixture_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+settings_profile = "compiled-defaults-v1"
+settings_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+output_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+snapshot_file = "snapshot.toml"
+snapshot_sha256 = "5e91622e297fa429b9a4bc98a1bf0c705a1f6d9fc85f752f95b072b1c375d668"
+opt_in = true
+telemetry = false
+network_io = false
+performance_claim = "none"
+coverage = ["launch", "workspace", "editing", "language", "accessibility", "lifecycle", "memory", "shutdown"]
+assumptions = ["Synthetic fixture values exercise the capture schema only."]
+exclusions = ["telemetry", "network-io", "comparative-claim"]
+
+[environment]
+hardware_id = "fixture-apple-silicon"
+os_build = "fixture-macos-15"
+architecture = "arm64"
+display_refresh_hz = 120
+power_source = "ac"
+thermal_state = "nominal"
+toolchain = "rust-1.93.0"
+locale = "en_US.UTF-8"
+
+[font]
+family = "Alpine Fixture Mono"
+postscript_name = "AlpineFixtureMono-Regular"
+size_milli_points = 14000
+
+[language_server]
+name = "rust-analyzer"
+version = "fixture"
+executable_sha256 = "none"

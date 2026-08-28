@@ -515,12 +515,23 @@ fn elapsed_ns(start: Instant, end: Instant) -> u64 {
     u64::try_from(end.saturating_duration_since(start).as_nanos()).unwrap_or(u64::MAX)
 }
 
+fn profile_latency_for_terminal(
+    latency: Option<FrameLatencyEvidence>,
+    recovery: Option<RecoveryClassification>,
+) -> Option<FrameLatencyEvidence> {
+    if matches!(recovery, Some(RecoveryClassification::RetryFrame)) {
+        None
+    } else {
+        latency
+    }
+}
+
 #[cfg(test)]
 mod frame_latency_timing_tests {
     use std::time::{Duration, Instant};
 
-    use super::{AttemptTiming, EventFrameTiming};
-    use crate::EventTimestamp;
+    use super::{AttemptTiming, EventFrameTiming, profile_latency_for_terminal};
+    use crate::{EventTimestamp, RecoveryClassification};
 
     #[test]
     fn timeline_preserves_exact_stages_and_absent_endpoints() -> Result<(), &'static str> {
@@ -561,6 +572,15 @@ mod frame_latency_timing_tests {
         assert_eq!(absent.event_to_presented_handler_ns(), None);
         assert_eq!(absent.event_to_terminal_record_ns(), 19);
         assert_eq!(AttemptTiming::default().latency_evidence(origin), None);
+        assert_eq!(
+            profile_latency_for_terminal(Some(complete), Some(RecoveryClassification::RetryFrame)),
+            None
+        );
+        assert_eq!(
+            profile_latency_for_terminal(Some(complete), None),
+            Some(complete)
+        );
+        assert_eq!(profile_latency_for_terminal(None, None), None);
         Ok(())
     }
 }
@@ -1150,7 +1170,7 @@ impl PresentationDriver {
             self.backend.accounting().current_retained_bytes(),
             recovery,
         );
-        if let Some(latency) = evidence.latency() {
+        if let Some(latency) = profile_latency_for_terminal(evidence.latency(), recovery) {
             let _emitted = self.latency_signposts.emit_frame_latency(latency);
         }
         if matches!(attempt.outcome(), PresentationOutcome::Superseded) {
@@ -1971,17 +1991,33 @@ impl SurfaceView {
 }
 
 fn keyboard_event(event: &NSEvent, state: KeyState) -> NativeInputEvent {
+    let (logical_key, repeat) = keyboard_text_metadata(
+        state,
+        || {
+            event
+                .charactersIgnoringModifiers()
+                .map(|characters| characters.to_string().into_boxed_str())
+        },
+        || event.isARepeat(),
+    );
     NativeInputEvent::Keyboard {
         state,
         physical_key: event.keyCode(),
-        logical_key: event
-            .charactersIgnoringModifiers()
-            .map_or_else(Box::default, |characters| {
-                characters.to_string().into_boxed_str()
-            }),
+        logical_key,
         modifiers: modifiers(event.modifierFlags()),
-        repeat: event.isARepeat(),
+        repeat,
     }
+}
+
+fn keyboard_text_metadata(
+    state: KeyState,
+    characters: impl FnOnce() -> Option<Box<str>>,
+    repeat: impl FnOnce() -> bool,
+) -> (Box<str>, bool) {
+    if matches!(state, KeyState::ModifiersChanged) {
+        return (Box::default(), false);
+    }
+    (characters().unwrap_or_default(), repeat())
 }
 
 fn clipboard_shortcut(event: &NativeInputEvent) -> Option<ClipboardOperation> {
@@ -2111,6 +2147,32 @@ type NSUInteger = usize;
 #[cfg(test)]
 mod native_input_tests {
     use super::*;
+
+    #[test]
+    fn modifier_keyboard_metadata_never_queries_character_fields() {
+        let characters_queried = Cell::new(false);
+        let repeat_queried = Cell::new(false);
+        let (logical_key, repeat) = keyboard_text_metadata(
+            KeyState::ModifiersChanged,
+            || {
+                characters_queried.set(true);
+                Some(Box::from("unsafe"))
+            },
+            || {
+                repeat_queried.set(true);
+                true
+            },
+        );
+        assert!(logical_key.is_empty());
+        assert!(!repeat);
+        assert!(!characters_queried.get());
+        assert!(!repeat_queried.get());
+
+        let (logical_key, repeat) =
+            keyboard_text_metadata(KeyState::Down, || Some(Box::from("s")), || true);
+        assert_eq!(&*logical_key, "s");
+        assert!(repeat);
+    }
 
     #[test]
     fn modifiers_preserve_only_alpine_supported_bits() {
