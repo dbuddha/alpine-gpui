@@ -3637,6 +3637,11 @@ const fn validation_close_should_retry(
 }
 
 #[cfg(alpine_native_validation)]
+const fn validation_close_accepts_terminal_failure(programmatic: bool, failed: u64) -> bool {
+    programmatic && failed > 0
+}
+
+#[cfg(alpine_native_validation)]
 enum ValidationCloseAction {
     UserButton,
     Programmatic {
@@ -3700,9 +3705,10 @@ fn schedule_validation_qualified_window_close(
             // active, then wait for its terminal accounting and full slot drain
             // before exercising the production close delegates. This keeps the
             // complete journey inside one NSApplication run-loop invocation.
-            let accepted_terminal_failure =
-                matches!(&action, ValidationCloseAction::Programmatic { .. })
-                    && counters.failed.load(Ordering::Acquire) > 0;
+            let accepted_terminal_failure = validation_close_accepts_terminal_failure(
+                matches!(&action, ValidationCloseAction::Programmatic { .. }),
+                counters.failed.load(Ordering::Acquire),
+            );
             if validation_close_should_retry(
                 counters.qualified_presented.load(Ordering::Acquire),
                 accepted_terminal_failure,
@@ -5665,6 +5671,13 @@ mod tests {
         assert!(validation_close_should_retry(1, false, false));
         assert!(!validation_close_should_retry(1, false, true));
         assert!(!validation_close_should_retry(u64::MAX, true, true));
+
+        assert!(!validation_close_accepts_terminal_failure(false, 0));
+        assert!(!validation_close_accepts_terminal_failure(false, 1));
+        assert!(!validation_close_accepts_terminal_failure(false, u64::MAX));
+        assert!(!validation_close_accepts_terminal_failure(true, 0));
+        assert!(validation_close_accepts_terminal_failure(true, 1));
+        assert!(validation_close_accepts_terminal_failure(true, u64::MAX));
     }
 
     #[test]

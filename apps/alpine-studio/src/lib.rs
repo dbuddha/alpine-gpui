@@ -7383,11 +7383,26 @@ pub mod native_validation {
         matches!((count, has_last), (0, false) | (1, true))
     }
 
+    const fn hosted_terminal_snapshot_is_settled(
+        submissions: u64,
+        terminal_outcomes: u64,
+        skipped: u64,
+        failed: u64,
+        occupied_slots: u8,
+        submitted_slots: u8,
+    ) -> bool {
+        submissions > 0
+            && terminal_outcomes == submissions
+            && skipped <= failed
+            && occupied_slots == 0
+            && submitted_slots == 0
+    }
+
     #[cfg(test)]
     mod presentation_evidence_policy_tests {
         use super::{
-            PresentationEvidenceMode, parse_presentation_evidence_mode,
-            pending_cancellation_evidence_is_bounded,
+            PresentationEvidenceMode, hosted_terminal_snapshot_is_settled,
+            parse_presentation_evidence_mode, pending_cancellation_evidence_is_bounded,
         };
         use std::ffi::OsStr;
 
@@ -7424,6 +7439,17 @@ pub mod native_validation {
             assert!(!pending_cancellation_evidence_is_bounded(1, false));
             assert!(!pending_cancellation_evidence_is_bounded(2, true));
             assert!(!pending_cancellation_evidence_is_bounded(u64::MAX, true));
+        }
+
+        #[test]
+        fn hosted_terminal_snapshot_requires_disjoint_complete_drain() {
+            assert!(hosted_terminal_snapshot_is_settled(1, 1, 0, 0, 0, 0));
+            assert!(hosted_terminal_snapshot_is_settled(1, 1, 1, 1, 0, 0));
+            assert!(!hosted_terminal_snapshot_is_settled(0, 0, 0, 0, 0, 0));
+            assert!(!hosted_terminal_snapshot_is_settled(2, 1, 0, 0, 0, 0));
+            assert!(!hosted_terminal_snapshot_is_settled(1, 1, 1, 0, 0, 0));
+            assert!(!hosted_terminal_snapshot_is_settled(1, 1, 0, 0, 1, 0));
+            assert!(!hosted_terminal_snapshot_is_settled(1, 1, 0, 0, 0, 1));
         }
     }
 
@@ -7472,12 +7498,14 @@ pub mod native_validation {
                     let terminal_outcomes = settled.presented_count()
                         + settled.cancelled_count()
                         + settled.failed_count();
-                    if settled.submission_count() == 0
-                        || terminal_outcomes != settled.submission_count()
-                        || settled.skipped_count() > settled.failed_count()
-                        || settled.occupied_frame_slots() != 0
-                        || settled.submitted_frame_slots() != 0
-                    {
+                    if !hosted_terminal_snapshot_is_settled(
+                        settled.submission_count(),
+                        terminal_outcomes,
+                        settled.skipped_count(),
+                        settled.failed_count(),
+                        settled.occupied_frame_slots(),
+                        settled.submitted_frame_slots(),
+                    ) {
                         return Err(alpine_platform_macos::SurfaceError::invariant(
                             alpine_platform_macos::SurfaceOperation::Presentation,
                         ));
