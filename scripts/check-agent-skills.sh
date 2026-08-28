@@ -33,6 +33,8 @@ grep -Fq 'live remote drift audit' "$skills_root/github-documentation-architect/
 grep -Fq 'scripts/wiki.sh audit-remote' "$skills_root/github-documentation-architect/references/wiki-and-releases.md" || fail 'documentation architect lacks the live Wiki audit command'
 grep -Fq 'Evidence Level' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks evidence-level handling'
 grep -Fq 'Separate implementation tasks from qualification tasks' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks implementation-qualification split'
+grep -Fq 'read-only worktree inventory' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks worktree preflight behavior'
+grep -Fq 'scripts/check-worktrees.sh --plan-remove' "$skills_root/github-project-operator/references/worktree-hygiene.md" || fail 'project operator lacks the worktree removal dry run'
 grep -Fq 'E4 Qualified' "$skills_root/github-deep-researcher/SKILL.md" || fail 'deep researcher lacks qualification evidence level'
 grep -Fq 'benchmark contamination' "$skills_root/github-deep-researcher/references/evidence-standard.md" || fail 'deep researcher lacks contamination analysis'
 if [ "$skills_root" = "$repo_root/skills" ]; then

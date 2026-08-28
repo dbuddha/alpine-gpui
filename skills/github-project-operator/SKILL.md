@@ -69,6 +69,12 @@ remains open. Separate Research closure from Experiment closure. Read
 [research-to-experiment handoff](references/research-to-experiment-handoff.md)
 before converting findings into measured work.
 
+Read [worktree hygiene](references/worktree-hygiene.md) before creating,
+retiring, or reconciling worktrees. Require a read-only worktree inventory,
+live active-PR preflight for removal, explicit preservation of unique state,
+and the bounded count gate. Never remove a candidate classified as dirty,
+ambiguous, detached, active, or incompletely archived.
+
 ## Reconciliation and critical path
 
 Before creating work, detect duplicate issues, stale Project fields, merged
