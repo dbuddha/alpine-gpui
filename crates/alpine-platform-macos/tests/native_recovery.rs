@@ -53,9 +53,12 @@ mod validation {
         let _backing_scale = prepare_visible_surface(&surface, hosted_direct)?;
         let baseline = surface.snapshot();
 
-        assert_eq!(surface.request_frame(scene.clone(), clear)?.get(), 1);
+        assert!(!native_validation::post_commit_control_armed(&surface));
         native_validation::inject_post_commit_observation(&surface, None, 0.0)?;
+        assert!(native_validation::post_commit_control_armed(&surface));
+        assert_eq!(surface.request_frame(scene.clone(), clear)?.get(), 1);
         native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+        assert!(!native_validation::post_commit_control_armed(&surface));
 
         assert_eq!(surface.take_error()?, None);
         let dropped = surface.snapshot();
@@ -112,9 +115,12 @@ mod validation {
             );
         }
 
-        assert_eq!(surface.request_frame(scene, clear)?.get(), 2);
+        assert!(!native_validation::post_commit_control_armed(&surface));
         native_validation::inject_post_commit_observation(&surface, None, 2.0)?;
+        assert!(native_validation::post_commit_control_armed(&surface));
+        assert_eq!(surface.request_frame(scene, clear)?.get(), 2);
         native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+        assert!(!native_validation::post_commit_control_armed(&surface));
 
         assert_eq!(surface.take_error()?, None);
         let recovered = surface.snapshot();
@@ -184,11 +190,15 @@ mod validation {
         let _backing_scale = prepare_visible_surface(&surface, hosted_direct)?;
         let baseline = surface.snapshot();
 
-        assert_eq!(surface.request_frame(scene.clone(), clear)?.get(), 1);
+        assert!(!native_validation::post_commit_control_armed(&surface));
         assert!(!native_validation::post_commit_omission_armed(&surface));
         native_validation::inject_post_commit_omission(&surface);
+        assert!(native_validation::post_commit_control_armed(&surface));
         assert!(native_validation::post_commit_omission_armed(&surface));
+        assert_eq!(surface.request_frame(scene.clone(), clear)?.get(), 1);
         native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+        assert!(!native_validation::post_commit_control_armed(&surface));
+        assert!(!native_validation::post_commit_omission_armed(&surface));
 
         assert_eq!(surface.take_error()?, None);
         let first = surface.snapshot();
@@ -251,9 +261,12 @@ mod validation {
             );
         }
 
-        let recovery_revision = surface.request_frame(scene, clear)?;
+        assert!(!native_validation::post_commit_control_armed(&surface));
         native_validation::inject_post_commit_observation(&surface, None, 2.5)?;
+        assert!(native_validation::post_commit_control_armed(&surface));
+        let recovery_revision = surface.request_frame(scene, clear)?;
         native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+        assert!(!native_validation::post_commit_control_armed(&surface));
 
         assert_eq!(surface.take_error()?, None);
         let recovered = surface.snapshot();
@@ -296,10 +309,13 @@ mod validation {
             native_validation::inject_post_commit_observation(&surface, None, f64::NAN).is_err()
         );
         assert!(native_validation::inject_post_commit_observation(&surface, None, -1.0).is_err());
+        assert!(!native_validation::post_commit_control_armed(&surface));
         let before = surface.snapshot();
-        assert_eq!(surface.request_frame(scene, clear)?.get(), 1);
         native_validation::inject_post_commit_observation(&surface, Some(usize::MAX), 1.25)?;
+        assert!(native_validation::post_commit_control_armed(&surface));
+        assert_eq!(surface.request_frame(scene, clear)?.get(), 1);
         native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+        assert!(!native_validation::post_commit_control_armed(&surface));
 
         assert_eq!(surface.take_error()?, None);
         let superseded = surface.snapshot();

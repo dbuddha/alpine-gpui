@@ -53,9 +53,12 @@ RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_surface_epochs
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_color
-ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct \
-    RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
-    cargo test --locked -p alpine-platform-macos --test native_recovery
+for iteration in $(seq 1 25); do
+    ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct \
+        RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
+        cargo test --locked -p alpine-platform-macos --test native_recovery
+done
+printf '%s\n' 'native recovery stress passed 25 iterations'
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_lifecycle
 for iteration in $(seq 1 25); do
