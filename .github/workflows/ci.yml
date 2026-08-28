@@ -287,7 +287,7 @@ jobs:
       - name: Install pinned Kani
         run: |
           cargo install --locked kani-verifier --version 0.67.0
-          cargo kani setup
+          scripts/setup-kani.sh
       - name: Verify bounded Rust properties
         run: |
           cargo kani list --format json

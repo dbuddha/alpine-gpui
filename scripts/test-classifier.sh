@@ -43,11 +43,20 @@ assert_every_gate "$ci_workflow"
 nightly_workflow=$(run_fixture .github/workflows/nightly-assurance.yml)
 assert_every_gate "$nightly_workflow"
 
+release_workflow=$(run_fixture .github/workflows/release-dry-run.yml)
+assert_every_gate "$release_workflow"
+
 classifier=$(run_fixture scripts/classify-ci.sh)
 assert_every_gate "$classifier"
 
 classifier_tests=$(run_fixture scripts/test-classifier.sh)
 assert_every_gate "$classifier_tests"
+
+kani_setup=$(run_fixture scripts/setup-kani.sh)
+assert_every_gate "$kani_setup"
+
+kani_setup_tests=$(run_fixture scripts/test-setup-kani.sh)
+assert_every_gate "$kani_setup_tests"
 
 coverage_checker=$(run_fixture scripts/check-coverage.sh)
 assert_every_gate "$coverage_checker"
