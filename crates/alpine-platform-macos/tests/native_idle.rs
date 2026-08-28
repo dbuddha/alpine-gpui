@@ -144,14 +144,27 @@ mod validation {
             .skipped_count()
             .checked_sub(before.skipped_count())
             .ok_or("skipped counter regressed")?;
+        let qualified_delta = terminal
+            .qualified_presented_count()
+            .checked_sub(before.qualified_presented_count())
+            .ok_or("qualified-presented counter regressed")?;
+        let failed_delta = terminal
+            .failed_count()
+            .checked_sub(before.failed_count())
+            .ok_or("failed counter regressed")?;
+        let final_current_terminal_delta = qualified_delta
+            .checked_add(failed_delta)
+            .ok_or("current terminal count exhausted")?;
         let expected_submissions = superseded_delta
-            .checked_add(skipped_delta)
-            .ok_or("expected retry count exhausted")?
-            .checked_add(1)
+            .checked_add(final_current_terminal_delta)
             .ok_or("expected submission count exhausted")?;
         assert_eq!(
             submission_delta, expected_submissions,
-            "every setup revision must admit one final submission plus exactly one replacement for each superseded or skipped attempt: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
+            "every setup revision must admit one final submission plus exactly one replacement for each superseded terminal: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
+        );
+        assert!(
+            skipped_delta <= failed_delta,
+            "a skipped-presentation omission must belong to a failed submitted frame: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
         );
         let direct_present_delta = terminal
             .direct_present_count()
@@ -162,21 +175,23 @@ mod validation {
             "every admitted submission must issue exactly one direct presentation: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
         );
         assert_eq!(
-            terminal
-                .qualified_presented_count()
-                .checked_sub(before.qualified_presented_count())
-                .ok_or("qualified-presented counter regressed")?,
-            1,
-            "every setup revision must finish with exactly one current presented attempt: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
+            final_current_terminal_delta, 1,
+            "every setup revision must finish with exactly one current terminal attempt: before={before:?}, terminal={terminal:?}, pause_evidence={pause_evidence:?}"
         );
-        assert_eq!(
-            terminal
-                .failed_count()
-                .checked_sub(before.failed_count())
-                .ok_or("failed counter regressed")?,
-            0,
-            "a setup revision must not terminalize as failed"
-        );
+        if hosted_direct {
+            assert!(qualified_delta <= 1);
+            assert!(failed_delta <= 1);
+        } else {
+            assert_eq!(
+                qualified_delta, 1,
+                "physical setup must qualify presentation"
+            );
+            assert_eq!(failed_delta, 0, "physical setup must not fail presentation");
+            assert_eq!(
+                skipped_delta, 0,
+                "physical setup must not skip presentation"
+            );
+        }
         assert_eq!(
             terminal
                 .cancelled_count()
@@ -290,13 +305,8 @@ mod validation {
             )
             .into());
         }
-        let qualified_delta = current
-            .qualified_presented_count()
-            .checked_sub(initial.qualified_presented_count())
-            .ok_or("qualified-presented counter regressed during frame drain")?;
         Ok(submission_delta > 0
             && terminal_delta == submission_delta
-            && qualified_delta > 0
             && current.occupied_frame_slots() == 0
             && current.submitted_frame_slots() == 0)
     }
@@ -306,7 +316,6 @@ mod validation {
             .qualified_presented_count()
             .checked_add(snapshot.superseded_count())
             .and_then(|count| count.checked_add(snapshot.cancelled_count()))
-            .and_then(|count| count.checked_add(snapshot.skipped_count()))
             .and_then(|count| count.checked_add(snapshot.failed_count()))
             .ok_or_else(|| "terminal outcome count exhausted".into())
     }

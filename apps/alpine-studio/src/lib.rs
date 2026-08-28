@@ -7383,11 +7383,42 @@ pub mod native_validation {
         matches!((count, has_last), (0, false) | (1, true))
     }
 
+    const fn hosted_terminal_snapshot_is_settled(
+        submissions: u64,
+        terminal_outcomes: u64,
+        skipped: u64,
+        failed: u64,
+        occupied_slots: u8,
+        submitted_slots: u8,
+    ) -> bool {
+        submissions > 0
+            && terminal_outcomes == submissions
+            && skipped <= failed
+            && occupied_slots == 0
+            && submitted_slots == 0
+    }
+
+    const fn terminal_outcome_count(presented: u64, cancelled: u64, failed: u64) -> Option<u64> {
+        let Some(presented_or_cancelled) = presented.checked_add(cancelled) else {
+            return None;
+        };
+        presented_or_cancelled.checked_add(failed)
+    }
+
+    const fn hosted_presentation_was_omitted(
+        evidence_mode: PresentationEvidenceMode,
+        qualified_presentations: u64,
+    ) -> bool {
+        matches!(evidence_mode, PresentationEvidenceMode::HostedDirect)
+            && qualified_presentations == 0
+    }
+
     #[cfg(test)]
     mod presentation_evidence_policy_tests {
         use super::{
-            PresentationEvidenceMode, parse_presentation_evidence_mode,
-            pending_cancellation_evidence_is_bounded,
+            PresentationEvidenceMode, hosted_presentation_was_omitted,
+            hosted_terminal_snapshot_is_settled, parse_presentation_evidence_mode,
+            pending_cancellation_evidence_is_bounded, terminal_outcome_count,
         };
         use std::ffi::OsStr;
 
@@ -7424,6 +7455,48 @@ pub mod native_validation {
             assert!(!pending_cancellation_evidence_is_bounded(1, false));
             assert!(!pending_cancellation_evidence_is_bounded(2, true));
             assert!(!pending_cancellation_evidence_is_bounded(u64::MAX, true));
+        }
+
+        #[test]
+        fn hosted_terminal_snapshot_requires_disjoint_complete_drain() {
+            assert!(hosted_terminal_snapshot_is_settled(1, 1, 0, 0, 0, 0));
+            assert!(hosted_terminal_snapshot_is_settled(1, 1, 1, 1, 0, 0));
+            assert!(!hosted_terminal_snapshot_is_settled(0, 0, 0, 0, 0, 0));
+            assert!(!hosted_terminal_snapshot_is_settled(2, 1, 0, 0, 0, 0));
+            assert!(!hosted_terminal_snapshot_is_settled(1, 1, 1, 0, 0, 0));
+            assert!(!hosted_terminal_snapshot_is_settled(1, 1, 0, 0, 1, 0));
+            assert!(!hosted_terminal_snapshot_is_settled(1, 1, 0, 0, 0, 1));
+        }
+
+        #[test]
+        fn terminal_outcomes_preserve_each_axis_and_reject_overflow() {
+            assert_eq!(terminal_outcome_count(2, 3, 5), Some(10));
+            assert_eq!(terminal_outcome_count(2, 0, 0), Some(2));
+            assert_eq!(terminal_outcome_count(0, 3, 0), Some(3));
+            assert_eq!(terminal_outcome_count(0, 0, 5), Some(5));
+            assert_eq!(terminal_outcome_count(u64::MAX, 1, 0), None);
+            assert_eq!(terminal_outcome_count(1, u64::MAX, 0), None);
+            assert_eq!(terminal_outcome_count(1, 0, u64::MAX), None);
+        }
+
+        #[test]
+        fn hosted_omission_requires_hosted_mode_and_zero_qualified_presentations() {
+            assert!(hosted_presentation_was_omitted(
+                PresentationEvidenceMode::HostedDirect,
+                0
+            ));
+            assert!(!hosted_presentation_was_omitted(
+                PresentationEvidenceMode::HostedDirect,
+                1
+            ));
+            assert!(!hosted_presentation_was_omitted(
+                PresentationEvidenceMode::Physical,
+                0
+            ));
+            assert!(!hosted_presentation_was_omitted(
+                PresentationEvidenceMode::Physical,
+                1
+            ));
         }
     }
 
@@ -7465,9 +7538,31 @@ pub mod native_validation {
                 PresentationEvidenceMode::HostedDirect => HOSTED_RUN_TIMEOUT,
                 PresentationEvidenceMode::Physical => Duration::from_secs(5),
             };
-            timeout = Some(platform_validation::arm_run_timeout(surface, run_timeout));
             match evidence_mode {
                 PresentationEvidenceMode::HostedDirect => {
+                    platform_validation::run_until_frame_terminal(surface, Duration::from_secs(5));
+                    let settled = surface.snapshot();
+                    let Some(terminal_outcomes) = terminal_outcome_count(
+                        settled.presented_count(),
+                        settled.cancelled_count(),
+                        settled.failed_count(),
+                    ) else {
+                        return Err(alpine_platform_macos::SurfaceError::invariant(
+                            alpine_platform_macos::SurfaceOperation::Presentation,
+                        ));
+                    };
+                    if !hosted_terminal_snapshot_is_settled(
+                        settled.submission_count(),
+                        terminal_outcomes,
+                        settled.skipped_count(),
+                        settled.failed_count(),
+                        settled.occupied_frame_slots(),
+                        settled.submitted_frame_slots(),
+                    ) {
+                        return Err(alpine_platform_macos::SurfaceError::invariant(
+                            alpine_platform_macos::SurfaceOperation::Presentation,
+                        ));
+                    }
                     // A headless AppKit host may decline `performClose` despite
                     // a valid delegate. Exercise the production close-admission
                     // and teardown delegates directly instead.
@@ -7477,6 +7572,7 @@ pub mod native_validation {
                     platform_validation::arm_user_window_close(surface, Duration::from_millis(500));
                 }
             }
+            timeout = Some(platform_validation::arm_run_timeout(surface, run_timeout));
             Ok(())
         });
         let snapshot = match run_result {
@@ -7522,28 +7618,54 @@ pub mod native_validation {
         let frame = surface.snapshot();
         let submissions = frame.submission_count();
         assert!(submissions >= 1);
-        if let PresentationEvidenceMode::Physical = evidence_mode {
-            assert!(submissions <= 4);
-        }
+        assert!(submissions <= 4);
         assert_eq!(frame.direct_present_count(), submissions);
         assert_eq!(frame.installed_presented_handler_count(), submissions);
-        assert_eq!(
-            frame.presented_count()
-                + frame.skipped_count()
-                + frame.cancelled_count()
-                + frame.failed_count(),
-            submissions
-        );
+        let terminal_outcomes = terminal_outcome_count(
+            frame.presented_count(),
+            frame.cancelled_count(),
+            frame.failed_count(),
+        )
+        .ok_or(alpine_runtime::RuntimeError::Surface(
+            alpine_platform_macos::SurfaceError::invariant(
+                alpine_platform_macos::SurfaceOperation::Application,
+            ),
+        ))?;
+        assert!(hosted_terminal_snapshot_is_settled(
+            submissions,
+            terminal_outcomes,
+            frame.skipped_count(),
+            frame.failed_count(),
+            frame.occupied_frame_slots(),
+            frame.submitted_frame_slots(),
+        ));
         assert_eq!(
             frame.qualified_presented_count() + frame.superseded_count(),
             frame.presented_count()
         );
-        assert!(frame.qualified_presented_count() >= 1);
+        let Some(terminal) = frame.last_terminal() else {
+            return Err(alpine_runtime::RuntimeError::Surface(
+                alpine_platform_macos::SurfaceError::invariant(
+                    alpine_platform_macos::SurfaceOperation::Application,
+                ),
+            ));
+        };
+        assert_eq!(terminal.submission_count(), 1);
+        assert_eq!(terminal.present_call_count(), 1);
+        assert_eq!(terminal.retained_bytes(), 0);
+        let hosted_omission =
+            hosted_presentation_was_omitted(evidence_mode, frame.qualified_presented_count());
+        if hosted_omission {
+            assert_eq!(terminal.observed_presentation_time_bits(), 0);
+            assert!(frame.failed_count() >= 1);
+        } else {
+            assert!(frame.qualified_presented_count() >= 1);
+            assert_eq!(frame.failed_count(), 0);
+        }
         assert!(pending_cancellation_evidence_is_bounded(
             frame.pending_cancellation_count(),
             frame.last_pending_cancellation().is_some()
         ));
-        assert_eq!(frame.failed_count(), 0);
         assert_eq!(frame.current_retained_bytes(), 0);
         assert_eq!(frame.occupied_frame_slots(), 0);
         assert_eq!(frame.submitted_frame_slots(), 0);
@@ -7571,12 +7693,13 @@ pub mod native_validation {
         assert_eq!(owners.release_order_violations(), 0);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closed);
         println!(
-            "alpine-native-journey submissions={submissions} presented={} qualified={} superseded={} skipped={} cancelled={} shutdown=true owners=9 evidence={evidence_source}",
+            "alpine-native-journey submissions={submissions} presented={} qualified={} superseded={} skipped={} cancelled={} failed={} shutdown=true owners=9 evidence={evidence_source}",
             frame.presented_count(),
             frame.qualified_presented_count(),
             frame.superseded_count(),
             frame.skipped_count(),
-            frame.cancelled_count()
+            frame.cancelled_count(),
+            frame.failed_count()
         );
         Ok(())
     }

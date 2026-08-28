@@ -1437,7 +1437,8 @@ pub mod native_validation {
     }
 
     /// Runs the real `AppKit` event loop until one frame records a terminal
-    /// outcome and all completion-owned frame slots drain, or timeout.
+    /// outcome and all pending, active, and completion-owned work drains, or
+    /// timeout.
     pub fn run_until_frame_terminal(surface: &NativeSurface, timeout: Duration) {
         surface.implementation.run_until_frame_terminal(timeout);
     }
@@ -1645,15 +1646,17 @@ pub mod native_validation {
         surface.implementation.inject_driver_error(error);
     }
 
-    /// Schedules one deterministic presented-handler observation immediately
-    /// after the next callback drawable commits and receives direct present.
+    /// Installs one deterministic presented-handler observation on the current
+    /// committed drawable, or on the next commit when no drawable is active.
+    /// Zero models Apple's terminal dropped/not-presented drawable result.
     ///
-    /// An optional display identity change advances the native surface epoch
-    /// at that exact post-commit boundary.
+    /// An optional display identity change always targets the next commit and
+    /// advances the native surface epoch at that exact boundary.
     ///
     /// # Errors
     ///
-    /// Returns a driver error for an invalid time or unavailable callback owner.
+    /// Returns a driver error for a negative/non-finite time or unavailable
+    /// callback owner.
     pub fn inject_post_commit_observation(
         surface: &NativeSurface,
         display_identity: Option<usize>,
@@ -1662,6 +1665,20 @@ pub mod native_validation {
         surface
             .implementation
             .inject_post_commit_observation(display_identity, presented_time)
+    }
+
+    /// Suppresses the next drawable's presentation callback after commit.
+    ///
+    /// This validation-only fault proves that optional presentation telemetry
+    /// cannot retain completed GPU resources or stall later editor frames.
+    pub fn inject_post_commit_omission(surface: &NativeSurface) {
+        surface.implementation.inject_post_commit_omission();
+    }
+
+    /// Returns whether the next commit has an armed presentation omission.
+    #[must_use]
+    pub fn post_commit_omission_armed(surface: &NativeSurface) -> bool {
+        surface.implementation.post_commit_omission_armed()
     }
 
     /// Revokes the native owner generation at the next post-commit boundary.
@@ -1804,7 +1821,13 @@ pub mod native_validation {
         surface.implementation.commit_native_text(text, handler)
     }
 
-    /// Sets the pre-run input epoch and focus state for startup publication validation.
+    /// Returns the current validation input epoch and focus state.
+    #[must_use]
+    pub fn input_focus_state(surface: &NativeSurface) -> (crate::InputEpoch, bool) {
+        surface.implementation.input_focus_state_for_validation()
+    }
+
+    /// Sets the validation input epoch and focus state before causal event replay.
     pub fn set_input_focus_state(
         surface: &NativeSurface,
         input_epoch: crate::InputEpoch,

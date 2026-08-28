@@ -11,6 +11,7 @@ mod validation {
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_metal::RenderError;
+    use alpine_platform::PresentationOutcome;
     use alpine_platform_macos::{
         NativeSurface, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceResponse,
         SurfaceSnapshot, SurfaceWakeAdmission, native_validation,
@@ -76,7 +77,7 @@ mod validation {
             // Hosted runners may expose no compositor-visible occlusion bit.
             native_validation::inject_surface_configuration(surface, 96.0, 64.0, 1.0, 0, true)?;
         }
-        let timeout = Duration::from_secs(if hosted_direct { 2 } else { 5 });
+        let timeout = Duration::from_secs(5);
         let observed_wakes = Rc::new(Cell::new(0_u64));
         let callback_wakes = Rc::clone(&observed_wakes);
         assert_eq!(surface.waker().wake(), SurfaceWakeAdmission::Scheduled);
@@ -99,35 +100,45 @@ mod validation {
             snapshot.installed_presented_handler_count(),
             snapshot.submission_count()
         );
+        let terminal_outcomes =
+            snapshot.presented_count() + snapshot.cancelled_count() + snapshot.failed_count();
+        assert!(terminal_outcomes >= 1);
+        assert!(terminal_outcomes <= snapshot.submission_count());
+        assert!(snapshot.skipped_count() <= snapshot.failed_count());
         if hosted_direct && snapshot.presented_count() == 0 {
             assert!(first_error.is_none());
-            assert!(snapshot.occupied_frame_slots() <= 1);
-            assert_eq!(
-                snapshot.submitted_frame_slots(),
-                snapshot.occupied_frame_slots()
-            );
+            let terminal = snapshot
+                .last_terminal()
+                .ok_or("hosted-direct missing-presentation terminal evidence")?;
+            assert_eq!(terminal.requested_revision().get(), 1);
+            assert_eq!(terminal.frame_revision().get(), 1);
+            assert_eq!(terminal.outcome(), PresentationOutcome::Failed);
+            assert_eq!(terminal.submission_count(), 1);
+            assert_eq!(terminal.present_call_count(), 1);
+            assert!(terminal.eligible_at_commit());
+            assert_eq!(terminal.observed_presentation_time_bits(), 0);
+            assert_eq!(terminal.retained_bytes(), 0);
+            assert!(snapshot.occupied_frame_slots() <= snapshot.frame_slot_capacity());
+            assert!(snapshot.submitted_frame_slots() <= snapshot.occupied_frame_slots());
             assert_eq!(snapshot.last_presented_time_bits(), 0);
-            assert_eq!(snapshot.skipped_count() + 1, snapshot.submission_count());
-            assert_eq!(snapshot.failed_count(), 0);
+            assert!(snapshot.failed_count() >= 1);
             assert!(snapshot.callback_count() >= 2);
             eprintln!(
-                "hosted-direct evidence: {} callback drawables committed and directly presented; Core Animation reported {} dropped outcomes and one drawable remains in flight at the bounded cutoff",
-                snapshot.submission_count(),
-                snapshot.skipped_count()
+                "hosted-direct evidence: the latest callback drawable was committed, directly presented, reported not presented by Core Animation, and released"
             );
             return Ok(None);
         }
         if let Some(error) = first_error {
             return Err(error.into());
         }
-        assert_eq!(snapshot.presented_count(), 1);
+        if hosted_direct {
+            assert!(snapshot.presented_count() >= 1);
+        } else {
+            assert_eq!(snapshot.presented_count(), 1);
+        }
         assert_eq!(snapshot.occupied_frame_slots(), 0);
         assert_eq!(snapshot.submitted_frame_slots(), 0);
         assert_ne!(snapshot.last_presented_time_bits(), 0);
-        assert_eq!(
-            snapshot.skipped_count(),
-            snapshot.submission_count() - snapshot.presented_count()
-        );
         assert_eq!(snapshot.failed_count(), 0);
         assert!(snapshot.callback_count() >= 2);
         assert!(snapshot.display_link_paused());

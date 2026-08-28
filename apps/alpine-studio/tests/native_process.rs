@@ -51,6 +51,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!initial.clips().is_empty());
     assert!(!initial.quads().is_empty());
     assert!(!initial.glyphs().is_empty());
+    if std::env::var_os("ALPINE_STUDIO_NATIVE_PROCESS_SCOPE").as_deref()
+        == Some(std::ffi::OsStr::new("shipping"))
+    {
+        qualify_shipping_executable()?;
+        return Ok(());
+    }
     qualify_shipping_executable()?;
     let evidence = alpine_studio::native_validation::qualify_clipboard_and_close_process()?;
     assert_eq!(evidence.input_events(), 12);
@@ -293,7 +299,7 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
             .into());
         }
         let fields = stdout.split_whitespace().collect::<Vec<_>>();
-        assert_eq!(fields.len(), 10);
+        assert_eq!(fields.len(), 11);
         assert_eq!(fields[0], "alpine-native-journey");
         let submissions = fields[1]
             .strip_prefix("submissions=")
@@ -319,16 +325,25 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
             .strip_prefix("cancelled=")
             .ok_or("missing cancelled-presentation evidence")?
             .parse::<u64>()?;
+        let failed = fields[7]
+            .strip_prefix("failed=")
+            .ok_or("missing failed-presentation evidence")?
+            .parse::<u64>()?;
         assert!(submissions >= 1);
         if expected_evidence == "physical" {
             assert!(submissions <= 4);
         }
-        assert_eq!(presented + skipped + cancelled, submissions);
+        assert_eq!(presented + cancelled + failed, submissions);
+        assert!(skipped <= failed);
         assert_eq!(qualified + superseded, presented);
-        assert!(qualified >= 1);
-        assert_eq!(fields[7], "shutdown=true");
-        assert_eq!(fields[8], "owners=9");
-        assert_eq!(fields[9], format!("evidence={expected_evidence}"));
+        if expected_evidence == "hosted-direct" && qualified == 0 {
+            assert!(failed >= 1);
+        } else {
+            assert!(qualified >= 1);
+        }
+        assert_eq!(fields[8], "shutdown=true");
+        assert_eq!(fields[9], "owners=9");
+        assert_eq!(fields[10], format!("evidence={expected_evidence}"));
         assert!(stderr.lines().all(|line| {
             line.ends_with("Metal API Validation Enabled")
                 || line.ends_with("Metal GPU Validation Enabled")

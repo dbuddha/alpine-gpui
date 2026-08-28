@@ -436,9 +436,19 @@ impl Drop for InitializationLease {
     }
 }
 
-// A 120 Hz display can produce roughly 600 callbacks during the five-second
-// terminal-observation budget used by native qualification.
-const MAX_PRESENTATION_POLLS: u16 = 600;
+// Command completion owns reusable GPU resources. Presentation telemetry gets
+// one additional display turn after the completion-observing callback, but it
+// must never hold editor progress for a human-visible interval.
+const MAX_POST_COMMAND_PRESENTATION_POLLS: u8 = 2;
+
+const fn should_wait_for_presentation_observation(
+    command_terminal: bool,
+    presentation_polls: u8,
+    newer_frame_pending: bool,
+) -> bool {
+    !command_terminal
+        || (!newer_frame_pending && presentation_polls < MAX_POST_COMMAND_PRESENTATION_POLLS)
+}
 
 #[derive(Default)]
 struct FrameCounters {
@@ -590,6 +600,7 @@ struct PostCommitControl {
     configuration: Option<SurfaceConfiguration>,
     presented_time_bits: u64,
     close_generation: bool,
+    suppress_observation: bool,
 }
 
 struct ActiveFrame {
@@ -604,7 +615,7 @@ struct ActiveFrame {
     frame: Option<PendingFrame>,
     observation: PresentationObservation,
     command_terminal: bool,
-    presentation_polls: u16,
+    presentation_polls: u8,
     timing: AttemptTiming,
 }
 
@@ -612,6 +623,8 @@ struct PresentationObservation {
     signal: Arc<PresentationSignal>,
     #[cfg(alpine_native_validation)]
     injected: Option<InjectedPresentationObservation>,
+    #[cfg(alpine_native_validation)]
+    suppressed: bool,
 }
 
 #[cfg(alpine_native_validation)]
@@ -627,10 +640,16 @@ impl PresentationObservation {
             signal,
             #[cfg(alpine_native_validation)]
             injected: None,
+            #[cfg(alpine_native_validation)]
+            suppressed: false,
         }
     }
 
     fn observed(&self) -> bool {
+        #[cfg(alpine_native_validation)]
+        if self.suppressed {
+            return false;
+        }
         #[cfg(alpine_native_validation)]
         if self.injected.is_some() {
             return true;
@@ -660,6 +679,12 @@ impl PresentationObservation {
             presented_time_bits,
             event_to_presented_handler_ns: self.signal.elapsed_from_event_now(),
         });
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn suppress(&mut self) {
+        self.injected = None;
+        self.suppressed = true;
     }
 }
 
@@ -716,7 +741,6 @@ struct PresentationDriver {
     owner_generation: FrameOwnerGeneration,
     backend: MetalBackend,
     latency_signposts: StudioSignposts,
-    consecutive_skips: u16,
     last_error: Option<SurfaceError>,
     last_terminal: Option<FrameTerminalEvidence>,
     last_superseded: Option<FrameTerminalEvidence>,
@@ -746,7 +770,6 @@ impl PresentationDriver {
             owner_generation,
             backend,
             latency_signposts: StudioSignposts::new(),
-            consecutive_skips: 0,
             last_error: None,
             last_terminal: None,
             last_superseded: None,
@@ -914,7 +937,6 @@ impl PresentationDriver {
             let token = active.token;
             let presented_time_bits = active.observation.presented_time_bits();
             if presented_time_bits != 0 {
-                self.consecutive_skips = 0;
                 counters
                     .last_presented_time_bits
                     .store(presented_time_bits, Ordering::Relaxed);
@@ -931,38 +953,51 @@ impl PresentationDriver {
             }
 
             counters.skipped.fetch_add(1, Ordering::Relaxed);
-            self.consecutive_skips = self.consecutive_skips.saturating_add(1);
-            if self.pending.is_none() {
-                self.pending = active.frame;
-            }
+            counters.failed.fetch_add(1, Ordering::Relaxed);
             let transition = self.state.apply(PresentationAction::FailActive(token))?;
-            let _ = self.record_terminal(
-                transition,
-                active.timing,
-                0,
-                Some(RecoveryClassification::RetryFrame),
-                counters,
-            )?;
-            if self.consecutive_skips >= MAX_PRESENTATION_POLLS {
-                return Err(SurfaceError::PresentationsSkipped {
-                    attempts: self.consecutive_skips,
-                });
+            let directive = self.record_terminal(transition, active.timing, 0, None, counters)?;
+            if self.pending.is_some() {
+                // A newer immutable frame is genuine work, not a replay of the
+                // dropped attempt. The physical link is still running in this
+                // callback, so reconcile the portable pause before allowing
+                // that newer frame to enter on the next callback.
+                self.state.apply(PresentationAction::Resume)?;
+                return Ok(Some(DisplayLinkDirective::None));
             }
-            // The physical link never paused during this callback. Reconcile
-            // the portable fail-and-resume pair, then consume this update
-            // rather than wasting one refresh before retrying.
-            self.state.apply(PresentationAction::Resume)?;
+            // Apple defines a zero presentedTime as a terminal drawable that
+            // was not presented. Release it and pause rather than replaying the
+            // same frame and event correlation indefinitely. A later genuine
+            // invalidation starts a new revision and resumes demand normally.
+            return Ok(Some(directive));
         }
+        let newer_frame_pending = self.pending.is_some();
         if let Some(active) = &mut self.active {
             active.presentation_polls = active.presentation_polls.saturating_add(1);
-            if active.presentation_polls >= MAX_PRESENTATION_POLLS {
-                return Err(SurfaceError::PresentationNotObserved {
-                    callbacks: active.presentation_polls,
-                });
+            if should_wait_for_presentation_observation(
+                active.command_terminal,
+                active.presentation_polls,
+                newer_frame_pending,
+            ) {
+                return Ok(Some(DisplayLinkDirective::None));
             }
+        } else {
+            return Ok(None);
+        }
+
+        let active = self
+            .active
+            .take()
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
+        counters.failed.fetch_add(1, Ordering::Relaxed);
+        let transition = self
+            .state
+            .apply(PresentationAction::FailActive(active.token))?;
+        let directive = self.record_terminal(transition, active.timing, 0, None, counters)?;
+        if self.pending.is_some() {
+            self.state.apply(PresentationAction::Resume)?;
             return Ok(Some(DisplayLinkDirective::None));
         }
-        Ok(None)
+        Ok(Some(directive))
     }
 
     fn poll_active_command(
@@ -1022,10 +1057,12 @@ impl PresentationDriver {
                 .record_terminal(transition, active.timing, 0, recovery, counters)
                 .map(Some);
         }
-        self.active
+        let active = self
+            .active
             .as_mut()
-            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?
-            .command_terminal = true;
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
+        active.command_terminal = true;
+        active.presentation_polls = 0;
         Ok(None)
     }
 
@@ -1233,13 +1270,37 @@ impl PresentationDriver {
         display_identity: Option<usize>,
         presented_time: f64,
     ) {
+        if display_identity.is_none()
+            && let Some(active) = self.active.as_mut()
+        {
+            active.observation.inject(presented_time.to_bits());
+            return;
+        }
         let configuration = display_identity
             .map(|identity| configuration_with_display_identity(self.configuration, identity));
         self.post_commit_control = Some(PostCommitControl {
             configuration,
             presented_time_bits: presented_time.to_bits(),
             close_generation: false,
+            suppress_observation: false,
         });
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn inject_post_commit_omission(&mut self) {
+        self.post_commit_control = Some(PostCommitControl {
+            configuration: None,
+            presented_time_bits: 0,
+            close_generation: false,
+            suppress_observation: true,
+        });
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn post_commit_omission_armed(&self) -> bool {
+        self.post_commit_control
+            .as_ref()
+            .is_some_and(|control| control.suppress_observation)
     }
 
     #[cfg(alpine_native_validation)]
@@ -1248,6 +1309,7 @@ impl PresentationDriver {
             configuration: None,
             presented_time_bits: 0,
             close_generation: true,
+            suppress_observation: false,
         });
     }
 
@@ -1269,7 +1331,9 @@ impl PresentationDriver {
             .active
             .as_mut()
             .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
-        if control.presented_time_bits != 0 {
+        if control.suppress_observation {
+            active.observation.suppress();
+        } else if !control.close_generation {
             active.observation.inject(control.presented_time_bits);
         }
         Ok(if control.close_generation {
@@ -3564,8 +3628,17 @@ const fn validation_close_resources_drained(
 }
 
 #[cfg(alpine_native_validation)]
-const fn validation_close_should_retry(qualified_presented: u64, resources_drained: bool) -> bool {
-    qualified_presented == 0 || !resources_drained
+const fn validation_close_should_retry(
+    qualified_presented: u64,
+    accepted_terminal_failure: bool,
+    resources_drained: bool,
+) -> bool {
+    (qualified_presented == 0 && !accepted_terminal_failure) || !resources_drained
+}
+
+#[cfg(alpine_native_validation)]
+const fn validation_close_accepts_terminal_failure(programmatic: bool, failed: u64) -> bool {
+    programmatic && failed > 0
 }
 
 #[cfg(alpine_native_validation)]
@@ -3632,8 +3705,13 @@ fn schedule_validation_qualified_window_close(
             // active, then wait for its terminal accounting and full slot drain
             // before exercising the production close delegates. This keeps the
             // complete journey inside one NSApplication run-loop invocation.
+            let accepted_terminal_failure = validation_close_accepts_terminal_failure(
+                matches!(&action, ValidationCloseAction::Programmatic { .. }),
+                counters.failed.load(Ordering::Acquire),
+            );
             if validation_close_should_retry(
                 counters.qualified_presented.load(Ordering::Acquire),
+                accepted_terminal_failure,
                 ready_to_close,
             ) {
                 timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(
@@ -4364,6 +4442,11 @@ impl NativeSurface {
     }
 
     #[cfg(alpine_native_validation)]
+    pub(crate) fn input_focus_state_for_validation(&self) -> (InputEpoch, bool) {
+        self.view.input_focus_state()
+    }
+
+    #[cfg(alpine_native_validation)]
     pub(crate) fn set_input_focus_state_for_validation(
         &self,
         input_epoch: InputEpoch,
@@ -4496,11 +4579,14 @@ impl NativeSurface {
                     > initial_presented
                     || counters.failed.load(Ordering::Acquire) > initial_failed
                     || counters.cancelled.load(Ordering::Acquire) > initial_cancelled;
-                let frame_slots_drained = self
-                    .driver
-                    .try_borrow()
-                    .is_ok_and(|driver| driver.frame_slots.snapshot().occupied_slots() == 0);
-                (!terminal_observed || !frame_slots_drained) && Instant::now() < deadline
+                let frame_work_drained = self.driver.try_borrow().is_ok_and(|driver| {
+                    validation_close_resources_drained(
+                        driver.pending.is_some(),
+                        driver.active.is_some(),
+                        driver.frame_slots.snapshot().occupied_slots(),
+                    )
+                });
+                (!terminal_observed || !frame_work_drained) && Instant::now() < deadline
             } {
                 NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.005));
             }
@@ -4513,13 +4599,17 @@ impl NativeSurface {
                     > initial_presented
                     || counters.failed.load(Ordering::Acquire) > initial_failed
                     || counters.cancelled.load(Ordering::Acquire) > initial_cancelled;
-                let frame_slots_drained = driver.upgrade().is_some_and(|driver| {
-                    driver
-                        .try_borrow()
-                        .is_ok_and(|driver| driver.frame_slots.snapshot().occupied_slots() == 0)
+                let frame_work_drained = driver.upgrade().is_some_and(|driver| {
+                    driver.try_borrow().is_ok_and(|driver| {
+                        validation_close_resources_drained(
+                            driver.pending.is_some(),
+                            driver.active.is_some(),
+                            driver.frame_slots.snapshot().occupied_slots(),
+                        )
+                    })
                 });
                 let terminal =
-                    (terminal_observed && frame_slots_drained) || Instant::now() >= deadline;
+                    (terminal_observed && frame_work_drained) || Instant::now() >= deadline;
                 if terminal {
                     // SAFETY: Foundation supplies a valid borrowed timer for
                     // the complete callback, and the reference does not escape.
@@ -4773,7 +4863,7 @@ impl NativeSurface {
         display_identity: Option<usize>,
         presented_time: f64,
     ) -> Result<(), SurfaceError> {
-        if !presented_time.is_finite() || presented_time <= 0.0 {
+        if !presented_time.is_finite() || presented_time < 0.0 {
             return Err(SurfaceError::validation(SurfaceOperation::Validation));
         }
         self.driver
@@ -4781,6 +4871,20 @@ impl NativeSurface {
             .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?
             .inject_post_commit_observation(display_identity, presented_time);
         Ok(())
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn inject_post_commit_omission(&self) {
+        if let Ok(mut driver) = self.driver.try_borrow_mut() {
+            driver.inject_post_commit_omission();
+        }
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn post_commit_omission_armed(&self) -> bool {
+        self.driver
+            .try_borrow()
+            .is_ok_and(|driver| driver.post_commit_omission_armed())
     }
 
     #[cfg(alpine_native_validation)]
@@ -5518,6 +5622,27 @@ mod tests {
     }
 
     #[test]
+    fn missing_presentation_wait_is_post_command_bounded_and_latest_first() {
+        assert!(should_wait_for_presentation_observation(
+            false,
+            u8::MAX,
+            true
+        ));
+        assert!(should_wait_for_presentation_observation(true, 0, false));
+        assert!(should_wait_for_presentation_observation(
+            true,
+            MAX_POST_COMMAND_PRESENTATION_POLLS - 1,
+            false
+        ));
+        assert!(!should_wait_for_presentation_observation(
+            true,
+            MAX_POST_COMMAND_PRESENTATION_POLLS,
+            false
+        ));
+        assert!(!should_wait_for_presentation_observation(true, 0, true));
+    }
+
+    #[test]
     #[cfg(alpine_native_validation)]
     fn validation_close_observation_is_active_only_and_bounded() {
         assert_eq!(next_validation_close_observation(0, None), None);
@@ -5539,7 +5664,7 @@ mod tests {
 
     #[test]
     #[cfg(alpine_native_validation)]
-    fn validation_close_requires_qualified_presentation_and_complete_resource_drain() {
+    fn validation_close_requires_terminal_evidence_and_complete_resource_drain() {
         assert!(validation_close_resources_drained(false, false, 0));
         assert!(!validation_close_resources_drained(true, false, 0));
         assert!(!validation_close_resources_drained(false, true, 0));
@@ -5548,11 +5673,39 @@ mod tests {
         assert!(!validation_close_resources_drained(false, false, 3));
         assert!(!validation_close_resources_drained(false, false, u8::MAX));
 
-        assert!(validation_close_should_retry(0, false));
-        assert!(validation_close_should_retry(0, true));
-        assert!(validation_close_should_retry(1, false));
-        assert!(!validation_close_should_retry(1, true));
-        assert!(!validation_close_should_retry(u64::MAX, true));
+        assert!(validation_close_should_retry(0, false, false));
+        assert!(validation_close_should_retry(0, false, true));
+        assert!(validation_close_should_retry(0, true, false));
+        assert!(!validation_close_should_retry(0, true, true));
+        assert!(validation_close_should_retry(1, false, false));
+        assert!(!validation_close_should_retry(1, false, true));
+        assert!(!validation_close_should_retry(u64::MAX, true, true));
+
+        assert!(!validation_close_accepts_terminal_failure(false, 0));
+        assert!(!validation_close_accepts_terminal_failure(false, 1));
+        assert!(!validation_close_accepts_terminal_failure(false, u64::MAX));
+        assert!(!validation_close_accepts_terminal_failure(true, 0));
+        assert!(validation_close_accepts_terminal_failure(true, 1));
+        assert!(validation_close_accepts_terminal_failure(true, u64::MAX));
+    }
+
+    #[test]
+    #[cfg(alpine_native_validation)]
+    fn presentation_observation_suppression_overrides_every_source() {
+        let signal = Arc::new(PresentationSignal::new(None));
+        signal.publish(1.25_f64.to_bits());
+        let mut observation = PresentationObservation::new(signal);
+        observation.inject(2.5_f64.to_bits());
+
+        assert!(observation.observed());
+        assert!(!observation.suppressed);
+        assert!(observation.injected.is_some());
+
+        observation.suppress();
+
+        assert!(!observation.observed());
+        assert!(observation.suppressed);
+        assert!(observation.injected.is_none());
     }
 
     #[test]
