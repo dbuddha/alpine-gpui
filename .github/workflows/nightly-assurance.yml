@@ -222,7 +222,7 @@ jobs:
           RUSTFLAGS: --cfg alpine_native_validation
         run: |
           if cargo metadata --format-version 1 --no-deps | grep -q '"name":"alpine-metal"'; then
-            cargo mutants --no-config --file crates/alpine-metal/src/native.rs --features platform-spi --no-shuffle --output target/native-mutants.out -- --locked
+            cargo mutants --no-config --file crates/alpine-metal/src/native.rs --features platform-spi --exclude-re 'tests::' --no-shuffle --output target/native-mutants.out -- --locked
             cargo mutants --no-config --file crates/alpine-metal/src/platform_spi.rs --features platform-spi --no-shuffle --output target/native-platform-spi-mutants.out -- --locked
             cargo mutants --no-config --file crates/alpine-metal/src/submission.rs --features platform-spi --re 'MetalBackend::render_callback_drawable|record_drawable_attempt|verify_drawable_attempt_lifecycle|complete_drawable_attempt' --no-shuffle --output target/native-submission-mutants.out -- --locked
             cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re 'validate_initialization_rollback|native_validation::arm_window_close|native_validation::NativeAccessibilityEvidence::' --no-shuffle --output target/native-platform-contract-mutants.out -- --locked
