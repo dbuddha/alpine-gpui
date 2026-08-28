@@ -789,7 +789,7 @@ artifact = "formal/tla/aep-0120/FrameSlots.tla#BoundedFrameSlots"
 assertion = "Exactly three abstract slots bound concurrent encoding and submitted ownership."
 scope = "One three-slot ring with bounded lease and environment identities."
 bounds = ["pull request: three admissions", "nightly: four admissions"]
-assumptions = ["one occupied abstract slot represents all native resources for one frame"]
+assumptions = ["one occupied abstract slot represents all native resources for one frame", "one formal saturation witness represents one or more saturated admissions; compiled Rust evidence owns exact repeat counts"]
 exclusions = ["native retain counts", "elapsed time", "Rust formal refinement"]
 companion = "crates/alpine-platform/src/frame_slots.rs#admission_is_bounded_and_saturation_is_observable"
 
@@ -801,7 +801,7 @@ artifact = "formal/tla/aep-0120/FrameSlots.tla#CurrentPublicationIsCurrent"
 assertion = "A current publication must match the live owner generation, revision, and surface epoch."
 scope = "Reordered terminal completion with bounded generation and supersession changes."
 bounds = ["pull request: one generation, revision, and epoch advance", "nightly: two advances"]
-assumptions = ["native completion identity maps to the slot lease before publication"]
+assumptions = ["native completion identity maps to the slot lease before publication", "non-current publication identity is unobserved by transitions and checked properties and is canonicalized to zero"]
 exclusions = ["native callback delivery", "physical presentation", "Rust formal refinement"]
 companion = "crates/alpine-platform/src/frame_slots.rs#terminal_classification_checks_status_generation_revision_and_epoch"
 

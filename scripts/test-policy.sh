@@ -113,10 +113,26 @@ run_policy() {
     ALPINE_PR_BODY="$pr_body" \
     ALPINE_PR_LABELS=release:feature \
     ALPINE_PR_TITLE='feat(core): exercise approval fixture' \
+    ALPINE_TLA_DRIVER="${ALPINE_TLA_DRIVER:-scripts/check-tla.sh}" \
     scripts/check-policy.sh
 }
 
 run_policy >/dev/null
+
+cp scripts/check-tla.sh "$fixture_dir/check-tla.sh"
+ALPINE_TLA_DRIVER="$fixture_dir/check-tla.sh" run_policy >/dev/null
+sed 's/nightly) config=Nightly.cfg; lncheck=final ;;/nightly) config=Nightly.cfg; lncheck=default ;;/' \
+    "$fixture_dir/check-tla.sh" > "$fixture_dir/periodic-nightly-tla.sh"
+if ALPINE_TLA_DRIVER="$fixture_dir/periodic-nightly-tla.sh" run_policy > "$fixture_dir/periodic-nightly-tla.log" 2>&1; then
+    printf 'policy test error: periodic Nightly liveness checking unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'TLA+ must preserve default pull-request checks and final-graph Nightly liveness checks' "$fixture_dir/periodic-nightly-tla.log"; then
+    printf 'policy test error: expected final-graph Nightly liveness failure was not reported\n' >&2
+    cat "$fixture_dir/periodic-nightly-tla.log" >&2
+    exit 1
+fi
+unset ALPINE_TLA_DRIVER
 
 cp .github/workflows/ci.yml "$fixture_dir/ci.yml"
 ALPINE_CI_WORKFLOW="$fixture_dir/ci.yml" run_policy >/dev/null
