@@ -23,3 +23,10 @@ requirements, decisions, qualification evidence, or implementation guidance.
 
 Run `scripts/check-wiki.sh` to validate sources, `scripts/test-wiki.sh` to test
 the pipeline, and `scripts/wiki.sh render REVISION OUTPUT` to render locally.
+
+Local checks do not prove the live Wiki is current. From clean current `main`,
+run `scripts/wiki.sh audit-remote /path/to/alpine-gpui-wiki` to fetch and compare
+the live remote without committing or pushing. Run this after source changes,
+publication, failed publication, checkout migration, and before reporting Wiki
+freshness. Network failure leaves live state unknown and does not weaken offline
+repository checks.

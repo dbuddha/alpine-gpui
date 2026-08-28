@@ -28,6 +28,7 @@ aep-0218	FaultyApply.cfg	ApplyRequiresCurrent
 aep-0218	FaultyLate.cfg	PublishedIsCurrent
 aep-0221	FaultyNavigate.cfg	NavigationRequiresCurrent
 aep-0221	FaultyPublish.cfg	PublishedIsCurrent
+aep-0222	FaultyStale.cfg	PublishedIsCurrent
 aep-0250	FaultyDuplicate.cfg	AtMostOneResponse
 aep-0250	FaultyStale.cfg	MutationIsCurrent
 aep-0271	FaultyBorrow.cfg	PostsReleaseBorrow

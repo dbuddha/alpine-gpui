@@ -53,6 +53,25 @@ git -C "$wiki_root" remote add origin https://github.com/dbuddha/alpine-gpui.wik
 "$wiki" publish "$wiki_root" "$source_root" >/dev/null
 [ "$(find "$wiki_root" -type f -name '*.md' | wc -l | tr -d ' ')" = 11 ]
 
+wiki_remote=$temporary/wiki-remote.git
+git init -q --bare --initial-branch=master "$wiki_remote"
+git -C "$wiki_root" config user.name 'Alpine Wiki Test'
+git -C "$wiki_root" config user.email 'wiki-test@example.invalid'
+git -C "$wiki_root" add .
+git -C "$wiki_root" commit -qm 'test wiki'
+git -C "$wiki_root" push -q "$wiki_remote" HEAD:master
+wiki_audit=$temporary/wiki-audit
+GIT_ALLOW_PROTOCOL=file git clone -q "$wiki_remote" "$wiki_audit"
+git -C "$wiki_audit" remote set-url origin https://github.com/dbuddha/alpine-gpui.wiki.git
+git -C "$wiki_audit" config url."file://$wiki_remote".insteadOf https://github.com/dbuddha/alpine-gpui.wiki.git
+GIT_ALLOW_PROTOCOL=file "$wiki" audit-remote "$wiki_audit" "$source_root" >/dev/null
+
+printf '\n' >> "$source_root/docs/wiki/README.md"
+git -C "$source_root" add docs/wiki/README.md
+git -C "$source_root" commit -qm 'advance source revision'
+git -C "$source_root" update-ref refs/remotes/origin/main HEAD
+expect_failure stale-live-wiki env GIT_ALLOW_PROTOCOL=file "$wiki" audit-remote "$wiki_audit" "$source_root"
+
 printf '# unknown\n' > "$wiki_root/Unknown.md"
 expect_failure unknown-destination "$wiki" publish "$wiki_root" "$source_root"
 rm "$wiki_root/Unknown.md"

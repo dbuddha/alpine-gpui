@@ -32,5 +32,11 @@ sed 's/Research lineage/Research origin/' "$temporary/bad-skills/github-document
 mv "$temporary/missing-lineage.md" "$temporary/bad-skills/github-documentation-architect/SKILL.md"
 if "$checker" --skills-root "$temporary/bad-skills" >"$temporary/missing-lineage.log" 2>&1; then printf 'agent skill test error: missing lineage contract unexpectedly passed\n' >&2; exit 1; fi
 grep -Fq 'lacks research-lineage contract' "$temporary/missing-lineage.log"
+rm -rf "$temporary/bad-skills"
+cp -R "$repo_root/skills/." "$temporary/bad-skills"
+sed 's/live remote drift audit/live remote freshness review/' "$temporary/bad-skills/github-documentation-architect/SKILL.md" > "$temporary/missing-wiki-audit.md"
+mv "$temporary/missing-wiki-audit.md" "$temporary/bad-skills/github-documentation-architect/SKILL.md"
+if "$checker" --skills-root "$temporary/bad-skills" >"$temporary/missing-wiki-audit.log" 2>&1; then printf 'agent skill test error: missing live Wiki drift behavior unexpectedly passed\n' >&2; exit 1; fi
+grep -Fq 'lacks live Wiki drift behavior' "$temporary/missing-wiki-audit.log"
 "$checker" >/dev/null
 printf 'repository agent skill tests passed\n'

@@ -5674,3 +5674,173 @@ artifact = ".github/workflows/ci.yml#coverage"
 assertion = "The assurance package coverage floor exercises fixture and physical attestation separation, bounded diagnostics, and distinct command outputs."
 scope = "Host-executable Task #273 validator and compiled CLI boundary."
 exclusions = ["human attestation truth", "Accessibility Inspector capture", "post-close physical drain"]
+
+[[claims]]
+id = "AEP-0222-C01"
+mission = "MP-01"
+capability_issue = 28
+aep = "docs/aep/0222-bounded-settings-reload.md"
+requirement_issue = 36
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "required"
+tla_properties = ["PublishedIsCurrent", "PublicationIsAtomic"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "kani", "unit", "integration"]
+
+[[claims]]
+id = "AEP-0222-C02"
+mission = "MP-03"
+capability_issue = 28
+aep = "docs/aep/0222-bounded-settings-reload.md"
+requirement_issue = 36
+claim_type = "memory"
+risk = "high"
+kani_applicability = "supporting"
+tla_properties = ["OneInFlightGeneration"]
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["tla", "kani", "unit", "integration"]
+
+[[claims]]
+id = "AEP-0222-C03"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0222-bounded-settings-reload.md"
+requirement_issue = 36
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable", "macos-metal"]
+required_evidence = ["unit", "integration"]
+
+[[evidence]]
+id = "EV-0222-UNIT01"
+claim = "AEP-0222-C01"
+kind = "unit"
+artifact = "apps/alpine-studio/src/settings/loader.rs#stale_completion_and_rejected_candidate_preserve_state"
+assertion = "A superseded worker result and an invalid current candidate preserve the complete compiled settings snapshot."
+scope = "Private settings controller and typed-state admission."
+exclusions = ["native filesystem notifications", "public configuration API"]
+
+[[evidence]]
+id = "EV-0222-INTEGRATION01"
+claim = "AEP-0222-C01"
+kind = "integration"
+artifact = "apps/alpine-studio/src/settings_reload_tests.rs#production_application_admission_preserves_editor_and_workspace_state"
+assertion = "A production Studio application applies global/project settings without changing document, workspace, selection, tab, or status identity."
+scope = "One local workspace and current-generation settings completion."
+exclusions = ["native AppKit process", "filesystem watcher"]
+
+[[evidence]]
+id = "EV-0222-TLA01"
+claim = "AEP-0222-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0222/SettingsAdmission.tla#PublishedIsCurrent"
+assertion = "Only the modeled latest requested and submitted generation can publish; the stale-publication control violates the invariant."
+scope = "Finite reload, submit, supersede, complete, retry, and failure interleavings."
+bounds = ["pull request: five generations", "nightly: nine generations"]
+assumptions = ["one serialized foreground settings owner"]
+exclusions = ["filesystem implementation", "Rust allocation behavior"]
+companion = "apps/alpine-studio/src/settings_reload_tests.rs#production_application_admission_preserves_editor_and_workspace_state"
+
+[[evidence]]
+id = "EV-0222-TLA01B"
+claim = "AEP-0222-C01"
+kind = "tla"
+artifact = "formal/tla/aep-0222/SettingsAdmission.tla#PublicationIsAtomic"
+assertion = "The finite accepted generation and active configuration version change together or remain unchanged."
+scope = "Finite reload, submit, complete, retry, and failure interleavings."
+bounds = ["pull request: five generations", "nightly: nine generations"]
+assumptions = ["One foreground settings owner publishes one complete typed snapshot."]
+exclusions = ["field-level Rust assignment order", "allocator failure internals"]
+companion = "apps/alpine-studio/src/settings_reload_tests.rs#failed_application_reload_keeps_the_previous_settings_snapshot"
+
+[[evidence]]
+id = "EV-0222-KANI01"
+claim = "AEP-0222-C01"
+kind = "kani"
+artifact = "apps/alpine-studio/src/settings/loader.rs#only_the_current_submitted_generation_can_publish"
+assertion = "For arbitrary generations and in-flight state, admission implies equality with both latest requested and submitted identity."
+scope = "Pure generation refinement predicate."
+bounds = ["symbolic u64 requested, submitted, and completed generations", "symbolic in-flight boolean"]
+exclusions = ["worker scheduler", "filesystem parsing"]
+companion = "apps/alpine-studio/src/settings/loader.rs#stale_completion_and_rejected_candidate_preserve_state"
+
+[[evidence]]
+id = "EV-0222-UNIT02"
+claim = "AEP-0222-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/settings/loader.rs#file_and_json_boundaries_fail_closed"
+assertion = "Exact file and JSON ceilings admit their boundary and reject oversized, over-deep, unknown-field, and unsupported-version input."
+scope = "Bounded local JSON decoder and read path."
+exclusions = ["host memory allocator proof", "malicious kernel metadata"]
+
+[[evidence]]
+id = "EV-0222-INTEGRATION02"
+claim = "AEP-0222-C02"
+kind = "integration"
+artifact = "apps/alpine-studio/src/settings/loader.rs#global_then_project_and_migration_are_atomic"
+assertion = "Global v0 migration and project v1 override produce one bounded typed candidate with exact precedence and accounting."
+scope = "Two local settings files and one in-memory migration."
+exclusions = ["automatic source rewrite", "versions beyond v0 and v1"]
+
+[[evidence]]
+id = "EV-0222-TLA02"
+claim = "AEP-0222-C02"
+kind = "tla"
+artifact = "formal/tla/aep-0222/SettingsAdmission.tla#OneInFlightGeneration"
+assertion = "Every finite in-flight load owns one nonzero submitted generation."
+scope = "Finite request coalescing, submission, completion, and retry transitions."
+bounds = ["pull request: five generations", "nightly: nine generations"]
+assumptions = ["The production controller is the sole submission owner."]
+exclusions = ["global worker-pool capacity", "filesystem and JSON bytes"]
+companion = "apps/alpine-studio/src/settings/loader.rs#duplicate_bindings_and_submission_failure_remain_bounded"
+
+[[evidence]]
+id = "EV-0222-KANI02"
+claim = "AEP-0222-C02"
+kind = "kani"
+artifact = "apps/alpine-studio/src/settings/loader.rs#only_the_current_submitted_generation_can_publish"
+assertion = "A symbolic completion cannot be admitted outside the one current submitted generation retained by the controller."
+scope = "Pure current-generation and in-flight ownership predicate."
+bounds = ["symbolic u64 requested, submitted, and completed generations", "one symbolic in-flight boolean"]
+exclusions = ["path and JSON allocation", "worker scheduler"]
+companion = "apps/alpine-studio/src/settings/loader.rs#duplicate_bindings_and_submission_failure_remain_bounded"
+
+[[evidence]]
+id = "EV-0222-UNIT03"
+claim = "AEP-0222-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/settings_reload_tests.rs#command_reload_announces_but_startup_keymap_only_does_not_redraw"
+assertion = "Startup retains only pending work, keymap-only admission creates no frame, and explicit command reload is visible."
+scope = "Private Studio command and event-effect boundary."
+exclusions = ["physical input-to-present latency", "comparative performance claim"]
+
+[[evidence]]
+id = "EV-0222-INTEGRATION03"
+claim = "AEP-0222-C03"
+kind = "integration"
+artifact = "apps/alpine-studio/src/settings_reload_tests.rs#production_application_admission_preserves_editor_and_workspace_state"
+assertion = "The Studio application receives a completed worker value and mutates only typed settings, leaving document and workspace owners unchanged."
+scope = "Private production application admission after off-thread request execution."
+bounds = ["one global/project completion", "one Studio workspace"]
+exclusions = ["physical scheduler timing", "comparative startup latency"]
+
+[[evidence]]
+id = "EV-0222-MUTATION01"
+claim = "AEP-0222-C01"
+kind = "mutation"
+artifact = ".github/workflows/ci.yml#mutation-diff"
+assertion = "Every viable changed generation, rollback, precedence, and settings application mutation must be killed before ci-pass succeeds."
+scope = "Changed host-executable Studio settings and application code."
+exclusions = ["compile-unviable substitutions", "native framework behavior"]
+
+[[evidence]]
+id = "EV-0222-COVERAGE01"
+claim = "AEP-0222-C02"
+kind = "coverage"
+artifact = ".github/workflows/ci.yml#coverage"
+assertion = "Studio coverage exercises parser, migration, bounds, precedence, stale, failure, and state-preservation paths."
+scope = "Host-executable Alpine Studio settings code."
+exclusions = ["semantic proof", "physical macOS process"]

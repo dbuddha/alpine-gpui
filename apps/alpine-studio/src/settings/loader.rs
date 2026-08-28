@@ -1,0 +1,1960 @@
+//! Bounded local settings file loading and current-generation admission.
+
+use std::{
+    borrow::Cow,
+    ffi::OsString,
+    fmt,
+    fs::{self, File},
+    io::{self, Read as _},
+    path::{Path, PathBuf},
+};
+
+use alpine_core::LinearRgba;
+use alpine_platform_macos::Modifiers;
+use serde_json::{Map, Value};
+
+use super::{
+    EditorSettingsPatch, FONT_NAME, KeyAction, KeyBinding, Keymap, MAX_KEY_BINDINGS,
+    SettingsAdmission, SettingsEffect, SettingsFailure, SettingsLayer, SettingsSource,
+    SettingsState, SettingsUpdate, StudioSettings, StudioTheme, SyntaxTheme, color,
+};
+use crate::commands::StudioCommand;
+
+pub(crate) const SETTINGS_VERSION: u64 = 1;
+pub(crate) const LEGACY_SETTINGS_VERSION: u64 = 0;
+pub(crate) const MAX_SETTINGS_FILE_BYTES: usize = 64 * 1_024;
+pub(crate) const MAX_SETTINGS_PATH_BYTES: usize = 4_096;
+pub(crate) const MAX_SETTINGS_JSON_DEPTH: usize = 8;
+pub(crate) const MAX_SETTINGS_JSON_VALUES: usize = 512;
+pub(crate) const MAX_SETTINGS_STRING_BYTES: usize = 32 * 1_024;
+const MAX_SETTINGS_READ_BYTES: usize = MAX_SETTINGS_FILE_BYTES + 1;
+const LEGACY_FIELDS: &[&str] = &[
+    "version",
+    "font_size",
+    "font_scale",
+    "line_height",
+    "tab_columns",
+];
+const EDITOR_FIELDS: &[&str] = &[
+    "font_name",
+    "font_size",
+    "font_scale",
+    "line_height",
+    "tab_columns",
+];
+const SYNTAX_FIELDS: &[&str] = &[
+    "comment", "keyword", "string", "number", "type", "property", "heading", "code",
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SettingsLoadError {
+    PathTooLong,
+    NotRegularFile,
+    FileTooLarge,
+    ConcurrentEdit,
+    Io {
+        operation: &'static str,
+        kind: io::ErrorKind,
+    },
+    InvalidJson,
+    JsonTooDeep,
+    TooManyValues,
+    TooManyStringBytes,
+    MissingVersion,
+    UnknownVersion(u64),
+    UnknownField,
+    MissingField(&'static str),
+    InvalidValue(&'static str),
+    AllocationFailed,
+}
+
+impl fmt::Display for SettingsLoadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PathTooLong => write!(
+                formatter,
+                "settings path exceeds its {MAX_SETTINGS_PATH_BYTES}-byte limit"
+            ),
+            Self::NotRegularFile => formatter.write_str("settings path is not a regular file"),
+            Self::FileTooLarge => write!(
+                formatter,
+                "settings file exceeds its {MAX_SETTINGS_FILE_BYTES}-byte limit"
+            ),
+            Self::ConcurrentEdit => {
+                formatter.write_str("settings file changed while it was being read")
+            }
+            Self::Io { operation, kind } => {
+                write!(formatter, "settings {operation} failed with {kind:?}")
+            }
+            Self::InvalidJson => formatter.write_str("settings JSON is malformed"),
+            Self::JsonTooDeep => write!(
+                formatter,
+                "settings JSON exceeds its {MAX_SETTINGS_JSON_DEPTH}-level depth limit"
+            ),
+            Self::TooManyValues => write!(
+                formatter,
+                "settings JSON exceeds its {MAX_SETTINGS_JSON_VALUES}-value limit"
+            ),
+            Self::TooManyStringBytes => write!(
+                formatter,
+                "settings JSON exceeds its {MAX_SETTINGS_STRING_BYTES}-byte string limit"
+            ),
+            Self::MissingVersion => formatter.write_str("settings version is missing"),
+            Self::UnknownVersion(version) => {
+                write!(formatter, "settings version {version} is unsupported")
+            }
+            Self::UnknownField => formatter.write_str("settings contain an unknown field"),
+            Self::MissingField(field) => write!(formatter, "settings field {field} is missing"),
+            Self::InvalidValue(field) => write!(formatter, "settings field {field} is invalid"),
+            Self::AllocationFailed => formatter.write_str("settings allocation failed"),
+        }
+    }
+}
+
+impl std::error::Error for SettingsLoadError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SettingsLoadFailure {
+    pub(crate) source: SettingsSource,
+    pub(crate) error: SettingsLoadError,
+}
+
+impl fmt::Display for SettingsLoadFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{:?} settings: {}", self.source, self.error)
+    }
+}
+
+impl std::error::Error for SettingsLoadFailure {}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SettingsPaths {
+    global: Result<Option<PathBuf>, SettingsLoadFailure>,
+    project: Result<Option<PathBuf>, SettingsLoadFailure>,
+}
+
+impl SettingsPaths {
+    fn new(home: Option<OsString>, workspace: Option<&Path>) -> Self {
+        Self {
+            global: global_path(home),
+            project: project_path(workspace),
+        }
+    }
+
+    #[cfg(test)]
+    fn explicit(global: Option<PathBuf>, project: Option<PathBuf>) -> Self {
+        Self {
+            global: checked_path(global, SettingsSource::Global),
+            project: checked_path(project, SettingsSource::Project),
+        }
+    }
+
+    fn replace_project(&mut self, workspace: Option<&Path>) -> bool {
+        let project = project_path(workspace);
+        if self.project == project {
+            false
+        } else {
+            self.project = project;
+            true
+        }
+    }
+
+    fn retained_bytes(&self) -> usize {
+        [&self.global, &self.project]
+            .into_iter()
+            .filter_map(|path| path.as_ref().ok().and_then(Option::as_ref))
+            .map(|path| path.as_os_str().as_encoded_bytes().len())
+            .sum()
+    }
+}
+
+fn global_path(home: Option<OsString>) -> Result<Option<PathBuf>, SettingsLoadFailure> {
+    let path = home
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .map(|home| {
+            home.join("Library")
+                .join("Application Support")
+                .join("Alpine Studio")
+                .join("settings.json")
+        });
+    checked_path(path, SettingsSource::Global)
+}
+
+fn project_path(workspace: Option<&Path>) -> Result<Option<PathBuf>, SettingsLoadFailure> {
+    checked_path(
+        workspace.map(|root| root.join(".alpine").join("settings.json")),
+        SettingsSource::Project,
+    )
+}
+
+fn checked_path(
+    path: Option<PathBuf>,
+    source: SettingsSource,
+) -> Result<Option<PathBuf>, SettingsLoadFailure> {
+    if path
+        .as_ref()
+        .is_some_and(|path| path.as_os_str().as_encoded_bytes().len() > MAX_SETTINGS_PATH_BYTES)
+    {
+        Err(SettingsLoadFailure {
+            source,
+            error: SettingsLoadError::PathTooLong,
+        })
+    } else {
+        Ok(path)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct DecodeReport {
+    file_bytes: usize,
+    parsed_values: usize,
+    string_bytes: usize,
+    migrations: u64,
+}
+
+impl DecodeReport {
+    fn merge(self, other: Self) -> Result<Self, SettingsLoadFailure> {
+        let overflow = || SettingsLoadFailure {
+            source: SettingsSource::Runtime,
+            error: SettingsLoadError::AllocationFailed,
+        };
+        Ok(Self {
+            file_bytes: self
+                .file_bytes
+                .checked_add(other.file_bytes)
+                .ok_or_else(overflow)?,
+            parsed_values: self
+                .parsed_values
+                .checked_add(other.parsed_values)
+                .ok_or_else(overflow)?,
+            string_bytes: self
+                .string_bytes
+                .checked_add(other.string_bytes)
+                .ok_or_else(overflow)?,
+            migrations: self.migrations.saturating_add(other.migrations),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct LoadedSettings {
+    update: SettingsUpdate,
+    report: DecodeReport,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SettingsLoadOutput {
+    generation: u64,
+    announce: bool,
+    result: Result<LoadedSettings, SettingsLoadFailure>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SettingsLoadRequest {
+    generation: u64,
+    announce: bool,
+    paths: SettingsPaths,
+}
+
+impl SettingsLoadRequest {
+    pub(crate) const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) const fn announce(&self) -> bool {
+        self.announce
+    }
+
+    pub(crate) fn execute(self) -> SettingsLoadOutput {
+        SettingsLoadOutput {
+            generation: self.generation,
+            announce: self.announce,
+            result: load_settings(self.generation, &self.paths),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SettingsReloadError {
+    GenerationExhausted,
+    SubmissionFailed,
+}
+
+impl fmt::Display for SettingsReloadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::GenerationExhausted => formatter.write_str("settings generation exhausted"),
+            Self::SubmissionFailed => formatter.write_str("settings worker queue rejected reload"),
+        }
+    }
+}
+
+impl std::error::Error for SettingsReloadError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SettingsReloadAdmission {
+    Applied {
+        effect: SettingsEffect,
+        revision: u64,
+        migrations: u64,
+        announce: bool,
+    },
+    Unchanged {
+        revision: u64,
+        migrations: u64,
+        announce: bool,
+    },
+    Stale,
+    Failed(SettingsLoadFailure),
+    Rejected(SettingsFailure),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "the opt-in local diagnostic overlay will consume this bounded snapshot"
+)]
+pub(crate) struct SettingsReloadReport {
+    pub(crate) requested_generation: u64,
+    pub(crate) submitted_generation: u64,
+    pub(crate) in_flight: bool,
+    pub(crate) pending: bool,
+    pub(crate) path_bytes: usize,
+    pub(crate) current_file_bytes: usize,
+    pub(crate) peak_file_bytes: usize,
+    pub(crate) current_parsed_values: usize,
+    pub(crate) peak_parsed_values: usize,
+    pub(crate) current_string_bytes: usize,
+    pub(crate) peak_string_bytes: usize,
+    pub(crate) reloads: u64,
+    pub(crate) submissions: u64,
+    pub(crate) migrations: u64,
+    pub(crate) stale_results: u64,
+    pub(crate) failures: u64,
+}
+
+pub(crate) struct SettingsReload {
+    paths: SettingsPaths,
+    requested_generation: u64,
+    submitted_generation: u64,
+    in_flight: bool,
+    pending: bool,
+    pending_announcement: bool,
+    report: SettingsReloadReport,
+}
+
+impl SettingsReload {
+    pub(crate) fn new(home: Option<OsString>, workspace: Option<&Path>) -> Self {
+        Self::from_paths(SettingsPaths::new(home, workspace))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn explicit(global: Option<PathBuf>, project: Option<PathBuf>) -> Self {
+        Self::from_paths(SettingsPaths::explicit(global, project))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exhaust_generation(&mut self) {
+        self.requested_generation = u64::MAX;
+    }
+
+    fn from_paths(paths: SettingsPaths) -> Self {
+        let path_bytes = paths.retained_bytes();
+        Self {
+            paths,
+            requested_generation: 1,
+            submitted_generation: 0,
+            in_flight: false,
+            pending: true,
+            pending_announcement: false,
+            report: SettingsReloadReport {
+                requested_generation: 1,
+                pending: true,
+                path_bytes,
+                reloads: 1,
+                ..SettingsReloadReport::default()
+            },
+        }
+    }
+
+    pub(crate) fn request(&mut self, announce: bool) -> Result<u64, SettingsReloadError> {
+        let generation = self
+            .requested_generation
+            .checked_add(1)
+            .ok_or(SettingsReloadError::GenerationExhausted)?;
+        self.requested_generation = generation;
+        self.pending = true;
+        self.pending_announcement |= announce;
+        self.report.requested_generation = generation;
+        self.report.pending = true;
+        self.report.reloads = self.report.reloads.saturating_add(1);
+        Ok(generation)
+    }
+
+    pub(crate) fn replace_project(
+        &mut self,
+        workspace: Option<&Path>,
+    ) -> Result<bool, SettingsReloadError> {
+        if !self.paths.replace_project(workspace) {
+            return Ok(false);
+        }
+        self.report.path_bytes = self.paths.retained_bytes();
+        self.request(false).map(|_| true)
+    }
+
+    pub(crate) fn take_request(&mut self) -> Option<SettingsLoadRequest> {
+        if !self.pending || self.in_flight {
+            return None;
+        }
+        self.pending = false;
+        self.in_flight = true;
+        self.submitted_generation = self.requested_generation;
+        let announce = std::mem::take(&mut self.pending_announcement);
+        self.report.submitted_generation = self.submitted_generation;
+        self.report.in_flight = true;
+        self.report.pending = false;
+        self.report.submissions = self.report.submissions.saturating_add(1);
+        Some(SettingsLoadRequest {
+            generation: self.submitted_generation,
+            announce,
+            paths: self.paths.clone(),
+        })
+    }
+
+    pub(crate) fn reject_submission(
+        &mut self,
+        generation: u64,
+        announce: bool,
+    ) -> Result<(), SettingsReloadError> {
+        if !self.in_flight || generation != self.submitted_generation {
+            self.report.stale_results = self.report.stale_results.saturating_add(1);
+            return Ok(());
+        }
+        self.in_flight = false;
+        self.pending = true;
+        self.pending_announcement |= announce;
+        self.report.in_flight = false;
+        self.report.pending = true;
+        self.report.failures = self.report.failures.saturating_add(1);
+        Err(SettingsReloadError::SubmissionFailed)
+    }
+
+    pub(crate) fn admit(
+        &mut self,
+        output: SettingsLoadOutput,
+        state: &mut SettingsState,
+    ) -> SettingsReloadAdmission {
+        if !completion_is_current(
+            self.requested_generation,
+            self.submitted_generation,
+            output.generation,
+            self.in_flight,
+        ) {
+            if self.in_flight && output.generation == self.submitted_generation {
+                self.in_flight = false;
+                self.report.in_flight = false;
+            }
+            self.report.stale_results = self.report.stale_results.saturating_add(1);
+            return SettingsReloadAdmission::Stale;
+        }
+        self.in_flight = false;
+        self.report.in_flight = false;
+        let loaded = match output.result {
+            Ok(loaded) => loaded,
+            Err(failure) => {
+                self.report.failures = self.report.failures.saturating_add(1);
+                return SettingsReloadAdmission::Failed(failure);
+            }
+        };
+        self.observe_decode(loaded.report);
+        match state.admit(&loaded.update) {
+            SettingsAdmission::Applied { revision, effect } => SettingsReloadAdmission::Applied {
+                effect,
+                revision,
+                migrations: loaded.report.migrations,
+                announce: output.announce,
+            },
+            SettingsAdmission::Unchanged { revision } => SettingsReloadAdmission::Unchanged {
+                revision,
+                migrations: loaded.report.migrations,
+                announce: output.announce,
+            },
+            SettingsAdmission::Stale { .. } => {
+                self.report.stale_results = self.report.stale_results.saturating_add(1);
+                SettingsReloadAdmission::Stale
+            }
+            SettingsAdmission::Rejected(failure) => {
+                self.report.failures = self.report.failures.saturating_add(1);
+                SettingsReloadAdmission::Rejected(failure)
+            }
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "the opt-in local diagnostic overlay will consume this bounded snapshot"
+    )]
+    pub(crate) const fn report(&self) -> SettingsReloadReport {
+        self.report
+    }
+
+    fn observe_decode(&mut self, decoded: DecodeReport) {
+        self.report.current_file_bytes = decoded.file_bytes;
+        self.report.peak_file_bytes = self.report.peak_file_bytes.max(decoded.file_bytes);
+        self.report.current_parsed_values = decoded.parsed_values;
+        self.report.peak_parsed_values = self.report.peak_parsed_values.max(decoded.parsed_values);
+        self.report.current_string_bytes = decoded.string_bytes;
+        self.report.peak_string_bytes = self.report.peak_string_bytes.max(decoded.string_bytes);
+        self.report.migrations = self.report.migrations.saturating_add(decoded.migrations);
+    }
+}
+
+pub(crate) const fn completion_is_current(
+    requested_generation: u64,
+    submitted_generation: u64,
+    completed_generation: u64,
+    in_flight: bool,
+) -> bool {
+    in_flight
+        && completed_generation == submitted_generation
+        && completed_generation == requested_generation
+}
+
+fn load_settings(
+    generation: u64,
+    paths: &SettingsPaths,
+) -> Result<LoadedSettings, SettingsLoadFailure> {
+    let global_path = paths.global.clone()?;
+    let project_path = paths.project.clone()?;
+    let compiled = StudioSettings::compiled().map_err(|_| compiled_settings_failure())?;
+    let (global, global_report) = load_layer(
+        global_path.as_deref(),
+        SettingsSource::Global,
+        &compiled.theme,
+    )?;
+    let project_base = global
+        .as_ref()
+        .and_then(|layer| layer.theme)
+        .unwrap_or(compiled.theme);
+    let source = SettingsSource::Project;
+    let (project, project_report) = load_layer(project_path.as_deref(), source, &project_base)?;
+    Ok(LoadedSettings {
+        update: SettingsUpdate {
+            generation,
+            global,
+            project,
+        },
+        report: global_report.merge(project_report)?,
+    })
+}
+
+fn compiled_settings_failure() -> SettingsLoadFailure {
+    SettingsLoadFailure {
+        source: SettingsSource::Compiled,
+        error: SettingsLoadError::InvalidValue("compiled settings"),
+    }
+}
+
+fn load_layer(
+    path: Option<&Path>,
+    source: SettingsSource,
+    base_theme: &StudioTheme,
+) -> Result<(Option<SettingsLayer>, DecodeReport), SettingsLoadFailure> {
+    let Some(path) = path else {
+        return Ok((None, DecodeReport::default()));
+    };
+    let Some(bytes) = read_file(path).map_err(|error| SettingsLoadFailure { source, error })?
+    else {
+        return Ok((None, DecodeReport::default()));
+    };
+    let file_bytes = bytes.len();
+    let (layer, mut report) =
+        decode_layer(&bytes, base_theme).map_err(|error| SettingsLoadFailure { source, error })?;
+    report.file_bytes = file_bytes;
+    Ok((Some(layer), report))
+}
+
+fn read_file(path: &Path) -> Result<Option<Vec<u8>>, SettingsLoadError> {
+    read_file_with(path, no_op, no_op)
+}
+
+fn no_op() {}
+
+fn read_file_with(
+    path: &Path,
+    before_read: impl FnOnce(),
+    after_read: impl FnOnce(),
+) -> Result<Option<Vec<u8>>, SettingsLoadError> {
+    if path.as_os_str().as_encoded_bytes().len() > MAX_SETTINGS_PATH_BYTES {
+        return Err(SettingsLoadError::PathTooLong);
+    }
+    let before = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(map_io("metadata", &error)),
+    };
+    if before.file_type().is_symlink() || !before.is_file() {
+        return Err(SettingsLoadError::NotRegularFile);
+    }
+    if before.len() > u64::try_from(MAX_SETTINGS_FILE_BYTES).unwrap_or(u64::MAX) {
+        return Err(SettingsLoadError::FileTooLarge);
+    }
+    let mut file = File::open(path).map_err(|error| map_io("open", &error))?;
+    let opened = file
+        .metadata()
+        .map_err(|error| map_io("metadata", &error))?;
+    require_same_file(&before, &opened)?;
+    before_read();
+    let mut bytes = Vec::new();
+    let reserve = usize::try_from(before.len()).unwrap_or(MAX_SETTINGS_FILE_BYTES);
+    bytes
+        .try_reserve_exact(reserve.min(MAX_SETTINGS_FILE_BYTES))
+        .map_err(|_| SettingsLoadError::AllocationFailed)?;
+    {
+        let mut limited = (&mut file).take(MAX_SETTINGS_READ_BYTES as u64);
+        limited
+            .read_to_end(&mut bytes)
+            .map_err(|error| map_io("read", &error))?;
+    }
+    if bytes.len() > MAX_SETTINGS_FILE_BYTES {
+        return Err(SettingsLoadError::FileTooLarge);
+    }
+    after_read();
+    let opened_after = file
+        .metadata()
+        .map_err(|error| map_io("metadata", &error))?;
+    let path_after = fs::symlink_metadata(path).map_err(|error| map_io("metadata", &error))?;
+    if !same_file(&opened, &opened_after) || !same_file(&opened, &path_after) {
+        return Err(SettingsLoadError::ConcurrentEdit);
+    }
+    Ok(Some(bytes))
+}
+
+fn map_io(operation: &'static str, error: &io::Error) -> SettingsLoadError {
+    SettingsLoadError::Io {
+        operation,
+        kind: error.kind(),
+    }
+}
+
+fn same_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    if !same_file_observation(
+        left.len(),
+        right.len(),
+        left.modified().ok(),
+        right.modified().ok(),
+    ) {
+        return false;
+    }
+    same_platform_file(left, right)
+}
+
+fn same_file_observation(
+    left_len: u64,
+    right_len: u64,
+    left_modified: Option<std::time::SystemTime>,
+    right_modified: Option<std::time::SystemTime>,
+) -> bool {
+    left_len == right_len && left_modified == right_modified
+}
+
+fn require_same_file(left: &fs::Metadata, right: &fs::Metadata) -> Result<(), SettingsLoadError> {
+    if same_file(left, right) {
+        Ok(())
+    } else {
+        Err(SettingsLoadError::ConcurrentEdit)
+    }
+}
+
+fn same_platform_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        left.dev() == right.dev() && left.ino() == right.ino()
+    }
+    #[cfg(windows)]
+    {
+        same_windows_file(left, right)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (left, right);
+        true
+    }
+}
+
+#[cfg(windows)]
+#[cfg_attr(test, mutants::skip)]
+fn same_windows_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+
+    left.creation_time() == right.creation_time()
+        && left.last_write_time() == right.last_write_time()
+        && left.file_attributes() == right.file_attributes()
+        && left.file_size() == right.file_size()
+}
+
+fn decode_layer(
+    bytes: &[u8],
+    base_theme: &StudioTheme,
+) -> Result<(SettingsLayer, DecodeReport), SettingsLoadError> {
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| SettingsLoadError::InvalidJson)?;
+    let mut report = DecodeReport::default();
+    inspect_json(&value, 1, &mut report)?;
+    let object = value
+        .as_object()
+        .ok_or(SettingsLoadError::InvalidValue("root"))?;
+    let version = object
+        .get("version")
+        .ok_or(SettingsLoadError::MissingVersion)?
+        .as_u64()
+        .ok_or(SettingsLoadError::InvalidValue("version"))?;
+    let layer = match version {
+        LEGACY_SETTINGS_VERSION => {
+            report.migrations = 1;
+            decode_legacy(object)?
+        }
+        SETTINGS_VERSION => decode_current(object, base_theme)?,
+        version => return Err(SettingsLoadError::UnknownVersion(version)),
+    };
+    Ok((layer, report))
+}
+
+fn inspect_json(
+    value: &Value,
+    depth: usize,
+    report: &mut DecodeReport,
+) -> Result<(), SettingsLoadError> {
+    if depth > MAX_SETTINGS_JSON_DEPTH {
+        return Err(SettingsLoadError::JsonTooDeep);
+    }
+    report.parsed_values = report
+        .parsed_values
+        .checked_add(1)
+        .ok_or(SettingsLoadError::TooManyValues)?;
+    if report.parsed_values > MAX_SETTINGS_JSON_VALUES {
+        return Err(SettingsLoadError::TooManyValues);
+    }
+    match value {
+        Value::String(value) => add_string_bytes(value.len(), report)?,
+        Value::Array(values) => {
+            for value in values {
+                inspect_json(value, depth + 1, report)?;
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                add_string_bytes(key.len(), report)?;
+                inspect_json(value, depth + 1, report)?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+    Ok(())
+}
+
+fn add_string_bytes(bytes: usize, report: &mut DecodeReport) -> Result<(), SettingsLoadError> {
+    report.string_bytes = report
+        .string_bytes
+        .checked_add(bytes)
+        .ok_or(SettingsLoadError::TooManyStringBytes)?;
+    if report.string_bytes > MAX_SETTINGS_STRING_BYTES {
+        Err(SettingsLoadError::TooManyStringBytes)
+    } else {
+        Ok(())
+    }
+}
+
+fn decode_legacy(object: &Map<String, Value>) -> Result<SettingsLayer, SettingsLoadError> {
+    reject_unknown(object, LEGACY_FIELDS)?;
+    Ok(SettingsLayer {
+        editor: EditorSettingsPatch {
+            font_size: optional_f32(object, "font_size")?,
+            font_scale: optional_f32(object, "font_scale")?,
+            line_height: optional_f32(object, "line_height")?,
+            tab_columns: optional_u32(object, "tab_columns")?,
+            ..EditorSettingsPatch::default()
+        },
+        ..SettingsLayer::default()
+    })
+}
+
+fn decode_current(
+    object: &Map<String, Value>,
+    base_theme: &StudioTheme,
+) -> Result<SettingsLayer, SettingsLoadError> {
+    reject_unknown(object, &["version", "editor", "theme", "keymap"])?;
+    Ok(SettingsLayer {
+        editor: object
+            .get("editor")
+            .map(decode_editor)
+            .transpose()?
+            .unwrap_or_default(),
+        theme: object
+            .get("theme")
+            .map(|theme| decode_theme(theme, base_theme))
+            .transpose()?,
+        keymap: object.get("keymap").map(decode_keymap).transpose()?,
+    })
+}
+
+fn decode_editor(value: &Value) -> Result<EditorSettingsPatch, SettingsLoadError> {
+    let object = value
+        .as_object()
+        .ok_or(SettingsLoadError::InvalidValue("editor"))?;
+    reject_unknown(object, EDITOR_FIELDS)?;
+    let font_name = object
+        .get("font_name")
+        .map(|value| {
+            let value = value
+                .as_str()
+                .ok_or(SettingsLoadError::InvalidValue("editor.font_name"))?;
+            if value != FONT_NAME {
+                return Err(SettingsLoadError::InvalidValue("editor.font_name"));
+            }
+            let mut owned = String::new();
+            owned
+                .try_reserve_exact(value.len())
+                .map_err(|_| SettingsLoadError::AllocationFailed)?;
+            owned.push_str(value);
+            Ok(Cow::Owned(owned))
+        })
+        .transpose()?;
+    Ok(EditorSettingsPatch {
+        font_name,
+        font_size: optional_f32(object, "font_size")?,
+        font_scale: optional_f32(object, "font_scale")?,
+        line_height: optional_f32(object, "line_height")?,
+        tab_columns: optional_u32(object, "tab_columns")?,
+        ..EditorSettingsPatch::default()
+    })
+}
+
+fn decode_theme(value: &Value, base_theme: &StudioTheme) -> Result<StudioTheme, SettingsLoadError> {
+    let object = value
+        .as_object()
+        .ok_or(SettingsLoadError::InvalidValue("theme"))?;
+    validate_theme_fields(object)?;
+    let mut theme = *base_theme;
+    set_color(object, "clear", "clear", &mut theme.clear)?;
+    set_color(object, "background", "background", &mut theme.background)?;
+    let target = &mut theme.editor_background;
+    set_color(object, "editor_background", "editor background", target)?;
+    set_color(object, "selection", "selection", &mut theme.selection)?;
+    set_color(object, "text", "text", &mut theme.text)?;
+    set_color(object, "caret", "caret", &mut theme.caret)?;
+    let target = &mut theme.status_background;
+    set_color(object, "status_background", "status background", target)?;
+    let target = &mut theme.sidebar_background;
+    set_color(object, "sidebar_background", "sidebar background", target)?;
+    set_color(object, "active_row", "active row", &mut theme.active_row)?;
+    let target = &mut theme.tab_background;
+    set_color(object, "tab_background", "tab background", target)?;
+    set_color(object, "active_tab", "active tab", &mut theme.active_tab)?;
+    set_color(object, "find_match", "find match", &mut theme.find_match)?;
+    let target = &mut theme.find_background;
+    set_color(object, "find_background", "find background", target)?;
+    let target = &mut theme.quick_open_background;
+    let field = "quick_open_background";
+    let diagnostic = "quick open background";
+    set_color(object, field, diagnostic, target)?;
+    let target = &mut theme.quick_open_selected;
+    set_color(object, "quick_open_selected", "quick open selected", target)?;
+    let target = &mut theme.project_search_background;
+    let field = "project_search_background";
+    let diagnostic = "project search background";
+    set_color(object, field, diagnostic, target)?;
+    let target = &mut theme.project_search_selected;
+    let field = "project_search_selected";
+    let diagnostic = "project search selected";
+    set_color(object, field, diagnostic, target)?;
+    let target = &mut theme.command_palette_background;
+    let field = "command_palette_background";
+    let diagnostic = "command palette background";
+    set_color(object, field, diagnostic, target)?;
+    let target = &mut theme.command_palette_selected;
+    let field = "command_palette_selected";
+    let diagnostic = "command palette selected";
+    set_color(object, field, diagnostic, target)?;
+    if let Some(syntax) = object.get("syntax") {
+        theme.syntax = decode_syntax(syntax, theme.syntax)?;
+    }
+    Ok(theme)
+}
+
+fn validate_theme_fields(object: &Map<String, Value>) -> Result<(), SettingsLoadError> {
+    reject_unknown(
+        object,
+        &[
+            "clear",
+            "background",
+            "editor_background",
+            "selection",
+            "text",
+            "caret",
+            "status_background",
+            "sidebar_background",
+            "active_row",
+            "tab_background",
+            "active_tab",
+            "find_match",
+            "find_background",
+            "quick_open_background",
+            "quick_open_selected",
+            "project_search_background",
+            "project_search_selected",
+            "command_palette_background",
+            "command_palette_selected",
+            "syntax",
+        ],
+    )
+}
+
+fn decode_syntax(value: &Value, mut syntax: SyntaxTheme) -> Result<SyntaxTheme, SettingsLoadError> {
+    let object = value
+        .as_object()
+        .ok_or(SettingsLoadError::InvalidValue("theme.syntax"))?;
+    reject_unknown(object, SYNTAX_FIELDS)?;
+    set_color(object, "comment", "syntax comment", &mut syntax.comment)?;
+    set_color(object, "keyword", "syntax keyword", &mut syntax.keyword)?;
+    set_color(object, "string", "syntax string", &mut syntax.string)?;
+    set_color(object, "number", "syntax number", &mut syntax.number)?;
+    set_color(object, "type", "syntax type", &mut syntax.type_name)?;
+    set_color(object, "property", "syntax property", &mut syntax.property)?;
+    set_color(object, "heading", "syntax heading", &mut syntax.heading)?;
+    set_color(object, "code", "syntax code", &mut syntax.code)?;
+    Ok(syntax)
+}
+
+fn set_color(
+    object: &Map<String, Value>,
+    field: &str,
+    diagnostic: &'static str,
+    target: &mut LinearRgba,
+) -> Result<(), SettingsLoadError> {
+    if let Some(value) = object.get(field) {
+        *target = decode_color(value, diagnostic)?;
+    }
+    Ok(())
+}
+
+fn decode_color(value: &Value, diagnostic: &'static str) -> Result<LinearRgba, SettingsLoadError> {
+    let channels = value
+        .as_array()
+        .ok_or(SettingsLoadError::InvalidValue("theme color"))?;
+    if channels.len() != 4 {
+        return Err(SettingsLoadError::InvalidValue("theme color"));
+    }
+    let channel = |index: usize| checked_f32(&channels[index], "theme color");
+    color(
+        diagnostic,
+        channel(0)?,
+        channel(1)?,
+        channel(2)?,
+        channel(3)?,
+    )
+    .map_err(|_| SettingsLoadError::InvalidValue("theme color"))
+}
+
+fn decode_keymap(value: &Value) -> Result<Keymap, SettingsLoadError> {
+    let object = value
+        .as_object()
+        .ok_or(SettingsLoadError::InvalidValue("keymap"))?;
+    reject_unknown(object, &["bindings"])?;
+    let values = object
+        .get("bindings")
+        .ok_or(SettingsLoadError::MissingField("keymap.bindings"))?
+        .as_array()
+        .ok_or(SettingsLoadError::InvalidValue("keymap.bindings"))?;
+    if values.len() > MAX_KEY_BINDINGS {
+        return Err(SettingsLoadError::InvalidValue("keymap.bindings"));
+    }
+    let mut bindings = Vec::new();
+    bindings
+        .try_reserve_exact(values.len())
+        .map_err(|_| SettingsLoadError::AllocationFailed)?;
+    for value in values {
+        bindings.push(decode_binding(value)?);
+    }
+    Ok(Keymap {
+        bindings: Cow::Owned(bindings),
+    })
+}
+
+fn decode_binding(value: &Value) -> Result<KeyBinding, SettingsLoadError> {
+    let object = value
+        .as_object()
+        .ok_or(SettingsLoadError::InvalidValue("key binding"))?;
+    reject_unknown(object, &["physical_key", "modifiers", "action", "label"])?;
+    let physical_key = object
+        .get("physical_key")
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or(SettingsLoadError::InvalidValue("key binding physical_key"))?;
+    let modifiers = object
+        .get("modifiers")
+        .ok_or(SettingsLoadError::MissingField("key binding modifiers"))?;
+    let modifiers = decode_modifiers(modifiers)?;
+    let action = object
+        .get("action")
+        .and_then(Value::as_str)
+        .and_then(decode_action)
+        .ok_or(SettingsLoadError::InvalidValue("key binding action"))?;
+    let label = object
+        .get("label")
+        .and_then(Value::as_str)
+        .ok_or(SettingsLoadError::InvalidValue("key binding label"))?;
+    let mut owned = String::new();
+    owned
+        .try_reserve_exact(label.len())
+        .map_err(|_| SettingsLoadError::AllocationFailed)?;
+    owned.push_str(label);
+    Ok(KeyBinding {
+        physical_key,
+        required_modifiers: modifiers,
+        action,
+        label: Cow::Owned(owned),
+    })
+}
+
+fn decode_modifiers(value: &Value) -> Result<u8, SettingsLoadError> {
+    let modifiers = value
+        .as_array()
+        .ok_or(SettingsLoadError::InvalidValue("key binding modifiers"))?;
+    if modifiers.len() > 4 {
+        return Err(SettingsLoadError::InvalidValue("key binding modifiers"));
+    }
+    let mut bits = 0_u8;
+    for modifier in modifiers {
+        let bit = match modifier.as_str() {
+            Some("command") => Modifiers::COMMAND,
+            Some("shift") => Modifiers::SHIFT,
+            Some("option") => Modifiers::OPTION,
+            Some("control") => Modifiers::CONTROL,
+            _ => return Err(SettingsLoadError::InvalidValue("key binding modifiers")),
+        };
+        if bits & bit != 0 {
+            return Err(SettingsLoadError::InvalidValue("key binding modifiers"));
+        }
+        bits |= bit;
+    }
+    Ok(bits)
+}
+
+fn decode_action(value: &str) -> Option<KeyAction> {
+    match value {
+        "command_palette" => Some(KeyAction::CommandPalette),
+        "select_all" => Some(KeyAction::SelectAll),
+        "undo" => Some(KeyAction::Undo),
+        "redo" => Some(KeyAction::Redo),
+        value => decode_command(value).map(KeyAction::Command),
+    }
+}
+
+fn decode_command(value: &str) -> Option<StudioCommand> {
+    match value {
+        "save_file" => Some(StudioCommand::SaveFile),
+        "close_tab" => Some(StudioCommand::CloseTab),
+        "navigate_back" => Some(StudioCommand::NavigateBack),
+        "navigate_forward" => Some(StudioCommand::NavigateForward),
+        "open_quick_open" => Some(StudioCommand::OpenQuickOpen),
+        "open_project_search" => Some(StudioCommand::OpenProjectSearch),
+        "open_find" => Some(StudioCommand::OpenFind),
+        "open_replace" => Some(StudioCommand::OpenReplace),
+        "trigger_completion" => Some(StudioCommand::TriggerCompletion),
+        "show_rust_hover" => Some(StudioCommand::ShowRustHover),
+        "go_to_rust_definition" => Some(StudioCommand::GoToRustDefinition),
+        "find_rust_references" => Some(StudioCommand::FindRustReferences),
+        "show_rust_document_symbols" => Some(StudioCommand::ShowRustDocumentSymbols),
+        "show_rust_workspace_symbols" => Some(StudioCommand::ShowRustWorkspaceSymbols),
+        "reload_settings" => Some(StudioCommand::ReloadSettings),
+        "toggle_file_tree" => Some(StudioCommand::ToggleFileTree),
+        "split_right" => Some(StudioCommand::SplitRight),
+        "split_down" => Some(StudioCommand::SplitDown),
+        "focus_next_pane" => Some(StudioCommand::FocusNextPane),
+        "close_pane" => Some(StudioCommand::ClosePane),
+        _ => None,
+    }
+}
+
+fn optional_f32(
+    object: &Map<String, Value>,
+    field: &'static str,
+) -> Result<Option<f32>, SettingsLoadError> {
+    object
+        .get(field)
+        .map(|value| checked_f32(value, field))
+        .transpose()
+}
+
+fn checked_f32(value: &Value, field: &'static str) -> Result<f32, SettingsLoadError> {
+    let value = value
+        .as_f64()
+        .filter(|value| {
+            value.is_finite() && *value >= f64::from(f32::MIN) && *value <= f64::from(f32::MAX)
+        })
+        .ok_or(SettingsLoadError::InvalidValue(field))?;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the finite value is range-checked against f32 before narrowing"
+    )]
+    let value = value as f32;
+    Ok(value)
+}
+
+fn optional_u32(
+    object: &Map<String, Value>,
+    field: &'static str,
+) -> Result<Option<u32>, SettingsLoadError> {
+    object
+        .get(field)
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or(SettingsLoadError::InvalidValue(field))
+        })
+        .transpose()
+}
+
+fn reject_unknown(object: &Map<String, Value>, allowed: &[&str]) -> Result<(), SettingsLoadError> {
+    if object.keys().all(|key| allowed.contains(&key.as_str())) {
+        Ok(())
+    } else {
+        Err(SettingsLoadError::UnknownField)
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[cfg_attr(test, mutants::skip)]
+    #[kani::proof]
+    fn only_the_current_submitted_generation_can_publish() {
+        let requested: u64 = kani::any();
+        let submitted: u64 = kani::any();
+        let completed: u64 = kani::any();
+        let in_flight: bool = kani::any();
+        let admitted = completion_is_current(requested, submitted, completed, in_flight);
+        kani::cover!(admitted);
+        kani::cover!(!admitted);
+        assert!(!admitted || (in_flight && completed == requested && completed == submitted));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        error::Error,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use super::*;
+    use crate::settings::MAX_FONT_NAME_BYTES;
+
+    static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    struct TestRoot(PathBuf);
+
+    impl TestRoot {
+        fn new() -> io::Result<Self> {
+            let id = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("alpine-settings-{}-{id}", std::process::id()));
+            fs::create_dir_all(&path)?;
+            Ok(Self(path))
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write(path: &Path, contents: &[u8]) -> io::Result<()> {
+        fs::write(path, contents)
+    }
+
+    #[test]
+    fn constants_paths_and_missing_files_are_exact() -> Result<(), Box<dyn Error>> {
+        assert_eq!(SETTINGS_VERSION, 1);
+        assert_eq!(LEGACY_SETTINGS_VERSION, 0);
+        assert_eq!(MAX_SETTINGS_FILE_BYTES, 65_536);
+        assert_eq!(MAX_SETTINGS_READ_BYTES, 65_537);
+        assert_eq!(MAX_SETTINGS_PATH_BYTES, 4_096);
+        assert_eq!(MAX_SETTINGS_JSON_DEPTH, 8);
+        assert_eq!(MAX_SETTINGS_JSON_VALUES, 512);
+        assert_eq!(MAX_SETTINGS_STRING_BYTES, 32_768);
+        let home = PathBuf::from("/tmp/alpine-home");
+        let paths = SettingsPaths::new(Some(home.clone().into_os_string()), Some(&home));
+        assert_eq!(
+            paths.global?,
+            Some(
+                home.join("Library")
+                    .join("Application Support")
+                    .join("Alpine Studio")
+                    .join("settings.json")
+            )
+        );
+        assert_eq!(paths.project?, Some(home.join(".alpine/settings.json")));
+        let loaded = load_settings(1, &SettingsPaths::explicit(None, None))?;
+        assert_eq!(loaded.update.global, None);
+        assert_eq!(loaded.update.project, None);
+        assert_eq!(loaded.report, DecodeReport::default());
+        let mut transitions = SettingsPaths::new(None, None);
+        assert!(!transitions.replace_project(None));
+        assert!(transitions.replace_project(Some(Path::new("/tmp/alpine-project"))));
+        assert!(!transitions.replace_project(Some(Path::new("/tmp/alpine-project"))));
+        assert!(transitions.replace_project(Some(Path::new("/tmp/alpine-other-project"))));
+        assert_eq!(
+            transitions.project?,
+            Some(PathBuf::from(
+                "/tmp/alpine-other-project/.alpine/settings.json"
+            ))
+        );
+        assert_eq!(
+            SettingsLoadError::InvalidValue("editor.font_size").to_string(),
+            "settings field editor.font_size is invalid"
+        );
+        assert_eq!(
+            SettingsLoadFailure {
+                source: SettingsSource::Project,
+                error: SettingsLoadError::UnknownVersion(9),
+            }
+            .to_string(),
+            "Project settings: settings version 9 is unsupported"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn global_then_project_and_migration_are_atomic() -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        let global = root.path().join("global.json");
+        let project = root.path().join("project.json");
+        write(&global, br#"{"version":0,"font_size":16,"tab_columns":2}"#)?;
+        let project_settings = br#"{"version":1,"editor":{"font_size":18},"theme":{"caret":[0.1,0.2,0.3,1.0]},"keymap":{"bindings":[{"physical_key":1,"modifiers":["command"],"action":"reload_settings","label":"Cmd+S"}]}}"#;
+        write(&project, project_settings)?;
+        let mut reload = SettingsReload::explicit(Some(global), Some(project));
+        let request = reload.take_request().ok_or("missing startup request")?;
+        let mut state = SettingsState::compiled()?;
+        let admission = reload.admit(request.execute(), &mut state);
+        assert!(matches!(
+            admission,
+            SettingsReloadAdmission::Applied {
+                effect: SettingsEffect {
+                    typography: true,
+                    theme: true,
+                    keymap: true
+                },
+                migrations: 1,
+                announce: false,
+                ..
+            }
+        ));
+        assert!((state.active().editor.font_size - 18.0).abs() < f32::EPSILON);
+        assert_eq!(state.active().editor.tab_columns, 2);
+        assert_eq!(
+            state
+                .active()
+                .keymap
+                .resolve(1, Modifiers::from_bits(Modifiers::COMMAND)),
+            Some(KeyAction::Command(StudioCommand::ReloadSettings))
+        );
+        assert_eq!(reload.report().migrations, 1);
+        assert!(reload.report().current_parsed_values > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn complete_v1_schema_decodes_every_owned_editor_theme_and_command_field()
+    -> Result<(), Box<dyn Error>> {
+        let actions = [
+            "command_palette",
+            "select_all",
+            "undo",
+            "redo",
+            "save_file",
+            "close_tab",
+            "navigate_back",
+            "navigate_forward",
+            "open_quick_open",
+            "open_project_search",
+            "open_find",
+            "open_replace",
+            "trigger_completion",
+            "show_rust_hover",
+            "go_to_rust_definition",
+            "find_rust_references",
+            "show_rust_document_symbols",
+            "show_rust_workspace_symbols",
+            "reload_settings",
+            "toggle_file_tree",
+            "split_right",
+            "split_down",
+            "focus_next_pane",
+            "close_pane",
+        ];
+        let bindings = actions
+            .iter()
+            .enumerate()
+            .map(|(index, action)| {
+                serde_json::json!({
+                    "physical_key": index,
+                    "modifiers": ["command", "shift", "option", "control"],
+                    "action": action,
+                    "label": format!("binding-{index}"),
+                })
+            })
+            .collect::<Vec<_>>();
+        let document = serde_json::json!({
+            "version": 1,
+            "editor": {
+                "font_name": FONT_NAME,
+                "font_size": 17.0,
+                "font_scale": 2.0,
+                "line_height": 21.0,
+                "tab_columns": 2,
+            },
+            "theme": {
+                "clear": [0.1, 0.2, 0.3, 1.0],
+                "background": [0.1, 0.2, 0.3, 1.0],
+                "editor_background": [0.1, 0.2, 0.3, 1.0],
+                "selection": [0.1, 0.2, 0.3, 1.0],
+                "text": [0.1, 0.2, 0.3, 1.0],
+                "caret": [0.1, 0.2, 0.3, 1.0],
+                "status_background": [0.1, 0.2, 0.3, 1.0],
+                "sidebar_background": [0.1, 0.2, 0.3, 1.0],
+                "active_row": [0.1, 0.2, 0.3, 1.0],
+                "tab_background": [0.1, 0.2, 0.3, 1.0],
+                "active_tab": [0.1, 0.2, 0.3, 1.0],
+                "find_match": [0.1, 0.2, 0.3, 1.0],
+                "find_background": [0.1, 0.2, 0.3, 1.0],
+                "quick_open_background": [0.1, 0.2, 0.3, 1.0],
+                "quick_open_selected": [0.1, 0.2, 0.3, 1.0],
+                "project_search_background": [0.1, 0.2, 0.3, 1.0],
+                "project_search_selected": [0.1, 0.2, 0.3, 1.0],
+                "command_palette_background": [0.1, 0.2, 0.3, 1.0],
+                "command_palette_selected": [0.1, 0.2, 0.3, 1.0],
+                "syntax": {
+                    "comment": [0.1, 0.2, 0.3, 1.0],
+                    "keyword": [0.1, 0.2, 0.3, 1.0],
+                    "string": [0.1, 0.2, 0.3, 1.0],
+                    "number": [0.1, 0.2, 0.3, 1.0],
+                    "type": [0.1, 0.2, 0.3, 1.0],
+                    "property": [0.1, 0.2, 0.3, 1.0],
+                    "heading": [0.1, 0.2, 0.3, 1.0],
+                    "code": [0.1, 0.2, 0.3, 1.0],
+                },
+            },
+            "keymap": { "bindings": bindings },
+        });
+        let bytes = serde_json::to_vec(&document)?;
+        let (layer, report) = decode_layer(&bytes, &StudioTheme::compiled()?)?;
+        assert_eq!(layer.editor.font_name.as_deref(), Some(FONT_NAME));
+        assert_eq!(layer.editor.font_size, Some(17.0));
+        assert_eq!(layer.editor.font_scale, Some(2.0));
+        assert_eq!(layer.editor.line_height, Some(21.0));
+        assert_eq!(layer.editor.tab_columns, Some(2));
+        assert!(layer.theme.is_some());
+        assert_eq!(
+            layer.keymap.as_ref().map(|keymap| keymap.bindings.len()),
+            Some(actions.len())
+        );
+        assert!(report.parsed_values > actions.len());
+        assert!(report.string_bytes > 0);
+        assert_eq!(decode_command("not-an-alpine-command"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn every_loader_diagnostic_is_observable() {
+        let diagnostics = [
+            (
+                SettingsLoadError::PathTooLong,
+                format!("settings path exceeds its {MAX_SETTINGS_PATH_BYTES}-byte limit"),
+            ),
+            (
+                SettingsLoadError::NotRegularFile,
+                "settings path is not a regular file".to_owned(),
+            ),
+            (
+                SettingsLoadError::FileTooLarge,
+                format!("settings file exceeds its {MAX_SETTINGS_FILE_BYTES}-byte limit"),
+            ),
+            (
+                SettingsLoadError::ConcurrentEdit,
+                "settings file changed while it was being read".to_owned(),
+            ),
+            (
+                SettingsLoadError::Io {
+                    operation: "read",
+                    kind: io::ErrorKind::PermissionDenied,
+                },
+                "settings read failed with PermissionDenied".to_owned(),
+            ),
+            (
+                SettingsLoadError::InvalidJson,
+                "settings JSON is malformed".to_owned(),
+            ),
+            (
+                SettingsLoadError::JsonTooDeep,
+                format!("settings JSON exceeds its {MAX_SETTINGS_JSON_DEPTH}-level depth limit"),
+            ),
+            (
+                SettingsLoadError::TooManyValues,
+                format!("settings JSON exceeds its {MAX_SETTINGS_JSON_VALUES}-value limit"),
+            ),
+            (
+                SettingsLoadError::TooManyStringBytes,
+                format!("settings JSON exceeds its {MAX_SETTINGS_STRING_BYTES}-byte string limit"),
+            ),
+            (
+                SettingsLoadError::MissingVersion,
+                "settings version is missing".to_owned(),
+            ),
+            (
+                SettingsLoadError::UnknownVersion(9),
+                "settings version 9 is unsupported".to_owned(),
+            ),
+            (
+                SettingsLoadError::UnknownField,
+                "settings contain an unknown field".to_owned(),
+            ),
+            (
+                SettingsLoadError::MissingField("keymap.bindings"),
+                "settings field keymap.bindings is missing".to_owned(),
+            ),
+            (
+                SettingsLoadError::InvalidValue("editor.font_size"),
+                "settings field editor.font_size is invalid".to_owned(),
+            ),
+            (
+                SettingsLoadError::AllocationFailed,
+                "settings allocation failed".to_owned(),
+            ),
+        ];
+        for (error, expected) in diagnostics {
+            assert_eq!(error.to_string(), expected);
+        }
+        assert_eq!(
+            SettingsReloadError::GenerationExhausted.to_string(),
+            "settings generation exhausted"
+        );
+        assert_eq!(
+            SettingsReloadError::SubmissionFailed.to_string(),
+            "settings worker queue rejected reload"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one boundary table keeps the loader's independent resource ceilings together"
+    )]
+    fn independent_loader_bounds_fail_closed() -> Result<(), Box<dyn Error>> {
+        let exact_path = PathBuf::from("x".repeat(MAX_SETTINGS_PATH_BYTES));
+        assert_eq!(
+            SettingsPaths::explicit(Some(exact_path.clone()), None).global,
+            Ok(Some(exact_path))
+        );
+        let too_long = PathBuf::from("x".repeat(MAX_SETTINGS_PATH_BYTES + 1));
+        assert_eq!(
+            SettingsPaths::explicit(Some(too_long), None).global,
+            Err(SettingsLoadFailure {
+                source: SettingsSource::Global,
+                error: SettingsLoadError::PathTooLong,
+            })
+        );
+        assert_eq!(
+            DecodeReport {
+                file_bytes: usize::MAX,
+                ..DecodeReport::default()
+            }
+            .merge(DecodeReport {
+                file_bytes: 1,
+                ..DecodeReport::default()
+            }),
+            Err(SettingsLoadFailure {
+                source: SettingsSource::Runtime,
+                error: SettingsLoadError::AllocationFailed,
+            })
+        );
+        let mut values = DecodeReport {
+            parsed_values: MAX_SETTINGS_JSON_VALUES,
+            ..DecodeReport::default()
+        };
+        assert_eq!(
+            inspect_json(&Value::Null, 0, &mut values),
+            Err(SettingsLoadError::TooManyValues)
+        );
+        let mut exact_values = DecodeReport::default();
+        let exact_value_tree =
+            Value::Array(std::iter::repeat_n(Value::Null, MAX_SETTINGS_JSON_VALUES - 1).collect());
+        assert_eq!(
+            inspect_json(&exact_value_tree, 1, &mut exact_values),
+            Ok(())
+        );
+        assert_eq!(exact_values.parsed_values, MAX_SETTINGS_JSON_VALUES);
+
+        let mut exact_depth = DecodeReport::default();
+        assert_eq!(
+            inspect_json(&Value::Null, MAX_SETTINGS_JSON_DEPTH, &mut exact_depth),
+            Ok(())
+        );
+        let mut excessive_depth = DecodeReport::default();
+        assert_eq!(
+            inspect_json(
+                &Value::Null,
+                MAX_SETTINGS_JSON_DEPTH + 1,
+                &mut excessive_depth
+            ),
+            Err(SettingsLoadError::JsonTooDeep)
+        );
+
+        let nested_array =
+            (0..MAX_SETTINGS_JSON_DEPTH).fold(Value::Null, |value, _| Value::Array(vec![value]));
+        let mut nested_array_report = DecodeReport::default();
+        assert_eq!(
+            inspect_json(&nested_array, 1, &mut nested_array_report),
+            Err(SettingsLoadError::JsonTooDeep)
+        );
+        let nested_object = (0..MAX_SETTINGS_JSON_DEPTH).fold(Value::Null, |value, index| {
+            Value::Object(Map::from_iter([(format!("k{index}"), value)]))
+        });
+        let mut nested_object_report = DecodeReport::default();
+        assert_eq!(
+            inspect_json(&nested_object, 1, &mut nested_object_report),
+            Err(SettingsLoadError::JsonTooDeep)
+        );
+
+        let mut exact_report = DecodeReport::default();
+        assert_eq!(
+            inspect_json(&serde_json::json!({ "ab": "xyz" }), 1, &mut exact_report),
+            Ok(())
+        );
+        assert_eq!(exact_report.parsed_values, 2);
+        assert_eq!(exact_report.string_bytes, 5);
+        let mut strings = DecodeReport::default();
+        assert_eq!(
+            add_string_bytes(MAX_SETTINGS_STRING_BYTES, &mut strings),
+            Ok(())
+        );
+        let mut excessive_strings = DecodeReport::default();
+        assert_eq!(
+            add_string_bytes(MAX_SETTINGS_STRING_BYTES + 1, &mut excessive_strings),
+            Err(SettingsLoadError::TooManyStringBytes)
+        );
+        assert_eq!(
+            decode_modifiers(&serde_json::json!([
+                "command", "shift", "option", "control", "command"
+            ])),
+            Err(SettingsLoadError::InvalidValue("key binding modifiers"))
+        );
+        assert_eq!(
+            decode_modifiers(&serde_json::json!(["command", "command"])),
+            Err(SettingsLoadError::InvalidValue("key binding modifiers"))
+        );
+        assert_eq!(
+            decode_modifiers(&serde_json::json!(["invalid"])),
+            Err(SettingsLoadError::InvalidValue("key binding modifiers"))
+        );
+        assert_eq!(
+            decode_color(&serde_json::json!([0.0, 1.0]), "short"),
+            Err(SettingsLoadError::InvalidValue("theme color"))
+        );
+        assert_eq!(
+            decode_color(&serde_json::json!([0.0, 1.0, 2.0, 1.0]), "range"),
+            Err(SettingsLoadError::InvalidValue("theme color"))
+        );
+        let document = serde_json::json!({
+            "version": 1,
+            "editor": { "font_name": "x".repeat(MAX_FONT_NAME_BYTES + 1) }
+        })
+        .to_string();
+        let theme = StudioTheme::compiled()?;
+        assert_eq!(
+            decode_layer(document.as_bytes(), &theme),
+            Err(SettingsLoadError::InvalidValue("editor.font_name"))
+        );
+        let bindings = (0..MAX_KEY_BINDINGS)
+            .map(|index| {
+                serde_json::json!({
+                    "physical_key": index + 1,
+                    "modifiers": ["command"],
+                    "action": "save_file",
+                    "label": format!("binding-{index}")
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decode_keymap(&serde_json::json!({ "bindings": bindings }))?
+                .bindings
+                .len(),
+            MAX_KEY_BINDINGS
+        );
+        let bindings = vec![
+            serde_json::json!({
+                "physical_key": 1,
+                "modifiers": ["command"],
+                "action": "save_file",
+                "label": "Cmd+S"
+            });
+            MAX_KEY_BINDINGS + 1
+        ];
+        assert_eq!(
+            decode_keymap(&serde_json::json!({ "bindings": bindings })),
+            Err(SettingsLoadError::InvalidValue("keymap.bindings"))
+        );
+        let legacy = serde_json::json!({
+            "version": LEGACY_SETTINGS_VERSION,
+            "font_size": 17.0,
+            "font_scale": 1.5,
+            "line_height": 22.0,
+            "tab_columns": 2,
+        });
+        let legacy_bytes = serde_json::to_vec(&legacy)?;
+        let (legacy_layer, _) = decode_layer(&legacy_bytes, &StudioTheme::compiled()?)?;
+        assert_eq!(legacy_layer.editor.font_size, Some(17.0));
+        assert_eq!(legacy_layer.editor.font_scale, Some(1.5));
+        assert_eq!(legacy_layer.editor.line_height, Some(22.0));
+        assert_eq!(legacy_layer.editor.tab_columns, Some(2));
+
+        assert_eq!(
+            checked_f32(&Value::from(f64::from(f32::MAX)), "maximum"),
+            Ok(f32::MAX)
+        );
+        assert_eq!(
+            checked_f32(&Value::from(f64::from(f32::MIN)), "minimum"),
+            Ok(f32::MIN)
+        );
+        assert_eq!(
+            checked_f32(&Value::from(f64::MAX), "maximum"),
+            Err(SettingsLoadError::InvalidValue("maximum"))
+        );
+        assert_eq!(
+            checked_f32(&Value::from(f64::MIN), "minimum"),
+            Err(SettingsLoadError::InvalidValue("minimum"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn initial_report_and_announced_request_are_exact() -> Result<(), Box<dyn Error>> {
+        let global = PathBuf::from("global.json");
+        let project = PathBuf::from("project.json");
+        let expected_path_bytes = global.as_os_str().as_encoded_bytes().len()
+            + project.as_os_str().as_encoded_bytes().len();
+        let mut reload = SettingsReload::explicit(Some(global), Some(project));
+        assert_eq!(
+            reload.report(),
+            SettingsReloadReport {
+                requested_generation: 1,
+                pending: true,
+                path_bytes: expected_path_bytes,
+                reloads: 1,
+                ..SettingsReloadReport::default()
+            }
+        );
+        let mut startup = SettingsReload::explicit(None, None);
+        let startup_request = startup.take_request().ok_or("missing startup request")?;
+        assert!(!startup_request.announce());
+        reload.request(true)?;
+        let request = reload.take_request().ok_or("missing announced request")?;
+        assert_eq!(request.generation(), 2);
+        assert!(request.announce());
+        Ok(())
+    }
+
+    #[test]
+    fn reload_identity_and_loader_failures_are_explicit() -> Result<(), Box<dyn Error>> {
+        let mut unchanged_project = SettingsReload::explicit(None, None);
+        assert!(!unchanged_project.replace_project(None)?);
+        assert_eq!(unchanged_project.reject_submission(99, false), Ok(()));
+        unchanged_project.exhaust_generation();
+        assert_eq!(
+            unchanged_project.request(false),
+            Err(SettingsReloadError::GenerationExhausted)
+        );
+
+        let mut stale_reload = SettingsReload::explicit(None, None);
+        let stale_request = stale_reload.take_request().ok_or("missing request")?;
+        let mut state = SettingsState::compiled()?;
+        assert!(matches!(
+            state.admit(&SettingsUpdate {
+                generation: 2,
+                global: None,
+                project: None,
+            }),
+            SettingsAdmission::Unchanged { revision: 1 }
+        ));
+        assert_eq!(
+            stale_reload.admit(stale_request.execute(), &mut state),
+            SettingsReloadAdmission::Stale
+        );
+        assert_eq!(stale_reload.report().stale_results, 1);
+        assert_eq!(
+            compiled_settings_failure(),
+            SettingsLoadFailure {
+                source: SettingsSource::Compiled,
+                error: SettingsLoadError::InvalidValue("compiled settings"),
+            }
+        );
+
+        let root = TestRoot::new()?;
+        let global = root.path().join("global.json");
+        let project = root.path().join("project.json");
+        write(&global, br#"{"version":1}"#)?;
+        write(&project, b"{")?;
+        assert_eq!(
+            load_settings(1, &SettingsPaths::explicit(Some(global), Some(project))),
+            Err(SettingsLoadFailure {
+                source: SettingsSource::Project,
+                error: SettingsLoadError::InvalidJson,
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stale_completion_and_rejected_candidate_preserve_state() -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        let global = root.path().join("settings.json");
+        write(&global, br#"{"version":1,"editor":{"font_size":16}}"#)?;
+        let mut reload = SettingsReload::explicit(Some(global.clone()), None);
+        let stale_request = reload.take_request().ok_or("missing startup request")?;
+        reload.request(true)?;
+        let mut settings_state = SettingsState::compiled()?;
+        let compiled = settings_state.active().clone();
+        assert_eq!(
+            reload.admit(stale_request.execute(), &mut settings_state),
+            SettingsReloadAdmission::Stale
+        );
+        assert_eq!(settings_state.active(), &compiled);
+        let current = reload.take_request().ok_or("missing current request")?;
+        write(&global, br#"{"version":1,"editor":{"font_size":0}}"#)?;
+        assert!(matches!(
+            reload.admit(current.execute(), &mut settings_state),
+            SettingsReloadAdmission::Rejected(SettingsFailure {
+                source: SettingsSource::Global,
+                ..
+            })
+        ));
+        assert_eq!(settings_state.active(), &compiled);
+        Ok(())
+    }
+
+    #[test]
+    fn file_and_json_boundaries_fail_closed() -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        let path = root.path().join("settings.json");
+        let mut exact = br#"{"version":1}"#.to_vec();
+        exact.resize(MAX_SETTINGS_FILE_BYTES, b' ');
+        write(&path, &exact)?;
+        assert!(read_file(&path)?.is_some());
+        let (_, report) = decode_layer(&exact, &StudioTheme::compiled()?)?;
+        assert!(report.parsed_values <= MAX_SETTINGS_JSON_VALUES);
+        exact.push(b' ');
+        write(&path, &exact)?;
+        assert_eq!(read_file(&path), Err(SettingsLoadError::FileTooLarge));
+        assert_eq!(
+            decode_layer(br#"{"version":2}"#, &StudioTheme::compiled()?),
+            Err(SettingsLoadError::UnknownVersion(2))
+        );
+        assert_eq!(
+            decode_layer(
+                br#"{"version":1,"unknown":true}"#,
+                &StudioTheme::compiled()?
+            ),
+            Err(SettingsLoadError::UnknownField)
+        );
+        assert_eq!(
+            decode_layer(
+                br#"{"version":1,"theme":{"unknown":[0.0,0.0,0.0,1.0]}}"#,
+                &StudioTheme::compiled()?
+            ),
+            Err(SettingsLoadError::UnknownField)
+        );
+        assert_eq!(
+            decode_layer(
+                br#"{"version":1,"editor":{"font_name":"Unregistered-Mono"}}"#,
+                &StudioTheme::compiled()?
+            ),
+            Err(SettingsLoadError::InvalidValue("editor.font_name"))
+        );
+        let deep = br#"{"version":1,"editor":{"x":{"x":{"x":{"x":{"x":{"x":{"x":0}}}}}}}}"#;
+        assert!(matches!(
+            decode_layer(deep, &StudioTheme::compiled()?),
+            Err(SettingsLoadError::JsonTooDeep | SettingsLoadError::UnknownField)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_edit_and_symlink_are_rejected() -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        let path = root.path().join("settings.json");
+        write(&path, br#"{"version":1}"#)?;
+        assert_eq!(
+            read_file_with(&path, no_op, || {
+                let _ = fs::write(&path, br#"{"version":1,"editor":{}}"#);
+            }),
+            Err(SettingsLoadError::ConcurrentEdit)
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let link = root.path().join("linked.json");
+            symlink(&path, &link)?;
+            assert_eq!(read_file(&link), Err(SettingsLoadError::NotRegularFile));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn file_identity_growth_and_io_failures_are_bounded() -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        let long_path = PathBuf::from("x".repeat(MAX_SETTINGS_PATH_BYTES + 1));
+        assert_eq!(read_file(&long_path), Err(SettingsLoadError::PathTooLong));
+
+        let exact_path = PathBuf::from("x".repeat(MAX_SETTINGS_PATH_BYTES));
+        assert!(!matches!(
+            read_file(&exact_path),
+            Err(SettingsLoadError::PathTooLong)
+        ));
+        assert_eq!(
+            read_file(root.path()),
+            Err(SettingsLoadError::NotRegularFile)
+        );
+
+        let parent_file = root.path().join("parent-file");
+        write(&parent_file, b"not a directory")?;
+        #[cfg(unix)]
+        assert!(matches!(
+            read_file(&parent_file.join("settings.json")),
+            Err(SettingsLoadError::Io {
+                operation: "metadata",
+                ..
+            })
+        ));
+        #[cfg(windows)]
+        assert_eq!(read_file(&parent_file.join("settings.json")), Ok(None));
+
+        let left = root.path().join("left.json");
+        let right = root.path().join("right.json");
+        write(&left, b"same")?;
+        write(&right, b"same")?;
+        let left_metadata = fs::metadata(&left)?;
+        let right_metadata = fs::metadata(&right)?;
+        let modified = std::time::SystemTime::UNIX_EPOCH;
+        let later = modified + std::time::Duration::from_secs(1);
+        assert!(same_file_observation(4, 4, Some(modified), Some(modified)));
+        assert!(!same_file_observation(4, 5, Some(modified), Some(modified)));
+        assert!(!same_file_observation(4, 4, Some(modified), Some(later)));
+        assert_eq!(require_same_file(&left_metadata, &left_metadata), Ok(()));
+        assert!(!same_platform_file(&left_metadata, &right_metadata));
+        assert_eq!(
+            require_same_file(&left_metadata, &right_metadata),
+            Err(SettingsLoadError::ConcurrentEdit)
+        );
+
+        #[cfg(unix)]
+        {
+            let replaced = root.path().join("replaced.json");
+            let archived = root.path().join("archived.json");
+            write(&replaced, br#"{"version":1}"#)?;
+            assert_eq!(
+                read_file_with(&replaced, no_op, || {
+                    let _ = fs::rename(&replaced, &archived);
+                    let _ = fs::write(&replaced, br#"{"version":1}"#);
+                }),
+                Err(SettingsLoadError::ConcurrentEdit)
+            );
+        }
+
+        let growing = root.path().join("growing.json");
+        write(&growing, &vec![b' '; MAX_SETTINGS_FILE_BYTES])?;
+        assert_eq!(
+            read_file_with(
+                &growing,
+                || {
+                    let _ = fs::OpenOptions::new()
+                        .append(true)
+                        .open(&growing)
+                        .and_then(|mut file| std::io::Write::write_all(&mut file, b"x"));
+                },
+                no_op,
+            ),
+            Err(SettingsLoadError::FileTooLarge)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_bindings_and_submission_failure_remain_bounded() -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        let path = root.path().join("settings.json");
+        let duplicate_settings = br#"{"version":1,"keymap":{"bindings":[{"physical_key":1,"modifiers":["command"],"action":"save_file","label":"Cmd+S"},{"physical_key":1,"modifiers":["command"],"action":"reload_settings","label":"Cmd+R"}]}}"#;
+        write(&path, duplicate_settings)?;
+        let mut reload = SettingsReload::explicit(Some(path), None);
+        let request = reload.take_request().ok_or("missing request")?;
+        let mut state = SettingsState::compiled()?;
+        assert!(matches!(
+            reload.admit(request.execute(), &mut state),
+            SettingsReloadAdmission::Rejected(SettingsFailure {
+                source: SettingsSource::Global,
+                ..
+            })
+        ));
+        reload.request(true)?;
+        let request = reload.take_request().ok_or("missing retry")?;
+        assert_eq!(
+            reload.reject_submission(request.generation(), request.announce()),
+            Err(SettingsReloadError::SubmissionFailed)
+        );
+        let retry = reload.take_request().ok_or("missing rejected retry")?;
+        assert!(retry.announce());
+        assert!(reload.report().path_bytes <= MAX_SETTINGS_PATH_BYTES * 2);
+        assert_eq!(reload.report().failures, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn reload_identity_and_project_replacement_transitions_are_independent()
+    -> Result<(), Box<dyn Error>> {
+        let root = TestRoot::new()?;
+        let project = root.path().join(".alpine").join("settings.json");
+        let mut reload = SettingsReload::explicit(None, None);
+        assert!(reload.replace_project(Some(root.path()))?);
+        assert!(!reload.replace_project(Some(root.path()))?);
+        let request = reload.take_request().ok_or("missing project request")?;
+
+        assert_eq!(
+            reload.reject_submission(request.generation().saturating_add(1), false),
+            Ok(())
+        );
+        assert!(reload.report().in_flight);
+
+        let mut stale = request.execute();
+        stale.generation = stale.generation.saturating_add(1);
+        assert_eq!(
+            reload.admit(stale, &mut SettingsState::compiled()?),
+            SettingsReloadAdmission::Stale
+        );
+        assert!(reload.report().in_flight);
+        assert_eq!(reload.report().path_bytes, project.as_os_str().len());
+
+        let mut idle = SettingsReload::explicit(None, None);
+        assert_eq!(idle.reject_submission(0, false), Ok(()));
+        assert_eq!(idle.report().stale_results, 1);
+        Ok(())
+    }
+}
