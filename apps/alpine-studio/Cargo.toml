@@ -18,6 +18,9 @@ ignore = { version = "=0.4.33", default-features = false }
 serde = { version = "=1.0.229", default-features = false }
 serde_json = { version = "=1.0.151", default-features = false, features = ["raw_value", "std"] }
 
+[target.'cfg(windows)'.dependencies]
+same-file = "=1.0.6"
+
 [dev-dependencies]
 mutants = "=0.0.3"
 
