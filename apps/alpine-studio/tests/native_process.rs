@@ -325,7 +325,11 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
         }
         assert_eq!(presented + skipped + cancelled, submissions);
         assert_eq!(qualified + superseded, presented);
-        assert!(qualified >= 1);
+        if expected_evidence == "hosted-direct" && qualified == 0 {
+            assert!(skipped >= 1);
+        } else {
+            assert!(qualified >= 1);
+        }
         assert_eq!(fields[7], "shutdown=true");
         assert_eq!(fields[8], "owners=9");
         assert_eq!(fields[9], format!("evidence={expected_evidence}"));

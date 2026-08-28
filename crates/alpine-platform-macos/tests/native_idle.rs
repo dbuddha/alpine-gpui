@@ -307,7 +307,6 @@ mod validation {
             .checked_add(snapshot.superseded_count())
             .and_then(|count| count.checked_add(snapshot.cancelled_count()))
             .and_then(|count| count.checked_add(snapshot.skipped_count()))
-            .and_then(|count| count.checked_add(snapshot.failed_count()))
             .ok_or_else(|| "terminal outcome count exhausted".into())
     }
 

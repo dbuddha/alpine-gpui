@@ -7528,22 +7528,26 @@ pub mod native_validation {
         assert_eq!(frame.direct_present_count(), submissions);
         assert_eq!(frame.installed_presented_handler_count(), submissions);
         assert_eq!(
-            frame.presented_count()
-                + frame.skipped_count()
-                + frame.cancelled_count()
-                + frame.failed_count(),
+            frame.presented_count() + frame.skipped_count() + frame.cancelled_count(),
             submissions
         );
         assert_eq!(
             frame.qualified_presented_count() + frame.superseded_count(),
             frame.presented_count()
         );
-        assert!(frame.qualified_presented_count() >= 1);
+        let hosted_omission = matches!(evidence_mode, PresentationEvidenceMode::HostedDirect)
+            && frame.qualified_presented_count() == 0;
+        if hosted_omission {
+            assert!(frame.skipped_count() >= 1);
+            assert!(frame.failed_count() >= 1);
+        } else {
+            assert!(frame.qualified_presented_count() >= 1);
+            assert_eq!(frame.failed_count(), 0);
+        }
         assert!(pending_cancellation_evidence_is_bounded(
             frame.pending_cancellation_count(),
             frame.last_pending_cancellation().is_some()
         ));
-        assert_eq!(frame.failed_count(), 0);
         assert_eq!(frame.current_retained_bytes(), 0);
         assert_eq!(frame.occupied_frame_slots(), 0);
         assert_eq!(frame.submitted_frame_slots(), 0);

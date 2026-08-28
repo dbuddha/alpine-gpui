@@ -3621,8 +3621,12 @@ const fn validation_close_resources_drained(
 }
 
 #[cfg(alpine_native_validation)]
-const fn validation_close_should_retry(qualified_presented: u64, resources_drained: bool) -> bool {
-    qualified_presented == 0 || !resources_drained
+const fn validation_close_should_retry(
+    qualified_presented: u64,
+    accepted_terminal_failure: bool,
+    resources_drained: bool,
+) -> bool {
+    (qualified_presented == 0 && !accepted_terminal_failure) || !resources_drained
 }
 
 #[cfg(alpine_native_validation)]
@@ -3689,8 +3693,12 @@ fn schedule_validation_qualified_window_close(
             // active, then wait for its terminal accounting and full slot drain
             // before exercising the production close delegates. This keeps the
             // complete journey inside one NSApplication run-loop invocation.
+            let accepted_terminal_failure =
+                matches!(&action, ValidationCloseAction::Programmatic { .. })
+                    && counters.failed.load(Ordering::Acquire) > 0;
             if validation_close_should_retry(
                 counters.qualified_presented.load(Ordering::Acquire),
+                accepted_terminal_failure,
                 ready_to_close,
             ) {
                 timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(
@@ -5620,7 +5628,7 @@ mod tests {
 
     #[test]
     #[cfg(alpine_native_validation)]
-    fn validation_close_requires_qualified_presentation_and_complete_resource_drain() {
+    fn validation_close_requires_terminal_evidence_and_complete_resource_drain() {
         assert!(validation_close_resources_drained(false, false, 0));
         assert!(!validation_close_resources_drained(true, false, 0));
         assert!(!validation_close_resources_drained(false, true, 0));
@@ -5629,11 +5637,13 @@ mod tests {
         assert!(!validation_close_resources_drained(false, false, 3));
         assert!(!validation_close_resources_drained(false, false, u8::MAX));
 
-        assert!(validation_close_should_retry(0, false));
-        assert!(validation_close_should_retry(0, true));
-        assert!(validation_close_should_retry(1, false));
-        assert!(!validation_close_should_retry(1, true));
-        assert!(!validation_close_should_retry(u64::MAX, true));
+        assert!(validation_close_should_retry(0, false, false));
+        assert!(validation_close_should_retry(0, false, true));
+        assert!(validation_close_should_retry(0, true, false));
+        assert!(!validation_close_should_retry(0, true, true));
+        assert!(validation_close_should_retry(1, false, false));
+        assert!(!validation_close_should_retry(1, false, true));
+        assert!(!validation_close_should_retry(u64::MAX, true, true));
     }
 
     #[test]

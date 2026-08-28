@@ -303,7 +303,9 @@ mod validation {
         assert!(superseded.presented_count() > before.presented_count());
         assert!(superseded.qualified_presented_count() >= before.qualified_presented_count());
         assert!(superseded.superseded_count() > before.superseded_count());
-        assert!(!superseded.display_link_paused());
+        // `last_superseded` remains stable after a newer attempt completes.
+        // The later snapshot may therefore observe the display link paused by
+        // that newer terminal without changing this attempt's exact evidence.
 
         validate_retry(
             &surface,
