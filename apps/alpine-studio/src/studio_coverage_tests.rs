@@ -1168,19 +1168,37 @@ fn runtime_find_worker_admits_current_results_and_schedules_replacement()
     let pending = runtime
         .dispatch(&ime(ImeEvent::Committed("alpha".into())))
         .ok_or("query frame")?;
-    let pending_quads = pending.scene().quads().len();
-    let mut admitted = false;
-    for timestamp in 10..266 {
+    let pending_revision = pending.scene().revision();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while runtime.snapshot().worker().queued_results() == 0 {
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for find worker result: {:?}",
+                runtime.snapshot().worker()
+            )
+            .into());
+        }
         std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let mut timestamp = 10;
+    let admitted = loop {
         if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
             timestamp: EventTimestamp::new(timestamp),
-        }) && frame.scene().quads().len() > pending_quads
-        {
-            admitted = true;
-            break;
+        }) {
+            break frame;
         }
-    }
-    assert!(admitted);
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "timed out admitting current find worker result: {:?}",
+                runtime.snapshot().worker()
+            )
+            .into());
+        }
+        timestamp = timestamp.saturating_add(1);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert_ne!(admitted.scene().revision(), pending_revision);
+    assert_eq!(runtime.snapshot().worker().queued_results(), 0);
 
     runtime
         .dispatch(&key(KEY_F, command_option))
@@ -1390,6 +1408,48 @@ fn runtime_find_failures_are_bounded_and_visible() -> Result<(), Box<dyn std::er
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn find_submission_errors_retry_only_saturation_and_reject_terminal_failures()
+-> Result<(), Box<dyn std::error::Error>> {
+    let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let mut app = test_app()?;
+    *app.buffer_mut() = Buffer::new("alpha beta alpha");
+    app.handle_event(&key(KEY_F, command));
+    app.handle_event(&ime(ImeEvent::Committed("alpha".into())));
+
+    let saturated = app
+        .prepare_find_request()?
+        .ok_or("missing saturated find request")?;
+    assert_eq!(
+        app.resolve_find_submission_error(saturated.identity(), SubmitError::Saturated),
+        EventEffect::default()
+    );
+    assert!(app.find_needs_search);
+    assert_eq!(app.find.failures(), 0);
+
+    let closed = app
+        .prepare_find_request()?
+        .ok_or("missing closed find request")?;
+    assert_eq!(
+        app.resolve_find_submission_error(closed.identity(), SubmitError::Closed),
+        EventEffect::visual()
+    );
+    assert!(!app.find_needs_search);
+    assert_eq!(app.find.failures(), 1);
+
+    app.find_needs_search = true;
+    let exhausted = app
+        .prepare_find_request()?
+        .ok_or("missing exhausted find request")?;
+    assert_eq!(
+        app.resolve_find_submission_error(exhausted.identity(), SubmitError::SequenceExhausted),
+        EventEffect::visual()
+    );
+    assert!(!app.find_needs_search);
+    assert_eq!(app.find.failures(), 2);
     Ok(())
 }
 

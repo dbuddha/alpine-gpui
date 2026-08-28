@@ -71,7 +71,7 @@ branches or broad parent tasks:
    [Task #220](https://github.com/dbuddha/alpine-gpui/issues/220).
 4. Add document and workspace symbols through
    [Task #221](https://github.com/dbuddha/alpine-gpui/issues/221).
-5. Finish typed configuration reload and migration through
+5. Qualify and merge typed configuration reload and migration through
    [Task #222](https://github.com/dbuddha/alpine-gpui/issues/222).
 6. Complete onscreen SDR, lifecycle soak, production journey, and native idle
    qualification through [Tasks #234 through #237](https://github.com/dbuddha/alpine-gpui/issues/72),
@@ -89,8 +89,9 @@ branches or broad parent tasks:
 No terminal, Git UI, plugin, AI, cloud, collaboration, telemetry, remote, or
 multi-window work may preempt this path.
 
-Tasks #218 through #221 form the Rust-intelligence dependency chain. Task #222
-is an independent accepted leaf. Task #72 aggregates native leaves #234 through
+Tasks #218, #219, and #221 are merged Rust-intelligence leaves; #220 remains the
+publication gap. Task #222 is the active independent configuration leaf. Task
+#72 aggregates native leaves #234 through
 #237 and remains the blocker for Task #223. Task #224 aggregates dogfood leaves
 #238 through #242 and is the convergence gate; neither parent can close while a
 child or linked assurance, data-loss, lifecycle, accessibility, idle-work, or

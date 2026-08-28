@@ -72,13 +72,6 @@ mod rust_workspace_publication_tests;
 mod rust_workspace_publish;
 mod rust_workspace_ui;
 mod session;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Task #129 stages typed reload admission before the approved parser and watcher slice"
-    )
-)]
 mod settings;
 mod syntax;
 
@@ -108,7 +101,9 @@ use alpine_platform_macos::{
     EventTimestamp, ImeEvent, InputEpoch, InputEpochAdmission, KeyState, Modifiers, PointerAction,
     PointerButton, StudioSignpost, StudioSignpostStage, SurfaceError, SurfaceEvent,
 };
-use alpine_runtime::{AppContext, AppDelegate, DocumentRevision, RuntimeError, WindowContext};
+use alpine_runtime::{
+    AppContext, AppDelegate, DocumentRevision, RuntimeError, SubmitError, WindowContext,
+};
 use alpine_scene::{
     AtlasBounds, Clip, Glyph, GlyphAtlasImage, GlyphAtlasRowPatch, Primitive, Quad, Scene,
     SceneBuilder, SceneError, SceneRevision,
@@ -130,8 +125,8 @@ use file_tree::{
     FileTreeWorkerOutput,
 };
 use find::{
-    FindAdmission, FindError, FindNavigation, FindRequest, FindState, FindWorkerOutput,
-    MAX_REPLACEMENT_TRANSACTION_BYTES,
+    FindAdmission, FindError, FindIdentity, FindNavigation, FindRequest, FindState,
+    FindWorkerOutput, MAX_REPLACEMENT_TRANSACTION_BYTES,
 };
 use panes::{MAX_PANES, PaneError, PaneGrid, SplitAxis};
 use profiling::{MeasuredTextSystem, StudioProfiler, TextSystemSnapshot};
@@ -1022,6 +1017,10 @@ impl ExplicitPathTarget {
                     .checked_add(1)
                     .ok_or(RecoveryLaunchError::TargetComposition)?;
                 app.workspace = Some(workspace);
+                let result = app
+                    .settings_reload
+                    .replace_project(app.workspace.as_ref().map(Workspace::root));
+                record_project_settings_result(app, result);
                 app.active_workspace_entry = None;
                 app.file_tree = FileTreeState::default();
                 app.prime_workspace_launch()
@@ -1032,6 +1031,17 @@ impl ExplicitPathTarget {
             app.local_status = recovered_status;
         }
         Ok(())
+    }
+}
+
+fn record_project_settings_result(
+    app: &mut StudioApp,
+    result: Result<bool, impl std::fmt::Display>,
+) {
+    if let Err(error) = result {
+        app.local_status = Some(LocalStatus::Command(Arc::from(format!(
+            "Settings project override failed: {error}"
+        ))));
     }
 }
 
@@ -1759,6 +1769,7 @@ macro_rules! force_workspace_edit_publication_submission_failure {
 
 struct StudioApp {
     settings: SettingsState,
+    settings_reload: settings::SettingsReload,
     document: StudioDocument,
     tabs: DocumentTabs<StudioDocument>,
     workspace: Option<Workspace>,
@@ -1839,6 +1850,10 @@ struct StudioApp {
     force_command_clip_failure: Option<()>,
     #[cfg(test)]
     force_empty_navigation_result: Option<()>,
+}
+
+fn settings_reload_for(workspace: Option<&Workspace>) -> settings::SettingsReload {
+    settings::SettingsReload::new(std::env::var_os("HOME"), workspace.map(Workspace::root))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2004,6 +2019,12 @@ impl StudioApp {
             .with_semantic(1)
     }
 
+    fn initial_text_budgets() -> Result<(NonZeroUsize, NonZeroUsize), SurfaceError> {
+        let layout = NonZeroUsize::new(DEFAULT_LAYOUT_BUDGET_BYTES).ok_or(APPLICATION_INVARIANT)?;
+        let atlas = NonZeroUsize::new(DEFAULT_ATLAS_BUDGET_BYTES).ok_or(APPLICATION_INVARIANT)?;
+        Ok((layout, atlas))
+    }
+
     fn from_parts(
         text_system: impl StudioTextSystem + 'static,
         document: StudioDocument,
@@ -2011,11 +2032,9 @@ impl StudioApp {
         workspace: Option<Workspace>,
     ) -> Result<Self, SurfaceError> {
         let settings = SettingsState::compiled().map_err(|_| APPLICATION_INVARIANT)?;
+        let settings_reload = settings_reload_for(workspace.as_ref());
         let last_viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(APPLICATION_INVARIANT)?;
-        let layout_budget =
-            NonZeroUsize::new(DEFAULT_LAYOUT_BUDGET_BYTES).ok_or(APPLICATION_INVARIANT)?;
-        let atlas_budget =
-            NonZeroUsize::new(DEFAULT_ATLAS_BUDGET_BYTES).ok_or(APPLICATION_INVARIANT)?;
+        let (layout_budget, atlas_budget) = Self::initial_text_budgets()?;
         let syntax_cache =
             SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES).map_err(|_| APPLICATION_INVARIANT)?;
         let runtime_document_revision = document.buffer().revision().get();
@@ -2029,6 +2048,7 @@ impl StudioApp {
         let text_system = MeasuredTextSystem::new(text_system, profiler.enabled());
         Ok(Self {
             settings,
+            settings_reload,
             document,
             tabs,
             workspace,
@@ -4666,6 +4686,7 @@ impl StudioApp {
     fn dispatch_command(&mut self, command: StudioCommand) -> EventEffect {
         match command {
             StudioCommand::SaveFile => self.save_document(),
+            StudioCommand::ReloadSettings => self.request_settings_reload(),
             StudioCommand::CloseTab => self.close_active_tab_or_record(),
             StudioCommand::NavigateBack => self.navigate_document_history(false),
             StudioCommand::NavigateForward => self.navigate_document_history(true),
@@ -4814,6 +4835,60 @@ impl StudioApp {
             format!("Command palette failed: {error}").into(),
         ))
         .merge(EventEffect::visual())
+    }
+
+    fn request_settings_reload(&mut self) -> EventEffect {
+        match self.settings_reload.request(true) {
+            Ok(_) => self.set_local_status(LocalStatus::Command(Arc::from("Reloading settings."))),
+            Err(error) => self.set_local_status(LocalStatus::Command(Arc::from(format!(
+                "Settings reload failed: {error}"
+            )))),
+        }
+    }
+
+    fn apply_settings_output(&mut self, output: settings::SettingsLoadOutput) -> EventEffect {
+        match self.settings_reload.admit(output, &mut self.settings) {
+            settings::SettingsReloadAdmission::Applied {
+                effect,
+                revision,
+                migrations,
+                announce,
+            } => {
+                let mut visual_changed = effect.typography
+                    || effect.theme
+                    || (effect.keymap && self.command_palette.is_open());
+                if announce {
+                    self.local_status = Some(LocalStatus::Command(Arc::from(format!(
+                        "Settings reloaded at revision {revision} ({migrations} migrations)."
+                    ))));
+                    visual_changed = true;
+                }
+                visual_changed.then(EventEffect::visual).unwrap_or_default()
+            }
+            settings::SettingsReloadAdmission::Unchanged {
+                revision,
+                migrations,
+                announce,
+            } => {
+                if announce {
+                    self.set_local_status(LocalStatus::Command(Arc::from(format!(
+                        "Settings unchanged at revision {revision} ({migrations} migrations)."
+                    ))))
+                } else {
+                    EventEffect::default()
+                }
+            }
+            settings::SettingsReloadAdmission::Stale => EventEffect::default(),
+            settings::SettingsReloadAdmission::Failed(failure) => self.set_local_status(
+                LocalStatus::Command(Arc::from(format!("Settings reload failed: {failure}"))),
+            ),
+            settings::SettingsReloadAdmission::Rejected(failure) => {
+                self.set_local_status(LocalStatus::Command(Arc::from(format!(
+                    "Settings reload rejected ({:?}): {}",
+                    failure.source, failure.error
+                ))))
+            }
+        }
     }
 
     fn record_project_search_error(&mut self, error: &ProjectSearchError) -> EventEffect {
@@ -5094,6 +5169,26 @@ impl StudioApp {
         self.find_needs_search = false;
         self.find
             .request(self.runtime_document_revision, self.buffer().snapshot())
+    }
+
+    fn resolve_find_submission_error(
+        &mut self,
+        identity: FindIdentity,
+        error: SubmitError,
+    ) -> EventEffect {
+        match error {
+            SubmitError::Saturated => {
+                if self.find.defer_submission(identity) {
+                    self.find_needs_search = true;
+                }
+                EventEffect::default()
+            }
+            SubmitError::Closed | SubmitError::SequenceExhausted => self
+                .find
+                .reject_submission(identity)
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+        }
     }
 
     fn prepare_quick_open_request(&mut self) -> Result<Option<QuickOpenRequest>, QuickOpenError> {
@@ -6536,6 +6631,22 @@ impl StudioApp {
         self.advance_selection_revision(selection_before);
         let language_visual_changed = self.synchronize_language_after_event(context);
         effect.visual_changed |= language_visual_changed;
+        match self.prepare_find_request() {
+            Ok(Some(request)) => {
+                let identity = request.identity();
+                match context.spawn(move || StudioWorkerOutput::Find(request.execute())) {
+                    Ok(_) => {}
+                    Err(error) => {
+                        effect = effect.merge(self.resolve_find_submission_error(identity, error));
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.find.record_error(&error);
+                effect.visual_changed = true;
+            }
+        }
         self.advance_accessibility_semantic_revision(effect.visual_changed);
         if effect.visual_changed {
             context.invalidate();
@@ -6545,28 +6656,10 @@ impl StudioApp {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        match self.prepare_find_request() {
-            Ok(Some(request)) => {
-                let identity = request.identity();
-                if context
-                    .spawn(move || StudioWorkerOutput::Find(request.execute()))
-                    .is_err()
-                    && self.find.reject_submission(identity)
-                {
-                    self.advance_accessibility_semantic_revision(true);
-                    context.invalidate();
-                }
-            }
-            Ok(None) => {}
-            Err(error) => {
-                self.find.record_error(&error);
-                self.advance_accessibility_semantic_revision(true);
-                context.invalidate();
-            }
-        }
         self.submit_quick_open_request(context);
         self.submit_project_search_request(context);
         self.submit_file_tree_request(context);
+        self.submit_settings_request(context);
         self.publish_recovery();
         self.record_profile(
             StudioSignpostStage::StateMutationComplete,
@@ -6593,6 +6686,7 @@ enum StudioWorkerOutput {
     QuickOpen(QuickOpenWorkerOutput),
     ProjectSearch(ProjectSearchWorkerOutput),
     FileTree(FileTreeWorkerOutput),
+    Settings(Box<settings::SettingsLoadOutput>),
     Language(LanguageWake),
     WorkspaceEdit(WorkspaceEditPreparationOutput),
     WorkspaceEditPublication(WorkspaceEditPublicationOutput),
@@ -6662,6 +6756,7 @@ impl AppDelegate for StudioApp {
             StudioWorkerOutput::QuickOpen(result) => self.apply_quick_open_output(result),
             StudioWorkerOutput::ProjectSearch(result) => self.apply_project_search_output(result),
             StudioWorkerOutput::FileTree(result) => self.apply_file_tree_output(result),
+            StudioWorkerOutput::Settings(result) => self.apply_settings_output(*result),
             StudioWorkerOutput::Language(wake) => {
                 #[cfg(all(alpine_native_validation, not(test)))]
                 NATIVE_VALIDATION_LANGUAGE_FOREGROUND_RESULTS
@@ -6743,6 +6838,7 @@ impl AppDelegate for StudioApp {
         self.submit_quick_open_request(context);
         self.submit_project_search_request(context);
         self.submit_file_tree_request(context);
+        self.submit_settings_request(context);
         self.publish_recovery();
     }
 
@@ -6793,6 +6889,24 @@ fn accessibility_admission_failures(current: u64, admitted: bool) -> u64 {
 }
 
 impl StudioApp {
+    fn submit_settings_request(&mut self, context: &mut AppContext<'_, StudioWorkerOutput>) {
+        let Some(request) = self.settings_reload.take_request() else {
+            return;
+        };
+        let generation = request.generation();
+        let announce = request.announce();
+        if context
+            .spawn(move || StudioWorkerOutput::Settings(Box::new(request.execute())))
+            .is_err()
+            && let Err(error) = self.settings_reload.reject_submission(generation, announce)
+        {
+            self.local_status = Some(LocalStatus::Command(Arc::from(format!(
+                "Settings reload failed: {error}"
+            ))));
+            context.invalidate();
+        }
+    }
+
     fn submit_workspace_edit_preparation(
         &mut self,
         context: &mut AppContext<'_, StudioWorkerOutput>,
@@ -8401,6 +8515,10 @@ mod project_search_tests;
 #[cfg(test)]
 #[path = "studio_coverage_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "settings_reload_tests.rs"]
+mod settings_reload_tests;
 
 #[cfg(test)]
 #[path = "rust_diagnostics_scene_tests.rs"]

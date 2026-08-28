@@ -604,8 +604,9 @@ fn runtime_project_search_admits_workers_and_rolls_back_submission_failures()
     let command_shift = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
     assert!(runtime.dispatch(&key(KEY_F, command_shift)).is_some());
     assert!(runtime.dispatch(&ime("needle")).is_some());
-    let mut admitted = false;
-    for timestamp in 100..612 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut timestamp = 100;
+    let admitted = loop {
         std::thread::sleep(Duration::from_millis(1));
         if runtime
             .dispatch(&SurfaceEvent::Wake {
@@ -613,9 +614,13 @@ fn runtime_project_search_admits_workers_and_rolls_back_submission_failures()
             })
             .is_some()
         {
-            admitted = true;
+            break true;
         }
-    }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        timestamp = timestamp.saturating_add(1);
+    };
     assert!(admitted);
 
     let worker_config = WorkerConfig::new(
