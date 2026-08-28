@@ -611,9 +611,7 @@ fn read_file_with(
     )
     .map_err(|error| map_io("metadata", &error))?;
     #[cfg(windows)]
-    if path_identity_before != opened_identity {
-        return Err(SettingsLoadError::ConcurrentEdit);
-    }
+    require_same_windows_identity(&path_identity_before, &opened_identity)?;
     let opened = file
         .metadata()
         .map_err(|error| map_io("metadata", &error))?;
@@ -642,9 +640,7 @@ fn read_file_with(
     {
         let path_identity_after =
             same_file::Handle::from_path(path).map_err(|error| map_io("metadata", &error))?;
-        if opened_identity != path_identity_after {
-            return Err(SettingsLoadError::ConcurrentEdit);
-        }
+        require_same_windows_identity(&opened_identity, &path_identity_after)?;
     }
     if !same_file(&opened, &opened_after) || !same_file(&opened, &path_after) {
         return Err(SettingsLoadError::ConcurrentEdit);
@@ -715,6 +711,19 @@ fn same_windows_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
         && left.last_write_time() == right.last_write_time()
         && left.file_attributes() == right.file_attributes()
         && left.file_size() == right.file_size()
+}
+
+#[cfg(windows)]
+#[cfg_attr(test, mutants::skip)]
+fn require_same_windows_identity(
+    left: &same_file::Handle,
+    right: &same_file::Handle,
+) -> Result<(), SettingsLoadError> {
+    if left == right {
+        Ok(())
+    } else {
+        Err(SettingsLoadError::ConcurrentEdit)
+    }
 }
 
 fn decode_layer(
@@ -1891,13 +1900,16 @@ mod tests {
         }
         #[cfg(windows)]
         {
+            let left_identity = same_file::Handle::from_path(&left)?;
+            let left_identity_again = same_file::Handle::from_path(&left)?;
+            let right_identity = same_file::Handle::from_path(&right)?;
             assert_eq!(
-                same_file::Handle::from_path(&left)?,
-                same_file::Handle::from_path(&left)?
+                require_same_windows_identity(&left_identity, &left_identity_again),
+                Ok(())
             );
-            assert_ne!(
-                same_file::Handle::from_path(&left)?,
-                same_file::Handle::from_path(&right)?
+            assert_eq!(
+                require_same_windows_identity(&left_identity, &right_identity),
+                Err(SettingsLoadError::ConcurrentEdit)
             );
         }
 
