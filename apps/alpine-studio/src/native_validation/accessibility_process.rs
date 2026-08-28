@@ -11,8 +11,9 @@ use std::{
 };
 
 use alpine_platform_macos::{
-    AccessibilityRole, CloseDisposition, EventTimestamp, NativeSurface, SurfaceDescriptor,
-    SurfaceEvent, SurfaceLifecycle, SurfaceOperation, native_validation as platform_validation,
+    AccessibilityRole, CloseDisposition, EventTimestamp, InputEpoch, NativeSurface,
+    SurfaceDescriptor, SurfaceEvent, SurfaceLifecycle, SurfaceOperation,
+    native_validation as platform_validation,
 };
 use alpine_runtime::{Application, WorkerConfig};
 
@@ -263,6 +264,17 @@ fn qualify_workspace(
         .map_err(|error| format!("initial native accessibility frame failed: {error}"))?;
 
     let mut timestamp = 10_u64;
+    dispatch(
+        &surface,
+        &state,
+        &[SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(timestamp),
+            input_epoch: InputEpoch::INITIAL,
+            focused: true,
+        }],
+    )
+    .map_err(|error| format!("initial native accessibility focus dispatch failed: {error}"))?;
+    timestamp = timestamp.saturating_add(1);
     let mut tree_actions = 0_usize;
     let mut tab_actions = 0_usize;
     let mut command_actions = 0_usize;
