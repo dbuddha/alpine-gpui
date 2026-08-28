@@ -1160,7 +1160,13 @@ fn runtime_find_worker_admits_current_results_and_schedules_replacement()
     ))?;
     let mut app = test_app()?;
     *app.buffer_mut() = Buffer::new("alpha beta alpha");
-    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    // The success path must not race unrelated startup producers for the
+    // default result capacity. Keep the worker system finite while allowing
+    // startup work and the find request to retain independent queued slots.
+    let admitted_capacity = std::num::NonZeroUsize::new(4).ok_or("worker capacity")?;
+    let admitted_workers = std::num::NonZeroUsize::new(2).ok_or("worker count")?;
+    let admitted_config = WorkerConfig::new(admitted_workers, admitted_capacity, admitted_capacity);
+    let mut runtime = Application::new(app, viewport, clear, admitted_config)?;
     let command = Modifiers::from_bits(Modifiers::COMMAND);
     let command_option = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION);
 
