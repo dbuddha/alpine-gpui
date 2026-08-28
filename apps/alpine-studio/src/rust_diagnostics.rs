@@ -782,7 +782,7 @@ impl RustDiagnostics {
             .target
             .as_ref()
             .is_some_and(|current| current.shares_workspace_with(&target));
-        if !shares_workspace {
+        if !shares_workspace || self.session.is_none() {
             self.stop();
             self.target = Some(target.clone());
             let result = self.start(input, target, wake_factory);
@@ -2113,33 +2113,23 @@ impl RustDiagnostics {
             Ok(document) => document,
             Err(error) => return self.fail(RustDiagnosticsError::Language(error)),
         };
-        let Some(state) = self.session.as_ref().map(|session| session.state) else {
-            return LanguageEffect::default();
-        };
-        let transition = if state == SessionState::Open {
-            let close = match self
-                .session
-                .as_ref()
-                .map(|session| session.document.did_close_params())
-            {
-                Some(Ok(close)) => close,
-                Some(Err(error)) => return self.fail(RustDiagnosticsError::Language(error)),
-                None => return LanguageEffect::default(),
-            };
+        let session = self.session.as_ref().unwrap_or_else(|| unreachable!());
+        let transition = if session.state == SessionState::Open {
             let text = input.snapshot.text();
-            let open = match document.did_open_params(&text) {
-                Ok(open) => open,
+            let transition = session
+                .document
+                .did_close_params()
+                .and_then(|close| document.did_open_params(&text).map(|open| (close, open)));
+            match transition {
+                Ok(transition) => Some(transition),
                 Err(error) => return self.fail(RustDiagnosticsError::Language(error)),
-            };
-            Some((close, open))
+            }
         } else {
             None
         };
 
         let transition_result = {
-            let Some(session) = self.session.as_mut() else {
-                return LanguageEffect::default();
-            };
+            let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
             let _ = session.completion.take();
             let _ = session.navigation.take();
             let _ = session.symbols.take();
