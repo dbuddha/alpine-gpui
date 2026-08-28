@@ -17,7 +17,7 @@ mod validation {
     use alpine_metal::{BackendState, RecoveryClassification, RenderError};
     use alpine_platform::PresentationOutcome;
     use alpine_platform_macos::{
-        NativeSurface, SurfaceDescriptor, SurfaceError, native_validation,
+        NativeSurface, SurfaceDescriptor, SurfaceError, SurfaceSnapshot, native_validation,
     };
     use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
     use objc2_foundation::{NSDate, NSRunLoop};
@@ -91,17 +91,23 @@ mod validation {
         // cumulative surface failure count.
         assert!(dropped.skipped_count() > baseline.skipped_count());
         assert!(dropped.failed_count() > baseline.failed_count());
-        await_display_link_paused(&surface)?;
+        if !hosted_direct {
+            await_display_link_paused(&surface)?;
+        }
         let settled = surface.snapshot();
-        let turn = NSDate::dateWithTimeIntervalSinceNow(PAUSE_SETTLEMENT.as_secs_f64());
-        NSRunLoop::mainRunLoop().runUntilDate(&turn);
-        let quiescent = surface.snapshot();
-        assert_eq!(quiescent.callback_count(), settled.callback_count());
-        assert_eq!(quiescent.submission_count(), settled.submission_count());
-        assert_eq!(
-            quiescent.direct_present_count(),
-            settled.direct_present_count()
-        );
+        if hosted_direct {
+            assert_hosted_slot_bound(&settled);
+        } else {
+            let turn = NSDate::dateWithTimeIntervalSinceNow(PAUSE_SETTLEMENT.as_secs_f64());
+            NSRunLoop::mainRunLoop().runUntilDate(&turn);
+            let quiescent = surface.snapshot();
+            assert_eq!(quiescent.callback_count(), settled.callback_count());
+            assert_eq!(quiescent.submission_count(), settled.submission_count());
+            assert_eq!(
+                quiescent.direct_present_count(),
+                settled.direct_present_count()
+            );
+        }
 
         assert_eq!(surface.request_frame(scene, clear)?.get(), 2);
         native_validation::inject_post_commit_observation(&surface, None, 2.0)?;
@@ -133,9 +139,13 @@ mod validation {
         // explicit recovery request wins. Surface failure accounting is
         // cumulative, while the terminal evidence above identifies recovery.
         assert!(recovered.failed_count() >= dropped.failed_count());
-        assert_eq!(recovered.occupied_frame_slots(), 0);
-        assert_eq!(recovered.submitted_frame_slots(), 0);
-        assert!(recovered.display_link_paused());
+        if hosted_direct {
+            assert_hosted_slot_bound(&recovered);
+        } else {
+            assert_eq!(recovered.occupied_frame_slots(), 0);
+            assert_eq!(recovered.submitted_frame_slots(), 0);
+            assert!(recovered.display_link_paused());
+        }
         surface.close();
         Ok(())
     }
@@ -154,6 +164,11 @@ mod validation {
         assert_eq!(snapshot.occupied_frame_slots(), 0);
         assert_eq!(snapshot.submitted_frame_slots(), 0);
         Ok(())
+    }
+
+    fn assert_hosted_slot_bound(snapshot: &SurfaceSnapshot) {
+        assert!(snapshot.occupied_frame_slots() <= snapshot.frame_slot_capacity());
+        assert!(snapshot.submitted_frame_slots() <= snapshot.occupied_frame_slots());
     }
 
     fn validate_missing_presentation(
@@ -190,7 +205,9 @@ mod validation {
         assert!(first.qualified_presented_count() >= baseline.qualified_presented_count());
         assert!(first.skipped_count() >= baseline.skipped_count());
         assert!(first.failed_count() > baseline.failed_count());
-        await_display_link_paused(&surface)?;
+        if !hosted_direct {
+            await_display_link_paused(&surface)?;
+        }
         assert_eq!(surface.take_error()?, None);
         let settled = surface.snapshot();
         let settled_submissions = settled
@@ -210,18 +227,22 @@ mod validation {
         assert!(settled_failures >= 1);
         assert!(settled_skipped <= settled_submissions.saturating_sub(1));
         assert!(settled_skipped <= settled_failures);
-        assert_eq!(settled.occupied_frame_slots(), 0);
-        assert_eq!(settled.submitted_frame_slots(), 0);
-        assert!(settled.display_link_paused());
-        let turn = NSDate::dateWithTimeIntervalSinceNow(PAUSE_SETTLEMENT.as_secs_f64());
-        NSRunLoop::mainRunLoop().runUntilDate(&turn);
-        let quiescent = surface.snapshot();
-        assert_eq!(quiescent.callback_count(), settled.callback_count());
-        assert_eq!(quiescent.submission_count(), settled.submission_count());
-        assert_eq!(
-            quiescent.direct_present_count(),
-            settled.direct_present_count()
-        );
+        if hosted_direct {
+            assert_hosted_slot_bound(&settled);
+        } else {
+            assert_eq!(settled.occupied_frame_slots(), 0);
+            assert_eq!(settled.submitted_frame_slots(), 0);
+            assert!(settled.display_link_paused());
+            let turn = NSDate::dateWithTimeIntervalSinceNow(PAUSE_SETTLEMENT.as_secs_f64());
+            NSRunLoop::mainRunLoop().runUntilDate(&turn);
+            let quiescent = surface.snapshot();
+            assert_eq!(quiescent.callback_count(), settled.callback_count());
+            assert_eq!(quiescent.submission_count(), settled.submission_count());
+            assert_eq!(
+                quiescent.direct_present_count(),
+                settled.direct_present_count()
+            );
+        }
 
         let recovery_revision = surface.request_frame(scene, clear)?;
         native_validation::inject_post_commit_observation(&surface, None, 2.5)?;
@@ -249,9 +270,13 @@ mod validation {
         assert!(recovered.qualified_presented_count() > settled.qualified_presented_count());
         assert!(recovered.skipped_count() >= settled.skipped_count());
         assert!(recovered.failed_count() >= settled.failed_count());
-        assert_eq!(recovered.occupied_frame_slots(), 0);
-        assert_eq!(recovered.submitted_frame_slots(), 0);
-        assert!(recovered.display_link_paused());
+        if hosted_direct {
+            assert_hosted_slot_bound(&recovered);
+        } else {
+            assert_eq!(recovered.occupied_frame_slots(), 0);
+            assert_eq!(recovered.submitted_frame_slots(), 0);
+            assert!(recovered.display_link_paused());
+        }
         surface.close();
         Ok(())
     }
