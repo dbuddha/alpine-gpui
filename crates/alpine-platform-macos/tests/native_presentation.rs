@@ -101,19 +101,18 @@ mod validation {
         );
         if hosted_direct && snapshot.presented_count() == 0 {
             assert!(first_error.is_none());
-            assert!(snapshot.occupied_frame_slots() <= 1);
-            assert_eq!(
-                snapshot.submitted_frame_slots(),
-                snapshot.occupied_frame_slots()
-            );
+            assert_eq!(snapshot.submission_count(), 1);
+            assert_eq!(snapshot.direct_present_count(), 1);
+            assert_eq!(snapshot.installed_presented_handler_count(), 1);
+            assert_eq!(snapshot.occupied_frame_slots(), 0);
+            assert_eq!(snapshot.submitted_frame_slots(), 0);
             assert_eq!(snapshot.last_presented_time_bits(), 0);
-            assert_eq!(snapshot.skipped_count() + 1, snapshot.submission_count());
-            assert_eq!(snapshot.failed_count(), 0);
+            assert_eq!(snapshot.skipped_count(), 1);
+            assert_eq!(snapshot.failed_count(), 1);
             assert!(snapshot.callback_count() >= 2);
+            assert!(snapshot.display_link_paused());
             eprintln!(
-                "hosted-direct evidence: {} callback drawables committed and directly presented; Core Animation reported {} dropped outcomes and one drawable remains in flight at the bounded cutoff",
-                snapshot.submission_count(),
-                snapshot.skipped_count()
+                "hosted-direct evidence: one callback drawable was committed, directly presented, reported not presented by Core Animation, released, and not retried"
             );
             return Ok(None);
         }
