@@ -4482,6 +4482,10 @@ fn runtime_quick_open_worker_admits_inventory_and_ranked_results()
         alpine_platform_macos::SurfaceOperation::Application,
     ))?;
     let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let (wake_sender, wake_receiver) = std::sync::mpsc::sync_channel(2);
+    runtime.set_worker_waker(move || {
+        let _ = wake_sender.try_send(());
+    });
     let command = Modifiers::from_bits(Modifiers::COMMAND);
     let worker_baseline = runtime.snapshot().worker();
 
@@ -4489,18 +4493,16 @@ fn runtime_quick_open_worker_admits_inventory_and_ranked_results()
         .dispatch(&key(KEY_P, command))
         .ok_or("quick-open frame")?;
     let pending_quads = pending.scene().quads().len();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let wake_timeout = std::time::Duration::from_secs(if cfg!(miri) { 60 } else { 5 });
     let mut timestamp = 300_u64;
     let ranked = loop {
-        while runtime.snapshot().worker().queued_results() == 0 {
-            if std::time::Instant::now() >= deadline {
-                return Err(format!(
-                    "timed out awaiting quick-open completion: {:?}",
+        if runtime.snapshot().worker().queued_results() == 0 {
+            wake_receiver.recv_timeout(wake_timeout).map_err(|error| {
+                format!(
+                    "failed awaiting quick-open worker wake ({error:?}): {:?}",
                     runtime.snapshot()
                 )
-                .into());
-            }
-            std::thread::yield_now();
+            })?;
         }
         if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
             timestamp: EventTimestamp::new(timestamp),
@@ -4509,13 +4511,6 @@ fn runtime_quick_open_worker_admits_inventory_and_ranked_results()
             break frame;
         }
         timestamp = timestamp.checked_add(1).ok_or("wake timestamp exhausted")?;
-        if std::time::Instant::now() >= deadline {
-            return Err(format!(
-                "timed out awaiting ranked quick-open scene: {:?}",
-                runtime.snapshot()
-            )
-            .into());
-        }
     };
     assert_ne!(ranked.scene().revision(), pending.scene().revision());
 
