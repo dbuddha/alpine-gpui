@@ -185,7 +185,9 @@ mod validation {
         let baseline = surface.snapshot();
 
         assert_eq!(surface.request_frame(scene.clone(), clear)?.get(), 1);
+        assert!(!native_validation::post_commit_omission_armed(&surface));
         native_validation::inject_post_commit_omission(&surface);
+        assert!(native_validation::post_commit_omission_armed(&surface));
         native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
 
         assert_eq!(surface.take_error()?, None);

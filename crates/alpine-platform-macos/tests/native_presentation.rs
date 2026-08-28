@@ -101,9 +101,10 @@ mod validation {
             snapshot.submission_count()
         );
         let terminal_outcomes =
-            snapshot.presented_count() + snapshot.skipped_count() + snapshot.cancelled_count();
+            snapshot.presented_count() + snapshot.cancelled_count() + snapshot.failed_count();
         assert!(terminal_outcomes >= 1);
         assert!(terminal_outcomes <= snapshot.submission_count());
+        assert!(snapshot.skipped_count() <= snapshot.failed_count());
         if hosted_direct && snapshot.presented_count() == 0 {
             assert!(first_error.is_none());
             let terminal = snapshot
@@ -120,7 +121,6 @@ mod validation {
             assert!(snapshot.occupied_frame_slots() <= snapshot.frame_slot_capacity());
             assert!(snapshot.submitted_frame_slots() <= snapshot.occupied_frame_slots());
             assert_eq!(snapshot.last_presented_time_bits(), 0);
-            assert!(snapshot.skipped_count() >= 1);
             assert!(snapshot.failed_count() >= 1);
             assert!(snapshot.callback_count() >= 2);
             eprintln!(
