@@ -44,19 +44,11 @@ case "$parent" in
         ;;
 esac
 
-if [ "$issue_action" = reopened ]; then
-    parent_state=$(gh issue view "$parent" --repo "$repository" --json state --jq .state)
-    if [ "$parent_state" = CLOSED ]; then
-        gh issue reopen "$parent" --repo "$repository" \
-            --comment "Reopened automatically because child #$issue_number reopened."
-    fi
-    exit 0
-fi
-
 parent_labels=$(gh issue view "$parent" --repo "$repository" --json labels --jq '.labels[].name')
 if ! printf '%s\n' "$parent_labels" | grep -Eq '^kind:(requirement|capability)$'; then
-    printf 'Issue hierarchy error: parent #%s is not a requirement or capability.\n' "$parent" >&2
-    exit 1
+    printf 'Parent #%s is outside automatic requirement/capability reconciliation; child #%s was not propagated.\n' \
+        "$parent" "$issue_number"
+    exit 0
 fi
 if ! printf '%s\n' "$parent_labels" | grep -Fxq owner:approved; then
     printf 'Issue hierarchy error: parent #%s is not owner-approved.\n' "$parent" >&2
@@ -74,6 +66,15 @@ if [ "${ALPINE_ENFORCE_EVIDENCE:-true}" = true ]; then
             "$parent" >&2
         exit 1
     fi
+fi
+
+if [ "$issue_action" = reopened ]; then
+    parent_state=$(gh issue view "$parent" --repo "$repository" --json state --jq .state)
+    if [ "$parent_state" = CLOSED ]; then
+        gh issue reopen "$parent" --repo "$repository" \
+            --comment "Reopened automatically because child #$issue_number reopened."
+    fi
+    exit 0
 fi
 
 parent_subissues=$(gh api -H "X-GitHub-Api-Version: $api_version" \
