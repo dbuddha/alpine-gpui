@@ -81,6 +81,7 @@
   - [AEP 0171: Lazy bounded workspace file tree](aep/0171-lazy-bounded-workspace-file-tree.md)
   - [AEP 0177: Bounded static command palette](aep/0177-bounded-static-command-palette.md)
   - [AEP 0180: Bounded streaming local project search](aep/0180-bounded-streaming-project-search.md)
+  - [AEP 0184: Evidence-first GitHub operations](aep/0184-evidence-first-github-operations.md)
   - [AEP 0218: Bounded revision-safe Rust completion](aep/0218-bounded-rust-completion.md)
   - [AEP 0221: Bounded Rust document and workspace symbols](aep/0221-bounded-rust-symbols.md)
   - [AEP 0222: Bounded settings reload and migration](aep/0222-bounded-settings-reload.md)
