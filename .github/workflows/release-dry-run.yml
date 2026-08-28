@@ -42,7 +42,7 @@ jobs:
       - name: Install pinned Kani
         run: |
           cargo install --locked kani-verifier --version 0.67.0
-          cargo kani setup
+          scripts/setup-kani.sh
       - name: Qualify formal and implementation evidence
         run: |
           cargo run --locked -p alpine-assurance -- validate
