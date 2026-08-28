@@ -600,7 +600,14 @@ fn runtime_project_search_admits_workers_and_rolls_back_submission_failures()
     let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?;
     let project = TempProject::new()?;
     let app = StudioApp::open_workspace_lazy(SearchTextSystem, &project.root)?;
-    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    // The success path must not race unrelated startup file-tree and settings
+    // requests for the one-slot saturation configuration exercised below.
+    // Keep this capacity finite while allowing every startup producer and the
+    // project-search inventory request to own an independent queued slot.
+    let admitted_capacity = std::num::NonZeroUsize::new(4).ok_or("worker capacity")?;
+    let admitted_workers = std::num::NonZeroUsize::new(2).ok_or("worker count")?;
+    let admitted_config = WorkerConfig::new(admitted_workers, admitted_capacity, admitted_capacity);
+    let mut runtime = Application::new(app, viewport, clear, admitted_config)?;
     let command_shift = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
     assert!(runtime.dispatch(&key(KEY_F, command_shift)).is_some());
     assert!(runtime.dispatch(&ime("needle")).is_some());
