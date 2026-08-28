@@ -4561,11 +4561,14 @@ impl NativeSurface {
                     > initial_presented
                     || counters.failed.load(Ordering::Acquire) > initial_failed
                     || counters.cancelled.load(Ordering::Acquire) > initial_cancelled;
-                let frame_slots_drained = self
-                    .driver
-                    .try_borrow()
-                    .is_ok_and(|driver| driver.frame_slots.snapshot().occupied_slots() == 0);
-                (!terminal_observed || !frame_slots_drained) && Instant::now() < deadline
+                let frame_work_drained = self.driver.try_borrow().is_ok_and(|driver| {
+                    validation_close_resources_drained(
+                        driver.pending.is_some(),
+                        driver.active.is_some(),
+                        driver.frame_slots.snapshot().occupied_slots(),
+                    )
+                });
+                (!terminal_observed || !frame_work_drained) && Instant::now() < deadline
             } {
                 NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.005));
             }
@@ -4578,13 +4581,17 @@ impl NativeSurface {
                     > initial_presented
                     || counters.failed.load(Ordering::Acquire) > initial_failed
                     || counters.cancelled.load(Ordering::Acquire) > initial_cancelled;
-                let frame_slots_drained = driver.upgrade().is_some_and(|driver| {
-                    driver
-                        .try_borrow()
-                        .is_ok_and(|driver| driver.frame_slots.snapshot().occupied_slots() == 0)
+                let frame_work_drained = driver.upgrade().is_some_and(|driver| {
+                    driver.try_borrow().is_ok_and(|driver| {
+                        validation_close_resources_drained(
+                            driver.pending.is_some(),
+                            driver.active.is_some(),
+                            driver.frame_slots.snapshot().occupied_slots(),
+                        )
+                    })
                 });
                 let terminal =
-                    (terminal_observed && frame_slots_drained) || Instant::now() >= deadline;
+                    (terminal_observed && frame_work_drained) || Instant::now() >= deadline;
                 if terminal {
                     // SAFETY: Foundation supplies a valid borrowed timer for
                     // the complete callback, and the reference does not escape.

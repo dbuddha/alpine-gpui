@@ -1437,7 +1437,8 @@ pub mod native_validation {
     }
 
     /// Runs the real `AppKit` event loop until one frame records a terminal
-    /// outcome and all completion-owned frame slots drain, or timeout.
+    /// outcome and all pending, active, and completion-owned work drains, or
+    /// timeout.
     pub fn run_until_frame_terminal(surface: &NativeSurface, timeout: Duration) {
         surface.implementation.run_until_frame_terminal(timeout);
     }
