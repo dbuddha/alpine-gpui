@@ -7398,11 +7398,27 @@ pub mod native_validation {
             && submitted_slots == 0
     }
 
+    const fn terminal_outcome_count(presented: u64, cancelled: u64, failed: u64) -> Option<u64> {
+        let Some(presented_or_cancelled) = presented.checked_add(cancelled) else {
+            return None;
+        };
+        presented_or_cancelled.checked_add(failed)
+    }
+
+    const fn hosted_presentation_was_omitted(
+        evidence_mode: PresentationEvidenceMode,
+        qualified_presentations: u64,
+    ) -> bool {
+        matches!(evidence_mode, PresentationEvidenceMode::HostedDirect)
+            && qualified_presentations == 0
+    }
+
     #[cfg(test)]
     mod presentation_evidence_policy_tests {
         use super::{
-            PresentationEvidenceMode, hosted_terminal_snapshot_is_settled,
-            parse_presentation_evidence_mode, pending_cancellation_evidence_is_bounded,
+            PresentationEvidenceMode, hosted_presentation_was_omitted,
+            hosted_terminal_snapshot_is_settled, parse_presentation_evidence_mode,
+            pending_cancellation_evidence_is_bounded, terminal_outcome_count,
         };
         use std::ffi::OsStr;
 
@@ -7451,6 +7467,37 @@ pub mod native_validation {
             assert!(!hosted_terminal_snapshot_is_settled(1, 1, 0, 0, 1, 0));
             assert!(!hosted_terminal_snapshot_is_settled(1, 1, 0, 0, 0, 1));
         }
+
+        #[test]
+        fn terminal_outcomes_preserve_each_axis_and_reject_overflow() {
+            assert_eq!(terminal_outcome_count(2, 3, 5), Some(10));
+            assert_eq!(terminal_outcome_count(2, 0, 0), Some(2));
+            assert_eq!(terminal_outcome_count(0, 3, 0), Some(3));
+            assert_eq!(terminal_outcome_count(0, 0, 5), Some(5));
+            assert_eq!(terminal_outcome_count(u64::MAX, 1, 0), None);
+            assert_eq!(terminal_outcome_count(1, u64::MAX, 0), None);
+            assert_eq!(terminal_outcome_count(1, 0, u64::MAX), None);
+        }
+
+        #[test]
+        fn hosted_omission_requires_hosted_mode_and_zero_qualified_presentations() {
+            assert!(hosted_presentation_was_omitted(
+                PresentationEvidenceMode::HostedDirect,
+                0
+            ));
+            assert!(!hosted_presentation_was_omitted(
+                PresentationEvidenceMode::HostedDirect,
+                1
+            ));
+            assert!(!hosted_presentation_was_omitted(
+                PresentationEvidenceMode::Physical,
+                0
+            ));
+            assert!(!hosted_presentation_was_omitted(
+                PresentationEvidenceMode::Physical,
+                1
+            ));
+        }
     }
 
     /// Runs the real Studio runtime through one presented frame and close.
@@ -7495,9 +7542,15 @@ pub mod native_validation {
                 PresentationEvidenceMode::HostedDirect => {
                     platform_validation::run_until_frame_terminal(surface, Duration::from_secs(5));
                     let settled = surface.snapshot();
-                    let terminal_outcomes = settled.presented_count()
-                        + settled.cancelled_count()
-                        + settled.failed_count();
+                    let Some(terminal_outcomes) = terminal_outcome_count(
+                        settled.presented_count(),
+                        settled.cancelled_count(),
+                        settled.failed_count(),
+                    ) else {
+                        return Err(alpine_platform_macos::SurfaceError::invariant(
+                            alpine_platform_macos::SurfaceOperation::Presentation,
+                        ));
+                    };
                     if !hosted_terminal_snapshot_is_settled(
                         settled.submission_count(),
                         terminal_outcomes,
@@ -7568,10 +7621,24 @@ pub mod native_validation {
         assert!(submissions <= 4);
         assert_eq!(frame.direct_present_count(), submissions);
         assert_eq!(frame.installed_presented_handler_count(), submissions);
-        let terminal_outcomes =
-            frame.presented_count() + frame.cancelled_count() + frame.failed_count();
-        assert!(terminal_outcomes >= 1);
-        assert!(terminal_outcomes <= submissions);
+        let terminal_outcomes = terminal_outcome_count(
+            frame.presented_count(),
+            frame.cancelled_count(),
+            frame.failed_count(),
+        )
+        .ok_or(alpine_runtime::RuntimeError::Surface(
+            alpine_platform_macos::SurfaceError::invariant(
+                alpine_platform_macos::SurfaceOperation::Application,
+            ),
+        ))?;
+        assert!(hosted_terminal_snapshot_is_settled(
+            submissions,
+            terminal_outcomes,
+            frame.skipped_count(),
+            frame.failed_count(),
+            frame.occupied_frame_slots(),
+            frame.submitted_frame_slots(),
+        ));
         assert_eq!(
             frame.qualified_presented_count() + frame.superseded_count(),
             frame.presented_count()
@@ -7586,8 +7653,8 @@ pub mod native_validation {
         assert_eq!(terminal.submission_count(), 1);
         assert_eq!(terminal.present_call_count(), 1);
         assert_eq!(terminal.retained_bytes(), 0);
-        let hosted_omission = matches!(evidence_mode, PresentationEvidenceMode::HostedDirect)
-            && frame.qualified_presented_count() == 0;
+        let hosted_omission =
+            hosted_presentation_was_omitted(evidence_mode, frame.qualified_presented_count());
         if hosted_omission {
             assert_eq!(terminal.observed_presentation_time_bits(), 0);
             assert!(frame.failed_count() >= 1);
