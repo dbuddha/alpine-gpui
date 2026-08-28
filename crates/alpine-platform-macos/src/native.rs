@@ -441,13 +441,13 @@ impl Drop for InitializationLease {
 // must never hold editor progress for a human-visible interval.
 const MAX_POST_COMMAND_PRESENTATION_POLLS: u8 = 2;
 
-const fn missing_presentation_is_terminal(
+const fn should_wait_for_presentation_observation(
     command_terminal: bool,
     presentation_polls: u8,
     newer_frame_pending: bool,
 ) -> bool {
-    command_terminal
-        && (newer_frame_pending || presentation_polls >= MAX_POST_COMMAND_PRESENTATION_POLLS)
+    !command_terminal
+        || (!newer_frame_pending && presentation_polls < MAX_POST_COMMAND_PRESENTATION_POLLS)
 }
 
 #[derive(Default)]
@@ -973,7 +973,7 @@ impl PresentationDriver {
         let newer_frame_pending = self.pending.is_some();
         if let Some(active) = &mut self.active {
             active.presentation_polls = active.presentation_polls.saturating_add(1);
-            if !missing_presentation_is_terminal(
+            if should_wait_for_presentation_observation(
                 active.command_terminal,
                 active.presentation_polls,
                 newer_frame_pending,
@@ -5623,19 +5623,23 @@ mod tests {
 
     #[test]
     fn missing_presentation_wait_is_post_command_bounded_and_latest_first() {
-        assert!(!missing_presentation_is_terminal(false, u8::MAX, true));
-        assert!(!missing_presentation_is_terminal(true, 0, false));
-        assert!(!missing_presentation_is_terminal(
+        assert!(should_wait_for_presentation_observation(
+            false,
+            u8::MAX,
+            true
+        ));
+        assert!(should_wait_for_presentation_observation(true, 0, false));
+        assert!(should_wait_for_presentation_observation(
             true,
             MAX_POST_COMMAND_PRESENTATION_POLLS - 1,
             false
         ));
-        assert!(missing_presentation_is_terminal(
+        assert!(!should_wait_for_presentation_observation(
             true,
             MAX_POST_COMMAND_PRESENTATION_POLLS,
             false
         ));
-        assert!(missing_presentation_is_terminal(true, 0, true));
+        assert!(!should_wait_for_presentation_observation(true, 0, true));
     }
 
     #[test]
