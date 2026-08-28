@@ -140,6 +140,11 @@ if [ -n "$workflow_files" ]; then
 
     nightly_native_workflow=.github/workflows/nightly-assurance.yml
     if [ -f "$nightly_native_workflow" ]; then
+        nightly_metal_block=$(awk '
+            /^  metal-validation:/ { capture = 1 }
+            /^  [A-Za-z0-9_-]+:/ && $1 != "metal-validation:" && capture { exit }
+            capture
+        ' "$nightly_native_workflow")
         nightly_accessibility_block=$(awk '
             /^  native-accessibility-mutation:/ { capture = 1 }
             /^  [A-Za-z0-9_-]+:/ && $1 != "native-accessibility-mutation:" && capture { exit }
@@ -168,6 +173,20 @@ if [ -n "$workflow_files" ]; then
                 fail "nightly native accessibility mutation scopes are missing shard $shard/8"
             fi
         done
+        native_metal_mutation_count=$(printf '%s\n' "$nightly_metal_block" \
+            | grep -Fc -- '--file crates/alpine-metal/src/native.rs')
+        native_metal_mutation_line=$(printf '%s\n' "$nightly_metal_block" \
+            | grep -F -- '--file crates/alpine-metal/src/native.rs' || true)
+        if [ "$native_metal_mutation_count" -ne 1 ] \
+            || ! printf '%s\n' "$native_metal_mutation_line" \
+                | grep -Fq -- "--exclude-re 'tests::'"; then
+            fail 'nightly Metal mutation must exclude exactly the native.rs test-helper namespace'
+        fi
+        remaining_metal_exclusions=$(printf '%s\n' "$native_metal_mutation_line" \
+            | sed "s/--exclude-re 'tests::'//")
+        if printf '%s\n' "$remaining_metal_exclusions" | grep -Fq -- '--exclude-re'; then
+            fail 'nightly Metal shipping mutation must not add another native.rs exclusion'
+        fi
         for mutation_block in \
             "$nightly_accessibility_block" \
             "$nightly_studio_accessibility_block"; do
