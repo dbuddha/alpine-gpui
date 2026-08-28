@@ -931,6 +931,12 @@ fn runtime_workspace_edit_handoffs_invalidate_and_admit_production_frames()
     drop(publication_runtime);
 
     let mut rejected_preparation_app = StudioApp::open_file(TestTextSystem, &path)?;
+    assert!(
+        rejected_preparation_app
+            .settings_reload
+            .take_request()
+            .is_some()
+    );
     let snapshot = rejected_preparation_app.buffer().snapshot();
     let language_identity = rejected_preparation_app.language_identity();
     rejected_preparation_app.rust_diagnostics.install_for_test(
@@ -984,6 +990,12 @@ fn runtime_workspace_edit_handoffs_invalidate_and_admit_production_frames()
     drop(rejected_preparation_runtime);
 
     let mut rejected_publication_app = StudioApp::open_file(TestTextSystem, &path)?;
+    assert!(
+        rejected_publication_app
+            .settings_reload
+            .take_request()
+            .is_some()
+    );
     rejected_publication_app.session_path = Some(root.join("rejected-session-v2.json"));
     let snapshot = rejected_publication_app.buffer().snapshot();
     let language_identity = rejected_publication_app.language_identity();
@@ -1039,6 +1051,12 @@ fn runtime_workspace_edit_handoffs_invalidate_and_admit_production_frames()
     drop(rejected_publication_runtime);
 
     let mut missing_persistence_app = StudioApp::open_file(TestTextSystem, &path)?;
+    assert!(
+        missing_persistence_app
+            .settings_reload
+            .take_request()
+            .is_some()
+    );
     let snapshot = missing_persistence_app.buffer().snapshot();
     let language_identity = missing_persistence_app.language_identity();
     missing_persistence_app.rust_diagnostics.install_for_test(
