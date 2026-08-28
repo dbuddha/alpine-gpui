@@ -1708,6 +1708,12 @@ pub mod native_validation {
         surface.implementation.post_commit_omission_armed()
     }
 
+    /// Returns whether deterministic evidence is armed for the next commit.
+    #[must_use]
+    pub fn post_commit_control_armed(surface: &NativeSurface) -> bool {
+        surface.implementation.post_commit_control_armed()
+    }
+
     /// Revokes the native owner generation at the next post-commit boundary.
     pub fn inject_post_commit_close(surface: &NativeSurface) {
         surface.implementation.inject_post_commit_close();

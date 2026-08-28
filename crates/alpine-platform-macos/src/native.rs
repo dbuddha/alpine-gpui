@@ -1304,6 +1304,11 @@ impl PresentationDriver {
     }
 
     #[cfg(alpine_native_validation)]
+    fn post_commit_control_armed(&self) -> bool {
+        self.post_commit_control.is_some()
+    }
+
+    #[cfg(alpine_native_validation)]
     fn inject_post_commit_close(&mut self) {
         self.post_commit_control = Some(PostCommitControl {
             configuration: None,
@@ -4902,6 +4907,13 @@ impl NativeSurface {
         self.driver
             .try_borrow()
             .is_ok_and(|driver| driver.post_commit_omission_armed())
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn post_commit_control_armed(&self) -> bool {
+        self.driver
+            .try_borrow()
+            .is_ok_and(|driver| driver.post_commit_control_armed())
     }
 
     #[cfg(alpine_native_validation)]
