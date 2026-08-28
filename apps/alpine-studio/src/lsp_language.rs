@@ -142,6 +142,12 @@ impl LspDocument {
         }))
     }
 
+    pub(crate) fn did_close_params(&self) -> Result<Box<RawValue>, LanguageProtocolError> {
+        raw_value(&serde_json::json!({
+            "textDocument": { "uri": self.uri }
+        }))
+    }
+
     pub(crate) fn set_version(&mut self, version: i32) {
         self.version = version;
     }
@@ -568,6 +574,9 @@ mod tests {
         assert!(change.get().contains(r#""version":7"#));
         assert!(change.get().contains(r#""start":{"character":0,"line":0}"#));
         assert!(change.get().contains(r#""end":{"character":11,"line":3}"#));
+        let close = document.did_close_params()?;
+        assert!(close.get().contains(r#""uri":"file:///tmp/a%20b.rs""#));
+        assert!(!close.get().contains("version"));
         let mut versioned = document.clone();
         versioned.set_version(8);
         assert_eq!(versioned.version(), 8);

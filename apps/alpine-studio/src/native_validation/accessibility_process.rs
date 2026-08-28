@@ -1096,7 +1096,13 @@ pub fn validate_native_language_startup_prefix(trace: &str) -> Result<(), Box<st
 #[doc(hidden)]
 pub fn validate_native_language_startup_trace(trace: &str) -> Result<(), Box<str>> {
     let evidence = language_server_trace_evidence(trace)?;
-    if evidence.completed_phases == REQUIRED_LANGUAGE_PHASES.len() {
+    if evidence.attempts != 1 {
+        Err(format!(
+            "language startup used {} processes instead of one workspace process",
+            evidence.attempts
+        )
+        .into())
+    } else if evidence.completed_phases == REQUIRED_LANGUAGE_PHASES.len() {
         Ok(())
     } else {
         Err(format!(
@@ -1132,11 +1138,13 @@ fn diagnostic_authority_ready(evidence: crate::NativeValidationLanguageEvidence)
         && evidence.submitted_inputs >= 3
         && evidence.written_inputs >= 3
         && evidence.input_saturations == 0
+        && evidence.process_starts == 1
         && evidence.polls > 0
         && evidence.diagnostic_publications > 0
         && evidence.diagnostic_items > 0
         && stale_language_wakes_are_bounded(evidence)
         && evidence.restarts == 0
+        && evidence.document_switches > 0
         && evidence.invalidations > 0
         && evidence.frame_builds > 1
         && evidence.semantic_revision > 0
@@ -1498,7 +1506,7 @@ mod process_contract_tests {
             completed_language_server_phases(switched),
             REQUIRED_LANGUAGE_PHASES.len()
         );
-        assert_eq!(validate_native_language_startup_trace(switched), Ok(()));
+        assert!(validate_native_language_startup_trace(switched).is_err());
         assert_eq!(
             completed_language_server_phases(
                 "qualification-child\nwrapper-invoked:41\nprocess-spawned:73\n"
@@ -1583,6 +1591,7 @@ mod process_contract_tests {
             process_epoch: 1,
             lsp_version: 1,
             process_queued_events: 0,
+            process_starts: 1,
             submitted_inputs: 3,
             written_inputs: 3,
             input_saturations: 0,
@@ -1591,6 +1600,7 @@ mod process_contract_tests {
             diagnostic_items: 1,
             stale_wakes: 0,
             restarts: 0,
+            document_switches: 1,
             frame_builds: 2,
             semantic_revision: 1,
         };

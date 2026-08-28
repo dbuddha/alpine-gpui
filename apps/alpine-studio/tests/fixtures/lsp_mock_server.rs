@@ -45,6 +45,8 @@ fn run() -> io::Result<()> {
     let mut buffered = Vec::new();
     let mut chunk = [0_u8; 4_096];
     let mut initialized = false;
+    let mut active_document: Option<Box<str>> = None;
+    let mut startup_document_observed = false;
 
     loop {
         let read = input.read(&mut chunk)?;
@@ -73,15 +75,39 @@ fn run() -> io::Result<()> {
                     initialized = true;
                 }
                 Some("textDocument/didOpen") if initialized => {
-                    trace.record("did-open-received")?;
+                    let uri = json_string(message, "uri").ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "missing document URI")
+                    })?;
+                    if active_document.is_some() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "document opened before the active document was closed",
+                        ));
+                    }
+                    active_document = Some(uri.into());
+                    if !startup_document_observed {
+                        trace.record("did-open-received")?;
+                    }
                     write_diagnostics(&mut output, message, false)?;
-                    trace.record("diagnostics-written")?;
+                    if !startup_document_observed {
+                        trace.record("diagnostics-written")?;
+                        startup_document_observed = true;
+                    }
                     write_frame(
                         &mut output,
                         r#"{"jsonrpc":"2.0","method":"test/unrelated-notification"}"#,
                     )?;
                 }
                 Some("textDocument/didChange") if initialized => {
+                    let uri = json_string(message, "uri").ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "missing document URI")
+                    })?;
+                    if active_document.as_deref() != Some(uri) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "document change did not belong to the active document",
+                        ));
+                    }
                     if message.contains("ALPINE_CRASH") {
                         process::exit(7);
                     }
@@ -93,6 +119,18 @@ fn run() -> io::Result<()> {
                         continue;
                     }
                     write_diagnostics(&mut output, message, message.contains("let ok"))?;
+                }
+                Some("textDocument/didClose") if initialized => {
+                    let uri = json_string(message, "uri").ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "missing document URI")
+                    })?;
+                    if active_document.as_deref() != Some(uri) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "document close did not belong to the active document",
+                        ));
+                    }
+                    active_document = None;
                 }
                 Some("textDocument/completion") if initialized => {
                     if message.contains(r#""character":99"#) {
