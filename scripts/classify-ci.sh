@@ -33,7 +33,7 @@ tla=false
 # Changes to the CI control plane must exercise every gate it can select.
 # Classifying these paths selectively would allow the classifier or workflow
 # itself to suppress the evidence required to prove its own correction.
-if matches '^(\.github/workflows/(ci|nightly-assurance)\.yml$|assurance/miri-studio-partitions\.tsv$|scripts/(classify-ci|test-classifier|check-coverage|test-coverage|run-miri-partition|test-miri-partitions)\.sh$)'; then
+if matches '^(\.github/workflows/(ci|nightly-assurance|release-dry-run)\.yml$|assurance/miri-studio-partitions\.tsv$|scripts/(classify-ci|test-classifier|setup-kani|test-setup-kani|check-coverage|test-coverage|run-miri-partition|test-miri-partitions)\.sh$)'; then
     coverage=true
     mutation=true
     kani=true
