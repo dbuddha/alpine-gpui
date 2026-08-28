@@ -58,6 +58,12 @@ ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct \
     cargo test --locked -p alpine-platform-macos --test native_recovery
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_lifecycle
+for iteration in $(seq 1 25); do
+    ALPINE_NATIVE_LIFECYCLE_SCENARIO=missing-close-control \
+        RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
+        cargo test --locked -p alpine-platform-macos --test native_lifecycle
+done
+printf '%s\n' 'native missing-close teardown stress passed 25 iterations'
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_input
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \

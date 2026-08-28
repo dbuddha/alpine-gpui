@@ -185,6 +185,9 @@ mod validation {
         );
         assert!(timeout.expired());
         native_validation::close_window(&surface);
+        let drain = native_validation::arm_run_loop_drain_marker(&surface);
+        drain_framework_work();
+        assert!(drain.executed());
         assert_exact_teardown(native_validation::close_with_owner_evidence(surface)?);
         Ok(())
     }
