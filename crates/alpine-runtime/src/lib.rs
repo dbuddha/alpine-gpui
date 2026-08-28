@@ -2076,10 +2076,7 @@ mod tests {
         let completion = result_receiver.recv_timeout(Duration::from_secs(1))?;
         counters.queued_results.fetch_sub(1, Ordering::AcqRel);
         assert_eq!(completion.token.sequence(), 2);
-        let WorkerOutcome::Completed(value) = completion.outcome else {
-            return Err("worker unexpectedly panicked".into());
-        };
-        assert_eq!(value, 2);
+        assert!(matches!(completion.outcome, WorkerOutcome::Completed(2)));
         assert!(worker.join().is_ok());
         assert_eq!(counters.dropped_results.load(Ordering::Acquire), 0);
         assert_eq!(counters.queued_results.load(Ordering::Acquire), 0);
