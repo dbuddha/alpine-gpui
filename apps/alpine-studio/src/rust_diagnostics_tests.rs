@@ -403,6 +403,64 @@ fn portable_mock_reuses_one_process_across_workspace_document_switches()
 
 #[test]
 #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn portable_mock_replaces_process_for_workspace_change() -> Result<(), Box<dyn Error>> {
+    let (root, path, snapshot, identity) = fixture();
+    let latch = LanguageWakeLatch::default();
+    let mut model = RustDiagnostics::with_server(mock_executable());
+    let wake_latch = latch.clone();
+    assert!(
+        model
+            .sync(
+                Some(RustDocumentInput::new(&path, &root, identity, snapshot)),
+                move |wake| {
+                    let wake_latch = wake_latch.clone();
+                    Arc::new(move || wake_latch.publish(wake))
+                },
+            )
+            .visual_changed
+    );
+    let first = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
+
+    let (other_root, other_path, other_snapshot, mut other_identity) = fixture();
+    other_identity.workspace_id = identity.workspace_id.saturating_add(1);
+    other_identity.document_id = identity.document_id.saturating_add(1);
+    let wake_latch = latch.clone();
+    assert!(
+        model
+            .sync(
+                Some(RustDocumentInput::new(
+                    &other_path,
+                    &other_root,
+                    other_identity,
+                    other_snapshot,
+                )),
+                move |wake| {
+                    let wake_latch = wake_latch.clone();
+                    Arc::new(move || wake_latch.publish(wake))
+                },
+            )
+            .visual_changed
+    );
+    let replaced = wait_for_product_diagnostics(
+        &mut model,
+        &latch,
+        first.diagnostic_publications.saturating_add(1),
+        1,
+        false,
+        true,
+    )?;
+    assert_eq!(replaced.process_starts, 1);
+    assert!(replaced.generation > first.generation);
+    assert_eq!(replaced.document_switches, 0);
+    assert_eq!(replaced.restarts, 0);
+    assert!(!model.shutdown().active);
+    fs::remove_dir_all(root)?;
+    fs::remove_dir_all(other_root)?;
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn portable_mock_protocol_failure_restarts_the_active_document() -> Result<(), Box<dyn Error>> {
     let (root, path, _, mut identity) = fixture();
     let mut buffer = alpine_text::Buffer::new("fn broken( {\n");

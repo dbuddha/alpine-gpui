@@ -782,21 +782,17 @@ impl RustDiagnostics {
             .target
             .as_ref()
             .is_some_and(|current| current.shares_workspace_with(&target));
-        if !shares_workspace || self.session.is_none() {
-            self.stop();
-            self.target = Some(target.clone());
-            let result = self.start(input, target, wake_factory);
-            let status = result.err().map(|error| Arc::from(error.to_string()));
-            return LanguageEffect {
-                visual_changed: replace_status(&mut self.status, status) || self.session.is_some(),
-                continuation: None,
-            };
+        if !shares_workspace {
+            return self.replace_session(input, target, wake_factory);
         }
         if self.target.as_ref() != Some(&target) {
-            return self.switch_document(input, target);
+            if self.session.is_some() {
+                return self.switch_document(input, target);
+            }
+            return self.replace_session(input, target, wake_factory);
         }
         let Some(session) = self.session.as_mut() else {
-            return LanguageEffect::default();
+            return self.replace_session(input, target, wake_factory);
         };
         let mut visual_changed = false;
         if input.identity != session.identity {
@@ -2106,6 +2102,25 @@ impl RustDiagnostics {
         session.synced_snapshot = session.snapshot.clone();
         session.pending_change = false;
         replace_status(&mut self.status, None)
+    }
+
+    fn replace_session<F>(
+        &mut self,
+        input: RustDocumentInput,
+        target: Target,
+        wake_factory: F,
+    ) -> LanguageEffect
+    where
+        F: FnOnce(LanguageWake) -> ProcessWake,
+    {
+        self.stop();
+        self.target = Some(target.clone());
+        let result = self.start(input, target, wake_factory);
+        let status = result.err().map(|error| Arc::from(error.to_string()));
+        LanguageEffect {
+            visual_changed: replace_status(&mut self.status, status) || self.session.is_some(),
+            continuation: None,
+        }
     }
 
     fn switch_document(&mut self, input: RustDocumentInput, target: Target) -> LanguageEffect {

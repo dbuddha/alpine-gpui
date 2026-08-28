@@ -210,6 +210,43 @@ fn document_switch_rejects_invalid_identity_and_preserves_initialization()
 }
 
 #[test]
+fn missing_session_restarts_a_changed_target_without_switching() -> Result<(), Box<dyn Error>> {
+    let (mut model, input, root) = installed_model()?;
+    model.server_path = Some(tests::mock_executable().to_path_buf());
+    let mut previous = model.session.take().ok_or("session")?;
+    let previous_generation = previous.generation;
+    model.next_generation = previous_generation;
+    let _ = previous.client.shutdown();
+    model.status = Some(Arc::from("stale stopped session"));
+    let replacement_path = root.join("replacement.rs");
+    std::fs::write(&replacement_path, "fn replacement() {}\n")?;
+    let mut replacement_identity = input.identity;
+    replacement_identity.document_id = replacement_identity.document_id.saturating_add(1);
+    replacement_identity.document_revision =
+        replacement_identity.document_revision.saturating_add(1);
+    let replacement = RustDocumentInput::new(
+        &replacement_path,
+        &root,
+        replacement_identity,
+        alpine_text::Buffer::new("fn replacement() {}\n").snapshot(),
+    );
+
+    assert!(
+        model
+            .sync(Some(replacement), |_| Arc::new(|| {}))
+            .visual_changed
+    );
+    let snapshot = model.snapshot();
+    assert!(snapshot.active);
+    assert!(snapshot.generation > previous_generation);
+    assert_eq!(snapshot.document_switches, 0);
+
+    assert!(!model.shutdown().active);
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn document_switch_cancels_all_pending_work_and_reports_transport_failure()
 -> Result<(), Box<dyn Error>> {
     let (mut pending, input, pending_root) = installed_model()?;
