@@ -11,6 +11,7 @@ mod validation {
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_metal::RenderError;
+    use alpine_platform::PresentationOutcome;
     use alpine_platform_macos::{
         NativeSurface, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceResponse,
         SurfaceSnapshot, SurfaceWakeAdmission, native_validation,
@@ -99,34 +100,46 @@ mod validation {
             snapshot.installed_presented_handler_count(),
             snapshot.submission_count()
         );
+        assert_eq!(
+            snapshot.submission_count(),
+            snapshot.presented_count() + snapshot.skipped_count() + snapshot.superseded_count()
+        );
         if hosted_direct && snapshot.presented_count() == 0 {
             assert!(first_error.is_none());
-            assert_eq!(snapshot.submission_count(), 1);
-            assert_eq!(snapshot.direct_present_count(), 1);
-            assert_eq!(snapshot.installed_presented_handler_count(), 1);
+            let terminal = snapshot
+                .last_terminal()
+                .ok_or("hosted-direct missing-presentation terminal evidence")?;
+            assert_eq!(terminal.requested_revision().get(), 1);
+            assert_eq!(terminal.frame_revision().get(), 1);
+            assert_eq!(terminal.outcome(), PresentationOutcome::Failed);
+            assert_eq!(terminal.submission_count(), 1);
+            assert_eq!(terminal.present_call_count(), 1);
+            assert!(terminal.eligible_at_commit());
+            assert_eq!(terminal.observed_presentation_time_bits(), 0);
+            assert_eq!(terminal.retained_bytes(), 0);
             assert_eq!(snapshot.occupied_frame_slots(), 0);
             assert_eq!(snapshot.submitted_frame_slots(), 0);
             assert_eq!(snapshot.last_presented_time_bits(), 0);
-            assert_eq!(snapshot.skipped_count(), 1);
-            assert_eq!(snapshot.failed_count(), 1);
+            assert!(snapshot.skipped_count() >= 1);
+            assert!(snapshot.failed_count() >= 1);
             assert!(snapshot.callback_count() >= 2);
             assert!(snapshot.display_link_paused());
             eprintln!(
-                "hosted-direct evidence: one callback drawable was committed, directly presented, reported not presented by Core Animation, released, and not retried"
+                "hosted-direct evidence: the latest callback drawable was committed, directly presented, reported not presented by Core Animation, and released"
             );
             return Ok(None);
         }
         if let Some(error) = first_error {
             return Err(error.into());
         }
-        assert_eq!(snapshot.presented_count(), 1);
+        if hosted_direct {
+            assert!(snapshot.presented_count() >= 1);
+        } else {
+            assert_eq!(snapshot.presented_count(), 1);
+        }
         assert_eq!(snapshot.occupied_frame_slots(), 0);
         assert_eq!(snapshot.submitted_frame_slots(), 0);
         assert_ne!(snapshot.last_presented_time_bits(), 0);
-        assert_eq!(
-            snapshot.skipped_count(),
-            snapshot.submission_count() - snapshot.presented_count()
-        );
         assert_eq!(snapshot.failed_count(), 0);
         assert!(snapshot.callback_count() >= 2);
         assert!(snapshot.display_link_paused());
