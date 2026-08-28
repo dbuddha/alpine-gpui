@@ -11,11 +11,13 @@
 | ALP-S005 | [Alpine workspace-edit preparation](https://github.com/dbuddha/alpine-gpui/tree/e2564055622dce3a7d1f277d52fc53e34c16e916) | `e256405...` | Alpine repository | Exact merge implementing strict rename and formatting admission plus immutable off-thread preparation from PR #348 |
 | LAB-S001 | [alpine-zed-lab](https://github.com/dbuddha/alpine-zed-lab/tree/13fade6ac4c344a6bf40295544c49971ddfecb96) | `13fade6ac4c344a6bf40295544c49971ddfecb96` | Isolated GPL laboratory | Exact merged adapter and correctness-evidence generator |
 | ZED-S001 | [Zed comparator pin](https://github.com/zed-industries/zed/tree/e17dc4f9d50db73a458b64dcce50ecd4878b98a3) | `v1.15.0`, `e17dc4f...` | GPUI crate is Apache-2.0; Zed application source is GPL-3.0-or-later | Immutable accepted comparator |
-| ZED-S002 | [Zed current stable review](https://github.com/zed-industries/zed/tree/eb8e1c8b5502b7007465fbbc465f4a736fa39210) | `v1.16.1`, `eb8e1c8...` | Same split boundary | Drift review only; does not change comparator pin |
+| ZED-S002 | [Zed prior stable review](https://github.com/zed-industries/zed/tree/eb8e1c8b5502b7007465fbbc465f4a736fa39210) | `v1.16.1`, `eb8e1c8...` | Same split boundary | Retained prior drift review |
+| ZED-S003 | [Zed current stable review](https://github.com/zed-industries/zed/tree/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a) | `v1.17.2`, `c8e44cf...` | Same split boundary | Current drift review only; immutable comparator remains v1.15.0 |
 | WGPU-S001 | [WGPU accepted study](https://github.com/gfx-rs/wgpu/tree/8ee190c6f151c731a4f8cfd9a102d6ee5903460a) | `8ee190c...` | MIT OR Apache-2.0 | E2 architecture and experiment source |
-| WGPU-S002 | [WGPU current release](https://github.com/gfx-rs/wgpu/tree/40f4a34ebaf56f9a046231f54125ad046239d3f3) | `v30.0.1`, `40f4a34...` | MIT OR Apache-2.0 | Pending patch-delta review under #302 |
+| WGPU-S002 | [WGPU current release](https://github.com/gfx-rs/wgpu/tree/40f4a34ebaf56f9a046231f54125ad046239d3f3) | `v30.0.1`, `40f4a34...` | MIT OR Apache-2.0 | Reviewed under #302; release branch is 180 commits behind and five commits divergent from the radar baseline |
 | AWG-S001 | [awesome-gpui accepted survey](https://github.com/zed-industries/awesome-gpui/tree/cf11f85a1420dfc5a7f64bc159aacba8133a2f35) | `cf11f85...` | CC0-1.0 | Workload discovery only |
-| AWG-S002 | [awesome-gpui current review](https://github.com/zed-industries/awesome-gpui/tree/657169337a19a5b27f9aa7e53811e6f82b7f213c) | `6571693...` | CC0-1.0 | Catalog drift review only |
+| AWG-S002 | [awesome-gpui prior review](https://github.com/zed-industries/awesome-gpui/tree/657169337a19a5b27f9aa7e53811e6f82b7f213c) | `6571693...` | CC0-1.0 | Retained prior catalog review |
+| AWG-S003 | [awesome-gpui current review](https://github.com/zed-industries/awesome-gpui/tree/f3889e71920ffbe8affa0f133c3db6ce6b06af76) | `f3889e7...` | CC0-1.0 | Discovery-only catalog delta; no implementation evidence |
 
 ## GPUI and Zed source anchors
 
@@ -27,6 +29,10 @@
 | ZGP-S004 | [Line layout cache](https://github.com/zed-industries/zed/blob/eb8e1c8b5502b7007465fbbc465f4a736fa39210/crates/gpui/src/text_system/line_layout.rs#L393) | GPUI retains current and previous frame text layout state |
 | ZGP-S005 | [Metal completion handler](https://github.com/zed-industries/zed/blob/eb8e1c8b5502b7007465fbbc465f4a736fa39210/crates/gpui_macos/src/metal_renderer.rs#L529) | Reusable GPU ownership follows terminal command completion |
 | ZGP-S006 | [GPUI architecture README](https://github.com/zed-industries/zed/blob/eb8e1c8b5502b7007465fbbc465f4a736fa39210/crates/gpui/README.md) | GPUI describes a hybrid immediate/retained model, entity state, elements, actions, async execution, and test support |
+| ZGP-S007 | [Current GPUI scene](https://github.com/zed-industries/zed/blob/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a/crates/gpui/src/scene.rs) | Blob `ea0f5d7e...` is byte-identical to the immutable comparator scene |
+| ZGP-S008 | [Current line-layout cache](https://github.com/zed-industries/zed/blob/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a/crates/gpui/src/text_system/line_layout.rs) | Blob `5e85cefb...` is byte-identical to the immutable comparator cache |
+| ZGP-S009 | [Current Apple Metal renderer](https://github.com/zed-industries/zed/blob/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a/crates/gpui_apple/src/metal_renderer.rs) and [atlas](https://github.com/zed-industries/zed/blob/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a/crates/gpui_apple/src/metal_atlas.rs) | Crate move plus five visibility widenings; audited render and atlas behavior is unchanged |
+| ZGP-S010 | [Current profiler](https://github.com/zed-industries/zed/blob/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a/crates/gpui/src/profiler.rs) and [debug overlay](https://github.com/zed-industries/zed/blob/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a/crates/gpui/src/debug_overlay.rs) | Bounded task, frame-event, and draw-sample diagnostics; present timing is recorded after `platform_window.draw`, not at compositor or optical presentation |
 | ZED-S101 | [Zed text model](https://github.com/zed-industries/zed/blob/eb8e1c8b5502b7007465fbbc465f4a736fa39210/crates/text/src/text.rs#L16) | Zed text includes replica identity and operation-oriented state needed for collaboration |
 | ZED-S102 | [Zed editor crate](https://github.com/zed-industries/zed/tree/eb8e1c8b5502b7007465fbbc465f4a736fa39210/crates/editor) | Full editor behavior and rendering source |
 | ZED-S103 | [Zed workspace crate](https://github.com/zed-industries/zed/tree/eb8e1c8b5502b7007465fbbc465f4a736fa39210/crates/workspace) | Broad workspace, actions, persistence, and pane behavior |
@@ -62,7 +68,7 @@ architecture, correctness, performance, or memory behavior.
 ## Known source limitations
 
 - Zed application source may explain behavior, but GPL application code remains isolated from Alpine shipping implementation.
-- Current Zed stable is a drift-review source, not the accepted comparator revision.
+- Current Zed stable is a drift-review source, not the accepted comparator revision; prior v1.16.1 anchors remain immutable evidence for their own snapshot.
 - WGPU experiments in Alpine are designed but not yet reproduced, so their ceiling is E2.
 - Sublime Text internals are proprietary and cannot provide code lineage evidence.
 - awesome-gpui is unsuitable for performance or implementation claims.

@@ -88,6 +88,17 @@ validate_revision() {
     esac
 }
 
+require_current_main() {
+    root=$1
+    command -v git >/dev/null 2>&1 || fail 'git is required for revision validation'
+    [ -z "$(git -C "$root" status --porcelain)" ] || fail 'source checkout must be clean'
+    [ "$(git -C "$root" symbolic-ref --short HEAD 2>/dev/null || true)" = main ] || fail 'source checkout must be on main'
+    head=$(git -C "$root" rev-parse HEAD)
+    upstream=$(git -C "$root" rev-parse origin/main 2>/dev/null || true)
+    [ -n "$upstream" ] && [ "$head" = "$upstream" ] || fail 'source HEAD must equal origin/main'
+    printf '%s\n' "$head"
+}
+
 render() {
     revision=$1
     output=$2
@@ -124,13 +135,8 @@ publish() {
     wiki_root=$(CDPATH= cd -- "$1" && pwd)
     root=$2
     validate_source "$root"
-    command -v git >/dev/null 2>&1 || fail 'git is required for publication'
-    [ -z "$(git -C "$root" status --porcelain)" ] || fail 'source checkout must be clean'
-    [ "$(git -C "$root" symbolic-ref --short HEAD 2>/dev/null || true)" = main ] || fail 'source checkout must be on main'
-    head=$(git -C "$root" rev-parse HEAD)
-    upstream=$(git -C "$root" rev-parse origin/main 2>/dev/null || true)
-    [ -n "$upstream" ] && [ "$head" = "$upstream" ] || fail 'source HEAD must equal origin/main'
-    remote=$(git -C "$wiki_root" remote get-url origin 2>/dev/null || true)
+    head=$(require_current_main "$root")
+    remote=$(git -C "$wiki_root" config --get remote.origin.url 2>/dev/null || true)
     [ "$remote" = 'https://github.com/dbuddha/alpine-gpui.wiki.git' ] || fail 'Wiki checkout has an unexpected origin URL'
 
     for existing in "$wiki_root"/*.md; do
@@ -148,12 +154,43 @@ publish() {
     printf 'Wiki pages rendered from %s. Review, commit, and push the Wiki checkout separately.\n' "$head"
 }
 
+audit_remote() {
+    wiki_root=$(CDPATH= cd -- "$1" && pwd)
+    root=$2
+    validate_source "$root"
+    head=$(require_current_main "$root")
+    remote=$(git -C "$wiki_root" config --get remote.origin.url 2>/dev/null || true)
+    [ "$remote" = 'https://github.com/dbuddha/alpine-gpui.wiki.git' ] || fail 'Wiki checkout has an unexpected origin URL'
+
+    # This fetch updates only the local remote-tracking ref. The audit has no
+    # commit or push path and therefore cannot mutate the live Wiki repository.
+    git -C "$wiki_root" fetch --quiet origin master || fail 'could not fetch Wiki origin/master'
+    wiki_revision=$(git -C "$wiki_root" rev-parse refs/remotes/origin/master 2>/dev/null || true)
+    validate_revision "$wiki_revision"
+
+    temporary=$(mktemp -d "${TMPDIR:-/tmp}/alpine-wiki-audit.XXXXXX")
+    trap 'rm -rf "$temporary"' EXIT HUP INT TERM
+    render "$head" "$temporary/rendered" "$root"
+    printf '%s\n' "$expected_pages" | sed 's/$/.md/' | sort > "$temporary/expected-pages"
+    git -C "$wiki_root" ls-tree -r --name-only "$wiki_revision" | sort > "$temporary/remote-pages"
+    cmp -s "$temporary/expected-pages" "$temporary/remote-pages" || fail 'live Wiki page inventory differs from the approved bounded set'
+
+    while IFS= read -r page; do
+        git -C "$wiki_root" show "$wiki_revision:$page.md" > "$temporary/$page.md" || fail "could not read live Wiki page: $page.md"
+        cmp -s "$temporary/rendered/$page.md" "$temporary/$page.md" || fail "live Wiki page is stale or divergent: $page.md"
+    done <<EOF
+$expected_pages
+EOF
+    printf 'Live Wiki %s matches repository main %s.\n' "$wiki_revision" "$head"
+}
+
 usage() {
     cat >&2 <<'EOF'
 usage:
   scripts/wiki.sh validate [REPO_ROOT]
   scripts/wiki.sh render REVISION OUTPUT [REPO_ROOT]
   scripts/wiki.sh publish WIKI_ROOT [REPO_ROOT]
+  scripts/wiki.sh audit-remote WIKI_ROOT [REPO_ROOT]
 EOF
     exit 2
 }
@@ -181,6 +218,13 @@ case "$command" in
         shift
         root=$(root_for "$@")
         publish "$wiki_root" "$root"
+        ;;
+    audit-remote)
+        [ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage
+        wiki_root=$1
+        shift
+        root=$(root_for "$@")
+        audit_remote "$wiki_root" "$root"
         ;;
     *) usage ;;
 esac

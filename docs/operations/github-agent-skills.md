@@ -25,12 +25,34 @@ scripts/install-agent-skills.sh --remove-links
 
 Issues own live work and approval. Projects own views and planning metadata. Repository Markdown and mdBook own durable technical truth. Wiki is generated navigation. Releases own shipped-version facts and assets. Skills cannot lower repository gates.
 
+Wiki source checks are deliberately offline. They prove templates, manifests,
+links, and deterministic rendering but not the content currently published on
+GitHub. Before reporting the live Wiki as current, use a clean exact `main`
+checkout and run:
+
+```sh
+scripts/wiki.sh audit-remote /path/to/alpine-gpui-wiki
+```
+
+The audit fetches and compares without a commit or push path. Failed remote
+access means freshness is unknown.
+
 The [project execution package](../project/README.md) owns the stable
 daily-driver path, milestone gate semantics, operating model, claim readiness,
 and deferred scope. The [lineage package](../research/alpine-lineage/index.md)
 owns mechanism origin, Alpine modifications, historical supersession, and
 evidence ceilings. `docs/SUMMARY.md` only exposes these pages in mdBook
 navigation.
+
+## Publication-state reporting
+
+Name the exact state when bridging local work to GitHub: local commit, pushed
+branch, open pull request, merged repository source, published Wiki, or audited
+live Wiki. Include the corresponding commit, pull request, merge, and Wiki
+revision identities when they exist. An Issue comment can retain the location
+of a local candidate, but it does not make that candidate published. Likewise,
+merged templates do not make the live Wiki current until publication and the
+fetched-remote audit both succeed.
 
 ## Project access preflight
 
@@ -80,4 +102,6 @@ scripts/test-agent-skills.sh
 scripts/check.sh
 ```
 
-Checks cover metadata, resources, triggers, overwrite refusal, idempotency, owned-link removal, foreign-link preservation, mdBook navigation, and Wiki integrity.
+Checks cover metadata, resources, triggers, overwrite refusal, idempotency,
+owned-link removal, foreign-link preservation, mdBook navigation, local Wiki
+integrity, and deterministic fake-remote Wiki drift detection.

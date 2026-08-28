@@ -16,6 +16,24 @@ historical or release material. Retrieval date is 2026-08-18.
 | WGPU-S006 | [Current reviewed pin](https://github.com/gfx-rs/wgpu/tree/8ee190c6f151c731a4f8cfd9a102d6ee5903460a) | Primary source | Current research identity | Snapshot, not a claim about future releases |
 | WGPU-S007 | [Remote-core extraction commit](https://github.com/gfx-rs/wgpu/commit/5cd735daf) | Primary source | Major delta after the historical pin | Mostly outside Alpine v1 scope |
 | WGPU-S008 | [Locking migration commit](https://github.com/gfx-rs/wgpu/commit/8573e7a44) | Primary source | Synchronization delta after the historical pin | Does not establish performance impact |
+| WGPU-S009 | [v30.0.1 stable release](https://github.com/gfx-rs/wgpu/tree/40f4a34ebaf56f9a046231f54125ad046239d3f3) | Primary source | Current stable artifact and release-branch delta under #302 | Diverges from the upstream-main radar baseline; direct diff is not chronological |
+
+### v30.0.1 branch topology
+
+A local partial Git comparison reproduced these exact identities:
+
+- radar baseline `ee5cfb074fd0c4e318b5f8608df504678e4e17ac`;
+- stable release `40f4a34ebaf56f9a046231f54125ad046239d3f3`;
+- merge base `8bf3e5ff4ab45e2c150e0d6c70d01d25f5b126c1`;
+- divergence of 180 baseline-only and five release-only commits.
+
+The release-only Metal commit
+[`5e1084c3`](https://github.com/gfx-rs/wgpu/commit/5e1084c3e33763c5495dfd1262fc0482c4f3f444)
+backports dynamic CoreGraphics color-space symbol lookup. The baseline already
+contains the corresponding upstream change and a later availability guard.
+No release-only presentation, command-submission, staging, allocation, or
+resource-lifetime mechanism changes an Alpine decision. This is E2 source
+evidence only.
 
 ## Public API and ownership
 

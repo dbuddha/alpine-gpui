@@ -28,6 +28,27 @@ base for Alpine. GPL application code, assets, patches, and build products stay
 inside `alpine-zed-lab`. GPUI concepts may influence an independently designed
 Alpine boundary, but source adaptation requires separate provenance approval.
 
+## Current-stable product delta at v1.17.2
+
+Research [#96](https://github.com/dbuddha/alpine-gpui/issues/96) reviewed Zed
+[`v1.17.2`](https://github.com/zed-industries/zed/tree/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a)
+as a drift source. It does not replace the immutable v1.15.0 product
+comparator.
+
+The relevant GPUI scene and line-layout sources are byte-identical, and the
+Metal renderer and atlas changes are crate movement plus internal visibility
+widening. The reviewed editor delta adds no local text, viewport, rendering,
+input, or memory mechanism that changes Alpine's implementation plan. Current
+macOS work is fullscreen lifecycle, current image-clipboard work targets the
+web path, and Tree-sitter worker pinning addresses a web-main-thread
+rendezvous. None justifies importing Zed's executor or broad product runtime.
+
+The local-only boundary remains unchanged: AI, collaboration, cloud, remote,
+telemetry, extensions, terminal, Git UI, and marketplace systems stay outside
+M5. The only carried findings are the existing demand-driven wake contract,
+the profiler endpoint limitation, and the still-unproven present-only-tail
+experiment.
+
 ## Product decomposition
 
 ### Keep for the first daily driver

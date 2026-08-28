@@ -48,7 +48,8 @@ The workspace currently provides:
   hard-budgeted glyph and line caches;
 - Alpine Studio file and folder launch, virtualized file tree, tabs, bounded
   splits, find and replace, quick open, command discovery, project search,
-  restoration, compiled syntax, typed settings, keyboard, pointer, clipboard,
+  restoration, compiled syntax, bounded local settings reload and migration,
+  typed themes and keymaps, keyboard, pointer, clipboard,
   IME, and revisioned accessibility semantics;
 - a bounded local process, JSON-RPC, and LSP path qualified with a pinned
   `rust-analyzer`, including revision-safe visible Rust diagnostics and no
@@ -57,8 +58,8 @@ The workspace currently provides:
   rustdoc, coverage, changed-code mutation, selected models and proofs,
   three-platform CI, native Metal validation, and scheduled assurance.
 
-Remaining daily-driver work includes richer Rust intelligence, configuration
-reload and migration, native VoiceOver and lifecycle qualification, sustained
+Remaining daily-driver work includes rename and formatting publication, native
+VoiceOver and lifecycle qualification, sustained
 repository dogfood, and defect closure. Fixed-hardware comparator evidence,
 API stabilization, signing, notarization, packaging, and release support remain
 later gates. The exact implemented boundaries and invariants are documented in

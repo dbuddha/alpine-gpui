@@ -30,7 +30,7 @@ The comparison therefore has two views:
 | S12 | Find and replace | Zed editor search | Bounded in-file find/replace | Independent editor behavior |
 | S13 | Project search | Zed project search | Streaming local search with inventory/read/result/batch caps | Narrow local adaptation with graceful truncation |
 | S14 | Built-in syntax | Zed language registry and Tree-sitter ecosystem | Compiled Rust, Markdown, TOML, JSON, and plain-text cohort | Smaller static implementation; no grammar extension API |
-| S15 | Typed settings, themes, keymaps | Zed settings and dynamic registrations | Central compiled schema and deterministic layering | Implemented core; reload and migration remain open in #222 |
+| S15 | Typed settings, themes, keymaps | Zed settings and dynamic registrations | Central compiled schema, deterministic layering, bounded worker-backed local reload, and accepted in-memory migration under [#222](https://github.com/dbuddha/alpine-gpui/issues/222) | Narrower static implementation with explicit file, JSON, generation, and retained-memory limits; no watcher or runtime registration |
 | S16 | Local language process | Zed project/language/LSP stores | Bounded child process, framing, JSON-RPC, lifecycle, pinned rust-analyzer | Narrow independent transport; no remote server or extension host |
 | S17 | Diagnostics | Zed editor/project language integration | Revision-safe bounded Rust diagnostics | Behavioral subset implemented |
 | S18 | Completion | Zed editor completion and language stores | Revision-safe bounded Rust completion | Behavioral subset implemented |
@@ -41,7 +41,7 @@ The comparison therefore has two views:
 | S23 | Local diagnostic evidence | Zed diagnostics/profiling facilities | Frame, cache, residency tools, event-to-present correlation and signposts | Alpine-specific claim discipline; external physical capture pending |
 | S24 | Sustained repository dogfood | Zed is a mature production editor | Open #224 and #238 through #242; visible typing defect #304 | Blocking qualification, not a polish item |
 
-Twenty rows implement their selected behavior. S15, S20, and S22 have
+Twenty-one rows implement their selected behavior. S20 and S22 have
 production implementation but incomplete reload/migration, edit publication,
 or physical qualification, and S24 remains incomplete. Twenty-three rows
 therefore have some production implementation. These counts are an inventory,
@@ -109,8 +109,9 @@ complete before daily-driver acceptance.
 
 Zed supports a broad evolving settings and extension ecosystem. Alpine compiles
 one typed schema, static command set, built-in syntax cohort, themes, and
-keymaps. The smaller model prevents runtime registration weight, but safe reload,
-migration, diagnostics, and project override behavior still need #222.
+keymaps. The smaller model prevents runtime registration weight. Task #222 adds
+bounded global and project reload, closed-schema diagnostics, migration, and
+current-generation publication without a watcher or dynamic registry.
 
 ## Fair product comparison
 
