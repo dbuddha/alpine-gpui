@@ -100,6 +100,7 @@ dependencies = [
  "alpine-text-layout",
  "ignore",
  "mutants",
+ "same-file",
  "serde",
  "serde_json",
 ]
