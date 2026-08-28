@@ -5,7 +5,11 @@
 
 The prior four-bullet summary has been replaced by a revision-pinned research
 package. The reviewed source identity is
-`8ee190c6f151c731a4f8cfd9a102d6ee5903460a`, with `v30.0.0` as release context.
+`8ee190c6f151c731a4f8cfd9a102d6ee5903460a`, with `v30.0.0` as its accepted
+release context. Current stable `v30.0.1` at
+`40f4a34ebaf56f9a046231f54125ad046239d3f3` is tracked separately: its release
+branch diverges from the upstream-main radar baseline, and its sole
+release-only Metal patch adds no new Alpine-relevant performance mechanism.
 
 WGPU is factored into Alpine as:
 

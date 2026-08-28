@@ -134,9 +134,10 @@ Required correction:
 
 ### P2: upstream drift is separated but not yet operationally closed
 
-Zed stable moved from v1.15.0 to v1.16.1 and WGPU to v30.0.1. Keeping the
-comparator immutable is correct. Leaving #95, #96, #302, and #100 open without a
-bounded delta report creates indefinite research debt.
+Zed stable moved from v1.15.0 to v1.17.2 and WGPU to v30.0.1. Keeping the
+comparator immutable is correct. Bounded source-delta reports now exist for
+#95, #96, #302, and #100. Leaving them open after their durable source-map
+updates merge would create indefinite research debt.
 
 Required correction: review only changed mechanisms relevant to Alpine, record
 adopt/reject/no-change decisions, and close the narrative research independently

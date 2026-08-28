@@ -5,8 +5,11 @@ reviewed: 2026-08-18
 reviewed_revision: 8ee190c6f151c731a4f8cfd9a102d6ee5903460a
 historical_revision: ee5cfb074fd0c4e318b5f8608df504678e4e17ac
 release_context: v30.0.0
+current_release_revision: 40f4a34ebaf56f9a046231f54125ad046239d3f3
+current_release_context: v30.0.1
 owner_requirement: 132
 research_issue: 99
+upstream_research_issue: 302
 task: 202
 ---
 
@@ -40,6 +43,7 @@ shipping dependency or substitute for direct Metal.
 | Primary source inspection | Complete at reviewed revision |
 | Historical-to-current delta | Complete for Alpine-relevant paths |
 | Official release review | Complete for v30.0.0 |
+| Current stable delta | Complete for v30.0.1 with release-branch topology separated from upstream main |
 | Alpine design inference | Recorded separately from source facts |
 | Differential correctness experiment | Designed, not run |
 | Performance or memory comparison | Not run; no claim permitted |
@@ -57,9 +61,10 @@ shipping dependency or substitute for direct Metal.
 
 ## Provenance and update rule
 
-Research #23 remains the historical baseline. Research #99 owns this
-re-evaluation. Task #202 owns the retained package and roadmap reconciliation.
-The current source pin is immutable evidence even after upstream advances.
+Research #23 remains the historical baseline. Research #99 owns the accepted
+package, Research #302 owns the v30.0.1 branch-topology delta, and Task #202
+owns the retained package and roadmap reconciliation. Every source pin remains
+immutable evidence after upstream advances.
 
 A future update must create or reopen an upstream-research record, select a new
 exact revision, record the delta from this pin, and state which findings changed.
