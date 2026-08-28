@@ -4482,24 +4482,48 @@ fn runtime_quick_open_worker_admits_inventory_and_ranked_results()
         alpine_platform_macos::SurfaceOperation::Application,
     ))?;
     let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let (wake_sender, wake_receiver) = std::sync::mpsc::sync_channel(2);
+    runtime.set_worker_waker(move || {
+        let _ = wake_sender.try_send(());
+    });
     let command = Modifiers::from_bits(Modifiers::COMMAND);
+    let worker_baseline = runtime.snapshot().worker();
 
     let pending = runtime
         .dispatch(&key(KEY_P, command))
         .ok_or("quick-open frame")?;
     let pending_quads = pending.scene().quads().len();
-    let mut admitted = false;
-    for timestamp in 300..812 {
-        std::thread::sleep(std::time::Duration::from_millis(1));
+    let wake_timeout = std::time::Duration::from_secs(if cfg!(miri) { 60 } else { 5 });
+    let mut timestamp = 300_u64;
+    let ranked = loop {
+        if runtime.snapshot().worker().queued_results() == 0 {
+            wake_receiver.recv_timeout(wake_timeout).map_err(|error| {
+                format!(
+                    "failed awaiting quick-open worker wake ({error:?}): {:?}",
+                    runtime.snapshot()
+                )
+            })?;
+        }
         if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
             timestamp: EventTimestamp::new(timestamp),
         }) && frame.scene().quads().len() > pending_quads
         {
-            admitted = true;
-            break;
+            break frame;
         }
-    }
-    assert!(admitted);
+        timestamp = timestamp.checked_add(1).ok_or("wake timestamp exhausted")?;
+    };
+    assert_ne!(ranked.scene().revision(), pending.scene().revision());
+
+    let snapshot = runtime.snapshot();
+    assert_eq!(
+        snapshot.worker().dropped_results(),
+        worker_baseline.dropped_results()
+    );
+    assert_eq!(
+        snapshot.worker().panicked_jobs(),
+        worker_baseline.panicked_jobs()
+    );
+    assert_eq!(snapshot.stale_results(), 0);
     Ok(())
 }
 

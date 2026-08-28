@@ -3,7 +3,7 @@
 - Status: accepted 2026-08-15
 - Capability: [#28](https://github.com/dbuddha/alpine-gpui/issues/28)
 - Requirements: [#37](https://github.com/dbuddha/alpine-gpui/issues/37), [#32](https://github.com/dbuddha/alpine-gpui/issues/32), [#34](https://github.com/dbuddha/alpine-gpui/issues/34)
-- Tasks: [#124](https://github.com/dbuddha/alpine-gpui/issues/124), [#210](https://github.com/dbuddha/alpine-gpui/issues/210), [#211](https://github.com/dbuddha/alpine-gpui/issues/211), [#215](https://github.com/dbuddha/alpine-gpui/issues/215)
+- Tasks: [#124](https://github.com/dbuddha/alpine-gpui/issues/124), [#210](https://github.com/dbuddha/alpine-gpui/issues/210), [#211](https://github.com/dbuddha/alpine-gpui/issues/211), [#215](https://github.com/dbuddha/alpine-gpui/issues/215), [#389](https://github.com/dbuddha/alpine-gpui/issues/389)
 - Decision: [#137](https://github.com/dbuddha/alpine-gpui/issues/137)
 - Research: [#118](https://github.com/dbuddha/alpine-gpui/issues/118)
 
@@ -20,9 +20,13 @@ windows.
 
 - **AEP-0137-C01:** One `Application` owns one foreground delegate and a fixed
   number of standard worker threads. Request and result channels are bounded;
-  foreground submission never waits for capacity; saturation and omitted
-  results are counted. Independent local producers use a separate fixed result
-  queue with item, retained-byte, wake, rejection, and drain accounting.
+  foreground submission never waits for capacity; request saturation is
+  counted. A completed standard worker waits at the bounded result channel
+  instead of omitting accepted work; foreground disconnection is counted.
+  Pending standard-worker completions are bounded by result capacity plus one
+  owned completion per fixed worker.
+  Independent local producers use a separate fixed result queue with item,
+  retained-byte, wake, rejection, and drain accounting.
 - **AEP-0137-C02:** Standard worker requests and results carry workspace,
   document, and process-local sequence identity; only results matching both
   current revisions reach application state. Independent producer payloads
@@ -45,11 +49,13 @@ windows.
 
 Workspace and document revisions advance monotonically. Worker panic is caught
 at the thread boundary and never unwinds through application or native code.
-Result-channel saturation drops the result with evidence rather than blocking a
-worker indefinitely. External result admission serializes only the nonblocking
-channel operation, rejects capacity or shutdown structurally, and never exposes
-native handles. Returned scenes with the wrong revision or viewport are rejected
-while dirty state remains pending.
+Result-channel saturation backpressures only a standard background worker and
+never omits an accepted completion. Shutdown disconnects the result receiver
+before joining workers so blocked publication terminates without deadlock;
+completion omitted after disconnection is counted. External result admission
+serializes only the nonblocking channel operation, rejects capacity or shutdown
+structurally, and never exposes native handles. Returned scenes with the wrong
+revision or viewport are rejected while dirty state remains pending.
 
 The runtime owns no native handles. `AppContext` exposes invalidation, revision
 advance, nonblocking job submission, and a cloneable `ExternalProducer` whose
@@ -63,16 +69,19 @@ redraw is introduced.
 
 [`RuntimeHandoff.tla`](../../formal/tla/aep-0137/RuntimeHandoff.tla)
 models fixed request and result queue capacities, tagged job ownership,
-revision advances, saturation, result omission, panic, current application,
-stale rejection, and shutdown cancellation. `BoundedRequestQueue` and
-`BoundedResultQueue` enforce the channel ceilings.
+revision advances, request saturation, backpressured completion, panic, current
+application, stale rejection, and shutdown cancellation. `BoundedRequestQueue`
+and `BoundedResultQueue` enforce the channel ceilings;
+`BoundedWorkers` and `BoundedCompletionOwnership` constrain retained completion
+ownership across workers and the result queue.
 `CurrentApplicationIsCurrent` prevents stale foreground mutation, and
-`ShutdownEventuallyDrains` supplies the bounded model's progress contract.
+`RunningEventuallyResolves` and `ShutdownEventuallyDrains` supply the bounded
+model's completion and shutdown progress contracts.
 
 The deliberately faulty configuration applies one stale result as current and
 must violate `CurrentApplicationIsCurrent`. `WorkerPool::submit` maps to
 `Admit` or `RecordSaturation`; worker receive and terminal production map to
-`Start`, `Complete`, `DropResult`, and `PanicJob`; foreground draining maps to
+`Start`, capacity-gated `Complete`, and `PanicJob`; foreground draining maps to
 `ApplyCurrent` or `RejectStale`; runtime close maps to `BeginShutdown` and
 `CancelOwned`. This is model checking of the stated abstraction, not a formal
 refinement proof of Rust or standard-library channels.
@@ -95,14 +104,15 @@ qualification work.
 
 Unit controls cover worker and external saturation, external wake coalescing,
 cross-revision external delivery, stale worker rejection, retained-byte release,
-shutdown revocation, worker panic, invalid scene rejection, and clean-idle frame
-behavior. Studio's language composition additionally preserves one latest
-process-wake generation across temporary shared-queue saturation, admits
-diagnostics through exact application identity, and leaves stale or unchanged
-language output non-invalidating. TLA+ covers the original revision-stamped
-worker handoff and shutdown
-abstraction; it does not claim the later independent producer extension. Native
-validation proves the complete event value vocabulary crosses the retained
+result backpressure, shutdown disconnection, shutdown revocation, worker panic,
+invalid scene rejection, and clean-idle frame behavior. Studio's language
+composition additionally preserves one latest process-wake generation across
+temporary shared-queue saturation, admits diagnostics through exact application
+identity, and leaves stale or unchanged language output non-invalidating. TLA+
+covers the revision-stamped worker handoff, capacity-gated completion, and
+shutdown abstraction; it does not claim the later independent producer
+extension. Native validation proves the complete event value vocabulary crosses
+the retained
 delegate seam and that owner teardown remains balanced. Hosted mutation, Miri,
 coverage, and `ci-pass` remain merge gates.
 
