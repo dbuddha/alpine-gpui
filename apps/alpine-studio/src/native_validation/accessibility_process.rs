@@ -12,7 +12,7 @@ use std::{
 
 use alpine_platform_macos::{
     AccessibilityRole, CloseDisposition, EventTimestamp, InputEpoch, NativeSurface,
-    SurfaceDescriptor, SurfaceEvent, SurfaceLifecycle, SurfaceOperation,
+    SurfaceDescriptor, SurfaceEvent, SurfaceLifecycle, SurfaceOperation, SurfaceSnapshot,
     native_validation as platform_validation,
 };
 use alpine_runtime::{Application, WorkerConfig};
@@ -242,6 +242,7 @@ fn qualify_workspace(
         .frame_if_dirty()
         .ok_or("Studio did not build its initial accessibility frame")?;
     let (scene, clear) = initial_frame.into_parts();
+    let initial_frame_baseline = surface.snapshot();
     let _revision = surface
         .request_frame(scene, clear)
         .map_err(|error| format!("initial native accessibility frame request failed: {error}"))?;
@@ -260,8 +261,13 @@ fn qualify_workspace(
         )?;
     }
     let state = Rc::new(RefCell::new(application));
-    await_frame_terminal(&surface, &state, FRAME_TERMINAL_TIMEOUT)
-        .map_err(|error| format!("initial native accessibility frame failed: {error}"))?;
+    await_frame_terminal(
+        &surface,
+        &state,
+        initial_frame_baseline,
+        FRAME_TERMINAL_TIMEOUT,
+    )
+    .map_err(|error| format!("initial native accessibility frame failed: {error}"))?;
 
     let mut timestamp = 10_u64;
     dispatch(
@@ -416,14 +422,24 @@ fn qualify_workspace(
             require_dispatch_failure(&surface, &state, &diagnostic_label)?;
     }
     if omitted_step != Some(OmittedStep::Edit) {
+        let first_edit_baseline = surface.snapshot();
         platform_validation::commit_native_text(&surface, "// alpine\n", event_handler(&state))
             .map_err(|error| format!("first native editor text commit failed: {error}"))?;
-        await_frame_terminal(&surface, &state, FRAME_TERMINAL_TIMEOUT)
-            .map_err(|error| format!("first native editor text frame failed: {error}"))?;
+        await_frame_terminal(
+            &surface,
+            &state,
+            first_edit_baseline,
+            FRAME_TERMINAL_TIMEOUT,
+        )
+        .map_err(|error| format!("first native editor text frame failed: {error}"))?;
     }
     timestamp = timestamp.saturating_add(1);
 
     if omitted_step != Some(OmittedStep::Save) {
+        let lost_epoch = relinquish_native_focus(&surface, &state, &mut timestamp)?;
+        if platform_validation::input_focus_state(&surface) != (lost_epoch, false) {
+            return Err("native focus-loss control was not retained for restoration".into());
+        }
         maximum_action_frames = maximum_action_frames.max(open_palette_and_activate(
             &surface,
             &state,
@@ -437,19 +453,31 @@ fn qualify_workspace(
         return Err("required native edit and save did not preserve the expected prefix".into());
     }
 
+    let dirty_edit_baseline = surface.snapshot();
     platform_validation::commit_native_text(&surface, "dirty", event_handler(&state))
         .map_err(|error| format!("dirty native editor text commit failed: {error}"))?;
-    await_frame_terminal(&surface, &state, FRAME_TERMINAL_TIMEOUT)
-        .map_err(|error| format!("dirty native editor text frame failed: {error}"))?;
+    await_frame_terminal(
+        &surface,
+        &state,
+        dirty_edit_baseline,
+        FRAME_TERMINAL_TIMEOUT,
+    )
+    .map_err(|error| format!("dirty native editor text frame failed: {error}"))?;
     timestamp = timestamp.saturating_add(1);
     let observer = surface.observer();
+    let dirty_close_baseline = surface.snapshot();
     let (closed, disposition, close_frame) = replay_close(&surface, &state)
         .map_err(|error| format!("dirty-close native replay failed: {error}"))?;
     assert!(!closed);
     assert_eq!(disposition, CloseDisposition::Cancel);
     assert!(close_frame);
-    await_frame_terminal(&surface, &state, FRAME_TERMINAL_TIMEOUT)
-        .map_err(|error| format!("dirty-close native frame failed: {error}"))?;
+    await_frame_terminal(
+        &surface,
+        &state,
+        dirty_close_baseline,
+        FRAME_TERMINAL_TIMEOUT,
+    )
+    .map_err(|error| format!("dirty-close native frame failed: {error}"))?;
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
     let blocked =
         platform_validation::inspect_native_accessibility_tree(&surface, event_handler(&state))
@@ -555,6 +583,7 @@ fn dispatch(
     state: &Rc<RefCell<Application<StudioApp>>>,
     events: &[SurfaceEvent],
 ) -> Result<bool, Box<dyn std::error::Error>> {
+    let initial = surface.snapshot();
     let frame_requested = Rc::new(Cell::new(false));
     let observed_frame = Rc::clone(&frame_requested);
     let mut handler = event_handler(state);
@@ -565,7 +594,7 @@ fn dispatch(
     })?;
     let frame_requested = frame_requested.get();
     if frame_requested {
-        await_frame_terminal(surface, state, FRAME_TERMINAL_TIMEOUT)?;
+        await_frame_terminal(surface, state, initial, FRAME_TERMINAL_TIMEOUT)?;
     } else {
         require_frame_quiescence(surface)?;
     }
@@ -595,9 +624,9 @@ fn require_frame_quiescence(
 fn await_frame_terminal(
     surface: &NativeSurface,
     state: &Rc<RefCell<Application<StudioApp>>>,
+    initial: SurfaceSnapshot,
     timeout: Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let initial = surface.snapshot();
     let failure = |phase: &str,
                    observed_submissions: u64,
                    error: &dyn std::fmt::Display|
@@ -1190,6 +1219,7 @@ fn activate(
     let response_frames = Rc::new(Cell::new(0_u64));
     let observed_frames = Rc::clone(&response_frames);
     let callback_state = Rc::clone(state);
+    let action_baseline = surface.snapshot();
     let evidence = platform_validation::activate_named_native_accessibility_node(
         surface,
         role,
@@ -1249,11 +1279,13 @@ fn activate(
             )
         })?;
     } else {
-        await_frame_terminal(surface, state, FRAME_TERMINAL_TIMEOUT).map_err(|error| {
+        await_frame_terminal(surface, state, action_baseline, FRAME_TERMINAL_TIMEOUT).map_err(
+            |error| {
             format!(
                 "native accessibility action frame failed for role={role:?} label={label:?}: {error}"
             )
-        })?;
+            },
+        )?;
     }
     assert_eq!(evidence.label(), label);
     assert!(!evidence.role().is_empty());
@@ -1299,6 +1331,7 @@ fn require_dispatch_failure(
     let response_frames = Rc::new(Cell::new(0_u64));
     let callback_response_frames = Rc::clone(&response_frames);
     let callback_state = Rc::clone(state);
+    let action_baseline = surface.snapshot();
     let evidence = platform_validation::activate_named_native_accessibility_node(
         surface,
         AccessibilityRole::ListItem,
@@ -1358,7 +1391,7 @@ fn require_dispatch_failure(
     if frames == 0 {
         require_frame_quiescence(surface)?;
     } else {
-        await_frame_terminal(surface, state, FRAME_TERMINAL_TIMEOUT)?;
+        await_frame_terminal(surface, state, action_baseline, FRAME_TERMINAL_TIMEOUT)?;
     }
     let recovered = inspect(surface, state)?;
     assert!(recovered.nodes().iter().any(|node| {
@@ -1818,6 +1851,24 @@ fn open_palette_and_activate(
     timestamp: &mut u64,
     label: &str,
 ) -> Result<u64, Box<dyn std::error::Error>> {
+    let (input_epoch, native_focused) = platform_validation::input_focus_state(surface);
+    if !native_focused {
+        platform_validation::set_input_focus_state(surface, input_epoch, true);
+    }
+    if platform_validation::input_focus_state(surface) != (input_epoch, true) {
+        return Err("command-palette native focus restoration failed".into());
+    }
+    dispatch(
+        surface,
+        state,
+        &[SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(*timestamp),
+            input_epoch,
+            focused: true,
+        }],
+    )
+    .map_err(|error| format!("command-palette focus dispatch failed: {error}"))?;
+    *timestamp = timestamp.saturating_add(1);
     dispatch(
         surface,
         state,
@@ -1835,4 +1886,31 @@ fn open_palette_and_activate(
         node.role() == "AXGroup" && node.label() == "Command palette" && node.focused()
     }));
     activate(surface, state, AccessibilityRole::ListItem, label)
+}
+
+fn relinquish_native_focus(
+    surface: &NativeSurface,
+    state: &Rc<RefCell<Application<StudioApp>>>,
+    timestamp: &mut u64,
+) -> Result<InputEpoch, Box<dyn std::error::Error>> {
+    let (current_epoch, _) = platform_validation::input_focus_state(surface);
+    let lost_epoch = current_epoch
+        .checked_next()
+        .ok_or("native focus epoch exhausted during accessibility qualification")?;
+    platform_validation::set_input_focus_state(surface, lost_epoch, false);
+    if platform_validation::input_focus_state(surface) != (lost_epoch, false) {
+        return Err("native focus-loss control was not established".into());
+    }
+    dispatch(
+        surface,
+        state,
+        &[SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(*timestamp),
+            input_epoch: lost_epoch,
+            focused: false,
+        }],
+    )
+    .map_err(|error| format!("native focus-loss control dispatch failed: {error}"))?;
+    *timestamp = timestamp.saturating_add(1);
+    Ok(lost_epoch)
 }

@@ -4442,6 +4442,11 @@ impl NativeSurface {
     }
 
     #[cfg(alpine_native_validation)]
+    pub(crate) fn input_focus_state_for_validation(&self) -> (InputEpoch, bool) {
+        self.view.input_focus_state()
+    }
+
+    #[cfg(alpine_native_validation)]
     pub(crate) fn set_input_focus_state_for_validation(
         &self,
         input_epoch: InputEpoch,
@@ -5678,6 +5683,25 @@ mod tests {
         assert!(!validation_close_accepts_terminal_failure(true, 0));
         assert!(validation_close_accepts_terminal_failure(true, 1));
         assert!(validation_close_accepts_terminal_failure(true, u64::MAX));
+    }
+
+    #[test]
+    #[cfg(alpine_native_validation)]
+    fn presentation_observation_suppression_overrides_every_source() {
+        let signal = Arc::new(PresentationSignal::new(None));
+        signal.publish(1.25_f64.to_bits());
+        let mut observation = PresentationObservation::new(signal);
+        observation.inject(2.5_f64.to_bits());
+
+        assert!(observation.observed());
+        assert!(!observation.suppressed);
+        assert!(observation.injected.is_some());
+
+        observation.suppress();
+
+        assert!(!observation.observed());
+        assert!(observation.suppressed);
+        assert!(observation.injected.is_none());
     }
 
     #[test]

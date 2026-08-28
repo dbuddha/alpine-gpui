@@ -1821,7 +1821,13 @@ pub mod native_validation {
         surface.implementation.commit_native_text(text, handler)
     }
 
-    /// Sets the pre-run input epoch and focus state for startup publication validation.
+    /// Returns the current validation input epoch and focus state.
+    #[must_use]
+    pub fn input_focus_state(surface: &NativeSurface) -> (crate::InputEpoch, bool) {
+        surface.implementation.input_focus_state_for_validation()
+    }
+
+    /// Sets the validation input epoch and focus state before causal event replay.
     pub fn set_input_focus_state(
         surface: &NativeSurface,
         input_epoch: crate::InputEpoch,
