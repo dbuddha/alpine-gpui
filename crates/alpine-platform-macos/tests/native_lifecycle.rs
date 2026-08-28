@@ -186,7 +186,8 @@ mod validation {
         assert!(timeout.expired());
         native_validation::close_window(&surface);
         let drain = native_validation::arm_run_loop_drain_marker(&surface);
-        drain_framework_work();
+        assert!(!drain.executed());
+        drain_framework_work_until(&drain);
         assert!(drain.executed());
         assert_exact_teardown(native_validation::close_with_owner_evidence(surface)?);
         Ok(())
@@ -502,6 +503,13 @@ mod validation {
         autoreleasepool(|_| {
             NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.001));
         });
+    }
+
+    fn drain_framework_work_until(drain: &native_validation::RunLoopDrainEvidence) {
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while !drain.executed() && Instant::now() < deadline {
+            drain_framework_work();
+        }
     }
 
     fn resident_bytes() -> TestResult<u64> {
