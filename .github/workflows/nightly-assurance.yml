@@ -305,6 +305,7 @@ jobs:
           xcrun --sdk macosx --find metallib
       - name: Require exhaustive native accessibility mutants to be killed
         run: |
+          mkdir -p target
           cargo mutants --no-config --file crates/alpine-platform-macos/src/native_accessibility.rs --test-package alpine-platform-macos --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-accessibility-mutants-${{ matrix.id }}.out" -- --locked
       - name: Upload native accessibility mutation evidence
         if: always()
@@ -358,6 +359,7 @@ jobs:
           xcrun --sdk macosx --find metallib
       - name: Require exhaustive Studio accessibility process mutants to be killed
         run: |
+          mkdir -p target
           env -u ALPINE_RUST_ANALYZER ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility cargo mutants --no-config --file apps/alpine-studio/src/native_validation/accessibility_process.rs --test-package alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out" -- --locked
           env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence' --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-studio-language-evidence-mutants-${{ matrix.id }}.out" -- --locked
       - name: Upload Studio accessibility process mutation evidence
