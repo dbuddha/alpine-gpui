@@ -600,7 +600,20 @@ fn read_file_with(
     if before.len() > u64::try_from(MAX_SETTINGS_FILE_BYTES).unwrap_or(u64::MAX) {
         return Err(SettingsLoadError::FileTooLarge);
     }
+    #[cfg(windows)]
+    let path_identity_before =
+        same_file::Handle::from_path(path).map_err(|error| map_io("metadata", &error))?;
     let mut file = File::open(path).map_err(|error| map_io("open", &error))?;
+    #[cfg(windows)]
+    let opened_identity = same_file::Handle::from_file(
+        file.try_clone()
+            .map_err(|error| map_io("metadata", &error))?,
+    )
+    .map_err(|error| map_io("metadata", &error))?;
+    #[cfg(windows)]
+    if path_identity_before != opened_identity {
+        return Err(SettingsLoadError::ConcurrentEdit);
+    }
     let opened = file
         .metadata()
         .map_err(|error| map_io("metadata", &error))?;
@@ -625,6 +638,14 @@ fn read_file_with(
         .metadata()
         .map_err(|error| map_io("metadata", &error))?;
     let path_after = fs::symlink_metadata(path).map_err(|error| map_io("metadata", &error))?;
+    #[cfg(windows)]
+    {
+        let path_identity_after =
+            same_file::Handle::from_path(path).map_err(|error| map_io("metadata", &error))?;
+        if opened_identity != path_identity_after {
+            return Err(SettingsLoadError::ConcurrentEdit);
+        }
+    }
     if !same_file(&opened, &opened_after) || !same_file(&opened, &path_after) {
         return Err(SettingsLoadError::ConcurrentEdit);
     }
@@ -1860,11 +1881,25 @@ mod tests {
         assert!(!same_file_observation(4, 5, Some(modified), Some(modified)));
         assert!(!same_file_observation(4, 4, Some(modified), Some(later)));
         assert_eq!(require_same_file(&left_metadata, &left_metadata), Ok(()));
-        assert!(!same_platform_file(&left_metadata, &right_metadata));
-        assert_eq!(
-            require_same_file(&left_metadata, &right_metadata),
-            Err(SettingsLoadError::ConcurrentEdit)
-        );
+        #[cfg(unix)]
+        {
+            assert!(!same_platform_file(&left_metadata, &right_metadata));
+            assert_eq!(
+                require_same_file(&left_metadata, &right_metadata),
+                Err(SettingsLoadError::ConcurrentEdit)
+            );
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                same_file::Handle::from_path(&left)?,
+                same_file::Handle::from_path(&left)?
+            );
+            assert_ne!(
+                same_file::Handle::from_path(&left)?,
+                same_file::Handle::from_path(&right)?
+            );
+        }
 
         #[cfg(unix)]
         {
