@@ -1,0 +1,348 @@
+event	missing_stage
+2	Native Presented Handler Latency
+37	Native Presented Handler Latency
+80	Native Presented Handler Latency
+82	Native Presented Handler Latency
+102	Native Event Handler Latency
+102	Native Frame Queue Latency
+102	Native GPU Terminal Observed Latency
+102	Native Presented Handler Latency
+102	Native Submission Latency
+102	Native Terminal Record Latency
+112	Native Presented Handler Latency
+122	Native Event Handler Latency
+122	Native Frame Queue Latency
+122	Native GPU Terminal Observed Latency
+122	Native Presented Handler Latency
+122	Native Submission Latency
+122	Native Terminal Record Latency
+132	Native Event Handler Latency
+132	Native Frame Queue Latency
+132	Native GPU Terminal Observed Latency
+132	Native Presented Handler Latency
+132	Native Submission Latency
+132	Native Terminal Record Latency
+142	Native Presented Handler Latency
+152	Native Event Handler Latency
+152	Native Frame Queue Latency
+152	Native GPU Terminal Observed Latency
+152	Native Presented Handler Latency
+152	Native Submission Latency
+152	Native Terminal Record Latency
+162	Native Event Handler Latency
+162	Native Frame Queue Latency
+162	Native GPU Terminal Observed Latency
+162	Native Presented Handler Latency
+162	Native Submission Latency
+162	Native Terminal Record Latency
+172	Native Event Handler Latency
+172	Native Frame Queue Latency
+172	Native GPU Terminal Observed Latency
+172	Native Presented Handler Latency
+172	Native Submission Latency
+172	Native Terminal Record Latency
+182	Native Presented Handler Latency
+192	Native Event Handler Latency
+192	Native Frame Queue Latency
+192	Native GPU Terminal Observed Latency
+192	Native Presented Handler Latency
+192	Native Submission Latency
+192	Native Terminal Record Latency
+202	Native Event Handler Latency
+202	Native Frame Queue Latency
+202	Native GPU Terminal Observed Latency
+202	Native Presented Handler Latency
+202	Native Submission Latency
+202	Native Terminal Record Latency
+212	Native Presented Handler Latency
+222	Native Event Handler Latency
+222	Native Frame Queue Latency
+222	Native GPU Terminal Observed Latency
+222	Native Presented Handler Latency
+222	Native Submission Latency
+222	Native Terminal Record Latency
+232	Native Event Handler Latency
+232	Native Frame Queue Latency
+232	Native GPU Terminal Observed Latency
+232	Native Presented Handler Latency
+232	Native Submission Latency
+232	Native Terminal Record Latency
+242	Native Event Handler Latency
+242	Native Frame Queue Latency
+242	Native GPU Terminal Observed Latency
+242	Native Presented Handler Latency
+242	Native Submission Latency
+242	Native Terminal Record Latency
+252	Native Event Handler Latency
+252	Native Frame Queue Latency
+252	Native GPU Terminal Observed Latency
+252	Native Presented Handler Latency
+252	Native Submission Latency
+252	Native Terminal Record Latency
+262	Native Presented Handler Latency
+272	Native Event Handler Latency
+272	Native Frame Queue Latency
+272	Native GPU Terminal Observed Latency
+272	Native Presented Handler Latency
+272	Native Submission Latency
+272	Native Terminal Record Latency
+282	Native Event Handler Latency
+282	Native Frame Queue Latency
+282	Native GPU Terminal Observed Latency
+282	Native Presented Handler Latency
+282	Native Submission Latency
+282	Native Terminal Record Latency
+292	Native Event Handler Latency
+292	Native Frame Queue Latency
+292	Native GPU Terminal Observed Latency
+292	Native Presented Handler Latency
+292	Native Submission Latency
+292	Native Terminal Record Latency
+302	Native Event Handler Latency
+302	Native Frame Queue Latency
+302	Native GPU Terminal Observed Latency
+302	Native Presented Handler Latency
+302	Native Submission Latency
+302	Native Terminal Record Latency
+312	Native Presented Handler Latency
+322	Native Event Handler Latency
+322	Native Frame Queue Latency
+322	Native GPU Terminal Observed Latency
+322	Native Presented Handler Latency
+322	Native Submission Latency
+322	Native Terminal Record Latency
+332	Native Event Handler Latency
+332	Native Frame Queue Latency
+332	Native GPU Terminal Observed Latency
+332	Native Presented Handler Latency
+332	Native Submission Latency
+332	Native Terminal Record Latency
+342	Native Event Handler Latency
+342	Native Frame Queue Latency
+342	Native GPU Terminal Observed Latency
+342	Native Presented Handler Latency
+342	Native Submission Latency
+342	Native Terminal Record Latency
+352	Native Event Handler Latency
+352	Native Frame Queue Latency
+352	Native GPU Terminal Observed Latency
+352	Native Presented Handler Latency
+352	Native Submission Latency
+352	Native Terminal Record Latency
+362	Native Event Handler Latency
+362	Native Frame Queue Latency
+362	Native GPU Terminal Observed Latency
+362	Native Presented Handler Latency
+362	Native Submission Latency
+362	Native Terminal Record Latency
+372	Native Event Handler Latency
+372	Native Frame Queue Latency
+372	Native GPU Terminal Observed Latency
+372	Native Presented Handler Latency
+372	Native Submission Latency
+372	Native Terminal Record Latency
+382	Native Event Handler Latency
+382	Native Frame Queue Latency
+382	Native GPU Terminal Observed Latency
+382	Native Presented Handler Latency
+382	Native Submission Latency
+382	Native Terminal Record Latency
+392	Native Event Handler Latency
+392	Native Frame Queue Latency
+392	Native GPU Terminal Observed Latency
+392	Native Presented Handler Latency
+392	Native Submission Latency
+392	Native Terminal Record Latency
+402	Native Event Handler Latency
+402	Native Frame Queue Latency
+402	Native GPU Terminal Observed Latency
+402	Native Presented Handler Latency
+402	Native Submission Latency
+402	Native Terminal Record Latency
+412	Native Presented Handler Latency
+422	Native Event Handler Latency
+422	Native Frame Queue Latency
+422	Native GPU Terminal Observed Latency
+422	Native Presented Handler Latency
+422	Native Submission Latency
+422	Native Terminal Record Latency
+432	Native Event Handler Latency
+432	Native Frame Queue Latency
+432	Native GPU Terminal Observed Latency
+432	Native Presented Handler Latency
+432	Native Submission Latency
+432	Native Terminal Record Latency
+442	Native Event Handler Latency
+442	Native Frame Queue Latency
+442	Native GPU Terminal Observed Latency
+442	Native Presented Handler Latency
+442	Native Submission Latency
+442	Native Terminal Record Latency
+452	Native Presented Handler Latency
+462	Native Event Handler Latency
+462	Native Frame Queue Latency
+462	Native GPU Terminal Observed Latency
+462	Native Presented Handler Latency
+462	Native Submission Latency
+462	Native Terminal Record Latency
+472	Native Event Handler Latency
+472	Native Frame Queue Latency
+472	Native GPU Terminal Observed Latency
+472	Native Presented Handler Latency
+472	Native Submission Latency
+472	Native Terminal Record Latency
+482	Native Event Handler Latency
+482	Native Frame Queue Latency
+482	Native GPU Terminal Observed Latency
+482	Native Presented Handler Latency
+482	Native Submission Latency
+482	Native Terminal Record Latency
+492	Native Presented Handler Latency
+502	Native Event Handler Latency
+502	Native Frame Queue Latency
+502	Native GPU Terminal Observed Latency
+502	Native Presented Handler Latency
+502	Native Submission Latency
+502	Native Terminal Record Latency
+512	Native Event Handler Latency
+512	Native Frame Queue Latency
+512	Native GPU Terminal Observed Latency
+512	Native Presented Handler Latency
+512	Native Submission Latency
+512	Native Terminal Record Latency
+522	Native Event Handler Latency
+522	Native Frame Queue Latency
+522	Native GPU Terminal Observed Latency
+522	Native Presented Handler Latency
+522	Native Submission Latency
+522	Native Terminal Record Latency
+532	Native Presented Handler Latency
+542	Native Event Handler Latency
+542	Native Frame Queue Latency
+542	Native GPU Terminal Observed Latency
+542	Native Presented Handler Latency
+542	Native Submission Latency
+542	Native Terminal Record Latency
+552	Native Event Handler Latency
+552	Native Frame Queue Latency
+552	Native GPU Terminal Observed Latency
+552	Native Presented Handler Latency
+552	Native Submission Latency
+552	Native Terminal Record Latency
+562	Native Event Handler Latency
+562	Native Frame Queue Latency
+562	Native GPU Terminal Observed Latency
+562	Native Presented Handler Latency
+562	Native Submission Latency
+562	Native Terminal Record Latency
+572	Native Presented Handler Latency
+582	Native Event Handler Latency
+582	Native Frame Queue Latency
+582	Native GPU Terminal Observed Latency
+582	Native Presented Handler Latency
+582	Native Submission Latency
+582	Native Terminal Record Latency
+592	Native Event Handler Latency
+592	Native Frame Queue Latency
+592	Native GPU Terminal Observed Latency
+592	Native Presented Handler Latency
+592	Native Submission Latency
+592	Native Terminal Record Latency
+602	Native Event Handler Latency
+602	Native Frame Queue Latency
+602	Native GPU Terminal Observed Latency
+602	Native Presented Handler Latency
+602	Native Submission Latency
+602	Native Terminal Record Latency
+612	Native Presented Handler Latency
+622	Native Event Handler Latency
+622	Native Frame Queue Latency
+622	Native GPU Terminal Observed Latency
+622	Native Presented Handler Latency
+622	Native Submission Latency
+622	Native Terminal Record Latency
+632	Native Event Handler Latency
+632	Native Frame Queue Latency
+632	Native GPU Terminal Observed Latency
+632	Native Presented Handler Latency
+632	Native Submission Latency
+632	Native Terminal Record Latency
+642	Native Presented Handler Latency
+652	Native Event Handler Latency
+652	Native Frame Queue Latency
+652	Native GPU Terminal Observed Latency
+652	Native Presented Handler Latency
+652	Native Submission Latency
+652	Native Terminal Record Latency
+662	Native Event Handler Latency
+662	Native Frame Queue Latency
+662	Native GPU Terminal Observed Latency
+662	Native Presented Handler Latency
+662	Native Submission Latency
+662	Native Terminal Record Latency
+672	Native Event Handler Latency
+672	Native Frame Queue Latency
+672	Native GPU Terminal Observed Latency
+672	Native Presented Handler Latency
+672	Native Submission Latency
+672	Native Terminal Record Latency
+682	Native Presented Handler Latency
+692	Native Event Handler Latency
+692	Native Frame Queue Latency
+692	Native GPU Terminal Observed Latency
+692	Native Presented Handler Latency
+692	Native Submission Latency
+692	Native Terminal Record Latency
+702	Native Event Handler Latency
+702	Native Frame Queue Latency
+702	Native GPU Terminal Observed Latency
+702	Native Presented Handler Latency
+702	Native Submission Latency
+702	Native Terminal Record Latency
+712	Native Event Handler Latency
+712	Native Frame Queue Latency
+712	Native GPU Terminal Observed Latency
+712	Native Presented Handler Latency
+712	Native Submission Latency
+712	Native Terminal Record Latency
+722	Native Presented Handler Latency
+732	Native Event Handler Latency
+732	Native Frame Queue Latency
+732	Native GPU Terminal Observed Latency
+732	Native Presented Handler Latency
+732	Native Submission Latency
+732	Native Terminal Record Latency
+742	Native Event Handler Latency
+742	Native Frame Queue Latency
+742	Native GPU Terminal Observed Latency
+742	Native Presented Handler Latency
+742	Native Submission Latency
+742	Native Terminal Record Latency
+752	Native Presented Handler Latency
+762	Native Event Handler Latency
+762	Native Frame Queue Latency
+762	Native GPU Terminal Observed Latency
+762	Native Presented Handler Latency
+762	Native Submission Latency
+762	Native Terminal Record Latency
+772	Native Event Handler Latency
+772	Native Frame Queue Latency
+772	Native GPU Terminal Observed Latency
+772	Native Presented Handler Latency
+772	Native Submission Latency
+772	Native Terminal Record Latency
+782	Native Presented Handler Latency
+792	Native Event Handler Latency
+792	Native Frame Queue Latency
+792	Native GPU Terminal Observed Latency
+792	Native Presented Handler Latency
+792	Native Submission Latency
+792	Native Terminal Record Latency
+802	Native Event Handler Latency
+802	Native Frame Queue Latency
+802	Native GPU Terminal Observed Latency
+802	Native Presented Handler Latency
+802	Native Submission Latency
+802	Native Terminal Record Latency
+812	Native Presented Handler Latency
+822	Native Presented Handler Latency

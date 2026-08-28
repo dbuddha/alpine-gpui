@@ -107,6 +107,25 @@ use deterministic nearest-rank selection. The report always records
 `threshold_activation_allowed=false`; a separate accepted calibration package
 must change those claim boundaries rather than editing analyzer output.
 
+## Retained diagnostic checkpoint
+
+Task [#371](https://github.com/dbuddha/alpine-gpui/issues/371) retains the
+process-filtered physical capture that informed the dropped-presentation
+correction in [PR #367](https://github.com/dbuddha/alpine-gpui/pull/367).
+The canonical package is
+[`assurance/studio-profile/v1/c93950e-physical-diagnostic`](../../assurance/studio-profile/v1/c93950e-physical-diagnostic/README.md).
+It binds the original raw hash while committing only a privacy-normalized,
+analyzer-minimal record stream. Repository validation replays the version 1
+analyzer and requires byte-identical summaries, samples, counters, omissions,
+and claim boundaries.
+
+The checkpoint has zero presented-handler samples. It supports the regression
+that optional presentation telemetry cannot own frame-slot release or editor
+progress, but it does not attribute the remaining queue or GPU-observer tails.
+Observer A/A calibration, Instruments traces, display refresh, power, thermal,
+and optical evidence are absent. Defect #304 and Experiment #331 therefore
+remain open.
+
 Unified logging has observer cost. Run matched capture-off and capture-on A/A
 windows before using persisted distributions to attribute a stall. Reject the
 fallback for causal analysis when its confidence interval shows material
