@@ -691,23 +691,20 @@ impl From<SurfaceError> for StudioError {
 /// # Errors
 ///
 /// Returns a structured unsupported or native construction failure.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn initial_scene() -> Result<Scene, SurfaceError> {
-    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::invariant(
-        alpine_platform_macos::SurfaceOperation::Application,
-    ))?;
-    let mut app = native_app()?;
-    Ok(app.scene(SceneRevision::new(1), viewport))
-}
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::invariant(
+            alpine_platform_macos::SurfaceOperation::Application,
+        ))?;
+        let mut app = native_app()?;
+        Ok(app.scene(SceneRevision::new(1), viewport))
+    }
 
-/// Rejects native scene construction on unsupported hosts.
-///
-/// # Errors
-///
-/// Always returns [`SurfaceError::UnsupportedPlatform`].
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-pub fn initial_scene() -> Result<Scene, SurfaceError> {
-    Err(SurfaceError::UnsupportedPlatform)
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        Err(SurfaceError::UnsupportedPlatform)
+    }
 }
 
 /// Opens one native Studio window, requests one frame, and runs until close.
