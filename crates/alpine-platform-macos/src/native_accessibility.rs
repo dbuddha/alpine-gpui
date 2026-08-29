@@ -1121,9 +1121,16 @@ impl NativeAccessibilityAdapter {
         let stable_root_identity = repeated
             .firstObject()
             .is_some_and(|candidate| core::ptr::eq(&*root, &*candidate));
-        let root_children: Retained<NSArray<NativeAccessibilityElement>> =
-            unsafe { msg_send![&*root, accessibilityChildren] };
-        let root_has_children = root_children.len() > 0;
+        let root_has_children = !view
+            .ivars()
+            .accessibility
+            .borrow()
+            .children(
+                root.ivars().generation,
+                root.ivars().instance_generation,
+                root.ivars().id,
+            )
+            .is_empty();
         let editor = view
             .ivars()
             .accessibility
