@@ -4862,14 +4862,16 @@ fn native_validation_dispatch_counters_reset_and_report_nonzero_work() {
     language.process_epoch = 8;
     language.lsp_version = 9;
     language.process_queued_events = 10;
-    language.process_submitted_inputs = 11;
-    language.process_written_inputs = 12;
-    language.process_input_saturations = 13;
-    language.polls = 14;
-    language.diagnostic_publications = 15;
-    language.diagnostic_items = 16;
-    language.stale_wakes = 17;
-    language.restarts = 18;
+    language.process_starts = 11;
+    language.process_submitted_inputs = 12;
+    language.process_written_inputs = 13;
+    language.process_input_saturations = 14;
+    language.document_switches = 15;
+    language.polls = 16;
+    language.diagnostic_publications = 17;
+    language.diagnostic_items = 18;
+    language.stale_wakes = 19;
+    language.restarts = 20;
     record_native_validation_language_snapshot(language);
     for admission in [
         alpine_runtime::ExternalAdmission::Admitted,
@@ -4908,14 +4910,16 @@ fn native_validation_dispatch_counters_reset_and_report_nonzero_work() {
             process_epoch: 8,
             lsp_version: 9,
             process_queued_events: 10,
-            submitted_inputs: 11,
-            written_inputs: 12,
-            input_saturations: 13,
-            polls: 14,
-            diagnostic_publications: 15,
-            diagnostic_items: 16,
-            stale_wakes: 17,
-            restarts: 18,
+            process_starts: 11,
+            submitted_inputs: 12,
+            written_inputs: 13,
+            input_saturations: 14,
+            document_switches: 15,
+            polls: 16,
+            diagnostic_publications: 17,
+            diagnostic_items: 18,
+            stale_wakes: 19,
+            restarts: 20,
             frame_builds: 3,
             semantic_revision: 0,
         }

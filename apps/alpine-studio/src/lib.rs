@@ -301,6 +301,9 @@ static NATIVE_VALIDATION_LANGUAGE_LSP_VERSION: std::sync::atomic::AtomicI32 =
 static NATIVE_VALIDATION_LANGUAGE_PROCESS_QUEUED_EVENTS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 #[cfg(alpine_native_validation)]
+static NATIVE_VALIDATION_LANGUAGE_PROCESS_STARTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(alpine_native_validation)]
 static NATIVE_VALIDATION_LANGUAGE_SUBMITTED_INPUTS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 #[cfg(alpine_native_validation)]
@@ -323,6 +326,9 @@ static NATIVE_VALIDATION_LANGUAGE_STALE_WAKES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 #[cfg(alpine_native_validation)]
 static NATIVE_VALIDATION_LANGUAGE_RESTARTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(alpine_native_validation)]
+static NATIVE_VALIDATION_LANGUAGE_DOCUMENT_SWITCHES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 #[cfg(alpine_native_validation)]
 static NATIVE_VALIDATION_ACCESSIBILITY_SEMANTIC_REVISION: std::sync::atomic::AtomicU64 =
@@ -350,6 +356,7 @@ pub(crate) struct NativeValidationLanguageEvidence {
     process_epoch: u64,
     lsp_version: i32,
     process_queued_events: usize,
+    process_starts: u64,
     submitted_inputs: u64,
     written_inputs: u64,
     input_saturations: u64,
@@ -358,6 +365,7 @@ pub(crate) struct NativeValidationLanguageEvidence {
     diagnostic_items: usize,
     stale_wakes: u64,
     restarts: u64,
+    document_switches: u64,
     frame_builds: u64,
     semantic_revision: u64,
 }
@@ -383,6 +391,7 @@ pub(crate) fn reset_native_validation_language_evidence() {
         &NATIVE_VALIDATION_LANGUAGE_INVALIDATIONS,
         &NATIVE_VALIDATION_LANGUAGE_GENERATION,
         &NATIVE_VALIDATION_LANGUAGE_PROCESS_EPOCH,
+        &NATIVE_VALIDATION_LANGUAGE_PROCESS_STARTS,
         &NATIVE_VALIDATION_LANGUAGE_SUBMITTED_INPUTS,
         &NATIVE_VALIDATION_LANGUAGE_WRITTEN_INPUTS,
         &NATIVE_VALIDATION_LANGUAGE_INPUT_SATURATIONS,
@@ -390,6 +399,7 @@ pub(crate) fn reset_native_validation_language_evidence() {
         &NATIVE_VALIDATION_LANGUAGE_DIAGNOSTIC_PUBLICATIONS,
         &NATIVE_VALIDATION_LANGUAGE_STALE_WAKES,
         &NATIVE_VALIDATION_LANGUAGE_RESTARTS,
+        &NATIVE_VALIDATION_LANGUAGE_DOCUMENT_SWITCHES,
         &NATIVE_VALIDATION_ACCESSIBILITY_SEMANTIC_REVISION,
     ] {
         counter.store(0, Ordering::Release);
@@ -410,6 +420,7 @@ fn record_native_validation_language_snapshot(snapshot: rust_diagnostics::RustDi
     NATIVE_VALIDATION_LANGUAGE_LSP_VERSION.store(snapshot.lsp_version, Ordering::Release);
     NATIVE_VALIDATION_LANGUAGE_PROCESS_QUEUED_EVENTS
         .store(snapshot.process_queued_events, Ordering::Release);
+    NATIVE_VALIDATION_LANGUAGE_PROCESS_STARTS.store(snapshot.process_starts, Ordering::Release);
     NATIVE_VALIDATION_LANGUAGE_SUBMITTED_INPUTS
         .store(snapshot.process_submitted_inputs, Ordering::Release);
     NATIVE_VALIDATION_LANGUAGE_WRITTEN_INPUTS
@@ -422,6 +433,8 @@ fn record_native_validation_language_snapshot(snapshot: rust_diagnostics::RustDi
     NATIVE_VALIDATION_LANGUAGE_DIAGNOSTIC_ITEMS.store(snapshot.diagnostic_items, Ordering::Release);
     NATIVE_VALIDATION_LANGUAGE_STALE_WAKES.store(snapshot.stale_wakes, Ordering::Release);
     NATIVE_VALIDATION_LANGUAGE_RESTARTS.store(snapshot.restarts, Ordering::Release);
+    NATIVE_VALIDATION_LANGUAGE_DOCUMENT_SWITCHES
+        .store(snapshot.document_switches, Ordering::Release);
 }
 
 #[cfg(alpine_native_validation)]
@@ -494,6 +507,7 @@ pub(crate) fn native_validation_language_evidence() -> NativeValidationLanguageE
         lsp_version: NATIVE_VALIDATION_LANGUAGE_LSP_VERSION.load(Ordering::Acquire),
         process_queued_events: NATIVE_VALIDATION_LANGUAGE_PROCESS_QUEUED_EVENTS
             .load(Ordering::Acquire),
+        process_starts: NATIVE_VALIDATION_LANGUAGE_PROCESS_STARTS.load(Ordering::Acquire),
         submitted_inputs: NATIVE_VALIDATION_LANGUAGE_SUBMITTED_INPUTS.load(Ordering::Acquire),
         written_inputs: NATIVE_VALIDATION_LANGUAGE_WRITTEN_INPUTS.load(Ordering::Acquire),
         input_saturations: NATIVE_VALIDATION_LANGUAGE_INPUT_SATURATIONS.load(Ordering::Acquire),
@@ -503,6 +517,7 @@ pub(crate) fn native_validation_language_evidence() -> NativeValidationLanguageE
         diagnostic_items: NATIVE_VALIDATION_LANGUAGE_DIAGNOSTIC_ITEMS.load(Ordering::Acquire),
         stale_wakes: NATIVE_VALIDATION_LANGUAGE_STALE_WAKES.load(Ordering::Acquire),
         restarts: NATIVE_VALIDATION_LANGUAGE_RESTARTS.load(Ordering::Acquire),
+        document_switches: NATIVE_VALIDATION_LANGUAGE_DOCUMENT_SWITCHES.load(Ordering::Acquire),
         frame_builds: NATIVE_VALIDATION_FRAME_BUILDS.load(Ordering::Acquire),
         semantic_revision: NATIVE_VALIDATION_ACCESSIBILITY_SEMANTIC_REVISION
             .load(Ordering::Acquire),

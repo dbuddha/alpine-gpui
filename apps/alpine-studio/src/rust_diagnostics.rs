@@ -382,9 +382,11 @@ pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) peak_workspace_edit_wire_bytes: usize,
     pub(crate) process_retained_bytes: usize,
     pub(crate) process_queued_events: usize,
+    pub(crate) process_starts: u64,
     pub(crate) process_submitted_inputs: u64,
     pub(crate) process_written_inputs: u64,
     pub(crate) process_input_saturations: u64,
+    pub(crate) document_switches: u64,
     pub(crate) polls: u64,
     pub(crate) stale_wakes: u64,
     pub(crate) stale_diagnostics: u64,
@@ -438,6 +440,12 @@ enum SessionState {
 struct Target {
     path: PathBuf,
     workspace_root: PathBuf,
+}
+
+impl Target {
+    fn shares_workspace_with(&self, other: &Self) -> bool {
+        self.workspace_root == other.workspace_root
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -698,6 +706,7 @@ pub(crate) struct RustDiagnostics {
     stale_wakes: u64,
     stale_diagnostics: u64,
     restarts: u64,
+    document_switches: u64,
     #[cfg(test)]
     force_continuation_once: bool,
 }
@@ -742,6 +751,7 @@ impl Default for RustDiagnostics {
             stale_wakes: 0,
             stale_diagnostics: 0,
             restarts: 0,
+            document_switches: 0,
             #[cfg(test)]
             force_continuation_once: false,
         }
@@ -768,18 +778,21 @@ impl RustDiagnostics {
             path: input.path.clone(),
             workspace_root: input.workspace_root.clone(),
         };
+        let shares_workspace = self
+            .target
+            .as_ref()
+            .is_some_and(|current| current.shares_workspace_with(&target));
+        if !shares_workspace {
+            return self.replace_session(input, target, wake_factory);
+        }
         if self.target.as_ref() != Some(&target) {
-            self.stop();
-            self.target = Some(target.clone());
-            let result = self.start(input, target, wake_factory);
-            let status = result.err().map(|error| Arc::from(error.to_string()));
-            return LanguageEffect {
-                visual_changed: replace_status(&mut self.status, status) || self.session.is_some(),
-                continuation: None,
-            };
+            if self.session.is_some() {
+                return self.switch_document(input, target);
+            }
+            return self.replace_session(input, target, wake_factory);
         }
         let Some(session) = self.session.as_mut() else {
-            return LanguageEffect::default();
+            return self.replace_session(input, target, wake_factory);
         };
         let mut visual_changed = false;
         if input.identity != session.identity {
@@ -1956,9 +1969,11 @@ impl RustDiagnostics {
             peak_workspace_edit_wire_bytes: self.peak_workspace_edit_wire_bytes,
             process_retained_bytes: process.retained_bytes,
             process_queued_events: process.queued_events,
+            process_starts: process.starts,
             process_submitted_inputs: process.submitted_inputs,
             process_written_inputs: process.written_inputs,
             process_input_saturations: process.input_saturations,
+            document_switches: self.document_switches,
             polls: self.polls,
             stale_wakes: self.stale_wakes,
             stale_diagnostics: self.stale_diagnostics,
@@ -2087,6 +2102,96 @@ impl RustDiagnostics {
         session.synced_snapshot = session.snapshot.clone();
         session.pending_change = false;
         replace_status(&mut self.status, None)
+    }
+
+    fn replace_session<F>(
+        &mut self,
+        input: RustDocumentInput,
+        target: Target,
+        wake_factory: F,
+    ) -> LanguageEffect
+    where
+        F: FnOnce(LanguageWake) -> ProcessWake,
+    {
+        self.stop();
+        self.target = Some(target.clone());
+        let result = self.start(input, target, wake_factory);
+        let status = result.err().map(|error| Arc::from(error.to_string()));
+        LanguageEffect {
+            visual_changed: replace_status(&mut self.status, status) || self.session.is_some(),
+            continuation: None,
+        }
+    }
+
+    fn switch_document(&mut self, input: RustDocumentInput, target: Target) -> LanguageEffect {
+        let document = match LspDocument::from_file_path(&input.path, "rust", 1) {
+            Ok(document) => document,
+            Err(error) => return self.fail(RustDiagnosticsError::Language(error)),
+        };
+        let session = self.session.as_ref().unwrap_or_else(|| unreachable!());
+        let transition = if session.state == SessionState::Open {
+            let text = input.snapshot.text();
+            let transition = session
+                .document
+                .did_close_params()
+                .and_then(|close| document.did_open_params(&text).map(|open| (close, open)));
+            match transition {
+                Ok(transition) => Some(transition),
+                Err(error) => return self.fail(RustDiagnosticsError::Language(error)),
+            }
+        } else {
+            None
+        };
+
+        let transition_result = {
+            let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
+            let _ = session.completion.take();
+            let _ = session.navigation.take();
+            let _ = session.symbols.take();
+            if let Some(pending) = session.pending_completion.take() {
+                let _ = session.client.cancel(pending.request_id);
+                self.completion_cancellations = self.completion_cancellations.saturating_add(1);
+            }
+            if let Some(pending) = session.pending_navigation.take() {
+                let _ = session.client.cancel(pending.request_id);
+                self.navigation_cancellations = self.navigation_cancellations.saturating_add(1);
+            }
+            if let Some(pending) = session.pending_symbols.take() {
+                let _ = session.client.cancel(pending.request_id);
+                self.symbol_cancellations = self.symbol_cancellations.saturating_add(1);
+            }
+            if let Some(pending) = session.pending_workspace_edit.take() {
+                let _ = session.client.cancel(pending.request_id);
+                self.workspace_edit_cancellations =
+                    self.workspace_edit_cancellations.saturating_add(1);
+            }
+            self.workspace_edit_preparation = None;
+            let _ = session.diagnostics.take();
+            session.target = target.clone();
+            session.identity = input.identity;
+            session.lsp_version = 1;
+            session.snapshot = input.snapshot;
+            session.synced_snapshot = session.snapshot.clone();
+            session.pending_change = false;
+            session.document = document;
+            transition.map_or(Ok(()), |(close, open)| {
+                session
+                    .client
+                    .notify("textDocument/didClose", Some(&close))
+                    .and_then(|_| session.client.notify("textDocument/didOpen", Some(&open)))
+                    .map(|_| ())
+            })
+        };
+        self.target = Some(target);
+        self.document_switches = self.document_switches.saturating_add(1);
+        let _ = replace_status(&mut self.status, None);
+        if let Err(error) = transition_result {
+            let _ = self.restart_or_fail(RustDiagnosticsError::Client(error));
+        }
+        LanguageEffect {
+            visual_changed: true,
+            continuation: None,
+        }
     }
 
     fn flush_change(&mut self) -> bool {

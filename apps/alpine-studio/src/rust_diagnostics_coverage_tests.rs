@@ -32,9 +32,15 @@ fn state_guards_and_admission_failures_are_discriminating() -> Result<(), Box<dy
         target: Some(target),
         ..RustDiagnostics::default()
     };
-    assert_eq!(
-        target_only.sync(Some(input.clone()), |_| Arc::new(|| {})),
-        LanguageEffect::default()
+    assert!(
+        target_only
+            .sync(Some(input.clone()), |_| Arc::new(|| {}))
+            .visual_changed
+    );
+    assert!(
+        target_only
+            .status_message()
+            .is_some_and(|message| message.contains("MissingServer"))
     );
     assert!(!target_only.begin_initialize(1));
     assert!(!target_only.open_document());
@@ -44,7 +50,7 @@ fn state_guards_and_admission_failures_are_discriminating() -> Result<(), Box<dy
         target_only.for_each_marker(identity, 0, 1, |_| Ok::<(), ()>(())),
         Ok(0)
     );
-    assert!(target_only.restart_or_fail(RustDiagnosticsError::MissingServer));
+    assert!(!target_only.restart_or_fail(RustDiagnosticsError::MissingServer));
     assert!(
         !target_only
             .fail(RustDiagnosticsError::MissingServer)
@@ -142,6 +148,158 @@ fn installed_state_covers_selection_markers_versions_and_admission() -> Result<(
     ));
     assert!(!model.shutdown().active);
     std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn document_switch_rejects_invalid_identity_and_preserves_initialization()
+-> Result<(), Box<dyn Error>> {
+    let (mut invalid, input, invalid_root) = installed_model()?;
+    let mut invalid_identity = input.identity;
+    invalid_identity.document_id += 1;
+    assert!(
+        invalid
+            .sync(
+                Some(RustDocumentInput::new(
+                    Path::new("relative.rs"),
+                    &invalid_root,
+                    invalid_identity,
+                    input.snapshot.clone(),
+                )),
+                |_| Arc::new(|| {}),
+            )
+            .visual_changed
+    );
+    assert_eq!(invalid.snapshot().document_switches, 0);
+    assert!(
+        invalid
+            .status_message()
+            .is_some_and(|message| message.contains("InvalidPath"))
+    );
+
+    let (mut initializing, input, initializing_root) = installed_model()?;
+    let initializing_path = initializing_root.join("initializing.rs");
+    std::fs::write(&initializing_path, "fn initializing() {}\n")?;
+    initializing.session.as_mut().ok_or("session")?.state = SessionState::Initializing;
+    let mut initializing_identity = input.identity;
+    initializing_identity.document_id += 1;
+    assert!(
+        initializing
+            .sync(
+                Some(RustDocumentInput::new(
+                    &initializing_path,
+                    &initializing_root,
+                    initializing_identity,
+                    input.snapshot,
+                )),
+                |_| Arc::new(|| {}),
+            )
+            .visual_changed
+    );
+    assert_eq!(initializing.snapshot().document_switches, 1);
+    assert_eq!(
+        initializing.session.as_ref().ok_or("session")?.state,
+        SessionState::Initializing
+    );
+
+    assert!(!invalid.shutdown().active);
+    assert!(!initializing.shutdown().active);
+    std::fs::remove_dir_all(invalid_root)?;
+    std::fs::remove_dir_all(initializing_root)?;
+    Ok(())
+}
+
+#[test]
+fn missing_session_restarts_a_changed_target_without_switching() -> Result<(), Box<dyn Error>> {
+    let (mut model, input, root) = installed_model()?;
+    model.server_path = Some(tests::mock_executable().to_path_buf());
+    let mut previous = model.session.take().ok_or("session")?;
+    let previous_generation = previous.generation;
+    model.next_generation = previous_generation;
+    let _ = previous.client.shutdown();
+    model.status = Some(Arc::from("stale stopped session"));
+    let replacement_path = root.join("replacement.rs");
+    std::fs::write(&replacement_path, "fn replacement() {}\n")?;
+    let mut replacement_identity = input.identity;
+    replacement_identity.document_id = replacement_identity.document_id.saturating_add(1);
+    replacement_identity.document_revision =
+        replacement_identity.document_revision.saturating_add(1);
+    let replacement = RustDocumentInput::new(
+        &replacement_path,
+        &root,
+        replacement_identity,
+        alpine_text::Buffer::new("fn replacement() {}\n").snapshot(),
+    );
+
+    assert!(
+        model
+            .sync(Some(replacement), |_| Arc::new(|| {}))
+            .visual_changed
+    );
+    let snapshot = model.snapshot();
+    assert!(snapshot.active);
+    assert!(snapshot.generation > previous_generation);
+    assert_eq!(snapshot.document_switches, 0);
+
+    assert!(!model.shutdown().active);
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn document_switch_cancels_all_pending_work_and_reports_transport_failure()
+-> Result<(), Box<dyn Error>> {
+    let (mut pending, input, pending_root) = installed_model()?;
+    let pending_path = pending_root.join("pending.rs");
+    std::fs::write(&pending_path, "fn pending() {}\n")?;
+    let completion = install_pending_completion(&mut pending, 11)?;
+    let navigation = install_pending_navigation(&mut pending, 12, NavigationRequestKind::Hover)?;
+    let session = pending.session.as_mut().ok_or("session")?;
+    let stamp = session.identity.request_stamp().ok_or("request stamp")?;
+    session.pending_symbols = Some(PendingSymbols {
+        request_id: 13,
+        stamp,
+        kind: SymbolRequestKind::Document,
+        identity: session.identity,
+        process_epoch: session.process_epoch,
+        lsp_version: session.lsp_version,
+        query_revision: 1,
+    });
+    session.pending_workspace_edit = Some(PendingWorkspaceEdit {
+        request_id: 14,
+        stamp,
+        kind: WorkspaceEditKind::Rename,
+        identity: session.identity,
+        process_epoch: session.process_epoch,
+        lsp_version: session.lsp_version,
+    });
+    assert_eq!(completion.request_id, 11);
+    assert_eq!(navigation.request_id, 12);
+    let mut pending_identity = input.identity;
+    pending_identity.document_id += 1;
+    assert!(
+        pending
+            .sync(
+                Some(RustDocumentInput::new(
+                    &pending_path,
+                    &pending_root,
+                    pending_identity,
+                    input.snapshot,
+                )),
+                |_| Arc::new(|| {}),
+            )
+            .visual_changed
+    );
+    let snapshot = pending.snapshot();
+    assert_eq!(snapshot.completion_cancellations, 1);
+    assert_eq!(snapshot.navigation_cancellations, 1);
+    assert_eq!(snapshot.symbol_cancellations, 1);
+    assert_eq!(snapshot.workspace_edit_cancellations, 1);
+    assert_eq!(snapshot.document_switches, 1);
+    assert!(pending.status_message().is_some());
+
+    assert!(!pending.shutdown().active);
+    std::fs::remove_dir_all(pending_root)?;
     Ok(())
 }
 
@@ -255,10 +413,37 @@ fn oversized_document_messages_fail_boundedly() -> Result<(), Box<dyn Error>> {
     session.restart_count = MAX_RESTARTS_PER_DOCUMENT;
     assert!(oversized_change.flush_change());
 
+    let (mut oversized_switch, input, root_three) = installed_model()?;
+    let oversized_path = root_three.join("oversized.rs");
+    std::fs::write(&oversized_path, "fn oversized() {}\n")?;
+    let mut identity = input.identity;
+    identity.document_id += 1;
+    assert!(
+        oversized_switch
+            .sync(
+                Some(RustDocumentInput::new(
+                    &oversized_path,
+                    &root_three,
+                    identity,
+                    alpine_text::Buffer::new(&oversized).snapshot(),
+                )),
+                |_| Arc::new(|| {}),
+            )
+            .visual_changed
+    );
+    assert_eq!(oversized_switch.snapshot().document_switches, 0);
+    assert!(
+        oversized_switch
+            .status_message()
+            .is_some_and(|message| message.contains("DocumentTooLarge"))
+    );
+
     assert!(!oversized_open.shutdown().active);
     assert!(!oversized_change.shutdown().active);
+    assert!(!oversized_switch.shutdown().active);
     std::fs::remove_dir_all(root)?;
     std::fs::remove_dir_all(root_two)?;
+    std::fs::remove_dir_all(root_three)?;
     Ok(())
 }
 
