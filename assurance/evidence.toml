@@ -2955,7 +2955,7 @@ artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#CurrentApplicationIsCurrent"
 assertion = "A foreground application classified current carries the active workspace and document revisions."
 scope = "Bounded completion interleavings across independent workspace and document advances."
 bounds = ["pull request: one workspace and document advance", "nightly: two workspace and document advances"]
-assumptions = ["native wake eventually causes foreground result inspection", "non-current disposition identity is unobserved by transitions and checked properties and is canonicalized to zero"]
+assumptions = ["native wake eventually causes foreground result inspection", "a direct boolean monitor records whether the current-application action admitted exact revisions; historical result identity is outside the checked abstraction"]
 exclusions = ["application result semantics", "unbounded revisions", "Rust formal refinement"]
 companion = "crates/alpine-runtime/src/lib.rs#stale_background_result_never_mutates_delegate_state"
 
