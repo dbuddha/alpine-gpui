@@ -2,6 +2,7 @@
 set -eu
 
 failures=0
+tla_driver=${ALPINE_TLA_DRIVER:-scripts/check-tla.sh}
 
 fail() {
     printf 'policy error: %s\n' "$1" >&2
@@ -413,6 +414,14 @@ do
         fail "required assurance artifact is missing: $required_path"
     fi
 done
+
+if [ ! -f "$tla_driver" ]; then
+    fail "TLA+ driver is missing: $tla_driver"
+elif ! grep -Fq 'pull-request) config=PullRequest.cfg; lncheck=default ;;' "$tla_driver" \
+    || ! grep -Fq 'nightly) config=Nightly.cfg; lncheck=final ;;' "$tla_driver" \
+    || [ "$(grep -Fc -- '-lncheck "$lncheck"' "$tla_driver" || true)" -ne 2 ]; then
+    fail 'TLA+ must preserve default pull-request checks and final-graph Nightly liveness checks'
+fi
 
 issue_form_count=$(find .github/ISSUE_TEMPLATE -maxdepth 1 -type f -name '*.yml' ! -name config.yml | wc -l | tr -d ' ')
 if [ "$issue_form_count" -ne 5 ]; then

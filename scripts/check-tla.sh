@@ -33,8 +33,8 @@ if [ "$actual_sha" != "$expected_sha" ]; then
 fi
 
 case "$mode" in
-    pull-request) config=PullRequest.cfg ;;
-    nightly) config=Nightly.cfg ;;
+    pull-request) config=PullRequest.cfg; lncheck=default ;;
+    nightly) config=Nightly.cfg; lncheck=final ;;
     *) printf 'usage: %s [pull-request|nightly]\n' "$0" >&2; exit 2 ;;
 esac
 
@@ -48,7 +48,8 @@ for model_dir in formal/tla/aep-*; do
     if ! (
         cd "$model_dir"
         java -XX:+UseParallelGC -cp "../../../$jar" tlc2.TLC \
-            -cleanup -deadlock -workers auto -config "$config" "$model_name"
+            -cleanup -deadlock -workers auto -lncheck "$lncheck" \
+            -config "$config" "$model_name"
     ) >"$model_output/$config.log" 2>&1; then
         cat "$model_output/$config.log" >&2
         exit 1
@@ -59,7 +60,8 @@ for model_dir in formal/tla/aep-*; do
         if (
             cd "$model_dir"
             java -XX:+UseParallelGC -cp "../../../$jar" tlc2.TLC \
-                -cleanup -deadlock -workers auto -config "$faulty_config" "$model_name"
+                -cleanup -deadlock -workers auto -lncheck "$lncheck" \
+                -config "$faulty_config" "$model_name"
         ) >"$model_output/$faulty_config.log" 2>&1; then
             printf 'faulty model unexpectedly passed: %s %s\n' \
                 "$model_dir" "$faulty_config" >&2
