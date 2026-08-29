@@ -36,6 +36,7 @@ workflow_files=$(find .github/workflows -type f \( -name '*.yml' -o -name '*.yam
 
 if [ -n "$workflow_files" ]; then
     ci_workflow=${ALPINE_CI_WORKFLOW:-.github/workflows/ci.yml}
+    assurance_failure_workflow=${ALPINE_ASSURANCE_FAILURE_WORKFLOW:-.github/workflows/assurance-failure.yml}
     action_refs=$(grep -hE '^[[:space:]]*uses:' $workflow_files || true)
     if [ -n "$action_refs" ] && printf '%s\n' "$action_refs" | grep -Ev '@[0-9a-f]{40}([[:space:]]|$)' >/dev/null; then
         fail 'every GitHub Action must be pinned to a full commit SHA'
@@ -88,6 +89,11 @@ if [ -n "$workflow_files" ]; then
     fi
     if ! printf '%s\n' "$ci_pass_block" | grep -Fq 'test "$2" = success || {'; then
         fail 'ci-pass must reject every required result other than success'
+    fi
+    if [ ! -x scripts/filter-assurance-failures.sh ] \
+        || [ ! -f "$assurance_failure_workflow" ] \
+        || ! grep -Fq 'scripts/filter-assurance-failures.sh |' "$assurance_failure_workflow"; then
+        fail 'assurance routing must suppress derivative ci-pass failures through the tested selector'
     fi
     extract_metal_step() {
         printf '%s\n' "$metal_validation_block" | awk -v target="      - name: $1" '
