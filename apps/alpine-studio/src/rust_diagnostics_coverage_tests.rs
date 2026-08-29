@@ -210,6 +210,7 @@ fn document_switch_rejects_invalid_identity_and_preserves_initialization()
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn missing_session_restarts_a_changed_target_without_switching() -> Result<(), Box<dyn Error>> {
     let (mut model, input, root) = installed_model()?;
     model.server_path = Some(tests::mock_executable().to_path_buf());
