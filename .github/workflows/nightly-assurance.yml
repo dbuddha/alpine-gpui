@@ -298,7 +298,8 @@ jobs:
           mkdir -p target
           cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re 'validate_initialization_rollback|native_validation::arm_window_close|native_validation::NativeAccessibilityEvidence::|native_validation::arm_user_window_close|native_validation::arm_programmatic_window_close|native_validation::commit_native_text' --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-platform-contract-mutants-${{ matrix.id }}.out" -- --locked
           if [ "${{ matrix.id }}" = "1" ]; then
-            cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --re 'native_validation::arm_user_window_close|native_validation::arm_programmatic_window_close|native_validation::commit_native_text' --test-package alpine-studio --no-shuffle --output target/native-platform-studio-contract-mutants.out -- --locked
+            # Hosted AppKit cannot qualify user-facing `performClose`; physical Tasks #72 and #253 own that contract.
+            cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --re 'native_validation::arm_programmatic_window_close|native_validation::commit_native_text' --test-package alpine-studio --no-shuffle --output target/native-platform-studio-contract-mutants.out -- --locked
           fi
       - name: Upload native platform contract mutation evidence
         if: always()
