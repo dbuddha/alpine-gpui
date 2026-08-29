@@ -5082,7 +5082,24 @@ impl NativeSurface {
 
 #[cfg(alpine_native_validation)]
 fn stop_validation_event_loop(application: &NSApplication) {
-    stop_event_loop(application);
+    // Keep the validation watchdog independent from the production stop path.
+    // If a production close mutation removes `stop_event_loop`, this guard must
+    // still release `NSApplication::run` so the process reports the expired
+    // guard instead of hanging until the mutation harness times out.
+    application.stop(None);
+    if let Some(event) = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+        NSEventType::ApplicationDefined,
+        NSPoint::new(0.0, 0.0),
+        NSEventModifierFlags::empty(),
+        0.0,
+        0,
+        None,
+        0,
+        0,
+        0,
+    ) {
+        application.postEvent_atStart(&event, true);
+    }
 }
 
 fn stop_event_loop(application: &NSApplication) {
