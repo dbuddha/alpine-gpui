@@ -113,13 +113,89 @@ run_policy() {
     ALPINE_PR_BODY="$pr_body" \
     ALPINE_PR_LABELS=release:feature \
     ALPINE_PR_TITLE='feat(core): exercise approval fixture' \
+    ALPINE_TLA_DRIVER="${ALPINE_TLA_DRIVER:-scripts/check-tla.sh}" \
     scripts/check-policy.sh
 }
 
 run_policy >/dev/null
 
+cp scripts/check-tla.sh "$fixture_dir/check-tla.sh"
+ALPINE_TLA_DRIVER="$fixture_dir/check-tla.sh" run_policy >/dev/null
+sed 's/nightly) config=Nightly.cfg; lncheck=final ;;/nightly) config=Nightly.cfg; lncheck=default ;;/' \
+    "$fixture_dir/check-tla.sh" > "$fixture_dir/periodic-nightly-tla.sh"
+if ALPINE_TLA_DRIVER="$fixture_dir/periodic-nightly-tla.sh" run_policy > "$fixture_dir/periodic-nightly-tla.log" 2>&1; then
+    printf 'policy test error: periodic Nightly liveness checking unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'TLA+ must preserve default pull-request checks and final-graph Nightly liveness checks' "$fixture_dir/periodic-nightly-tla.log"; then
+    printf 'policy test error: expected final-graph Nightly liveness failure was not reported\n' >&2
+    cat "$fixture_dir/periodic-nightly-tla.log" >&2
+    exit 1
+fi
+unset ALPINE_TLA_DRIVER
+
 cp .github/workflows/ci.yml "$fixture_dir/ci.yml"
 ALPINE_CI_WORKFLOW="$fixture_dir/ci.yml" run_policy >/dev/null
+
+sed 's/if: ${{ always() && !cancelled() }}/if: always()/' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/canceled-aggregate-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/canceled-aggregate-ci.yml" run_policy > "$fixture_dir/canceled-aggregate-ci.log" 2>&1; then
+    printf 'policy test error: aggregate admitted during workflow cancellation unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'ci-pass must run after ordinary failures but skip a canceled workflow' "$fixture_dir/canceled-aggregate-ci.log"; then
+    printf 'policy test error: expected canceled aggregate admission failure was not reported\n' >&2
+    cat "$fixture_dir/canceled-aggregate-ci.log" >&2
+    exit 1
+fi
+
+sed 's/if: ${{ always() && !cancelled() }}/if: ${{ !cancelled() }}/' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/failed-dependency-skips-aggregate-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/failed-dependency-skips-aggregate-ci.yml" run_policy > "$fixture_dir/failed-dependency-skips-aggregate-ci.log" 2>&1; then
+    printf 'policy test error: aggregate without ordinary-failure admission unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'ci-pass must run after ordinary failures but skip a canceled workflow' "$fixture_dir/failed-dependency-skips-aggregate-ci.log"; then
+    printf 'policy test error: expected ordinary-failure aggregate admission failure was not reported\n' >&2
+    cat "$fixture_dir/failed-dependency-skips-aggregate-ci.log" >&2
+    exit 1
+fi
+
+sed 's/test "$2" = success || {/test "$2" != failure || {/' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/canceled-dependency-accepted-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/canceled-dependency-accepted-ci.yml" run_policy > "$fixture_dir/canceled-dependency-accepted-ci.log" 2>&1; then
+    printf 'policy test error: aggregate accepting a canceled required dependency unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'ci-pass must reject every required result other than success' "$fixture_dir/canceled-dependency-accepted-ci.log"; then
+    printf 'policy test error: expected canceled required dependency failure was not reported\n' >&2
+    cat "$fixture_dir/canceled-dependency-accepted-ci.log" >&2
+    exit 1
+fi
+
+sed "s/steps.upload-metal-shader-primary.outcome == 'failure'/steps.upload-metal-shader-primary.outcome == 'success'/" \
+    "$fixture_dir/ci.yml" > "$fixture_dir/wrong-artifact-retry-route-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/wrong-artifact-retry-route-ci.yml" run_policy > "$fixture_dir/wrong-artifact-retry-route-ci.log" 2>&1; then
+    printf 'policy test error: incorrectly routed Metal artifact retry unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'required Metal artifact upload must retain one identical blocking retry' "$fixture_dir/wrong-artifact-retry-route-ci.log"; then
+    printf 'policy test error: expected Metal artifact retry routing failure was not reported\n' >&2
+    cat "$fixture_dir/wrong-artifact-retry-route-ci.log" >&2
+    exit 1
+fi
+
+sed "/steps.upload-metal-shader-primary.outcome == 'failure'/a\\
+        continue-on-error: true" "$fixture_dir/ci.yml" > "$fixture_dir/nonblocking-artifact-retry-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/nonblocking-artifact-retry-ci.yml" run_policy > "$fixture_dir/nonblocking-artifact-retry-ci.log" 2>&1; then
+    printf 'policy test error: nonblocking Metal artifact retry unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Eq 'continue-on-error is restricted|required Metal artifact upload must retain one identical blocking retry' "$fixture_dir/nonblocking-artifact-retry-ci.log"; then
+    printf 'policy test error: expected blocking Metal artifact retry failure was not reported\n' >&2
+    cat "$fixture_dir/nonblocking-artifact-retry-ci.log" >&2
+    exit 1
+fi
 
 perl -0pe 's/(  native-mutation:.*?)( --shard "\$\{\{ matrix\.shard \}\}")/$1/s' \
     "$fixture_dir/ci.yml" > "$fixture_dir/unsharded-ci.yml"

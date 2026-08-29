@@ -70,9 +70,13 @@ model is not evidence that the callback wait has been removed.
 [`FrameSlots.tla`](../../formal/tla/aep-0120/FrameSlots.tla) models three fixed
 slots, free, encoding, and submitted phases, monotonic lease sequences, owner
 generation, revision and epoch supersession, completion reorder, cancellation,
-saturation, and shutdown drain. `BoundedFrameSlots`, `BalancedOwnership`, and
-`OwnedSequencesUnique` constrain ownership. `CurrentPublicationIsCurrent`
-rejects stale publication. `ShutdownEventuallyDrains` is a progress property.
+a one-bit saturation witness, and shutdown drain. Repeated saturation counts are
+stutter-equivalent in this model and remain exact in the compiled Rust evidence.
+Inactive publication identity is canonicalized because no transition or checked
+property consumes it. `BoundedFrameSlots`, `BalancedOwnership`,
+`OwnedSequencesUnique`, and `InactivePublicationHasNoIdentity` constrain
+ownership and the quotient. `CurrentPublicationIsCurrent` rejects stale
+publication. `ShutdownEventuallyDrains` is a progress property.
 
 The faulty configuration deliberately publishes one stale submitted slot as
 current. TLC must report a `CurrentPublicationIsCurrent` violation. The model

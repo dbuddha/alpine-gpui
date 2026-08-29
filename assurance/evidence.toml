@@ -789,7 +789,7 @@ artifact = "formal/tla/aep-0120/FrameSlots.tla#BoundedFrameSlots"
 assertion = "Exactly three abstract slots bound concurrent encoding and submitted ownership."
 scope = "One three-slot ring with bounded lease and environment identities."
 bounds = ["pull request: three admissions", "nightly: four admissions"]
-assumptions = ["one occupied abstract slot represents all native resources for one frame"]
+assumptions = ["one occupied abstract slot represents all native resources for one frame", "one formal saturation witness represents one or more saturated admissions; compiled Rust evidence owns exact repeat counts"]
 exclusions = ["native retain counts", "elapsed time", "Rust formal refinement"]
 companion = "crates/alpine-platform/src/frame_slots.rs#admission_is_bounded_and_saturation_is_observable"
 
@@ -801,7 +801,7 @@ artifact = "formal/tla/aep-0120/FrameSlots.tla#CurrentPublicationIsCurrent"
 assertion = "A current publication must match the live owner generation, revision, and surface epoch."
 scope = "Reordered terminal completion with bounded generation and supersession changes."
 bounds = ["pull request: one generation, revision, and epoch advance", "nightly: two advances"]
-assumptions = ["native completion identity maps to the slot lease before publication"]
+assumptions = ["native completion identity maps to the slot lease before publication", "non-current publication identity is unobserved by transitions and checked properties and is canonicalized to zero"]
 exclusions = ["native callback delivery", "physical presentation", "Rust formal refinement"]
 companion = "crates/alpine-platform/src/frame_slots.rs#terminal_classification_checks_status_generation_revision_and_epoch"
 
@@ -2919,7 +2919,7 @@ artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#BoundedRequestQueue"
 assertion = "The fixed request capacity bounds every queued request state."
 scope = "Three pull-request jobs with one request slot, one result slot, and bounded revision advances."
 bounds = ["pull request: three jobs and one revision advance", "nightly: four jobs and two revision advances"]
-assumptions = ["one modeled queue slot represents one standard-channel message"]
+assumptions = ["one modeled queue slot represents one standard-channel message", "formal saturation and application-result counts are one-bit occurrence witnesses; compiled runtime evidence owns exact arithmetic"]
 exclusions = ["thread scheduling", "mutex implementation", "elapsed time", "Rust formal refinement"]
 companion = "crates/alpine-runtime/src/lib.rs#saturated_submission_returns_without_waiting"
 
@@ -2931,7 +2931,7 @@ artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#BoundedResultQueue"
 assertion = "The fixed result capacity bounds every completed result awaiting foreground inspection."
 scope = "Three pull-request jobs with one request slot and one result slot."
 bounds = ["pull request: three jobs and one result slot", "nightly: four jobs and two result slots"]
-assumptions = ["one modeled result slot represents one standard-channel message"]
+assumptions = ["one modeled result slot represents one standard-channel message", "terminal job revision tags and per-job outcome labels are unobservable after queue and worker ownership ends; distinct actions and disposition witnesses retain the modeled outcomes"]
 exclusions = ["allocator bytes", "thread scheduling", "Rust formal refinement"]
 companion = "crates/alpine-runtime/src/lib.rs#worker_panic_is_contained_and_counted"
 
@@ -2955,7 +2955,7 @@ artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#CurrentApplicationIsCurrent"
 assertion = "A foreground application classified current carries the active workspace and document revisions."
 scope = "Bounded completion interleavings across independent workspace and document advances."
 bounds = ["pull request: one workspace and document advance", "nightly: two workspace and document advances"]
-assumptions = ["native wake eventually causes foreground result inspection"]
+assumptions = ["native wake eventually causes foreground result inspection", "a direct boolean monitor records whether the current-application action admitted exact revisions; historical result identity is outside the checked abstraction"]
 exclusions = ["application result semantics", "unbounded revisions", "Rust formal refinement"]
 companion = "crates/alpine-runtime/src/lib.rs#stale_background_result_never_mutates_delegate_state"
 
