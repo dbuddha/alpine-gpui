@@ -25,7 +25,10 @@ use super::{
 
 const MAX_WORKER_TURNS: u64 = 1_024;
 const MAX_TERMINAL_DRAINS: u8 = 8;
-const FRAME_TERMINAL_TIMEOUT: Duration = Duration::from_secs(5);
+// Hosted Metal runners can take several seconds to make an already submitted
+// command terminal. This is a correctness watchdog, not a frame-performance
+// budget; the submission count and ownership drain remain independently bound.
+const FRAME_TERMINAL_TIMEOUT: Duration = Duration::from_secs(10);
 const FRAME_TERMINAL_POLL: Duration = Duration::from_millis(100);
 const DIAGNOSTIC_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const DIAGNOSTIC_READY_POLL: Duration = Duration::from_millis(5);
