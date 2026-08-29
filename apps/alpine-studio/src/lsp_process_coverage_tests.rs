@@ -1104,7 +1104,11 @@ fn bounded_supervisor_join_reports_an_unfinished_worker() {
 #[test]
 #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn supervisor_exits_after_terminal_event_overflow() -> Result<(), Box<dyn Error>> {
-    let spec = ProcessSpec::new("/usr/bin/yes", ["x"], None)?;
+    let spec = ProcessSpec::new(
+        "/bin/sh",
+        ["-c", "printf x; exec 1>&- 2>&-; read ignored"],
+        None,
+    )?;
     let (control_sender, control_receiver) = sync_channel(1);
     let (event_sender, _event_receiver) = sync_channel(1);
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -1124,9 +1128,7 @@ fn supervisor_exits_after_terminal_event_overflow() -> Result<(), Box<dyn Error>
         );
         let _ = done_sender.try_send(());
     });
-    let completed = done_receiver
-        .recv_timeout(Duration::from_millis(250))
-        .is_ok();
+    let completed = done_receiver.recv_timeout(TIMEOUT).is_ok();
     shutdown.store(true, Ordering::Release);
     drop(control_sender);
     if !completed {
