@@ -659,10 +659,11 @@ impl NativeAccessibilityAdapter {
         {
             self.push_notification(intents, id, NotificationKind::Selection);
         }
-        if (previous.revision() != current.revision()
-            || previous.text_len_utf16() != current.text_len_utf16()
-            || previous.is_dirty() != current.is_dirty())
-            && let Some(id) = role_id(current, AccessibilityRole::CodeEditor)
+        if any_conditions([
+            previous.revision() != current.revision(),
+            previous.text_len_utf16() != current.text_len_utf16(),
+            previous.is_dirty() != current.is_dirty(),
+        ]) && let Some(id) = role_id(current, AccessibilityRole::CodeEditor)
         {
             self.push_notification(intents, id, NotificationKind::Value);
         }
@@ -811,12 +812,16 @@ impl NativeAccessibilityAdapter {
     }
 
     fn valid(&self, generation: u64, instance_generation: u64, id: AccessibilityNodeId) -> bool {
-        self.active
-            && self.generation == generation
-            && self
-                .elements
-                .iter()
-                .any(|entry| entry.id == id && entry.instance_generation == instance_generation)
+        all_conditions([
+            self.active,
+            self.generation == generation,
+            self.elements.iter().any(|entry| {
+                all_conditions([
+                    entry.id == id,
+                    entry.instance_generation == instance_generation,
+                ])
+            }),
+        ])
     }
 
     fn node(
@@ -858,7 +863,7 @@ impl NativeAccessibilityAdapter {
         snapshot
             .nodes()
             .iter()
-            .filter(|node| node.parent() == Some(id))
+            .filter(|node| is_direct_child(node.parent(), id))
             .filter_map(|node| self.element(node.id()))
             .collect()
     }
@@ -1116,6 +1121,9 @@ impl NativeAccessibilityAdapter {
         let stable_root_identity = repeated
             .firstObject()
             .is_some_and(|candidate| core::ptr::eq(&*root, &*candidate));
+        let root_children: Retained<NSArray<NativeAccessibilityElement>> =
+            unsafe { msg_send![&*root, accessibilityChildren] };
+        let root_has_children = root_children.len() > 0;
         let editor = view
             .ivars()
             .accessibility
@@ -1139,6 +1147,8 @@ impl NativeAccessibilityAdapter {
             unsafe { msg_send![&*editor, accessibilitySelectedTextRange] };
         let line_for_index: usize =
             unsafe { msg_send![&*editor, accessibilityLineForIndex: 6usize] };
+        let first_line_for_index: usize =
+            unsafe { msg_send![&*editor, accessibilityLineForIndex: 0usize] };
         let range_for_line: NSRange =
             unsafe { msg_send![&*editor, accessibilityRangeForLine: 1usize] };
         let range_for_index: NSRange =
@@ -1161,8 +1171,10 @@ impl NativeAccessibilityAdapter {
         let identifier: Retained<NSString> = unsafe { msg_send![&*tab, accessibilityIdentifier] };
         let repeated_identifier: Retained<NSString> =
             unsafe { msg_send![&*tab, accessibilityIdentifier] };
-        let stable_external_identifier = !identifier.to_string().is_empty()
-            && identifier.to_string() == repeated_identifier.to_string();
+        let stable_external_identifier = all_conditions([
+            !identifier.to_string().is_empty(),
+            identifier.to_string() == repeated_identifier.to_string(),
+        ]);
         let frame: NSRect = unsafe { msg_send![&*tab, accessibilityFrame] };
         let bounded_screen_frame = bounded_screen_frame(frame);
         let tab_activate_selector_allowed: bool = unsafe {
@@ -1182,9 +1194,11 @@ impl NativeAccessibilityAdapter {
             msg_send![&*status, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
         };
         let status_activation: bool = unsafe { msg_send![&*status, accessibilityPerformPress] };
-        let activate_selector_allowed = tab_activate_selector_allowed
-            && !status_activate_selector_allowed
-            && !status_activation;
+        let activate_selector_allowed = all_conditions([
+            tab_activate_selector_allowed,
+            !status_activate_selector_allowed,
+            !status_activation,
+        ]);
         let editor_parent: Option<Retained<NativeAccessibilityElement>> =
             unsafe { msg_send![&*editor, accessibilityParent] };
         let editor_focused: bool = unsafe { msg_send![&*editor, isAccessibilityFocused] };
@@ -1270,11 +1284,13 @@ impl NativeAccessibilityAdapter {
             )
             .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?
             .with_bounds(current.bounds());
-            reusable_semantics(current, current)
-                && !reusable_semantics(current, &changed_parent)
-                && !reusable_semantics(current, &changed_role)
-                && !reusable_semantics(current, &changed_name)
-                && !reusable_semantics(current, &changed_action)
+            all_conditions([
+                reusable_semantics(current, current),
+                !reusable_semantics(current, &changed_parent),
+                !reusable_semantics(current, &changed_role),
+                !reusable_semantics(current, &changed_name),
+                !reusable_semantics(current, &changed_action),
+            ])
         };
         let layout_semantics_changed_valid = {
             let snapshot = view
@@ -1356,40 +1372,51 @@ impl NativeAccessibilityAdapter {
                 None,
             )
             .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?;
-            !layout_semantics_changed(current, current)
-                && layout_semantics_changed(current, &changed_parent)
-                && layout_semantics_changed(current, &changed_role)
-                && layout_semantics_changed(current, &changed_name)
-                && layout_semantics_changed(current, &changed_bounds)
-                && layout_semantics_changed(current, &changed_enabled)
-                && layout_semantics_changed(current, &changed_action)
+            all_conditions([
+                !layout_semantics_changed(current, current),
+                layout_semantics_changed(current, &changed_parent),
+                layout_semantics_changed(current, &changed_role),
+                layout_semantics_changed(current, &changed_name),
+                layout_semantics_changed(current, &changed_bounds),
+                layout_semantics_changed(current, &changed_enabled),
+                layout_semantics_changed(current, &changed_action),
+            ])
         };
-        let notification_user_info_controls_valid = layout_user_info_valid(1, true)
-            && !layout_user_info_valid(0, true)
-            && !layout_user_info_valid(1, false)
-            && announcement_user_info_valid(2, true, true)
-            && !announcement_user_info_valid(1, true, true)
-            && !announcement_user_info_valid(2, false, true)
-            && !announcement_user_info_valid(2, true, false);
-        let semantic_tree_valid = role_mapping_valid
-            && editor_focused
-            && tab_selected
-            && reusable_semantics_valid
-            && layout_semantics_changed_valid
-            && status_value.is_some_and(|value| value.to_string() == "Opened main.rs")
-            && editor_parent.is_some_and(|parent| core::ptr::eq(&*parent, &*root));
+        let notification_user_info_controls_valid = all_conditions([
+            layout_user_info_valid(1, true),
+            !layout_user_info_valid(0, true),
+            !layout_user_info_valid(1, false),
+            announcement_user_info_valid(2, true, true),
+            !announcement_user_info_valid(1, true, true),
+            !announcement_user_info_valid(2, false, true),
+            !announcement_user_info_valid(2, true, false),
+        ]);
+        let semantic_tree_valid = all_conditions([
+            role_mapping_valid,
+            root_has_children,
+            editor_focused,
+            tab_selected,
+            reusable_semantics_valid,
+            layout_semantics_changed_valid,
+            status_value.is_some_and(|value| value.to_string() == "Opened main.rs"),
+            editor_parent.is_some_and(|parent| core::ptr::eq(&*parent, &*root)),
+        ]);
         let status_text_selector_allowed: bool = unsafe {
             msg_send![&*status, isAccessibilitySelectorAllowed: sel!(accessibilityStringForRange:)]
         };
         let status_character_count: usize =
             unsafe { msg_send![&*status, accessibilityNumberOfCharacters] };
-        let checked_range_contract_valid = checked_range(NSRange::new(0, 2), 2)
-            == Some(AccessibilityTextRange::new(0, 2))
-            && checked_range(NSRange::new(usize::MAX, 0), usize::MAX).is_none()
-            && checked_range(NSRange::new(usize::MAX - 1, 2), usize::MAX).is_none();
-        let text_selector_scope_valid = !status_text_selector_allowed
-            && status_character_count == 0
-            && checked_range_contract_valid;
+        let checked_range_contract_valid = all_conditions([
+            checked_range(NSRange::new(0, 2), 2) == Some(AccessibilityTextRange::new(0, 2)),
+            checked_range(NSRange::new(usize::MAX, 0), usize::MAX).is_none(),
+            checked_range(NSRange::new(usize::MAX.saturating_sub(1), 2), usize::MAX).is_none(),
+        ]);
+        let text_selector_scope_valid = all_conditions([
+            !status_text_selector_allowed,
+            status_character_count == 0,
+            checked_range_contract_valid,
+            first_line_for_index == 0,
+        ]);
         let accepted_native = NSRange::new(2, 2);
         let _: () =
             unsafe { msg_send![&*editor, setAccessibilitySelectedTextRange: accepted_native] };
@@ -1472,8 +1499,10 @@ impl NativeAccessibilityAdapter {
             notification_user_info_controls_valid,
             posts_after_handler_revocation: final_counters.posts_after_handler_revocation,
             revoke_starts: final_counters.revoke_starts,
-            revoke_terminal: view.ivars().accessibility.borrow().handler.is_none()
-                && !view.ivars().accessibility.borrow().revoking,
+            revoke_terminal: all_conditions([
+                view.ivars().accessibility.borrow().handler.is_none(),
+                !view.ivars().accessibility.borrow().revoking,
+            ]),
             posted_notification_payload_bytes: final_counters.posted_payload_bytes,
             peak_notification_retained_bytes: final_counters.peak_notification_retained_bytes,
             current_elements_after_revoke: view.ivars().accessibility.borrow().elements.len(),
@@ -1768,21 +1797,37 @@ fn structural_tree_changed(
     previous: &AccessibilitySnapshot,
     current: &AccessibilitySnapshot,
 ) -> bool {
-    previous.root() != current.root()
-        || previous.nodes().len() != current.nodes().len()
-        || previous
+    any_conditions([
+        previous.root() != current.root(),
+        previous.nodes().len() != current.nodes().len(),
+        previous
             .nodes()
             .iter()
             .zip(current.nodes())
             .any(|(left, right)| {
-                left.id() != right.id()
-                    || left.parent() != right.parent()
-                    || left.role() != right.role()
-                    || left.name() != right.name()
-                    || left.bounds() != right.bounds()
-                    || left.is_enabled() != right.is_enabled()
-                    || left.supports_activate() != right.supports_activate()
-            })
+                any_conditions([
+                    left.id() != right.id(),
+                    left.parent() != right.parent(),
+                    left.role() != right.role(),
+                    left.name() != right.name(),
+                    left.bounds() != right.bounds(),
+                    left.is_enabled() != right.is_enabled(),
+                    left.supports_activate() != right.supports_activate(),
+                ])
+            }),
+    ])
+}
+
+fn all_conditions<const N: usize>(conditions: [bool; N]) -> bool {
+    conditions.into_iter().all(core::convert::identity)
+}
+
+fn any_conditions<const N: usize>(conditions: [bool; N]) -> bool {
+    conditions.into_iter().any(core::convert::identity)
+}
+
+fn is_direct_child(parent: Option<AccessibilityNodeId>, id: AccessibilityNodeId) -> bool {
+    parent == Some(id)
 }
 
 fn layout_semantics_changed(previous: &AccessibilityNode, current: &AccessibilityNode) -> bool {
@@ -1846,6 +1891,45 @@ fn bounded_screen_frame(frame: NSRect) -> bool {
 
 const fn not_found_range() -> NSRange {
     NSRange::new(usize::MAX, 0)
+}
+
+#[cfg(test)]
+mod accessibility_predicate_tests {
+    use super::*;
+
+    #[test]
+    fn conjunction_requires_every_condition_independently() {
+        assert!(all_conditions([true; 8]));
+        for index in 0..8 {
+            let mut conditions = [true; 8];
+            conditions[index] = false;
+            assert!(!all_conditions(conditions));
+        }
+    }
+
+    #[test]
+    fn disjunction_accepts_every_condition_independently() {
+        assert!(!any_conditions([false; 8]));
+        for index in 0..8 {
+            let mut conditions = [false; 8];
+            conditions[index] = true;
+            assert!(any_conditions(conditions));
+        }
+    }
+
+    #[test]
+    fn inactive_adapter_never_validates_an_element() {
+        let adapter = NativeAccessibilityAdapter::new();
+        assert!(!adapter.valid(0, 0, AccessibilityNodeId::new(1)));
+    }
+
+    #[test]
+    fn direct_child_requires_the_requested_parent() {
+        let parent = AccessibilityNodeId::new(1);
+        assert!(is_direct_child(Some(parent), parent));
+        assert!(!is_direct_child(None, parent));
+        assert!(!is_direct_child(Some(AccessibilityNodeId::new(2)), parent));
+    }
 }
 
 #[cfg(test)]
