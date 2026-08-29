@@ -3633,6 +3633,15 @@ const fn validation_close_resources_drained(
 }
 
 #[cfg(alpine_native_validation)]
+const fn validation_frame_run_complete(
+    terminal_observed: bool,
+    frame_work_drained: bool,
+    wake_pending: bool,
+) -> bool {
+    terminal_observed && frame_work_drained && !wake_pending
+}
+
+#[cfg(alpine_native_validation)]
 const fn validation_close_should_retry(
     qualified_presented: u64,
     accepted_terminal_failure: bool,
@@ -4591,13 +4600,18 @@ impl NativeSurface {
                         driver.frame_slots.snapshot().occupied_slots(),
                     )
                 });
-                (!terminal_observed || !frame_work_drained) && Instant::now() < deadline
+                !validation_frame_run_complete(
+                    terminal_observed,
+                    frame_work_drained,
+                    self.wake_bridge.pending.load(Ordering::Acquire),
+                ) && Instant::now() < deadline
             } {
                 NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.005));
             }
             return;
         }
         let driver = Rc::downgrade(&self.driver);
+        let wake_bridge = Arc::clone(&self.wake_bridge);
         let timer_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
             RcBlock::new(move |timer: NonNull<NSTimer>| {
                 let terminal_observed = counters.presented.load(Ordering::Acquire)
@@ -4613,8 +4627,11 @@ impl NativeSurface {
                         )
                     })
                 });
-                let terminal =
-                    (terminal_observed && frame_work_drained) || Instant::now() >= deadline;
+                let terminal = validation_frame_run_complete(
+                    terminal_observed,
+                    frame_work_drained,
+                    wake_bridge.pending.load(Ordering::Acquire),
+                ) || Instant::now() >= deadline;
                 if terminal {
                     // SAFETY: Foundation supplies a valid borrowed timer for
                     // the complete callback, and the reference does not escape.
@@ -5716,6 +5733,19 @@ mod tests {
         assert!(!validation_close_accepts_terminal_failure(true, 0));
         assert!(validation_close_accepts_terminal_failure(true, 1));
         assert!(validation_close_accepts_terminal_failure(true, u64::MAX));
+    }
+
+    #[test]
+    #[cfg(alpine_native_validation)]
+    fn validation_frame_run_waits_for_terminal_frame_and_wake_drain() {
+        assert!(validation_frame_run_complete(true, true, false));
+        assert!(!validation_frame_run_complete(false, true, false));
+        assert!(!validation_frame_run_complete(true, false, false));
+        assert!(!validation_frame_run_complete(true, true, true));
+        assert!(!validation_frame_run_complete(false, false, false));
+        assert!(!validation_frame_run_complete(false, true, true));
+        assert!(!validation_frame_run_complete(true, false, true));
+        assert!(!validation_frame_run_complete(false, false, true));
     }
 
     #[test]
