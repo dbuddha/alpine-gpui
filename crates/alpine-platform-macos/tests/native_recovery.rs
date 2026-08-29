@@ -115,7 +115,7 @@ mod validation {
             );
         }
 
-        let _recovered = validate_post_drop_recovery(
+        let _recovered = validate_post_failure_recovery(
             &surface,
             &scene,
             clear,
@@ -156,7 +156,7 @@ mod validation {
         clippy::too_many_arguments,
         reason = "the retry must preserve every cumulative terminal-evidence axis"
     )]
-    fn validate_post_drop_recovery(
+    fn validate_post_failure_recovery(
         surface: &NativeSurface,
         scene: &Scene,
         clear: LinearRgba,
@@ -181,7 +181,7 @@ mod validation {
             let recovered = surface.snapshot();
             let terminal = recovered
                 .last_terminal()
-                .ok_or("post-drop recovery terminal evidence")?;
+                .ok_or("post-failure recovery terminal evidence")?;
             assert!(terminal.attempt() > prior_attempt);
             assert_eq!(terminal.requested_revision(), revision);
             assert_eq!(terminal.frame_revision(), revision);
@@ -230,7 +230,7 @@ mod validation {
                 }
                 outcome => {
                     return Err(format!(
-                        "unexpected post-drop recovery outcome on retry {retry}: {outcome:?}; terminal={terminal:?}; snapshot={recovered:?}"
+                        "unexpected post-failure recovery outcome on retry {retry}: {outcome:?}; terminal={terminal:?}; snapshot={recovered:?}"
                     )
                     .into());
                 }
@@ -244,7 +244,7 @@ mod validation {
             prior_failed = recovered.failed_count();
         }
         Err(format!(
-            "post-drop recovery did not qualify after {MAX_RETRY_ATTEMPTS} attempts: {:?}",
+            "post-failure recovery did not qualify after {MAX_RETRY_ATTEMPTS} attempts: {:?}",
             surface.snapshot()
         )
         .into())
@@ -331,42 +331,18 @@ mod validation {
             );
         }
 
-        assert!(!native_validation::post_commit_control_armed(&surface));
-        native_validation::inject_post_commit_observation(&surface, None, 2.5)?;
-        assert!(native_validation::post_commit_control_armed(&surface));
-        let recovery_revision = surface.request_frame(scene, clear)?;
-        native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
-        assert!(!native_validation::post_commit_control_armed(&surface));
-
-        assert_eq!(surface.take_error()?, None);
-        let recovered = surface.snapshot();
-        let terminal = recovered
-            .last_terminal()
-            .ok_or("post-omission recovery terminal evidence")?;
-        assert_eq!(terminal.requested_revision(), recovery_revision);
-        assert_eq!(terminal.frame_revision(), recovery_revision);
-        assert_eq!(terminal.outcome(), PresentationOutcome::Presented);
-        assert_eq!(
-            terminal.observed_presentation_time_bits(),
-            2.5_f64.to_bits()
-        );
-        assert_eq!(terminal.recovery(), None);
-        assert!(recovered.submission_count() > settled.submission_count());
-        assert_eq!(
-            recovered.direct_present_count(),
-            recovered.submission_count()
-        );
-        assert!(recovered.presented_count() > settled.presented_count());
-        assert!(recovered.qualified_presented_count() > settled.qualified_presented_count());
-        assert!(recovered.skipped_count() >= settled.skipped_count());
-        assert!(recovered.failed_count() >= settled.failed_count());
-        if hosted_direct {
-            assert_hosted_slot_bound(&recovered);
-        } else {
-            assert_eq!(recovered.occupied_frame_slots(), 0);
-            assert_eq!(recovered.submitted_frame_slots(), 0);
-            assert!(recovered.display_link_paused());
-        }
+        let _recovered = validate_post_failure_recovery(
+            &surface,
+            &scene,
+            clear,
+            terminal.attempt(),
+            settled.submission_count(),
+            settled.presented_count(),
+            settled.qualified_presented_count(),
+            settled.skipped_count(),
+            settled.failed_count(),
+            hosted_direct,
+        )?;
         surface.close();
         Ok(())
     }
