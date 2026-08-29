@@ -4,6 +4,29 @@ set -eu
 fixture_dir=$(mktemp -d)
 trap 'rm -rf "$fixture_dir"' EXIT HUP INT TERM
 
+cat > "$fixture_dir/mixed-assurance-failures.tsv" <<'EOF'
+native-macos-arm64	Test workspace
+ci-pass	Require selected evidence
+metal-validation	Validate Metal
+EOF
+cat > "$fixture_dir/mixed-assurance-expected.tsv" <<'EOF'
+native-macos-arm64	Test workspace
+metal-validation	Validate Metal
+EOF
+scripts/filter-assurance-failures.sh < "$fixture_dir/mixed-assurance-failures.tsv" \
+    > "$fixture_dir/mixed-assurance-actual.tsv"
+cmp "$fixture_dir/mixed-assurance-expected.tsv" "$fixture_dir/mixed-assurance-actual.tsv"
+
+printf 'ci-pass\tRequire selected evidence\n' > "$fixture_dir/aggregate-only.tsv"
+scripts/filter-assurance-failures.sh < "$fixture_dir/aggregate-only.tsv" \
+    > "$fixture_dir/aggregate-only-actual.tsv"
+cmp "$fixture_dir/aggregate-only.tsv" "$fixture_dir/aggregate-only-actual.tsv"
+
+: > "$fixture_dir/no-failures.tsv"
+scripts/filter-assurance-failures.sh < "$fixture_dir/no-failures.tsv" \
+    > "$fixture_dir/no-failures-actual.tsv"
+cmp "$fixture_dir/no-failures.tsv" "$fixture_dir/no-failures-actual.tsv"
+
 cat > "$fixture_dir/gh" <<'EOF'
 #!/bin/sh
 set -eu
@@ -136,6 +159,22 @@ unset ALPINE_TLA_DRIVER
 
 cp .github/workflows/ci.yml "$fixture_dir/ci.yml"
 ALPINE_CI_WORKFLOW="$fixture_dir/ci.yml" run_policy >/dev/null
+
+cp .github/workflows/assurance-failure.yml "$fixture_dir/assurance-failure.yml"
+sed '/scripts\/filter-assurance-failures.sh |/d' \
+    "$fixture_dir/assurance-failure.yml" > "$fixture_dir/unfiltered-assurance-failure.yml"
+if ALPINE_ASSURANCE_FAILURE_WORKFLOW="$fixture_dir/unfiltered-assurance-failure.yml" \
+    run_policy > "$fixture_dir/unfiltered-assurance-failure.log" 2>&1; then
+    printf 'policy test error: derivative aggregate failure routing unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'assurance routing must suppress derivative ci-pass failures through the tested selector' \
+    "$fixture_dir/unfiltered-assurance-failure.log"; then
+    printf 'policy test error: expected derivative aggregate routing failure was not reported\n' >&2
+    cat "$fixture_dir/unfiltered-assurance-failure.log" >&2
+    exit 1
+fi
+unset ALPINE_ASSURANCE_FAILURE_WORKFLOW
 
 sed 's/if: ${{ always() && !cancelled() }}/if: always()/' \
     "$fixture_dir/ci.yml" > "$fixture_dir/canceled-aggregate-ci.yml"
