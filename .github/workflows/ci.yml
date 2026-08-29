@@ -554,21 +554,37 @@ jobs:
       matrix:
         include:
           - id: 1
-            shard: 0/8
+            shard: 0/16
           - id: 2
-            shard: 1/8
+            shard: 1/16
           - id: 3
-            shard: 2/8
+            shard: 2/16
           - id: 4
-            shard: 3/8
+            shard: 3/16
           - id: 5
-            shard: 4/8
+            shard: 4/16
           - id: 6
-            shard: 5/8
+            shard: 5/16
           - id: 7
-            shard: 6/8
+            shard: 6/16
           - id: 8
-            shard: 7/8
+            shard: 7/16
+          - id: 9
+            shard: 8/16
+          - id: 10
+            shard: 9/16
+          - id: 11
+            shard: 10/16
+          - id: 12
+            shard: 11/16
+          - id: 13
+            shard: 12/16
+          - id: 14
+            shard: 13/16
+          - id: 15
+            shard: 14/16
+          - id: 16
+            shard: 15/16
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       MACOSX_DEPLOYMENT_TARGET: "15.0"

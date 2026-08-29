@@ -142,14 +142,14 @@ if [ -n "$workflow_files" ]; then
         'Retry rust-analyzer compatibility evidence upload' \
         'upload-rust-analyzer-compatibility-primary'
     if [ -z "$native_mutation_block" ] \
-        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec '^[[:space:]]+shard: [0-7]/8$')" -ne 8 ] \
+        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec '^[[:space:]]+shard: ([0-9]|1[0-5])/16$')" -ne 16 ] \
         || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec 'cargo mutants ')" -ne 10 ] \
         || [ "$(printf '%s\n' "$native_mutation_block" | grep -Fc -- '--shard "${{ matrix.shard }}"')" -ne 10 ]; then
-        fail 'pull-request native mutation must preserve all ten scopes across eight deterministic shards'
+        fail 'pull-request native mutation must preserve all ten scopes across sixteen deterministic shards'
     fi
-    for shard in 0 1 2 3 4 5 6 7; do
-        if ! printf '%s\n' "$native_mutation_block" | grep -Fq "shard: $shard/8"; then
-            fail "pull-request native mutation is missing shard $shard/8"
+    for shard in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        if ! printf '%s\n' "$native_mutation_block" | grep -Fq "shard: $shard/16"; then
+            fail "pull-request native mutation is missing shard $shard/16"
         fi
     done
     if [ -z "$mutation_diff_block" ] \

@@ -273,7 +273,7 @@ if ALPINE_CI_WORKFLOW="$fixture_dir/unsharded-ci.yml" run_policy > "$fixture_dir
     printf 'policy test error: unsharded native mutation unexpectedly passed\n' >&2
     exit 1
 fi
-if ! grep -Fq 'pull-request native mutation must preserve all ten scopes across eight deterministic shards' "$fixture_dir/unsharded-ci.log"; then
+if ! grep -Fq 'pull-request native mutation must preserve all ten scopes across sixteen deterministic shards' "$fixture_dir/unsharded-ci.log"; then
     printf 'policy test error: expected native-mutation sharding failure was not reported\n' >&2
     cat "$fixture_dir/unsharded-ci.log" >&2
     exit 1
@@ -433,5 +433,15 @@ if ALPINE_CI_WORKFLOW="${ci_native_fixture}/ci.yml" scripts/check-policy.sh >/de
   exit 1
 fi
 rm -rf "${ci_native_fixture}"
+
+ci_native_shard_fixture="$(mktemp -d)"
+sed '/shard: 15\/16/d' .github/workflows/ci.yml \
+  > "${ci_native_shard_fixture}/ci.yml"
+if ALPINE_CI_WORKFLOW="${ci_native_shard_fixture}/ci.yml" scripts/check-policy.sh >/dev/null 2>&1; then
+  echo "policy test failure: missing exact-head native mutation shard was accepted" >&2
+  rm -rf "${ci_native_shard_fixture}"
+  exit 1
+fi
+rm -rf "${ci_native_shard_fixture}"
 
 printf 'repository policy tests passed\n'
