@@ -5,9 +5,8 @@ CONSTANTS MaxSequence, MaxWorkspaceRevision, MaxDocumentRevision,
           WorkerCapacity, RequestCapacity, ResultCapacity, FaultyAcceptStale
 
 Jobs == 1..MaxSequence
-JobStates == {"Unused", "Queued", "Running", "Result", "Applied",
-              "Rejected", "Panicked"}
-Dispositions == {"None", "Current", "StaleRejected"}
+JobStates == {"Unused", "Queued", "Running", "Result", "Terminal"}
+Dispositions == {"None", "Current", "StaleRejected", "Panicked"}
 
 VARIABLES jobState, jobWorkspaceRevision, jobDocumentRevision,
           nextSequence, currentWorkspaceRevision, currentDocumentRevision,
@@ -36,9 +35,9 @@ TypeOK ==
     /\ nextSequence \in 0..MaxSequence
     /\ currentWorkspaceRevision \in 0..MaxWorkspaceRevision
     /\ currentDocumentRevision \in 0..MaxDocumentRevision
-    /\ requestSaturations \in 0..MaxSequence
-    /\ staleResults \in 0..MaxSequence
-    /\ appliedResults \in 0..MaxSequence
+    /\ requestSaturations \in 0..1
+    /\ staleResults \in 0..1
+    /\ appliedResults \in 0..1
     /\ lastDisposition \in Dispositions
     /\ lastWorkspaceRevision \in 0..MaxWorkspaceRevision
     /\ lastDocumentRevision \in 0..MaxDocumentRevision
@@ -78,7 +77,7 @@ Admit ==
 RecordSaturation ==
     /\ ~shuttingDown
     /\ Cardinality(QueuedJobs) = RequestCapacity
-    /\ requestSaturations < MaxSequence
+    /\ requestSaturations = 0
     /\ requestSaturations' = requestSaturations + 1
     /\ UNCHANGED <<jobState, jobWorkspaceRevision, jobDocumentRevision,
                     nextSequence, currentWorkspaceRevision,
@@ -111,25 +110,29 @@ Complete(job) ==
 PanicJob(job) ==
     /\ ~shuttingDown
     /\ jobState[job] = "Running"
-    /\ jobState' = [jobState EXCEPT ![job] = "Panicked"]
-    /\ UNCHANGED <<jobWorkspaceRevision, jobDocumentRevision, nextSequence,
-                    currentWorkspaceRevision, currentDocumentRevision,
+    /\ jobState' = [jobState EXCEPT ![job] = "Terminal"]
+    /\ jobWorkspaceRevision' = [jobWorkspaceRevision EXCEPT ![job] = 0]
+    /\ jobDocumentRevision' = [jobDocumentRevision EXCEPT ![job] = 0]
+    /\ lastDisposition' = "Panicked"
+    /\ lastWorkspaceRevision' = 0
+    /\ lastDocumentRevision' = 0
+    /\ UNCHANGED <<nextSequence, currentWorkspaceRevision, currentDocumentRevision,
                     requestSaturations, staleResults,
-                    appliedResults, lastDisposition, lastWorkspaceRevision,
-                    lastDocumentRevision, shuttingDown>>
+                    appliedResults, shuttingDown>>
 
 ApplyCurrent(job) ==
     /\ ~shuttingDown
     /\ jobState[job] = "Result"
     /\ jobWorkspaceRevision[job] = currentWorkspaceRevision
     /\ jobDocumentRevision[job] = currentDocumentRevision
-    /\ jobState' = [jobState EXCEPT ![job] = "Applied"]
-    /\ appliedResults' = appliedResults + 1
+    /\ jobState' = [jobState EXCEPT ![job] = "Terminal"]
+    /\ jobWorkspaceRevision' = [jobWorkspaceRevision EXCEPT ![job] = 0]
+    /\ jobDocumentRevision' = [jobDocumentRevision EXCEPT ![job] = 0]
+    /\ appliedResults' = 1
     /\ lastDisposition' = "Current"
     /\ lastWorkspaceRevision' = jobWorkspaceRevision[job]
     /\ lastDocumentRevision' = jobDocumentRevision[job]
-    /\ UNCHANGED <<jobWorkspaceRevision, jobDocumentRevision, nextSequence,
-                    currentWorkspaceRevision, currentDocumentRevision,
+    /\ UNCHANGED <<nextSequence, currentWorkspaceRevision, currentDocumentRevision,
                     requestSaturations, staleResults,
                     shuttingDown>>
 
@@ -138,13 +141,14 @@ RejectStale(job) ==
     /\ jobState[job] = "Result"
     /\ \/ jobWorkspaceRevision[job] # currentWorkspaceRevision
        \/ jobDocumentRevision[job] # currentDocumentRevision
-    /\ jobState' = [jobState EXCEPT ![job] = "Rejected"]
-    /\ staleResults' = staleResults + 1
+    /\ jobState' = [jobState EXCEPT ![job] = "Terminal"]
+    /\ jobWorkspaceRevision' = [jobWorkspaceRevision EXCEPT ![job] = 0]
+    /\ jobDocumentRevision' = [jobDocumentRevision EXCEPT ![job] = 0]
+    /\ staleResults' = 1
     /\ lastDisposition' = "StaleRejected"
-    /\ lastWorkspaceRevision' = jobWorkspaceRevision[job]
-    /\ lastDocumentRevision' = jobDocumentRevision[job]
-    /\ UNCHANGED <<jobWorkspaceRevision, jobDocumentRevision, nextSequence,
-                    currentWorkspaceRevision, currentDocumentRevision,
+    /\ lastWorkspaceRevision' = 0
+    /\ lastDocumentRevision' = 0
+    /\ UNCHANGED <<nextSequence, currentWorkspaceRevision, currentDocumentRevision,
                     requestSaturations, appliedResults,
                     shuttingDown>>
 
@@ -153,39 +157,43 @@ AdvanceWorkspace ==
     /\ currentWorkspaceRevision < MaxWorkspaceRevision
     /\ currentWorkspaceRevision' = currentWorkspaceRevision + 1
     /\ lastDisposition' = "None"
+    /\ lastWorkspaceRevision' = 0
+    /\ lastDocumentRevision' = 0
     /\ UNCHANGED <<jobState, jobWorkspaceRevision, jobDocumentRevision,
                     nextSequence, currentDocumentRevision,
                     requestSaturations, staleResults,
-                    appliedResults, lastWorkspaceRevision,
-                    lastDocumentRevision, shuttingDown>>
+                    appliedResults, shuttingDown>>
 
 AdvanceDocument ==
     /\ ~shuttingDown
     /\ currentDocumentRevision < MaxDocumentRevision
     /\ currentDocumentRevision' = currentDocumentRevision + 1
     /\ lastDisposition' = "None"
+    /\ lastWorkspaceRevision' = 0
+    /\ lastDocumentRevision' = 0
     /\ UNCHANGED <<jobState, jobWorkspaceRevision, jobDocumentRevision,
                     nextSequence, currentWorkspaceRevision,
                     requestSaturations, staleResults,
-                    appliedResults, lastWorkspaceRevision,
-                    lastDocumentRevision, shuttingDown>>
+                    appliedResults, shuttingDown>>
 
 BeginShutdown ==
     /\ ~shuttingDown
     /\ shuttingDown' = TRUE
     /\ lastDisposition' = "None"
+    /\ lastWorkspaceRevision' = 0
+    /\ lastDocumentRevision' = 0
     /\ UNCHANGED <<jobState, jobWorkspaceRevision, jobDocumentRevision,
                     nextSequence, currentWorkspaceRevision,
                     currentDocumentRevision, requestSaturations,
-                    staleResults, appliedResults,
-                    lastWorkspaceRevision, lastDocumentRevision>>
+                    staleResults, appliedResults>>
 
 CancelOwned(job) ==
     /\ shuttingDown
     /\ job \in OwnedJobs
-    /\ jobState' = [jobState EXCEPT ![job] = "Rejected"]
-    /\ UNCHANGED <<jobWorkspaceRevision, jobDocumentRevision, nextSequence,
-                    currentWorkspaceRevision, currentDocumentRevision,
+    /\ jobState' = [jobState EXCEPT ![job] = "Terminal"]
+    /\ jobWorkspaceRevision' = [jobWorkspaceRevision EXCEPT ![job] = 0]
+    /\ jobDocumentRevision' = [jobDocumentRevision EXCEPT ![job] = 0]
+    /\ UNCHANGED <<nextSequence, currentWorkspaceRevision, currentDocumentRevision,
                     requestSaturations, staleResults,
                     appliedResults, lastDisposition, lastWorkspaceRevision,
                     lastDocumentRevision, shuttingDown>>
@@ -196,13 +204,14 @@ FaultyApplyStale(job) ==
     /\ jobState[job] = "Result"
     /\ \/ jobWorkspaceRevision[job] # currentWorkspaceRevision
        \/ jobDocumentRevision[job] # currentDocumentRevision
-    /\ jobState' = [jobState EXCEPT ![job] = "Applied"]
-    /\ appliedResults' = appliedResults + 1
+    /\ jobState' = [jobState EXCEPT ![job] = "Terminal"]
+    /\ jobWorkspaceRevision' = [jobWorkspaceRevision EXCEPT ![job] = 0]
+    /\ jobDocumentRevision' = [jobDocumentRevision EXCEPT ![job] = 0]
+    /\ appliedResults' = 1
     /\ lastDisposition' = "Current"
     /\ lastWorkspaceRevision' = jobWorkspaceRevision[job]
     /\ lastDocumentRevision' = jobDocumentRevision[job]
-    /\ UNCHANGED <<jobWorkspaceRevision, jobDocumentRevision, nextSequence,
-                    currentWorkspaceRevision, currentDocumentRevision,
+    /\ UNCHANGED <<nextSequence, currentWorkspaceRevision, currentDocumentRevision,
                     requestSaturations, staleResults,
                     shuttingDown>>
 
@@ -245,10 +254,21 @@ UnusedJobsHaveNoTag ==
             /\ jobWorkspaceRevision[job] = 0
             /\ jobDocumentRevision[job] = 0
 
+TerminalJobsHaveNoTag ==
+    \A job \in Jobs:
+        jobState[job] = "Terminal" =>
+            /\ jobWorkspaceRevision[job] = 0
+            /\ jobDocumentRevision[job] = 0
+
 CurrentApplicationIsCurrent ==
     lastDisposition = "Current" =>
         /\ lastWorkspaceRevision = currentWorkspaceRevision
         /\ lastDocumentRevision = currentDocumentRevision
+
+InactiveDispositionHasNoIdentity ==
+    lastDisposition # "Current" =>
+        /\ lastWorkspaceRevision = 0
+        /\ lastDocumentRevision = 0
 
 QueuedEventuallyLeavesQueue ==
     \A job \in Jobs:

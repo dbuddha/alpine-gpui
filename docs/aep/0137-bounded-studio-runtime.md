@@ -76,7 +76,16 @@ and `BoundedResultQueue` enforce the channel ceilings;
 ownership across workers and the result queue.
 `CurrentApplicationIsCurrent` prevents stale foreground mutation, and
 `RunningEventuallyResolves` and `ShutdownEventuallyDrains` supply the bounded
-model's completion and shutdown progress contracts.
+model's completion and shutdown progress contracts. Formal saturation and
+application-result counts are one-bit witnesses because their exact history
+does not influence a modeled guard or checked property; compiled runtime tests
+retain exact counter coverage. Applied, stale-rejected, panicked, and cancelled
+jobs share one canonical terminal storage state after ownership ends; their
+distinct actions and disposition witnesses preserve the modeled outcomes.
+Terminal jobs and inactive dispositions clear revision identity after it
+becomes unobservable, with
+`TerminalJobsHaveNoTag` and `InactiveDispositionHasNoIdentity` enforcing those
+quotients.
 
 The deliberately faulty configuration applies one stale result as current and
 must violate `CurrentApplicationIsCurrent`. `WorkerPool::submit` maps to
