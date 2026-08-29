@@ -192,6 +192,21 @@ if ! grep -Fq 'nightly assurance must shard native platform contracts and route 
 fi
 unset ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
 
+sed '/Hosted AppKit cannot qualify user-facing `performClose`/d' \
+    "$fixture_dir/nightly-assurance.yml" > "$fixture_dir/unclassified-user-close-nightly.yml"
+if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/unclassified-user-close-nightly.yml" \
+    run_policy > "$fixture_dir/unclassified-user-close-nightly.log" 2>&1; then
+    printf 'policy test error: unclassified physical user-close mutation scope unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'nightly assurance must shard native platform contracts and route Studio-only wrappers through Studio tests' \
+    "$fixture_dir/unclassified-user-close-nightly.log"; then
+    printf 'policy test error: expected physical user-close classification failure was not reported\n' >&2
+    cat "$fixture_dir/unclassified-user-close-nightly.log" >&2
+    exit 1
+fi
+unset ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
+
 sed 's/if: ${{ always() && !cancelled() }}/if: always()/' \
     "$fixture_dir/ci.yml" > "$fixture_dir/canceled-aggregate-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/canceled-aggregate-ci.yml" run_policy > "$fixture_dir/canceled-aggregate-ci.log" 2>&1; then

@@ -234,7 +234,8 @@ if [ -n "$workflow_files" ]; then
             || [ "$(printf '%s\n' "$nightly_platform_contract_block" | grep -Fc -- '--file crates/alpine-platform-macos/src/lib.rs')" -ne 2 ] \
             || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq -- '--shard "${{ matrix.shard }}"' \
             || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq -- '--test-package alpine-studio' \
-            || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq -- "--re 'native_validation::arm_user_window_close|native_validation::arm_programmatic_window_close|native_validation::commit_native_text'" \
+            || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq -- "--re 'native_validation::arm_programmatic_window_close|native_validation::commit_native_text'" \
+            || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq 'Hosted AppKit cannot qualify user-facing `performClose`; physical Tasks #72 and #253 own that contract.' \
             || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq 'target/native-platform-contract-mutants-${{ matrix.id }}.out' \
             || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq 'target/native-platform-studio-contract-mutants.out' \
             || printf '%s\n' "$nightly_metal_block" | grep -Fq -- '--file crates/alpine-platform-macos/src/lib.rs'; then
