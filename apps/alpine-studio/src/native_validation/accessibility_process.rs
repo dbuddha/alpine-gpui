@@ -1711,6 +1711,10 @@ mod process_contract_tests {
                 ..valid
             },
             crate::NativeValidationLanguageEvidence {
+                document_switches: 0,
+                ..valid
+            },
+            crate::NativeValidationLanguageEvidence {
                 invalidations: 0,
                 ..valid
             },
