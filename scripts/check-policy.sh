@@ -2,6 +2,7 @@
 set -eu
 
 failures=0
+tla_driver=${ALPINE_TLA_DRIVER:-scripts/check-tla.sh}
 
 fail() {
     printf 'policy error: %s\n' "$1" >&2
@@ -46,10 +47,7 @@ if [ -n "$workflow_files" ]; then
         printf '%s\n' "$action_refs" | grep -Ev 'uses:[[:space:]]+(actions|github)/' >&2 || true
     fi
 
-    if grep -nE 'continue-on-error:[[:space:]]*true' $workflow_files >/dev/null; then
-        fail 'CI gates may not use continue-on-error: true'
-        grep -nE 'continue-on-error:[[:space:]]*true' $workflow_files >&2 || true
-    fi
+    continue_on_error_lines=$(grep -hE '^[[:space:]]*continue-on-error:[[:space:]]*true[[:space:]]*$' $workflow_files || true)
 
     if ! grep -Fq -- "--exclude 'crates/alpine-platform-macos/src/native_accessibility.rs'" "$ci_workflow"; then
         fail 'Linux changed-code mutation must delegate native accessibility to macOS validation'
@@ -85,6 +83,58 @@ if [ -n "$workflow_files" ]; then
         /^  ci-pass:/ { capture = 1 }
         capture
     ' "$ci_workflow")
+    if ! printf '%s\n' "$ci_pass_block" | grep -Fqx '    if: ${{ always() && !cancelled() }}'; then
+        fail 'ci-pass must run after ordinary failures but skip a canceled workflow'
+    fi
+    if ! printf '%s\n' "$ci_pass_block" | grep -Fq 'test "$2" = success || {'; then
+        fail 'ci-pass must reject every required result other than success'
+    fi
+    extract_metal_step() {
+        printf '%s\n' "$metal_validation_block" | awk -v target="      - name: $1" '
+            $0 == target { capture = 1 }
+            capture && /^      - name:/ && $0 != target { exit }
+            capture
+        '
+    }
+    validate_metal_upload_retry() {
+        primary_name=$1
+        retry_name=$2
+        primary_id=$3
+        primary_step=$(extract_metal_step "$primary_name")
+        retry_step=$(extract_metal_step "$retry_name")
+        primary_contract=$(printf '%s\n' "$primary_step" | sed -n '/^[[:space:]]*with:/,$p')
+        retry_contract=$(printf '%s\n' "$retry_step" | sed -n '/^[[:space:]]*with:/,$p')
+
+        if [ -z "$primary_step" ] \
+            || [ -z "$retry_step" ] \
+            || ! printf '%s\n' "$primary_step" | grep -Fqx "        id: $primary_id" \
+            || ! printf '%s\n' "$primary_step" | grep -Fqx '        if: always()' \
+            || ! printf '%s\n' "$primary_step" | grep -Fqx '        continue-on-error: true' \
+            || ! printf '%s\n' "$primary_step" | grep -Fqx '        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' \
+            || ! printf '%s\n' "$retry_step" | grep -Fqx "        if: always() && steps.$primary_id.outcome == 'failure'" \
+            || ! printf '%s\n' "$retry_step" | grep -Fqx '        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' \
+            || printf '%s\n' "$retry_step" | grep -Eq 'continue-on-error:[[:space:]]*true' \
+            || [ -z "$primary_contract" ] \
+            || [ "$primary_contract" != "$retry_contract" ]; then
+            fail "required Metal artifact upload must retain one identical blocking retry: $primary_name"
+        fi
+    }
+    if [ "$(printf '%s\n' "$continue_on_error_lines" | grep -c . || true)" -ne 3 ] \
+        || [ "$(printf '%s\n' "$metal_validation_block" | grep -Ec '^[[:space:]]*continue-on-error:[[:space:]]*true[[:space:]]*$')" -ne 3 ]; then
+        fail 'continue-on-error is restricted to the three bounded primary Metal artifact uploads'
+    fi
+    validate_metal_upload_retry \
+        'Upload compiled shader evidence' \
+        'Retry compiled shader evidence upload' \
+        'upload-metal-shader-primary'
+    validate_metal_upload_retry \
+        'Upload native lifecycle soak evidence' \
+        'Retry native lifecycle soak evidence upload' \
+        'upload-native-lifecycle-primary'
+    validate_metal_upload_retry \
+        'Upload rust-analyzer compatibility evidence' \
+        'Retry rust-analyzer compatibility evidence upload' \
+        'upload-rust-analyzer-compatibility-primary'
     if [ -z "$native_mutation_block" ] \
         || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec '^[[:space:]]+shard: [0-7]/8$')" -ne 8 ] \
         || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec 'cargo mutants ')" -ne 10 ] \
@@ -364,6 +414,14 @@ do
         fail "required assurance artifact is missing: $required_path"
     fi
 done
+
+if [ ! -f "$tla_driver" ]; then
+    fail "TLA+ driver is missing: $tla_driver"
+elif ! grep -Fq 'pull-request) config=PullRequest.cfg; lncheck=default ;;' "$tla_driver" \
+    || ! grep -Fq 'nightly) config=Nightly.cfg; lncheck=final ;;' "$tla_driver" \
+    || [ "$(grep -Fc -- '-lncheck "$lncheck"' "$tla_driver" || true)" -ne 2 ]; then
+    fail 'TLA+ must preserve default pull-request checks and final-graph Nightly liveness checks'
+fi
 
 issue_form_count=$(find .github/ISSUE_TEMPLATE -maxdepth 1 -type f -name '*.yml' ! -name config.yml | wc -l | tr -d ' ')
 if [ "$issue_form_count" -ne 5 ]; then

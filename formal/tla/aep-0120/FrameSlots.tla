@@ -32,7 +32,7 @@ TypeOK ==
     /\ currentEpoch \in 0..MaxEpoch
     /\ admissions \in 0..MaxSequence
     /\ releases \in 0..MaxSequence
-    /\ saturations \in 0..MaxSequence
+    /\ saturations \in 0..1
     /\ lastPublication \in Publications
     /\ lastGeneration \in 0..MaxGeneration
     /\ lastRevision \in 0..MaxRevision
@@ -76,7 +76,7 @@ Acquire(slot) ==
 RecordSaturation ==
     /\ ~shuttingDown
     /\ Cardinality(Occupied) = 3
-    /\ saturations < MaxSequence
+    /\ saturations = 0
     /\ saturations' = saturations + 1
     /\ UNCHANGED <<slotState, slotSequence, slotGeneration, slotRevision,
                     slotEpoch, nextSequence, currentGeneration,
@@ -93,6 +93,12 @@ Submit(slot) ==
                     lastPublication, lastGeneration, lastRevision, lastEpoch,
                     shuttingDown>>
 
+PublishesCurrent(slot, status) ==
+    /\ status = "Completed"
+    /\ slotGeneration[slot] = currentGeneration
+    /\ slotRevision[slot] = currentRevision
+    /\ slotEpoch[slot] = currentEpoch
+
 Release(slot, status) ==
     /\ slotState[slot] = "Submitted"
     /\ status \in TerminalStatuses
@@ -102,15 +108,14 @@ Release(slot, status) ==
     /\ slotRevision' = [slotRevision EXCEPT ![slot] = 0]
     /\ slotEpoch' = [slotEpoch EXCEPT ![slot] = 0]
     /\ releases' = releases + 1
-    /\ lastGeneration' = slotGeneration[slot]
-    /\ lastRevision' = slotRevision[slot]
-    /\ lastEpoch' = slotEpoch[slot]
     /\ lastPublication' =
-        IF status = "Completed"
-           /\ slotGeneration[slot] = currentGeneration
-           /\ slotRevision[slot] = currentRevision
-           /\ slotEpoch[slot] = currentEpoch
-        THEN "Current" ELSE "Rejected"
+        IF PublishesCurrent(slot, status) THEN "Current" ELSE "Rejected"
+    /\ lastGeneration' =
+        IF PublishesCurrent(slot, status) THEN slotGeneration[slot] ELSE 0
+    /\ lastRevision' =
+        IF PublishesCurrent(slot, status) THEN slotRevision[slot] ELSE 0
+    /\ lastEpoch' =
+        IF PublishesCurrent(slot, status) THEN slotEpoch[slot] ELSE 0
     /\ UNCHANGED <<nextSequence, currentGeneration, currentRevision,
                     currentEpoch, admissions, saturations, shuttingDown>>
 
@@ -133,28 +138,35 @@ AdvanceRevision ==
     /\ currentRevision < MaxRevision
     /\ currentRevision' = currentRevision + 1
     /\ lastPublication' = "None"
+    /\ lastGeneration' = 0
+    /\ lastRevision' = 0
+    /\ lastEpoch' = 0
     /\ UNCHANGED <<slotState, slotSequence, slotGeneration, slotRevision,
                     slotEpoch, nextSequence, currentGeneration, currentEpoch,
-                    admissions, releases, saturations, lastGeneration,
-                    lastRevision, lastEpoch, shuttingDown>>
+                    admissions, releases, saturations, shuttingDown>>
 
 AdvanceEpoch ==
     /\ currentEpoch < MaxEpoch
     /\ currentEpoch' = currentEpoch + 1
     /\ lastPublication' = "None"
+    /\ lastGeneration' = 0
+    /\ lastRevision' = 0
+    /\ lastEpoch' = 0
     /\ UNCHANGED <<slotState, slotSequence, slotGeneration, slotRevision,
                     slotEpoch, nextSequence, currentGeneration,
                     currentRevision, admissions, releases, saturations,
-                    lastGeneration, lastRevision, lastEpoch, shuttingDown>>
+                    shuttingDown>>
 
 AdvanceGeneration ==
     /\ currentGeneration < MaxGeneration
     /\ currentGeneration' = currentGeneration + 1
     /\ lastPublication' = "None"
+    /\ lastGeneration' = 0
+    /\ lastRevision' = 0
+    /\ lastEpoch' = 0
     /\ UNCHANGED <<slotState, slotSequence, slotGeneration, slotRevision,
                     slotEpoch, nextSequence, currentRevision, currentEpoch,
-                    admissions, releases, saturations, lastGeneration,
-                    lastRevision, lastEpoch, shuttingDown>>
+                    admissions, releases, saturations, shuttingDown>>
 
 BeginShutdown ==
     /\ ~shuttingDown
@@ -222,6 +234,12 @@ CurrentPublicationIsCurrent ==
         /\ lastGeneration = currentGeneration
         /\ lastRevision = currentRevision
         /\ lastEpoch = currentEpoch
+
+InactivePublicationHasNoIdentity ==
+    lastPublication # "Current" =>
+        /\ lastGeneration = 0
+        /\ lastRevision = 0
+        /\ lastEpoch = 0
 
 SubmittedEventuallyReleases ==
     \A slot \in Slots: [](slotState[slot] = "Submitted" => <> (slotState[slot] = "Free"))

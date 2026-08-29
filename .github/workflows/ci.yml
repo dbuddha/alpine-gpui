@@ -481,7 +481,19 @@ jobs:
       - name: Run Metal API and shader validation
         run: scripts/check-metal.sh
       - name: Upload compiled shader evidence
+        id: upload-metal-shader-primary
         if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: metal-shader-${{ github.sha }}
+          path: |
+            target/metal/offscreen.metallib
+            target/metal/offscreen.metallib.manifest.txt
+          retention-days: 7
+          if-no-files-found: error
+      - name: Retry compiled shader evidence upload
+        if: always() && steps.upload-metal-shader-primary.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: metal-shader-${{ github.sha }}
@@ -491,7 +503,17 @@ jobs:
           retention-days: 7
           if-no-files-found: error
       - name: Upload native lifecycle soak evidence
+        id: upload-native-lifecycle-primary
         if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-lifecycle-${{ github.sha }}
+          path: target/native-lifecycle-*.toml
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Retry native lifecycle soak evidence upload
+        if: always() && steps.upload-native-lifecycle-primary.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: native-lifecycle-${{ github.sha }}
@@ -499,7 +521,19 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
       - name: Upload rust-analyzer compatibility evidence
+        id: upload-rust-analyzer-compatibility-primary
         if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rust-analyzer-compatibility-${{ github.sha }}
+          path: |
+            target/rust-analyzer-qualification/environment.txt
+            target/rust-analyzer-qualification/workspace-files.sha256
+          retention-days: 7
+          if-no-files-found: error
+      - name: Retry rust-analyzer compatibility evidence upload
+        if: always() && steps.upload-rust-analyzer-compatibility-primary.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: rust-analyzer-compatibility-${{ github.sha }}
@@ -596,7 +630,7 @@ jobs:
 
   ci-pass:
     name: ci-pass
-    if: always()
+    if: ${{ always() && !cancelled() }}
     needs: [classify, quality, native, coverage, mutation-diff, kani, tla, miri, metal-validation, native-mutation]
     runs-on: ubuntu-24.04
     timeout-minutes: 5

@@ -1263,7 +1263,7 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
 
     let initial = buffer.snapshot().text();
     let navigation_offset = initial
-        .find("deliberately_invalid")
+        .find("navigation_target(7)")
         .and_then(|offset| offset.checked_add(2))
         .ok_or("pinned navigation context is missing")?;
     let navigation_position = crate::rust_completion::position_for_byte(
@@ -1281,8 +1281,21 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
         } else {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        let snapshot = model.snapshot();
+        if !snapshot.navigation_pending() && snapshot.hover_bytes == 0 {
+            return Err(format!(
+                "pinned hover completed without content: snapshot={snapshot:?}, status={:?}",
+                model.status_message()
+            )
+            .into());
+        }
         if std::time::Instant::now() >= deadline {
-            return Err(format!("pinned hover timed out: {:?}", model.snapshot()).into());
+            return Err(format!(
+                "pinned hover remained pending: snapshot={:?}, status={:?}",
+                model.snapshot(),
+                model.status_message()
+            )
+            .into());
         }
     }
     assert!(model.hover_content(identity).is_some());
@@ -1302,8 +1315,22 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
             } else {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
+            let snapshot = model.snapshot();
+            if !snapshot.navigation_pending() && snapshot.location_items == 0 {
+                return Err(format!(
+                    "pinned {kind:?} completed without locations: snapshot={snapshot:?}, \
+                     status={:?}",
+                    model.status_message()
+                )
+                .into());
+            }
             if std::time::Instant::now() >= deadline {
-                return Err(format!("pinned {kind:?} timed out: {:?}", model.snapshot()).into());
+                return Err(format!(
+                    "pinned {kind:?} remained pending: snapshot={:?}, status={:?}",
+                    model.snapshot(),
+                    model.status_message()
+                )
+                .into());
             }
         }
         let navigation = model.snapshot();
