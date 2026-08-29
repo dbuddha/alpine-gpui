@@ -401,4 +401,14 @@ if ! grep -Fq 'architecture changes require a closed kind:decision issue' "$fixt
     exit 1
 fi
 
+native_surface_fixture="$(mktemp -d)"
+cp .github/workflows/nightly-assurance.yml "${native_surface_fixture}/nightly-assurance.yml"
+sed -i '' '/shard: "7\/8"/d' "${native_surface_fixture}/nightly-assurance.yml"
+if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="${native_surface_fixture}/nightly-assurance.yml" scripts/check-policy.sh >/dev/null 2>&1; then
+  echo "policy test failure: missing native surface shard was accepted" >&2
+  rm -rf "${native_surface_fixture}"
+  exit 1
+fi
+rm -rf "${native_surface_fixture}"
+
 printf 'repository policy tests passed\n'

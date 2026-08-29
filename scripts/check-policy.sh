@@ -616,6 +616,41 @@ if printf '%s\n' "${ALPINE_PR_LABELS:-}" | tr ',' '\n' | grep -Fxq review:proven
     fi
 fi
 
+# Native surface mutation proof must remain complete, deterministic, retained,
+# and separate from the serial Metal ownership job.
+nightly_assurance_workflow="${ALPINE_NIGHTLY_ASSURANCE_WORKFLOW:-.github/workflows/nightly-assurance.yml}"
+native_surface_mutation_job="$(sed -n '/^  native-surface-mutation:/,/^  [A-Za-z0-9_-][A-Za-z0-9_-]*:$/p' "${nightly_assurance_workflow}")"
+metal_validation_job="$(sed -n '/^  metal-validation:/,/^  [A-Za-z0-9_-][A-Za-z0-9_-]*:$/p' "${nightly_assurance_workflow}")"
+
+if [[ -z "${native_surface_mutation_job}" ]]; then
+  echo "policy failure: Nightly assurance must define native-surface-mutation" >&2
+  exit 1
+fi
+for shard in 0 1 2 3 4 5 6 7; do
+  if ! grep -Fq "shard: \"${shard}/8\"" <<<"${native_surface_mutation_job}"; then
+    echo "policy failure: native surface mutation must retain deterministic shard ${shard}/8" >&2
+    exit 1
+  fi
+done
+if [[ "$(grep -Fc -- '--file crates/alpine-platform-macos/src/native.rs' <<<"${native_surface_mutation_job}")" -ne 1 ]]; then
+  echo "policy failure: native surface mutation must scope native.rs exactly once" >&2
+  exit 1
+fi
+if ! grep -Fq -- "--exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|NativeSurface::arm_window_close'" <<<"${native_surface_mutation_job}"; then
+  echo "policy failure: native surface mutation must preserve the reviewed physical-only exclusions" >&2
+  exit 1
+fi
+for required in '--no-shuffle' '--shard "${{ matrix.shard }}"' 'mkdir -p target' 'target/native-surface-mutants-${{ matrix.id }}.out' 'if-no-files-found: error'; do
+  if ! grep -Fq -- "${required}" <<<"${native_surface_mutation_job}"; then
+    echo "policy failure: native surface mutation is missing ${required}" >&2
+    exit 1
+  fi
+done
+if grep -Fq -- '--file crates/alpine-platform-macos/src/native.rs' <<<"${metal_validation_job}"; then
+  echo "policy failure: serial metal-validation must not absorb native surface mutation proof" >&2
+  exit 1
+fi
+
 if [ "$failures" -ne 0 ]; then
     exit 1
 fi
