@@ -1147,8 +1147,6 @@ impl NativeAccessibilityAdapter {
             unsafe { msg_send![&*editor, accessibilitySelectedTextRange] };
         let line_for_index: usize =
             unsafe { msg_send![&*editor, accessibilityLineForIndex: 6usize] };
-        let first_line_for_index: usize =
-            unsafe { msg_send![&*editor, accessibilityLineForIndex: 0usize] };
         let range_for_line: NSRange =
             unsafe { msg_send![&*editor, accessibilityRangeForLine: 1usize] };
         let range_for_index: NSRange =
@@ -1415,7 +1413,6 @@ impl NativeAccessibilityAdapter {
             !status_text_selector_allowed,
             status_character_count == 0,
             checked_range_contract_valid,
-            first_line_for_index == 0,
         ]);
         let accepted_native = NSRange::new(2, 2);
         let _: () =
@@ -2041,5 +2038,17 @@ mod adapter_refresh_tests {
             Some(current)
         );
         Ok(())
+    }
+
+    #[test]
+    fn line_request_preserves_a_nondefault_response() {
+        let revision = AccessibilityRevision::new(7, 11).with_semantic(13);
+        let mut adapter = NativeAccessibilityAdapter::new();
+        adapter.install(Box::new(move |request| {
+            AccessibilityResponse::success(request, revision, AccessibilityPayload::Line(4))
+                .map_err(|_| SurfaceError::invariant(SurfaceOperation::Accessibility))
+        }));
+
+        assert_eq!(adapter.line_for_index(revision, 9), Some(4));
     }
 }
