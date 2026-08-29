@@ -137,6 +137,30 @@ unset ALPINE_TLA_DRIVER
 cp .github/workflows/ci.yml "$fixture_dir/ci.yml"
 ALPINE_CI_WORKFLOW="$fixture_dir/ci.yml" run_policy >/dev/null
 
+sed "s/steps.upload-metal-shader-primary.outcome == 'failure'/steps.upload-metal-shader-primary.outcome == 'success'/" \
+    "$fixture_dir/ci.yml" > "$fixture_dir/wrong-artifact-retry-route-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/wrong-artifact-retry-route-ci.yml" run_policy > "$fixture_dir/wrong-artifact-retry-route-ci.log" 2>&1; then
+    printf 'policy test error: incorrectly routed Metal artifact retry unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'required Metal artifact upload must retain one identical blocking retry' "$fixture_dir/wrong-artifact-retry-route-ci.log"; then
+    printf 'policy test error: expected Metal artifact retry routing failure was not reported\n' >&2
+    cat "$fixture_dir/wrong-artifact-retry-route-ci.log" >&2
+    exit 1
+fi
+
+sed "/steps.upload-metal-shader-primary.outcome == 'failure'/a\\
+        continue-on-error: true" "$fixture_dir/ci.yml" > "$fixture_dir/nonblocking-artifact-retry-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/nonblocking-artifact-retry-ci.yml" run_policy > "$fixture_dir/nonblocking-artifact-retry-ci.log" 2>&1; then
+    printf 'policy test error: nonblocking Metal artifact retry unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Eq 'continue-on-error is restricted|required Metal artifact upload must retain one identical blocking retry' "$fixture_dir/nonblocking-artifact-retry-ci.log"; then
+    printf 'policy test error: expected blocking Metal artifact retry failure was not reported\n' >&2
+    cat "$fixture_dir/nonblocking-artifact-retry-ci.log" >&2
+    exit 1
+fi
+
 perl -0pe 's/(  native-mutation:.*?)( --shard "\$\{\{ matrix\.shard \}\}")/$1/s' \
     "$fixture_dir/ci.yml" > "$fixture_dir/unsharded-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/unsharded-ci.yml" run_policy > "$fixture_dir/unsharded-ci.log" 2>&1; then
