@@ -1027,7 +1027,7 @@ pub mod native_validation {
         };
 
         #[test]
-        fn handle_free_accessors_preserve_negative_and_nondefault_evidence() {
+        fn handle_free_accessors_preserve_positive_negative_and_nondefault_evidence() {
             let node = NativeAccessibilityNodeEvidence {
                 semantic_id: 37,
                 role: Box::from("AXButton"),
@@ -1054,11 +1054,27 @@ pub mod native_validation {
             };
             assert!(current_node.current());
 
+            let observed_node = NativeAccessibilityNodeEvidence {
+                focused: true,
+                selected: true,
+                activate_allowed: true,
+                current: true,
+                bounded_screen_frame: true,
+                ..node.clone()
+            };
+            assert!(observed_node.focused());
+            assert!(observed_node.selected());
+            assert!(observed_node.activate_allowed());
+            assert!(observed_node.current());
+            assert!(observed_node.bounded_screen_frame());
+
             let tree = NativeAccessibilityTreeEvidence {
                 revision: crate::AccessibilityRevision::new(3, 5),
-                nodes: Box::new([]),
+                nodes: Box::new([observed_node.clone()]),
                 focused_nodes: 2,
             };
+            assert_eq!(tree.revision(), crate::AccessibilityRevision::new(3, 5));
+            assert_eq!(tree.nodes(), &[observed_node]);
             assert_eq!(tree.focused_nodes(), 2);
 
             let activation = NativeAccessibilityActivationEvidence {
