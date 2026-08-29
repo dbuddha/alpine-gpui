@@ -49,6 +49,16 @@ Serve evaluator, new user, daily user, operator, contributor, maintainer, securi
 5. Validate links, examples, navigation, generated Wiki output, and release references.
 6. Record supersession instead of silently rewriting historical decisions or research.
 
+## PR metadata preflight
+
+Before opening a documentation pull request, read the repository template and
+validate its final Conventional Commit title, template sections, issue and
+parent links, release label, base, and source head. Apply the complete title,
+body, and required labels in the initial creation command. A later title, body,
+label, base, or source-head change creates a new review event: retain the prior
+run, mark it superseded rather than erased, and require a new conforming
+exact-head aggregate result before describing the change as merge-ready.
+
 ## Research lineage and evidence
 
 For architecture, renderer, text, performance, memory, comparator, or product
@@ -127,6 +137,7 @@ Every supported release answers what changed, who is affected, compatibility, in
 - No `SUMMARY.md` entry treated as delivery or milestone authority.
 - No live Wiki freshness claim without a successful fetched-remote audit.
 - No local candidate or pushed branch described as merged or published.
+- No superseded failed or canceled check suite omitted from the publication history.
 
 ## Output
 

@@ -72,6 +72,19 @@ burn-down only for an explicitly frozen scope snapshot, and always pair either
 chart with scope change, leaf completion, cycle time, blocker age, and the
 current critical path.
 
+## Pull request creation preflight
+
+Before creating a pull request, read the repository template and validate the
+final Conventional Commit title, complete body, closing issue and parent chain,
+release label, base, and source head as one metadata snapshot. Apply the title,
+body, and required labels in the initial creation command. This prevents a
+known-invalid metadata event from starting an expensive CI matrix.
+
+If any of those fields changes after checks start, retain the earlier run as
+superseded evidence and require a new exact-head aggregate result. Never hide a
+failed or canceled run, merge from a stale source head, or treat a successful
+older suite as evidence for corrected metadata.
+
 ## Research depth
 
 Deep research states a decision question, pins primary sources, separates facts from inference, seeks contradictory evidence, records validity threats, reproduces consequential behavior, and links findings to requirements. Architecture adoption requires E2, performance design claims E3, and dominance claims E4.

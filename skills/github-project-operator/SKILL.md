@@ -21,6 +21,22 @@ Treat GitHub as an execution control plane, not a task graveyard. Preserve one c
 Never infer completion from prose, a parent counter, a merged branch, or an item moved to Done. Completion requires accepted evidence and closure rules.
 Never treat a successful command that selected or executed zero required tests as evidence.
 
+## PR metadata preflight
+
+Before creating a pull request, read the repository template and policy, then
+validate the final title, body, closing issue, parent chain, release label,
+base, and source head together. Require a Conventional Commit title when the
+repository does. Supply the final title, template-complete body, and required
+labels in the initial creation command so metadata policy fails before CI
+fan-out rather than after expensive jobs start.
+
+If title, body, labels, base, or source head changes after checks begin, treat
+the earlier suite as superseded. Retain its run identity and result, wait for a
+new conforming exact-head suite, and never rerun or relabel an older suite into
+merge evidence. Before merge, fetch the base, require the latest applicable
+aggregate gate, protect the tested source SHA, and use only a repository-allowed
+merge mode.
+
 ## Canonical ownership
 
 - Capability: end-to-end observable outcome.
@@ -108,6 +124,7 @@ Read [metrics and reporting](references/metrics-and-reporting.md) before publish
 - Treat inaccessible Project fields as unknown, never empty.
 - Never promote Evidence Level or Claim State without exact retained identity.
 - Never accept a re-run of an older workflow as exact-head evidence for a newer source revision.
+- Never erase a failed or canceled suite merely because a corrected metadata event superseded it.
 - Treat source-head identity, synthetic merge-test identity, and final merge identity as separate facts.
 - Never force-push, delete branches, bypass checks, fabricate dates, or mark inconclusive evidence green.
 - Ask immediately before a push or release when repository policy requires it.

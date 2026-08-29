@@ -25,8 +25,10 @@ for skill in $skills; do
     for link in $links; do case "$link" in http://*|https://*|\#*) ;; *) [ -f "$directory/$link" ] || fail "$skill references missing resource $link" ;; esac; done
 done
 grep -Fq 'read-only snapshot' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks read-before-write behavior'
+grep -Fq 'PR metadata preflight' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks PR metadata preflight'
 grep -Fq 'burn-up' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks burn-up guidance'
 grep -Fq 'generated, revision-pinned retrieval mirror' "$skills_root/github-documentation-architect/SKILL.md" || fail 'documentation architect lacks Wiki authority rule'
+grep -Fq 'PR metadata preflight' "$skills_root/github-documentation-architect/SKILL.md" || fail 'documentation architect lacks PR metadata preflight'
 grep -Fq 'Research lineage' "$skills_root/github-documentation-architect/SKILL.md" || fail 'documentation architect lacks research-lineage contract'
 grep -Fq 'SUMMARY.md' "$skills_root/github-documentation-architect/SKILL.md" || fail 'documentation architect lacks navigation-only boundary'
 grep -Fq 'live remote drift audit' "$skills_root/github-documentation-architect/SKILL.md" || fail 'documentation architect lacks live Wiki drift behavior'
