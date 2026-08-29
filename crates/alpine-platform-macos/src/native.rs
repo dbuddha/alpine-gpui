@@ -1892,14 +1892,13 @@ impl SurfaceView {
     }
 
     #[cfg(alpine_native_validation)]
-    fn detach_input_handler_for_validation(&self) -> Result<(), SurfaceError> {
+    fn detach_input_handler_for_validation(&self) -> Result<NativeInputHandler, SurfaceError> {
         let Ok(mut installed) = self.ivars().input_handler.try_borrow_mut() else {
             return Err(SurfaceError::validation(SurfaceOperation::Input));
         };
-        if installed.take().is_none() {
-            return Err(SurfaceError::validation(SurfaceOperation::Input));
-        }
-        Ok(())
+        installed
+            .take()
+            .ok_or(SurfaceError::validation(SurfaceOperation::Input))
     }
 
     pub(crate) fn take_input_dispatch_failure(&self) -> bool {
@@ -4423,7 +4422,7 @@ impl NativeSurface {
         if let Err(error) = self.activate_input_responder() {
             let cleanup = self.view.detach_input_handler_for_validation();
             self.delegate.clear_event_handler();
-            cleanup?;
+            drop(cleanup?);
             return Err(error);
         }
         let (input_epoch, focused) = self.view.input_focus_state();
@@ -4434,7 +4433,7 @@ impl NativeSurface {
         }) {
             let cleanup = self.view.detach_input_handler_for_validation();
             self.delegate.clear_event_handler();
-            cleanup?;
+            drop(cleanup?);
             return Err(error);
         }
 
@@ -4456,7 +4455,7 @@ impl NativeSurface {
             Err(SurfaceError::validation(SurfaceOperation::Input))
         };
 
-        self.view.detach_input_handler_for_validation()?;
+        drop(self.view.detach_input_handler_for_validation()?);
         self.delegate.clear_event_handler();
         resolve_input_dispatch(replay_result, self.view.take_input_dispatch_failure())
     }
@@ -5083,7 +5082,24 @@ impl NativeSurface {
 
 #[cfg(alpine_native_validation)]
 fn stop_validation_event_loop(application: &NSApplication) {
-    stop_event_loop(application);
+    // Keep the validation watchdog independent from the production stop path.
+    // If a production close mutation removes `stop_event_loop`, this guard must
+    // still release `NSApplication::run` so the process reports the expired
+    // guard instead of hanging until the mutation harness times out.
+    application.stop(None);
+    if let Some(event) = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+        NSEventType::ApplicationDefined,
+        NSPoint::new(0.0, 0.0),
+        NSEventModifierFlags::empty(),
+        0.0,
+        0,
+        None,
+        0,
+        0,
+        0,
+    ) {
+        application.postEvent_atStart(&event, true);
+    }
 }
 
 fn stop_event_loop(application: &NSApplication) {

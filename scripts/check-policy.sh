@@ -142,14 +142,14 @@ if [ -n "$workflow_files" ]; then
         'Retry rust-analyzer compatibility evidence upload' \
         'upload-rust-analyzer-compatibility-primary'
     if [ -z "$native_mutation_block" ] \
-        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec '^[[:space:]]+shard: [0-7]/8$')" -ne 8 ] \
+        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec '^[[:space:]]+shard: ([0-9]|1[0-5])/16$')" -ne 16 ] \
         || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec 'cargo mutants ')" -ne 10 ] \
         || [ "$(printf '%s\n' "$native_mutation_block" | grep -Fc -- '--shard "${{ matrix.shard }}"')" -ne 10 ]; then
-        fail 'pull-request native mutation must preserve all ten scopes across eight deterministic shards'
+        fail 'pull-request native mutation must preserve all ten scopes across sixteen deterministic shards'
     fi
-    for shard in 0 1 2 3 4 5 6 7; do
-        if ! printf '%s\n' "$native_mutation_block" | grep -Fq "shard: $shard/8"; then
-            fail "pull-request native mutation is missing shard $shard/8"
+    for shard in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        if ! printf '%s\n' "$native_mutation_block" | grep -Fq "shard: $shard/16"; then
+            fail "pull-request native mutation is missing shard $shard/16"
         fi
     done
     if [ -z "$mutation_diff_block" ] \
@@ -619,8 +619,12 @@ fi
 # Native surface mutation proof must remain complete, deterministic, retained,
 # and separate from the serial Metal ownership job.
 nightly_assurance_workflow="${ALPINE_NIGHTLY_ASSURANCE_WORKFLOW:-.github/workflows/nightly-assurance.yml}"
+ci_workflow="${ALPINE_CI_WORKFLOW:-.github/workflows/ci.yml}"
 native_surface_mutation_job="$(sed -n '/^  native-surface-mutation:/,/^  [A-Za-z0-9_-][A-Za-z0-9_-]*:$/p' "${nightly_assurance_workflow}")"
+native_studio_contract_mutation_job="$(sed -n '/^  native-studio-contract-mutation:/,/^  [A-Za-z0-9_-][A-Za-z0-9_-]*:$/p' "${nightly_assurance_workflow}")"
 metal_validation_job="$(sed -n '/^  metal-validation:/,/^  [A-Za-z0-9_-][A-Za-z0-9_-]*:$/p' "${nightly_assurance_workflow}")"
+ci_native_mutation_job="$(sed -n '/^  native-mutation:/,/^  [A-Za-z0-9_-][A-Za-z0-9_-]*:$/p' "${ci_workflow}")"
+ci_pass_job="$(sed -n '/^  ci-pass:/,/^  [A-Za-z0-9_-][A-Za-z0-9_-]*:$/p' "${ci_workflow}")"
 
 if [ -z "${native_surface_mutation_job}" ]; then
   echo "policy failure: Nightly assurance must define native-surface-mutation" >&2
@@ -637,18 +641,53 @@ if [ "${native_surface_scope_count}" -ne 1 ]; then
   echo "policy failure: native surface mutation must scope native.rs exactly once" >&2
   exit 1
 fi
-if ! printf '%s\n' "${native_surface_mutation_job}" | grep -Fq -- "--exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|NativeSurface::arm_window_close'"; then
+if ! printf '%s\n' "${native_surface_mutation_job}" | grep -Fq -- "--exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|schedule_validation_user_window_close|NativeSurface::arm_window_close|NativeSurface::arm_user_window_close'"; then
   echo "policy failure: native surface mutation must preserve the reviewed physical-only exclusions" >&2
   exit 1
 fi
-for required in '--no-shuffle' '--shard "${{ matrix.shard }}"' 'mkdir -p target' 'target/native-surface-mutants-${{ matrix.id }}.out' 'if-no-files-found: error'; do
+for required in '--test-package alpine-platform-macos' '--test-package alpine-studio' '--no-shuffle' '--shard "${{ matrix.shard }}"' 'mkdir -p target' 'target/native-surface-mutants-${{ matrix.id }}.out' 'if-no-files-found: error'; do
   if ! printf '%s\n' "${native_surface_mutation_job}" | grep -Fq -- "${required}"; then
     echo "policy failure: native surface mutation is missing ${required}" >&2
     exit 1
   fi
 done
-if printf '%s\n' "${metal_validation_job}" | grep -Fq -- '--file crates/alpine-platform-macos/src/native.rs'; then
-  echo "policy failure: serial metal-validation must not absorb native surface mutation proof" >&2
+if [ -z "${native_studio_contract_mutation_job}" ]; then
+  echo "policy failure: Nightly assurance must define native-studio-contract-mutation" >&2
+  exit 1
+fi
+for shard in 0 1 2 3 4 5 6 7; do
+  if ! printf '%s\n' "${native_studio_contract_mutation_job}" | grep -Fq "shard: \"${shard}/8\""; then
+    echo "policy failure: Studio native contract mutation must retain deterministic shard ${shard}/8" >&2
+    exit 1
+  fi
+done
+for required in '--file crates/alpine-runtime/src/lib.rs' '--file apps/alpine-studio/src/lib.rs' '--test-package alpine-studio' 'initial_scene' '--shard "${{ matrix.shard }}"' 'target/native-studio-contract-mutants-${{ matrix.id }}.out' 'if-no-files-found: error'; do
+  if ! printf '%s\n' "${native_studio_contract_mutation_job}" | grep -Fq -- "${required}"; then
+    echo "policy failure: Studio native contract mutation is missing ${required}" >&2
+    exit 1
+  fi
+done
+for forbidden in '--file crates/alpine-platform-macos/src/native.rs' '--file crates/alpine-runtime/src/lib.rs' '--file apps/alpine-studio/src/lib.rs'; do
+  if printf '%s\n' "${metal_validation_job}" | grep -Fq -- "${forbidden}"; then
+    echo "policy failure: serial metal-validation must not absorb ${forbidden}" >&2
+    exit 1
+  fi
+done
+
+ci_native_surface_scope="$(printf '%s\n' "${ci_native_mutation_job}" | grep -- '--file crates/alpine-platform-macos/src/native.rs' || true)"
+ci_native_studio_scope="$(printf '%s\n' "${ci_native_mutation_job}" | grep -- '--file apps/alpine-studio/src/lib.rs' || true)"
+for scope in "${ci_native_surface_scope}" "${ci_native_studio_scope}"; do
+  if [ -z "${scope}" ] || printf '%s\n' "${scope}" | grep -Fq -- '--in-diff'; then
+    echo "policy failure: exact-head native process mutation scopes must be exhaustive" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "${scope}" | grep -Fq -- '--test-package alpine-studio'; then
+    echo "policy failure: exact-head native process mutation scopes must run Studio process tests" >&2
+    exit 1
+  fi
+done
+if ! printf '%s\n' "${ci_pass_job}" | grep -Fq 'native-mutation'; then
+  echo "policy failure: ci-pass must require exact-head native mutation evidence" >&2
   exit 1
 fi
 

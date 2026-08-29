@@ -275,6 +275,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         |_| SurfaceResponse::new(None, None, CloseDisposition::Cancel),
     )?);
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
+    assert!(!native_validation::replay_close(
+        &surface,
+        CloseReplayScenario::Cancel
+    )?);
+    assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
     assert!(native_validation::replay_close_with_handler(
         &surface,
         |_| SurfaceResponse::new(None, None, CloseDisposition::Allow),

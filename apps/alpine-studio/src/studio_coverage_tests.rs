@@ -4822,6 +4822,19 @@ fn run_rejects_an_unsupported_host() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
+fn initial_scene_contains_required_editor_primitives() -> Result<(), SurfaceError> {
+    let initial = initial_scene()?;
+
+    assert_eq!(initial.revision().get(), 1);
+    assert!(!initial.operations().is_empty());
+    assert!(!initial.clips().is_empty());
+    assert!(!initial.quads().is_empty());
+    assert!(!initial.glyphs().is_empty());
+    Ok(())
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
 fn native_file_constructor_rejects_a_missing_file_before_native_setup()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = TestWorkspace::new()?;
