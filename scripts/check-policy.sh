@@ -82,6 +82,12 @@ if [ -n "$workflow_files" ]; then
         /^  ci-pass:/ { capture = 1 }
         capture
     ' "$ci_workflow")
+    if ! printf '%s\n' "$ci_pass_block" | grep -Fqx '    if: ${{ always() && !cancelled() }}'; then
+        fail 'ci-pass must run after ordinary failures but skip a canceled workflow'
+    fi
+    if ! printf '%s\n' "$ci_pass_block" | grep -Fq 'test "$2" = success || {'; then
+        fail 'ci-pass must reject every required result other than success'
+    fi
     extract_metal_step() {
         printf '%s\n' "$metal_validation_block" | awk -v target="      - name: $1" '
             $0 == target { capture = 1 }

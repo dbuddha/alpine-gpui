@@ -630,7 +630,7 @@ jobs:
 
   ci-pass:
     name: ci-pass
-    if: always()
+    if: ${{ always() && !cancelled() }}
     needs: [classify, quality, native, coverage, mutation-diff, kani, tla, miri, metal-validation, native-mutation]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
