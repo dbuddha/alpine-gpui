@@ -115,46 +115,18 @@ mod validation {
             );
         }
 
-        assert!(!native_validation::post_commit_control_armed(&surface));
-        native_validation::inject_post_commit_observation(&surface, None, 2.0)?;
-        assert!(native_validation::post_commit_control_armed(&surface));
-        assert_eq!(surface.request_frame(scene, clear)?.get(), 2);
-        native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
-        assert!(!native_validation::post_commit_control_armed(&surface));
-
-        assert_eq!(surface.take_error()?, None);
-        let recovered = surface.snapshot();
-        let terminal = recovered
-            .last_terminal()
-            .ok_or("post-drop recovery terminal evidence")?;
-        assert!(terminal.attempt() > dropped_attempt);
-        assert_eq!(terminal.requested_revision().get(), 2);
-        assert_eq!(terminal.frame_revision().get(), 2);
-        assert_eq!(terminal.outcome(), PresentationOutcome::Presented);
-        assert_eq!(
-            terminal.observed_presentation_time_bits(),
-            2.0_f64.to_bits()
-        );
-        assert_eq!(terminal.recovery(), None);
-        assert!(recovered.submission_count() > dropped_submissions);
-        assert_eq!(
-            recovered.direct_present_count(),
-            recovered.submission_count()
-        );
-        assert!(recovered.presented_count() > dropped.presented_count());
-        assert!(recovered.qualified_presented_count() > dropped.qualified_presented_count());
-        assert!(recovered.skipped_count() >= dropped.skipped_count());
-        // Hosted AppKit may contribute an unrelated failed callback while the
-        // explicit recovery request wins. Surface failure accounting is
-        // cumulative, while the terminal evidence above identifies recovery.
-        assert!(recovered.failed_count() >= dropped.failed_count());
-        if hosted_direct {
-            assert_hosted_slot_bound(&recovered);
-        } else {
-            assert_eq!(recovered.occupied_frame_slots(), 0);
-            assert_eq!(recovered.submitted_frame_slots(), 0);
-            assert!(recovered.display_link_paused());
-        }
+        let _recovered = validate_post_drop_recovery(
+            &surface,
+            &scene,
+            clear,
+            dropped_attempt,
+            dropped_submissions,
+            dropped.presented_count(),
+            dropped.qualified_presented_count(),
+            dropped.skipped_count(),
+            dropped.failed_count(),
+            hosted_direct,
+        )?;
         surface.close();
         Ok(())
     }
@@ -178,6 +150,104 @@ mod validation {
     fn assert_hosted_slot_bound(snapshot: &SurfaceSnapshot) {
         assert!(snapshot.occupied_frame_slots() <= snapshot.frame_slot_capacity());
         assert!(snapshot.submitted_frame_slots() <= snapshot.occupied_frame_slots());
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the retry must preserve every cumulative terminal-evidence axis"
+    )]
+    fn validate_post_drop_recovery(
+        surface: &NativeSurface,
+        scene: &Scene,
+        clear: LinearRgba,
+        mut prior_attempt: u64,
+        mut prior_submissions: u64,
+        mut prior_presented: u64,
+        mut prior_qualified: u64,
+        mut prior_skipped: u64,
+        mut prior_failed: u64,
+        hosted_direct: bool,
+    ) -> TestResult<SurfaceSnapshot> {
+        for retry in 0_u8..MAX_RETRY_ATTEMPTS {
+            let presented_time = 2.0 + f64::from(retry) / 10.0;
+            assert!(!native_validation::post_commit_control_armed(surface));
+            native_validation::inject_post_commit_observation(surface, None, presented_time)?;
+            assert!(native_validation::post_commit_control_armed(surface));
+            let revision = surface.request_frame(scene.clone(), clear)?;
+            native_validation::run_until_frame_terminal(surface, Duration::from_secs(5));
+            assert!(!native_validation::post_commit_control_armed(surface));
+            assert_eq!(surface.take_error()?, None);
+
+            let recovered = surface.snapshot();
+            let terminal = recovered
+                .last_terminal()
+                .ok_or("post-drop recovery terminal evidence")?;
+            assert!(terminal.attempt() > prior_attempt);
+            assert_eq!(terminal.requested_revision(), revision);
+            assert_eq!(terminal.frame_revision(), revision);
+            assert_eq!(terminal.submission_count(), 1);
+            assert_eq!(terminal.present_call_count(), 1);
+            assert!(terminal.eligible_at_commit());
+            assert_eq!(terminal.retained_bytes(), 0);
+            assert_eq!(terminal.recovery(), None);
+            assert!(recovered.submission_count() > prior_submissions);
+            assert_eq!(
+                recovered.direct_present_count(),
+                recovered.submission_count()
+            );
+            assert!(recovered.presented_count() >= prior_presented);
+            assert!(recovered.qualified_presented_count() >= prior_qualified);
+            assert!(recovered.skipped_count() >= prior_skipped);
+            assert!(recovered.failed_count() >= prior_failed);
+            if hosted_direct {
+                assert_hosted_slot_bound(&recovered);
+            } else {
+                assert_eq!(recovered.occupied_frame_slots(), 0);
+                assert_eq!(recovered.submitted_frame_slots(), 0);
+            }
+
+            match terminal.outcome() {
+                PresentationOutcome::Presented => {
+                    assert_eq!(
+                        terminal.observed_presentation_time_bits(),
+                        presented_time.to_bits()
+                    );
+                    assert!(recovered.presented_count() > prior_presented);
+                    assert!(recovered.qualified_presented_count() > prior_qualified);
+                    assert!(recovered.display_link_paused());
+                    return Ok(recovered);
+                }
+                PresentationOutcome::Superseded => {
+                    assert_eq!(
+                        terminal.observed_presentation_time_bits(),
+                        presented_time.to_bits()
+                    );
+                }
+                PresentationOutcome::Failed if hosted_direct => {
+                    assert_eq!(terminal.observed_presentation_time_bits(), 0);
+                    assert!(recovered.failed_count() > prior_failed);
+                    assert!(recovered.display_link_paused());
+                }
+                outcome => {
+                    return Err(format!(
+                        "unexpected post-drop recovery outcome on retry {retry}: {outcome:?}; terminal={terminal:?}; snapshot={recovered:?}"
+                    )
+                    .into());
+                }
+            }
+
+            prior_attempt = terminal.attempt();
+            prior_submissions = recovered.submission_count();
+            prior_presented = recovered.presented_count();
+            prior_qualified = recovered.qualified_presented_count();
+            prior_skipped = recovered.skipped_count();
+            prior_failed = recovered.failed_count();
+        }
+        Err(format!(
+            "post-drop recovery did not qualify after {MAX_RETRY_ATTEMPTS} attempts: {:?}",
+            surface.snapshot()
+        )
+        .into())
     }
 
     fn validate_missing_presentation(

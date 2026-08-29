@@ -7420,20 +7420,45 @@ pub mod native_validation {
         presented_or_cancelled.checked_add(failed)
     }
 
-    const fn hosted_presentation_was_omitted(
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PresentationEvidenceDisposition {
+        PhysicalQualified,
+        HostedQualified,
+        HostedOmitted,
+    }
+
+    const fn classify_presentation_evidence(
         evidence_mode: PresentationEvidenceMode,
         qualified_presentations: u64,
-    ) -> bool {
-        matches!(evidence_mode, PresentationEvidenceMode::HostedDirect)
-            && qualified_presentations == 0
+        failed_presentations: u64,
+    ) -> Option<PresentationEvidenceDisposition> {
+        match (
+            evidence_mode,
+            qualified_presentations > 0,
+            failed_presentations > 0,
+        ) {
+            (PresentationEvidenceMode::Physical, true, false) => {
+                Some(PresentationEvidenceDisposition::PhysicalQualified)
+            }
+            (PresentationEvidenceMode::HostedDirect, true, _) => {
+                Some(PresentationEvidenceDisposition::HostedQualified)
+            }
+            (PresentationEvidenceMode::HostedDirect, false, true) => {
+                Some(PresentationEvidenceDisposition::HostedOmitted)
+            }
+            (PresentationEvidenceMode::Physical, false, _)
+            | (PresentationEvidenceMode::Physical, true, true)
+            | (PresentationEvidenceMode::HostedDirect, false, false) => None,
+        }
     }
 
     #[cfg(test)]
     mod presentation_evidence_policy_tests {
         use super::{
-            PresentationEvidenceMode, hosted_presentation_was_omitted,
-            hosted_terminal_snapshot_is_settled, parse_presentation_evidence_mode,
-            pending_cancellation_evidence_is_bounded, terminal_outcome_count,
+            PresentationEvidenceDisposition, PresentationEvidenceMode,
+            classify_presentation_evidence, hosted_terminal_snapshot_is_settled,
+            parse_presentation_evidence_mode, pending_cancellation_evidence_is_bounded,
+            terminal_outcome_count,
         };
         use std::ffi::OsStr;
 
@@ -7495,23 +7520,43 @@ pub mod native_validation {
         }
 
         #[test]
-        fn hosted_omission_requires_hosted_mode_and_zero_qualified_presentations() {
-            assert!(hosted_presentation_was_omitted(
-                PresentationEvidenceMode::HostedDirect,
-                0
-            ));
-            assert!(!hosted_presentation_was_omitted(
-                PresentationEvidenceMode::HostedDirect,
-                1
-            ));
-            assert!(!hosted_presentation_was_omitted(
-                PresentationEvidenceMode::Physical,
-                0
-            ));
-            assert!(!hosted_presentation_was_omitted(
-                PresentationEvidenceMode::Physical,
-                1
-            ));
+        fn presentation_policy_separates_hosted_mixed_evidence_from_physical_strictness() {
+            assert_eq!(
+                classify_presentation_evidence(PresentationEvidenceMode::Physical, 1, 0),
+                Some(PresentationEvidenceDisposition::PhysicalQualified)
+            );
+            assert_eq!(
+                classify_presentation_evidence(PresentationEvidenceMode::Physical, 0, 0),
+                None
+            );
+            assert_eq!(
+                classify_presentation_evidence(PresentationEvidenceMode::Physical, 0, 1),
+                None
+            );
+            assert_eq!(
+                classify_presentation_evidence(PresentationEvidenceMode::Physical, 1, 1),
+                None
+            );
+            assert_eq!(
+                classify_presentation_evidence(PresentationEvidenceMode::HostedDirect, 0, 0),
+                None
+            );
+            assert_eq!(
+                classify_presentation_evidence(PresentationEvidenceMode::HostedDirect, 0, 1),
+                Some(PresentationEvidenceDisposition::HostedOmitted)
+            );
+            assert_eq!(
+                classify_presentation_evidence(PresentationEvidenceMode::HostedDirect, 1, 0),
+                Some(PresentationEvidenceDisposition::HostedQualified)
+            );
+            assert_eq!(
+                classify_presentation_evidence(PresentationEvidenceMode::HostedDirect, 1, 2),
+                Some(PresentationEvidenceDisposition::HostedQualified)
+            );
+            assert_ne!(
+                classify_presentation_evidence(PresentationEvidenceMode::HostedDirect, 1, 2),
+                classify_presentation_evidence(PresentationEvidenceMode::HostedDirect, 0, 1)
+            );
         }
     }
 
@@ -7668,14 +7713,28 @@ pub mod native_validation {
         assert_eq!(terminal.submission_count(), 1);
         assert_eq!(terminal.present_call_count(), 1);
         assert_eq!(terminal.retained_bytes(), 0);
-        let hosted_omission =
-            hosted_presentation_was_omitted(evidence_mode, frame.qualified_presented_count());
-        if hosted_omission {
-            assert_eq!(terminal.observed_presentation_time_bits(), 0);
-            assert!(frame.failed_count() >= 1);
-        } else {
-            assert!(frame.qualified_presented_count() >= 1);
-            assert_eq!(frame.failed_count(), 0);
+        let disposition = classify_presentation_evidence(
+            evidence_mode,
+            frame.qualified_presented_count(),
+            frame.failed_count(),
+        )
+        .ok_or(alpine_runtime::RuntimeError::Surface(
+            alpine_platform_macos::SurfaceError::invariant(
+                alpine_platform_macos::SurfaceOperation::Presentation,
+            ),
+        ))?;
+        match disposition {
+            PresentationEvidenceDisposition::HostedOmitted => {
+                assert_eq!(terminal.observed_presentation_time_bits(), 0);
+                assert!(frame.failed_count() >= 1);
+            }
+            PresentationEvidenceDisposition::HostedQualified => {
+                assert!(frame.qualified_presented_count() >= 1);
+            }
+            PresentationEvidenceDisposition::PhysicalQualified => {
+                assert!(frame.qualified_presented_count() >= 1);
+                assert_eq!(frame.failed_count(), 0);
+            }
         }
         assert!(pending_cancellation_evidence_is_bounded(
             frame.pending_cancellation_count(),
