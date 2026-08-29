@@ -44,5 +44,17 @@ sed 's/read-only worktree inventory/read-only checkout inventory/' "$temporary/b
 mv "$temporary/missing-worktree-preflight.md" "$temporary/bad-skills/github-project-operator/SKILL.md"
 if "$checker" --skills-root "$temporary/bad-skills" >"$temporary/missing-worktree-preflight.log" 2>&1; then printf 'agent skill test error: missing worktree preflight unexpectedly passed\n' >&2; exit 1; fi
 grep -Fq 'lacks worktree preflight behavior' "$temporary/missing-worktree-preflight.log"
+rm -rf "$temporary/bad-skills"
+cp -R "$repo_root/skills/." "$temporary/bad-skills"
+sed 's/PR metadata preflight/PR creation review/' "$temporary/bad-skills/github-project-operator/SKILL.md" > "$temporary/missing-project-pr-preflight.md"
+mv "$temporary/missing-project-pr-preflight.md" "$temporary/bad-skills/github-project-operator/SKILL.md"
+if "$checker" --skills-root "$temporary/bad-skills" >"$temporary/missing-project-pr-preflight.log" 2>&1; then printf 'agent skill test error: missing project PR preflight unexpectedly passed\n' >&2; exit 1; fi
+grep -Fq 'project operator lacks PR metadata preflight' "$temporary/missing-project-pr-preflight.log"
+rm -rf "$temporary/bad-skills"
+cp -R "$repo_root/skills/." "$temporary/bad-skills"
+sed 's/PR metadata preflight/PR creation review/' "$temporary/bad-skills/github-documentation-architect/SKILL.md" > "$temporary/missing-docs-pr-preflight.md"
+mv "$temporary/missing-docs-pr-preflight.md" "$temporary/bad-skills/github-documentation-architect/SKILL.md"
+if "$checker" --skills-root "$temporary/bad-skills" >"$temporary/missing-docs-pr-preflight.log" 2>&1; then printf 'agent skill test error: missing documentation PR preflight unexpectedly passed\n' >&2; exit 1; fi
+grep -Fq 'documentation architect lacks PR metadata preflight' "$temporary/missing-docs-pr-preflight.log"
 "$checker" >/dev/null
 printf 'repository agent skill tests passed\n'

@@ -29,8 +29,8 @@ The current execution sequence is retrieved from:
 - [GitHub Milestones](https://github.com/dbuddha/alpine-gpui/milestones) for live
   outcome cohorts.
 - [Typing latency #304](https://github.com/dbuddha/alpine-gpui/issues/304) and
-  [capture #314](https://github.com/dbuddha/alpine-gpui/issues/314) for the first
-  measured product blocker.
+  [physical experiment #331](https://github.com/dbuddha/alpine-gpui/issues/331)
+  for the first measured product blocker.
 - [Input and accessibility #37](https://github.com/dbuddha/alpine-gpui/issues/37),
   [language intelligence #34](https://github.com/dbuddha/alpine-gpui/issues/34),
   and [settings #36](https://github.com/dbuddha/alpine-gpui/issues/36) for the
