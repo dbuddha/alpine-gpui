@@ -89,6 +89,7 @@ tests::full_atlas_adaptation_rejects_malformed_bytes	studio-app-03
 tests::grapheme_delete_and_command_undo_restore_text	studio-app-03
 tests::glyph_geometry_and_atlas_publication_axes_are_exact	studio-app-03
 tests::ime_preview_is_non_destructive_and_commit_is_atomic	studio-app-03
+tests::initial_scene_contains_required_editor_primitives	studio-app-07
 tests::input_edges_are_bounded_and_failed_edits_are_atomic	studio-app-03
 tests::keyboard_commands_cover_selection_navigation_and_history	studio-app-03
 tests::malformed_find_highlight_fails_before_scene_publication	studio-app-03

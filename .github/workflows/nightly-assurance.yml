@@ -225,12 +225,6 @@ jobs:
             cargo mutants --no-config --file crates/alpine-metal/src/native.rs --features platform-spi --exclude-re 'tests::' --no-shuffle --output target/native-mutants.out -- --locked
             cargo mutants --no-config --file crates/alpine-metal/src/platform_spi.rs --features platform-spi --no-shuffle --output target/native-platform-spi-mutants.out -- --locked
             cargo mutants --no-config --file crates/alpine-metal/src/submission.rs --features platform-spi --re 'MetalBackend::render_callback_drawable|record_drawable_attempt|verify_drawable_attempt_lifecycle|complete_drawable_attempt' --no-shuffle --output target/native-submission-mutants.out -- --locked
-            cargo mutants --no-config --file crates/alpine-runtime/src/lib.rs --re 'run_on_native_surface' --test-package alpine-studio --no-shuffle --output target/native-runtime-mutants.out -- --locked
-            if find target/native-runtime-mutants.out -name unviable.txt -type f -size +0c | grep -q .; then
-              find target/native-runtime-mutants.out -name unviable.txt -type f -size +0c -exec cat {} \;
-              exit 1
-            fi
-            cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|initial_scene' --no-shuffle --output target/native-studio-mutants.out -- --locked
           else
             echo "Native mutation activates when alpine-metal is implemented."
           fi
@@ -243,8 +237,6 @@ jobs:
             target/native-mutants.out
             target/native-platform-spi-mutants.out
             target/native-submission-mutants.out
-            target/native-runtime-mutants.out
-            target/native-studio-mutants.out
           retention-days: 14
           if-no-files-found: warn
       - name: Upload compiled shader evidence
@@ -354,13 +346,76 @@ jobs:
       - name: Require exhaustive native surface mutants to be killed
         run: |
           mkdir -p target
-          cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|NativeSurface::arm_window_close' --no-shuffle --shard "${{ matrix.shard }}" --output "target/native-surface-mutants-${{ matrix.id }}.out" -- --locked
+          cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|schedule_validation_user_window_close|NativeSurface::arm_window_close|NativeSurface::arm_user_window_close' --test-package alpine-platform-macos --test-package alpine-studio --no-shuffle --shard "${{ matrix.shard }}" --output "target/native-surface-mutants-${{ matrix.id }}.out" -- --locked
       - name: Upload native surface mutation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: native-surface-mutation-${{ matrix.id }}-${{ github.sha }}
           path: target/native-surface-mutants-${{ matrix.id }}.out
+          retention-days: 14
+          if-no-files-found: error
+
+  native-studio-contract-mutation:
+    name: native-studio-contract-mutation-${{ matrix.id }}
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: 1
+            shard: "0/8"
+          - id: 2
+            shard: "1/8"
+          - id: 3
+            shard: "2/8"
+          - id: 4
+            shard: "3/8"
+          - id: 5
+            shard: "4/8"
+          - id: 6
+            shard: "5/8"
+          - id: 7
+            shard: "6/8"
+          - id: 8
+            shard: "7/8"
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
+      RUSTFLAGS: --cfg alpine_native_validation
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install native mutation tooling
+        run: cargo install --locked cargo-mutants --version 27.1.0
+      - name: Install the optional Metal toolchain when absent
+        run: |
+          if ! xcrun --sdk macosx --find metal >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk macosx --find metal
+          xcrun --sdk macosx --find metallib
+      - name: Require exhaustive Studio native contract mutants to be killed
+        run: |
+          mkdir -p target
+          if [ "${{ matrix.id }}" = "1" ]; then
+            cargo mutants --no-config --file crates/alpine-runtime/src/lib.rs --re 'run_on_native_surface' --test-package alpine-studio --no-shuffle --output target/native-studio-runtime-mutants.out -- --locked
+            if find target/native-studio-runtime-mutants.out -name unviable.txt -type f -size +0c | grep -q .; then
+              find target/native-studio-runtime-mutants.out -name unviable.txt -type f -size +0c -exec cat {} \;
+              exit 1
+            fi
+          fi
+          cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence|initial_scene' --test-package alpine-studio --no-shuffle --shard "${{ matrix.shard }}" --output "target/native-studio-contract-mutants-${{ matrix.id }}.out" -- --locked
+      - name: Upload Studio native contract mutation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-studio-contract-mutation-${{ matrix.id }}-${{ github.sha }}
+          path: |
+            target/native-studio-runtime-mutants.out
+            target/native-studio-contract-mutants-${{ matrix.id }}.out
           retention-days: 14
           if-no-files-found: error
 

@@ -414,4 +414,24 @@ if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="${native_surface_fixture}/nightly-assuranc
 fi
 rm -rf "${native_surface_fixture}"
 
+native_studio_fixture="$(mktemp -d)"
+sed '/^  native-studio-contract-mutation:/d' .github/workflows/nightly-assurance.yml \
+  > "${native_studio_fixture}/nightly-assurance.yml"
+if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="${native_studio_fixture}/nightly-assurance.yml" scripts/check-policy.sh >/dev/null 2>&1; then
+  echo "policy test failure: missing Studio native contract job was accepted" >&2
+  rm -rf "${native_studio_fixture}"
+  exit 1
+fi
+rm -rf "${native_studio_fixture}"
+
+ci_native_fixture="$(mktemp -d)"
+sed 's#--file crates/alpine-platform-macos/src/native.rs#--file crates/alpine-platform-macos/src/native-missing.rs#' .github/workflows/ci.yml \
+  > "${ci_native_fixture}/ci.yml"
+if ALPINE_CI_WORKFLOW="${ci_native_fixture}/ci.yml" scripts/check-policy.sh >/dev/null 2>&1; then
+  echo "policy test failure: missing exact-head native surface scope was accepted" >&2
+  rm -rf "${ci_native_fixture}"
+  exit 1
+fi
+rm -rf "${ci_native_fixture}"
+
 printf 'repository policy tests passed\n'
