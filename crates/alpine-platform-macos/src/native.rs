@@ -1892,10 +1892,14 @@ impl SurfaceView {
     }
 
     #[cfg(alpine_native_validation)]
-    fn detach_input_handler_for_validation(&self) {
-        if let Ok(mut installed) = self.ivars().input_handler.try_borrow_mut() {
-            installed.take();
+    fn detach_input_handler_for_validation(&self) -> Result<(), SurfaceError> {
+        let Ok(mut installed) = self.ivars().input_handler.try_borrow_mut() else {
+            return Err(SurfaceError::validation(SurfaceOperation::Input));
+        };
+        if installed.take().is_none() {
+            return Err(SurfaceError::validation(SurfaceOperation::Input));
         }
+        Ok(())
     }
 
     pub(crate) fn take_input_dispatch_failure(&self) -> bool {
@@ -4417,8 +4421,9 @@ impl NativeSurface {
             return Err(SurfaceError::validation(SurfaceOperation::Input));
         }
         if let Err(error) = self.activate_input_responder() {
-            self.view.detach_input_handler_for_validation();
+            let cleanup = self.view.detach_input_handler_for_validation();
             self.delegate.clear_event_handler();
+            cleanup?;
             return Err(error);
         }
         let (input_epoch, focused) = self.view.input_focus_state();
@@ -4427,8 +4432,9 @@ impl NativeSurface {
             input_epoch,
             focused,
         }) {
-            self.view.detach_input_handler_for_validation();
+            let cleanup = self.view.detach_input_handler_for_validation();
             self.delegate.clear_event_handler();
+            cleanup?;
             return Err(error);
         }
 
@@ -4450,7 +4456,7 @@ impl NativeSurface {
             Err(SurfaceError::validation(SurfaceOperation::Input))
         };
 
-        self.view.detach_input_handler_for_validation();
+        self.view.detach_input_handler_for_validation()?;
         self.delegate.clear_event_handler();
         resolve_input_dispatch(replay_result, self.view.take_input_dispatch_failure())
     }
@@ -5882,6 +5888,39 @@ mod tests {
         assert_eq!(evidence.target_presentation_timestamp_bits(), 139);
         assert_eq!(evidence.submission_count(), 1);
         assert_eq!(evidence.present_call_count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(alpine_native_validation)]
+    fn committed_cancellation_begins_drain_after_lifecycle_revocation() -> Result<(), SurfaceError>
+    {
+        let device = require_device(MTLCreateSystemDefaultDevice())?;
+        let backend = platform_spi::new_validation_backend_with_device(device)?;
+        let configuration = SurfaceConfiguration::from_native(64.0, 64.0, 1.0, 0, false)?;
+        let lifecycle = Arc::new(AtomicU8::new(SURFACE_LIVE));
+        let mut driver = PresentationDriver::new(backend, configuration, Arc::clone(&lifecycle))?;
+        let counters = FrameCounters::default();
+
+        driver.state.apply(PresentationAction::SetVisible(true))?;
+        driver.state.apply(PresentationAction::Invalidate)?;
+        driver.state.apply(PresentationAction::Resume)?;
+        let prepared = driver.state.apply(PresentationAction::Prepare)?;
+        let PresentationEvent::Prepared(token) = prepared.event() else {
+            return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
+        };
+        driver.state.apply(PresentationAction::BeginUpdate(token))?;
+        driver.state.apply(PresentationAction::Submit(token))?;
+        driver.state.apply(PresentationAction::CallPresent(token))?;
+        lifecycle.store(SURFACE_CLOSING, Ordering::Release);
+
+        let directive = driver.cancel_attempt(token, AttemptTiming::default(), &counters)?;
+
+        assert_eq!(directive, DisplayLinkDirective::None);
+        assert_eq!(driver.state.application(), ApplicationState::Stopped);
+        assert_eq!(driver.state.outcome(), PresentationOutcome::Cancelled);
+        assert_eq!(counters.cancelled.load(Ordering::Relaxed), 1);
+        assert!(driver.last_cancelled.is_some());
         Ok(())
     }
 }
