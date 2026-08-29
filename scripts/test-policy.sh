@@ -137,6 +137,42 @@ unset ALPINE_TLA_DRIVER
 cp .github/workflows/ci.yml "$fixture_dir/ci.yml"
 ALPINE_CI_WORKFLOW="$fixture_dir/ci.yml" run_policy >/dev/null
 
+sed 's/if: ${{ always() && !cancelled() }}/if: always()/' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/canceled-aggregate-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/canceled-aggregate-ci.yml" run_policy > "$fixture_dir/canceled-aggregate-ci.log" 2>&1; then
+    printf 'policy test error: aggregate admitted during workflow cancellation unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'ci-pass must run after ordinary failures but skip a canceled workflow' "$fixture_dir/canceled-aggregate-ci.log"; then
+    printf 'policy test error: expected canceled aggregate admission failure was not reported\n' >&2
+    cat "$fixture_dir/canceled-aggregate-ci.log" >&2
+    exit 1
+fi
+
+sed 's/if: ${{ always() && !cancelled() }}/if: ${{ !cancelled() }}/' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/failed-dependency-skips-aggregate-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/failed-dependency-skips-aggregate-ci.yml" run_policy > "$fixture_dir/failed-dependency-skips-aggregate-ci.log" 2>&1; then
+    printf 'policy test error: aggregate without ordinary-failure admission unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'ci-pass must run after ordinary failures but skip a canceled workflow' "$fixture_dir/failed-dependency-skips-aggregate-ci.log"; then
+    printf 'policy test error: expected ordinary-failure aggregate admission failure was not reported\n' >&2
+    cat "$fixture_dir/failed-dependency-skips-aggregate-ci.log" >&2
+    exit 1
+fi
+
+sed 's/test "$2" = success || {/test "$2" != failure || {/' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/canceled-dependency-accepted-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/canceled-dependency-accepted-ci.yml" run_policy > "$fixture_dir/canceled-dependency-accepted-ci.log" 2>&1; then
+    printf 'policy test error: aggregate accepting a canceled required dependency unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'ci-pass must reject every required result other than success' "$fixture_dir/canceled-dependency-accepted-ci.log"; then
+    printf 'policy test error: expected canceled required dependency failure was not reported\n' >&2
+    cat "$fixture_dir/canceled-dependency-accepted-ci.log" >&2
+    exit 1
+fi
+
 sed "s/steps.upload-metal-shader-primary.outcome == 'failure'/steps.upload-metal-shader-primary.outcome == 'success'/" \
     "$fixture_dir/ci.yml" > "$fixture_dir/wrong-artifact-retry-route-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/wrong-artifact-retry-route-ci.yml" run_policy > "$fixture_dir/wrong-artifact-retry-route-ci.log" 2>&1; then
