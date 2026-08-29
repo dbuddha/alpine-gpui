@@ -194,7 +194,7 @@ if [ -n "$workflow_files" ]; then
         fail 'ci-pass must require and retain exact-head native mutation matrix evidence'
     fi
 
-    nightly_native_workflow=.github/workflows/nightly-assurance.yml
+    nightly_native_workflow=${ALPINE_NIGHTLY_ASSURANCE_WORKFLOW:-.github/workflows/nightly-assurance.yml}
     if [ -f "$nightly_native_workflow" ]; then
         nightly_metal_block=$(awk '
             /^  metal-validation:/ { capture = 1 }
@@ -206,12 +206,18 @@ if [ -n "$workflow_files" ]; then
             /^  [A-Za-z0-9_-]+:/ && $1 != "native-accessibility-mutation:" && capture { exit }
             capture
         ' "$nightly_native_workflow")
+        nightly_platform_contract_block=$(awk '
+            /^  native-platform-contract-mutation:/ { capture = 1 }
+            /^  [A-Za-z0-9_-]+:/ && $1 != "native-platform-contract-mutation:" && capture { exit }
+            capture
+        ' "$nightly_native_workflow")
         nightly_studio_accessibility_block=$(awk '
             /^  native-studio-accessibility-mutation:/ { capture = 1 }
             /^  [A-Za-z0-9_-]+:/ && $1 != "native-studio-accessibility-mutation:" && capture { exit }
             capture
         ' "$nightly_native_workflow")
-        if ! grep -Fq 'native-accessibility-mutation:' "$nightly_native_workflow" \
+        if ! grep -Fq 'native-platform-contract-mutation:' "$nightly_native_workflow" \
+            || ! grep -Fq 'native-accessibility-mutation:' "$nightly_native_workflow" \
             || ! grep -Fq 'native-studio-accessibility-mutation:' "$nightly_native_workflow" \
             || [ "$(grep -Ec '^[[:space:]]+shard: [0-7]/8$' "$nightly_native_workflow")" -ne 16 ] \
             || [ "$(grep -Fc -- '--file crates/alpine-platform-macos/src/native_accessibility.rs' "$nightly_native_workflow")" -ne 1 ] \
@@ -223,6 +229,16 @@ if [ -n "$workflow_files" ]; then
             || ! grep -Fq 'target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out' "$nightly_native_workflow" \
             || ! grep -Fq 'target/native-studio-language-evidence-mutants-${{ matrix.id }}.out' "$nightly_native_workflow"; then
             fail 'nightly assurance must exhaustively shard and retain native accessibility and Studio process mutation evidence'
+        fi
+        if [ "$(printf '%s\n' "$nightly_platform_contract_block" | grep -Ec '^[[:space:]]+shard: [0-3]/4$')" -ne 4 ] \
+            || [ "$(printf '%s\n' "$nightly_platform_contract_block" | grep -Fc -- '--file crates/alpine-platform-macos/src/lib.rs')" -ne 2 ] \
+            || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq -- '--shard "${{ matrix.shard }}"' \
+            || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq -- '--test-package alpine-studio' \
+            || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq -- "--re 'native_validation::arm_user_window_close|native_validation::arm_programmatic_window_close|native_validation::commit_native_text'" \
+            || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq 'target/native-platform-contract-mutants-${{ matrix.id }}.out' \
+            || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq 'target/native-platform-studio-contract-mutants.out' \
+            || printf '%s\n' "$nightly_metal_block" | grep -Fq -- '--file crates/alpine-platform-macos/src/lib.rs'; then
+            fail 'nightly assurance must shard native platform contracts and route Studio-only wrappers through Studio tests'
         fi
         for shard in 0 1 2 3 4 5 6 7; do
             if [ "$(grep -Fc "shard: $shard/8" "$nightly_native_workflow")" -ne 2 ]; then
@@ -244,6 +260,7 @@ if [ -n "$workflow_files" ]; then
             fail 'nightly Metal shipping mutation must not add another native.rs exclusion'
         fi
         for mutation_block in \
+            "$nightly_platform_contract_block" \
             "$nightly_accessibility_block" \
             "$nightly_studio_accessibility_block"; do
             output_parent_line=$(printf '%s\n' "$mutation_block" \
