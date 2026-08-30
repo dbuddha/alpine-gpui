@@ -2788,7 +2788,7 @@ impl SurfaceSnapshot {
     /// Returns a non-admissible empty snapshot for downstream portable tests.
     ///
     /// This value never represents native or physical evidence.
-    #[cfg(feature = "test-support")]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     #[must_use]
     pub const fn empty_for_test() -> Self {

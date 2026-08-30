@@ -3,6 +3,7 @@ command_palette_tests::	studio-command
 commands::	studio-command
 documents::	studio-model
 dogfood_diagnostic::	studio-app-07
+dogfood_accessibility_counter_tests::	studio-app-07
 entry_point_contract_tests::	studio-app-01
 file_tree::	studio-workspace
 find::	studio-workspace

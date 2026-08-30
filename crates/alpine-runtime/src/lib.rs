@@ -1606,6 +1606,19 @@ mod tests {
     }
 
     #[test]
+    fn application_completion_preserves_handle_free_snapshots() {
+        let application = ApplicationSnapshot::default();
+        let surface = SurfaceSnapshot::empty_for_test();
+        assert!(surface.display_link_paused());
+        let completion = ApplicationCompletion {
+            application,
+            surface,
+        };
+        assert_eq!(completion.application(), application);
+        assert_eq!(*completion.surface(), surface);
+    }
+
+    #[test]
     fn public_values_and_errors_preserve_exact_identity() {
         let config = WorkerConfig::new(
             NonZeroUsize::new(2).unwrap_or(NonZeroUsize::MIN),
@@ -1630,13 +1643,6 @@ mod tests {
         assert_eq!(application.invalid_scenes(), 0);
         assert_eq!(application.worker(), WorkerSnapshot::default());
         assert_eq!(application.external(), ExternalSnapshot::default());
-        let surface = SurfaceSnapshot::empty_for_test();
-        let completion = ApplicationCompletion {
-            application,
-            surface,
-        };
-        assert_eq!(completion.application(), application);
-        assert_eq!(*completion.surface(), surface);
 
         let work = token(13);
         assert_eq!(work.sequence(), 13);

@@ -6732,6 +6732,31 @@ enum StudioWorkerOutput {
     WorkspaceEditPublication(WorkspaceEditPublicationOutput),
 }
 
+const fn dogfood_accessibility_delta(kind: AccessibilityRequestKind) -> (u64, u64) {
+    if matches!(kind, AccessibilityRequestKind::Action) {
+        (0, 1)
+    } else {
+        (1, 0)
+    }
+}
+
+#[cfg(test)]
+mod dogfood_accessibility_counter_tests {
+    use super::*;
+
+    #[test]
+    fn action_and_query_kinds_increment_independent_axes() -> Result<(), String> {
+        assert_eq!(
+            dogfood_accessibility_delta(AccessibilityRequestKind::Action),
+            (0, 1)
+        );
+        let query = AccessibilityRequest::snapshot(AccessibilityRequestId::new(1))
+            .map_err(|error| error.to_string())?;
+        assert_eq!(dogfood_accessibility_delta(query.kind()), (1, 0));
+        Ok(())
+    }
+}
+
 impl AppDelegate for StudioApp {
     type WorkerOutput = StudioWorkerOutput;
 
@@ -6749,13 +6774,11 @@ impl AppDelegate for StudioApp {
             [surface_event_kind(event), self.selection_revision, 0],
         );
         if let SurfaceEvent::Accessibility { request, .. } = event {
-            if request.kind() == AccessibilityRequestKind::Action {
-                self.dogfood_accessibility_actions =
-                    self.dogfood_accessibility_actions.saturating_add(1);
-            } else {
-                self.dogfood_accessibility_queries =
-                    self.dogfood_accessibility_queries.saturating_add(1);
-            }
+            let (queries, actions) = dogfood_accessibility_delta(request.kind());
+            self.dogfood_accessibility_queries =
+                self.dogfood_accessibility_queries.saturating_add(queries);
+            self.dogfood_accessibility_actions =
+                self.dogfood_accessibility_actions.saturating_add(actions);
             let selection_before = self.selection;
             let (response, effect) = accessibility::respond(self, request);
             let admitted = context.respond_accessibility(response);

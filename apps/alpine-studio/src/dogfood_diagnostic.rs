@@ -20,6 +20,8 @@ const OUTPUT_ENV: &str = "ALPINE_STUDIO_DOGFOOD_OUTPUT";
 const WORKLOAD_ENV: &str = "ALPINE_STUDIO_DOGFOOD_WORKLOAD_ID";
 const REVISION_ENV: &str = "ALPINE_STUDIO_DOGFOOD_REVISION";
 const CAPTURED_AT_ENV: &str = "ALPINE_STUDIO_DOGFOOD_CAPTURED_AT_UTC";
+#[cfg(all(test, not(miri)))]
+const ENVIRONMENT_TEST_CHILD_ENV: &str = "ALPINE_STUDIO_DOGFOOD_TEST_CHILD";
 const MAX_OUTPUT_BYTES: usize = 262_144;
 const LANGUAGE_BUDGET_BYTES: usize = 16 * 1024 * 1024;
 const FOREGROUND_QUEUE_BUDGET_BYTES: usize = 8 * 1024 * 1024;
@@ -107,16 +109,16 @@ impl CaptureController {
         let captured_at_utc = captured_at
             .and_then(|value| value.into_string().ok())
             .ok_or(CaptureError("dogfood timestamp must be UTF-8"))?;
-        Self::new(output, workload_id, revision, captured_at_utc).map(Some)
+        Self::new(&output, workload_id, revision, captured_at_utc).map(Some)
     }
 
     fn new(
-        output: PathBuf,
+        output: &Path,
         workload_id: String,
         revision: String,
         captured_at_utc: String,
     ) -> Result<Self, CaptureError> {
-        validate_output_path(&output)?;
+        let output = normalized_output_path(output)?;
         if !valid_slug(&workload_id) {
             return Err(CaptureError("dogfood workload id must be a bounded slug"));
         }
@@ -441,7 +443,7 @@ fn resource(name: &str, evidence: ResourceEvidence, omitted: bool) -> Value {
     })
 }
 
-fn validate_output_path(path: &Path) -> Result<(), CaptureError> {
+fn normalized_output_path(path: &Path) -> Result<PathBuf, CaptureError> {
     if !path.is_absolute()
         || path
             .components()
@@ -458,18 +460,27 @@ fn validate_output_path(path: &Path) -> Result<(), CaptureError> {
     let parent = path
         .parent()
         .ok_or(CaptureError("dogfood diagnostic output lacks a parent"))?;
-    let canonical = fs::canonicalize(parent)
+    let parent_metadata = fs::symlink_metadata(parent)
         .map_err(|_| CaptureError("dogfood diagnostic parent is unavailable"))?;
-    if canonical != parent {
+    if parent_metadata.file_type().is_symlink() {
         return Err(CaptureError(
             "dogfood diagnostic parent must not traverse a symbolic link",
         ));
     }
-    Ok(())
+    let canonical = fs::canonicalize(parent)
+        .map_err(|_| CaptureError("dogfood diagnostic parent is unavailable"))?;
+    let normalized = canonical.join(
+        path.file_name()
+            .ok_or(CaptureError("dogfood diagnostic output lacks a file name"))?,
+    );
+    if fs::symlink_metadata(&normalized).is_ok() {
+        return Err(CaptureError("dogfood diagnostic output already exists"));
+    }
+    Ok(normalized)
 }
 
 fn write_atomic_json(path: &Path, payload: &Value) -> Result<(), CaptureError> {
-    validate_output_path(path)?;
+    let path = normalized_output_path(path)?;
     let bytes = serde_json::to_vec_pretty(payload)
         .map_err(|_| CaptureError("dogfood diagnostic encoding failed"))?;
     if bytes.len() > MAX_OUTPUT_BYTES {
@@ -492,7 +503,7 @@ fn write_atomic_json(path: &Path, payload: &Value) -> Result<(), CaptureError> {
         file.write_all(&bytes)
             .and_then(|()| file.sync_all())
             .map_err(|_| CaptureError("dogfood diagnostic write failed"))?;
-        fs::hard_link(&staging, path)
+        fs::hard_link(&staging, &path)
             .map_err(|_| CaptureError("dogfood diagnostic publication failed"))?;
         fs::remove_file(&staging)
             .map_err(|_| CaptureError("dogfood diagnostic staging cleanup failed"))?;
@@ -559,7 +570,7 @@ mod tests {
     fn identity_and_output_boundaries_fail_closed() -> Result<(), String> {
         let path = output_path("identity")?;
         let valid = CaptureController::new(
-            path.clone(),
+            &path,
             "local-edit".to_owned(),
             "a".repeat(40),
             "2026-08-30T12:00:00Z".to_owned(),
@@ -567,7 +578,7 @@ mod tests {
         assert!(valid.is_ok());
         assert!(
             CaptureController::new(
-                path.clone(),
+                &path,
                 "Local Edit".to_owned(),
                 "a".repeat(40),
                 "2026-08-30T12:00:00Z".to_owned(),
@@ -576,7 +587,7 @@ mod tests {
         );
         assert!(
             CaptureController::new(
-                path.clone(),
+                &path,
                 "local-edit".to_owned(),
                 "A".repeat(40),
                 "2026-08-30T12:00:00Z".to_owned(),
@@ -585,7 +596,7 @@ mod tests {
         );
         assert!(
             CaptureController::new(
-                path,
+                &path,
                 "local-edit".to_owned(),
                 "a".repeat(40),
                 "2026-08-30 12:00:00Z".to_owned(),
@@ -596,6 +607,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn environment_values_and_error_translation_are_exact() -> Result<(), String> {
         assert!(
             CaptureController::from_environment()
@@ -630,6 +642,34 @@ mod tests {
         assert_eq!(
             capture_surface_error(&error),
             alpine_platform_macos::SurfaceError::invariant(SurfaceOperation::Application)
+        );
+        let child_output = output_path("environment-child")?;
+        let child =
+            std::process::Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
+                .arg("--exact")
+                .arg("dogfood_diagnostic::tests::environment_child_reads_complete_contract")
+                .arg("--nocapture")
+                .env(OUTPUT_ENV, &child_output)
+                .env(WORKLOAD_ENV, "local-edit")
+                .env(REVISION_ENV, "b".repeat(40))
+                .env(CAPTURED_AT_ENV, "2026-08-30T12:00:01Z")
+                .env(ENVIRONMENT_TEST_CHILD_ENV, "1")
+                .status()
+                .map_err(|error| error.to_string())?;
+        assert!(child.success());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn environment_child_reads_complete_contract() -> Result<(), String> {
+        if env::var_os(ENVIRONMENT_TEST_CHILD_ENV).is_none() {
+            return Ok(());
+        }
+        assert!(
+            CaptureController::from_environment()
+                .map_err(|error| error.to_string())?
+                .is_some()
         );
         Ok(())
     }
@@ -740,7 +780,7 @@ mod tests {
     fn real_studio_capture_finishes_one_bounded_payload() -> Result<(), String> {
         let output = output_path("full-capture")?;
         let controller = CaptureController::new(
-            output.clone(),
+            &output,
             "local-edit".to_owned(),
             "a".repeat(40),
             "2026-08-30T12:00:00Z".to_owned(),
@@ -788,7 +828,7 @@ mod tests {
         fs::remove_file(output).map_err(|error| error.to_string())?;
 
         let missing = CaptureController::new(
-            output_path("missing-state")?,
+            &output_path("missing-state")?,
             "local-edit".to_owned(),
             "b".repeat(40),
             "2026-08-30T12:00:01Z".to_owned(),
@@ -806,21 +846,82 @@ mod tests {
     }
 
     #[test]
+    fn resource_and_budget_contracts_preserve_exact_values() {
+        assert_eq!(LANGUAGE_BUDGET_BYTES, 16_777_216);
+        assert_eq!(FOREGROUND_QUEUE_BUDGET_BYTES, 8_388_608);
+        assert_eq!(
+            resource(
+                "glyph-atlas",
+                ResourceEvidence {
+                    current: 3,
+                    peak: 5,
+                    budget: 7,
+                },
+                false,
+            ),
+            json!({
+                "name": "glyph-atlas",
+                "current_bytes": 3,
+                "peak_bytes": 5,
+                "budget_bytes": 7,
+                "omitted": false,
+            })
+        );
+    }
+
+    #[test]
     fn path_size_and_staging_boundaries_fail_closed() -> Result<(), String> {
-        assert!(validate_output_path(Path::new("relative.json")).is_err());
-        assert!(validate_output_path(Path::new("/tmp/../tmp/output.json")).is_err());
-        assert!(validate_output_path(Path::new("/")).is_err());
+        let normalized_error =
+            Some("dogfood diagnostic output must be one normalized absolute file path".to_owned());
+        for invalid in ["relative.json", "/tmp/../tmp/output.json", "/"] {
+            assert_eq!(
+                normalized_output_path(Path::new(invalid))
+                    .err()
+                    .map(|error| error.to_string()),
+                normalized_error
+            );
+        }
 
         let root = output_path("boundaries")?.with_extension("root");
         fs::create_dir_all(&root).map_err(|error| error.to_string())?;
         let existing = root.join("existing.json");
         fs::write(&existing, b"existing").map_err(|error| error.to_string())?;
-        assert!(validate_output_path(&existing).is_err());
-        assert!(validate_output_path(&root.join("missing/output.json")).is_err());
+        assert!(normalized_output_path(&existing).is_err());
+        assert!(normalized_output_path(&root.join("missing/output.json")).is_err());
+
+        let empty_payload = serde_json::to_vec_pretty(&json!({"payload": ""}))
+            .map_err(|error| error.to_string())?;
+        let fill = MAX_OUTPUT_BYTES
+            .checked_sub(empty_payload.len())
+            .ok_or("payload encoding exceeds byte ceiling")?;
+        let boundary = root.join("boundary.json");
+        let boundary_payload = json!({"payload": "x".repeat(fill)});
+        assert_eq!(
+            serde_json::to_vec_pretty(&boundary_payload)
+                .map_err(|error| error.to_string())?
+                .len(),
+            MAX_OUTPUT_BYTES
+        );
+        write_atomic_json(&boundary, &boundary_payload).map_err(|error| error.to_string())?;
+        assert_eq!(
+            usize::try_from(
+                fs::metadata(&boundary)
+                    .map_err(|error| error.to_string())?
+                    .len()
+            )
+            .map_err(|error| error.to_string())?,
+            MAX_OUTPUT_BYTES
+        );
+        fs::remove_file(boundary).map_err(|error| error.to_string())?;
 
         let oversized = root.join("oversized.json");
-        let payload = json!({"payload": "x".repeat(MAX_OUTPUT_BYTES)});
-        assert!(write_atomic_json(&oversized, &payload).is_err());
+        let payload = json!({"payload": "x".repeat(fill + 1)});
+        assert_eq!(
+            write_atomic_json(&oversized, &payload)
+                .err()
+                .map(|error| error.to_string()),
+            Some("dogfood diagnostic exceeds its byte limit".to_owned())
+        );
         assert!(!oversized.exists());
 
         let collision = root.join("collision.json");
@@ -845,7 +946,20 @@ mod tests {
         let alias = root.join("alias");
         fs::create_dir_all(&target).map_err(|error| error.to_string())?;
         symlink(&target, &alias).map_err(|error| error.to_string())?;
-        assert!(validate_output_path(&alias.join("output.json")).is_err());
+        assert!(normalized_output_path(&alias.join("output.json")).is_err());
+
+        let nested = target.join("nested");
+        fs::create_dir(&nested).map_err(|error| error.to_string())?;
+        let nested_output = alias.join("nested/output.json");
+        let normalized =
+            normalized_output_path(&nested_output).map_err(|error| error.to_string())?;
+        assert_eq!(
+            normalized,
+            fs::canonicalize(nested)
+                .map_err(|error| error.to_string())?
+                .join("output.json")
+        );
+        assert_ne!(normalized, nested_output);
 
         let invalid_name = OsString::from_vec(vec![0xff]);
         assert!(write_atomic_json(&target.join(invalid_name), &json!({})).is_err());
