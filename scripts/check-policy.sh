@@ -661,7 +661,7 @@ for shard in 0 1 2 3 4 5 6 7; do
     exit 1
   fi
 done
-for required in '--file crates/alpine-runtime/src/lib.rs' '--file apps/alpine-studio/src/lib.rs' '--test-package alpine-studio' 'initial_scene' '--shard "${{ matrix.shard }}"' 'target/native-studio-contract-mutants-${{ matrix.id }}.out' 'if-no-files-found: error'; do
+for required in '--file crates/alpine-runtime/src/lib.rs' '--file apps/alpine-studio/src/lib.rs' '--test-package alpine-studio' '-- --locked native_process' 'initial_scene' '--shard "${{ matrix.shard }}"' 'target/native-studio-contract-mutants-${{ matrix.id }}.out' 'if-no-files-found: error'; do
   if ! printf '%s\n' "${native_studio_contract_mutation_job}" | grep -Fq -- "${required}"; then
     echo "policy failure: Studio native contract mutation is missing ${required}" >&2
     exit 1
@@ -676,6 +676,7 @@ done
 
 ci_native_surface_scope="$(printf '%s\n' "${ci_native_mutation_job}" | grep -- '--file crates/alpine-platform-macos/src/native.rs' || true)"
 ci_native_studio_scope="$(printf '%s\n' "${ci_native_mutation_job}" | grep -- '--file apps/alpine-studio/src/lib.rs' || true)"
+ci_native_runtime_scope="$(printf '%s\n' "${ci_native_mutation_job}" | grep -- '--file crates/alpine-runtime/src/lib.rs' || true)"
 for scope in "${ci_native_surface_scope}" "${ci_native_studio_scope}"; do
   if [ -z "${scope}" ] || printf '%s\n' "${scope}" | grep -Fq -- '--in-diff'; then
     echo "policy failure: exact-head native process mutation scopes must be exhaustive" >&2
@@ -686,6 +687,12 @@ for scope in "${ci_native_surface_scope}" "${ci_native_studio_scope}"; do
     exit 1
   fi
 done
+if [ -z "${ci_native_runtime_scope}" ] \
+  || ! printf '%s\n' "${ci_native_runtime_scope}" | grep -Fq -- '--test-package alpine-studio' \
+  || ! printf '%s\n' "${ci_native_runtime_scope}" | grep -Fq -- '-- --locked native_process'; then
+  echo "policy failure: exact-head runtime mutation must use the bounded Studio native process control" >&2
+  exit 1
+fi
 if ! printf '%s\n' "${ci_pass_job}" | grep -Fq 'native-mutation'; then
   echo "policy failure: ci-pass must require exact-head native mutation evidence" >&2
   exit 1

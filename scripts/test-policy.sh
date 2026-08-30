@@ -424,6 +424,17 @@ if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="${native_studio_fixture}/nightly-assurance
 fi
 rm -rf "${native_studio_fixture}"
 
+native_runtime_filter_fixture="$(mktemp -d)"
+sed '/--file crates\/alpine-runtime\/src\/lib.rs/s/ native_process$//' \
+  .github/workflows/nightly-assurance.yml \
+  > "${native_runtime_filter_fixture}/nightly-assurance.yml"
+if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="${native_runtime_filter_fixture}/nightly-assurance.yml" scripts/check-policy.sh >/dev/null 2>&1; then
+  echo "policy test failure: unfiltered Nightly runtime mutation control was accepted" >&2
+  rm -rf "${native_runtime_filter_fixture}"
+  exit 1
+fi
+rm -rf "${native_runtime_filter_fixture}"
+
 ci_native_fixture="$(mktemp -d)"
 sed 's#--file crates/alpine-platform-macos/src/native.rs#--file crates/alpine-platform-macos/src/native-missing.rs#' .github/workflows/ci.yml \
   > "${ci_native_fixture}/ci.yml"
@@ -433,6 +444,16 @@ if ALPINE_CI_WORKFLOW="${ci_native_fixture}/ci.yml" scripts/check-policy.sh >/de
   exit 1
 fi
 rm -rf "${ci_native_fixture}"
+
+ci_runtime_filter_fixture="$(mktemp -d)"
+sed '/--file crates\/alpine-runtime\/src\/lib.rs/s/ native_process$//' \
+  .github/workflows/ci.yml > "${ci_runtime_filter_fixture}/ci.yml"
+if ALPINE_CI_WORKFLOW="${ci_runtime_filter_fixture}/ci.yml" scripts/check-policy.sh >/dev/null 2>&1; then
+  echo "policy test failure: unfiltered exact-head runtime mutation control was accepted" >&2
+  rm -rf "${ci_runtime_filter_fixture}"
+  exit 1
+fi
+rm -rf "${ci_runtime_filter_fixture}"
 
 ci_native_shard_fixture="$(mktemp -d)"
 sed '/shard: 15\/16/d' .github/workflows/ci.yml \

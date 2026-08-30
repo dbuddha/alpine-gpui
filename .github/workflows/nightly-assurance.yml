@@ -401,7 +401,7 @@ jobs:
         run: |
           mkdir -p target
           if [ "${{ matrix.id }}" = "1" ]; then
-            cargo mutants --no-config --file crates/alpine-runtime/src/lib.rs --re 'run_on_native_surface' --test-package alpine-studio --no-shuffle --output target/native-studio-runtime-mutants.out -- --locked
+            cargo mutants --no-config --file crates/alpine-runtime/src/lib.rs --re 'run_on_native_surface' --test-package alpine-studio --no-shuffle --output target/native-studio-runtime-mutants.out -- --locked native_process
             if find target/native-studio-runtime-mutants.out -name unviable.txt -type f -size +0c | grep -q .; then
               find target/native-studio-runtime-mutants.out -name unviable.txt -type f -size +0c -exec cat {} \;
               exit 1
