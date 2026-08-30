@@ -35,9 +35,14 @@ The current execution sequence is retrieved from:
   [language intelligence #34](https://github.com/dbuddha/alpine-gpui/issues/34),
   and [settings #36](https://github.com/dbuddha/alpine-gpui/issues/36) for the
   remaining accepted behavior families.
-- [Renderer task #61](https://github.com/dbuddha/alpine-gpui/issues/61) and
-  [qualification #38](https://github.com/dbuddha/alpine-gpui/issues/38) for the
-  separate GPUI evidence path.
+- Completed E3 [renderer task #61](https://github.com/dbuddha/alpine-gpui/issues/61),
+  [atlas lifecycle and recovery #353](https://github.com/dbuddha/alpine-gpui/issues/353),
+  [renderer E4 Requirement #53](https://github.com/dbuddha/alpine-gpui/issues/53),
+  and [dominance policy #38](https://github.com/dbuddha/alpine-gpui/issues/38)
+  for the separate GPUI evidence path.
+- [Dogfood task #224](https://github.com/dbuddha/alpine-gpui/issues/224) and
+  [capture through acceptance #238 through #242](https://github.com/dbuddha/alpine-gpui/issues/238)
+  for private daily-driver and residency qualification.
 
 Issue timelines and Project fields own live state. This page does not copy issue
 counts, readiness percentages, due dates, or Project status. M5 does not require

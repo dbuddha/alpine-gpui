@@ -117,9 +117,10 @@ The stable sequence is:
    changing the runtime or renderer architecture.
 2. Finish native input, IME, focus, accessibility, lifecycle, and physical
    behavior required by [Requirement #37](https://github.com/dbuddha/alpine-gpui/issues/37).
-3. Finish the remaining language and configuration behavior under
+3. Preserve the implemented language and configuration contracts under
    [Requirements #34](https://github.com/dbuddha/alpine-gpui/issues/34) and
-   [#36](https://github.com/dbuddha/alpine-gpui/issues/36).
+   [#36](https://github.com/dbuddha/alpine-gpui/issues/36), and turn dogfood
+   failures into revision-bound regression defects.
 4. Run sustained private dogfood and residency journeys; promote each incident
    to a reproduced defect with a production-path regression.
 5. Preserve the E3 GPUI admission established by

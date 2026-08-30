@@ -36,10 +36,9 @@ recovery, timing, memory, latency, and E4 dominance remain open under
 [#53](https://github.com/dbuddha/alpine-gpui/issues/53). The most important
 product defect is visible typing latency in
 [#304](https://github.com/dbuddha/alpine-gpui/issues/304). Physical
-accessibility qualification, sustained dogfood, residency measurement, Rust
-rename and formatting publication, and settings reload and migration remain
-open. Bounded document and workspace symbols are implemented under Task #221,
-with exact hosted evidence pending the implementation pull request.
+accessibility qualification, sustained dogfood, residency measurement, and
+physical typing attribution remain open. Rust rename/formatting, symbols, and
+settings reload/migration are implemented through #220 through #222.
 
 ## Capability accounting
 
@@ -79,17 +78,17 @@ used as a current burn-up report.
 
 | Milestone | State at review | Evidence-based interpretation |
 | --- | --- | --- |
-| M0 | 21 closed, 2 open | Governance exists, but parent requirements remain open and should not obscure the product critical path |
-| M1 | 8 closed, 4 open | Direct Metal works; realistic GPUI comparison and hardware qualification do not |
-| M2 | 9 closed, 6 open | Native presentation is implemented; physical SDR, lifecycle residency, and idle-energy qualification remain |
+| M0 | Foundation accepted | Governance exists, but parent requirements must not obscure the product critical path |
+| M1 | Qualification active | Direct Metal works; realistic GPUI comparison and hardware qualification remain |
+| M2 | Physical qualification active | Native presentation is implemented; physical SDR, lifecycle residency, and idle-energy qualification remain |
 | M3 | Closed | Local workspace shell was accepted |
-| M4 | 10 closed, 8 open | Input and accessibility implementation is substantial; physical VoiceOver and real-process qualification remain |
-| M5 | 19 closed, 20 open | Studio is a real editor prototype, but typing latency, Rust feature completion, dogfood, and residency are open |
-| M6 | 0 closed, 4 open | Linux and Windows are deferred and are not part of the Apple-first path |
-| M7 | 0 closed, 6 open | Public stabilization, claims, signing, and release qualification are future work |
+| M4 | Physical acceptance active | Input and accessibility implementation is substantial; physical VoiceOver qualification remains |
+| M5 | Private dogfood active | Studio is a real editor prototype; typing latency, sustained dogfood, residency, and acceptance evidence remain |
+| M6 | Deferred | Linux and Windows are not part of the Apple-first path |
+| M7 | Future | Public stabilization, claims, signing, and release qualification remain future work |
 
-Milestone counts are fetched GitHub state, not earned-value metrics. Parent
-issues, research, hardware experiments, and leaf implementation tasks are mixed
+Milestone issue counts are not earned-value metrics. Parent issues, research,
+hardware experiments, and leaf implementation tasks are mixed
 inside those counts. Prototype readiness should be read from blocking leaf
 gates, not from issue percentages.
 
