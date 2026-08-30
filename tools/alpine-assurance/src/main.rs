@@ -3,6 +3,7 @@
 mod ax;
 mod calibration;
 mod dogfood;
+mod dogfood_live;
 mod lab;
 mod lab_v2;
 mod onscreen;
@@ -155,6 +156,9 @@ fn run() -> Result<String, Vec<String>> {
     if command == "record-studio-dogfood" {
         return run_dogfood_record_command(&mut arguments);
     }
+    if command == "seal-live-studio-dogfood" {
+        return run_live_dogfood_seal_command(&mut arguments);
+    }
     if matches!(
         command.as_str(),
         "validate-ax-fixture" | "validate-ax-evidence" | "ax-evidence-report"
@@ -255,7 +259,7 @@ fn run() -> Result<String, Vec<String>> {
         )),
         "report" => Ok(render_report(&registry)),
         other => Err(vec![format!(
-            "unknown command {other:?}; expected validate, report, validate-scene-trace, validate-trace-sequence, render-scene-reference, render-scene-native, render-trace-sequence-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, record-studio-dogfood, validate-studio-dogfood, studio-dogfood-report, or upstream-radar"
+            "unknown command {other:?}; expected validate, report, validate-scene-trace, validate-trace-sequence, render-scene-reference, render-scene-native, render-trace-sequence-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, record-studio-dogfood, seal-live-studio-dogfood, validate-studio-dogfood, studio-dogfood-report, or upstream-radar"
         )]),
     }
 }
@@ -307,7 +311,50 @@ fn run_dogfood_command(
     if arguments.next().is_some() {
         return Err(vec![format!("{command} accepts exactly one manifest path")]);
     }
-    dogfood::run(command, Path::new(&path))
+    let path = Path::new(&path);
+    if dogfood_live::is_v2(path) {
+        dogfood_live::run(command, path)
+    } else {
+        dogfood::run(command, path)
+    }
+}
+
+fn run_live_dogfood_seal_command(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<String, Vec<String>> {
+    let values = arguments.collect::<Vec<_>>();
+    if values.len() != 15 {
+        return Err(vec![
+            "seal-live-studio-dogfood requires draft, internal JSON, footprint JSON, stdout, stderr, binary, sampler, PID, duration ms, interval ms, evidence scope, process start, expected revision, capture timestamp, and destination"
+                .to_owned(),
+        ]);
+    }
+    let expected_pid = values[7]
+        .parse::<u32>()
+        .map_err(|_| vec!["seal-live-studio-dogfood PID must be an unsigned integer".to_owned()])?;
+    let requested_duration_ms = values[8].parse::<u64>().map_err(|_| {
+        vec!["seal-live-studio-dogfood duration must be unsigned milliseconds".to_owned()]
+    })?;
+    let interval_ms = values[9].parse::<u64>().map_err(|_| {
+        vec!["seal-live-studio-dogfood interval must be unsigned milliseconds".to_owned()]
+    })?;
+    dogfood_live::seal(&dogfood_live::SealRequest {
+        draft: PathBuf::from(&values[0]),
+        internal: PathBuf::from(&values[1]),
+        footprint: PathBuf::from(&values[2]),
+        stdout: PathBuf::from(&values[3]),
+        stderr: PathBuf::from(&values[4]),
+        binary: PathBuf::from(&values[5]),
+        sampler: PathBuf::from(&values[6]),
+        expected_pid,
+        requested_duration_ms,
+        interval_ms,
+        evidence_scope: values[10].clone(),
+        process_start: values[11].clone(),
+        expected_revision: values[12].clone(),
+        expected_captured_at: values[13].clone(),
+        destination: PathBuf::from(&values[14]),
+    })
 }
 
 fn run_dogfood_record_command(
