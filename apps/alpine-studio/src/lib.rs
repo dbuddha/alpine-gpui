@@ -8298,6 +8298,13 @@ pub mod native_validation {
         })
     }
 
+    fn project_search_terminal_frames_published(
+        latest_frames: usize,
+        required_frames: usize,
+    ) -> bool {
+        latest_frames >= required_frames
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one process journey preserves surface, worker, search, save, and drain identity"
@@ -8357,6 +8364,21 @@ pub mod native_validation {
             ],
         )?;
         let frames_after_query = journey.borrow().frames;
+        let required_terminal_frames = frames_after_query
+            .checked_add(2)
+            .ok_or("project-search frame threshold exhausted")?;
+        assert!(!project_search_terminal_frames_published(
+            required_terminal_frames - 1,
+            required_terminal_frames,
+        ));
+        assert!(project_search_terminal_frames_published(
+            required_terminal_frames,
+            required_terminal_frames,
+        ));
+        assert!(project_search_terminal_frames_published(
+            required_terminal_frames.saturating_add(1),
+            required_terminal_frames,
+        ));
         let mut latest_frames = frames_after_query;
         let mut stable_wakes = 0_usize;
         let mut published_terminal = false;
@@ -8374,7 +8396,10 @@ pub mod native_validation {
             if current_frames > latest_frames {
                 latest_frames = current_frames;
                 stable_wakes = 0;
-            } else if latest_frames >= frames_after_query.saturating_add(2) {
+            } else if project_search_terminal_frames_published(
+                latest_frames,
+                required_terminal_frames,
+            ) {
                 stable_wakes = stable_wakes.saturating_add(1);
             }
             if stable_wakes == 16 {
