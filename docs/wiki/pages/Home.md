@@ -11,6 +11,7 @@ development, or marketplace.
 ## Start here
 
 - [Execution map](Execution-Map)
+- [Rendering doctrine](Rendering-Doctrine)
 - [Research index](Research-Index)
 - [Implementation lineage and evidence](Research-Lineage)
 - [Zed and GPUI findings](Zed)

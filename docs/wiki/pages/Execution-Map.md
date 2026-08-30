@@ -45,6 +45,7 @@ renderer superiority. Comparative claims remain blocked until semantically
 equivalent E4 evidence exists.
 
 - [Implementation lineage](Research-Lineage)
+- [Rendering doctrine](Rendering-Doctrine)
 - [Comparator qualification](Comparator-Qualification)
 
 Canonical source: [private daily-driver path](https://github.com/dbuddha/alpine-gpui/blob/{{ALPINE_MAIN_REVISION}}/docs/project/daily-driver-path.md)

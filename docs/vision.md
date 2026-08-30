@@ -19,6 +19,11 @@ Zed GPUI, with Apple Silicon and direct Metal as its first proving ground.
   qualify latency, throughput, energy, allocation, and memory on real hardware.
 - **MP-06, accessible interaction:** treat semantics, focus, keyboard operation,
   IME, announcements, and platform accessibility as framework contracts.
+- **MP-07, editor-specialized rendering:** combine a proper native graphical
+  shell with a visible-range text canvas, purpose-built layout, bounded GPU
+  resources, and demand-driven Direct Metal presentation. The
+  [editor rendering doctrine](concepts/editor-rendering-doctrine.md) owns the
+  stable boundary and its evidence gates.
 
 ## Intended applications
 

@@ -6,6 +6,7 @@
   - [Desktop application foundation](use-cases/desktop-application.md)
   - [Alpine Studio daily-driver path](use-cases/alpine-studio-highfidelity.md)
 - [Knowledge and requirements](concepts/traceability.md)
+  - [Alpine editor rendering doctrine](concepts/editor-rendering-doctrine.md)
 - [GitHub agent operations](operations/github-agent-skills.md)
   - [Worktree inventory and cleanup](operations/worktrees.md)
 - [Project execution](project/README.md)

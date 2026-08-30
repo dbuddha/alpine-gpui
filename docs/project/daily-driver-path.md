@@ -147,6 +147,19 @@ latency, or memory bottleneck. The
 mechanism is adapted, independently convergent, Alpine-original,
 comparator-only, rejected, or deferred.
 
+The [editor rendering doctrine](../concepts/editor-rendering-doctrine.md) makes
+this composition explicit: a full native graphical shell, a specialized
+visible-range text canvas, purpose-built editor layout, and demand-driven
+Direct Metal rendering. It rejects fixed-cell TUI shortcuts, browser layout,
+game-engine process, and unmeasured framework generalization while preserving
+Unicode, IME, accessibility, smooth scrolling, and native semantics.
+
+The doctrine is enforced through the existing critical path rather than a new
+parallel program: exact-main assurance, physical typing attribution #304/#331,
+physical accessibility #253/#273, dogfood and residency #238 through #242, and
+realistic renderer qualification #353/#53. Architecture language does not
+advance any of those gates without their retained evidence.
+
 ## Qualification relationship
 
 Renderer-only comparison, adapter cost, framework scene construction, and full
