@@ -1528,8 +1528,94 @@ fn require(condition: bool, message: impl Into<String>, errors: &mut Vec<String>
     reason = "fixture construction and cleanup failures are unrecoverable test harness defects"
 )]
 mod tests {
-    use super::{Footprint, InternalDiagnostic, SealRequest, derive_snapshot, is_v2, run, seal};
+    use super::{
+        Draft, Footprint, InternalDiagnostic, Manifest, SealRequest, Snapshot, artifact,
+        calculate_sha256, derive_snapshot, is_v2, load_toml, run, seal, snapshot_source_identity,
+        staging_path,
+    };
     use std::{fs, path::PathBuf};
+
+    #[test]
+    fn malformed_capture_inputs_fail_closed() {
+        let root = root("rejections");
+        if root.exists() {
+            fs::remove_dir_all(&root).expect("remove stale rejection fixture");
+        }
+        fs::create_dir_all(&root).expect("create rejection fixture");
+
+        let missing = root.join("missing");
+        assert!(calculate_sha256(&missing).is_err());
+        assert!(artifact(&root, "missing", "missing.json").is_err());
+        assert!(staging_path(std::path::Path::new("")).is_err());
+
+        let malformed_identity = root.join("malformed-identity.json");
+        fs::write(&malformed_identity, b"{not-json").expect("write malformed identity");
+        assert!(snapshot_source_identity(&malformed_identity).is_err());
+
+        let invalid_utf8_toml = root.join("invalid-utf8.toml");
+        fs::write(&invalid_utf8_toml, [0xff]).expect("write invalid UTF-8 TOML");
+        assert!(load_toml::<Draft>(&invalid_utf8_toml, 16).is_err());
+        assert!(load_toml::<Manifest>(&invalid_utf8_toml, 16).is_err());
+        assert!(load_toml::<Snapshot>(&invalid_utf8_toml, 16).is_err());
+
+        let malformed_toml = root.join("malformed.toml");
+        fs::write(&malformed_toml, b"schema = [").expect("write malformed TOML");
+        assert!(load_toml::<Draft>(&malformed_toml, 16).is_err());
+        assert!(load_toml::<Manifest>(&malformed_toml, 16).is_err());
+        assert!(load_toml::<Snapshot>(&malformed_toml, 16).is_err());
+
+        let missing_bundle = root.join("missing-bundle");
+        assert!(!is_v2(&missing_bundle));
+
+        let invalid_utf8_bundle = root.join("invalid-utf8-bundle");
+        fs::create_dir_all(&invalid_utf8_bundle).expect("create invalid UTF-8 bundle");
+        fs::write(invalid_utf8_bundle.join("manifest.toml"), [0xff])
+            .expect("write invalid UTF-8 manifest");
+        assert!(!is_v2(&invalid_utf8_bundle));
+
+        let malformed_bundle = root.join("malformed-bundle");
+        fs::create_dir_all(&malformed_bundle).expect("create malformed bundle");
+        fs::write(malformed_bundle.join("manifest.toml"), b"schema = [")
+            .expect("write malformed manifest");
+        assert!(!is_v2(&malformed_bundle));
+
+        fs::remove_dir_all(root).expect("remove rejection fixture");
+    }
+
+    #[test]
+    fn seal_rejects_malformed_sources_and_unpublishable_staging() {
+        let (internal_root, internal_request) = write_inputs("malformed-internal", REVISION);
+        fs::write(&internal_request.internal, b"{malformed")
+            .expect("write malformed internal diagnostic");
+        let internal_errors = seal(&internal_request).expect_err("reject malformed internal JSON");
+        assert!(
+            internal_errors
+                .iter()
+                .any(|error| error.contains("cannot parse internal diagnostic"))
+        );
+        fs::remove_dir_all(internal_root).expect("remove malformed internal fixture");
+
+        let (footprint_root, footprint_request) = write_inputs("malformed-footprint", REVISION);
+        fs::write(&footprint_request.footprint, b"{malformed").expect("write malformed footprint");
+        let footprint_errors =
+            seal(&footprint_request).expect_err("reject malformed footprint JSON");
+        assert!(
+            footprint_errors
+                .iter()
+                .any(|error| error.contains("cannot parse footprint JSON"))
+        );
+        fs::remove_dir_all(footprint_root).expect("remove malformed footprint fixture");
+
+        let (staging_root, mut staging_request) = write_inputs("unpublishable-staging", REVISION);
+        staging_request.destination = staging_root.join("a".repeat(512));
+        let staging_errors = seal(&staging_request).expect_err("reject unpublishable staging path");
+        assert!(
+            staging_errors
+                .iter()
+                .any(|error| error.contains("cannot create live dogfood staging directory"))
+        );
+        fs::remove_dir_all(staging_root).expect("remove staging fixture");
+    }
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const REVISION: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
