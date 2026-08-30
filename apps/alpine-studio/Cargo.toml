@@ -22,6 +22,7 @@ serde_json = { version = "=1.0.151", default-features = false, features = ["raw_
 same-file = "=1.0.6"
 
 [dev-dependencies]
+alpine-platform-macos = { path = "../../crates/alpine-platform-macos", version = "=0.0.0", features = ["test-support"] }
 mutants = "=0.0.3"
 
 [lints.rust]

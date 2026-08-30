@@ -246,6 +246,7 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let home = root.join("home");
     let path = root.join("document.rs");
+    let diagnostic = root.join("internal-diagnostic.json");
     std::fs::create_dir_all(&home)?;
     std::fs::write(&path, "fn main() {}\n")?;
     let expected_evidence = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
@@ -262,6 +263,13 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
             .env(
                 "ALPINE_STUDIO_NATIVE_PROCESS_SCENARIO",
                 "production-single-window",
+            )
+            .env("ALPINE_STUDIO_DOGFOOD_OUTPUT", &diagnostic)
+            .env("ALPINE_STUDIO_DOGFOOD_WORKLOAD_ID", "hosted-close")
+            .env("ALPINE_STUDIO_DOGFOOD_REVISION", "a".repeat(40))
+            .env(
+                "ALPINE_STUDIO_DOGFOOD_CAPTURED_AT_UTC",
+                "2026-08-30T12:00:00Z",
             )
             .env("HOME", &home)
             .stdout(Stdio::piped())
@@ -344,6 +352,31 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(fields[8], "shutdown=true");
         assert_eq!(fields[9], "owners=9");
         assert_eq!(fields[10], format!("evidence={expected_evidence}"));
+        let diagnostic_bytes = std::fs::read(&diagnostic)?;
+        assert!(diagnostic_bytes.len() <= 262_144);
+        let diagnostic: serde_json::Value = serde_json::from_slice(&diagnostic_bytes)?;
+        assert_eq!(
+            diagnostic.get("schema").and_then(serde_json::Value::as_str),
+            Some("alpine-studio-internal-diagnostic/v1")
+        );
+        assert_eq!(
+            diagnostic
+                .pointer("/lifecycle/clean_shutdown")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic
+                .pointer("/surface/current_retained_bytes")
+                .and_then(serde_json::Value::as_u64),
+            Some(0)
+        );
+        assert!(
+            diagnostic
+                .get("omissions")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|items| items.iter().any(|item| item == "process-samples"))
+        );
         assert!(stderr.lines().all(|line| {
             line.ends_with("Metal API Validation Enabled")
                 || line.ends_with("Metal GPU Validation Enabled")

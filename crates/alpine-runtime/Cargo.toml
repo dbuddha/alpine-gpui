@@ -12,6 +12,9 @@ alpine-core = { path = "../alpine-core", version = "=0.0.0" }
 alpine-platform-macos = { path = "../alpine-platform-macos", version = "=0.0.0" }
 alpine-scene = { path = "../alpine-scene", version = "=0.0.0" }
 
+[dev-dependencies]
+alpine-platform-macos = { path = "../alpine-platform-macos", version = "=0.0.0", features = ["test-support"] }
+
 [lints.rust]
 missing_docs = "deny"
 unsafe_code = "deny"

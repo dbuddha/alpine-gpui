@@ -7,6 +7,9 @@ rust-version.workspace = true
 publish.workspace = true
 license-file.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 alpine-core = { path = "../alpine-core", version = "=0.0.0" }
 alpine-metal = { path = "../alpine-metal", version = "=0.0.0", features = ["platform-spi"] }

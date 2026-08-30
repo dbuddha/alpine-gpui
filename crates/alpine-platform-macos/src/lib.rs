@@ -2785,6 +2785,60 @@ pub struct SurfaceSnapshot {
 }
 
 impl SurfaceSnapshot {
+    /// Returns a non-admissible empty snapshot for downstream portable tests.
+    ///
+    /// This value never represents native or physical evidence.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn empty_for_test() -> Self {
+        Self {
+            physical_width: 0,
+            physical_height: 0,
+            surface_epoch: 0,
+            sized: false,
+            presentation_visible: false,
+            sdr_color_contract: None,
+            extended_dynamic_range: false,
+            framebuffer_only: false,
+            display_sync_enabled: false,
+            allows_next_drawable_timeout: false,
+            maximum_drawable_count: 0,
+            regular_activation_policy: false,
+            display_link_paused: true,
+            #[cfg(alpine_native_validation)]
+            pause_confirmation_count: 0,
+            visible: false,
+            callback_count: 0,
+            rejected_callback_count: 0,
+            submission_count: 0,
+            direct_present_count: 0,
+            installed_presented_handler_count: 0,
+            presented_count: 0,
+            qualified_presented_count: 0,
+            superseded_count: 0,
+            cancelled_count: 0,
+            pending_cancellation_count: 0,
+            last_presented_time_bits: 0,
+            skipped_count: 0,
+            failed_count: 0,
+            allocated_bytes: 0,
+            peak_retained_bytes: 0,
+            current_retained_bytes: 0,
+            current_upload_bytes: 0,
+            peak_upload_bytes: 0,
+            frame_slot_capacity: 0,
+            occupied_frame_slots: 0,
+            submitted_frame_slots: 0,
+            peak_occupied_frame_slots: 0,
+            frame_slot_saturation_count: 0,
+            last_terminal: None,
+            last_superseded: None,
+            last_cancelled: None,
+            last_pending_cancellation: None,
+        }
+    }
+
     /// Returns the configured drawable width in pixels.
     #[must_use]
     pub const fn physical_width(self) -> u32 {

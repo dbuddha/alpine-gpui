@@ -3075,6 +3075,19 @@ platform_scope = ["macos-metal"]
 required_evidence = ["native"]
 
 [[claims]]
+id = "AEP-0137-C05"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0137-bounded-studio-runtime.md"
+requirement_issue = 37
+claim_type = "safety"
+risk = "critical"
+kani_applicability = "not_applicable"
+tla_properties = ["ShutdownEventuallyDrains"]
+platform_scope = ["macos-metal"]
+required_evidence = ["tla", "native"]
+
+[[claims]]
 id = "AEP-0153-C01"
 mission = "MP-04"
 capability_issue = 28
@@ -4404,6 +4417,28 @@ artifact = "apps/alpine-studio/src/rust_diagnostics_tests.rs#status_replacement_
 assertion = "Repeated status and stale language wakes report no visual change, so the Studio delegate has no language-driven reason to invalidate a clean frame."
 scope = "One inactive language model, one stale generation, and one repeated bounded status."
 exclusions = ["native presentation", "run-loop wake latency", "real server traffic"]
+
+[[evidence]]
+id = "EV-0137-TLA05"
+claim = "AEP-0137-C05"
+kind = "tla"
+artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#ShutdownEventuallyDrains"
+assertion = "After shutdown begins, weakly fair cancellation eventually removes every queued, running, or completed owned job before the handle-free final completion is published."
+scope = "The accepted bounded RuntimeHandoff model with fixed request, running, and result capacities."
+bounds = ["pull request: three jobs", "nightly: four jobs"]
+assumptions = ["Native surface teardown remains qualified separately by EV-0137-NATIVE05."]
+exclusions = ["AppKit callback scheduling", "Metal command completion latency", "physical process footprint"]
+companion = "crates/alpine-runtime/src/lib.rs#drop_waits_for_admitted_work_to_finish"
+
+[[evidence]]
+id = "EV-0137-NATIVE05"
+claim = "AEP-0137-C05"
+kind = "native"
+artifact = "apps/alpine-studio/tests/native_process.rs#qualify_shipping_executable"
+assertion = "The production Studio executable closes through the real hosted AppKit and Direct Metal path, emits one bounded revision-bound internal diagnostic, reports clean shutdown and zero post-close native retention, and preserves explicit process and timing omissions."
+scope = "One Apple Silicon hosted-direct Studio window, one local file, one production close, and one new diagnostic output path."
+assumptions = ["The live launcher and process sampler remain Task #462."]
+exclusions = ["physical process footprint", "GPU process bytes", "comparative claim", "user content retention"]
 
 [[evidence]]
 id = "EV-0137-NATIVE02C"

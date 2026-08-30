@@ -3,7 +3,7 @@
 - Status: accepted 2026-08-15
 - Capability: [#28](https://github.com/dbuddha/alpine-gpui/issues/28)
 - Requirements: [#37](https://github.com/dbuddha/alpine-gpui/issues/37), [#32](https://github.com/dbuddha/alpine-gpui/issues/32), [#34](https://github.com/dbuddha/alpine-gpui/issues/34)
-- Tasks: [#124](https://github.com/dbuddha/alpine-gpui/issues/124), [#210](https://github.com/dbuddha/alpine-gpui/issues/210), [#211](https://github.com/dbuddha/alpine-gpui/issues/211), [#215](https://github.com/dbuddha/alpine-gpui/issues/215), [#389](https://github.com/dbuddha/alpine-gpui/issues/389)
+- Tasks: [#124](https://github.com/dbuddha/alpine-gpui/issues/124), [#210](https://github.com/dbuddha/alpine-gpui/issues/210), [#211](https://github.com/dbuddha/alpine-gpui/issues/211), [#215](https://github.com/dbuddha/alpine-gpui/issues/215), [#389](https://github.com/dbuddha/alpine-gpui/issues/389), [#461](https://github.com/dbuddha/alpine-gpui/issues/461)
 - Decision: [#137](https://github.com/dbuddha/alpine-gpui/issues/137)
 - Research: [#118](https://github.com/dbuddha/alpine-gpui/issues/118)
 
@@ -43,7 +43,10 @@ windows.
   input and accessibility mapping.
 - **AEP-0137-C05:** Close revokes foreground mutation and new frame production,
   closes worker admission, drains owned standard threads, and leaves native
-  presentation teardown to the existing bounded surface lifecycle.
+  presentation teardown to the existing bounded surface lifecycle. A caller
+  may request one copied `ApplicationCompletion` after that close boundary;
+  it contains only final `ApplicationSnapshot` and `SurfaceSnapshot` values and
+  retains no delegate, scene, worker, native handle, or completed frame.
 
 ## Correctness and resource rules
 
@@ -109,6 +112,11 @@ queue has fixed capacity plus current and peak accounting. Independent payloads
 are capped at 16 queued items and 8 MiB of attributed retained bytes. Process
 footprint, native wake latency, and sustained editor residency remain later
 qualification work.
+
+Studio may consume the final copied completion only through an explicit local
+dogfood contract. That path performs no work when absent, writes no document
+content or path, and marks every unavailable timing or resource axis as an
+omission rather than manufacturing a zero-valued observation.
 
 ## Evidence and remaining risk
 
