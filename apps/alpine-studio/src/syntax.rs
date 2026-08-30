@@ -140,7 +140,6 @@ impl CacheEntry {
     }
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SyntaxCacheSnapshot {
     current_bytes: usize,
@@ -151,7 +150,6 @@ pub(crate) struct SyntaxCacheSnapshot {
     omitted_lines: u64,
 }
 
-#[cfg(test)]
 impl SyntaxCacheSnapshot {
     pub(crate) const fn current_bytes(self) -> usize {
         self.current_bytes
@@ -282,7 +280,6 @@ impl SyntaxCache {
         Ok(line)
     }
 
-    #[cfg(test)]
     pub(crate) fn snapshot(&self) -> SyntaxCacheSnapshot {
         SyntaxCacheSnapshot {
             current_bytes: self.current_bytes(),

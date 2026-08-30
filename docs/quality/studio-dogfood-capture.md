@@ -14,11 +14,30 @@ captured session.
 ## Current implementation status
 
 `alpine-assurance` can validate, report, and atomically seal
-`alpine-studio-dogfood/v1` bundles. It does not yet launch Studio, sample a live
-process, or ask Studio to emit its internal diagnostic snapshot. Those are
-remaining Task #238 implementation slices. The committed fixture proves the
-protocol and its rejection controls only; it is not physical dogfood evidence
-and establishes no baseline or comparative claim.
+`alpine-studio-dogfood/v1` bundles. Studio can emit one bounded
+`alpine-studio-internal-diagnostic/v1` JSON record after a clean close when all
+four explicit local environment values are present. The output copies final
+runtime, surface, queue, cache, language, accessibility, and lifecycle evidence,
+refuses overwrite and symbolic-link traversal, and identifies unavailable
+stage timing, process sampling, and cache axes as omissions. It performs no
+default-path I/O when the contract is absent.
+
+The remaining [Task #462](https://github.com/dbuddha/alpine-gpui/issues/462)
+must launch Studio, sample a live process, and compose that internal record into
+the final TOML snapshot. The committed fixture proves the protocol and its
+rejection controls only; it is not physical dogfood evidence and establishes no
+baseline or comparative claim.
+
+The opt-in internal contract requires:
+
+- `ALPINE_STUDIO_DOGFOOD_OUTPUT`: normalized absolute new JSON file path.
+- `ALPINE_STUDIO_DOGFOOD_WORKLOAD_ID`: bounded lowercase workload slug.
+- `ALPINE_STUDIO_DOGFOOD_REVISION`: exact lowercase 40-character revision.
+- `ALPINE_STUDIO_DOGFOOD_CAPTURED_AT_UTC`: UTC capture start timestamp.
+
+Partial identity, an existing output, an unavailable parent, and a parent path
+that traverses a symbolic link fail before publication. Task #462 owns the only
+supported operator-facing launcher for this contract.
 
 ## Bundle contract
 

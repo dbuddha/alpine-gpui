@@ -8,6 +8,7 @@
 mod accessibility;
 mod commands;
 mod documents;
+mod dogfood_diagnostic;
 mod file_tree;
 mod find;
 #[cfg_attr(
@@ -97,9 +98,9 @@ use alpine_core::{LinearRgba, Point, Rect, Size};
 #[cfg(test)]
 use alpine_platform_macos::{AccessibilityPayload, AccessibilityRequest, AccessibilityRequestId};
 use alpine_platform_macos::{
-    ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText, ClipboardWrite,
-    EventTimestamp, ImeEvent, InputEpoch, InputEpochAdmission, KeyState, Modifiers, PointerAction,
-    PointerButton, StudioSignpost, StudioSignpostStage, SurfaceError, SurfaceEvent,
+    AccessibilityRequestKind, ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText,
+    ClipboardWrite, EventTimestamp, ImeEvent, InputEpoch, InputEpochAdmission, KeyState, Modifiers,
+    PointerAction, PointerButton, StudioSignpost, StudioSignpostStage, SurfaceError, SurfaceEvent,
 };
 use alpine_runtime::{
     AppContext, AppDelegate, DocumentRevision, RuntimeError, SubmitError, WindowContext,
@@ -790,7 +791,12 @@ fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
     #[cfg(alpine_native_validation)]
     let mut app = app;
     #[cfg(not(alpine_native_validation))]
-    let app = app;
+    let mut app = app;
+    let capture = dogfood_diagnostic::CaptureController::from_environment()
+        .map_err(|error| dogfood_diagnostic::capture_surface_error(&error))?;
+    if let Some(capture) = capture.as_ref() {
+        app.dogfood_capture = Some(capture.sink());
+    }
     #[cfg(alpine_native_validation)]
     let production_process_scenario = std::env::var_os("ALPINE_STUDIO_NATIVE_PROCESS_SCENARIO");
     #[cfg(alpine_native_validation)]
@@ -841,9 +847,22 @@ fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
     let application = Application::new(app, viewport, clear, WorkerConfig::default())?;
     #[cfg(alpine_native_validation)]
     if production_process_validation {
-        return native_validation::qualify_production_window_application(application, &descriptor);
+        return native_validation::qualify_production_window_application(
+            application,
+            &descriptor,
+            capture,
+        );
     }
-    application.run(&descriptor)
+    match capture {
+        None => application.run(&descriptor),
+        Some(capture) => {
+            let completion = application.run_with_completion(&descriptor)?;
+            capture
+                .finish_completion(&completion)
+                .map_err(|error| dogfood_diagnostic::capture_surface_error(&error))?;
+            Ok(())
+        }
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -1812,6 +1831,9 @@ struct StudioApp {
     published_atlas_source_revision: u64,
     text_system: MeasuredTextSystem,
     profiler: StudioProfiler,
+    dogfood_capture: Option<dogfood_diagnostic::CaptureSink>,
+    dogfood_accessibility_queries: u64,
+    dogfood_accessibility_actions: u64,
     profile_event_timestamp: EventTimestamp,
     profile_scene_revision: SceneRevision,
     rust_diagnostics: RustDiagnostics,
@@ -1922,6 +1944,9 @@ enum SessionCaptureError {
 
 impl Drop for StudioApp {
     fn drop(&mut self) {
+        if let Some(capture) = self.dogfood_capture.take() {
+            capture.capture(self);
+        }
         let _ = self.rust_diagnostics.shutdown();
         if self.recovery.is_some()
             && let Ok(request) = self.capture_recovery_request()
@@ -2037,6 +2062,16 @@ impl StudioApp {
         Ok((layout, atlas))
     }
 
+    fn initial_tabs_and_panes(
+        path: Option<&Path>,
+    ) -> Result<(DocumentTabs<StudioDocument>, PaneGrid), SurfaceError> {
+        let tabs = DocumentTabs::new(path, None, DocumentTabLimits::default())
+            .map_err(|_| APPLICATION_INVARIANT)?;
+        let active_tab = tabs.active_id().map_err(|_| APPLICATION_INVARIANT)?;
+        let panes = PaneGrid::new(active_tab, DocumentViewState::default());
+        Ok((tabs, panes))
+    }
+
     fn from_parts(
         text_system: impl StudioTextSystem + 'static,
         document: StudioDocument,
@@ -2052,10 +2087,7 @@ impl StudioApp {
         let runtime_document_revision = document.buffer().revision().get();
         let accessibility_projection_revision =
             Self::initial_accessibility_projection_revision(&document);
-        let tabs = DocumentTabs::new(path, None, DocumentTabLimits::default())
-            .map_err(|_| APPLICATION_INVARIANT)?;
-        let active_tab = tabs.active_id().map_err(|_| APPLICATION_INVARIANT)?;
-        let panes = PaneGrid::new(active_tab, DocumentViewState::default());
+        let (tabs, panes) = Self::initial_tabs_and_panes(path)?;
         let profiler = StudioProfiler::default();
         let text_system = MeasuredTextSystem::new(text_system, profiler.enabled());
         Ok(Self {
@@ -2091,6 +2123,9 @@ impl StudioApp {
             published_atlas_source_revision: 0,
             text_system,
             profiler,
+            dogfood_capture: None,
+            dogfood_accessibility_queries: 0,
+            dogfood_accessibility_actions: 0,
             profile_event_timestamp: EventTimestamp::new(0),
             profile_scene_revision: SceneRevision::new(0),
             rust_diagnostics: RustDiagnostics::default(),
@@ -2536,13 +2571,6 @@ impl StudioApp {
         self.document.buffer_mut()
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the reviewed native adapter will call this demand-driven boundary in the next Task #130 slice"
-        )
-    )]
     fn accessibility_snapshot(&self) -> Result<AccessibilitySnapshot, AccessibilityError> {
         accessibility::snapshot(self)
     }
@@ -6721,6 +6749,13 @@ impl AppDelegate for StudioApp {
             [surface_event_kind(event), self.selection_revision, 0],
         );
         if let SurfaceEvent::Accessibility { request, .. } = event {
+            if request.kind() == AccessibilityRequestKind::Action {
+                self.dogfood_accessibility_actions =
+                    self.dogfood_accessibility_actions.saturating_add(1);
+            } else {
+                self.dogfood_accessibility_queries =
+                    self.dogfood_accessibility_queries.saturating_add(1);
+            }
             let selection_before = self.selection;
             let (response, effect) = accessibility::respond(self, request);
             let admitted = context.respond_accessibility(response);
@@ -7567,6 +7602,7 @@ pub mod native_validation {
     pub(super) fn qualify_production_window_application(
         application: Application<StudioApp>,
         descriptor: &SurfaceDescriptor,
+        capture: Option<crate::dogfood_diagnostic::CaptureController>,
     ) -> Result<(), alpine_runtime::RuntimeError> {
         let evidence_value = std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE");
         let evidence_mode = parse_presentation_evidence_mode(evidence_value.as_deref())
@@ -7673,6 +7709,11 @@ pub mod native_validation {
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
 
         let frame = surface.snapshot();
+        if let Some(capture) = capture {
+            capture
+                .finish(snapshot, &frame)
+                .map_err(|error| crate::dogfood_diagnostic::capture_surface_error(&error))?;
+        }
         let submissions = frame.submission_count();
         assert!(submissions >= 1);
         assert!(submissions <= 4);

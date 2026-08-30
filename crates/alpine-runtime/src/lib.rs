@@ -13,7 +13,7 @@ use std::{
 use alpine_core::{LinearRgba, Size};
 use alpine_platform_macos::{
     AccessibilityResponse, ClipboardWrite, CloseDisposition, SurfaceDescriptor, SurfaceError,
-    SurfaceEvent, SurfaceFrame, SurfaceResponse,
+    SurfaceEvent, SurfaceFrame, SurfaceResponse, SurfaceSnapshot,
 };
 use alpine_scene::{Scene, SceneRevision};
 
@@ -1045,6 +1045,27 @@ impl Default for ApplicationSnapshot {
     }
 }
 
+/// Handle-free final evidence from one completed application run.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ApplicationCompletion {
+    application: ApplicationSnapshot,
+    surface: SurfaceSnapshot,
+}
+
+impl ApplicationCompletion {
+    /// Returns final bounded foreground and worker evidence.
+    #[must_use]
+    pub const fn application(&self) -> ApplicationSnapshot {
+        self.application
+    }
+
+    /// Returns final copied native presentation and residency evidence.
+    #[must_use]
+    pub const fn surface(&self) -> &SurfaceSnapshot {
+        &self.surface
+    }
+}
+
 impl ApplicationSnapshot {
     /// Returns the current workspace revision.
     #[must_use]
@@ -1276,14 +1297,31 @@ impl<D: AppDelegate + 'static> Application<D> {
     ///
     /// Returns a structured worker or native surface failure.
     pub fn run(self, descriptor: &SurfaceDescriptor) -> Result<(), RuntimeError> {
+        self.run_with_completion(descriptor).map(|_| ())
+    }
+
+    /// Owns one native surface and returns copied final evidence after close.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured worker or native surface failure. No completion is
+    /// returned unless the production close boundary was observed.
+    pub fn run_with_completion(
+        self,
+        descriptor: &SurfaceDescriptor,
+    ) -> Result<ApplicationCompletion, RuntimeError> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let surface = NativeSurface::new(descriptor)?;
-            self.run_on_native_surface(&surface, |_| Ok(()))?
-                .ok_or(RuntimeError::Surface(SurfaceError::invariant(
-                    alpine_platform_macos::SurfaceOperation::Application,
-                )))?;
-            Ok(())
+            let application =
+                self.run_on_native_surface(&surface, |_| Ok(()))?
+                    .ok_or(RuntimeError::Surface(SurfaceError::invariant(
+                        alpine_platform_macos::SurfaceOperation::Application,
+                    )))?;
+            Ok(ApplicationCompletion {
+                application,
+                surface: surface.snapshot(),
+            })
         }
 
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -2174,6 +2212,11 @@ mod tests {
         let application = runtime(TestDelegate::default()).map_err(|_| APPLICATION_INVARIANT)?;
         assert!(matches!(
             application.run(&descriptor),
+            Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))
+        ));
+        let application = runtime(TestDelegate::default()).map_err(|_| APPLICATION_INVARIANT)?;
+        assert!(matches!(
+            application.run_with_completion(&descriptor),
             Err(RuntimeError::Surface(SurfaceError::UnsupportedPlatform))
         ));
         Ok(())
