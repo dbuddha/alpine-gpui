@@ -1457,6 +1457,13 @@ fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, Vec<String>> {
 }
 
 fn calculate_sha256(path: &Path) -> Result<String, Vec<String>> {
+    if let Ok(metadata) = fs::metadata(path)
+        && metadata.is_file()
+        && metadata.len() == 0
+    {
+        return Ok("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_owned());
+    }
+
     for (program, arguments) in [("sha256sum", &[][..]), ("shasum", &["-a", "256"][..])] {
         let output = Command::new(program).args(arguments).arg(path).output();
         let Ok(output) = output else {
@@ -1572,6 +1579,13 @@ mod tests {
             fs::remove_dir_all(&root).expect("remove stale rejection fixture");
         }
         fs::create_dir_all(&root).expect("create rejection fixture");
+
+        let empty = root.join("empty");
+        fs::write(&empty, b"").expect("write empty hash fixture");
+        assert_eq!(
+            calculate_sha256(&empty).expect("hash empty regular file"),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
 
         let missing = root.join("missing");
         assert!(calculate_sha256(&missing).is_err());
