@@ -2,6 +2,7 @@
 
 - [Home](Home)
 - [Execution map](Execution-Map)
+- [Rendering doctrine](Rendering-Doctrine)
 - [Research index](Research-Index)
 - [Implementation lineage](Research-Lineage)
 - [Zed and GPUI](Zed)

@@ -10,6 +10,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 default_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 expected_pages='Home
 Execution-Map
+Rendering-Doctrine
 Research-Index
 Research-Lineage
 Zed
@@ -47,7 +48,7 @@ validate_source() {
 
     actual=$(manifest_pages "$root")
     [ "$actual" = "$expected_pages" ] || fail 'manifest page inventory is not the approved bounded set'
-    [ "$(printf '%s\n' "$actual" | sort -u | wc -l | tr -d ' ')" = 11 ] || fail 'manifest contains duplicate pages'
+    [ "$(printf '%s\n' "$actual" | sort -u | wc -l | tr -d ' ')" = 12 ] || fail 'manifest contains duplicate pages'
 
     while IFS="$(printf '\t')" read -r page title source tracking extra; do
         [ -n "$page" ] || fail 'manifest contains an empty page name'
