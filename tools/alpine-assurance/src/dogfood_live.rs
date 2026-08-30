@@ -1457,27 +1457,44 @@ fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, Vec<String>> {
 }
 
 fn calculate_sha256(path: &Path) -> Result<String, Vec<String>> {
-    let output = Command::new("shasum")
-        .args(["-a", "256"])
-        .arg(path)
-        .output()
-        .map_err(|error| vec![format!("cannot run shasum for {}: {error}", path.display())])?;
-    if !output.status.success() {
-        return Err(vec![format!("shasum failed for {}", path.display())]);
+    for (program, arguments) in [("sha256sum", &[][..]), ("shasum", &["-a", "256"][..])] {
+        let output = Command::new(program).args(arguments).arg(path).output();
+        let Ok(output) = output else {
+            continue;
+        };
+        if output.status.success()
+            && let Some(digest) = sha256_from_output(&output.stdout)
+        {
+            return Ok(digest);
+        }
     }
-    let digest = String::from_utf8_lossy(&output.stdout)
+
+    #[cfg(windows)]
+    {
+        let output = Command::new("certutil")
+            .arg("-hashfile")
+            .arg(path)
+            .arg("SHA256")
+            .output();
+        if let Ok(output) = output
+            && output.status.success()
+            && let Some(digest) = sha256_from_output(&output.stdout)
+        {
+            return Ok(digest);
+        }
+    }
+
+    Err(vec![format!(
+        "cannot calculate SHA-256 for {}; sha256sum, shasum, or certutil is required",
+        path.display()
+    )])
+}
+
+fn sha256_from_output(output: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(output)
         .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_owned();
-    if valid_sha256(&digest) {
-        Ok(digest)
-    } else {
-        Err(vec![format!(
-            "shasum returned an invalid digest for {}",
-            path.display()
-        )])
-    }
+        .find(|token| valid_sha256(token))
+        .map(str::to_owned)
 }
 
 fn valid_slug(value: &str) -> bool {
@@ -1530,13 +1547,26 @@ fn require(condition: bool, message: impl Into<String>, errors: &mut Vec<String>
 mod tests {
     use super::{
         Draft, Footprint, InternalDiagnostic, Manifest, SealRequest, Snapshot, artifact,
-        calculate_sha256, derive_snapshot, is_v2, load_toml, run, seal, snapshot_source_identity,
-        staging_path,
+        calculate_sha256, derive_snapshot, is_v2, load_toml, run, seal, sha256_from_output,
+        snapshot_source_identity, staging_path,
     };
     use std::{fs, path::PathBuf};
 
     #[test]
     fn malformed_capture_inputs_fail_closed() {
+        let unix_digest = format!("{SHA}  fixture\n");
+        assert_eq!(
+            sha256_from_output(unix_digest.as_bytes()).as_deref(),
+            Some(SHA)
+        );
+        let certutil_digest =
+            format!("SHA256 hash of fixture:\r\n{SHA}\r\nCertUtil: completed\r\n");
+        assert_eq!(
+            sha256_from_output(certutil_digest.as_bytes()).as_deref(),
+            Some(SHA)
+        );
+        assert!(sha256_from_output(b"not-a-digest").is_none());
+
         let root = root("rejections");
         if root.exists() {
             fs::remove_dir_all(&root).expect("remove stale rejection fixture");
