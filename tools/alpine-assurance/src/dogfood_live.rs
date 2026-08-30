@@ -1553,9 +1553,11 @@ fn require(condition: bool, message: impl Into<String>, errors: &mut Vec<String>
 )]
 mod tests {
     use super::{
-        Draft, Footprint, InternalDiagnostic, Manifest, SealRequest, Snapshot, artifact,
-        calculate_sha256, derive_snapshot, is_v2, load_toml, run, seal, sha256_from_output,
-        snapshot_source_identity, staging_path,
+        AccessibilitySnapshot, Draft, Footprint, InternalDiagnostic, LifecycleSnapshot, Manifest,
+        ResourceSnapshot, SealRequest, Snapshot, artifact, calculate_sha256,
+        derive_process_samples, derive_snapshot, is_v2, load_toml, run, seal, sha256_from_output,
+        snapshot_source_identity, staging_path, validate_accessibility, validate_lifecycle,
+        validate_resources,
     };
     use std::{fs, path::PathBuf};
 
@@ -1818,6 +1820,191 @@ executable_sha256 = "none"
         );
         assert!(snapshot.stages.iter().all(|stage| stage.omitted));
         assert_eq!(snapshot.resources.len(), 10);
+    }
+
+    #[test]
+    fn accessibility_validation_discriminates_bounds_and_exact_omissions() {
+        let mut errors = Vec::new();
+        validate_accessibility(
+            &AccessibilitySnapshot {
+                queries: 0,
+                actions: 0,
+                stale_actions: Some(0),
+                retained_nodes: None,
+                peak_retained_nodes: None,
+            },
+            &[],
+            &mut errors,
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error == "missing accessibility tree lacks an omission")
+        );
+
+        for (current, peak) in [(2, 1), (272, 272)] {
+            let mut errors = Vec::new();
+            validate_accessibility(
+                &AccessibilitySnapshot {
+                    queries: 0,
+                    actions: 0,
+                    stale_actions: Some(0),
+                    retained_nodes: Some(current),
+                    peak_retained_nodes: Some(peak),
+                },
+                &[],
+                &mut errors,
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error == "accessibility nodes exceed their bound")
+            );
+        }
+
+        let mut errors = Vec::new();
+        validate_accessibility(
+            &AccessibilitySnapshot {
+                queries: 0,
+                actions: 0,
+                stale_actions: Some(0),
+                retained_nodes: None,
+                peak_retained_nodes: None,
+            },
+            &["accessibility-tree".to_owned()],
+            &mut errors,
+        );
+        assert!(errors.is_empty());
+
+        validate_accessibility(
+            &AccessibilitySnapshot {
+                queries: 0,
+                actions: 0,
+                stale_actions: None,
+                retained_nodes: Some(0),
+                peak_retained_nodes: Some(0),
+            },
+            &["accessibility-stale-actions".to_owned()],
+            &mut errors,
+        );
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn lifecycle_validation_distinguishes_failed_and_invalid_passed_captures() {
+        let mut errors = Vec::new();
+        validate_lifecycle(
+            &LifecycleSnapshot {
+                close_requests: 0,
+                close_completions: 1,
+                clean_shutdown: false,
+                post_close_bytes: 1,
+                post_close_limit_bytes: 0,
+            },
+            "passed",
+            &mut errors,
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error == "close completions exceed close requests")
+        );
+
+        let mut failed_errors = Vec::new();
+        validate_lifecycle(
+            &LifecycleSnapshot {
+                close_requests: 0,
+                close_completions: 0,
+                clean_shutdown: false,
+                post_close_bytes: 1,
+                post_close_limit_bytes: 0,
+            },
+            "failed",
+            &mut failed_errors,
+        );
+        assert!(failed_errors.is_empty());
+    }
+
+    #[test]
+    fn resource_validation_discriminates_each_byte_axis_and_exact_omission() {
+        for (current, peak, budget) in [
+            (Some(1), None, None),
+            (None, Some(1), None),
+            (None, None, Some(1)),
+        ] {
+            let mut errors = Vec::new();
+            validate_resources(
+                &[ResourceSnapshot {
+                    name: "font-cache".to_owned(),
+                    current_bytes: current,
+                    peak_bytes: peak,
+                    budget_bytes: budget,
+                    omitted: true,
+                    omitted_axes: Vec::new(),
+                }],
+                &["font-cache".to_owned()],
+                &mut errors,
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error == "omitted resource font-cache contains bytes")
+            );
+        }
+
+        let mut omission_errors = Vec::new();
+        validate_resources(
+            &[ResourceSnapshot {
+                name: "font-cache".to_owned(),
+                current_bytes: None,
+                peak_bytes: None,
+                budget_bytes: None,
+                omitted: true,
+                omitted_axes: Vec::new(),
+            }],
+            &["font-cache".to_owned()],
+            &mut omission_errors,
+        );
+        assert!(
+            !omission_errors
+                .iter()
+                .any(|error| error == "resource font-cache lacks a matching omission")
+        );
+
+        for (current, peak, budget) in [(2, 1, 3), (1, 3, 2)] {
+            let mut errors = Vec::new();
+            validate_resources(
+                &[ResourceSnapshot {
+                    name: "layout-cache".to_owned(),
+                    current_bytes: Some(current),
+                    peak_bytes: Some(peak),
+                    budget_bytes: Some(budget),
+                    omitted: false,
+                    omitted_axes: Vec::new(),
+                }],
+                &[],
+                &mut errors,
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error == "resource layout-cache exceeds peak or budget")
+            );
+        }
+    }
+
+    #[test]
+    fn footprint_validation_requires_strictly_increasing_sample_time() {
+        let mut footprint: Footprint =
+            serde_json::from_str(&footprint(42)).expect("parse footprint");
+        footprint.samples[1].start_time.wall_time_s = footprint.samples[0].start_time.wall_time_s;
+        let mut errors = Vec::new();
+        let _ = derive_process_samples(&footprint, 42, &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error == "footprint sample 1 wall time is not increasing")
+        );
     }
 
     #[test]
