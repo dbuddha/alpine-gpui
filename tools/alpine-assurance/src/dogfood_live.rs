@@ -470,9 +470,14 @@ fn validate_seal_request(request: &SealRequest, errors: &mut Vec<String>) {
         "sample interval must be positive and shorter than duration",
         errors,
     );
-    let sample_bound = request.requested_duration_ms / request.interval_ms + 2;
+    let sample_bound = request
+        .requested_duration_ms
+        .checked_div(request.interval_ms)
+        .and_then(|samples| samples.checked_add(2));
     require(
-        (4..=u64::try_from(MAX_SAMPLES).unwrap_or(u64::MAX)).contains(&sample_bound),
+        sample_bound.is_some_and(|sample_bound| {
+            (4..=u64::try_from(MAX_SAMPLES).unwrap_or(u64::MAX)).contains(&sample_bound)
+        }),
         "requested sample bound must remain within 4 and 4096",
         errors,
     );
@@ -1553,13 +1558,19 @@ fn require(condition: bool, message: impl Into<String>, errors: &mut Vec<String>
 )]
 mod tests {
     use super::{
-        AccessibilitySnapshot, Draft, Footprint, InternalDiagnostic, LifecycleSnapshot, Manifest,
-        ResourceSnapshot, SealRequest, Snapshot, artifact, calculate_sha256,
-        derive_process_samples, derive_snapshot, is_v2, load_toml, run, seal, sha256_from_output,
-        snapshot_source_identity, staging_path, validate_accessibility, validate_lifecycle,
-        validate_resources,
+        AccessibilitySnapshot, Artifact, Draft, Footprint, FrameSnapshot, InternalDiagnostic,
+        LanguageSnapshot, LifecycleSnapshot, Manifest, ResourceSnapshot, SealRequest, Snapshot,
+        artifact, calculate_sha256, derive_process_samples, derive_snapshot, is_v2, load_toml,
+        read_limited, run, seal, sha256_from_output, snapshot_source_identity, staging_path,
+        valid_git_sha, valid_sha256, valid_slug, valid_timestamp, validate_accessibility,
+        validate_artifacts, validate_bundle, validate_fixed_list, validate_frames,
+        validate_identity, validate_identity_fields, validate_language, validate_lifecycle,
+        validate_resources, validate_seal_request,
     };
-    use std::{fs, path::PathBuf};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
     #[test]
     fn malformed_capture_inputs_fail_closed() {
@@ -1670,6 +1681,27 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target")
             .join(format!("live-dogfood-{label}-{}", std::process::id()))
+    }
+
+    fn assert_error(errors: &[String], expected: &str) {
+        assert!(
+            errors.iter().any(|error| error == expected),
+            "missing error {expected:?} in {errors:?}"
+        );
+    }
+
+    fn manifest_errors(manifest_path: &Path, mutate: impl FnOnce(&mut Manifest)) -> Vec<String> {
+        let source = fs::read_to_string(manifest_path).expect("read valid manifest");
+        let mut manifest: Manifest = toml::from_str(&source).expect("parse valid manifest");
+        mutate(&mut manifest);
+        fs::write(
+            manifest_path,
+            toml::to_string_pretty(&manifest).expect("encode mutated manifest"),
+        )
+        .expect("write mutated manifest");
+        let errors = validate_bundle(manifest_path).expect_err("reject mutated manifest");
+        fs::write(manifest_path, source).expect("restore valid manifest");
+        errors
     }
 
     fn internal(revision: &str) -> String {
@@ -1802,8 +1834,9 @@ executable_sha256 = "none"
     fn derives_omission_aware_physical_snapshot() {
         let internal: InternalDiagnostic =
             serde_json::from_str(&internal(REVISION)).expect("parse internal");
-        let footprint: Footprint = serde_json::from_str(&footprint(42)).expect("parse footprint");
-        let snapshot = derive_snapshot(&internal, &footprint, 42).expect("derive snapshot");
+        let valid_footprint: Footprint =
+            serde_json::from_str(&footprint(42)).expect("parse footprint");
+        let snapshot = derive_snapshot(&internal, &valid_footprint, 42).expect("derive snapshot");
         assert_eq!(snapshot.duration_ms, 3_000);
         assert_eq!(snapshot.samples.len(), 4);
         assert!(
@@ -1820,6 +1853,379 @@ executable_sha256 = "none"
         );
         assert!(snapshot.stages.iter().all(|stage| stage.omitted));
         assert_eq!(snapshot.resources.len(), 10);
+    }
+
+    #[test]
+    fn seal_request_and_window_boundaries_are_exact() {
+        let (root, mut request) = write_inputs("request-boundaries", REVISION);
+
+        for duration in [0, 604_800_001] {
+            request.requested_duration_ms = duration;
+            request.interval_ms = 1;
+            let mut errors = Vec::new();
+            validate_seal_request(&request, &mut errors);
+            assert_error(
+                &errors,
+                "requested duration must be within one millisecond and seven days",
+            );
+        }
+
+        request.requested_duration_ms = 3_000;
+        for interval in [0, 3_000] {
+            request.interval_ms = interval;
+            let mut errors = Vec::new();
+            validate_seal_request(&request, &mut errors);
+            assert_error(
+                &errors,
+                "sample interval must be positive and shorter than duration",
+            );
+        }
+
+        request.requested_duration_ms = 4_094;
+        request.interval_ms = 1;
+        let mut errors = Vec::new();
+        validate_seal_request(&request, &mut errors);
+        assert!(
+            !errors
+                .iter()
+                .any(|error| error == "requested sample bound must remain within 4 and 4096")
+        );
+
+        request.requested_duration_ms = 3_000;
+        request.interval_ms = 1_000;
+        for process_start in [String::new(), "x".repeat(257)] {
+            request.process_start = process_start;
+            let mut errors = Vec::new();
+            validate_seal_request(&request, &mut errors);
+            assert_error(
+                &errors,
+                "process start identity must contain 1 to 256 bytes",
+            );
+        }
+
+        request.process_start = "fixture-start".to_owned();
+        request.requested_duration_ms = 4_000;
+        assert!(seal(&request).is_ok());
+        fs::remove_dir_all(root).expect("remove request boundary fixture");
+    }
+
+    #[test]
+    fn manifest_boundaries_reject_each_invalid_axis() {
+        let (root, request) = write_inputs("manifest-boundaries", REVISION);
+        seal(&request).expect("seal valid manifest fixture");
+        let manifest_path = request.destination.join("session.toml");
+
+        for mutate in [
+            |manifest: &mut Manifest| {
+                manifest.duration_ms = 0;
+                manifest.requested_duration_ms = 0;
+                manifest.interval_ms = 0;
+            },
+            |manifest: &mut Manifest| {
+                manifest.duration_ms = manifest.requested_duration_ms + 1;
+            },
+            |manifest: &mut Manifest| {
+                manifest.duration_ms = manifest.requested_duration_ms - manifest.interval_ms - 1;
+            },
+        ] {
+            assert_error(
+                &manifest_errors(&manifest_path, mutate),
+                "captured duration is outside the requested sample window",
+            );
+        }
+
+        for mutate in [
+            |manifest: &mut Manifest| manifest.interval_ms = 0,
+            |manifest: &mut Manifest| {
+                manifest.interval_ms = manifest.requested_duration_ms;
+            },
+        ] {
+            assert_error(
+                &manifest_errors(&manifest_path, mutate),
+                "manifest interval is invalid",
+            );
+        }
+
+        assert_error(
+            &manifest_errors(&manifest_path, |manifest| manifest.process_pid = 0),
+            "manifest PID must be positive",
+        );
+        for process_start in [String::new(), "x".repeat(257)] {
+            assert_error(
+                &manifest_errors(&manifest_path, |manifest| {
+                    manifest.process_start = process_start;
+                }),
+                "manifest process start identity is invalid",
+            );
+        }
+        assert_error(
+            &manifest_errors(&manifest_path, |manifest| manifest.binary_bytes = 0),
+            "binary byte count must be positive",
+        );
+        assert_error(
+            &manifest_errors(&manifest_path, |manifest| manifest.sampler_bytes = 0),
+            "sampler byte count must be positive",
+        );
+
+        fs::remove_dir_all(root).expect("remove manifest boundary fixture");
+    }
+
+    #[test]
+    fn artifact_paths_require_nonempty_relative_normal_components() {
+        let root = root("artifact-paths");
+        fs::create_dir_all(&root).expect("create artifact path fixture");
+        for file in ["", "../snapshot.toml"] {
+            let mut errors = Vec::new();
+            validate_artifacts(
+                &root,
+                &[Artifact {
+                    name: "snapshot".to_owned(),
+                    file: file.to_owned(),
+                    sha256: SHA.to_owned(),
+                    bytes: 0,
+                }],
+                &mut errors,
+            );
+            assert_error(&errors, "artifact snapshot escapes its bundle");
+        }
+        fs::remove_dir_all(root).expect("remove artifact path fixture");
+    }
+
+    #[test]
+    fn snapshot_identity_status_duration_and_omission_bounds_are_exact() {
+        let valid_footprint: Footprint =
+            serde_json::from_str(&footprint(42)).expect("parse footprint");
+
+        let mut zero_duration: InternalDiagnostic =
+            serde_json::from_str(&internal(REVISION)).expect("parse internal");
+        zero_duration.duration_ms = 0;
+        assert_error(
+            &derive_snapshot(&zero_duration, &valid_footprint, 42)
+                .expect_err("reject zero application duration"),
+            "internal duration must be positive",
+        );
+
+        for status in [String::new(), "x".repeat(4_097)] {
+            let mut diagnostic: InternalDiagnostic =
+                serde_json::from_str(&internal(REVISION)).expect("parse internal");
+            diagnostic.status = status;
+            assert_error(
+                &derive_snapshot(&diagnostic, &valid_footprint, 42)
+                    .expect_err("reject status boundary"),
+                "internal status is invalid",
+            );
+        }
+
+        let mut zero_window: Footprint =
+            serde_json::from_str(&footprint(42)).expect("parse footprint");
+        for sample in &mut zero_window.samples {
+            sample.start_time.wall_time_s = 1_000.0;
+        }
+        let diagnostic: InternalDiagnostic =
+            serde_json::from_str(&internal(REVISION)).expect("parse internal");
+        assert_error(
+            &derive_snapshot(&diagnostic, &zero_window, 42)
+                .expect_err("reject zero physical duration"),
+            "physical sample duration must be positive",
+        );
+
+        let mut excessive_omissions: InternalDiagnostic =
+            serde_json::from_str(&internal(REVISION)).expect("parse internal");
+        excessive_omissions.omissions = (0..33).map(|index| format!("omission-{index}")).collect();
+        assert_error(
+            &derive_snapshot(&excessive_omissions, &valid_footprint, 42)
+                .expect_err("reject excessive omissions"),
+            "omission inventory is invalid",
+        );
+    }
+
+    #[test]
+    fn frame_and_language_validation_discriminate_each_ordering_axis() {
+        for frames in [
+            FrameSnapshot {
+                requested: 2,
+                submitted: 2,
+                completed: 1,
+                presented: 2,
+                omitted: 0,
+                idle_submissions: 0,
+                peak_in_flight: 1,
+            },
+            FrameSnapshot {
+                requested: 2,
+                submitted: 1,
+                completed: 2,
+                presented: 1,
+                omitted: 0,
+                idle_submissions: 0,
+                peak_in_flight: 1,
+            },
+            FrameSnapshot {
+                requested: 1,
+                submitted: 2,
+                completed: 1,
+                presented: 1,
+                omitted: 0,
+                idle_submissions: 0,
+                peak_in_flight: 1,
+            },
+        ] {
+            let mut errors = Vec::new();
+            validate_frames(&frames, &mut errors);
+            assert_error(&errors, "internal frame counters are out of order");
+        }
+
+        for (current, peak, budget) in [(2, 1, 3), (1, 3, 2)] {
+            let mut errors = Vec::new();
+            validate_language(
+                &LanguageSnapshot {
+                    requests: 1,
+                    responses: Some(1),
+                    stale_responses: 0,
+                    restarts: 0,
+                    current_retained_bytes: current,
+                    peak_retained_bytes: peak,
+                    budget_bytes: budget,
+                },
+                &[],
+                &mut errors,
+            );
+            assert_error(&errors, "language bytes exceed peak or budget");
+        }
+
+        let mut valid_errors = Vec::new();
+        validate_language(
+            &LanguageSnapshot {
+                requests: 1,
+                responses: Some(1),
+                stale_responses: 0,
+                restarts: 0,
+                current_retained_bytes: 1,
+                peak_retained_bytes: 2,
+                budget_bytes: 3,
+            },
+            &[],
+            &mut valid_errors,
+        );
+        assert!(valid_errors.is_empty());
+
+        validate_language(
+            &LanguageSnapshot {
+                requests: 1,
+                responses: None,
+                stale_responses: 0,
+                restarts: 0,
+                current_retained_bytes: 1,
+                peak_retained_bytes: 2,
+                budget_bytes: 3,
+            },
+            &["language-responses".to_owned()],
+            &mut valid_errors,
+        );
+        assert!(valid_errors.is_empty());
+    }
+
+    #[test]
+    fn elapsed_sample_range_is_bounded_in_validation_and_projection() {
+        let mut footprint: Footprint =
+            serde_json::from_str(&footprint(42)).expect("parse footprint");
+        footprint.samples[3].start_time.wall_time_s = 605_801.0;
+        let mut errors = Vec::new();
+        let samples = derive_process_samples(&footprint, 42, &mut errors);
+        assert_error(&errors, "footprint sample 3 elapsed time is invalid");
+        assert_eq!(samples[3].elapsed_ms, 0);
+    }
+
+    #[test]
+    fn identity_and_fixed_list_boundaries_fail_independently() {
+        let mut invalid_schema: Draft = toml::from_str(&draft()).expect("parse draft");
+        invalid_schema.schema = "invalid".to_owned();
+        assert_error(
+            &validate_identity(&invalid_schema),
+            "draft schema must be alpine-studio-dogfood-draft/v2",
+        );
+
+        let valid: Draft = toml::from_str(&draft()).expect("parse draft");
+        let mut zero_version = valid.identity.clone();
+        zero_version.workload_version = 0;
+        let mut errors = Vec::new();
+        validate_identity_fields(&zero_version, &mut errors);
+        assert_error(&errors, "workload version must be positive");
+
+        for value in [String::new(), "x".repeat(4_097)] {
+            let mut identity = valid.identity.clone();
+            identity.workspace_fixture = value;
+            let mut errors = Vec::new();
+            validate_identity_fields(&identity, &mut errors);
+            assert_error(&errors, "workspace fixture is empty or too long");
+        }
+
+        for assumptions in [Vec::new(), vec!["x".to_owned(); 33]] {
+            let mut identity = valid.identity.clone();
+            identity.assumptions = assumptions;
+            let mut errors = Vec::new();
+            validate_identity_fields(&identity, &mut errors);
+            assert_error(&errors, "assumptions must contain 1 to 32 items");
+        }
+
+        for assumption in [String::new(), "x".repeat(4_097)] {
+            let mut identity = valid.identity.clone();
+            identity.assumptions = vec![assumption];
+            let mut errors = Vec::new();
+            validate_identity_fields(&identity, &mut errors);
+            assert_error(&errors, "assumption is empty or too long");
+        }
+
+        for values in [Vec::new(), vec!["launch".to_owned(); 33]] {
+            let mut errors = Vec::new();
+            validate_fixed_list("coverage", &values, &["launch"], false, &mut errors);
+            assert_error(&errors, "coverage must contain 1 to 32 items");
+        }
+    }
+
+    #[test]
+    fn bounded_read_and_identity_syntax_edges_are_exact() {
+        let root = root("syntax-boundaries");
+        fs::create_dir_all(&root).expect("create syntax fixture");
+        let bounded = root.join("bounded");
+        fs::write(&bounded, b"abcd").expect("write bounded fixture");
+        assert_eq!(
+            read_limited(&bounded, 4).expect("accept exact limit"),
+            b"abcd"
+        );
+        assert!(read_limited(&bounded, 3).is_err());
+
+        assert!(valid_slug("fixture-slug.1"));
+        for invalid in [String::new(), "x".repeat(129), "INVALID".to_owned()] {
+            assert!(!valid_slug(&invalid));
+        }
+
+        assert!(valid_git_sha(REVISION));
+        for invalid in ["b".repeat(39), "B".repeat(40), "g".repeat(40)] {
+            assert!(!valid_git_sha(&invalid));
+        }
+
+        assert!(valid_sha256(SHA));
+        for invalid in ["a".repeat(63), "A".repeat(64), "g".repeat(64)] {
+            assert!(!valid_sha256(&invalid));
+        }
+
+        assert!(valid_timestamp("2026-08-30T18:00:00Z"));
+        let valid = b"2026-08-30T18:00:00Z";
+        let mut invalid_timestamps = vec!["2026-08-30T18:00:00Z0".to_owned()];
+        for index in [4, 7, 10, 13, 16, 19] {
+            let mut bytes = *valid;
+            bytes[index] = b'x';
+            invalid_timestamps.push(String::from_utf8(bytes.to_vec()).expect("ASCII timestamp"));
+        }
+        let mut nondigit = *valid;
+        nondigit[0] = b'x';
+        invalid_timestamps.push(String::from_utf8(nondigit.to_vec()).expect("ASCII timestamp"));
+        for invalid in invalid_timestamps {
+            assert!(!valid_timestamp(&invalid));
+        }
+
+        fs::remove_dir_all(root).expect("remove syntax fixture");
     }
 
     #[test]
