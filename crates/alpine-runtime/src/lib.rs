@@ -1630,6 +1630,13 @@ mod tests {
         assert_eq!(application.invalid_scenes(), 0);
         assert_eq!(application.worker(), WorkerSnapshot::default());
         assert_eq!(application.external(), ExternalSnapshot::default());
+        let surface = SurfaceSnapshot::empty_for_test();
+        let completion = ApplicationCompletion {
+            application,
+            surface,
+        };
+        assert_eq!(completion.application(), application);
+        assert_eq!(*completion.surface(), surface);
 
         let work = token(13);
         assert_eq!(work.sequence(), 13);

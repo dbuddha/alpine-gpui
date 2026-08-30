@@ -858,7 +858,7 @@ fn run_native(app: StudioApp) -> Result<(), RuntimeError> {
         Some(capture) => {
             let completion = application.run_with_completion(&descriptor)?;
             capture
-                .finish_completion(&completion)
+                .finish(completion.application(), completion.surface())
                 .map_err(|error| dogfood_diagnostic::capture_surface_error(&error))?;
             Ok(())
         }

@@ -1,6 +1,8 @@
 use std::{
     cell::RefCell,
-    env, fmt,
+    env,
+    ffi::OsString,
+    fmt,
     fs::{self, OpenOptions},
     io::Write as _,
     path::{Component, Path, PathBuf},
@@ -9,7 +11,7 @@ use std::{
 };
 
 use alpine_platform_macos::{SurfaceOperation, SurfaceSnapshot};
-use alpine_runtime::{ApplicationCompletion, ApplicationSnapshot};
+use alpine_runtime::ApplicationSnapshot;
 use serde_json::{Value, json};
 
 use super::StudioApp;
@@ -67,10 +69,20 @@ pub(super) struct CaptureController {
 
 impl CaptureController {
     pub(super) fn from_environment() -> Result<Option<Self>, CaptureError> {
-        let output = env::var_os(OUTPUT_ENV);
-        let workload = env::var_os(WORKLOAD_ENV);
-        let revision = env::var_os(REVISION_ENV);
-        let captured_at = env::var_os(CAPTURED_AT_ENV);
+        Self::from_values(
+            env::var_os(OUTPUT_ENV),
+            env::var_os(WORKLOAD_ENV),
+            env::var_os(REVISION_ENV),
+            env::var_os(CAPTURED_AT_ENV),
+        )
+    }
+
+    fn from_values(
+        output: Option<OsString>,
+        workload: Option<OsString>,
+        revision: Option<OsString>,
+        captured_at: Option<OsString>,
+    ) -> Result<Option<Self>, CaptureError> {
         let supplied = [
             output.is_some(),
             workload.is_some(),
@@ -130,13 +142,6 @@ impl CaptureController {
 
     pub(super) fn sink(&self) -> CaptureSink {
         self.sink.clone()
-    }
-
-    pub(super) fn finish_completion(
-        self,
-        completion: &ApplicationCompletion,
-    ) -> Result<(), CaptureError> {
-        self.finish(completion.application(), completion.surface())
     }
 
     pub(super) fn finish(
@@ -478,12 +483,12 @@ fn write_atomic_json(path: &Path, payload: &Value) -> Result<(), CaptureError> {
         .and_then(|name| name.to_str())
         .ok_or(CaptureError("dogfood diagnostic file name must be UTF-8"))?;
     let staging = parent.join(format!(".{name}.{}.staging", std::process::id()));
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&staging)
+        .map_err(|_| CaptureError("dogfood diagnostic staging is unavailable"))?;
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&staging)
-            .map_err(|_| CaptureError("dogfood diagnostic staging is unavailable"))?;
         file.write_all(&bytes)
             .and_then(|()| file.sync_all())
             .map_err(|_| CaptureError("dogfood diagnostic write failed"))?;
@@ -493,9 +498,7 @@ fn write_atomic_json(path: &Path, payload: &Value) -> Result<(), CaptureError> {
             .map_err(|_| CaptureError("dogfood diagnostic staging cleanup failed"))?;
         Ok(())
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(staging);
-    }
+    let _ = fs::remove_file(staging);
     result
 }
 
@@ -593,6 +596,84 @@ mod tests {
     }
 
     #[test]
+    fn environment_values_and_error_translation_are_exact() -> Result<(), String> {
+        assert!(
+            CaptureController::from_environment()
+                .map_err(|error| error.to_string())?
+                .is_none()
+        );
+        assert!(
+            CaptureController::from_values(None, None, None, None)
+                .map_err(|error| error.to_string())?
+                .is_none()
+        );
+        assert!(
+            CaptureController::from_values(
+                Some(output_path("partial")?.into_os_string()),
+                None,
+                None,
+                None,
+            )
+            .is_err()
+        );
+        let path = output_path("complete")?;
+        let controller = CaptureController::from_values(
+            Some(path.into_os_string()),
+            Some(OsString::from("local-edit")),
+            Some(OsString::from("a".repeat(40))),
+            Some(OsString::from("2026-08-30T12:00:00Z")),
+        )
+        .map_err(|error| error.to_string())?;
+        assert!(controller.is_some());
+        let error = CaptureError("translated failure");
+        assert_eq!(error.to_string(), "translated failure");
+        assert_eq!(
+            capture_surface_error(&error),
+            alpine_platform_macos::SurfaceError::invariant(SurfaceOperation::Application)
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_environment_values_fail_closed() -> Result<(), String> {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let path = output_path("non-utf8-environment")?.into_os_string();
+        let invalid = OsString::from_vec(vec![0xff]);
+        let valid_revision = OsString::from("a".repeat(40));
+        let valid_time = OsString::from("2026-08-30T12:00:00Z");
+        assert!(
+            CaptureController::from_values(
+                Some(path.clone()),
+                Some(invalid.clone()),
+                Some(valid_revision.clone()),
+                Some(valid_time.clone()),
+            )
+            .is_err()
+        );
+        assert!(
+            CaptureController::from_values(
+                Some(path.clone()),
+                Some(OsString::from("local-edit")),
+                Some(invalid.clone()),
+                Some(valid_time),
+            )
+            .is_err()
+        );
+        assert!(
+            CaptureController::from_values(
+                Some(path),
+                Some(OsString::from("local-edit")),
+                Some(valid_revision),
+                Some(invalid),
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn atomic_writer_refuses_overwrite_and_retains_omissions() -> Result<(), String> {
         let path = output_path("atomic")?;
         let payload = json!({
@@ -653,5 +734,122 @@ mod tests {
         ] {
             assert!(omissions.iter().any(|item| item == required));
         }
+    }
+
+    #[test]
+    fn real_studio_capture_finishes_one_bounded_payload() -> Result<(), String> {
+        let output = output_path("full-capture")?;
+        let controller = CaptureController::new(
+            output.clone(),
+            "local-edit".to_owned(),
+            "a".repeat(40),
+            "2026-08-30T12:00:00Z".to_owned(),
+        )
+        .map_err(|error| error.to_string())?;
+        let sink = controller.sink();
+        let mut app =
+            StudioApp::new(crate::tests::TestTextSystem).map_err(|error| error.to_string())?;
+        app.dogfood_accessibility_queries = 2;
+        app.dogfood_accessibility_actions = 1;
+        let held = sink.0.borrow_mut();
+        sink.capture(&app);
+        assert!(held.is_none());
+        drop(held);
+        sink.capture(&app);
+        let before_drop = *sink.0.borrow();
+        assert!(before_drop.is_some());
+        app.dogfood_capture = Some(sink.clone());
+        drop(app);
+        assert_eq!(*sink.0.borrow(), before_drop);
+        controller
+            .finish(
+                ApplicationSnapshot::default(),
+                &SurfaceSnapshot::empty_for_test(),
+            )
+            .map_err(|error| error.to_string())?;
+        let bytes = fs::read(&output).map_err(|error| error.to_string())?;
+        assert!(bytes.len() <= MAX_OUTPUT_BYTES);
+        let payload: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        assert_eq!(
+            payload.get("schema"),
+            Some(&json!("alpine-studio-internal-diagnostic/v1"))
+        );
+        assert_eq!(payload.pointer("/accessibility/queries"), Some(&json!(2)));
+        assert_eq!(payload.pointer("/accessibility/actions"), Some(&json!(1)));
+        assert_eq!(
+            payload.pointer("/lifecycle/clean_shutdown"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            payload.pointer("/surface/current_retained_bytes"),
+            Some(&json!(0))
+        );
+        assert!(!String::from_utf8_lossy(&bytes).contains("document_path"));
+        fs::remove_file(output).map_err(|error| error.to_string())?;
+
+        let missing = CaptureController::new(
+            output_path("missing-state")?,
+            "local-edit".to_owned(),
+            "b".repeat(40),
+            "2026-08-30T12:00:01Z".to_owned(),
+        )
+        .map_err(|error| error.to_string())?;
+        assert!(
+            missing
+                .finish(
+                    ApplicationSnapshot::default(),
+                    &SurfaceSnapshot::empty_for_test(),
+                )
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn path_size_and_staging_boundaries_fail_closed() -> Result<(), String> {
+        assert!(validate_output_path(Path::new("relative.json")).is_err());
+        assert!(validate_output_path(Path::new("/tmp/../tmp/output.json")).is_err());
+        assert!(validate_output_path(Path::new("/")).is_err());
+
+        let root = output_path("boundaries")?.with_extension("root");
+        fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        let existing = root.join("existing.json");
+        fs::write(&existing, b"existing").map_err(|error| error.to_string())?;
+        assert!(validate_output_path(&existing).is_err());
+        assert!(validate_output_path(&root.join("missing/output.json")).is_err());
+
+        let oversized = root.join("oversized.json");
+        let payload = json!({"payload": "x".repeat(MAX_OUTPUT_BYTES)});
+        assert!(write_atomic_json(&oversized, &payload).is_err());
+        assert!(!oversized.exists());
+
+        let collision = root.join("collision.json");
+        let staging = root.join(format!(".collision.json.{}.staging", std::process::id()));
+        fs::write(&staging, b"foreign").map_err(|error| error.to_string())?;
+        assert!(write_atomic_json(&collision, &json!({"bounded": true})).is_err());
+        assert_eq!(
+            fs::read(&staging).map_err(|error| error.to_string())?,
+            b"foreign"
+        );
+        fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_and_non_utf8_output_paths_fail_closed() -> Result<(), String> {
+        use std::os::unix::{ffi::OsStringExt as _, fs::symlink};
+
+        let root = output_path("unix-paths")?.with_extension("root");
+        let target = root.join("target");
+        let alias = root.join("alias");
+        fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+        symlink(&target, &alias).map_err(|error| error.to_string())?;
+        assert!(validate_output_path(&alias.join("output.json")).is_err());
+
+        let invalid_name = OsString::from_vec(vec![0xff]);
+        assert!(write_atomic_json(&target.join(invalid_name), &json!({})).is_err());
+        fs::remove_dir_all(root).map_err(|error| error.to_string())?;
+        Ok(())
     }
 }
