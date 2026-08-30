@@ -46,14 +46,17 @@ Required correction:
   small scroll delta, resize, and recovery traces.
 - Establish semantic equivalence before timing.
 - Measure adaptation separately from framework scene build and renderer stages.
-- Close Task #61 only after its exact E3 record is retained; keep Requirement
-  #53 open until recovery and retained E4 evidence exist.
+- Task #61 and the E3 fixture ladder are complete. Finish atlas lifecycle and
+  recovery trace qualification in #353, then satisfy Requirement #53 with
+  retained E4 evidence before making renderer dominance claims.
 
 ### P1: M4 physical correctness is not closed
 
-AppKit accessibility implementation is substantial, but #253, #272, and #273
-remain open. Snapshot tests cannot prove VoiceOver behavior, external AX tree
-visibility, announcements, focus transfer, or lifecycle recovery.
+AppKit accessibility implementation is substantial, and the production process
+journey #272 is complete. Physical VoiceOver, AXObserver, and lifecycle
+acceptance remain open under #223, #253, and #273. Snapshot tests cannot prove
+VoiceOver behavior, external AX tree visibility, announcements, focus transfer,
+or lifecycle recovery.
 
 Required correction: run the real bundled process through AXObserver and
 VoiceOver journeys on an unlocked Apple Silicon session, retaining revision and
@@ -61,15 +64,15 @@ OS identity.
 
 ### P1: project truth is inconsistent
 
-PR #306 and #313 implement bundle and launch behavior while #303 remains open.
+PR #306 and #313 implement bundle and launch behavior, and #303 is complete.
 Several parent requirements and old foundational tasks remain open after their
 core implementation landed. Milestone issue counts therefore understate
 progress and obscure true blockers.
 
 Required correction:
 
-- Close #303 if its acceptance evidence is complete, or rewrite it to name the
-  exact missing evidence.
+- Preserve #303's accepted Finder-launch evidence and reconcile later status
+  changes through #225.
 - Reclassify implementation-complete parent tasks as qualification parents when
   only hardware evidence remains.
 - Keep one Prototype Readiness view based on blocking leaf issues.
@@ -135,9 +138,10 @@ Required correction:
 ### P2: upstream drift is separated but not yet operationally closed
 
 Zed stable moved from v1.15.0 to v1.17.2 and WGPU to v30.0.1. Keeping the
-comparator immutable is correct. Bounded source-delta reports now exist for
-#95, #96, #302, and #100. Leaving them open after their durable source-map
-updates merge would create indefinite research debt.
+comparator immutable is correct. The prior bounded source-delta reviews #95,
+#96, #100, and #302 are complete. The active review cycle is #445 through #449;
+its findings must become bounded research decisions, defects, or experiments
+rather than silently widening the product.
 
 Required correction: review only changed mechanisms relevant to Alpine, record
 adopt/reject/no-change decisions, and close the narrative research independently
@@ -179,17 +183,25 @@ large-project corpora, and revise bounds from retained workload evidence.
 
 ## What to change now
 
-1. Treat #304 and #314 as the first execution line.
-2. Finish #253, #272, and #273 on physical hardware.
+1. Use the event-to-present reporting completed in #314 to resolve visible
+   typing-latency defect #304 through physical stage-distribution experiment
+   #331.
+2. Finish #223, #253, and #273 on physical hardware; #272 already proves the
+   production process journey.
 3. Keep #303 and other implementation-complete issues reconciled with their
-   retained evidence.
-4. Finish #220 through #222 in thin behavior slices; #219 merged through PR
-   #345.
+   retained evidence through #225.
+4. Preserve completed behavior #218 through #222 through dogfood regressions
+   instead of reporting those slices as pending.
 5. Execute #238 through #242 as the daily-driver acceptance chain.
-6. Use #61's retained E3 trace ladder as admission and finish #53 recovery,
-   timing, memory, and E4 work before claims.
+6. Use #61's retained E3 trace ladder as admission, finish #353, and satisfy
+   #53 recovery, timing, memory, and E4 evidence before claims.
 7. Run WGPU experiments only after those trace semantics stabilize.
 8. Update this ledger in every material architecture/performance PR.
+
+The assurance repair cycle represented by #401, #406, and #443 is complete.
+Live Studio dogfood diagnostics and bounded capture are implemented through
+#461 and #462. Exact-head and exact-main aggregate CI remain the authoritative
+admission evidence for future changes.
 
 ## Wrong-direction triggers
 

@@ -22,10 +22,11 @@ tree, tabs, splits, search, command discovery, and crash-safe restoration. The
 central weakness is now daily-driver completion and qualification. Compiled
 syntax, typed settings, shortcuts, the no-bloat boundary, revisioned
 accessibility semantics, bounded local LSP transport, pinned rust-analyzer
-qualification, and visible Rust diagnostics are merged. Completion, richer
-Rust intelligence, configuration reload and migration, native VoiceOver and
-lifecycle qualification, sustained dogfood, packaging, and defensible
-fixed-hardware evidence remain open.
+qualification, visible Rust diagnostics, bounded completion, richer Rust
+intelligence, rename and formatting, symbols, and configuration reload and
+migration are merged through #218 through #222. Native VoiceOver and lifecycle
+qualification, physical typing attribution, sustained dogfood, residency,
+packaging, and defensible fixed-hardware evidence remain open.
 
 ## Keep, change, and defer
 
@@ -85,12 +86,12 @@ an Alpine implementation choice.
 2. Preserve the completed asynchronous, three-slot presentation contract.
 3. Preserve and dogfood the implemented real-file editor and native input path.
 4. Preserve and dogfood the implemented local workspace shell and restoration.
-5. Complete bounded Rust completion, hover and navigation, rename and
-   formatting, and symbols through Tasks #218 through #221.
-6. Complete configuration reload and migration through Task #222, then close
-   the native compositor, lifecycle soak, production journey, and idle-energy
-   leaves #234 through #237 under Task #72 before Task #223 completes native
-   VoiceOver and lifecycle qualification.
+5. Preserve the bounded Rust completion, hover/navigation, rename/formatting,
+   and symbols contracts completed through Tasks #218 through #221.
+6. Preserve configuration reload and migration completed through Task #222.
+   The production journey #236 is complete; close compositor/display #234,
+   lifecycle soak #235, and idle-energy #237 under Task #72 before Task #223
+   completes native VoiceOver and lifecycle qualification.
 7. Execute dogfood capture, sustained sessions, interaction baselines,
    residency, and final acceptance through leaves #238 through #242 under Task
    #224, with no known data-loss, lifecycle, unbounded-memory, idle-submission,
@@ -140,11 +141,11 @@ that Alpine is the fastest general UI framework.
 - Native VoiceOver and lifecycle qualification remains blocked by the residual
   single-window surface evidence decomposed as Tasks #234 through #237 under
   Task #72.
-- Studio changed-line diagnostics do not yet cover `apps/` with the same
-  actionable contract as `crates/`; Defect #232 must close before dogfood can
-  rely on that gate.
-- Nightly Miri assurance remains open in Defect #183 until its bounded shards
-  pass authoritatively without unsupported process E2E or unbounded duration.
+- Studio changed-line diagnostics cover `apps/` through closed Defect #232 and
+  remain part of the accepted CI evidence contract.
+- Defect #183 is closed. Later formal, Metal-validation, and native mutation
+  defects #401, #406, and #443 are also closed; exact-main Nightly and aggregate
+  CI evidence remain the authority for future assurance regressions.
 - Fixed-hardware superiority evidence does not exist until the accepted
   workload and environment windows are collected.
 - Dogfood Tasks #238 through #242 have not yet established startup, input,

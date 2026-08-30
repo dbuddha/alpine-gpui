@@ -58,12 +58,20 @@ The workspace currently provides:
   rustdoc, coverage, changed-code mutation, selected models and proofs,
   three-platform CI, native Metal validation, and scheduled assurance.
 
-Remaining daily-driver work includes rename and formatting publication, native
-VoiceOver and lifecycle qualification, sustained
-repository dogfood, and defect closure. Fixed-hardware comparator evidence,
-API stabilization, signing, notarization, packaging, and release support remain
-later gates. The exact implemented boundaries and invariants are documented in
-[Architecture](ARCHITECTURE.md); GitHub issues own live delivery state.
+The private daily-driver critical path is physical typing-latency qualification
+([#304](https://github.com/dbuddha/alpine-gpui/issues/304) and
+[#331](https://github.com/dbuddha/alpine-gpui/issues/331)), physical VoiceOver
+and lifecycle qualification ([#223](https://github.com/dbuddha/alpine-gpui/issues/223),
+[#253](https://github.com/dbuddha/alpine-gpui/issues/253), and
+[#273](https://github.com/dbuddha/alpine-gpui/issues/273)), sustained dogfood
+and residency acceptance ([#224](https://github.com/dbuddha/alpine-gpui/issues/224)
+and [#238 through #242](https://github.com/dbuddha/alpine-gpui/issues/238)), and
+realistic renderer qualification ([#353](https://github.com/dbuddha/alpine-gpui/issues/353)
+and [#53](https://github.com/dbuddha/alpine-gpui/issues/53)). Fixed-hardware
+comparator evidence, API stabilization, signing, notarization, packaging, and
+release support remain later gates. The exact implemented boundaries and
+invariants are documented in [Architecture](ARCHITECTURE.md); GitHub Issues own
+live delivery state.
 
 The [engineering guide](docs/SUMMARY.md) owns durable mission principles, user
 journeys, case-study conclusions, enhancement proposals, and the assurance
