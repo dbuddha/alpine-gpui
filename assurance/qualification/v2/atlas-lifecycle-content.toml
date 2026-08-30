@@ -1,6 +1,6 @@
 schema = "alpine-scene-trace/v2"
 id = "atlas-lifecycle-content"
-workload_hash = "59e7c8fa9b9110ddb6acf3406ffd02fbc39f84ba9b93f53a3a985710b72d4337"
+workload_hash = "9e30813e8a768ccd5eb731042db131f5772a14794c830aa49ae083f0c868f70e"
 revision = 2
 clear_color = [0.055, 0.063, 0.075, 1.0]
 
@@ -34,8 +34,8 @@ resource = "editor-atlas"
 clip = "viewport"
 x = 1.0
 y = 1.0
-width = 4.0
-height = 4.0
+width = 2.0
+height = 2.0
 red = 0.82
 green = 0.86
 blue = 0.91

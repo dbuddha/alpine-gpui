@@ -25,6 +25,13 @@ expected upload bytes, and expected compact CPU image bytes. Teardown carries
 no scene or atlas identity. Reconstruction must use the exact latest accepted
 atlas and must perform one full upload.
 
+Lifecycle glyphs preserve a one-to-one mapping between A8 source texels and
+device pixels. This isolates resource ownership from texture-filter policy and
+matches the normal editor path where glyphs are rasterized for their target
+size. Alpine's nearest lookup and pinned GPUI's linear sampler are not declared
+equivalent for scaled atlas regions. A scaled-filter comparator requires a
+separate accepted protocol and cannot be inferred from this sequence.
+
 The pure `alpine-trace` state contract rejects stale revision, noncontiguous
 steps, incompatible reuse, partial identity, generation drift, nonzero terminal
 retention, and arithmetic overflow. The assurance boundary additionally rejects
