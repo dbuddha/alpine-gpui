@@ -473,9 +473,6 @@ fn normalized_output_path(path: &Path) -> Result<PathBuf, CaptureError> {
         path.file_name()
             .ok_or(CaptureError("dogfood diagnostic output lacks a file name"))?,
     );
-    if fs::symlink_metadata(&normalized).is_ok() {
-        return Err(CaptureError("dogfood diagnostic output already exists"));
-    }
     Ok(normalized)
 }
 
