@@ -748,7 +748,7 @@ fn should_arm_hosted_observation(
     submission_count: u64,
 ) -> bool {
     matches!(evidence_mode, PresentationEvidenceMode::HostedDirect)
-        && submitted_slots == 0
+        && submitted_slots > 0
         && armed_at_submission != Some(submission_count)
 }
 
@@ -1834,21 +1834,15 @@ mod process_contract_tests {
     }
 
     #[test]
-    fn hosted_observation_requires_mode_empty_slots_and_a_new_submission() {
+    fn hosted_observation_requires_mode_in_flight_slots_and_a_new_submission() {
         assert!(should_arm_hosted_observation(
             PresentationEvidenceMode::HostedDirect,
-            0,
+            1,
             None,
             4
         ));
         assert!(!should_arm_hosted_observation(
             PresentationEvidenceMode::Physical,
-            0,
-            None,
-            4
-        ));
-        assert!(!should_arm_hosted_observation(
-            PresentationEvidenceMode::HostedDirect,
             1,
             None,
             4
@@ -1856,8 +1850,26 @@ mod process_contract_tests {
         assert!(!should_arm_hosted_observation(
             PresentationEvidenceMode::HostedDirect,
             0,
+            None,
+            4
+        ));
+        assert!(!should_arm_hosted_observation(
+            PresentationEvidenceMode::HostedDirect,
+            1,
             Some(4),
             4
+        ));
+        assert!(!should_arm_hosted_observation(
+            PresentationEvidenceMode::HostedDirect,
+            0,
+            None,
+            18
+        ));
+        assert!(should_arm_hosted_observation(
+            PresentationEvidenceMode::HostedDirect,
+            1,
+            None,
+            19
         ));
     }
 }
