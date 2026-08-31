@@ -181,11 +181,13 @@ if [ -n "$workflow_files" ]; then
         || ! printf '%s\n' "$native_mutation_block" | grep -Fq 'target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out'; then
         fail 'Studio accessibility process mutation must transfer explicitly from Linux to accessibility-scoped retained native shards'
     fi
-    if ! printf '%s\n' "$native_mutation_block" | grep -Fq -- 'if [ -f tools/alpine-ax-client/src/native_factory.rs ]; then' \
+    if ! printf '%s\n' "$mutation_diff_block" | grep -Fq -- "--exclude 'tools/alpine-ax-client/src/native.rs'" \
+        || ! printf '%s\n' "$mutation_diff_block" | grep -Fq -- "--exclude 'tools/alpine-ax-client/src/native_factory.rs'" \
+        || ! printf '%s\n' "$native_mutation_block" | grep -Fq -- 'if [ -f tools/alpine-ax-client/src/native_factory.rs ]; then' \
         || ! printf '%s\n' "$native_mutation_block" | grep -Fq -- '--file tools/alpine-ax-client/src/native_factory.rs' \
         || ! printf '%s\n' "$native_mutation_block" | grep -Fq -- '--test-package alpine-ax-client' \
         || ! printf '%s\n' "$native_mutation_block" | grep -Fq 'target/native-ax-client-factory-mutants-${{ matrix.id }}.out'; then
-        fail 'macOS AX factory mutation must have one conditional retained Apple native owner'
+        fail 'AX target-only mutation must leave Linux explicitly and retain one conditional Apple factory owner'
     fi
     for language_evidence_owner in \
         reset_native_validation_language_evidence \
