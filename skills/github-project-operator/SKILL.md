@@ -28,7 +28,10 @@ validate the final title, body, closing issue, parent chain, release label,
 base, and source head together. Require a Conventional Commit title when the
 repository does. Supply the final title, template-complete body, and required
 labels in the initial creation command so metadata policy fails before CI
-fan-out rather than after expensive jobs start.
+fan-out rather than after expensive jobs start. When the repository starts CI
+from the settled release-label event instead of `opened`, an unlabeled pull
+request must remain blocked with no required check until its complete metadata
+snapshot is applied.
 
 If title, body, labels, base, or source head changes after checks begin, treat
 the earlier suite as superseded. Retain its run identity and result, wait for a
@@ -36,6 +39,13 @@ new conforming exact-head suite, and never rerun or relabel an older suite into
 merge evidence. Before merge, fetch the base, require the latest applicable
 aggregate gate, protect the tested source SHA, and use only a repository-allowed
 merge mode.
+
+If GitHub reports both canceled and successful required checks for the current
+pull-request state, do not use an administrator bypass. Retain both run IDs,
+record the trigger and concurrency defect, and require one later metadata event
+with a clean current-state aggregate. Fix the workflow so metadata-only events
+cannot cancel another required check at the same source SHA; source-changing
+events may still cancel work attached to obsolete SHAs.
 
 ## Canonical ownership
 
