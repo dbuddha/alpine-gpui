@@ -31,17 +31,24 @@ export MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1
 export MTL_SHADER_VALIDATION_ABORT_ON_FAULT=1
 
 native_benchmark=target/qualification/native-renderer-samples.csv
+native_benchmark_stdout=target/qualification/native-renderer-benchmark.txt
+native_benchmark_stderr=target/qualification/native-renderer-benchmark.stderr
 mkdir -p target/qualification
-rm -f "$native_benchmark"
+rm -f "$native_benchmark" "$native_benchmark_stdout" "$native_benchmark_stderr"
+set +e
 cargo run --quiet --locked -p alpine-assurance -- \
     benchmark-scene-native assurance/qualification/v1/scene.toml \
     "$native_benchmark" 1 3 \
-    > target/qualification/native-renderer-benchmark.txt
-grep -Fq 'stage renderer-submit-readback using process-monotonic Instant' \
-    target/qualification/native-renderer-benchmark.txt
-grep -Fq 'performance claim=none' \
-    target/qualification/native-renderer-benchmark.txt
-test "$(wc -l < "$native_benchmark" | tr -d ' ')" -eq 4
+    > "$native_benchmark_stdout" 2> "$native_benchmark_stderr"
+native_benchmark_status=$?
+set -e
+cat "$native_benchmark_stderr" >&2
+scripts/check-native-benchmark-result.sh \
+    "$native_benchmark_status" \
+    "$native_benchmark_stdout" \
+    "$native_benchmark_stderr" \
+    "$native_benchmark" \
+    3
 
 mkdir -p target
 xcrun swiftc -parse-as-library tools/onscreen-sdr-capture/Capture.swift \
