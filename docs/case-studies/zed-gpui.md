@@ -209,3 +209,71 @@ callback.
 - [Pinned Metal atlas](https://github.com/zed-industries/zed/blob/e17dc4f9d50db73a458b64dcce50ecd4878b98a3/crates/gpui_macos/src/metal_atlas.rs): tile and texture reclamation.
 - [Optimizing GPUI for 120 FPS](https://zed.dev/blog/120fps): direct-display completion-wait failure.
 - [Apple CAMetalDisplayLink](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink): platform pacing contract.
+
+## Upstream radar review: 2026-08-31
+
+This review answers a narrow decision question: did GPUI change after Alpine's
+accepted comparator pin in a way that should alter Alpine's runtime, renderer,
+diagnostics, or qualification plan?
+
+### Identity and method
+
+| Field | Value |
+| --- | --- |
+| Accepted comparator pin | `e17dc4f9d50db73a458b64dcce50ecd4878b98a3` (`v1.15.0`) |
+| Previously reviewed stable point | `c8e44cfa7bda9b2e22c8d6934d78969352e7f61a` (`v1.17.2`) |
+| Radar review head | `1662f5f3f6497c5f80830ccdca1edfd1fc0c6c6a` |
+| Relevant source scope | `crates/gpui`, `crates/gpui_apple`, and `crates/gpui_macos` |
+| Evidence level | E2: exact-tree and source-diff review, not an Alpine reproduction |
+| Tracking issue | [Research #445](https://github.com/dbuddha/alpine-gpui/issues/445) |
+
+The review compared exact Git trees and blobs, then inspected changed runtime,
+text, profiler, benchmark, renderer, tests, and license sources. Relative to the
+original comparator pin, the relevant scope contains 11 added, 42 changed, and
+4 removed paths. Relative to the already reviewed `v1.17.2` stable point, only
+2 paths were added and 32 changed. The latter delta is the decision-bearing
+scope; the larger count is retained so the audit does not silently substitute a
+newer baseline for the accepted comparator identity.
+
+### Source-backed findings
+
+| Finding | Observation | Alpine consequence |
+| --- | --- | --- |
+| Scene representation | `scene.rs` has the same blob at the prior stable point and radar head. | No new scene-layout or batching technique is available to adopt. Alpine retains its immutable structure-of-arrays scene. |
+| Metal atlas | `metal_atlas.rs` has the same blob at the prior stable point and radar head. | No new atlas allocation, eviction, or upload evidence changes Alpine's corrected lookup-first and dirty-row plan. |
+| Metal renderer | Runtime renderer changes are limited to extending test-only configuration gates with `bench-support`; no production submission or resource-lifetime behavior changed. | Keep benchmark instrumentation isolated. Do not infer a renderer improvement or change the Direct Metal backend. |
+| Demand re-arming | A dirty window or queued next-frame callback explicitly schedules and wakes a subsequent frame after throttling or a completed request. Tests cover callbacks that would otherwise be stranded. | This corroborates Alpine's latest-demand-wins wake contract. It does not justify continuous rendering or a present-only tail. Zero idle submissions remain the default. |
+| Foreground attribution | A bounded journal records foreground work, frame-pending boundaries, drawing, and presentation. Independent collectors retain discontinuity markers when entries are unavailable. | Preserve Alpine's stage-separated evidence and explicit omissions. Consider a smaller bounded journal only if #304 or a reproduced incident cannot be explained by current reports. |
+| Hang classification | GPUI separates foreground occupancy from dirty-to-present delay. A slow presentation with little foreground work is deliberately not classified as a foreground hang. | Alpine must not label compositor or GPU delay as CPU/editor work. Typing analysis #331 must retain separate event, mutation, scene, commit, completion, and presentation stages. |
+| Benchmark support | Benchmark reports add foreground count, total, maximum, percentiles, and frame-budget overruns while excluding draw and present work already reported separately. | The measurement boundary supports Alpine's existing no-double-counting rule. It is research input, not comparable timing evidence. |
+| Line splitting | `LineLayout::split_at` partitions shaped runs, clones prefix and suffix glyph vectors, and rebases suffix indices and positions. | Defer. It is a utility for a concrete caller, not evidence of lower allocation or faster shaping, and Alpine has no measured need for the same API. |
+| Licensing | GPUI-family `LICENSE-APACHE` blobs are unchanged across the compared trees. | License boundaries are unchanged. This review studies behavior and copies no source. |
+
+Primary source anchors:
+
+- [Window invalidation and pending-frame recording](https://github.com/zed-industries/zed/blob/1662f5f3f6497c5f80830ccdca1edfd1fc0c6c6a/crates/gpui/src/window.rs#L182-L213)
+- [Demand re-arming after throttling and frame completion](https://github.com/zed-industries/zed/blob/1662f5f3f6497c5f80830ccdca1edfd1fc0c6c6a/crates/gpui/src/window.rs#L1550-L1675)
+- [Bounded foreground-journal limits](https://github.com/zed-industries/zed/blob/1662f5f3f6497c5f80830ccdca1edfd1fc0c6c6a/crates/gpui/src/profiler/journal.rs#L32-L56)
+- [Journal collector and discontinuity contract](https://github.com/zed-industries/zed/blob/1662f5f3f6497c5f80830ccdca1edfd1fc0c6c6a/crates/gpui/src/profiler/journal.rs#L885-L938)
+- [Foreground hang attribution](https://github.com/zed-industries/zed/blob/1662f5f3f6497c5f80830ccdca1edfd1fc0c6c6a/crates/gpui/src/profiler/hang.rs#L1-L86)
+- [Slow-presentation classification control](https://github.com/zed-industries/zed/blob/1662f5f3f6497c5f80830ccdca1edfd1fc0c6c6a/crates/gpui/src/profiler/hang.rs#L805-L836)
+- [Line-layout split utility](https://github.com/zed-industries/zed/blob/1662f5f3f6497c5f80830ccdca1edfd1fc0c6c6a/crates/gpui/src/text_system/line_layout.rs#L128-L166)
+- [Unchanged Apache license identity](https://github.com/zed-industries/zed/blob/1662f5f3f6497c5f80830ccdca1edfd1fc0c6c6a/crates/gpui/LICENSE-APACHE)
+
+### Decision and limits
+
+The decision is to retain Alpine's current architecture. Adopt the principles
+of explicit demand re-arming, bounded diagnostic retention, discontinuity
+reporting, and stage attribution. Do not import GPUI's journal, profiler,
+runtime, line-layout utility, or source. Do not widen Alpine's product runtime
+or add always-on diagnostic memory from this review.
+
+The comparator remains pinned to `v1.15.0`; changing that identity would
+invalidate retained fixtures and requires a separate accepted requalification.
+Only the upstream radar baseline advances to the reviewed head so future scans
+report new deltas instead of reopening this one. No code was executed and no
+timing or memory samples were collected, so this review supports architecture
+decisions at E2 and supports no performance claim. Revisit the decision when a
+new radar issue identifies runtime or renderer changes, or when Alpine's own
+typing evidence demonstrates a diagnostic gap that current bounded reports
+cannot localize.
