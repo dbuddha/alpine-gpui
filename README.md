@@ -65,9 +65,13 @@ and lifecycle qualification ([#223](https://github.com/dbuddha/alpine-gpui/issue
 [#253](https://github.com/dbuddha/alpine-gpui/issues/253), and
 [#273](https://github.com/dbuddha/alpine-gpui/issues/273)), sustained dogfood
 and residency acceptance ([#224](https://github.com/dbuddha/alpine-gpui/issues/224)
-and [#238 through #242](https://github.com/dbuddha/alpine-gpui/issues/238)), and
-realistic renderer qualification ([#353](https://github.com/dbuddha/alpine-gpui/issues/353)
-and [#53](https://github.com/dbuddha/alpine-gpui/issues/53)). Fixed-hardware
+and [#239 through #242](https://github.com/dbuddha/alpine-gpui/issues/239)), and
+renderer E4 qualification ([#470](https://github.com/dbuddha/alpine-gpui/issues/470),
+[#471](https://github.com/dbuddha/alpine-gpui/issues/471), and
+[#472](https://github.com/dbuddha/alpine-gpui/issues/472) under
+[#53](https://github.com/dbuddha/alpine-gpui/issues/53)). The revision-pinned
+dogfood capture mechanism #238 and realistic renderer lifecycle task #353 are
+complete prerequisites, not remaining acceptance gates. Fixed-hardware
 comparator evidence, API stabilization, signing, notarization, packaging, and
 release support remain later gates. The exact implemented boundaries and
 invariants are documented in [Architecture](ARCHITECTURE.md); GitHub Issues own

@@ -19,8 +19,9 @@ The canonical lineage package records:
 Current claim boundary: deterministic bounded-resource and avoided-work
 invariants exist, but comparative GPUI, Zed, and Sublime dominance is not yet
 qualified. Visible release typing latency remains a critical blocker. The
-realistic prepared-scene ladder has composed E3 semantic admission; atlas
-recovery, timing, memory, and E4 comparison remain open.
+realistic prepared-scene ladder and six-step atlas lifecycle have composed E3
+semantic admission. Timing, adaptation, renderer residency, and independent
+E4 comparison remain open through #470, #471, and #472.
 
 - [Research index](Research-Index)
 - [Execution map](Execution-Map)

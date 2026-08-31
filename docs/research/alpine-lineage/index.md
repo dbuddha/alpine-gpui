@@ -2,7 +2,7 @@
 
 - Research record: [#315](https://github.com/dbuddha/alpine-gpui/issues/315)
 - Historical audit baseline: [`de8cd6397adc81632fe1103f1834214ae6ec6a1a`](https://github.com/dbuddha/alpine-gpui/tree/de8cd6397adc81632fe1103f1834214ae6ec6a1a)
-- Current reconciliation revision: [`e2564055622dce3a7d1f277d52fc53e34c16e916`](https://github.com/dbuddha/alpine-gpui/tree/e2564055622dce3a7d1f277d52fc53e34c16e916)
+- Current reconciliation revision: [`ca46188bd31618a9e4d25858664e44cfae5dc04d`](https://github.com/dbuddha/alpine-gpui/tree/ca46188bd31618a9e4d25858664e44cfae5dc04d)
 - Comparator pin: Zed [`v1.15.0`](https://github.com/zed-industries/zed/tree/e17dc4f9d50db73a458b64dcce50ecd4878b98a3)
 - Current-upstream review: Zed [`v1.17.2`](https://github.com/zed-industries/zed/tree/c8e44cfa7bda9b2e22c8d6934d78969352e7f61a), WGPU [`v30.0.1`](https://github.com/gfx-rs/wgpu/tree/40f4a34ebaf56f9a046231f54125ad046239d3f3), awesome-gpui [`f3889e7`](https://github.com/zed-industries/awesome-gpui/tree/f3889e71920ffbe8affa0f133c3db6ce6b06af76)
 - Reviewed: 2026-08-27
@@ -28,11 +28,15 @@ adds stricter value validation, bounded queues and caches, lifecycle generation
 identity, structured failure evidence, deterministic CPU oracles, formal model
 checks, and a local-only editor boundary.
 
-The project is not yet qualified as faster than GPUI, Zed, or Sublime. PR
-[#344](https://github.com/dbuddha/alpine-gpui/pull/344) advances the pinned Zed
-lab to composed E3 semantic agreement for the immutable control, clipped grid,
-glyph grid, realistic code viewport, scroll, and resize fixture ladder. Atlas
-recovery, timing, memory, latency, and E4 dominance remain open under
+The project is not yet qualified as faster than GPUI, Zed, or Sublime. PRs
+[#344](https://github.com/dbuddha/alpine-gpui/pull/344) and
+[#469](https://github.com/dbuddha/alpine-gpui/pull/469) retain composed E3
+semantic agreement for the immutable control, clipped grid, glyph grid,
+realistic code viewport, scroll, resize, and six-step atlas lifecycle. Timing
+and adaptation calibration [#470](https://github.com/dbuddha/alpine-gpui/issues/470),
+renderer residency [#471](https://github.com/dbuddha/alpine-gpui/issues/471),
+and independent-window E4 qualification
+[#472](https://github.com/dbuddha/alpine-gpui/issues/472) remain open under
 [#53](https://github.com/dbuddha/alpine-gpui/issues/53). The most important
 product defect is visible typing latency in
 [#304](https://github.com/dbuddha/alpine-gpui/issues/304). Physical
