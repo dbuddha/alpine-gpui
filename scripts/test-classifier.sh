@@ -136,19 +136,19 @@ ax_client=$(run_fixture tools/alpine-ax-client/src/lib.rs)
 assert_output "$ax_client" coverage=true
 assert_output "$ax_client" mutation=true
 assert_output "$ax_client" kani=false
-assert_output "$ax_client" metal=false
+assert_output "$ax_client" metal=true
 
 ax_client_native=$(run_fixture tools/alpine-ax-client/src/native.rs)
 assert_output "$ax_client_native" coverage=true
 assert_output "$ax_client_native" mutation=true
 assert_output "$ax_client_native" kani=false
-assert_output "$ax_client_native" metal=false
+assert_output "$ax_client_native" metal=true
 
 ax_client_manifest=$(run_fixture tools/alpine-ax-client/Cargo.toml)
 assert_output "$ax_client_manifest" coverage=true
 assert_output "$ax_client_manifest" mutation=true
 assert_output "$ax_client_manifest" kani=false
-assert_output "$ax_client_manifest" metal=false
+assert_output "$ax_client_manifest" metal=true
 
 tool_docs=$(run_fixture tools/alpine-ax-client/README.md)
 assert_output "$tool_docs" coverage=false
@@ -196,5 +196,14 @@ assert_output "$shader" coverage=false
 assert_output "$shader" mutation=false
 assert_output "$shader" kani=false
 assert_output "$shader" metal=true
+
+metal_gate=$(run_fixture scripts/check-metal.sh)
+assert_output "$metal_gate" metal=true
+
+native_benchmark_classifier=$(run_fixture scripts/check-native-benchmark-result.sh)
+assert_output "$native_benchmark_classifier" metal=true
+
+native_benchmark_classifier_tests=$(run_fixture scripts/test-native-benchmark-result.sh)
+assert_output "$native_benchmark_classifier_tests" metal=true
 
 printf 'CI classifier tests passed\n'

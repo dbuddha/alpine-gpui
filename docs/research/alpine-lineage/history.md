@@ -101,3 +101,19 @@ superseded but must not erase the earlier claim or evidence state.
 - Distinguish the source head under review from any synthetic merge-test revision used to name hosted artifacts.
 - Never rewrite an E2 design observation as if it had always been E4.
 - Link raw evidence identities rather than pasting benchmark headlines.
+
+## 2026-08-31: Zed GPUI upstream radar review
+
+- Research [#445](https://github.com/dbuddha/alpine-gpui/issues/445) reviewed
+  exact source changes from the accepted `v1.15.0` comparator pin through
+  `1662f5f3f6497c5f80830ccdca1edfd1fc0c6c6a`, subtracting the previously
+  reviewed `v1.17.2` stable point before making project decisions.
+- GPUI scene and Metal-atlas blobs did not change after the prior stable review;
+  Metal renderer edits only widened benchmark-support configuration gates.
+- Demand re-arming and bounded foreground attribution corroborate Alpine's
+  latest-demand-wins and stage-separated evidence contracts. They do not
+  justify continuous rendering, a broad profiler subsystem, copied source, or
+  a performance claim.
+- The research radar baseline advanced to the reviewed head. The immutable
+  renderer comparator remains Zed `v1.15.0` pending a separately approved
+  requalification.
