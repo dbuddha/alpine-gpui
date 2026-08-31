@@ -330,7 +330,7 @@ fn reference_benchmark_publishes_bounded_samples() -> Result<(), String> {
 }
 
 #[test]
-fn native_benchmark_publishes_measured_samples() -> Result<(), String> {
+fn native_benchmark_publishes_or_rejects_the_known_virtual_device() -> Result<(), String> {
     let binary = env!("CARGO_BIN_EXE_alpine-assurance");
     let root = repository_root();
     let manifest = "assurance/qualification/v1/scene.toml";
@@ -346,12 +346,17 @@ fn native_benchmark_publishes_measured_samples() -> Result<(), String> {
         .args(["1", "1"])
         .output()
         .map_err(|error| error.to_string())?;
-    if cfg!(target_os = "macos") {
+    let stderr = String::from_utf8_lossy(&native.stderr);
+    if cfg!(target_os = "macos") && !native.status.success() {
         assert!(
-            native.status.success(),
-            "{}",
-            String::from_utf8_lossy(&native.stderr)
+            stderr.contains(
+                "Metal device Apple Paravirtual device is unsupported: Metal 3 family support is required"
+            ),
+            "unexpected native benchmark failure: {stderr}"
         );
+        assert!(!native_output_path.exists());
+    } else if cfg!(target_os = "macos") {
+        assert!(native.status.success(), "{stderr}");
         assert!(String::from_utf8_lossy(&native.stdout).contains("direct-metal"));
         let native_csv =
             fs::read_to_string(&native_output_path).map_err(|error| error.to_string())?;
@@ -366,6 +371,7 @@ fn native_benchmark_publishes_measured_samples() -> Result<(), String> {
         fs::remove_file(&native_output_path).map_err(|error| error.to_string())?;
     } else {
         assert!(!native.status.success());
+        assert!(stderr.contains("cannot initialize Direct Metal"));
         assert!(!native_output_path.exists());
     }
     Ok(())
