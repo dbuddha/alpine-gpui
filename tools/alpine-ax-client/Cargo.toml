@@ -1,0 +1,27 @@
+[package]
+name = "alpine-ax-client"
+description = "Non-shipping bounded macOS accessibility assurance client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-application-services = { version = "=0.3.2", default-features = false, features = ["std", "AXError", "AXUIElement", "AXValue", "HIServices", "libc"] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFArray", "CFDate", "CFNumber", "CFRunLoop", "CFString"] }
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "allow"
+unexpected_cfgs = { level = "deny", check-cfg = ['cfg(kani)'] }
+
+[lints.clippy]
+all = "deny"
+pedantic = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"

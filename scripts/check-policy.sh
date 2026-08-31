@@ -152,9 +152,9 @@ if [ -n "$workflow_files" ]; then
         'upload-rust-analyzer-compatibility-primary'
     if [ -z "$native_mutation_block" ] \
         || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec '^[[:space:]]+shard: ([0-9]|1[0-5])/16$')" -ne 16 ] \
-        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec 'cargo mutants ')" -ne 10 ] \
-        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Fc -- '--shard "${{ matrix.shard }}"')" -ne 10 ]; then
-        fail 'pull-request native mutation must preserve all ten scopes across sixteen deterministic shards'
+        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec 'cargo mutants ')" -ne 11 ] \
+        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Fc -- '--shard "${{ matrix.shard }}"')" -ne 11 ]; then
+        fail 'pull-request native mutation must preserve all eleven scopes across sixteen deterministic shards'
     fi
     for shard in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         if ! printf '%s\n' "$native_mutation_block" | grep -Fq "shard: $shard/16"; then
@@ -180,6 +180,14 @@ if [ -n "$workflow_files" ]; then
         || ! printf '%s\n' "$native_mutation_block" | grep -Fq 'ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility' \
         || ! printf '%s\n' "$native_mutation_block" | grep -Fq 'target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out'; then
         fail 'Studio accessibility process mutation must transfer explicitly from Linux to accessibility-scoped retained native shards'
+    fi
+    if ! printf '%s\n' "$mutation_diff_block" | grep -Fq -- "--exclude 'tools/alpine-ax-client/src/native.rs'" \
+        || ! printf '%s\n' "$mutation_diff_block" | grep -Fq -- "--exclude 'tools/alpine-ax-client/src/native_factory.rs'" \
+        || ! printf '%s\n' "$native_mutation_block" | grep -Fq -- 'if [ -f tools/alpine-ax-client/src/native_factory.rs ]; then' \
+        || ! printf '%s\n' "$native_mutation_block" | grep -Fq -- '--file tools/alpine-ax-client/src/native_factory.rs' \
+        || ! printf '%s\n' "$native_mutation_block" | grep -Fq -- '--test-package alpine-ax-client' \
+        || ! printf '%s\n' "$native_mutation_block" | grep -Fq 'target/native-ax-client-factory-mutants-${{ matrix.id }}.out'; then
+        fail 'AX target-only mutation must leave Linux explicitly and retain one conditional Apple factory owner'
     fi
     for language_evidence_owner in \
         reset_native_validation_language_evidence \
@@ -306,20 +314,22 @@ fi
 unsafe_override_files=$(grep -lE '^unsafe_code[[:space:]]*=[[:space:]]*"allow"' $manifest_files 2>/dev/null | sort || true)
 expected_unsafe_override_files='./crates/alpine-metal/Cargo.toml
 ./crates/alpine-platform-macos/Cargo.toml
-./crates/alpine-text-layout/Cargo.toml'
+./crates/alpine-text-layout/Cargo.toml
+./tools/alpine-ax-client/Cargo.toml'
 if [ "$unsafe_override_files" != "$expected_unsafe_override_files" ]; then
-    fail 'only audited native Metal and macOS platform crates may override unsafe-code denial'
+    fail 'only audited native Metal, macOS platform, text, and non-shipping AX crates may override unsafe-code denial'
     printf '%s\n' "$unsafe_override_files" >&2
 fi
 
-unsafe_source_files=$(find crates -type f -name '*.rs' -print0 \
+unsafe_source_files=$(find crates tools -type f -name '*.rs' -print0 \
     | xargs -0 grep -lE 'unsafe[[:space:]]+(extern|fn|impl|trait)|unsafe[[:space:]]*\{' 2>/dev/null \
     | sort || true)
 expected_unsafe_source_files='crates/alpine-metal/src/native.rs
 crates/alpine-platform-macos/src/native.rs
 crates/alpine-platform-macos/src/native_accessibility.rs
 crates/alpine-platform-macos/src/signpost.rs
-crates/alpine-text-layout/src/native.rs'
+crates/alpine-text-layout/src/native.rs
+tools/alpine-ax-client/src/native.rs'
 if [ "$unsafe_source_files" != "$expected_unsafe_source_files" ]; then
     fail 'unsafe Rust constructs must remain isolated in audited native boundary files'
     printf '%s\n' "$unsafe_source_files" >&2
