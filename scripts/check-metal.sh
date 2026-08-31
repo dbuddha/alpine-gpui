@@ -30,6 +30,19 @@ export MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING=1
 export MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1
 export MTL_SHADER_VALIDATION_ABORT_ON_FAULT=1
 
+native_benchmark=target/qualification/native-renderer-samples.csv
+mkdir -p target/qualification
+rm -f "$native_benchmark"
+cargo run --quiet --locked -p alpine-assurance -- \
+    benchmark-scene-native assurance/qualification/v1/scene.toml \
+    "$native_benchmark" 1 3 \
+    > target/qualification/native-renderer-benchmark.txt
+grep -Fq 'stage renderer-submit-readback using process-monotonic Instant' \
+    target/qualification/native-renderer-benchmark.txt
+grep -Fq 'performance claim=none' \
+    target/qualification/native-renderer-benchmark.txt
+test "$(wc -l < "$native_benchmark" | tr -d ' ')" -eq 4
+
 mkdir -p target
 xcrun swiftc -parse-as-library tools/onscreen-sdr-capture/Capture.swift \
     -o target/onscreen-sdr-capture-helper
