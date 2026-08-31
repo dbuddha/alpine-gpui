@@ -46,24 +46,36 @@ Each task has one direct parent. Related requirements use links. A dependency
 edge means the downstream contract cannot be satisfied first; a sequencing
 preference is not a blocker.
 
-## Preferred Project fields
+## Project schema
 
-Use fields only when a view or decision consumes them:
+Use GitHub-native metadata as the canonical owner whenever it exists:
 
-- Type.
-- Gate.
-- Status.
-- Priority.
-- Risk.
-- Blocked By.
-- Evidence Level.
-- Claim State.
-- Estimate.
-- Acceptance Gate.
+| Planning fact | Authority |
+| --- | --- |
+| Work type | `kind:*` issue label |
+| Delivery owner | Assignees |
+| Outcome cohort | Milestone |
+| Decomposition | Parent and sub-issue relationships |
+| Required ordering | Native blocked-by relationship |
+| Workflow | Project `Status` |
 
-Preferred workflow states are `Proposed`, `Ready`, `In Progress`, `Blocked`,
-`In Review`, and `Done` when the existing Project supports them. Labels classify
-work and risk; they do not duplicate workflow state.
+Project #1 custom fields are `Delivery Gate`, `Evidence Level`, `Workload`, and
+`Acceptance Gate`. Existing planning fields are `Priority`, `Risk`, `Horizon`,
+`Remaining weeks`, and `Confidence`. Do not duplicate native facts in custom
+`Type`, `Owner`, or `Blocked By` fields.
+
+Delivery Gate uses `Foundation`, `Native Correctness`, `Text and Atlas`, `Daily
+Driver`, `Private Dogfood`, `Residency`, `Performance Qualification`, `Element
+Extraction`, and `Release`. Evidence Level uses `E0` through `E4`; it records
+the highest accepted evidence, not the intended destination. `Workload` names
+the bounded journey or trace, while `Acceptance Gate` states the evidence still
+required for closure.
+
+Project #1 workflow states are `Backlog`, `Ready`, `In Progress`, `Review`,
+`Blocked`, and `Done`. A blocked item names a native blocking issue whenever one
+exists. Use a blocker without an issue edge only for a named external condition
+with an explicit acceptance gate. Labels classify work and risk; they do not
+duplicate workflow state.
 
 ## Required retrieval views
 
