@@ -80,6 +80,12 @@ if matches '^(apps/alpine-studio/(.+\.rs|Cargo\.toml)$|crates/(alpine-metal|alpi
     metal=true
 fi
 
+# Metal validation orchestration owns the same native evidence as the source it
+# qualifies. A gate must not be able to change while classifying itself out.
+if matches '^scripts/(check-metal|check-native-benchmark-result|test-native-benchmark-result)\.sh$'; then
+    metal=true
+fi
+
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
     {
         printf 'base_sha=%s\n' "$base_sha"
