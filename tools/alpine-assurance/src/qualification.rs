@@ -592,16 +592,19 @@ mod benchmark_tests {
             benchmark_scene(false, &manifest, &output, 0, 0),
             Err(errors) if errors.iter().any(|error| error.contains("sample count"))
         ));
-        let blocked_parent =
-            directory.join(format!("benchmark-blocked-parent-{}", std::process::id()));
-        let _ = fs::remove_file(&blocked_parent);
-        fs::write(&blocked_parent, b"not a directory").map_err(|error| error.to_string())?;
-        let blocked_output = blocked_parent.join("samples.csv");
-        assert!(matches!(
-            benchmark_scene(false, &manifest, &blocked_output, 0, 1),
-            Err(errors) if errors.iter().any(|error| error.contains("cannot inspect"))
-        ));
-        fs::remove_file(&blocked_parent).map_err(|error| error.to_string())?;
+        #[cfg(not(windows))]
+        {
+            let blocked_parent =
+                directory.join(format!("benchmark-blocked-parent-{}", std::process::id()));
+            let _ = fs::remove_file(&blocked_parent);
+            fs::write(&blocked_parent, b"not a directory").map_err(|error| error.to_string())?;
+            let blocked_output = blocked_parent.join("samples.csv");
+            assert!(matches!(
+                benchmark_scene(false, &manifest, &blocked_output, 0, 1),
+                Err(errors) if errors.iter().any(|error| error.contains("cannot inspect"))
+            ));
+            fs::remove_file(&blocked_parent).map_err(|error| error.to_string())?;
+        }
 
         let warmup_images = [vec![1_u8], vec![2_u8]];
         let mut warmup_images = warmup_images.into_iter();
