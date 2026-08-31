@@ -197,4 +197,13 @@ assert_output "$shader" mutation=false
 assert_output "$shader" kani=false
 assert_output "$shader" metal=true
 
+metal_gate=$(run_fixture scripts/check-metal.sh)
+assert_output "$metal_gate" metal=true
+
+native_benchmark_classifier=$(run_fixture scripts/check-native-benchmark-result.sh)
+assert_output "$native_benchmark_classifier" metal=true
+
+native_benchmark_classifier_tests=$(run_fixture scripts/test-native-benchmark-result.sh)
+assert_output "$native_benchmark_classifier_tests" metal=true
+
 printf 'CI classifier tests passed\n'
