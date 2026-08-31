@@ -5,6 +5,7 @@ mod calibration;
 mod dogfood;
 mod dogfood_live;
 mod lab;
+mod lab_lifecycle;
 mod lab_v2;
 mod onscreen;
 mod qualification;
@@ -275,7 +276,9 @@ fn run_lab_command(
         return Err(vec![format!("{command} accepts exactly one evidence path")]);
     }
     let path = Path::new(&path);
-    if lab_v2::is_v2_evidence(path) {
+    if lab_lifecycle::is_lifecycle_evidence(path) {
+        lab_lifecycle::run(command, path)
+    } else if lab_v2::is_v2_evidence(path) {
         lab_v2::run(command, path)
     } else {
         lab::run(command, path)

@@ -603,6 +603,20 @@ platform_scope = ["tooling", "macos-metal"]
 required_evidence = ["integration", "e2e", "native", "mutation", "coverage"]
 
 [[claims]]
+id = "AEP-0028-C08"
+mission = "MP-03"
+capability_issue = 25
+aep = "docs/aep/0028-zed-golden-qualification.md"
+requirement_issue = 53
+claim_type = "compatibility"
+risk = "critical"
+case_study_findings = ["CS-ZED-005", "CS-ZED-006", "CS-ZED-007"]
+kani_applicability = "required"
+tla_properties = ["MeasurementRequiresEquivalence"]
+platform_scope = ["tooling", "macos-metal"]
+required_evidence = ["tla", "kani", "unit", "property", "integration", "e2e", "native", "mutation", "coverage"]
+
+[[claims]]
 id = "AEP-0025-C01"
 mission = "MP-02"
 capability_issue = 25
@@ -1610,6 +1624,92 @@ kind = "coverage"
 artifact = "assurance/lab/v2/task-61-realistic-scenes.toml#coverage_lines_covered = 1142"
 assertion = "Merged-main hosted execution covered 1142 of 1184 adapter lines and 122 of 134 functions, above the accepted ratchets."
 scope = "Pinned Alpine Trace Adapter in Alpine Zed Lab run 32733054956."
+exclusions = ["Proof of correctness", "Zed code outside the adapter", "Alpine shipping code"]
+
+[[evidence]]
+id = "EV-0028-TLA08"
+claim = "AEP-0028-C08"
+kind = "tla"
+artifact = "formal/tla/aep-0028/GoldenQualification.tla#MeasurementRequiresEquivalence"
+assertion = "The qualification lifecycle forbids measurement before complete semantic equivalence and qualified environment identity."
+scope = "Finite ordering review reused by the atlas-lifecycle E3 admission boundary."
+bounds = ["pull request: 4 required gates and 3 windows", "nightly: 5 required gates and 4 windows"]
+assumptions = ["required gate membership represents valid independent correctness evidence", "weak fairness for enabled lifecycle progress"]
+exclusions = ["Rust refinement", "native renderer correctness", "elapsed time"]
+companion = "tools/alpine-assurance/src/qualification.rs#rejects_performance_before_correctness"
+
+[[evidence]]
+id = "EV-0028-KANI08"
+claim = "AEP-0028-C08"
+kind = "kani"
+artifact = "tools/alpine-trace/src/proofs.rs#lifecycle_sequence_rejects_symbolic_incompatible_reuse"
+assertion = "A symbolic compatible-reuse content drift is rejected while exact bounded reuse remains admitted."
+scope = "Six-step pure Rust lifecycle admission for Task #353."
+bounds = ["one two-by-two initial atlas", "one four-by-two capacity replacement", "one symbolic reuse-content fault"]
+exclusions = ["TOML parser", "native handles", "GPU execution"]
+companion = "tools/alpine-trace/src/lib.rs#lifecycle_sequence_accepts_only_bounded_reuse_replacement_and_resynchronization"
+
+[[evidence]]
+id = "EV-0028-UNIT08"
+claim = "AEP-0028-C08"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/lab_lifecycle.rs#canonical_record_validates_and_reports_the_claim_boundary"
+assertion = "The immutable Task #353 record validates and reports zero-upload warm reuse while preserving the no-performance-claim boundary."
+scope = "Byte-pinned composed lifecycle evidence and report generation."
+exclusions = ["Re-execution of Zed or Metal", "hardware attestation"]
+
+[[evidence]]
+id = "EV-0028-PROPERTY08"
+claim = "AEP-0028-C08"
+kind = "property"
+artifact = "tools/alpine-trace/src/lib.rs#lifecycle_sequence_accepts_only_bounded_reuse_replacement_and_resynchronization"
+assertion = "Only full admission, exact reuse, content and capacity replacement, teardown, and generation-two full resynchronization satisfy the bounded companion."
+scope = "Serialization-neutral lifecycle semantics for Task #353."
+exclusions = ["Native resource handles", "timing", "memory superiority"]
+
+[[evidence]]
+id = "EV-0028-INTEGRATION08"
+claim = "AEP-0028-C08"
+kind = "integration"
+artifact = "scripts/test-zed-lab-evidence.sh"
+assertion = "Repository-root validation pins every hosted and physical source-manifest hash, raw readback hash and size, exact canonical record, and claim boundary."
+scope = "Non-shipping cross-repository evidence retention for Task #353."
+exclusions = ["Network re-download", "GPL source in Alpine", "performance measurement"]
+
+[[evidence]]
+id = "EV-0028-E2E08"
+claim = "AEP-0028-C08"
+kind = "e2e"
+artifact = "assurance/lab/v3/task-353-atlas-lifecycle.toml#task-353-atlas-lifecycle"
+assertion = "Six exact transitions bind merged-main lab, pinned Zed and Alpine revisions, workload identities, source manifests, GPUI resource transitions, Direct Metal bytes and uploads, terminal drain, and deduplicated raw readbacks."
+scope = "Renderer-only atlas lifecycle and clean reconstruction at lab c5aaa5d, Zed e17dc4, and Alpine 4e6ee28."
+exclusions = ["Timing", "memory superiority", "presentation", "product journeys", "device-loss simulation"]
+
+[[evidence]]
+id = "EV-0028-NATIVE08"
+claim = "AEP-0028-C08"
+kind = "native"
+artifact = "assurance/lab/v3/task-353-atlas-lifecycle.toml#physical"
+assertion = "On physical Apple M4, all five visible lifecycle steps match the CPU oracle, pinned GPUI Metal, and Alpine Direct Metal exactly; warm reuse uploads zero bytes and teardown retains zero terminal bytes."
+scope = "Mac16,1 on macOS 26.6.2 with runtime-source GPUI shaders explicitly marked supporting and unqualified."
+exclusions = ["Offline shader compilation on the physical run", "onscreen presentation", "timing", "memory superiority"]
+
+[[evidence]]
+id = "EV-0028-MUTATION08"
+claim = "AEP-0028-C08"
+kind = "mutation"
+artifact = "assurance/lab/v3/task-353-atlas-lifecycle.toml#hosted"
+assertion = "Merged-main hosted analysis classified all 290 generated adapter mutants as 269 caught and 21 compiler-unviable with none missed or timed out."
+scope = "Pinned Alpine Trace Adapter in Alpine Zed Lab run 33346520970."
+exclusions = ["Alpine shipping code", "proof of semantic completeness"]
+
+[[evidence]]
+id = "EV-0028-COVERAGE08"
+claim = "AEP-0028-C08"
+kind = "coverage"
+artifact = "assurance/lab/v3/task-353-atlas-lifecycle.toml#hosted"
+assertion = "Merged-main hosted execution covered 2330 of 2411 adapter lines and 243 of 268 functions, above the accepted 95 and 90 percent ratchets."
+scope = "Pinned Alpine Trace Adapter in Alpine Zed Lab run 33346520970."
 exclusions = ["Proof of correctness", "Zed code outside the adapter", "Alpine shipping code"]
 
 [[evidence]]

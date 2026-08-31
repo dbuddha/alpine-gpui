@@ -1,0 +1,78 @@
+schema = "alpine-scene-trace-sequence-evidence/v1"
+id = "editor-atlas-lifecycle"
+comparison_level = "renderer-only"
+renderer_timing_performed = false
+memory_claim_performed = false
+atlas_allocation_identity_observed = false
+atlas_allocation_omission = "The safe offscreen report exposes exact bytes but not native resource handles or allocation identities."
+
+[[steps]]
+sequence = 0
+transition = "full-admission"
+logical_renderer_generation = 1
+backend_generation = 1
+submission = 1
+cpu_bytes = 256
+gpu_allocated_bytes = 2360
+atlas_upload_bytes = 4
+terminal_retained_bytes = 0
+max_cpu_oracle_channel_delta = 0
+semantic_and_pixel_equivalent = true
+
+[[steps]]
+sequence = 1
+transition = "compatible-reuse"
+logical_renderer_generation = 1
+backend_generation = 1
+submission = 2
+cpu_bytes = 256
+gpu_allocated_bytes = 2352
+atlas_upload_bytes = 0
+terminal_retained_bytes = 0
+max_cpu_oracle_channel_delta = 0
+semantic_and_pixel_equivalent = true
+
+[[steps]]
+sequence = 2
+transition = "content-replacement"
+logical_renderer_generation = 1
+backend_generation = 1
+submission = 3
+cpu_bytes = 256
+gpu_allocated_bytes = 2360
+atlas_upload_bytes = 4
+terminal_retained_bytes = 0
+max_cpu_oracle_channel_delta = 0
+semantic_and_pixel_equivalent = true
+
+[[steps]]
+sequence = 3
+transition = "capacity-replacement"
+logical_renderer_generation = 1
+backend_generation = 1
+submission = 4
+cpu_bytes = 256
+gpu_allocated_bytes = 2368
+atlas_upload_bytes = 8
+terminal_retained_bytes = 0
+max_cpu_oracle_channel_delta = 0
+semantic_and_pixel_equivalent = true
+
+[[steps]]
+sequence = 4
+transition = "teardown"
+logical_renderer_generation = 1
+terminal_retained_bytes = 0
+
+[[steps]]
+sequence = 5
+transition = "full-resynchronization"
+logical_renderer_generation = 2
+backend_generation = 1
+submission = 1
+cpu_bytes = 256
+gpu_allocated_bytes = 2368
+atlas_upload_bytes = 8
+terminal_retained_bytes = 0
+max_cpu_oracle_channel_delta = 0
+semantic_and_pixel_equivalent = true
