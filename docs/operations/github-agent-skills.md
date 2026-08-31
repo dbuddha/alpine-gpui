@@ -72,6 +72,29 @@ burn-down only for an explicitly frozen scope snapshot, and always pair either
 chart with scope change, leaf completion, cycle time, blocker age, and the
 current critical path.
 
+## Live Project schema
+
+Project #1 does not duplicate GitHub-native issue facts. `kind:*` labels own
+work type, Assignees own delivery ownership, Milestones own outcome cohorts,
+parent and sub-issue relationships own decomposition, and native blocked-by
+relationships own required ordering.
+
+Custom fields own only delivery projection: `Delivery Gate`, `Evidence Level`,
+`Workload`, and `Acceptance Gate`. The board also retains `Priority`, `Risk`,
+`Horizon`, `Remaining weeks`, and `Confidence`. Status values are `Backlog`,
+`Ready`, `In Progress`, `Review`, `Blocked`, and `Done`. Do not create custom
+`Type`, `Owner`, or `Blocked By` fields alongside the native authorities.
+
+If an environment `GH_TOKEN` cannot read Project #1, inspect `gh auth status`
+before declaring Project state unknown. An authenticated keyring credential may
+have different scopes; a read-only retry with that credential is allowed only
+after its identity and authorization are verified. This is credential
+selection, not a check bypass.
+
+Reconcile in this order: issue hierarchy and native dependencies, Project
+projection, stable repository documentation, generated Wiki source, published
+Wiki, and fetched-remote Wiki audit. `docs/SUMMARY.md` remains navigation only.
+
 ## Pull request creation preflight
 
 Before creating a pull request, read the repository template and validate the
