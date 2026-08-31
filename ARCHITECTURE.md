@@ -312,6 +312,13 @@ Alpine, trace, patch, hosted artifact, physical machine, readback, coverage, and
 mutation identities. The first accepted record composes hosted offline-shader
 GPUI-to-CPU equivalence with physical Direct-Metal-to-CPU equivalence and
 rejects timing or performance claims. Calibration validation requires exact
+revision and environment identity. The non-shipping `alpine-ax-client` crate
+owns the physical assurance process's only generated ApplicationServices
+binding boundary. Its safe contract exposes bounded, generation-tagged tree,
+observer, query, action, and stale-element values without native handles;
+shipping crates do not depend on it. All CoreFoundation ownership and callback
+unsafe code remains isolated in `native.rs`, while non-macOS builds retain only
+an explicit unsupported contract.
 workload and identical-revision identity, four or more distinct hardware
 windows, twenty or more runs, balanced paired execution order, strict
 separation of cold and warm samples, measurement stage and clock identity,

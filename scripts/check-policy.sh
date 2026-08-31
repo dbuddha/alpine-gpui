@@ -314,20 +314,22 @@ fi
 unsafe_override_files=$(grep -lE '^unsafe_code[[:space:]]*=[[:space:]]*"allow"' $manifest_files 2>/dev/null | sort || true)
 expected_unsafe_override_files='./crates/alpine-metal/Cargo.toml
 ./crates/alpine-platform-macos/Cargo.toml
-./crates/alpine-text-layout/Cargo.toml'
+./crates/alpine-text-layout/Cargo.toml
+./tools/alpine-ax-client/Cargo.toml'
 if [ "$unsafe_override_files" != "$expected_unsafe_override_files" ]; then
-    fail 'only audited native Metal and macOS platform crates may override unsafe-code denial'
+    fail 'only audited native Metal, macOS platform, text, and non-shipping AX crates may override unsafe-code denial'
     printf '%s\n' "$unsafe_override_files" >&2
 fi
 
-unsafe_source_files=$(find crates -type f -name '*.rs' -print0 \
+unsafe_source_files=$(find crates tools -type f -name '*.rs' -print0 \
     | xargs -0 grep -lE 'unsafe[[:space:]]+(extern|fn|impl|trait)|unsafe[[:space:]]*\{' 2>/dev/null \
     | sort || true)
 expected_unsafe_source_files='crates/alpine-metal/src/native.rs
 crates/alpine-platform-macos/src/native.rs
 crates/alpine-platform-macos/src/native_accessibility.rs
 crates/alpine-platform-macos/src/signpost.rs
-crates/alpine-text-layout/src/native.rs'
+crates/alpine-text-layout/src/native.rs
+tools/alpine-ax-client/src/native.rs'
 if [ "$unsafe_source_files" != "$expected_unsafe_source_files" ]; then
     fail 'unsafe Rust constructs must remain isolated in audited native boundary files'
     printf '%s\n' "$unsafe_source_files" >&2
