@@ -177,6 +177,97 @@ fi
 unset ALPINE_ASSURANCE_FAILURE_WORKFLOW
 
 cp .github/workflows/nightly-assurance.yml "$fixture_dir/nightly-assurance.yml"
+cp .github/actions/upload-required-artifact/action.yml "$fixture_dir/upload-required-artifact.yml"
+ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/nightly-assurance.yml" \
+    ALPINE_REQUIRED_ARTIFACT_ACTION="$fixture_dir/upload-required-artifact.yml" \
+    run_policy >/dev/null
+
+sed 's#actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a#actions/upload-artifact@0000000000000000000000000000000000000000#' \
+    "$fixture_dir/upload-required-artifact.yml" > "$fixture_dir/unpinned-required-artifact.yml"
+if ALPINE_REQUIRED_ARTIFACT_ACTION="$fixture_dir/unpinned-required-artifact.yml" \
+    run_policy > "$fixture_dir/unpinned-required-artifact.log" 2>&1; then
+    printf 'policy test error: unpinned required artifact helper unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'required artifact helper must retain one tolerated primary and one identical blocking failure-only retry' \
+    "$fixture_dir/unpinned-required-artifact.log"; then
+    printf 'policy test error: expected required artifact pin failure was not reported\n' >&2
+    cat "$fixture_dir/unpinned-required-artifact.log" >&2
+    exit 1
+fi
+
+sed "s/steps.primary.outcome == 'failure'/steps.primary.outcome == 'success'/" \
+    "$fixture_dir/upload-required-artifact.yml" > "$fixture_dir/wrong-required-artifact-route.yml"
+if ALPINE_REQUIRED_ARTIFACT_ACTION="$fixture_dir/wrong-required-artifact-route.yml" \
+    run_policy > "$fixture_dir/wrong-required-artifact-route.log" 2>&1; then
+    printf 'policy test error: incorrectly routed required artifact retry unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'required artifact helper must retain one tolerated primary and one identical blocking failure-only retry' \
+    "$fixture_dir/wrong-required-artifact-route.log"; then
+    printf 'policy test error: expected required artifact routing failure was not reported\n' >&2
+    cat "$fixture_dir/wrong-required-artifact-route.log" >&2
+    exit 1
+fi
+
+sed "/steps.primary.outcome == 'failure'/a\\
+      continue-on-error: true" "$fixture_dir/upload-required-artifact.yml" \
+    > "$fixture_dir/nonblocking-required-artifact-retry.yml"
+if ALPINE_REQUIRED_ARTIFACT_ACTION="$fixture_dir/nonblocking-required-artifact-retry.yml" \
+    run_policy > "$fixture_dir/nonblocking-required-artifact-retry.log" 2>&1; then
+    printf 'policy test error: nonblocking required artifact retry unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'required artifact helper must retain one tolerated primary and one identical blocking failure-only retry' \
+    "$fixture_dir/nonblocking-required-artifact-retry.log"; then
+    printf 'policy test error: expected blocking required artifact retry failure was not reported\n' >&2
+    cat "$fixture_dir/nonblocking-required-artifact-retry.log" >&2
+    exit 1
+fi
+
+sed 's/name: ${{ inputs.name }}/name: drift/' "$fixture_dir/upload-required-artifact.yml" \
+    > "$fixture_dir/drifted-required-artifact-contract.yml"
+if ALPINE_REQUIRED_ARTIFACT_ACTION="$fixture_dir/drifted-required-artifact-contract.yml" \
+    run_policy > "$fixture_dir/drifted-required-artifact-contract.log" 2>&1; then
+    printf 'policy test error: drifted required artifact forwarding unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'required artifact helper must retain one tolerated primary and one identical blocking failure-only retry' \
+    "$fixture_dir/drifted-required-artifact-contract.log"; then
+    printf 'policy test error: expected required artifact forwarding failure was not reported\n' >&2
+    cat "$fixture_dir/drifted-required-artifact-contract.log" >&2
+    exit 1
+fi
+unset ALPINE_REQUIRED_ARTIFACT_ACTION
+
+perl -0pe 's#uses: \Q./.github/actions/upload-required-artifact\E#uses: actions/upload-artifact\@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a#' \
+    "$fixture_dir/nightly-assurance.yml" > "$fixture_dir/bypassed-required-artifact-nightly.yml"
+if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/bypassed-required-artifact-nightly.yml" \
+    run_policy > "$fixture_dir/bypassed-required-artifact-nightly.log" 2>&1; then
+    printf 'policy test error: bypassed Nightly required artifact helper unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'Nightly required artifacts must use eight governed retries and retain one direct supplementary upload' \
+    "$fixture_dir/bypassed-required-artifact-nightly.log"; then
+    printf 'policy test error: expected Nightly required artifact bypass failure was not reported\n' >&2
+    cat "$fixture_dir/bypassed-required-artifact-nightly.log" >&2
+    exit 1
+fi
+
+perl -0pe 's/if-no-files-found: error/if-no-files-found: warn/' \
+    "$fixture_dir/nightly-assurance.yml" > "$fixture_dir/downgraded-required-artifact-nightly.yml"
+if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/downgraded-required-artifact-nightly.yml" \
+    run_policy > "$fixture_dir/downgraded-required-artifact-nightly.log" 2>&1; then
+    printf 'policy test error: downgraded Nightly required artifact unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'Nightly required artifacts must use eight governed retries and retain one direct supplementary upload' \
+    "$fixture_dir/downgraded-required-artifact-nightly.log"; then
+    printf 'policy test error: expected Nightly required artifact downgrade failure was not reported\n' >&2
+    cat "$fixture_dir/downgraded-required-artifact-nightly.log" >&2
+    exit 1
+fi
+
 perl -0pe 's/(  native-platform-contract-mutation:.*?)( --shard "\$\{\{ matrix\.shard \}\}")/$1/s' \
     "$fixture_dir/nightly-assurance.yml" > "$fixture_dir/unsharded-native-platform-nightly.yml"
 if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/unsharded-native-platform-nightly.yml" \

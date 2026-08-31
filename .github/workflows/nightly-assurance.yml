@@ -34,7 +34,7 @@ jobs:
         run: scripts/check-tla.sh nightly
       - name: Upload model-checking evidence and counterexamples
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: ./.github/actions/upload-required-artifact
         with:
           name: tla-nightly-${{ github.sha }}
           path: target/tla
@@ -61,7 +61,7 @@ jobs:
           cargo kani --workspace --output-format=terse 2>&1 | tee target/kani/proofs.log
       - name: Upload proof inventory and results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: ./.github/actions/upload-required-artifact
         with:
           name: kani-nightly-${{ github.sha }}
           path: target/kani
@@ -241,7 +241,7 @@ jobs:
           if-no-files-found: warn
       - name: Upload compiled shader evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: ./.github/actions/upload-required-artifact
         with:
           name: metal-shader-nightly-${{ github.sha }}
           path: |
@@ -293,7 +293,7 @@ jobs:
           fi
       - name: Upload native platform contract mutation evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: ./.github/actions/upload-required-artifact
         with:
           name: native-platform-contract-mutation-${{ matrix.id }}-${{ github.sha }}
           path: |
@@ -349,7 +349,7 @@ jobs:
           cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|schedule_validation_user_window_close|NativeSurface::arm_window_close|NativeSurface::arm_user_window_close' --test-package alpine-platform-macos --test-package alpine-studio --no-shuffle --shard "${{ matrix.shard }}" --output "target/native-surface-mutants-${{ matrix.id }}.out" -- --locked
       - name: Upload native surface mutation evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: ./.github/actions/upload-required-artifact
         with:
           name: native-surface-mutation-${{ matrix.id }}-${{ github.sha }}
           path: target/native-surface-mutants-${{ matrix.id }}.out
@@ -410,7 +410,7 @@ jobs:
           cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence|initial_scene' --test-package alpine-studio --no-shuffle --shard "${{ matrix.shard }}" --output "target/native-studio-contract-mutants-${{ matrix.id }}.out" -- --locked
       - name: Upload Studio native contract mutation evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: ./.github/actions/upload-required-artifact
         with:
           name: native-studio-contract-mutation-${{ matrix.id }}-${{ github.sha }}
           path: |
@@ -466,7 +466,7 @@ jobs:
           cargo mutants --no-config --file crates/alpine-platform-macos/src/native_accessibility.rs --test-package alpine-platform-macos --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-accessibility-mutants-${{ matrix.id }}.out" -- --locked
       - name: Upload native accessibility mutation evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: ./.github/actions/upload-required-artifact
         with:
           name: native-accessibility-mutation-${{ matrix.id }}-${{ github.sha }}
           path: target/native-accessibility-mutants-${{ matrix.id }}.out
@@ -521,7 +521,7 @@ jobs:
           env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence' --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-studio-language-evidence-mutants-${{ matrix.id }}.out" -- --locked
       - name: Upload Studio accessibility process mutation evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: ./.github/actions/upload-required-artifact
         with:
           name: native-studio-accessibility-mutation-${{ matrix.id }}-${{ github.sha }}
           path: |

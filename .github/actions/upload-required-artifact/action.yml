@@ -1,0 +1,35 @@
+name: Upload required artifact with one retry
+description: Retain one required artifact with one failure-only blocking retry.
+inputs:
+  name:
+    description: Artifact name.
+    required: true
+  path:
+    description: Files or directories to upload.
+    required: true
+  retention-days:
+    description: Artifact retention in days.
+    required: true
+  if-no-files-found:
+    description: Missing-file behavior passed to the official upload action.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Upload required artifact
+      id: primary
+      continue-on-error: true
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+    - name: Retry required artifact upload
+      if: always() && steps.primary.outcome == 'failure'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
