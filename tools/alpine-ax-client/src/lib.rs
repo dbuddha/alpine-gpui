@@ -6,6 +6,10 @@ use std::{error::Error, fmt, time::Duration};
 mod native;
 #[cfg(target_os = "macos")]
 pub use native::NativeAxClient;
+#[cfg(target_os = "macos")]
+mod native_factory;
+#[cfg(target_os = "macos")]
+pub use native_factory::NativeAxClientFactory;
 
 /// Maximum admitted accessibility nodes in one snapshot.
 pub const MAX_NODE_LIMIT: usize = 16_384;
@@ -523,26 +527,9 @@ pub trait AxClientFactory {
 }
 
 /// Native generated-binding factory on macOS and an unsupported stub elsewhere.
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NativeAxClientFactory;
-
-#[cfg(target_os = "macos")]
-impl AxClientFactory for NativeAxClientFactory {
-    type Client = NativeAxClient;
-
-    fn is_trusted(&self) -> Result<bool, AxClientError> {
-        Ok(native::is_trusted())
-    }
-
-    fn attach(
-        &self,
-        pid: i32,
-        generation: AxGeneration,
-        limits: AxLimits,
-    ) -> Result<Self::Client, AxClientError> {
-        native::NativeAxClient::attach(pid, generation, limits)
-    }
-}
 
 #[cfg(not(target_os = "macos"))]
 impl AxClientFactory for NativeAxClientFactory {
