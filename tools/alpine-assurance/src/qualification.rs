@@ -352,16 +352,7 @@ pub(crate) fn benchmark_scene(
     warmup_iterations: u64,
     sample_count: u64,
 ) -> Result<String, Vec<String>> {
-    if warmup_iterations > MAX_BENCHMARK_WARMUPS {
-        return Err(vec![format!(
-            "renderer benchmark warmup count must not exceed {MAX_BENCHMARK_WARMUPS}"
-        )]);
-    }
-    if !(1..=MAX_BENCHMARK_SAMPLES).contains(&sample_count) {
-        return Err(vec![format!(
-            "renderer benchmark sample count must be between 1 and {MAX_BENCHMARK_SAMPLES}"
-        )]);
-    }
+    validate_benchmark_counts(warmup_iterations, sample_count)?;
     match fs::symlink_metadata(output) {
         Err(error) if error.kind() == ErrorKind::NotFound => {}
         Ok(_) => {
@@ -402,50 +393,38 @@ pub(crate) fn benchmark_scene(
     ))
 }
 
+fn validate_benchmark_counts(warmup_iterations: u64, sample_count: u64) -> Result<(), Vec<String>> {
+    if warmup_iterations > MAX_BENCHMARK_WARMUPS {
+        return Err(vec![format!(
+            "renderer benchmark warmup count must not exceed {MAX_BENCHMARK_WARMUPS}"
+        )]);
+    }
+    if !(1..=MAX_BENCHMARK_SAMPLES).contains(&sample_count) {
+        return Err(vec![format!(
+            "renderer benchmark sample count must be between 1 and {MAX_BENCHMARK_SAMPLES}"
+        )]);
+    }
+    Ok(())
+}
+
 fn benchmark_reference_scene(
     decoded: &DecodedTrace,
     warmup_iterations: u64,
     sample_count: u64,
 ) -> Result<Vec<u64>, Vec<String>> {
-    let admitted = decoded
-        .validated_frame()
-        .map_err(|error| vec![format!("scene trace frame validation failed: {error}")])?
-        .reference_image()
-        .map_err(|error| vec![format!("scene trace CPU oracle failed: {error}")])?;
-    let admitted_bytes = admitted.bytes().to_vec();
-
-    for _ in 0..warmup_iterations {
-        let image = decoded
-            .validated_frame()
-            .map_err(|error| vec![format!("scene trace frame validation failed: {error}")])?
-            .reference_image()
-            .map_err(|error| vec![format!("scene trace CPU oracle failed: {error}")])?;
-        if image.bytes() != admitted_bytes {
-            return Err(vec![
-                "renderer benchmark reference image changed during warmup".to_owned(),
-            ]);
-        }
-    }
-
-    let capacity = usize::try_from(sample_count)
-        .map_err(|_| vec!["renderer benchmark sample count exceeds usize".to_owned()])?;
-    let mut samples = Vec::with_capacity(capacity);
-    for _ in 0..sample_count {
-        let started = std::time::Instant::now();
-        let image = decoded
-            .validated_frame()
-            .map_err(|error| vec![format!("scene trace frame validation failed: {error}")])?
-            .reference_image()
-            .map_err(|error| vec![format!("scene trace CPU oracle failed: {error}")])?;
-        let elapsed = elapsed_benchmark_ns(started)?;
-        if image.bytes() != admitted_bytes {
-            return Err(vec![
-                "renderer benchmark reference image changed during measurement".to_owned(),
-            ]);
-        }
-        samples.push(elapsed);
-    }
-    Ok(samples)
+    benchmark_rendered_images(
+        warmup_iterations,
+        sample_count,
+        "reference",
+        || {
+            decoded
+                .validated_frame()
+                .map_err(|error| vec![format!("scene trace frame validation failed: {error}")])?
+                .reference_image()
+                .map_err(|error| vec![format!("scene trace CPU oracle failed: {error}")])
+        },
+        |image| image.bytes(),
+    )
 }
 
 fn benchmark_native_scene(
@@ -455,19 +434,39 @@ fn benchmark_native_scene(
 ) -> Result<Vec<u64>, Vec<String>> {
     let mut backend = alpine_metal::MetalBackend::new()
         .map_err(|error| vec![format!("cannot initialize Direct Metal: {error}")])?;
-    let admitted = backend
-        .render_offscreen(decoded.scene(), decoded.descriptor())
-        .map_err(|error| vec![format!("Direct Metal trace render failed: {error}")])?;
-    let admitted_bytes = admitted.image().bytes().to_vec();
+    benchmark_rendered_images(
+        warmup_iterations,
+        sample_count,
+        "Direct Metal",
+        || {
+            backend
+                .render_offscreen(decoded.scene(), decoded.descriptor())
+                .map_err(|error| vec![format!("Direct Metal trace render failed: {error}")])
+        },
+        |frame| frame.image().bytes(),
+    )
+}
+
+fn benchmark_rendered_images<R, Render, Bytes>(
+    warmup_iterations: u64,
+    sample_count: u64,
+    renderer: &str,
+    mut render: Render,
+    bytes: Bytes,
+) -> Result<Vec<u64>, Vec<String>>
+where
+    Render: FnMut() -> Result<R, Vec<String>>,
+    Bytes: for<'a> Fn(&'a R) -> &'a [u8],
+{
+    let admitted = render()?;
+    let admitted_bytes = bytes(&admitted).to_vec();
 
     for _ in 0..warmup_iterations {
-        let frame = backend
-            .render_offscreen(decoded.scene(), decoded.descriptor())
-            .map_err(|error| vec![format!("Direct Metal trace render failed: {error}")])?;
-        if frame.image().bytes() != admitted_bytes {
-            return Err(vec![
-                "renderer benchmark Direct Metal image changed during warmup".to_owned(),
-            ]);
+        let image = render()?;
+        if bytes(&image) != admitted_bytes {
+            return Err(vec![format!(
+                "renderer benchmark {renderer} image changed during warmup"
+            )]);
         }
     }
 
@@ -476,14 +475,12 @@ fn benchmark_native_scene(
     let mut samples = Vec::with_capacity(capacity);
     for _ in 0..sample_count {
         let started = std::time::Instant::now();
-        let frame = backend
-            .render_offscreen(decoded.scene(), decoded.descriptor())
-            .map_err(|error| vec![format!("Direct Metal trace render failed: {error}")])?;
+        let image = render()?;
         let elapsed = elapsed_benchmark_ns(started)?;
-        if frame.image().bytes() != admitted_bytes {
-            return Err(vec![
-                "renderer benchmark Direct Metal image changed during measurement".to_owned(),
-            ]);
+        if bytes(&image) != admitted_bytes {
+            return Err(vec![format!(
+                "renderer benchmark {renderer} image changed during measurement"
+            )]);
         }
         samples.push(elapsed);
     }
@@ -558,8 +555,11 @@ fn publish_benchmark_samples(output: &Path, bytes: &[u8]) -> Result<(), String> 
 
 #[cfg(test)]
 mod benchmark_tests {
-    use super::{MAX_BENCHMARK_WARMUPS, benchmark_scene};
-    use std::{fs, path::Path};
+    use super::{
+        MAX_BENCHMARK_SAMPLES, MAX_BENCHMARK_WARMUPS, benchmark_rendered_images, benchmark_scene,
+        elapsed_benchmark_ns, validate_benchmark_counts,
+    };
+    use std::{fs, path::Path, time::Duration};
 
     #[test]
     fn benchmark_counts_atomic_publication_and_collision_are_bounded() -> Result<(), String> {
@@ -570,10 +570,16 @@ mod benchmark_tests {
         let _ = fs::remove_file(&output);
         let manifest = root.join("assurance/qualification/v1/scene.toml");
 
-        let report = benchmark_scene(false, &manifest, &output, 1, 3)
+        assert!(validate_benchmark_counts(MAX_BENCHMARK_WARMUPS, MAX_BENCHMARK_SAMPLES).is_ok());
+        assert!(validate_benchmark_counts(MAX_BENCHMARK_WARMUPS + 1, 1).is_err());
+        assert!(validate_benchmark_counts(0, 0).is_err());
+        assert!(validate_benchmark_counts(0, MAX_BENCHMARK_SAMPLES + 1).is_err());
+
+        let report = benchmark_scene(false, &manifest, &output, 2, 3)
             .map_err(|errors| format!("valid benchmark failed: {errors:#?}"))?;
         let csv = fs::read_to_string(&output).map_err(|error| error.to_string())?;
         assert!(report.contains("performance claim=none"));
+        assert!(report.contains("warmup_iterations=2 sample_count=3"));
         assert_eq!(csv.lines().next(), Some("sample_index,elapsed_ns"));
         assert_eq!(csv.lines().count(), 4);
         assert!(matches!(
@@ -586,10 +592,59 @@ mod benchmark_tests {
             benchmark_scene(false, &manifest, &output, 0, 0),
             Err(errors) if errors.iter().any(|error| error.contains("sample count"))
         ));
+        let blocked_parent =
+            directory.join(format!("benchmark-blocked-parent-{}", std::process::id()));
+        let _ = fs::remove_file(&blocked_parent);
+        fs::write(&blocked_parent, b"not a directory").map_err(|error| error.to_string())?;
+        let blocked_output = blocked_parent.join("samples.csv");
         assert!(matches!(
-            benchmark_scene(false, &manifest, &output, MAX_BENCHMARK_WARMUPS + 1, 1),
-            Err(errors) if errors.iter().any(|error| error.contains("warmup count"))
+            benchmark_scene(false, &manifest, &blocked_output, 0, 1),
+            Err(errors) if errors.iter().any(|error| error.contains("cannot inspect"))
         ));
+        fs::remove_file(&blocked_parent).map_err(|error| error.to_string())?;
+
+        let warmup_images = [vec![1_u8], vec![2_u8]];
+        let mut warmup_images = warmup_images.into_iter();
+        assert!(matches!(
+            benchmark_rendered_images(
+                1,
+                1,
+                "controlled",
+                || warmup_images.next().ok_or_else(|| vec!["missing image".to_owned()]),
+                Vec::as_slice,
+            ),
+            Err(errors) if errors.iter().any(|error| error.contains("during warmup"))
+        ));
+        let measurement_images = [vec![1_u8], vec![2_u8]];
+        let mut measurement_images = measurement_images.into_iter();
+        assert!(matches!(
+            benchmark_rendered_images(
+                0,
+                1,
+                "controlled",
+                || measurement_images.next().ok_or_else(|| vec!["missing image".to_owned()]),
+                Vec::as_slice,
+            ),
+            Err(errors) if errors.iter().any(|error| error.contains("during measurement"))
+        ));
+
+        let started = std::time::Instant::now();
+        std::thread::sleep(Duration::from_millis(1));
+        let elapsed = elapsed_benchmark_ns(started)
+            .map_err(|errors| format!("elapsed benchmark failed: {errors:#?}"))?;
+        assert!(elapsed >= 100_000);
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let native_output =
+                directory.join(format!("benchmark-native-unit-{}.csv", std::process::id()));
+            let _ = fs::remove_file(&native_output);
+            assert!(matches!(
+                benchmark_scene(true, &manifest, &native_output, 0, 1),
+                Err(errors) if errors.iter().any(|error| error.contains("cannot initialize Direct Metal"))
+            ));
+            assert!(!native_output.exists());
+        }
         assert!(!output.exists());
         Ok(())
     }
