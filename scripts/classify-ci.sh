@@ -76,7 +76,7 @@ if has_label review:unsafe || matches '^(crates/alpine-text-layout/|crates/.+/(u
     miri=true
 fi
 
-if matches '^(apps/alpine-studio/(.+\.rs|Cargo\.toml)$|crates/(alpine-metal|alpine-platform-macos)/|shaders/|.+\.metal$)'; then
+if matches '^(apps/alpine-studio/(.+\.rs|Cargo\.toml)$|crates/(alpine-metal|alpine-platform-macos)/|tools/alpine-ax-client/(src/.+\.rs|Cargo\.toml)$|shaders/|.+\.metal$)'; then
     metal=true
 fi
 
