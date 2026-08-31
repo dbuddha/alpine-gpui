@@ -627,6 +627,9 @@ jobs:
             exit 1
           fi
           env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence|initial_scene' --test-package alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-studio-mutants-${{ matrix.id }}.out" -- --locked
+          if [ -f tools/alpine-ax-client/src/native_factory.rs ]; then
+            cargo mutants --no-config --file tools/alpine-ax-client/src/native_factory.rs --test-package alpine-ax-client --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-ax-client-factory-mutants-${{ matrix.id }}.out" -- --locked
+          fi
       - name: Upload native mutation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -643,6 +646,7 @@ jobs:
             target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out
             target/native-runtime-mutants-${{ matrix.id }}.out
             target/native-studio-mutants-${{ matrix.id }}.out
+            target/native-ax-client-factory-mutants-${{ matrix.id }}.out
           retention-days: 7
           if-no-files-found: warn
 
