@@ -52,6 +52,18 @@ if "$checker" --skills-root "$temporary/bad-skills" >"$temporary/missing-project
 grep -Fq 'project operator lacks PR metadata preflight' "$temporary/missing-project-pr-preflight.log"
 rm -rf "$temporary/bad-skills"
 cp -R "$repo_root/skills/." "$temporary/bad-skills"
+sed 's/native blocked-by relationships/native dependency links/' "$temporary/bad-skills/github-project-operator/SKILL.md" > "$temporary/missing-native-dependencies.md"
+mv "$temporary/missing-native-dependencies.md" "$temporary/bad-skills/github-project-operator/SKILL.md"
+if "$checker" --skills-root "$temporary/bad-skills" >"$temporary/missing-native-dependencies.log" 2>&1; then printf 'agent skill test error: missing native dependency authority unexpectedly passed\n' >&2; exit 1; fi
+grep -Fq 'project operator lacks native dependency authority' "$temporary/missing-native-dependencies.log"
+rm -rf "$temporary/bad-skills"
+cp -R "$repo_root/skills/." "$temporary/bad-skills"
+sed 's/native issue hierarchy and dependencies/native issue planning/' "$temporary/bad-skills/github-documentation-architect/SKILL.md" > "$temporary/missing-reconciliation-order.md"
+mv "$temporary/missing-reconciliation-order.md" "$temporary/bad-skills/github-documentation-architect/SKILL.md"
+if "$checker" --skills-root "$temporary/bad-skills" >"$temporary/missing-reconciliation-order.log" 2>&1; then printf 'agent skill test error: missing documentation reconciliation order unexpectedly passed\n' >&2; exit 1; fi
+grep -Fq 'documentation architect lacks reconciliation ordering' "$temporary/missing-reconciliation-order.log"
+rm -rf "$temporary/bad-skills"
+cp -R "$repo_root/skills/." "$temporary/bad-skills"
 sed 's/PR metadata preflight/PR creation review/' "$temporary/bad-skills/github-documentation-architect/SKILL.md" > "$temporary/missing-docs-pr-preflight.md"
 mv "$temporary/missing-docs-pr-preflight.md" "$temporary/bad-skills/github-documentation-architect/SKILL.md"
 if "$checker" --skills-root "$temporary/bad-skills" >"$temporary/missing-docs-pr-preflight.log" 2>&1; then printf 'agent skill test error: missing documentation PR preflight unexpectedly passed\n' >&2; exit 1; fi

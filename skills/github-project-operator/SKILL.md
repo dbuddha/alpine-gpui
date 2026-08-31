@@ -68,15 +68,22 @@ performance, memory, hardware, or comparator claims.
 
 ## Status and field defaults
 
-Use the repository's existing workflow. Alpine prefers `Proposed`, `Ready`,
-`In Progress`, `Blocked`, `In Review`, and `Done` when Project configuration
-supports them. Do not encode status again in labels.
+Use the repository's existing workflow. Alpine Project #1 uses `Backlog`,
+`Ready`, `In Progress`, `Review`, `Blocked`, and `Done`. Do not encode status
+again in labels.
 
-Prefer typed fields `Type`, `Gate`, `Priority`, `Risk`, `Blocked By`, `Evidence
-Level`, `Claim State`, `Estimate`, and `Acceptance Gate` when Project access
-exists. Use stable estimates `1`, `2`, `3`, `5`, and `8`; they express relative
-delivery complexity, not hours. A field without a decision or view consumer is
-dead metadata.
+Use GitHub-native metadata before custom fields. `kind:*` labels own work type,
+Assignees own delivery ownership, Milestones own outcome cohorts, parent and
+sub-issue relationships own decomposition, and native blocked-by relationships
+own required ordering. Do not create duplicate custom `Type`, `Owner`, or
+`Blocked By` fields.
+
+Alpine custom fields are `Delivery Gate`, `Evidence Level`, `Workload`, and
+`Acceptance Gate`. Existing planning fields are `Priority`, `Risk`, `Horizon`,
+`Remaining weeks`, and `Confidence`. Delivery Gate options are `Foundation`,
+`Native Correctness`, `Text and Atlas`, `Daily Driver`, `Private Dogfood`,
+`Residency`, `Performance Qualification`, `Element Extraction`, and `Release`.
+A field without a decision or view consumer is dead metadata.
 
 ## Planning algorithm
 
@@ -128,6 +135,10 @@ Read [metrics and reporting](references/metrics-and-reporting.md) before publish
 
 - Prefer stable node IDs for GraphQL mutations.
 - Preflight permissions and current field option IDs.
+- Prefer native blocked-by relationships, reject dependency cycles, and verify
+  both the blocked and blocking issue after mutation.
+- Use `Blocked` without an issue edge only for a named external condition that
+  has an explicit acceptance gate.
 - Make idempotent changes and verify each remote result.
 - Do not create duplicate issues to compensate for missing Project access.
 - Fall back to issue hierarchy when Project permissions are absent.

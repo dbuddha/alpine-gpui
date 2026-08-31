@@ -93,6 +93,14 @@ it is not another planning system.
 Read [documentation freshness](references/documentation-freshness.md) before
 publishing status-like material or declaring a page current.
 
+Use this reconciliation order: native issue hierarchy and dependencies,
+Project projection, stable repository documentation, Wiki source projection,
+Wiki publication, then fetched-remote audit. A documentation change never
+repairs stale Project state, and a Project mutation never publishes durable
+technical truth. When the Project schema changes, update its operating guide
+and installed skills in the same bounded task; project kind remains in issue
+labels, owner remains in Assignees, and blockers remain native issue edges.
+
 Before describing the live GitHub Wiki as current, run the live remote drift audit
 from a clean exact `origin/main` checkout. Local source validation and rendering
 prove only the repository templates; they do not prove that the fetched Wiki
