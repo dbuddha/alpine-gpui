@@ -9,8 +9,8 @@ use serde::{Deserialize, de::DeserializeOwned};
 use std::{
     collections::BTreeSet,
     fmt::Write as _,
-    fs,
-    io::ErrorKind,
+    fs::{self, OpenOptions},
+    io::{ErrorKind, Write as _},
     path::{Component, Path},
 };
 
@@ -18,6 +18,8 @@ const SCENE_SCHEMA: &str = "alpine-scene-trace/v1";
 const PREPARED_SCENE_SCHEMA: &str = "alpine-scene-trace/v2";
 const JOURNEY_SCHEMA: &str = "alpine-journey/v1";
 const QUALIFICATION_SCHEMA: &str = "alpine-qualification/v1";
+const MAX_BENCHMARK_WARMUPS: u64 = 100_000;
+const MAX_BENCHMARK_SAMPLES: u64 = 100_000;
 const SUPPORTED_OPERATIONS: &[&str] = &["solid-quad"];
 const PREPARED_OPERATIONS: &[&str] = &["solid-quad", "monochrome-glyph"];
 const SUPPORTED_ACTIONS: &[&str] = &[
@@ -341,6 +343,256 @@ pub(crate) fn render_scene(
         image.width(),
         image.height()
     ))
+}
+
+pub(crate) fn benchmark_scene(
+    native: bool,
+    manifest: &Path,
+    output: &Path,
+    warmup_iterations: u64,
+    sample_count: u64,
+) -> Result<String, Vec<String>> {
+    if warmup_iterations > MAX_BENCHMARK_WARMUPS {
+        return Err(vec![format!(
+            "renderer benchmark warmup count must not exceed {MAX_BENCHMARK_WARMUPS}"
+        )]);
+    }
+    if !(1..=MAX_BENCHMARK_SAMPLES).contains(&sample_count) {
+        return Err(vec![format!(
+            "renderer benchmark sample count must be between 1 and {MAX_BENCHMARK_SAMPLES}"
+        )]);
+    }
+    match fs::symlink_metadata(output) {
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Ok(_) => {
+            return Err(vec![format!(
+                "renderer benchmark output already exists: {}",
+                output.display()
+            )]);
+        }
+        Err(error) => {
+            return Err(vec![format!(
+                "cannot inspect renderer benchmark output {}: {error}",
+                output.display()
+            )]);
+        }
+    }
+
+    let scene: SceneTrace = load_toml(manifest)?;
+    let errors = validate_scene_errors_all(&scene);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let decoded = decode_scene(&scene).map_err(|error| vec![error])?;
+    let samples = if native {
+        benchmark_native_scene(&decoded, warmup_iterations, sample_count)?
+    } else {
+        benchmark_reference_scene(&decoded, warmup_iterations, sample_count)?
+    };
+    let csv = render_benchmark_samples(&samples)?;
+    publish_benchmark_samples(output, csv.as_bytes()).map_err(|error| vec![error])?;
+
+    let renderer = if native { "direct-metal" } else { "cpu-oracle" };
+    Ok(format!(
+        "recorded {} warmup and {} measured {renderer} samples for {} at stage renderer-submit-readback using process-monotonic Instant; performance claim=none; output={}",
+        warmup_iterations,
+        samples.len(),
+        scene.id,
+        output.display()
+    ))
+}
+
+fn benchmark_reference_scene(
+    decoded: &DecodedTrace,
+    warmup_iterations: u64,
+    sample_count: u64,
+) -> Result<Vec<u64>, Vec<String>> {
+    let admitted = decoded
+        .validated_frame()
+        .map_err(|error| vec![format!("scene trace frame validation failed: {error}")])?
+        .reference_image()
+        .map_err(|error| vec![format!("scene trace CPU oracle failed: {error}")])?;
+    let admitted_bytes = admitted.bytes().to_vec();
+
+    for _ in 0..warmup_iterations {
+        let image = decoded
+            .validated_frame()
+            .map_err(|error| vec![format!("scene trace frame validation failed: {error}")])?
+            .reference_image()
+            .map_err(|error| vec![format!("scene trace CPU oracle failed: {error}")])?;
+        if image.bytes() != admitted_bytes {
+            return Err(vec![
+                "renderer benchmark reference image changed during warmup".to_owned(),
+            ]);
+        }
+    }
+
+    let capacity = usize::try_from(sample_count)
+        .map_err(|_| vec!["renderer benchmark sample count exceeds usize".to_owned()])?;
+    let mut samples = Vec::with_capacity(capacity);
+    for _ in 0..sample_count {
+        let started = std::time::Instant::now();
+        let image = decoded
+            .validated_frame()
+            .map_err(|error| vec![format!("scene trace frame validation failed: {error}")])?
+            .reference_image()
+            .map_err(|error| vec![format!("scene trace CPU oracle failed: {error}")])?;
+        let elapsed = elapsed_benchmark_ns(started)?;
+        if image.bytes() != admitted_bytes {
+            return Err(vec![
+                "renderer benchmark reference image changed during measurement".to_owned(),
+            ]);
+        }
+        samples.push(elapsed);
+    }
+    Ok(samples)
+}
+
+fn benchmark_native_scene(
+    decoded: &DecodedTrace,
+    warmup_iterations: u64,
+    sample_count: u64,
+) -> Result<Vec<u64>, Vec<String>> {
+    let mut backend = alpine_metal::MetalBackend::new()
+        .map_err(|error| vec![format!("cannot initialize Direct Metal: {error}")])?;
+    let admitted = backend
+        .render_offscreen(decoded.scene(), decoded.descriptor())
+        .map_err(|error| vec![format!("Direct Metal trace render failed: {error}")])?;
+    let admitted_bytes = admitted.image().bytes().to_vec();
+
+    for _ in 0..warmup_iterations {
+        let frame = backend
+            .render_offscreen(decoded.scene(), decoded.descriptor())
+            .map_err(|error| vec![format!("Direct Metal trace render failed: {error}")])?;
+        if frame.image().bytes() != admitted_bytes {
+            return Err(vec![
+                "renderer benchmark Direct Metal image changed during warmup".to_owned(),
+            ]);
+        }
+    }
+
+    let capacity = usize::try_from(sample_count)
+        .map_err(|_| vec!["renderer benchmark sample count exceeds usize".to_owned()])?;
+    let mut samples = Vec::with_capacity(capacity);
+    for _ in 0..sample_count {
+        let started = std::time::Instant::now();
+        let frame = backend
+            .render_offscreen(decoded.scene(), decoded.descriptor())
+            .map_err(|error| vec![format!("Direct Metal trace render failed: {error}")])?;
+        let elapsed = elapsed_benchmark_ns(started)?;
+        if frame.image().bytes() != admitted_bytes {
+            return Err(vec![
+                "renderer benchmark Direct Metal image changed during measurement".to_owned(),
+            ]);
+        }
+        samples.push(elapsed);
+    }
+    Ok(samples)
+}
+
+fn elapsed_benchmark_ns(started: std::time::Instant) -> Result<u64, Vec<String>> {
+    let elapsed = started.elapsed().as_nanos();
+    if elapsed == 0 {
+        return Err(vec![
+            "renderer benchmark clock resolution produced a zero-duration sample".to_owned(),
+        ]);
+    }
+    u64::try_from(elapsed)
+        .map_err(|_| vec!["renderer benchmark duration exceeded u64 nanoseconds".to_owned()])
+}
+
+fn render_benchmark_samples(samples: &[u64]) -> Result<String, Vec<String>> {
+    let capacity = samples
+        .len()
+        .checked_mul(32)
+        .and_then(|bytes| bytes.checked_add(24))
+        .ok_or_else(|| vec!["renderer benchmark CSV capacity overflowed".to_owned()])?;
+    let mut csv = String::with_capacity(capacity);
+    csv.push_str("sample_index,elapsed_ns\n");
+    for (index, elapsed) in samples.iter().enumerate() {
+        writeln!(&mut csv, "{index},{elapsed}")
+            .map_err(|error| vec![format!("cannot format renderer benchmark sample: {error}")])?;
+    }
+    Ok(csv)
+}
+
+fn publish_benchmark_samples(output: &Path, bytes: &[u8]) -> Result<(), String> {
+    let temporary = output.with_file_name(format!(
+        ".alpine-renderer-benchmark-{}.tmp",
+        std::process::id()
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| {
+            format!(
+                "cannot create renderer benchmark temporary output {}: {error}",
+                temporary.display()
+            )
+        })?;
+    let write_result = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!(
+            "cannot persist renderer benchmark temporary output {}: {error}",
+            temporary.display()
+        ));
+    }
+    if let Err(error) = fs::hard_link(&temporary, output) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!(
+            "cannot publish renderer benchmark output {} without replacement: {error}",
+            output.display()
+        ));
+    }
+    if let Err(error) = fs::remove_file(&temporary) {
+        return Err(format!(
+            "cannot remove renderer benchmark temporary output {}: {error}",
+            temporary.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod benchmark_tests {
+    use super::{MAX_BENCHMARK_WARMUPS, benchmark_scene};
+    use std::{fs, path::Path};
+
+    #[test]
+    fn benchmark_counts_atomic_publication_and_collision_are_bounded() -> Result<(), String> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let directory = root.join("target/qualification");
+        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let output = directory.join(format!("benchmark-unit-{}.csv", std::process::id()));
+        let _ = fs::remove_file(&output);
+        let manifest = root.join("assurance/qualification/v1/scene.toml");
+
+        let report = benchmark_scene(false, &manifest, &output, 1, 3)
+            .map_err(|errors| format!("valid benchmark failed: {errors:#?}"))?;
+        let csv = fs::read_to_string(&output).map_err(|error| error.to_string())?;
+        assert!(report.contains("performance claim=none"));
+        assert_eq!(csv.lines().next(), Some("sample_index,elapsed_ns"));
+        assert_eq!(csv.lines().count(), 4);
+        assert!(matches!(
+            benchmark_scene(false, &manifest, &output, 1, 1),
+            Err(errors) if errors.iter().any(|error| error.contains("output already exists"))
+        ));
+        fs::remove_file(&output).map_err(|error| error.to_string())?;
+
+        assert!(matches!(
+            benchmark_scene(false, &manifest, &output, 0, 0),
+            Err(errors) if errors.iter().any(|error| error.contains("sample count"))
+        ));
+        assert!(matches!(
+            benchmark_scene(false, &manifest, &output, MAX_BENCHMARK_WARMUPS + 1, 1),
+            Err(errors) if errors.iter().any(|error| error.contains("warmup count"))
+        ));
+        assert!(!output.exists());
+        Ok(())
+    }
 }
 
 fn load_toml<T: DeserializeOwned>(path: &Path) -> Result<T, Vec<String>> {

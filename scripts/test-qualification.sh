@@ -28,6 +28,37 @@ grep -Fq 'with 3 operations and 8x4 reference pixels' \
     "$output_dir/scene-validation.txt"
 test "$(wc -c < "$output_dir/reference.bgra" | tr -d ' ')" -eq 128
 
+reference_samples="$output_dir/reference-samples.csv"
+rm -f "$reference_samples"
+cargo run --quiet --locked -p alpine-assurance -- \
+    benchmark-scene-reference assurance/qualification/v1/scene.toml \
+    "$reference_samples" 1 3 \
+    > "$output_dir/reference-benchmark.txt"
+grep -Fq 'stage renderer-submit-readback using process-monotonic Instant' \
+    "$output_dir/reference-benchmark.txt"
+grep -Fq 'performance claim=none' "$output_dir/reference-benchmark.txt"
+test "$(wc -l < "$reference_samples" | tr -d ' ')" -eq 4
+awk -F, '
+    NR == 1 { if ($1 != "sample_index" || $2 != "elapsed_ns") exit 1; next }
+    $1 != NR - 2 || $2 !~ /^[1-9][0-9]*$/ { exit 1 }
+' "$reference_samples"
+if cargo run --quiet --locked -p alpine-assurance -- \
+    benchmark-scene-reference assurance/qualification/v1/scene.toml \
+    "$reference_samples" 1 1 > "$output_dir/reference-collision.log" 2>&1; then
+    printf 'benchmark output collision unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'output already exists' "$output_dir/reference-collision.log"
+rm -f "$reference_samples"
+if cargo run --quiet --locked -p alpine-assurance -- \
+    benchmark-scene-reference assurance/qualification/v1/scene.toml \
+    "$reference_samples" 0 0 > "$output_dir/reference-zero.log" 2>&1; then
+    printf 'zero benchmark sample count unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'sample count must be between 1 and' "$output_dir/reference-zero.log"
+test ! -e "$reference_samples"
+
 for fixture in assurance/qualification/v2/*.toml; do
     name=$(basename "$fixture" .toml)
     cargo run --quiet --locked -p alpine-assurance -- \

@@ -62,3 +62,14 @@ drift and order effects. Fixture reports say `fixture-only`; physical records
 may say `protocol-ready`. Neither status is a confidence interval, equivalence
 margin, sample-size approval, blocking gate, or performance claim. Those require
 real physical-hardware data and a later owner-approved statistical decision.
+
+The non-shipping `benchmark-scene-reference` and `benchmark-scene-native`
+commands produce the bounded raw input for that calibration boundary. They
+decode and validate one immutable trace before sampling, reuse one renderer,
+discard declared warmups, require every image to match the admitted preflight
+image, and atomically publish strict `sample_index,elapsed_ns` CSV without
+replacement. The measured stage is explicitly `renderer-submit-readback` on a
+process-monotonic `Instant`; parsing, trace adaptation, process launch, and
+artifact publication remain outside it. These samples do not establish clock
+accuracy, A/A stability, statistical significance, GPUI comparison, or a
+performance claim.
