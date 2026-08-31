@@ -1,8 +1,11 @@
 # AEP 0028: Zed golden-workload qualification
 
 - Status: accepted foundation
-- Capability: [#28](https://github.com/dbuddha/alpine-gpui/issues/28)
-- Requirement: [#29](https://github.com/dbuddha/alpine-gpui/issues/29)
+- Capabilities: [#25](https://github.com/dbuddha/alpine-gpui/issues/25) and
+  [#28](https://github.com/dbuddha/alpine-gpui/issues/28)
+- Requirements: [#29](https://github.com/dbuddha/alpine-gpui/issues/29),
+  [#31](https://github.com/dbuddha/alpine-gpui/issues/31), and
+  [#53](https://github.com/dbuddha/alpine-gpui/issues/53)
 - Decision: [#41](https://github.com/dbuddha/alpine-gpui/issues/41)
 - Research: [#27](https://github.com/dbuddha/alpine-gpui/issues/27)
 - Mission: MP-02, MP-03, and MP-04
@@ -57,14 +60,19 @@ benchmark result, set a performance budget, or claim daily-driver parity.
   and performance evidence selected by its risk.
 - **AEP-0028-C07:** Optical results name their endpoints precisely; software
   timestamps cannot be reported as photon evidence.
+- **AEP-0028-C08:** One accepted atlas-lifecycle record binds the six-step
+  sequence, exact revisions, source manifests, shader modes, CPU, GPUI, and
+  Direct Metal outputs, upload and owner transitions, omissions, raw readback
+  identities, and assurance counts. Any drift or performance claim fails
+  closed.
 
 Claims C01 through C03 are implemented by the foundation Requirement. C04 is
 implemented for the immutable solid-quad control and the eight-fixture prepared
 renderer ladder by Requirement #31 and Task #61, with exact hosted and physical
 evidence registered in Alpine. This is E3 semantic equivalence, not timing,
-memory, latency, or dominance evidence. C05 through C07 remain approved design
-direction and unimplemented until their Requirements receive owner approval and
-evidence.
+memory, latency, or dominance evidence. C08 is implemented by Task #353 as
+composed E3 lifecycle evidence for Requirement #53. C05 through C07 remain
+approved direction without E4 or optical evidence.
 
 [Decision #333](https://github.com/dbuddha/alpine-gpui/issues/333) preserves the
 version 1 solid-quad slice as an immutable control and accepts
@@ -78,8 +86,11 @@ Task [#353](https://github.com/dbuddha/alpine-gpui/issues/353) adds the
 compatible `alpine-scene-trace-sequence/v1` companion. It binds full atlas
 admission, exact reuse, content replacement, capacity replacement, teardown,
 and clean full resynchronization without changing any retained v1 or v2 scene
-byte. The protocol and CPU-oracle path are implemented in Alpine; physical
-Direct Metal and pinned GPUI lifecycle evidence remain required before E3.
+byte. Exact-main hosted offline GPUI evidence composes with a final-revision
+physical runtime-source GPUI and Direct Metal run through identical GPUI and
+CPU output identities. The runtime-source physical shader remains supporting
+and unqualified; the retained record makes no timing, memory, or dominance
+claim.
 
 ## Formal model
 

@@ -1,0 +1,88 @@
+schema = "alpine-renderer-atlas-lifecycle-equivalence/v1"
+state = "gpui-oracle-equivalent"
+comparison_level = "renderer-only"
+lab_revision = "c5aaa5d78c63d3135d9077ae3d45fc758c08e8fa"
+zed_revision = "e17dc4f9d50db73a458b64dcce50ecd4878b98a3"
+alpine_revision = "4e6ee28668d3cd7a62e347e7b9f96c99318956ab"
+sequence_manifest_path = "assurance/qualification/sequences/atlas-lifecycle-v1.toml"
+sequence_manifest_sha256 = "2e85ae89b33b6af0d2577b9f4a7f0338b0d3ced81e61e075166cf883b38e12b8"
+gpui_sequence_evidence_sha256 = "65d0f161b82022c7686c04ee3729ed127b2fab2f80072868cbd20fa9922c571d"
+alpine_sequence_evidence_sha256 = "not-run"
+visible_steps = 5
+renderer_generations = 2
+adapter_atlas_allocations = 4
+adapter_atlas_replacements = 2
+cpu_oracle_channel_tolerance = 1
+cpu_oracle_equivalence_within_tolerance_all = true
+direct_metal_performed = false
+adaptation_timing_performed = false
+renderer_timing_performed = false
+memory_performed = false
+performance_qualified = false
+generated_at_utc = "2026-08-31T01:54:03Z"
+
+[[steps]]
+sequence = 0
+transition = "full-admission"
+scene_path = "assurance/qualification/v2/atlas-lifecycle-initial.toml"
+workload_hash = "a6e323885000332203077c0b7caf3fd4914f4b55555a849646ec405fe24e1d65"
+expected_cpu_bytes = 256
+cpu_oracle_sha256 = "fbb7e42e4eed8f8b98468fa42a339ffd615bfe81e4805046b599a5b9b8c1d4be"
+gpui_metal_sha256 = "fbb7e42e4eed8f8b98468fa42a339ffd615bfe81e4805046b599a5b9b8c1d4be"
+cpu_oracle_max_observed_channel_delta = 0
+semantic_and_pixel_equivalent = true
+
+[[steps]]
+sequence = 1
+transition = "compatible-reuse"
+scene_path = "assurance/qualification/v2/atlas-lifecycle-initial.toml"
+workload_hash = "a6e323885000332203077c0b7caf3fd4914f4b55555a849646ec405fe24e1d65"
+expected_cpu_bytes = 256
+cpu_oracle_sha256 = "fbb7e42e4eed8f8b98468fa42a339ffd615bfe81e4805046b599a5b9b8c1d4be"
+gpui_metal_sha256 = "fbb7e42e4eed8f8b98468fa42a339ffd615bfe81e4805046b599a5b9b8c1d4be"
+cpu_oracle_max_observed_channel_delta = 0
+semantic_and_pixel_equivalent = true
+
+[[steps]]
+sequence = 2
+transition = "content-replacement"
+scene_path = "assurance/qualification/v2/atlas-lifecycle-content.toml"
+workload_hash = "9e30813e8a768ccd5eb731042db131f5772a14794c830aa49ae083f0c868f70e"
+expected_cpu_bytes = 256
+cpu_oracle_sha256 = "8f0c039370af535d9a9772207dd6db5ec169f8126d621d5f7ba96fe2afc63554"
+gpui_metal_sha256 = "8f0c039370af535d9a9772207dd6db5ec169f8126d621d5f7ba96fe2afc63554"
+cpu_oracle_max_observed_channel_delta = 0
+semantic_and_pixel_equivalent = true
+
+[[steps]]
+sequence = 3
+transition = "capacity-replacement"
+scene_path = "assurance/qualification/v2/atlas-lifecycle-capacity.toml"
+workload_hash = "f0accc06fd417a0cc14ac39d405b3c9f45f7b15025584b00a4d78ddb74a5e171"
+expected_cpu_bytes = 256
+cpu_oracle_sha256 = "8f0c039370af535d9a9772207dd6db5ec169f8126d621d5f7ba96fe2afc63554"
+gpui_metal_sha256 = "8f0c039370af535d9a9772207dd6db5ec169f8126d621d5f7ba96fe2afc63554"
+cpu_oracle_max_observed_channel_delta = 0
+semantic_and_pixel_equivalent = true
+
+[[steps]]
+sequence = 4
+transition = "teardown"
+scene_path = "none"
+workload_hash = "none"
+expected_cpu_bytes = 0
+cpu_oracle_sha256 = "none"
+gpui_metal_sha256 = "none"
+cpu_oracle_max_observed_channel_delta = 0
+semantic_and_pixel_equivalent = true
+
+[[steps]]
+sequence = 5
+transition = "full-resynchronization"
+scene_path = "assurance/qualification/v2/atlas-lifecycle-capacity.toml"
+workload_hash = "f0accc06fd417a0cc14ac39d405b3c9f45f7b15025584b00a4d78ddb74a5e171"
+expected_cpu_bytes = 256
+cpu_oracle_sha256 = "8f0c039370af535d9a9772207dd6db5ec169f8126d621d5f7ba96fe2afc63554"
+gpui_metal_sha256 = "8f0c039370af535d9a9772207dd6db5ec169f8126d621d5f7ba96fe2afc63554"
+cpu_oracle_max_observed_channel_delta = 0
+semantic_and_pixel_equivalent = true

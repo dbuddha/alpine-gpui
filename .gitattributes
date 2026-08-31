@@ -5,3 +5,4 @@
 /assurance/onscreen-sdr/**/*.scene -text
 /assurance/onscreen-sdr/**/*.capture -text
 /assurance/onscreen-sdr/**/*.icc -text
+/assurance/lab/v3/source/readbacks/*.bgra -text
