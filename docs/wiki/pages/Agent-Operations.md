@@ -12,4 +12,9 @@ Pull requests use one pre-creation metadata check for the repository template,
 Conventional Commit title, issue chain, release label, base, and source head.
 Later metadata changes supersede but never erase earlier check suites.
 
+Issue kind labels, Assignees, Milestones, parent relationships, and native
+blocked-by edges own their corresponding facts. Project #1 custom fields own
+Delivery Gate, Evidence Level, Workload, and Acceptance Gate. Repository
+documentation owns stable policy, and this Wiki remains a retrieval projection.
+
 Canonical source: [GitHub agent operations](https://github.com/dbuddha/alpine-gpui/blob/{{ALPINE_MAIN_REVISION}}/docs/operations/github-agent-skills.md)
