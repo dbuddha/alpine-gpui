@@ -124,8 +124,9 @@ The stable sequence is:
 4. Run sustained private dogfood and residency journeys; promote each incident
    to a reproduced defect with a production-path regression.
 5. Preserve the E3 GPUI admission established by
-   [Task #334](https://github.com/dbuddha/alpine-gpui/issues/334) and #61, then
-   complete #53 atlas recovery, calibrated timing, memory, and E4 evidence.
+   [Tasks #334](https://github.com/dbuddha/alpine-gpui/issues/334), #61, and
+   #353, then complete #53 timing and adaptation calibration #470, renderer
+   residency #471, and independent-window E4 qualification #472.
 6. Qualify scoped renderer and product claims, then enter M7 release work.
 
 These links are entry points, not copied status. The issue timeline and Project
@@ -157,9 +158,11 @@ Unicode, IME, accessibility, smooth scrolling, and native semantics.
 
 The doctrine is enforced through the existing critical path rather than a new
 parallel program: exact-main assurance, physical typing attribution #304/#331,
-physical accessibility #253/#273, dogfood and residency #238 through #242, and
-realistic renderer qualification #353/#53. Architecture language does not
-advance any of those gates without their retained evidence.
+physical accessibility #253/#273, sustained dogfood and residency #239 through
+#242, and renderer E4 qualification #470 through #472 under #53. Completed
+capture task #238 and E3 lifecycle task #353 are retained admission evidence,
+not active blockers. Architecture language does not advance any open gate
+without its retained evidence.
 
 ## Qualification relationship
 

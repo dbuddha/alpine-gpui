@@ -34,21 +34,22 @@ Timing and memory were intentionally disabled, so it could not support glyph,
 text viewport, clipping, scroll, resize, latency, residency, or framework
 dominance statements.
 
-Status update, 2026-08-24: PR #343 and Alpine Zed Lab PR #5 now provide
-composed E3 correctness for an eight-fixture ladder covering the immutable
-control, clipping, glyph atlas sampling, a realistic code viewport, scroll, and
-resize. Timing, memory, latency, atlas recovery, and dominance remain open under
-Requirement #53.
+Status update, 2026-08-30: PR #343 and Alpine Zed Lab PR #5 provide composed E3
+correctness for an eight-fixture ladder covering the immutable control,
+clipping, glyph atlas sampling, a realistic code viewport, scroll, and resize.
+Alpine PR #469 and Alpine Zed Lab PR #6 additionally retain the six-step atlas
+lifecycle and recovery protocol as composed E3 evidence. Timing, adaptation,
+process and GPU residency, independent hardware windows, and dominance remain
+open under Requirement #53 through #470, #471, and #472.
 
 Required correction:
 
-- Add clipped grids, glyph grids, realistic code viewport, selection/caret,
-  small scroll delta, resize, and recovery traces.
+- Retain the accepted clipped grids, glyph grids, realistic code viewport,
+  selection/caret, scroll, resize, and lifecycle traces as semantic admission.
 - Establish semantic equivalence before timing.
 - Measure adaptation separately from framework scene build and renderer stages.
-- Task #61 and the E3 fixture ladder are complete. Finish atlas lifecycle and
-  recovery trace qualification in #353, then satisfy Requirement #53 with
-  retained E4 evidence before making renderer dominance claims.
+- Tasks #61, #334, and #353 are complete E3 admission. Satisfy Requirement #53
+  through #470, #471, and #472 before making renderer dominance claims.
 
 ### P1: M4 physical correctness is not closed
 
@@ -192,9 +193,10 @@ large-project corpora, and revise bounds from retained workload evidence.
    retained evidence through #225.
 4. Preserve completed behavior #218 through #222 through dogfood regressions
    instead of reporting those slices as pending.
-5. Execute #238 through #242 as the daily-driver acceptance chain.
-6. Use #61's retained E3 trace ladder as admission, finish #353, and satisfy
-   #53 recovery, timing, memory, and E4 evidence before claims.
+5. Preserve completed capture task #238, then execute #239 through #242 as the
+   remaining daily-driver acceptance chain.
+6. Use #61/#334/#353 retained E3 evidence as admission, then satisfy #470,
+   #471, and #472 under #53 before timing or memory claims.
 7. Run WGPU experiments only after those trace semantics stabilize.
 8. Update this ledger in every material architecture/performance PR.
 

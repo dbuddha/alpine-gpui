@@ -20,10 +20,12 @@ Performance follows evidence, not visual style. The critical gates are:
   [physical capture #331](https://github.com/dbuddha/alpine-gpui/issues/331).
 - [Accessibility #253](https://github.com/dbuddha/alpine-gpui/issues/253) and
   [physical AX harness #273](https://github.com/dbuddha/alpine-gpui/issues/273).
-- [Dogfood capture #238](https://github.com/dbuddha/alpine-gpui/issues/238)
-  through [M5 acceptance #242](https://github.com/dbuddha/alpine-gpui/issues/242).
-- [Realistic renderer traces #353](https://github.com/dbuddha/alpine-gpui/issues/353)
-  and [E4 qualification #53](https://github.com/dbuddha/alpine-gpui/issues/53).
+- Completed [dogfood capture #238](https://github.com/dbuddha/alpine-gpui/issues/238),
+  followed by sustained sessions #239 through
+  [M5 acceptance #242](https://github.com/dbuddha/alpine-gpui/issues/242).
+- Completed [realistic renderer traces #353](https://github.com/dbuddha/alpine-gpui/issues/353),
+  followed by timing #470, residency #471, and independent-window #472 under
+  [E4 Requirement #53](https://github.com/dbuddha/alpine-gpui/issues/53).
 
 The doctrine rejects browser layout, continuous game loops, render graphs, ECS,
 3D asset pipelines, generalized component infrastructure, and universal
