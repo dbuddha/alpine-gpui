@@ -240,6 +240,7 @@ impl AxNotificationKind {
         }
     }
 
+    #[cfg(any(target_os = "macos", test))]
     const ALL: [Self; 8] = [
         Self::Focus,
         Self::Value,
@@ -564,12 +565,14 @@ impl AxClientFactory for NativeAxClientFactory {
 /// Non-macOS placeholder that cannot perform native operations.
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug)]
-pub struct UnsupportedAxClient;
+pub struct UnsupportedAxClient {
+    generation: AxGeneration,
+}
 
 #[cfg(not(target_os = "macos"))]
 impl AxClient for UnsupportedAxClient {
     fn generation(&self) -> AxGeneration {
-        unreachable!("unsupported client cannot be constructed")
+        self.generation
     }
 
     fn snapshot_tree(&mut self) -> Result<Vec<AxNode>, AxClientError> {
@@ -840,19 +843,57 @@ mod tests {
     #[test]
     fn limits_and_generations_fail_closed() {
         assert_eq!(AxGeneration::new(0), Err(AxClientError::InvalidGeneration));
-        assert!(AxLimits::new(0, 1, 1, 1, 1, Duration::from_nanos(1)).is_err());
+        let maximum = AxLimits::new(
+            MAX_NODE_LIMIT,
+            MAX_EVENT_LIMIT,
+            MAX_REGISTRATION_LIMIT,
+            MAX_DEPTH_LIMIT,
+            MAX_VALUE_BYTE_LIMIT,
+            MAX_MESSAGING_TIMEOUT,
+        )
+        .unwrap_or_else(|error| panic!("maximum limits: {error}"));
+        assert_eq!(maximum.node_limit(), MAX_NODE_LIMIT);
+        assert_eq!(maximum.event_limit(), MAX_EVENT_LIMIT);
+        assert_eq!(maximum.registration_limit(), MAX_REGISTRATION_LIMIT);
+        assert_eq!(maximum.depth_limit(), MAX_DEPTH_LIMIT);
+        assert_eq!(maximum.value_byte_limit(), MAX_VALUE_BYTE_LIMIT);
+        assert_eq!(maximum.messaging_timeout(), MAX_MESSAGING_TIMEOUT);
+
+        for result in [
+            AxLimits::new(0, 1, 1, 1, 1, Duration::from_nanos(1)),
+            AxLimits::new(1, 0, 1, 1, 1, Duration::from_nanos(1)),
+            AxLimits::new(1, 1, 0, 1, 1, Duration::from_nanos(1)),
+            AxLimits::new(1, 1, 1, 0, 1, Duration::from_nanos(1)),
+            AxLimits::new(1, 1, 1, 1, 0, Duration::from_nanos(1)),
+            AxLimits::new(1, 1, 1, 1, 1, Duration::ZERO),
+        ] {
+            assert!(result.is_err());
+        }
+        assert!(AxLimits::new(MAX_NODE_LIMIT + 1, 1, 1, 1, 1, Duration::from_nanos(1),).is_err());
+        assert!(AxLimits::new(1, MAX_EVENT_LIMIT + 1, 1, 1, 1, Duration::from_nanos(1),).is_err());
         assert!(
             AxLimits::new(
-                MAX_NODE_LIMIT,
-                MAX_EVENT_LIMIT,
-                MAX_REGISTRATION_LIMIT,
-                MAX_DEPTH_LIMIT,
-                MAX_VALUE_BYTE_LIMIT,
-                MAX_MESSAGING_TIMEOUT,
+                1,
+                1,
+                MAX_REGISTRATION_LIMIT + 1,
+                1,
+                1,
+                Duration::from_nanos(1),
             )
-            .is_ok()
+            .is_err()
         );
-        assert!(AxLimits::new(MAX_NODE_LIMIT + 1, 1, 1, 1, 1, Duration::from_nanos(1),).is_err());
+        assert!(AxLimits::new(1, 1, 1, MAX_DEPTH_LIMIT + 1, 1, Duration::from_nanos(1),).is_err());
+        assert!(
+            AxLimits::new(
+                1,
+                1,
+                1,
+                1,
+                MAX_VALUE_BYTE_LIMIT + 1,
+                Duration::from_nanos(1),
+            )
+            .is_err()
+        );
         assert!(
             AxLimits::new(
                 1,
@@ -879,6 +920,17 @@ mod tests {
             untrusted.attach(42, generation(1), limits()),
             Err(AxClientError::AccessibilityUntrusted)
         ));
+
+        let invalid_pid = FakeFactory {
+            trusted: true,
+            pid: 42,
+            nodes: Vec::new(),
+            events: Vec::new(),
+        };
+        assert_eq!(
+            invalid_pid.attach(0, generation(1), limits()).err(),
+            Some(AxClientError::InvalidPid)
+        );
 
         let replaced = FakeFactory {
             trusted: true,
@@ -924,6 +976,23 @@ mod tests {
             client.snapshot_tree(),
             Err(AxClientError::TreeBoundExceeded {
                 name: "node",
+                limit: 3
+            })
+        ));
+
+        let too_deep = FakeFactory {
+            trusted: true,
+            pid: 42,
+            nodes: vec![node("root", 4)],
+            events: Vec::new(),
+        };
+        let mut client = too_deep
+            .attach(42, generation(1), limits())
+            .unwrap_or_else(|error| panic!("attach fake: {error}"));
+        assert!(matches!(
+            client.snapshot_tree(),
+            Err(AxClientError::TreeBoundExceeded {
+                name: "depth",
                 limit: 3
             })
         ));
@@ -979,6 +1048,7 @@ mod tests {
         let mut client = factory
             .attach(42, current, limits())
             .unwrap_or_else(|error| panic!("attach fake: {error}"));
+        assert_eq!(client.generation(), current);
         client
             .snapshot_tree()
             .unwrap_or_else(|error| panic!("snapshot fake: {error}"));
@@ -990,6 +1060,14 @@ mod tests {
             client.query_retained_stale(current),
             Err(AxClientError::MissingStaleElement)
         );
+        assert!(matches!(
+            client.perform_action(current, "missing", AxAction::Confirm),
+            Err(AxClientError::UnknownIdentifier(identifier)) if identifier == "missing"
+        ));
+        assert!(matches!(
+            client.retain_for_stale_query(current, "missing"),
+            Err(AxClientError::UnknownIdentifier(identifier)) if identifier == "missing"
+        ));
         client
             .retain_for_stale_query(current, "editor")
             .unwrap_or_else(|error| panic!("retain fake: {error}"));
@@ -1001,6 +1079,11 @@ mod tests {
             .close(current)
             .unwrap_or_else(|error| panic!("close fake: {error}"));
         assert_eq!(client.snapshot_tree(), Err(AxClientError::Closed));
+        assert_eq!(
+            client.perform_action(current, "editor", AxAction::Confirm),
+            Err(AxClientError::Closed)
+        );
+        assert_eq!(client.close(current), Err(AxClientError::Closed));
     }
 
     #[test]
@@ -1008,10 +1091,164 @@ mod tests {
         assert_eq!(AxAction::Press.native_name(), "AXPress");
         assert_eq!(AxAction::Confirm.native_name(), "AXConfirm");
         assert_eq!(AxAction::ShowMenu.native_name(), "AXShowMenu");
-        assert_eq!(AxNotificationKind::ALL.len(), 8);
         assert_eq!(
-            AxNotificationKind::Destroyed.native_name(),
-            "AXUIElementDestroyed"
+            AxNotificationKind::ALL.map(AxNotificationKind::native_name),
+            [
+                "AXFocusedUIElementChanged",
+                "AXValueChanged",
+                "AXSelectedTextChanged",
+                "AXLayoutChanged",
+                "AXAnnouncementRequested",
+                "AXWindowMiniaturized",
+                "AXWindowDeminiaturized",
+                "AXUIElementDestroyed",
+            ]
+        );
+    }
+
+    #[test]
+    fn errors_have_stable_exhaustive_messages() {
+        let cases = [
+            (
+                AxClientError::UnsupportedPlatform,
+                "AX client requires macOS",
+            ),
+            (
+                AxClientError::AccessibilityUntrusted,
+                "Accessibility permission is absent; no prompt was issued",
+            ),
+            (AxClientError::InvalidPid, "AX target PID must be positive"),
+            (
+                AxClientError::PidMismatch {
+                    expected: 7,
+                    actual: 8,
+                },
+                "AX element PID 8 does not match target 7",
+            ),
+            (
+                AxClientError::InvalidGeneration,
+                "AX generation must be nonzero",
+            ),
+            (
+                AxClientError::InvalidLimit {
+                    name: "node",
+                    value: 0,
+                    maximum: 3,
+                },
+                "AX node limit 0 must be within 1..=3",
+            ),
+            (
+                AxClientError::InvalidTimeout,
+                "AX messaging timeout must be within 1 ns..=5s",
+            ),
+            (
+                AxClientError::Native {
+                    operation: "attach",
+                    code: -25_205,
+                },
+                "AX operation attach failed with -25205",
+            ),
+            (
+                AxClientError::MissingAttribute {
+                    attribute: "AXRole",
+                    identifier: Some("editor".to_owned()),
+                },
+                "AX attribute AXRole is absent on editor",
+            ),
+            (
+                AxClientError::MissingAttribute {
+                    attribute: "AXRole",
+                    identifier: None,
+                },
+                "AX attribute AXRole is absent on unidentified element",
+            ),
+            (
+                AxClientError::InvalidAttributeType {
+                    attribute: "AXValue",
+                },
+                "AX attribute AXValue has an unexpected type",
+            ),
+            (
+                AxClientError::DuplicateIdentifier("editor".to_owned()),
+                "AX identifier \"editor\" is duplicated",
+            ),
+            (
+                AxClientError::TreeBoundExceeded {
+                    name: "depth",
+                    limit: 3,
+                },
+                "AX tree exceeded depth limit 3",
+            ),
+            (
+                AxClientError::ValueBoundExceeded {
+                    attribute: "AXValue",
+                    limit: 128,
+                },
+                "AX attribute AXValue exceeded value-byte limit 128",
+            ),
+            (
+                AxClientError::UnknownIdentifier("missing".to_owned()),
+                "AX identifier \"missing\" is not in the snapshot",
+            ),
+            (
+                AxClientError::MissingStaleElement,
+                "no AX element is retained for stale-query control",
+            ),
+            (
+                AxClientError::StaleGeneration {
+                    expected: 2,
+                    actual: 3,
+                },
+                "AX generation 3 does not match attached generation 2",
+            ),
+            (AxClientError::Closed, "AX client is closed"),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn unsupported_factory_and_client_fail_structurally() {
+        let current = generation(9);
+        let factory = super::NativeAxClientFactory;
+        assert_eq!(
+            factory.is_trusted(),
+            Err(AxClientError::UnsupportedPlatform)
+        );
+        assert!(matches!(
+            factory.attach(42, current, limits()),
+            Err(AxClientError::UnsupportedPlatform)
+        ));
+
+        let mut client = super::UnsupportedAxClient {
+            generation: current,
+        };
+        assert_eq!(client.generation(), current);
+        assert_eq!(
+            client.snapshot_tree(),
+            Err(AxClientError::UnsupportedPlatform)
+        );
+        assert_eq!(
+            client.drain_events(current, Duration::ZERO),
+            Err(AxClientError::UnsupportedPlatform)
+        );
+        assert_eq!(
+            client.perform_action(current, "editor", AxAction::Press),
+            Err(AxClientError::UnsupportedPlatform)
+        );
+        assert_eq!(
+            client.retain_for_stale_query(current, "editor"),
+            Err(AxClientError::UnsupportedPlatform)
+        );
+        assert_eq!(
+            client.query_retained_stale(current),
+            Err(AxClientError::UnsupportedPlatform)
+        );
+        assert_eq!(
+            client.close(current),
+            Err(AxClientError::UnsupportedPlatform)
         );
     }
 }
