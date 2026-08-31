@@ -1426,6 +1426,33 @@ scope = "Non-shipping calibration CLI and synthetic fixture."
 exclusions = ["Real elapsed time", "Scaleway provisioning", "blocking performance gate"]
 
 [[evidence]]
+id = "EV-0028-UNIT01C"
+claim = "AEP-0028-C01"
+kind = "unit"
+artifact = "tools/alpine-assurance/src/qualification.rs#benchmark_counts_atomic_publication_and_collision_are_bounded"
+assertion = "The offscreen sampler bounds warmup and sample counts, reuses one admitted scene, emits strict positive process-monotonic samples, publishes without replacement, and rejects output collisions."
+scope = "Non-shipping CPU-oracle sampler contract and atomic raw CSV publication."
+exclusions = ["Physical Metal behavior", "elapsed-time threshold", "performance comparison"]
+
+[[evidence]]
+id = "EV-0028-INTEGRATION01C"
+claim = "AEP-0028-C01"
+kind = "integration"
+artifact = "scripts/test-qualification.sh"
+assertion = "Repository-root commands emit bounded LF-normalized reference samples and fail closed for output collisions and zero sample counts."
+scope = "Cross-platform assurance CLI and deterministic output-shape controls."
+exclusions = ["GPU execution", "clock accuracy", "performance claim"]
+
+[[evidence]]
+id = "EV-0028-NATIVE01C"
+claim = "AEP-0028-C01"
+kind = "native"
+artifact = "scripts/check-metal.sh"
+assertion = "Apple Silicon Metal validation decodes one qualified trace before measurement, reuses one Direct Metal backend, and emits three semantic-stable submit-to-readback samples under API and Shader Validation."
+scope = "Offscreen Direct Metal sampling command with offline shaders on hosted Apple Silicon."
+exclusions = ["Uninstrumented production timing", "A/A calibration", "GPUI comparison", "blocking performance claim"]
+
+[[evidence]]
 id = "EV-0028-TLA02"
 claim = "AEP-0028-C02"
 kind = "tla"
