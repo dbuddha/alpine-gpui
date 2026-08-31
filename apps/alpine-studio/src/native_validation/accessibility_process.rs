@@ -752,6 +752,31 @@ fn should_arm_hosted_observation(
         && armed_at_submission != Some(submission_count)
 }
 
+/// Returns whether one failed hosted child is the exact retryable command stall.
+///
+/// The retry belongs to the outer process harness. It never changes frame
+/// ownership, the correctness deadline, physical evidence, or terminal state.
+#[must_use]
+pub fn hosted_terminal_stall_retry_allowed(
+    evidence_mode: &str,
+    attempt: u8,
+    status_succeeded: bool,
+    stdout: &str,
+    stderr: &str,
+    language_trace_complete: bool,
+) -> bool {
+    evidence_mode == "hosted-direct"
+        && attempt == 0
+        && !status_succeeded
+        && stdout.is_empty()
+        && language_trace_complete
+        && stderr.contains("dirty-close native frame failed")
+        && stderr.contains("frame-terminal correctness-timeout failed after 1 observed submissions")
+        && stderr
+            .contains("frame ownership did not become terminal before the correctness deadline")
+        && stderr.contains("current=(occupied=1 submitted=1 paused=false")
+}
+
 const fn action_frame_bound_exceeded(frames: u64) -> bool {
     frames > 1
 }
@@ -1871,6 +1896,68 @@ mod process_contract_tests {
             None,
             19
         ));
+    }
+
+    #[test]
+    fn hosted_terminal_retry_requires_every_exact_stall_fact() {
+        let stall = "dirty-close native frame failed: frame-terminal correctness-timeout failed after 1 observed submissions: frame ownership did not become terminal before the correctness deadline; current=(occupied=1 submitted=1 paused=false submissions=19)";
+        assert!(hosted_terminal_stall_retry_allowed(
+            "hosted-direct",
+            0,
+            false,
+            "",
+            stall,
+            true
+        ));
+        assert!(!hosted_terminal_stall_retry_allowed(
+            "physical", 0, false, "", stall, true
+        ));
+        assert!(!hosted_terminal_stall_retry_allowed(
+            "hosted-direct",
+            1,
+            false,
+            "",
+            stall,
+            true
+        ));
+        assert!(!hosted_terminal_stall_retry_allowed(
+            "hosted-direct",
+            0,
+            true,
+            "",
+            stall,
+            true
+        ));
+        assert!(!hosted_terminal_stall_retry_allowed(
+            "hosted-direct",
+            0,
+            false,
+            "unexpected output",
+            stall,
+            true
+        ));
+        assert!(!hosted_terminal_stall_retry_allowed(
+            "hosted-direct",
+            0,
+            false,
+            "",
+            stall,
+            false
+        ));
+        for non_stall in [
+            stall.replace("dirty-close", "initial"),
+            stall.replace("correctness-timeout", "event-loop"),
+            stall.replace("occupied=1", "occupied=0"),
+        ] {
+            assert!(!hosted_terminal_stall_retry_allowed(
+                "hosted-direct",
+                0,
+                false,
+                "",
+                &non_stall,
+                true
+            ));
+        }
     }
 }
 
