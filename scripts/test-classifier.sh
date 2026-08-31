@@ -132,6 +132,32 @@ assert_output "$trace" mutation=true
 assert_output "$trace" kani=true
 assert_output "$trace" tla=true
 
+ax_client=$(run_fixture tools/alpine-ax-client/src/lib.rs)
+assert_output "$ax_client" coverage=true
+assert_output "$ax_client" mutation=true
+assert_output "$ax_client" kani=false
+assert_output "$ax_client" metal=false
+
+ax_client_native=$(run_fixture tools/alpine-ax-client/src/native.rs)
+assert_output "$ax_client_native" coverage=true
+assert_output "$ax_client_native" mutation=true
+assert_output "$ax_client_native" kani=false
+assert_output "$ax_client_native" metal=false
+
+ax_client_manifest=$(run_fixture tools/alpine-ax-client/Cargo.toml)
+assert_output "$ax_client_manifest" coverage=true
+assert_output "$ax_client_manifest" mutation=true
+assert_output "$ax_client_manifest" kani=false
+assert_output "$ax_client_manifest" metal=false
+
+tool_docs=$(run_fixture tools/alpine-ax-client/README.md)
+assert_output "$tool_docs" coverage=false
+assert_output "$tool_docs" mutation=false
+
+tool_fixture=$(run_fixture tools/alpine-ax-client/fixtures/tree.json)
+assert_output "$tool_fixture" coverage=false
+assert_output "$tool_fixture" mutation=false
+
 unsafe=$(run_fixture README.md review:unsafe)
 assert_output "$unsafe" miri=true
 

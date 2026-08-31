@@ -43,7 +43,7 @@ if matches '^(\.github/workflows/(ci|nightly-assurance|release-dry-run)\.yml$|as
 fi
 
 # Shipping application Rust receives the same coverage contract as crate Rust.
-if matches '^(Cargo\.toml$|Cargo\.lock$|crates/.+\.rs$|crates/.+/Cargo\.toml$|apps/.+\.rs$|apps/.+/Cargo\.toml$|tools/alpine-trace/)'; then
+if matches '^(Cargo\.toml$|Cargo\.lock$|crates/.+\.rs$|crates/.+/Cargo\.toml$|apps/.+\.rs$|apps/.+/Cargo\.toml$|tools/[^/]+/(src/.+\.rs|Cargo\.toml)$|tools/alpine-trace/)'; then
     coverage=true
 fi
 
@@ -53,6 +53,13 @@ if matches '^(crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal|alpi
 fi
 
 if matches '^(apps/alpine-studio/.+\.rs$|apps/alpine-studio/Cargo\.toml$)'; then
+    mutation=true
+fi
+
+# Every Rust tool implementation receives changed-code mutation evidence.
+# Tool-specific selectors below may require additional formal evidence, but a
+# newly admitted tool must not bypass mutation merely because it is unnamed.
+if matches '^tools/[^/]+/(src/.+\.rs|Cargo\.toml)$'; then
     mutation=true
 fi
 
