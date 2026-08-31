@@ -21,6 +21,7 @@ scripts/test-hierarchy.sh
 scripts/test-assurance.sh
 scripts/test-formal-effectiveness.sh
 scripts/test-qualification.sh
+scripts/test-native-benchmark-result.sh
 scripts/test-studio-residency.sh
 scripts/test-alpine-studio-app-bundle.sh
 scripts/test-dogfood-capture.sh
