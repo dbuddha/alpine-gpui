@@ -207,6 +207,45 @@ if ! grep -Fq 'nightly assurance must shard native platform contracts and route 
 fi
 unset ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
 
+sed 's/types: \[synchronize,/types: [opened, synchronize,/' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/opened-pr-fanout-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/opened-pr-fanout-ci.yml" run_policy > "$fixture_dir/opened-pr-fanout-ci.log" 2>&1; then
+    printf 'policy test error: opened PR fan-out unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'CI pull_request triggers must start after label settlement and retain source and metadata events' \
+    "$fixture_dir/opened-pr-fanout-ci.log"; then
+    printf 'policy test error: expected settled PR trigger failure was not reported\n' >&2
+    cat "$fixture_dir/opened-pr-fanout-ci.log" >&2
+    exit 1
+fi
+
+sed "s/github.run_id || 'source'/github.event.action || 'source'/" \
+    "$fixture_dir/ci.yml" > "$fixture_dir/shared-metadata-concurrency-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/shared-metadata-concurrency-ci.yml" run_policy > "$fixture_dir/shared-metadata-concurrency-ci.log" 2>&1; then
+    printf 'policy test error: shared metadata concurrency unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'CI metadata events must not share a cancelable required-check concurrency group' \
+    "$fixture_dir/shared-metadata-concurrency-ci.log"; then
+    printf 'policy test error: expected metadata concurrency failure was not reported\n' >&2
+    cat "$fixture_dir/shared-metadata-concurrency-ci.log" >&2
+    exit 1
+fi
+
+sed 's/^  cancel-in-progress: .*/  cancel-in-progress: true/' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/unconditional-pr-cancellation-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/unconditional-pr-cancellation-ci.yml" run_policy > "$fixture_dir/unconditional-pr-cancellation-ci.log" 2>&1; then
+    printf 'policy test error: unconditional PR cancellation unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'CI cancellation must be limited to source-changing or non-PR runs' \
+    "$fixture_dir/unconditional-pr-cancellation-ci.log"; then
+    printf 'policy test error: expected conditional cancellation failure was not reported\n' >&2
+    cat "$fixture_dir/unconditional-pr-cancellation-ci.log" >&2
+    exit 1
+fi
+
 sed 's/if: ${{ always() && !cancelled() }}/if: always()/' \
     "$fixture_dir/ci.yml" > "$fixture_dir/canceled-aggregate-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/canceled-aggregate-ci.yml" run_policy > "$fixture_dir/canceled-aggregate-ci.log" 2>&1; then

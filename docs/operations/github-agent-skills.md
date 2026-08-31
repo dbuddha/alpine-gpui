@@ -78,12 +78,21 @@ Before creating a pull request, read the repository template and validate the
 final Conventional Commit title, complete body, closing issue and parent chain,
 release label, base, and source head as one metadata snapshot. Apply the title,
 body, and required labels in the initial creation command. This prevents a
-known-invalid metadata event from starting an expensive CI matrix.
+known-invalid metadata event from starting an expensive CI matrix. Alpine CI
+starts a new pull request from the settled release-label event rather than
+`opened`; an unlabeled pull request remains blocked until that event exists.
 
 If any of those fields changes after checks start, retain the earlier run as
 superseded evidence and require a new exact-head aggregate result. Never hide a
 failed or canceled run, merge from a stale source head, or treat a successful
 older suite as evidence for corrected metadata.
+
+A canceled and a successful required check on the same current pull-request
+state is a CI trust defect, not a mergeable green result. Preserve both run IDs,
+refuse administrator bypass, obtain one clean later metadata event, and correct
+the trigger or concurrency policy. Metadata events must not cancel another
+required check at the same SHA; source updates may cancel checks on obsolete
+SHAs.
 
 ## Research depth
 

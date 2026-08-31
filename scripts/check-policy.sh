@@ -84,6 +84,15 @@ if [ -n "$workflow_files" ]; then
         /^  ci-pass:/ { capture = 1 }
         capture
     ' "$ci_workflow")
+    if ! grep -Fqx '    types: [synchronize, reopened, edited, labeled, unlabeled]' "$ci_workflow"; then
+        fail 'CI pull_request triggers must start after label settlement and retain source and metadata events'
+    fi
+    if ! grep -Fqx "  group: ci-\${{ github.workflow }}-\${{ github.ref }}-\${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && github.run_id || 'source' }}" "$ci_workflow"; then
+        fail 'CI metadata events must not share a cancelable required-check concurrency group'
+    fi
+    if ! grep -Fqx "  cancel-in-progress: \${{ github.event_name != 'pull_request' || github.event.action == 'synchronize' }}" "$ci_workflow"; then
+        fail 'CI cancellation must be limited to source-changing or non-PR runs'
+    fi
     if ! printf '%s\n' "$ci_pass_block" | grep -Fqx '    if: ${{ always() && !cancelled() }}'; then
         fail 'ci-pass must run after ordinary failures but skip a canceled workflow'
     fi

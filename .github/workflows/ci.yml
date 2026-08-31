@@ -2,7 +2,9 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    # Label application is the first settled metadata event for a new PR.
+    # Starting on opened as well creates two required checks at one source SHA.
+    types: [synchronize, reopened, edited, labeled, unlabeled]
   push:
     branches: [main]
   workflow_dispatch:
@@ -13,8 +15,8 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && github.run_id || 'source' }}
+  cancel-in-progress: ${{ github.event_name != 'pull_request' || github.event.action == 'synchronize' }}
 
 env:
   CARGO_INCREMENTAL: "0"
