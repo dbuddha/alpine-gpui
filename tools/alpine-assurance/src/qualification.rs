@@ -394,7 +394,7 @@ pub(crate) fn benchmark_scene(
 
     let renderer = if native { "direct-metal" } else { "cpu-oracle" };
     Ok(format!(
-        "recorded {} warmup and {} measured {renderer} samples for {} at stage renderer-submit-readback using process-monotonic Instant; performance claim=none; output={}",
+        "recorded admission_iterations=1 warmup_iterations={} sample_count={} renderer={renderer} trace={} at stage renderer-submit-readback using process-monotonic Instant; performance claim=none; output={}",
         warmup_iterations,
         samples.len(),
         scene.id,

@@ -36,6 +36,8 @@ cargo run --quiet --locked -p alpine-assurance -- \
     > "$output_dir/reference-benchmark.txt"
 grep -Fq 'stage renderer-submit-readback using process-monotonic Instant' \
     "$output_dir/reference-benchmark.txt"
+grep -Fq 'admission_iterations=1 warmup_iterations=1 sample_count=3' \
+    "$output_dir/reference-benchmark.txt"
 grep -Fq 'performance claim=none' "$output_dir/reference-benchmark.txt"
 test "$(wc -l < "$reference_samples" | tr -d ' ')" -eq 4
 awk -F, '
