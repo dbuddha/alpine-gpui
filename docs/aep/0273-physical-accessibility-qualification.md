@@ -48,11 +48,14 @@ production AppKit accessibility surface. The client owns every copied AX value
 and observer registration, retains one stale-element control, and releases all
 external ownership after the target closes.
 
-The preferred implementation uses target-only generated bindings for Apple's
-ApplicationServices framework. Handwritten raw FFI or UI scripting is rejected
-unless a separate review demonstrates that generated bindings cannot express
-the required API. Adding a binding remains owner-gated and is not implied by
-this protocol or structural-validator slice.
+The accepted client boundary uses target-only `objc2-application-services`
+0.3.2 generated bindings for Apple's ApplicationServices framework, isolated
+in the non-shipping `alpine-ax-client` crate under approved child Task #480.
+Handwritten raw FFI and UI scripting remain rejected. The safe contract exposes
+no native handles. Version 0.3.2 models `AXObserverGetRunLoopSource` as owned
+even though Apple's Get rule returns borrowed ownership; the audited boundary
+must suppress release of that generated temporary and establish exactly one
+explicit Alpine retain before adding the source to the run loop.
 
 ## Evidence bundle
 
@@ -173,8 +176,8 @@ The first slice is complete only when the fixture-only CLI, fail-closed unit and
 integration controls, evidence registry, mutation, coverage, TLA applicability
 review, and full exact-head CI pass. Task #273 remains open after that slice.
 
-Remaining work is the external `AXUIElement` client, `AXObserver` ownership,
-action and stale-element capture, exact binary launch, physical lifecycle run,
+Remaining work is completion of the bounded generated-binding client in #480,
+exact binary launch and artifact publication in #479, physical lifecycle run,
 Inspector capture, human VoiceOver checklist, physical residency and latency
 artifacts, negative controls, native mutation evidence, and revision-scoped
 trusted-machine report.
