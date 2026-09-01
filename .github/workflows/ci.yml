@@ -50,9 +50,28 @@ jobs:
           ALPINE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: scripts/classify-ci.sh
 
+  preflight:
+    name: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Validate repository and pull request policy
+        env:
+          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ALPINE_PR_BODY: ${{ github.event.pull_request.body }}
+          ALPINE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          ALPINE_PR_TITLE: ${{ github.event.pull_request.title }}
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/check-policy.sh
+
   quality:
     name: quality
-    needs: classify
+    needs: [classify, preflight]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -134,7 +153,7 @@ jobs:
 
   native:
     name: native-${{ matrix.name }}
-    needs: classify
+    needs: [classify, preflight]
     strategy:
       fail-fast: false
       matrix:
@@ -168,7 +187,7 @@ jobs:
 
   coverage:
     name: coverage
-    needs: classify
+    needs: [classify, preflight]
     if: needs.classify.outputs.coverage == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -227,7 +246,7 @@ jobs:
 
   mutation-diff:
     name: mutation-diff-${{ matrix.id }}
-    needs: classify
+    needs: [classify, preflight]
     if: needs.classify.outputs.mutation == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -281,7 +300,7 @@ jobs:
 
   kani:
     name: kani
-    needs: classify
+    needs: [classify, preflight]
     if: needs.classify.outputs.kani == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -311,7 +330,7 @@ jobs:
 
   tla:
     name: tla
-    needs: classify
+    needs: [classify, preflight]
     if: needs.classify.outputs.tla == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -336,7 +355,7 @@ jobs:
 
   miri:
     name: miri-${{ matrix.partition }}
-    needs: classify
+    needs: [classify, preflight]
     if: needs.classify.outputs.miri == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -423,7 +442,7 @@ jobs:
 
   metal-validation:
     name: metal-validation
-    needs: classify
+    needs: [classify, preflight]
     if: needs.classify.outputs.metal == 'true'
     runs-on: macos-26
     timeout-minutes: 20
@@ -547,7 +566,7 @@ jobs:
 
   native-mutation:
     name: native-mutation-${{ matrix.id }}
-    needs: classify
+    needs: [classify, preflight]
     if: needs.classify.outputs.metal == 'true'
     runs-on: macos-26
     timeout-minutes: 30
@@ -653,13 +672,14 @@ jobs:
   ci-pass:
     name: ci-pass
     if: ${{ always() && !cancelled() }}
-    needs: [classify, quality, native, coverage, mutation-diff, kani, tla, miri, metal-validation, native-mutation]
+    needs: [classify, preflight, quality, native, coverage, mutation-diff, kani, tla, miri, metal-validation, native-mutation]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require selected evidence
         env:
           CLASSIFY_RESULT: ${{ needs.classify.result }}
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
           NATIVE_RESULT: ${{ needs.native.result }}
           COVERAGE_REQUIRED: ${{ needs.classify.outputs.coverage }}
@@ -691,6 +711,7 @@ jobs:
             fi
           }
           require_success classify "$CLASSIFY_RESULT"
+          require_success preflight "$PREFLIGHT_RESULT"
           require_success quality "$QUALITY_RESULT"
           require_success native "$NATIVE_RESULT"
           require_selected coverage "$COVERAGE_REQUIRED" "$COVERAGE_RESULT"
