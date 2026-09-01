@@ -782,6 +782,10 @@ impl RustDiagnostics {
             .target
             .as_ref()
             .is_some_and(|current| current.shares_workspace_with(&target));
+        if self.target.as_ref() == Some(&target) && self.session.is_none() && self.status.is_some()
+        {
+            return LanguageEffect::default();
+        }
         if !shares_workspace {
             return self.replace_session(input, target, wake_factory);
         }
