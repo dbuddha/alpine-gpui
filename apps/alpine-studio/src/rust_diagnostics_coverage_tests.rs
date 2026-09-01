@@ -93,6 +93,68 @@ fn state_guards_and_admission_failures_are_discriminating() -> Result<(), Box<dy
 }
 
 #[test]
+fn terminal_start_failure_is_quiet_until_target_changes() -> Result<(), Box<dyn Error>> {
+    let (root, path, snapshot, identity) = tests::fixture();
+    let input = RustDocumentInput::new(&path, &root, identity, snapshot);
+    let mut missing = RustDiagnostics::default();
+    assert!(
+        missing
+            .sync(Some(input.clone()), |_| Arc::new(|| {}))
+            .visual_changed
+    );
+    let failed_target = missing.target.clone();
+    let failed_status = missing.status_message();
+    assert_eq!(
+        missing.sync(Some(input.clone()), |_| Arc::new(|| {})),
+        LanguageEffect::default()
+    );
+
+    let mut same_workspace_identity = input.identity;
+    same_workspace_identity.document_revision += 1;
+    let same_workspace = RustDocumentInput::new(
+        &root.join("second.rs"),
+        &root,
+        same_workspace_identity,
+        input.snapshot.clone(),
+    );
+    assert!(
+        missing
+            .sync(Some(same_workspace.clone()), |_| Arc::new(|| {}))
+            .visual_changed
+    );
+    assert_ne!(missing.target, failed_target);
+    assert_eq!(missing.status_message(), failed_status);
+    assert_eq!(missing.snapshot().process_starts, 0);
+    assert_eq!(
+        missing.sync(Some(same_workspace), |_| Arc::new(|| {})),
+        LanguageEffect::default()
+    );
+
+    let other_root = root.join("other-workspace");
+    let mut other_identity = input.identity;
+    other_identity.workspace_revision += 1;
+    other_identity.document_revision += 1;
+    let other_workspace = RustDocumentInput::new(
+        &other_root.join("main.rs"),
+        &other_root,
+        other_identity,
+        input.snapshot.clone(),
+    );
+    assert!(
+        missing
+            .sync(Some(other_workspace.clone()), |_| Arc::new(|| {}))
+            .visual_changed
+    );
+    assert_eq!(
+        missing.sync(Some(other_workspace), |_| Arc::new(|| {})),
+        LanguageEffect::default()
+    );
+    assert_eq!(missing.snapshot().process_starts, 0);
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn installed_state_covers_selection_markers_versions_and_admission() -> Result<(), Box<dyn Error>> {
     let (mut model, input, root) = installed_model()?;
     let identity = input.identity;
