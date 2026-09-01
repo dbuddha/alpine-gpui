@@ -60,8 +60,12 @@ pub(crate) fn run_native(
     post_action_ms: u64,
     output: &Path,
 ) -> Result<String, Vec<String>> {
+    #[cfg(target_os = "macos")]
+    let factory = NativeAxClientFactory::default();
+    #[cfg(not(target_os = "macos"))]
+    let factory = NativeAxClientFactory;
     run_with_factory(
-        &NativeAxClientFactory::default(),
+        &factory,
         pid,
         generation,
         pre_action_ms,
