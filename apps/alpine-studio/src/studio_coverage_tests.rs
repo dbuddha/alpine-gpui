@@ -1769,6 +1769,64 @@ fn dirty_file_close_is_blocked_until_atomic_save_succeeds() -> Result<(), Box<dy
 }
 
 #[test]
+fn close_blockers_preserve_file_error_recovery_and_activation_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut file_error = test_app()?;
+    file_error.last_file_error = Some(FileError::Conflict(ExternalChange::Modified));
+    let label = file_error
+        .tabs
+        .label(file_error.tabs.active_index())
+        .ok_or("active label")?;
+    let blocked = file_error.handle_close_request();
+    assert!(blocked.cancel_close);
+    assert_eq!(
+        file_error.local_status.as_ref().map(LocalStatus::message),
+        Some(format!("Resolve the file error in {label} before closing.").as_str())
+    );
+
+    let root = TestWorkspace::new()?;
+    let recovered_path = root.path().join("recovered.rs");
+    let session_path = root.path().join("state").join("session-v1.bin");
+    fs::write(&recovered_path, "base")?;
+    dirty_recovery_fixture(&session_path, &recovered_path, "local ")?;
+    fs::write(&recovered_path, "external")?;
+    let target = ExplicitPathTarget::open(&recovered_path, ExplicitPathKind::File)?;
+    let mut recovered = compose_explicit_path(TestTextSystem, target, Some(session_path))?;
+    let blocked = recovered.handle_close_request();
+    assert!(blocked.cancel_close);
+    assert_eq!(
+        recovered.local_status.as_ref().map(LocalStatus::message),
+        Some(
+            "Recovered changes in recovered.rs conflict with disk; copy them to safety before closing."
+        )
+    );
+
+    root.write("alpha.rs", "alpha")?;
+    root.write("beta.rs", "beta")?;
+    let mut activation_error = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = activation_error.workspace.as_ref().ok_or("workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("alpha")?;
+    let beta = workspace.index_named("beta.rs").ok_or("beta")?;
+    activation_error.open_workspace_entry(alpha)?;
+    assert!(
+        activation_error
+            .handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    activation_error.open_workspace_entry(beta)?;
+    activation_error.tabs.inject_active_index_fault();
+    let failures = activation_error.workspace_failures;
+    let blocked = activation_error.handle_close_request();
+    assert!(blocked.cancel_close);
+    assert_eq!(activation_error.workspace_failures, failures + 1);
+    assert!(matches!(
+        activation_error.local_status,
+        Some(LocalStatus::CloseBlocked(_))
+    ));
+    Ok(())
+}
+
+#[test]
 #[cfg(not(target_family = "windows"))]
 fn real_file_open_edit_save_and_conflicts_are_atomic() -> Result<(), Box<dyn std::error::Error>> {
     let file = TestFile::new("before")?;
