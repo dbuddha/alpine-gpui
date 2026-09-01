@@ -7623,6 +7623,78 @@ pub mod native_validation {
     /// Returns a structured runtime or native-surface failure. Contract
     /// violations remain fatal to the isolated process so the parent watchdog
     /// cannot mistake partial execution for successful qualification.
+    fn production_submission_count_is_admissible(
+        evidence_mode: PresentationEvidenceMode,
+        submissions: u64,
+        frame_builds: u64,
+        failed_presentations: u64,
+    ) -> bool {
+        if submissions == 0 {
+            return false;
+        }
+        let Some(explained_work) = frame_builds.checked_add(failed_presentations) else {
+            return false;
+        };
+        if submissions > explained_work {
+            return false;
+        }
+        match evidence_mode {
+            PresentationEvidenceMode::HostedDirect => true,
+            PresentationEvidenceMode::Physical => submissions <= 4,
+        }
+    }
+
+    #[cfg(test)]
+    mod production_submission_admission_tests {
+        use super::{PresentationEvidenceMode, production_submission_count_is_admissible};
+
+        #[test]
+        fn physical_and_hosted_submission_bounds_are_independent_and_work_bound() {
+            assert!(!production_submission_count_is_admissible(
+                PresentationEvidenceMode::HostedDirect,
+                0,
+                0,
+                0,
+            ));
+            assert!(production_submission_count_is_admissible(
+                PresentationEvidenceMode::HostedDirect,
+                5,
+                2,
+                3,
+            ));
+            assert!(!production_submission_count_is_admissible(
+                PresentationEvidenceMode::HostedDirect,
+                5,
+                2,
+                2,
+            ));
+            assert!(!production_submission_count_is_admissible(
+                PresentationEvidenceMode::HostedDirect,
+                1,
+                u64::MAX,
+                1,
+            ));
+            assert!(production_submission_count_is_admissible(
+                PresentationEvidenceMode::Physical,
+                4,
+                4,
+                0,
+            ));
+            assert!(!production_submission_count_is_admissible(
+                PresentationEvidenceMode::Physical,
+                5,
+                5,
+                0,
+            ));
+            assert!(!production_submission_count_is_admissible(
+                PresentationEvidenceMode::Physical,
+                4,
+                3,
+                0,
+            ));
+        }
+    }
+
     pub(super) fn qualify_production_window_application(
         application: Application<StudioApp>,
         descriptor: &SurfaceDescriptor,
@@ -7739,8 +7811,13 @@ pub mod native_validation {
                 .map_err(|error| crate::dogfood_diagnostic::capture_surface_error(&error))?;
         }
         let submissions = frame.submission_count();
-        assert!(submissions >= 1);
-        assert!(submissions <= 4);
+        let (_, frame_builds) = native_validation_dispatch_counts();
+        assert!(production_submission_count_is_admissible(
+            evidence_mode,
+            submissions,
+            frame_builds,
+            frame.failed_count(),
+        ));
         assert_eq!(frame.direct_present_count(), submissions);
         assert_eq!(frame.installed_presented_handler_count(), submissions);
         let terminal_outcomes = terminal_outcome_count(
