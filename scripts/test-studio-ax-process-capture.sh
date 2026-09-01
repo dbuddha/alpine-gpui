@@ -30,6 +30,12 @@ cat > "$root/fake-no-output" <<'EOF'
 exit 0
 EOF
 
+cat > "$root/fake-untrusted" <<'EOF'
+#!/bin/sh
+printf 'assurance error: AX client is not trusted\n' >&2
+exit 32
+EOF
+
 cat > "$root/fake-footprint" <<'EOF'
 #!/bin/sh
 pid=
@@ -65,7 +71,7 @@ exit 7
 EOF
 
 chmod +x "$root/fake-studio" "$root/fake-assurance" \
-    "$root/fake-no-output" "$root/fake-footprint" \
+    "$root/fake-no-output" "$root/fake-untrusted" "$root/fake-footprint" \
     "$root/fake-sampler-failure" "$root/fake-studio-failure"
 
 capture() {
@@ -124,6 +130,9 @@ expect_failure() {
 
 expect_failure missing-ax "$root/fake-studio" "$root/fake-no-output" \
     "$root/fake-footprint" 'raw AX capture did not publish tree.jsonl'
+expect_failure untrusted "$root/fake-studio" "$root/fake-untrusted" \
+    "$root/fake-footprint" 'assurance error: AX client is not trusted'
+grep -Fq 'raw AX capture command failed' "$root/untrusted.log"
 expect_failure sampler-failure "$root/fake-studio" "$root/fake-assurance" \
     "$root/fake-sampler-failure" 'footprint sampler failed'
 expect_failure process-failure "$root/fake-studio-failure" "$root/fake-assurance" \

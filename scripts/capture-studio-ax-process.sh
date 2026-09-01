@@ -249,7 +249,12 @@ set +e
     > "$ax_stdout" 2> "$ax_stderr"
 ax_status=$?
 set -e
-[ "$ax_status" -eq 0 ] || fail "raw AX capture command failed"
+if [ "$ax_status" -ne 0 ]; then
+    printf 'bounded raw AX diagnostic:\n' >&2
+    head -c 4096 "$ax_stderr" >&2
+    printf '\n' >&2
+    fail "raw AX capture command failed"
+fi
 for artifact_path in tree.jsonl events.jsonl latency.jsonl; do
     [ -s "$capture_root/raw-ax/$artifact_path" ] ||
         fail "raw AX capture did not publish $artifact_path"
