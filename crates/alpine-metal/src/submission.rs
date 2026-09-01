@@ -537,7 +537,7 @@ pub(crate) fn duration_nanoseconds(duration: Duration) -> (u64, bool) {
 pub struct OffscreenFrame {
     image: Bgra8Image,
     report: FrameReport,
-    timings: OffscreenStageTimings,
+    timings: Option<OffscreenStageTimings>,
 }
 
 /// Portable owner of the latest completed Metal offscreen image.
@@ -590,7 +590,7 @@ impl OffscreenFrame {
 
     /// Returns immutable stage timings for this completed submission.
     #[must_use]
-    pub const fn timings(&self) -> OffscreenStageTimings {
+    pub const fn timings(&self) -> Option<OffscreenStageTimings> {
         self.timings
     }
 }
@@ -600,7 +600,7 @@ pub(crate) struct NativeRenderAttempt {
     pub(crate) device_lost: bool,
     pub(crate) operations: FrameOperationUsage,
     pub(crate) resources: FrameResourceUsage,
-    pub(crate) timings: OffscreenStageTimings,
+    pub(crate) timings: Option<OffscreenStageTimings>,
     pub(crate) result: Result<Bgra8Image, RenderError>,
 }
 
@@ -636,21 +636,49 @@ impl MetalBackend {
         scene: &Scene,
         descriptor: OffscreenDescriptor,
     ) -> Result<OffscreenFrame, RenderError> {
-        let total_started = Instant::now();
-        let admission_started = Instant::now();
+        self.render_offscreen_with_profile::<false>(scene, descriptor)
+    }
+
+    /// Validates and renders one immutable scene while collecting stage timings.
+    ///
+    /// This explicit path keeps timing probes out of ordinary submissions and
+    /// comparator measurements.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stage-classified error without pixels or timing evidence.
+    pub fn render_offscreen_profiled(
+        &mut self,
+        scene: &Scene,
+        descriptor: OffscreenDescriptor,
+    ) -> Result<OffscreenFrame, RenderError> {
+        self.render_offscreen_with_profile::<true>(scene, descriptor)
+    }
+
+    fn render_offscreen_with_profile<const PROFILE: bool>(
+        &mut self,
+        scene: &Scene,
+        descriptor: OffscreenDescriptor,
+    ) -> Result<OffscreenFrame, RenderError> {
+        let total_started = timing_started::<PROFILE>();
+        let admission_started = timing_started::<PROFILE>();
         let frame = self.admit_frame(scene, descriptor)?;
-        let (admission_ns, admission_saturated) = duration_nanoseconds(admission_started.elapsed());
-        let submission_started = Instant::now();
-        let mut completed = self.submit_validated(&frame)?;
-        let (submission_ns, submission_saturated) =
-            duration_nanoseconds(submission_started.elapsed());
-        let (total_ns, total_saturated) = duration_nanoseconds(total_started.elapsed());
-        completed.timings.admission_ns = admission_ns;
-        completed.timings.submission_accounting_ns =
-            submission_ns.saturating_sub(completed.timings.native_total_ns);
-        completed.timings.total_ns = total_ns;
-        completed.timings.timing_saturated |=
-            admission_saturated || submission_saturated || total_saturated;
+        let admission = elapsed_timing(admission_started);
+        let submission_started = timing_started::<PROFILE>();
+        let mut completed = self.submit_validated::<PROFILE>(&frame)?;
+        let submission = elapsed_timing(submission_started);
+        let total = elapsed_timing(total_started);
+        if let Some(timings) = completed.timings.as_mut() {
+            let (admission_ns, admission_saturated) = admission.unwrap_or_default();
+            let (submission_ns, submission_saturated) = submission.unwrap_or_default();
+            let (total_ns, total_saturated) = total.unwrap_or_default();
+            timings.admission_ns = admission_ns;
+            timings.submission_accounting_ns =
+                submission_ns.saturating_sub(timings.native_total_ns);
+            timings.total_ns = total_ns;
+            timings.timing_saturated |=
+                admission_saturated || submission_saturated || total_saturated;
+        }
         Ok(completed)
     }
 
@@ -762,7 +790,10 @@ impl MetalBackend {
         self.accounting.submitted_frames()
     }
 
-    fn submit_validated(&mut self, frame: &ValidatedFrame) -> Result<OffscreenFrame, RenderError> {
+    fn submit_validated<const PROFILE: bool>(
+        &mut self,
+        frame: &ValidatedFrame,
+    ) -> Result<OffscreenFrame, RenderError> {
         let Some(next_submission) = self.accounting.submitted_frames().checked_add(1) else {
             self.accounting
                 .record_accepted(
@@ -776,9 +807,9 @@ impl MetalBackend {
             return Err(RenderError::SubmissionSequenceExhausted);
         };
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let attempt = objc2::rc::autoreleasepool(|_| self.native.render(frame));
+        let attempt = objc2::rc::autoreleasepool(|_| self.native.render::<PROFILE>(frame));
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let attempt = self.native.render(frame);
+        let attempt = self.native.render::<PROFILE>(frame);
         record_attempt(&mut self.accounting, frame, &attempt)?;
         complete_attempt(next_submission, frame, attempt)
     }
@@ -807,6 +838,15 @@ impl MetalBackend {
             }
         }
     }
+}
+
+#[inline]
+fn timing_started<const PROFILE: bool>() -> Option<Instant> {
+    if PROFILE { Some(Instant::now()) } else { None }
+}
+
+fn elapsed_timing(started: Option<Instant>) -> Option<(u64, bool)> {
+    started.map(|started| duration_nanoseconds(started.elapsed()))
 }
 
 fn record_attempt(
@@ -1327,7 +1367,7 @@ mod tests {
                 device_lost: false,
                 operations: FrameOperationUsage::default(),
                 resources: resources(),
-                timings: crate::OffscreenStageTimings::default(),
+                timings: None,
                 result: Ok(image(7)),
             },
         );
@@ -1336,7 +1376,7 @@ mod tests {
             result,
             Ok(OffscreenFrame {
                 image: image(7),
-                timings: crate::OffscreenStageTimings::default(),
+                timings: None,
                 report: FrameReport {
                     submission: 5,
                     primitives: 0,
@@ -1384,7 +1424,7 @@ mod tests {
                 device_lost: false,
                 operations: FrameOperationUsage::default(),
                 resources: resources(),
-                timings: crate::OffscreenStageTimings::default(),
+                timings: None,
                 result: Err(RenderError::CommandFailed {
                     status: CommandStatus::Error,
                     failure: None,
@@ -1408,7 +1448,7 @@ mod tests {
                 device_lost: false,
                 operations: FrameOperationUsage::default(),
                 resources: resources(),
-                timings: crate::OffscreenStageTimings::default(),
+                timings: None,
                 result: Ok(image(3)),
             },
         );
@@ -1438,7 +1478,7 @@ mod tests {
             &mut target,
             Ok(OffscreenFrame {
                 image: image(11),
-                timings: crate::OffscreenStageTimings::default(),
+                timings: None,
                 report,
             }),
         );
@@ -1453,7 +1493,7 @@ mod tests {
                 &mut target,
                 Ok(OffscreenFrame {
                     image: image(12),
-                    timings: crate::OffscreenStageTimings::default(),
+                    timings: None,
                     report,
                 }),
             ),
@@ -1679,7 +1719,7 @@ mod tests {
                 &mut target,
                 Ok(OffscreenFrame {
                     image: image(21),
-                    timings: OffscreenStageTimings::default(),
+                    timings: None,
                     report: FrameReport::default(),
                 }),
             ),
@@ -1813,7 +1853,7 @@ mod tests {
             device_lost: false,
             operations: FrameOperationUsage::default(),
             resources: resources(),
-            timings: crate::OffscreenStageTimings::default(),
+            timings: None,
             result: Ok(image(2)),
         };
         record_attempt(&mut healthy, &frame, &committed_success)?;
@@ -1825,7 +1865,7 @@ mod tests {
             device_lost: true,
             operations: FrameOperationUsage::default(),
             resources: resources(),
-            timings: crate::OffscreenStageTimings::default(),
+            timings: None,
             result: Err(RenderError::CommandFailed {
                 status: CommandStatus::Error,
                 failure: None,
@@ -1842,7 +1882,7 @@ mod tests {
             device_lost: false,
             operations: FrameOperationUsage::default(),
             resources: resources(),
-            timings: crate::OffscreenStageTimings::default(),
+            timings: None,
             result: Ok(image(1)),
         };
         assert_eq!(
@@ -1867,7 +1907,7 @@ mod tests {
             device_lost: true,
             operations: FrameOperationUsage::default(),
             resources: resources(),
-            timings: crate::OffscreenStageTimings::default(),
+            timings: None,
             result: Err(RenderError::CommandFailed {
                 status: CommandStatus::Error,
                 failure: None,
