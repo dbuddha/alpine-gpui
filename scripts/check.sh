@@ -26,6 +26,7 @@ scripts/test-studio-residency.sh
 scripts/test-alpine-studio-app-bundle.sh
 scripts/test-dogfood-capture.sh
 scripts/test-live-dogfood-capture.sh
+scripts/test-studio-ax-process-capture.sh
 scripts/test-zed-lab-evidence.sh
 scripts/test-calibration.sh
 scripts/test-studio-profile.sh
