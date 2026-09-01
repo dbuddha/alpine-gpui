@@ -3,6 +3,7 @@
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::{
+        rc::Rc,
         sync::{Arc, Mutex, mpsc::sync_channel},
         thread,
         time::Duration,
@@ -26,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(revoked_owners.release_order_violations(), 0);
 
     let descriptor = SurfaceDescriptor::new("Alpine worker wake", 96.0, 64.0, 1.0)?;
-    let surface = native_validation::new_surface(&descriptor)?;
+    let surface = Rc::new(native_validation::new_surface(&descriptor)?);
     surface.show()?;
     let observer = surface.observer();
     let waker = surface.waker();
@@ -49,8 +50,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let admissions = Arc::new(Mutex::new(None));
     let callback_admissions = Arc::clone(&admissions);
     let mut ready_sender = Some(ready_sender);
-    native_validation::arm_window_close(&surface, Duration::from_millis(500));
-    surface.run_with_event_handler(move |event| {
+    let callback_surface = Rc::clone(&surface);
+    let timeout = native_validation::arm_run_timeout(&surface, Duration::from_secs(5));
+    let run_result = surface.run_with_event_handler(move |event| {
         if let SurfaceEvent::Wake { timestamp } = event
             && let Ok(mut received) = callback_received.lock()
         {
@@ -63,9 +65,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     *admissions = Some(admitted);
                 }
             }
+            let should_close = received.len() == 2;
+            drop(received);
+            if should_close {
+                native_validation::arm_window_close(&callback_surface, Duration::ZERO);
+            }
         }
         SurfaceResponse::default()
-    })?;
+    });
+    timeout.cancel();
+    assert!(!timeout.expired());
+    assert!(timeout.cancelled());
+    run_result?;
     worker.join().map_err(|_| "worker wake thread panicked")??;
 
     let received = received.lock().map_err(|_| "wake receiver poisoned")?;
@@ -91,6 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(waker.wake(), SurfaceWakeAdmission::Closed);
     assert_eq!(waker.snapshot().rejected(), 1);
 
+    let surface = Rc::try_unwrap(surface).map_err(|_| "native wake surface remained retained")?;
     let owners = native_validation::close_with_owner_evidence(surface)?;
     assert_eq!(owners.active(), [0; 10]);
     assert_eq!(owners.pasteboard_releases(), 0);
