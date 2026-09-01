@@ -27,7 +27,7 @@ const LANGUAGE_BUDGET_BYTES: usize = 16 * 1024 * 1024;
 const FOREGROUND_QUEUE_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 const OMITTED_EVIDENCE: [&str; 10] = [
     "accessibility-stale-actions",
-    "background-queue-bytes",
+    "background-queue",
     "font-cache",
     "fallback-cache",
     "glyph-atlas-gpu",
@@ -766,6 +766,7 @@ mod tests {
         for required in [
             "accessibility-stale-actions",
             "accessibility-tree",
+            "background-queue",
             "language-responses",
             "upload-staging-budget",
         ] {

@@ -664,6 +664,7 @@ impl LineLayoutCache {
             font,
             wrap_width_bits,
         )? {
+            reserve_cache_entries(&mut self.current, 1)?;
             let entry = self.previous.remove(index);
             let layout = Arc::clone(&entry.layout);
             self.current.push(entry);
@@ -671,6 +672,7 @@ impl LineLayoutCache {
                 .hits
                 .checked_add(1)
                 .ok_or(LayoutError::SequenceExhausted)?;
+            self.enforce_budget()?;
             return Ok(layout);
         }
 
