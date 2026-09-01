@@ -790,7 +790,7 @@ fn valid_timestamp(value: &str) -> bool {
             .all(|(_, byte)| byte.is_ascii_digit())
 }
 
-fn calculate_sha256(path: &Path) -> Result<String, String> {
+pub(crate) fn calculate_sha256(path: &Path) -> Result<String, String> {
     for (program, arguments) in [("sha256sum", &[][..]), ("shasum", &["-a", "256"][..])] {
         let output = Command::new(program).args(arguments).arg(path).output();
         let Ok(output) = output else {

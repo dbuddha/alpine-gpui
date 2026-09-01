@@ -1,0 +1,13 @@
+admission_ns                 n=100 p50=167       p95=209       p99=500       mean=169
+resource_preparation_ns      n=100 p50=10333     p95=14000     p99=23000     mean=10477
+command_buffer_ns            n=100 p50=375       p95=459       p99=625       mean=381
+atlas_upload_encoding_ns     n=100 p50=0         p95=0         p99=0         mean=0
+render_encoding_ns           n=100 p50=5500      p95=5875      p99=6750      mean=5454
+readback_encoding_ns         n=100 p50=4959      p95=5291      p99=5625      mean=4871
+commit_ns                    n=100 p50=2042      p95=3583      p99=5667      mean=2259
+completion_wait_ns           n=100 p50=336000    p95=376167    p99=560167    mean=369648
+gpu_execution_ns             n=100 p50=34667     p95=35458     p99=37208     mean=67556
+readback_compaction_ns       n=100 p50=458       p95=542       p99=1000      mean=455
+native_total_ns              n=100 p50=358750    p95=404416    p99=579291    mean=393878
+submission_accounting_ns     n=100 p50=3208      p95=4958      p99=12042     mean=3544
+total_ns                     n=100 p50=362375    p95=408375    p99=591625    mean=397685

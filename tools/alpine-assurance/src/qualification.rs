@@ -704,6 +704,57 @@ mod benchmark_tests {
     };
     use std::{fs, path::Path, time::Duration};
 
+    fn manifest_string<'a>(manifest: &'a toml::Value, field: &str) -> Result<&'a str, String> {
+        manifest
+            .get(field)
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| format!("renderer stage profile manifest lacks string field {field}"))
+    }
+
+    fn validate_retained_csv(
+        source: &str,
+        expected_header: &str,
+        expected_fields: usize,
+        expected_samples: usize,
+    ) -> Result<(), String> {
+        let mut lines = source.lines();
+        if lines.next() != Some(expected_header) {
+            return Err("renderer stage profile CSV header drifted".to_owned());
+        }
+        let mut observed = 0_usize;
+        for (expected_index, line) in lines.enumerate() {
+            let fields = line.split(',').collect::<Vec<_>>();
+            if fields.len() != expected_fields {
+                return Err(format!(
+                    "renderer stage profile sample {expected_index} has {} fields instead of {expected_fields}",
+                    fields.len()
+                ));
+            }
+            let index = fields[0]
+                .parse::<usize>()
+                .map_err(|error| format!("invalid retained sample index: {error}"))?;
+            if index != expected_index {
+                return Err(format!(
+                    "renderer stage profile sample index {index} is not contiguous at {expected_index}"
+                ));
+            }
+            for value in &fields[1..] {
+                value
+                    .parse::<u64>()
+                    .map_err(|error| format!("invalid retained timing value: {error}"))?;
+            }
+            observed = observed
+                .checked_add(1)
+                .ok_or_else(|| "renderer stage profile sample count overflowed".to_owned())?;
+        }
+        if observed != expected_samples {
+            return Err(format!(
+                "renderer stage profile retains {observed} samples instead of {expected_samples}"
+            ));
+        }
+        Ok(())
+    }
+
     #[test]
     fn benchmark_counts_atomic_publication_and_collision_are_bounded() -> Result<(), String> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -804,6 +855,62 @@ mod benchmark_tests {
             assert!(!native_output.exists());
         }
         assert!(!output.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn retained_renderer_stage_profile_is_identity_bound_and_complete() -> Result<(), String> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let manifest_path =
+            root.join("assurance/qualification/v2/raw/issue-521-388e4b8/evidence.toml");
+        let source = fs::read_to_string(&manifest_path).map_err(|error| error.to_string())?;
+        let manifest = toml::from_str::<toml::Value>(&source).map_err(|error| error.to_string())?;
+        if manifest_string(&manifest, "schema")? != "alpine-renderer-stage-profile/v1"
+            || manifest_string(&manifest, "claim")? != "none"
+        {
+            return Err("renderer stage profile schema or claim boundary drifted".to_owned());
+        }
+        let issue = manifest
+            .get("issue")
+            .and_then(toml::Value::as_integer)
+            .ok_or_else(|| "renderer stage profile issue is missing".to_owned())?;
+        if issue != 521 {
+            return Err("renderer stage profile issue identity drifted".to_owned());
+        }
+        let sample_count = manifest
+            .get("sample_count")
+            .and_then(toml::Value::as_integer)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| "renderer stage profile sample count is invalid".to_owned())?;
+        for (path_field, hash_field) in [
+            ("trace_path", "trace_sha256"),
+            ("stage_samples_path", "stage_samples_sha256"),
+            ("ordinary_samples_path", "ordinary_samples_sha256"),
+            ("environment_path", "environment_sha256"),
+        ] {
+            let path = root.join(manifest_string(&manifest, path_field)?);
+            let expected = manifest_string(&manifest, hash_field)?;
+            let actual = crate::dogfood::calculate_sha256(&path)?;
+            if actual != expected {
+                return Err(format!(
+                    "renderer stage profile {path_field} hash drifted: expected {expected}, observed {actual}"
+                ));
+            }
+        }
+
+        let stage_source =
+            fs::read_to_string(root.join(manifest_string(&manifest, "stage_samples_path")?))
+                .map_err(|error| error.to_string())?;
+        validate_retained_csv(
+            &stage_source,
+            "sample_index,admission_ns,resource_preparation_ns,command_buffer_ns,atlas_upload_encoding_ns,render_encoding_ns,readback_encoding_ns,commit_ns,completion_wait_ns,gpu_execution_ns,readback_compaction_ns,native_total_ns,submission_accounting_ns,total_ns",
+            14,
+            sample_count,
+        )?;
+        let ordinary_source =
+            fs::read_to_string(root.join(manifest_string(&manifest, "ordinary_samples_path")?))
+                .map_err(|error| error.to_string())?;
+        validate_retained_csv(&ordinary_source, "sample_index,elapsed_ns", 2, sample_count)?;
         Ok(())
     }
 }
