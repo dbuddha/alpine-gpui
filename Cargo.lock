@@ -15,6 +15,7 @@ dependencies = [
 name = "alpine-assurance"
 version = "0.0.0"
 dependencies = [
+ "alpine-ax-client",
  "alpine-metal",
  "alpine-trace",
  "serde",
