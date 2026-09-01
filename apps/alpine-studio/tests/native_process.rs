@@ -151,7 +151,37 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
             Ok::<_, Box<dyn std::error::Error>>((status, stdout, stderr, trace))
         };
 
-        let (status, stdout, stderr, trace) = run_child(None, &root.join("home-normal"))?;
+        let evidence_mode = std::env::var("ALPINE_PRESENTATION_EVIDENCE_MODE")
+            .unwrap_or_else(|_| String::from("physical"));
+        let (first_status, first_stdout, first_stderr, first_trace) =
+            run_child(None, &root.join("home-normal"))?;
+        let first_trace_complete =
+            alpine_studio::native_validation::validate_native_language_startup_trace(&first_trace)
+                .is_ok();
+        let (status, stdout, stderr, trace) =
+            if alpine_studio::native_validation::hosted_terminal_stall_retry_allowed(
+                &evidence_mode,
+                0,
+                first_status.success(),
+                &first_stdout,
+                &first_stderr,
+                first_trace_complete,
+            ) {
+                eprintln!(
+                    "alpine-hosted-native-command-stall-retry attempt=1 status={first_status} stderr={first_stderr:?} language_trace={first_trace:?}"
+                );
+                let retry = run_child(None, &root.join("home-normal-retry"))?;
+                if !retry.0.success() {
+                    return Err(format!(
+                        "native Studio accessibility hosted retry failed; first=(status={first_status} stdout={first_stdout:?} stderr={first_stderr:?} language_trace={first_trace:?}) retry=(status={} stdout={:?} stderr={:?} language_trace={:?})",
+                        retry.0, retry.1, retry.2, retry.3
+                    )
+                    .into());
+                }
+                retry
+            } else {
+                (first_status, first_stdout, first_stderr, first_trace)
+            };
         if !status.success() {
             return Err(format!(
                 "native Studio accessibility child failed with {status}; stdout={stdout:?}; stderr={stderr:?}; language_trace={trace:?}"

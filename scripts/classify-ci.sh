@@ -76,7 +76,13 @@ if has_label review:unsafe || matches '^(crates/alpine-text-layout/|crates/.+/(u
     miri=true
 fi
 
-if matches '^(apps/alpine-studio/(.+\.rs|Cargo\.toml)$|crates/(alpine-metal|alpine-platform-macos)/|shaders/|.+\.metal$)'; then
+if matches '^(apps/alpine-studio/(.+\.rs|Cargo\.toml)$|crates/(alpine-metal|alpine-platform-macos)/|tools/alpine-ax-client/(src/.+\.rs|Cargo\.toml)$|shaders/|.+\.metal$)'; then
+    metal=true
+fi
+
+# Metal validation orchestration owns the same native evidence as the source it
+# qualifies. A gate must not be able to change while classifying itself out.
+if matches '^scripts/(check-metal|check-native-benchmark-result|test-native-benchmark-result)\.sh$'; then
     metal=true
 fi
 

@@ -403,11 +403,37 @@ if ALPINE_CI_WORKFLOW="$fixture_dir/unsharded-ci.yml" run_policy > "$fixture_dir
     printf 'policy test error: unsharded native mutation unexpectedly passed\n' >&2
     exit 1
 fi
-if ! grep -Fq 'pull-request native mutation must preserve all ten scopes across sixteen deterministic shards' "$fixture_dir/unsharded-ci.log"; then
+if ! grep -Fq 'pull-request native mutation must preserve all eleven scopes across sixteen deterministic shards' "$fixture_dir/unsharded-ci.log"; then
     printf 'policy test error: expected native-mutation sharding failure was not reported\n' >&2
     cat "$fixture_dir/unsharded-ci.log" >&2
     exit 1
 fi
+
+sed 's#--file tools/alpine-ax-client/src/native_factory.rs#--file tools/alpine-ax-client/src/missing-native-factory.rs#' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/missing-native-ax-factory-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/missing-native-ax-factory-ci.yml" run_policy > "$fixture_dir/missing-native-ax-factory-ci.log" 2>&1; then
+    printf 'policy test error: missing native AX factory mutation unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'AX target-only mutation must leave Linux explicitly and retain one conditional Apple factory owner' "$fixture_dir/missing-native-ax-factory-ci.log"; then
+    printf 'policy test error: expected missing native AX factory owner failure was not reported\n' >&2
+    cat "$fixture_dir/missing-native-ax-factory-ci.log" >&2
+    exit 1
+fi
+
+for target_only_file in native.rs native_factory.rs; do
+    sed "s/ --exclude 'tools\/alpine-ax-client\/src\/${target_only_file}'//" \
+        "$fixture_dir/ci.yml" > "$fixture_dir/linux-owned-ax-${target_only_file}.yml"
+    if ALPINE_CI_WORKFLOW="$fixture_dir/linux-owned-ax-${target_only_file}.yml" run_policy > "$fixture_dir/linux-owned-ax-${target_only_file}.log" 2>&1; then
+        printf 'policy test error: Linux-owned target-only AX mutation unexpectedly passed for %s\n' "$target_only_file" >&2
+        exit 1
+    fi
+    if ! grep -Fq 'AX target-only mutation must leave Linux explicitly and retain one conditional Apple factory owner' "$fixture_dir/linux-owned-ax-${target_only_file}.log"; then
+        printf 'policy test error: expected target-only AX ownership failure was not reported for %s\n' "$target_only_file" >&2
+        cat "$fixture_dir/linux-owned-ax-${target_only_file}.log" >&2
+        exit 1
+    fi
+done
 
 perl -0pe 's/(  mutation-diff:.*?)( --shard "\$\{\{ matrix\.shard \}\}")/$1/s' \
     "$fixture_dir/ci.yml" > "$fixture_dir/unsharded-mutation-diff-ci.yml"

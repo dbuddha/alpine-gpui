@@ -3,8 +3,8 @@ schema = "alpine-upstreams/v1"
 [[upstreams]]
 name = "Zed GPUI"
 repository = "zed-industries/zed"
-baseline_commit = "e17dc4f9d50db73a458b64dcce50ecd4878b98a3"
-research_issue = 27
+baseline_commit = "1662f5f3f6497c5f80830ccdca1edfd1fc0c6c6a"
+research_issue = 445
 
 [[upstreams]]
 name = "Zed Editor"

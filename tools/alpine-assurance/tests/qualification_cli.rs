@@ -199,3 +199,180 @@ fn rejects_an_invalid_fixture_through_the_binary_boundary() {
         assert!(stderr.contains("equivalence gate visual did not pass"));
     }
 }
+
+#[test]
+fn benchmark_admission_runs_through_the_compiled_command_boundary() -> Result<(), String> {
+    let binary = env!("CARGO_BIN_EXE_alpine-assurance");
+    let root = repository_root();
+    let manifest = "assurance/qualification/v1/scene.toml";
+    let registry_validation = Command::new(binary)
+        .current_dir(root)
+        .output()
+        .map_err(|error| error.to_string())?;
+    assert!(
+        registry_validation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&registry_validation.stderr)
+    );
+    let registry_report = Command::new(binary)
+        .current_dir(root)
+        .arg("report")
+        .output()
+        .map_err(|error| error.to_string())?;
+    assert!(
+        registry_report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&registry_report.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&registry_report.stdout).starts_with("# Alpine assurance report\n")
+    );
+    let unavailable_radar = Command::new(binary)
+        .current_dir(root)
+        .arg("upstream-radar")
+        .env("PATH", "")
+        .env("GH_REPOSITORY", "dbuddha/alpine-gpui")
+        .env_remove("GH_TOKEN")
+        .output()
+        .map_err(|error| error.to_string())?;
+    assert!(!unavailable_radar.status.success());
+    assert!(
+        String::from_utf8_lossy(&unavailable_radar.stderr)
+            .contains("cannot determine current date")
+    );
+    for arguments in [
+        vec!["benchmark-scene-reference", manifest, "missing.csv", "1"],
+        vec![
+            "benchmark-scene-reference",
+            manifest,
+            "extra.csv",
+            "1",
+            "1",
+            "extra",
+        ],
+        vec![
+            "benchmark-scene-reference",
+            manifest,
+            "invalid-warmup.csv",
+            "invalid",
+            "1",
+        ],
+        vec![
+            "benchmark-scene-reference",
+            manifest,
+            "invalid-sample.csv",
+            "1",
+            "invalid",
+        ],
+        vec![
+            "benchmark-scene-reference",
+            manifest,
+            "zero-sample.csv",
+            "0",
+            "0",
+        ],
+    ] {
+        let rejected = Command::new(binary)
+            .current_dir(root)
+            .args(arguments)
+            .output()
+            .map_err(|error| error.to_string())?;
+        assert!(!rejected.status.success());
+    }
+    Ok(())
+}
+
+#[test]
+fn reference_benchmark_publishes_bounded_samples() -> Result<(), String> {
+    let binary = env!("CARGO_BIN_EXE_alpine-assurance");
+    let root = repository_root();
+    let manifest = "assurance/qualification/v1/scene.toml";
+    let output_path = root.join("target").join(format!(
+        "qualification-cli-benchmark-{}.csv",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&output_path);
+    let benchmark = Command::new(binary)
+        .current_dir(root)
+        .args(["benchmark-scene-reference", manifest])
+        .arg(&output_path)
+        .args(["2", "3"])
+        .output()
+        .map_err(|error| error.to_string())?;
+    assert!(
+        benchmark.status.success(),
+        "{}",
+        String::from_utf8_lossy(&benchmark.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&benchmark.stdout);
+    assert!(stdout.contains("cpu-oracle"));
+    assert!(stdout.contains("performance claim=none"));
+    assert!(stdout.contains("warmup_iterations=2 sample_count=3"));
+    let csv = fs::read_to_string(&output_path).map_err(|error| error.to_string())?;
+    assert_eq!(csv.lines().next(), Some("sample_index,elapsed_ns"));
+    assert_eq!(csv.lines().count(), 4);
+    assert!(csv.lines().skip(1).all(|line| {
+        line.split_once(',')
+            .and_then(|(_, elapsed)| elapsed.parse::<u64>().ok())
+            .is_some_and(|elapsed| elapsed > 0)
+    }));
+    let collision = Command::new(binary)
+        .current_dir(root)
+        .args(["benchmark-scene-reference", manifest])
+        .arg(&output_path)
+        .args(["1", "1"])
+        .output()
+        .map_err(|error| error.to_string())?;
+    assert!(!collision.status.success());
+    assert!(String::from_utf8_lossy(&collision.stderr).contains("output already exists"));
+    fs::remove_file(&output_path).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[test]
+fn native_benchmark_publishes_or_rejects_the_known_virtual_device() -> Result<(), String> {
+    let binary = env!("CARGO_BIN_EXE_alpine-assurance");
+    let root = repository_root();
+    let manifest = "assurance/qualification/v1/scene.toml";
+    let native_output_path = root.join("target").join(format!(
+        "qualification-cli-native-benchmark-{}.csv",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&native_output_path);
+    let native = Command::new(binary)
+        .current_dir(root)
+        .args(["benchmark-scene-native", manifest])
+        .arg(&native_output_path)
+        .args(["1", "1"])
+        .output()
+        .map_err(|error| error.to_string())?;
+    let stderr = String::from_utf8_lossy(&native.stderr);
+    if cfg!(target_os = "macos") && !native.status.success() {
+        assert!(
+            stderr.contains(
+                "Metal device Apple Paravirtual device is unsupported: Metal 3 family support is required"
+            ),
+            "unexpected native benchmark failure: {stderr}"
+        );
+        assert!(!native_output_path.exists());
+    } else if cfg!(target_os = "macos") {
+        assert!(native.status.success(), "{stderr}");
+        assert!(String::from_utf8_lossy(&native.stdout).contains("direct-metal"));
+        let native_csv =
+            fs::read_to_string(&native_output_path).map_err(|error| error.to_string())?;
+        assert_eq!(native_csv.lines().next(), Some("sample_index,elapsed_ns"));
+        assert_eq!(native_csv.lines().count(), 2);
+        let native_elapsed = native_csv
+            .lines()
+            .nth(1)
+            .and_then(|line| line.split_once(','))
+            .and_then(|(_, elapsed)| elapsed.parse::<u64>().ok());
+        assert!(native_elapsed.is_some_and(|elapsed| elapsed > 1));
+        fs::remove_file(&native_output_path).map_err(|error| error.to_string())?;
+    } else {
+        assert!(!native.status.success());
+        assert!(stderr.contains("cannot initialize Direct Metal"));
+        assert!(!native_output_path.exists());
+    }
+    Ok(())
+}
