@@ -8447,6 +8447,13 @@ pub mod native_validation {
         latest_frames >= required_frames
     }
 
+    fn project_search_publication_window_open(
+        elapsed: Duration,
+        publication_budget: Duration,
+    ) -> bool {
+        elapsed < publication_budget
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one process journey preserves surface, worker, search, save, and drain identity"
@@ -8524,9 +8531,25 @@ pub mod native_validation {
         let mut latest_frames = frames_after_query;
         let mut stable_wakes = 0_usize;
         let mut published_terminal = false;
-        let publication_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let publication_budget = Duration::from_secs(5);
+        assert!(project_search_publication_window_open(
+            Duration::ZERO,
+            publication_budget,
+        ));
+        assert!(!project_search_publication_window_open(
+            publication_budget,
+            publication_budget,
+        ));
+        assert!(!project_search_publication_window_open(
+            publication_budget.saturating_add(Duration::from_nanos(1)),
+            publication_budget,
+        ));
+        let publication_started = std::time::Instant::now();
         let mut timestamp = 702_u64;
-        while std::time::Instant::now() < publication_deadline {
+        while project_search_publication_window_open(
+            publication_started.elapsed(),
+            publication_budget,
+        ) {
             std::thread::sleep(Duration::from_millis(1));
             replay_tree_events(
                 &surface,
