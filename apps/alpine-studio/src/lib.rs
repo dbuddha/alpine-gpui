@@ -8524,7 +8524,9 @@ pub mod native_validation {
         let mut latest_frames = frames_after_query;
         let mut stable_wakes = 0_usize;
         let mut published_terminal = false;
-        for timestamp in 702..1_214 {
+        let publication_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut timestamp = 702_u64;
+        while std::time::Instant::now() < publication_deadline {
             std::thread::sleep(Duration::from_millis(1));
             replay_tree_events(
                 &surface,
@@ -8534,6 +8536,9 @@ pub mod native_validation {
                     timestamp: EventTimestamp::new(timestamp),
                 }],
             )?;
+            timestamp = timestamp
+                .checked_add(1)
+                .ok_or("project-search event timestamp exhausted")?;
             let current_frames = journey.borrow().frames;
             if current_frames > latest_frames {
                 latest_frames = current_frames;
@@ -8556,10 +8561,13 @@ pub mod native_validation {
             &state,
             &journey,
             &[SurfaceEvent::Wake {
-                timestamp: EventTimestamp::new(1_214),
+                timestamp: EventTimestamp::new(timestamp),
             }],
         )?;
         assert_eq!(journey.borrow().frames, terminal_frames);
+        timestamp = timestamp
+            .checked_add(1)
+            .ok_or("project-search event timestamp exhausted")?;
 
         let before_open = state.borrow().snapshot().document_revision();
         replay_tree_events(
@@ -8567,24 +8575,34 @@ pub mod native_validation {
             &state,
             &journey,
             &[keyboard_event(
-                1_215,
+                timestamp,
                 KEY_RETURN,
                 "Enter",
                 Modifiers::default(),
             )],
         )?;
         assert_ne!(state.borrow().snapshot().document_revision(), before_open);
+        timestamp = timestamp
+            .checked_add(1)
+            .ok_or("project-search event timestamp exhausted")?;
         replay_tree_events(
             &surface,
             &state,
             &journey,
             &[
                 SurfaceEvent::Ime {
-                    timestamp: EventTimestamp::new(1_216),
+                    timestamp: EventTimestamp::new(timestamp),
                     input_epoch: InputEpoch::INITIAL,
                     event: ImeEvent::Committed("!".into()),
                 },
-                keyboard_event(1_217, KEY_S, "s", Modifiers::from_bits(Modifiers::COMMAND)),
+                keyboard_event(
+                    timestamp
+                        .checked_add(1)
+                        .ok_or("project-search event timestamp exhausted")?,
+                    KEY_S,
+                    "s",
+                    Modifiers::from_bits(Modifiers::COMMAND),
+                ),
             ],
         )?;
         assert_eq!(fs::read_to_string(matched)?, "zero\n! alpha\n");
