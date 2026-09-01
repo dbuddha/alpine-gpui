@@ -24,10 +24,10 @@ use objc2::{
     runtime::{AnyObject, ProtocolObject, Sel},
 };
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent,
-    NSEventModifierFlags, NSEventPhase, NSPasteboard, NSPasteboardType, NSPasteboardTypeString,
-    NSTextInputClient, NSView, NSWindow, NSWindowDelegate, NSWindowOcclusionState,
-    NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationTerminateReply, NSBackingStoreType, NSEvent, NSEventModifierFlags, NSEventPhase,
+    NSPasteboard, NSPasteboardType, NSPasteboardTypeString, NSTextInputClient, NSView, NSWindow,
+    NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
 };
 #[cfg(alpine_native_validation)]
 use objc2_app_kit::{NSEventType, NSScreen, NSWindowButton};
@@ -2768,6 +2768,40 @@ define_class!(
         }
     }
 
+    // SAFETY: The selector and Rust signature exactly match the generated
+    // NSApplicationDelegate protocol. Alpine owns one process application and
+    // installs this main-thread-only delegate only for the native surface
+    // lifetime. Termination is always cancelled at AppKit so the admitted
+    // window-close path can drain and return through Rust ownership.
+    unsafe impl NSApplicationDelegate for DisplayLinkDelegate {
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        #[unsafe(method(applicationShouldTerminate:))]
+        fn applicationShouldTerminate(
+            &self,
+            _sender: &NSApplication,
+        ) -> NSApplicationTerminateReply {
+            if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+                return NSApplicationTerminateReply::TerminateCancel;
+            }
+            match self.dispatch_surface_event(SurfaceEvent::CloseRequested {
+                timestamp: self.next_event_timestamp(),
+            }) {
+                Ok(CloseDisposition::Allow) => {
+                    self.begin_native_close();
+                    if let Some(window) = &self.ivars().window {
+                        window.close();
+                    }
+                }
+                Ok(CloseDisposition::Cancel | CloseDisposition::NotRequested) => {}
+                Err(error) => self.record_dispatch_error(error),
+            }
+            NSApplicationTerminateReply::TerminateCancel
+        }
+    }
+
     // SAFETY: Each implemented selector exactly matches NSWindowDelegate.
     // AppKit invokes these callbacks on the main thread and no notification
     // object or native reference escapes the callback.
@@ -4056,6 +4090,15 @@ impl NativeSurface {
             .ok_or_else(|| native_unavailable(SurfaceStage::DisplayLink))?;
         display_link.setDelegate(Some(ProtocolObject::from_ref(&**delegate)));
         window.setDelegate(Some(ProtocolObject::from_ref(&**delegate)));
+        let application = builder
+            .application
+            .as_ref()
+            .ok_or_else(|| native_unavailable(SurfaceStage::MainThread))?;
+        if application.delegate().is_some() {
+            return Err(SurfaceError::invariant(SurfaceOperation::Application));
+        }
+        application.setDelegate(Some(ProtocolObject::from_ref(&**delegate)));
+        builder.application_delegate_installed = true;
         control.checkpoint(SurfaceStage::DisplayLink)?;
 
         let run_loop = NSRunLoop::mainRunLoop();
@@ -4568,6 +4611,27 @@ impl NativeSurface {
         self.delegate.install_event_handler(handler)?;
         self.window.performClose(None);
         self.delegate.clear_event_handler();
+        Ok(self.window_close_started.load(Ordering::Acquire))
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn replay_application_quit_with_handler<F>(
+        &self,
+        handler: F,
+    ) -> Result<bool, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        self.delegate.install_event_handler(handler)?;
+        // SAFETY: This is the exact NSApplicationDelegate selector implemented
+        // above. Both objects are retained and main-thread-only for the
+        // synchronous validation message.
+        let reply: NSApplicationTerminateReply =
+            unsafe { msg_send![&*self.delegate, applicationShouldTerminate: &*self.application] };
+        self.delegate.clear_event_handler();
+        if reply != NSApplicationTerminateReply::TerminateCancel {
+            return Err(SurfaceError::invariant(SurfaceOperation::Application));
+        }
         Ok(self.window_close_started.load(Ordering::Acquire))
     }
 
@@ -5139,6 +5203,7 @@ impl Drop for NativeSurface {
     fn drop(&mut self) {
         self.wake_bridge.revoke();
         self.view.revoke_accessibility();
+        self.application.setDelegate(None);
         let native_close_started = self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE;
         let must_close_window = !self.window_close_started.load(Ordering::Acquire);
         if !native_close_started {
@@ -5204,6 +5269,7 @@ struct NativeSurfaceBuilder {
     window: Option<Retained<NSWindow>>,
     device: Option<Device>,
     application: Option<Retained<NSApplication>>,
+    application_delegate_installed: bool,
     completed: bool,
     #[cfg(alpine_native_validation)]
     validation_probe: Option<InitializationProbe>,
@@ -5234,6 +5300,7 @@ impl NativeSurfaceBuilder {
             window: None,
             device: None,
             application: None,
+            application_delegate_installed: false,
             completed: false,
             #[cfg(alpine_native_validation)]
             validation_probe,
@@ -5303,6 +5370,11 @@ impl Drop for NativeSurfaceBuilder {
             return;
         }
         begin_close_observer_state(&self.lifecycle);
+        if self.application_delegate_installed
+            && let Some(application) = &self.application
+        {
+            application.setDelegate(None);
+        }
         if let Some(display_link) = &self.display_link {
             display_link.setPaused(true);
             display_link.invalidate();
