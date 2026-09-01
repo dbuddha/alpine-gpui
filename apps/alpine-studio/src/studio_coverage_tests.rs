@@ -1749,7 +1749,10 @@ fn dirty_file_close_is_blocked_until_atomic_save_succeeds() -> Result<(), Box<dy
         timestamp: EventTimestamp::new(2),
     });
     assert!(blocked.cancel_close);
-    assert_eq!(app.local_status, Some(LocalStatus::CloseBlocked));
+    assert!(matches!(
+        app.local_status,
+        Some(LocalStatus::CloseBlocked(ref message)) if message.contains("Command-S")
+    ));
     assert!(
         app.handle_event(&key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND)))
             .visual_changed
@@ -2019,9 +2022,16 @@ fn explicit_file_launch_composes_dirty_recovery_without_replacing_local_text()
     assert_eq!(app.tabs.len(), 2);
     assert_eq!(app.tabs.active_index(), 1);
     assert_eq!(app.buffer().snapshot().text(), "requested\n");
-    assert!(app.activate_document_tab(0)?.document_changed);
+    let blocked = app.handle_close_request();
+    assert!(blocked.cancel_close);
+    assert!(blocked.effect.document_changed);
+    assert_eq!(app.tabs.active_index(), 0);
     assert_eq!(app.buffer().snapshot().text(), "local recovery\n");
     assert!(app.document.is_dirty());
+    assert_eq!(
+        app.local_status.as_ref().map(LocalStatus::message),
+        Some("Save changes in recovered.rs with Command-S before closing.")
+    );
     drop(app);
 
     let retained = recovery::load(&recovery::path_for_session(&session_path))?;
@@ -2331,8 +2341,8 @@ fn workspace_errors_and_statuses_preserve_exact_sources_and_messages()
         assert!(std::error::Error::source(&error).is_none());
     }
     assert_eq!(
-        LocalStatus::CloseBlocked.message(),
-        "Save changes before closing."
+        LocalStatus::CloseBlocked(Arc::from("close owner")).message(),
+        "close owner"
     );
     assert_eq!(
         LocalStatus::Workspace(Arc::from("workspace status")).message(),
@@ -3242,9 +3252,17 @@ fn bounded_tabs_preserve_dirty_documents_and_refuse_dirty_close()
     assert!(app.open_workspace_entry(beta)?.document_changed);
     assert_eq!(app.buffer().snapshot().text(), "beta");
     let tab_count = app.tabs.len();
-    assert!(app.handle_close_request().cancel_close);
+    let blocked = app.handle_close_request();
+    assert!(blocked.cancel_close);
+    assert!(blocked.effect.document_changed);
+    assert_eq!(app.tabs.active_index(), 1);
+    assert_eq!(app.buffer().snapshot().text(), dirty_alpha);
+    assert_eq!(
+        app.local_status.as_ref().map(LocalStatus::message),
+        Some("Save changes in alpha.rs with Command-S before closing.")
+    );
 
-    assert!(app.open_workspace_entry(alpha)?.document_changed);
+    assert_eq!(app.open_workspace_entry(alpha)?, EventEffect::default());
     assert_eq!(app.tabs.len(), tab_count);
     assert_eq!(app.buffer().snapshot().text(), dirty_alpha);
     assert!(matches!(

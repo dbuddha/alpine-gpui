@@ -1305,7 +1305,7 @@ struct PendingCut {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum LocalStatus {
     Clipboard(Arc<str>),
-    CloseBlocked,
+    CloseBlocked(Arc<str>),
     Command(Arc<str>),
     Workspace(Arc<str>),
 }
@@ -1313,8 +1313,10 @@ enum LocalStatus {
 impl LocalStatus {
     fn message(&self) -> &str {
         match self {
-            Self::Clipboard(message) | Self::Command(message) | Self::Workspace(message) => message,
-            Self::CloseBlocked => "Save changes before closing.",
+            Self::Clipboard(message)
+            | Self::CloseBlocked(message)
+            | Self::Command(message)
+            | Self::Workspace(message) => message,
         }
     }
 }
@@ -2523,10 +2525,15 @@ impl StudioApp {
         &mut self,
         path: PathBuf,
     ) -> Result<(), recovery::RecoveryError> {
+        let request = self
+            .capture_recovery_request()
+            .map_err(|_| recovery::RecoveryError::Invalid)?;
         let recovery_path = recovery::path_for_session(&path);
+        let coordinator = recovery::RecoveryCoordinator::new(recovery_path)?;
+        coordinator.publish(request)?;
         self.session_path = Some(path);
-        self.recovery = Some(recovery::RecoveryCoordinator::new(recovery_path)?);
-        self.publish_recovery();
+        self.recovery = Some(coordinator);
+        self.last_recovery_error = None;
         Ok(())
     }
 
@@ -3971,12 +3978,23 @@ impl StudioApp {
     }
 
     fn handle_close_request(&mut self) -> StudioTransition {
-        if self.workspace_edits.is_publication_pending()
-            || self.document.is_dirty()
-            || self.tabs.inactive_documents().any(StudioDocument::is_dirty)
-            || self.last_file_error.is_some()
-        {
-            let effect = self.set_local_status(LocalStatus::CloseBlocked);
+        let blocker = if self.workspace_edits.is_publication_pending() {
+            Some((
+                self.tabs.active_index(),
+                Arc::from("Wait for the pending workspace edit before closing."),
+            ))
+        } else {
+            self.close_blocking_document()
+        };
+        if let Some((index, message)) = blocker {
+            let mut effect = EventEffect::default();
+            if index != self.tabs.active_index() {
+                effect = match self.activate_document_tab(index) {
+                    Ok(effect) => effect,
+                    Err(error) => self.record_workspace_error(&error),
+                };
+            }
+            effect = effect.merge(self.set_local_status(LocalStatus::CloseBlocked(message)));
             StudioTransition {
                 effect,
                 clipboard_write: None,
@@ -3985,6 +4003,33 @@ impl StudioApp {
         } else {
             StudioTransition::default()
         }
+    }
+
+    fn close_blocking_document(&self) -> Option<(usize, Arc<str>)> {
+        let active = self.tabs.active_index();
+        std::iter::once(active)
+            .chain((0..self.tabs.len()).filter(|index| *index != active))
+            .find_map(|index| {
+                let document = self.tabs.document_at(index, &self.document).ok()?;
+                let file_error = index == active && self.last_file_error.is_some();
+                if !document.is_dirty() && !file_error {
+                    return None;
+                }
+                let label = self
+                    .tabs
+                    .label(index)
+                    .unwrap_or_else(|| Arc::from("this document"));
+                let message = if file_error {
+                    format!("Resolve the file error in {label} before closing.")
+                } else if document.has_recovery_conflict() {
+                    format!(
+                        "Recovered changes in {label} conflict with disk; copy them to safety before closing."
+                    )
+                } else {
+                    format!("Save changes in {label} with Command-S before closing.")
+                };
+                Some((index, Arc::from(message)))
+            })
     }
 
     fn record_clipboard_error(&mut self, error: ClipboardError) -> EventEffect {
@@ -4043,7 +4088,7 @@ impl StudioApp {
     }
 
     fn clear_close_status(&mut self) -> EventEffect {
-        if self.local_status == Some(LocalStatus::CloseBlocked) {
+        if matches!(self.local_status, Some(LocalStatus::CloseBlocked(_))) {
             self.local_status = None;
             EventEffect::visual()
         } else {
@@ -9263,6 +9308,16 @@ mod session_integration_tests {
         );
 
         let capture_path = root.join("capture").join("session.bin");
+        let mut invalid_configuration = StudioApp::new(tests::TestTextSystem)?;
+        invalid_configuration.tabs.inject_active_index_fault();
+        assert_eq!(
+            invalid_configuration.configure_recovery_persistence(capture_path.clone()),
+            Err(recovery::RecoveryError::Invalid)
+        );
+        assert!(invalid_configuration.session_path.is_none());
+        assert!(invalid_configuration.recovery.is_none());
+        assert!(invalid_configuration.local_status.is_none());
+
         let mut capture = StudioApp::new(tests::TestTextSystem)?;
         capture
             .configure_persistence(capture_path)

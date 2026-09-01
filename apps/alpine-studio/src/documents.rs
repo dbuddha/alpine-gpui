@@ -427,10 +427,6 @@ impl<T> DocumentTabs<T> {
         self.active = self.tabs.len();
     }
 
-    pub(crate) fn inactive_documents(&self) -> impl Iterator<Item = &T> {
-        self.tabs.iter().filter_map(|tab| tab.document.as_ref())
-    }
-
     pub(crate) fn can_navigate_back(&self) -> bool {
         self.history
             .get(..self.history_cursor)
