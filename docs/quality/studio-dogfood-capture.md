@@ -13,8 +13,8 @@ captured session.
 
 ## Current implementation status
 
-`alpine-assurance` can validate, report, and atomically seal
-`alpine-studio-dogfood/v1` bundles. Studio can emit one bounded
+`alpine-assurance` can validate, report, and atomically seal version 1 and
+version 2 Alpine Studio dogfood bundles. Studio can emit one bounded
 `alpine-studio-internal-diagnostic/v1` JSON record after a clean close when all
 four explicit local environment values are present. The output copies final
 runtime, surface, queue, cache, language, accessibility, and lifecycle evidence,
@@ -181,8 +181,21 @@ the release bundle's embedded revision and executable hash, canonical process
 identity, process-start identity before and after sampling, bounded duration and
 interval values, successful process exit, final internal output, and a new
 destination. The sealer independently requires the internal revision and capture
-timestamp to match the launcher's values. It performs no network operation and
-uploads nothing. Closing Studio is an explicit human action after sampling.
+timestamp to match the launcher's values. The physical window may differ from
+the requested sampler duration by at most one declared interval so bounded
+operating-system scheduling drift is retained rather than hidden. It performs no
+network operation and uploads nothing. After sampling, request application Quit
+or close the window through the production AppKit boundary. An admitted close
+must publish diagnostics and exit cleanly; a dirty-state rejection must keep the
+application live.
+
+The retained [issue #527 physical control](../../assurance/dogfood/v2/raw/issue-527-e8aa460/session.toml)
+binds a clean local file, an empty isolated session home, the exact release
+revision, five Apple `footprint` samples, and production application Quit. It
+proves capture publication, zero idle submissions, bounded frame ownership, and
+clean lifecycle drain for that scope. It deliberately excludes ordinary restored
+session behavior, editing interaction, accessibility qualification, latency, and
+all comparative or performance claims.
 
 `--fixture-only --sampler PATH` exists solely for the headless fake-process and
 fake-sampler regression. Its manifest records `evidence_scope = "fixture"`, so

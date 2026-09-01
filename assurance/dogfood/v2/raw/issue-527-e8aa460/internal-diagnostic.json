@@ -1,0 +1,158 @@
+{
+  "accessibility": {
+    "actions": 0,
+    "peak_retained_nodes": 5,
+    "queries": 0,
+    "retained_nodes": 5,
+    "stale_actions": null
+  },
+  "alpine_revision": "e8aa4600ff4082ebfaea17f879917c6a3718685b",
+  "captured_at_utc": "2026-09-01T23:20:07Z",
+  "duration_ms": 23777,
+  "frames": {
+    "completed": 4,
+    "idle_submissions": 0,
+    "omitted": 4,
+    "peak_in_flight": 1,
+    "presented": 0,
+    "requested": 5,
+    "submitted": 4
+  },
+  "language": {
+    "budget_bytes": 16777216,
+    "current_retained_bytes": 0,
+    "peak_retained_bytes": 0,
+    "requests": 0,
+    "responses": null,
+    "restarts": 0,
+    "stale_responses": 0
+  },
+  "lifecycle": {
+    "clean_shutdown": true,
+    "close_completions": 1,
+    "close_requests": 1,
+    "post_close_bytes": 0,
+    "post_close_limit_bytes": 0
+  },
+  "omissions": [
+    "accessibility-stale-actions",
+    "background-queue",
+    "font-cache",
+    "fallback-cache",
+    "glyph-atlas-gpu",
+    "process-samples",
+    "process-gpu-bytes",
+    "stage-timings",
+    "language-responses",
+    "upload-staging-budget"
+  ],
+  "outcome": "passed",
+  "resources": [
+    {
+      "budget_bytes": 33554432,
+      "current_bytes": 2912,
+      "name": "layout-cache",
+      "omitted": false,
+      "peak_bytes": 2912
+    },
+    {
+      "budget_bytes": 4194304,
+      "current_bytes": 728,
+      "name": "syntax-cache",
+      "omitted": false,
+      "peak_bytes": 728
+    },
+    {
+      "budget_bytes": 16777216,
+      "current_bytes": 75264,
+      "name": "glyph-atlas-cpu",
+      "omitted": false,
+      "peak_bytes": 75264
+    },
+    {
+      "budget_bytes": null,
+      "current_bytes": null,
+      "name": "glyph-atlas-gpu",
+      "omitted": true,
+      "peak_bytes": null
+    },
+    {
+      "budget_bytes": null,
+      "current_bytes": null,
+      "name": "font-cache",
+      "omitted": true,
+      "peak_bytes": null
+    },
+    {
+      "budget_bytes": null,
+      "current_bytes": null,
+      "name": "fallback-cache",
+      "omitted": true,
+      "peak_bytes": null
+    },
+    {
+      "budget_bytes": 16777216,
+      "current_bytes": 0,
+      "name": "language-process",
+      "omitted": false,
+      "peak_bytes": 0
+    },
+    {
+      "budget_bytes": 8388608,
+      "current_bytes": 0,
+      "name": "foreground-queue",
+      "omitted": false,
+      "peak_bytes": 0
+    },
+    {
+      "budget_bytes": null,
+      "current_bytes": null,
+      "name": "background-queue",
+      "omitted": true,
+      "peak_bytes": null
+    },
+    {
+      "budget_bytes": null,
+      "current_bytes": 8192,
+      "name": "upload-staging",
+      "omitted": false,
+      "omitted_axes": [
+        "budget_bytes"
+      ],
+      "peak_bytes": 8192
+    }
+  ],
+  "runtime": {
+    "external_items": 0,
+    "invalid_scenes": 0,
+    "peak_external_items": 0,
+    "peak_worker_requests": 1,
+    "peak_worker_results": 1,
+    "queued_worker_requests": 0,
+    "queued_worker_results": 0,
+    "stale_results": 0
+  },
+  "schema": "alpine-studio-internal-diagnostic/v1",
+  "status": "clean native close captured",
+  "surface": {
+    "allocated_bytes": "139264",
+    "callbacks": 10,
+    "cancelled": 0,
+    "current_retained_bytes": 0,
+    "failed": 4,
+    "peak_retained_bytes": 8626176,
+    "qualified_presentations": 0,
+    "rejected_callbacks": 0,
+    "skipped": 2,
+    "submissions": 4,
+    "superseded": 0
+  },
+  "text": {
+    "rasterize_calls": 0,
+    "shape_calls": 0,
+    "syntax_cache_hits": 8,
+    "syntax_cache_misses": 2,
+    "syntax_omitted_lines": 0
+  },
+  "workload_id": "physical-isolated-clean-file"
+}
