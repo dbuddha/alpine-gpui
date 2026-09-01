@@ -908,6 +908,7 @@ fn derive_snapshot(
         &mut errors,
     );
     let mut omissions = internal.omissions.clone();
+    omissions.retain(|item| item != "process-samples");
     for required in [
         "process-gpu-bytes",
         "process-alpine-retained-bytes",
@@ -1834,13 +1835,20 @@ executable_sha256 = "none"
 
     #[test]
     fn derives_omission_aware_physical_snapshot() {
-        let internal: InternalDiagnostic =
+        let mut internal: InternalDiagnostic =
             serde_json::from_str(&internal(REVISION)).expect("parse internal");
+        internal.omissions.push("process-samples".to_owned());
         let valid_footprint: Footprint =
             serde_json::from_str(&footprint(42)).expect("parse footprint");
         let snapshot = derive_snapshot(&internal, &valid_footprint, 42).expect("derive snapshot");
         assert_eq!(snapshot.duration_ms, 3_000);
         assert_eq!(snapshot.samples.len(), 4);
+        assert!(
+            !snapshot
+                .omissions
+                .iter()
+                .any(|item| item == "process-samples")
+        );
         assert!(
             snapshot
                 .omissions
