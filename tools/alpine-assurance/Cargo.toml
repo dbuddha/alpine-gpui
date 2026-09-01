@@ -8,6 +8,7 @@ publish.workspace = true
 license-file.workspace = true
 
 [dependencies]
+alpine-ax-client = { path = "../alpine-ax-client", version = "=0.0.0" }
 alpine-metal = { path = "../../crates/alpine-metal", version = "=0.0.0" }
 alpine-trace = { path = "../alpine-trace", version = "=0.0.0" }
 serde = { version = "=1.0.229", features = ["derive"] }
