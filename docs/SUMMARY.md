@@ -46,6 +46,7 @@
 - [Assurance strategy](quality/assurance.md)
   - [Formal assurance effectiveness](quality/formal-effectiveness.md)
   - [Performance qualification](quality/performance.md)
+    - [Renderer stage attribution](quality/renderer-stage-attribution.md)
   - [Alpine Studio release profiling](quality/studio-release-profiling.md)
   - [Alpine Studio residency protocol](quality/studio-residency.md)
   - [Alpine Studio dogfood capture](quality/studio-dogfood-capture.md)
