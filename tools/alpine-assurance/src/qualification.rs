@@ -393,6 +393,134 @@ pub(crate) fn benchmark_scene(
     ))
 }
 
+pub(crate) fn profile_native_scene(
+    manifest: &Path,
+    output: &Path,
+    warmup_iterations: u64,
+    sample_count: u64,
+) -> Result<String, Vec<String>> {
+    validate_benchmark_counts(warmup_iterations, sample_count)?;
+    match fs::symlink_metadata(output) {
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Ok(_) => {
+            return Err(vec![format!(
+                "renderer stage profile output already exists: {}",
+                output.display()
+            )]);
+        }
+        Err(error) => {
+            return Err(vec![format!(
+                "cannot inspect renderer stage profile output {}: {error}",
+                output.display()
+            )]);
+        }
+    }
+
+    let scene: SceneTrace = load_toml(manifest)?;
+    let errors = validate_scene_errors_all(&scene);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let decoded = decode_scene(&scene).map_err(|error| vec![error])?;
+    let mut backend = alpine_metal::MetalBackend::new()
+        .map_err(|error| vec![format!("cannot initialize Direct Metal: {error}")])?;
+    let admitted = backend
+        .render_offscreen(decoded.scene(), decoded.descriptor())
+        .map_err(|error| vec![format!("Direct Metal trace profile failed: {error}")])?;
+    let admitted_bytes = admitted.image().bytes().to_vec();
+    for _ in 0..warmup_iterations {
+        let frame = backend
+            .render_offscreen(decoded.scene(), decoded.descriptor())
+            .map_err(|error| vec![format!("Direct Metal trace profile failed: {error}")])?;
+        if frame.image().bytes() != admitted_bytes {
+            return Err(vec![
+                "renderer stage profile image changed during warmup".to_owned(),
+            ]);
+        }
+    }
+
+    let capacity = usize::try_from(sample_count)
+        .map_err(|_| vec!["renderer stage profile sample count exceeds usize".to_owned()])?;
+    let mut samples = Vec::with_capacity(capacity);
+    for _ in 0..sample_count {
+        let frame = backend
+            .render_offscreen(decoded.scene(), decoded.descriptor())
+            .map_err(|error| vec![format!("Direct Metal trace profile failed: {error}")])?;
+        if frame.image().bytes() != admitted_bytes {
+            return Err(vec![
+                "renderer stage profile image changed during measurement".to_owned(),
+            ]);
+        }
+        if frame.timings().timing_saturated() {
+            return Err(vec![
+                "renderer stage profile timing exceeded the representable range".to_owned(),
+            ]);
+        }
+        samples.push(frame.timings());
+    }
+    let csv = render_stage_profile_samples(&samples)?;
+    publish_benchmark_samples(output, csv.as_bytes()).map_err(|error| vec![error])?;
+    Ok(format!(
+        "recorded admission_iterations=1 warmup_iterations={} sample_count={} renderer=direct-metal trace={} at individually attributed offscreen stages; performance claim=none; output={}",
+        warmup_iterations,
+        samples.len(),
+        scene.id,
+        output.display()
+    ))
+}
+
+fn render_stage_profile_samples(
+    samples: &[alpine_metal::OffscreenStageTimings],
+) -> Result<String, Vec<String>> {
+    let capacity = samples
+        .len()
+        .checked_mul(192)
+        .and_then(|bytes| bytes.checked_add(320))
+        .ok_or_else(|| vec!["renderer stage profile CSV capacity overflowed".to_owned()])?;
+    let mut csv = String::with_capacity(capacity);
+    csv.push_str("sample_index,admission_ns,resource_preparation_ns,command_buffer_ns,atlas_upload_encoding_ns,render_encoding_ns,readback_encoding_ns,commit_ns,completion_wait_ns,gpu_execution_ns,readback_compaction_ns,native_total_ns,submission_accounting_ns,total_ns\n");
+    for (index, timing) in samples.iter().copied().enumerate() {
+        write!(
+            &mut csv,
+            "{index},{},{},{},{},{},{},{},{},",
+            timing.admission_ns(),
+            timing.resource_preparation_ns(),
+            timing.command_buffer_ns(),
+            timing.atlas_upload_encoding_ns(),
+            timing.render_encoding_ns(),
+            timing.readback_encoding_ns(),
+            timing.commit_ns(),
+            timing.completion_wait_ns(),
+        )
+        .map_err(|error| {
+            vec![format!(
+                "cannot format renderer stage profile sample: {error}"
+            )]
+        })?;
+        if let Some(gpu_execution_ns) = timing.gpu_execution_ns() {
+            write!(&mut csv, "{gpu_execution_ns}").map_err(|error| {
+                vec![format!(
+                    "cannot format renderer stage profile GPU sample: {error}"
+                )]
+            })?;
+        }
+        writeln!(
+            &mut csv,
+            ",{},{},{},{}",
+            timing.readback_compaction_ns(),
+            timing.native_total_ns(),
+            timing.submission_accounting_ns(),
+            timing.total_ns(),
+        )
+        .map_err(|error| {
+            vec![format!(
+                "cannot format renderer stage profile sample: {error}"
+            )]
+        })?;
+    }
+    Ok(csv)
+}
+
 fn validate_benchmark_counts(warmup_iterations: u64, sample_count: u64) -> Result<(), Vec<String>> {
     if warmup_iterations > MAX_BENCHMARK_WARMUPS {
         return Err(vec![format!(
@@ -569,7 +697,7 @@ mod benchmark_tests {
     use super::{
         MAX_BENCHMARK_SAMPLES, MAX_BENCHMARK_WARMUPS, admit_benchmark_measurement,
         benchmark_rendered_images, benchmark_scene, elapsed_benchmark_duration_ns,
-        validate_benchmark_counts,
+        render_stage_profile_samples, validate_benchmark_counts,
     };
     use std::{fs, path::Path, time::Duration};
 
@@ -654,6 +782,12 @@ mod benchmark_tests {
         let elapsed = elapsed_benchmark_duration_ns(Duration::from_millis(1))
             .map_err(|errors| format!("elapsed benchmark failed: {errors:#?}"))?;
         assert!(elapsed >= 1_000_000);
+
+        let stage_csv =
+            render_stage_profile_samples(&[alpine_metal::OffscreenStageTimings::default()])
+                .map_err(|errors| format!("stage profile formatting failed: {errors:#?}"))?;
+        assert!(stage_csv.starts_with("sample_index,admission_ns,"));
+        assert_eq!(stage_csv.lines().count(), 2);
 
         #[cfg(not(target_os = "macos"))]
         {
