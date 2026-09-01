@@ -689,33 +689,49 @@ impl PresentationObservation {
 }
 
 struct PresentationSignal {
+    published: AtomicBool,
     observed: AtomicBool,
     time_bits: AtomicU64,
     event_to_presented_handler_ns: AtomicU64,
     event_received_at: Option<Instant>,
+    event_timestamp: Option<EventTimestamp>,
+    signposts: StudioSignposts,
 }
 
 impl PresentationSignal {
     const MISSING_LATENCY_NS: u64 = u64::MAX;
 
-    fn new(event_received_at: Option<Instant>) -> Self {
+    fn new(event: Option<EventFrameTiming>, signposts: StudioSignposts) -> Self {
         Self {
+            published: AtomicBool::new(false),
             observed: AtomicBool::new(false),
             time_bits: AtomicU64::new(0),
             event_to_presented_handler_ns: AtomicU64::new(Self::MISSING_LATENCY_NS),
-            event_received_at,
+            event_received_at: event.map(|event| event.received_at),
+            event_timestamp: event.map(|event| event.timestamp),
+            signposts,
         }
     }
 
-    fn publish(&self, presented_time_bits: u64) {
-        if let Some(received_at) = self.event_received_at {
-            let elapsed = elapsed_ns(received_at, Instant::now())
-                .min(Self::MISSING_LATENCY_NS.saturating_sub(1));
+    fn publish(&self, presented_time_bits: u64) -> Option<u64> {
+        if self.published.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        let elapsed = self.event_received_at.map(|received_at| {
+            elapsed_ns(received_at, Instant::now()).min(Self::MISSING_LATENCY_NS.saturating_sub(1))
+        });
+        if let Some(elapsed) = elapsed {
             self.event_to_presented_handler_ns
                 .store(elapsed, Ordering::Relaxed);
         }
         self.time_bits.store(presented_time_bits, Ordering::Relaxed);
         self.observed.store(true, Ordering::Release);
+        self.event_timestamp
+            .zip(elapsed)
+            .and_then(|(event, elapsed)| {
+                self.signposts
+                    .emit_presented_handler_latency(event, elapsed)
+            })
     }
 
     fn event_to_presented_handler_ns(&self) -> Option<u64> {
@@ -751,6 +767,15 @@ struct PresentationDriver {
 }
 
 impl PresentationDriver {
+    fn observe_presentation(
+        &self,
+        drawable: &ProtocolObject<dyn MTLDrawable>,
+        event_timing: Option<EventFrameTiming>,
+        counters: &FrameCounters,
+    ) -> Arc<PresentationSignal> {
+        install_observation(drawable, event_timing, self.latency_signposts, counters)
+    }
+
     fn new(
         backend: MetalBackend,
         configuration: SurfaceConfiguration,
@@ -1097,9 +1122,9 @@ impl PresentationDriver {
         .map_err(alpine_metal::RenderError::from)?;
 
         let drawable = update.drawable();
-        let texture = drawable.texture();
         let drawable_protocol = ProtocolObject::from_ref(&*drawable);
-        let presentation = install_observation(drawable_protocol, frame.event_timing, counters);
+        let presentation =
+            self.observe_presentation(drawable_protocol, frame.event_timing, counters);
         let admission = self
             .frame_slots
             .acquire(token, self.owner_generation)
@@ -1116,7 +1141,7 @@ impl PresentationDriver {
             slot,
             &frame.scene,
             descriptor,
-            &texture,
+            &drawable.texture(),
             drawable_protocol,
         );
         timing.submission_finished_at = Some(Instant::now());
@@ -1208,7 +1233,7 @@ impl PresentationDriver {
             recovery,
         );
         if let Some(latency) = profile_latency_for_terminal(evidence.latency(), recovery) {
-            let _emitted = self.latency_signposts.emit_frame_latency(latency);
+            let _emitted = self.latency_signposts.emit_terminal_frame_latency(latency);
         }
         if matches!(attempt.outcome(), PresentationOutcome::Superseded) {
             self.last_superseded = Some(evidence);
@@ -1502,7 +1527,7 @@ fn install_presented_handler(
             // SAFETY: Metal invokes the registered handler with a valid borrowed
             // drawable for the complete block call. The reference does not escape.
             let drawable = unsafe { drawable.as_ref() };
-            signal.publish(drawable.presentedTime().to_bits());
+            let _profile_correlation = signal.publish(drawable.presentedTime().to_bits());
         });
     // SAFETY: The generated selector signature matches the retained block.
     // Metal copies the escaping block and keeps its captured Arc alive until
@@ -1518,11 +1543,10 @@ fn install_presented_handler(
 fn install_observation(
     drawable: &ProtocolObject<dyn MTLDrawable>,
     event_timing: Option<EventFrameTiming>,
+    signposts: StudioSignposts,
     counters: &FrameCounters,
 ) -> Arc<PresentationSignal> {
-    let presentation = Arc::new(PresentationSignal::new(
-        event_timing.map(|event| event.received_at),
-    ));
+    let presentation = Arc::new(PresentationSignal::new(event_timing, signposts));
     install_presented_handler(drawable, &presentation, counters);
     presentation
 }
@@ -5638,14 +5662,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(alpine_native_validation)]
     fn presentation_observation_requires_a_real_or_injected_signal() -> Result<(), &'static str> {
-        let signal = Arc::new(PresentationSignal::new(None));
+        let signal = Arc::new(PresentationSignal::new(None, StudioSignposts::new()));
         let observation = PresentationObservation::new(Arc::clone(&signal));
         assert!(!observation.observed());
         assert_eq!(observation.event_to_presented_handler_ns(), None);
 
-        signal.publish(17);
+        assert_eq!(signal.publish(17), None);
         assert!(observation.observed());
         assert_eq!(observation.presented_time_bits(), 17);
         assert_eq!(observation.event_to_presented_handler_ns(), None);
@@ -5653,10 +5676,19 @@ mod tests {
         let received_at = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_secs(1))
             .ok_or("timed presentation origin")?;
-        let timed_signal = Arc::new(PresentationSignal::new(Some(received_at)));
+        let event = EventFrameTiming {
+            timestamp: EventTimestamp::new(31),
+            received_at,
+            handler_finished_at: received_at,
+            admitted_at: received_at,
+        };
+        let timed_signal = Arc::new(PresentationSignal::new(
+            Some(event),
+            StudioSignposts::for_test(false, true),
+        ));
         let timed_observation = PresentationObservation::new(Arc::clone(&timed_signal));
         assert_eq!(timed_observation.event_to_presented_handler_ns(), None);
-        timed_signal.publish(19);
+        assert_eq!(timed_signal.publish(19), Some(31));
         assert!(timed_observation.observed());
         assert_eq!(timed_observation.presented_time_bits(), 19);
         assert!(
@@ -5665,27 +5697,35 @@ mod tests {
                 .ok_or("timed presentation latency")?
                 >= 1_000_000_000
         );
+        assert_eq!(timed_signal.publish(29), None);
+        assert_eq!(timed_observation.presented_time_bits(), 19);
 
-        let signal = Arc::new(PresentationSignal::new(Some(received_at)));
-        let mut injected = PresentationObservation::new(Arc::clone(&signal));
-        injected.inject(23);
-        let injected_latency = injected
-            .event_to_presented_handler_ns()
-            .ok_or("injected presentation latency")?;
-        assert!(injected_latency >= 1_000_000_000);
-        signal.publish(29);
-        assert!(injected.observed());
-        assert_eq!(injected.presented_time_bits(), 23);
-        assert_eq!(
-            injected.event_to_presented_handler_ns(),
-            Some(injected_latency)
-        );
-        assert!(
-            signal
+        #[cfg(alpine_native_validation)]
+        {
+            let signal = Arc::new(PresentationSignal::new(
+                Some(event),
+                StudioSignposts::for_test(false, true),
+            ));
+            let mut injected = PresentationObservation::new(Arc::clone(&signal));
+            injected.inject(23);
+            let injected_latency = injected
                 .event_to_presented_handler_ns()
-                .ok_or("late presentation latency")?
-                >= injected_latency
-        );
+                .ok_or("injected presentation latency")?;
+            assert!(injected_latency >= 1_000_000_000);
+            assert_eq!(signal.publish(29), Some(31));
+            assert!(injected.observed());
+            assert_eq!(injected.presented_time_bits(), 23);
+            assert_eq!(
+                injected.event_to_presented_handler_ns(),
+                Some(injected_latency)
+            );
+            assert!(
+                signal
+                    .event_to_presented_handler_ns()
+                    .ok_or("late presentation latency")?
+                    >= injected_latency
+            );
+        }
         Ok(())
     }
 
@@ -5773,8 +5813,8 @@ mod tests {
     #[test]
     #[cfg(alpine_native_validation)]
     fn presentation_observation_suppression_overrides_every_source() {
-        let signal = Arc::new(PresentationSignal::new(None));
-        signal.publish(1.25_f64.to_bits());
+        let signal = Arc::new(PresentationSignal::new(None, StudioSignposts::new()));
+        assert_eq!(signal.publish(1.25_f64.to_bits()), None);
         let mut observation = PresentationObservation::new(signal);
         observation.inject(2.5_f64.to_bits());
 
