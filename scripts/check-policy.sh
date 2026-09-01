@@ -33,19 +33,27 @@ if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -n "${GITHUB_REPOSITORY:-}
 fi
 
 workflow_files=$(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print)
+action_files=$(find .github/actions -type f \( -name '*.yml' -o -name '*.yaml' \) -print 2>/dev/null || true)
 
 if [ -n "$workflow_files" ]; then
     ci_workflow=${ALPINE_CI_WORKFLOW:-.github/workflows/ci.yml}
     assurance_failure_workflow=${ALPINE_ASSURANCE_FAILURE_WORKFLOW:-.github/workflows/assurance-failure.yml}
-    action_refs=$(grep -hE '^[[:space:]]*uses:' $workflow_files || true)
-    if [ -n "$action_refs" ] && printf '%s\n' "$action_refs" | grep -Ev '@[0-9a-f]{40}([[:space:]]|$)' >/dev/null; then
+    action_source_files=$workflow_files
+    if [ -n "$action_files" ]; then
+        action_source_files="$action_source_files $action_files"
+    fi
+    action_refs=$(grep -hE '^[[:space:]]*uses:' $action_source_files || true)
+    external_action_refs=$(printf '%s\n' "$action_refs" | grep -E 'uses:[[:space:]]+(actions|github)/' || true)
+    if [ -n "$external_action_refs" ] && printf '%s\n' "$external_action_refs" | grep -Ev '@[0-9a-f]{40}([[:space:]]|$)' >/dev/null; then
         fail 'every GitHub Action must be pinned to a full commit SHA'
-        printf '%s\n' "$action_refs" | grep -Ev '@[0-9a-f]{40}([[:space:]]|$)' >&2 || true
+        printf '%s\n' "$external_action_refs" | grep -Ev '@[0-9a-f]{40}([[:space:]]|$)' >&2 || true
     fi
 
-    if [ -n "$action_refs" ] && printf '%s\n' "$action_refs" | grep -Ev 'uses:[[:space:]]+(actions|github)/' >/dev/null; then
-        fail 'only GitHub-owned Actions are permitted'
-        printf '%s\n' "$action_refs" | grep -Ev 'uses:[[:space:]]+(actions|github)/' >&2 || true
+    if [ -n "$action_refs" ] && printf '%s\n' "$action_refs" \
+        | grep -Ev 'uses:[[:space:]]+(actions|github)/|uses:[[:space:]]+\./\.github/actions/upload-required-artifact([[:space:]]|$)' >/dev/null; then
+        fail 'only pinned GitHub-owned Actions and the governed required-artifact helper are permitted'
+        printf '%s\n' "$action_refs" \
+            | grep -Ev 'uses:[[:space:]]+(actions|github)/|uses:[[:space:]]+\./\.github/actions/upload-required-artifact([[:space:]]|$)' >&2 || true
     fi
 
     continue_on_error_lines=$(grep -hE '^[[:space:]]*continue-on-error:[[:space:]]*true[[:space:]]*$' $workflow_files || true)
@@ -211,8 +219,72 @@ if [ -n "$workflow_files" ]; then
         fail 'ci-pass must require and retain exact-head native mutation matrix evidence'
     fi
 
+    required_artifact_action=${ALPINE_REQUIRED_ARTIFACT_ACTION:-.github/actions/upload-required-artifact/action.yml}
+    if [ ! -f "$required_artifact_action" ]; then
+        fail 'the governed required-artifact helper must exist'
+    else
+        required_primary_step=$(awk '
+            /^    - name: Upload required artifact$/ { capture = 1 }
+            /^    - name:/ && $0 != "    - name: Upload required artifact" && capture { exit }
+            capture
+        ' "$required_artifact_action")
+        required_retry_step=$(awk '
+            /^    - name: Retry required artifact upload$/ { capture = 1 }
+            capture
+        ' "$required_artifact_action")
+        required_primary_contract=$(printf '%s\n' "$required_primary_step" | sed -n '/^[[:space:]]*with:/,$p')
+        required_retry_contract=$(printf '%s\n' "$required_retry_step" | sed -n '/^[[:space:]]*with:/,$p')
+        required_action_pin='actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
+        required_action_valid=true
+        if [ "$(grep -Fc "uses: $required_action_pin" "$required_artifact_action")" -ne 2 ] \
+            || [ "$(grep -Ec '^[[:space:]]+required:[[:space:]]+true$' "$required_artifact_action")" -ne 4 ] \
+            || ! grep -Fqx '  using: composite' "$required_artifact_action" \
+            || ! printf '%s\n' "$required_primary_step" | grep -Fqx '      id: primary' \
+            || ! printf '%s\n' "$required_primary_step" | grep -Fqx '      continue-on-error: true' \
+            || ! printf '%s\n' "$required_retry_step" | grep -Fqx "      if: always() && steps.primary.outcome == 'failure'" \
+            || printf '%s\n' "$required_retry_step" | grep -Eq 'continue-on-error:[[:space:]]*true' \
+            || [ -z "$required_primary_contract" ] \
+            || [ "$required_primary_contract" != "$required_retry_contract" ]; then
+            required_action_valid=false
+        fi
+        for required_input in name path retention-days if-no-files-found; do
+            required_forward="\${{ inputs.$required_input }}"
+            if ! grep -Fqx "  $required_input:" "$required_artifact_action" \
+                || [ "$(grep -Fc "$required_forward" "$required_artifact_action")" -ne 2 ]; then
+                required_action_valid=false
+            fi
+        done
+        if [ "$required_action_valid" != true ]; then
+            fail 'required artifact helper must retain one tolerated primary and one identical blocking failure-only retry'
+        fi
+    fi
+
     nightly_native_workflow=${ALPINE_NIGHTLY_ASSURANCE_WORKFLOW:-.github/workflows/nightly-assurance.yml}
     if [ -f "$nightly_native_workflow" ]; then
+        if ! awk '
+            function finish() {
+                if (helper && (!always || !name || !path || !retention || !required)) exit 1
+                if (direct && (!always || !name || !path || !retention || !supplementary)) exit 1
+            }
+            /^      - name:/ {
+                finish()
+                helper = direct = always = name = path = retention = required = supplementary = 0
+            }
+            /^        if: always\(\)$/ { always = 1 }
+            /uses: \.\/\.github\/actions\/upload-required-artifact$/ { helper = 1; helper_count++ }
+            /uses: actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a$/ { direct = 1; direct_count++ }
+            /^[[:space:]]+name:/ { name = 1 }
+            /^[[:space:]]+path:/ { path = 1 }
+            /^[[:space:]]+retention-days:/ { retention = 1 }
+            /^[[:space:]]+if-no-files-found: error$/ { required = 1 }
+            /^[[:space:]]+if-no-files-found: warn$/ { supplementary = 1 }
+            END {
+                finish()
+                if (helper_count != 8 || direct_count != 1) exit 1
+            }
+        ' "$nightly_native_workflow"; then
+            fail 'Nightly required artifacts must use eight governed retries and retain one direct supplementary upload'
+        fi
         nightly_metal_block=$(awk '
             /^  metal-validation:/ { capture = 1 }
             /^  [A-Za-z0-9_-]+:/ && $1 != "metal-validation:" && capture { exit }
