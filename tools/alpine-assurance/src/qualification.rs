@@ -476,19 +476,30 @@ where
     for _ in 0..sample_count {
         let started = std::time::Instant::now();
         let image = render()?;
-        let elapsed = elapsed_benchmark_ns(started)?;
-        if bytes(&image) != admitted_bytes {
-            return Err(vec![format!(
-                "renderer benchmark {renderer} image changed during measurement"
-            )]);
-        }
+        let elapsed = started.elapsed();
+        let elapsed =
+            admit_benchmark_measurement(renderer, &admitted_bytes, bytes(&image), elapsed)?;
         samples.push(elapsed);
     }
     Ok(samples)
 }
 
-fn elapsed_benchmark_ns(started: std::time::Instant) -> Result<u64, Vec<String>> {
-    let elapsed = started.elapsed().as_nanos();
+fn admit_benchmark_measurement(
+    renderer: &str,
+    admitted_bytes: &[u8],
+    image_bytes: &[u8],
+    elapsed: std::time::Duration,
+) -> Result<u64, Vec<String>> {
+    if image_bytes != admitted_bytes {
+        return Err(vec![format!(
+            "renderer benchmark {renderer} image changed during measurement"
+        )]);
+    }
+    elapsed_benchmark_duration_ns(elapsed)
+}
+
+fn elapsed_benchmark_duration_ns(elapsed: std::time::Duration) -> Result<u64, Vec<String>> {
+    let elapsed = elapsed.as_nanos();
     if elapsed == 0 {
         return Err(vec![
             "renderer benchmark clock resolution produced a zero-duration sample".to_owned(),
@@ -556,8 +567,9 @@ fn publish_benchmark_samples(output: &Path, bytes: &[u8]) -> Result<(), String> 
 #[cfg(test)]
 mod benchmark_tests {
     use super::{
-        MAX_BENCHMARK_SAMPLES, MAX_BENCHMARK_WARMUPS, benchmark_rendered_images, benchmark_scene,
-        elapsed_benchmark_ns, validate_benchmark_counts,
+        MAX_BENCHMARK_SAMPLES, MAX_BENCHMARK_WARMUPS, admit_benchmark_measurement,
+        benchmark_rendered_images, benchmark_scene, elapsed_benchmark_duration_ns,
+        validate_benchmark_counts,
     };
     use std::{fs, path::Path, time::Duration};
 
@@ -630,12 +642,18 @@ mod benchmark_tests {
             ),
             Err(errors) if errors.iter().any(|error| error.contains("during measurement"))
         ));
+        assert!(matches!(
+            admit_benchmark_measurement("controlled", &[1], &[2], Duration::ZERO),
+            Err(errors) if errors.iter().any(|error| error.contains("during measurement"))
+        ));
+        assert!(matches!(
+            admit_benchmark_measurement("controlled", &[1], &[1], Duration::ZERO),
+            Err(errors) if errors.iter().any(|error| error.contains("zero-duration"))
+        ));
 
-        let started = std::time::Instant::now();
-        std::thread::sleep(Duration::from_millis(1));
-        let elapsed = elapsed_benchmark_ns(started)
+        let elapsed = elapsed_benchmark_duration_ns(Duration::from_millis(1))
             .map_err(|errors| format!("elapsed benchmark failed: {errors:#?}"))?;
-        assert!(elapsed >= 100_000);
+        assert!(elapsed >= 1_000_000);
 
         #[cfg(not(target_os = "macos"))]
         {
