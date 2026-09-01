@@ -1152,6 +1152,34 @@ fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeEr
 }
 
 #[test]
+fn failed_rust_server_does_not_reinvalidate_noop_keyboard_events()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn main() {}\n")?;
+    let app = StudioApp::open_file(TestTextSystem, root.path().join("main.rs"))?;
+    assert!(app.active_rust_document().is_some());
+    assert!(app.rust_diagnostics.status_message().is_none());
+
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
+    let mut application = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    assert!(application.frame_if_dirty().is_some());
+    assert!(
+        application
+            .dispatch(&key(0, Modifiers::from_bits(0)))
+            .is_some()
+    );
+    assert!(
+        application
+            .dispatch(&key(0, Modifiers::from_bits(0)))
+            .is_none()
+    );
+    assert!(application.frame_if_dirty().is_none());
+    Ok(())
+}
+
+#[test]
 fn runtime_find_worker_admits_current_results_and_schedules_replacement()
 -> Result<(), Box<dyn std::error::Error>> {
     let viewport = viewport()?;
