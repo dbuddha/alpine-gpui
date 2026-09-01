@@ -425,12 +425,12 @@ pub(crate) fn profile_native_scene(
     let mut backend = alpine_metal::MetalBackend::new()
         .map_err(|error| vec![format!("cannot initialize Direct Metal: {error}")])?;
     let admitted = backend
-        .render_offscreen(decoded.scene(), decoded.descriptor())
+        .render_offscreen_profiled(decoded.scene(), decoded.descriptor())
         .map_err(|error| vec![format!("Direct Metal trace profile failed: {error}")])?;
     let admitted_bytes = admitted.image().bytes().to_vec();
     for _ in 0..warmup_iterations {
         let frame = backend
-            .render_offscreen(decoded.scene(), decoded.descriptor())
+            .render_offscreen_profiled(decoded.scene(), decoded.descriptor())
             .map_err(|error| vec![format!("Direct Metal trace profile failed: {error}")])?;
         if frame.image().bytes() != admitted_bytes {
             return Err(vec![
@@ -444,19 +444,22 @@ pub(crate) fn profile_native_scene(
     let mut samples = Vec::with_capacity(capacity);
     for _ in 0..sample_count {
         let frame = backend
-            .render_offscreen(decoded.scene(), decoded.descriptor())
+            .render_offscreen_profiled(decoded.scene(), decoded.descriptor())
             .map_err(|error| vec![format!("Direct Metal trace profile failed: {error}")])?;
         if frame.image().bytes() != admitted_bytes {
             return Err(vec![
                 "renderer stage profile image changed during measurement".to_owned(),
             ]);
         }
-        if frame.timings().timing_saturated() {
+        let timings = frame.timings().ok_or_else(|| {
+            vec!["renderer stage profile omitted requested timing evidence".to_owned()]
+        })?;
+        if timings.timing_saturated() {
             return Err(vec![
                 "renderer stage profile timing exceeded the representable range".to_owned(),
             ]);
         }
-        samples.push(frame.timings());
+        samples.push(timings);
     }
     let csv = render_stage_profile_samples(&samples)?;
     publish_benchmark_samples(output, csv.as_bytes()).map_err(|error| vec![error])?;
