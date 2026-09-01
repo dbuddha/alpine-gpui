@@ -26,11 +26,11 @@ use objc2::{
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationTerminateReply, NSBackingStoreType, NSEvent, NSEventModifierFlags, NSEventPhase,
-    NSPasteboard, NSPasteboardType, NSPasteboardTypeString, NSTextInputClient, NSView, NSWindow,
-    NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
+    NSEventType, NSPasteboard, NSPasteboardType, NSPasteboardTypeString, NSTextInputClient, NSView,
+    NSWindow, NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
 };
 #[cfg(alpine_native_validation)]
-use objc2_app_kit::{NSEventType, NSScreen, NSWindowButton};
+use objc2_app_kit::{NSScreen, NSWindowButton};
 use objc2_core_foundation::{CFRunLoop, kCFRunLoopCommonModes};
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 #[cfg(alpine_native_validation)]
@@ -5168,7 +5168,6 @@ fn stop_validation_event_loop(application: &NSApplication) {
 
 fn stop_event_loop(application: &NSApplication) {
     application.stop(None);
-    #[cfg(alpine_native_validation)]
     if let Some(event) = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
         NSEventType::ApplicationDefined,
         NSPoint::new(0.0, 0.0),
