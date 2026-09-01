@@ -486,7 +486,8 @@ fn qualify_workspace(
         platform_validation::inspect_native_accessibility_tree(&surface, event_handler(&state))
             .map_err(|error| format!("dirty-close native tree query failed: {error}"))?;
     assert!(blocked.nodes().iter().any(|node| {
-        node.role() == "AXStaticText" && node.label() == "Save changes before closing."
+        node.role() == "AXStaticText"
+            && node.label() == "Save changes in main.rs with Command-S before closing."
     }));
     maximum_action_frames = maximum_action_frames.max(open_palette_and_activate(
         &surface,
