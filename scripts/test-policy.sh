@@ -337,6 +337,45 @@ if ! grep -Fq 'CI cancellation must be limited to source-changing or non-PR runs
     exit 1
 fi
 
+perl -0pe 's/(  preflight:.*?)(        run: scripts\/check-policy\.sh)/$1        run: true/s' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/bypassed-preflight-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/bypassed-preflight-ci.yml" run_policy > "$fixture_dir/bypassed-preflight-ci.log" 2>&1; then
+    printf 'policy test error: bypassed fast policy preflight unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'CI preflight must validate current repository and pull request policy before fan-out' \
+    "$fixture_dir/bypassed-preflight-ci.log"; then
+    printf 'policy test error: expected fast policy preflight failure was not reported\n' >&2
+    cat "$fixture_dir/bypassed-preflight-ci.log" >&2
+    exit 1
+fi
+
+perl -0pe 's/(  native:.*?needs:) \[classify, preflight\]/$1 classify/s' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/native-bypasses-preflight-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/native-bypasses-preflight-ci.yml" run_policy > "$fixture_dir/native-bypasses-preflight-ci.log" 2>&1; then
+    printf 'policy test error: expensive CI job bypassing preflight unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'CI job native must wait for the fast policy preflight' \
+    "$fixture_dir/native-bypasses-preflight-ci.log"; then
+    printf 'policy test error: expected expensive preflight dependency failure was not reported\n' >&2
+    cat "$fixture_dir/native-bypasses-preflight-ci.log" >&2
+    exit 1
+fi
+
+sed '/PREFLIGHT_RESULT:.*needs.preflight.result/d' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/aggregate-omits-preflight-ci.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/aggregate-omits-preflight-ci.yml" run_policy > "$fixture_dir/aggregate-omits-preflight-ci.log" 2>&1; then
+    printf 'policy test error: aggregate omitting preflight unexpectedly passed\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'ci-pass must require the exact-head policy preflight' \
+    "$fixture_dir/aggregate-omits-preflight-ci.log"; then
+    printf 'policy test error: expected aggregate preflight failure was not reported\n' >&2
+    cat "$fixture_dir/aggregate-omits-preflight-ci.log" >&2
+    exit 1
+fi
+
 sed 's/if: ${{ always() && !cancelled() }}/if: always()/' \
     "$fixture_dir/ci.yml" > "$fixture_dir/canceled-aggregate-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/canceled-aggregate-ci.yml" run_policy > "$fixture_dir/canceled-aggregate-ci.log" 2>&1; then
