@@ -88,6 +88,11 @@ if [ -n "$workflow_files" ]; then
         /^  [A-Za-z0-9_-]+:/ && $1 != "metal-validation:" && capture { exit }
         capture
     ' "$ci_workflow")
+    preflight_block=$(awk '
+        /^  preflight:/ { capture = 1 }
+        /^  [A-Za-z0-9_-]+:/ && $1 != "preflight:" && capture { exit }
+        capture
+    ' "$ci_workflow")
     ci_pass_block=$(awk '
         /^  ci-pass:/ { capture = 1 }
         capture
@@ -101,8 +106,38 @@ if [ -n "$workflow_files" ]; then
     if ! grep -Fqx "  cancel-in-progress: \${{ github.event_name != 'pull_request' || github.event.action == 'synchronize' }}" "$ci_workflow"; then
         fail 'CI cancellation must be limited to source-changing or non-PR runs'
     fi
+    for required in \
+        '    name: preflight' \
+        '          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}' \
+        '          ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}' \
+        '          ALPINE_PR_BODY: ${{ github.event.pull_request.body }}' \
+        "          ALPINE_PR_LABELS: \${{ join(github.event.pull_request.labels.*.name, ',') }}" \
+        '          ALPINE_PR_TITLE: ${{ github.event.pull_request.title }}' \
+        '          GH_TOKEN: ${{ github.token }}' \
+        '        run: scripts/check-policy.sh'
+    do
+        if ! printf '%s\n' "$preflight_block" | grep -Fqx "$required"; then
+            fail 'CI preflight must validate current repository and pull request policy before fan-out'
+            break
+        fi
+    done
+    for required_job in quality native coverage mutation-diff kani tla miri metal-validation native-mutation; do
+        required_job_block=$(awk -v job="$required_job" '
+            $0 == "  " job ":" { capture = 1 }
+            /^  [A-Za-z0-9_-]+:/ && $1 != job ":" && capture { exit }
+            capture
+        ' "$ci_workflow")
+        if ! printf '%s\n' "$required_job_block" | grep -Fqx '    needs: [classify, preflight]'; then
+            fail "CI job $required_job must wait for the fast policy preflight"
+        fi
+    done
     if ! printf '%s\n' "$ci_pass_block" | grep -Fqx '    if: ${{ always() && !cancelled() }}'; then
         fail 'ci-pass must run after ordinary failures but skip a canceled workflow'
+    fi
+    if ! printf '%s\n' "$ci_pass_block" | grep -Fq 'needs: [classify, preflight,' \
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'PREFLIGHT_RESULT: ${{ needs.preflight.result }}' \
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'require_success preflight "$PREFLIGHT_RESULT"'; then
+        fail 'ci-pass must require the exact-head policy preflight'
     fi
     if ! printf '%s\n' "$ci_pass_block" | grep -Fq 'test "$2" = success || {'; then
         fail 'ci-pass must reject every required result other than success'
