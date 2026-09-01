@@ -2,7 +2,7 @@
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    validation::run()
+    objc2::rc::autoreleasepool(|_| validation::run())
 }
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
@@ -20,6 +20,7 @@ mod validation {
         NativeSurface, SurfaceDescriptor, SurfaceError, SurfaceSnapshot, native_validation,
     };
     use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
+    use objc2::rc::autoreleasepool;
     use objc2_foundation::{NSDate, NSRunLoop};
 
     type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -127,7 +128,7 @@ mod validation {
             dropped.failed_count(),
             hosted_direct,
         )?;
-        surface.close();
+        close_recovery_surface(surface, "dropped presentation")?;
         Ok(())
     }
 
@@ -343,7 +344,7 @@ mod validation {
             settled.failed_count(),
             hosted_direct,
         )?;
-        surface.close();
+        close_recovery_surface(surface, "missing presentation")?;
         Ok(())
     }
 
@@ -411,7 +412,7 @@ mod validation {
             superseded.superseded_count(),
             hosted_direct,
         )?;
-        surface.close();
+        close_recovery_surface(surface, "supersession")?;
         Ok(())
     }
 
@@ -548,7 +549,7 @@ mod validation {
         assert!(failed.display_link_paused());
 
         validate_lost_generation(&surface, scene, clear)?;
-        surface.close();
+        close_recovery_surface(surface, "device loss")?;
         Ok(())
     }
 
@@ -611,6 +612,48 @@ mod validation {
             )?;
         }
         Ok(width_scale)
+    }
+
+    fn close_recovery_surface(surface: NativeSurface, scenario: &str) -> TestResult {
+        let drain = native_validation::arm_run_loop_drain_marker(&surface);
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while !drain.executed() && Instant::now() < deadline {
+            drain_framework_work();
+        }
+        if !drain.executed() {
+            return Err(format!(
+                "{scenario} close did not drain admitted native callbacks before owner release"
+            )
+            .into());
+        }
+
+        let evidence = native_validation::close_with_owner_evidence(surface)?;
+        if evidence.acquired() != evidence.released()
+            || evidence.active() != [0; 10]
+            || evidence.run_loop_registrations() != 1
+            || evidence.link_invalidations() != 1
+            || evidence.delegate_revocations() != 1
+            || evidence.window_closes() != 1
+            || evidence.pasteboard_releases() != 0
+            || evidence.release_order_violations() != 0
+        {
+            return Err(format!(
+                "{scenario} close retained native ownership after run-loop drain: {evidence:?}"
+            )
+            .into());
+        }
+
+        // Release AppKit and Metal autoreleased values created by teardown
+        // before another validation surface is admitted in this process.
+        drain_framework_work();
+        eprintln!("native recovery stage complete: {scenario}");
+        Ok(())
+    }
+
+    fn drain_framework_work() {
+        autoreleasepool(|_| {
+            NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.001));
+        });
     }
 
     fn validation_scene() -> TestResult<(Scene, LinearRgba)> {
