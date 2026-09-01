@@ -1,10 +1,13 @@
+#[cfg(feature = "platform-spi")]
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 #[cfg(test)]
 use std::{cell::Cell, rc::Rc};
-use std::{ffi::c_void, mem::size_of, ptr::NonNull, slice};
-#[cfg(feature = "platform-spi")]
 use std::{
-    sync::{Arc, Condvar, Mutex, MutexGuard},
-    time::Duration,
+    ffi::c_void,
+    mem::size_of,
+    ptr::NonNull,
+    slice,
+    time::{Duration, Instant},
 };
 
 #[cfg(feature = "platform-spi")]
@@ -32,8 +35,8 @@ use crate::initialization::{
 #[cfg(feature = "platform-spi")]
 use crate::submission::NativeDrawableAttempt;
 use crate::submission::{
-    CommandStatus, NativeRenderAttempt, RecoveryClassification, RenderError, RenderStage,
-    compact_readback,
+    CommandStatus, NativeRenderAttempt, OffscreenStageTimings, RecoveryClassification, RenderError,
+    RenderStage, compact_readback, duration_nanoseconds,
 };
 use crate::{
     Bgra8Image, MAX_METAL3_TEXTURE_DIMENSION_2D, ValidatedFrame,
@@ -1000,8 +1003,11 @@ impl NativeBackend {
         frame: &ValidatedFrame,
         target: TargetContract,
     ) -> NativeRenderAttempt {
+        let native_started = Instant::now();
+        let mut timings = OffscreenStageTimings::default();
         let device = self.initialized.device.clone();
-        let resources = match FrameResources::new(
+        let resource_started = Instant::now();
+        let resources = FrameResources::new(
             &device,
             frame,
             target.pixel_format(),
@@ -1010,7 +1016,13 @@ impl NativeBackend {
             self.fault,
             #[cfg(test)]
             &self.probe,
-        ) {
+        );
+        record_timing(
+            resource_started,
+            &mut timings.resource_preparation_ns,
+            &mut timings.timing_saturated,
+        );
+        let resources = match resources {
             Ok(resources) => resources,
             Err(failure) => {
                 return NativeRenderAttempt {
@@ -1018,6 +1030,7 @@ impl NativeBackend {
                     device_lost: false,
                     operations: FrameOperationUsage::default(),
                     resources: failure.usage,
+                    timings: finish_native_timings(timings, native_started),
                     result: Err(failure.error),
                 };
             }
@@ -1038,18 +1051,27 @@ impl NativeBackend {
                 device_lost: false,
                 operations,
                 resources: resource_usage,
+                timings: finish_native_timings(timings, native_started),
                 result: Err(RenderError::ResourceUnavailable {
                     stage: RenderStage::CommandBuffer,
                     requested_bytes: None,
                 }),
             };
         }
-        let Some(command) = self.initialized.queue.commandBuffer() else {
+        let command_started = Instant::now();
+        let command = self.initialized.queue.commandBuffer();
+        record_timing(
+            command_started,
+            &mut timings.command_buffer_ns,
+            &mut timings.timing_saturated,
+        );
+        let Some(command) = command else {
             return NativeRenderAttempt {
                 committed: false,
                 device_lost: false,
                 operations,
                 resources: resource_usage,
+                timings: finish_native_timings(timings, native_started),
                 result: Err(RenderError::ResourceUnavailable {
                     stage: RenderStage::CommandBuffer,
                     requested_bytes: None,
@@ -1064,6 +1086,7 @@ impl NativeBackend {
                 device_lost: false,
                 operations,
                 resources: resource_usage,
+                timings: finish_native_timings(timings, native_started),
                 result: Err(RenderError::EncoderUnavailable {
                     stage: RenderStage::RenderEncoder,
                 }),
@@ -1072,30 +1095,47 @@ impl NativeBackend {
 
         if let (Some(upload), Some(atlas)) =
             (resources.atlas_upload.as_ref(), resources.atlas.as_deref())
-            && let Err(error) = encode_atlas_upload(&command, upload, atlas)
         {
-            return NativeRenderAttempt {
-                committed: false,
-                device_lost: false,
-                operations,
-                resources: resource_usage,
-                result: Err(error),
-            };
+            let atlas_started = Instant::now();
+            let result = encode_atlas_upload(&command, upload, atlas);
+            record_timing(
+                atlas_started,
+                &mut timings.atlas_upload_encoding_ns,
+                &mut timings.timing_saturated,
+            );
+            if let Err(error) = result {
+                return NativeRenderAttempt {
+                    committed: false,
+                    device_lost: false,
+                    operations,
+                    resources: resource_usage,
+                    timings: finish_native_timings(timings, native_started),
+                    result: Err(error),
+                };
+            }
         }
 
-        if let Err(error) = encode_render_pass(
+        let render_started = Instant::now();
+        let render_result = encode_render_pass(
             &command,
             target.pipeline(&self.initialized.pipeline),
             &resources.texture,
             resources.upload.as_deref(),
             resources.atlas.as_deref(),
             frame,
-        ) {
+        );
+        record_timing(
+            render_started,
+            &mut timings.render_encoding_ns,
+            &mut timings.timing_saturated,
+        );
+        if let Err(error) = render_result {
             return NativeRenderAttempt {
                 committed: false,
                 device_lost: false,
                 operations,
                 resources: resource_usage,
+                timings: finish_native_timings(timings, native_started),
                 result: Err(error),
             };
         }
@@ -1107,26 +1147,59 @@ impl NativeBackend {
                 device_lost: false,
                 operations,
                 resources: resource_usage,
+                timings: finish_native_timings(timings, native_started),
                 result: Err(RenderError::EncoderUnavailable {
                     stage: RenderStage::BlitEncoder,
                 }),
             };
         }
-        if let Err(error) = encode_readback(&command, &resources, frame) {
+        let readback_encoding_started = Instant::now();
+        let readback_result = encode_readback(&command, &resources, frame);
+        record_timing(
+            readback_encoding_started,
+            &mut timings.readback_encoding_ns,
+            &mut timings.timing_saturated,
+        );
+        if let Err(error) = readback_result {
             return NativeRenderAttempt {
                 committed: false,
                 device_lost: false,
                 operations,
                 resources: resource_usage,
+                timings: finish_native_timings(timings, native_started),
                 result: Err(error),
             };
         }
 
+        let commit_started = Instant::now();
         command.commit();
+        record_timing(
+            commit_started,
+            &mut timings.commit_ns,
+            &mut timings.timing_saturated,
+        );
+        let completion_started = Instant::now();
         command.waitUntilCompleted();
+        record_timing(
+            completion_started,
+            &mut timings.completion_wait_ns,
+            &mut timings.timing_saturated,
+        );
+        let (gpu_execution_ns, gpu_timing_saturated) = gpu_execution_nanoseconds(&command);
+        timings.gpu_execution_ns = gpu_execution_ns;
+        timings.timing_saturated |= gpu_timing_saturated;
         let status = command_status(command.status());
         let terminal = match status {
-            CommandStatus::Completed => (read_compact_image(&resources.readback, frame), false),
+            CommandStatus::Completed => {
+                let compaction_started = Instant::now();
+                let result = read_compact_image(&resources.readback, frame);
+                record_timing(
+                    compaction_started,
+                    &mut timings.readback_compaction_ns,
+                    &mut timings.timing_saturated,
+                );
+                (result, false)
+            }
             CommandStatus::Error => {
                 let failure = command.error().map(|error| copy_error(&error));
                 let (recovery, device_lost) = classify_command_failure(failure.as_ref());
@@ -1156,6 +1229,7 @@ impl NativeBackend {
             device_lost,
             operations,
             resources: resource_usage,
+            timings: finish_native_timings(timings, native_started),
             result,
         }
     }
@@ -1430,6 +1504,41 @@ impl NativeBackend {
         } else {
             self.atlas_cache.pressure();
         }
+    }
+}
+
+fn record_timing(started: Instant, destination: &mut u64, saturated: &mut bool) {
+    let (nanoseconds, did_saturate) = duration_nanoseconds(started.elapsed());
+    *destination = nanoseconds;
+    *saturated |= did_saturate;
+}
+
+fn finish_native_timings(
+    mut timings: OffscreenStageTimings,
+    started: Instant,
+) -> OffscreenStageTimings {
+    record_timing(
+        started,
+        &mut timings.native_total_ns,
+        &mut timings.timing_saturated,
+    );
+    timings
+}
+
+fn gpu_execution_nanoseconds(
+    command: &ProtocolObject<dyn MTLCommandBuffer>,
+) -> (Option<u64>, bool) {
+    let started = command.GPUStartTime();
+    let completed = command.GPUEndTime();
+    if !started.is_finite() || !completed.is_finite() || started <= 0.0 || completed < started {
+        return (None, false);
+    }
+    match Duration::try_from_secs_f64(completed - started) {
+        Ok(duration) => {
+            let (nanoseconds, saturated) = duration_nanoseconds(duration);
+            (Some(nanoseconds), saturated)
+        }
+        Err(_) => (None, true),
     }
 }
 

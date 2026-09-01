@@ -1,4 +1,8 @@
-use std::{error::Error, fmt};
+use std::{
+    error::Error,
+    fmt,
+    time::{Duration, Instant},
+};
 
 use alpine_renderer::{FrameReport, Renderer, RendererCapabilities};
 use alpine_scene::Scene;
@@ -413,11 +417,127 @@ impl From<OffscreenError> for RenderError {
     }
 }
 
+/// Handle-free stage timings for one completed offscreen submission.
+///
+/// `gpu_execution_ns` overlaps `completion_wait_ns`: the former is Metal's
+/// device interval, while the latter is the host synchronization interval.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OffscreenStageTimings {
+    pub(crate) admission_ns: u64,
+    pub(crate) resource_preparation_ns: u64,
+    pub(crate) command_buffer_ns: u64,
+    pub(crate) atlas_upload_encoding_ns: u64,
+    pub(crate) render_encoding_ns: u64,
+    pub(crate) readback_encoding_ns: u64,
+    pub(crate) commit_ns: u64,
+    pub(crate) completion_wait_ns: u64,
+    pub(crate) gpu_execution_ns: Option<u64>,
+    pub(crate) readback_compaction_ns: u64,
+    pub(crate) native_total_ns: u64,
+    pub(crate) submission_accounting_ns: u64,
+    pub(crate) total_ns: u64,
+    pub(crate) timing_saturated: bool,
+}
+
+impl OffscreenStageTimings {
+    /// Returns scene validation and lowering time.
+    #[must_use]
+    pub const fn admission_ns(self) -> u64 {
+        self.admission_ns
+    }
+
+    /// Returns native texture, buffer, and upload preparation time.
+    #[must_use]
+    pub const fn resource_preparation_ns(self) -> u64 {
+        self.resource_preparation_ns
+    }
+
+    /// Returns command-buffer acquisition time.
+    #[must_use]
+    pub const fn command_buffer_ns(self) -> u64 {
+        self.command_buffer_ns
+    }
+
+    /// Returns atlas upload command encoding time.
+    #[must_use]
+    pub const fn atlas_upload_encoding_ns(self) -> u64 {
+        self.atlas_upload_encoding_ns
+    }
+
+    /// Returns render-pass command encoding time.
+    #[must_use]
+    pub const fn render_encoding_ns(self) -> u64 {
+        self.render_encoding_ns
+    }
+
+    /// Returns readback blit command encoding time.
+    #[must_use]
+    pub const fn readback_encoding_ns(self) -> u64 {
+        self.readback_encoding_ns
+    }
+
+    /// Returns host command commit time.
+    #[must_use]
+    pub const fn commit_ns(self) -> u64 {
+        self.commit_ns
+    }
+
+    /// Returns host time blocked for terminal command completion.
+    #[must_use]
+    pub const fn completion_wait_ns(self) -> u64 {
+        self.completion_wait_ns
+    }
+
+    /// Returns Metal's GPU execution interval when the driver reports it.
+    #[must_use]
+    pub const fn gpu_execution_ns(self) -> Option<u64> {
+        self.gpu_execution_ns
+    }
+
+    /// Returns padded-to-compact CPU readback copy time.
+    #[must_use]
+    pub const fn readback_compaction_ns(self) -> u64 {
+        self.readback_compaction_ns
+    }
+
+    /// Returns total time inside the native submission boundary.
+    #[must_use]
+    pub const fn native_total_ns(self) -> u64 {
+        self.native_total_ns
+    }
+
+    /// Returns submission accounting and result-publication time.
+    #[must_use]
+    pub const fn submission_accounting_ns(self) -> u64 {
+        self.submission_accounting_ns
+    }
+
+    /// Returns the complete validation-through-readback duration.
+    #[must_use]
+    pub const fn total_ns(self) -> u64 {
+        self.total_ns
+    }
+
+    /// Reports whether any host duration exceeded the representable range.
+    #[must_use]
+    pub const fn timing_saturated(self) -> bool {
+        self.timing_saturated
+    }
+}
+
+pub(crate) fn duration_nanoseconds(duration: Duration) -> (u64, bool) {
+    match u64::try_from(duration.as_nanos()) {
+        Ok(nanoseconds) => (nanoseconds, false),
+        Err(_) => (u64::MAX, true),
+    }
+}
+
 /// Owned pixels and observable work for one completed offscreen frame.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OffscreenFrame {
     image: Bgra8Image,
     report: FrameReport,
+    timings: OffscreenStageTimings,
 }
 
 /// Portable owner of the latest completed Metal offscreen image.
@@ -467,6 +587,12 @@ impl OffscreenFrame {
     pub const fn report(&self) -> FrameReport {
         self.report
     }
+
+    /// Returns immutable stage timings for this completed submission.
+    #[must_use]
+    pub const fn timings(&self) -> OffscreenStageTimings {
+        self.timings
+    }
 }
 
 pub(crate) struct NativeRenderAttempt {
@@ -474,6 +600,7 @@ pub(crate) struct NativeRenderAttempt {
     pub(crate) device_lost: bool,
     pub(crate) operations: FrameOperationUsage,
     pub(crate) resources: FrameResourceUsage,
+    pub(crate) timings: OffscreenStageTimings,
     pub(crate) result: Result<Bgra8Image, RenderError>,
 }
 
@@ -509,8 +636,22 @@ impl MetalBackend {
         scene: &Scene,
         descriptor: OffscreenDescriptor,
     ) -> Result<OffscreenFrame, RenderError> {
+        let total_started = Instant::now();
+        let admission_started = Instant::now();
         let frame = self.admit_frame(scene, descriptor)?;
-        self.submit_validated(&frame)
+        let (admission_ns, admission_saturated) = duration_nanoseconds(admission_started.elapsed());
+        let submission_started = Instant::now();
+        let mut completed = self.submit_validated(&frame)?;
+        let (submission_ns, submission_saturated) =
+            duration_nanoseconds(submission_started.elapsed());
+        let (total_ns, total_saturated) = duration_nanoseconds(total_started.elapsed());
+        completed.timings.admission_ns = admission_ns;
+        completed.timings.submission_accounting_ns =
+            submission_ns.saturating_sub(completed.timings.native_total_ns);
+        completed.timings.total_ns = total_ns;
+        completed.timings.timing_saturated |=
+            admission_saturated || submission_saturated || total_saturated;
+        Ok(completed)
     }
 
     #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
@@ -845,6 +986,7 @@ fn complete_attempt(
 
     Ok(OffscreenFrame {
         image,
+        timings: attempt.timings,
         report: FrameReport {
             submission: next_submission,
             primitives: frame.consumed_primitives(),
@@ -1185,6 +1327,7 @@ mod tests {
                 device_lost: false,
                 operations: FrameOperationUsage::default(),
                 resources: resources(),
+                timings: crate::OffscreenStageTimings::default(),
                 result: Ok(image(7)),
             },
         );
@@ -1193,6 +1336,7 @@ mod tests {
             result,
             Ok(OffscreenFrame {
                 image: image(7),
+                timings: crate::OffscreenStageTimings::default(),
                 report: FrameReport {
                     submission: 5,
                     primitives: 0,
@@ -1240,6 +1384,7 @@ mod tests {
                 device_lost: false,
                 operations: FrameOperationUsage::default(),
                 resources: resources(),
+                timings: crate::OffscreenStageTimings::default(),
                 result: Err(RenderError::CommandFailed {
                     status: CommandStatus::Error,
                     failure: None,
@@ -1263,6 +1408,7 @@ mod tests {
                 device_lost: false,
                 operations: FrameOperationUsage::default(),
                 resources: resources(),
+                timings: crate::OffscreenStageTimings::default(),
                 result: Ok(image(3)),
             },
         );
@@ -1292,6 +1438,7 @@ mod tests {
             &mut target,
             Ok(OffscreenFrame {
                 image: image(11),
+                timings: crate::OffscreenStageTimings::default(),
                 report,
             }),
         );
@@ -1306,6 +1453,7 @@ mod tests {
                 &mut target,
                 Ok(OffscreenFrame {
                     image: image(12),
+                    timings: crate::OffscreenStageTimings::default(),
                     report,
                 }),
             ),
@@ -1531,6 +1679,7 @@ mod tests {
                 &mut target,
                 Ok(OffscreenFrame {
                     image: image(21),
+                    timings: OffscreenStageTimings::default(),
                     report: FrameReport::default(),
                 }),
             ),
@@ -1664,6 +1813,7 @@ mod tests {
             device_lost: false,
             operations: FrameOperationUsage::default(),
             resources: resources(),
+            timings: crate::OffscreenStageTimings::default(),
             result: Ok(image(2)),
         };
         record_attempt(&mut healthy, &frame, &committed_success)?;
@@ -1675,6 +1825,7 @@ mod tests {
             device_lost: true,
             operations: FrameOperationUsage::default(),
             resources: resources(),
+            timings: crate::OffscreenStageTimings::default(),
             result: Err(RenderError::CommandFailed {
                 status: CommandStatus::Error,
                 failure: None,
@@ -1691,6 +1842,7 @@ mod tests {
             device_lost: false,
             operations: FrameOperationUsage::default(),
             resources: resources(),
+            timings: crate::OffscreenStageTimings::default(),
             result: Ok(image(1)),
         };
         assert_eq!(
@@ -1715,6 +1867,7 @@ mod tests {
             device_lost: true,
             operations: FrameOperationUsage::default(),
             resources: resources(),
+            timings: crate::OffscreenStageTimings::default(),
             result: Err(RenderError::CommandFailed {
                 status: CommandStatus::Error,
                 failure: None,

@@ -36,6 +36,6 @@ pub use lifecycle::{
 };
 pub use oracle::Bgra8Image;
 pub use submission::{
-    CancellationReport, CommandStatus, OffscreenFrame, OffscreenTarget, RecoveryClassification,
-    RecoveryError, RenderError, RenderStage,
+    CancellationReport, CommandStatus, OffscreenFrame, OffscreenStageTimings, OffscreenTarget,
+    RecoveryClassification, RecoveryError, RenderError, RenderStage,
 };

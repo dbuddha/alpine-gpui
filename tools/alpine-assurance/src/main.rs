@@ -240,7 +240,7 @@ fn run() -> Result<String, Vec<String>> {
     }
     if matches!(
         command.as_str(),
-        "benchmark-scene-reference" | "benchmark-scene-native"
+        "benchmark-scene-reference" | "benchmark-scene-native" | "profile-scene-native"
     ) {
         let values = arguments.collect::<Vec<_>>();
         if values.len() != 4 {
@@ -258,6 +258,14 @@ fn run() -> Result<String, Vec<String>> {
                 "{command} sample count must be an unsigned integer"
             )]
         })?;
+        if command == "profile-scene-native" {
+            return qualification::profile_native_scene(
+                Path::new(&values[0]),
+                Path::new(&values[1]),
+                warmup_iterations,
+                sample_count,
+            );
+        }
         return qualification::benchmark_scene(
             command == "benchmark-scene-native",
             Path::new(&values[0]),
@@ -292,7 +300,7 @@ fn run() -> Result<String, Vec<String>> {
         )),
         "report" => Ok(render_report(&registry)),
         other => Err(vec![format!(
-            "unknown command {other:?}; expected validate, report, validate-scene-trace, validate-trace-sequence, render-scene-reference, render-scene-native, benchmark-scene-reference, benchmark-scene-native, render-trace-sequence-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, capture-ax-client, record-studio-dogfood, seal-live-studio-dogfood, validate-studio-dogfood, studio-dogfood-report, or upstream-radar"
+            "unknown command {other:?}; expected validate, report, validate-scene-trace, validate-trace-sequence, render-scene-reference, render-scene-native, benchmark-scene-reference, benchmark-scene-native, profile-scene-native, render-trace-sequence-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, capture-ax-client, record-studio-dogfood, seal-live-studio-dogfood, validate-studio-dogfood, studio-dogfood-report, or upstream-radar"
         )]),
     }
 }
