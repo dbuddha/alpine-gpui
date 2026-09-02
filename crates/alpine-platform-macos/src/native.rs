@@ -6112,8 +6112,14 @@ mod tests {
     #[test]
     #[cfg(alpine_native_validation)]
     fn presentation_observation_suppression_overrides_every_source() {
-        let signal = Arc::new(PresentationSignal::new(None, StudioSignposts::new()));
-        assert_eq!(signal.publish(1.25_f64.to_bits()), None);
+        let signal = Arc::new(PresentationSignal::new(
+            None,
+            1.0,
+            1.25,
+            Arc::new(AtomicU8::new(SURFACE_LIVE)),
+            StudioSignposts::new(),
+        ));
+        assert_eq!(signal.publish(1.25_f64.to_bits(), 1.25), None);
         let mut observation = PresentationObservation::new(signal);
         observation.inject(2.5_f64.to_bits());
 
