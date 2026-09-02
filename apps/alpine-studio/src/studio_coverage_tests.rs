@@ -292,6 +292,30 @@ fn primary_caret_reveal_follows_edits_and_preserves_manual_scroll_until_navigati
     let top = app.set_selection(Selection::caret(ByteOffset::new(0)));
     assert!(top.visual_changed);
     assert_eq!(app.scroll_y.to_bits(), 0.0_f32.to_bits());
+
+    let mut invalid_layout =
+        StudioApp::from_document(TestTextSystem, StudioDocument::scratch("head"), None)?;
+    let _scene = invalid_layout.try_scene(SceneRevision::new(1), viewport)?;
+    invalid_layout.panes.inject_layout_fault();
+    let failures = invalid_layout.input_failures;
+    assert_eq!(
+        invalid_layout.reveal_primary_caret(),
+        EventEffect::default()
+    );
+    assert_eq!(invalid_layout.input_failures, failures);
+
+    let mut invalid_selection =
+        StudioApp::from_document(TestTextSystem, StudioDocument::scratch("head"), None)?;
+    let _scene = invalid_selection.try_scene(SceneRevision::new(1), viewport)?;
+    invalid_selection.selection = Selection::caret(ByteOffset::new(
+        invalid_selection.buffer().snapshot().len_bytes() + 1,
+    ));
+    let failures = invalid_selection.input_failures;
+    assert_eq!(
+        invalid_selection.reveal_primary_caret(),
+        EventEffect::default()
+    );
+    assert_eq!(invalid_selection.input_failures, failures + 1);
     Ok(())
 }
 
