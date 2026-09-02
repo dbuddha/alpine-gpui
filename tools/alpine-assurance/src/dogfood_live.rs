@@ -142,6 +142,38 @@ struct LanguageServerIdentity {
     executable_sha256: String,
 }
 
+const MAX_DRAFT_PREFLIGHT_BYTES: u64 = 1_048_576;
+
+pub(crate) fn validate_draft(path: &Path) -> Result<String, Vec<String>> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| vec![format!("cannot inspect live dogfood draft: {error}")])?;
+    if !metadata.file_type().is_file() {
+        return Err(vec![
+            "live dogfood draft must be a regular non-symlinked file".to_owned(),
+        ]);
+    }
+    if metadata.len() > MAX_DRAFT_PREFLIGHT_BYTES {
+        return Err(vec![format!(
+            "live dogfood draft exceeds {MAX_DRAFT_PREFLIGHT_BYTES} bytes"
+        )]);
+    }
+    let bytes =
+        fs::read(path).map_err(|error| vec![format!("cannot read live dogfood draft: {error}")])?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|error| vec![format!("live dogfood draft is not UTF-8: {error}")])?;
+    let draft: Draft = toml::from_str(text)
+        .map_err(|error| vec![format!("cannot parse live dogfood draft: {error}")])?;
+    let mut errors = validate_identity(&draft);
+    if !errors.is_empty() {
+        errors.sort();
+        return Err(errors);
+    }
+    Ok(format!(
+        "validated live Studio dogfood draft {}",
+        draft.identity.id
+    ))
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
