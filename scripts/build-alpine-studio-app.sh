@@ -12,7 +12,7 @@ EOF
 }
 
 repository_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd -P)
-output="$repository_root/target/release/Alpine Studio.app"
+output=
 executable=
 
 while [ "$#" -gt 0 ]; do
@@ -45,6 +45,33 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+target_directory=${CARGO_TARGET_DIR-}
+if [ -z "$target_directory" ]; then
+    target_directory="$repository_root/target"
+else
+    case "$target_directory" in
+        /*) ;;
+        *) target_directory="$repository_root/$target_directory" ;;
+    esac
+fi
+
+if [ -z "$executable" ]; then
+    if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
+        printf 'app bundle error: release builds require Apple Silicon macOS\n' >&2
+        exit 1
+    fi
+    (
+        cd "$repository_root"
+        CARGO_TARGET_DIR="$target_directory" \
+            cargo build --release --locked -p alpine-studio
+    )
+    target_directory=$(CDPATH= cd -- "$target_directory" && pwd -P)
+    executable="$target_directory/release/alpine-studio"
+fi
+
+if [ -z "$output" ]; then
+    output="$target_directory/release/Alpine Studio.app"
+fi
 case "$output" in
     */'Alpine Studio.app'|'Alpine Studio.app') ;;
     *)
@@ -52,15 +79,6 @@ case "$output" in
         exit 2
         ;;
 esac
-
-if [ -z "$executable" ]; then
-    if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
-        printf 'app bundle error: release builds require Apple Silicon macOS\n' >&2
-        exit 1
-    fi
-    (cd "$repository_root" && cargo build --release --locked -p alpine-studio)
-    executable="$repository_root/target/release/alpine-studio"
-fi
 
 if [ ! -f "$executable" ] || [ ! -x "$executable" ]; then
     printf 'app bundle error: executable is missing or not executable: %s\n' \
@@ -113,6 +131,10 @@ resources="$contents/Resources"
 mkdir -p "$macos" "$resources"
 cp "$executable" "$macos/alpine-studio"
 chmod 0755 "$macos/alpine-studio"
+if ! cmp -s "$executable" "$macos/alpine-studio"; then
+    printf 'app bundle error: bundled executable does not match build output\n' >&2
+    exit 1
+fi
 
 cat > "$contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
