@@ -152,6 +152,9 @@ executable_sha256 = "none"
 #[test]
 fn seal_dispatch_rejects_missing_and_malformed_numeric_arguments()
 -> Result<(), Box<dyn std::error::Error>> {
+    let missing_draft = invoke_failure(&["validate-live-studio-dogfood-draft"])?;
+    assert!(missing_draft.contains("requires a draft path"));
+
     let missing = invoke_failure(&["seal-live-studio-dogfood"])?;
     assert!(missing.contains("requires draft, internal JSON"));
 
@@ -174,6 +177,21 @@ fn seals_validates_reports_and_rejects_tampering_through_the_binary()
         fs::remove_dir_all(&root)?;
     }
     write_fixture(&root, std::process::id())?;
+
+    let draft = root.join("draft.toml");
+    let draft_text = draft.to_string_lossy();
+    let preflight = invoke_success(&["validate-live-studio-dogfood-draft", &draft_text])?;
+    assert!(preflight.contains("validated live Studio dogfood draft fixture-live-session"));
+
+    let invalid_draft = root.join("invalid-draft.toml");
+    fs::write(
+        &invalid_draft,
+        fs::read_to_string(&draft)?
+            .replace("alpine-studio-dogfood-draft/v2", "alpine-studio-dogfood/v2"),
+    )?;
+    let invalid_text = invalid_draft.to_string_lossy();
+    let rejected = invoke_failure(&["validate-live-studio-dogfood-draft", &invalid_text])?;
+    assert!(rejected.contains("draft schema must be alpine-studio-dogfood-draft/v2"));
 
     let pid = std::process::id().to_string();
     let relative = seal_arguments(&pid, "3000", "1000");
