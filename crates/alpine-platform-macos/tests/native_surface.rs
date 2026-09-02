@@ -31,6 +31,10 @@ fn main() -> Result<(), alpine_platform_macos::SurfaceError> {
     assert!(snapshot.display_sync_enabled());
     assert!(snapshot.allows_next_drawable_timeout());
     assert_eq!(snapshot.maximum_drawable_count(), 3);
+    assert_eq!(
+        snapshot.preferred_frame_latency().to_bits(),
+        1.0_f32.to_bits()
+    );
     assert!(snapshot.display_link_paused());
     assert!(!snapshot.visible());
     assert_eq!(snapshot.callback_count(), 0);

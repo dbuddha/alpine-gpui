@@ -2772,6 +2772,7 @@ pub struct SurfaceSnapshot {
     display_sync_enabled: bool,
     allows_next_drawable_timeout: bool,
     maximum_drawable_count: u8,
+    preferred_frame_latency_bits: u32,
     regular_activation_policy: bool,
     display_link_paused: bool,
     #[cfg(alpine_native_validation)]
@@ -2826,6 +2827,7 @@ impl SurfaceSnapshot {
             display_sync_enabled: false,
             allows_next_drawable_timeout: false,
             maximum_drawable_count: 0,
+            preferred_frame_latency_bits: 0,
             regular_activation_policy: false,
             display_link_paused: true,
             #[cfg(alpine_native_validation)]
@@ -2925,6 +2927,12 @@ impl SurfaceSnapshot {
     #[must_use]
     pub const fn maximum_drawable_count(self) -> u8 {
         self.maximum_drawable_count
+    }
+
+    /// Returns the requested GPU rendering latency in display frames.
+    #[must_use]
+    pub const fn preferred_frame_latency(self) -> f32 {
+        f32::from_bits(self.preferred_frame_latency_bits)
     }
 
     /// Returns whether the standalone application uses the regular `AppKit` policy.
@@ -4153,6 +4161,7 @@ mod tests {
             display_sync_enabled: false,
             allows_next_drawable_timeout: true,
             maximum_drawable_count: 2,
+            preferred_frame_latency_bits: 1.0_f32.to_bits(),
             regular_activation_policy: false,
             display_link_paused: false,
             #[cfg(alpine_native_validation)]
@@ -4198,6 +4207,7 @@ mod tests {
             display_sync_enabled: true,
             allows_next_drawable_timeout: false,
             maximum_drawable_count: 3,
+            preferred_frame_latency_bits: 2.0_f32.to_bits(),
             regular_activation_policy: true,
             display_link_paused: true,
             #[cfg(alpine_native_validation)]
@@ -4246,6 +4256,10 @@ mod tests {
         assert!(!snapshot.display_sync_enabled());
         assert!(snapshot.allows_next_drawable_timeout());
         assert_eq!(snapshot.maximum_drawable_count(), 2);
+        assert_eq!(
+            snapshot.preferred_frame_latency().to_bits(),
+            1.0_f32.to_bits()
+        );
         assert!(!snapshot.regular_activation_policy());
         assert!(!snapshot.display_link_paused());
         assert!(snapshot.visible());
@@ -4299,6 +4313,10 @@ mod tests {
         assert!(inverse.display_sync_enabled());
         assert!(!inverse.allows_next_drawable_timeout());
         assert_eq!(inverse.maximum_drawable_count(), 3);
+        assert_eq!(
+            inverse.preferred_frame_latency().to_bits(),
+            2.0_f32.to_bits()
+        );
         assert!(inverse.regular_activation_policy());
         assert!(inverse.display_link_paused());
         assert!(!inverse.visible());
