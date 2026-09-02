@@ -140,6 +140,28 @@ Observer A/A calibration, Instruments traces, display refresh, power, thermal,
 and optical evidence are absent. Defect #304 and Experiment #331 therefore
 remain open.
 
+## Retained one-frame scheduling rejection
+
+Experiment [#544](https://github.com/dbuddha/alpine-gpui/issues/544) tested
+whether changing CAMetalDisplayLink.preferredFrameLatency from 2.0 to 1.0
+reduces scheduled presentation latency in a composited 120 Hz window. The
+privacy-normalized paired package is retained at
+[assurance/studio-profile/v2/544-frame-latency-negative](../../assurance/studio-profile/v2/544-frame-latency-negative/README.md).
+
+The matched release runs produced the same final document and clean production
+close. Every complete sample in both configurations reported a target
+presentation timestamp exactly 33.333250 ms after the display-link target: 42
+samples at two frames and 44 samples at one frame. The candidate therefore
+produced no scheduling reduction and was rejected. Production remains at two
+frames.
+
+This is diagnostic E3 negative evidence only. It does not convert small
+event-to-present differences into causal findings, because unified-log observer
+cost is uncalibrated and the package is not a statistical performance window.
+It does not close #304 or #331. A future pacing correction requires its own
+accepted experiment and must preserve demand-driven invalidation, zero idle
+rendering, bounded frame ownership, direct presentation, and lifecycle safety.
+
 Unified logging has observer cost. Run matched capture-off and capture-on A/A
 windows before using persisted distributions to attribute a stall. Reject the
 fallback for causal analysis when its confidence interval shows material

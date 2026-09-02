@@ -4136,7 +4136,7 @@ impl NativeSurface {
             .ok_or_else(|| native_unavailable(SurfaceStage::Layer))?;
         let display_link =
             CAMetalDisplayLink::initWithMetalLayer(CAMetalDisplayLink::alloc(), layer);
-        display_link.setPreferredFrameLatency(1.0);
+        display_link.setPreferredFrameLatency(2.0);
         display_link.setPaused(true);
         builder.display_link = Some(display_link);
         builder.track(NativeOwnerKind::DisplayLink);
@@ -4998,7 +4998,6 @@ impl NativeSurface {
             display_sync_enabled: self.layer.displaySyncEnabled(),
             allows_next_drawable_timeout: self.layer.allowsNextDrawableTimeout(),
             maximum_drawable_count: u8::try_from(self.layer.maximumDrawableCount()).unwrap_or(0),
-            preferred_frame_latency_bits: self.display_link.preferredFrameLatency().to_bits(),
             regular_activation_policy: self.application.activationPolicy()
                 == NSApplicationActivationPolicy::Regular,
             display_link_paused: self.display_link.isPaused(),

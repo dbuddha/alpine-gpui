@@ -1,0 +1,3 @@
+configuration	complete_samples	target_minus_display_min_ns	target_minus_display_p50_ns	target_minus_display_p95_ns	target_minus_display_p99_ns	target_minus_display_max_ns
+two-frame	42	33333250	33333250	33333250	33333250	33333250
+one-frame	44	33333250	33333250	33333250	33333250	33333250

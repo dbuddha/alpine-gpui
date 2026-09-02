@@ -1,0 +1,2894 @@
+stage	event	scene	document	buffer	a	b	c
+Atlas Publication Begin	0	1	0	0	38	0	0
+Atlas Publication Complete	0	1	0	0	1	65536	1
+Frame Build Begin	0	1	0	0	1148190720	1141309440	0
+Frame Build Complete	0	1	0	0	43	38	0
+Glyph Atlas Summary	0	1	0	0	22	22	70400
+Layout Cache Summary	0	1	0	0	0	4	1536
+Text Summary	0	1	0	0	5	22	4
+Visible Layout Begin	0	1	0	0	0	0	0
+Visible Layout Complete	0	1	0	0	4	0	0
+Atlas Publication Begin	2	2	0	0	78	0	0
+Atlas Publication Complete	2	2	0	0	2	16384	3
+Event Dispatch Begin	2	0	0	0	9	1	0
+Frame Build Begin	2	2	0	0	1148190720	1141309440	0
+Frame Build Complete	2	2	0	0	84	78	0
+Glyph Atlas Summary	2	2	0	0	77	10	70400
+Layout Cache Summary	2	2	0	0	4	0	1952
+Native Display Link Target Latency	2	0	0	0	51339792	0	0
+Native Event Handler Latency	2	0	0	0	272125	0	0
+Native Frame Queue Latency	2	0	0	0	43517875	0	0
+Native GPU Terminal Observed Latency	2	0	0	0	88903667	0	0
+Native Presented Handler Latency	2	0	0	0	55536292	0	0
+Native Submission Latency	2	0	0	0	4287209	0	0
+Native Target Presentation Latency	2	0	0	0	84673042	0	0
+Native Terminal Record Latency	2	0	0	0	88905209	0	0
+State Mutation Complete	2	0	0	0	1	0	1
+Text Summary	2	2	0	0	2	10	0
+Visible Layout Begin	2	2	0	0	0	0	0
+Visible Layout Complete	2	2	0	0	4	0	0
+Event Dispatch Begin	3	0	0	0	9	1	0
+State Mutation Complete	3	0	0	0	0	0	1
+Event Dispatch Begin	4	0	0	0	7	1	0
+State Mutation Complete	4	0	0	0	0	0	1
+Event Dispatch Begin	5	0	0	0	8	1	0
+State Mutation Complete	5	0	0	0	0	0	1
+Event Dispatch Begin	6	0	0	0	8	1	0
+State Mutation Complete	6	0	0	0	0	0	1
+Event Dispatch Begin	7	0	0	0	8	1	0
+State Mutation Complete	7	0	0	0	0	0	1
+Event Dispatch Begin	8	0	0	0	8	1	0
+State Mutation Complete	8	0	0	0	0	0	1
+Event Dispatch Begin	9	0	0	0	8	1	0
+State Mutation Complete	9	0	0	0	0	0	1
+Event Dispatch Begin	10	0	0	0	8	1	0
+State Mutation Complete	10	0	0	0	0	0	1
+Event Dispatch Begin	11	0	0	0	8	1	0
+State Mutation Complete	11	0	0	0	0	0	1
+Event Dispatch Begin	12	0	0	0	8	1	0
+State Mutation Complete	12	0	0	0	0	0	1
+Event Dispatch Begin	13	0	0	0	8	1	0
+State Mutation Complete	13	0	0	0	0	0	1
+Event Dispatch Begin	14	0	0	0	8	1	0
+State Mutation Complete	14	0	0	0	0	0	1
+Event Dispatch Begin	15	0	0	0	8	1	0
+State Mutation Complete	15	0	0	0	0	0	1
+Event Dispatch Begin	16	0	0	0	8	1	0
+State Mutation Complete	16	0	0	0	0	0	1
+Event Dispatch Begin	17	0	0	0	8	1	0
+State Mutation Complete	17	0	0	0	0	0	1
+Event Dispatch Begin	18	0	0	0	8	1	0
+State Mutation Complete	18	0	0	0	0	0	1
+Event Dispatch Begin	19	0	0	0	8	1	0
+State Mutation Complete	19	0	0	0	0	0	1
+Event Dispatch Begin	20	0	0	0	8	1	0
+State Mutation Complete	20	0	0	0	0	0	1
+Event Dispatch Begin	21	0	0	0	8	1	0
+State Mutation Complete	21	0	0	0	0	0	1
+Event Dispatch Begin	22	0	0	0	8	1	0
+State Mutation Complete	22	0	0	0	0	0	1
+Event Dispatch Begin	23	0	0	0	8	1	0
+State Mutation Complete	23	0	0	0	0	0	1
+Event Dispatch Begin	24	0	0	0	8	1	0
+State Mutation Complete	24	0	0	0	0	0	1
+Event Dispatch Begin	25	0	0	0	8	1	0
+State Mutation Complete	25	0	0	0	0	0	1
+Event Dispatch Begin	26	0	0	0	8	1	0
+State Mutation Complete	26	0	0	0	0	0	1
+Event Dispatch Begin	27	0	0	0	8	1	0
+State Mutation Complete	27	0	0	0	0	0	1
+Event Dispatch Begin	28	0	0	0	8	1	0
+State Mutation Complete	28	0	0	0	0	0	1
+Event Dispatch Begin	29	0	0	0	8	1	0
+State Mutation Complete	29	0	0	0	0	0	1
+Event Dispatch Begin	30	0	0	0	8	1	0
+State Mutation Complete	30	0	0	0	0	0	1
+Event Dispatch Begin	31	0	0	0	8	1	0
+State Mutation Complete	31	0	0	0	0	0	1
+Event Dispatch Begin	32	0	0	0	8	1	0
+State Mutation Complete	32	0	0	0	0	0	1
+Event Dispatch Begin	33	0	0	0	8	1	0
+State Mutation Complete	33	0	0	0	0	0	1
+Event Dispatch Begin	34	0	0	0	8	1	0
+State Mutation Complete	34	0	0	0	0	0	1
+Event Dispatch Begin	35	0	0	0	8	1	0
+State Mutation Complete	35	0	0	0	0	0	1
+Event Dispatch Begin	36	0	0	0	8	1	0
+State Mutation Complete	36	0	0	0	0	0	1
+Event Dispatch Begin	37	0	0	0	8	1	0
+State Mutation Complete	37	0	0	0	0	0	1
+Event Dispatch Begin	38	0	0	0	8	1	0
+State Mutation Complete	38	0	0	0	0	0	1
+Event Dispatch Begin	39	0	0	0	8	1	0
+State Mutation Complete	39	0	0	0	0	0	1
+Event Dispatch Begin	40	0	0	0	8	1	0
+State Mutation Complete	40	0	0	0	0	0	1
+Event Dispatch Begin	41	0	0	0	8	1	0
+State Mutation Complete	41	0	0	0	0	0	1
+Event Dispatch Begin	42	0	0	0	8	1	0
+State Mutation Complete	42	0	0	0	0	0	1
+Event Dispatch Begin	43	0	0	0	8	1	0
+State Mutation Complete	43	0	0	0	0	0	1
+Event Dispatch Begin	44	0	0	0	8	1	0
+State Mutation Complete	44	0	0	0	0	0	1
+Event Dispatch Begin	45	0	0	0	2	1	0
+State Mutation Complete	45	0	0	0	0	0	1
+Event Dispatch Begin	46	0	0	0	8	1	0
+State Mutation Complete	46	0	0	0	0	0	1
+Atlas Publication Begin	47	3	0	0	78	0	0
+Atlas Publication Complete	47	3	0	0	0	0	0
+Event Dispatch Begin	47	0	0	0	2	1	0
+Frame Build Begin	47	3	0	0	1148190720	1141309440	0
+Frame Build Complete	47	3	0	0	84	78	0
+Glyph Atlas Summary	47	3	0	0	87	0	70400
+Layout Cache Summary	47	3	0	0	4	0	1952
+Native Display Link Target Latency	47	0	0	0	14514250	0	0
+Native Event Handler Latency	47	0	0	0	214000	0	0
+Native Frame Queue Latency	47	0	0	0	6086000	0	0
+Native GPU Terminal Observed Latency	47	0	0	0	36610167	0	0
+Native Presented Handler Latency	47	0	0	0	36613833	0	0
+Native Submission Latency	47	0	0	0	265292	0	0
+Native Target Presentation Latency	47	0	0	0	47847500	0	0
+Native Terminal Record Latency	47	0	0	0	36611208	0	0
+State Mutation Complete	47	0	0	0	1	0	2
+Text Summary	47	3	0	0	2	0	0
+Visible Layout Begin	47	3	0	0	0	0	0
+Visible Layout Complete	47	3	0	0	4	0	0
+Event Dispatch Begin	48	0	0	0	8	2	0
+State Mutation Complete	48	0	0	0	0	0	2
+Event Dispatch Begin	49	0	0	0	2	2	0
+State Mutation Complete	49	0	0	0	0	0	2
+Event Dispatch Begin	50	0	0	0	8	2	0
+State Mutation Complete	50	0	0	0	0	0	2
+Event Dispatch Begin	51	0	0	0	1	2	0
+State Mutation Complete	51	0	0	0	0	0	2
+Event Dispatch Begin	52	0	0	0	8	2	0
+State Mutation Complete	52	0	0	0	0	0	2
+Atlas Publication Begin	53	4	0	0	78	0	0
+Atlas Publication Complete	53	4	0	0	0	0	0
+Event Dispatch Begin	53	0	0	0	1	2	0
+Frame Build Begin	53	4	0	0	1148190720	1141309440	0
+Frame Build Complete	53	4	0	0	84	78	0
+Glyph Atlas Summary	53	4	0	0	87	0	70400
+Layout Cache Summary	53	4	0	0	4	0	1952
+State Mutation Complete	53	0	0	0	1	0	3
+Text Summary	53	4	0	0	2	0	0
+Visible Layout Begin	53	4	0	0	0	0	0
+Visible Layout Complete	53	4	0	0	4	0	0
+Event Dispatch Begin	54	0	0	0	8	3	0
+State Mutation Complete	54	0	0	0	0	0	3
+Event Dispatch Begin	55	0	0	0	1	3	0
+State Mutation Complete	55	0	0	0	0	0	3
+Event Dispatch Begin	56	0	0	0	8	3	0
+State Mutation Complete	56	0	0	0	0	0	3
+Event Dispatch Begin	57	0	0	0	1	3	0
+State Mutation Complete	57	0	0	0	0	0	3
+Event Dispatch Begin	58	0	0	0	8	3	0
+State Mutation Complete	58	0	0	0	0	0	3
+Event Dispatch Begin	59	0	0	0	1	3	0
+State Mutation Complete	59	0	0	0	0	0	3
+Event Dispatch Begin	60	0	0	0	8	3	0
+State Mutation Complete	60	0	0	0	0	0	3
+Atlas Publication Begin	61	5	1	1	78	0	0
+Atlas Publication Complete	61	5	1	1	0	0	0
+Event Dispatch Begin	61	0	0	0	1	3	0
+Frame Build Begin	61	5	1	1	1148190720	1141309440	0
+Frame Build Complete	61	5	1	1	84	78	0
+Glyph Atlas Summary	61	5	1	1	87	0	70400
+Layout Cache Summary	61	5	1	1	4	1	2368
+State Mutation Complete	61	0	1	1	1	1	4
+Text Summary	61	5	1	1	3	0	1
+Visible Layout Begin	61	5	1	1	0	0	0
+Visible Layout Complete	61	5	1	1	5	0	0
+Event Dispatch Begin	62	0	1	1	8	4	0
+State Mutation Complete	62	0	1	1	0	0	4
+Event Dispatch Begin	63	0	1	1	1	4	0
+State Mutation Complete	63	0	1	1	0	0	4
+Event Dispatch Begin	64	0	1	1	8	4	0
+State Mutation Complete	64	0	1	1	0	0	4
+Event Dispatch Begin	65	0	1	1	1	4	0
+State Mutation Complete	65	0	1	1	0	0	4
+Event Dispatch Begin	66	0	1	1	8	4	0
+State Mutation Complete	66	0	1	1	0	0	4
+Event Dispatch Begin	67	0	1	1	1	4	0
+State Mutation Complete	67	0	1	1	0	0	4
+Event Dispatch Begin	68	0	1	1	8	4	0
+State Mutation Complete	68	0	1	1	0	0	4
+Event Dispatch Begin	69	0	1	1	1	4	0
+State Mutation Complete	69	0	1	1	0	0	4
+Event Dispatch Begin	70	0	1	1	8	4	0
+State Mutation Complete	70	0	1	1	0	0	4
+Atlas Publication Begin	71	6	2	2	79	0	0
+Atlas Publication Complete	71	6	2	2	0	0	0
+Event Dispatch Begin	71	0	1	1	5	4	0
+Frame Build Begin	71	6	2	2	1148190720	1141309440	0
+Frame Build Complete	71	6	2	2	85	79	0
+Glyph Atlas Summary	71	6	2	2	88	0	70400
+Layout Cache Summary	71	6	2	2	4	1	2816
+Native Display Link Target Latency	71	0	0	0	25029542	0	0
+Native Event Handler Latency	71	0	0	0	35917	0	0
+Native Frame Queue Latency	71	0	0	0	16707792	0	0
+Native GPU Terminal Observed Latency	71	0	0	0	25396708	0	0
+Native Presented Handler Latency	71	0	0	0	76970500	0	0
+Native Submission Latency	71	0	0	0	63750	0	0
+Native Target Presentation Latency	71	0	0	0	58362792	0	0
+Native Terminal Record Latency	71	0	0	0	33425875	0	0
+State Mutation Complete	71	0	2	2	1	1	5
+Text Summary	71	6	2	2	3	0	1
+Visible Layout Begin	71	6	2	2	0	0	0
+Visible Layout Complete	71	6	2	2	5	0	0
+Event Dispatch Begin	72	0	2	2	8	5	0
+State Mutation Complete	72	0	2	2	0	0	5
+Event Dispatch Begin	73	0	2	2	1	5	0
+State Mutation Complete	73	0	2	2	0	0	5
+Event Dispatch Begin	74	0	2	2	8	5	0
+State Mutation Complete	74	0	2	2	0	0	5
+Event Dispatch Begin	75	0	2	2	1	5	0
+State Mutation Complete	75	0	2	2	0	0	5
+Event Dispatch Begin	76	0	2	2	8	5	0
+State Mutation Complete	76	0	2	2	0	0	5
+Event Dispatch Begin	77	0	2	2	1	5	0
+State Mutation Complete	77	0	2	2	0	0	5
+Event Dispatch Begin	78	0	2	2	8	5	0
+State Mutation Complete	78	0	2	2	0	0	5
+Event Dispatch Begin	79	0	2	2	1	5	0
+State Mutation Complete	79	0	2	2	0	0	5
+Event Dispatch Begin	80	0	2	2	8	5	0
+State Mutation Complete	80	0	2	2	0	0	5
+Atlas Publication Begin	81	7	3	3	80	0	0
+Atlas Publication Complete	81	7	3	3	0	0	0
+Event Dispatch Begin	81	0	2	2	5	5	0
+Frame Build Begin	81	7	3	3	1148190720	1141309440	0
+Frame Build Complete	81	7	3	3	86	80	0
+Glyph Atlas Summary	81	7	3	3	89	0	70400
+Layout Cache Summary	81	7	3	3	4	1	2880
+Native Actual Presentation Latency	81	0	0	0	64683625	0	0
+Native Display Link Target Latency	81	0	0	0	14683958	0	0
+Native Event Handler Latency	81	0	0	0	86583	0	0
+Native Frame Queue Latency	81	0	0	0	6332875	0	0
+Native GPU Terminal Observed Latency	81	0	0	0	15423458	0	0
+Native Presentation Callback Lag	81	0	0	0	3099500	0	0
+Native Presented Handler Latency	81	0	0	0	67783875	0	0
+Native Submission Latency	81	0	0	0	136542	0	0
+Native Target Presentation Latency	81	0	0	0	48017208	0	0
+Native Terminal Record Latency	81	0	0	0	23441333	0	0
+State Mutation Complete	81	0	3	3	1	1	6
+Text Summary	81	7	3	3	3	0	1
+Visible Layout Begin	81	7	3	3	0	0	0
+Visible Layout Complete	81	7	3	3	5	0	0
+Event Dispatch Begin	82	0	3	3	8	6	0
+State Mutation Complete	82	0	3	3	0	0	6
+Event Dispatch Begin	83	0	3	3	1	6	0
+State Mutation Complete	83	0	3	3	0	0	6
+Event Dispatch Begin	84	0	3	3	8	6	0
+State Mutation Complete	84	0	3	3	0	0	6
+Event Dispatch Begin	85	0	3	3	1	6	0
+State Mutation Complete	85	0	3	3	0	0	6
+Event Dispatch Begin	86	0	3	3	8	6	0
+State Mutation Complete	86	0	3	3	0	0	6
+Event Dispatch Begin	87	0	3	3	1	6	0
+State Mutation Complete	87	0	3	3	0	0	6
+Event Dispatch Begin	88	0	3	3	8	6	0
+State Mutation Complete	88	0	3	3	0	0	6
+Event Dispatch Begin	89	0	3	3	1	6	0
+State Mutation Complete	89	0	3	3	0	0	6
+Event Dispatch Begin	90	0	3	3	8	6	0
+State Mutation Complete	90	0	3	3	0	0	6
+Atlas Publication Begin	91	8	4	4	81	0	0
+Atlas Publication Complete	91	8	4	4	0	0	0
+Event Dispatch Begin	91	0	3	3	5	6	0
+Frame Build Begin	91	8	4	4	1148190720	1141309440	0
+Frame Build Complete	91	8	4	4	87	81	0
+Glyph Atlas Summary	91	8	4	4	90	0	70400
+Layout Cache Summary	91	8	4	4	4	1	2944
+Native Actual Presentation Latency	91	0	0	0	64264750	0	0
+Native Display Link Target Latency	91	0	0	0	14264917	0	0
+Native Event Handler Latency	91	0	0	0	167125	0	0
+Native Frame Queue Latency	91	0	0	0	5824041	0	0
+Native GPU Terminal Observed Latency	91	0	0	0	14373167	0	0
+Native Presentation Callback Lag	91	0	0	0	2796542	0	0
+Native Presented Handler Latency	91	0	0	0	67062917	0	0
+Native Submission Latency	91	0	0	0	67625	0	0
+Native Target Presentation Latency	91	0	0	0	47598167	0	0
+Native Terminal Record Latency	91	0	0	0	22697167	0	0
+State Mutation Complete	91	0	4	4	1	1	7
+Text Summary	91	8	4	4	3	0	1
+Visible Layout Begin	91	8	4	4	0	0	0
+Visible Layout Complete	91	8	4	4	5	0	0
+Event Dispatch Begin	92	0	4	4	8	7	0
+State Mutation Complete	92	0	4	4	0	0	7
+Event Dispatch Begin	93	0	4	4	1	7	0
+State Mutation Complete	93	0	4	4	0	0	7
+Event Dispatch Begin	94	0	4	4	8	7	0
+State Mutation Complete	94	0	4	4	0	0	7
+Event Dispatch Begin	95	0	4	4	1	7	0
+State Mutation Complete	95	0	4	4	0	0	7
+Event Dispatch Begin	96	0	4	4	8	7	0
+State Mutation Complete	96	0	4	4	0	0	7
+Event Dispatch Begin	97	0	4	4	1	7	0
+State Mutation Complete	97	0	4	4	0	0	7
+Event Dispatch Begin	98	0	4	4	8	7	0
+State Mutation Complete	98	0	4	4	0	0	7
+Event Dispatch Begin	99	0	4	4	1	7	0
+State Mutation Complete	99	0	4	4	0	0	7
+Event Dispatch Begin	100	0	4	4	8	7	0
+State Mutation Complete	100	0	4	4	0	0	7
+Atlas Publication Begin	101	9	5	5	81	0	0
+Atlas Publication Complete	101	9	5	5	0	0	0
+Event Dispatch Begin	101	0	4	4	5	7	0
+Frame Build Begin	101	9	5	5	1148190720	1141309440	0
+Frame Build Complete	101	9	5	5	87	81	0
+Glyph Atlas Summary	101	9	5	5	91	0	70400
+Layout Cache Summary	101	9	5	5	4	1	3008
+Native Actual Presentation Latency	101	0	0	0	43781375	0	0
+Native Display Link Target Latency	101	0	0	0	10448208	0	0
+Native Event Handler Latency	101	0	0	0	95834	0	0
+Native Frame Queue Latency	101	0	0	0	2068500	0	0
+Native GPU Terminal Observed Latency	101	0	0	0	10500084	0	0
+Native Presentation Callback Lag	101	0	0	0	215250	0	0
+Native Presented Handler Latency	101	0	0	0	43996709	0	0
+Native Submission Latency	101	0	0	0	60584	0	0
+Native Target Presentation Latency	101	0	0	0	43781458	0	0
+Native Terminal Record Latency	101	0	0	0	18881709	0	0
+State Mutation Complete	101	0	5	5	1	1	8
+Text Summary	101	9	5	5	3	0	1
+Visible Layout Begin	101	9	5	5	0	0	0
+Visible Layout Complete	101	9	5	5	5	0	0
+Event Dispatch Begin	102	0	5	5	8	8	0
+State Mutation Complete	102	0	5	5	0	0	8
+Event Dispatch Begin	103	0	5	5	1	8	0
+State Mutation Complete	103	0	5	5	0	0	8
+Event Dispatch Begin	104	0	5	5	8	8	0
+State Mutation Complete	104	0	5	5	0	0	8
+Event Dispatch Begin	105	0	5	5	1	8	0
+State Mutation Complete	105	0	5	5	0	0	8
+Event Dispatch Begin	106	0	5	5	8	8	0
+State Mutation Complete	106	0	5	5	0	0	8
+Event Dispatch Begin	107	0	5	5	1	8	0
+State Mutation Complete	107	0	5	5	0	0	8
+Event Dispatch Begin	108	0	5	5	8	8	0
+State Mutation Complete	108	0	5	5	0	0	8
+Event Dispatch Begin	109	0	5	5	1	8	0
+State Mutation Complete	109	0	5	5	0	0	8
+Event Dispatch Begin	110	0	5	5	8	8	0
+State Mutation Complete	110	0	5	5	0	0	8
+Atlas Publication Begin	111	10	6	6	82	0	0
+Atlas Publication Complete	111	10	6	6	0	0	0
+Event Dispatch Begin	111	0	5	5	5	8	0
+Frame Build Begin	111	10	6	6	1148190720	1141309440	0
+Frame Build Complete	111	10	6	6	88	82	0
+Glyph Atlas Summary	111	10	6	6	92	0	70400
+Layout Cache Summary	111	10	6	6	4	1	3072
+Native Actual Presentation Latency	111	0	0	0	43566875	0	0
+Native Display Link Target Latency	111	0	0	0	10233875	0	0
+Native Event Handler Latency	111	0	0	0	218292	0	0
+Native Frame Queue Latency	111	0	0	0	1752459	0	0
+Native GPU Terminal Observed Latency	111	0	0	0	10374292	0	0
+Native Presentation Callback Lag	111	0	0	0	327250	0	0
+Native Presented Handler Latency	111	0	0	0	43895500	0	0
+Native Submission Latency	111	0	0	0	100625	0	0
+Native Target Presentation Latency	111	0	0	0	43567125	0	0
+Native Terminal Record Latency	111	0	0	0	18727375	0	0
+State Mutation Complete	111	0	6	6	1	1	9
+Text Summary	111	10	6	6	3	0	1
+Visible Layout Begin	111	10	6	6	0	0	0
+Visible Layout Complete	111	10	6	6	5	0	0
+Event Dispatch Begin	112	0	6	6	8	9	0
+State Mutation Complete	112	0	6	6	0	0	9
+Event Dispatch Begin	113	0	6	6	1	9	0
+State Mutation Complete	113	0	6	6	0	0	9
+Event Dispatch Begin	114	0	6	6	8	9	0
+State Mutation Complete	114	0	6	6	0	0	9
+Event Dispatch Begin	115	0	6	6	1	9	0
+State Mutation Complete	115	0	6	6	0	0	9
+Event Dispatch Begin	116	0	6	6	8	9	0
+State Mutation Complete	116	0	6	6	0	0	9
+Event Dispatch Begin	117	0	6	6	1	9	0
+State Mutation Complete	117	0	6	6	0	0	9
+Event Dispatch Begin	118	0	6	6	8	9	0
+State Mutation Complete	118	0	6	6	0	0	9
+Event Dispatch Begin	119	0	6	6	1	9	0
+State Mutation Complete	119	0	6	6	0	0	9
+Event Dispatch Begin	120	0	6	6	8	9	0
+State Mutation Complete	120	0	6	6	0	0	9
+Atlas Publication Begin	121	11	7	7	83	0	0
+Atlas Publication Complete	121	11	7	7	0	0	0
+Event Dispatch Begin	121	0	6	6	5	9	0
+Frame Build Begin	121	11	7	7	1148190720	1141309440	0
+Frame Build Complete	121	11	7	7	89	83	0
+Glyph Atlas Summary	121	11	7	7	93	0	70400
+Layout Cache Summary	121	11	7	7	4	1	3136
+Native Actual Presentation Latency	121	0	0	0	43798958	0	0
+Native Display Link Target Latency	121	0	0	0	10466083	0	0
+Native Event Handler Latency	121	0	0	0	88417	0	0
+Native Frame Queue Latency	121	0	0	0	2082791	0	0
+Native GPU Terminal Observed Latency	121	0	0	0	10525250	0	0
+Native Presentation Callback Lag	121	0	0	0	231292	0	0
+Native Presented Handler Latency	121	0	0	0	44031167	0	0
+Native Submission Latency	121	0	0	0	81334	0	0
+Native Target Presentation Latency	121	0	0	0	43799333	0	0
+Native Terminal Record Latency	121	0	0	0	18889875	0	0
+State Mutation Complete	121	0	7	7	1	1	10
+Text Summary	121	11	7	7	3	0	1
+Visible Layout Begin	121	11	7	7	0	0	0
+Visible Layout Complete	121	11	7	7	5	0	0
+Event Dispatch Begin	122	0	7	7	8	10	0
+State Mutation Complete	122	0	7	7	0	0	10
+Event Dispatch Begin	123	0	7	7	1	10	0
+State Mutation Complete	123	0	7	7	0	0	10
+Event Dispatch Begin	124	0	7	7	8	10	0
+State Mutation Complete	124	0	7	7	0	0	10
+Event Dispatch Begin	125	0	7	7	1	10	0
+State Mutation Complete	125	0	7	7	0	0	10
+Event Dispatch Begin	126	0	7	7	8	10	0
+State Mutation Complete	126	0	7	7	0	0	10
+Event Dispatch Begin	127	0	7	7	1	10	0
+State Mutation Complete	127	0	7	7	0	0	10
+Event Dispatch Begin	128	0	7	7	8	10	0
+State Mutation Complete	128	0	7	7	0	0	10
+Event Dispatch Begin	129	0	7	7	1	10	0
+State Mutation Complete	129	0	7	7	0	0	10
+Event Dispatch Begin	130	0	7	7	8	10	0
+State Mutation Complete	130	0	7	7	0	0	10
+Atlas Publication Begin	131	12	8	8	84	0	0
+Atlas Publication Complete	131	12	8	8	0	0	0
+Event Dispatch Begin	131	0	7	7	5	10	0
+Frame Build Begin	131	12	8	8	1148190720	1141309440	0
+Frame Build Complete	131	12	8	8	90	84	0
+Glyph Atlas Summary	131	12	8	8	94	0	70400
+Layout Cache Summary	131	12	8	8	4	1	3200
+Native Actual Presentation Latency	131	0	0	0	57258708	0	0
+Native Display Link Target Latency	131	0	0	0	15592125	0	0
+Native Event Handler Latency	131	0	0	0	104041	0	0
+Native Frame Queue Latency	131	0	0	0	7204083	0	0
+Native GPU Terminal Observed Latency	131	0	0	0	15763666	0	0
+Native Presentation Callback Lag	131	0	0	0	257792	0	0
+Native Presented Handler Latency	131	0	0	0	57516625	0	0
+Native Submission Latency	131	0	0	0	59042	0	0
+Native Target Presentation Latency	131	0	0	0	48925375	0	0
+Native Terminal Record Latency	131	0	0	0	24012625	0	0
+State Mutation Complete	131	0	8	8	1	1	11
+Text Summary	131	12	8	8	3	0	1
+Visible Layout Begin	131	12	8	8	0	0	0
+Visible Layout Complete	131	12	8	8	5	0	0
+Event Dispatch Begin	132	0	8	8	8	11	0
+State Mutation Complete	132	0	8	8	0	0	11
+Event Dispatch Begin	133	0	8	8	1	11	0
+State Mutation Complete	133	0	8	8	0	0	11
+Event Dispatch Begin	134	0	8	8	8	11	0
+State Mutation Complete	134	0	8	8	0	0	11
+Event Dispatch Begin	135	0	8	8	1	11	0
+State Mutation Complete	135	0	8	8	0	0	11
+Event Dispatch Begin	136	0	8	8	8	11	0
+State Mutation Complete	136	0	8	8	0	0	11
+Event Dispatch Begin	137	0	8	8	1	11	0
+State Mutation Complete	137	0	8	8	0	0	11
+Event Dispatch Begin	138	0	8	8	8	11	0
+State Mutation Complete	138	0	8	8	0	0	11
+Event Dispatch Begin	139	0	8	8	1	11	0
+State Mutation Complete	139	0	8	8	0	0	11
+Event Dispatch Begin	140	0	8	8	8	11	0
+State Mutation Complete	140	0	8	8	0	0	11
+Atlas Publication Begin	141	13	9	9	85	0	0
+Atlas Publication Complete	141	13	9	9	0	0	0
+Event Dispatch Begin	141	0	8	8	5	11	0
+Frame Build Begin	141	13	9	9	1148190720	1141309440	0
+Frame Build Complete	141	13	9	9	91	85	0
+Glyph Atlas Summary	141	13	9	9	95	0	70400
+Layout Cache Summary	141	13	9	9	4	1	3264
+Native Actual Presentation Latency	141	0	0	0	46569333	0	0
+Native Display Link Target Latency	141	0	0	0	13236250	0	0
+Native Event Handler Latency	141	0	0	0	165375	0	0
+Native Frame Queue Latency	141	0	0	0	4801667	0	0
+Native GPU Terminal Observed Latency	141	0	0	0	13334417	0	0
+Native Presentation Callback Lag	141	0	0	0	200208	0	0
+Native Presented Handler Latency	141	0	0	0	46769625	0	0
+Native Submission Latency	141	0	0	0	82042	0	0
+Native Target Presentation Latency	141	0	0	0	46569500	0	0
+Native Terminal Record Latency	141	0	0	0	21658083	0	0
+State Mutation Complete	141	0	9	9	1	1	12
+Text Summary	141	13	9	9	3	0	1
+Visible Layout Begin	141	13	9	9	0	0	0
+Visible Layout Complete	141	13	9	9	5	0	0
+Event Dispatch Begin	142	0	9	9	8	12	0
+State Mutation Complete	142	0	9	9	0	0	12
+Event Dispatch Begin	143	0	9	9	1	12	0
+State Mutation Complete	143	0	9	9	0	0	12
+Event Dispatch Begin	144	0	9	9	8	12	0
+State Mutation Complete	144	0	9	9	0	0	12
+Event Dispatch Begin	145	0	9	9	1	12	0
+State Mutation Complete	145	0	9	9	0	0	12
+Event Dispatch Begin	146	0	9	9	8	12	0
+State Mutation Complete	146	0	9	9	0	0	12
+Event Dispatch Begin	147	0	9	9	1	12	0
+State Mutation Complete	147	0	9	9	0	0	12
+Event Dispatch Begin	148	0	9	9	8	12	0
+State Mutation Complete	148	0	9	9	0	0	12
+Event Dispatch Begin	149	0	9	9	1	12	0
+State Mutation Complete	149	0	9	9	0	0	12
+Event Dispatch Begin	150	0	9	9	8	12	0
+State Mutation Complete	150	0	9	9	0	0	12
+Atlas Publication Begin	151	14	10	10	86	0	0
+Atlas Publication Complete	151	14	10	10	0	0	0
+Event Dispatch Begin	151	0	9	9	5	12	0
+Frame Build Begin	151	14	10	10	1148190720	1141309440	0
+Frame Build Complete	151	14	10	10	92	86	0
+Glyph Atlas Summary	151	14	10	10	96	0	70400
+Layout Cache Summary	151	14	10	10	4	1	3328
+Native Actual Presentation Latency	151	0	0	0	52101250	0	0
+Native Display Link Target Latency	151	0	0	0	10434917	0	0
+Native Event Handler Latency	151	0	0	0	89167	0	0
+Native Frame Queue Latency	151	0	0	0	2060834	0	0
+Native GPU Terminal Observed Latency	151	0	0	0	10483750	0	0
+Native Presentation Callback Lag	151	0	0	0	580958	0	0
+Native Presented Handler Latency	151	0	0	0	52682792	0	0
+Native Submission Latency	151	0	0	0	80541	0	0
+Native Target Presentation Latency	151	0	0	0	43768167	0	0
+Native Terminal Record Latency	151	0	0	0	18896333	0	0
+State Mutation Complete	151	0	10	10	1	1	13
+Text Summary	151	14	10	10	3	0	1
+Visible Layout Begin	151	14	10	10	0	0	0
+Visible Layout Complete	151	14	10	10	5	0	0
+Event Dispatch Begin	152	0	10	10	8	13	0
+State Mutation Complete	152	0	10	10	0	0	13
+Event Dispatch Begin	153	0	10	10	1	13	0
+State Mutation Complete	153	0	10	10	0	0	13
+Event Dispatch Begin	154	0	10	10	8	13	0
+State Mutation Complete	154	0	10	10	0	0	13
+Event Dispatch Begin	155	0	10	10	1	13	0
+State Mutation Complete	155	0	10	10	0	0	13
+Event Dispatch Begin	156	0	10	10	8	13	0
+State Mutation Complete	156	0	10	10	0	0	13
+Event Dispatch Begin	157	0	10	10	1	13	0
+State Mutation Complete	157	0	10	10	0	0	13
+Event Dispatch Begin	158	0	10	10	8	13	0
+State Mutation Complete	158	0	10	10	0	0	13
+Event Dispatch Begin	159	0	10	10	1	13	0
+State Mutation Complete	159	0	10	10	0	0	13
+Event Dispatch Begin	160	0	10	10	8	13	0
+State Mutation Complete	160	0	10	10	0	0	13
+Atlas Publication Begin	161	15	11	11	87	0	0
+Atlas Publication Complete	161	15	11	11	2	5888	1
+Event Dispatch Begin	161	0	10	10	5	13	0
+Frame Build Begin	161	15	11	11	1148190720	1141309440	0
+Frame Build Complete	161	15	11	11	93	87	0
+Glyph Atlas Summary	161	15	11	11	96	1	75008
+Layout Cache Summary	161	15	11	11	4	1	3392
+Native Actual Presentation Latency	161	0	0	0	54569042	0	0
+Native Display Link Target Latency	161	0	0	0	12902417	0	0
+Native Event Handler Latency	161	0	0	0	291667	0	0
+Native Frame Queue Latency	161	0	0	0	4322500	0	0
+Native GPU Terminal Observed Latency	161	0	0	0	12988042	0	0
+Native Presentation Callback Lag	161	0	0	0	240500	0	0
+Native Presented Handler Latency	161	0	0	0	54809792	0	0
+Native Submission Latency	161	0	0	0	1335000	0	0
+Native Target Presentation Latency	161	0	0	0	46235667	0	0
+Native Terminal Record Latency	161	0	0	0	21330500	0	0
+State Mutation Complete	161	0	11	11	1	1	14
+Text Summary	161	15	11	11	3	1	1
+Visible Layout Begin	161	15	11	11	0	0	0
+Visible Layout Complete	161	15	11	11	5	0	0
+Event Dispatch Begin	162	0	11	11	8	14	0
+State Mutation Complete	162	0	11	11	0	0	14
+Event Dispatch Begin	163	0	11	11	1	14	0
+State Mutation Complete	163	0	11	11	0	0	14
+Event Dispatch Begin	164	0	11	11	8	14	0
+State Mutation Complete	164	0	11	11	0	0	14
+Event Dispatch Begin	165	0	11	11	1	14	0
+State Mutation Complete	165	0	11	11	0	0	14
+Event Dispatch Begin	166	0	11	11	8	14	0
+State Mutation Complete	166	0	11	11	0	0	14
+Event Dispatch Begin	167	0	11	11	1	14	0
+State Mutation Complete	167	0	11	11	0	0	14
+Event Dispatch Begin	168	0	11	11	8	14	0
+State Mutation Complete	168	0	11	11	0	0	14
+Event Dispatch Begin	169	0	11	11	1	14	0
+State Mutation Complete	169	0	11	11	0	0	14
+Event Dispatch Begin	170	0	11	11	8	14	0
+State Mutation Complete	170	0	11	11	0	0	14
+Atlas Publication Begin	171	16	12	12	88	0	0
+Atlas Publication Complete	171	16	12	12	2	1024	1
+Event Dispatch Begin	171	0	11	11	5	14	0
+Frame Build Begin	171	16	12	12	1148190720	1141309440	0
+Frame Build Complete	171	16	12	12	94	88	0
+Glyph Atlas Summary	171	16	12	12	97	1	75008
+Layout Cache Summary	171	16	12	12	4	1	3456
+Native Actual Presentation Latency	171	0	0	0	41496917	0	0
+Native Display Link Target Latency	171	0	0	0	8163792	0	0
+Native Event Handler Latency	171	0	0	0	203500	0	0
+Native Frame Queue Latency	171	0	0	0	101334	0	0
+Native GPU Terminal Observed Latency	171	0	0	0	8241750	0	0
+Native Presentation Callback Lag	171	0	0	0	253083	0	0
+Native Presented Handler Latency	171	0	0	0	41750209	0	0
+Native Submission Latency	171	0	0	0	111708	0	0
+Native Target Presentation Latency	171	0	0	0	41497042	0	0
+Native Terminal Record Latency	171	0	0	0	16637125	0	0
+State Mutation Complete	171	0	12	12	1	1	15
+Text Summary	171	16	12	12	3	1	1
+Visible Layout Begin	171	16	12	12	0	0	0
+Visible Layout Complete	171	16	12	12	5	0	0
+Event Dispatch Begin	172	0	12	12	8	15	0
+State Mutation Complete	172	0	12	12	0	0	15
+Event Dispatch Begin	173	0	12	12	1	15	0
+State Mutation Complete	173	0	12	12	0	0	15
+Event Dispatch Begin	174	0	12	12	8	15	0
+State Mutation Complete	174	0	12	12	0	0	15
+Event Dispatch Begin	175	0	12	12	1	15	0
+State Mutation Complete	175	0	12	12	0	0	15
+Event Dispatch Begin	176	0	12	12	8	15	0
+State Mutation Complete	176	0	12	12	0	0	15
+Event Dispatch Begin	177	0	12	12	1	15	0
+State Mutation Complete	177	0	12	12	0	0	15
+Event Dispatch Begin	178	0	12	12	8	15	0
+State Mutation Complete	178	0	12	12	0	0	15
+Event Dispatch Begin	179	0	12	12	1	15	0
+State Mutation Complete	179	0	12	12	0	0	15
+Event Dispatch Begin	180	0	12	12	8	15	0
+State Mutation Complete	180	0	12	12	0	0	15
+Atlas Publication Begin	181	17	13	13	89	0	0
+Atlas Publication Complete	181	17	13	13	0	0	0
+Event Dispatch Begin	181	0	12	12	5	15	0
+Frame Build Begin	181	17	13	13	1148190720	1141309440	0
+Frame Build Complete	181	17	13	13	95	89	0
+Glyph Atlas Summary	181	17	13	13	99	0	75008
+Layout Cache Summary	181	17	13	13	4	1	3520
+Native Actual Presentation Latency	181	0	0	0	47720292	0	0
+Native Display Link Target Latency	181	0	0	0	10220625	0	0
+Native Event Handler Latency	181	0	0	0	99375	0	0
+Native Frame Queue Latency	181	0	0	0	1833417	0	0
+Native GPU Terminal Observed Latency	181	0	0	0	10290208	0	0
+Native Presentation Callback Lag	181	0	0	0	2909792	0	0
+Native Presented Handler Latency	181	0	0	0	50630666	0	0
+Native Submission Latency	181	0	0	0	93542	0	0
+Native Target Presentation Latency	181	0	0	0	43553875	0	0
+Native Terminal Record Latency	181	0	0	0	18633833	0	0
+State Mutation Complete	181	0	13	13	1	1	16
+Text Summary	181	17	13	13	3	0	1
+Visible Layout Begin	181	17	13	13	0	0	0
+Visible Layout Complete	181	17	13	13	5	0	0
+Event Dispatch Begin	182	0	13	13	8	16	0
+State Mutation Complete	182	0	13	13	0	0	16
+Event Dispatch Begin	183	0	13	13	1	16	0
+State Mutation Complete	183	0	13	13	0	0	16
+Event Dispatch Begin	184	0	13	13	8	16	0
+State Mutation Complete	184	0	13	13	0	0	16
+Event Dispatch Begin	185	0	13	13	1	16	0
+State Mutation Complete	185	0	13	13	0	0	16
+Event Dispatch Begin	186	0	13	13	8	16	0
+State Mutation Complete	186	0	13	13	0	0	16
+Event Dispatch Begin	187	0	13	13	1	16	0
+State Mutation Complete	187	0	13	13	0	0	16
+Event Dispatch Begin	188	0	13	13	8	16	0
+State Mutation Complete	188	0	13	13	0	0	16
+Event Dispatch Begin	189	0	13	13	1	16	0
+State Mutation Complete	189	0	13	13	0	0	16
+Event Dispatch Begin	190	0	13	13	8	16	0
+State Mutation Complete	190	0	13	13	0	0	16
+Atlas Publication Begin	191	18	14	14	90	0	0
+Atlas Publication Complete	191	18	14	14	0	0	0
+Event Dispatch Begin	191	0	13	13	5	16	0
+Frame Build Begin	191	18	14	14	1148190720	1141309440	0
+Frame Build Complete	191	18	14	14	96	90	0
+Glyph Atlas Summary	191	18	14	14	100	0	75008
+Layout Cache Summary	191	18	14	14	4	1	3584
+Native Actual Presentation Latency	191	0	0	0	43261333	0	0
+Native Display Link Target Latency	191	0	0	0	9928083	0	0
+Native Event Handler Latency	191	0	0	0	125542	0	0
+Native Frame Queue Latency	191	0	0	0	1558833	0	0
+Native GPU Terminal Observed Latency	191	0	0	0	10073625	0	0
+Native Presentation Callback Lag	191	0	0	0	2279042	0	0
+Native Presented Handler Latency	191	0	0	0	45541209	0	0
+Native Submission Latency	191	0	0	0	93417	0	0
+Native Target Presentation Latency	191	0	0	0	43261333	0	0
+Native Terminal Record Latency	191	0	0	0	18374167	0	0
+State Mutation Complete	191	0	14	14	1	1	17
+Text Summary	191	18	14	14	3	0	1
+Visible Layout Begin	191	18	14	14	0	0	0
+Visible Layout Complete	191	18	14	14	5	0	0
+Event Dispatch Begin	192	0	14	14	8	17	0
+State Mutation Complete	192	0	14	14	0	0	17
+Event Dispatch Begin	193	0	14	14	1	17	0
+State Mutation Complete	193	0	14	14	0	0	17
+Event Dispatch Begin	194	0	14	14	8	17	0
+State Mutation Complete	194	0	14	14	0	0	17
+Event Dispatch Begin	195	0	14	14	1	17	0
+State Mutation Complete	195	0	14	14	0	0	17
+Event Dispatch Begin	196	0	14	14	8	17	0
+State Mutation Complete	196	0	14	14	0	0	17
+Event Dispatch Begin	197	0	14	14	1	17	0
+State Mutation Complete	197	0	14	14	0	0	17
+Event Dispatch Begin	198	0	14	14	8	17	0
+State Mutation Complete	198	0	14	14	0	0	17
+Event Dispatch Begin	199	0	14	14	1	17	0
+State Mutation Complete	199	0	14	14	0	0	17
+Event Dispatch Begin	200	0	14	14	8	17	0
+State Mutation Complete	200	0	14	14	0	0	17
+Atlas Publication Begin	201	19	15	15	91	0	0
+Atlas Publication Complete	201	19	15	15	0	0	0
+Event Dispatch Begin	201	0	14	14	5	17	0
+Frame Build Begin	201	19	15	15	1148190720	1141309440	0
+Frame Build Complete	201	19	15	15	97	91	0
+Glyph Atlas Summary	201	19	15	15	101	0	75008
+Layout Cache Summary	201	19	15	15	4	1	3648
+Native Actual Presentation Latency	201	0	0	0	51873583	0	0
+Native Display Link Target Latency	201	0	0	0	14373667	0	0
+Native Event Handler Latency	201	0	0	0	145541	0	0
+Native Frame Queue Latency	201	0	0	0	5977417	0	0
+Native GPU Terminal Observed Latency	201	0	0	0	14505916	0	0
+Native Presentation Callback Lag	201	0	0	0	208750	0	0
+Native Presented Handler Latency	201	0	0	0	52082500	0	0
+Native Submission Latency	201	0	0	0	164916	0	0
+Native Target Presentation Latency	201	0	0	0	47706917	0	0
+Native Terminal Record Latency	201	0	0	0	22832083	0	0
+State Mutation Complete	201	0	15	15	1	1	18
+Text Summary	201	19	15	15	3	0	1
+Visible Layout Begin	201	19	15	15	0	0	0
+Visible Layout Complete	201	19	15	15	5	0	0
+Event Dispatch Begin	202	0	15	15	8	18	0
+State Mutation Complete	202	0	15	15	0	0	18
+Event Dispatch Begin	203	0	15	15	1	18	0
+State Mutation Complete	203	0	15	15	0	0	18
+Event Dispatch Begin	204	0	15	15	8	18	0
+State Mutation Complete	204	0	15	15	0	0	18
+Event Dispatch Begin	205	0	15	15	1	18	0
+State Mutation Complete	205	0	15	15	0	0	18
+Event Dispatch Begin	206	0	15	15	8	18	0
+State Mutation Complete	206	0	15	15	0	0	18
+Event Dispatch Begin	207	0	15	15	1	18	0
+State Mutation Complete	207	0	15	15	0	0	18
+Event Dispatch Begin	208	0	15	15	8	18	0
+State Mutation Complete	208	0	15	15	0	0	18
+Event Dispatch Begin	209	0	15	15	1	18	0
+State Mutation Complete	209	0	15	15	0	0	18
+Event Dispatch Begin	210	0	15	15	8	18	0
+State Mutation Complete	210	0	15	15	0	0	18
+Atlas Publication Begin	211	20	16	16	92	0	0
+Atlas Publication Complete	211	20	16	16	0	0	0
+Event Dispatch Begin	211	0	15	15	5	18	0
+Frame Build Begin	211	20	16	16	1148190720	1141309440	0
+Frame Build Complete	211	20	16	16	98	92	0
+Glyph Atlas Summary	211	20	16	16	102	0	75008
+Layout Cache Summary	211	20	16	16	4	1	3712
+Native Actual Presentation Latency	211	0	0	0	47812708	0	0
+Native Display Link Target Latency	211	0	0	0	14479417	0	0
+Native Event Handler Latency	211	0	0	0	210959	0	0
+Native Frame Queue Latency	211	0	0	0	6042125	0	0
+Native GPU Terminal Observed Latency	211	0	0	0	14591000	0	0
+Native Presentation Callback Lag	211	0	0	0	262542	0	0
+Native Presented Handler Latency	211	0	0	0	48075459	0	0
+Native Submission Latency	211	0	0	0	66000	0	0
+Native Target Presentation Latency	211	0	0	0	47812667	0	0
+Native Terminal Record Latency	211	0	0	0	22936167	0	0
+State Mutation Complete	211	0	16	16	1	1	19
+Text Summary	211	20	16	16	3	0	1
+Visible Layout Begin	211	20	16	16	0	0	0
+Visible Layout Complete	211	20	16	16	5	0	0
+Event Dispatch Begin	212	0	16	16	8	19	0
+State Mutation Complete	212	0	16	16	0	0	19
+Event Dispatch Begin	213	0	16	16	1	19	0
+State Mutation Complete	213	0	16	16	0	0	19
+Event Dispatch Begin	214	0	16	16	8	19	0
+State Mutation Complete	214	0	16	16	0	0	19
+Event Dispatch Begin	215	0	16	16	1	19	0
+State Mutation Complete	215	0	16	16	0	0	19
+Event Dispatch Begin	216	0	16	16	8	19	0
+State Mutation Complete	216	0	16	16	0	0	19
+Event Dispatch Begin	217	0	16	16	1	19	0
+State Mutation Complete	217	0	16	16	0	0	19
+Event Dispatch Begin	218	0	16	16	8	19	0
+State Mutation Complete	218	0	16	16	0	0	19
+Event Dispatch Begin	219	0	16	16	1	19	0
+State Mutation Complete	219	0	16	16	0	0	19
+Event Dispatch Begin	220	0	16	16	8	19	0
+State Mutation Complete	220	0	16	16	0	0	19
+Atlas Publication Begin	221	21	17	17	93	0	0
+Atlas Publication Complete	221	21	17	17	0	0	0
+Event Dispatch Begin	221	0	16	16	5	19	0
+Frame Build Begin	221	21	17	17	1148190720	1141309440	0
+Frame Build Complete	221	21	17	17	99	93	0
+Glyph Atlas Summary	221	21	17	17	103	0	75008
+Layout Cache Summary	221	21	17	17	4	1	3776
+Native Actual Presentation Latency	221	0	0	0	41269375	0	0
+Native Display Link Target Latency	221	0	0	0	7936333	0	0
+Native Event Handler Latency	221	0	0	0	113500	0	0
+Native Frame Queue Latency	221	0	0	0	252750	0	0
+Native GPU Terminal Observed Latency	221	0	0	0	8081625	0	0
+Native Presentation Callback Lag	221	0	0	0	253417	0	0
+Native Presented Handler Latency	221	0	0	0	41523042	0	0
+Native Submission Latency	221	0	0	0	72625	0	0
+Native Target Presentation Latency	221	0	0	0	41269583	0	0
+Native Terminal Record Latency	221	0	0	0	16413000	0	0
+State Mutation Complete	221	0	17	17	1	1	20
+Text Summary	221	21	17	17	3	0	1
+Visible Layout Begin	221	21	17	17	0	0	0
+Visible Layout Complete	221	21	17	17	5	0	0
+Event Dispatch Begin	222	0	17	17	8	20	0
+State Mutation Complete	222	0	17	17	0	0	20
+Event Dispatch Begin	223	0	17	17	1	20	0
+State Mutation Complete	223	0	17	17	0	0	20
+Event Dispatch Begin	224	0	17	17	8	20	0
+State Mutation Complete	224	0	17	17	0	0	20
+Event Dispatch Begin	225	0	17	17	1	20	0
+State Mutation Complete	225	0	17	17	0	0	20
+Event Dispatch Begin	226	0	17	17	8	20	0
+State Mutation Complete	226	0	17	17	0	0	20
+Event Dispatch Begin	227	0	17	17	1	20	0
+State Mutation Complete	227	0	17	17	0	0	20
+Event Dispatch Begin	228	0	17	17	8	20	0
+State Mutation Complete	228	0	17	17	0	0	20
+Event Dispatch Begin	229	0	17	17	1	20	0
+State Mutation Complete	229	0	17	17	0	0	20
+Event Dispatch Begin	230	0	17	17	8	20	0
+State Mutation Complete	230	0	17	17	0	0	20
+Atlas Publication Begin	231	22	18	18	93	0	0
+Atlas Publication Complete	231	22	18	18	0	0	0
+Event Dispatch Begin	231	0	17	17	5	20	0
+Frame Build Begin	231	22	18	18	1148190720	1141309440	0
+Frame Build Complete	231	22	18	18	99	93	0
+Glyph Atlas Summary	231	22	18	18	104	0	75008
+Layout Cache Summary	231	22	18	18	4	1	3840
+Native Actual Presentation Latency	231	0	0	0	42988917	0	0
+Native Display Link Target Latency	231	0	0	0	9655958	0	0
+Native Event Handler Latency	231	0	0	0	134125	0	0
+Native Frame Queue Latency	231	0	0	0	1254583	0	0
+Native GPU Terminal Observed Latency	231	0	0	0	9772417	0	0
+Native Presentation Callback Lag	231	0	0	0	220667	0	0
+Native Presented Handler Latency	231	0	0	0	43210209	0	0
+Native Submission Latency	231	0	0	0	130792	0	0
+Native Target Presentation Latency	231	0	0	0	42989208	0	0
+Native Terminal Record Latency	231	0	0	0	18191500	0	0
+State Mutation Complete	231	0	18	18	1	1	21
+Text Summary	231	22	18	18	3	0	1
+Visible Layout Begin	231	22	18	18	0	0	0
+Visible Layout Complete	231	22	18	18	5	0	0
+Event Dispatch Begin	232	0	18	18	8	21	0
+State Mutation Complete	232	0	18	18	0	0	21
+Event Dispatch Begin	233	0	18	18	1	21	0
+State Mutation Complete	233	0	18	18	0	0	21
+Event Dispatch Begin	234	0	18	18	8	21	0
+State Mutation Complete	234	0	18	18	0	0	21
+Event Dispatch Begin	235	0	18	18	1	21	0
+State Mutation Complete	235	0	18	18	0	0	21
+Event Dispatch Begin	236	0	18	18	8	21	0
+State Mutation Complete	236	0	18	18	0	0	21
+Event Dispatch Begin	237	0	18	18	1	21	0
+State Mutation Complete	237	0	18	18	0	0	21
+Event Dispatch Begin	238	0	18	18	8	21	0
+State Mutation Complete	238	0	18	18	0	0	21
+Event Dispatch Begin	239	0	18	18	1	21	0
+State Mutation Complete	239	0	18	18	0	0	21
+Event Dispatch Begin	240	0	18	18	8	21	0
+State Mutation Complete	240	0	18	18	0	0	21
+Atlas Publication Begin	241	23	19	19	94	0	0
+Atlas Publication Complete	241	23	19	19	2	2816	1
+Event Dispatch Begin	241	0	18	18	5	21	0
+Frame Build Begin	241	23	19	19	1148190720	1141309440	0
+Frame Build Complete	241	23	19	19	100	94	0
+Glyph Atlas Summary	241	23	19	19	104	1	75008
+Layout Cache Summary	241	23	19	19	4	1	3904
+Native Actual Presentation Latency	241	0	0	0	52076208	0	0
+Native Display Link Target Latency	241	0	0	0	10409708	0	0
+Native Event Handler Latency	241	0	0	0	173875	0	0
+Native Frame Queue Latency	241	0	0	0	1993334	0	0
+Native GPU Terminal Observed Latency	241	0	0	0	10539375	0	0
+Native Presentation Callback Lag	241	0	0	0	257375	0	0
+Native Presented Handler Latency	241	0	0	0	52333958	0	0
+Native Submission Latency	241	0	0	0	160291	0	0
+Native Target Presentation Latency	241	0	0	0	43742958	0	0
+Native Terminal Record Latency	241	0	0	0	18880083	0	0
+State Mutation Complete	241	0	19	19	1	1	22
+Text Summary	241	23	19	19	3	1	1
+Visible Layout Begin	241	23	19	19	0	0	0
+Visible Layout Complete	241	23	19	19	5	0	0
+Event Dispatch Begin	242	0	19	19	8	22	0
+State Mutation Complete	242	0	19	19	0	0	22
+Event Dispatch Begin	243	0	19	19	1	22	0
+State Mutation Complete	243	0	19	19	0	0	22
+Event Dispatch Begin	244	0	19	19	8	22	0
+State Mutation Complete	244	0	19	19	0	0	22
+Event Dispatch Begin	245	0	19	19	1	22	0
+State Mutation Complete	245	0	19	19	0	0	22
+Event Dispatch Begin	246	0	19	19	8	22	0
+State Mutation Complete	246	0	19	19	0	0	22
+Event Dispatch Begin	247	0	19	19	1	22	0
+State Mutation Complete	247	0	19	19	0	0	22
+Event Dispatch Begin	248	0	19	19	8	22	0
+State Mutation Complete	248	0	19	19	0	0	22
+Event Dispatch Begin	249	0	19	19	1	22	0
+State Mutation Complete	249	0	19	19	0	0	22
+Event Dispatch Begin	250	0	19	19	8	22	0
+State Mutation Complete	250	0	19	19	0	0	22
+Atlas Publication Begin	251	24	20	20	94	0	0
+Atlas Publication Complete	251	24	20	20	0	0	0
+Event Dispatch Begin	251	0	19	19	5	22	0
+Frame Build Begin	251	24	20	20	1148190720	1141309440	0
+Frame Build Complete	251	24	20	20	100	94	0
+Glyph Atlas Summary	251	24	20	20	106	0	75008
+Layout Cache Summary	251	24	20	20	4	1	3968
+Native Actual Presentation Latency	251	0	0	0	48065708	0	0
+Native Display Link Target Latency	251	0	0	0	10565917	0	0
+Native Event Handler Latency	251	0	0	0	82833	0	0
+Native Frame Queue Latency	251	0	0	0	2204208	0	0
+Native GPU Terminal Observed Latency	251	0	0	0	10634208	0	0
+Native Presentation Callback Lag	251	0	0	0	1330583	0	0
+Native Presented Handler Latency	251	0	0	0	49397500	0	0
+Native Submission Latency	251	0	0	0	82000	0	0
+Native Target Presentation Latency	251	0	0	0	43899167	0	0
+Native Terminal Record Latency	251	0	0	0	19013833	0	0
+State Mutation Complete	251	0	20	20	1	1	23
+Text Summary	251	24	20	20	3	0	1
+Visible Layout Begin	251	24	20	20	0	0	0
+Visible Layout Complete	251	24	20	20	5	0	0
+Event Dispatch Begin	252	0	20	20	8	23	0
+State Mutation Complete	252	0	20	20	0	0	23
+Event Dispatch Begin	253	0	20	20	1	23	0
+State Mutation Complete	253	0	20	20	0	0	23
+Event Dispatch Begin	254	0	20	20	8	23	0
+State Mutation Complete	254	0	20	20	0	0	23
+Event Dispatch Begin	255	0	20	20	1	23	0
+State Mutation Complete	255	0	20	20	0	0	23
+Event Dispatch Begin	256	0	20	20	8	23	0
+State Mutation Complete	256	0	20	20	0	0	23
+Event Dispatch Begin	257	0	20	20	1	23	0
+State Mutation Complete	257	0	20	20	0	0	23
+Event Dispatch Begin	258	0	20	20	8	23	0
+State Mutation Complete	258	0	20	20	0	0	23
+Event Dispatch Begin	259	0	20	20	1	23	0
+State Mutation Complete	259	0	20	20	0	0	23
+Event Dispatch Begin	260	0	20	20	8	23	0
+State Mutation Complete	260	0	20	20	0	0	23
+Atlas Publication Begin	261	25	21	21	95	0	0
+Atlas Publication Complete	261	25	21	21	2	5632	1
+Event Dispatch Begin	261	0	20	20	5	23	0
+Frame Build Begin	261	25	21	21	1148190720	1141309440	0
+Frame Build Complete	261	25	21	21	101	95	0
+Glyph Atlas Summary	261	25	21	21	106	1	75264
+Layout Cache Summary	261	25	21	21	4	1	4032
+Native Actual Presentation Latency	261	0	0	0	52063125	0	0
+Native Display Link Target Latency	261	0	0	0	14563250	0	0
+Native Event Handler Latency	261	0	0	0	261125	0	0
+Native Frame Queue Latency	261	0	0	0	6035667	0	0
+Native GPU Terminal Observed Latency	261	0	0	0	14699541	0	0
+Native Presentation Callback Lag	261	0	0	0	200375	0	0
+Native Presented Handler Latency	261	0	0	0	52263666	0	0
+Native Submission Latency	261	0	0	0	80167	0	0
+Native Target Presentation Latency	261	0	0	0	47896500	0	0
+Native Terminal Record Latency	261	0	0	0	23018666	0	0
+State Mutation Complete	261	0	21	21	1	1	24
+Text Summary	261	25	21	21	3	1	1
+Visible Layout Begin	261	25	21	21	0	0	0
+Visible Layout Complete	261	25	21	21	5	0	0
+Event Dispatch Begin	262	0	21	21	8	24	0
+State Mutation Complete	262	0	21	21	0	0	24
+Event Dispatch Begin	263	0	21	21	1	24	0
+State Mutation Complete	263	0	21	21	0	0	24
+Event Dispatch Begin	264	0	21	21	8	24	0
+State Mutation Complete	264	0	21	21	0	0	24
+Event Dispatch Begin	265	0	21	21	1	24	0
+State Mutation Complete	265	0	21	21	0	0	24
+Event Dispatch Begin	266	0	21	21	8	24	0
+State Mutation Complete	266	0	21	21	0	0	24
+Event Dispatch Begin	267	0	21	21	1	24	0
+State Mutation Complete	267	0	21	21	0	0	24
+Event Dispatch Begin	268	0	21	21	8	24	0
+State Mutation Complete	268	0	21	21	0	0	24
+Event Dispatch Begin	269	0	21	21	1	24	0
+State Mutation Complete	269	0	21	21	0	0	24
+Event Dispatch Begin	270	0	21	21	8	24	0
+State Mutation Complete	270	0	21	21	0	0	24
+Atlas Publication Begin	271	26	22	22	96	0	0
+Atlas Publication Complete	271	26	22	22	2	5888	1
+Event Dispatch Begin	271	0	21	21	5	24	0
+Frame Build Begin	271	26	22	22	1148190720	1141309440	0
+Frame Build Complete	271	26	22	22	102	96	0
+Glyph Atlas Summary	271	26	22	22	107	1	75264
+Layout Cache Summary	271	26	22	22	4	1	4096
+Native Actual Presentation Latency	271	0	0	0	50971542	0	0
+Native Display Link Target Latency	271	0	0	0	13471792	0	0
+Native Event Handler Latency	271	0	0	0	511375	0	0
+Native Frame Queue Latency	271	0	0	0	4682208	0	0
+Native GPU Terminal Observed Latency	271	0	0	0	13587917	0	0
+Native Presentation Callback Lag	271	0	0	0	185500	0	0
+Native Presented Handler Latency	271	0	0	0	51157000	0	0
+Native Submission Latency	271	0	0	0	73125	0	0
+Native Target Presentation Latency	271	0	0	0	46805042	0	0
+Native Terminal Record Latency	271	0	0	0	21927500	0	0
+State Mutation Complete	271	0	22	22	1	1	25
+Text Summary	271	26	22	22	3	1	1
+Visible Layout Begin	271	26	22	22	0	0	0
+Visible Layout Complete	271	26	22	22	5	0	0
+Event Dispatch Begin	272	0	22	22	8	25	0
+State Mutation Complete	272	0	22	22	0	0	25
+Event Dispatch Begin	273	0	22	22	1	25	0
+State Mutation Complete	273	0	22	22	0	0	25
+Event Dispatch Begin	274	0	22	22	8	25	0
+State Mutation Complete	274	0	22	22	0	0	25
+Event Dispatch Begin	275	0	22	22	1	25	0
+State Mutation Complete	275	0	22	22	0	0	25
+Event Dispatch Begin	276	0	22	22	8	25	0
+State Mutation Complete	276	0	22	22	0	0	25
+Event Dispatch Begin	277	0	22	22	1	25	0
+State Mutation Complete	277	0	22	22	0	0	25
+Event Dispatch Begin	278	0	22	22	8	25	0
+State Mutation Complete	278	0	22	22	0	0	25
+Event Dispatch Begin	279	0	22	22	1	25	0
+State Mutation Complete	279	0	22	22	0	0	25
+Event Dispatch Begin	280	0	22	22	8	25	0
+State Mutation Complete	280	0	22	22	0	0	25
+Atlas Publication Begin	281	27	23	23	97	0	0
+Atlas Publication Complete	281	27	23	23	0	0	0
+Event Dispatch Begin	281	0	22	22	5	25	0
+Frame Build Begin	281	27	23	23	1148190720	1141309440	0
+Frame Build Complete	281	27	23	23	103	97	0
+Glyph Atlas Summary	281	27	23	23	109	0	75264
+Layout Cache Summary	281	27	23	23	4	1	4160
+Native Actual Presentation Latency	281	0	0	0	43783542	0	0
+Native Display Link Target Latency	281	0	0	0	10450375	0	0
+Native Event Handler Latency	281	0	0	0	96125	0	0
+Native Frame Queue Latency	281	0	0	0	2160792	0	0
+Native GPU Terminal Observed Latency	281	0	0	0	10641666	0	0
+Native Presentation Callback Lag	281	0	0	0	319375	0	0
+Native Presented Handler Latency	281	0	0	0	44103083	0	0
+Native Submission Latency	281	0	0	0	124167	0	0
+Native Target Presentation Latency	281	0	0	0	43783625	0	0
+Native Terminal Record Latency	281	0	0	0	18972541	0	0
+State Mutation Complete	281	0	23	23	1	1	26
+Text Summary	281	27	23	23	3	0	1
+Visible Layout Begin	281	27	23	23	0	0	0
+Visible Layout Complete	281	27	23	23	5	0	0
+Event Dispatch Begin	282	0	23	23	8	26	0
+State Mutation Complete	282	0	23	23	0	0	26
+Event Dispatch Begin	283	0	23	23	1	26	0
+State Mutation Complete	283	0	23	23	0	0	26
+Event Dispatch Begin	284	0	23	23	8	26	0
+State Mutation Complete	284	0	23	23	0	0	26
+Event Dispatch Begin	285	0	23	23	1	26	0
+State Mutation Complete	285	0	23	23	0	0	26
+Event Dispatch Begin	286	0	23	23	8	26	0
+State Mutation Complete	286	0	23	23	0	0	26
+Event Dispatch Begin	287	0	23	23	1	26	0
+State Mutation Complete	287	0	23	23	0	0	26
+Event Dispatch Begin	288	0	23	23	8	26	0
+State Mutation Complete	288	0	23	23	0	0	26
+Atlas Publication Begin	289	28	24	24	97	0	0
+Atlas Publication Complete	289	28	24	24	0	0	0
+Event Dispatch Begin	289	0	23	23	1	26	0
+Frame Build Begin	289	28	24	24	1148190720	1141309440	0
+Frame Build Complete	289	28	24	24	103	97	0
+Glyph Atlas Summary	289	28	24	24	109	0	75264
+Layout Cache Summary	289	28	24	24	5	1	3488
+Native Actual Presentation Latency	289	0	0	0	49249167	0	0
+Native Display Link Target Latency	289	0	0	0	15916125	0	0
+Native Event Handler Latency	289	0	0	0	94375	0	0
+Native Frame Queue Latency	289	0	0	0	7571875	0	0
+Native GPU Terminal Observed Latency	289	0	0	0	16031500	0	0
+Native Presentation Callback Lag	289	0	0	0	259375	0	0
+Native Presented Handler Latency	289	0	0	0	49508666	0	0
+Native Submission Latency	289	0	0	0	145208	0	0
+Native Target Presentation Latency	289	0	0	0	49249375	0	0
+Native Terminal Record Latency	289	0	0	0	16032375	0	0
+State Mutation Complete	289	0	24	24	1	1	27
+Text Summary	289	28	24	24	3	0	1
+Visible Layout Begin	289	28	24	24	0	0	0
+Visible Layout Complete	289	28	24	24	6	0	0
+Event Dispatch Begin	290	0	24	24	8	27	0
+State Mutation Complete	290	0	24	24	0	0	27
+Event Dispatch Begin	291	0	24	24	1	27	0
+State Mutation Complete	291	0	24	24	0	0	27
+Event Dispatch Begin	292	0	24	24	8	27	0
+State Mutation Complete	292	0	24	24	0	0	27
+Event Dispatch Begin	293	0	24	24	1	27	0
+State Mutation Complete	293	0	24	24	0	0	27
+Event Dispatch Begin	294	0	24	24	8	27	0
+State Mutation Complete	294	0	24	24	0	0	27
+Event Dispatch Begin	295	0	24	24	1	27	0
+State Mutation Complete	295	0	24	24	0	0	27
+Event Dispatch Begin	296	0	24	24	8	27	0
+State Mutation Complete	296	0	24	24	0	0	27
+Event Dispatch Begin	297	0	24	24	1	27	0
+State Mutation Complete	297	0	24	24	0	0	27
+Event Dispatch Begin	298	0	24	24	8	27	0
+State Mutation Complete	298	0	24	24	0	0	27
+Atlas Publication Begin	299	29	25	25	98	0	0
+Atlas Publication Complete	299	29	25	25	0	0	0
+Event Dispatch Begin	299	0	24	24	5	27	0
+Frame Build Begin	299	29	25	25	1148190720	1141309440	0
+Frame Build Complete	299	29	25	25	104	98	0
+Glyph Atlas Summary	299	29	25	25	110	0	75264
+Layout Cache Summary	299	29	25	25	5	1	3520
+Native Actual Presentation Latency	299	0	0	0	50907375	0	0
+Native Display Link Target Latency	299	0	0	0	17574333	0	0
+Native Event Handler Latency	299	0	0	0	152541	0	0
+Native Frame Queue Latency	299	0	0	0	9152458	0	0
+Native GPU Terminal Observed Latency	299	0	0	0	17634416	0	0
+Native Presentation Callback Lag	299	0	0	0	713333	0	0
+Native Presented Handler Latency	299	0	0	0	51621583	0	0
+Native Submission Latency	299	0	0	0	73125	0	0
+Native Target Presentation Latency	299	0	0	0	50907583	0	0
+Native Terminal Record Latency	299	0	0	0	17635166	0	0
+State Mutation Complete	299	0	25	25	1	1	28
+Text Summary	299	29	25	25	3	0	1
+Visible Layout Begin	299	29	25	25	0	0	0
+Visible Layout Complete	299	29	25	25	6	0	0
+Event Dispatch Begin	300	0	25	25	8	28	0
+State Mutation Complete	300	0	25	25	0	0	28
+Event Dispatch Begin	301	0	25	25	1	28	0
+State Mutation Complete	301	0	25	25	0	0	28
+Event Dispatch Begin	302	0	25	25	8	28	0
+State Mutation Complete	302	0	25	25	0	0	28
+Event Dispatch Begin	303	0	25	25	1	28	0
+State Mutation Complete	303	0	25	25	0	0	28
+Event Dispatch Begin	304	0	25	25	8	28	0
+State Mutation Complete	304	0	25	25	0	0	28
+Event Dispatch Begin	305	0	25	25	1	28	0
+State Mutation Complete	305	0	25	25	0	0	28
+Event Dispatch Begin	306	0	25	25	8	28	0
+State Mutation Complete	306	0	25	25	0	0	28
+Event Dispatch Begin	307	0	25	25	1	28	0
+State Mutation Complete	307	0	25	25	0	0	28
+Event Dispatch Begin	308	0	25	25	8	28	0
+State Mutation Complete	308	0	25	25	0	0	28
+Atlas Publication Begin	309	30	26	26	99	0	0
+Atlas Publication Complete	309	30	26	26	0	0	0
+Event Dispatch Begin	309	0	25	25	5	28	0
+Frame Build Begin	309	30	26	26	1148190720	1141309440	0
+Frame Build Complete	309	30	26	26	105	99	0
+Glyph Atlas Summary	309	30	26	26	111	0	75264
+Layout Cache Summary	309	30	26	26	5	1	3584
+State Mutation Complete	309	0	26	26	1	1	29
+Text Summary	309	30	26	26	3	0	1
+Visible Layout Begin	309	30	26	26	0	0	0
+Visible Layout Complete	309	30	26	26	6	0	0
+Event Dispatch Begin	310	0	26	26	8	29	0
+State Mutation Complete	310	0	26	26	0	0	29
+Event Dispatch Begin	311	0	26	26	1	29	0
+State Mutation Complete	311	0	26	26	0	0	29
+Event Dispatch Begin	312	0	26	26	8	29	0
+State Mutation Complete	312	0	26	26	0	0	29
+Event Dispatch Begin	313	0	26	26	1	29	0
+State Mutation Complete	313	0	26	26	0	0	29
+Event Dispatch Begin	314	0	26	26	8	29	0
+State Mutation Complete	314	0	26	26	0	0	29
+Event Dispatch Begin	315	0	26	26	1	29	0
+State Mutation Complete	315	0	26	26	0	0	29
+Event Dispatch Begin	316	0	26	26	8	29	0
+State Mutation Complete	316	0	26	26	0	0	29
+Event Dispatch Begin	317	0	26	26	1	29	0
+State Mutation Complete	317	0	26	26	0	0	29
+Event Dispatch Begin	318	0	26	26	8	29	0
+State Mutation Complete	318	0	26	26	0	0	29
+Atlas Publication Begin	319	31	27	27	100	0	0
+Atlas Publication Complete	319	31	27	27	0	0	0
+Event Dispatch Begin	319	0	26	26	5	29	0
+Frame Build Begin	319	31	27	27	1148190720	1141309440	0
+Frame Build Complete	319	31	27	27	106	100	0
+Glyph Atlas Summary	319	31	27	27	112	0	75264
+Layout Cache Summary	319	31	27	27	5	1	3648
+State Mutation Complete	319	0	27	27	1	1	30
+Text Summary	319	31	27	27	3	0	1
+Visible Layout Begin	319	31	27	27	0	0	0
+Visible Layout Complete	319	31	27	27	6	0	0
+Event Dispatch Begin	320	0	27	27	8	30	0
+State Mutation Complete	320	0	27	27	0	0	30
+Event Dispatch Begin	321	0	27	27	1	30	0
+State Mutation Complete	321	0	27	27	0	0	30
+Event Dispatch Begin	322	0	27	27	8	30	0
+State Mutation Complete	322	0	27	27	0	0	30
+Event Dispatch Begin	323	0	27	27	1	30	0
+State Mutation Complete	323	0	27	27	0	0	30
+Event Dispatch Begin	324	0	27	27	8	30	0
+State Mutation Complete	324	0	27	27	0	0	30
+Event Dispatch Begin	325	0	27	27	1	30	0
+State Mutation Complete	325	0	27	27	0	0	30
+Event Dispatch Begin	326	0	27	27	8	30	0
+State Mutation Complete	326	0	27	27	0	0	30
+Event Dispatch Begin	327	0	27	27	1	30	0
+State Mutation Complete	327	0	27	27	0	0	30
+Event Dispatch Begin	328	0	27	27	8	30	0
+State Mutation Complete	328	0	27	27	0	0	30
+Atlas Publication Begin	329	32	28	28	101	0	0
+Atlas Publication Complete	329	32	28	28	0	0	0
+Event Dispatch Begin	329	0	27	27	5	30	0
+Frame Build Begin	329	32	28	28	1148190720	1141309440	0
+Frame Build Complete	329	32	28	28	107	101	0
+Glyph Atlas Summary	329	32	28	28	113	0	75264
+Layout Cache Summary	329	32	28	28	5	1	3712
+State Mutation Complete	329	0	28	28	1	1	31
+Text Summary	329	32	28	28	3	0	1
+Visible Layout Begin	329	32	28	28	0	0	0
+Visible Layout Complete	329	32	28	28	6	0	0
+Event Dispatch Begin	330	0	28	28	8	31	0
+State Mutation Complete	330	0	28	28	0	0	31
+Event Dispatch Begin	331	0	28	28	1	31	0
+State Mutation Complete	331	0	28	28	0	0	31
+Event Dispatch Begin	332	0	28	28	8	31	0
+State Mutation Complete	332	0	28	28	0	0	31
+Event Dispatch Begin	333	0	28	28	1	31	0
+State Mutation Complete	333	0	28	28	0	0	31
+Event Dispatch Begin	334	0	28	28	8	31	0
+State Mutation Complete	334	0	28	28	0	0	31
+Event Dispatch Begin	335	0	28	28	1	31	0
+State Mutation Complete	335	0	28	28	0	0	31
+Event Dispatch Begin	336	0	28	28	8	31	0
+State Mutation Complete	336	0	28	28	0	0	31
+Event Dispatch Begin	337	0	28	28	1	31	0
+State Mutation Complete	337	0	28	28	0	0	31
+Event Dispatch Begin	338	0	28	28	8	31	0
+State Mutation Complete	338	0	28	28	0	0	31
+Atlas Publication Begin	339	33	29	29	102	0	0
+Atlas Publication Complete	339	33	29	29	0	0	0
+Event Dispatch Begin	339	0	28	28	5	31	0
+Frame Build Begin	339	33	29	29	1148190720	1141309440	0
+Frame Build Complete	339	33	29	29	108	102	0
+Glyph Atlas Summary	339	33	29	29	114	0	75264
+Layout Cache Summary	339	33	29	29	5	1	3776
+Native Actual Presentation Latency	339	0	0	0	52082417	0	0
+Native Display Link Target Latency	339	0	0	0	10416125	0	0
+Native Event Handler Latency	339	0	0	0	103125	0	0
+Native Frame Queue Latency	339	0	0	0	2072875	0	0
+Native GPU Terminal Observed Latency	339	0	0	0	10512250	0	0
+Native Presentation Callback Lag	339	0	0	0	177000	0	0
+Native Presented Handler Latency	339	0	0	0	52259500	0	0
+Native Submission Latency	339	0	0	0	136083	0	0
+Native Target Presentation Latency	339	0	0	0	43749375	0	0
+Native Terminal Record Latency	339	0	0	0	10515583	0	0
+State Mutation Complete	339	0	29	29	1	1	32
+Text Summary	339	33	29	29	3	0	1
+Visible Layout Begin	339	33	29	29	0	0	0
+Visible Layout Complete	339	33	29	29	6	0	0
+Event Dispatch Begin	340	0	29	29	8	32	0
+State Mutation Complete	340	0	29	29	0	0	32
+Event Dispatch Begin	341	0	29	29	1	32	0
+State Mutation Complete	341	0	29	29	0	0	32
+Event Dispatch Begin	342	0	29	29	8	32	0
+State Mutation Complete	342	0	29	29	0	0	32
+Event Dispatch Begin	343	0	29	29	1	32	0
+State Mutation Complete	343	0	29	29	0	0	32
+Event Dispatch Begin	344	0	29	29	8	32	0
+State Mutation Complete	344	0	29	29	0	0	32
+Event Dispatch Begin	345	0	29	29	1	32	0
+State Mutation Complete	345	0	29	29	0	0	32
+Event Dispatch Begin	346	0	29	29	8	32	0
+State Mutation Complete	346	0	29	29	0	0	32
+Event Dispatch Begin	347	0	29	29	1	32	0
+State Mutation Complete	347	0	29	29	0	0	32
+Event Dispatch Begin	348	0	29	29	8	32	0
+State Mutation Complete	348	0	29	29	0	0	32
+Atlas Publication Begin	349	34	30	30	103	0	0
+Atlas Publication Complete	349	34	30	30	0	0	0
+Event Dispatch Begin	349	0	29	29	5	32	0
+Frame Build Begin	349	34	30	30	1148190720	1141309440	0
+Frame Build Complete	349	34	30	30	109	103	0
+Glyph Atlas Summary	349	34	30	30	115	0	75264
+Layout Cache Summary	349	34	30	30	5	1	3840
+State Mutation Complete	349	0	30	30	1	1	33
+Text Summary	349	34	30	30	3	0	1
+Visible Layout Begin	349	34	30	30	0	0	0
+Visible Layout Complete	349	34	30	30	6	0	0
+Event Dispatch Begin	350	0	30	30	8	33	0
+State Mutation Complete	350	0	30	30	0	0	33
+Event Dispatch Begin	351	0	30	30	1	33	0
+State Mutation Complete	351	0	30	30	0	0	33
+Event Dispatch Begin	352	0	30	30	8	33	0
+State Mutation Complete	352	0	30	30	0	0	33
+Event Dispatch Begin	353	0	30	30	1	33	0
+State Mutation Complete	353	0	30	30	0	0	33
+Event Dispatch Begin	354	0	30	30	8	33	0
+State Mutation Complete	354	0	30	30	0	0	33
+Event Dispatch Begin	355	0	30	30	1	33	0
+State Mutation Complete	355	0	30	30	0	0	33
+Event Dispatch Begin	356	0	30	30	8	33	0
+State Mutation Complete	356	0	30	30	0	0	33
+Event Dispatch Begin	357	0	30	30	1	33	0
+State Mutation Complete	357	0	30	30	0	0	33
+Event Dispatch Begin	358	0	30	30	8	33	0
+State Mutation Complete	358	0	30	30	0	0	33
+Atlas Publication Begin	359	35	31	31	104	0	0
+Atlas Publication Complete	359	35	31	31	0	0	0
+Event Dispatch Begin	359	0	30	30	5	33	0
+Frame Build Begin	359	35	31	31	1148190720	1141309440	0
+Frame Build Complete	359	35	31	31	110	104	0
+Glyph Atlas Summary	359	35	31	31	116	0	75264
+Layout Cache Summary	359	35	31	31	5	1	3904
+State Mutation Complete	359	0	31	31	1	1	34
+Text Summary	359	35	31	31	3	0	1
+Visible Layout Begin	359	35	31	31	0	0	0
+Visible Layout Complete	359	35	31	31	6	0	0
+Event Dispatch Begin	360	0	31	31	8	34	0
+State Mutation Complete	360	0	31	31	0	0	34
+Event Dispatch Begin	361	0	31	31	1	34	0
+State Mutation Complete	361	0	31	31	0	0	34
+Event Dispatch Begin	362	0	31	31	8	34	0
+State Mutation Complete	362	0	31	31	0	0	34
+Event Dispatch Begin	363	0	31	31	1	34	0
+State Mutation Complete	363	0	31	31	0	0	34
+Event Dispatch Begin	364	0	31	31	8	34	0
+State Mutation Complete	364	0	31	31	0	0	34
+Event Dispatch Begin	365	0	31	31	1	34	0
+State Mutation Complete	365	0	31	31	0	0	34
+Event Dispatch Begin	366	0	31	31	8	34	0
+State Mutation Complete	366	0	31	31	0	0	34
+Event Dispatch Begin	367	0	31	31	1	34	0
+State Mutation Complete	367	0	31	31	0	0	34
+Event Dispatch Begin	368	0	31	31	8	34	0
+State Mutation Complete	368	0	31	31	0	0	34
+Atlas Publication Begin	369	36	32	32	105	0	0
+Atlas Publication Complete	369	36	32	32	0	0	0
+Event Dispatch Begin	369	0	31	31	5	34	0
+Frame Build Begin	369	36	32	32	1148190720	1141309440	0
+Frame Build Complete	369	36	32	32	111	105	0
+Glyph Atlas Summary	369	36	32	32	117	0	75264
+Layout Cache Summary	369	36	32	32	5	1	3968
+Native Actual Presentation Latency	369	0	0	0	43550083	0	0
+Native Display Link Target Latency	369	0	0	0	10217167	0	0
+Native Event Handler Latency	369	0	0	0	47083	0	0
+Native Frame Queue Latency	369	0	0	0	1948333	0	0
+Native GPU Terminal Observed Latency	369	0	0	0	10289417	0	0
+Native Presentation Callback Lag	369	0	0	0	195125	0	0
+Native Presented Handler Latency	369	0	0	0	43745375	0	0
+Native Submission Latency	369	0	0	0	82334	0	0
+Native Target Presentation Latency	369	0	0	0	43550417	0	0
+Native Terminal Record Latency	369	0	0	0	10290125	0	0
+State Mutation Complete	369	0	32	32	1	1	35
+Text Summary	369	36	32	32	3	0	1
+Visible Layout Begin	369	36	32	32	0	0	0
+Visible Layout Complete	369	36	32	32	6	0	0
+Event Dispatch Begin	370	0	32	32	8	35	0
+State Mutation Complete	370	0	32	32	0	0	35
+Event Dispatch Begin	371	0	32	32	1	35	0
+State Mutation Complete	371	0	32	32	0	0	35
+Event Dispatch Begin	372	0	32	32	8	35	0
+State Mutation Complete	372	0	32	32	0	0	35
+Event Dispatch Begin	373	0	32	32	1	35	0
+State Mutation Complete	373	0	32	32	0	0	35
+Event Dispatch Begin	374	0	32	32	8	35	0
+State Mutation Complete	374	0	32	32	0	0	35
+Event Dispatch Begin	375	0	32	32	1	35	0
+State Mutation Complete	375	0	32	32	0	0	35
+Event Dispatch Begin	376	0	32	32	8	35	0
+State Mutation Complete	376	0	32	32	0	0	35
+Event Dispatch Begin	377	0	32	32	1	35	0
+State Mutation Complete	377	0	32	32	0	0	35
+Event Dispatch Begin	378	0	32	32	8	35	0
+State Mutation Complete	378	0	32	32	0	0	35
+Atlas Publication Begin	379	37	33	33	106	0	0
+Atlas Publication Complete	379	37	33	33	0	0	0
+Event Dispatch Begin	379	0	32	32	5	35	0
+Frame Build Begin	379	37	33	33	1148190720	1141309440	0
+Frame Build Complete	379	37	33	33	112	106	0
+Glyph Atlas Summary	379	37	33	33	118	0	75264
+Layout Cache Summary	379	37	33	33	5	1	4032
+State Mutation Complete	379	0	33	33	1	1	36
+Text Summary	379	37	33	33	3	0	1
+Visible Layout Begin	379	37	33	33	0	0	0
+Visible Layout Complete	379	37	33	33	6	0	0
+Event Dispatch Begin	380	0	33	33	8	36	0
+State Mutation Complete	380	0	33	33	0	0	36
+Event Dispatch Begin	381	0	33	33	1	36	0
+State Mutation Complete	381	0	33	33	0	0	36
+Event Dispatch Begin	382	0	33	33	8	36	0
+State Mutation Complete	382	0	33	33	0	0	36
+Event Dispatch Begin	383	0	33	33	1	36	0
+State Mutation Complete	383	0	33	33	0	0	36
+Event Dispatch Begin	384	0	33	33	8	36	0
+State Mutation Complete	384	0	33	33	0	0	36
+Event Dispatch Begin	385	0	33	33	1	36	0
+State Mutation Complete	385	0	33	33	0	0	36
+Event Dispatch Begin	386	0	33	33	8	36	0
+State Mutation Complete	386	0	33	33	0	0	36
+Event Dispatch Begin	387	0	33	33	1	36	0
+State Mutation Complete	387	0	33	33	0	0	36
+Event Dispatch Begin	388	0	33	33	8	36	0
+State Mutation Complete	388	0	33	33	0	0	36
+Atlas Publication Begin	389	38	34	34	107	0	0
+Atlas Publication Complete	389	38	34	34	2	7680	1
+Event Dispatch Begin	389	0	33	33	5	36	0
+Frame Build Begin	389	38	34	34	1148190720	1141309440	0
+Frame Build Complete	389	38	34	34	113	107	0
+Glyph Atlas Summary	389	38	34	34	118	1	75264
+Layout Cache Summary	389	38	34	34	5	1	4096
+State Mutation Complete	389	0	34	34	1	1	37
+Text Summary	389	38	34	34	3	1	1
+Visible Layout Begin	389	38	34	34	0	0	0
+Visible Layout Complete	389	38	34	34	6	0	0
+Event Dispatch Begin	390	0	34	34	8	37	0
+State Mutation Complete	390	0	34	34	0	0	37
+Event Dispatch Begin	391	0	34	34	1	37	0
+State Mutation Complete	391	0	34	34	0	0	37
+Event Dispatch Begin	392	0	34	34	8	37	0
+State Mutation Complete	392	0	34	34	0	0	37
+Event Dispatch Begin	393	0	34	34	1	37	0
+State Mutation Complete	393	0	34	34	0	0	37
+Event Dispatch Begin	394	0	34	34	8	37	0
+State Mutation Complete	394	0	34	34	0	0	37
+Event Dispatch Begin	395	0	34	34	1	37	0
+State Mutation Complete	395	0	34	34	0	0	37
+Event Dispatch Begin	396	0	34	34	8	37	0
+State Mutation Complete	396	0	34	34	0	0	37
+Event Dispatch Begin	397	0	34	34	1	37	0
+State Mutation Complete	397	0	34	34	0	0	37
+Event Dispatch Begin	398	0	34	34	8	37	0
+State Mutation Complete	398	0	34	34	0	0	37
+Atlas Publication Begin	399	39	35	35	108	0	0
+Atlas Publication Complete	399	39	35	35	2	5888	1
+Event Dispatch Begin	399	0	34	34	5	37	0
+Frame Build Begin	399	39	35	35	1148190720	1141309440	0
+Frame Build Complete	399	39	35	35	114	108	0
+Glyph Atlas Summary	399	39	35	35	119	1	75264
+Layout Cache Summary	399	39	35	35	5	1	4160
+State Mutation Complete	399	0	35	35	1	1	38
+Text Summary	399	39	35	35	3	1	1
+Visible Layout Begin	399	39	35	35	0	0	0
+Visible Layout Complete	399	39	35	35	6	0	0
+Event Dispatch Begin	400	0	35	35	8	38	0
+State Mutation Complete	400	0	35	35	0	0	38
+Event Dispatch Begin	401	0	35	35	1	38	0
+State Mutation Complete	401	0	35	35	0	0	38
+Event Dispatch Begin	402	0	35	35	8	38	0
+State Mutation Complete	402	0	35	35	0	0	38
+Event Dispatch Begin	403	0	35	35	1	38	0
+State Mutation Complete	403	0	35	35	0	0	38
+Event Dispatch Begin	404	0	35	35	8	38	0
+State Mutation Complete	404	0	35	35	0	0	38
+Event Dispatch Begin	405	0	35	35	1	38	0
+State Mutation Complete	405	0	35	35	0	0	38
+Event Dispatch Begin	406	0	35	35	8	38	0
+State Mutation Complete	406	0	35	35	0	0	38
+Event Dispatch Begin	407	0	35	35	1	38	0
+State Mutation Complete	407	0	35	35	0	0	38
+Event Dispatch Begin	408	0	35	35	8	38	0
+State Mutation Complete	408	0	35	35	0	0	38
+Atlas Publication Begin	409	40	36	36	109	0	0
+Atlas Publication Complete	409	40	36	36	0	0	0
+Event Dispatch Begin	409	0	35	35	5	38	0
+Frame Build Begin	409	40	36	36	1148190720	1141309440	0
+Frame Build Complete	409	40	36	36	115	109	0
+Glyph Atlas Summary	409	40	36	36	121	0	75264
+Layout Cache Summary	409	40	36	36	5	1	4224
+State Mutation Complete	409	0	36	36	1	1	39
+Text Summary	409	40	36	36	3	0	1
+Visible Layout Begin	409	40	36	36	0	0	0
+Visible Layout Complete	409	40	36	36	6	0	0
+Event Dispatch Begin	410	0	36	36	8	39	0
+State Mutation Complete	410	0	36	36	0	0	39
+Event Dispatch Begin	411	0	36	36	1	39	0
+State Mutation Complete	411	0	36	36	0	0	39
+Event Dispatch Begin	412	0	36	36	8	39	0
+State Mutation Complete	412	0	36	36	0	0	39
+Event Dispatch Begin	413	0	36	36	1	39	0
+State Mutation Complete	413	0	36	36	0	0	39
+Event Dispatch Begin	414	0	36	36	8	39	0
+State Mutation Complete	414	0	36	36	0	0	39
+Event Dispatch Begin	415	0	36	36	1	39	0
+State Mutation Complete	415	0	36	36	0	0	39
+Event Dispatch Begin	416	0	36	36	8	39	0
+State Mutation Complete	416	0	36	36	0	0	39
+Event Dispatch Begin	417	0	36	36	1	39	0
+State Mutation Complete	417	0	36	36	0	0	39
+Event Dispatch Begin	418	0	36	36	8	39	0
+State Mutation Complete	418	0	36	36	0	0	39
+Atlas Publication Begin	419	41	37	37	110	0	0
+Atlas Publication Complete	419	41	37	37	0	0	0
+Event Dispatch Begin	419	0	36	36	5	39	0
+Frame Build Begin	419	41	37	37	1148190720	1141309440	0
+Frame Build Complete	419	41	37	37	116	110	0
+Glyph Atlas Summary	419	41	37	37	122	0	75264
+Layout Cache Summary	419	41	37	37	5	1	4288
+Native Actual Presentation Latency	419	0	0	0	43464750	0	0
+Native Display Link Target Latency	419	0	0	0	10131833	0	0
+Native Event Handler Latency	419	0	0	0	31291	0	0
+Native Frame Queue Latency	419	0	0	0	1808167	0	0
+Native GPU Terminal Observed Latency	419	0	0	0	10195333	0	0
+Native Presentation Callback Lag	419	0	0	0	203667	0	0
+Native Presented Handler Latency	419	0	0	0	43668500	0	0
+Native Submission Latency	419	0	0	0	68000	0	0
+Native Target Presentation Latency	419	0	0	0	43465083	0	0
+Native Terminal Record Latency	419	0	0	0	10196083	0	0
+State Mutation Complete	419	0	37	37	1	1	40
+Text Summary	419	41	37	37	3	0	1
+Visible Layout Begin	419	41	37	37	0	0	0
+Visible Layout Complete	419	41	37	37	6	0	0
+Event Dispatch Begin	420	0	37	37	8	40	0
+State Mutation Complete	420	0	37	37	0	0	40
+Event Dispatch Begin	421	0	37	37	1	40	0
+State Mutation Complete	421	0	37	37	0	0	40
+Event Dispatch Begin	422	0	37	37	8	40	0
+State Mutation Complete	422	0	37	37	0	0	40
+Event Dispatch Begin	423	0	37	37	1	40	0
+State Mutation Complete	423	0	37	37	0	0	40
+Event Dispatch Begin	424	0	37	37	8	40	0
+State Mutation Complete	424	0	37	37	0	0	40
+Event Dispatch Begin	425	0	37	37	1	40	0
+State Mutation Complete	425	0	37	37	0	0	40
+Event Dispatch Begin	426	0	37	37	8	40	0
+State Mutation Complete	426	0	37	37	0	0	40
+Event Dispatch Begin	427	0	37	37	1	40	0
+State Mutation Complete	427	0	37	37	0	0	40
+Event Dispatch Begin	428	0	37	37	8	40	0
+State Mutation Complete	428	0	37	37	0	0	40
+Atlas Publication Begin	429	42	38	38	111	0	0
+Atlas Publication Complete	429	42	38	38	0	0	0
+Event Dispatch Begin	429	0	37	37	5	40	0
+Frame Build Begin	429	42	38	38	1148190720	1141309440	0
+Frame Build Complete	429	42	38	38	117	111	0
+Glyph Atlas Summary	429	42	38	38	123	0	75264
+Layout Cache Summary	429	42	38	38	5	1	4352
+State Mutation Complete	429	0	38	38	1	1	41
+Text Summary	429	42	38	38	3	0	1
+Visible Layout Begin	429	42	38	38	0	0	0
+Visible Layout Complete	429	42	38	38	6	0	0
+Event Dispatch Begin	430	0	38	38	8	41	0
+State Mutation Complete	430	0	38	38	0	0	41
+Event Dispatch Begin	431	0	38	38	1	41	0
+State Mutation Complete	431	0	38	38	0	0	41
+Event Dispatch Begin	432	0	38	38	8	41	0
+State Mutation Complete	432	0	38	38	0	0	41
+Event Dispatch Begin	433	0	38	38	1	41	0
+State Mutation Complete	433	0	38	38	0	0	41
+Event Dispatch Begin	434	0	38	38	8	41	0
+State Mutation Complete	434	0	38	38	0	0	41
+Event Dispatch Begin	435	0	38	38	1	41	0
+State Mutation Complete	435	0	38	38	0	0	41
+Event Dispatch Begin	436	0	38	38	8	41	0
+State Mutation Complete	436	0	38	38	0	0	41
+Event Dispatch Begin	437	0	38	38	1	41	0
+State Mutation Complete	437	0	38	38	0	0	41
+Event Dispatch Begin	438	0	38	38	8	41	0
+State Mutation Complete	438	0	38	38	0	0	41
+Atlas Publication Begin	439	43	39	39	112	0	0
+Atlas Publication Complete	439	43	39	39	0	0	0
+Event Dispatch Begin	439	0	38	38	5	41	0
+Frame Build Begin	439	43	39	39	1148190720	1141309440	0
+Frame Build Complete	439	43	39	39	118	112	0
+Glyph Atlas Summary	439	43	39	39	124	0	75264
+Layout Cache Summary	439	43	39	39	5	1	4416
+State Mutation Complete	439	0	39	39	1	1	42
+Text Summary	439	43	39	39	3	0	1
+Visible Layout Begin	439	43	39	39	0	0	0
+Visible Layout Complete	439	43	39	39	6	0	0
+Event Dispatch Begin	440	0	39	39	8	42	0
+State Mutation Complete	440	0	39	39	0	0	42
+Event Dispatch Begin	441	0	39	39	1	42	0
+State Mutation Complete	441	0	39	39	0	0	42
+Event Dispatch Begin	442	0	39	39	8	42	0
+State Mutation Complete	442	0	39	39	0	0	42
+Event Dispatch Begin	443	0	39	39	1	42	0
+State Mutation Complete	443	0	39	39	0	0	42
+Event Dispatch Begin	444	0	39	39	8	42	0
+State Mutation Complete	444	0	39	39	0	0	42
+Event Dispatch Begin	445	0	39	39	1	42	0
+State Mutation Complete	445	0	39	39	0	0	42
+Event Dispatch Begin	446	0	39	39	8	42	0
+State Mutation Complete	446	0	39	39	0	0	42
+Event Dispatch Begin	447	0	39	39	1	42	0
+State Mutation Complete	447	0	39	39	0	0	42
+Event Dispatch Begin	448	0	39	39	8	42	0
+State Mutation Complete	448	0	39	39	0	0	42
+Atlas Publication Begin	449	44	40	40	113	0	0
+Atlas Publication Complete	449	44	40	40	0	0	0
+Event Dispatch Begin	449	0	39	39	5	42	0
+Frame Build Begin	449	44	40	40	1148190720	1141309440	0
+Frame Build Complete	449	44	40	40	119	113	0
+Glyph Atlas Summary	449	44	40	40	125	0	75264
+Layout Cache Summary	449	44	40	40	5	1	4480
+Native Actual Presentation Latency	449	0	0	0	43737792	0	0
+Native Display Link Target Latency	449	0	0	0	10404958	0	0
+Native Event Handler Latency	449	0	0	0	85208	0	0
+Native Frame Queue Latency	449	0	0	0	2036000	0	0
+Native GPU Terminal Observed Latency	449	0	0	0	10474458	0	0
+Native Presentation Callback Lag	449	0	0	0	250125	0	0
+Native Presented Handler Latency	449	0	0	0	43988041	0	0
+Native Submission Latency	449	0	0	0	70666	0	0
+Native Target Presentation Latency	449	0	0	0	43738208	0	0
+Native Terminal Record Latency	449	0	0	0	10476250	0	0
+State Mutation Complete	449	0	40	40	1	1	43
+Text Summary	449	44	40	40	3	0	1
+Visible Layout Begin	449	44	40	40	0	0	0
+Visible Layout Complete	449	44	40	40	6	0	0
+Event Dispatch Begin	450	0	40	40	8	43	0
+State Mutation Complete	450	0	40	40	0	0	43
+Event Dispatch Begin	451	0	40	40	1	43	0
+State Mutation Complete	451	0	40	40	0	0	43
+Event Dispatch Begin	452	0	40	40	8	43	0
+State Mutation Complete	452	0	40	40	0	0	43
+Event Dispatch Begin	453	0	40	40	1	43	0
+State Mutation Complete	453	0	40	40	0	0	43
+Event Dispatch Begin	454	0	40	40	8	43	0
+State Mutation Complete	454	0	40	40	0	0	43
+Event Dispatch Begin	455	0	40	40	1	43	0
+State Mutation Complete	455	0	40	40	0	0	43
+Event Dispatch Begin	456	0	40	40	8	43	0
+State Mutation Complete	456	0	40	40	0	0	43
+Event Dispatch Begin	457	0	40	40	1	43	0
+State Mutation Complete	457	0	40	40	0	0	43
+Event Dispatch Begin	458	0	40	40	8	43	0
+State Mutation Complete	458	0	40	40	0	0	43
+Atlas Publication Begin	459	45	41	41	114	0	0
+Atlas Publication Complete	459	45	41	41	2	6144	1
+Event Dispatch Begin	459	0	40	40	5	43	0
+Frame Build Begin	459	45	41	41	1148190720	1141309440	0
+Frame Build Complete	459	45	41	41	120	114	0
+Glyph Atlas Summary	459	45	41	41	125	1	75264
+Layout Cache Summary	459	45	41	41	5	1	4544
+State Mutation Complete	459	0	41	41	1	1	44
+Text Summary	459	45	41	41	3	1	1
+Visible Layout Begin	459	45	41	41	0	0	0
+Visible Layout Complete	459	45	41	41	6	0	0
+Event Dispatch Begin	460	0	41	41	8	44	0
+State Mutation Complete	460	0	41	41	0	0	44
+Event Dispatch Begin	461	0	41	41	1	44	0
+State Mutation Complete	461	0	41	41	0	0	44
+Event Dispatch Begin	462	0	41	41	8	44	0
+State Mutation Complete	462	0	41	41	0	0	44
+Event Dispatch Begin	463	0	41	41	1	44	0
+State Mutation Complete	463	0	41	41	0	0	44
+Event Dispatch Begin	464	0	41	41	8	44	0
+State Mutation Complete	464	0	41	41	0	0	44
+Event Dispatch Begin	465	0	41	41	1	44	0
+State Mutation Complete	465	0	41	41	0	0	44
+Event Dispatch Begin	466	0	41	41	8	44	0
+State Mutation Complete	466	0	41	41	0	0	44
+Event Dispatch Begin	467	0	41	41	1	44	0
+State Mutation Complete	467	0	41	41	0	0	44
+Event Dispatch Begin	468	0	41	41	8	44	0
+State Mutation Complete	468	0	41	41	0	0	44
+Atlas Publication Begin	469	46	42	42	115	0	0
+Atlas Publication Complete	469	46	42	42	0	0	0
+Event Dispatch Begin	469	0	41	41	5	44	0
+Frame Build Begin	469	46	42	42	1148190720	1141309440	0
+Frame Build Complete	469	46	42	42	121	115	0
+Glyph Atlas Summary	469	46	42	42	127	0	75264
+Layout Cache Summary	469	46	42	42	5	1	4608
+State Mutation Complete	469	0	42	42	1	1	45
+Text Summary	469	46	42	42	3	0	1
+Visible Layout Begin	469	46	42	42	0	0	0
+Visible Layout Complete	469	46	42	42	6	0	0
+Event Dispatch Begin	470	0	42	42	8	45	0
+State Mutation Complete	470	0	42	42	0	0	45
+Event Dispatch Begin	471	0	42	42	1	45	0
+State Mutation Complete	471	0	42	42	0	0	45
+Event Dispatch Begin	472	0	42	42	8	45	0
+State Mutation Complete	472	0	42	42	0	0	45
+Event Dispatch Begin	473	0	42	42	1	45	0
+State Mutation Complete	473	0	42	42	0	0	45
+Event Dispatch Begin	474	0	42	42	8	45	0
+State Mutation Complete	474	0	42	42	0	0	45
+Event Dispatch Begin	475	0	42	42	1	45	0
+State Mutation Complete	475	0	42	42	0	0	45
+Event Dispatch Begin	476	0	42	42	8	45	0
+State Mutation Complete	476	0	42	42	0	0	45
+Event Dispatch Begin	477	0	42	42	1	45	0
+State Mutation Complete	477	0	42	42	0	0	45
+Event Dispatch Begin	478	0	42	42	8	45	0
+State Mutation Complete	478	0	42	42	0	0	45
+Atlas Publication Begin	479	47	43	43	116	0	0
+Atlas Publication Complete	479	47	43	43	0	0	0
+Event Dispatch Begin	479	0	42	42	5	45	0
+Frame Build Begin	479	47	43	43	1148190720	1141309440	0
+Frame Build Complete	479	47	43	43	122	116	0
+Glyph Atlas Summary	479	47	43	43	128	0	75264
+Layout Cache Summary	479	47	43	43	5	1	4672
+Native Actual Presentation Latency	479	0	0	0	43556458	0	0
+Native Display Link Target Latency	479	0	0	0	10223625	0	0
+Native Event Handler Latency	479	0	0	0	41125	0	0
+Native Frame Queue Latency	479	0	0	0	1910541	0	0
+Native GPU Terminal Observed Latency	479	0	0	0	10295125	0	0
+Native Presentation Callback Lag	479	0	0	0	222667	0	0
+Native Presented Handler Latency	479	0	0	0	43779250	0	0
+Native Submission Latency	479	0	0	0	152292	0	0
+Native Target Presentation Latency	479	0	0	0	43556875	0	0
+Native Terminal Record Latency	479	0	0	0	10296666	0	0
+State Mutation Complete	479	0	43	43	1	1	46
+Text Summary	479	47	43	43	3	0	1
+Visible Layout Begin	479	47	43	43	0	0	0
+Visible Layout Complete	479	47	43	43	6	0	0
+Event Dispatch Begin	480	0	43	43	8	46	0
+State Mutation Complete	480	0	43	43	0	0	46
+Event Dispatch Begin	481	0	43	43	1	46	0
+State Mutation Complete	481	0	43	43	0	0	46
+Event Dispatch Begin	482	0	43	43	8	46	0
+State Mutation Complete	482	0	43	43	0	0	46
+Event Dispatch Begin	483	0	43	43	1	46	0
+State Mutation Complete	483	0	43	43	0	0	46
+Event Dispatch Begin	484	0	43	43	8	46	0
+State Mutation Complete	484	0	43	43	0	0	46
+Event Dispatch Begin	485	0	43	43	1	46	0
+State Mutation Complete	485	0	43	43	0	0	46
+Event Dispatch Begin	486	0	43	43	8	46	0
+State Mutation Complete	486	0	43	43	0	0	46
+Event Dispatch Begin	487	0	43	43	1	46	0
+State Mutation Complete	487	0	43	43	0	0	46
+Event Dispatch Begin	488	0	43	43	8	46	0
+State Mutation Complete	488	0	43	43	0	0	46
+Atlas Publication Begin	489	48	44	44	117	0	0
+Atlas Publication Complete	489	48	44	44	0	0	0
+Event Dispatch Begin	489	0	43	43	5	46	0
+Frame Build Begin	489	48	44	44	1148190720	1141309440	0
+Frame Build Complete	489	48	44	44	123	117	0
+Glyph Atlas Summary	489	48	44	44	129	0	75264
+Layout Cache Summary	489	48	44	44	5	1	4736
+State Mutation Complete	489	0	44	44	1	1	47
+Text Summary	489	48	44	44	3	0	1
+Visible Layout Begin	489	48	44	44	0	0	0
+Visible Layout Complete	489	48	44	44	6	0	0
+Event Dispatch Begin	490	0	44	44	8	47	0
+State Mutation Complete	490	0	44	44	0	0	47
+Event Dispatch Begin	491	0	44	44	1	47	0
+State Mutation Complete	491	0	44	44	0	0	47
+Event Dispatch Begin	492	0	44	44	8	47	0
+State Mutation Complete	492	0	44	44	0	0	47
+Event Dispatch Begin	493	0	44	44	1	47	0
+State Mutation Complete	493	0	44	44	0	0	47
+Event Dispatch Begin	494	0	44	44	8	47	0
+State Mutation Complete	494	0	44	44	0	0	47
+Event Dispatch Begin	495	0	44	44	1	47	0
+State Mutation Complete	495	0	44	44	0	0	47
+Event Dispatch Begin	496	0	44	44	8	47	0
+State Mutation Complete	496	0	44	44	0	0	47
+Event Dispatch Begin	497	0	44	44	1	47	0
+State Mutation Complete	497	0	44	44	0	0	47
+Event Dispatch Begin	498	0	44	44	8	47	0
+State Mutation Complete	498	0	44	44	0	0	47
+Atlas Publication Begin	499	49	45	45	118	0	0
+Atlas Publication Complete	499	49	45	45	0	0	0
+Event Dispatch Begin	499	0	44	44	5	47	0
+Frame Build Begin	499	49	45	45	1148190720	1141309440	0
+Frame Build Complete	499	49	45	45	124	118	0
+Glyph Atlas Summary	499	49	45	45	130	0	75264
+Layout Cache Summary	499	49	45	45	5	1	4800
+State Mutation Complete	499	0	45	45	1	1	48
+Text Summary	499	49	45	45	3	0	1
+Visible Layout Begin	499	49	45	45	0	0	0
+Visible Layout Complete	499	49	45	45	6	0	0
+Event Dispatch Begin	500	0	45	45	8	48	0
+State Mutation Complete	500	0	45	45	0	0	48
+Event Dispatch Begin	501	0	45	45	1	48	0
+State Mutation Complete	501	0	45	45	0	0	48
+Event Dispatch Begin	502	0	45	45	8	48	0
+State Mutation Complete	502	0	45	45	0	0	48
+Event Dispatch Begin	503	0	45	45	1	48	0
+State Mutation Complete	503	0	45	45	0	0	48
+Event Dispatch Begin	504	0	45	45	8	48	0
+State Mutation Complete	504	0	45	45	0	0	48
+Event Dispatch Begin	505	0	45	45	1	48	0
+State Mutation Complete	505	0	45	45	0	0	48
+Event Dispatch Begin	506	0	45	45	8	48	0
+State Mutation Complete	506	0	45	45	0	0	48
+Event Dispatch Begin	507	0	45	45	1	48	0
+State Mutation Complete	507	0	45	45	0	0	48
+Event Dispatch Begin	508	0	45	45	8	48	0
+State Mutation Complete	508	0	45	45	0	0	48
+Atlas Publication Begin	509	50	46	46	119	0	0
+Atlas Publication Complete	509	50	46	46	0	0	0
+Event Dispatch Begin	509	0	45	45	5	48	0
+Frame Build Begin	509	50	46	46	1148190720	1141309440	0
+Frame Build Complete	509	50	46	46	125	119	0
+Glyph Atlas Summary	509	50	46	46	131	0	75264
+Layout Cache Summary	509	50	46	46	5	1	4864
+State Mutation Complete	509	0	46	46	1	1	49
+Text Summary	509	50	46	46	3	0	1
+Visible Layout Begin	509	50	46	46	0	0	0
+Visible Layout Complete	509	50	46	46	6	0	0
+Event Dispatch Begin	510	0	46	46	8	49	0
+State Mutation Complete	510	0	46	46	0	0	49
+Event Dispatch Begin	511	0	46	46	1	49	0
+State Mutation Complete	511	0	46	46	0	0	49
+Event Dispatch Begin	512	0	46	46	8	49	0
+State Mutation Complete	512	0	46	46	0	0	49
+Event Dispatch Begin	513	0	46	46	1	49	0
+State Mutation Complete	513	0	46	46	0	0	49
+Event Dispatch Begin	514	0	46	46	8	49	0
+State Mutation Complete	514	0	46	46	0	0	49
+Event Dispatch Begin	515	0	46	46	1	49	0
+State Mutation Complete	515	0	46	46	0	0	49
+Event Dispatch Begin	516	0	46	46	8	49	0
+State Mutation Complete	516	0	46	46	0	0	49
+Event Dispatch Begin	517	0	46	46	1	49	0
+State Mutation Complete	517	0	46	46	0	0	49
+Event Dispatch Begin	518	0	46	46	8	49	0
+State Mutation Complete	518	0	46	46	0	0	49
+Atlas Publication Begin	519	51	47	47	120	0	0
+Atlas Publication Complete	519	51	47	47	2	4352	1
+Event Dispatch Begin	519	0	46	46	5	49	0
+Frame Build Begin	519	51	47	47	1148190720	1141309440	0
+Frame Build Complete	519	51	47	47	126	120	0
+Glyph Atlas Summary	519	51	47	47	131	1	75264
+Layout Cache Summary	519	51	47	47	5	1	4928
+State Mutation Complete	519	0	47	47	1	1	50
+Text Summary	519	51	47	47	3	1	1
+Visible Layout Begin	519	51	47	47	0	0	0
+Visible Layout Complete	519	51	47	47	6	0	0
+Event Dispatch Begin	520	0	47	47	8	50	0
+State Mutation Complete	520	0	47	47	0	0	50
+Event Dispatch Begin	521	0	47	47	1	50	0
+State Mutation Complete	521	0	47	47	0	0	50
+Event Dispatch Begin	522	0	47	47	8	50	0
+State Mutation Complete	522	0	47	47	0	0	50
+Event Dispatch Begin	523	0	47	47	1	50	0
+State Mutation Complete	523	0	47	47	0	0	50
+Event Dispatch Begin	524	0	47	47	8	50	0
+State Mutation Complete	524	0	47	47	0	0	50
+Event Dispatch Begin	525	0	47	47	1	50	0
+State Mutation Complete	525	0	47	47	0	0	50
+Event Dispatch Begin	526	0	47	47	8	50	0
+State Mutation Complete	526	0	47	47	0	0	50
+Event Dispatch Begin	527	0	47	47	1	50	0
+State Mutation Complete	527	0	47	47	0	0	50
+Event Dispatch Begin	528	0	47	47	8	50	0
+State Mutation Complete	528	0	47	47	0	0	50
+Atlas Publication Begin	529	52	48	48	121	0	0
+Atlas Publication Complete	529	52	48	48	2	4352	1
+Event Dispatch Begin	529	0	47	47	5	50	0
+Frame Build Begin	529	52	48	48	1148190720	1141309440	0
+Frame Build Complete	529	52	48	48	127	121	0
+Glyph Atlas Summary	529	52	48	48	132	1	75264
+Layout Cache Summary	529	52	48	48	5	1	4992
+Native Actual Presentation Latency	529	0	0	0	43304833	0	0
+Native Display Link Target Latency	529	0	0	0	9972042	0	0
+Native Event Handler Latency	529	0	0	0	53709	0	0
+Native Frame Queue Latency	529	0	0	0	1651834	0	0
+Native GPU Terminal Observed Latency	529	0	0	0	10113334	0	0
+Native Presentation Callback Lag	529	0	0	0	288708	0	0
+Native Presented Handler Latency	529	0	0	0	43593709	0	0
+Native Submission Latency	529	0	0	0	113250	0	0
+Native Target Presentation Latency	529	0	0	0	43305292	0	0
+Native Terminal Record Latency	529	0	0	0	18370459	0	0
+State Mutation Complete	529	0	48	48	1	1	51
+Text Summary	529	52	48	48	3	1	1
+Visible Layout Begin	529	52	48	48	0	0	0
+Visible Layout Complete	529	52	48	48	6	0	0
+Event Dispatch Begin	530	0	48	48	8	51	0
+State Mutation Complete	530	0	48	48	0	0	51
+Event Dispatch Begin	531	0	48	48	1	51	0
+State Mutation Complete	531	0	48	48	0	0	51
+Event Dispatch Begin	532	0	48	48	8	51	0
+State Mutation Complete	532	0	48	48	0	0	51
+Event Dispatch Begin	533	0	48	48	1	51	0
+State Mutation Complete	533	0	48	48	0	0	51
+Event Dispatch Begin	534	0	48	48	8	51	0
+State Mutation Complete	534	0	48	48	0	0	51
+Event Dispatch Begin	535	0	48	48	1	51	0
+State Mutation Complete	535	0	48	48	0	0	51
+Event Dispatch Begin	536	0	48	48	8	51	0
+State Mutation Complete	536	0	48	48	0	0	51
+Event Dispatch Begin	537	0	48	48	1	51	0
+State Mutation Complete	537	0	48	48	0	0	51
+Event Dispatch Begin	538	0	48	48	8	51	0
+State Mutation Complete	538	0	48	48	0	0	51
+Atlas Publication Begin	539	53	49	49	122	0	0
+Atlas Publication Complete	539	53	49	49	0	0	0
+Event Dispatch Begin	539	0	48	48	5	51	0
+Frame Build Begin	539	53	49	49	1148190720	1141309440	0
+Frame Build Complete	539	53	49	49	128	122	0
+Glyph Atlas Summary	539	53	49	49	134	0	75264
+Layout Cache Summary	539	53	49	49	5	1	5056
+State Mutation Complete	539	0	49	49	1	1	52
+Text Summary	539	53	49	49	3	0	1
+Visible Layout Begin	539	53	49	49	0	0	0
+Visible Layout Complete	539	53	49	49	6	0	0
+Event Dispatch Begin	540	0	49	49	8	52	0
+State Mutation Complete	540	0	49	49	0	0	52
+Event Dispatch Begin	541	0	49	49	1	52	0
+State Mutation Complete	541	0	49	49	0	0	52
+Event Dispatch Begin	542	0	49	49	8	52	0
+State Mutation Complete	542	0	49	49	0	0	52
+Event Dispatch Begin	543	0	49	49	1	52	0
+State Mutation Complete	543	0	49	49	0	0	52
+Event Dispatch Begin	544	0	49	49	8	52	0
+State Mutation Complete	544	0	49	49	0	0	52
+Event Dispatch Begin	545	0	49	49	1	52	0
+State Mutation Complete	545	0	49	49	0	0	52
+Event Dispatch Begin	546	0	49	49	8	52	0
+State Mutation Complete	546	0	49	49	0	0	52
+Event Dispatch Begin	547	0	49	49	1	52	0
+State Mutation Complete	547	0	49	49	0	0	52
+Event Dispatch Begin	548	0	49	49	8	52	0
+State Mutation Complete	548	0	49	49	0	0	52
+Atlas Publication Begin	549	54	50	50	123	0	0
+Atlas Publication Complete	549	54	50	50	2	4352	1
+Event Dispatch Begin	549	0	49	49	5	52	0
+Frame Build Begin	549	54	50	50	1148190720	1141309440	0
+Frame Build Complete	549	54	50	50	129	123	0
+Glyph Atlas Summary	549	54	50	50	134	1	75264
+Layout Cache Summary	549	54	50	50	5	1	5120
+State Mutation Complete	549	0	50	50	1	1	53
+Text Summary	549	54	50	50	3	1	1
+Visible Layout Begin	549	54	50	50	0	0	0
+Visible Layout Complete	549	54	50	50	6	0	0
+Event Dispatch Begin	550	0	50	50	8	53	0
+State Mutation Complete	550	0	50	50	0	0	53
+Event Dispatch Begin	551	0	50	50	1	53	0
+State Mutation Complete	551	0	50	50	0	0	53
+Event Dispatch Begin	552	0	50	50	8	53	0
+State Mutation Complete	552	0	50	50	0	0	53
+Event Dispatch Begin	553	0	50	50	1	53	0
+State Mutation Complete	553	0	50	50	0	0	53
+Event Dispatch Begin	554	0	50	50	8	53	0
+State Mutation Complete	554	0	50	50	0	0	53
+Event Dispatch Begin	555	0	50	50	1	53	0
+State Mutation Complete	555	0	50	50	0	0	53
+Event Dispatch Begin	556	0	50	50	8	53	0
+State Mutation Complete	556	0	50	50	0	0	53
+Event Dispatch Begin	557	0	50	50	1	53	0
+State Mutation Complete	557	0	50	50	0	0	53
+Event Dispatch Begin	558	0	50	50	8	53	0
+State Mutation Complete	558	0	50	50	0	0	53
+Atlas Publication Begin	559	55	51	51	124	0	0
+Atlas Publication Complete	559	55	51	51	2	6144	1
+Event Dispatch Begin	559	0	50	50	5	53	0
+Frame Build Begin	559	55	51	51	1148190720	1141309440	0
+Frame Build Complete	559	55	51	51	130	124	0
+Glyph Atlas Summary	559	55	51	51	135	1	75264
+Layout Cache Summary	559	55	51	51	5	1	5184
+State Mutation Complete	559	0	51	51	1	1	54
+Text Summary	559	55	51	51	3	1	1
+Visible Layout Begin	559	55	51	51	0	0	0
+Visible Layout Complete	559	55	51	51	6	0	0
+Event Dispatch Begin	560	0	51	51	8	54	0
+State Mutation Complete	560	0	51	51	0	0	54
+Event Dispatch Begin	561	0	51	51	1	54	0
+State Mutation Complete	561	0	51	51	0	0	54
+Event Dispatch Begin	562	0	51	51	8	54	0
+State Mutation Complete	562	0	51	51	0	0	54
+Event Dispatch Begin	563	0	51	51	1	54	0
+State Mutation Complete	563	0	51	51	0	0	54
+Event Dispatch Begin	564	0	51	51	8	54	0
+State Mutation Complete	564	0	51	51	0	0	54
+Event Dispatch Begin	565	0	51	51	1	54	0
+State Mutation Complete	565	0	51	51	0	0	54
+Event Dispatch Begin	566	0	51	51	8	54	0
+State Mutation Complete	566	0	51	51	0	0	54
+Event Dispatch Begin	567	0	51	51	1	54	0
+State Mutation Complete	567	0	51	51	0	0	54
+Event Dispatch Begin	568	0	51	51	8	54	0
+State Mutation Complete	568	0	51	51	0	0	54
+Atlas Publication Begin	569	56	52	52	125	0	0
+Atlas Publication Complete	569	56	52	52	2	5632	1
+Event Dispatch Begin	569	0	51	51	5	54	0
+Frame Build Begin	569	56	52	52	1148190720	1141309440	0
+Frame Build Complete	569	56	52	52	131	125	0
+Glyph Atlas Summary	569	56	52	52	136	1	75264
+Layout Cache Summary	569	56	52	52	5	1	5248
+Native Actual Presentation Latency	569	0	0	0	43730250	0	0
+Native Display Link Target Latency	569	0	0	0	10397500	0	0
+Native Event Handler Latency	569	0	0	0	124750	0	0
+Native Frame Queue Latency	569	0	0	0	1996667	0	0
+Native GPU Terminal Observed Latency	569	0	0	0	10481375	0	0
+Native Presentation Callback Lag	569	0	0	0	199333	0	0
+Native Presented Handler Latency	569	0	0	0	43929875	0	0
+Native Submission Latency	569	0	0	0	131041	0	0
+Native Target Presentation Latency	569	0	0	0	43730750	0	0
+Native Terminal Record Latency	569	0	0	0	10484709	0	0
+State Mutation Complete	569	0	52	52	1	1	55
+Text Summary	569	56	52	52	3	1	1
+Visible Layout Begin	569	56	52	52	0	0	0
+Visible Layout Complete	569	56	52	52	6	0	0
+Event Dispatch Begin	570	0	52	52	8	55	0
+State Mutation Complete	570	0	52	52	0	0	55
+Event Dispatch Begin	571	0	52	52	1	55	0
+State Mutation Complete	571	0	52	52	0	0	55
+Event Dispatch Begin	572	0	52	52	8	55	0
+State Mutation Complete	572	0	52	52	0	0	55
+Event Dispatch Begin	573	0	52	52	1	55	0
+State Mutation Complete	573	0	52	52	0	0	55
+Event Dispatch Begin	574	0	52	52	8	55	0
+State Mutation Complete	574	0	52	52	0	0	55
+Event Dispatch Begin	575	0	52	52	1	55	0
+State Mutation Complete	575	0	52	52	0	0	55
+Event Dispatch Begin	576	0	52	52	8	55	0
+State Mutation Complete	576	0	52	52	0	0	55
+Event Dispatch Begin	577	0	52	52	1	55	0
+State Mutation Complete	577	0	52	52	0	0	55
+Event Dispatch Begin	578	0	52	52	8	55	0
+State Mutation Complete	578	0	52	52	0	0	55
+Atlas Publication Begin	579	57	53	53	126	0	0
+Atlas Publication Complete	579	57	53	53	0	0	0
+Event Dispatch Begin	579	0	52	52	5	55	0
+Frame Build Begin	579	57	53	53	1148190720	1141309440	0
+Frame Build Complete	579	57	53	53	132	126	0
+Glyph Atlas Summary	579	57	53	53	138	0	75264
+Layout Cache Summary	579	57	53	53	5	1	5312
+State Mutation Complete	579	0	53	53	1	1	56
+Text Summary	579	57	53	53	3	0	1
+Visible Layout Begin	579	57	53	53	0	0	0
+Visible Layout Complete	579	57	53	53	6	0	0
+Event Dispatch Begin	580	0	53	53	8	56	0
+State Mutation Complete	580	0	53	53	0	0	56
+Event Dispatch Begin	581	0	53	53	1	56	0
+State Mutation Complete	581	0	53	53	0	0	56
+Event Dispatch Begin	582	0	53	53	8	56	0
+State Mutation Complete	582	0	53	53	0	0	56
+Event Dispatch Begin	583	0	53	53	1	56	0
+State Mutation Complete	583	0	53	53	0	0	56
+Event Dispatch Begin	584	0	53	53	8	56	0
+State Mutation Complete	584	0	53	53	0	0	56
+Event Dispatch Begin	585	0	53	53	1	56	0
+State Mutation Complete	585	0	53	53	0	0	56
+Event Dispatch Begin	586	0	53	53	8	56	0
+State Mutation Complete	586	0	53	53	0	0	56
+Event Dispatch Begin	587	0	53	53	1	56	0
+State Mutation Complete	587	0	53	53	0	0	56
+Event Dispatch Begin	588	0	53	53	8	56	0
+State Mutation Complete	588	0	53	53	0	0	56
+Atlas Publication Begin	589	58	54	54	127	0	0
+Atlas Publication Complete	589	58	54	54	2	6144	1
+Event Dispatch Begin	589	0	53	53	5	56	0
+Frame Build Begin	589	58	54	54	1148190720	1141309440	0
+Frame Build Complete	589	58	54	54	133	127	0
+Glyph Atlas Summary	589	58	54	54	138	1	75264
+Layout Cache Summary	589	58	54	54	5	1	5376
+State Mutation Complete	589	0	54	54	1	1	57
+Text Summary	589	58	54	54	3	1	1
+Visible Layout Begin	589	58	54	54	0	0	0
+Visible Layout Complete	589	58	54	54	6	0	0
+Event Dispatch Begin	590	0	54	54	8	57	0
+State Mutation Complete	590	0	54	54	0	0	57
+Event Dispatch Begin	591	0	54	54	1	57	0
+State Mutation Complete	591	0	54	54	0	0	57
+Event Dispatch Begin	592	0	54	54	8	57	0
+State Mutation Complete	592	0	54	54	0	0	57
+Event Dispatch Begin	593	0	54	54	1	57	0
+State Mutation Complete	593	0	54	54	0	0	57
+Event Dispatch Begin	594	0	54	54	8	57	0
+State Mutation Complete	594	0	54	54	0	0	57
+Event Dispatch Begin	595	0	54	54	1	57	0
+State Mutation Complete	595	0	54	54	0	0	57
+Event Dispatch Begin	596	0	54	54	8	57	0
+State Mutation Complete	596	0	54	54	0	0	57
+Event Dispatch Begin	597	0	54	54	1	57	0
+State Mutation Complete	597	0	54	54	0	0	57
+Event Dispatch Begin	598	0	54	54	8	57	0
+State Mutation Complete	598	0	54	54	0	0	57
+Atlas Publication Begin	599	59	55	55	128	0	0
+Atlas Publication Complete	599	59	55	55	0	0	0
+Event Dispatch Begin	599	0	54	54	5	57	0
+Frame Build Begin	599	59	55	55	1148190720	1141309440	0
+Frame Build Complete	599	59	55	55	134	128	0
+Glyph Atlas Summary	599	59	55	55	140	0	75264
+Layout Cache Summary	599	59	55	55	5	1	5440
+State Mutation Complete	599	0	55	55	1	1	58
+Text Summary	599	59	55	55	3	0	1
+Visible Layout Begin	599	59	55	55	0	0	0
+Visible Layout Complete	599	59	55	55	6	0	0
+Event Dispatch Begin	600	0	55	55	8	58	0
+State Mutation Complete	600	0	55	55	0	0	58
+Event Dispatch Begin	601	0	55	55	1	58	0
+State Mutation Complete	601	0	55	55	0	0	58
+Event Dispatch Begin	602	0	55	55	8	58	0
+State Mutation Complete	602	0	55	55	0	0	58
+Event Dispatch Begin	603	0	55	55	1	58	0
+State Mutation Complete	603	0	55	55	0	0	58
+Event Dispatch Begin	604	0	55	55	8	58	0
+State Mutation Complete	604	0	55	55	0	0	58
+Event Dispatch Begin	605	0	55	55	1	58	0
+State Mutation Complete	605	0	55	55	0	0	58
+Event Dispatch Begin	606	0	55	55	8	58	0
+State Mutation Complete	606	0	55	55	0	0	58
+Event Dispatch Begin	607	0	55	55	1	58	0
+State Mutation Complete	607	0	55	55	0	0	58
+Event Dispatch Begin	608	0	55	55	8	58	0
+State Mutation Complete	608	0	55	55	0	0	58
+Atlas Publication Begin	609	60	56	56	129	0	0
+Atlas Publication Complete	609	60	56	56	2	5888	1
+Event Dispatch Begin	609	0	55	55	5	58	0
+Frame Build Begin	609	60	56	56	1148190720	1141309440	0
+Frame Build Complete	609	60	56	56	135	129	0
+Glyph Atlas Summary	609	60	56	56	140	1	75264
+Layout Cache Summary	609	60	56	56	5	1	5504
+Native Actual Presentation Latency	609	0	0	0	43829083	0	0
+Native Display Link Target Latency	609	0	0	0	10496375	0	0
+Native Event Handler Latency	609	0	0	0	144625	0	0
+Native Frame Queue Latency	609	0	0	0	2179375	0	0
+Native GPU Terminal Observed Latency	609	0	0	0	10561500	0	0
+Native Presentation Callback Lag	609	0	0	0	173375	0	0
+Native Presented Handler Latency	609	0	0	0	44002541	0	0
+Native Submission Latency	609	0	0	0	175500	0	0
+Native Target Presentation Latency	609	0	0	0	43829625	0	0
+Native Terminal Record Latency	609	0	0	0	10564083	0	0
+State Mutation Complete	609	0	56	56	1	1	59
+Text Summary	609	60	56	56	3	1	1
+Visible Layout Begin	609	60	56	56	0	0	0
+Visible Layout Complete	609	60	56	56	6	0	0
+Event Dispatch Begin	610	0	56	56	8	59	0
+State Mutation Complete	610	0	56	56	0	0	59
+Event Dispatch Begin	611	0	56	56	1	59	0
+State Mutation Complete	611	0	56	56	0	0	59
+Event Dispatch Begin	612	0	56	56	8	59	0
+State Mutation Complete	612	0	56	56	0	0	59
+Event Dispatch Begin	613	0	56	56	1	59	0
+State Mutation Complete	613	0	56	56	0	0	59
+Event Dispatch Begin	614	0	56	56	8	59	0
+State Mutation Complete	614	0	56	56	0	0	59
+Event Dispatch Begin	615	0	56	56	1	59	0
+State Mutation Complete	615	0	56	56	0	0	59
+Event Dispatch Begin	616	0	56	56	8	59	0
+State Mutation Complete	616	0	56	56	0	0	59
+Event Dispatch Begin	617	0	56	56	1	59	0
+State Mutation Complete	617	0	56	56	0	0	59
+Event Dispatch Begin	618	0	56	56	8	59	0
+State Mutation Complete	618	0	56	56	0	0	59
+Atlas Publication Begin	619	61	57	57	130	0	0
+Atlas Publication Complete	619	61	57	57	2	6144	1
+Event Dispatch Begin	619	0	56	56	5	59	0
+Frame Build Begin	619	61	57	57	1148190720	1141309440	0
+Frame Build Complete	619	61	57	57	136	130	0
+Glyph Atlas Summary	619	61	57	57	141	1	75264
+Layout Cache Summary	619	61	57	57	5	1	5568
+State Mutation Complete	619	0	57	57	1	1	60
+Text Summary	619	61	57	57	3	1	1
+Visible Layout Begin	619	61	57	57	0	0	0
+Visible Layout Complete	619	61	57	57	6	0	0
+Event Dispatch Begin	620	0	57	57	8	60	0
+State Mutation Complete	620	0	57	57	0	0	60
+Event Dispatch Begin	621	0	57	57	1	60	0
+State Mutation Complete	621	0	57	57	0	0	60
+Event Dispatch Begin	622	0	57	57	8	60	0
+State Mutation Complete	622	0	57	57	0	0	60
+Event Dispatch Begin	623	0	57	57	1	60	0
+State Mutation Complete	623	0	57	57	0	0	60
+Event Dispatch Begin	624	0	57	57	8	60	0
+State Mutation Complete	624	0	57	57	0	0	60
+Event Dispatch Begin	625	0	57	57	1	60	0
+State Mutation Complete	625	0	57	57	0	0	60
+Event Dispatch Begin	626	0	57	57	8	60	0
+State Mutation Complete	626	0	57	57	0	0	60
+Event Dispatch Begin	627	0	57	57	1	60	0
+State Mutation Complete	627	0	57	57	0	0	60
+Event Dispatch Begin	628	0	57	57	8	60	0
+State Mutation Complete	628	0	57	57	0	0	60
+Atlas Publication Begin	629	62	58	58	131	0	0
+Atlas Publication Complete	629	62	58	58	2	5632	1
+Event Dispatch Begin	629	0	57	57	5	60	0
+Frame Build Begin	629	62	58	58	1148190720	1141309440	0
+Frame Build Complete	629	62	58	58	137	131	0
+Glyph Atlas Summary	629	62	58	58	142	1	75264
+Layout Cache Summary	629	62	58	58	5	1	5632
+State Mutation Complete	629	0	58	58	1	1	61
+Text Summary	629	62	58	58	3	1	1
+Visible Layout Begin	629	62	58	58	0	0	0
+Visible Layout Complete	629	62	58	58	6	0	0
+Event Dispatch Begin	630	0	58	58	8	61	0
+State Mutation Complete	630	0	58	58	0	0	61
+Event Dispatch Begin	631	0	58	58	1	61	0
+State Mutation Complete	631	0	58	58	0	0	61
+Event Dispatch Begin	632	0	58	58	8	61	0
+State Mutation Complete	632	0	58	58	0	0	61
+Event Dispatch Begin	633	0	58	58	1	61	0
+State Mutation Complete	633	0	58	58	0	0	61
+Event Dispatch Begin	634	0	58	58	8	61	0
+State Mutation Complete	634	0	58	58	0	0	61
+Event Dispatch Begin	635	0	58	58	1	61	0
+State Mutation Complete	635	0	58	58	0	0	61
+Event Dispatch Begin	636	0	58	58	8	61	0
+State Mutation Complete	636	0	58	58	0	0	61
+Event Dispatch Begin	637	0	58	58	1	61	0
+State Mutation Complete	637	0	58	58	0	0	61
+Event Dispatch Begin	638	0	58	58	8	61	0
+State Mutation Complete	638	0	58	58	0	0	61
+Atlas Publication Begin	639	63	59	59	132	0	0
+Atlas Publication Complete	639	63	59	59	2	6144	1
+Event Dispatch Begin	639	0	58	58	5	61	0
+Frame Build Begin	639	63	59	59	1148190720	1141309440	0
+Frame Build Complete	639	63	59	59	138	132	0
+Glyph Atlas Summary	639	63	59	59	143	1	75264
+Layout Cache Summary	639	63	59	59	5	1	5696
+Native Actual Presentation Latency	639	0	0	0	51733208	0	0
+Native Display Link Target Latency	639	0	0	0	18400625	0	0
+Native Event Handler Latency	639	0	0	0	65500	0	0
+Native Frame Queue Latency	639	0	0	0	10109458	0	0
+Native GPU Terminal Observed Latency	639	0	0	0	18461834	0	0
+Native Presentation Callback Lag	639	0	0	0	330000	0	0
+Native Presented Handler Latency	639	0	0	0	52063500	0	0
+Native Submission Latency	639	0	0	0	140792	0	0
+Native Target Presentation Latency	639	0	0	0	51733875	0	0
+Native Terminal Record Latency	639	0	0	0	18462625	0	0
+State Mutation Complete	639	0	59	59	1	1	62
+Text Summary	639	63	59	59	3	1	1
+Visible Layout Begin	639	63	59	59	0	0	0
+Visible Layout Complete	639	63	59	59	6	0	0
+Event Dispatch Begin	640	0	59	59	8	62	0
+State Mutation Complete	640	0	59	59	0	0	62
+Event Dispatch Begin	641	0	59	59	1	62	0
+State Mutation Complete	641	0	59	59	0	0	62
+Event Dispatch Begin	642	0	59	59	8	62	0
+State Mutation Complete	642	0	59	59	0	0	62
+Event Dispatch Begin	643	0	59	59	1	62	0
+State Mutation Complete	643	0	59	59	0	0	62
+Event Dispatch Begin	644	0	59	59	8	62	0
+State Mutation Complete	644	0	59	59	0	0	62
+Event Dispatch Begin	645	0	59	59	1	62	0
+State Mutation Complete	645	0	59	59	0	0	62
+Event Dispatch Begin	646	0	59	59	8	62	0
+State Mutation Complete	646	0	59	59	0	0	62
+Event Dispatch Begin	647	0	59	59	1	62	0
+State Mutation Complete	647	0	59	59	0	0	62
+Event Dispatch Begin	648	0	59	59	8	62	0
+State Mutation Complete	648	0	59	59	0	0	62
+Atlas Publication Begin	649	64	60	60	133	0	0
+Atlas Publication Complete	649	64	60	60	2	6144	1
+Event Dispatch Begin	649	0	59	59	5	62	0
+Frame Build Begin	649	64	60	60	1148190720	1141309440	0
+Frame Build Complete	649	64	60	60	139	133	0
+Glyph Atlas Summary	649	64	60	60	144	1	75264
+Layout Cache Summary	649	64	60	60	5	1	5760
+State Mutation Complete	649	0	60	60	1	1	63
+Text Summary	649	64	60	60	3	1	1
+Visible Layout Begin	649	64	60	60	0	0	0
+Visible Layout Complete	649	64	60	60	6	0	0
+Event Dispatch Begin	650	0	60	60	8	63	0
+State Mutation Complete	650	0	60	60	0	0	63
+Event Dispatch Begin	651	0	60	60	1	63	0
+State Mutation Complete	651	0	60	60	0	0	63
+Event Dispatch Begin	652	0	60	60	8	63	0
+State Mutation Complete	652	0	60	60	0	0	63
+Event Dispatch Begin	653	0	60	60	1	63	0
+State Mutation Complete	653	0	60	60	0	0	63
+Event Dispatch Begin	654	0	60	60	8	63	0
+State Mutation Complete	654	0	60	60	0	0	63
+Event Dispatch Begin	655	0	60	60	1	63	0
+State Mutation Complete	655	0	60	60	0	0	63
+Event Dispatch Begin	656	0	60	60	8	63	0
+State Mutation Complete	656	0	60	60	0	0	63
+Atlas Publication Begin	657	65	60	60	133	0	0
+Atlas Publication Complete	657	65	60	60	0	0	0
+Event Dispatch Begin	657	0	60	60	1	63	0
+Frame Build Begin	657	65	60	60	1148190720	1141309440	0
+Frame Build Complete	657	65	60	60	139	133	0
+Glyph Atlas Summary	657	65	60	60	145	0	75264
+Layout Cache Summary	657	65	60	60	6	0	4640
+State Mutation Complete	657	0	60	60	1	0	64
+Text Summary	657	65	60	60	2	0	0
+Visible Layout Begin	657	65	60	60	0	0	0
+Visible Layout Complete	657	65	60	60	6	0	0
+Event Dispatch Begin	658	0	60	60	8	64	0
+State Mutation Complete	658	0	60	60	0	0	64
+Event Dispatch Begin	659	0	60	60	1	64	0
+State Mutation Complete	659	0	60	60	0	0	64
+Event Dispatch Begin	660	0	60	60	8	64	0
+State Mutation Complete	660	0	60	60	0	0	64
+Event Dispatch Begin	661	0	60	60	1	64	0
+State Mutation Complete	661	0	60	60	0	0	64
+Event Dispatch Begin	662	0	60	60	8	64	0
+State Mutation Complete	662	0	60	60	0	0	64
+Event Dispatch Begin	663	0	60	60	1	64	0
+State Mutation Complete	663	0	60	60	0	0	64
+Event Dispatch Begin	664	0	60	60	8	64	0
+State Mutation Complete	664	0	60	60	0	0	64
+Atlas Publication Begin	665	66	60	60	133	0	0
+Atlas Publication Complete	665	66	60	60	0	0	0
+Event Dispatch Begin	665	0	60	60	1	64	0
+Frame Build Begin	665	66	60	60	1148190720	1141309440	0
+Frame Build Complete	665	66	60	60	139	133	0
+Glyph Atlas Summary	665	66	60	60	145	0	75264
+Layout Cache Summary	665	66	60	60	6	0	4640
+Native Actual Presentation Latency	665	0	0	0	41452917	0	0
+Native Display Link Target Latency	665	0	0	0	8120292	0	0
+Native Event Handler Latency	665	0	0	0	153333	0	0
+Native Frame Queue Latency	665	0	0	0	325708	0	0
+Native GPU Terminal Observed Latency	665	0	0	0	8189542	0	0
+Native Presentation Callback Lag	665	0	0	0	298792	0	0
+Native Presented Handler Latency	665	0	0	0	41751792	0	0
+Native Submission Latency	665	0	0	0	201000	0	0
+Native Target Presentation Latency	665	0	0	0	41453542	0	0
+Native Terminal Record Latency	665	0	0	0	16560125	0	0
+State Mutation Complete	665	0	60	60	1	0	65
+Text Summary	665	66	60	60	2	0	0
+Visible Layout Begin	665	66	60	60	0	0	0
+Visible Layout Complete	665	66	60	60	6	0	0
+Event Dispatch Begin	666	0	60	60	8	65	0
+State Mutation Complete	666	0	60	60	0	0	65
+Event Dispatch Begin	667	0	60	60	1	65	0
+State Mutation Complete	667	0	60	60	0	0	65
+Event Dispatch Begin	668	0	60	60	8	65	0
+State Mutation Complete	668	0	60	60	0	0	65
+Event Dispatch Begin	669	0	60	60	1	65	0
+State Mutation Complete	669	0	60	60	0	0	65
+Event Dispatch Begin	670	0	60	60	8	65	0
+State Mutation Complete	670	0	60	60	0	0	65
+Event Dispatch Begin	671	0	60	60	1	65	0
+State Mutation Complete	671	0	60	60	0	0	65
+Event Dispatch Begin	672	0	60	60	8	65	0
+State Mutation Complete	672	0	60	60	0	0	65
+Atlas Publication Begin	673	67	60	60	133	0	0
+Atlas Publication Complete	673	67	60	60	0	0	0
+Event Dispatch Begin	673	0	60	60	1	65	0
+Frame Build Begin	673	67	60	60	1148190720	1141309440	0
+Frame Build Complete	673	67	60	60	139	133	0
+Glyph Atlas Summary	673	67	60	60	145	0	75264
+Layout Cache Summary	673	67	60	60	6	0	4640
+State Mutation Complete	673	0	60	60	1	0	66
+Text Summary	673	67	60	60	2	0	0
+Visible Layout Begin	673	67	60	60	0	0	0
+Visible Layout Complete	673	67	60	60	6	0	0
+Event Dispatch Begin	674	0	60	60	8	66	0
+State Mutation Complete	674	0	60	60	0	0	66
+Event Dispatch Begin	675	0	60	60	1	66	0
+State Mutation Complete	675	0	60	60	0	0	66
+Event Dispatch Begin	676	0	60	60	8	66	0
+State Mutation Complete	676	0	60	60	0	0	66
+Event Dispatch Begin	677	0	60	60	1	66	0
+State Mutation Complete	677	0	60	60	0	0	66
+Event Dispatch Begin	678	0	60	60	8	66	0
+State Mutation Complete	678	0	60	60	0	0	66
+Event Dispatch Begin	679	0	60	60	1	66	0
+State Mutation Complete	679	0	60	60	0	0	66
+Event Dispatch Begin	680	0	60	60	8	66	0
+State Mutation Complete	680	0	60	60	0	0	66
+Atlas Publication Begin	681	68	60	60	133	0	0
+Atlas Publication Complete	681	68	60	60	0	0	0
+Event Dispatch Begin	681	0	60	60	1	66	0
+Frame Build Begin	681	68	60	60	1148190720	1141309440	0
+Frame Build Complete	681	68	60	60	139	133	0
+Glyph Atlas Summary	681	68	60	60	145	0	75264
+Layout Cache Summary	681	68	60	60	6	0	4640
+Native Actual Presentation Latency	681	0	0	0	43628542	0	0
+Native Display Link Target Latency	681	0	0	0	10296042	0	0
+Native Event Handler Latency	681	0	0	0	100708	0	0
+Native Frame Queue Latency	681	0	0	0	1962541	0	0
+Native GPU Terminal Observed Latency	681	0	0	0	10360458	0	0
+Native Presentation Callback Lag	681	0	0	0	220750	0	0
+Native Presented Handler Latency	681	0	0	0	43849333	0	0
+Native Submission Latency	681	0	0	0	166709	0	0
+Native Target Presentation Latency	681	0	0	0	43629292	0	0
+Native Terminal Record Latency	681	0	0	0	10361625	0	0
+State Mutation Complete	681	0	60	60	1	0	67
+Text Summary	681	68	60	60	2	0	0
+Visible Layout Begin	681	68	60	60	0	0	0
+Visible Layout Complete	681	68	60	60	6	0	0
+Event Dispatch Begin	682	0	60	60	8	67	0
+State Mutation Complete	682	0	60	60	0	0	67
+Event Dispatch Begin	683	0	60	60	1	67	0
+State Mutation Complete	683	0	60	60	0	0	67
+Event Dispatch Begin	684	0	60	60	8	67	0
+State Mutation Complete	684	0	60	60	0	0	67
+Event Dispatch Begin	685	0	60	60	1	67	0
+State Mutation Complete	685	0	60	60	0	0	67
+Event Dispatch Begin	686	0	60	60	8	67	0
+State Mutation Complete	686	0	60	60	0	0	67
+Event Dispatch Begin	687	0	60	60	1	67	0
+State Mutation Complete	687	0	60	60	0	0	67
+Event Dispatch Begin	688	0	60	60	8	67	0
+State Mutation Complete	688	0	60	60	0	0	67
+Atlas Publication Begin	689	69	60	60	133	0	0
+Atlas Publication Complete	689	69	60	60	0	0	0
+Event Dispatch Begin	689	0	60	60	1	67	0
+Frame Build Begin	689	69	60	60	1148190720	1141309440	0
+Frame Build Complete	689	69	60	60	139	133	0
+Glyph Atlas Summary	689	69	60	60	145	0	75264
+Layout Cache Summary	689	69	60	60	6	0	4640
+State Mutation Complete	689	0	60	60	1	0	68
+Text Summary	689	69	60	60	2	0	0
+Visible Layout Begin	689	69	60	60	0	0	0
+Visible Layout Complete	689	69	60	60	6	0	0
+Event Dispatch Begin	690	0	60	60	8	68	0
+State Mutation Complete	690	0	60	60	0	0	68
+Event Dispatch Begin	691	0	60	60	1	68	0
+State Mutation Complete	691	0	60	60	0	0	68
+Event Dispatch Begin	692	0	60	60	8	68	0
+State Mutation Complete	692	0	60	60	0	0	68
+Event Dispatch Begin	693	0	60	60	1	68	0
+State Mutation Complete	693	0	60	60	0	0	68
+Event Dispatch Begin	694	0	60	60	8	68	0
+State Mutation Complete	694	0	60	60	0	0	68
+Event Dispatch Begin	695	0	60	60	1	68	0
+State Mutation Complete	695	0	60	60	0	0	68
+Event Dispatch Begin	696	0	60	60	8	68	0
+State Mutation Complete	696	0	60	60	0	0	68
+Atlas Publication Begin	697	70	60	60	133	0	0
+Atlas Publication Complete	697	70	60	60	0	0	0
+Event Dispatch Begin	697	0	60	60	1	68	0
+Frame Build Begin	697	70	60	60	1148190720	1141309440	0
+Frame Build Complete	697	70	60	60	139	133	0
+Glyph Atlas Summary	697	70	60	60	145	0	75264
+Layout Cache Summary	697	70	60	60	6	0	4640
+Native Actual Presentation Latency	697	0	0	0	43665167	0	0
+Native Display Link Target Latency	697	0	0	0	10332667	0	0
+Native Event Handler Latency	697	0	0	0	85750	0	0
+Native Frame Queue Latency	697	0	0	0	1992583	0	0
+Native GPU Terminal Observed Latency	697	0	0	0	10464083	0	0
+Native Presentation Callback Lag	697	0	0	0	215667	0	0
+Native Presented Handler Latency	697	0	0	0	43881333	0	0
+Native Submission Latency	697	0	0	0	125084	0	0
+Native Target Presentation Latency	697	0	0	0	43665917	0	0
+Native Terminal Record Latency	697	0	0	0	10465833	0	0
+State Mutation Complete	697	0	60	60	1	0	69
+Text Summary	697	70	60	60	2	0	0
+Visible Layout Begin	697	70	60	60	0	0	0
+Visible Layout Complete	697	70	60	60	6	0	0
+Event Dispatch Begin	698	0	60	60	8	69	0
+State Mutation Complete	698	0	60	60	0	0	69
+Event Dispatch Begin	699	0	60	60	1	69	0
+State Mutation Complete	699	0	60	60	0	0	69
+Event Dispatch Begin	700	0	60	60	8	69	0
+State Mutation Complete	700	0	60	60	0	0	69
+Event Dispatch Begin	701	0	60	60	1	69	0
+State Mutation Complete	701	0	60	60	0	0	69
+Event Dispatch Begin	702	0	60	60	8	69	0
+State Mutation Complete	702	0	60	60	0	0	69
+Event Dispatch Begin	703	0	60	60	1	69	0
+State Mutation Complete	703	0	60	60	0	0	69
+Event Dispatch Begin	704	0	60	60	8	69	0
+State Mutation Complete	704	0	60	60	0	0	69
+Atlas Publication Begin	705	71	60	60	133	0	0
+Atlas Publication Complete	705	71	60	60	0	0	0
+Event Dispatch Begin	705	0	60	60	1	69	0
+Frame Build Begin	705	71	60	60	1148190720	1141309440	0
+Frame Build Complete	705	71	60	60	139	133	0
+Glyph Atlas Summary	705	71	60	60	145	0	75264
+Layout Cache Summary	705	71	60	60	6	0	4640
+State Mutation Complete	705	0	60	60	1	0	70
+Text Summary	705	71	60	60	2	0	0
+Visible Layout Begin	705	71	60	60	0	0	0
+Visible Layout Complete	705	71	60	60	6	0	0
+Event Dispatch Begin	706	0	60	60	8	70	0
+State Mutation Complete	706	0	60	60	0	0	70
+Event Dispatch Begin	707	0	60	60	1	70	0
+State Mutation Complete	707	0	60	60	0	0	70
+Event Dispatch Begin	708	0	60	60	8	70	0
+State Mutation Complete	708	0	60	60	0	0	70
+Event Dispatch Begin	709	0	60	60	1	70	0
+State Mutation Complete	709	0	60	60	0	0	70
+Event Dispatch Begin	710	0	60	60	8	70	0
+State Mutation Complete	710	0	60	60	0	0	70
+Event Dispatch Begin	711	0	60	60	1	70	0
+State Mutation Complete	711	0	60	60	0	0	70
+Event Dispatch Begin	712	0	60	60	8	70	0
+State Mutation Complete	712	0	60	60	0	0	70
+Atlas Publication Begin	713	72	60	60	133	0	0
+Atlas Publication Complete	713	72	60	60	0	0	0
+Event Dispatch Begin	713	0	60	60	1	70	0
+Frame Build Begin	713	72	60	60	1148190720	1141309440	0
+Frame Build Complete	713	72	60	60	139	133	0
+Glyph Atlas Summary	713	72	60	60	145	0	75264
+Layout Cache Summary	713	72	60	60	6	0	4640
+Native Actual Presentation Latency	713	0	0	0	43698792	0	0
+Native Display Link Target Latency	713	0	0	0	10366375	0	0
+Native Event Handler Latency	713	0	0	0	94250	0	0
+Native Frame Queue Latency	713	0	0	0	2011875	0	0
+Native GPU Terminal Observed Latency	713	0	0	0	10439375	0	0
+Native Presentation Callback Lag	713	0	0	0	198750	0	0
+Native Presented Handler Latency	713	0	0	0	43897625	0	0
+Native Submission Latency	713	0	0	0	80250	0	0
+Native Target Presentation Latency	713	0	0	0	43699625	0	0
+Native Terminal Record Latency	713	0	0	0	10440250	0	0
+State Mutation Complete	713	0	60	60	1	0	71
+Text Summary	713	72	60	60	2	0	0
+Visible Layout Begin	713	72	60	60	0	0	0
+Visible Layout Complete	713	72	60	60	6	0	0
+Event Dispatch Begin	714	0	60	60	8	71	0
+State Mutation Complete	714	0	60	60	0	0	71
+Event Dispatch Begin	715	0	60	60	1	71	0
+State Mutation Complete	715	0	60	60	0	0	71
+Event Dispatch Begin	716	0	60	60	8	71	0
+State Mutation Complete	716	0	60	60	0	0	71
+Event Dispatch Begin	717	0	60	60	1	71	0
+State Mutation Complete	717	0	60	60	0	0	71
+Event Dispatch Begin	718	0	60	60	8	71	0
+State Mutation Complete	718	0	60	60	0	0	71
+Event Dispatch Begin	719	0	60	60	1	71	0
+State Mutation Complete	719	0	60	60	0	0	71
+Event Dispatch Begin	720	0	60	60	8	71	0
+State Mutation Complete	720	0	60	60	0	0	71
+Atlas Publication Begin	721	73	60	60	133	0	0
+Atlas Publication Complete	721	73	60	60	0	0	0
+Event Dispatch Begin	721	0	60	60	1	71	0
+Frame Build Begin	721	73	60	60	1148190720	1141309440	0
+Frame Build Complete	721	73	60	60	140	133	0
+Glyph Atlas Summary	721	73	60	60	145	0	75264
+Layout Cache Summary	721	73	60	60	6	0	4640
+State Mutation Complete	721	0	60	60	1	0	72
+Text Summary	721	73	60	60	2	0	0
+Visible Layout Begin	721	73	60	60	0	0	0
+Visible Layout Complete	721	73	60	60	6	0	0
+Event Dispatch Begin	722	0	60	60	8	72	0
+State Mutation Complete	722	0	60	60	0	0	72
+Event Dispatch Begin	723	0	60	60	1	72	0
+State Mutation Complete	723	0	60	60	0	0	72
+Event Dispatch Begin	724	0	60	60	8	72	0
+State Mutation Complete	724	0	60	60	0	0	72
+Event Dispatch Begin	725	0	60	60	1	72	0
+State Mutation Complete	725	0	60	60	0	0	72
+Event Dispatch Begin	726	0	60	60	8	72	0
+State Mutation Complete	726	0	60	60	0	0	72
+Event Dispatch Begin	727	0	60	60	1	72	0
+State Mutation Complete	727	0	60	60	0	0	72
+Event Dispatch Begin	728	0	60	60	8	72	0
+State Mutation Complete	728	0	60	60	0	0	72
+Atlas Publication Begin	729	74	60	60	133	0	0
+Atlas Publication Complete	729	74	60	60	0	0	0
+Event Dispatch Begin	729	0	60	60	1	72	0
+Frame Build Begin	729	74	60	60	1148190720	1141309440	0
+Frame Build Complete	729	74	60	60	140	133	0
+Glyph Atlas Summary	729	74	60	60	145	0	75264
+Layout Cache Summary	729	74	60	60	6	0	4640
+Native Actual Presentation Latency	729	0	0	0	43670958	0	0
+Native Display Link Target Latency	729	0	0	0	10338542	0	0
+Native Event Handler Latency	729	0	0	0	102625	0	0
+Native Frame Queue Latency	729	0	0	0	1964292	0	0
+Native GPU Terminal Observed Latency	729	0	0	0	10405042	0	0
+Native Presentation Callback Lag	729	0	0	0	224125	0	0
+Native Presented Handler Latency	729	0	0	0	43895292	0	0
+Native Submission Latency	729	0	0	0	92500	0	0
+Native Target Presentation Latency	729	0	0	0	43671792	0	0
+Native Terminal Record Latency	729	0	0	0	10406542	0	0
+State Mutation Complete	729	0	60	60	1	0	73
+Text Summary	729	74	60	60	2	0	0
+Visible Layout Begin	729	74	60	60	0	0	0
+Visible Layout Complete	729	74	60	60	6	0	0
+Event Dispatch Begin	730	0	60	60	8	73	0
+State Mutation Complete	730	0	60	60	0	0	73
+Event Dispatch Begin	731	0	60	60	1	73	0
+State Mutation Complete	731	0	60	60	0	0	73
+Event Dispatch Begin	732	0	60	60	8	73	0
+State Mutation Complete	732	0	60	60	0	0	73
+Event Dispatch Begin	733	0	60	60	1	73	0
+State Mutation Complete	733	0	60	60	0	0	73
+Event Dispatch Begin	734	0	60	60	8	73	0
+State Mutation Complete	734	0	60	60	0	0	73
+Event Dispatch Begin	735	0	60	60	1	73	0
+State Mutation Complete	735	0	60	60	0	0	73
+Event Dispatch Begin	736	0	60	60	8	73	0
+State Mutation Complete	736	0	60	60	0	0	73
+Atlas Publication Begin	737	75	60	60	133	0	0
+Atlas Publication Complete	737	75	60	60	0	0	0
+Event Dispatch Begin	737	0	60	60	1	73	0
+Frame Build Begin	737	75	60	60	1148190720	1141309440	0
+Frame Build Complete	737	75	60	60	140	133	0
+Glyph Atlas Summary	737	75	60	60	145	0	75264
+Layout Cache Summary	737	75	60	60	6	0	4640
+State Mutation Complete	737	0	60	60	1	0	74
+Text Summary	737	75	60	60	2	0	0
+Visible Layout Begin	737	75	60	60	0	0	0
+Visible Layout Complete	737	75	60	60	6	0	0
+Event Dispatch Begin	738	0	60	60	8	74	0
+State Mutation Complete	738	0	60	60	0	0	74
+Event Dispatch Begin	739	0	60	60	1	74	0
+State Mutation Complete	739	0	60	60	0	0	74
+Event Dispatch Begin	740	0	60	60	8	74	0
+State Mutation Complete	740	0	60	60	0	0	74
+Event Dispatch Begin	741	0	60	60	1	74	0
+State Mutation Complete	741	0	60	60	0	0	74
+Event Dispatch Begin	742	0	60	60	8	74	0
+State Mutation Complete	742	0	60	60	0	0	74
+Event Dispatch Begin	743	0	60	60	1	74	0
+State Mutation Complete	743	0	60	60	0	0	74
+Event Dispatch Begin	744	0	60	60	8	74	0
+State Mutation Complete	744	0	60	60	0	0	74
+Atlas Publication Begin	745	76	60	60	133	0	0
+Atlas Publication Complete	745	76	60	60	0	0	0
+Event Dispatch Begin	745	0	60	60	1	74	0
+Frame Build Begin	745	76	60	60	1148190720	1141309440	0
+Frame Build Complete	745	76	60	60	140	133	0
+Glyph Atlas Summary	745	76	60	60	145	0	75264
+Layout Cache Summary	745	76	60	60	6	0	4640
+Native Actual Presentation Latency	745	0	0	0	43667375	0	0
+Native Display Link Target Latency	745	0	0	0	10335042	0	0
+Native Event Handler Latency	745	0	0	0	96625	0	0
+Native Frame Queue Latency	745	0	0	0	1985084	0	0
+Native GPU Terminal Observed Latency	745	0	0	0	10405250	0	0
+Native Presentation Callback Lag	745	0	0	0	252292	0	0
+Native Presented Handler Latency	745	0	0	0	43920125	0	0
+Native Submission Latency	745	0	0	0	79083	0	0
+Native Target Presentation Latency	745	0	0	0	43668292	0	0
+Native Terminal Record Latency	745	0	0	0	10407333	0	0
+State Mutation Complete	745	0	60	60	1	0	75
+Text Summary	745	76	60	60	2	0	0
+Visible Layout Begin	745	76	60	60	0	0	0
+Visible Layout Complete	745	76	60	60	6	0	0
+Event Dispatch Begin	746	0	60	60	8	75	0
+State Mutation Complete	746	0	60	60	0	0	75
+Event Dispatch Begin	747	0	60	60	1	75	0
+State Mutation Complete	747	0	60	60	0	0	75
+Event Dispatch Begin	748	0	60	60	8	75	0
+State Mutation Complete	748	0	60	60	0	0	75
+Event Dispatch Begin	749	0	60	60	1	75	0
+State Mutation Complete	749	0	60	60	0	0	75
+Event Dispatch Begin	750	0	60	60	8	75	0
+State Mutation Complete	750	0	60	60	0	0	75
+Event Dispatch Begin	751	0	60	60	1	75	0
+State Mutation Complete	751	0	60	60	0	0	75
+Event Dispatch Begin	752	0	60	60	8	75	0
+State Mutation Complete	752	0	60	60	0	0	75
+Atlas Publication Begin	753	77	60	60	133	0	0
+Atlas Publication Complete	753	77	60	60	0	0	0
+Event Dispatch Begin	753	0	60	60	1	75	0
+Frame Build Begin	753	77	60	60	1148190720	1141309440	0
+Frame Build Complete	753	77	60	60	140	133	0
+Glyph Atlas Summary	753	77	60	60	145	0	75264
+Layout Cache Summary	753	77	60	60	6	0	4640
+State Mutation Complete	753	0	60	60	1	0	76
+Text Summary	753	77	60	60	2	0	0
+Visible Layout Begin	753	77	60	60	0	0	0
+Visible Layout Complete	753	77	60	60	6	0	0
+Event Dispatch Begin	754	0	60	60	8	76	0
+State Mutation Complete	754	0	60	60	0	0	76
+Event Dispatch Begin	755	0	60	60	1	76	0
+State Mutation Complete	755	0	60	60	0	0	76
+Event Dispatch Begin	756	0	60	60	8	76	0
+State Mutation Complete	756	0	60	60	0	0	76
+Event Dispatch Begin	757	0	60	60	1	76	0
+State Mutation Complete	757	0	60	60	0	0	76
+Event Dispatch Begin	758	0	60	60	8	76	0
+State Mutation Complete	758	0	60	60	0	0	76
+Event Dispatch Begin	759	0	60	60	1	76	0
+State Mutation Complete	759	0	60	60	0	0	76
+Event Dispatch Begin	760	0	60	60	8	76	0
+State Mutation Complete	760	0	60	60	0	0	76
+Event Dispatch Begin	761	0	60	60	1	76	0
+State Mutation Complete	761	0	60	60	0	0	76
+Event Dispatch Begin	762	0	60	60	8	76	0
+State Mutation Complete	762	0	60	60	0	0	76
+Atlas Publication Begin	763	78	61	61	129	0	0
+Atlas Publication Complete	763	78	61	61	0	0	0
+Event Dispatch Begin	763	0	60	60	5	76	0
+Frame Build Begin	763	78	61	61	1148190720	1141309440	0
+Frame Build Complete	763	78	61	61	135	129	0
+Glyph Atlas Summary	763	78	61	61	141	0	75264
+Layout Cache Summary	763	78	61	61	5	1	5664
+Native Actual Presentation Latency	763	0	0	0	43726083	0	0
+Native Display Link Target Latency	763	0	0	0	10393792	0	0
+Native Event Handler Latency	763	0	0	0	100333	0	0
+Native Frame Queue Latency	763	0	0	0	2010291	0	0
+Native GPU Terminal Observed Latency	763	0	0	0	10455041	0	0
+Native Presentation Callback Lag	763	0	0	0	249417	0	0
+Native Presented Handler Latency	763	0	0	0	43975833	0	0
+Native Submission Latency	763	0	0	0	83750	0	0
+Native Target Presentation Latency	763	0	0	0	43727042	0	0
+Native Terminal Record Latency	763	0	0	0	10455875	0	0
+State Mutation Complete	763	0	61	61	1	1	77
+Text Summary	763	78	61	61	3	0	1
+Visible Layout Begin	763	78	61	61	0	0	0
+Visible Layout Complete	763	78	61	61	6	0	0
+Event Dispatch Begin	764	0	61	61	8	77	0
+State Mutation Complete	764	0	61	61	0	0	77
+Event Dispatch Begin	765	0	61	61	1	77	0
+State Mutation Complete	765	0	61	61	0	0	77
+Event Dispatch Begin	766	0	61	61	8	77	0
+State Mutation Complete	766	0	61	61	0	0	77
+Event Dispatch Begin	767	0	61	61	1	77	0
+State Mutation Complete	767	0	61	61	0	0	77
+Event Dispatch Begin	768	0	61	61	8	77	0
+State Mutation Complete	768	0	61	61	0	0	77
+Event Dispatch Begin	769	0	61	61	1	77	0
+State Mutation Complete	769	0	61	61	0	0	77
+Event Dispatch Begin	770	0	61	61	8	77	0
+State Mutation Complete	770	0	61	61	0	0	77
+Event Dispatch Begin	771	0	61	61	1	77	0
+State Mutation Complete	771	0	61	61	0	0	77
+Event Dispatch Begin	772	0	61	61	8	77	0
+State Mutation Complete	772	0	61	61	0	0	77
+Atlas Publication Begin	773	79	62	62	130	0	0
+Atlas Publication Complete	773	79	62	62	0	0	0
+Event Dispatch Begin	773	0	61	61	5	77	0
+Frame Build Begin	773	79	62	62	1148190720	1141309440	0
+Frame Build Complete	773	79	62	62	136	130	0
+Glyph Atlas Summary	773	79	62	62	142	0	75264
+Layout Cache Summary	773	79	62	62	5	1	5568
+State Mutation Complete	773	0	62	62	1	1	78
+Text Summary	773	79	62	62	3	0	1
+Visible Layout Begin	773	79	62	62	0	0	0
+Visible Layout Complete	773	79	62	62	6	0	0
+Event Dispatch Begin	774	0	62	62	8	78	0
+State Mutation Complete	774	0	62	62	0	0	78
+Event Dispatch Begin	775	0	62	62	1	78	0
+State Mutation Complete	775	0	62	62	0	0	78
+Event Dispatch Begin	776	0	62	62	8	78	0
+State Mutation Complete	776	0	62	62	0	0	78
+Event Dispatch Begin	777	0	62	62	1	78	0
+State Mutation Complete	777	0	62	62	0	0	78
+Event Dispatch Begin	778	0	62	62	8	78	0
+State Mutation Complete	778	0	62	62	0	0	78
+Event Dispatch Begin	779	0	62	62	1	78	0
+State Mutation Complete	779	0	62	62	0	0	78
+Event Dispatch Begin	780	0	62	62	8	78	0
+State Mutation Complete	780	0	62	62	0	0	78
+Event Dispatch Begin	781	0	62	62	1	78	0
+State Mutation Complete	781	0	62	62	0	0	78
+Event Dispatch Begin	782	0	62	62	8	78	0
+State Mutation Complete	782	0	62	62	0	0	78
+Atlas Publication Begin	783	80	63	63	131	0	0
+Atlas Publication Complete	783	80	63	63	0	0	0
+Event Dispatch Begin	783	0	62	62	5	78	0
+Frame Build Begin	783	80	63	63	1148190720	1141309440	0
+Frame Build Complete	783	80	63	63	137	131	0
+Glyph Atlas Summary	783	80	63	63	143	0	75264
+Layout Cache Summary	783	80	63	63	5	1	5632
+State Mutation Complete	783	0	63	63	1	1	79
+Text Summary	783	80	63	63	3	0	1
+Visible Layout Begin	783	80	63	63	0	0	0
+Visible Layout Complete	783	80	63	63	6	0	0
+Event Dispatch Begin	784	0	63	63	8	79	0
+State Mutation Complete	784	0	63	63	0	0	79
+Event Dispatch Begin	785	0	63	63	1	79	0
+State Mutation Complete	785	0	63	63	0	0	79
+Event Dispatch Begin	786	0	63	63	8	79	0
+State Mutation Complete	786	0	63	63	0	0	79
+Event Dispatch Begin	787	0	63	63	1	79	0
+State Mutation Complete	787	0	63	63	0	0	79
+Event Dispatch Begin	788	0	63	63	8	79	0
+State Mutation Complete	788	0	63	63	0	0	79
+Event Dispatch Begin	789	0	63	63	1	79	0
+State Mutation Complete	789	0	63	63	0	0	79
+Event Dispatch Begin	790	0	63	63	8	79	0
+State Mutation Complete	790	0	63	63	0	0	79
+Event Dispatch Begin	791	0	63	63	1	79	0
+State Mutation Complete	791	0	63	63	0	0	79
+Event Dispatch Begin	792	0	63	63	8	79	0
+State Mutation Complete	792	0	63	63	0	0	79
+Atlas Publication Begin	793	81	64	64	132	0	0
+Atlas Publication Complete	793	81	64	64	0	0	0
+Event Dispatch Begin	793	0	63	63	5	79	0
+Frame Build Begin	793	81	64	64	1148190720	1141309440	0
+Frame Build Complete	793	81	64	64	138	132	0
+Glyph Atlas Summary	793	81	64	64	144	0	75264
+Layout Cache Summary	793	81	64	64	5	1	5696
+Native Actual Presentation Latency	793	0	0	0	51778208	0	0
+Native Display Link Target Latency	793	0	0	0	18445917	0	0
+Native Event Handler Latency	793	0	0	0	41459	0	0
+Native Frame Queue Latency	793	0	0	0	10159041	0	0
+Native GPU Terminal Observed Latency	793	0	0	0	18598792	0	0
+Native Presentation Callback Lag	793	0	0	0	269042	0	0
+Native Presented Handler Latency	793	0	0	0	52047792	0	0
+Native Submission Latency	793	0	0	0	109459	0	0
+Native Target Presentation Latency	793	0	0	0	51779167	0	0
+Native Terminal Record Latency	793	0	0	0	18600917	0	0
+State Mutation Complete	793	0	64	64	1	1	80
+Text Summary	793	81	64	64	3	0	1
+Visible Layout Begin	793	81	64	64	0	0	0
+Visible Layout Complete	793	81	64	64	6	0	0
+Event Dispatch Begin	794	0	64	64	8	80	0
+State Mutation Complete	794	0	64	64	0	0	80
+Event Dispatch Begin	795	0	64	64	1	80	0
+State Mutation Complete	795	0	64	64	0	0	80
+Event Dispatch Begin	796	0	64	64	8	80	0
+State Mutation Complete	796	0	64	64	0	0	80
+Event Dispatch Begin	797	0	64	64	1	80	0
+State Mutation Complete	797	0	64	64	0	0	80
+Event Dispatch Begin	798	0	64	64	8	80	0
+State Mutation Complete	798	0	64	64	0	0	80
+Event Dispatch Begin	799	0	64	64	1	80	0
+State Mutation Complete	799	0	64	64	0	0	80
+Event Dispatch Begin	800	0	64	64	8	80	0
+State Mutation Complete	800	0	64	64	0	0	80
+Event Dispatch Begin	801	0	64	64	1	80	0
+State Mutation Complete	801	0	64	64	0	0	80
+Event Dispatch Begin	802	0	64	64	8	80	0
+State Mutation Complete	802	0	64	64	0	0	80
+Atlas Publication Begin	803	82	65	65	133	0	0
+Atlas Publication Complete	803	82	65	65	0	0	0
+Event Dispatch Begin	803	0	64	64	5	80	0
+Frame Build Begin	803	82	65	65	1148190720	1141309440	0
+Frame Build Complete	803	82	65	65	139	133	0
+Glyph Atlas Summary	803	82	65	65	145	0	75264
+Layout Cache Summary	803	82	65	65	5	1	5760
+Native Actual Presentation Latency	803	0	0	0	52093208	0	0
+Native Display Link Target Latency	803	0	0	0	18761000	0	0
+Native Event Handler Latency	803	0	0	0	101875	0	0
+Native Frame Queue Latency	803	0	0	0	10418666	0	0
+Native GPU Terminal Observed Latency	803	0	0	0	18908250	0	0
+Native Presentation Callback Lag	803	0	0	0	208083	0	0
+Native Presented Handler Latency	803	0	0	0	52301916	0	0
+Native Submission Latency	803	0	0	0	126042	0	0
+Native Target Presentation Latency	803	0	0	0	52094250	0	0
+Native Terminal Record Latency	803	0	0	0	27179541	0	0
+State Mutation Complete	803	0	65	65	1	1	81
+Text Summary	803	82	65	65	3	0	1
+Visible Layout Begin	803	82	65	65	0	0	0
+Visible Layout Complete	803	82	65	65	6	0	0
+Event Dispatch Begin	804	0	65	65	8	81	0
+State Mutation Complete	804	0	65	65	0	0	81
+Event Dispatch Begin	805	0	65	65	1	81	0
+State Mutation Complete	805	0	65	65	0	0	81
+Event Dispatch Begin	806	0	65	65	8	81	0
+State Mutation Complete	806	0	65	65	0	0	81
+Event Dispatch Begin	807	0	65	65	1	81	0
+State Mutation Complete	807	0	65	65	0	0	81
+Event Dispatch Begin	808	0	65	65	8	81	0
+State Mutation Complete	808	0	65	65	0	0	81
+Event Dispatch Begin	809	0	65	65	1	81	0
+State Mutation Complete	809	0	65	65	0	0	81
+Event Dispatch Begin	810	0	65	65	8	81	0
+State Mutation Complete	810	0	65	65	0	0	81
+Atlas Publication Begin	811	83	65	65	133	0	0
+Atlas Publication Complete	811	83	65	65	0	0	0
+Event Dispatch Begin	811	0	65	65	1	81	0
+Frame Build Begin	811	83	65	65	1148190720	1141309440	0
+Frame Build Complete	811	83	65	65	139	133	0
+Glyph Atlas Summary	811	83	65	65	145	0	75264
+Layout Cache Summary	811	83	65	65	6	0	4640
+State Mutation Complete	811	0	65	65	1	0	82
+Text Summary	811	83	65	65	2	0	0
+Visible Layout Begin	811	83	65	65	0	0	0
+Visible Layout Complete	811	83	65	65	6	0	0
+Event Dispatch Begin	812	0	65	65	8	82	0
+State Mutation Complete	812	0	65	65	0	0	82
+Event Dispatch Begin	813	0	65	65	1	82	0
+State Mutation Complete	813	0	65	65	0	0	82
+Event Dispatch Begin	814	0	65	65	8	82	0
+State Mutation Complete	814	0	65	65	0	0	82
+Event Dispatch Begin	815	0	65	65	1	82	0
+State Mutation Complete	815	0	65	65	0	0	82
+Event Dispatch Begin	816	0	65	65	8	82	0
+State Mutation Complete	816	0	65	65	0	0	82
+Event Dispatch Begin	817	0	65	65	1	82	0
+State Mutation Complete	817	0	65	65	0	0	82
+Event Dispatch Begin	818	0	65	65	8	82	0
+State Mutation Complete	818	0	65	65	0	0	82
+Atlas Publication Begin	819	84	66	66	133	0	0
+Atlas Publication Complete	819	84	66	66	0	0	0
+Event Dispatch Begin	819	0	65	65	1	82	0
+Frame Build Begin	819	84	66	66	1148190720	1141309440	0
+Frame Build Complete	819	84	66	66	139	133	0
+Glyph Atlas Summary	819	84	66	66	145	0	75264
+Layout Cache Summary	819	84	66	66	6	1	4640
+Native Display Link Target Latency	819	0	0	0	9162292	0	0
+Native Event Handler Latency	819	0	0	0	147291	0	0
+Native Frame Queue Latency	819	0	0	0	752250	0	0
+Native GPU Terminal Observed Latency	819	0	0	0	9240708	0	0
+Native Presented Handler Latency	819	0	0	0	32896125	0	0
+Native Submission Latency	819	0	0	0	220666	0	0
+Native Target Presentation Latency	819	0	0	0	42495542	0	0
+Native Terminal Record Latency	819	0	0	0	32883083	0	0
+State Mutation Complete	819	0	66	66	1	1	83
+Text Summary	819	84	66	66	3	0	1
+Visible Layout Begin	819	84	66	66	0	0	0
+Visible Layout Complete	819	84	66	66	7	0	0
+Event Dispatch Begin	820	0	66	66	8	83	0
+State Mutation Complete	820	0	66	66	0	0	83
+Event Dispatch Begin	821	0	66	66	1	83	0
+State Mutation Complete	821	0	66	66	0	0	83
+Event Dispatch Begin	822	0	66	66	8	83	0
+State Mutation Complete	822	0	66	66	0	0	83
+Event Dispatch Begin	823	0	66	66	1	83	0
+State Mutation Complete	823	0	66	66	0	0	83
+Event Dispatch Begin	824	0	66	66	8	83	0
+State Mutation Complete	824	0	66	66	0	0	83
+Event Dispatch Begin	825	0	66	66	1	83	0
+State Mutation Complete	825	0	66	66	0	0	83
+Event Dispatch Begin	826	0	66	66	8	83	0
+State Mutation Complete	826	0	66	66	0	0	83
+Event Dispatch Begin	827	0	66	66	1	83	0
+State Mutation Complete	827	0	66	66	0	0	83
+Event Dispatch Begin	828	0	66	66	8	83	0
+State Mutation Complete	828	0	66	66	0	0	83
+Atlas Publication Begin	829	85	67	67	141	0	0
+Atlas Publication Complete	829	85	67	67	1	262144	1
+Event Dispatch Begin	829	0	66	66	6	83	0
+Frame Build Begin	829	85	67	67	1148190720	1141309440	0
+Frame Build Complete	829	85	67	67	147	141	0
+Glyph Atlas Summary	829	85	67	67	150	5	271872
+Layout Cache Summary	829	85	67	67	6	1	4960
+Native Actual Presentation Latency	829	0	0	0	68297667	0	0
+Native Display Link Target Latency	829	0	0	0	34964500	0	0
+Native Event Handler Latency	829	0	0	0	9788042	0	0
+Native Frame Queue Latency	829	0	0	0	16933500	0	0
+Native GPU Terminal Observed Latency	829	0	0	0	35073834	0	0
+Native Presentation Callback Lag	829	0	0	0	271458	0	0
+Native Presented Handler Latency	829	0	0	0	68569959	0	0
+Native Submission Latency	829	0	0	0	305542	0	0
+Native Target Presentation Latency	829	0	0	0	68297750	0	0
+Native Terminal Record Latency	829	0	0	0	43422375	0	0
+State Mutation Complete	829	0	67	67	1	1	84
+Text Summary	829	85	67	67	3	5	1
+Visible Layout Begin	829	85	67	67	0	0	0
+Visible Layout Complete	829	85	67	67	7	0	0
+Event Dispatch Begin	830	0	67	67	8	84	0
+State Mutation Complete	830	0	67	67	0	0	84
+Event Dispatch Begin	831	0	67	67	1	84	0
+State Mutation Complete	831	0	67	67	0	0	84
+Event Dispatch Begin	832	0	67	67	8	84	0
+State Mutation Complete	832	0	67	67	0	0	84
+Event Dispatch Begin	833	0	67	67	1	84	0
+State Mutation Complete	833	0	67	67	0	0	84
+Event Dispatch Begin	834	0	67	67	8	84	0
+State Mutation Complete	834	0	67	67	0	0	84
+Event Dispatch Begin	835	0	67	67	1	84	0
+State Mutation Complete	835	0	67	67	0	0	84
+Event Dispatch Begin	836	0	67	67	8	84	0
+State Mutation Complete	836	0	67	67	0	0	84
+Event Dispatch Begin	837	0	67	67	1	84	0
+State Mutation Complete	837	0	67	67	0	0	84
+Event Dispatch Begin	838	0	67	67	8	84	0
+State Mutation Complete	838	0	67	67	0	0	84
+Event Dispatch Begin	839	0	67	67	10	84	0
+State Mutation Complete	839	0	67	67	0	0	84

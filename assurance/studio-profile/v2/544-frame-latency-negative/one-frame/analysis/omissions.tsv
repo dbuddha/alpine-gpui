@@ -1,0 +1,381 @@
+event	missing_stage
+2	Native Actual Presentation Latency
+2	Native Presentation Callback Lag
+30	Native Actual Presentation Latency
+30	Native Presentation Callback Lag
+73	Native Actual Presentation Latency
+73	Native Presentation Callback Lag
+81	Native Actual Presentation Latency
+81	Native Presentation Callback Lag
+337	Native Actual Presentation Latency
+337	Native Display Link Target Latency
+337	Native Event Handler Latency
+337	Native Frame Queue Latency
+337	Native GPU Terminal Observed Latency
+337	Native Presentation Callback Lag
+337	Native Presented Handler Latency
+337	Native Submission Latency
+337	Native Target Presentation Latency
+337	Native Terminal Record Latency
+347	Native Actual Presentation Latency
+347	Native Display Link Target Latency
+347	Native Event Handler Latency
+347	Native Frame Queue Latency
+347	Native GPU Terminal Observed Latency
+347	Native Presentation Callback Lag
+347	Native Presented Handler Latency
+347	Native Submission Latency
+347	Native Target Presentation Latency
+347	Native Terminal Record Latency
+367	Native Actual Presentation Latency
+367	Native Display Link Target Latency
+367	Native Event Handler Latency
+367	Native Frame Queue Latency
+367	Native GPU Terminal Observed Latency
+367	Native Presentation Callback Lag
+367	Native Presented Handler Latency
+367	Native Submission Latency
+367	Native Target Presentation Latency
+367	Native Terminal Record Latency
+377	Native Actual Presentation Latency
+377	Native Display Link Target Latency
+377	Native Event Handler Latency
+377	Native Frame Queue Latency
+377	Native GPU Terminal Observed Latency
+377	Native Presentation Callback Lag
+377	Native Presented Handler Latency
+377	Native Submission Latency
+377	Native Target Presentation Latency
+377	Native Terminal Record Latency
+387	Native Actual Presentation Latency
+387	Native Display Link Target Latency
+387	Native Event Handler Latency
+387	Native Frame Queue Latency
+387	Native GPU Terminal Observed Latency
+387	Native Presentation Callback Lag
+387	Native Presented Handler Latency
+387	Native Submission Latency
+387	Native Target Presentation Latency
+387	Native Terminal Record Latency
+397	Native Actual Presentation Latency
+397	Native Display Link Target Latency
+397	Native Event Handler Latency
+397	Native Frame Queue Latency
+397	Native GPU Terminal Observed Latency
+397	Native Presentation Callback Lag
+397	Native Presented Handler Latency
+397	Native Submission Latency
+397	Native Target Presentation Latency
+397	Native Terminal Record Latency
+417	Native Actual Presentation Latency
+417	Native Display Link Target Latency
+417	Native Event Handler Latency
+417	Native Frame Queue Latency
+417	Native GPU Terminal Observed Latency
+417	Native Presentation Callback Lag
+417	Native Presented Handler Latency
+417	Native Submission Latency
+417	Native Target Presentation Latency
+417	Native Terminal Record Latency
+427	Native Actual Presentation Latency
+427	Native Display Link Target Latency
+427	Native Event Handler Latency
+427	Native Frame Queue Latency
+427	Native GPU Terminal Observed Latency
+427	Native Presentation Callback Lag
+427	Native Presented Handler Latency
+427	Native Submission Latency
+427	Native Target Presentation Latency
+427	Native Terminal Record Latency
+447	Native Actual Presentation Latency
+447	Native Display Link Target Latency
+447	Native Event Handler Latency
+447	Native Frame Queue Latency
+447	Native GPU Terminal Observed Latency
+447	Native Presentation Callback Lag
+447	Native Presented Handler Latency
+447	Native Submission Latency
+447	Native Target Presentation Latency
+447	Native Terminal Record Latency
+457	Native Actual Presentation Latency
+457	Native Display Link Target Latency
+457	Native Event Handler Latency
+457	Native Frame Queue Latency
+457	Native GPU Terminal Observed Latency
+457	Native Presentation Callback Lag
+457	Native Presented Handler Latency
+457	Native Submission Latency
+457	Native Target Presentation Latency
+457	Native Terminal Record Latency
+477	Native Actual Presentation Latency
+477	Native Display Link Target Latency
+477	Native Event Handler Latency
+477	Native Frame Queue Latency
+477	Native GPU Terminal Observed Latency
+477	Native Presentation Callback Lag
+477	Native Presented Handler Latency
+477	Native Submission Latency
+477	Native Target Presentation Latency
+477	Native Terminal Record Latency
+487	Native Actual Presentation Latency
+487	Native Display Link Target Latency
+487	Native Event Handler Latency
+487	Native Frame Queue Latency
+487	Native GPU Terminal Observed Latency
+487	Native Presentation Callback Lag
+487	Native Presented Handler Latency
+487	Native Submission Latency
+487	Native Target Presentation Latency
+487	Native Terminal Record Latency
+497	Native Actual Presentation Latency
+497	Native Display Link Target Latency
+497	Native Event Handler Latency
+497	Native Frame Queue Latency
+497	Native GPU Terminal Observed Latency
+497	Native Presentation Callback Lag
+497	Native Presented Handler Latency
+497	Native Submission Latency
+497	Native Target Presentation Latency
+497	Native Terminal Record Latency
+517	Native Actual Presentation Latency
+517	Native Display Link Target Latency
+517	Native Event Handler Latency
+517	Native Frame Queue Latency
+517	Native GPU Terminal Observed Latency
+517	Native Presentation Callback Lag
+517	Native Presented Handler Latency
+517	Native Submission Latency
+517	Native Target Presentation Latency
+517	Native Terminal Record Latency
+527	Native Actual Presentation Latency
+527	Native Display Link Target Latency
+527	Native Event Handler Latency
+527	Native Frame Queue Latency
+527	Native GPU Terminal Observed Latency
+527	Native Presentation Callback Lag
+527	Native Presented Handler Latency
+527	Native Submission Latency
+527	Native Target Presentation Latency
+527	Native Terminal Record Latency
+537	Native Actual Presentation Latency
+537	Native Display Link Target Latency
+537	Native Event Handler Latency
+537	Native Frame Queue Latency
+537	Native GPU Terminal Observed Latency
+537	Native Presentation Callback Lag
+537	Native Presented Handler Latency
+537	Native Submission Latency
+537	Native Target Presentation Latency
+537	Native Terminal Record Latency
+557	Native Actual Presentation Latency
+557	Native Display Link Target Latency
+557	Native Event Handler Latency
+557	Native Frame Queue Latency
+557	Native GPU Terminal Observed Latency
+557	Native Presentation Callback Lag
+557	Native Presented Handler Latency
+557	Native Submission Latency
+557	Native Target Presentation Latency
+557	Native Terminal Record Latency
+567	Native Actual Presentation Latency
+567	Native Display Link Target Latency
+567	Native Event Handler Latency
+567	Native Frame Queue Latency
+567	Native GPU Terminal Observed Latency
+567	Native Presentation Callback Lag
+567	Native Presented Handler Latency
+567	Native Submission Latency
+567	Native Target Presentation Latency
+567	Native Terminal Record Latency
+577	Native Actual Presentation Latency
+577	Native Display Link Target Latency
+577	Native Event Handler Latency
+577	Native Frame Queue Latency
+577	Native GPU Terminal Observed Latency
+577	Native Presentation Callback Lag
+577	Native Presented Handler Latency
+577	Native Submission Latency
+577	Native Target Presentation Latency
+577	Native Terminal Record Latency
+597	Native Actual Presentation Latency
+597	Native Display Link Target Latency
+597	Native Event Handler Latency
+597	Native Frame Queue Latency
+597	Native GPU Terminal Observed Latency
+597	Native Presentation Callback Lag
+597	Native Presented Handler Latency
+597	Native Submission Latency
+597	Native Target Presentation Latency
+597	Native Terminal Record Latency
+607	Native Actual Presentation Latency
+607	Native Display Link Target Latency
+607	Native Event Handler Latency
+607	Native Frame Queue Latency
+607	Native GPU Terminal Observed Latency
+607	Native Presentation Callback Lag
+607	Native Presented Handler Latency
+607	Native Submission Latency
+607	Native Target Presentation Latency
+607	Native Terminal Record Latency
+627	Native Actual Presentation Latency
+627	Native Display Link Target Latency
+627	Native Event Handler Latency
+627	Native Frame Queue Latency
+627	Native GPU Terminal Observed Latency
+627	Native Presentation Callback Lag
+627	Native Presented Handler Latency
+627	Native Submission Latency
+627	Native Target Presentation Latency
+627	Native Terminal Record Latency
+637	Native Actual Presentation Latency
+637	Native Display Link Target Latency
+637	Native Event Handler Latency
+637	Native Frame Queue Latency
+637	Native GPU Terminal Observed Latency
+637	Native Presentation Callback Lag
+637	Native Presented Handler Latency
+637	Native Submission Latency
+637	Native Target Presentation Latency
+637	Native Terminal Record Latency
+657	Native Actual Presentation Latency
+657	Native Display Link Target Latency
+657	Native Event Handler Latency
+657	Native Frame Queue Latency
+657	Native GPU Terminal Observed Latency
+657	Native Presentation Callback Lag
+657	Native Presented Handler Latency
+657	Native Submission Latency
+657	Native Target Presentation Latency
+657	Native Terminal Record Latency
+667	Native Actual Presentation Latency
+667	Native Display Link Target Latency
+667	Native Event Handler Latency
+667	Native Frame Queue Latency
+667	Native GPU Terminal Observed Latency
+667	Native Presentation Callback Lag
+667	Native Presented Handler Latency
+667	Native Submission Latency
+667	Native Target Presentation Latency
+667	Native Terminal Record Latency
+677	Native Actual Presentation Latency
+677	Native Display Link Target Latency
+677	Native Event Handler Latency
+677	Native Frame Queue Latency
+677	Native GPU Terminal Observed Latency
+677	Native Presentation Callback Lag
+677	Native Presented Handler Latency
+677	Native Submission Latency
+677	Native Target Presentation Latency
+677	Native Terminal Record Latency
+693	Native Actual Presentation Latency
+693	Native Display Link Target Latency
+693	Native Event Handler Latency
+693	Native Frame Queue Latency
+693	Native GPU Terminal Observed Latency
+693	Native Presentation Callback Lag
+693	Native Presented Handler Latency
+693	Native Submission Latency
+693	Native Target Presentation Latency
+693	Native Terminal Record Latency
+709	Native Actual Presentation Latency
+709	Native Display Link Target Latency
+709	Native Event Handler Latency
+709	Native Frame Queue Latency
+709	Native GPU Terminal Observed Latency
+709	Native Presentation Callback Lag
+709	Native Presented Handler Latency
+709	Native Submission Latency
+709	Native Target Presentation Latency
+709	Native Terminal Record Latency
+717	Native Actual Presentation Latency
+717	Native Display Link Target Latency
+717	Native Event Handler Latency
+717	Native Frame Queue Latency
+717	Native GPU Terminal Observed Latency
+717	Native Presentation Callback Lag
+717	Native Presented Handler Latency
+717	Native Submission Latency
+717	Native Target Presentation Latency
+717	Native Terminal Record Latency
+733	Native Actual Presentation Latency
+733	Native Display Link Target Latency
+733	Native Event Handler Latency
+733	Native Frame Queue Latency
+733	Native GPU Terminal Observed Latency
+733	Native Presentation Callback Lag
+733	Native Presented Handler Latency
+733	Native Submission Latency
+733	Native Target Presentation Latency
+733	Native Terminal Record Latency
+749	Native Actual Presentation Latency
+749	Native Display Link Target Latency
+749	Native Event Handler Latency
+749	Native Frame Queue Latency
+749	Native GPU Terminal Observed Latency
+749	Native Presentation Callback Lag
+749	Native Presented Handler Latency
+749	Native Submission Latency
+749	Native Target Presentation Latency
+749	Native Terminal Record Latency
+765	Native Actual Presentation Latency
+765	Native Display Link Target Latency
+765	Native Event Handler Latency
+765	Native Frame Queue Latency
+765	Native GPU Terminal Observed Latency
+765	Native Presentation Callback Lag
+765	Native Presented Handler Latency
+765	Native Submission Latency
+765	Native Target Presentation Latency
+765	Native Terminal Record Latency
+781	Native Actual Presentation Latency
+781	Native Display Link Target Latency
+781	Native Event Handler Latency
+781	Native Frame Queue Latency
+781	Native GPU Terminal Observed Latency
+781	Native Presentation Callback Lag
+781	Native Presented Handler Latency
+781	Native Submission Latency
+781	Native Target Presentation Latency
+781	Native Terminal Record Latency
+791	Native Actual Presentation Latency
+791	Native Display Link Target Latency
+791	Native Event Handler Latency
+791	Native Frame Queue Latency
+791	Native GPU Terminal Observed Latency
+791	Native Presentation Callback Lag
+791	Native Presented Handler Latency
+791	Native Submission Latency
+791	Native Target Presentation Latency
+791	Native Terminal Record Latency
+811	Native Actual Presentation Latency
+811	Native Display Link Target Latency
+811	Native Event Handler Latency
+811	Native Frame Queue Latency
+811	Native GPU Terminal Observed Latency
+811	Native Presentation Callback Lag
+811	Native Presented Handler Latency
+811	Native Submission Latency
+811	Native Target Presentation Latency
+811	Native Terminal Record Latency
+821	Native Actual Presentation Latency
+821	Native Display Link Target Latency
+821	Native Event Handler Latency
+821	Native Frame Queue Latency
+821	Native GPU Terminal Observed Latency
+821	Native Presentation Callback Lag
+821	Native Presented Handler Latency
+821	Native Submission Latency
+821	Native Target Presentation Latency
+821	Native Terminal Record Latency
+876	Native Actual Presentation Latency
+876	Native Display Link Target Latency
+876	Native Event Handler Latency
+876	Native Frame Queue Latency
+876	Native GPU Terminal Observed Latency
+876	Native Presentation Callback Lag
+876	Native Presented Handler Latency
+876	Native Submission Latency
+876	Native Target Presentation Latency
+876	Native Terminal Record Latency
+884	Native Actual Presentation Latency
+884	Native Presentation Callback Lag
