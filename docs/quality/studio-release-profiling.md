@@ -140,6 +140,19 @@ Observer A/A calibration, Instruments traces, display refresh, power, thermal,
 and optical evidence are absent. Defect #304 and Experiment #331 therefore
 remain open.
 
+### Command-buffer presentation negative result
+
+[Experiment #553](https://github.com/dbuddha/alpine-gpui/issues/553) tested a
+command-buffer-owned drawable presentation against the accepted direct-present
+path on the same Apple M4 host. The canonical paired package is
+[`assurance/studio-profile/v2/553-command-buffer-presentation`](../../assurance/studio-profile/v2/553-command-buffer-presentation/README.md).
+Both isolated runs preserved the exact `33,333,250 ns` interval from the
+display-link target to target presentation. The candidate's `0.810 ms` lower
+actual-presentation p50 was already present at the display-link target and is
+not attributable to command-buffer ownership under the uncalibrated one-pair
+protocol. The candidate was rejected, the direct-present path remains current,
+and the fixed presentation offset remains open under #304 and #331.
+
 Unified logging has observer cost. Run matched capture-off and capture-on A/A
 windows before using persisted distributions to attribute a stall. Reject the
 fallback for causal analysis when its confidence interval shows material
