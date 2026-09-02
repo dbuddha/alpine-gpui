@@ -4001,6 +4001,9 @@ impl StudioApp {
                 cancel_close: true,
             }
         } else {
+            if let Some(capture) = self.dogfood_capture.as_ref() {
+                capture.capture(self);
+            }
             StudioTransition::default()
         }
     }

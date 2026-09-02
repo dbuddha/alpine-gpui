@@ -280,6 +280,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         CloseReplayScenario::Cancel
     )?);
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
+    let cancelled_quit_events = Arc::new(Mutex::new(Vec::new()));
+    let cancelled_quit_received = Arc::clone(&cancelled_quit_events);
+    assert!(!native_validation::replay_application_quit_with_handler(
+        &surface,
+        move |event| {
+            if let Ok(mut received) = cancelled_quit_received.lock() {
+                received.push(event);
+            }
+            SurfaceResponse::new(None, None, CloseDisposition::Cancel)
+        },
+    )?);
+    assert!(matches!(
+        cancelled_quit_events
+            .lock()
+            .map_err(|_| "cancelled quit receiver poisoned")?
+            .as_slice(),
+        [SurfaceEvent::CloseRequested { .. }]
+    ));
+    assert_eq!(observer.lifecycle(), SurfaceLifecycle::Live);
     assert!(native_validation::replay_close_with_handler(
         &surface,
         |_| SurfaceResponse::new(None, None, CloseDisposition::Allow),
@@ -294,6 +313,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(evidence.active(), [0; 10]);
     assert_eq!(evidence.pasteboard_releases(), 1);
     assert_eq!(evidence.release_order_violations(), 0);
+
+    let quit_surface = native_validation::new_surface(&descriptor)?;
+    let quit_observer = quit_surface.observer();
+    let admitted_quit_events = Arc::new(Mutex::new(Vec::new()));
+    let admitted_quit_received = Arc::clone(&admitted_quit_events);
+    assert!(native_validation::replay_application_quit_with_handler(
+        &quit_surface,
+        move |event| {
+            if let Ok(mut received) = admitted_quit_received.lock() {
+                received.push(event);
+            }
+            SurfaceResponse::new(None, None, CloseDisposition::Allow)
+        },
+    )?);
+    assert!(matches!(
+        admitted_quit_events
+            .lock()
+            .map_err(|_| "admitted quit receiver poisoned")?
+            .as_slice(),
+        [
+            SurfaceEvent::CloseRequested { .. },
+            SurfaceEvent::Focus { focused: false, .. }
+        ]
+    ));
+    assert_eq!(quit_observer.lifecycle(), SurfaceLifecycle::Closing);
+    let quit_evidence = native_validation::close_with_owner_evidence(quit_surface)?;
+    assert_eq!(quit_evidence.active(), [0; 10]);
+    assert_eq!(quit_evidence.release_order_violations(), 0);
     Ok(())
 }
 

@@ -184,7 +184,7 @@ if [ "$fixture" != true ]; then
     [ "$running_binary" = "$binary" ] || fail "Studio process identity drifted during capture"
     current_start=$(ps -ww -p "$studio_pid" -o lstart= | sed 's/^[[:space:]]*//')
     [ "$current_start" = "$process_start" ] || fail "Studio process start identity drifted"
-    printf 'sampling complete; close Alpine Studio within %s seconds\n' "$post_close_timeout"
+    printf 'sampling complete; request application Quit or close the Alpine Studio window within %s seconds; a blocked close remains live\n' "$post_close_timeout"
 fi
 
 remaining=$post_close_timeout

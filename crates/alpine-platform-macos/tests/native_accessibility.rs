@@ -370,6 +370,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let rejected_descriptor =
         SurfaceDescriptor::new("Alpine rejected accessibility", 96.0, 64.0, 1.0)?;
+    assert!(matches!(
+        native_validation::new_surface(&rejected_descriptor),
+        Err(alpine_platform_macos::SurfaceError::InvariantViolation {
+            operation: alpine_platform_macos::SurfaceOperation::Application
+        })
+    ));
+    let owner_evidence = native_validation::close_with_owner_evidence(surface)?;
+    assert_eq!(owner_evidence.active(), [0; 10]);
+    assert_eq!(owner_evidence.release_order_violations(), 0);
+
     let rejected_surface = native_validation::new_surface(&rejected_descriptor)?;
     rejected_surface.show()?;
     let rejected_state = Arc::new(Mutex::new(State {
@@ -406,9 +416,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(rejected_owner_evidence.active(), [0; 10]);
     assert_eq!(rejected_owner_evidence.release_order_violations(), 0);
 
-    let owner_evidence = native_validation::close_with_owner_evidence(surface)?;
-    assert_eq!(owner_evidence.active(), [0; 10]);
-    assert_eq!(owner_evidence.release_order_violations(), 0);
     Ok(())
 }
 

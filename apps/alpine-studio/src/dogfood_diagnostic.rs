@@ -27,7 +27,7 @@ const LANGUAGE_BUDGET_BYTES: usize = 16 * 1024 * 1024;
 const FOREGROUND_QUEUE_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 const OMITTED_EVIDENCE: [&str; 10] = [
     "accessibility-stale-actions",
-    "background-queue-bytes",
+    "background-queue",
     "font-cache",
     "fallback-cache",
     "glyph-atlas-gpu",
@@ -766,6 +766,7 @@ mod tests {
         for required in [
             "accessibility-stale-actions",
             "accessibility-tree",
+            "background-queue",
             "language-responses",
             "upload-staging-budget",
         ] {
@@ -839,6 +840,64 @@ mod tests {
                 )
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_close_captures_before_finish_and_blocked_close_does_not() -> Result<(), String> {
+        let output = output_path("admitted-close")?;
+        let controller = CaptureController::new(
+            &output,
+            "local-edit".to_owned(),
+            "c".repeat(40),
+            "2026-09-01T12:00:00Z".to_owned(),
+        )
+        .map_err(|error| error.to_string())?;
+        let sink = controller.sink();
+        let mut app =
+            StudioApp::new(crate::tests::TestTextSystem).map_err(|error| error.to_string())?;
+        app.dogfood_capture = Some(sink.clone());
+
+        assert!(sink.0.borrow().is_none());
+        let admitted = app.handle_close_request();
+        assert!(!admitted.cancel_close);
+        assert!(sink.0.borrow().is_some());
+        controller
+            .finish(
+                ApplicationSnapshot::default(),
+                &SurfaceSnapshot::empty_for_test(),
+            )
+            .map_err(|error| error.to_string())?;
+        assert!(output.is_file());
+        fs::remove_file(output).map_err(|error| error.to_string())?;
+
+        let blocked_output = output_path("blocked-close")?;
+        let blocked_controller = CaptureController::new(
+            &blocked_output,
+            "local-edit".to_owned(),
+            "d".repeat(40),
+            "2026-09-01T12:00:01Z".to_owned(),
+        )
+        .map_err(|error| error.to_string())?;
+        let blocked_sink = blocked_controller.sink();
+        let mut blocked_app =
+            StudioApp::new(crate::tests::TestTextSystem).map_err(|error| error.to_string())?;
+        let changed = blocked_app.replace_selection("dirty");
+        assert!(changed.document_changed);
+        blocked_app.dogfood_capture = Some(blocked_sink.clone());
+
+        let blocked = blocked_app.handle_close_request();
+        assert!(blocked.cancel_close);
+        assert!(blocked_sink.0.borrow().is_none());
+        assert!(
+            blocked_controller
+                .finish(
+                    ApplicationSnapshot::default(),
+                    &SurfaceSnapshot::empty_for_test(),
+                )
+                .is_err()
+        );
+        assert!(!blocked_output.exists());
         Ok(())
     }
 

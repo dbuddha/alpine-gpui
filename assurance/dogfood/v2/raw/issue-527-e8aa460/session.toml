@@ -1,0 +1,94 @@
+schema = "alpine-studio-dogfood/v2"
+captured_at_utc = "2026-09-01T23:20:07Z"
+alpine_revision = "e8aa4600ff4082ebfaea17f879917c6a3718685b"
+duration_ms = 20502
+requested_duration_ms = 20000
+interval_ms = 5000
+process_pid = 2178
+process_start = "Tue Sep  1 16:20:07 2026    "
+evidence_scope = "physical"
+binary_sha256 = "bf18b471b866f086e5701f4c4a5b95c2c2b157125086724f8a2d960804b484fb"
+binary_bytes = 3368384
+sampler_sha256 = "c300bd4ffe79dac4dc20f58372bf5bc33b8b39ffd0c5f3988b95d452ab25373d"
+sampler_bytes = 789360
+gpu_process_sampling = "omitted-unavailable"
+
+[identity]
+id = "physical-isolated-close"
+workload_id = "physical-isolated-clean-file"
+workload_version = 1
+workspace_fixture = "isolated-clean-rust-file"
+workspace_fixture_sha256 = "bdf92115381cac9815b5e7b6352c978f5eb5d9868dcfb614910be64ffc539cf3"
+settings_profile = "default-settings-empty-session"
+settings_sha256 = "4efaec45505fbabbf2e50cd96c081502720489928bdd94d4bf87973ead4501df"
+opt_in = true
+telemetry = false
+network_io = false
+performance_claim = "none"
+coverage = [
+    "launch",
+    "lifecycle",
+    "memory",
+    "shutdown",
+]
+assumptions = [
+    "clean issue-527 revision",
+    "clean regular-file fixture",
+    "isolated empty session HOME",
+    "application Quit routed through production close admission",
+]
+exclusions = [
+    "telemetry",
+    "network-io",
+    "comparative-claim",
+]
+
+[identity.environment]
+hardware_id = "local-apple-m4-qualification-host"
+os_build = "25G83"
+architecture = "arm64"
+display_refresh_hz = 120
+power_source = "ac"
+thermal_state = "nominal"
+toolchain = "rustc 1.97.1 (8bab26f4f 2026-07-14) "
+locale = "C.UTF-8"
+
+[identity.font]
+family = "SF Mono"
+postscript_name = "SFMono-Regular"
+size_milli_points = 13000
+
+[identity.language_server]
+name = "none"
+version = "none"
+executable_sha256 = "none"
+
+[[artifacts]]
+name = "internal-diagnostic"
+file = "internal-diagnostic.json"
+sha256 = "6acde1d443165a7cb1c04ddb25671f04b8657d807a28c83b65b94bcd3a832f7f"
+bytes = 3537
+
+[[artifacts]]
+name = "process-footprint"
+file = "footprint.json"
+sha256 = "7b93a10e6bb91e9e1ab68fb5c7ca9eb0735c43b4fbd86eccb2c030396e84aaa0"
+bytes = 3528
+
+[[artifacts]]
+name = "studio-stdout"
+file = "studio.stdout"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+bytes = 0
+
+[[artifacts]]
+name = "studio-stderr"
+file = "studio.stderr"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+bytes = 0
+
+[[artifacts]]
+name = "snapshot"
+file = "snapshot.toml"
+sha256 = "5b9173fd54ce691dd8a98731737a03ee351dd82f48445b446d658054fb0cb339"
+bytes = 3101
