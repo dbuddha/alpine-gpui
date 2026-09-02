@@ -551,11 +551,7 @@ fn elapsed_ns(start: Instant, end: Instant) -> u64 {
 }
 
 fn media_time_delta_ns(start_seconds: f64, end_seconds: f64) -> Option<u64> {
-    if !start_seconds.is_finite()
-        || !end_seconds.is_finite()
-        || start_seconds <= 0.0
-        || end_seconds <= 0.0
-    {
+    if start_seconds <= 0.0 || end_seconds <= 0.0 {
         return None;
     }
     let duration = Duration::try_from_secs_f64(end_seconds - start_seconds).ok()?;
