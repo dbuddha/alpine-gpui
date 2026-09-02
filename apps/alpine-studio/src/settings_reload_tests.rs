@@ -190,6 +190,15 @@ fn settings_submission_retries_only_saturation_without_a_failure_banner()
     assert_eq!(app.settings_reload.report().stale_results, 1);
 
     assert!(!app.apply_settings_submission_result(
+        generation.saturating_add(1),
+        true,
+        Err(SubmitError::Closed)
+    ));
+    assert_eq!(app.local_status, None);
+    assert!(app.settings_reload.report().in_flight);
+    assert_eq!(app.settings_reload.report().stale_results, 2);
+
+    assert!(!app.apply_settings_submission_result(
         generation,
         request.announce(),
         Err(SubmitError::Saturated)
