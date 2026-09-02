@@ -963,7 +963,7 @@ mod benchmark_tests {
         assert_eq!(stage_csv.lines().count(), 2);
 
         #[cfg(not(target_os = "macos"))]
-        assert_native_profilers_reject_unsupported_host(&directory, &manifest)?;
+        assert_native_profilers_reject_unsupported_host(&directory, &manifest);
         assert!(!output.exists());
         Ok(())
     }
