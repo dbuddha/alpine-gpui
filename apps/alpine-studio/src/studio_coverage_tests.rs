@@ -1749,7 +1749,10 @@ fn dirty_file_close_is_blocked_until_atomic_save_succeeds() -> Result<(), Box<dy
         timestamp: EventTimestamp::new(2),
     });
     assert!(blocked.cancel_close);
-    assert_eq!(app.local_status, Some(LocalStatus::CloseBlocked));
+    assert!(matches!(
+        app.local_status,
+        Some(LocalStatus::CloseBlocked(ref message)) if message.contains("Command-S")
+    ));
     assert!(
         app.handle_event(&key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND)))
             .visual_changed
@@ -1762,6 +1765,64 @@ fn dirty_file_close_is_blocked_until_atomic_save_succeeds() -> Result<(), Box<dy
         })
         .cancel_close
     );
+    Ok(())
+}
+
+#[test]
+fn close_blockers_preserve_file_error_recovery_and_activation_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut file_error = test_app()?;
+    file_error.last_file_error = Some(FileError::Conflict(ExternalChange::Modified));
+    let label = file_error
+        .tabs
+        .label(file_error.tabs.active_index())
+        .ok_or("active label")?;
+    let blocked = file_error.handle_close_request();
+    assert!(blocked.cancel_close);
+    assert_eq!(
+        file_error.local_status.as_ref().map(LocalStatus::message),
+        Some(format!("Resolve the file error in {label} before closing.").as_str())
+    );
+
+    let root = TestWorkspace::new()?;
+    let recovered_path = root.path().join("recovered.rs");
+    let session_path = root.path().join("state").join("session-v1.bin");
+    fs::write(&recovered_path, "base")?;
+    dirty_recovery_fixture(&session_path, &recovered_path, "local ")?;
+    fs::write(&recovered_path, "external")?;
+    let target = ExplicitPathTarget::open(&recovered_path, ExplicitPathKind::File)?;
+    let mut recovered = compose_explicit_path(TestTextSystem, target, Some(session_path))?;
+    let blocked = recovered.handle_close_request();
+    assert!(blocked.cancel_close);
+    assert_eq!(
+        recovered.local_status.as_ref().map(LocalStatus::message),
+        Some(
+            "Recovered changes in recovered.rs conflict with disk; copy them to safety before closing."
+        )
+    );
+
+    root.write("alpha.rs", "alpha")?;
+    root.write("beta.rs", "beta")?;
+    let mut activation_error = StudioApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = activation_error.workspace.as_ref().ok_or("workspace")?;
+    let alpha = workspace.index_named("alpha.rs").ok_or("alpha")?;
+    let beta = workspace.index_named("beta.rs").ok_or("beta")?;
+    activation_error.open_workspace_entry(alpha)?;
+    assert!(
+        activation_error
+            .handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    activation_error.open_workspace_entry(beta)?;
+    activation_error.tabs.inject_active_index_fault();
+    let failures = activation_error.workspace_failures;
+    let blocked = activation_error.handle_close_request();
+    assert!(blocked.cancel_close);
+    assert_eq!(activation_error.workspace_failures, failures + 1);
+    assert!(matches!(
+        activation_error.local_status,
+        Some(LocalStatus::CloseBlocked(_))
+    ));
     Ok(())
 }
 
@@ -2019,9 +2080,16 @@ fn explicit_file_launch_composes_dirty_recovery_without_replacing_local_text()
     assert_eq!(app.tabs.len(), 2);
     assert_eq!(app.tabs.active_index(), 1);
     assert_eq!(app.buffer().snapshot().text(), "requested\n");
-    assert!(app.activate_document_tab(0)?.document_changed);
+    let blocked = app.handle_close_request();
+    assert!(blocked.cancel_close);
+    assert!(blocked.effect.document_changed);
+    assert_eq!(app.tabs.active_index(), 0);
     assert_eq!(app.buffer().snapshot().text(), "local recovery\n");
     assert!(app.document.is_dirty());
+    assert_eq!(
+        app.local_status.as_ref().map(LocalStatus::message),
+        Some("Save changes in recovered.rs with Command-S before closing.")
+    );
     drop(app);
 
     let retained = recovery::load(&recovery::path_for_session(&session_path))?;
@@ -2331,8 +2399,8 @@ fn workspace_errors_and_statuses_preserve_exact_sources_and_messages()
         assert!(std::error::Error::source(&error).is_none());
     }
     assert_eq!(
-        LocalStatus::CloseBlocked.message(),
-        "Save changes before closing."
+        LocalStatus::CloseBlocked(Arc::from("close owner")).message(),
+        "close owner"
     );
     assert_eq!(
         LocalStatus::Workspace(Arc::from("workspace status")).message(),
@@ -3242,9 +3310,17 @@ fn bounded_tabs_preserve_dirty_documents_and_refuse_dirty_close()
     assert!(app.open_workspace_entry(beta)?.document_changed);
     assert_eq!(app.buffer().snapshot().text(), "beta");
     let tab_count = app.tabs.len();
-    assert!(app.handle_close_request().cancel_close);
+    let blocked = app.handle_close_request();
+    assert!(blocked.cancel_close);
+    assert!(blocked.effect.document_changed);
+    assert_eq!(app.tabs.active_index(), 1);
+    assert_eq!(app.buffer().snapshot().text(), dirty_alpha);
+    assert_eq!(
+        app.local_status.as_ref().map(LocalStatus::message),
+        Some("Save changes in alpha.rs with Command-S before closing.")
+    );
 
-    assert!(app.open_workspace_entry(alpha)?.document_changed);
+    assert_eq!(app.open_workspace_entry(alpha)?, EventEffect::default());
     assert_eq!(app.tabs.len(), tab_count);
     assert_eq!(app.buffer().snapshot().text(), dirty_alpha);
     assert!(matches!(
