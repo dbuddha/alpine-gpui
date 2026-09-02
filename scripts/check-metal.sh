@@ -87,6 +87,11 @@ for iteration in $(seq 1 25); do
         cargo test --locked -p alpine-platform-macos --test native_lifecycle
 done
 printf '%s\n' 'native missing-close teardown stress passed 25 iterations'
+for iteration in $(seq 1 25); do
+    RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
+        cargo test --locked -p alpine-platform-macos --test native_wake
+done
+printf '%s\n' 'native wake teardown stress passed 25 iterations'
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_input
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
