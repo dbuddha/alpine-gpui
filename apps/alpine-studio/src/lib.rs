@@ -8495,6 +8495,16 @@ pub mod native_validation {
         latest_frames >= required_frames
     }
 
+    const PROJECT_SEARCH_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+    fn project_search_publication_window_open(elapsed: Duration, timeout: Duration) -> bool {
+        elapsed < timeout
+    }
+
+    fn next_project_search_event_timestamp(timestamp: u64) -> Option<u64> {
+        timestamp.checked_add(1)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one process journey preserves surface, worker, search, save, and drain identity"
@@ -8569,10 +8579,34 @@ pub mod native_validation {
             required_terminal_frames.saturating_add(1),
             required_terminal_frames,
         ));
+        assert_eq!(PROJECT_SEARCH_PUBLICATION_TIMEOUT, Duration::from_secs(5));
+        assert!(project_search_publication_window_open(
+            Duration::ZERO,
+            PROJECT_SEARCH_PUBLICATION_TIMEOUT,
+        ));
+        assert!(project_search_publication_window_open(
+            PROJECT_SEARCH_PUBLICATION_TIMEOUT.saturating_sub(Duration::from_nanos(1)),
+            PROJECT_SEARCH_PUBLICATION_TIMEOUT,
+        ));
+        assert!(!project_search_publication_window_open(
+            PROJECT_SEARCH_PUBLICATION_TIMEOUT,
+            PROJECT_SEARCH_PUBLICATION_TIMEOUT,
+        ));
+        assert!(!project_search_publication_window_open(
+            PROJECT_SEARCH_PUBLICATION_TIMEOUT.saturating_add(Duration::from_nanos(1)),
+            PROJECT_SEARCH_PUBLICATION_TIMEOUT,
+        ));
+        assert_eq!(next_project_search_event_timestamp(701), Some(702));
+        assert_eq!(next_project_search_event_timestamp(u64::MAX), None);
         let mut latest_frames = frames_after_query;
         let mut stable_wakes = 0_usize;
         let mut published_terminal = false;
-        for timestamp in 702..1_214 {
+        let publication_started = std::time::Instant::now();
+        let mut timestamp = 702_u64;
+        while project_search_publication_window_open(
+            publication_started.elapsed(),
+            PROJECT_SEARCH_PUBLICATION_TIMEOUT,
+        ) {
             std::thread::sleep(Duration::from_millis(1));
             replay_tree_events(
                 &surface,
@@ -8582,6 +8616,8 @@ pub mod native_validation {
                     timestamp: EventTimestamp::new(timestamp),
                 }],
             )?;
+            timestamp = next_project_search_event_timestamp(timestamp)
+                .ok_or("project-search event timestamp exhausted")?;
             let current_frames = journey.borrow().frames;
             if current_frames > latest_frames {
                 latest_frames = current_frames;
@@ -8597,16 +8633,25 @@ pub mod native_validation {
                 break;
             }
         }
-        assert!(published_terminal);
+        if !published_terminal {
+            return Err(format!(
+                "project-search publication timed out after {} ms: {latest_frames} frames, \
+                 {required_terminal_frames} required, {stable_wakes} stable wakes",
+                publication_started.elapsed().as_millis(),
+            )
+            .into());
+        }
         let terminal_frames = journey.borrow().frames;
         replay_tree_events(
             &surface,
             &state,
             &journey,
             &[SurfaceEvent::Wake {
-                timestamp: EventTimestamp::new(1_214),
+                timestamp: EventTimestamp::new(timestamp),
             }],
         )?;
+        timestamp = next_project_search_event_timestamp(timestamp)
+            .ok_or("project-search event timestamp exhausted")?;
         assert_eq!(journey.borrow().frames, terminal_frames);
 
         let before_open = state.borrow().snapshot().document_revision();
@@ -8615,12 +8660,14 @@ pub mod native_validation {
             &state,
             &journey,
             &[keyboard_event(
-                1_215,
+                timestamp,
                 KEY_RETURN,
                 "Enter",
                 Modifiers::default(),
             )],
         )?;
+        timestamp = next_project_search_event_timestamp(timestamp)
+            .ok_or("project-search event timestamp exhausted")?;
         assert_ne!(state.borrow().snapshot().document_revision(), before_open);
         replay_tree_events(
             &surface,
@@ -8628,11 +8675,17 @@ pub mod native_validation {
             &journey,
             &[
                 SurfaceEvent::Ime {
-                    timestamp: EventTimestamp::new(1_216),
+                    timestamp: EventTimestamp::new(timestamp),
                     input_epoch: InputEpoch::INITIAL,
                     event: ImeEvent::Committed("!".into()),
                 },
-                keyboard_event(1_217, KEY_S, "s", Modifiers::from_bits(Modifiers::COMMAND)),
+                keyboard_event(
+                    next_project_search_event_timestamp(timestamp)
+                        .ok_or("project-search event timestamp exhausted")?,
+                    KEY_S,
+                    "s",
+                    Modifiers::from_bits(Modifiers::COMMAND),
+                ),
             ],
         )?;
         assert_eq!(fs::read_to_string(matched)?, "zero\n! alpha\n");
