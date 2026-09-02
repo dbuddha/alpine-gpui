@@ -50,6 +50,14 @@ pub enum StudioSignpostStage {
     NativePresentedHandlerLatency = 17,
     /// Alpine published terminal frame evidence; `a` is nanoseconds from event receipt.
     NativeTerminalRecordLatency = 18,
+    /// Display-link target time; a is nanoseconds from event receipt.
+    NativeDisplayLinkTargetLatency = 19,
+    /// Display-link target-presentation time; a is nanoseconds from event receipt.
+    NativeTargetPresentationLatency = 20,
+    /// Drawable actual presentation time; a is nanoseconds from event receipt.
+    NativeActualPresentationLatency = 21,
+    /// Presented-handler dispatch lag; a is nanoseconds from actual presentation.
+    NativePresentationCallbackLag = 22,
 }
 
 /// One numeric, revision-correlated point suitable for a dynamic signpost.
@@ -214,6 +222,49 @@ impl StudioSignposts {
             0,
             [duration_ns, 0, 0],
         ))
+    }
+
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn emit_presentation_latency(
+        self,
+        event_timestamp: crate::EventTimestamp,
+        callback_ns: u64,
+        display_link_target_ns: Option<u64>,
+        target_presentation_ns: Option<u64>,
+        actual_presentation_ns: Option<u64>,
+        callback_lag_ns: Option<u64>,
+    ) -> Option<u64> {
+        let correlation = self.emit_presented_handler_latency(event_timestamp, callback_ns);
+        for (stage, duration_ns) in [
+            (
+                StudioSignpostStage::NativeDisplayLinkTargetLatency,
+                display_link_target_ns,
+            ),
+            (
+                StudioSignpostStage::NativeTargetPresentationLatency,
+                target_presentation_ns,
+            ),
+            (
+                StudioSignpostStage::NativeActualPresentationLatency,
+                actual_presentation_ns,
+            ),
+            (
+                StudioSignpostStage::NativePresentationCallbackLag,
+                callback_lag_ns,
+            ),
+        ] {
+            if let Some(duration_ns) = duration_ns {
+                let _additional = self.emit(StudioSignpost::new(
+                    stage,
+                    event_timestamp.get(),
+                    0,
+                    0,
+                    0,
+                    [duration_ns, 0, 0],
+                ));
+            }
+        }
+        correlation
     }
 }
 
@@ -462,6 +513,17 @@ mod tests {
                 .emit_presented_handler_latency(EventTimestamp::new(53), 71),
             Some(53)
         );
+        assert_eq!(
+            StudioSignposts::for_test(false, true).emit_presentation_latency(
+                EventTimestamp::new(53),
+                71,
+                Some(73),
+                Some(79),
+                Some(83),
+                Some(11),
+            ),
+            Some(53)
+        );
         assert!(points.iter().all(|point| point.scene_revision() == 0
             && point.document_revision() == 0
             && point.buffer_revision() == 0));
@@ -530,6 +592,10 @@ mod tests {
             "Native GPU Terminal Observed Latency",
             "Native Presented Handler Latency",
             "Native Terminal Record Latency",
+            "Native Display Link Target Latency",
+            "Native Target Presentation Latency",
+            "Native Actual Presentation Latency",
+            "Native Presentation Callback Lag",
         ] {
             assert!(source.contains(&format!("ALPINE_STUDIO_ROUTE(\"{stage}\")")));
         }

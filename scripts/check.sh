@@ -30,6 +30,7 @@ scripts/test-studio-ax-process-capture.sh
 scripts/test-zed-lab-evidence.sh
 scripts/test-calibration.sh
 scripts/test-studio-profile.sh
+scripts/test-studio-profile-v2.sh
 scripts/test-studio-profile-evidence.sh
 scripts/test-core-contracts.sh
 scripts/test-metal-contracts.sh
