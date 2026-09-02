@@ -161,6 +161,53 @@ font, language-server, and environment identities. Build the exact release app,
 then run the explicit local capture action. The output parent must already exist
 and the destination must not.
 
+The canonical minimal draft shape is:
+
+```toml
+schema = "alpine-studio-dogfood-draft/v2"
+
+[identity]
+id = "physical-alpine-session"
+workload_id = "alpine-repository-edit"
+workload_version = 1
+workspace_fixture = "clean-alpine-checkout"
+workspace_fixture_sha256 = "<64 lowercase hex characters>"
+settings_profile = "default-settings"
+settings_sha256 = "<64 lowercase hex characters>"
+opt_in = true
+telemetry = false
+network_io = false
+performance_claim = "none"
+coverage = ["launch", "workspace", "editing", "lifecycle", "memory", "shutdown"]
+assumptions = ["clean revision-bound release capture"]
+exclusions = ["telemetry", "network-io", "comparative-claim"]
+
+[identity.environment]
+hardware_id = "stable-pseudonymous-hardware-id"
+os_build = "<macOS build>"
+architecture = "arm64"
+display_refresh_hz = 120
+power_source = "ac"
+thermal_state = "nominal"
+toolchain = "<exact rustc identity>"
+locale = "en_US.UTF-8"
+
+[identity.font]
+family = "SF Mono"
+postscript_name = "SFMono-Regular"
+size_milli_points = 13000
+
+[identity.language_server]
+name = "none"
+version = "none"
+executable_sha256 = "none"
+```
+
+The launcher validates this complete draft through the same Rust parser and
+identity rules used by the sealer before it opens Studio or starts the sampler.
+Invalid schema, slugs, bounds, coverage, assumptions, or exclusions therefore
+fail without creating visible or physical work.
+
 ```sh
 scripts/capture-studio-dogfood.sh \
   --binary 'target/release/Alpine Studio.app/Contents/MacOS/alpine-studio' \
