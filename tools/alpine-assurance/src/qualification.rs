@@ -747,9 +747,10 @@ fn publish_benchmark_samples(output: &Path, bytes: &[u8]) -> Result<(), String> 
 mod benchmark_tests {
     use super::{
         MAX_BENCHMARK_SAMPLES, MAX_BENCHMARK_WARMUPS, admit_benchmark_measurement,
-        benchmark_rendered_images, benchmark_scene, elapsed_benchmark_duration_ns,
-        ensure_stage_profile_output_absent, ensure_stage_profile_output_absent_with,
-        render_stage_profile_samples, validate_benchmark_counts, validate_stage_profile_image,
+        benchmark_rendered_images, benchmark_scene, decode_scene_file,
+        elapsed_benchmark_duration_ns, ensure_stage_profile_output_absent,
+        ensure_stage_profile_output_absent_with, render_stage_profile_samples,
+        validate_benchmark_counts, validate_stage_profile_image,
     };
     use std::{
         fs,
@@ -850,6 +851,31 @@ mod benchmark_tests {
         );
     }
 
+    #[cfg(not(target_os = "macos"))]
+    fn assert_native_profilers_reject_unsupported_host(
+        directory: &Path,
+        manifest: &Path,
+    ) -> Result<(), String> {
+        let native_output =
+            directory.join(format!("benchmark-native-unit-{}.csv", std::process::id()));
+        let _ = fs::remove_file(&native_output);
+        assert!(matches!(
+            benchmark_scene(true, manifest, &native_output, 0, 1),
+            Err(errors) if errors.iter().any(|error| error.contains("cannot initialize Direct Metal"))
+        ));
+        assert!(!native_output.exists());
+
+        let profile_output =
+            directory.join(format!("profile-native-unit-{}.csv", std::process::id()));
+        let _ = fs::remove_file(&profile_output);
+        assert!(matches!(
+            super::profile_native_scene(manifest, &profile_output, 0, 1),
+            Err(errors) if errors.iter().any(|error| error.contains("cannot initialize Direct Metal"))
+        ));
+        assert!(!profile_output.exists());
+        Ok(())
+    }
+
     #[test]
     fn benchmark_counts_atomic_publication_and_collision_are_bounded() -> Result<(), String> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -858,6 +884,8 @@ mod benchmark_tests {
         let output = directory.join(format!("benchmark-unit-{}.csv", std::process::id()));
         let _ = fs::remove_file(&output);
         let manifest = root.join("assurance/qualification/v1/scene.toml");
+
+        assert!(decode_scene_file(&manifest).is_ok());
 
         assert!(validate_benchmark_counts(MAX_BENCHMARK_WARMUPS, MAX_BENCHMARK_SAMPLES).is_ok());
         assert!(validate_benchmark_counts(MAX_BENCHMARK_WARMUPS + 1, 1).is_err());
@@ -939,16 +967,7 @@ mod benchmark_tests {
         assert_eq!(stage_csv.lines().count(), 2);
 
         #[cfg(not(target_os = "macos"))]
-        {
-            let native_output =
-                directory.join(format!("benchmark-native-unit-{}.csv", std::process::id()));
-            let _ = fs::remove_file(&native_output);
-            assert!(matches!(
-                benchmark_scene(true, &manifest, &native_output, 0, 1),
-                Err(errors) if errors.iter().any(|error| error.contains("cannot initialize Direct Metal"))
-            ));
-            assert!(!native_output.exists());
-        }
+        assert_native_profilers_reject_unsupported_host(&directory, &manifest)?;
         assert!(!output.exists());
         Ok(())
     }
