@@ -173,6 +173,9 @@ jobs:
         run: rustc --version --verbose
       - name: Test workspace
         run: cargo test --workspace --all-targets --all-features --locked
+      - name: Validate platform-complete Miri partition manifest
+        if: matrix.name == 'macos-arm64'
+        run: scripts/test-miri-partitions.sh
       - name: Audit Alpine Studio release product boundary
         if: matrix.name == 'macos-arm64'
         run: scripts/check-product-boundary.sh --binary | tee target/studio-product-boundary.txt
