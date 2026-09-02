@@ -106,6 +106,9 @@ fi
 binary=$(canonical_file "$binary") || fail "binary canonical path is unavailable"
 sampler=$(canonical_file "$sampler") || fail "sampler canonical path is unavailable"
 draft=$(canonical_file "$draft") || fail "draft canonical path is unavailable"
+cargo run --quiet --locked --manifest-path "$repository/Cargo.toml" \
+    -p alpine-assurance -- validate-live-studio-dogfood-draft "$draft" \
+    > /dev/null || fail "dogfood draft preflight failed"
 if [ "$fixture" != true ]; then
     contents=$(CDPATH= cd -- "$(dirname -- "$binary")/.." && pwd -P) ||
         fail "release bundle Contents directory is unavailable"
