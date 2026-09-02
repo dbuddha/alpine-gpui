@@ -5734,6 +5734,22 @@ impl StudioApp {
             .max(0.0)
     }
 
+    fn caret_scroll_target(
+        current: f32,
+        line_top: f32,
+        content_height: f32,
+        document_maximum: f32,
+    ) -> f32 {
+        let line_bottom = line_top + LINE_HEIGHT;
+        let visible_minimum = (line_bottom - content_height).min(line_top).max(0.0);
+        let visible_maximum = line_top.min(document_maximum).max(visible_minimum);
+        current.clamp(visible_minimum, visible_maximum)
+    }
+
+    fn selection_changed(before: Selection, after: Selection) -> bool {
+        before != after
+    }
+
     fn reveal_primary_caret(&mut self) -> EventEffect {
         let Ok(bounds) = self.active_pane_bounds() else {
             return EventEffect::default();
@@ -5745,14 +5761,13 @@ impl StudioApp {
         };
         let content_height = bounds.size().height().max(1.0);
         let line_top = usize_as_f32(line) * LINE_HEIGHT;
-        let line_bottom = line_top + LINE_HEIGHT;
         let before = self.scroll_y;
-        if line_top < self.scroll_y {
-            self.scroll_y = line_top;
-        } else if line_bottom > self.scroll_y + content_height {
-            self.scroll_y = line_bottom - content_height;
-        }
-        self.scroll_y = self.scroll_y.clamp(0.0, self.maximum_scroll());
+        self.scroll_y = Self::caret_scroll_target(
+            self.scroll_y,
+            line_top,
+            content_height,
+            self.maximum_scroll(),
+        );
         (self.scroll_y.to_bits() != before.to_bits())
             .then(EventEffect::visual)
             .unwrap_or_default()
@@ -6741,7 +6756,7 @@ impl StudioApp {
             let admitted = context.advance_document(revision);
             self.input_failures = accessibility_admission_failures(self.input_failures, admitted);
         }
-        if self.selection != selection_before {
+        if Self::selection_changed(selection_before, self.selection) {
             effect = effect.merge(self.reveal_primary_caret());
         }
         self.advance_selection_revision(selection_before);
