@@ -193,6 +193,15 @@ fn seals_validates_reports_and_rejects_tampering_through_the_binary()
     let rejected = invoke_failure(&["validate-live-studio-dogfood-draft", &invalid_text])?;
     assert!(rejected.contains("draft schema must be alpine-studio-dogfood-draft/v2"));
 
+    let maximum_draft = root.join("maximum-draft.toml");
+    let mut maximum_bytes = fs::read(&draft)?;
+    maximum_bytes.push(b'\n');
+    maximum_bytes.resize(1_048_576, b'#');
+    fs::write(&maximum_draft, maximum_bytes)?;
+    let maximum_text = maximum_draft.to_string_lossy();
+    let maximum = invoke_success(&["validate-live-studio-dogfood-draft", &maximum_text])?;
+    assert!(maximum.contains("validated live Studio dogfood draft fixture-live-session"));
+
     let oversized_draft = root.join("oversized-draft.toml");
     fs::write(&oversized_draft, vec![b'#'; 1_048_577])?;
     let oversized_text = oversized_draft.to_string_lossy();
