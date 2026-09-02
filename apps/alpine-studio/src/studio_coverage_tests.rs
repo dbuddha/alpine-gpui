@@ -293,6 +293,39 @@ fn primary_caret_reveal_follows_edits_and_preserves_manual_scroll_until_navigati
     assert!(top.visual_changed);
     assert_eq!(app.scroll_y.to_bits(), 0.0_f32.to_bits());
 
+    let snapshot = app.buffer().snapshot();
+    let middle_line = 32;
+    let middle_offset = snapshot.line_byte_range(middle_line)?.start;
+    let line_top = usize_as_f32(middle_line) * LINE_HEIGHT;
+    let content_height = app.active_pane_bounds()?.size().height().max(1.0);
+    let expected = (line_top + LINE_HEIGHT - content_height)
+        .min(line_top)
+        .max(0.0);
+    app.scroll_y = 0.0;
+    let middle = app.set_selection(Selection::caret(ByteOffset::new(middle_offset)));
+    assert!(middle.visual_changed);
+    assert_eq!(app.scroll_y.to_bits(), expected.to_bits());
+    assert_eq!(
+        StudioApp::caret_scroll_target(expected, line_top, content_height, app.maximum_scroll())
+            .to_bits(),
+        expected.to_bits()
+    );
+    assert_eq!(
+        StudioApp::caret_scroll_target(
+            app.maximum_scroll(),
+            line_top,
+            content_height,
+            app.maximum_scroll(),
+        )
+        .to_bits(),
+        line_top.to_bits()
+    );
+    assert!(!StudioApp::selection_changed(app.selection, app.selection));
+    assert!(StudioApp::selection_changed(
+        Selection::caret(ByteOffset::new(0)),
+        app.selection,
+    ));
+
     let mut invalid_layout =
         StudioApp::from_document(TestTextSystem, StudioDocument::scratch("head"), None)?;
     let _scene = invalid_layout.try_scene(SceneRevision::new(1), viewport)?;
