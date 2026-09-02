@@ -543,7 +543,6 @@ fn media_time_delta_ns(start_seconds: f64, end_seconds: f64) -> Option<u64> {
         || !end_seconds.is_finite()
         || start_seconds <= 0.0
         || end_seconds <= 0.0
-        || end_seconds < start_seconds
     {
         return None;
     }
