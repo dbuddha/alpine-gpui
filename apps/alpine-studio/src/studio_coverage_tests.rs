@@ -255,6 +255,47 @@ fn viewport() -> Result<Size, SurfaceError> {
 }
 
 #[test]
+fn primary_caret_reveal_follows_edits_and_preserves_manual_scroll_until_navigation()
+-> Result<(), Box<dyn Error>> {
+    let mut app = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("head"), None)?;
+    let viewport = viewport()?;
+    let _initial = app.try_scene(SceneRevision::new(1), viewport)?;
+    app.selection = Selection::caret(ByteOffset::new(app.buffer().snapshot().len_bytes()));
+    let mut appended = String::with_capacity(64 * 8);
+    for line in 0..64 {
+        use std::fmt::Write as _;
+        write!(&mut appended, "\nline {line:02}")?;
+    }
+
+    let edited = app.replace_selection(&appended);
+    assert!(edited.document_changed);
+    assert_eq!(app.scroll_y.to_bits(), app.maximum_scroll().to_bits());
+
+    let maximum = app.scroll_y;
+    let scrolled = app.handle_event(&SurfaceEvent::Scroll {
+        timestamp: EventTimestamp::new(1),
+        delta_x: 0.0,
+        delta_y: LINE_HEIGHT * 4.0,
+        phase: ScrollPhase::Changed,
+        precise: true,
+        modifiers: Modifiers::default(),
+    });
+    assert!(scrolled.visual_changed);
+    assert!(app.scroll_y < maximum);
+    let manually_scrolled = app.scroll_y;
+    assert_eq!(app.scroll_y.to_bits(), manually_scrolled.to_bits());
+
+    let revealed = app.handle_key(KEY_END, Modifiers::default());
+    assert!(revealed.visual_changed);
+    assert_eq!(app.scroll_y.to_bits(), maximum.to_bits());
+
+    let top = app.set_selection(Selection::caret(ByteOffset::new(0)));
+    assert!(top.visual_changed);
+    assert_eq!(app.scroll_y.to_bits(), 0.0_f32.to_bits());
+    Ok(())
+}
+
+#[test]
 fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_frames()
 -> Result<(), Box<dyn Error>> {
     let rasterizations = Arc::new(AtomicU64::new(0));
