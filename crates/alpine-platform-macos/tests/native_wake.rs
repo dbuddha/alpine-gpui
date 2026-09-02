@@ -2,17 +2,41 @@
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    objc2::rc::autoreleasepool(|_| run())
+}
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::{
         rc::Rc,
         sync::{Arc, Mutex, mpsc::sync_channel},
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use alpine_platform_macos::{
         SurfaceDescriptor, SurfaceEvent, SurfaceLifecycle, SurfaceResponse, SurfaceWakeAdmission,
         native_validation,
     };
+    use objc2::rc::autoreleasepool;
+    use objc2_foundation::{NSDate, NSRunLoop};
+
+    fn drain_native_callbacks(
+        surface: &alpine_platform_macos::NativeSurface,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let drain = native_validation::arm_run_loop_drain_marker(surface);
+        assert!(!drain.executed());
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while !drain.executed() && Instant::now() < deadline {
+            autoreleasepool(|_| {
+                NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.001));
+            });
+        }
+        if !drain.executed() {
+            return Err("native wake callbacks did not drain before owner release".into());
+        }
+        Ok(())
+    }
 
     let revoked_descriptor = SurfaceDescriptor::new("Alpine revoked worker wake", 96.0, 64.0, 1.0)?;
     let revoked_surface = native_validation::new_surface(&revoked_descriptor)?;
@@ -21,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     native_validation::revoke_surface_waker(&revoked_surface);
     assert_eq!(revoked_observer.lifecycle(), SurfaceLifecycle::Live);
     assert_eq!(revoked_waker.wake(), SurfaceWakeAdmission::Closed);
+    drain_native_callbacks(&revoked_surface)?;
     let revoked_owners = native_validation::close_with_owner_evidence(revoked_surface)?;
     assert_eq!(revoked_owners.active(), [0; 10]);
     assert_eq!(revoked_owners.pasteboard_releases(), 0);
@@ -102,6 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(waker.wake(), SurfaceWakeAdmission::Closed);
     assert_eq!(waker.snapshot().rejected(), 1);
 
+    drain_native_callbacks(&surface)?;
     let surface = Rc::try_unwrap(surface).map_err(|_| "native wake surface remained retained")?;
     let owners = native_validation::close_with_owner_evidence(surface)?;
     assert_eq!(owners.active(), [0; 10]);
