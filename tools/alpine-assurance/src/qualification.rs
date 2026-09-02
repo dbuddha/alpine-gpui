@@ -852,10 +852,7 @@ mod benchmark_tests {
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn assert_native_profilers_reject_unsupported_host(
-        directory: &Path,
-        manifest: &Path,
-    ) -> Result<(), String> {
+    fn assert_native_profilers_reject_unsupported_host(directory: &Path, manifest: &Path) {
         let native_output =
             directory.join(format!("benchmark-native-unit-{}.csv", std::process::id()));
         let _ = fs::remove_file(&native_output);
@@ -873,7 +870,6 @@ mod benchmark_tests {
             Err(errors) if errors.iter().any(|error| error.contains("cannot initialize Direct Metal"))
         ));
         assert!(!profile_output.exists());
-        Ok(())
     }
 
     #[test]
