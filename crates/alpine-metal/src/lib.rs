@@ -16,7 +16,7 @@ mod oracle;
 #[doc(hidden)]
 pub mod platform_spi;
 mod submission;
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(any(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
 mod unsupported;
 
 #[cfg(kani)]

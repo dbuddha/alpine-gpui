@@ -665,21 +665,10 @@ impl MetalBackend {
         let frame = self.admit_frame(scene, descriptor)?;
         let admission = elapsed_timing(admission_started);
         let submission_started = timing_started::<PROFILE>();
-        let mut completed = self.submit_validated::<PROFILE>(&frame)?;
+        let completed = self.submit_validated::<PROFILE>(&frame);
         let submission = elapsed_timing(submission_started);
         let total = elapsed_timing(total_started);
-        if let Some(timings) = completed.timings.as_mut() {
-            let (admission_ns, admission_saturated) = admission.unwrap_or_default();
-            let (submission_ns, submission_saturated) = submission.unwrap_or_default();
-            let (total_ns, total_saturated) = total.unwrap_or_default();
-            timings.admission_ns = admission_ns;
-            timings.submission_accounting_ns =
-                submission_ns.saturating_sub(timings.native_total_ns);
-            timings.total_ns = total_ns;
-            timings.timing_saturated |=
-                admission_saturated || submission_saturated || total_saturated;
-        }
-        Ok(completed)
+        complete_profiled_frame(completed, admission, submission, total)
     }
 
     #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
@@ -847,6 +836,29 @@ fn timing_started<const PROFILE: bool>() -> Option<Instant> {
 
 fn elapsed_timing(started: Option<Instant>) -> Option<(u64, bool)> {
     started.map(|started| duration_nanoseconds(started.elapsed()))
+}
+
+fn complete_profiled_frame(
+    mut completed: Result<OffscreenFrame, RenderError>,
+    admission: Option<(u64, bool)>,
+    submission: Option<(u64, bool)>,
+    total: Option<(u64, bool)>,
+) -> Result<OffscreenFrame, RenderError> {
+    let Some(timings) = completed
+        .as_mut()
+        .ok()
+        .and_then(|frame| frame.timings.as_mut())
+    else {
+        return completed;
+    };
+    let (admission_ns, admission_saturated) = admission.unwrap_or_default();
+    let (submission_ns, submission_saturated) = submission.unwrap_or_default();
+    let (total_ns, total_saturated) = total.unwrap_or_default();
+    timings.admission_ns = admission_ns;
+    timings.submission_accounting_ns = submission_ns.saturating_sub(timings.native_total_ns);
+    timings.total_ns = total_ns;
+    timings.timing_saturated |= admission_saturated || submission_saturated || total_saturated;
+    completed
 }
 
 fn record_attempt(
@@ -1137,7 +1149,10 @@ fn compact_readback_with_control(
 
 #[cfg(test)]
 mod tests {
-    use std::error::Error as _;
+    use std::{
+        error::Error as _,
+        time::{Duration, Instant},
+    };
 
     use alpine_core::{LinearRgba, Size};
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -1150,10 +1165,11 @@ mod tests {
     use alpine_scene::{SceneBuilder, SceneRevision};
 
     use super::{
-        CommandStatus, NativeRenderAttempt, OffscreenFrame, OffscreenTarget,
+        CommandStatus, NativeRenderAttempt, OffscreenFrame, OffscreenStageTimings, OffscreenTarget,
         RecoveryClassification, RenderError, RenderStage, compact_readback,
-        compact_readback_with_control, complete_attempt, map_readback_reservation_failure,
-        record_attempt, store_render_result, verify_terminal_release,
+        compact_readback_with_control, complete_attempt, complete_profiled_frame,
+        duration_nanoseconds, elapsed_timing, map_readback_reservation_failure, record_attempt,
+        store_render_result, timing_started, verify_terminal_release,
     };
     #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
     use super::{
@@ -1190,6 +1206,129 @@ mod tests {
             LinearRgba::new(0.0, 0.0, 0.0, 0.0).ok_or(RenderError::SubmissionInvariantViolated)?;
         let descriptor = OffscreenDescriptor::new(u32::from(width), u32::from(height), 1.0, clear)?;
         Ok(ValidatedFrame::new(&scene, descriptor)?)
+    }
+
+    fn timing_fixture(timing_saturated: bool) -> OffscreenStageTimings {
+        OffscreenStageTimings {
+            admission_ns: 2,
+            resource_preparation_ns: 3,
+            command_buffer_ns: 5,
+            atlas_upload_encoding_ns: 7,
+            render_encoding_ns: 11,
+            readback_encoding_ns: 13,
+            commit_ns: 17,
+            completion_wait_ns: 19,
+            gpu_execution_ns: Some(23),
+            readback_compaction_ns: 29,
+            native_total_ns: 31,
+            submission_accounting_ns: 37,
+            total_ns: 41,
+            timing_saturated,
+        }
+    }
+
+    fn profiled_frame(timings: Option<OffscreenStageTimings>) -> OffscreenFrame {
+        OffscreenFrame {
+            image: image(43),
+            report: FrameReport::default(),
+            timings,
+        }
+    }
+
+    #[test]
+    fn stage_timing_values_and_profile_completion_are_independently_observable()
+    -> Result<(), RenderError> {
+        let timings = timing_fixture(true);
+        assert_eq!(timings.admission_ns(), 2);
+        assert_eq!(timings.resource_preparation_ns(), 3);
+        assert_eq!(timings.command_buffer_ns(), 5);
+        assert_eq!(timings.atlas_upload_encoding_ns(), 7);
+        assert_eq!(timings.render_encoding_ns(), 11);
+        assert_eq!(timings.readback_encoding_ns(), 13);
+        assert_eq!(timings.commit_ns(), 17);
+        assert_eq!(timings.completion_wait_ns(), 19);
+        assert_eq!(timings.gpu_execution_ns(), Some(23));
+        assert_eq!(timings.readback_compaction_ns(), 29);
+        assert_eq!(timings.native_total_ns(), 31);
+        assert_eq!(timings.submission_accounting_ns(), 37);
+        assert_eq!(timings.total_ns(), 41);
+        assert!(timings.timing_saturated());
+        assert!(!OffscreenStageTimings::default().timing_saturated());
+
+        let completed = complete_profiled_frame(
+            Ok(profiled_frame(Some(timing_fixture(false)))),
+            Some((43, false)),
+            Some((101, false)),
+            Some((149, false)),
+        )?;
+        let completed_timings = completed
+            .timings()
+            .ok_or(RenderError::SubmissionInvariantViolated)?;
+        assert_eq!(completed_timings.admission_ns(), 43);
+        assert_eq!(completed_timings.submission_accounting_ns(), 70);
+        assert_eq!(completed_timings.total_ns(), 149);
+        assert!(!completed_timings.timing_saturated());
+        assert_eq!(completed_timings.gpu_execution_ns(), Some(23));
+
+        let saturated_inputs = [
+            (true, false, false, false),
+            (false, true, false, false),
+            (false, false, true, false),
+            (false, false, false, true),
+        ];
+        for (existing, admission, submission, total) in saturated_inputs {
+            let completed = complete_profiled_frame(
+                Ok(profiled_frame(Some(timing_fixture(existing)))),
+                Some((47, admission)),
+                Some((17, submission)),
+                Some((53, total)),
+            )?;
+            let timings = completed
+                .timings()
+                .ok_or(RenderError::SubmissionInvariantViolated)?;
+            assert_eq!(timings.submission_accounting_ns(), 0);
+            assert!(timings.timing_saturated());
+        }
+
+        let unprofiled = complete_profiled_frame(
+            Ok(profiled_frame(None)),
+            Some((59, true)),
+            Some((61, true)),
+            Some((67, true)),
+        )?;
+        assert_eq!(unprofiled.timings(), None);
+        assert_eq!(
+            complete_profiled_frame(
+                Err(RenderError::SubmissionInvariantViolated),
+                Some((71, true)),
+                Some((73, true)),
+                Some((79, true)),
+            ),
+            Err(RenderError::SubmissionInvariantViolated)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn timing_probe_helpers_preserve_disabled_enabled_and_overflow_paths() -> Result<(), RenderError>
+    {
+        assert_eq!(
+            duration_nanoseconds(Duration::new(2, 3)),
+            (2_000_000_003, false)
+        );
+        assert_eq!(duration_nanoseconds(Duration::MAX), (u64::MAX, true));
+        assert_eq!(timing_started::<false>(), None);
+        assert!(timing_started::<true>().is_some());
+        assert_eq!(elapsed_timing(None), None);
+
+        let started = Instant::now()
+            .checked_sub(Duration::from_millis(5))
+            .ok_or(RenderError::SubmissionInvariantViolated)?;
+        let (elapsed_ns, saturated) =
+            elapsed_timing(Some(started)).ok_or(RenderError::SubmissionInvariantViolated)?;
+        assert!(elapsed_ns >= 5_000_000);
+        assert!(!saturated);
+        Ok(())
     }
 
     #[cfg(all(feature = "platform-spi", target_os = "macos", target_arch = "aarch64"))]
