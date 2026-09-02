@@ -193,6 +193,12 @@ fn seals_validates_reports_and_rejects_tampering_through_the_binary()
     let rejected = invoke_failure(&["validate-live-studio-dogfood-draft", &invalid_text])?;
     assert!(rejected.contains("draft schema must be alpine-studio-dogfood-draft/v2"));
 
+    let oversized_draft = root.join("oversized-draft.toml");
+    fs::write(&oversized_draft, vec![b'#'; 1_048_577])?;
+    let oversized_text = oversized_draft.to_string_lossy();
+    let oversized = invoke_failure(&["validate-live-studio-dogfood-draft", &oversized_text])?;
+    assert!(oversized.contains("live dogfood draft exceeds 1048576 bytes"));
+
     let pid = std::process::id().to_string();
     let relative = seal_arguments(&pid, "3000", "1000");
     let owned = relative
