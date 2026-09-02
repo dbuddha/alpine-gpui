@@ -341,6 +341,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let quit_evidence = native_validation::close_with_owner_evidence(quit_surface)?;
     assert_eq!(quit_evidence.active(), [0; 10]);
     assert_eq!(quit_evidence.release_order_violations(), 0);
+
+    let shortcut_surface = native_validation::new_surface(&descriptor)?;
+    let shortcut_observer = shortcut_surface.observer();
+    let shortcut_events = Arc::new(Mutex::new(Vec::new()));
+    let cancelled_shortcut_received = Arc::clone(&shortcut_events);
+    assert!(
+        !native_validation::replay_application_quit_shortcut_with_handler(
+            &shortcut_surface,
+            move |event| {
+                if let Ok(mut received) = cancelled_shortcut_received.lock() {
+                    received.push(event);
+                }
+                SurfaceResponse::new(None, None, CloseDisposition::Cancel)
+            },
+        )?
+    );
+    assert!(matches!(
+        shortcut_events
+            .lock()
+            .map_err(|_| "cancelled shortcut receiver poisoned")?
+            .as_slice(),
+        [SurfaceEvent::CloseRequested { .. }]
+    ));
+    assert_eq!(shortcut_observer.lifecycle(), SurfaceLifecycle::Live);
+    shortcut_events
+        .lock()
+        .map_err(|_| "shortcut receiver poisoned")?
+        .clear();
+    let admitted_shortcut_received = Arc::clone(&shortcut_events);
+    assert!(
+        native_validation::replay_application_quit_shortcut_with_handler(
+            &shortcut_surface,
+            move |event| {
+                if let Ok(mut received) = admitted_shortcut_received.lock() {
+                    received.push(event);
+                }
+                SurfaceResponse::new(None, None, CloseDisposition::Allow)
+            },
+        )?
+    );
+    assert!(matches!(
+        shortcut_events
+            .lock()
+            .map_err(|_| "admitted shortcut receiver poisoned")?
+            .as_slice(),
+        [
+            SurfaceEvent::CloseRequested { .. },
+            SurfaceEvent::Focus { focused: false, .. }
+        ]
+    ));
+    assert_eq!(shortcut_observer.lifecycle(), SurfaceLifecycle::Closing);
+    let shortcut_evidence = native_validation::close_with_owner_evidence(shortcut_surface)?;
+    assert_eq!(shortcut_evidence.active(), [0; 10]);
+    assert_eq!(shortcut_evidence.release_order_violations(), 0);
     Ok(())
 }
 

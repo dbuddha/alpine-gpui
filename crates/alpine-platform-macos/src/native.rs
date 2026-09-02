@@ -2121,6 +2121,24 @@ fn clipboard_shortcut(event: &NativeInputEvent) -> Option<ClipboardOperation> {
     }
 }
 
+fn application_quit_shortcut(event: &NativeInputEvent) -> bool {
+    let NativeInputEvent::Keyboard {
+        state: KeyState::Down,
+        logical_key,
+        modifiers,
+        repeat: false,
+        ..
+    } = event
+    else {
+        return false;
+    };
+    modifiers.contains(Modifiers::COMMAND)
+        && !modifiers.contains(Modifiers::CONTROL)
+        && !modifiers.contains(Modifiers::OPTION)
+        && !modifiers.contains(Modifiers::SHIFT)
+        && logical_key.eq_ignore_ascii_case("q")
+}
+
 fn plain_text_pasteboard_type() -> &'static NSPasteboardType {
     // SAFETY: AppKit exports NSPasteboardTypeString as a non-null,
     // process-lifetime NSString constant on every supported macOS version.
@@ -2484,6 +2502,60 @@ mod native_input_tests {
             None
         );
         assert_eq!(clipboard_shortcut(&event("v", 0, false)), None);
+    }
+
+    #[test]
+    fn application_quit_shortcut_requires_exact_nonrepeating_command_identity() {
+        let event = |state, logical_key: &str, modifiers: u8, repeat| NativeInputEvent::Keyboard {
+            state,
+            physical_key: 0,
+            logical_key: logical_key.into(),
+            modifiers: Modifiers::from_bits(modifiers),
+            repeat,
+        };
+        assert!(application_quit_shortcut(&event(
+            KeyState::Down,
+            "q",
+            Modifiers::COMMAND,
+            false,
+        )));
+        assert!(application_quit_shortcut(&event(
+            KeyState::Down,
+            "Q",
+            Modifiers::COMMAND | Modifiers::CAPS_LOCK,
+            false,
+        )));
+        for modifiers in [
+            0,
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Modifiers::COMMAND | Modifiers::CONTROL,
+            Modifiers::COMMAND | Modifiers::OPTION,
+        ] {
+            assert!(!application_quit_shortcut(&event(
+                KeyState::Down,
+                "q",
+                modifiers,
+                false,
+            )));
+        }
+        assert!(!application_quit_shortcut(&event(
+            KeyState::Down,
+            "q",
+            Modifiers::COMMAND,
+            true,
+        )));
+        assert!(!application_quit_shortcut(&event(
+            KeyState::Up,
+            "q",
+            Modifiers::COMMAND,
+            false,
+        )));
+        assert!(!application_quit_shortcut(&event(
+            KeyState::Down,
+            "c",
+            Modifiers::COMMAND,
+            false,
+        )));
     }
 
     #[test]
@@ -3005,6 +3077,12 @@ impl DisplayLinkDelegate {
         event: NativeInputEvent,
         received_at: Instant,
     ) -> Result<(), SurfaceError> {
+        if application_quit_shortcut(&event) {
+            let main_thread = MainThreadMarker::new()
+                .ok_or_else(|| SurfaceError::invariant(SurfaceOperation::Application))?;
+            NSApplication::sharedApplication(main_thread).terminate(None);
+            return Ok(());
+        }
         let clipboard_operation = clipboard_shortcut(&event);
         let timestamp = self.next_event_timestamp();
         let event = match event {
@@ -4632,6 +4710,30 @@ impl NativeSurface {
         if reply != NSApplicationTerminateReply::TerminateCancel {
             return Err(SurfaceError::invariant(SurfaceOperation::Application));
         }
+        Ok(self.window_close_started.load(Ordering::Acquire))
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn replay_application_quit_shortcut_with_handler<F>(
+        &self,
+        handler: F,
+    ) -> Result<bool, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        self.delegate.install_event_handler(handler)?;
+        let result = self.delegate.try_dispatch_native_input_event(
+            NativeInputEvent::Keyboard {
+                state: KeyState::Down,
+                physical_key: 12,
+                logical_key: "q".into(),
+                modifiers: Modifiers::from_bits(Modifiers::COMMAND),
+                repeat: false,
+            },
+            Instant::now(),
+        );
+        self.delegate.clear_event_handler();
+        result?;
         Ok(self.window_close_started.load(Ordering::Acquire))
     }
 
