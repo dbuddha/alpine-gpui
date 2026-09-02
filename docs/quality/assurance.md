@@ -57,3 +57,22 @@ the static product boundary; native startup, idle, process, and connection
 observation remain separate journey evidence and cannot be inferred from the
 static audit alone. A reviewed local language-server dependency changes the
 allowlist explicitly but does not weaken the network prohibition.
+
+## Portable cfg compile-contract gate
+
+`scripts/check-portable-targets.sh` type-checks the locked workspace, all targets,
+and all features for `x86_64-unknown-linux-gnu` and
+`x86_64-pc-windows-msvc`. Both official Rust targets are mandatory. A missing
+target fails with the exact `rustup target add` command instead of skipping the
+evidence.
+
+`scripts/test-portable-targets.sh` proves that an invalid non-macOS-only call
+site is rejected and its corrected form is accepted under both target cfgs. The
+CI classifier selects `portable=true` for Rust, Cargo, toolchain, workflow, and
+portable-gate control paths. Hosted Linux and Windows runners then execute the
+workspace test under their native targets, while the macOS native lane remains
+unconditional.
+
+This gate protects unsupported-host and portable contracts before push. It does
+not add Linux or Windows runtime behavior, shipping support, or a non-Metal
+renderer to Alpine's Apple Silicon macOS product scope.
