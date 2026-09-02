@@ -1236,8 +1236,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_timing_values_and_profile_completion_are_independently_observable()
-    -> Result<(), RenderError> {
+    fn stage_timing_values_and_profile_completion_are_independently_observable() {
         let timings = timing_fixture(true);
         assert_eq!(timings.admission_ns(), 2);
         assert_eq!(timings.resource_preparation_ns(), 3);
@@ -1260,15 +1259,19 @@ mod tests {
             Some((43, false)),
             Some((101, false)),
             Some((149, false)),
-        )?;
-        let completed_timings = completed
-            .timings()
-            .ok_or(RenderError::SubmissionInvariantViolated)?;
-        assert_eq!(completed_timings.admission_ns(), 43);
-        assert_eq!(completed_timings.submission_accounting_ns(), 70);
-        assert_eq!(completed_timings.total_ns(), 149);
-        assert!(!completed_timings.timing_saturated());
-        assert_eq!(completed_timings.gpu_execution_ns(), Some(23));
+        );
+        assert!(matches!(
+            completed,
+            Ok(frame) if matches!(
+                frame.timings(),
+                Some(timings)
+                    if timings.admission_ns() == 43
+                        && timings.submission_accounting_ns() == 70
+                        && timings.total_ns() == 149
+                        && !timings.timing_saturated()
+                        && timings.gpu_execution_ns() == Some(23)
+            )
+        ));
 
         let saturated_inputs = [
             (true, false, false, false),
@@ -1282,21 +1285,27 @@ mod tests {
                 Some((47, admission)),
                 Some((17, submission)),
                 Some((53, total)),
-            )?;
-            let timings = completed
-                .timings()
-                .ok_or(RenderError::SubmissionInvariantViolated)?;
-            assert_eq!(timings.submission_accounting_ns(), 0);
-            assert!(timings.timing_saturated());
+            );
+            assert!(matches!(
+                completed,
+                Ok(frame) if matches!(
+                    frame.timings(),
+                    Some(timings)
+                        if timings.submission_accounting_ns() == 0
+                            && timings.timing_saturated()
+                )
+            ));
         }
 
-        let unprofiled = complete_profiled_frame(
-            Ok(profiled_frame(None)),
-            Some((59, true)),
-            Some((61, true)),
-            Some((67, true)),
-        )?;
-        assert_eq!(unprofiled.timings(), None);
+        assert!(matches!(
+            complete_profiled_frame(
+                Ok(profiled_frame(None)),
+                Some((59, true)),
+                Some((61, true)),
+                Some((67, true)),
+            ),
+            Ok(frame) if frame.timings().is_none()
+        ));
         assert_eq!(
             complete_profiled_frame(
                 Err(RenderError::SubmissionInvariantViolated),
@@ -1306,7 +1315,6 @@ mod tests {
             ),
             Err(RenderError::SubmissionInvariantViolated)
         );
-        Ok(())
     }
 
     #[test]
@@ -1848,6 +1856,13 @@ mod tests {
         let unsupported = backend.render_offscreen(&scene, descriptor).err();
         assert!(matches!(
             unsupported,
+            Some(RenderError::UnsupportedPlatform { .. })
+        ));
+        assert_eq!(backend.submission_count(), 0);
+
+        let profiled = backend.render_offscreen_profiled(&scene, descriptor).err();
+        assert!(matches!(
+            profiled,
             Some(RenderError::UnsupportedPlatform { .. })
         ));
         assert_eq!(backend.submission_count(), 0);

@@ -60,17 +60,12 @@ mod tests {
 
     #[test]
     fn portable_backend_preserves_exact_unsupported_results() -> Result<(), Box<dyn Error>> {
-        let initialization = new_backend();
-        assert!(initialization.is_err());
-        let Err(initialization) = initialization else {
-            return Ok(());
-        };
         assert!(matches!(
-            initialization,
-            crate::InitializationError::UnsupportedPlatform {
+            new_backend(),
+            Err(crate::InitializationError::UnsupportedPlatform {
                 architecture,
                 operating_system,
-            } if architecture == std::env::consts::ARCH
+            }) if architecture == std::env::consts::ARCH
                 && operating_system == std::env::consts::OS
         ));
 

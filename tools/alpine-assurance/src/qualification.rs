@@ -400,21 +400,7 @@ pub(crate) fn profile_native_scene(
     sample_count: u64,
 ) -> Result<String, Vec<String>> {
     validate_benchmark_counts(warmup_iterations, sample_count)?;
-    match fs::symlink_metadata(output) {
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Ok(_) => {
-            return Err(vec![format!(
-                "renderer stage profile output already exists: {}",
-                output.display()
-            )]);
-        }
-        Err(error) => {
-            return Err(vec![format!(
-                "cannot inspect renderer stage profile output {}: {error}",
-                output.display()
-            )]);
-        }
-    }
+    ensure_stage_profile_output_absent(output)?;
 
     let scene: SceneTrace = load_toml(manifest)?;
     let errors = validate_scene_errors_all(&scene);
@@ -432,11 +418,11 @@ pub(crate) fn profile_native_scene(
         let frame = backend
             .render_offscreen_profiled(decoded.scene(), decoded.descriptor())
             .map_err(|error| vec![format!("Direct Metal trace profile failed: {error}")])?;
-        if frame.image().bytes() != admitted_bytes {
-            return Err(vec![
-                "renderer stage profile image changed during warmup".to_owned(),
-            ]);
-        }
+        validate_stage_profile_image(
+            &admitted_bytes,
+            frame.image().bytes(),
+            "renderer stage profile image changed during warmup",
+        )?;
     }
 
     let capacity = usize::try_from(sample_count)
@@ -446,11 +432,11 @@ pub(crate) fn profile_native_scene(
         let frame = backend
             .render_offscreen_profiled(decoded.scene(), decoded.descriptor())
             .map_err(|error| vec![format!("Direct Metal trace profile failed: {error}")])?;
-        if frame.image().bytes() != admitted_bytes {
-            return Err(vec![
-                "renderer stage profile image changed during measurement".to_owned(),
-            ]);
-        }
+        validate_stage_profile_image(
+            &admitted_bytes,
+            frame.image().bytes(),
+            "renderer stage profile image changed during measurement",
+        )?;
         let timings = frame.timings().ok_or_else(|| {
             vec!["renderer stage profile omitted requested timing evidence".to_owned()]
         })?;
@@ -470,6 +456,43 @@ pub(crate) fn profile_native_scene(
         scene.id,
         output.display()
     ))
+}
+
+fn ensure_stage_profile_output_absent(output: &Path) -> Result<(), Vec<String>> {
+    ensure_stage_profile_output_absent_with(output, |path| fs::symlink_metadata(path))
+}
+
+fn ensure_stage_profile_output_absent_with<F>(output: &Path, inspect: F) -> Result<(), Vec<String>>
+where
+    F: FnOnce(&Path) -> std::io::Result<fs::Metadata>,
+{
+    match inspect(output) {
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Ok(_) => {
+            return Err(vec![format!(
+                "renderer stage profile output already exists: {}",
+                output.display()
+            )]);
+        }
+        Err(error) => {
+            return Err(vec![format!(
+                "cannot inspect renderer stage profile output {}: {error}",
+                output.display()
+            )]);
+        }
+    }
+    Ok(())
+}
+
+fn validate_stage_profile_image(
+    admitted: &[u8],
+    observed: &[u8],
+    mismatch: &'static str,
+) -> Result<(), Vec<String>> {
+    if observed != admitted {
+        return Err(vec![mismatch.to_owned()]);
+    }
+    Ok(())
 }
 
 fn render_stage_profile_samples(
@@ -700,9 +723,15 @@ mod benchmark_tests {
     use super::{
         MAX_BENCHMARK_SAMPLES, MAX_BENCHMARK_WARMUPS, admit_benchmark_measurement,
         benchmark_rendered_images, benchmark_scene, elapsed_benchmark_duration_ns,
-        render_stage_profile_samples, validate_benchmark_counts,
+        ensure_stage_profile_output_absent, ensure_stage_profile_output_absent_with,
+        render_stage_profile_samples, validate_benchmark_counts, validate_stage_profile_image,
     };
-    use std::{fs, path::Path, time::Duration};
+    use std::{
+        fs,
+        io::{self, ErrorKind},
+        path::Path,
+        time::Duration,
+    };
 
     fn manifest_string<'a>(manifest: &'a toml::Value, field: &str) -> Result<&'a str, String> {
         manifest
@@ -753,6 +782,47 @@ mod benchmark_tests {
             ));
         }
         Ok(())
+    }
+
+    #[test]
+    fn stage_profile_output_and_image_guards_are_discriminating() {
+        let output = Path::new("profile.csv");
+        assert!(matches!(
+            ensure_stage_profile_output_absent(Path::new(env!("CARGO_MANIFEST_DIR"))),
+            Err(errors)
+                if errors.iter().any(|error| error.contains("output already exists"))
+        ));
+        assert!(
+            ensure_stage_profile_output_absent_with(output, |_| {
+                Err(io::Error::from(ErrorKind::NotFound))
+            })
+            .is_ok()
+        );
+        assert!(matches!(
+            ensure_stage_profile_output_absent_with(output, |_| {
+                fs::symlink_metadata(env!("CARGO_MANIFEST_DIR"))
+            }),
+            Err(errors) if errors == ["renderer stage profile output already exists: profile.csv"]
+        ));
+        assert!(matches!(
+            ensure_stage_profile_output_absent_with(output, |_| {
+                Err(io::Error::new(ErrorKind::PermissionDenied, "denied"))
+            }),
+            Err(errors)
+                if errors == [
+                    "cannot inspect renderer stage profile output profile.csv: denied"
+                ]
+        ));
+
+        assert!(validate_stage_profile_image(&[1, 2], &[1, 2], "warmup").is_ok());
+        assert_eq!(
+            validate_stage_profile_image(&[1, 2], &[1, 3], "warmup"),
+            Err(vec!["warmup".to_owned()])
+        );
+        assert_eq!(
+            validate_stage_profile_image(&[1, 2], &[1, 3], "measurement"),
+            Err(vec!["measurement".to_owned()])
+        );
     }
 
     #[test]
