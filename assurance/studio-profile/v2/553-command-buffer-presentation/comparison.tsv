@@ -1,0 +1,9 @@
+metric	baseline_count	baseline_p50_ns	candidate_count	candidate_p50_ns	candidate_minus_baseline_ns
+native_display_link_target	15	15161125	14	14365833	-795292
+native_target_presentation	15	48494375	14	47699083	-795292
+native_actual_presentation	12	48508292	11	47698750	-809542
+native_presentation_callback_lag	12	192667	11	179125	-13542
+native_submission	15	95417	14	79292	-16125
+frame_build	56	54458	56	52333	-2125
+display_target_to_target_presentation	15	33333250	14	33333250	0
+target_to_actual_presentation	12	13917	11	-333	-14250
