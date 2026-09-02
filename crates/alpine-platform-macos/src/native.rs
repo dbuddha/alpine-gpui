@@ -5,14 +5,11 @@ use std::sync::{
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use std::{ffi::c_void, ptr::NonNull};
 
 use alpine_core::Point;
-
-#[cfg(alpine_native_validation)]
-use std::time::Duration;
 
 #[cfg(alpine_native_validation)]
 use objc2::rc::autoreleasepool;
@@ -44,8 +41,8 @@ use objc2_foundation::{
 use objc2_foundation::{NSDate, NSTimer};
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLPixelFormat};
 use objc2_quartz_core::{
-    CAMetalDisplayLink, CAMetalDisplayLinkDelegate, CAMetalDisplayLinkUpdate, CAMetalDrawable,
-    CAMetalLayer,
+    CACurrentMediaTime, CAMetalDisplayLink, CAMetalDisplayLinkDelegate, CAMetalDisplayLinkUpdate,
+    CAMetalDrawable, CAMetalLayer,
 };
 
 use alpine_core::LinearRgba;
@@ -487,8 +484,24 @@ struct PendingFrame {
 struct EventFrameTiming {
     timestamp: EventTimestamp,
     received_at: Instant,
+    received_media_time_seconds: f64,
     handler_finished_at: Instant,
     admitted_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+struct EventReceipt {
+    instant: Instant,
+    media_time_seconds: f64,
+}
+
+impl EventReceipt {
+    fn now() -> Self {
+        Self {
+            media_time_seconds: CACurrentMediaTime(),
+            instant: Instant::now(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -537,6 +550,19 @@ fn elapsed_ns(start: Instant, end: Instant) -> u64 {
     u64::try_from(end.saturating_duration_since(start).as_nanos()).unwrap_or(u64::MAX)
 }
 
+fn media_time_delta_ns(start_seconds: f64, end_seconds: f64) -> Option<u64> {
+    if !start_seconds.is_finite()
+        || !end_seconds.is_finite()
+        || start_seconds <= 0.0
+        || end_seconds <= 0.0
+        || end_seconds < start_seconds
+    {
+        return None;
+    }
+    let duration = Duration::try_from_secs_f64(end_seconds - start_seconds).ok()?;
+    u64::try_from(duration.as_nanos()).ok()
+}
+
 fn profile_latency_for_terminal(
     latency: Option<FrameLatencyEvidence>,
     recovery: Option<RecoveryClassification>,
@@ -561,6 +587,7 @@ mod frame_latency_timing_tests {
         let event = EventFrameTiming {
             timestamp: EventTimestamp::new(11),
             received_at: origin,
+            received_media_time_seconds: 101.0,
             handler_finished_at: origin + Duration::from_nanos(13),
             admitted_at: origin + Duration::from_nanos(17),
         };
@@ -603,6 +630,16 @@ mod frame_latency_timing_tests {
             Some(complete)
         );
         assert_eq!(profile_latency_for_terminal(None, None), None);
+        assert_eq!(super::media_time_delta_ns(101.0, 101.25), Some(250_000_000));
+        for (start, end) in [
+            (0.0, 1.0),
+            (1.0, 0.0),
+            (2.0, 1.0),
+            (f64::NAN, 1.0),
+            (1.0, f64::INFINITY),
+        ] {
+            assert_eq!(super::media_time_delta_ns(start, end), None);
+        }
         Ok(())
     }
 }
@@ -706,26 +743,40 @@ struct PresentationSignal {
     time_bits: AtomicU64,
     event_to_presented_handler_ns: AtomicU64,
     event_received_at: Option<Instant>,
+    event_received_media_time_seconds: Option<f64>,
     event_timestamp: Option<EventTimestamp>,
+    display_link_target_seconds: f64,
+    target_presentation_seconds: f64,
+    lifecycle: Arc<AtomicU8>,
     signposts: StudioSignposts,
 }
 
 impl PresentationSignal {
     const MISSING_LATENCY_NS: u64 = u64::MAX;
 
-    fn new(event: Option<EventFrameTiming>, signposts: StudioSignposts) -> Self {
+    fn new(
+        event: Option<EventFrameTiming>,
+        display_link_target_seconds: f64,
+        target_presentation_seconds: f64,
+        lifecycle: Arc<AtomicU8>,
+        signposts: StudioSignposts,
+    ) -> Self {
         Self {
             published: AtomicBool::new(false),
             observed: AtomicBool::new(false),
             time_bits: AtomicU64::new(0),
             event_to_presented_handler_ns: AtomicU64::new(Self::MISSING_LATENCY_NS),
             event_received_at: event.map(|event| event.received_at),
+            event_received_media_time_seconds: event.map(|event| event.received_media_time_seconds),
             event_timestamp: event.map(|event| event.timestamp),
+            display_link_target_seconds,
+            target_presentation_seconds,
+            lifecycle,
             signposts,
         }
     }
 
-    fn publish(&self, presented_time_bits: u64) -> Option<u64> {
+    fn publish(&self, presented_time_bits: u64, callback_media_time_seconds: f64) -> Option<u64> {
         if self.published.swap(true, Ordering::AcqRel) {
             return None;
         }
@@ -738,11 +789,22 @@ impl PresentationSignal {
         }
         self.time_bits.store(presented_time_bits, Ordering::Relaxed);
         self.observed.store(true, Ordering::Release);
+        if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+            return None;
+        }
         self.event_timestamp
             .zip(elapsed)
-            .and_then(|(event, elapsed)| {
-                self.signposts
-                    .emit_presented_handler_latency(event, elapsed)
+            .and_then(|(event, callback_ns)| {
+                let event_media = self.event_received_media_time_seconds?;
+                let actual_presentation_seconds = f64::from_bits(presented_time_bits);
+                self.signposts.emit_presentation_latency(
+                    event,
+                    callback_ns,
+                    media_time_delta_ns(event_media, self.display_link_target_seconds),
+                    media_time_delta_ns(event_media, self.target_presentation_seconds),
+                    media_time_delta_ns(event_media, actual_presentation_seconds),
+                    media_time_delta_ns(actual_presentation_seconds, callback_media_time_seconds),
+                )
             })
     }
 
@@ -783,9 +845,33 @@ impl PresentationDriver {
         &self,
         drawable: &ProtocolObject<dyn MTLDrawable>,
         event_timing: Option<EventFrameTiming>,
+        display_link_target_seconds: f64,
+        target_presentation_seconds: f64,
         counters: &FrameCounters,
     ) -> Arc<PresentationSignal> {
-        install_observation(drawable, event_timing, self.latency_signposts, counters)
+        install_observation(
+            drawable,
+            event_timing,
+            display_link_target_seconds,
+            target_presentation_seconds,
+            Arc::clone(&self.lifecycle),
+            self.latency_signposts,
+            counters,
+        )
+    }
+
+    fn offscreen_descriptor(&self, clear: LinearRgba) -> Result<OffscreenDescriptor, SurfaceError> {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "validated finite scale is narrowed to the renderer's f32 coordinate contract"
+        )]
+        Ok(OffscreenDescriptor::new(
+            self.configuration.physical_width,
+            self.configuration.physical_height,
+            self.configuration.scale as f32,
+            clear,
+        )
+        .map_err(alpine_metal::RenderError::from)?)
     }
 
     fn new(
@@ -1121,22 +1207,17 @@ impl PresentationDriver {
             return self.cancel_attempt(token, timing, counters);
         }
 
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "validated finite scale is narrowed to the renderer's f32 coordinate contract"
-        )]
-        let descriptor = OffscreenDescriptor::new(
-            self.configuration.physical_width,
-            self.configuration.physical_height,
-            self.configuration.scale as f32,
-            frame.clear,
-        )
-        .map_err(alpine_metal::RenderError::from)?;
+        let descriptor = self.offscreen_descriptor(frame.clear)?;
 
         let drawable = update.drawable();
         let drawable_protocol = ProtocolObject::from_ref(&*drawable);
-        let presentation =
-            self.observe_presentation(drawable_protocol, frame.event_timing, counters);
+        let presentation = self.observe_presentation(
+            drawable_protocol,
+            frame.event_timing,
+            update.targetTimestamp(),
+            update.targetPresentationTimestamp(),
+            counters,
+        );
         let admission = self
             .frame_slots
             .acquire(token, self.owner_generation)
@@ -1539,7 +1620,8 @@ fn install_presented_handler(
             // SAFETY: Metal invokes the registered handler with a valid borrowed
             // drawable for the complete block call. The reference does not escape.
             let drawable = unsafe { drawable.as_ref() };
-            let _profile_correlation = signal.publish(drawable.presentedTime().to_bits());
+            let _profile_correlation =
+                signal.publish(drawable.presentedTime().to_bits(), CACurrentMediaTime());
         });
     // SAFETY: The generated selector signature matches the retained block.
     // Metal copies the escaping block and keeps its captured Arc alive until
@@ -1555,10 +1637,19 @@ fn install_presented_handler(
 fn install_observation(
     drawable: &ProtocolObject<dyn MTLDrawable>,
     event_timing: Option<EventFrameTiming>,
+    display_link_target_seconds: f64,
+    target_presentation_seconds: f64,
+    lifecycle: Arc<AtomicU8>,
     signposts: StudioSignposts,
     counters: &FrameCounters,
 ) -> Arc<PresentationSignal> {
-    let presentation = Arc::new(PresentationSignal::new(event_timing, signposts));
+    let presentation = Arc::new(PresentationSignal::new(
+        event_timing,
+        display_link_target_seconds,
+        target_presentation_seconds,
+        lifecycle,
+        signposts,
+    ));
     install_presented_handler(drawable, &presentation, counters);
     presentation
 }
@@ -3042,8 +3133,8 @@ impl DisplayLinkDelegate {
     }
 
     fn dispatch_native_input_event(&self, event: NativeInputEvent) {
-        let received_at = Instant::now();
-        if let Err(error) = self.try_dispatch_native_input_event(event, received_at) {
+        let receipt = EventReceipt::now();
+        if let Err(error) = self.try_dispatch_native_input_event(event, receipt) {
             self.record_dispatch_error(error);
         }
     }
@@ -3051,7 +3142,7 @@ impl DisplayLinkDelegate {
     fn try_dispatch_native_input_event(
         &self,
         event: NativeInputEvent,
-        received_at: Instant,
+        receipt: EventReceipt,
     ) -> Result<(), SurfaceError> {
         let clipboard_operation = clipboard_shortcut(&event);
         let timestamp = self.next_event_timestamp();
@@ -3102,7 +3193,7 @@ impl DisplayLinkDelegate {
                 event,
             },
         };
-        let _close = self.dispatch_surface_event_at(event, received_at)?;
+        let _close = self.dispatch_surface_event_at(event, receipt)?;
         if clipboard_operation == Some(ClipboardOperation::Paste) {
             let event = ClipboardEvent::PasteCompleted(self.read_clipboard());
             let _close = self.dispatch_surface_event_inner(
@@ -3111,7 +3202,7 @@ impl DisplayLinkDelegate {
                     event,
                 },
                 false,
-                Instant::now(),
+                EventReceipt::now(),
             )?;
         }
         Ok(())
@@ -3143,15 +3234,15 @@ impl DisplayLinkDelegate {
         &self,
         event: SurfaceEvent,
     ) -> Result<CloseDisposition, SurfaceError> {
-        self.dispatch_surface_event_at(event, Instant::now())
+        self.dispatch_surface_event_at(event, EventReceipt::now())
     }
 
     fn dispatch_surface_event_at(
         &self,
         event: SurfaceEvent,
-        received_at: Instant,
+        receipt: EventReceipt,
     ) -> Result<CloseDisposition, SurfaceError> {
-        self.dispatch_surface_event_inner(event, true, received_at)
+        self.dispatch_surface_event_inner(event, true, receipt)
     }
 
     fn submit_surface_frame(
@@ -3181,7 +3272,7 @@ impl DisplayLinkDelegate {
         &self,
         event: SurfaceEvent,
         clipboard_write_allowed: bool,
-        received_at: Instant,
+        receipt: EventReceipt,
     ) -> Result<CloseDisposition, SurfaceError> {
         let event_timestamp = event.timestamp();
         let close_requested = matches!(event, SurfaceEvent::CloseRequested { .. });
@@ -3212,7 +3303,8 @@ impl DisplayLinkDelegate {
             let (scene, clear) = frame.into_parts();
             let event_timing = EventFrameTiming {
                 timestamp: event_timestamp,
-                received_at,
+                received_at: receipt.instant,
+                received_media_time_seconds: receipt.media_time_seconds,
                 handler_finished_at,
                 admitted_at: Instant::now(),
             };
@@ -3251,7 +3343,7 @@ impl DisplayLinkDelegate {
                     event,
                 },
                 false,
-                Instant::now(),
+                EventReceipt::now(),
             )?;
         }
         if close != CloseDisposition::Allow {
@@ -4609,7 +4701,7 @@ impl NativeSurface {
                 modifiers: Modifiers::from_bits(Modifiers::COMMAND),
                 repeat: false,
             },
-            Instant::now(),
+            EventReceipt::now(),
         );
         self.delegate.clear_event_handler();
         result
@@ -5836,12 +5928,19 @@ mod tests {
 
     #[test]
     fn presentation_observation_requires_a_real_or_injected_signal() -> Result<(), &'static str> {
-        let signal = Arc::new(PresentationSignal::new(None, StudioSignposts::new()));
+        let lifecycle = Arc::new(AtomicU8::new(SURFACE_LIVE));
+        let signal = Arc::new(PresentationSignal::new(
+            None,
+            0.0,
+            0.0,
+            Arc::clone(&lifecycle),
+            StudioSignposts::new(),
+        ));
         let observation = PresentationObservation::new(Arc::clone(&signal));
         assert!(!observation.observed());
         assert_eq!(observation.event_to_presented_handler_ns(), None);
 
-        assert_eq!(signal.publish(17), None);
+        assert_eq!(signal.publish(17, 0.0), None);
         assert!(observation.observed());
         assert_eq!(observation.presented_time_bits(), 17);
         assert_eq!(observation.event_to_presented_handler_ns(), None);
@@ -5852,31 +5951,58 @@ mod tests {
         let event = EventFrameTiming {
             timestamp: EventTimestamp::new(31),
             received_at,
+            received_media_time_seconds: 101.0,
             handler_finished_at: received_at,
             admitted_at: received_at,
         };
         let timed_signal = Arc::new(PresentationSignal::new(
             Some(event),
+            101.005,
+            101.010,
+            Arc::clone(&lifecycle),
             StudioSignposts::for_test(false, true),
         ));
         let timed_observation = PresentationObservation::new(Arc::clone(&timed_signal));
         assert_eq!(timed_observation.event_to_presented_handler_ns(), None);
-        assert_eq!(timed_signal.publish(19), Some(31));
+        assert_eq!(
+            timed_signal.publish(101.012_f64.to_bits(), 101.014),
+            Some(31)
+        );
         assert!(timed_observation.observed());
-        assert_eq!(timed_observation.presented_time_bits(), 19);
+        assert_eq!(
+            timed_observation.presented_time_bits(),
+            101.012_f64.to_bits()
+        );
         assert!(
             timed_observation
                 .event_to_presented_handler_ns()
                 .ok_or("timed presentation latency")?
                 >= 1_000_000_000
         );
-        assert_eq!(timed_signal.publish(29), None);
-        assert_eq!(timed_observation.presented_time_bits(), 19);
+        assert_eq!(timed_signal.publish(101.020_f64.to_bits(), 101.021), None);
+        assert_eq!(
+            timed_observation.presented_time_bits(),
+            101.012_f64.to_bits()
+        );
+
+        let stale_signal = Arc::new(PresentationSignal::new(
+            Some(event),
+            101.005,
+            101.010,
+            Arc::clone(&lifecycle),
+            StudioSignposts::for_test(false, true),
+        ));
+        lifecycle.store(SURFACE_CLOSING, Ordering::Release);
+        assert_eq!(stale_signal.publish(101.012_f64.to_bits(), 101.014), None);
+        assert!(stale_signal.observed.load(Ordering::Acquire));
 
         #[cfg(alpine_native_validation)]
         {
             let signal = Arc::new(PresentationSignal::new(
                 Some(event),
+                101.005,
+                101.010,
+                Arc::new(AtomicU8::new(SURFACE_LIVE)),
                 StudioSignposts::for_test(false, true),
             ));
             let mut injected = PresentationObservation::new(Arc::clone(&signal));
@@ -5885,7 +6011,7 @@ mod tests {
                 .event_to_presented_handler_ns()
                 .ok_or("injected presentation latency")?;
             assert!(injected_latency >= 1_000_000_000);
-            assert_eq!(signal.publish(29), Some(31));
+            assert_eq!(signal.publish(101.012_f64.to_bits(), 101.014), Some(31));
             assert!(injected.observed());
             assert_eq!(injected.presented_time_bits(), 23);
             assert_eq!(
