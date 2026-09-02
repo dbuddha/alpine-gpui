@@ -1,0 +1,184 @@
+schema = "alpine-studio-diagnostic/v2"
+workload_id = "physical-isolated-clean-file"
+application_duration_ms = 23777
+duration_ms = 20502
+outcome = "passed"
+status = "clean native close captured"
+omissions = [
+    "accessibility-stale-actions",
+    "background-queue",
+    "fallback-cache",
+    "font-cache",
+    "glyph-atlas-gpu",
+    "language-responses",
+    "process-alpine-retained-bytes",
+    "process-gpu-bytes",
+    "stage-timings",
+    "upload-staging-budget",
+]
+
+[frames]
+requested = 5
+submitted = 4
+completed = 4
+presented = 0
+omitted = 4
+idle_submissions = 0
+peak_in_flight = 1
+
+[text]
+shape_calls = 0
+rasterize_calls = 0
+syntax_cache_hits = 8
+syntax_cache_misses = 2
+syntax_omitted_lines = 0
+
+[language]
+requests = 0
+stale_responses = 0
+restarts = 0
+current_retained_bytes = 0
+peak_retained_bytes = 0
+budget_bytes = 16777216
+
+[accessibility]
+queries = 0
+actions = 0
+retained_nodes = 5
+peak_retained_nodes = 5
+
+[lifecycle]
+close_requests = 1
+close_completions = 1
+clean_shutdown = true
+post_close_bytes = 0
+post_close_limit_bytes = 0
+
+[[stages]]
+name = "scene-build"
+omitted = true
+
+[[stages]]
+name = "adaptation"
+omitted = true
+
+[[stages]]
+name = "atlas-upload"
+omitted = true
+
+[[stages]]
+name = "encode"
+omitted = true
+
+[[stages]]
+name = "commit"
+omitted = true
+
+[[stages]]
+name = "gpu-completion"
+omitted = true
+
+[[stages]]
+name = "presentation"
+omitted = true
+
+[[stages]]
+name = "input-to-present"
+omitted = true
+
+[[stages]]
+name = "shutdown-drain"
+omitted = true
+
+[[resources]]
+name = "layout-cache"
+current_bytes = 2912
+peak_bytes = 2912
+budget_bytes = 33554432
+omitted = false
+
+[[resources]]
+name = "syntax-cache"
+current_bytes = 728
+peak_bytes = 728
+budget_bytes = 4194304
+omitted = false
+
+[[resources]]
+name = "glyph-atlas-cpu"
+current_bytes = 75264
+peak_bytes = 75264
+budget_bytes = 16777216
+omitted = false
+
+[[resources]]
+name = "glyph-atlas-gpu"
+omitted = true
+
+[[resources]]
+name = "font-cache"
+omitted = true
+
+[[resources]]
+name = "fallback-cache"
+omitted = true
+
+[[resources]]
+name = "language-process"
+current_bytes = 0
+peak_bytes = 0
+budget_bytes = 16777216
+omitted = false
+
+[[resources]]
+name = "foreground-queue"
+current_bytes = 0
+peak_bytes = 0
+budget_bytes = 8388608
+omitted = false
+
+[[resources]]
+name = "background-queue"
+omitted = true
+
+[[resources]]
+name = "upload-staging"
+current_bytes = 8192
+peak_bytes = 8192
+omitted = false
+omitted_axes = ["budget_bytes"]
+
+[[samples]]
+sequence = 0
+elapsed_ms = 0
+physical_footprint_bytes = 81992
+physical_peak_bytes = 98376
+private_dirty_bytes = 81992
+
+[[samples]]
+sequence = 1
+elapsed_ms = 5503
+physical_footprint_bytes = 94520184
+physical_peak_bytes = 127812472
+private_dirty_bytes = 94487416
+
+[[samples]]
+sequence = 2
+elapsed_ms = 10507
+physical_footprint_bytes = 41812856
+physical_peak_bytes = 127812472
+private_dirty_bytes = 41780088
+
+[[samples]]
+sequence = 3
+elapsed_ms = 15505
+physical_footprint_bytes = 39715704
+physical_peak_bytes = 127812472
+private_dirty_bytes = 39682936
+
+[[samples]]
+sequence = 4
+elapsed_ms = 20502
+physical_footprint_bytes = 39158648
+physical_peak_bytes = 127812472
+private_dirty_bytes = 39125880

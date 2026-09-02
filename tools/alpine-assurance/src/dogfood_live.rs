@@ -406,12 +406,11 @@ pub(crate) fn seal(request: &SealRequest) -> Result<String, Vec<String>> {
             "internal timestamp does not match the launcher capture identity".to_owned(),
         ]);
     }
-    if snapshot.duration_ms > request.requested_duration_ms
-        || request
-            .requested_duration_ms
-            .saturating_sub(snapshot.duration_ms)
-            > request.interval_ms
-    {
+    if !sample_window_matches(
+        snapshot.duration_ms,
+        request.requested_duration_ms,
+        request.interval_ms,
+    ) {
         return Err(vec![
             "physical sample window does not match the requested duration".to_owned(),
         ]);
@@ -452,6 +451,10 @@ pub(crate) fn seal(request: &SealRequest) -> Result<String, Vec<String>> {
         let _ = fs::remove_dir_all(&staging);
     }
     result
+}
+
+fn sample_window_matches(actual_ms: u64, requested_ms: u64, interval_ms: u64) -> bool {
+    actual_ms > 0 && actual_ms.abs_diff(requested_ms) <= interval_ms
 }
 
 fn validate_seal_request(request: &SealRequest, errors: &mut Vec<String>) {
@@ -637,12 +640,11 @@ fn validate_bundle(manifest_path: &Path) -> Result<(Manifest, Snapshot), Vec<Str
         &mut errors,
     );
     require(
-        manifest.duration_ms > 0
-            && manifest.duration_ms <= manifest.requested_duration_ms
-            && manifest
-                .requested_duration_ms
-                .saturating_sub(manifest.duration_ms)
-                <= manifest.interval_ms,
+        sample_window_matches(
+            manifest.duration_ms,
+            manifest.requested_duration_ms,
+            manifest.interval_ms,
+        ),
         "captured duration is outside the requested sample window",
         &mut errors,
     );
@@ -906,6 +908,7 @@ fn derive_snapshot(
         &mut errors,
     );
     let mut omissions = internal.omissions.clone();
+    omissions.retain(|item| item != "process-samples");
     for required in [
         "process-gpu-bytes",
         "process-alpine-retained-bytes",
@@ -1832,13 +1835,20 @@ executable_sha256 = "none"
 
     #[test]
     fn derives_omission_aware_physical_snapshot() {
-        let internal: InternalDiagnostic =
+        let mut internal: InternalDiagnostic =
             serde_json::from_str(&internal(REVISION)).expect("parse internal");
+        internal.omissions.push("process-samples".to_owned());
         let valid_footprint: Footprint =
             serde_json::from_str(&footprint(42)).expect("parse footprint");
         let snapshot = derive_snapshot(&internal, &valid_footprint, 42).expect("derive snapshot");
         assert_eq!(snapshot.duration_ms, 3_000);
         assert_eq!(snapshot.samples.len(), 4);
+        assert!(
+            !snapshot
+                .omissions
+                .iter()
+                .any(|item| item == "process-samples")
+        );
         assert!(
             snapshot
                 .omissions
@@ -1910,6 +1920,17 @@ executable_sha256 = "none"
     }
 
     #[test]
+    fn sample_window_tolerance_is_symmetric_and_bounded() {
+        assert!(!super::sample_window_matches(0, 3_000, 1_000));
+        for actual in [2_000, 3_000, 4_000] {
+            assert!(super::sample_window_matches(actual, 3_000, 1_000));
+        }
+        for actual in [1_999, 4_001] {
+            assert!(!super::sample_window_matches(actual, 3_000, 1_000));
+        }
+    }
+
+    #[test]
     fn manifest_boundaries_reject_each_invalid_axis() {
         let (root, request) = write_inputs("manifest-boundaries", REVISION);
         seal(&request).expect("seal valid manifest fixture");
@@ -1922,7 +1943,7 @@ executable_sha256 = "none"
                 manifest.interval_ms = 0;
             },
             |manifest: &mut Manifest| {
-                manifest.duration_ms = manifest.requested_duration_ms + 1;
+                manifest.duration_ms = manifest.requested_duration_ms + manifest.interval_ms + 1;
             },
             |manifest: &mut Manifest| {
                 manifest.duration_ms = manifest.requested_duration_ms - manifest.interval_ms - 1;
@@ -2471,6 +2492,7 @@ executable_sha256 = "none"
 
         fs::write(&request.internal, internal(REVISION)).expect("restore internal");
         request.requested_duration_ms = 2_000;
+        request.interval_ms = 999;
         assert!(
             seal(&request)
                 .expect_err("reject duration")
@@ -2478,6 +2500,7 @@ executable_sha256 = "none"
                 .any(|error| error.contains("requested duration"))
         );
         request.requested_duration_ms = 3_000;
+        request.interval_ms = 1_000;
         request.evidence_scope = "claim".to_owned();
         assert!(
             seal(&request)

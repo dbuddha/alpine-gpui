@@ -235,6 +235,9 @@ impl SyntaxCache {
             range.clone(),
             language,
         )? {
+            self.current
+                .try_reserve(1)
+                .map_err(|_| SyntaxError::AllocationFailed)?;
             let entry = self.previous.remove(index);
             let line = Arc::clone(&entry.line);
             self.current.push(entry);
@@ -242,6 +245,7 @@ impl SyntaxCache {
                 .hits
                 .checked_add(1)
                 .ok_or(SyntaxError::SequenceExhausted)?;
+            self.enforce_budget();
             return Ok(line);
         }
         self.misses = self
@@ -899,6 +903,9 @@ mod tests {
         cache.begin_frame();
         let reused = cache.line(&equal, 0, SyntaxLanguage::Rust)?;
         assert!(Arc::ptr_eq(&initial, &reused));
+        let migrated = cache.snapshot();
+        assert!(migrated.current_bytes() <= migrated.peak_bytes());
+        assert!(migrated.peak_bytes() <= migrated.budget_bytes());
         let changed_line = cache.line(&changed, 0, SyntaxLanguage::Rust)?;
         assert!(!Arc::ptr_eq(&initial, &changed_line));
         let oversized = Buffer::new(&"a".repeat(MAX_SYNTAX_LINE_BYTES + 1)).snapshot();

@@ -190,6 +190,11 @@ beta\r",
     assert_eq!(cache_snapshot.misses(), 2);
     assert_eq!(cache_snapshot.evictions(), 0);
     assert_eq!(cache_snapshot.shaped_lines(), 2);
+    let previous_hit = cache.layout_line(&text, 0, key, wrap()?, &mut shaper)?;
+    assert!(Arc::ptr_eq(&first, &previous_hit));
+    let migrated_snapshot = cache.snapshot();
+    assert!(migrated_snapshot.current_bytes() <= migrated_snapshot.peak_bytes());
+    assert!(migrated_snapshot.peak_bytes() <= migrated_snapshot.budget_bytes());
 
     let invalid_range = usize::MAX..usize::MAX;
     let valid_range = text.line_byte_range(0)?;

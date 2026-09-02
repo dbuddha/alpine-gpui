@@ -1996,6 +1996,28 @@ pub mod native_validation {
         surface.implementation.replay_close_with_handler(handler)
     }
 
+    /// Exercises application Quit through the production close authority.
+    ///
+    /// AppKit termination remains cancelled so an admitted close can drain and
+    /// return through Rust ownership. The result reports whether native close
+    /// began after the application handler resolved the close request.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured dispatch error if the handler cannot be installed
+    /// or AppKit does not preserve the termination-cancellation contract.
+    pub fn replay_application_quit_with_handler<F>(
+        surface: &NativeSurface,
+        handler: F,
+    ) -> Result<bool, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        surface
+            .implementation
+            .replay_application_quit_with_handler(handler)
+    }
+
     /// Injects every initialization-stage failure and verifies complete rollback.
     ///
     /// # Errors
