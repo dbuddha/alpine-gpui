@@ -7007,20 +7007,41 @@ fn accessibility_admission_failures(current: u64, admitted: bool) -> u64 {
 }
 
 impl StudioApp {
+    fn apply_settings_submission_result(
+        &mut self,
+        generation: u64,
+        announce: bool,
+        result: Result<(), SubmitError>,
+    ) -> bool {
+        match result {
+            Ok(()) => false,
+            Err(SubmitError::Saturated) => {
+                let _ = self.settings_reload.defer_submission(generation, announce);
+                false
+            }
+            Err(SubmitError::Closed | SubmitError::SequenceExhausted) => {
+                if let Err(error) = self.settings_reload.reject_submission(generation, announce) {
+                    self.local_status = Some(LocalStatus::Command(Arc::from(format!(
+                        "Settings reload failed: {error}"
+                    ))));
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
     fn submit_settings_request(&mut self, context: &mut AppContext<'_, StudioWorkerOutput>) {
         let Some(request) = self.settings_reload.take_request() else {
             return;
         };
         let generation = request.generation();
         let announce = request.announce();
-        if context
+        let result = context
             .spawn(move || StudioWorkerOutput::Settings(Box::new(request.execute())))
-            .is_err()
-            && let Err(error) = self.settings_reload.reject_submission(generation, announce)
-        {
-            self.local_status = Some(LocalStatus::Command(Arc::from(format!(
-                "Settings reload failed: {error}"
-            ))));
+            .map(|_| ());
+        if self.apply_settings_submission_result(generation, announce, result) {
             context.invalidate();
         }
     }
