@@ -749,8 +749,8 @@ mod benchmark_tests {
         MAX_BENCHMARK_SAMPLES, MAX_BENCHMARK_WARMUPS, admit_benchmark_measurement,
         benchmark_rendered_images, benchmark_scene, decode_scene_file,
         elapsed_benchmark_duration_ns, ensure_stage_profile_output_absent,
-        ensure_stage_profile_output_absent_with, render_stage_profile_samples,
-        validate_benchmark_counts, validate_stage_profile_image,
+        ensure_stage_profile_output_absent_with, profile_native_scene, publish_benchmark_samples,
+        render_stage_profile_samples, validate_benchmark_counts, validate_stage_profile_image,
     };
     use std::{
         fs,
@@ -849,6 +849,47 @@ mod benchmark_tests {
             validate_stage_profile_image(&[1, 2], &[1, 3], "measurement"),
             Err(vec!["measurement".to_owned()])
         );
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let directory = root.join("target/qualification");
+        assert!(fs::create_dir_all(&directory).is_ok());
+        let manifest = root.join("assurance/qualification/v1/scene.toml");
+        let stage_profile_output = directory.join(format!(
+            "profile-invalid-count-unit-{}.csv",
+            std::process::id()
+        ));
+        assert!(matches!(
+            profile_native_scene(
+                &manifest,
+                &stage_profile_output,
+                MAX_BENCHMARK_WARMUPS + 1,
+                1
+            ),
+            Err(errors) if errors.iter().any(|error| error.contains("warmup count"))
+        ));
+        assert!(!stage_profile_output.exists());
+
+        let missing_manifest =
+            directory.join(format!("missing-scene-unit-{}.toml", std::process::id()));
+        assert!(matches!(
+            decode_scene_file(&missing_manifest),
+            Err(errors) if errors.iter().any(|error| error.contains("cannot read"))
+        ));
+
+        let blocked_publication_parent = directory.join(format!(
+            "benchmark-publication-blocked-unit-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&blocked_publication_parent);
+        assert!(fs::write(&blocked_publication_parent, b"not a directory").is_ok());
+        assert!(
+            publish_benchmark_samples(
+                &blocked_publication_parent.join("samples.csv"),
+                b"sample_index,elapsed_ns\n0,1\n"
+            )
+            .is_err()
+        );
+        assert!(fs::remove_file(&blocked_publication_parent).is_ok());
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -873,10 +914,11 @@ mod benchmark_tests {
     }
 
     #[test]
-    fn benchmark_counts_atomic_publication_and_collision_are_bounded() -> Result<(), String> {
+    fn benchmark_counts_atomic_publication_and_collision_are_bounded()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let directory = root.join("target/qualification");
-        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        fs::create_dir_all(&directory)?;
         let output = directory.join(format!("benchmark-unit-{}.csv", std::process::id()));
         let _ = fs::remove_file(&output);
         let manifest = root.join("assurance/qualification/v1/scene.toml");
@@ -888,9 +930,10 @@ mod benchmark_tests {
         assert!(validate_benchmark_counts(0, 0).is_err());
         assert!(validate_benchmark_counts(0, MAX_BENCHMARK_SAMPLES + 1).is_err());
 
-        let report = benchmark_scene(false, &manifest, &output, 2, 3)
-            .map_err(|errors| format!("valid benchmark failed: {errors:#?}"))?;
-        let csv = fs::read_to_string(&output).map_err(|error| error.to_string())?;
+        let Ok(report) = benchmark_scene(false, &manifest, &output, 2, 3) else {
+            return Err(io::Error::other("valid benchmark failed").into());
+        };
+        let csv = fs::read_to_string(&output)?;
         assert!(report.contains("performance claim=none"));
         assert!(report.contains("warmup_iterations=2 sample_count=3"));
         assert_eq!(csv.lines().next(), Some("sample_index,elapsed_ns"));
@@ -899,7 +942,7 @@ mod benchmark_tests {
             benchmark_scene(false, &manifest, &output, 1, 1),
             Err(errors) if errors.iter().any(|error| error.contains("output already exists"))
         ));
-        fs::remove_file(&output).map_err(|error| error.to_string())?;
+        fs::remove_file(&output)?;
 
         assert!(matches!(
             benchmark_scene(false, &manifest, &output, 0, 0),
@@ -910,13 +953,13 @@ mod benchmark_tests {
             let blocked_parent =
                 directory.join(format!("benchmark-blocked-parent-{}", std::process::id()));
             let _ = fs::remove_file(&blocked_parent);
-            fs::write(&blocked_parent, b"not a directory").map_err(|error| error.to_string())?;
+            fs::write(&blocked_parent, b"not a directory")?;
             let blocked_output = blocked_parent.join("samples.csv");
             assert!(matches!(
                 benchmark_scene(false, &manifest, &blocked_output, 0, 1),
                 Err(errors) if errors.iter().any(|error| error.contains("cannot inspect"))
             ));
-            fs::remove_file(&blocked_parent).map_err(|error| error.to_string())?;
+            fs::remove_file(&blocked_parent)?;
         }
 
         let warmup_images = [vec![1_u8], vec![2_u8]];
@@ -952,13 +995,16 @@ mod benchmark_tests {
             Err(errors) if errors.iter().any(|error| error.contains("zero-duration"))
         ));
 
-        let elapsed = elapsed_benchmark_duration_ns(Duration::from_millis(1))
-            .map_err(|errors| format!("elapsed benchmark failed: {errors:#?}"))?;
+        let Ok(elapsed) = elapsed_benchmark_duration_ns(Duration::from_millis(1)) else {
+            return Err(io::Error::other("positive benchmark duration did not convert").into());
+        };
         assert!(elapsed >= 1_000_000);
 
-        let stage_csv =
+        let Ok(stage_csv) =
             render_stage_profile_samples(&[alpine_metal::OffscreenStageTimings::default()])
-                .map_err(|errors| format!("stage profile formatting failed: {errors:#?}"))?;
+        else {
+            return Err(io::Error::other("stage profile formatting failed").into());
+        };
         assert!(stage_csv.starts_with("sample_index,admission_ns,"));
         assert_eq!(stage_csv.lines().count(), 2);
 
