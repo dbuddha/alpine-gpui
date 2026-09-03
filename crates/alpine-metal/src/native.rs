@@ -1554,7 +1554,33 @@ fn gpu_execution_nanoseconds(started: f64, completed: f64) -> (Option<u64>, bool
 
 #[cfg(test)]
 mod gpu_execution_timing_tests {
-    use super::gpu_execution_nanoseconds;
+    use std::time::{Duration, Instant};
+
+    use super::{finish_native_timings, gpu_execution_nanoseconds, record_timing};
+    use crate::submission::OffscreenStageTimings;
+
+    #[test]
+    fn native_timing_helpers_preserve_disabled_and_accumulated_state() -> Result<(), &'static str> {
+        let mut destination = 17;
+        let mut saturated = true;
+        record_timing(None, &mut destination, &mut saturated);
+        assert_eq!(destination, 17);
+        assert!(saturated);
+
+        destination = 0;
+        let started = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .ok_or("one-second timing origin")?;
+        record_timing(Some(started), &mut destination, &mut saturated);
+        assert!(destination >= 1_000_000_000);
+        assert!(saturated);
+
+        assert!(finish_native_timings(OffscreenStageTimings::default(), None).is_none());
+        assert!(
+            finish_native_timings(OffscreenStageTimings::default(), Some(Instant::now())).is_some()
+        );
+        Ok(())
+    }
 
     #[test]
     fn preserves_valid_unavailable_and_overflowing_driver_intervals() {
