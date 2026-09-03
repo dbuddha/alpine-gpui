@@ -1189,7 +1189,8 @@ impl NativeBackend {
             &mut timings.timing_saturated,
         );
         if PROFILE {
-            let (gpu_execution_ns, gpu_timing_saturated) = gpu_execution_nanoseconds(&command);
+            let (gpu_execution_ns, gpu_timing_saturated) =
+                gpu_execution_nanoseconds(command.GPUStartTime(), command.GPUEndTime());
             timings.gpu_execution_ns = gpu_execution_ns;
             timings.timing_saturated |= gpu_timing_saturated;
         }
@@ -1538,11 +1539,7 @@ fn finish_native_timings(
     Some(timings)
 }
 
-fn gpu_execution_nanoseconds(
-    command: &ProtocolObject<dyn MTLCommandBuffer>,
-) -> (Option<u64>, bool) {
-    let started = command.GPUStartTime();
-    let completed = command.GPUEndTime();
+fn gpu_execution_nanoseconds(started: f64, completed: f64) -> (Option<u64>, bool) {
     if !started.is_finite() || !completed.is_finite() || started <= 0.0 || completed < started {
         return (None, false);
     }
@@ -1552,6 +1549,35 @@ fn gpu_execution_nanoseconds(
             (Some(nanoseconds), saturated)
         }
         Err(_) => (None, true),
+    }
+}
+
+#[cfg(test)]
+mod gpu_execution_timing_tests {
+    use super::gpu_execution_nanoseconds;
+
+    #[test]
+    fn preserves_valid_unavailable_and_overflowing_driver_intervals() {
+        assert_eq!(
+            gpu_execution_nanoseconds(1.0, 1.5),
+            (Some(500_000_000), false)
+        );
+        assert_eq!(gpu_execution_nanoseconds(1.0, 1.0), (Some(0), false));
+
+        for (started, completed) in [
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (2.0, 1.0),
+            (f64::NAN, 1.0),
+            (1.0, f64::INFINITY),
+        ] {
+            assert_eq!(gpu_execution_nanoseconds(started, completed), (None, false));
+        }
+
+        assert_eq!(
+            gpu_execution_nanoseconds(f64::MIN_POSITIVE, f64::MAX),
+            (None, true)
+        );
     }
 }
 
