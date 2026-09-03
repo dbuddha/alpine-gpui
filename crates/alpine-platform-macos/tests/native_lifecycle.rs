@@ -33,7 +33,8 @@ mod validation {
     const LIFECYCLE_OWNER_COUNTS: [u64; OWNER_KINDS] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 0];
     const QUALIFICATION_WARMUP_ITERATIONS: usize = 512;
     const DIAGNOSTIC_WARMUP_ITERATIONS: usize = 8;
-    const SOAK_SAMPLE_COUNT: usize = 65;
+    const SOAK_MIN_SAMPLE_COUNT: usize = 65;
+    const SOAK_MAX_SAMPLE_COUNT: usize = 129;
     const SOAK_TAIL_SAMPLE_COUNT: usize = 9;
     const SOAK_MAX_GROWTH_PAGES: u64 = 16;
     const MAX_PRESENTATION_UPLOAD_BYTES: usize = 3 * 8 * 1024 * 1024;
@@ -72,6 +73,7 @@ mod validation {
     const CHILD_SCENARIO_ENV: &str = "ALPINE_NATIVE_LIFECYCLE_SCENARIO";
     const MISSING_CLOSE_SCENARIO: &str = "missing-close-control";
     const POST_COMMIT_CLOSE_SCENARIO: &str = "post-commit-close";
+    const RESIDENT_POLICY_SCENARIO: &str = "resident-policy-controls";
 
     pub(super) fn run() -> TestResult {
         if let Some(scenario) = std::env::var_os(CHILD_SCENARIO_ENV) {
@@ -81,6 +83,7 @@ mod validation {
             return run_stage_soak(&stage);
         }
 
+        validate_resident_policy_controls()?;
         validate_bounded_child(MISSING_CLOSE_SCENARIO, Duration::from_secs(2))?;
         validate_bounded_child(POST_COMMIT_CLOSE_SCENARIO, Duration::from_secs(8))?;
 
@@ -135,6 +138,9 @@ mod validation {
         if scenario == OsStr::new(POST_COMMIT_CLOSE_SCENARIO) {
             let (scene, clear) = validation_scene()?;
             return validate_post_commit_close(scene, clear, hosted_direct()?);
+        }
+        if scenario == OsStr::new(RESIDENT_POLICY_SCENARIO) {
+            return validate_resident_policy_controls();
         }
         Err(format!("unsupported native lifecycle child scenario: {scenario:?}").into())
     }
@@ -332,20 +338,30 @@ mod validation {
         for _ in 0..QUALIFICATION_WARMUP_ITERATIONS {
             validate_owner_iteration(&descriptor)?;
         }
-        let mut samples = Vec::with_capacity(SOAK_SAMPLE_COUNT);
+        let page_bytes = host_page_bytes()?;
+        let mut samples = Vec::with_capacity(SOAK_MAX_SAMPLE_COUNT);
         let _ = resident_bytes()?;
-        for _ in 0..SOAK_SAMPLE_COUNT {
+        while samples.len() < SOAK_MAX_SAMPLE_COUNT {
             validate_owner_iteration(&descriptor)?;
             samples.push(resident_bytes()?);
+            if resident_sampling_complete(&samples, page_bytes)? {
+                break;
+            }
         }
-        summarize_samples(samples)
+        summarize_samples_with_page(samples, page_bytes)
     }
 
     fn summarize_samples(samples: Vec<u64>) -> TestResult<OwnerSoakEvidence> {
+        summarize_samples_with_page(samples, host_page_bytes()?)
+    }
+
+    fn summarize_samples_with_page(
+        samples: Vec<u64>,
+        page_bytes: u64,
+    ) -> TestResult<OwnerSoakEvidence> {
         if samples.len() < SOAK_TAIL_SAMPLE_COUNT {
             return Err("RSS summary requires the complete tail window".into());
         }
-        let page_bytes = host_page_bytes()?;
         let maximum_bytes = samples.iter().copied().max().ok_or("maximum RSS sample")?;
         let tail = &samples[samples.len() - SOAK_TAIL_SAMPLE_COUNT..];
         let tail_minimum_bytes = tail
@@ -367,6 +383,131 @@ mod validation {
         })
     }
 
+    fn resident_sampling_complete(samples: &[u64], page_bytes: u64) -> TestResult<bool> {
+        if samples.len() < SOAK_MIN_SAMPLE_COUNT {
+            return Ok(false);
+        }
+        if page_bytes == 0 {
+            return Err("resident sampling page size must be positive".into());
+        }
+        let tail = &samples[samples.len() - SOAK_TAIL_SAMPLE_COUNT..];
+        let minimum = tail
+            .iter()
+            .copied()
+            .min()
+            .ok_or("tail minimum RSS sample")?;
+        let maximum = tail
+            .iter()
+            .copied()
+            .max()
+            .ok_or("tail maximum RSS sample")?;
+        Ok(maximum - minimum <= page_bytes)
+    }
+
+    fn validate_resident_policy_controls() -> TestResult {
+        const CONTROL_PAGE_BYTES: u64 = 16;
+        const CONTROL_BASE_BYTES: u64 = 1_024;
+
+        let immediate = vec![CONTROL_BASE_BYTES; SOAK_MIN_SAMPLE_COUNT];
+        assert!(resident_sampling_complete(&immediate, CONTROL_PAGE_BYTES)?);
+        assert!(resident_sampling_complete(&immediate, 0).is_err());
+        assert!(
+            validate_resident_plateau(
+                &summarize_samples_with_page(immediate, CONTROL_PAGE_BYTES,)?
+            )
+            .is_ok()
+        );
+
+        let mut delayed = vec![CONTROL_BASE_BYTES; SOAK_MIN_SAMPLE_COUNT - 4];
+        delayed.extend([CONTROL_BASE_BYTES + 3 * CONTROL_PAGE_BYTES; 4]);
+        assert!(!resident_sampling_complete(&delayed, CONTROL_PAGE_BYTES)?);
+        delayed.extend([CONTROL_BASE_BYTES + 3 * CONTROL_PAGE_BYTES; 5]);
+        assert!(resident_sampling_complete(&delayed, CONTROL_PAGE_BYTES)?);
+        assert!(
+            validate_resident_plateau(&summarize_samples_with_page(delayed, CONTROL_PAGE_BYTES,)?)
+                .is_ok()
+        );
+
+        let mut exact_tail_span = vec![CONTROL_BASE_BYTES; SOAK_MIN_SAMPLE_COUNT];
+        for (index, sample) in exact_tail_span[SOAK_MIN_SAMPLE_COUNT - SOAK_TAIL_SAMPLE_COUNT..]
+            .iter_mut()
+            .enumerate()
+        {
+            *sample += u64::from(index % 2 == 0) * CONTROL_PAGE_BYTES;
+        }
+        assert!(resident_sampling_complete(
+            &exact_tail_span,
+            CONTROL_PAGE_BYTES
+        )?);
+
+        let continuing_growth = (0..SOAK_MAX_SAMPLE_COUNT)
+            .map(|index| CONTROL_BASE_BYTES + index as u64 * CONTROL_PAGE_BYTES)
+            .collect::<Vec<_>>();
+        assert!(!resident_sampling_complete(
+            &continuing_growth,
+            CONTROL_PAGE_BYTES
+        )?);
+        assert!(
+            validate_resident_plateau(&summarize_samples_with_page(
+                continuing_growth,
+                CONTROL_PAGE_BYTES,
+            )?)
+            .is_err()
+        );
+
+        let oscillating = (0..SOAK_MAX_SAMPLE_COUNT)
+            .map(|index| CONTROL_BASE_BYTES + u64::from(index % 2 == 0) * 2 * CONTROL_PAGE_BYTES)
+            .collect::<Vec<_>>();
+        assert!(!resident_sampling_complete(
+            &oscillating,
+            CONTROL_PAGE_BYTES
+        )?);
+        assert!(
+            validate_resident_plateau(&summarize_samples_with_page(
+                oscillating,
+                CONTROL_PAGE_BYTES,
+            )?)
+            .is_err()
+        );
+
+        let mut exact_growth_bound = vec![CONTROL_BASE_BYTES; SOAK_MIN_SAMPLE_COUNT];
+        exact_growth_bound[SOAK_MIN_SAMPLE_COUNT - SOAK_TAIL_SAMPLE_COUNT..]
+            .fill(CONTROL_BASE_BYTES + SOAK_MAX_GROWTH_PAGES * CONTROL_PAGE_BYTES);
+        assert!(
+            validate_resident_plateau(&summarize_samples_with_page(
+                exact_growth_bound,
+                CONTROL_PAGE_BYTES,
+            )?)
+            .is_ok()
+        );
+
+        let mut excessive_growth = vec![CONTROL_BASE_BYTES; SOAK_MIN_SAMPLE_COUNT];
+        excessive_growth[SOAK_MIN_SAMPLE_COUNT - SOAK_TAIL_SAMPLE_COUNT..]
+            .fill(CONTROL_BASE_BYTES + (SOAK_MAX_GROWTH_PAGES + 1) * CONTROL_PAGE_BYTES);
+        assert!(resident_sampling_complete(
+            &excessive_growth,
+            CONTROL_PAGE_BYTES
+        )?);
+        assert!(
+            validate_resident_plateau(&summarize_samples_with_page(
+                excessive_growth,
+                CONTROL_PAGE_BYTES,
+            )?)
+            .is_err()
+        );
+
+        assert!(!resident_sampling_complete(
+            &vec![CONTROL_BASE_BYTES; SOAK_MIN_SAMPLE_COUNT - 1],
+            CONTROL_PAGE_BYTES
+        )?);
+        let overlong = vec![CONTROL_BASE_BYTES; SOAK_MAX_SAMPLE_COUNT + 1];
+        assert!(
+            validate_resident_plateau(&summarize_samples_with_page(overlong, CONTROL_PAGE_BYTES,)?)
+                .is_err()
+        );
+        Ok(())
+    }
+
     fn run_stage_soak(value: &OsStr) -> TestResult {
         if !residency_capture_enabled()? {
             return Err("initialization-stage RSS capture requires residency capture".into());
@@ -379,7 +520,7 @@ mod validation {
 
     fn diagnostic_sample_count() -> TestResult<usize> {
         let Some(value) = std::env::var_os(LIFECYCLE_STAGE_SAMPLE_COUNT_ENV) else {
-            return Ok(SOAK_SAMPLE_COUNT);
+            return Ok(SOAK_MIN_SAMPLE_COUNT);
         };
         let value = value
             .to_str()
@@ -539,9 +680,9 @@ mod validation {
     }
 
     fn validate_resident_plateau(soak: &OwnerSoakEvidence) -> TestResult {
-        if soak.samples.len() != SOAK_SAMPLE_COUNT {
+        if !(SOAK_MIN_SAMPLE_COUNT..=SOAK_MAX_SAMPLE_COUNT).contains(&soak.samples.len()) {
             return Err(format!(
-                "native lifecycle soak requires {SOAK_SAMPLE_COUNT} RSS samples, found {}",
+                "native lifecycle soak requires between {SOAK_MIN_SAMPLE_COUNT} and {SOAK_MAX_SAMPLE_COUNT} RSS samples, found {}",
                 soak.samples.len()
             )
             .into());
@@ -563,8 +704,8 @@ mod validation {
         }
         if soak.tail_maximum_bytes - soak.tail_minimum_bytes > soak.page_bytes {
             return Err(format!(
-                "native lifecycle RSS tail spans {} to {} bytes, above one {}-byte page",
-                soak.tail_minimum_bytes, soak.tail_maximum_bytes, soak.page_bytes
+                "native lifecycle RSS did not reach a one-page terminal span after {} samples: {} to {} bytes with {}-byte pages",
+                soak.samples.len(), soak.tail_minimum_bytes, soak.tail_maximum_bytes, soak.page_bytes
             )
             .into());
         }
@@ -604,6 +745,9 @@ mod validation {
             "warmup_iterations = {QUALIFICATION_WARMUP_ITERATIONS}"
         )?;
         writeln!(artifact, "sample_count = {}", soak.samples.len())?;
+        writeln!(artifact, "minimum_sample_count = {SOAK_MIN_SAMPLE_COUNT}")?;
+        writeln!(artifact, "maximum_sample_count = {SOAK_MAX_SAMPLE_COUNT}")?;
+        writeln!(artifact, "terminal_sample_count = {SOAK_TAIL_SAMPLE_COUNT}")?;
         writeln!(artifact, "page_bytes = {}", soak.page_bytes)?;
         writeln!(artifact, "initial_bytes = {}", soak.samples[0])?;
         writeln!(artifact, "maximum_bytes = {}", soak.maximum_bytes)?;
