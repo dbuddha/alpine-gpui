@@ -1189,10 +1189,7 @@ impl NativeBackend {
             &mut timings.timing_saturated,
         );
         if PROFILE {
-            let (gpu_execution_ns, gpu_timing_saturated) =
-                gpu_execution_nanoseconds(command.GPUStartTime(), command.GPUEndTime());
-            timings.gpu_execution_ns = gpu_execution_ns;
-            timings.timing_saturated |= gpu_timing_saturated;
+            record_gpu_execution_timing(&mut timings, command.GPUStartTime(), command.GPUEndTime());
         }
         let status = command_status(command.status());
         let terminal = match status {
@@ -1552,15 +1549,27 @@ fn gpu_execution_nanoseconds(started: f64, completed: f64) -> (Option<u64>, bool
     }
 }
 
+fn record_gpu_execution_timing(timings: &mut OffscreenStageTimings, started: f64, completed: f64) {
+    let (gpu_execution_ns, gpu_timing_saturated) = gpu_execution_nanoseconds(started, completed);
+    timings.gpu_execution_ns = gpu_execution_ns;
+    timings.timing_saturated |= gpu_timing_saturated;
+}
+
 #[cfg(test)]
 mod gpu_execution_timing_tests {
     use std::time::{Duration, Instant};
 
-    use super::{finish_native_timings, gpu_execution_nanoseconds, record_timing};
+    use super::{
+        finish_native_timings, gpu_execution_nanoseconds, record_gpu_execution_timing,
+        record_timing, timing_started,
+    };
     use crate::submission::OffscreenStageTimings;
 
     #[test]
     fn native_timing_helpers_preserve_disabled_and_accumulated_state() -> Result<(), &'static str> {
+        assert!(timing_started::<true>().is_some());
+        assert!(timing_started::<false>().is_none());
+
         let mut destination = 17;
         let mut saturated = true;
         record_timing(None, &mut destination, &mut saturated);
@@ -1604,6 +1613,11 @@ mod gpu_execution_timing_tests {
             gpu_execution_nanoseconds(f64::MIN_POSITIVE, f64::MAX),
             (None, true)
         );
+
+        let mut timings = OffscreenStageTimings::default();
+        record_gpu_execution_timing(&mut timings, f64::MIN_POSITIVE, f64::MAX);
+        assert_eq!(timings.gpu_execution_ns, None);
+        assert!(timings.timing_saturated);
     }
 }
 
