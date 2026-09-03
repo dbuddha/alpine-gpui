@@ -376,3 +376,44 @@ fn native_benchmark_publishes_or_rejects_the_known_virtual_device() -> Result<()
     }
     Ok(())
 }
+
+#[test]
+fn native_stage_profile_publishes_or_rejects_the_known_virtual_device() -> Result<(), String> {
+    let binary = env!("CARGO_BIN_EXE_alpine-assurance");
+    let root = repository_root();
+    let manifest = "assurance/qualification/v1/scene.toml";
+    let output_path = root.join("target").join(format!(
+        "qualification-cli-native-stage-profile-{}.csv",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&output_path);
+    let profile = Command::new(binary)
+        .current_dir(root)
+        .args(["profile-scene-native", manifest])
+        .arg(&output_path)
+        .args(["1", "1"])
+        .output()
+        .map_err(|error| error.to_string())?;
+    let stderr = String::from_utf8_lossy(&profile.stderr);
+    if cfg!(target_os = "macos") && !profile.status.success() {
+        assert!(
+            stderr.contains(
+                "Metal device Apple Paravirtual device is unsupported: Metal 3 family support is required"
+            ),
+            "unexpected native stage profile failure: {stderr}"
+        );
+        assert!(!output_path.exists());
+    } else if cfg!(target_os = "macos") {
+        assert!(profile.status.success(), "{stderr}");
+        assert!(String::from_utf8_lossy(&profile.stdout).contains("performance claim=none"));
+        let csv = fs::read_to_string(&output_path).map_err(|error| error.to_string())?;
+        assert!(csv.starts_with("sample_index,admission_ns,"));
+        assert_eq!(csv.lines().count(), 2);
+        fs::remove_file(&output_path).map_err(|error| error.to_string())?;
+    } else {
+        assert!(!profile.status.success());
+        assert!(stderr.contains("cannot initialize Direct Metal"));
+        assert!(!output_path.exists());
+    }
+    Ok(())
+}

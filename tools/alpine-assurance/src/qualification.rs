@@ -393,6 +393,185 @@ pub(crate) fn benchmark_scene(
     ))
 }
 
+pub(crate) fn profile_native_scene(
+    manifest: &Path,
+    output: &Path,
+    warmup_iterations: u64,
+    sample_count: u64,
+) -> Result<String, Vec<String>> {
+    validate_benchmark_counts(warmup_iterations, sample_count)?;
+    ensure_stage_profile_output_absent(output)?;
+
+    let scene: SceneTrace = load_toml(manifest)?;
+    let errors = validate_scene_errors_all(&scene);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let decoded = match decode_scene(&scene) {
+        Ok(decoded) => decoded,
+        Err(error) => return Err(vec![error]),
+    };
+    let mut backend = match alpine_metal::MetalBackend::new() {
+        Ok(backend) => backend,
+        Err(error) => return Err(vec![format!("cannot initialize Direct Metal: {error}")]),
+    };
+    let admitted = match backend.render_offscreen_profiled(decoded.scene(), decoded.descriptor()) {
+        Ok(frame) => frame,
+        Err(error) => return Err(vec![format!("Direct Metal trace profile failed: {error}")]),
+    };
+    let admitted_bytes = admitted.image().bytes().to_vec();
+    for _ in 0..warmup_iterations {
+        let frame = match backend.render_offscreen_profiled(decoded.scene(), decoded.descriptor()) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return Err(vec![format!("Direct Metal trace profile failed: {error}")]);
+            }
+        };
+        validate_stage_profile_image(
+            &admitted_bytes,
+            frame.image().bytes(),
+            "renderer stage profile image changed during warmup",
+        )?;
+    }
+
+    let Ok(capacity) = usize::try_from(sample_count) else {
+        return Err(vec![
+            "renderer stage profile sample count exceeds usize".to_owned(),
+        ]);
+    };
+    let mut samples = Vec::with_capacity(capacity);
+    for _ in 0..sample_count {
+        let frame = match backend.render_offscreen_profiled(decoded.scene(), decoded.descriptor()) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return Err(vec![format!("Direct Metal trace profile failed: {error}")]);
+            }
+        };
+        validate_stage_profile_image(
+            &admitted_bytes,
+            frame.image().bytes(),
+            "renderer stage profile image changed during measurement",
+        )?;
+        let Some(timings) = frame.timings() else {
+            return Err(vec![
+                "renderer stage profile omitted requested timing evidence".to_owned(),
+            ]);
+        };
+        if timings.timing_saturated() {
+            return Err(vec![
+                "renderer stage profile timing exceeded the representable range".to_owned(),
+            ]);
+        }
+        samples.push(timings);
+    }
+    let csv = render_stage_profile_samples(&samples)?;
+    if let Err(error) = publish_benchmark_samples(output, csv.as_bytes()) {
+        return Err(vec![error]);
+    }
+    Ok(format!(
+        "recorded admission_iterations=1 warmup_iterations={} sample_count={} renderer=direct-metal trace={} at individually attributed offscreen stages; performance claim=none; output={}",
+        warmup_iterations,
+        samples.len(),
+        scene.id,
+        output.display()
+    ))
+}
+
+fn ensure_stage_profile_output_absent(output: &Path) -> Result<(), Vec<String>> {
+    ensure_stage_profile_output_absent_with(output, |path| fs::symlink_metadata(path))
+}
+
+fn ensure_stage_profile_output_absent_with<F>(output: &Path, inspect: F) -> Result<(), Vec<String>>
+where
+    F: FnOnce(&Path) -> std::io::Result<fs::Metadata>,
+{
+    match inspect(output) {
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Ok(_) => {
+            return Err(vec![format!(
+                "renderer stage profile output already exists: {}",
+                output.display()
+            )]);
+        }
+        Err(error) => {
+            return Err(vec![format!(
+                "cannot inspect renderer stage profile output {}: {error}",
+                output.display()
+            )]);
+        }
+    }
+    Ok(())
+}
+
+fn validate_stage_profile_image(
+    admitted: &[u8],
+    observed: &[u8],
+    mismatch: &'static str,
+) -> Result<(), Vec<String>> {
+    if observed != admitted {
+        return Err(vec![mismatch.to_owned()]);
+    }
+    Ok(())
+}
+
+fn render_stage_profile_samples(
+    samples: &[alpine_metal::OffscreenStageTimings],
+) -> Result<String, Vec<String>> {
+    let Some(capacity) = samples
+        .len()
+        .checked_mul(192)
+        .and_then(|bytes| bytes.checked_add(320))
+    else {
+        return Err(vec![
+            "renderer stage profile CSV capacity overflowed".to_owned(),
+        ]);
+    };
+    let mut csv = String::with_capacity(capacity);
+    csv.push_str("sample_index,admission_ns,resource_preparation_ns,command_buffer_ns,atlas_upload_encoding_ns,render_encoding_ns,readback_encoding_ns,commit_ns,completion_wait_ns,gpu_execution_ns,readback_compaction_ns,native_total_ns,submission_accounting_ns,total_ns\n");
+    for (index, timing) in samples.iter().copied().enumerate() {
+        if write!(
+            &mut csv,
+            "{index},{},{},{},{},{},{},{},{},",
+            timing.admission_ns(),
+            timing.resource_preparation_ns(),
+            timing.command_buffer_ns(),
+            timing.atlas_upload_encoding_ns(),
+            timing.render_encoding_ns(),
+            timing.readback_encoding_ns(),
+            timing.commit_ns(),
+            timing.completion_wait_ns(),
+        )
+        .is_err()
+        {
+            return Err(vec![
+                "cannot format renderer stage profile sample".to_owned(),
+            ]);
+        }
+        if let Some(gpu_execution_ns) = timing.gpu_execution_ns()
+            && write!(&mut csv, "{gpu_execution_ns}").is_err()
+        {
+            return Err(vec![
+                "cannot format renderer stage profile GPU sample".to_owned(),
+            ]);
+        }
+        if writeln!(
+            &mut csv,
+            ",{},{},{},{}",
+            timing.readback_compaction_ns(),
+            timing.native_total_ns(),
+            timing.submission_accounting_ns(),
+            timing.total_ns(),
+        )
+        .is_err()
+        {
+            return Err(vec![
+                "cannot format renderer stage profile sample".to_owned(),
+            ]);
+        }
+    }
+    Ok(csv)
+}
+
 fn validate_benchmark_counts(warmup_iterations: u64, sample_count: u64) -> Result<(), Vec<String>> {
     if warmup_iterations > MAX_BENCHMARK_WARMUPS {
         return Err(vec![format!(
@@ -568,28 +747,193 @@ fn publish_benchmark_samples(output: &Path, bytes: &[u8]) -> Result<(), String> 
 mod benchmark_tests {
     use super::{
         MAX_BENCHMARK_SAMPLES, MAX_BENCHMARK_WARMUPS, admit_benchmark_measurement,
-        benchmark_rendered_images, benchmark_scene, elapsed_benchmark_duration_ns,
-        validate_benchmark_counts,
+        benchmark_rendered_images, benchmark_scene, decode_scene_file,
+        elapsed_benchmark_duration_ns, ensure_stage_profile_output_absent,
+        ensure_stage_profile_output_absent_with, profile_native_scene, publish_benchmark_samples,
+        render_stage_profile_samples, validate_benchmark_counts, validate_stage_profile_image,
     };
-    use std::{fs, path::Path, time::Duration};
+    use std::{
+        fs,
+        io::{self, ErrorKind},
+        path::Path,
+        time::Duration,
+    };
+
+    fn manifest_string<'a>(manifest: &'a toml::Value, field: &str) -> Result<&'a str, String> {
+        manifest
+            .get(field)
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| format!("renderer stage profile manifest lacks string field {field}"))
+    }
+
+    fn validate_retained_csv(
+        source: &str,
+        expected_header: &str,
+        expected_fields: usize,
+        expected_samples: usize,
+    ) -> Result<(), String> {
+        let mut lines = source.lines();
+        if lines.next() != Some(expected_header) {
+            return Err("renderer stage profile CSV header drifted".to_owned());
+        }
+        let mut observed = 0_usize;
+        for (expected_index, line) in lines.enumerate() {
+            let fields = line.split(',').collect::<Vec<_>>();
+            if fields.len() != expected_fields {
+                return Err(format!(
+                    "renderer stage profile sample {expected_index} has {} fields instead of {expected_fields}",
+                    fields.len()
+                ));
+            }
+            let index = fields[0]
+                .parse::<usize>()
+                .map_err(|error| format!("invalid retained sample index: {error}"))?;
+            if index != expected_index {
+                return Err(format!(
+                    "renderer stage profile sample index {index} is not contiguous at {expected_index}"
+                ));
+            }
+            for value in &fields[1..] {
+                value
+                    .parse::<u64>()
+                    .map_err(|error| format!("invalid retained timing value: {error}"))?;
+            }
+            observed = observed
+                .checked_add(1)
+                .ok_or_else(|| "renderer stage profile sample count overflowed".to_owned())?;
+        }
+        if observed != expected_samples {
+            return Err(format!(
+                "renderer stage profile retains {observed} samples instead of {expected_samples}"
+            ));
+        }
+        Ok(())
+    }
 
     #[test]
-    fn benchmark_counts_atomic_publication_and_collision_are_bounded() -> Result<(), String> {
+    fn stage_profile_output_and_image_guards_are_discriminating() {
+        let output = Path::new("profile.csv");
+        assert!(matches!(
+            ensure_stage_profile_output_absent(Path::new(env!("CARGO_MANIFEST_DIR"))),
+            Err(errors)
+                if errors.iter().any(|error| error.contains("output already exists"))
+        ));
+        assert!(
+            ensure_stage_profile_output_absent_with(output, |_| {
+                Err(io::Error::from(ErrorKind::NotFound))
+            })
+            .is_ok()
+        );
+        assert!(matches!(
+            ensure_stage_profile_output_absent_with(output, |_| {
+                fs::symlink_metadata(env!("CARGO_MANIFEST_DIR"))
+            }),
+            Err(errors) if errors == ["renderer stage profile output already exists: profile.csv"]
+        ));
+        assert!(matches!(
+            ensure_stage_profile_output_absent_with(output, |_| {
+                Err(io::Error::new(ErrorKind::PermissionDenied, "denied"))
+            }),
+            Err(errors)
+                if errors == [
+                    "cannot inspect renderer stage profile output profile.csv: denied"
+                ]
+        ));
+
+        assert!(validate_stage_profile_image(&[1, 2], &[1, 2], "warmup").is_ok());
+        assert_eq!(
+            validate_stage_profile_image(&[1, 2], &[1, 3], "warmup"),
+            Err(vec!["warmup".to_owned()])
+        );
+        assert_eq!(
+            validate_stage_profile_image(&[1, 2], &[1, 3], "measurement"),
+            Err(vec!["measurement".to_owned()])
+        );
+
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let directory = root.join("target/qualification");
-        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        assert!(fs::create_dir_all(&directory).is_ok());
+        let manifest = root.join("assurance/qualification/v1/scene.toml");
+        let stage_profile_output = directory.join(format!(
+            "profile-invalid-count-unit-{}.csv",
+            std::process::id()
+        ));
+        assert!(matches!(
+            profile_native_scene(
+                &manifest,
+                &stage_profile_output,
+                MAX_BENCHMARK_WARMUPS + 1,
+                1
+            ),
+            Err(errors) if errors.iter().any(|error| error.contains("warmup count"))
+        ));
+        assert!(!stage_profile_output.exists());
+
+        let missing_manifest =
+            directory.join(format!("missing-scene-unit-{}.toml", std::process::id()));
+        assert!(matches!(
+            decode_scene_file(&missing_manifest),
+            Err(errors) if errors.iter().any(|error| error.contains("cannot read"))
+        ));
+
+        let blocked_publication_parent = directory.join(format!(
+            "benchmark-publication-blocked-unit-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&blocked_publication_parent);
+        assert!(fs::write(&blocked_publication_parent, b"not a directory").is_ok());
+        assert!(
+            publish_benchmark_samples(
+                &blocked_publication_parent.join("samples.csv"),
+                b"sample_index,elapsed_ns\n0,1\n"
+            )
+            .is_err()
+        );
+        assert!(fs::remove_file(&blocked_publication_parent).is_ok());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn assert_native_profilers_reject_unsupported_host(directory: &Path, manifest: &Path) {
+        let native_output =
+            directory.join(format!("benchmark-native-unit-{}.csv", std::process::id()));
+        let _ = fs::remove_file(&native_output);
+        assert!(matches!(
+            benchmark_scene(true, manifest, &native_output, 0, 1),
+            Err(errors) if errors.iter().any(|error| error.contains("cannot initialize Direct Metal"))
+        ));
+        assert!(!native_output.exists());
+
+        let profile_output =
+            directory.join(format!("profile-native-unit-{}.csv", std::process::id()));
+        let _ = fs::remove_file(&profile_output);
+        assert!(matches!(
+            super::profile_native_scene(manifest, &profile_output, 0, 1),
+            Err(errors) if errors.iter().any(|error| error.contains("cannot initialize Direct Metal"))
+        ));
+        assert!(!profile_output.exists());
+    }
+
+    #[test]
+    fn benchmark_counts_atomic_publication_and_collision_are_bounded()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let directory = root.join("target/qualification");
+        fs::create_dir_all(&directory)?;
         let output = directory.join(format!("benchmark-unit-{}.csv", std::process::id()));
         let _ = fs::remove_file(&output);
         let manifest = root.join("assurance/qualification/v1/scene.toml");
+
+        assert!(decode_scene_file(&manifest).is_ok());
 
         assert!(validate_benchmark_counts(MAX_BENCHMARK_WARMUPS, MAX_BENCHMARK_SAMPLES).is_ok());
         assert!(validate_benchmark_counts(MAX_BENCHMARK_WARMUPS + 1, 1).is_err());
         assert!(validate_benchmark_counts(0, 0).is_err());
         assert!(validate_benchmark_counts(0, MAX_BENCHMARK_SAMPLES + 1).is_err());
 
-        let report = benchmark_scene(false, &manifest, &output, 2, 3)
-            .map_err(|errors| format!("valid benchmark failed: {errors:#?}"))?;
-        let csv = fs::read_to_string(&output).map_err(|error| error.to_string())?;
+        let Ok(report) = benchmark_scene(false, &manifest, &output, 2, 3) else {
+            return Err(io::Error::other("valid benchmark failed").into());
+        };
+        let csv = fs::read_to_string(&output)?;
         assert!(report.contains("performance claim=none"));
         assert!(report.contains("warmup_iterations=2 sample_count=3"));
         assert_eq!(csv.lines().next(), Some("sample_index,elapsed_ns"));
@@ -598,7 +942,7 @@ mod benchmark_tests {
             benchmark_scene(false, &manifest, &output, 1, 1),
             Err(errors) if errors.iter().any(|error| error.contains("output already exists"))
         ));
-        fs::remove_file(&output).map_err(|error| error.to_string())?;
+        fs::remove_file(&output)?;
 
         assert!(matches!(
             benchmark_scene(false, &manifest, &output, 0, 0),
@@ -609,13 +953,13 @@ mod benchmark_tests {
             let blocked_parent =
                 directory.join(format!("benchmark-blocked-parent-{}", std::process::id()));
             let _ = fs::remove_file(&blocked_parent);
-            fs::write(&blocked_parent, b"not a directory").map_err(|error| error.to_string())?;
+            fs::write(&blocked_parent, b"not a directory")?;
             let blocked_output = blocked_parent.join("samples.csv");
             assert!(matches!(
                 benchmark_scene(false, &manifest, &blocked_output, 0, 1),
                 Err(errors) if errors.iter().any(|error| error.contains("cannot inspect"))
             ));
-            fs::remove_file(&blocked_parent).map_err(|error| error.to_string())?;
+            fs::remove_file(&blocked_parent)?;
         }
 
         let warmup_images = [vec![1_u8], vec![2_u8]];
@@ -651,22 +995,78 @@ mod benchmark_tests {
             Err(errors) if errors.iter().any(|error| error.contains("zero-duration"))
         ));
 
-        let elapsed = elapsed_benchmark_duration_ns(Duration::from_millis(1))
-            .map_err(|errors| format!("elapsed benchmark failed: {errors:#?}"))?;
+        let Ok(elapsed) = elapsed_benchmark_duration_ns(Duration::from_millis(1)) else {
+            return Err(io::Error::other("positive benchmark duration did not convert").into());
+        };
         assert!(elapsed >= 1_000_000);
 
+        let Ok(stage_csv) =
+            render_stage_profile_samples(&[alpine_metal::OffscreenStageTimings::default()])
+        else {
+            return Err(io::Error::other("stage profile formatting failed").into());
+        };
+        assert!(stage_csv.starts_with("sample_index,admission_ns,"));
+        assert_eq!(stage_csv.lines().count(), 2);
+
         #[cfg(not(target_os = "macos"))]
-        {
-            let native_output =
-                directory.join(format!("benchmark-native-unit-{}.csv", std::process::id()));
-            let _ = fs::remove_file(&native_output);
-            assert!(matches!(
-                benchmark_scene(true, &manifest, &native_output, 0, 1),
-                Err(errors) if errors.iter().any(|error| error.contains("cannot initialize Direct Metal"))
-            ));
-            assert!(!native_output.exists());
-        }
+        assert_native_profilers_reject_unsupported_host(&directory, &manifest);
         assert!(!output.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn retained_renderer_stage_profile_is_identity_bound_and_complete() -> Result<(), String> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let manifest_path =
+            root.join("assurance/qualification/v2/raw/issue-521-388e4b8/evidence.toml");
+        let source = fs::read_to_string(&manifest_path).map_err(|error| error.to_string())?;
+        let manifest = toml::from_str::<toml::Value>(&source).map_err(|error| error.to_string())?;
+        if manifest_string(&manifest, "schema")? != "alpine-renderer-stage-profile/v1"
+            || manifest_string(&manifest, "claim")? != "none"
+        {
+            return Err("renderer stage profile schema or claim boundary drifted".to_owned());
+        }
+        let issue = manifest
+            .get("issue")
+            .and_then(toml::Value::as_integer)
+            .ok_or_else(|| "renderer stage profile issue is missing".to_owned())?;
+        if issue != 521 {
+            return Err("renderer stage profile issue identity drifted".to_owned());
+        }
+        let sample_count = manifest
+            .get("sample_count")
+            .and_then(toml::Value::as_integer)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| "renderer stage profile sample count is invalid".to_owned())?;
+        for (path_field, hash_field) in [
+            ("trace_path", "trace_sha256"),
+            ("stage_samples_path", "stage_samples_sha256"),
+            ("ordinary_samples_path", "ordinary_samples_sha256"),
+            ("environment_path", "environment_sha256"),
+        ] {
+            let path = root.join(manifest_string(&manifest, path_field)?);
+            let expected = manifest_string(&manifest, hash_field)?;
+            let actual = crate::dogfood::calculate_sha256(&path)?;
+            if actual != expected {
+                return Err(format!(
+                    "renderer stage profile {path_field} hash drifted: expected {expected}, observed {actual}"
+                ));
+            }
+        }
+
+        let stage_source =
+            fs::read_to_string(root.join(manifest_string(&manifest, "stage_samples_path")?))
+                .map_err(|error| error.to_string())?;
+        validate_retained_csv(
+            &stage_source,
+            "sample_index,admission_ns,resource_preparation_ns,command_buffer_ns,atlas_upload_encoding_ns,render_encoding_ns,readback_encoding_ns,commit_ns,completion_wait_ns,gpu_execution_ns,readback_compaction_ns,native_total_ns,submission_accounting_ns,total_ns",
+            14,
+            sample_count,
+        )?;
+        let ordinary_source =
+            fs::read_to_string(root.join(manifest_string(&manifest, "ordinary_samples_path")?))
+                .map_err(|error| error.to_string())?;
+        validate_retained_csv(&ordinary_source, "sample_index,elapsed_ns", 2, sample_count)?;
         Ok(())
     }
 }
