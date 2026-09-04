@@ -7462,8 +7462,8 @@ pub mod native_validation {
     mod accessibility_process;
     pub use accessibility_process::{
         NativeStudioAccessibilityEvidence, hosted_terminal_stall_retry_allowed,
-        qualify_studio_accessibility_process, validate_native_language_startup_prefix,
-        validate_native_language_startup_trace,
+        qualify_studio_accessibility_process, validate_native_accessibility_omission_failure,
+        validate_native_language_startup_prefix, validate_native_language_startup_trace,
     };
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
