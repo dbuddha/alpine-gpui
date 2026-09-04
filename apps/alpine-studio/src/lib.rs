@@ -8595,6 +8595,22 @@ pub mod native_validation {
             ],
         )?;
         let frames_after_query = journey.borrow().frames;
+        assert!(
+            !project_search_publication_state(
+                state.borrow().snapshot(),
+                frames_after_query,
+                frames_after_query,
+            )
+            .published_frame
+        );
+        assert!(
+            project_search_publication_state(
+                state.borrow().snapshot(),
+                frames_after_query,
+                frames_after_query + 1,
+            )
+            .published_frame
+        );
         let settled = ProjectSearchPublicationState {
             published_frame: true,
             dirty: false,
