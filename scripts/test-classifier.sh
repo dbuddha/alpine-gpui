@@ -36,9 +36,11 @@ assert_output "$docs" coverage=false
 assert_output "$docs" mutation=false
 assert_output "$docs" kani=false
 assert_output "$docs" tla=false
+assert_output "$docs" portable=false
 
 ci_workflow=$(run_fixture .github/workflows/ci.yml)
 assert_every_gate "$ci_workflow"
+assert_output "$ci_workflow" portable=true
 
 nightly_workflow=$(run_fixture .github/workflows/nightly-assurance.yml)
 assert_every_gate "$nightly_workflow"
@@ -48,9 +50,11 @@ assert_every_gate "$release_workflow"
 
 classifier=$(run_fixture scripts/classify-ci.sh)
 assert_every_gate "$classifier"
+assert_output "$classifier" portable=true
 
 classifier_tests=$(run_fixture scripts/test-classifier.sh)
 assert_every_gate "$classifier_tests"
+assert_output "$classifier_tests" portable=true
 
 kani_setup=$(run_fixture scripts/setup-kani.sh)
 assert_every_gate "$kani_setup"
@@ -80,6 +84,7 @@ core=$(run_fixture crates/alpine-core/src/lib.rs)
 assert_output "$core" coverage=true
 assert_output "$core" mutation=true
 assert_output "$core" kani=true
+assert_output "$core" portable=true
 
 text=$(run_fixture crates/alpine-text/src/lib.rs)
 assert_output "$text" coverage=true
@@ -105,6 +110,7 @@ assert_output "$studio_manifest" coverage=true
 assert_output "$studio_manifest" mutation=true
 assert_output "$studio_manifest" kani=false
 assert_output "$studio_manifest" metal=true
+assert_output "$studio_manifest" portable=true
 
 studio_docs=$(run_fixture apps/alpine-studio/README.md)
 assert_output "$studio_docs" coverage=false
@@ -196,6 +202,13 @@ assert_output "$shader" coverage=false
 assert_output "$shader" mutation=false
 assert_output "$shader" kani=false
 assert_output "$shader" metal=true
+assert_output "$shader" portable=false
+
+portable_checker=$(run_fixture scripts/check-portable-targets.sh)
+assert_output "$portable_checker" portable=true
+
+portable_tests=$(run_fixture scripts/test-portable-targets.sh)
+assert_output "$portable_tests" portable=true
 
 metal_gate=$(run_fixture scripts/check-metal.sh)
 assert_output "$metal_gate" metal=true

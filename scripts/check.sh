@@ -14,6 +14,8 @@ scripts/test-research-retention.sh
 scripts/check-wiki.sh
 scripts/test-wiki.sh
 scripts/test-classifier.sh
+scripts/test-portable-targets.sh
+scripts/check-portable-targets.sh
 scripts/test-setup-kani.sh
 scripts/test-coverage.sh
 scripts/test-miri-partitions.sh
