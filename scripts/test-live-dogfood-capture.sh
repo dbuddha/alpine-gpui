@@ -107,6 +107,39 @@ JSON
 EOF
 chmod +x "$root/fake-studio" "$root/fake-footprint"
 
+cat > "$root/fake-should-not-run" <<EOF
+#!/bin/sh
+touch "$root/studio-started"
+exit 97
+EOF
+cat > "$root/fake-should-not-sample" <<EOF
+#!/bin/sh
+touch "$root/sampler-started"
+exit 98
+EOF
+chmod +x "$root/fake-should-not-run" "$root/fake-should-not-sample"
+sed 's#alpine-studio-dogfood-draft/v2#alpine-studio-dogfood/v2#' \
+    "$root/draft.toml" > "$root/invalid-draft.toml"
+if scripts/capture-studio-dogfood.sh \
+    --binary "$root/fake-should-not-run" \
+    --repository . --workspace . \
+    --draft "$root/invalid-draft.toml" \
+    --output-dir "$root/invalid-bundle" \
+    --workload-id fixture-live \
+    --duration-seconds 3 --interval-seconds 1 \
+    --post-close-timeout-seconds 5 --opt-in --fixture-only \
+    --sampler "$root/fake-should-not-sample" \
+    > "$root/invalid-preflight.log" 2>&1; then
+    printf 'invalid live draft unexpectedly passed preflight\n' >&2
+    exit 1
+fi
+grep -Fq 'draft schema must be alpine-studio-dogfood-draft/v2' \
+    "$root/invalid-preflight.log"
+grep -Fq 'dogfood draft preflight failed' "$root/invalid-preflight.log"
+test ! -e "$root/studio-started"
+test ! -e "$root/sampler-started"
+test ! -e "$root/invalid-bundle"
+
 scripts/capture-studio-dogfood.sh \
     --binary "$root/fake-studio" \
     --repository . \

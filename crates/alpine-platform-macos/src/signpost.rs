@@ -156,6 +156,14 @@ impl StudioSignposts {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) const fn for_test(dynamic_enabled: bool, persisted_enabled: bool) -> Self {
+        Self {
+            dynamic_enabled,
+            persisted_enabled,
+        }
+    }
+
     /// Returns whether either opt-in profile route was enabled at construction.
     #[must_use]
     pub const fn enabled(self) -> bool {
@@ -177,16 +185,35 @@ impl StudioSignposts {
     }
 
     #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
-    pub(crate) fn emit_frame_latency(self, evidence: crate::FrameLatencyEvidence) -> u8 {
+    pub(crate) fn emit_terminal_frame_latency(self, evidence: crate::FrameLatencyEvidence) -> u8 {
         if !self.enabled() {
             return 0;
         }
         let mut emitted = 0_u8;
-        for point in frame_latency_points(evidence).into_iter().flatten() {
+        for point in terminal_frame_latency_points(evidence)
+            .into_iter()
+            .flatten()
+        {
             let _correlation = imp::emit(point, self.dynamic_enabled, self.persisted_enabled);
             emitted = emitted.saturating_add(1);
         }
         emitted
+    }
+
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn emit_presented_handler_latency(
+        self,
+        event_timestamp: crate::EventTimestamp,
+        duration_ns: u64,
+    ) -> Option<u64> {
+        self.emit(StudioSignpost::new(
+            StudioSignpostStage::NativePresentedHandlerLatency,
+            event_timestamp.get(),
+            0,
+            0,
+            0,
+            [duration_ns, 0, 0],
+        ))
     }
 }
 
@@ -212,7 +239,9 @@ fn frame_latency_point(
 }
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
-fn frame_latency_points(evidence: crate::FrameLatencyEvidence) -> [Option<StudioSignpost>; 6] {
+fn terminal_frame_latency_points(
+    evidence: crate::FrameLatencyEvidence,
+) -> [Option<StudioSignpost>; 5] {
     [
         Some(frame_latency_point(
             StudioSignpostStage::NativeEventHandlerLatency,
@@ -242,13 +271,6 @@ fn frame_latency_points(evidence: crate::FrameLatencyEvidence) -> [Option<Studio
                     duration_ns,
                 )
             }),
-        evidence.event_to_presented_handler_ns().map(|duration_ns| {
-            frame_latency_point(
-                StudioSignpostStage::NativePresentedHandlerLatency,
-                evidence,
-                duration_ns,
-            )
-        }),
         Some(frame_latency_point(
             StudioSignpostStage::NativeTerminalRecordLatency,
             evidence,
@@ -411,7 +433,7 @@ mod tests {
             Some(71),
             u64::MAX,
         );
-        let points = frame_latency_points(complete).map(Option::unwrap);
+        let points = terminal_frame_latency_points(complete).map(Option::unwrap);
         assert_eq!(
             points.map(StudioSignpost::stage),
             [
@@ -419,22 +441,26 @@ mod tests {
                 StudioSignpostStage::NativeFrameQueueLatency,
                 StudioSignpostStage::NativeSubmissionLatency,
                 StudioSignpostStage::NativeGpuTerminalObservedLatency,
-                StudioSignpostStage::NativePresentedHandlerLatency,
                 StudioSignpostStage::NativeTerminalRecordLatency,
             ]
         );
-        assert_eq!(points.map(StudioSignpost::event_timestamp), [53; 6]);
+        assert_eq!(points.map(StudioSignpost::event_timestamp), [53; 5]);
         assert_eq!(
             points.map(|point| point.values()[0]),
-            [0, 59, 61, 67, 71, u64::MAX]
+            [0, 59, 61, 67, u64::MAX]
         );
         assert_eq!(
             StudioSignposts {
                 dynamic_enabled: true,
                 persisted_enabled: false,
             }
-            .emit_frame_latency(complete),
-            6
+            .emit_terminal_frame_latency(complete),
+            5
+        );
+        assert_eq!(
+            StudioSignposts::for_test(false, true)
+                .emit_presented_handler_latency(EventTimestamp::new(53), 71),
+            Some(53)
         );
         assert!(points.iter().all(|point| point.scene_revision() == 0
             && point.document_revision() == 0
@@ -442,7 +468,7 @@ mod tests {
 
         let omitted =
             FrameLatencyEvidence::new(EventTimestamp::new(73), 79, None, None, None, None, 83);
-        let [handler, queue, submission, gpu, presented, terminal] = frame_latency_points(omitted);
+        let [handler, queue, submission, gpu, terminal] = terminal_frame_latency_points(omitted);
         assert_eq!(
             handler.map(StudioSignpost::stage),
             Some(StudioSignpostStage::NativeEventHandlerLatency)
@@ -450,7 +476,6 @@ mod tests {
         assert_eq!(queue, None);
         assert_eq!(submission, None);
         assert_eq!(gpu, None);
-        assert_eq!(presented, None);
         assert_eq!(
             terminal.map(StudioSignpost::stage),
             Some(StudioSignpostStage::NativeTerminalRecordLatency)
@@ -460,7 +485,7 @@ mod tests {
                 dynamic_enabled: false,
                 persisted_enabled: true,
             }
-            .emit_frame_latency(omitted),
+            .emit_terminal_frame_latency(omitted),
             2
         );
         assert_eq!(
@@ -468,8 +493,13 @@ mod tests {
                 dynamic_enabled: false,
                 persisted_enabled: false,
             }
-            .emit_frame_latency(complete),
+            .emit_terminal_frame_latency(complete),
             0
+        );
+        assert_eq!(
+            StudioSignposts::for_test(false, false)
+                .emit_presented_handler_latency(EventTimestamp::new(53), 71),
+            None
         );
     }
 
