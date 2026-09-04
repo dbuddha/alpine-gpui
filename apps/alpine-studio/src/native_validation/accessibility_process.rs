@@ -70,6 +70,19 @@ fn classify_omission(requested: Option<OmittedStep>, observed: OmittedStep) -> O
     }
 }
 
+fn validate_omitted_close_state(
+    lifecycle: SurfaceLifecycle,
+    shutting_down: bool,
+) -> Result<(), &'static str> {
+    if lifecycle != SurfaceLifecycle::Live {
+        return Err("omitted final close changed the live lifecycle state");
+    }
+    if shutting_down {
+        return Err("omitted final close changed the live lifecycle state");
+    }
+    Ok(())
+}
+
 impl OmittedStep {
     fn from_value(value: &str) -> Result<Self, Box<dyn std::error::Error>> {
         match value {
@@ -574,11 +587,11 @@ fn qualify_workspace(
     if omitted_step == Some(OmittedStep::Close) {
         require_frame_quiescence(&surface)
             .map_err(|error| format!("omitted final close emitted frame work: {error}"))?;
-        if surface.observer().lifecycle() != SurfaceLifecycle::Live
-            || state.borrow().snapshot().is_shutting_down()
-        {
-            return Err("omitted final close changed the live lifecycle state".into());
-        }
+        validate_omitted_close_state(
+            surface.observer().lifecycle(),
+            state.borrow().snapshot().is_shutting_down(),
+        )
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
         return Err(OmittedStep::Close.expected_failure().into());
     }
 
@@ -1591,6 +1604,25 @@ mod process_contract_tests {
     }
 
     #[test]
+    fn omitted_close_requires_live_lifecycle_without_shutdown() {
+        assert_eq!(
+            validate_omitted_close_state(SurfaceLifecycle::Live, false),
+            Ok(())
+        );
+        for (lifecycle, shutting_down) in [
+            (SurfaceLifecycle::Closing, false),
+            (SurfaceLifecycle::Closed, false),
+            (SurfaceLifecycle::Live, true),
+            (SurfaceLifecycle::Closing, true),
+        ] {
+            assert_eq!(
+                validate_omitted_close_state(lifecycle, shutting_down),
+                Err("omitted final close changed the live lifecycle state")
+            );
+        }
+    }
+
+    #[test]
     fn omission_values_preserve_every_required_step_and_reject_unknown_values()
     -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(OmittedStep::from_value("open")?, OmittedStep::Open);
@@ -2187,6 +2219,13 @@ mod process_contract_tests {
             "x".repeat(MAX_OMISSION_ERROR_BYTES + 1)
         );
         assert!(validate_native_accessibility_omission_failure("open", &oversized_open).is_err());
+        assert!(
+            validate_native_accessibility_omission_failure(
+                "open",
+                &format!("{}; cause=", OmittedStep::Open.expected_failure())
+            )
+            .is_err()
+        );
 
         let oversized = "x".repeat(MAX_OMISSION_ERROR_BYTES * 2);
         let error = validate_native_accessibility_omission_failure("edit", &oversized)
