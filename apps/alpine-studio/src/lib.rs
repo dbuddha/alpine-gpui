@@ -7505,8 +7505,8 @@ pub mod native_validation {
     mod accessibility_process;
     pub use accessibility_process::{
         NativeStudioAccessibilityEvidence, hosted_terminal_stall_retry_allowed,
-        qualify_studio_accessibility_process, validate_native_language_startup_prefix,
-        validate_native_language_startup_trace,
+        qualify_studio_accessibility_process, validate_native_accessibility_omission_failure,
+        validate_native_language_startup_prefix, validate_native_language_startup_trace,
     };
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -8531,11 +8531,42 @@ pub mod native_validation {
         })
     }
 
-    fn project_search_terminal_frames_published(
+    #[derive(Clone, Copy)]
+    struct ProjectSearchPublicationState {
+        published_frame: bool,
+        dirty: bool,
+        shutting_down: bool,
+        queued_requests: usize,
+        active_jobs: usize,
+        queued_results: usize,
+        external_items: usize,
+    }
+
+    const fn project_search_publication_is_settled(state: ProjectSearchPublicationState) -> bool {
+        state.published_frame
+            && !state.dirty
+            && !state.shutting_down
+            && state.queued_requests == 0
+            && state.active_jobs == 0
+            && state.queued_results == 0
+            && state.external_items == 0
+    }
+
+    fn project_search_publication_state(
+        application: alpine_runtime::ApplicationSnapshot,
+        frames_after_query: usize,
         latest_frames: usize,
-        required_frames: usize,
-    ) -> bool {
-        latest_frames >= required_frames
+    ) -> ProjectSearchPublicationState {
+        let worker = application.worker();
+        ProjectSearchPublicationState {
+            published_frame: latest_frames > frames_after_query,
+            dirty: application.is_dirty(),
+            shutting_down: application.is_shutting_down(),
+            queued_requests: worker.queued_requests(),
+            active_jobs: worker.active_jobs(),
+            queued_results: worker.queued_results(),
+            external_items: application.external().current_items(),
+        }
     }
 
     const PROJECT_SEARCH_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -8607,20 +8638,73 @@ pub mod native_validation {
             ],
         )?;
         let frames_after_query = journey.borrow().frames;
-        let required_terminal_frames = frames_after_query
-            .checked_add(2)
-            .ok_or("project-search frame threshold exhausted")?;
-        assert!(!project_search_terminal_frames_published(
-            required_terminal_frames - 1,
-            required_terminal_frames,
+        assert!(
+            !project_search_publication_state(
+                state.borrow().snapshot(),
+                frames_after_query,
+                frames_after_query,
+            )
+            .published_frame
+        );
+        assert!(
+            project_search_publication_state(
+                state.borrow().snapshot(),
+                frames_after_query,
+                frames_after_query + 1,
+            )
+            .published_frame
+        );
+        let settled = ProjectSearchPublicationState {
+            published_frame: true,
+            dirty: false,
+            shutting_down: false,
+            queued_requests: 0,
+            active_jobs: 0,
+            queued_results: 0,
+            external_items: 0,
+        };
+        assert!(project_search_publication_is_settled(settled));
+        assert!(!project_search_publication_is_settled(
+            ProjectSearchPublicationState {
+                published_frame: false,
+                ..settled
+            }
         ));
-        assert!(project_search_terminal_frames_published(
-            required_terminal_frames,
-            required_terminal_frames,
+        assert!(!project_search_publication_is_settled(
+            ProjectSearchPublicationState {
+                dirty: true,
+                ..settled
+            }
         ));
-        assert!(project_search_terminal_frames_published(
-            required_terminal_frames.saturating_add(1),
-            required_terminal_frames,
+        assert!(!project_search_publication_is_settled(
+            ProjectSearchPublicationState {
+                shutting_down: true,
+                ..settled
+            }
+        ));
+        assert!(!project_search_publication_is_settled(
+            ProjectSearchPublicationState {
+                queued_requests: 1,
+                ..settled
+            }
+        ));
+        assert!(!project_search_publication_is_settled(
+            ProjectSearchPublicationState {
+                active_jobs: 1,
+                ..settled
+            }
+        ));
+        assert!(!project_search_publication_is_settled(
+            ProjectSearchPublicationState {
+                queued_results: 1,
+                ..settled
+            }
+        ));
+        assert!(!project_search_publication_is_settled(
+            ProjectSearchPublicationState {
+                external_items: 1,
+                ..settled
+            }
         ));
         assert_eq!(PROJECT_SEARCH_PUBLICATION_TIMEOUT, Duration::from_secs(5));
         assert!(project_search_publication_window_open(
@@ -8665,11 +8749,17 @@ pub mod native_validation {
             if current_frames > latest_frames {
                 latest_frames = current_frames;
                 stable_wakes = 0;
-            } else if project_search_terminal_frames_published(
-                latest_frames,
-                required_terminal_frames,
-            ) {
-                stable_wakes = stable_wakes.saturating_add(1);
+            } else {
+                let snapshot = state.borrow().snapshot();
+                if project_search_publication_is_settled(project_search_publication_state(
+                    snapshot,
+                    frames_after_query,
+                    latest_frames,
+                )) {
+                    stable_wakes = stable_wakes.saturating_add(1);
+                } else {
+                    stable_wakes = 0;
+                }
             }
             if stable_wakes == 16 {
                 published_terminal = true;
@@ -8677,10 +8767,20 @@ pub mod native_validation {
             }
         }
         if !published_terminal {
+            let snapshot = state.borrow().snapshot();
+            let worker = snapshot.worker();
             return Err(format!(
-                "project-search publication timed out after {} ms: {latest_frames} frames, \
-                 {required_terminal_frames} required, {stable_wakes} stable wakes",
+                "project-search publication timed out after {} ms: {} post-query frames, \
+                 {stable_wakes} stable wakes, dirty={}, shutdown={}, queued={}, active={}, \
+                 results={}, external={}",
                 publication_started.elapsed().as_millis(),
+                latest_frames.saturating_sub(frames_after_query),
+                snapshot.is_dirty(),
+                snapshot.is_shutting_down(),
+                worker.queued_requests(),
+                worker.active_jobs(),
+                worker.queued_results(),
+                snapshot.external().current_items(),
             )
             .into());
         }
@@ -8696,6 +8796,13 @@ pub mod native_validation {
         timestamp = next_project_search_event_timestamp(timestamp)
             .ok_or("project-search event timestamp exhausted")?;
         assert_eq!(journey.borrow().frames, terminal_frames);
+        assert!(project_search_publication_is_settled(
+            project_search_publication_state(
+                state.borrow().snapshot(),
+                frames_after_query,
+                terminal_frames,
+            )
+        ));
 
         let before_open = state.borrow().snapshot().document_revision();
         replay_tree_events(

@@ -501,6 +501,8 @@ struct WorkerCompletion<T> {
 struct WorkerCounters {
     queued_requests: AtomicUsize,
     peak_queued_requests: AtomicUsize,
+    active_jobs: AtomicUsize,
+    peak_active_jobs: AtomicUsize,
     queued_results: AtomicUsize,
     peak_queued_results: AtomicUsize,
     request_saturations: AtomicUsize,
@@ -513,6 +515,8 @@ struct WorkerCounters {
 pub struct WorkerSnapshot {
     queued_requests: usize,
     peak_queued_requests: usize,
+    active_jobs: usize,
+    peak_active_jobs: usize,
     queued_results: usize,
     peak_queued_results: usize,
     request_saturations: usize,
@@ -531,6 +535,18 @@ impl WorkerSnapshot {
     #[must_use]
     pub const fn peak_queued_requests(self) -> usize {
         self.peak_queued_requests
+    }
+
+    /// Returns jobs currently executing on workers.
+    #[must_use]
+    pub const fn active_jobs(self) -> usize {
+        self.active_jobs
+    }
+
+    /// Returns the greatest observed active-job count.
+    #[must_use]
+    pub const fn peak_active_jobs(self) -> usize {
+        self.peak_active_jobs
     }
 
     /// Returns results waiting for the foreground.
@@ -780,6 +796,8 @@ impl<T: Send + 'static> WorkerPool<T> {
         WorkerSnapshot {
             queued_requests: self.counters.queued_requests.load(Ordering::Acquire),
             peak_queued_requests: self.counters.peak_queued_requests.load(Ordering::Acquire),
+            active_jobs: self.counters.active_jobs.load(Ordering::Acquire),
+            peak_active_jobs: self.counters.peak_active_jobs.load(Ordering::Acquire),
             queued_results: self.counters.queued_results.load(Ordering::Acquire),
             peak_queued_results: self.counters.peak_queued_results.load(Ordering::Acquire),
             request_saturations: self.counters.request_saturations.load(Ordering::Acquire),
@@ -824,6 +842,8 @@ fn worker_loop<T: Send + 'static>(
         let Ok(request) = request else {
             return;
         };
+        let active = counters.active_jobs.fetch_add(1, Ordering::AcqRel) + 1;
+        update_peak(&counters.peak_active_jobs, active);
         counters.queued_requests.fetch_sub(1, Ordering::AcqRel);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(request.job))
             .map_or_else(
@@ -842,6 +862,7 @@ fn worker_loop<T: Send + 'static>(
             })
             .is_ok()
         {
+            counters.active_jobs.fetch_sub(1, Ordering::AcqRel);
             if let Ok(installed) = wake.lock()
                 && let Some(wake) = installed.as_ref()
             {
@@ -849,6 +870,7 @@ fn worker_loop<T: Send + 'static>(
             }
         } else {
             counters.queued_results.fetch_sub(1, Ordering::AcqRel);
+            counters.active_jobs.fetch_sub(1, Ordering::AcqRel);
             counters.dropped_results.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -1652,19 +1674,23 @@ mod tests {
         let snapshot = WorkerSnapshot {
             queued_requests: 2,
             peak_queued_requests: 3,
-            queued_results: 4,
-            peak_queued_results: 5,
-            request_saturations: 6,
-            dropped_results: 7,
-            panicked_jobs: 8,
+            active_jobs: 4,
+            peak_active_jobs: 5,
+            queued_results: 6,
+            peak_queued_results: 7,
+            request_saturations: 8,
+            dropped_results: 9,
+            panicked_jobs: 10,
         };
         assert_eq!(snapshot.queued_requests(), 2);
         assert_eq!(snapshot.peak_queued_requests(), 3);
-        assert_eq!(snapshot.queued_results(), 4);
-        assert_eq!(snapshot.peak_queued_results(), 5);
-        assert_eq!(snapshot.request_saturations(), 6);
-        assert_eq!(snapshot.dropped_results(), 7);
-        assert_eq!(snapshot.panicked_jobs(), 8);
+        assert_eq!(snapshot.active_jobs(), 4);
+        assert_eq!(snapshot.peak_active_jobs(), 5);
+        assert_eq!(snapshot.queued_results(), 6);
+        assert_eq!(snapshot.peak_queued_results(), 7);
+        assert_eq!(snapshot.request_saturations(), 8);
+        assert_eq!(snapshot.dropped_results(), 9);
+        assert_eq!(snapshot.panicked_jobs(), 10);
 
         let external = ExternalSnapshot {
             current_items: 1,
@@ -1790,17 +1816,34 @@ mod tests {
     fn current_result_wakes_and_mutates_the_delegate() -> Result<(), RuntimeError> {
         let mut application = runtime(TestDelegate::default())?;
         let (wake_sender, wake_receiver) = sync_channel(1);
+        let (started_sender, started_receiver) = sync_channel(1);
+        let (release_sender, release_receiver) = sync_channel(1);
         application.set_worker_waker(move || {
             let _ = wake_sender.try_send(());
         });
         let submitted = application.workers.submit(
             WorkspaceRevision::default(),
             DocumentRevision::default(),
-            || 55,
+            move || {
+                let _ = started_sender.send(());
+                let _ = release_receiver.recv();
+                55
+            },
         );
         assert!(submitted.is_ok());
+        assert_eq!(
+            started_receiver.recv_timeout(Duration::from_secs(1)),
+            Ok(())
+        );
+        let active = application.snapshot().worker();
+        assert_eq!(active.queued_requests(), 0);
+        assert_eq!(active.active_jobs(), 1);
+        assert_eq!(active.peak_active_jobs(), 1);
+        assert_eq!(active.queued_results(), 0);
+        assert_eq!(release_sender.send(()), Ok(()));
         assert_eq!(wake_receiver.recv_timeout(Duration::from_secs(1)), Ok(()));
         let evidence = application.snapshot().worker();
+        assert_eq!(evidence.active_jobs(), 0);
         assert_eq!(evidence.queued_results(), 1);
         assert_eq!(evidence.peak_queued_requests(), 1);
         assert_eq!(evidence.peak_queued_results(), 1);
@@ -2132,6 +2175,8 @@ mod tests {
         assert_eq!(done_receiver.recv_timeout(Duration::from_secs(1)), Ok(()));
         assert!(worker.join().is_ok());
         assert_eq!(counters.dropped_results.load(Ordering::Acquire), 0);
+        assert_eq!(counters.active_jobs.load(Ordering::Acquire), 0);
+        assert_eq!(counters.peak_active_jobs.load(Ordering::Acquire), 1);
         assert_eq!(counters.queued_results.load(Ordering::Acquire), 0);
         assert_eq!(counters.peak_queued_results.load(Ordering::Acquire), 1);
 
@@ -2157,6 +2202,8 @@ mod tests {
             &wake,
         );
         assert_eq!(disconnected.dropped_results.load(Ordering::Acquire), 1);
+        assert_eq!(disconnected.active_jobs.load(Ordering::Acquire), 0);
+        assert_eq!(disconnected.peak_active_jobs.load(Ordering::Acquire), 1);
         assert_eq!(disconnected.queued_results.load(Ordering::Acquire), 0);
 
         let (_sender, receiver) = sync_channel::<WorkerRequest<u64>>(1);
