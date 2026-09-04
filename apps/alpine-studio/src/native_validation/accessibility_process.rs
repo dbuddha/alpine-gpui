@@ -83,7 +83,7 @@ impl OmittedStep {
                 "native accessibility omission confirmed: step=open stage=workspace-file-open"
             }
             Self::Edit => {
-                "native accessibility omission confirmed: step=edit stage=save-unavailable-after-missing-edit"
+                "native accessibility omission confirmed: step=edit stage=document-unchanged-before-save"
             }
             Self::Action => {
                 "native accessibility omission confirmed: step=action stage=diagnostic-action"
@@ -133,7 +133,7 @@ pub fn validate_native_accessibility_omission_failure(
     let step =
         OmittedStep::from_value(requested).map_err(|error| error.to_string().into_boxed_str())?;
     let expected = step.expected_failure();
-    let matched = if matches!(step, OmittedStep::Open | OmittedStep::Edit) {
+    let matched = if step == OmittedStep::Open {
         observed
             .strip_prefix(expected)
             .and_then(|suffix| suffix.strip_prefix("; cause="))
@@ -505,18 +505,34 @@ fn qualify_workspace(
     diagnostic_actions = diagnostic_actions.saturating_add(1);
     let dispatch_failure_control_marker =
         require_dispatch_failure(&surface, &state, &diagnostic_label)?;
-    if omitted_step != Some(OmittedStep::Edit) {
-        let first_edit_baseline = surface.snapshot();
-        platform_validation::commit_native_text(&surface, "// alpine\n", event_handler(&state))
-            .map_err(|error| format!("first native editor text commit failed: {error}"))?;
-        await_frame_terminal(
-            &surface,
-            &state,
-            first_edit_baseline,
-            FRAME_TERMINAL_TIMEOUT,
-        )
-        .map_err(|error| format!("first native editor text frame failed: {error}"))?;
+    let first_edit_baseline = surface.snapshot();
+    if omitted_step == Some(OmittedStep::Edit) {
+        require_frame_quiescence(&surface)
+            .map_err(|error| format!("omitted native edit emitted frame work: {error}"))?;
+        let after_omission = surface.snapshot();
+        if after_omission.submission_count() != first_edit_baseline.submission_count() {
+            return Err(format!(
+                "omitted native edit changed submission count: before={} after={}",
+                first_edit_baseline.submission_count(),
+                after_omission.submission_count()
+            )
+            .into());
+        }
+        let persisted = fs::read(main_path)?;
+        if persisted.starts_with(b"// alpine\n") {
+            return Err("omitted native edit changed persisted document bytes".into());
+        }
+        return Err(OmittedStep::Edit.expected_failure().into());
     }
+    platform_validation::commit_native_text(&surface, "// alpine\n", event_handler(&state))
+        .map_err(|error| format!("first native editor text commit failed: {error}"))?;
+    await_frame_terminal(
+        &surface,
+        &state,
+        first_edit_baseline,
+        FRAME_TERMINAL_TIMEOUT,
+    )
+    .map_err(|error| format!("first native editor text frame failed: {error}"))?;
     timestamp = timestamp.saturating_add(1);
 
     if omitted_step != Some(OmittedStep::Save) {
@@ -524,23 +540,27 @@ fn qualify_workspace(
         if platform_validation::input_focus_state(&surface) != (lost_epoch, false) {
             return Err("native focus-loss control was not retained for restoration".into());
         }
-        let save_action = open_palette_and_activate(&surface, &state, &mut timestamp, "File: Save");
-        let save_frames = match save_action {
-            Ok(frames) => frames,
-            Err(error) if omitted_step == Some(OmittedStep::Edit) => {
-                return Err(omission_failure_with_cause(OmittedStep::Edit, &error));
-            }
-            Err(error) => return Err(error),
-        };
+        let save_frames =
+            open_palette_and_activate(&surface, &state, &mut timestamp, "File: Save")?;
         maximum_action_frames = maximum_action_frames.max(save_frames);
         command_actions = command_actions.saturating_add(1);
     }
     let persisted = fs::read(main_path)?;
     if !persisted.starts_with(b"// alpine\n") {
-        if let Some(step @ (OmittedStep::Edit | OmittedStep::Save)) = omitted_step {
-            return Err(step.expected_failure().into());
+        if omitted_step == Some(OmittedStep::Save) {
+            return Err(OmittedStep::Save.expected_failure().into());
         }
         return Err("required native edit and save did not preserve the expected prefix".into());
+    }
+    if omitted_step == Some(OmittedStep::Close) {
+        require_frame_quiescence(&surface)
+            .map_err(|error| format!("omitted final close emitted frame work: {error}"))?;
+        if surface.observer().lifecycle() != SurfaceLifecycle::Live
+            || state.borrow().snapshot().is_shutting_down()
+        {
+            return Err("omitted final close changed the live lifecycle state".into());
+        }
+        return Err(OmittedStep::Close.expected_failure().into());
     }
 
     let dirty_edit_baseline = surface.snapshot();
@@ -589,9 +609,6 @@ fn qualify_workspace(
             .windows("dirty".len())
             .any(|bytes| bytes == b"dirty")
     );
-    if omitted_step == Some(OmittedStep::Close) {
-        return Err(OmittedStep::Close.expected_failure().into());
-    }
     let (closed, disposition, close_frame) = replay_close(&surface, &state)
         .map_err(|error| format!("final native close replay failed: {error}"))?;
     if !final_close_succeeded(closed, disposition, close_frame) {
@@ -624,9 +641,6 @@ fn qualify_workspace(
         diagnostic_actions,
     );
     if observed_actions != (3, 2, 2, 1) {
-        if omitted_step == Some(OmittedStep::Open) && observed_actions == (2, 2, 2, 1) {
-            return Err(OmittedStep::Open.expected_failure().into());
-        }
         return Err(format!(
             "native accessibility action count mismatch: observed={observed_actions:?} expected=(3, 2, 2, 1)"
         )
@@ -2067,7 +2081,7 @@ mod process_contract_tests {
                 OmittedStep::Save => "save",
                 OmittedStep::Close => "close",
             };
-            let observed = if matches!(step, OmittedStep::Open | OmittedStep::Edit) {
+            let observed = if step == OmittedStep::Open {
                 format!(
                     "{}; cause=command activation rejected",
                     step.expected_failure()
@@ -2109,6 +2123,16 @@ mod process_contract_tests {
             validate_native_accessibility_omission_failure(
                 "edit",
                 OmittedStep::Edit.expected_failure()
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_native_accessibility_omission_failure(
+                "edit",
+                &format!(
+                    "{}; cause=unrelated failure",
+                    OmittedStep::Edit.expected_failure()
+                )
             )
             .is_err()
         );
