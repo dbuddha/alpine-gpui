@@ -367,7 +367,6 @@ fn qualify_workspace(
     let mut tab_actions = 0_usize;
     let mut command_actions = 0_usize;
     let mut diagnostic_actions = 0_usize;
-    let mut dispatch_failure_control_marker = 0_u64;
     dispatch(
         &surface,
         &state,
@@ -494,17 +493,18 @@ fn qualify_workspace(
     let mismatch_control_marker =
         reject_mismatched_activation(&surface, &state, &diagnostic_label)?;
 
-    if omitted_step != Some(OmittedStep::Action) {
-        maximum_action_frames = maximum_action_frames.max(activate(
-            &surface,
-            &state,
-            AccessibilityRole::ListItem,
-            &diagnostic_label,
-        )?);
-        diagnostic_actions = diagnostic_actions.saturating_add(1);
-        dispatch_failure_control_marker =
-            require_dispatch_failure(&surface, &state, &diagnostic_label)?;
+    if omitted_step == Some(OmittedStep::Action) {
+        return Err(OmittedStep::Action.expected_failure().into());
     }
+    maximum_action_frames = maximum_action_frames.max(activate(
+        &surface,
+        &state,
+        AccessibilityRole::ListItem,
+        &diagnostic_label,
+    )?);
+    diagnostic_actions = diagnostic_actions.saturating_add(1);
+    let dispatch_failure_control_marker =
+        require_dispatch_failure(&surface, &state, &diagnostic_label)?;
     if omitted_step != Some(OmittedStep::Edit) {
         let first_edit_baseline = surface.snapshot();
         platform_validation::commit_native_text(&surface, "// alpine\n", event_handler(&state))
@@ -626,9 +626,6 @@ fn qualify_workspace(
     if observed_actions != (3, 2, 2, 1) {
         if omitted_step == Some(OmittedStep::Open) && observed_actions == (2, 2, 2, 1) {
             return Err(OmittedStep::Open.expected_failure().into());
-        }
-        if omitted_step == Some(OmittedStep::Action) && observed_actions == (3, 2, 2, 0) {
-            return Err(OmittedStep::Action.expected_failure().into());
         }
         return Err(format!(
             "native accessibility action count mismatch: observed={observed_actions:?} expected=(3, 2, 2, 1)"
@@ -846,31 +843,6 @@ fn should_arm_hosted_observation(
         && armed_at_submission != Some(submission_count)
 }
 
-const HOSTED_FAILED_TERMINAL_RETRY_MARKER: &str =
-    "alpine-native-hosted-terminal-retry=first-editor-zero-submission-failed";
-
-/// Classifies the exact raw hosted frame failure before diagnostic truncation.
-///
-/// The returned marker carries no qualification credit. The outer process
-/// harness still requires hosted mode, a complete language trace, failed
-/// status, empty stdout, and attempt zero before it permits one isolated retry.
-#[must_use]
-#[doc(hidden)]
-pub fn hosted_failed_terminal_retry_marker(
-    evidence_mode: &str,
-    observed: &str,
-) -> Option<&'static str> {
-    (evidence_mode == "hosted-direct"
-        && observed.contains("first native editor text frame failed")
-        && observed
-            .contains("frame-terminal correctness-timeout failed after 0 observed submissions")
-        && observed
-            .contains("frame ownership did not become terminal before the correctness deadline")
-        && observed.contains("initial=(occupied=0 submitted=0 paused=true")
-        && observed.contains("outcome: Failed"))
-    .then_some(HOSTED_FAILED_TERMINAL_RETRY_MARKER)
-}
-
 /// Returns whether one failed hosted child is the exact retryable command stall.
 ///
 /// The retry belongs to the outer process harness. It never changes frame
@@ -884,21 +856,16 @@ pub fn hosted_terminal_stall_retry_allowed(
     stderr: &str,
     language_trace_complete: bool,
 ) -> bool {
-    let exact_hosted_failure = evidence_mode == "hosted-direct"
+    evidence_mode == "hosted-direct"
         && attempt == 0
         && !status_succeeded
         && stdout.is_empty()
-        && language_trace_complete;
-    let dirty_close_stall = stderr.contains("dirty-close native frame failed")
-        && stderr
-            .contains("frame-terminal correctness-timeout failed after 1 observed submissions")
+        && language_trace_complete
+        && stderr.contains("dirty-close native frame failed")
+        && stderr.contains("frame-terminal correctness-timeout failed after 1 observed submissions")
         && stderr
             .contains("frame ownership did not become terminal before the correctness deadline")
-        && stderr.contains("current=(occupied=1 submitted=1 paused=false");
-    let failed_before_submission = stderr
-        .lines()
-        .any(|line| line == HOSTED_FAILED_TERMINAL_RETRY_MARKER);
-    exact_hosted_failure && (dirty_close_stall || failed_before_submission)
+        && stderr.contains("current=(occupied=1 submitted=1 paused=false")
 }
 
 const fn action_frame_bound_exceeded(frames: u64) -> bool {
@@ -2081,38 +2048,6 @@ mod process_contract_tests {
                 &non_stall,
                 true
             ));
-        }
-
-        let failed_terminal = "first native editor text frame failed: frame-terminal correctness-timeout failed after 0 observed submissions: frame ownership did not become terminal before the correctness deadline; initial=(occupied=0 submitted=0 paused=true submissions=10 terminal=Some(FrameTerminalEvidence { outcome: Failed }))";
-        let marker = hosted_failed_terminal_retry_marker("hosted-direct", failed_terminal)
-            .expect("the exact raw terminal failure must publish a typed retry marker");
-        let retained_failure = format!("{marker}\nError: bounded diagnostic");
-        assert!(hosted_terminal_stall_retry_allowed(
-            "hosted-direct",
-            0,
-            false,
-            "",
-            &retained_failure,
-            true
-        ));
-        assert!(hosted_failed_terminal_retry_marker("physical", failed_terminal).is_none());
-        assert!(!hosted_terminal_stall_retry_allowed(
-            "hosted-direct",
-            0,
-            false,
-            "",
-            &retained_failure.replace(marker, "alpine-native-hosted-terminal-retry=other"),
-            true
-        ));
-        for non_terminal in [
-            failed_terminal.replace("first native editor", "second native editor"),
-            failed_terminal.replace("after 0 observed", "after 1 observed"),
-            failed_terminal.replace("occupied=0", "occupied=1"),
-            failed_terminal.replace("submitted=0", "submitted=1"),
-            failed_terminal.replace("paused=true", "paused=false"),
-            failed_terminal.replace("outcome: Failed", "outcome: Cancelled"),
-        ] {
-            assert!(hosted_failed_terminal_retry_marker("hosted-direct", &non_terminal).is_none());
         }
     }
 

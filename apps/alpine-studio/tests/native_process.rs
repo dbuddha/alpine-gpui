@@ -17,16 +17,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return match result {
                 Err(error) => {
                     let error = error.to_string();
-                    let evidence_mode = std::env::var("ALPINE_PRESENTATION_EVIDENCE_MODE")
-                        .unwrap_or_else(|_| String::from("physical"));
-                    if let Some(marker) =
-                        alpine_studio::native_validation::hosted_failed_terminal_retry_marker(
-                            &evidence_mode,
-                            &error,
-                        )
-                    {
-                        eprintln!("{marker}");
-                    }
                     alpine_studio::native_validation::validate_native_accessibility_omission_failure(
                         &omitted,
                         &error,
@@ -212,38 +202,8 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
                 || line.ends_with("Metal GPU Validation Enabled")
         }));
         for omitted in ["open", "edit", "action", "save", "close"] {
-            let (first_status, first_stdout, first_stderr, first_trace) =
-                run_child(Some(omitted), &root.join(format!("home-{omitted}")))?;
-            let first_trace_complete =
-                alpine_studio::native_validation::validate_native_language_startup_trace(
-                    &first_trace,
-                )
-                .is_ok();
             let (status, stdout, stderr, trace) =
-                if alpine_studio::native_validation::hosted_terminal_stall_retry_allowed(
-                    &evidence_mode,
-                    0,
-                    first_status.success(),
-                    &first_stdout,
-                    &first_stderr,
-                    first_trace_complete,
-                ) {
-                    eprintln!(
-                        "alpine-hosted-native-omission-stall-retry omission={omitted} attempt=1 status={first_status} stderr={first_stderr:?} language_trace={first_trace:?}"
-                    );
-                    let retry =
-                        run_child(Some(omitted), &root.join(format!("home-{omitted}-retry")))?;
-                    if !retry.0.success() {
-                        return Err(format!(
-                            "native Studio accessibility omission hosted retry failed for {omitted:?}; first=(status={first_status} stdout={first_stdout:?} stderr={first_stderr:?} language_trace={first_trace:?}) retry=(status={} stdout={:?} stderr={:?} language_trace={:?})",
-                            retry.0, retry.1, retry.2, retry.3
-                        )
-                        .into());
-                    }
-                    retry
-                } else {
-                    (first_status, first_stdout, first_stderr, first_trace)
-                };
+                run_child(Some(omitted), &root.join(format!("home-{omitted}")))?;
             if !status.success() {
                 return Err(format!(
                     "native Studio accessibility omission control {omitted:?} failed with {status}; stdout={stdout:?}; stderr={stderr:?}; language_trace={trace:?}"
