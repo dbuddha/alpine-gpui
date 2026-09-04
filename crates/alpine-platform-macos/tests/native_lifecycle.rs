@@ -10,10 +10,10 @@ mod validation {
     use std::{
         error::Error,
         ffi::OsStr,
-        fs::File,
+        fs::{self, File},
         io::Write,
         path::Path,
-        process::{Command, ExitStatus},
+        process::{self, Command, ExitStatus},
         thread,
         time::{Duration, Instant},
     };
@@ -71,6 +71,8 @@ mod validation {
         assert!(snapshot.peak_occupied_frame_slots() <= snapshot.frame_slot_capacity());
     }
     const CHILD_SCENARIO_ENV: &str = "ALPINE_NATIVE_LIFECYCLE_SCENARIO";
+    const CHILD_READY_ENV: &str = "ALPINE_NATIVE_LIFECYCLE_READY";
+    const CHILD_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(8);
     const MISSING_CLOSE_SCENARIO: &str = "missing-close-control";
     const POST_COMMIT_CLOSE_SCENARIO: &str = "post-commit-close";
     const RESIDENT_POLICY_SCENARIO: &str = "resident-policy-controls";
@@ -146,27 +148,67 @@ mod validation {
     }
 
     fn validate_bounded_child(scenario: &str, timeout: Duration) -> TestResult {
+        let ready_path = std::env::temp_dir().join(format!(
+            "alpine-native-lifecycle-ready-{}-{scenario}",
+            process::id()
+        ));
+        remove_ready_file(&ready_path)?;
         let mut child = Command::new(std::env::current_exe()?)
             .env(CHILD_SCENARIO_ENV, scenario)
+            .env(CHILD_READY_ENV, &ready_path)
             .spawn()?;
-        let deadline = Instant::now() + timeout;
+        let bootstrap_deadline = Instant::now() + CHILD_BOOTSTRAP_TIMEOUT;
+        let mut run_deadline = None;
 
         loop {
             if let Some(status) = child.try_wait()? {
+                remove_ready_file(&ready_path)?;
                 return require_child_success(scenario, status);
             }
+            if run_deadline.is_none() && ready_path.try_exists()? {
+                run_deadline = Some(Instant::now() + timeout);
+                remove_ready_file(&ready_path)?;
+            }
+            let deadline = run_deadline.unwrap_or(bootstrap_deadline);
             if Instant::now() >= deadline {
                 if let Some(status) = child.try_wait()? {
+                    remove_ready_file(&ready_path)?;
                     return require_child_success(scenario, status);
                 }
                 child.kill()?;
                 let status = child.wait()?;
-                return Err(format!(
-                    "native lifecycle child {scenario:?} exceeded {timeout:?} and was terminated with {status}"
-                )
-                .into());
+                remove_ready_file(&ready_path)?;
+                return if run_deadline.is_some() {
+                    Err(format!(
+                        "native lifecycle child {scenario:?} exceeded its ready-state {timeout:?} bound and was terminated with {status}"
+                    )
+                    .into())
+                } else {
+                    Err(format!(
+                        "native lifecycle child {scenario:?} did not finish AppKit bootstrap within {CHILD_BOOTSTRAP_TIMEOUT:?} and was terminated with {status}"
+                    )
+                    .into())
+                };
             }
             thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn signal_child_ready() -> TestResult {
+        let Some(path) = std::env::var_os(CHILD_READY_ENV) else {
+            return Ok(());
+        };
+        let mut file = File::create(path)?;
+        file.write_all(b"ready\n")?;
+        file.sync_all()?;
+        Ok(())
+    }
+
+    fn remove_ready_file(path: &Path) -> TestResult {
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
         }
     }
 
@@ -182,6 +224,7 @@ mod validation {
         let descriptor = SurfaceDescriptor::new("Alpine missing close control", 32.0, 24.0, 1.0)?;
         let surface = native_validation::new_surface(&descriptor)?;
         surface.show()?;
+        signal_child_ready()?;
         let timeout = native_validation::arm_run_timeout(&surface, Duration::from_millis(25));
         assert_eq!(
             surface.run_with_event_handler(|_| SurfaceResponse::default()),
@@ -284,6 +327,7 @@ mod validation {
         }
         assert_eq!(surface.request_frame(scene, clear)?.get(), 1);
         native_validation::inject_post_commit_close(&surface);
+        signal_child_ready()?;
         let timeout = native_validation::arm_run_timeout(&surface, Duration::from_secs(5));
         surface.run()?;
         assert!(!timeout.cancelled());

@@ -73,6 +73,19 @@ use crate::{
     presentation_visible,
 };
 
+#[cfg(alpine_native_validation)]
+const VALIDATION_ARM_KEY_CODE: u16 = u16::MAX - 1;
+#[cfg(alpine_native_validation)]
+const VALIDATION_STOP_KEY_CODE: u16 = u16::MAX;
+
+#[cfg(alpine_native_validation)]
+struct ValidationRunTimeout {
+    timeout: Duration,
+    expired: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
+    window_number: isize,
+}
+
 type Device = Retained<ProtocolObject<dyn MTLDevice>>;
 type SurfaceEventHandler = Box<dyn FnMut(SurfaceEvent) -> SurfaceResponse + 'static>;
 
@@ -1590,6 +1603,8 @@ pub(crate) struct SurfaceViewIvars {
     input_active: Cell<bool>,
     discarding_marked_text: Cell<bool>,
     rejected_ime_callbacks: Cell<u64>,
+    #[cfg(alpine_native_validation)]
+    validation_run_timeout: RefCell<Option<ValidationRunTimeout>>,
     pub(crate) accessibility: RefCell<NativeAccessibilityAdapter>,
 }
 
@@ -1792,6 +1807,24 @@ define_class!(
 
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
+            #[cfg(alpine_native_validation)]
+            if event.keyCode() == VALIDATION_ARM_KEY_CODE {
+                validation_phase("run-timeout-arm-key-dispatched");
+                if let Some(timeout) = self.ivars().validation_run_timeout.borrow_mut().take() {
+                    schedule_validation_run_timeout(timeout);
+                }
+                return;
+            }
+            #[cfg(alpine_native_validation)]
+            if event.keyCode() == VALIDATION_STOP_KEY_CODE {
+                validation_phase("run-timeout-key-down-dispatched");
+                if let Some(main_thread) = MainThreadMarker::new() {
+                    stop_validation_event_loop(&NSApplication::sharedApplication(main_thread));
+                } else {
+                    validation_phase("run-timeout-off-main-thread");
+                }
+                return;
+            }
             self.emit(keyboard_event(event, KeyState::Down));
             self.interpretKeyEvents(&NSArray::from_retained_slice(&[event.retain()]));
         }
@@ -1888,6 +1921,8 @@ impl SurfaceView {
             input_active: Cell::new(true),
             discarding_marked_text: Cell::new(false),
             rejected_ime_callbacks: Cell::new(0),
+            #[cfg(alpine_native_validation)]
+            validation_run_timeout: RefCell::new(None),
             accessibility: RefCell::new(NativeAccessibilityAdapter::new()),
         });
         // SAFETY: `frame` is finite and positive because the surface descriptor
@@ -4180,6 +4215,8 @@ impl NativeSurface {
         }
 
         self.application.run();
+        #[cfg(alpine_native_validation)]
+        validation_phase("application-run-returned");
 
         if matches!(
             surface_lifecycle(self.lifecycle.load(Ordering::Acquire)),
@@ -4766,28 +4803,21 @@ impl NativeSurface {
         expired: Arc<std::sync::atomic::AtomicBool>,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
     ) {
-        let timer_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
-            RcBlock::new(move |timer: NonNull<NSTimer>| {
-                // SAFETY: Foundation supplies a valid borrowed timer for the
-                // complete callback, and the reference does not escape.
-                unsafe { timer.as_ref() }.invalidate();
-                if !cancelled.swap(true, Ordering::AcqRel) {
-                    expired.store(true, Ordering::Release);
-                    if let Some(main_thread) = MainThreadMarker::new() {
-                        stop_validation_event_loop(&NSApplication::sharedApplication(main_thread));
-                    }
-                }
-            });
-        // SAFETY: The block is scheduled on the process main run loop,
-        // Foundation copies it for the timer lifetime, and the callback
-        // receives a valid NSTimer. The scheduled timer retains itself.
-        let _timer = unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_repeats_block(
-                timeout.as_secs_f64(),
-                false,
-                &timer_block,
-            )
-        };
+        let validation_window_number = self.window.windowNumber();
+        self.view
+            .ivars()
+            .validation_run_timeout
+            .replace(Some(ValidationRunTimeout {
+                timeout,
+                expired,
+                cancelled,
+                window_number: validation_window_number,
+            }));
+        post_validation_key_event(
+            &self.application,
+            validation_window_number,
+            VALIDATION_ARM_KEY_CODE,
+        );
     }
 
     #[cfg(alpine_native_validation)]
@@ -5187,6 +5217,73 @@ fn stop_validation_event_loop(application: &NSApplication) {
         0,
     ) {
         application.postEvent_atStart(&event, true);
+    }
+}
+
+#[cfg(alpine_native_validation)]
+fn schedule_validation_run_timeout(timeout: ValidationRunTimeout) {
+    let timer_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
+        RcBlock::new(move |timer: NonNull<NSTimer>| {
+            validation_phase("run-timeout-fired");
+            // SAFETY: Foundation supplies a valid borrowed timer for the
+            // complete callback, and the reference does not escape.
+            unsafe { timer.as_ref() }.invalidate();
+            if !timeout.cancelled.swap(true, Ordering::AcqRel) {
+                timeout.expired.store(true, Ordering::Release);
+                if let Some(main_thread) = MainThreadMarker::new() {
+                    post_validation_key_event(
+                        &NSApplication::sharedApplication(main_thread),
+                        timeout.window_number,
+                        VALIDATION_STOP_KEY_CODE,
+                    );
+                } else {
+                    validation_phase("run-timeout-off-main-thread");
+                }
+            }
+        });
+    // SAFETY: The arm key enters this function on the process main thread.
+    // Foundation copies the block, and the run loop retains the timer.
+    let timer = unsafe {
+        NSTimer::timerWithTimeInterval_repeats_block(
+            timeout.timeout.as_secs_f64(),
+            false,
+            &timer_block,
+        )
+    };
+    // SAFETY: The timer and common-mode identifier are valid for this
+    // main-thread registration call.
+    unsafe {
+        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+    }
+    validation_phase("run-timeout-armed-common-modes");
+}
+
+#[cfg(alpine_native_validation)]
+fn post_validation_key_event(application: &NSApplication, window_number: isize, key_code: u16) {
+    let characters = NSString::from_str("");
+    if let Some(event) = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+        NSEventType::KeyDown,
+        NSPoint::new(0.0, 0.0),
+        NSEventModifierFlags::empty(),
+        0.0,
+        window_number,
+        None,
+        &characters,
+        &characters,
+        false,
+        key_code,
+    ) {
+        application.postEvent_atStart(&event, true);
+        validation_phase("run-timeout-event-posted");
+    } else {
+        validation_phase("run-timeout-event-creation-failed");
+    }
+}
+
+#[cfg(alpine_native_validation)]
+fn validation_phase(phase: &str) {
+    if std::env::var_os("ALPINE_NATIVE_LIFECYCLE_PHASE_TRACE").is_some() {
+        eprintln!("alpine-native-lifecycle-phase={phase}");
     }
 }
 
