@@ -76,14 +76,13 @@ use crate::{
 #[cfg(alpine_native_validation)]
 const VALIDATION_ARM_KEY_CODE: u16 = u16::MAX - 1;
 #[cfg(alpine_native_validation)]
-const VALIDATION_STOP_KEY_CODE: u16 = u16::MAX;
+static VALIDATION_PHASE_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(alpine_native_validation)]
 struct ValidationRunTimeout {
     timeout: Duration,
     expired: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
-    window_number: isize,
 }
 
 type Device = Retained<ProtocolObject<dyn MTLDevice>>;
@@ -1812,16 +1811,6 @@ define_class!(
                 validation_phase("run-timeout-arm-key-dispatched");
                 if let Some(timeout) = self.ivars().validation_run_timeout.borrow_mut().take() {
                     schedule_validation_run_timeout(timeout);
-                }
-                return;
-            }
-            #[cfg(alpine_native_validation)]
-            if event.keyCode() == VALIDATION_STOP_KEY_CODE {
-                validation_phase("run-timeout-key-down-dispatched");
-                if let Some(main_thread) = MainThreadMarker::new() {
-                    stop_validation_event_loop(&NSApplication::sharedApplication(main_thread));
-                } else {
-                    validation_phase("run-timeout-off-main-thread");
                 }
                 return;
             }
@@ -4811,7 +4800,6 @@ impl NativeSurface {
                 timeout,
                 expired,
                 cancelled,
-                window_number: validation_window_number,
             }));
         post_validation_key_event(
             &self.application,
@@ -5231,11 +5219,11 @@ fn schedule_validation_run_timeout(timeout: ValidationRunTimeout) {
             if !timeout.cancelled.swap(true, Ordering::AcqRel) {
                 timeout.expired.store(true, Ordering::Release);
                 if let Some(main_thread) = MainThreadMarker::new() {
-                    post_validation_key_event(
-                        &NSApplication::sharedApplication(main_thread),
-                        timeout.window_number,
-                        VALIDATION_STOP_KEY_CODE,
-                    );
+                    // The timer already runs on AppKit's main run loop. Stop it
+                    // directly so a production close that removed the target
+                    // window cannot also remove the validation watchdog's exit
+                    // path.
+                    stop_validation_event_loop(&NSApplication::sharedApplication(main_thread));
                 } else {
                     validation_phase("run-timeout-off-main-thread");
                 }
@@ -5282,6 +5270,7 @@ fn post_validation_key_event(application: &NSApplication, window_number: isize, 
 
 #[cfg(alpine_native_validation)]
 fn validation_phase(phase: &str) {
+    VALIDATION_PHASE_COUNT.fetch_add(1, Ordering::Relaxed);
     if std::env::var_os("ALPINE_NATIVE_LIFECYCLE_PHASE_TRACE").is_some() {
         eprintln!("alpine-native-lifecycle-phase={phase}");
     }
@@ -5714,6 +5703,16 @@ fn expected_owner_counts(owner_count: usize) -> [u64; NATIVE_OWNER_KINDS] {
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
+
+    #[cfg(alpine_native_validation)]
+    #[test]
+    fn validation_phase_records_each_diagnostic_transition() {
+        let before = VALIDATION_PHASE_COUNT.load(Ordering::Relaxed);
+
+        validation_phase("mutation-control");
+
+        assert_eq!(VALIDATION_PHASE_COUNT.load(Ordering::Relaxed), before + 1);
+    }
 
     #[test]
     fn accessibility_frame_admission_requires_both_action_authorities() {
