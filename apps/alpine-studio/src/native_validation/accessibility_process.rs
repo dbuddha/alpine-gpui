@@ -110,10 +110,13 @@ impl OmittedStep {
 
 fn bounded_omission_error(value: &str) -> &str {
     let mut end = value.len().min(MAX_OMISSION_ERROR_BYTES);
-    while !value.is_char_boundary(end) {
+    for _ in 0..=3 {
+        if let Some(prefix) = value.get(..end) {
+            return prefix;
+        }
         end = end.saturating_sub(1);
     }
-    &value[..end]
+    ""
 }
 
 fn omission_failure_with_cause(
@@ -2190,6 +2193,15 @@ mod process_contract_tests {
             .expect_err("an unrelated oversized error must fail closed");
         assert!(error.len() < MAX_OMISSION_ERROR_BYTES + 256);
         assert!(!error.contains(&"x".repeat(MAX_OMISSION_ERROR_BYTES + 1)));
+
+        let four_byte_split = format!(
+            "{}\u{1f980}tail",
+            "x".repeat(MAX_OMISSION_ERROR_BYTES.saturating_sub(3))
+        );
+        assert_eq!(
+            bounded_omission_error(&four_byte_split).len(),
+            MAX_OMISSION_ERROR_BYTES - 3
+        );
     }
 }
 
