@@ -56,6 +56,20 @@ enum OmittedStep {
     Close,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OmissionMatch {
+    Requested,
+    Unrelated,
+}
+
+fn classify_omission(requested: Option<OmittedStep>, observed: OmittedStep) -> OmissionMatch {
+    if requested == Some(observed) {
+        OmissionMatch::Requested
+    } else {
+        OmissionMatch::Unrelated
+    }
+}
+
 impl OmittedStep {
     fn from_value(value: &str) -> Result<Self, Box<dyn std::error::Error>> {
         match value {
@@ -412,10 +426,12 @@ fn qualify_workspace(
     tab_actions = tab_actions.saturating_add(1);
     let main_tab_frames = match activate(&surface, &state, AccessibilityRole::Tab, "main.rs") {
         Ok(frames) => frames,
-        Err(error) if omitted_step == Some(OmittedStep::Open) => {
-            return Err(omission_failure_with_cause(OmittedStep::Open, &error));
-        }
-        Err(error) => return Err(error),
+        Err(error) => match classify_omission(omitted_step, OmittedStep::Open) {
+            OmissionMatch::Requested => {
+                return Err(omission_failure_with_cause(OmittedStep::Open, &error));
+            }
+            OmissionMatch::Unrelated => return Err(error),
+        },
     };
     maximum_action_frames = maximum_action_frames.max(main_tab_frames);
     tab_actions = tab_actions.saturating_add(1);
@@ -1544,6 +1560,32 @@ fn require_dispatch_failure(
 #[cfg(test)]
 mod process_contract_tests {
     use super::*;
+
+    #[test]
+    fn omission_matching_preserves_exact_stage_identity() {
+        let steps = [
+            OmittedStep::Open,
+            OmittedStep::Edit,
+            OmittedStep::Action,
+            OmittedStep::Save,
+            OmittedStep::Close,
+        ];
+        for observed in steps {
+            assert_eq!(
+                classify_omission(Some(observed), observed),
+                OmissionMatch::Requested
+            );
+            assert_eq!(classify_omission(None, observed), OmissionMatch::Unrelated);
+            for requested in steps {
+                if requested != observed {
+                    assert_eq!(
+                        classify_omission(Some(requested), observed),
+                        OmissionMatch::Unrelated
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn omission_values_preserve_every_required_step_and_reject_unknown_values()
