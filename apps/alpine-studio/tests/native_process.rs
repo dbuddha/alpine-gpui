@@ -17,6 +17,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return match result {
                 Err(error) => {
                     let error = error.to_string();
+                    let evidence_mode = std::env::var("ALPINE_PRESENTATION_EVIDENCE_MODE")
+                        .unwrap_or_else(|_| String::from("physical"));
+                    if let Some(marker) =
+                        alpine_studio::native_validation::hosted_failed_terminal_retry_marker(
+                            &evidence_mode,
+                            &error,
+                        )
+                    {
+                        eprintln!("{marker}");
+                    }
                     alpine_studio::native_validation::validate_native_accessibility_omission_failure(
                         &omitted,
                         &error,
