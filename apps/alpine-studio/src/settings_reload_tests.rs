@@ -172,6 +172,79 @@ fn runtime_dispatch_submits_and_publishes_the_startup_settings_request()
 }
 
 #[test]
+fn settings_submission_retries_only_saturation_without_a_failure_banner()
+-> Result<(), Box<dyn Error>> {
+    let mut app = StudioApp::new(tests::TestTextSystem)?;
+    app.settings_reload = settings::SettingsReload::explicit(None, None);
+    app.settings_reload.request(true)?;
+    let request = app
+        .settings_reload
+        .take_request()
+        .ok_or("missing settings request")?;
+    let generation = request.generation();
+    assert!(
+        !app.settings_reload
+            .defer_submission(generation.saturating_add(1), true)
+    );
+    assert!(app.settings_reload.report().in_flight);
+    assert_eq!(app.settings_reload.report().stale_results, 1);
+
+    assert!(!app.apply_settings_submission_result(
+        generation.saturating_add(1),
+        true,
+        Err(SubmitError::Closed)
+    ));
+    assert_eq!(app.local_status, None);
+    assert!(app.settings_reload.report().in_flight);
+    assert_eq!(app.settings_reload.report().stale_results, 2);
+
+    assert!(!app.apply_settings_submission_result(
+        generation,
+        request.announce(),
+        Err(SubmitError::Saturated)
+    ));
+    assert_eq!(app.local_status, None);
+    assert!(!app.settings_reload.report().in_flight);
+    assert!(app.settings_reload.report().pending);
+    assert_eq!(app.settings_reload.report().failures, 0);
+    let retry = app
+        .settings_reload
+        .take_request()
+        .ok_or("missing settings retry")?;
+    assert_eq!(retry.generation(), generation);
+    assert!(retry.announce());
+    assert_eq!(app.settings_reload.report().submissions, 2);
+
+    assert!(app.apply_settings_submission_result(
+        retry.generation(),
+        retry.announce(),
+        Err(SubmitError::Closed)
+    ));
+    assert_eq!(
+        app.local_status,
+        Some(LocalStatus::Command(Arc::from(
+            "Settings reload failed: settings worker queue rejected reload"
+        )))
+    );
+    assert_eq!(app.settings_reload.report().failures, 1);
+    assert!(app.settings_reload.report().pending);
+
+    let terminal_retry = app
+        .settings_reload
+        .take_request()
+        .ok_or("missing terminal settings retry")?;
+    app.local_status = None;
+    assert!(app.apply_settings_submission_result(
+        terminal_retry.generation(),
+        terminal_retry.announce(),
+        Err(SubmitError::SequenceExhausted)
+    ));
+    assert!(matches!(app.local_status, Some(LocalStatus::Command(_))));
+    assert_eq!(app.settings_reload.report().failures, 2);
+    Ok(())
+}
+
+#[test]
 fn failed_application_reload_keeps_the_previous_settings_snapshot() -> Result<(), Box<dyn Error>> {
     let root = TestRoot::new()?;
     let path = root.path().join("settings.json");

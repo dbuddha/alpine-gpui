@@ -427,17 +427,24 @@ impl SettingsReload {
         generation: u64,
         announce: bool,
     ) -> Result<(), SettingsReloadError> {
+        if !self.defer_submission(generation, announce) {
+            return Ok(());
+        }
+        self.report.failures = self.report.failures.saturating_add(1);
+        Err(SettingsReloadError::SubmissionFailed)
+    }
+
+    pub(crate) fn defer_submission(&mut self, generation: u64, announce: bool) -> bool {
         if !self.in_flight || generation != self.submitted_generation {
             self.report.stale_results = self.report.stale_results.saturating_add(1);
-            return Ok(());
+            return false;
         }
         self.in_flight = false;
         self.pending = true;
         self.pending_announcement |= announce;
         self.report.in_flight = false;
         self.report.pending = true;
-        self.report.failures = self.report.failures.saturating_add(1);
-        Err(SettingsReloadError::SubmissionFailed)
+        true
     }
 
     pub(crate) fn admit(

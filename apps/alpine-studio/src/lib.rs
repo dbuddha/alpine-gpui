@@ -6735,6 +6735,10 @@ impl StudioApp {
                 effect.visual_changed = true;
             }
         }
+        self.submit_quick_open_request(context);
+        self.submit_project_search_request(context);
+        self.submit_file_tree_request(context);
+        effect.visual_changed |= self.submit_settings_request(context);
         self.advance_accessibility_semantic_revision(effect.visual_changed);
         if effect.visual_changed {
             context.invalidate();
@@ -6744,10 +6748,6 @@ impl StudioApp {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        self.submit_quick_open_request(context);
-        self.submit_project_search_request(context);
-        self.submit_file_tree_request(context);
-        self.submit_settings_request(context);
         self.publish_recovery();
         self.record_profile(
             StudioSignpostStage::StateMutationComplete,
@@ -6944,6 +6944,10 @@ impl AppDelegate for StudioApp {
         }
         effect.visual_changed |= self.submit_workspace_edit_preparation(context);
         effect.visual_changed |= self.submit_workspace_edit_publication(context);
+        self.submit_quick_open_request(context);
+        self.submit_project_search_request(context);
+        self.submit_file_tree_request(context);
+        effect.visual_changed |= self.submit_settings_request(context);
         self.advance_accessibility_semantic_revision(effect.visual_changed);
         if effect.visual_changed {
             context.invalidate();
@@ -6953,10 +6957,6 @@ impl AppDelegate for StudioApp {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        self.submit_quick_open_request(context);
-        self.submit_project_search_request(context);
-        self.submit_file_tree_request(context);
-        self.submit_settings_request(context);
         self.publish_recovery();
     }
 
@@ -7007,22 +7007,44 @@ fn accessibility_admission_failures(current: u64, admitted: bool) -> u64 {
 }
 
 impl StudioApp {
-    fn submit_settings_request(&mut self, context: &mut AppContext<'_, StudioWorkerOutput>) {
+    fn apply_settings_submission_result(
+        &mut self,
+        generation: u64,
+        announce: bool,
+        result: Result<(), SubmitError>,
+    ) -> bool {
+        match result {
+            Ok(()) => false,
+            Err(SubmitError::Saturated) => {
+                let _ = self.settings_reload.defer_submission(generation, announce);
+                false
+            }
+            Err(SubmitError::Closed | SubmitError::SequenceExhausted) => {
+                if let Err(error) = self.settings_reload.reject_submission(generation, announce) {
+                    self.local_status = Some(LocalStatus::Command(Arc::from(format!(
+                        "Settings reload failed: {error}"
+                    ))));
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    fn submit_settings_request(
+        &mut self,
+        context: &mut AppContext<'_, StudioWorkerOutput>,
+    ) -> bool {
         let Some(request) = self.settings_reload.take_request() else {
-            return;
+            return false;
         };
         let generation = request.generation();
         let announce = request.announce();
-        if context
+        let result = context
             .spawn(move || StudioWorkerOutput::Settings(Box::new(request.execute())))
-            .is_err()
-            && let Err(error) = self.settings_reload.reject_submission(generation, announce)
-        {
-            self.local_status = Some(LocalStatus::Command(Arc::from(format!(
-                "Settings reload failed: {error}"
-            ))));
-            context.invalidate();
-        }
+            .map(|_| ());
+        self.apply_settings_submission_result(generation, announce, result)
     }
 
     fn submit_workspace_edit_preparation(
