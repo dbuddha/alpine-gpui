@@ -5714,6 +5714,12 @@ mod tests {
         assert_eq!(VALIDATION_PHASE_COUNT.load(Ordering::Relaxed), before + 1);
     }
 
+    #[cfg(alpine_native_validation)]
+    #[test]
+    fn validation_arm_key_preserves_its_reserved_identity() {
+        assert_eq!(VALIDATION_ARM_KEY_CODE, u16::MAX - 1);
+    }
+
     #[test]
     fn accessibility_frame_admission_requires_both_action_authorities() {
         assert!(DisplayLinkDelegate::accessibility_frame_admitted(
