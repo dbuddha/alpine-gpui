@@ -859,16 +859,25 @@ pub fn hosted_terminal_stall_retry_allowed(
     stderr: &str,
     language_trace_complete: bool,
 ) -> bool {
-    evidence_mode == "hosted-direct"
+    let exact_hosted_failure = evidence_mode == "hosted-direct"
         && attempt == 0
         && !status_succeeded
         && stdout.is_empty()
-        && language_trace_complete
-        && stderr.contains("dirty-close native frame failed")
-        && stderr.contains("frame-terminal correctness-timeout failed after 1 observed submissions")
+        && language_trace_complete;
+    let dirty_close_stall = stderr.contains("dirty-close native frame failed")
+        && stderr
+            .contains("frame-terminal correctness-timeout failed after 1 observed submissions")
         && stderr
             .contains("frame ownership did not become terminal before the correctness deadline")
-        && stderr.contains("current=(occupied=1 submitted=1 paused=false")
+        && stderr.contains("current=(occupied=1 submitted=1 paused=false");
+    let failed_before_submission = stderr.contains("first native editor text frame failed")
+        && stderr
+            .contains("frame-terminal correctness-timeout failed after 0 observed submissions")
+        && stderr
+            .contains("frame ownership did not become terminal before the correctness deadline")
+        && stderr.contains("initial=(occupied=0 submitted=0 paused=true")
+        && stderr.contains("outcome: Failed");
+    exact_hosted_failure && (dirty_close_stall || failed_before_submission)
 }
 
 const fn action_frame_bound_exceeded(frames: u64) -> bool {
@@ -2049,6 +2058,33 @@ mod process_contract_tests {
                 false,
                 "",
                 &non_stall,
+                true
+            ));
+        }
+
+        let failed_terminal = "first native editor text frame failed: frame-terminal correctness-timeout failed after 0 observed submissions: frame ownership did not become terminal before the correctness deadline; initial=(occupied=0 submitted=0 paused=true submissions=10 terminal=Some(FrameTerminalEvidence { outcome: Failed }))";
+        assert!(hosted_terminal_stall_retry_allowed(
+            "hosted-direct",
+            0,
+            false,
+            "",
+            failed_terminal,
+            true
+        ));
+        for non_terminal in [
+            failed_terminal.replace("first native editor", "second native editor"),
+            failed_terminal.replace("after 0 observed", "after 1 observed"),
+            failed_terminal.replace("occupied=0", "occupied=1"),
+            failed_terminal.replace("submitted=0", "submitted=1"),
+            failed_terminal.replace("paused=true", "paused=false"),
+            failed_terminal.replace("outcome: Failed", "outcome: Cancelled"),
+        ] {
+            assert!(!hosted_terminal_stall_retry_allowed(
+                "hosted-direct",
+                0,
+                false,
+                "",
+                &non_terminal,
                 true
             ));
         }
