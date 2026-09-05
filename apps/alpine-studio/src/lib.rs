@@ -5526,13 +5526,14 @@ impl StudioApp {
     }
 
     fn set_selection(&mut self, selection: Selection) -> EventEffect {
-        if selection == self.selection {
+        let effect = if selection == self.selection {
             EventEffect::default()
         } else {
             self.selection = selection;
             self.composition = None;
             EventEffect::visual()
-        }
+        };
+        effect.merge(self.reveal_primary_caret())
     }
 
     fn replace_selection(&mut self, text: &str) -> EventEffect {
@@ -5554,7 +5555,7 @@ impl StudioApp {
         if self.buffer_mut().apply(transaction).is_ok() {
             self.selection = next_selection;
             self.composition = None;
-            EventEffect::document()
+            EventEffect::document().merge(self.reveal_primary_caret())
         } else {
             self.input_failures = self.input_failures.saturating_add(1);
             EventEffect::default()
@@ -5674,7 +5675,7 @@ impl StudioApp {
                     self.selection = selection;
                 }
                 self.composition = None;
-                EventEffect::document()
+                EventEffect::document().merge(self.reveal_primary_caret())
             }
             result => {
                 self.input_failures = self
@@ -5692,7 +5693,7 @@ impl StudioApp {
                     self.selection = selection;
                 }
                 self.composition = None;
-                EventEffect::document()
+                EventEffect::document().merge(self.reveal_primary_caret())
             }
             result => {
                 self.input_failures = self
@@ -5731,6 +5732,45 @@ impl StudioApp {
             .map_or(1.0, |bounds| bounds.size().height().max(1.0));
         (usize_as_f32(self.buffer().snapshot().line_count()) * LINE_HEIGHT - content_height)
             .max(0.0)
+    }
+
+    fn caret_scroll_target(
+        current: f32,
+        line_top: f32,
+        content_height: f32,
+        document_maximum: f32,
+    ) -> f32 {
+        let line_bottom = line_top + LINE_HEIGHT;
+        let visible_minimum = (line_bottom - content_height).min(line_top).max(0.0);
+        let visible_maximum = line_top.min(document_maximum).max(visible_minimum);
+        current.clamp(visible_minimum, visible_maximum)
+    }
+
+    fn selection_changed(before: Selection, after: Selection) -> bool {
+        before != after
+    }
+
+    fn reveal_primary_caret(&mut self) -> EventEffect {
+        let Ok(bounds) = self.active_pane_bounds() else {
+            return EventEffect::default();
+        };
+        let snapshot = self.buffer().snapshot();
+        let Ok(Some(line)) = Self::line_for_offset(&snapshot, self.selection.head().get()) else {
+            self.input_failures = self.input_failures.saturating_add(1);
+            return EventEffect::default();
+        };
+        let content_height = bounds.size().height().max(1.0);
+        let line_top = usize_as_f32(line) * LINE_HEIGHT;
+        let before = self.scroll_y;
+        self.scroll_y = Self::caret_scroll_target(
+            self.scroll_y,
+            line_top,
+            content_height,
+            self.maximum_scroll(),
+        );
+        (self.scroll_y.to_bits() != before.to_bits())
+            .then(EventEffect::visual)
+            .unwrap_or_default()
     }
 
     fn editor_region(&self, viewport: Size) -> Result<Rect, PaneError> {
@@ -6715,6 +6755,9 @@ impl StudioApp {
             let revision = DocumentRevision::new(self.runtime_document_revision);
             let admitted = context.advance_document(revision);
             self.input_failures = accessibility_admission_failures(self.input_failures, admitted);
+        }
+        if Self::selection_changed(selection_before, self.selection) {
+            effect = effect.merge(self.reveal_primary_caret());
         }
         self.advance_selection_revision(selection_before);
         let language_visual_changed = self.synchronize_language_after_event(context);

@@ -255,6 +255,104 @@ fn viewport() -> Result<Size, SurfaceError> {
 }
 
 #[test]
+fn primary_caret_reveal_follows_edits_and_preserves_manual_scroll_until_navigation()
+-> Result<(), Box<dyn Error>> {
+    let mut app = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("head"), None)?;
+    let viewport = viewport()?;
+    let _initial = app.try_scene(SceneRevision::new(1), viewport)?;
+    app.selection = Selection::caret(ByteOffset::new(app.buffer().snapshot().len_bytes()));
+    let mut appended = String::with_capacity(64 * 8);
+    for line in 0..64 {
+        use std::fmt::Write as _;
+        write!(&mut appended, "\nline {line:02}")?;
+    }
+
+    let edited = app.replace_selection(&appended);
+    assert!(edited.document_changed);
+    assert_eq!(app.scroll_y.to_bits(), app.maximum_scroll().to_bits());
+
+    let maximum = app.scroll_y;
+    let scrolled = app.handle_event(&SurfaceEvent::Scroll {
+        timestamp: EventTimestamp::new(1),
+        delta_x: 0.0,
+        delta_y: LINE_HEIGHT * 4.0,
+        phase: ScrollPhase::Changed,
+        precise: true,
+        modifiers: Modifiers::default(),
+    });
+    assert!(scrolled.visual_changed);
+    assert!(app.scroll_y < maximum);
+    let manually_scrolled = app.scroll_y;
+    assert_eq!(app.scroll_y.to_bits(), manually_scrolled.to_bits());
+
+    let revealed = app.handle_key(KEY_END, Modifiers::default());
+    assert!(revealed.visual_changed);
+    assert_eq!(app.scroll_y.to_bits(), maximum.to_bits());
+
+    let top = app.set_selection(Selection::caret(ByteOffset::new(0)));
+    assert!(top.visual_changed);
+    assert_eq!(app.scroll_y.to_bits(), 0.0_f32.to_bits());
+
+    let snapshot = app.buffer().snapshot();
+    let middle_line = 32;
+    let middle_offset = snapshot.line_byte_range(middle_line)?.start;
+    let line_top = usize_as_f32(middle_line) * LINE_HEIGHT;
+    let content_height = app.active_pane_bounds()?.size().height().max(1.0);
+    let expected = (line_top + LINE_HEIGHT - content_height)
+        .min(line_top)
+        .max(0.0);
+    app.scroll_y = 0.0;
+    let middle = app.set_selection(Selection::caret(ByteOffset::new(middle_offset)));
+    assert!(middle.visual_changed);
+    assert_eq!(app.scroll_y.to_bits(), expected.to_bits());
+    assert_eq!(
+        StudioApp::caret_scroll_target(expected, line_top, content_height, app.maximum_scroll())
+            .to_bits(),
+        expected.to_bits()
+    );
+    assert_eq!(
+        StudioApp::caret_scroll_target(
+            app.maximum_scroll(),
+            line_top,
+            content_height,
+            app.maximum_scroll(),
+        )
+        .to_bits(),
+        line_top.to_bits()
+    );
+    assert!(!StudioApp::selection_changed(app.selection, app.selection));
+    assert!(StudioApp::selection_changed(
+        Selection::caret(ByteOffset::new(0)),
+        app.selection,
+    ));
+
+    let mut invalid_layout =
+        StudioApp::from_document(TestTextSystem, StudioDocument::scratch("head"), None)?;
+    let _scene = invalid_layout.try_scene(SceneRevision::new(1), viewport)?;
+    invalid_layout.panes.inject_layout_fault();
+    let failures = invalid_layout.input_failures;
+    assert_eq!(
+        invalid_layout.reveal_primary_caret(),
+        EventEffect::default()
+    );
+    assert_eq!(invalid_layout.input_failures, failures);
+
+    let mut invalid_selection =
+        StudioApp::from_document(TestTextSystem, StudioDocument::scratch("head"), None)?;
+    let _scene = invalid_selection.try_scene(SceneRevision::new(1), viewport)?;
+    invalid_selection.selection = Selection::caret(ByteOffset::new(
+        invalid_selection.buffer().snapshot().len_bytes() + 1,
+    ));
+    let failures = invalid_selection.input_failures;
+    assert_eq!(
+        invalid_selection.reveal_primary_caret(),
+        EventEffect::default()
+    );
+    assert_eq!(invalid_selection.input_failures, failures + 1);
+    Ok(())
+}
+
+#[test]
 fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_frames()
 -> Result<(), Box<dyn Error>> {
     let rasterizations = Arc::new(AtomicU64::new(0));
