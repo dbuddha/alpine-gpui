@@ -7545,11 +7545,9 @@ pub mod native_validation {
             }
         }
 
-        const fn requires_surface_configuration(self, presentation_visible: bool) -> bool {
-            match self {
-                Self::Physical => !presentation_visible,
-                Self::HostedDirect => true,
-            }
+        const fn requires_surface_configuration(self) -> bool {
+            // Physical admission must come from AppKit, never a hosted override.
+            matches!(self, Self::HostedDirect)
         }
     }
 
@@ -7649,11 +7647,9 @@ pub mod native_validation {
         }
 
         #[test]
-        fn configuration_policy_distinguishes_mode_and_visibility() {
-            assert!(PresentationEvidenceMode::Physical.requires_surface_configuration(false));
-            assert!(!PresentationEvidenceMode::Physical.requires_surface_configuration(true));
-            assert!(PresentationEvidenceMode::HostedDirect.requires_surface_configuration(false));
-            assert!(PresentationEvidenceMode::HostedDirect.requires_surface_configuration(true));
+        fn configuration_policy_never_injects_physical_visibility() {
+            assert!(!PresentationEvidenceMode::Physical.requires_surface_configuration());
+            assert!(PresentationEvidenceMode::HostedDirect.requires_surface_configuration());
         }
 
         #[test]
@@ -7823,10 +7819,11 @@ pub mod native_validation {
         let observer = surface.observer();
         let waker = surface.waker();
         let mut timeout = None;
+        let mut initial_native_visibility = None;
+        let mut configuration_injected = false;
         let run_result = application.run_on_native_surface_for_validation(&surface, |surface| {
-            if evidence_mode
-                .requires_surface_configuration(surface.snapshot().is_presentation_visible())
-            {
+            initial_native_visibility = Some(surface.snapshot().is_presentation_visible());
+            if evidence_mode.requires_surface_configuration() {
                 platform_validation::inject_surface_configuration(
                     surface,
                     f64::from(WINDOW_WIDTH),
@@ -7835,6 +7832,7 @@ pub mod native_validation {
                     0,
                     true,
                 )?;
+                configuration_injected = true;
             }
             let run_timeout = match evidence_mode {
                 PresentationEvidenceMode::HostedDirect => HOSTED_RUN_TIMEOUT,
@@ -7898,6 +7896,12 @@ pub mod native_validation {
                     frame.display_link_paused(),
                     frame_builds,
                 );
+                eprintln!(
+                    "alpine-native-run-failure-detail returned={error:?} retained={:?} evidence={evidence_source} initial-native-visible={initial_native_visibility:?} configuration-injected={configuration_injected} timeout-expired={:?}",
+                    surface.take_error(),
+                    timeout.as_ref().map(|guard| guard.expired()),
+                );
+                eprintln!("alpine-native-run-failure-snapshot={frame:?}");
                 return Err(error);
             }
         }

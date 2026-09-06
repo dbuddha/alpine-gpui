@@ -362,7 +362,7 @@ fn qualify_workspace(
         .show()
         .map_err(|error| format!("native accessibility surface show failed: {error}"))?;
     let evidence_mode = presentation_evidence_mode()?;
-    if evidence_mode.requires_surface_configuration(surface.snapshot().is_presentation_visible()) {
+    if evidence_mode.requires_surface_configuration() {
         platform_validation::inject_surface_configuration(
             &surface,
             f64::from(WINDOW_WIDTH),

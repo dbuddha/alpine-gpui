@@ -2018,6 +2018,28 @@ pub mod native_validation {
             .replay_application_quit_with_handler(handler)
     }
 
+    /// Exercises exact non-repeating Command-Q through the native input boundary.
+    ///
+    /// AppKit termination remains cancelled so an admitted close can drain and
+    /// return through Rust ownership. The result reports whether native close
+    /// began after the application handler resolved the close request.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured dispatch error if the handler cannot be installed,
+    /// input dispatch fails, or AppKit does not preserve the close authority.
+    pub fn replay_application_quit_shortcut_with_handler<F>(
+        surface: &NativeSurface,
+        handler: F,
+    ) -> Result<bool, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        surface
+            .implementation
+            .replay_application_quit_shortcut_with_handler(handler)
+    }
+
     /// Injects every initialization-stage failure and verifies complete rollback.
     ///
     /// # Errors

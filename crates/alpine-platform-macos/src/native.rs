@@ -1900,7 +1900,12 @@ define_class!(
                 }
                 return;
             }
-            self.emit(keyboard_event(event, KeyState::Down));
+            let input = keyboard_event(event, KeyState::Down);
+            let quit = application_quit_shortcut(&input);
+            self.emit(input);
+            if quit {
+                return;
+            }
             self.interpretKeyEvents(&NSArray::from_retained_slice(&[event.retain()]));
         }
 
@@ -2060,15 +2065,34 @@ impl SurfaceView {
     }
 
     fn emit(&self, event: NativeInputEvent) {
-        let Ok(mut installed) = self.ivars().input_handler.try_borrow_mut() else {
-            self.ivars().input_dispatch_failed.set(true);
+        let quit = application_quit_shortcut(&event);
+        if quit && !self.ivars().input_active.get() {
             return;
-        };
-        let Some(handler) = installed.as_mut() else {
-            self.ivars().input_dispatch_failed.set(true);
-            return;
-        };
-        handler(event);
+        }
+
+        {
+            let Ok(mut installed) = self.ivars().input_handler.try_borrow_mut() else {
+                self.ivars().input_dispatch_failed.set(true);
+                return;
+            };
+            let Some(handler) = installed.as_mut() else {
+                self.ivars().input_dispatch_failed.set(true);
+                return;
+            };
+            if !quit {
+                handler(event);
+            }
+        }
+
+        if quit {
+            let Some(main_thread) = MainThreadMarker::new() else {
+                self.ivars().input_dispatch_failed.set(true);
+                return;
+            };
+            // Closing can synchronously emit IME cancellation through this handler.
+            // Release its borrow before entering the existing close authority.
+            NSApplication::sharedApplication(main_thread).terminate(None);
+        }
     }
 
     fn emit_ime(&self, event: ImeEvent) {
@@ -2253,6 +2277,24 @@ fn clipboard_shortcut(event: &NativeInputEvent) -> Option<ClipboardOperation> {
     } else {
         None
     }
+}
+
+fn application_quit_shortcut(event: &NativeInputEvent) -> bool {
+    let NativeInputEvent::Keyboard {
+        state: KeyState::Down,
+        logical_key,
+        modifiers,
+        repeat: false,
+        ..
+    } = event
+    else {
+        return false;
+    };
+    modifiers.contains(Modifiers::COMMAND)
+        && !modifiers.contains(Modifiers::CONTROL)
+        && !modifiers.contains(Modifiers::OPTION)
+        && !modifiers.contains(Modifiers::SHIFT)
+        && logical_key.eq_ignore_ascii_case("q")
 }
 
 fn plain_text_pasteboard_type() -> &'static NSPasteboardType {
@@ -2618,6 +2660,60 @@ mod native_input_tests {
             None
         );
         assert_eq!(clipboard_shortcut(&event("v", 0, false)), None);
+    }
+
+    #[test]
+    fn application_quit_shortcut_requires_exact_nonrepeating_command_identity() {
+        let event = |state, logical_key: &str, modifiers: u8, repeat| NativeInputEvent::Keyboard {
+            state,
+            physical_key: 0,
+            logical_key: logical_key.into(),
+            modifiers: Modifiers::from_bits(modifiers),
+            repeat,
+        };
+        assert!(application_quit_shortcut(&event(
+            KeyState::Down,
+            "q",
+            Modifiers::COMMAND,
+            false,
+        )));
+        assert!(application_quit_shortcut(&event(
+            KeyState::Down,
+            "Q",
+            Modifiers::COMMAND | Modifiers::CAPS_LOCK,
+            false,
+        )));
+        for modifiers in [
+            0,
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Modifiers::COMMAND | Modifiers::CONTROL,
+            Modifiers::COMMAND | Modifiers::OPTION,
+        ] {
+            assert!(!application_quit_shortcut(&event(
+                KeyState::Down,
+                "q",
+                modifiers,
+                false,
+            )));
+        }
+        assert!(!application_quit_shortcut(&event(
+            KeyState::Down,
+            "q",
+            Modifiers::COMMAND,
+            true,
+        )));
+        assert!(!application_quit_shortcut(&event(
+            KeyState::Up,
+            "q",
+            Modifiers::COMMAND,
+            false,
+        )));
+        assert!(!application_quit_shortcut(&event(
+            KeyState::Down,
+            "c",
+            Modifiers::COMMAND,
+            false,
+        )));
     }
 
     #[test]
@@ -4769,6 +4865,67 @@ impl NativeSurface {
         if reply != NSApplicationTerminateReply::TerminateCancel {
             return Err(SurfaceError::invariant(SurfaceOperation::Application));
         }
+        Ok(self.window_close_started.load(Ordering::Acquire))
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn replay_application_quit_shortcut_with_handler<F>(
+        &self,
+        handler: F,
+    ) -> Result<bool, SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        let characters = NSString::from_str("q");
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown,
+            NSPoint::new(4.0, 4.0),
+            NSEventModifierFlags::Command,
+            0.0,
+            self.window.windowNumber(),
+            None,
+            &characters,
+            &characters,
+            false,
+            12,
+        )
+        .ok_or_else(|| SurfaceError::invariant(SurfaceOperation::Input))?;
+        self.delegate.install_event_handler(handler)?;
+        let delegate = self.delegate.clone();
+        if !self.view.install_input_handler(Box::new(move |event| {
+            delegate.dispatch_native_input_event(event);
+        })) {
+            self.delegate.clear_event_handler();
+            return Err(SurfaceError::invariant(SurfaceOperation::RunLoop));
+        }
+        if let Err(error) = self.activate_input_responder() {
+            let cleanup = self.view.detach_input_handler_for_validation();
+            self.delegate.clear_event_handler();
+            drop(cleanup?);
+            return Err(error);
+        }
+        if self.view.input_focus_state().1 && !NSTextInputClient::hasMarkedText(&*self.view) {
+            let marked = NSString::from_str("pending");
+            // SAFETY: NSTextInputClient accepts NSString or NSAttributedString.
+            // This retained NSString remains alive for the synchronous call.
+            unsafe {
+                NSTextInputClient::setMarkedText_selectedRange_replacementRange(
+                    &*self.view,
+                    &marked,
+                    NSRange::new(1, 0),
+                    NSRange::new(0, 0),
+                );
+            }
+        }
+        self.view.keyDown(&event);
+        let result = self.take_error().and_then(|error| match error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        });
+        let cleanup = self.view.detach_input_handler_for_validation();
+        self.delegate.clear_event_handler();
+        drop(cleanup?);
+        resolve_input_dispatch(result, self.view.take_input_dispatch_failure())?;
         Ok(self.window_close_started.load(Ordering::Acquire))
     }
 
