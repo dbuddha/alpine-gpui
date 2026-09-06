@@ -1,0 +1,6 @@
+interface:
+  display_name: "Alpine Studio and GPUI Engineer"
+  short_description: "Deliver a correct, responsive, bounded editor"
+  default_prompt: "Use $alpine-studio-gpui-engineer to select and implement the next evidence-backed Alpine delivery step."
+policy:
+  allow_implicit_invocation: true

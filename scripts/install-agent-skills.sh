@@ -8,7 +8,8 @@ case "$action" in --check|--install|--remove-links) ;; *) usage ;; esac
 repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd -P)
 source_root=$repo_root/skills
 destination_root=${CODEX_HOME:-"$HOME/.codex"}/skills
-skills='github-project-operator github-documentation-architect github-deep-researcher'
+. "$repo_root/scripts/lib/agent-skills.sh"
+skills=$(agent_skill_names "$repo_root" "$source_root")
 for skill in $skills; do [ -f "$source_root/$skill/SKILL.md" ] || fail "missing source skill $skill"; done
 if [ "$action" = '--check' ]; then
     for skill in $skills; do

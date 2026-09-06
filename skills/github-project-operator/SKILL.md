@@ -33,12 +33,14 @@ from the settled release-label event instead of `opened`, an unlabeled pull
 request must remain blocked with no required check until its complete metadata
 snapshot is applied.
 
-If title, body, labels, base, or source head changes after checks begin, treat
-the earlier suite as superseded. Retain its run identity and result, wait for a
-new conforming exact-head suite, and never rerun or relabel an older suite into
-merge evidence. Before merge, fetch the base, require the latest applicable
-aggregate gate, protect the tested source SHA, and use only a repository-allowed
-merge mode.
+If title, body or labels change after checks begin, invalidate only applicable
+metadata acceptance under the actual repository workflow. Retain prior run
+identities and results. Reuse identical code evidence only if existing policy
+allows; never waive a required rerun or check, or relabel evidence as newer work.
+Source/base changes require evidence applicable to the new state. Before merge,
+fetch and check the base, confirm the source head, require the latest applicable
+conforming exact-head aggregate gate, protect the tested source SHA, and use only
+a repository-allowed merge mode.
 
 If GitHub reports both canceled and successful required checks for the current
 pull-request state, do not use an administrator bypass. Retain both run IDs,
@@ -157,3 +159,15 @@ tasks, blockers with age and owner, milestone exit criteria, PR and exact-head
 check state, scope growth, Evidence Level, Claim State, and the next smallest
 uncompromised slice. Distinguish fact, inference, recommendation, implemented,
 reproduced, and qualified.
+For a narrow task, report only the relevant state, evidence, deltas and unresolved
+decisions; do not expand into portfolio reconciliation or unrelated mutations.
+
+## Engineering skill delivery
+
+Route domain decisions through the [engineering skill contract](../../docs/operations/alpine-engineering-skills.md).
+Use the existing skill requirement, implementation and evaluation issues rather
+than counting scenarios as delivery. Track feedback from real failures and record
+its acceptance artifact. Installed is not evaluated; E3 needs reproduced behavior,
+not phrase checks. Keep skill work outside milestone completion counts and within
+the shared WIP limit. Avoid circular dependencies between workload supply and its
+later qualification, and preserve the independently actionable renderer lane.

@@ -58,3 +58,12 @@ Stop rather than inflate confidence when sources cannot be pinned, licensing blo
 ## Completion
 
 Provide the decision answer, evidence level, supporting and disconfirming evidence, source and environment identities, limitations, threats to validity, Alpine decisions, implementing issues, review trigger, and artifact locations.
+
+## Domain research and skill evaluation
+
+Use the [engineering skill contract](../../docs/operations/alpine-engineering-skills.md)
+to route Metal hardware questions, pinned Zed/GPUI source dissection and algorithm
+cost models. Apple contracts, dated reverse engineering, author rationale and
+Alpine measurements are different evidence. Keep skill trial prompts separate
+from grading rubrics, retain independent baseline/candidate outputs, and never
+promote a source summary or structural validator into effectiveness evidence.

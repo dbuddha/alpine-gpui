@@ -1,0 +1,6 @@
+interface:
+  display_name: "Apple Metal Performance Engineer"
+  short_description: "Measure Metal latency, ownership and residency"
+  default_prompt: "Use $apple-metal-performance-engineer to diagnose the measured native bottleneck and propose a bounded, testable correction."
+policy:
+  allow_implicit_invocation: true

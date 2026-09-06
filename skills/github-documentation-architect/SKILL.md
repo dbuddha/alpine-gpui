@@ -55,9 +55,12 @@ Before opening a documentation pull request, read the repository template and
 validate its final Conventional Commit title, template sections, issue and
 parent links, release label, base, and source head. Apply the complete title,
 body, and required labels in the initial creation command. A later title, body,
-label, base, or source-head change creates a new review event: retain the prior
-run, mark it superseded rather than erased, and require a new conforming
-exact-head aggregate result before describing the change as merge-ready.
+or label change invalidates only applicable metadata acceptance under the actual
+repository workflow. Retain prior run identities and results. Reuse identical code
+evidence only if existing policy allows; never waive a required rerun or check.
+Recheck source head and base, and require the applicable conforming exact-head
+aggregate before describing the change as merge-ready. Source/base changes require
+evidence applicable to the new state.
 
 ## Research lineage and evidence
 
@@ -152,5 +155,17 @@ Every supported release answers what changed, who is affected, compatibility, in
 Produce the authority matrix, audience map, navigation tree, proposed files,
 migration or redirect plan, lineage and evidence impact, validation commands,
 freshness trigger, ownership and review cadence, and unresolved decisions.
+Include only items warranted by the task. A small correction needs its changed
+surface, relevant evidence and remaining risk, not a full architecture package.
+Scope validation to affected content unless repository mandatory gates require more.
 Distinguish fact, inference, recommendation, implemented, reproduced, and
 qualified.
+
+## Engineering skill publication
+
+Use the [engineering skill contract](../../docs/operations/alpine-engineering-skills.md)
+for inventory, routing and publication. Keep installed links, source implementation,
+structural checks, independent evaluation and accepted effectiveness separate.
+Canonical source references and the versioned evolution ledger retain attribution
+and supersession; Wiki is only a generated projection. Record exact source, PR,
+evaluation and merge identities before calling a skill change accepted.

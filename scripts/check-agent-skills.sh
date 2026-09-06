@@ -8,7 +8,8 @@ if [ "$#" -gt 0 ]; then
     [ "$#" -eq 2 ] && [ "$1" = '--skills-root' ] || { printf 'usage: scripts/check-agent-skills.sh [--skills-root PATH]\n' >&2; exit 2; }
     skills_root=$(CDPATH= cd -- "$2" && pwd -P)
 fi
-skills='github-project-operator github-documentation-architect github-deep-researcher'
+. "$repo_root/scripts/lib/agent-skills.sh"
+skills=$(agent_skill_names "$repo_root" "$skills_root")
 for skill in $skills; do
     directory=$skills_root/$skill; document=$directory/SKILL.md; agent=$directory/agents/openai.yaml
     [ -f "$document" ] || { fail "missing $skill/SKILL.md"; continue; }
