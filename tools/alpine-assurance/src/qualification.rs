@@ -1484,7 +1484,17 @@ mod benchmark_tests {
             .map_err(|errors| io::Error::other(errors.join("; ")))?;
         super::publish_stage_profile_samples(&output, &[valid])
             .map_err(|errors| io::Error::other(errors.join("; ")))?;
-        assert!(publish_benchmark_samples(&output, b"replacement").is_err());
+        let replacement = StageProfileSample {
+            caller_elapsed_ns: 2,
+            ..valid
+        };
+        assert!(matches!(
+            super::publish_stage_profile_samples(&output, &[replacement]),
+            Err(errors) if errors.len() == 1 && errors[0].starts_with(&format!(
+                "cannot publish renderer benchmark output {} without replacement: ",
+                output.display()
+            ))
+        ));
         assert_eq!(fs::read(&output)?, csv.as_bytes());
         let temporary = root.join(format!(
             ".alpine-renderer-benchmark-{}.tmp",
@@ -1493,7 +1503,13 @@ mod benchmark_tests {
         assert!(!temporary.exists());
         fs::write(&temporary, b"existing temporary owner")?;
         let blocked = root.join("blocked.csv");
-        assert!(publish_benchmark_samples(&blocked, csv.as_bytes()).is_err());
+        assert!(matches!(
+            super::publish_stage_profile_samples(&blocked, &[valid]),
+            Err(errors) if errors.len() == 1 && errors[0].starts_with(&format!(
+                "cannot create renderer benchmark temporary output {}: ",
+                temporary.display()
+            ))
+        ));
         assert!(!blocked.exists());
         assert_eq!(fs::read(&temporary)?, b"existing temporary owner");
         fs::remove_file(temporary)?;
