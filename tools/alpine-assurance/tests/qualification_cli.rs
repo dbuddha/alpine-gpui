@@ -405,10 +405,56 @@ fn native_stage_profile_publishes_or_rejects_the_known_virtual_device() -> Resul
         assert!(!output_path.exists());
     } else if cfg!(target_os = "macos") {
         assert!(profile.status.success(), "{stderr}");
-        assert!(String::from_utf8_lossy(&profile.stdout).contains("performance claim=none"));
+        let stdout = String::from_utf8_lossy(&profile.stdout);
+        for marker in [
+            "schema=alpine-renderer-stage-profile/v2",
+            "admission_renderer=ordinary",
+            "cpu_oracle_equivalence=exact",
+            "caller_endpoint=owned-image-return",
+            "inner_totals=unchanged",
+            "atlas_upload_encoding_occurrence=unknown",
+            "performance claim=none",
+        ] {
+            assert!(
+                stdout.contains(marker),
+                "missing profile contract: {marker}"
+            );
+        }
         let csv = fs::read_to_string(&output_path).map_err(|error| error.to_string())?;
-        assert!(csv.starts_with("sample_index,admission_ns,"));
+        assert_eq!(
+            csv.lines().next(),
+            Some(
+                "sample_index,admission_ns,resource_preparation_ns,command_buffer_ns,atlas_upload_encoding_ns,render_encoding_ns,readback_encoding_ns,commit_ns,completion_wait_ns,gpu_execution_ns,readback_compaction_ns,native_total_ns,submission_accounting_ns,total_ns,caller_elapsed_ns,gpu_execution_available,atlas_upload_encoding_occurrence,schema"
+            )
+        );
         assert_eq!(csv.lines().count(), 2);
+        let fields = csv
+            .lines()
+            .nth(1)
+            .ok_or("profile row is missing")?
+            .split(',')
+            .collect::<Vec<_>>();
+        assert_eq!(fields.len(), 18);
+        assert!(fields[14].parse::<u64>().is_ok_and(|value| value > 0));
+        match fields[15] {
+            "true" => assert!(fields[9].parse::<u64>().is_ok()),
+            "false" => assert!(fields[9].is_empty()),
+            value => return Err(format!("invalid GPU availability marker: {value}")),
+        }
+        assert_eq!(fields[16], "unknown");
+        assert_eq!(fields[17], "alpine-renderer-stage-profile/v2");
+        let collision = Command::new(binary)
+            .current_dir(root)
+            .args(["profile-scene-native", manifest])
+            .arg(&output_path)
+            .args(["1", "1"])
+            .output()
+            .map_err(|error| error.to_string())?;
+        assert!(!collision.status.success());
+        assert_eq!(
+            fs::read_to_string(&output_path).map_err(|error| error.to_string())?,
+            csv
+        );
         fs::remove_file(&output_path).map_err(|error| error.to_string())?;
     } else {
         assert!(!profile.status.success());
