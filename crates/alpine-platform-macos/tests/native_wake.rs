@@ -2,7 +2,13 @@
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    objc2::rc::autoreleasepool(|_| run())
+    eprintln!("native_wake phase=autoreleasepool.begin");
+    let result = objc2::rc::autoreleasepool(|_| run());
+    eprintln!(
+        "native_wake phase=autoreleasepool.drained result_ok={}",
+        result.is_ok()
+    );
+    result
 }
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
@@ -23,11 +29,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     fn drain_native_callbacks(
         surface: &alpine_platform_macos::NativeSurface,
+        callbacks_drained: impl Fn() -> bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let drain = native_validation::arm_run_loop_drain_marker(surface);
         assert!(!drain.executed());
         let deadline = Instant::now() + Duration::from_millis(250);
-        while !drain.executed() && Instant::now() < deadline {
+        while (!drain.executed() || !callbacks_drained()) && Instant::now() < deadline {
             autoreleasepool(|_| {
                 NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.001));
             });
@@ -35,25 +42,49 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if !drain.executed() {
             return Err("native wake callbacks did not drain before owner release".into());
         }
+        if !callbacks_drained() {
+            return Err("queued native wake did not terminate before owner release".into());
+        }
         Ok(())
     }
 
+    eprintln!("native_wake phase=revoked_surface.create.begin");
     let revoked_descriptor = SurfaceDescriptor::new("Alpine revoked worker wake", 96.0, 64.0, 1.0)?;
     let revoked_surface = native_validation::new_surface(&revoked_descriptor)?;
+    eprintln!("native_wake phase=revoked_surface.created");
     let revoked_observer = revoked_surface.observer();
     let revoked_waker = revoked_surface.waker();
+    assert_eq!(revoked_waker.wake(), SurfaceWakeAdmission::Scheduled);
     native_validation::revoke_surface_waker(&revoked_surface);
     assert_eq!(revoked_observer.lifecycle(), SurfaceLifecycle::Live);
     assert_eq!(revoked_waker.wake(), SurfaceWakeAdmission::Closed);
-    drain_native_callbacks(&revoked_surface)?;
+    eprintln!("native_wake phase=revoked_surface.close.begin");
+    native_validation::close_window(&revoked_surface);
+    assert_eq!(revoked_observer.lifecycle(), SurfaceLifecycle::Closing);
+    eprintln!("native_wake phase=revoked_surface.closed drain.begin");
+    // The timer alone is not evidence that the queued main-queue wake ran.
+    drain_native_callbacks(&revoked_surface, || {
+        revoked_waker.snapshot().rejected() == 2
+    })?;
+    let revoked_evidence = revoked_waker.snapshot();
+    assert_eq!(revoked_evidence.requests(), 2);
+    assert_eq!(revoked_evidence.scheduled(), 1);
+    assert_eq!(revoked_evidence.coalesced(), 0);
+    assert_eq!(revoked_evidence.dispatched(), 0);
+    assert_eq!(revoked_evidence.rejected(), 2);
+    eprintln!("native_wake phase=revoked_surface.drained release.begin");
     let revoked_owners = native_validation::close_with_owner_evidence(revoked_surface)?;
     assert_eq!(revoked_owners.active(), [0; 10]);
     assert_eq!(revoked_owners.pasteboard_releases(), 0);
     assert_eq!(revoked_owners.release_order_violations(), 0);
+    eprintln!("native_wake phase=revoked_surface.released");
 
+    eprintln!("native_wake phase=worker_surface.create.begin");
     let descriptor = SurfaceDescriptor::new("Alpine worker wake", 96.0, 64.0, 1.0)?;
     let surface = Rc::new(native_validation::new_surface(&descriptor)?);
+    eprintln!("native_wake phase=worker_surface.created show.begin");
     surface.show()?;
+    eprintln!("native_wake phase=worker_surface.shown");
     let observer = surface.observer();
     let waker = surface.waker();
     let worker_waker = waker.clone();
@@ -77,12 +108,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut ready_sender = Some(ready_sender);
     let callback_surface = Rc::clone(&surface);
     let timeout = native_validation::arm_run_timeout(&surface, Duration::from_secs(5));
+    eprintln!("native_wake phase=run.begin");
     let run_result = surface.run_with_event_handler(move |event| {
         if let SurfaceEvent::Wake { timestamp } = event
             && let Ok(mut received) = callback_received.lock()
         {
             received.push(timestamp.get());
             if let Some(sender) = ready_sender.take() {
+                eprintln!("native_wake phase=initial_wake.received");
                 let _ = sender.send(());
                 if let Ok(admitted) = admission_receiver.recv_timeout(Duration::from_secs(1))
                     && let Ok(mut admissions) = callback_admissions.lock()
@@ -93,16 +126,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let should_close = received.len() == 2;
             drop(received);
             if should_close {
+                eprintln!("native_wake phase=worker_wake.received close.armed");
                 native_validation::arm_window_close(&callback_surface, Duration::ZERO);
             }
         }
         SurfaceResponse::default()
     });
+    eprintln!("native_wake phase=run.returned");
     timeout.cancel();
     assert!(!timeout.expired());
     assert!(timeout.cancelled());
     run_result?;
     worker.join().map_err(|_| "worker wake thread panicked")??;
+    eprintln!("native_wake phase=worker.joined");
 
     let received = received.lock().map_err(|_| "wake receiver poisoned")?;
     assert_eq!(received.len(), 2);
@@ -127,12 +163,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(waker.wake(), SurfaceWakeAdmission::Closed);
     assert_eq!(waker.snapshot().rejected(), 1);
 
-    drain_native_callbacks(&surface)?;
+    eprintln!("native_wake phase=worker_surface.drain.begin");
+    drain_native_callbacks(&surface, || true)?;
+    eprintln!("native_wake phase=worker_surface.drained release.begin");
     let surface = Rc::try_unwrap(surface).map_err(|_| "native wake surface remained retained")?;
     let owners = native_validation::close_with_owner_evidence(surface)?;
     assert_eq!(owners.active(), [0; 10]);
     assert_eq!(owners.pasteboard_releases(), 0);
     assert_eq!(owners.release_order_violations(), 0);
+    eprintln!("native_wake phase=worker_surface.released");
     Ok(())
 }
 

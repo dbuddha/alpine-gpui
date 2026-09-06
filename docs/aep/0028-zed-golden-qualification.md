@@ -132,6 +132,78 @@ Reproduced and qualified states require at least three independent windows.
 The fixture samples prove validator behavior only. They establish no real
 latency, memory, GPU, energy, accessibility, or Zed-relative result.
 
+### Private renderer profile caller envelope
+
+Experiment [#526](https://github.com/dbuddha/alpine-gpui/issues/526), under Defect
+[#521](https://github.com/dbuddha/alpine-gpui/issues/521) and Requirement #53,
+adds the non-shipping `alpine-renderer-stage-profile/v2` sampler contract under
+C01 through C03. It changes no Metal API, native ownership, shader, submission,
+or readback behavior and supplies no new performance qualification.
+
+Ordinary and profiled sampling each admit one ordinary render against the exact
+CPU oracle's compact BGRA8 bytes before warmup or measurement. Every warmup and
+sample must match that admitted image. A mismatch rejects the capture rather
+than introducing a tolerance. CPU admission, image comparisons, serialization,
+and returned-image destruction remain outside the measured caller interval.
+This exact sampler gate does not change broader cross-device tolerance contracts.
+
+The ordinary CSV remains `sample_index,elapsed_ns`, with its existing stopwatch.
+Profile v2 retains the fourteen v1 columns in their original order and appends
+`caller_elapsed_ns,gpu_execution_available,atlas_upload_encoding_occurrence,schema`.
+Every row identifies `alpine-renderer-stage-profile/v2`. Caller elapsed starts
+immediately before the profiled renderer invocation and stops after the owned
+image/result returns, including the callee's return cleanup. This matches the
+ordinary caller endpoint without moving either backend's inner probes.
+
+Existing `total_ns` and `native_total_ns` retain their inner endpoints.
+`submission_accounting_ns` remains a mixed subtraction residual, not isolated
+accounting work. These fields must not replace caller elapsed in observer
+comparisons or be subtracted to correct ordinary samples. The GPU interval
+overlaps completion wait. Its availability flag is derived from `Option`:
+unavailable is `false` plus an empty duration, while an available zero is
+`true,0`. Missing requested timings and saturated durations reject capture.
+Atlas upload occurrence is explicitly `unknown`; a zero legacy stage duration
+does not establish a skipped operation. Occurrence-dependent comparisons remain
+blocked without separate evidence, not a new public marker in this slice.
+
+Retained #521 v1 artifacts and their identity checks are immutable historical
+evidence, including the unfavorable endpoint. Corrected source and local tests
+do not recalibrate that result. Observer calibration still requires matched
+identities, qualified environments, ordinary/ordinary and profile/profile
+negative controls, and counterbalanced ordinary/profile observations. No
+numeric margin, timing gain, stage-comparison qualification, or shipping
+optimization is established by this schema addition.
+
+### Private v2 whole-submission evidence admission
+
+Experiment #526 additionally requires a positive `total_ns` for every admitted
+profile timing record. This is the unchanged whole validation-through-readback
+endpoint, not `native_total_ns` or an individual stage. A zero whole total is
+unusable benchmark timing evidence; it does not establish missing data or a
+backend failure. `OffscreenStageTimings::default()` remains valid public API
+data but is not admissible private benchmark evidence.
+
+The private fallible conversion validates the constructed record. Shared
+admission validates it again during warmup and measurement, and serialization
+revalidates every record before publication. An invalid timing record or
+conversion error aborts the entire run, including any previously collected
+samples. No bad sample may be selectively omitted, replaced, or published in a
+partial CSV. Publication remains atomic and never overwrites an existing
+artifact.
+
+Zero individual host stages, GPU `Some(0)` versus `None`, and unknown atlas
+occurrence retain their existing meanings. Saturated timing and zero caller
+elapsed remain rejected. The real same-record native getter control remains
+required supported-host evidence; portable rejection of a default source does
+not prove native field forwarding. An unsupported native execution route
+supplies no such evidence.
+
+This private v2 admission restriction changes no old inner endpoint, retained
+v1 artifact, comparative threshold, timeout, or sample-count requirement. The
+same whole-total rule is required symmetrically for future matched comparator
+capture before observer calibration. It supplies no timing gain or shipping
+optimization claim.
+
 ## Failure and recovery
 
 Unknown protocol versions, operations, actions, gates, states, hashes, or
