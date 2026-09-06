@@ -330,6 +330,73 @@ fn reference_benchmark_publishes_bounded_samples() -> Result<(), String> {
 }
 
 #[test]
+fn benchmark_and_profile_reject_unreadable_or_malformed_input_before_rendering()
+-> Result<(), String> {
+    let root = repository_root();
+    fs::create_dir_all(root.join("target")).map_err(|error| error.to_string())?;
+    let directory = root.join("target").join(format!(
+        "qualification-cli-invalid-input-{}",
+        std::process::id()
+    ));
+    fs::create_dir(&directory).map_err(|error| error.to_string())?;
+    let malformed = directory.join("malformed.toml");
+    fs::write(&malformed, b"schema = [").map_err(|error| error.to_string())?;
+    let missing = directory.join("missing.toml");
+    let output_path = directory.join("samples.csv");
+
+    for command in [
+        "benchmark-scene-reference",
+        "benchmark-scene-native",
+        "profile-scene-native",
+    ] {
+        for manifest in [&missing, &malformed] {
+            let rejected = Command::new(env!("CARGO_BIN_EXE_alpine-assurance"))
+                .current_dir(root)
+                .arg(command)
+                .arg(manifest)
+                .arg(&output_path)
+                .args(["1", "1"])
+                .output()
+                .map_err(|error| error.to_string())?;
+            let stderr = String::from_utf8_lossy(&rejected.stderr);
+            assert!(
+                !rejected.status.success() && rejected.status.code().is_some(),
+                "{command}: expected a normal rejection, got {:?}: {stderr}",
+                rejected.status
+            );
+            assert!(
+                stderr.contains(manifest.to_string_lossy().as_ref()),
+                "{stderr}"
+            );
+            assert!(!stderr.contains("panicked at"), "{stderr}");
+            assert!(
+                !stderr.contains("cannot initialize Direct Metal"),
+                "{stderr}"
+            );
+            assert!(
+                rejected.stdout.is_empty(),
+                "{command}: emitted success output"
+            );
+            assert!(!output_path.exists(), "{command}: published rejected input");
+            let entries = fs::read_dir(&directory)
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            assert_eq!(
+                entries.len(),
+                1,
+                "{command}: left unexpected evidence files"
+            );
+            assert_eq!(entries[0].path(), malformed);
+        }
+    }
+
+    fs::remove_file(&malformed).map_err(|error| error.to_string())?;
+    fs::remove_dir(&directory).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[test]
 fn native_benchmark_publishes_or_rejects_the_known_virtual_device() -> Result<(), String> {
     let binary = env!("CARGO_BIN_EXE_alpine-assurance");
     let root = repository_root();
