@@ -10,5 +10,7 @@
 - [WGPU](WGPU)
 - [Comparator qualification](Comparator-Qualification)
 - [Documentation policy](Documentation-Policy)
+- [Agent operations](Agent-Operations)
+- [Engineering skills](Engineering-Skills)
 
 Synchronized from `{{ALPINE_MAIN_REVISION}}`.

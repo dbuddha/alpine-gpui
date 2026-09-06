@@ -1,6 +1,6 @@
 # GitHub agent operations
 
-Alpine owns three installable skills that turn repository policy into repeatable agent workflows. They advise and validate work; they do not supersede `AGENTS.md`, approved issues, CI, or owner-held approvals.
+Alpine owns manifest-listed installable skills that turn repository policy into repeatable agent workflows. The three GitHub authorities below route to the focused [engineering skills](alpine-engineering-skills.md) when needed. They advise and validate work; they do not supersede `AGENTS.md`, approved issues, CI, or owner-held approvals.
 
 | Skill | Use it for | Canonical output |
 | --- | --- | --- |
@@ -134,7 +134,7 @@ without bypassing that protection:
 3. Run `scripts/install-agent-skills.sh --install` from clean current Alpine
    `main`.
 4. Run `scripts/install-agent-skills.sh --check` from current `main`.
-5. Inspect all three installed link targets before removing the old worktree.
+5. Inspect every manifest-listed installed link target before removing the old worktree.
 
 Do not unlink or replace a foreign skill path and do not remove a worktree while
 installed skills still reference it.

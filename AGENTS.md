@@ -116,5 +116,5 @@ records exact results and remaining risk, `ci-pass` succeeds, and the merged PR
 closes its task. Requirements and capabilities close only when all child work
 and end-to-end acceptance are complete.
 ## Repository skills
-- Use github-project-operator for planning state, github-documentation-architect for mdBook, Wiki, or Releases, and github-deep-researcher for consequential research or agent evaluation.
+- Select one primary skill and load support only at an actual boundary: alpine-studio-gpui-engineer for delivery/editor correctness, apple-metal-performance-engineer for native GPU/presentation/residency, zed-gpui-architecture-expert for pinned translation, algorithmic-performance-engineer for measured algorithms, github-project-operator for planning, github-documentation-architect for mdBook/Wiki/releases, and github-deep-researcher for research/evaluation. skills/manifest.tsv owns the installable inventory.
 - Install only repository-owned links with scripts/install-agent-skills.sh; skills never supersede this policy, accepted issues, required checks, or owner-held approvals.

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Algorithmic Performance Engineer"
+  short_description: "Choose algorithms from costs and measured work"
+  default_prompt: "Use $algorithmic-performance-engineer to compare bounded algorithms for the measured Alpine workload."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Zed and GPUI Architecture Expert"
+  short_description: "Translate pinned GPUI mechanisms with evidence"
+  default_prompt: "Use $zed-gpui-architecture-expert to trace a pinned mechanism and justify a narrow Alpine adaptation."
+policy:
+  allow_implicit_invocation: true
