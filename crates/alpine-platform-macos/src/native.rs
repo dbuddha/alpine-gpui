@@ -5,14 +5,11 @@ use std::sync::{
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use std::{ffi::c_void, ptr::NonNull};
 
 use alpine_core::Point;
-
-#[cfg(alpine_native_validation)]
-use std::time::Duration;
 
 #[cfg(alpine_native_validation)]
 use objc2::rc::autoreleasepool;
@@ -44,8 +41,8 @@ use objc2_foundation::{
 use objc2_foundation::{NSDate, NSTimer};
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLPixelFormat};
 use objc2_quartz_core::{
-    CAMetalDisplayLink, CAMetalDisplayLinkDelegate, CAMetalDisplayLinkUpdate, CAMetalDrawable,
-    CAMetalLayer,
+    CACurrentMediaTime, CAMetalDisplayLink, CAMetalDisplayLinkDelegate, CAMetalDisplayLinkUpdate,
+    CAMetalDrawable, CAMetalLayer,
 };
 
 use alpine_core::LinearRgba;
@@ -72,6 +69,18 @@ use crate::{
     begin_close_observer_state, finish_close_observer_state, new_observer_state,
     presentation_visible,
 };
+
+#[cfg(alpine_native_validation)]
+const VALIDATION_ARM_KEY_CODE: u16 = u16::MAX - 1;
+#[cfg(alpine_native_validation)]
+static VALIDATION_PHASE_COUNT: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(alpine_native_validation)]
+struct ValidationRunTimeout {
+    timeout: Duration,
+    expired: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
+}
 
 type Device = Retained<ProtocolObject<dyn MTLDevice>>;
 type SurfaceEventHandler = Box<dyn FnMut(SurfaceEvent) -> SurfaceResponse + 'static>;
@@ -475,8 +484,24 @@ struct PendingFrame {
 struct EventFrameTiming {
     timestamp: EventTimestamp,
     received_at: Instant,
+    received_media_time_seconds: f64,
     handler_finished_at: Instant,
     admitted_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+struct EventReceipt {
+    instant: Instant,
+    media_time_seconds: f64,
+}
+
+impl EventReceipt {
+    fn now() -> Self {
+        Self {
+            media_time_seconds: CACurrentMediaTime(),
+            instant: Instant::now(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -525,6 +550,14 @@ fn elapsed_ns(start: Instant, end: Instant) -> u64 {
     u64::try_from(end.saturating_duration_since(start).as_nanos()).unwrap_or(u64::MAX)
 }
 
+fn media_time_delta_ns(start_seconds: f64, end_seconds: f64) -> Option<u64> {
+    if start_seconds <= 0.0 || end_seconds <= 0.0 {
+        return None;
+    }
+    let duration = Duration::try_from_secs_f64(end_seconds - start_seconds).ok()?;
+    u64::try_from(duration.as_nanos()).ok()
+}
+
 fn profile_latency_for_terminal(
     latency: Option<FrameLatencyEvidence>,
     recovery: Option<RecoveryClassification>,
@@ -549,6 +582,7 @@ mod frame_latency_timing_tests {
         let event = EventFrameTiming {
             timestamp: EventTimestamp::new(11),
             received_at: origin,
+            received_media_time_seconds: 101.0,
             handler_finished_at: origin + Duration::from_nanos(13),
             admitted_at: origin + Duration::from_nanos(17),
         };
@@ -591,6 +625,16 @@ mod frame_latency_timing_tests {
             Some(complete)
         );
         assert_eq!(profile_latency_for_terminal(None, None), None);
+        assert_eq!(super::media_time_delta_ns(101.0, 101.25), Some(250_000_000));
+        for (start, end) in [
+            (0.0, 1.0),
+            (1.0, 0.0),
+            (2.0, 1.0),
+            (f64::NAN, 1.0),
+            (1.0, f64::INFINITY),
+        ] {
+            assert_eq!(super::media_time_delta_ns(start, end), None);
+        }
         Ok(())
     }
 }
@@ -689,33 +733,74 @@ impl PresentationObservation {
 }
 
 struct PresentationSignal {
+    published: AtomicBool,
     observed: AtomicBool,
     time_bits: AtomicU64,
     event_to_presented_handler_ns: AtomicU64,
     event_received_at: Option<Instant>,
+    event_received_media_time_seconds: Option<f64>,
+    event_timestamp: Option<EventTimestamp>,
+    display_link_target_seconds: f64,
+    target_presentation_seconds: f64,
+    lifecycle: Arc<AtomicU8>,
+    signposts: StudioSignposts,
 }
 
 impl PresentationSignal {
     const MISSING_LATENCY_NS: u64 = u64::MAX;
 
-    fn new(event_received_at: Option<Instant>) -> Self {
+    fn new(
+        event: Option<EventFrameTiming>,
+        display_link_target_seconds: f64,
+        target_presentation_seconds: f64,
+        lifecycle: Arc<AtomicU8>,
+        signposts: StudioSignposts,
+    ) -> Self {
         Self {
+            published: AtomicBool::new(false),
             observed: AtomicBool::new(false),
             time_bits: AtomicU64::new(0),
             event_to_presented_handler_ns: AtomicU64::new(Self::MISSING_LATENCY_NS),
-            event_received_at,
+            event_received_at: event.map(|event| event.received_at),
+            event_received_media_time_seconds: event.map(|event| event.received_media_time_seconds),
+            event_timestamp: event.map(|event| event.timestamp),
+            display_link_target_seconds,
+            target_presentation_seconds,
+            lifecycle,
+            signposts,
         }
     }
 
-    fn publish(&self, presented_time_bits: u64) {
-        if let Some(received_at) = self.event_received_at {
-            let elapsed = elapsed_ns(received_at, Instant::now())
-                .min(Self::MISSING_LATENCY_NS.saturating_sub(1));
+    fn publish(&self, presented_time_bits: u64, callback_media_time_seconds: f64) -> Option<u64> {
+        if self.published.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        let elapsed = self.event_received_at.map(|received_at| {
+            elapsed_ns(received_at, Instant::now()).min(Self::MISSING_LATENCY_NS.saturating_sub(1))
+        });
+        if let Some(elapsed) = elapsed {
             self.event_to_presented_handler_ns
                 .store(elapsed, Ordering::Relaxed);
         }
         self.time_bits.store(presented_time_bits, Ordering::Relaxed);
         self.observed.store(true, Ordering::Release);
+        if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+            return None;
+        }
+        self.event_timestamp
+            .zip(elapsed)
+            .and_then(|(event, callback_ns)| {
+                let event_media = self.event_received_media_time_seconds?;
+                let actual_presentation_seconds = f64::from_bits(presented_time_bits);
+                self.signposts.emit_presentation_latency(
+                    event,
+                    callback_ns,
+                    media_time_delta_ns(event_media, self.display_link_target_seconds),
+                    media_time_delta_ns(event_media, self.target_presentation_seconds),
+                    media_time_delta_ns(event_media, actual_presentation_seconds),
+                    media_time_delta_ns(actual_presentation_seconds, callback_media_time_seconds),
+                )
+            })
     }
 
     fn event_to_presented_handler_ns(&self) -> Option<u64> {
@@ -751,6 +836,39 @@ struct PresentationDriver {
 }
 
 impl PresentationDriver {
+    fn observe_presentation(
+        &self,
+        drawable: &ProtocolObject<dyn MTLDrawable>,
+        event_timing: Option<EventFrameTiming>,
+        display_link_target_seconds: f64,
+        target_presentation_seconds: f64,
+        counters: &FrameCounters,
+    ) -> Arc<PresentationSignal> {
+        install_observation(
+            drawable,
+            event_timing,
+            display_link_target_seconds,
+            target_presentation_seconds,
+            Arc::clone(&self.lifecycle),
+            self.latency_signposts,
+            counters,
+        )
+    }
+
+    fn offscreen_descriptor(&self, clear: LinearRgba) -> Result<OffscreenDescriptor, SurfaceError> {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "validated finite scale is narrowed to the renderer's f32 coordinate contract"
+        )]
+        Ok(OffscreenDescriptor::new(
+            self.configuration.physical_width,
+            self.configuration.physical_height,
+            self.configuration.scale as f32,
+            clear,
+        )
+        .map_err(alpine_metal::RenderError::from)?)
+    }
+
     fn new(
         backend: MetalBackend,
         configuration: SurfaceConfiguration,
@@ -1084,22 +1202,17 @@ impl PresentationDriver {
             return self.cancel_attempt(token, timing, counters);
         }
 
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "validated finite scale is narrowed to the renderer's f32 coordinate contract"
-        )]
-        let descriptor = OffscreenDescriptor::new(
-            self.configuration.physical_width,
-            self.configuration.physical_height,
-            self.configuration.scale as f32,
-            frame.clear,
-        )
-        .map_err(alpine_metal::RenderError::from)?;
+        let descriptor = self.offscreen_descriptor(frame.clear)?;
 
         let drawable = update.drawable();
-        let texture = drawable.texture();
         let drawable_protocol = ProtocolObject::from_ref(&*drawable);
-        let presentation = install_observation(drawable_protocol, frame.event_timing, counters);
+        let presentation = self.observe_presentation(
+            drawable_protocol,
+            frame.event_timing,
+            update.targetTimestamp(),
+            update.targetPresentationTimestamp(),
+            counters,
+        );
         let admission = self
             .frame_slots
             .acquire(token, self.owner_generation)
@@ -1116,7 +1229,7 @@ impl PresentationDriver {
             slot,
             &frame.scene,
             descriptor,
-            &texture,
+            &drawable.texture(),
             drawable_protocol,
         );
         timing.submission_finished_at = Some(Instant::now());
@@ -1208,7 +1321,7 @@ impl PresentationDriver {
             recovery,
         );
         if let Some(latency) = profile_latency_for_terminal(evidence.latency(), recovery) {
-            let _emitted = self.latency_signposts.emit_frame_latency(latency);
+            let _emitted = self.latency_signposts.emit_terminal_frame_latency(latency);
         }
         if matches!(attempt.outcome(), PresentationOutcome::Superseded) {
             self.last_superseded = Some(evidence);
@@ -1502,7 +1615,8 @@ fn install_presented_handler(
             // SAFETY: Metal invokes the registered handler with a valid borrowed
             // drawable for the complete block call. The reference does not escape.
             let drawable = unsafe { drawable.as_ref() };
-            signal.publish(drawable.presentedTime().to_bits());
+            let _profile_correlation =
+                signal.publish(drawable.presentedTime().to_bits(), CACurrentMediaTime());
         });
     // SAFETY: The generated selector signature matches the retained block.
     // Metal copies the escaping block and keeps its captured Arc alive until
@@ -1518,10 +1632,18 @@ fn install_presented_handler(
 fn install_observation(
     drawable: &ProtocolObject<dyn MTLDrawable>,
     event_timing: Option<EventFrameTiming>,
+    display_link_target_seconds: f64,
+    target_presentation_seconds: f64,
+    lifecycle: Arc<AtomicU8>,
+    signposts: StudioSignposts,
     counters: &FrameCounters,
 ) -> Arc<PresentationSignal> {
     let presentation = Arc::new(PresentationSignal::new(
-        event_timing.map(|event| event.received_at),
+        event_timing,
+        display_link_target_seconds,
+        target_presentation_seconds,
+        lifecycle,
+        signposts,
     ));
     install_presented_handler(drawable, &presentation, counters);
     presentation
@@ -1566,6 +1688,8 @@ pub(crate) struct SurfaceViewIvars {
     input_active: Cell<bool>,
     discarding_marked_text: Cell<bool>,
     rejected_ime_callbacks: Cell<u64>,
+    #[cfg(alpine_native_validation)]
+    validation_run_timeout: RefCell<Option<ValidationRunTimeout>>,
     pub(crate) accessibility: RefCell<NativeAccessibilityAdapter>,
 }
 
@@ -1768,7 +1892,20 @@ define_class!(
 
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
-            self.emit(keyboard_event(event, KeyState::Down));
+            #[cfg(alpine_native_validation)]
+            if event.keyCode() == VALIDATION_ARM_KEY_CODE {
+                validation_phase("run-timeout-arm-key-dispatched");
+                if let Some(timeout) = self.ivars().validation_run_timeout.borrow_mut().take() {
+                    schedule_validation_run_timeout(timeout);
+                }
+                return;
+            }
+            let input = keyboard_event(event, KeyState::Down);
+            let quit = application_quit_shortcut(&input);
+            self.emit(input);
+            if quit {
+                return;
+            }
             self.interpretKeyEvents(&NSArray::from_retained_slice(&[event.retain()]));
         }
 
@@ -1864,6 +2001,8 @@ impl SurfaceView {
             input_active: Cell::new(true),
             discarding_marked_text: Cell::new(false),
             rejected_ime_callbacks: Cell::new(0),
+            #[cfg(alpine_native_validation)]
+            validation_run_timeout: RefCell::new(None),
             accessibility: RefCell::new(NativeAccessibilityAdapter::new()),
         });
         // SAFETY: `frame` is finite and positive because the surface descriptor
@@ -1926,15 +2065,34 @@ impl SurfaceView {
     }
 
     fn emit(&self, event: NativeInputEvent) {
-        let Ok(mut installed) = self.ivars().input_handler.try_borrow_mut() else {
-            self.ivars().input_dispatch_failed.set(true);
+        let quit = application_quit_shortcut(&event);
+        if quit && !self.ivars().input_active.get() {
             return;
-        };
-        let Some(handler) = installed.as_mut() else {
-            self.ivars().input_dispatch_failed.set(true);
-            return;
-        };
-        handler(event);
+        }
+
+        {
+            let Ok(mut installed) = self.ivars().input_handler.try_borrow_mut() else {
+                self.ivars().input_dispatch_failed.set(true);
+                return;
+            };
+            let Some(handler) = installed.as_mut() else {
+                self.ivars().input_dispatch_failed.set(true);
+                return;
+            };
+            if !quit {
+                handler(event);
+            }
+        }
+
+        if quit {
+            let Some(main_thread) = MainThreadMarker::new() else {
+                self.ivars().input_dispatch_failed.set(true);
+                return;
+            };
+            // Closing can synchronously emit IME cancellation through this handler.
+            // Release its borrow before entering the existing close authority.
+            NSApplication::sharedApplication(main_thread).terminate(None);
+        }
     }
 
     fn emit_ime(&self, event: ImeEvent) {
@@ -3066,8 +3224,8 @@ impl DisplayLinkDelegate {
     }
 
     fn dispatch_native_input_event(&self, event: NativeInputEvent) {
-        let received_at = Instant::now();
-        if let Err(error) = self.try_dispatch_native_input_event(event, received_at) {
+        let receipt = EventReceipt::now();
+        if let Err(error) = self.try_dispatch_native_input_event(event, receipt) {
             self.record_dispatch_error(error);
         }
     }
@@ -3075,14 +3233,8 @@ impl DisplayLinkDelegate {
     fn try_dispatch_native_input_event(
         &self,
         event: NativeInputEvent,
-        received_at: Instant,
+        receipt: EventReceipt,
     ) -> Result<(), SurfaceError> {
-        if application_quit_shortcut(&event) {
-            let main_thread = MainThreadMarker::new()
-                .ok_or_else(|| SurfaceError::invariant(SurfaceOperation::Application))?;
-            NSApplication::sharedApplication(main_thread).terminate(None);
-            return Ok(());
-        }
         let clipboard_operation = clipboard_shortcut(&event);
         let timestamp = self.next_event_timestamp();
         let event = match event {
@@ -3132,7 +3284,7 @@ impl DisplayLinkDelegate {
                 event,
             },
         };
-        let _close = self.dispatch_surface_event_at(event, received_at)?;
+        let _close = self.dispatch_surface_event_at(event, receipt)?;
         if clipboard_operation == Some(ClipboardOperation::Paste) {
             let event = ClipboardEvent::PasteCompleted(self.read_clipboard());
             let _close = self.dispatch_surface_event_inner(
@@ -3141,7 +3293,7 @@ impl DisplayLinkDelegate {
                     event,
                 },
                 false,
-                Instant::now(),
+                EventReceipt::now(),
             )?;
         }
         Ok(())
@@ -3173,15 +3325,15 @@ impl DisplayLinkDelegate {
         &self,
         event: SurfaceEvent,
     ) -> Result<CloseDisposition, SurfaceError> {
-        self.dispatch_surface_event_at(event, Instant::now())
+        self.dispatch_surface_event_at(event, EventReceipt::now())
     }
 
     fn dispatch_surface_event_at(
         &self,
         event: SurfaceEvent,
-        received_at: Instant,
+        receipt: EventReceipt,
     ) -> Result<CloseDisposition, SurfaceError> {
-        self.dispatch_surface_event_inner(event, true, received_at)
+        self.dispatch_surface_event_inner(event, true, receipt)
     }
 
     fn submit_surface_frame(
@@ -3211,7 +3363,7 @@ impl DisplayLinkDelegate {
         &self,
         event: SurfaceEvent,
         clipboard_write_allowed: bool,
-        received_at: Instant,
+        receipt: EventReceipt,
     ) -> Result<CloseDisposition, SurfaceError> {
         let event_timestamp = event.timestamp();
         let close_requested = matches!(event, SurfaceEvent::CloseRequested { .. });
@@ -3242,7 +3394,8 @@ impl DisplayLinkDelegate {
             let (scene, clear) = frame.into_parts();
             let event_timing = EventFrameTiming {
                 timestamp: event_timestamp,
-                received_at,
+                received_at: receipt.instant,
+                received_media_time_seconds: receipt.media_time_seconds,
                 handler_finished_at,
                 admitted_at: Instant::now(),
             };
@@ -3281,7 +3434,7 @@ impl DisplayLinkDelegate {
                     event,
                 },
                 false,
-                Instant::now(),
+                EventReceipt::now(),
             )?;
         }
         if close != CloseDisposition::Allow {
@@ -4234,6 +4387,8 @@ impl NativeSurface {
         }
 
         self.application.run();
+        #[cfg(alpine_native_validation)]
+        validation_phase("application-run-returned");
 
         if matches!(
             surface_lifecycle(self.lifecycle.load(Ordering::Acquire)),
@@ -4637,7 +4792,7 @@ impl NativeSurface {
                 modifiers: Modifiers::from_bits(Modifiers::COMMAND),
                 repeat: false,
             },
-            Instant::now(),
+            EventReceipt::now(),
         );
         self.delegate.clear_event_handler();
         result
@@ -4721,19 +4876,56 @@ impl NativeSurface {
     where
         F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
+        let characters = NSString::from_str("q");
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown,
+            NSPoint::new(4.0, 4.0),
+            NSEventModifierFlags::Command,
+            0.0,
+            self.window.windowNumber(),
+            None,
+            &characters,
+            &characters,
+            false,
+            12,
+        )
+        .ok_or_else(|| SurfaceError::invariant(SurfaceOperation::Input))?;
         self.delegate.install_event_handler(handler)?;
-        let result = self.delegate.try_dispatch_native_input_event(
-            NativeInputEvent::Keyboard {
-                state: KeyState::Down,
-                physical_key: 12,
-                logical_key: "q".into(),
-                modifiers: Modifiers::from_bits(Modifiers::COMMAND),
-                repeat: false,
-            },
-            Instant::now(),
-        );
+        let delegate = self.delegate.clone();
+        if !self.view.install_input_handler(Box::new(move |event| {
+            delegate.dispatch_native_input_event(event);
+        })) {
+            self.delegate.clear_event_handler();
+            return Err(SurfaceError::invariant(SurfaceOperation::RunLoop));
+        }
+        if let Err(error) = self.activate_input_responder() {
+            let cleanup = self.view.detach_input_handler_for_validation();
+            self.delegate.clear_event_handler();
+            drop(cleanup?);
+            return Err(error);
+        }
+        if self.view.input_focus_state().1 && !NSTextInputClient::hasMarkedText(&*self.view) {
+            let marked = NSString::from_str("pending");
+            // SAFETY: NSTextInputClient accepts NSString or NSAttributedString.
+            // This retained NSString remains alive for the synchronous call.
+            unsafe {
+                NSTextInputClient::setMarkedText_selectedRange_replacementRange(
+                    &*self.view,
+                    &marked,
+                    NSRange::new(1, 0),
+                    NSRange::new(0, 0),
+                );
+            }
+        }
+        self.view.keyDown(&event);
+        let result = self.take_error().and_then(|error| match error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        });
+        let cleanup = self.view.detach_input_handler_for_validation();
         self.delegate.clear_event_handler();
-        result?;
+        drop(cleanup?);
+        resolve_input_dispatch(result, self.view.take_input_dispatch_failure())?;
         Ok(self.window_close_started.load(Ordering::Acquire))
     }
 
@@ -4844,28 +5036,20 @@ impl NativeSurface {
         expired: Arc<std::sync::atomic::AtomicBool>,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
     ) {
-        let timer_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
-            RcBlock::new(move |timer: NonNull<NSTimer>| {
-                // SAFETY: Foundation supplies a valid borrowed timer for the
-                // complete callback, and the reference does not escape.
-                unsafe { timer.as_ref() }.invalidate();
-                if !cancelled.swap(true, Ordering::AcqRel) {
-                    expired.store(true, Ordering::Release);
-                    if let Some(main_thread) = MainThreadMarker::new() {
-                        stop_validation_event_loop(&NSApplication::sharedApplication(main_thread));
-                    }
-                }
-            });
-        // SAFETY: The block is scheduled on the process main run loop,
-        // Foundation copies it for the timer lifetime, and the callback
-        // receives a valid NSTimer. The scheduled timer retains itself.
-        let _timer = unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_repeats_block(
-                timeout.as_secs_f64(),
-                false,
-                &timer_block,
-            )
-        };
+        let validation_window_number = self.window.windowNumber();
+        self.view
+            .ivars()
+            .validation_run_timeout
+            .replace(Some(ValidationRunTimeout {
+                timeout,
+                expired,
+                cancelled,
+            }));
+        post_validation_key_event(
+            &self.application,
+            validation_window_number,
+            VALIDATION_ARM_KEY_CODE,
+        );
     }
 
     #[cfg(alpine_native_validation)]
@@ -5265,6 +5449,74 @@ fn stop_validation_event_loop(application: &NSApplication) {
         0,
     ) {
         application.postEvent_atStart(&event, true);
+    }
+}
+
+#[cfg(alpine_native_validation)]
+fn schedule_validation_run_timeout(timeout: ValidationRunTimeout) {
+    let timer_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
+        RcBlock::new(move |timer: NonNull<NSTimer>| {
+            validation_phase("run-timeout-fired");
+            // SAFETY: Foundation supplies a valid borrowed timer for the
+            // complete callback, and the reference does not escape.
+            unsafe { timer.as_ref() }.invalidate();
+            if !timeout.cancelled.swap(true, Ordering::AcqRel) {
+                timeout.expired.store(true, Ordering::Release);
+                if let Some(main_thread) = MainThreadMarker::new() {
+                    // The timer already runs on AppKit's main run loop. Stop it
+                    // directly so a production close that removed the target
+                    // window cannot also remove the validation watchdog's exit
+                    // path.
+                    stop_validation_event_loop(&NSApplication::sharedApplication(main_thread));
+                } else {
+                    validation_phase("run-timeout-off-main-thread");
+                }
+            }
+        });
+    // SAFETY: The arm key enters this function on the process main thread.
+    // Foundation copies the block, and the run loop retains the timer.
+    let timer = unsafe {
+        NSTimer::timerWithTimeInterval_repeats_block(
+            timeout.timeout.as_secs_f64(),
+            false,
+            &timer_block,
+        )
+    };
+    // SAFETY: The timer and common-mode identifier are valid for this
+    // main-thread registration call.
+    unsafe {
+        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+    }
+    validation_phase("run-timeout-armed-common-modes");
+}
+
+#[cfg(alpine_native_validation)]
+fn post_validation_key_event(application: &NSApplication, window_number: isize, key_code: u16) {
+    let characters = NSString::from_str("");
+    if let Some(event) = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+        NSEventType::KeyDown,
+        NSPoint::new(0.0, 0.0),
+        NSEventModifierFlags::empty(),
+        0.0,
+        window_number,
+        None,
+        &characters,
+        &characters,
+        false,
+        key_code,
+    ) {
+        application.postEvent_atStart(&event, true);
+        validation_phase("run-timeout-event-posted");
+    } else {
+        validation_phase("run-timeout-event-creation-failed");
+    }
+}
+
+#[cfg(alpine_native_validation)]
+fn validation_phase(phase: &str) {
+    VALIDATION_PHASE_COUNT.fetch_add(1, Ordering::Relaxed);
+    if std::env::var_os("ALPINE_NATIVE_LIFECYCLE_PHASE_TRACE").is_some() {
+        eprintln!("alpine-native-lifecycle-phase={phase}");
     }
 }
 
@@ -5696,6 +5948,22 @@ fn expected_owner_counts(owner_count: usize) -> [u64; NATIVE_OWNER_KINDS] {
 mod tests {
     use super::*;
 
+    #[cfg(alpine_native_validation)]
+    #[test]
+    fn validation_phase_records_each_diagnostic_transition() {
+        let before = VALIDATION_PHASE_COUNT.load(Ordering::Relaxed);
+
+        validation_phase("mutation-control");
+
+        assert_eq!(VALIDATION_PHASE_COUNT.load(Ordering::Relaxed), before + 1);
+    }
+
+    #[cfg(alpine_native_validation)]
+    #[test]
+    fn validation_arm_key_preserves_its_reserved_identity() {
+        assert_eq!(VALIDATION_ARM_KEY_CODE, u16::MAX - 1);
+    }
+
     #[test]
     fn accessibility_frame_admission_requires_both_action_authorities() {
         assert!(DisplayLinkDelegate::accessibility_frame_admitted(
@@ -5811,14 +6079,20 @@ mod tests {
     }
 
     #[test]
-    #[cfg(alpine_native_validation)]
     fn presentation_observation_requires_a_real_or_injected_signal() -> Result<(), &'static str> {
-        let signal = Arc::new(PresentationSignal::new(None));
+        let lifecycle = Arc::new(AtomicU8::new(SURFACE_LIVE));
+        let signal = Arc::new(PresentationSignal::new(
+            None,
+            0.0,
+            0.0,
+            Arc::clone(&lifecycle),
+            StudioSignposts::new(),
+        ));
         let observation = PresentationObservation::new(Arc::clone(&signal));
         assert!(!observation.observed());
         assert_eq!(observation.event_to_presented_handler_ns(), None);
 
-        signal.publish(17);
+        assert_eq!(signal.publish(17, 0.0), None);
         assert!(observation.observed());
         assert_eq!(observation.presented_time_bits(), 17);
         assert_eq!(observation.event_to_presented_handler_ns(), None);
@@ -5826,39 +6100,83 @@ mod tests {
         let received_at = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_secs(1))
             .ok_or("timed presentation origin")?;
-        let timed_signal = Arc::new(PresentationSignal::new(Some(received_at)));
+        let event = EventFrameTiming {
+            timestamp: EventTimestamp::new(31),
+            received_at,
+            received_media_time_seconds: 101.0,
+            handler_finished_at: received_at,
+            admitted_at: received_at,
+        };
+        let timed_signal = Arc::new(PresentationSignal::new(
+            Some(event),
+            101.005,
+            101.010,
+            Arc::clone(&lifecycle),
+            StudioSignposts::for_test(false, true),
+        ));
         let timed_observation = PresentationObservation::new(Arc::clone(&timed_signal));
         assert_eq!(timed_observation.event_to_presented_handler_ns(), None);
-        timed_signal.publish(19);
+        assert_eq!(
+            timed_signal.publish(101.012_f64.to_bits(), 101.014),
+            Some(31)
+        );
         assert!(timed_observation.observed());
-        assert_eq!(timed_observation.presented_time_bits(), 19);
+        assert_eq!(
+            timed_observation.presented_time_bits(),
+            101.012_f64.to_bits()
+        );
         assert!(
             timed_observation
                 .event_to_presented_handler_ns()
                 .ok_or("timed presentation latency")?
                 >= 1_000_000_000
         );
-
-        let signal = Arc::new(PresentationSignal::new(Some(received_at)));
-        let mut injected = PresentationObservation::new(Arc::clone(&signal));
-        injected.inject(23);
-        let injected_latency = injected
-            .event_to_presented_handler_ns()
-            .ok_or("injected presentation latency")?;
-        assert!(injected_latency >= 1_000_000_000);
-        signal.publish(29);
-        assert!(injected.observed());
-        assert_eq!(injected.presented_time_bits(), 23);
+        assert_eq!(timed_signal.publish(101.020_f64.to_bits(), 101.021), None);
         assert_eq!(
-            injected.event_to_presented_handler_ns(),
-            Some(injected_latency)
+            timed_observation.presented_time_bits(),
+            101.012_f64.to_bits()
         );
-        assert!(
-            signal
+
+        let stale_signal = Arc::new(PresentationSignal::new(
+            Some(event),
+            101.005,
+            101.010,
+            Arc::clone(&lifecycle),
+            StudioSignposts::for_test(false, true),
+        ));
+        lifecycle.store(SURFACE_CLOSING, Ordering::Release);
+        assert_eq!(stale_signal.publish(101.012_f64.to_bits(), 101.014), None);
+        assert!(stale_signal.observed.load(Ordering::Acquire));
+
+        #[cfg(alpine_native_validation)]
+        {
+            let signal = Arc::new(PresentationSignal::new(
+                Some(event),
+                101.005,
+                101.010,
+                Arc::new(AtomicU8::new(SURFACE_LIVE)),
+                StudioSignposts::for_test(false, true),
+            ));
+            let mut injected = PresentationObservation::new(Arc::clone(&signal));
+            injected.inject(23);
+            let injected_latency = injected
                 .event_to_presented_handler_ns()
-                .ok_or("late presentation latency")?
-                >= injected_latency
-        );
+                .ok_or("injected presentation latency")?;
+            assert!(injected_latency >= 1_000_000_000);
+            assert_eq!(signal.publish(101.012_f64.to_bits(), 101.014), Some(31));
+            assert!(injected.observed());
+            assert_eq!(injected.presented_time_bits(), 23);
+            assert_eq!(
+                injected.event_to_presented_handler_ns(),
+                Some(injected_latency)
+            );
+            assert!(
+                signal
+                    .event_to_presented_handler_ns()
+                    .ok_or("late presentation latency")?
+                    >= injected_latency
+            );
+        }
         Ok(())
     }
 
@@ -5946,8 +6264,14 @@ mod tests {
     #[test]
     #[cfg(alpine_native_validation)]
     fn presentation_observation_suppression_overrides_every_source() {
-        let signal = Arc::new(PresentationSignal::new(None));
-        signal.publish(1.25_f64.to_bits());
+        let signal = Arc::new(PresentationSignal::new(
+            None,
+            1.0,
+            1.25,
+            Arc::new(AtomicU8::new(SURFACE_LIVE)),
+            StudioSignposts::new(),
+        ));
+        assert_eq!(signal.publish(1.25_f64.to_bits(), 1.25), None);
         let mut observation = PresentationObservation::new(signal);
         observation.inject(2.5_f64.to_bits());
 

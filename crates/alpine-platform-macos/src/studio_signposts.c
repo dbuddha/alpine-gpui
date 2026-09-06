@@ -162,6 +162,18 @@ void alpine_studio_signpost_emit(
         case 18:
             ALPINE_STUDIO_ROUTE("Native Terminal Record Latency");
             break;
+        case 19:
+            ALPINE_STUDIO_ROUTE("Native Display Link Target Latency");
+            break;
+        case 20:
+            ALPINE_STUDIO_ROUTE("Native Target Presentation Latency");
+            break;
+        case 21:
+            ALPINE_STUDIO_ROUTE("Native Actual Presentation Latency");
+            break;
+        case 22:
+            ALPINE_STUDIO_ROUTE("Native Presentation Callback Lag");
+            break;
         default:
             break;
     }

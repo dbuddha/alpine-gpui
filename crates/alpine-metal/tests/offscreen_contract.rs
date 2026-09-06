@@ -91,6 +91,7 @@ fn public_backend_enforces_apple_silicon_baseline() -> Result<(), Box<dyn Error>
             let descriptor = OffscreenDescriptor::new(1, 1, 1.0, color(0.0, 0.0, 0.0, 0.0)?)?;
             let expected = ValidatedFrame::new(&scene, descriptor)?.reference_image()?;
             let completed = backend.render_offscreen(&scene, descriptor)?;
+            assert!(completed.timings().is_none());
             assert_eq!(completed.report().submission, 1);
             assert_eq!(completed.report().draw_calls, 1);
             assert_eq!(completed.report().omitted_primitives, 0);
@@ -104,9 +105,16 @@ fn public_backend_enforces_apple_silicon_baseline() -> Result<(), Box<dyn Error>
                 assert!(actual.abs_diff(*expected) <= 1);
             }
 
+            let profiled = backend.render_offscreen_profiled(&scene, descriptor)?;
+            let timings = profiled.timings().ok_or("profiled timing evidence")?;
+            assert!(timings.total_ns() > 0);
+            assert!(!timings.timing_saturated());
+            assert_eq!(profiled.report().submission, 2);
+            assert_eq!(profiled.image(), completed.image());
+
             let mut target = OffscreenTarget::new(descriptor);
             let report = backend.render(&scene, &mut target)?;
-            assert_eq!(report.submission, 2);
+            assert_eq!(report.submission, 3);
             assert!(target.image().is_some());
             assert_eq!(target.descriptor(), descriptor);
 
@@ -118,9 +126,9 @@ fn public_backend_enforces_apple_silicon_baseline() -> Result<(), Box<dyn Error>
                 std::mem::size_of::<alpine_metal::LoweredPaint>()
             );
             let accounting = backend.accounting();
-            assert_eq!(accounting.completed_frames(), 2);
+            assert_eq!(accounting.completed_frames(), 3);
             assert_eq!(accounting.cancelled_frames(), 1);
-            assert_eq!(accounting.submitted_frames(), 2);
+            assert_eq!(accounting.submitted_frames(), 3);
             assert_eq!(accounting.current_retained_bytes(), 0);
             assert!(accounting.invariants_hold());
 

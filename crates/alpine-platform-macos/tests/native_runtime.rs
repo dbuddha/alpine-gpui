@@ -343,17 +343,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(quit_evidence.release_order_violations(), 0);
 
     let shortcut_surface = native_validation::new_surface(&descriptor)?;
+    shortcut_surface.show()?;
     let shortcut_observer = shortcut_surface.observer();
     let shortcut_events = Arc::new(Mutex::new(Vec::new()));
+    native_validation::set_input_focus_state(
+        &shortcut_surface,
+        alpine_platform_macos::InputEpoch::INITIAL,
+        false,
+    );
+    let unfocused_shortcut_received = Arc::clone(&shortcut_events);
+    assert!(
+        !native_validation::replay_application_quit_shortcut_with_handler(
+            &shortcut_surface,
+            move |event| {
+                let close_requested = matches!(&event, SurfaceEvent::CloseRequested { .. });
+                if let Ok(mut received) = unfocused_shortcut_received.lock() {
+                    received.push(event);
+                }
+                if close_requested {
+                    SurfaceResponse::new(None, None, CloseDisposition::Allow)
+                } else {
+                    SurfaceResponse::default()
+                }
+            },
+        )?
+    );
+    assert!(
+        shortcut_events
+            .lock()
+            .map_err(|_| "unfocused shortcut receiver poisoned")?
+            .is_empty()
+    );
+    assert_eq!(shortcut_observer.lifecycle(), SurfaceLifecycle::Live);
+    native_validation::set_input_focus_state(
+        &shortcut_surface,
+        alpine_platform_macos::InputEpoch::INITIAL,
+        true,
+    );
     let cancelled_shortcut_received = Arc::clone(&shortcut_events);
     assert!(
         !native_validation::replay_application_quit_shortcut_with_handler(
             &shortcut_surface,
             move |event| {
+                let close_requested = matches!(&event, SurfaceEvent::CloseRequested { .. });
                 if let Ok(mut received) = cancelled_shortcut_received.lock() {
                     received.push(event);
                 }
-                SurfaceResponse::new(None, None, CloseDisposition::Cancel)
+                if close_requested {
+                    SurfaceResponse::new(None, None, CloseDisposition::Cancel)
+                } else {
+                    SurfaceResponse::default()
+                }
             },
         )?
     );
@@ -362,7 +402,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .lock()
             .map_err(|_| "cancelled shortcut receiver poisoned")?
             .as_slice(),
-        [SurfaceEvent::CloseRequested { .. }]
+        [
+            SurfaceEvent::Ime {
+                event: alpine_platform_macos::ImeEvent::Started,
+                ..
+            },
+            SurfaceEvent::Ime {
+                event: alpine_platform_macos::ImeEvent::Updated {
+                    text,
+                    selected_start_utf16: 1,
+                    selected_length_utf16: 0,
+                },
+                ..
+            },
+            SurfaceEvent::CloseRequested { .. }
+        ] if text.as_ref() == "pending"
     ));
     assert_eq!(shortcut_observer.lifecycle(), SurfaceLifecycle::Live);
     shortcut_events
@@ -374,10 +428,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         native_validation::replay_application_quit_shortcut_with_handler(
             &shortcut_surface,
             move |event| {
+                let close_requested = matches!(&event, SurfaceEvent::CloseRequested { .. });
                 if let Ok(mut received) = admitted_shortcut_received.lock() {
                     received.push(event);
                 }
-                SurfaceResponse::new(None, None, CloseDisposition::Allow)
+                if close_requested {
+                    SurfaceResponse::new(None, None, CloseDisposition::Allow)
+                } else {
+                    SurfaceResponse::default()
+                }
             },
         )?
     );
@@ -388,6 +447,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_slice(),
         [
             SurfaceEvent::CloseRequested { .. },
+            SurfaceEvent::Ime {
+                event: alpine_platform_macos::ImeEvent::Cancelled,
+                ..
+            },
             SurfaceEvent::Focus { focused: false, .. }
         ]
     ));
