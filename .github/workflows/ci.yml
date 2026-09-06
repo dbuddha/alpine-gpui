@@ -233,9 +233,123 @@ jobs:
           ALPINE_HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
         run: scripts/check-coverage.sh target/coverage-base.json target/coverage-head.json target/lcov-base.info target/lcov.info ${{ needs.classify.outputs.base_sha }}
       - name: Enforce assurance-tool coverage floor
+        id: assurance_floor
+        shell: bash
+        env:
+          ALPINE_HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
+          ALPINE_BASE_SHA: ${{ needs.classify.outputs.base_sha }}
         run: |
-          cargo llvm-cov clean --workspace
-          cargo llvm-cov -p alpine-assurance --locked --fail-under-lines 80 --fail-under-functions 80
+          set -euo pipefail
+          evidence_dir=$(mktemp -d "$RUNNER_TEMP/alpine-assurance-coverage.XXXXXX")
+          printf 'evidence_dir=%s\n' "$evidence_dir" >> "$GITHUB_OUTPUT"
+          touch "$evidence_dir/clean.log" "$evidence_dir/gate.log"
+          printf '%s\n' '{"phase":"setup","clean_exit":null,"gate_exit":null,"log_exit":null}' > "$evidence_dir/gate-status.json"
+          checkout_sha=$(git rev-parse HEAD)
+          jq -n --arg checkout "$checkout_sha" --arg event "$GITHUB_SHA" \
+            --arg head "$ALPINE_HEAD_SHA" --arg base "$ALPINE_BASE_SHA" \
+            --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg job "$GITHUB_JOB" --arg os "$RUNNER_OS" --arg arch "$RUNNER_ARCH" \
+            '{checkout_sha:$checkout,event_sha:$event,head_sha:$head,base_sha:$base,
+              run_id:$run,run_attempt:$attempt,job:$job,runner_os:$os,runner_arch:$arch,
+              package:"alpine-assurance",lines_floor:80,functions_floor:80}' > "$evidence_dir/identity.json"
+          for sha in "$checkout_sha" "$GITHUB_SHA" "$ALPINE_HEAD_SHA" "$ALPINE_BASE_SHA"; do
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { printf 'Invalid coverage source identity\n' >&2; exit 1; }
+          done
+          [[ "$checkout_sha" == "$GITHUB_SHA" ]] || { printf 'Coverage checkout differs from event SHA\n' >&2; exit 1; }
+          cargo llvm-cov --version > "$evidence_dir/toolchain.txt"
+          rustc -Vv >> "$evidence_dir/toolchain.txt"
+          gate=(cargo llvm-cov -p alpine-assurance --locked --fail-under-lines 80 --fail-under-functions 80)
+          printf '%q ' "${gate[@]}" > "$evidence_dir/gate-command.txt"
+          printf '\n' >> "$evidence_dir/gate-command.txt"
+          # Capture both statuses before another command overwrites PIPESTATUS.
+          set +e
+          cargo llvm-cov clean --workspace 2>&1 | tee "$evidence_dir/clean.log"
+          clean_status=("${PIPESTATUS[@]}")
+          set -e
+          jq -n --argjson clean "${clean_status[0]}" --argjson log "${clean_status[1]}" \
+            '{phase:"clean",clean_exit:$clean,gate_exit:null,log_exit:$log}' > "$evidence_dir/gate-status.json"
+          if (( clean_status[0] != 0 )); then exit "${clean_status[0]}"; fi
+          if (( clean_status[1] != 0 )); then exit "${clean_status[1]}"; fi
+          printf 'measurement_started=true\n' >> "$GITHUB_OUTPUT"
+          set +e
+          "${gate[@]}" 2>&1 | tee "$evidence_dir/gate.log"
+          gate_status=("${PIPESTATUS[@]}")
+          set -e
+          jq -n --argjson gate "${gate_status[0]}" --argjson log "${gate_status[1]}" \
+            '{phase:"gate-finished",clean_exit:0,gate_exit:$gate,log_exit:$log}' > "$evidence_dir/gate-status.json"
+          if (( gate_status[0] != 0 )); then exit "${gate_status[0]}"; fi
+          exit "${gate_status[1]}"
+      - name: Export detailed assurance coverage
+        id: assurance_export
+        if: always() && steps.assurance_floor.outputs.evidence_dir != ''
+        shell: bash
+        env:
+          EVIDENCE_DIR: ${{ steps.assurance_floor.outputs.evidence_dir }}
+          MEASUREMENT_STARTED: ${{ steps.assurance_floor.outputs.measurement_started }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' '{"available":false,"reason":"export-not-completed"}' > "$EVIDENCE_DIR/export-status.json"
+          if [[ "$MEASUREMENT_STARTED" != true ]]; then
+            printf 'No assurance measurement started after successful cleanup; refusing stale profiles.\n' > "$EVIDENCE_DIR/export.log"
+            exit 1
+          fi
+          report=(cargo llvm-cov report -p alpine-assurance --locked --json --output-path "$EVIDENCE_DIR/coverage.json.partial")
+          printf '%q ' "${report[@]}" > "$EVIDENCE_DIR/export-command.txt"
+          printf '\n' >> "$EVIDENCE_DIR/export-command.txt"
+          set +e
+          "${report[@]}" 2>&1 | tee "$EVIDENCE_DIR/export.log"
+          report_status=("${PIPESTATUS[@]}")
+          set -e
+          result=${report_status[0]}
+          if (( result == 0 )); then result=${report_status[1]}; fi
+          validation_exit=null
+          available=false
+          if (( result == 0 )); then
+            if jq -e '
+              .type == "llvm.coverage.json.export"
+              and any(.data[].files[]?; .filename | endswith("/tools/alpine-assurance/src/qualification.rs"))
+              and any(.data[].functions[]?;
+                (.name | type) == "string" and (.count | type) == "number"
+                and (.regions | type) == "array" and (.regions | length) > 0
+                and any(.filenames[]?; endswith("/tools/alpine-assurance/src/qualification.rs")))
+              ' "$EVIDENCE_DIR/coverage.json.partial" >> "$EVIDENCE_DIR/export.log" 2>&1; then
+              validation_exit=0
+              mv "$EVIDENCE_DIR/coverage.json.partial" "$EVIDENCE_DIR/coverage.json"
+              available=true
+            else
+              validation_exit=$?
+              result=$validation_exit
+            fi
+          fi
+          jq -n --argjson report "${report_status[0]}" --argjson log "${report_status[1]}" \
+            --argjson validation "$validation_exit" --argjson available "$available" \
+            '{available:$available,report_exit:$report,log_exit:$log,validation_exit:$validation,
+              qualification_claim:false}' > "$EVIDENCE_DIR/export-status.json"
+          exit "$result"
+      - name: Hash assurance coverage evidence
+        if: always() && steps.assurance_floor.outputs.evidence_dir != ''
+        shell: bash
+        env:
+          EVIDENCE_DIR: ${{ steps.assurance_floor.outputs.evidence_dir }}
+          GATE_OUTCOME: ${{ steps.assurance_floor.outcome }}
+          EXPORT_OUTCOME: ${{ steps.assurance_export.outcome }}
+          MEASUREMENT_STARTED: ${{ steps.assurance_floor.outputs.measurement_started }}
+        run: |
+          set -euo pipefail
+          jq -n --arg gate "$GATE_OUTCOME" --arg export "$EXPORT_OUTCOME" --arg started "$MEASUREMENT_STARTED" \
+            '{gate_outcome:$gate,export_outcome:$export,measurement_started:($started == "true")}' > "$EVIDENCE_DIR/status.json"
+          cd "$EVIDENCE_DIR"
+          for path in *; do
+            if [[ -f "$path" && "$path" != SHA256SUMS ]]; then sha256sum "$path"; fi
+          done > SHA256SUMS
+      - name: Upload assurance coverage evidence
+        if: always() && steps.assurance_floor.outputs.evidence_dir != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: assurance-coverage-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.assurance_floor.outputs.evidence_dir }}
+          retention-days: 7
+          if-no-files-found: error
       - name: Upload coverage evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
