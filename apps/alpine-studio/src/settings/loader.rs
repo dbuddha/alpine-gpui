@@ -425,19 +425,30 @@ impl SettingsReload {
     pub(crate) fn reject_submission(
         &mut self,
         generation: u64,
-        announce: bool,
+        _announce: bool,
     ) -> Result<(), SettingsReloadError> {
         if !self.in_flight || generation != self.submitted_generation {
             self.report.stale_results = self.report.stale_results.saturating_add(1);
             return Ok(());
+        }
+        // Release this submission without rearming it or replacing newer pending work.
+        self.in_flight = false;
+        self.report.in_flight = false;
+        self.report.failures = self.report.failures.saturating_add(1);
+        Err(SettingsReloadError::SubmissionFailed)
+    }
+
+    pub(crate) fn defer_submission(&mut self, generation: u64, announce: bool) -> bool {
+        if !self.in_flight || generation != self.submitted_generation {
+            self.report.stale_results = self.report.stale_results.saturating_add(1);
+            return false;
         }
         self.in_flight = false;
         self.pending = true;
         self.pending_announcement |= announce;
         self.report.in_flight = false;
         self.report.pending = true;
-        self.report.failures = self.report.failures.saturating_add(1);
-        Err(SettingsReloadError::SubmissionFailed)
+        true
     }
 
     pub(crate) fn admit(
@@ -1967,7 +1978,12 @@ mod tests {
             reload.reject_submission(request.generation(), request.announce()),
             Err(SettingsReloadError::SubmissionFailed)
         );
+        assert!(!reload.report().in_flight);
+        assert!(!reload.report().pending);
+        assert!(reload.take_request().is_none());
+        reload.request(true)?;
         let retry = reload.take_request().ok_or("missing rejected retry")?;
+        assert!(retry.generation() > request.generation());
         assert!(retry.announce());
         assert!(reload.report().path_bytes <= MAX_SETTINGS_PATH_BYTES * 2);
         assert_eq!(reload.report().failures, 2);
