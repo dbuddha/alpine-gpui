@@ -405,9 +405,11 @@ struct ProfileTimingRecord {
     saturated: bool,
 }
 
-impl From<alpine_metal::OffscreenStageTimings> for ProfileTimingRecord {
-    fn from(timing: alpine_metal::OffscreenStageTimings) -> Self {
-        Self {
+impl TryFrom<alpine_metal::OffscreenStageTimings> for ProfileTimingRecord {
+    type Error = Vec<String>;
+
+    fn try_from(timing: alpine_metal::OffscreenStageTimings) -> Result<Self, Self::Error> {
+        let record = Self {
             host_ns: [
                 timing.admission_ns(),
                 timing.resource_preparation_ns(),
@@ -424,7 +426,8 @@ impl From<alpine_metal::OffscreenStageTimings> for ProfileTimingRecord {
             ],
             gpu_execution_ns: timing.gpu_execution_ns(),
             saturated: timing.timing_saturated(),
-        }
+        };
+        admit_profile_timing(Some(record))
     }
 }
 
@@ -467,10 +470,14 @@ pub(crate) fn profile_native_scene(
                 .map_err(|error| vec![format!("Direct Metal trace profile failed: {error}")])
         },
         |frame| frame.image().bytes(),
-        |frame| frame.timings().map(ProfileTimingRecord::from),
+        |frame| {
+            frame
+                .timings()
+                .map(ProfileTimingRecord::try_from)
+                .transpose()
+        },
     )?;
-    let csv = render_stage_profile_samples(&samples)?;
-    publish_benchmark_samples(output, csv.as_bytes()).map_err(|error| vec![error])?;
+    publish_stage_profile_samples(output, &samples)?;
     Ok(format!(
         "recorded schema={STAGE_PROFILE_SCHEMA} admission_iterations=1 admission_renderer=ordinary cpu_oracle_equivalence=exact cpu_oracle_format=compact-bgra8 warmup_iterations={} sample_count={} renderer=direct-metal trace={} measurement_stage=renderer-submit-readback caller_endpoint=owned-image-return inner_totals=unchanged observer_perturbed=true atlas_upload_encoding_occurrence=unknown; performance claim=none; output={}",
         warmup_iterations,
@@ -530,6 +537,12 @@ fn admit_profile_timing(
             "renderer stage profile timing exceeded the representable range".to_owned(),
         ]);
     }
+    if timing.host_ns[11] == 0 {
+        return Err(vec![
+            "renderer stage profile whole-submission total is zero; timing evidence is unusable"
+                .to_owned(),
+        ]);
+    }
     Ok(timing)
 }
 
@@ -556,7 +569,7 @@ fn profile_rendered_images<R, Render, Bytes, Timing>(
 where
     Render: FnMut() -> Result<R, Vec<String>>,
     Bytes: for<'a> Fn(&'a R) -> &'a [u8],
-    Timing: Fn(&R) -> Option<ProfileTimingRecord>,
+    Timing: Fn(&R) -> Result<Option<ProfileTimingRecord>, Vec<String>>,
 {
     let admitted_bytes = admit_renderer_image(bytes(&admitted), Some(oracle))?;
     for _ in 0..warmup_iterations {
@@ -566,7 +579,7 @@ where
             bytes(&image),
             "renderer stage profile image changed during warmup",
         )?;
-        admit_profile_timing(timing(&image))?;
+        admit_profile_timing(timing(&image)?)?;
     }
     let capacity = usize::try_from(sample_count)
         .map_err(|_| vec!["renderer stage profile sample count exceeds usize".to_owned()])?;
@@ -581,7 +594,7 @@ where
             bytes(&image),
             "renderer stage profile image changed during measurement",
         )?;
-        samples.push(admit_profile_sample(elapsed, timing(&image))?);
+        samples.push(admit_profile_sample(elapsed, timing(&image)?)?);
     }
     // Retain the admission owner through sampling, then drop it outside caller clocks.
     drop(admitted);
@@ -634,7 +647,7 @@ fn render_stage_profile_samples(samples: &[StageProfileSample]) -> Result<String
     let mut csv = String::with_capacity(capacity);
     csv.push_str(STAGE_PROFILE_HEADER);
     for (index, sample) in samples.iter().enumerate() {
-        let timing = sample.timing;
+        let timing = admit_profile_timing(Some(sample.timing))?;
         let format_error = |_| vec!["cannot format renderer stage profile sample".to_owned()];
         write!(&mut csv, "{index}").map_err(format_error)?;
         for value in &timing.host_ns[..8] {
@@ -656,6 +669,14 @@ fn render_stage_profile_samples(samples: &[StageProfileSample]) -> Result<String
         .map_err(format_error)?;
     }
     Ok(csv)
+}
+
+fn publish_stage_profile_samples(
+    output: &Path,
+    samples: &[StageProfileSample],
+) -> Result<(), Vec<String>> {
+    let csv = render_stage_profile_samples(samples)?;
+    publish_benchmark_samples(output, csv.as_bytes()).map_err(|error| vec![error])
 }
 
 fn validate_benchmark_counts(warmup_iterations: u64, sample_count: u64) -> Result<(), Vec<String>> {
@@ -1096,7 +1117,10 @@ mod benchmark_tests {
 
         let Ok(stage_csv) = render_stage_profile_samples(&[StageProfileSample {
             caller_elapsed_ns: 1,
-            timing: alpine_metal::OffscreenStageTimings::default().into(),
+            timing: ProfileTimingRecord {
+                host_ns: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                ..ProfileTimingRecord::default()
+            },
         }]) else {
             return Err(io::Error::other("stage profile formatting failed").into());
         };
@@ -1157,6 +1181,76 @@ mod benchmark_tests {
     }
 
     #[test]
+    fn scene_cpu_oracle_matches_independent_bgra_and_shared_admission() -> Result<(), Vec<String>> {
+        use std::cell::Cell;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let decoded = decode_scene_file(&root.join("assurance/qualification/v1/scene.toml"))?;
+        let oracle = super::scene_cpu_oracle(&decoded)?;
+        // Opaque blue, half-red at x >= 1, then half-green at x < 2 and y < 1.
+        let upper_row: [u8; 32] = [
+            128, 128, 0, 255, 128, 128, 0, 255, 64, 128, 64, 255, 64, 128, 64, 255, 128, 0, 128,
+            255, 128, 0, 128, 255, 128, 0, 128, 255, 128, 0, 128, 255,
+        ];
+        let lower_row: [u8; 32] = [
+            255, 0, 0, 255, 255, 0, 0, 255, 128, 0, 128, 255, 128, 0, 128, 255, 128, 0, 128, 255,
+            128, 0, 128, 255, 128, 0, 128, 255, 128, 0, 128, 255,
+        ];
+        let expected = [upper_row, upper_row, lower_row, lower_row].concat();
+        assert_eq!(oracle.len(), 128);
+        assert_eq!(oracle, expected);
+        assert_eq!(
+            super::admit_renderer_image(&expected, Some(&oracle))?,
+            expected
+        );
+        assert_eq!(super::admit_renderer_image(&expected, None)?, expected);
+
+        let mut corrupt = expected.clone();
+        corrupt[0] ^= 1;
+        let short = expected[..expected.len() - 1].to_vec();
+        let mut long = expected.clone();
+        long.push(0);
+        for rejected in [corrupt, short, long] {
+            let error =
+                vec!["ordinary renderer admission differs from the exact CPU oracle".to_owned()];
+            assert_eq!(
+                super::admit_renderer_image(&rejected, Some(&oracle)),
+                Err(error.clone())
+            );
+            let calls = Cell::new(0);
+            let ordinary = benchmark_rendered_images(
+                1,
+                1,
+                "independent-cpu-oracle",
+                || {
+                    calls.set(calls.get() + 1);
+                    Ok(rejected.clone())
+                },
+                Vec::as_slice,
+                Some(&oracle),
+            );
+            assert_eq!(ordinary, Err(error.clone()));
+            assert_eq!(calls.get(), 1);
+            calls.set(0);
+            let profile = profile_rendered_images(
+                rejected,
+                &oracle,
+                1,
+                1,
+                || {
+                    calls.set(calls.get() + 1);
+                    Ok(expected.clone())
+                },
+                Vec::as_slice,
+                |_| Ok(Some(ProfileTimingRecord::default())),
+            );
+            assert_eq!(profile, Err(error));
+            assert_eq!(calls.get(), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn ordinary_and_profile_admission_reject_consistent_cpu_disagreement() {
         use std::cell::Cell;
 
@@ -1188,7 +1282,7 @@ mod benchmark_tests {
                 Ok(vec![1_u8])
             },
             Vec::as_slice,
-            |_| Some(ProfileTimingRecord::default()),
+            |_| Ok(Some(ProfileTimingRecord::default())),
         );
         assert!(matches!(
             profile,
@@ -1207,7 +1301,7 @@ mod benchmark_tests {
                 1,
                 || Ok(vec![2_u8]),
                 Vec::as_slice,
-                |_| Some(ProfileTimingRecord::default()),
+                |_| Ok(Some(ProfileTimingRecord::default())),
             );
             let phase = if warmups == 0 {
                 "measurement"
@@ -1221,6 +1315,7 @@ mod benchmark_tests {
             for timing in [
                 None,
                 Some(ProfileTimingRecord {
+                    host_ns: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
                     saturated: true,
                     ..ProfileTimingRecord::default()
                 }),
@@ -1232,7 +1327,7 @@ mod benchmark_tests {
                     1,
                     || Ok(vec![1_u8]),
                     Vec::as_slice,
-                    |_| timing,
+                    |_| Ok(timing),
                 );
                 assert!(matches!(
                     invalid,
@@ -1242,7 +1337,87 @@ mod benchmark_tests {
             }
         }
         for elapsed in [Duration::ZERO, Duration::from_secs(u64::MAX)] {
-            assert!(admit_profile_sample(elapsed, Some(ProfileTimingRecord::default())).is_err());
+            let timing = ProfileTimingRecord {
+                host_ns: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                ..ProfileTimingRecord::default()
+            };
+            assert!(admit_profile_sample(elapsed, Some(timing)).is_err());
+        }
+    }
+
+    #[test]
+    fn profile_whole_submission_admission_is_positive_not_per_stage() -> Result<(), Vec<String>> {
+        let diagnostic = vec![
+            "renderer stage profile whole-submission total is zero; timing evidence is unusable"
+                .to_owned(),
+        ];
+        assert_eq!(
+            ProfileTimingRecord::try_from(alpine_metal::OffscreenStageTimings::default()),
+            Err(diagnostic.clone())
+        );
+        assert_eq!(
+            super::admit_profile_timing(Some(ProfileTimingRecord::default())),
+            Err(diagnostic.clone())
+        );
+        let mut zero_whole = ProfileTimingRecord {
+            host_ns: [7; 12],
+            gpu_execution_ns: Some(0),
+            saturated: false,
+        };
+        zero_whole.host_ns[11] = 0;
+        assert_eq!(
+            super::admit_profile_timing(Some(zero_whole)),
+            Err(diagnostic.clone())
+        );
+        assert_eq!(
+            admit_profile_sample(Duration::from_nanos(1), Some(zero_whole)),
+            Err(diagnostic)
+        );
+        for gpu_execution_ns in [None, Some(0), Some(23)] {
+            let timing = ProfileTimingRecord {
+                host_ns: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                gpu_execution_ns,
+                saturated: false,
+            };
+            assert_eq!(super::admit_profile_timing(Some(timing)), Ok(timing));
+            let sample = admit_profile_sample(Duration::from_nanos(1), Some(timing))?;
+            assert_eq!(sample.timing, timing);
+            assert!(render_stage_profile_samples(&[sample]).is_ok());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn profile_timing_rejection_aborts_warmup_or_measurement_without_skipping() {
+        use std::cell::Cell;
+
+        for warmups in [0, 1] {
+            for (timing, diagnostic) in [
+                (
+                    Ok(Some(ProfileTimingRecord::default())),
+                    "renderer stage profile whole-submission total is zero; timing evidence is unusable",
+                ),
+                (
+                    Err(vec!["controlled timing conversion failure".to_owned()]),
+                    "controlled timing conversion failure",
+                ),
+            ] {
+                let calls = Cell::new(0);
+                let result = profile_rendered_images(
+                    vec![1_u8],
+                    &[1],
+                    warmups,
+                    3,
+                    || {
+                        calls.set(calls.get() + 1);
+                        Ok(vec![1_u8])
+                    },
+                    Vec::as_slice,
+                    |_| timing.clone(),
+                );
+                assert_eq!(result, Err(vec![diagnostic.to_owned()]));
+                assert_eq!(calls.get(), 1);
+            }
         }
     }
 
@@ -1273,10 +1448,6 @@ mod benchmark_tests {
             assert_eq!(fields[17], STAGE_PROFILE_SCHEMA);
         }
         assert_eq!(
-            ProfileTimingRecord::from(alpine_metal::OffscreenStageTimings::default()),
-            ProfileTimingRecord::default()
-        );
-        assert_eq!(
             super::render_benchmark_samples(&[101])?,
             "sample_index,elapsed_ns\n0,101\n"
         );
@@ -1290,12 +1461,29 @@ mod benchmark_tests {
             std::env::temp_dir().join(format!("alpine-526-publication-{}", std::process::id()));
         fs::create_dir(&root)?;
         let output = root.join("profile.csv");
-        let csv = render_stage_profile_samples(&[StageProfileSample {
+        let valid = StageProfileSample {
             caller_elapsed_ns: 1,
+            timing: ProfileTimingRecord {
+                host_ns: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                ..ProfileTimingRecord::default()
+            },
+        };
+        let invalid = StageProfileSample {
             timing: ProfileTimingRecord::default(),
-        }])
-        .map_err(|errors| io::Error::other(errors.join("; ")))?;
-        publish_benchmark_samples(&output, csv.as_bytes()).map_err(io::Error::other)?;
+            ..valid
+        };
+        assert_eq!(
+            super::publish_stage_profile_samples(&output, &[valid, invalid, valid]),
+            Err(vec![
+                "renderer stage profile whole-submission total is zero; timing evidence is unusable"
+                    .to_owned(),
+            ])
+        );
+        assert!(!output.exists());
+        let csv = render_stage_profile_samples(&[valid])
+            .map_err(|errors| io::Error::other(errors.join("; ")))?;
+        super::publish_stage_profile_samples(&output, &[valid])
+            .map_err(|errors| io::Error::other(errors.join("; ")))?;
         assert!(publish_benchmark_samples(&output, b"replacement").is_err());
         assert_eq!(fs::read(&output)?, csv.as_bytes());
         let temporary = root.join(format!(
@@ -1311,6 +1499,70 @@ mod benchmark_tests {
         fs::remove_file(temporary)?;
         fs::remove_file(output)?;
         fs::remove_dir(root)?;
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn profile_timing_record_forwards_real_native_getters() -> Result<(), Vec<String>> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let decoded =
+            decode_scene_file(&root.join("assurance/qualification/v2/code-viewport.toml"))?;
+        let mut backend = match alpine_metal::MetalBackend::new() {
+            Ok(backend) => backend,
+            Err(error)
+                if error.to_string()
+                    == "Metal device Apple Paravirtual device is unsupported: Metal 3 family support is required" =>
+            {
+                eprintln!(
+                    "native_profile_forwarding_performed=false; unsupported_host=apple-paravirtual; no native forwarding evidence"
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(vec![format!("cannot initialize Direct Metal: {error}")]),
+        };
+        let frame = backend
+            .render_offscreen_profiled(decoded.scene(), decoded.descriptor())
+            .map_err(|error| vec![format!("native forwarding control render failed: {error}")])?;
+        let oracle = super::scene_cpu_oracle(&decoded)?;
+        validate_stage_profile_image(
+            &oracle,
+            frame.image().bytes(),
+            "native forwarding control differs from the exact CPU oracle",
+        )?;
+        let source = frame
+            .timings()
+            .ok_or_else(|| vec!["native forwarding control omitted real timing data".to_owned()])?;
+        assert!(
+            source.total_ns() > 0,
+            "native timing source must be nonvacuous, not satisfy a latency budget"
+        );
+        let expected = ProfileTimingRecord {
+            host_ns: [
+                source.admission_ns(),
+                source.resource_preparation_ns(),
+                source.command_buffer_ns(),
+                source.atlas_upload_encoding_ns(),
+                source.render_encoding_ns(),
+                source.readback_encoding_ns(),
+                source.commit_ns(),
+                source.completion_wait_ns(),
+                source.readback_compaction_ns(),
+                source.native_total_ns(),
+                source.submission_accounting_ns(),
+                source.total_ns(),
+            ],
+            gpu_execution_ns: source.gpu_execution_ns(),
+            saturated: source.timing_saturated(),
+        };
+        assert_ne!(expected, ProfileTimingRecord::default());
+        let observed = ProfileTimingRecord::try_from(source)?;
+        assert_eq!(observed.host_ns, expected.host_ns);
+        assert_eq!(observed.gpu_execution_ns, expected.gpu_execution_ns);
+        assert_eq!(observed.saturated, expected.saturated);
+        eprintln!(
+            "native_profile_forwarding_performed=true; host_fields=12; source_total_nonzero=true; qualification=native-only"
+        );
         Ok(())
     }
 

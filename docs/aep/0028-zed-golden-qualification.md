@@ -174,6 +174,36 @@ negative controls, and counterbalanced ordinary/profile observations. No
 numeric margin, timing gain, stage-comparison qualification, or shipping
 optimization is established by this schema addition.
 
+### Private v2 whole-submission evidence admission
+
+Experiment #526 additionally requires a positive `total_ns` for every admitted
+profile timing record. This is the unchanged whole validation-through-readback
+endpoint, not `native_total_ns` or an individual stage. A zero whole total is
+unusable benchmark timing evidence; it does not establish missing data or a
+backend failure. `OffscreenStageTimings::default()` remains valid public API
+data but is not admissible private benchmark evidence.
+
+The private fallible conversion validates the constructed record. Shared
+admission validates it again during warmup and measurement, and serialization
+revalidates every record before publication. An invalid timing record or
+conversion error aborts the entire run, including any previously collected
+samples. No bad sample may be selectively omitted, replaced, or published in a
+partial CSV. Publication remains atomic and never overwrites an existing
+artifact.
+
+Zero individual host stages, GPU `Some(0)` versus `None`, and unknown atlas
+occurrence retain their existing meanings. Saturated timing and zero caller
+elapsed remain rejected. The real same-record native getter control remains
+required supported-host evidence; portable rejection of a default source does
+not prove native field forwarding. An unsupported native execution route
+supplies no such evidence.
+
+This private v2 admission restriction changes no old inner endpoint, retained
+v1 artifact, comparative threshold, timeout, or sample-count requirement. The
+same whole-total rule is required symmetrically for future matched comparator
+capture before observer calibration. It supplies no timing gain or shipping
+optimization claim.
+
 ## Failure and recovery
 
 Unknown protocol versions, operations, actions, gates, states, hashes, or
