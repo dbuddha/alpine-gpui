@@ -14,6 +14,8 @@ scripts/test-research-retention.sh
 scripts/check-wiki.sh
 scripts/test-wiki.sh
 scripts/test-classifier.sh
+scripts/test-portable-targets.sh
+scripts/check-portable-targets.sh
 scripts/test-setup-kani.sh
 scripts/test-coverage.sh
 scripts/test-miri-partitions.sh
@@ -30,6 +32,7 @@ scripts/test-studio-ax-process-capture.sh
 scripts/test-zed-lab-evidence.sh
 scripts/test-calibration.sh
 scripts/test-studio-profile.sh
+scripts/test-studio-profile-v2.sh
 scripts/test-studio-profile-evidence.sh
 scripts/test-core-contracts.sh
 scripts/test-metal-contracts.sh

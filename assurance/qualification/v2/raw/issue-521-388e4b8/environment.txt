@@ -1,0 +1,19 @@
+capture_time_utc=2026-09-01T19:45:41Z
+source_revision=388e4b8a0638c72c50a4f0eae932d1dcae390dc4
+ProductName:		macOS
+ProductVersion:		26.6.2
+BuildVersion:		25G83
+hardware_model=Mac16,1
+chip=Apple M4
+memory_bytes=25769803776
+metal_support=Metal 4
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+binary: rustc
+commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452
+commit-date: 2026-07-14
+host: aarch64-apple-darwin
+release: 1.97.1
+LLVM version: 22.1.6
+developer_dir=/Library/Developer/CommandLineTools
+sdk=26.5
+Now drawing from 'AC Power'

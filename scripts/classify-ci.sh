@@ -29,6 +29,7 @@ kani=false
 miri=false
 metal=false
 tla=false
+portable=false
 
 # Changes to the CI control plane must exercise every gate it can select.
 # Classifying these paths selectively would allow the classifier or workflow
@@ -86,6 +87,13 @@ if matches '^scripts/(check-metal|check-native-benchmark-result|test-native-benc
     metal=true
 fi
 
+# Portable and unsupported-host Rust must be type-checked under the exact Linux
+# and Windows cfgs. Workflow and classifier changes select this gate so the
+# control plane cannot classify its own correction out.
+if matches '(^|/)(Cargo\.toml|build\.rs|[^/]+\.rs)$|^(Cargo\.lock|rust-toolchain\.toml|\.github/workflows/.+\.yml|scripts/(check-portable-targets|test-portable-targets|classify-ci|test-classifier)\.sh)$'; then
+    portable=true
+fi
+
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
     {
         printf 'base_sha=%s\n' "$base_sha"
@@ -96,8 +104,9 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
         printf 'miri=%s\n' "$miri"
         printf 'metal=%s\n' "$metal"
         printf 'tla=%s\n' "$tla"
+        printf 'portable=%s\n' "$portable"
     } >> "$GITHUB_OUTPUT"
 else
-    printf 'base_sha=%s\nhead_sha=%s\ncoverage=%s\nmutation=%s\nkani=%s\nmiri=%s\nmetal=%s\ntla=%s\n' \
-        "$base_sha" "$head_sha" "$coverage" "$mutation" "$kani" "$miri" "$metal" "$tla"
+    printf 'base_sha=%s\nhead_sha=%s\ncoverage=%s\nmutation=%s\nkani=%s\nmiri=%s\nmetal=%s\ntla=%s\nportable=%s\n' \
+        "$base_sha" "$head_sha" "$coverage" "$mutation" "$kani" "$miri" "$metal" "$tla" "$portable"
 fi

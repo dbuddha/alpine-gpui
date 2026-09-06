@@ -37,6 +37,7 @@ jobs:
       miri: ${{ steps.classify.outputs.miri }}
       metal: ${{ steps.classify.outputs.metal }}
       tla: ${{ steps.classify.outputs.tla }}
+      portable: ${{ steps.classify.outputs.portable }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -172,6 +173,7 @@ jobs:
       - name: Show target
         run: rustc --version --verbose
       - name: Test workspace
+        if: matrix.name == 'macos-arm64' || needs.classify.outputs.portable == 'true'
         run: cargo test --workspace --all-targets --all-features --locked
       - name: Validate platform-complete Miri partition manifest
         if: matrix.name == 'macos-arm64'

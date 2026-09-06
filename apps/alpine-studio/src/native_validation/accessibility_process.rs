@@ -33,6 +33,7 @@ const FRAME_TERMINAL_POLL: Duration = Duration::from_millis(100);
 const DIAGNOSTIC_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const DIAGNOSTIC_READY_POLL: Duration = Duration::from_millis(5);
 const MAX_LANGUAGE_TRACE_BYTES: u64 = 4_096;
+const MAX_OMISSION_ERROR_BYTES: usize = 512;
 const REQUIRED_LANGUAGE_PHASES: [&str; 8] = [
     "qualification-child",
     "wrapper-invoked",
@@ -55,6 +56,33 @@ enum OmittedStep {
     Close,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OmissionMatch {
+    Requested,
+    Unrelated,
+}
+
+fn classify_omission(requested: Option<OmittedStep>, observed: OmittedStep) -> OmissionMatch {
+    if requested == Some(observed) {
+        OmissionMatch::Requested
+    } else {
+        OmissionMatch::Unrelated
+    }
+}
+
+fn validate_omitted_close_state(
+    lifecycle: SurfaceLifecycle,
+    shutting_down: bool,
+) -> Result<(), &'static str> {
+    if lifecycle != SurfaceLifecycle::Live {
+        return Err("omitted final close changed the live lifecycle state");
+    }
+    if shutting_down {
+        return Err("omitted final close changed the live lifecycle state");
+    }
+    Ok(())
+}
+
 impl OmittedStep {
     fn from_value(value: &str) -> Result<Self, Box<dyn std::error::Error>> {
         match value {
@@ -74,6 +102,87 @@ impl OmittedStep {
             return Ok(None);
         };
         Self::from_value(&value).map(Some)
+    }
+
+    const fn expected_failure(self) -> &'static str {
+        match self {
+            Self::Open => {
+                "native accessibility omission confirmed: step=open stage=workspace-file-open"
+            }
+            Self::Edit => {
+                "native accessibility omission confirmed: step=edit stage=document-unchanged-before-save"
+            }
+            Self::Action => {
+                "native accessibility omission confirmed: step=action stage=diagnostic-action"
+            }
+            Self::Save => "native accessibility omission confirmed: step=save stage=persisted-save",
+            Self::Close => "native accessibility omission confirmed: step=close stage=final-close",
+        }
+    }
+}
+
+fn bounded_omission_error(value: &str) -> &str {
+    let mut end = value.len().min(MAX_OMISSION_ERROR_BYTES);
+    for _ in 0..=3 {
+        if let Some(prefix) = value.get(..end) {
+            return prefix;
+        }
+        end = end.saturating_sub(1);
+    }
+    ""
+}
+
+fn omission_failure_with_cause(
+    step: OmittedStep,
+    cause: &dyn std::fmt::Display,
+) -> Box<dyn std::error::Error> {
+    let cause = cause.to_string();
+    format!(
+        "{}; cause={}",
+        step.expected_failure(),
+        bounded_omission_error(&cause)
+    )
+    .into()
+}
+
+/// Requires one native omission child to fail for its exact requested step.
+///
+/// The child-process harness uses this before publishing a success marker, so
+/// unrelated startup, renderer, language, filesystem, or lifecycle failures
+/// cannot masquerade as an accepted omission control.
+///
+/// # Errors
+///
+/// Returns bounded evidence when the requested step is unknown or the observed
+/// root error is not the canonical failure for that step.
+#[doc(hidden)]
+pub fn validate_native_accessibility_omission_failure(
+    requested: &str,
+    observed: &str,
+) -> Result<(), Box<str>> {
+    let step =
+        OmittedStep::from_value(requested).map_err(|error| error.to_string().into_boxed_str())?;
+    let expected = step.expected_failure();
+    let matched = if step == OmittedStep::Open {
+        observed
+            .strip_prefix(expected)
+            .and_then(|suffix| suffix.strip_prefix("; cause="))
+            .is_some_and(|cause| {
+                !cause.is_empty()
+                    && cause.len() <= MAX_OMISSION_ERROR_BYTES
+                    && cause == bounded_omission_error(cause)
+            })
+    } else {
+        observed == expected
+    };
+    if matched {
+        Ok(())
+    } else {
+        Err(format!(
+            "native accessibility omission {requested:?} expected {expected:?}, observed {:?}",
+            bounded_omission_error(observed)
+        )
+        .into())
     }
 }
 
@@ -288,7 +397,6 @@ fn qualify_workspace(
     let mut tab_actions = 0_usize;
     let mut command_actions = 0_usize;
     let mut diagnostic_actions = 0_usize;
-    let mut dispatch_failure_control_marker = 0_u64;
     dispatch(
         &surface,
         &state,
@@ -332,12 +440,16 @@ fn qualify_workspace(
         "lib.rs",
     )?);
     tab_actions = tab_actions.saturating_add(1);
-    maximum_action_frames = maximum_action_frames.max(activate(
-        &surface,
-        &state,
-        AccessibilityRole::Tab,
-        "main.rs",
-    )?);
+    let main_tab_frames = match activate(&surface, &state, AccessibilityRole::Tab, "main.rs") {
+        Ok(frames) => frames,
+        Err(error) => match classify_omission(omitted_step, OmittedStep::Open) {
+            OmissionMatch::Requested => {
+                return Err(omission_failure_with_cause(OmittedStep::Open, &error));
+            }
+            OmissionMatch::Unrelated => return Err(error),
+        },
+    };
+    maximum_action_frames = maximum_action_frames.max(main_tab_frames);
     tab_actions = tab_actions.saturating_add(1);
     dispatch(
         &surface,
@@ -413,29 +525,46 @@ fn qualify_workspace(
     let mismatch_control_marker =
         reject_mismatched_activation(&surface, &state, &diagnostic_label)?;
 
-    if omitted_step != Some(OmittedStep::Action) {
-        maximum_action_frames = maximum_action_frames.max(activate(
-            &surface,
-            &state,
-            AccessibilityRole::ListItem,
-            &diagnostic_label,
-        )?);
-        diagnostic_actions = diagnostic_actions.saturating_add(1);
-        dispatch_failure_control_marker =
-            require_dispatch_failure(&surface, &state, &diagnostic_label)?;
+    if omitted_step == Some(OmittedStep::Action) {
+        return Err(OmittedStep::Action.expected_failure().into());
     }
-    if omitted_step != Some(OmittedStep::Edit) {
-        let first_edit_baseline = surface.snapshot();
-        platform_validation::commit_native_text(&surface, "// alpine\n", event_handler(&state))
-            .map_err(|error| format!("first native editor text commit failed: {error}"))?;
-        await_frame_terminal(
-            &surface,
-            &state,
-            first_edit_baseline,
-            FRAME_TERMINAL_TIMEOUT,
-        )
-        .map_err(|error| format!("first native editor text frame failed: {error}"))?;
+    maximum_action_frames = maximum_action_frames.max(activate(
+        &surface,
+        &state,
+        AccessibilityRole::ListItem,
+        &diagnostic_label,
+    )?);
+    diagnostic_actions = diagnostic_actions.saturating_add(1);
+    let dispatch_failure_control_marker =
+        require_dispatch_failure(&surface, &state, &diagnostic_label)?;
+    let first_edit_baseline = surface.snapshot();
+    if omitted_step == Some(OmittedStep::Edit) {
+        require_frame_quiescence(&surface)
+            .map_err(|error| format!("omitted native edit emitted frame work: {error}"))?;
+        let after_omission = surface.snapshot();
+        if after_omission.submission_count() != first_edit_baseline.submission_count() {
+            return Err(format!(
+                "omitted native edit changed submission count: before={} after={}",
+                first_edit_baseline.submission_count(),
+                after_omission.submission_count()
+            )
+            .into());
+        }
+        let persisted = fs::read(main_path)?;
+        if persisted.starts_with(b"// alpine\n") {
+            return Err("omitted native edit changed persisted document bytes".into());
+        }
+        return Err(OmittedStep::Edit.expected_failure().into());
     }
+    platform_validation::commit_native_text(&surface, "// alpine\n", event_handler(&state))
+        .map_err(|error| format!("first native editor text commit failed: {error}"))?;
+    await_frame_terminal(
+        &surface,
+        &state,
+        first_edit_baseline,
+        FRAME_TERMINAL_TIMEOUT,
+    )
+    .map_err(|error| format!("first native editor text frame failed: {error}"))?;
     timestamp = timestamp.saturating_add(1);
 
     if omitted_step != Some(OmittedStep::Save) {
@@ -443,17 +572,27 @@ fn qualify_workspace(
         if platform_validation::input_focus_state(&surface) != (lost_epoch, false) {
             return Err("native focus-loss control was not retained for restoration".into());
         }
-        maximum_action_frames = maximum_action_frames.max(open_palette_and_activate(
-            &surface,
-            &state,
-            &mut timestamp,
-            "File: Save",
-        )?);
+        let save_frames =
+            open_palette_and_activate(&surface, &state, &mut timestamp, "File: Save")?;
+        maximum_action_frames = maximum_action_frames.max(save_frames);
         command_actions = command_actions.saturating_add(1);
     }
     let persisted = fs::read(main_path)?;
     if !persisted.starts_with(b"// alpine\n") {
+        if omitted_step == Some(OmittedStep::Save) {
+            return Err(OmittedStep::Save.expected_failure().into());
+        }
         return Err("required native edit and save did not preserve the expected prefix".into());
+    }
+    if omitted_step == Some(OmittedStep::Close) {
+        require_frame_quiescence(&surface)
+            .map_err(|error| format!("omitted final close emitted frame work: {error}"))?;
+        validate_omitted_close_state(
+            surface.observer().lifecycle(),
+            state.borrow().snapshot().is_shutting_down(),
+        )
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+        return Err(OmittedStep::Close.expected_failure().into());
     }
 
     let dirty_edit_baseline = surface.snapshot();
@@ -502,9 +641,6 @@ fn qualify_workspace(
             .windows("dirty".len())
             .any(|bytes| bytes == b"dirty")
     );
-    if omitted_step == Some(OmittedStep::Close) {
-        return Err("required final native close was omitted".into());
-    }
     let (closed, disposition, close_frame) = replay_close(&surface, &state)
         .map_err(|error| format!("final native close replay failed: {error}"))?;
     if !final_close_succeeded(closed, disposition, close_frame) {
@@ -1442,6 +1578,51 @@ mod process_contract_tests {
     use super::*;
 
     #[test]
+    fn omission_matching_preserves_exact_stage_identity() {
+        let steps = [
+            OmittedStep::Open,
+            OmittedStep::Edit,
+            OmittedStep::Action,
+            OmittedStep::Save,
+            OmittedStep::Close,
+        ];
+        for observed in steps {
+            assert_eq!(
+                classify_omission(Some(observed), observed),
+                OmissionMatch::Requested
+            );
+            assert_eq!(classify_omission(None, observed), OmissionMatch::Unrelated);
+            for requested in steps {
+                if requested != observed {
+                    assert_eq!(
+                        classify_omission(Some(requested), observed),
+                        OmissionMatch::Unrelated
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn omitted_close_requires_live_lifecycle_without_shutdown() {
+        assert_eq!(
+            validate_omitted_close_state(SurfaceLifecycle::Live, false),
+            Ok(())
+        );
+        for (lifecycle, shutting_down) in [
+            (SurfaceLifecycle::Closing, false),
+            (SurfaceLifecycle::Closed, false),
+            (SurfaceLifecycle::Live, true),
+            (SurfaceLifecycle::Closing, true),
+        ] {
+            assert_eq!(
+                validate_omitted_close_state(lifecycle, shutting_down),
+                Err("omitted final close changed the live lifecycle state")
+            );
+        }
+    }
+
+    #[test]
     fn omission_values_preserve_every_required_step_and_reject_unknown_values()
     -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(OmittedStep::from_value("open")?, OmittedStep::Open);
@@ -1959,6 +2140,107 @@ mod process_contract_tests {
                 true
             ));
         }
+    }
+
+    #[test]
+    fn omission_failure_requires_the_exact_named_step_and_bounds_diagnostics() {
+        for step in [
+            OmittedStep::Open,
+            OmittedStep::Edit,
+            OmittedStep::Action,
+            OmittedStep::Save,
+            OmittedStep::Close,
+        ] {
+            let requested = match step {
+                OmittedStep::Open => "open",
+                OmittedStep::Edit => "edit",
+                OmittedStep::Action => "action",
+                OmittedStep::Save => "save",
+                OmittedStep::Close => "close",
+            };
+            let observed = if step == OmittedStep::Open {
+                format!(
+                    "{}; cause=command activation rejected",
+                    step.expected_failure()
+                )
+            } else {
+                step.expected_failure().to_owned()
+            };
+            assert!(validate_native_accessibility_omission_failure(requested, &observed).is_ok());
+            assert!(
+                validate_native_accessibility_omission_failure(
+                    requested,
+                    "unrelated native failure"
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            validate_native_accessibility_omission_failure(
+                "edit",
+                OmittedStep::Save.expected_failure()
+            )
+            .is_err()
+        );
+        assert!(
+            validate_native_accessibility_omission_failure(
+                "unknown",
+                OmittedStep::Open.expected_failure()
+            )
+            .is_err()
+        );
+        assert!(
+            validate_native_accessibility_omission_failure(
+                "open",
+                OmittedStep::Open.expected_failure()
+            )
+            .is_err()
+        );
+        assert!(
+            validate_native_accessibility_omission_failure(
+                "edit",
+                OmittedStep::Edit.expected_failure()
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_native_accessibility_omission_failure(
+                "edit",
+                &format!(
+                    "{}; cause=unrelated failure",
+                    OmittedStep::Edit.expected_failure()
+                )
+            )
+            .is_err()
+        );
+        let oversized_open = format!(
+            "{}; cause={}",
+            OmittedStep::Open.expected_failure(),
+            "x".repeat(MAX_OMISSION_ERROR_BYTES + 1)
+        );
+        assert!(validate_native_accessibility_omission_failure("open", &oversized_open).is_err());
+        assert!(
+            validate_native_accessibility_omission_failure(
+                "open",
+                &format!("{}; cause=", OmittedStep::Open.expected_failure())
+            )
+            .is_err()
+        );
+
+        let oversized = "x".repeat(MAX_OMISSION_ERROR_BYTES * 2);
+        let error = validate_native_accessibility_omission_failure("edit", &oversized)
+            .expect_err("an unrelated oversized error must fail closed");
+        assert!(error.len() < MAX_OMISSION_ERROR_BYTES + 256);
+        assert!(!error.contains(&"x".repeat(MAX_OMISSION_ERROR_BYTES + 1)));
+
+        let four_byte_split = format!(
+            "{}\u{1f980}tail",
+            "x".repeat(MAX_OMISSION_ERROR_BYTES.saturating_sub(3))
+        );
+        assert_eq!(
+            bounded_omission_error(&four_byte_split).len(),
+            MAX_OMISSION_ERROR_BYTES - 3
+        );
     }
 }
 

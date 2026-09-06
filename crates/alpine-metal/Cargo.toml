@@ -21,7 +21,7 @@ block2 = { version = "=0.6.2", default-features = false }
 dispatch2 = { version = "=0.3.0", default-features = false, features = ["std", "block2", "objc2"] }
 objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSObject", "NSString"] }
-objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "dispatch2", "MTLAllocation", "MTLBlitCommandEncoder", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLTexture", "MTLTypes"] }
+objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "dispatch2", "objc2-core-foundation", "MTLAllocation", "MTLBlitCommandEncoder", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLTexture", "MTLTypes"] }
 
 [lints.rust]
 missing_docs = "deny"

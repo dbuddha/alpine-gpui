@@ -15,8 +15,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let result = alpine_studio::native_validation::qualify_studio_accessibility_process();
         if let Some(omitted) = omitted {
             return match result {
-                Err(_) => {
+                Err(error) => {
+                    let error = error.to_string();
+                    alpine_studio::native_validation::validate_native_accessibility_omission_failure(
+                        &omitted,
+                        &error,
+                    )
+                    .map_err(|validation| std::io::Error::other(validation.to_string()))?;
                     println!("alpine-native-accessibility-omission-rejected={omitted}");
+                    println!("alpine-native-accessibility-omission-error={error}");
                     Ok(())
                 }
                 Ok(_) => Err(format!(
@@ -208,10 +215,7 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 require_language_trace(&trace, omitted)?;
             }
-            assert_eq!(
-                stdout.trim(),
-                format!("alpine-native-accessibility-omission-rejected={omitted}")
-            );
+            require_omission_output(&stdout, omitted)?;
             assert!(stderr.lines().all(|line| {
                 line.ends_with("Metal API Validation Enabled")
                     || line.ends_with("Metal GPU Validation Enabled")
@@ -225,6 +229,28 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
         (Ok(()), Err(error)) => Err(Box::new(error)),
         (Ok(()), Ok(())) => Ok(()),
     }
+}
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+fn require_omission_output(stdout: &str, omitted: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut lines = stdout.lines();
+    let marker = format!("alpine-native-accessibility-omission-rejected={omitted}");
+    if lines.next() != Some(marker.as_str()) {
+        return Err(
+            format!("native accessibility omission {omitted:?} lost its exact marker").into(),
+        );
+    }
+    let error = lines
+        .next()
+        .and_then(|line| line.strip_prefix("alpine-native-accessibility-omission-error="))
+        .ok_or_else(|| format!("native accessibility omission {omitted:?} lost its root error"))?;
+    if lines.next().is_some() {
+        return Err(
+            format!("native accessibility omission {omitted:?} published trailing output").into(),
+        );
+    }
+    alpine_studio::native_validation::validate_native_accessibility_omission_failure(omitted, error)
+        .map_err(|validation| std::io::Error::other(validation.to_string()).into())
 }
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]

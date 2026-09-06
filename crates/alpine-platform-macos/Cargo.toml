@@ -25,7 +25,7 @@ objc2-core-foundation = { version = "=0.3.2", default-features = false, features
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["CGColorSpace", "CGEvent", "CGEventTypes"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSAttributedString", "NSDate", "NSGeometry", "NSNotification", "NSObject", "NSRange", "NSRunLoop", "NSString", "NSTimer"] }
 objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "block2", "objc2-core-foundation", "MTLDevice", "MTLDrawable", "MTLPixelFormat", "MTLTexture"] }
-objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer", "CAMetalDisplayLink", "objc2-core-foundation", "objc2-core-graphics", "objc2-metal"] }
+objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CABase", "CALayer", "CAMetalLayer", "CAMetalDisplayLink", "objc2-core-foundation", "objc2-core-graphics", "objc2-metal"] }
 
 [build-dependencies]
 cc = "=1.4.4"

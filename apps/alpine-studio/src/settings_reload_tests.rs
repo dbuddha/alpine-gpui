@@ -227,8 +227,10 @@ fn settings_submission_retries_only_saturation_without_a_failure_banner()
         )))
     );
     assert_eq!(app.settings_reload.report().failures, 1);
-    assert!(app.settings_reload.report().pending);
+    assert!(!app.settings_reload.report().pending);
+    assert!(app.settings_reload.take_request().is_none());
 
+    app.settings_reload.request(true)?;
     let terminal_retry = app
         .settings_reload
         .take_request()
@@ -241,6 +243,78 @@ fn settings_submission_retries_only_saturation_without_a_failure_banner()
     ));
     assert!(matches!(app.local_status, Some(LocalStatus::Command(_))));
     assert_eq!(app.settings_reload.report().failures, 2);
+    assert!(!app.settings_reload.report().pending);
+    assert!(app.settings_reload.take_request().is_none());
+    Ok(())
+}
+
+#[test]
+fn terminal_settings_submission_requires_an_explicit_reload_before_retry()
+-> Result<(), Box<dyn Error>> {
+    for terminal in [SubmitError::Closed, SubmitError::SequenceExhausted] {
+        let mut app = StudioApp::new(tests::TestTextSystem)?;
+        app.settings_reload = settings::SettingsReload::explicit(None, None);
+        app.settings_reload.request(true)?;
+        let request = app
+            .settings_reload
+            .take_request()
+            .ok_or("missing terminal settings request")?;
+        let generation = request.generation();
+        assert!(app.apply_settings_submission_result(
+            generation,
+            request.announce(),
+            Err(terminal)
+        ));
+        assert!(app.local_status.is_some());
+        assert_eq!(app.settings_reload.report().failures, 1);
+        assert!(!app.settings_reload.report().in_flight);
+        assert!(!app.settings_reload.report().pending);
+        assert!(app.settings_reload.take_request().is_none());
+
+        app.settings_reload.request(true)?;
+        let retry = app
+            .settings_reload
+            .take_request()
+            .ok_or("explicit settings reload did not permit a new attempt")?;
+        assert!(retry.generation() > generation);
+        assert!(retry.announce());
+    }
+    Ok(())
+}
+
+#[test]
+fn terminal_settings_submission_preserves_a_newer_pending_request() -> Result<(), Box<dyn Error>> {
+    for terminal in [SubmitError::Closed, SubmitError::SequenceExhausted] {
+        let mut app = StudioApp::new(tests::TestTextSystem)?;
+        app.settings_reload = settings::SettingsReload::explicit(None, None);
+        app.settings_reload.request(true)?;
+        let older = app
+            .settings_reload
+            .take_request()
+            .ok_or("missing older settings request")?;
+        let generation = older.generation();
+        app.settings_reload.request(false)?;
+        assert!(app.settings_reload.take_request().is_none());
+
+        assert!(app.apply_settings_submission_result(generation, older.announce(), Err(terminal)));
+        assert!(!app.settings_reload.report().in_flight);
+        assert!(app.settings_reload.report().pending);
+        let newer = app
+            .settings_reload
+            .take_request()
+            .ok_or("terminal failure discarded the newer settings request")?;
+        assert_eq!(newer.generation(), generation + 1);
+        assert!(!newer.announce());
+        assert!(!app.apply_settings_submission_result(
+            generation,
+            older.announce(),
+            Err(SubmitError::Closed)
+        ));
+        assert!(app.settings_reload.report().in_flight);
+        assert_eq!(app.settings_reload.report().failures, 1);
+        assert_eq!(app.settings_reload.report().stale_results, 1);
+        assert!(app.settings_reload.take_request().is_none());
+    }
     Ok(())
 }
 

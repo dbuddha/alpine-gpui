@@ -74,3 +74,12 @@ process-monotonic `Instant`; parsing, trace adaptation, process launch, and
 artifact publication remain outside it. These samples do not establish clock
 accuracy, A/A stability, statistical significance, GPUI comparison, or a
 performance claim.
+
+The separate `profile-scene-native` command uses the same validated trace and
+output-equivalence checks but calls an explicit profiled Metal boundary. It
+records upload preparation, encoding, commit, host completion waiting, Metal
+GPU execution, readback, accounting, and total time in a bounded CSV. Ordinary
+offscreen submissions return no stage timing evidence, so these probes are not
+placed inside the existing GPUI comparator path. The first retained one-window
+diagnostic and its interpretation limits are documented in
+[renderer stage attribution](renderer-stage-attribution.md).

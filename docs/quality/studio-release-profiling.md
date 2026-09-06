@@ -35,10 +35,16 @@ revision, buffer revision, and three stage-specific values:
 | Native GPU Terminal Observed Latency | event-to-observer nanoseconds | reserved | reserved |
 | Native Presented Handler Latency | event-to-callback nanoseconds | reserved | reserved |
 | Native Terminal Record Latency | event-to-record nanoseconds | reserved | reserved |
+| Native Display Link Target Latency | event-to-display-link target nanoseconds | reserved | reserved |
+| Native Target Presentation Latency | event-to-target-presentation nanoseconds | reserved | reserved |
+| Native Actual Presentation Latency | event-to-drawable-presentation nanoseconds | reserved | reserved |
+| Native Presentation Callback Lag | actual-presentation-to-callback nanoseconds | reserved | reserved |
 
 `Atlas Publication Failed` and `Frame Build Failed` are terminal omission points.
-Native latency points are emitted together when the corresponding frame reaches
-terminal evidence. Their `a` payload contains the process-monotonic duration;
+Terminal native latency points are emitted together when the corresponding frame reaches
+terminal evidence. Presentation points are emitted directly from the one-shot
+drawable callback.
+Their `a` payload contains the process-monotonic duration;
 their trace event timestamp is not substituted for the measured endpoint. Every
 native point uses the producing event identity and zero scene, document, and
 buffer revisions, so it joins to Studio scene points by event identity without
@@ -47,6 +53,14 @@ when unavailable. `Native GPU Terminal Observed Latency` remains an upper bound
 from main-thread observation, not exact GPU execution time. The native frame
 terminal snapshot remains authoritative for request, commit, actual presentation
 timestamp, outcome, retained bytes, and recovery classification.
+
+Profile vocabulary v2 anchors event receipt with CACurrentMediaTime, the same
+monotonic host clock used by CAMetalDisplayLinkUpdate.targetTimestamp,
+targetPresentationTimestamp, and MTLDrawable.presentedTime. It reports the
+display-link target, target presentation, actual presentation, callback lag,
+and callback arrival separately. Zero, non-finite, backward, overflowing, or
+closing-generation clocks are omitted rather than coerced. The v1 analyzer and
+retained v1 packages remain byte-stable and are never reinterpreted as v2.
 
 ## Opt-in persisted fallback
 
@@ -91,14 +105,14 @@ capture host's exact `mach_timebase_info` numerator and denominator; they are
 required to convert unified-log `machTimestamp` differences into nanoseconds.
 
 ```sh
-scripts/analyze-studio-profile.sh \
+scripts/analyze-studio-profile-v2.sh \
   persisted-profile.json \
   target/qualification/studio-profile-analysis \
   MACH_TIMEBASE_NUMER \
   MACH_TIMEBASE_DENOM
 ```
 
-The analyzer rejects mixed process identity, unknown or duplicate stages,
+The v2 analyzer rejects mixed process identity, unknown or duplicate stages,
 malformed static messages, correlation drift, decreasing timestamps, and
 invalid revision ownership. It emits byte-preserved record identity,
 `samples.tsv`, `summary.tsv`, `counters.tsv`, and `omissions.tsv`. Percentiles
