@@ -117,6 +117,64 @@ the trigger or concurrency policy. Metadata events must not cancel another
 required check at the same SHA; source updates may cancel checks on obsolete
 SHAs.
 
+## Merge target and evidence preflight
+
+`--auto` is not a promise to wait. Use auto-merge only against the protected
+default branch, never an intermediate stacked base, even when that stack has
+some protection. An unprotected target can merge immediately. Manual stacked
+merges still require terminal-green applicable exact-head checks and `ci-pass`.
+
+Before every merge, fetch the base and retain the live PR source SHA, base SHA,
+effective classic protection and rulesets, required check identities and their
+applicability, selected check count, hosted run metadata, and mergeability.
+Establish the base actually tested by that run; do not substitute the current
+base when the run does not identify it. Unknown or conflicting state blocks
+the merge. The source and tested base must match the current candidate and base.
+
+The installed project operator uses this repository-owned snapshot policy:
+
+```sh
+scripts/check-agent-skills.sh --merge-readiness \
+  MODE DEFAULT_BRANCH BASE_BRANCH PROTECTION \
+  EXPECTED_HEAD RUN_HEAD EXPECTED_BASE TESTED_BASE \
+  AGGREGATE REQUIRED_CHECKS SELECTED_COUNT MERGEABILITY
+```
+
+`MODE` is `manual` or `auto`; `PROTECTION` is `protected` or `unprotected`.
+Revision arguments are full lowercase nonzero SHA-1 identities. `AGGREGATE` and
+`REQUIRED_CHECKS` must both be `success`, `SELECTED_COUNT` must be a positive
+canonical integer at most 9999, and `MERGEABILITY` must be `mergeable`. Required
+check applicability is resolved from GitHub policy, not inferred from a count.
+Retain the underlying responses as evidence rather than only these summaries.
+
+This checker consumes caller-supplied values. It does not contact GitHub,
+authenticate evidence, discover tests, grant permission, lock refs, or make a
+merge race-proof. Recheck the live snapshot immediately before an allowed,
+source-safe merge. A source or base change invalidates the earlier decision.
+After a stacked merge, require fresh post-stack acceptance for the main PR;
+after a main merge, require exact-main CI before advancing dependent work.
+Never repair the evidence trail by erasing canceled or failed runs.
+
+### Retained incident and safe supersession
+
+[Defect #520](https://github.com/dbuddha/alpine-gpui/issues/520) records
+[PR #519](https://github.com/dbuddha/alpine-gpui/pull/519) merging into an
+unprotected stack while 16 checks were pending. Its intermediate commit remains
+historical evidence, not an accepted main revision.
+[PR #517](https://github.com/dbuddha/alpine-gpui/pull/517) received a fresh
+post-stack run, failed, and closed unmerged. The isolated replacement
+[PR #536](https://github.com/dbuddha/alpine-gpui/pull/536) merged only after its
+exact-head aggregate completed. This is safe supersession, not a retroactive
+green result for #517 or acceptance of every change in the old stack.
+
+[PR #582](https://github.com/dbuddha/alpine-gpui/pull/582) added the executable
+policy, rejection controls, and installed skill guidance. The
+[retained receipt](https://github.com/dbuddha/alpine-gpui/issues/520#issuecomment-5564601665)
+binds those changes to source, tested base, runs, and the historical disposition.
+Deterministic policy tests do not establish improved agent decision quality;
+[Experiment #566](https://github.com/dbuddha/alpine-gpui/issues/566) must evaluate
+that separately with tools and permissions held constant between skill variants.
+
 ## Research depth
 
 Deep research states a decision question, pins primary sources, separates facts from inference, seeks contradictory evidence, records validity threats, reproduces consequential behavior, and links findings to requirements. Architecture adoption requires E2, performance design claims E3, and dominance claims E4.
