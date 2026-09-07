@@ -65,7 +65,7 @@ turn chat into a durable requirement without an approved GitHub issue.
   exact research record and states the influence mode.
 - Consequential behavior lists exact AEP claim and evidence IDs in the PR.
 - Complete every PR template section with concrete evidence and remaining risk.
-- Squash merge only after required checks and conversations are resolved.
+- Squash merge only after required checks and conversations are resolved. Never assume `--auto` waits: use it only for the protected default branch, never an intermediate stack. Require exact source and tested-base identity, terminal-green applicable checks and `ci-pass`, live protection and mergeability, and subsequent exact-main evidence. Follow the snapshot checker and recheck procedure in `docs/operations/github-agent-skills.md`; Defect #520 retains the incident. Stacks merge manually and require fresh post-stack main acceptance.
 
 ## Owner approval required
 
