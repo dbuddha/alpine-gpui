@@ -1,5 +1,38 @@
 #!/bin/sh
 set -eu
+# This is a deterministic policy check over caller-supplied evidence fields,
+# not a GitHub fetch, merge authorization, or atomic source/base lock.
+if [ "${1-}" = '--merge-readiness' ]; then
+    shift
+    [ "$#" -eq 12 ] || {
+        printf '%s\n' 'usage: scripts/check-agent-skills.sh --merge-readiness MODE DEFAULT_BRANCH BASE_BRANCH PROTECTION EXPECTED_HEAD RUN_HEAD EXPECTED_BASE TESTED_BASE AGGREGATE REQUIRED_CHECKS SELECTED_COUNT MERGEABILITY' >&2
+        exit 2
+    }
+    merge_fail() { printf 'merge readiness policy error: %s\n' "$1" >&2; exit 1; }
+    mode=$1; default_branch=$2; base_branch=$3; protection=$4
+    expected_head=$5; run_head=$6; expected_base=$7; tested_base=$8
+    aggregate=$9; required_checks=${10}; selected_count=${11}; mergeability=${12}
+    case "$mode" in manual|auto) ;; *) merge_fail 'unknown merge mode' ;; esac
+    [ -n "$default_branch" ] && [ -n "$base_branch" ] || merge_fail 'missing branch identity'
+    case "$protection" in protected|unprotected) ;; *) merge_fail 'unknown base protection' ;; esac
+    for revision in "$expected_head" "$run_head" "$expected_base" "$tested_base"; do
+        printf '%s\n' "$revision" | LC_ALL=C grep -Eq '^[0-9a-f]{40}$' || merge_fail 'invalid source or base revision'
+        [ "$revision" != '0000000000000000000000000000000000000000' ] || merge_fail 'missing source or base revision'
+    done
+    [ "$expected_head" = "$run_head" ] || merge_fail 'hosted run is not the expected source head'
+    [ "$expected_base" = "$tested_base" ] || merge_fail 'tested base does not match the current base'
+    [ "$aggregate" = success ] || merge_fail 'aggregate is not terminal-successful'
+    [ "$required_checks" = success ] || merge_fail 'required checks are not all terminal-successful'
+    case "$selected_count" in ''|0*|*[!0-9]*) merge_fail 'selected check count must be positive' ;; esac
+    [ "${#selected_count}" -le 4 ] || merge_fail 'selected check count exceeds the policy bound'
+    [ "$mergeability" = mergeable ] || merge_fail 'mergeability is not known and clean'
+    if [ "$mode" = auto ]; then
+        [ "$base_branch" = "$default_branch" ] && [ "$protection" = protected ] ||
+            merge_fail 'auto-merge requires the protected default branch'
+    fi
+    printf '%s\n' 'merge snapshot satisfies policy; live GitHub verification and source-safe merge are still required'
+    exit 0
+fi
 failures=0
 fail() { printf 'agent skill check error: %s\n' "$1" >&2; failures=$((failures + 1)); }
 repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd -P)
@@ -27,6 +60,8 @@ for skill in $skills; do
 done
 grep -Fq 'read-only snapshot' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks read-before-write behavior'
 grep -Fq 'PR metadata preflight' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks PR metadata preflight'
+grep -Fq 'protected default branch' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks the auto-merge protection boundary'
+grep -Fq -- '--merge-readiness' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks the merge-readiness policy command'
 grep -Fq 'burn-up' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks burn-up guidance'
 grep -Fq 'native blocked-by relationships' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks native dependency authority'
 grep -Fq '`Delivery Gate`' "$skills_root/github-project-operator/SKILL.md" || fail 'project operator lacks the live delivery field schema'

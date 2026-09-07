@@ -105,4 +105,56 @@ for defect in duplicate malformed class folder evaluation header empty; do
     grep -Fq 'agent skill manifest error:' "$temporary/manifest-$defect.log"
 done
 "$checker" >/dev/null
+# Exercise the actual policy mode, not only the presence of prose in a skill.
+# Snapshot values here are fixtures and do not attest to live GitHub state.
+head=1111111111111111111111111111111111111111
+base=2222222222222222222222222222222222222222
+other=3333333333333333333333333333333333333333
+"$checker" --merge-readiness manual main main protected "$head" "$head" "$base" "$base" success success 6 mergeable >/dev/null
+"$checker" --merge-readiness manual main stack unprotected "$head" "$head" "$base" "$base" success success 6 mergeable >/dev/null
+"$checker" --merge-readiness auto main main protected "$head" "$head" "$base" "$base" success success 6 mergeable >/dev/null
+for defect in auto-stack auto-protected-stack auto-unprotected-default wrong-head wrong-base pending-aggregate failed-aggregate canceled-aggregate pending-checks failed-checks zero-checks invalid-count excessive-count unknown-protection unknown-mergeability conflict unknown-mode missing-branch malformed-head missing-base; do
+    mode=manual; default_branch=main; base_branch=main; protection=protected
+    run_head=$head; tested_base=$base; aggregate=success; required_checks=success
+    selected_count=6; mergeability=mergeable
+    case "$defect" in
+        auto-stack) mode=auto; base_branch=stack; protection=unprotected ;;
+        auto-protected-stack) mode=auto; base_branch=stack ;;
+        auto-unprotected-default) mode=auto; protection=unprotected ;;
+        wrong-head) run_head=$other ;;
+        wrong-base) tested_base=$other ;;
+        pending-aggregate) aggregate=pending ;;
+        failed-aggregate) aggregate=failure ;;
+        canceled-aggregate) aggregate=cancelled ;;
+        pending-checks) required_checks=pending ;;
+        failed-checks) required_checks=failure ;;
+        zero-checks) selected_count=0 ;;
+        invalid-count) selected_count=-1 ;;
+        excessive-count) selected_count=10000 ;;
+        unknown-protection) protection=unknown ;;
+        unknown-mergeability) mergeability=unknown ;;
+        conflict) mergeability=conflicting ;;
+        unknown-mode) mode=force ;;
+        missing-branch) default_branch= ;;
+        malformed-head) run_head=not-a-revision ;;
+        missing-base) tested_base=0000000000000000000000000000000000000000 ;;
+    esac
+    if "$checker" --merge-readiness "$mode" "$default_branch" "$base_branch" "$protection" "$head" "$run_head" "$base" "$tested_base" "$aggregate" "$required_checks" "$selected_count" "$mergeability" > "$temporary/merge-$defect.log" 2>&1; then
+        printf 'agent skill test error: unsafe merge snapshot admitted: %s\n' "$defect" >&2; exit 1
+    fi
+    grep -Fq 'merge readiness policy error:' "$temporary/merge-$defect.log"
+done
+if "$checker" --merge-readiness manual > "$temporary/merge-incomplete.log" 2>&1; then
+    printf 'agent skill test error: incomplete merge snapshot admitted\n' >&2; exit 1
+fi
+grep -Fq 'usage:' "$temporary/merge-incomplete.log"
+fixture=$temporary/missing-merge-boundary
+cp -R "$repo_root/skills" "$fixture"
+sed 's/protected default branch/arbitrary target branch/g' "$fixture/github-project-operator/SKILL.md" > "$temporary/missing-merge-boundary.md"
+mv "$temporary/missing-merge-boundary.md" "$fixture/github-project-operator/SKILL.md"
+if "$checker" --skills-root "$fixture" > "$temporary/missing-merge-boundary.log" 2>&1; then
+    printf 'agent skill test error: missing auto-merge protection boundary admitted\n' >&2; exit 1
+fi
+grep -Fq 'lacks the auto-merge protection boundary' "$temporary/missing-merge-boundary.log"
+printf 'merge readiness policy controls passed: 3 accepted, 20 rejected, incomplete input, and missing guidance\n'
 printf 'repository agent skill tests passed\n'

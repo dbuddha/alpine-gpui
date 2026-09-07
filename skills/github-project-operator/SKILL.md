@@ -42,6 +42,39 @@ fetch and check the base, confirm the source head, require the latest applicable
 conforming exact-head aggregate gate, protect the tested source SHA, and use only
 a repository-allowed merge mode.
 
+### Merge target and protection boundary
+
+Never assume `--auto` defers a merge. Auto-merge is permitted only for the
+protected default branch, after resolving its effective protection and required
+checks. Never invoke it for an intermediate stacked base, even if that branch
+is protected. An unprotected stacked base may merge manually only after its
+applicable exact-head aggregate and every selected required check are terminal
+green. Missing protection, source, tested-base, or check evidence is not success.
+
+Use the read-only policy mode on fields obtained from the current GitHub
+snapshot before choosing a merge command:
+
+```sh
+scripts/check-agent-skills.sh --merge-readiness \
+  "$mode" "$default_branch" "$base_branch" "$protection" \
+  "$expected_head" "$run_head" "$expected_base" "$tested_base" \
+  "$aggregate" "$required_checks" "$selected_count" "$mergeability"
+```
+
+The mode accepts `manual` or `auto`, known `protected` or `unprotected` base
+state, full source/base revisions, `success` for terminal aggregate and required
+checks, a selected-check count of 1-9999, and known `mergeable` state. It checks
+caller-supplied fields; it does not fetch GitHub, establish authentic evidence,
+authorize a merge, or lock refs. Resolve repository rulesets and classic branch
+protection, required check identities and applicability, and the actual hosted
+run before supplying values. Do not invent a tested base or equate an empty
+selected suite with success. Retain the raw snapshot and exact run identity.
+
+After policy acceptance, recheck live source/base and use the tested source SHA
+with the repository-allowed merge command. A stacked merge invalidates dependent
+main-PR acceptance until the resulting source receives applicable fresh checks.
+Retain intermediate history rather than rewriting an earlier unsafe merge.
+
 If GitHub reports both canceled and successful required checks for the current
 pull-request state, do not use an administrator bypass. Retain both run IDs,
 record the trigger and concurrency defect, and require one later metadata event
