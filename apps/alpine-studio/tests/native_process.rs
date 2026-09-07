@@ -303,7 +303,9 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
     let home = root.join("home");
     let path = root.join("document.rs");
     let diagnostic = root.join("internal-diagnostic.json");
+    let scene_captures = root.join("scene-captures");
     std::fs::create_dir_all(&home)?;
+    std::fs::create_dir(&scene_captures)?;
     std::fs::write(&path, "fn main() {}\n")?;
     let expected_evidence = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
         None => "physical",
@@ -321,6 +323,7 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
                 "production-single-window",
             )
             .env("ALPINE_STUDIO_DOGFOOD_OUTPUT", &diagnostic)
+            .env("ALPINE_STUDIO_NATIVE_SCENE_CAPTURE_DIR", &scene_captures)
             .env("ALPINE_STUDIO_DOGFOOD_WORKLOAD_ID", "hosted-close")
             .env("ALPINE_STUDIO_DOGFOOD_REVISION", "a".repeat(40))
             .env(
@@ -331,6 +334,7 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
+        let capture_pid = child.id();
         let timeout = Duration::from_secs(8);
         let deadline = Instant::now() + timeout;
         let status = loop {
@@ -437,6 +441,7 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
             line.ends_with("Metal API Validation Enabled")
                 || line.ends_with("Metal GPU Validation Enabled")
         }));
+        qualify_scene_capture(&scene_captures, capture_pid)?;
         qualify_recovery_launch_processes(&root, expected_evidence)?;
         Ok(())
     })();
@@ -446,6 +451,58 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
         (Ok(()), Err(error)) => Err(Box::new(error)),
         (Ok(()), Ok(())) => Ok(()),
     }
+}
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+fn qualify_scene_capture(
+    directory: &std::path::Path,
+    process_id: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let stem = format!("scene-{process_id}-0000");
+    let path = directory.join(format!("{stem}.json"));
+    assert!(std::fs::metadata(&path)?.len() <= 33_554_432);
+    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    assert_eq!(capture["schema"], "alpine-studio-scene-capture/v1");
+    assert_eq!(capture["origin"], "studio-app-delegate-frame");
+    assert_eq!(capture["process_id"], process_id);
+    assert_eq!(capture["capture_index"], 0);
+    assert_eq!(capture["capture_limit"], 16);
+    assert_eq!(capture["renderer_trace_admitted"], false);
+    assert_eq!(capture["timing_invalidated"], true);
+    assert!(capture["viewport"]["backing_scale_factor"].is_null());
+    assert!(
+        capture["scene_revision"]
+            .as_u64()
+            .is_some_and(|value| value > 0)
+    );
+    assert!(
+        capture["visible_editor_lines"]
+            .as_u64()
+            .is_some_and(|value| value > 0)
+    );
+    assert!(
+        capture["counts"]["glyphs"]
+            .as_u64()
+            .is_some_and(|value| value > 0)
+    );
+    let operations = capture["operations"]
+        .as_array()
+        .ok_or("captured operations")?;
+    assert!(!operations.is_empty());
+    assert_eq!(capture["counts"]["operations"], operations.len());
+    assert!(operations.len() <= 65_536);
+    for (sequence, operation) in operations.iter().enumerate() {
+        assert_eq!(operation["sequence"], sequence);
+    }
+    let atlas_name = format!("{stem}.a8");
+    assert_eq!(capture["atlas"]["file"], atlas_name);
+    let width = capture["atlas"]["width"].as_u64().ok_or("atlas width")?;
+    let height = capture["atlas"]["height"].as_u64().ok_or("atlas height")?;
+    let bytes = width.checked_mul(height).ok_or("atlas byte overflow")?;
+    assert!(bytes > 0 && bytes <= 16_777_216);
+    assert_eq!(capture["atlas"]["bytes"], bytes);
+    assert_eq!(std::fs::metadata(directory.join(atlas_name))?.len(), bytes);
+    Ok(())
 }
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]

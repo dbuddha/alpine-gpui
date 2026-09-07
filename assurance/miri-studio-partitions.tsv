@@ -37,6 +37,7 @@ rust_workspace_edit::	studio-language-workspace-edit
 rust_workspace_ui::	studio-language-workspace-edit
 rust_workspace_publish::	studio-language-workspace-edit
 rust_workspace_publication_tests::	studio-language-workspace-edit
+scene_capture::	studio-persistence
 session::	studio-persistence
 session_integration_tests::	studio-persistence
 settings::	studio-model
