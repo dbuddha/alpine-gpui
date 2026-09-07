@@ -414,6 +414,12 @@ impl GlyphRasterizer for CoreTextSystem {
         else {
             return RasterizedGlyph::new(None, 0.0, 0.0);
         };
+        // A positive quarter-pixel phase can move coverage past the unshifted
+        // right edge. Keep phase zero byte-identical and account for the extra
+        // column before allocating or creating the bitmap context.
+        let width = width
+            .checked_add(usize::from(subpixel_x != 0))
+            .ok_or(LayoutError::ArithmeticOverflow)?;
         let bytes = width
             .checked_mul(height)
             .ok_or(LayoutError::ArithmeticOverflow)?;
@@ -579,6 +585,140 @@ mod tests {
         assert!(
             top_coverage > bottom_coverage,
             "uppercase F must retain its heavier top bar above its lower stem: top={top_coverage}, bottom={bottom_coverage}"
+        );
+        Ok(())
+    }
+
+    // The guard border observes coverage a production bitmap might truncate.
+    fn padded_phase_reference(
+        font: &CTFont,
+        glyph: u16,
+        scale: f32,
+        phase: u8,
+        raster: &RasterizedGlyph,
+    ) -> Result<(usize, Vec<u8>), LayoutError> {
+        let bitmap = raster.bitmap().ok_or(LayoutError::InvalidShaperOutput)?;
+        let width = usize::try_from(bitmap.width.get())
+            .map_err(|_| LayoutError::ArithmeticOverflow)?
+            .checked_add(8)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        let height = usize::try_from(bitmap.height.get())
+            .map_err(|_| LayoutError::ArithmeticOverflow)?
+            .checked_add(8)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        let bytes = width
+            .checked_mul(height)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        let mut pixels = vec![0; bytes];
+        let color_space = CGColorSpace::new_device_gray()
+            .ok_or(LayoutError::NativeFailure("reference color space"))?;
+        // SAFETY: The vector owns width * height initialized bytes for the
+        // context's complete lifetime, with one byte per pixel and width stride.
+        // It is not resized or accessed until the context is dropped.
+        let context = unsafe {
+            CGBitmapContextCreate(
+                pixels.as_mut_ptr().cast::<c_void>(),
+                width,
+                height,
+                8,
+                width,
+                Some(&color_space),
+                CGImageAlphaInfo::None.0,
+            )
+        }
+        .ok_or(LayoutError::NativeFailure("reference bitmap context"))?;
+        CGContext::set_should_antialias(Some(&context), true);
+        CGContext::set_allows_font_smoothing(Some(&context), false);
+        CGContext::set_gray_fill_color(Some(&context), 1.0, 1.0);
+        let scale = f64::from(scale);
+        CGContext::scale_ctm(Some(&context), scale, scale);
+        let bottom = f64::from(raster.top()) - f64::from(bitmap.height.get()) / scale;
+        CGContext::translate_ctm(
+            Some(&context),
+            -f64::from(raster.left()) + f64::from(phase) / 4.0 / scale + 4.0 / scale,
+            -bottom + 4.0 / scale,
+        );
+        let mut glyph = glyph;
+        let mut position = CGPoint { x: 0.0, y: 0.0 };
+        // SAFETY: Both pointers refer to one initialized element, matching
+        // count = 1. Font and context outlive this synchronous drawing call.
+        unsafe {
+            font.draw_glyphs(
+                NonNull::from(&mut glyph),
+                NonNull::from(&mut position),
+                1,
+                &context,
+            );
+        }
+        drop(context);
+        Ok((width, pixels))
+    }
+
+    #[test]
+    fn quarter_phase_rasters_preserve_coverage_and_phase_zero() -> Result<(), LayoutError> {
+        let mut system = CoreTextSystem::new();
+        system.register_font(1, "Menlo-Regular")?;
+        let mut missing_column_controls = 0;
+        let mut cases = 0;
+        for size in [14.0, 18.0] {
+            for scale in [1.0, 2.0] {
+                let key = FontKey::new(
+                    1,
+                    PositiveFinite::new(size).ok_or(LayoutError::InvalidShaperOutput)?,
+                    PositiveFinite::new(scale).ok_or(LayoutError::InvalidShaperOutput)?,
+                    NonZeroU32::new(4).ok_or(LayoutError::InvalidShaperOutput)?,
+                );
+                for text in ["F", "M", "j", "g", "@", "é"] {
+                    let line = system.shape(text, key)?;
+                    let glyph_id = line
+                        .glyphs()
+                        .first()
+                        .ok_or(LayoutError::InvalidShaperOutput)?
+                        .glyph_id();
+                    let glyph =
+                        u16::try_from(glyph_id).map_err(|_| LayoutError::InvalidShaperOutput)?;
+                    let font = system.font(key)?;
+                    let (left, top, base_width, base_height) =
+                        CoreTextSystem::raster_bounds(&font, glyph, scale)?
+                            .ok_or(LayoutError::InvalidShaperOutput)?;
+                    for phase in 0..4 {
+                        let raster = system.rasterize(key, glyph_id, phase)?;
+                        let bitmap = raster.bitmap().ok_or(LayoutError::InvalidShaperOutput)?;
+                        let width = usize::try_from(bitmap.width.get())
+                            .map_err(|_| LayoutError::ArithmeticOverflow)?;
+                        let height = usize::try_from(bitmap.height.get())
+                            .map_err(|_| LayoutError::ArithmeticOverflow)?;
+                        assert_eq!(raster.left().to_bits(), left.to_bits());
+                        assert_eq!(raster.top().to_bits(), top.to_bits());
+                        assert_eq!(height, base_height);
+                        assert_eq!(width, base_width + usize::from(phase != 0));
+                        let (stride, reference) =
+                            padded_phase_reference(&font, glyph, scale, phase, &raster)?;
+                        for (offset, &coverage) in reference.iter().enumerate() {
+                            let x = offset % stride;
+                            let y = offset / stride;
+                            if (4..4 + width).contains(&x) && (4..4 + height).contains(&y) {
+                                assert_eq!(coverage, bitmap.pixels[(y - 4) * width + x - 4]);
+                            } else {
+                                assert_eq!(coverage, 0, "clipped {text} {size} {scale} {phase}");
+                            }
+                        }
+                        // Negative control: dropping the added column must
+                        // lose real ink for at least one fixture in the corpus.
+                        if phase != 0
+                            && (0..height).any(|y| bitmap.pixels[y * width + width - 1] != 0)
+                        {
+                            missing_column_controls += 1;
+                        }
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 96);
+        assert!(
+            missing_column_controls > 0,
+            "missing-column control is vacuous"
         );
         Ok(())
     }
