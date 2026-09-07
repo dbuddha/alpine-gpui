@@ -1,12 +1,15 @@
 #!/bin/sh
 set -eu
 
+repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd -P)
 fixture_dir=$(mktemp -d)
 trap 'rm -rf "$fixture_dir"' EXIT HUP INT TERM
 
 cat > "$fixture_dir/gh" <<'EOF'
 #!/bin/sh
 set -eu
+
+printf '%s\n' "$*" >> "${ALPINE_HIERARCHY_READ_LOG:?}"
 
 if [ "$1" = api ]; then
     endpoint=
@@ -24,6 +27,11 @@ if [ "$1" = api ]; then
         registered-parent:*/issues/104/sub_issues?*) printf '[]\n' ;;
         registered-parent:*/issues/104/parent) printf '184\n' ;;
         registered-parent:*/issues/184/sub_issues?*) printf '[{"state":"closed"},{"state":"open"}]\n' ;;
+        skill-*:*/issues/565/sub_issues?*) printf '[]\n' ;;
+        skill-*:*/issues/565/parent) printf '564\n' ;;
+        skill-*:*/issues/564/sub_issues?*)
+            printf '[{"number":565,"state":"closed"},{"number":566,"state":"open"},{"number":584,"state":"closed"}]\n'
+            ;;
         unregistered-parent:*/issues/105/sub_issues?*) printf '[]\n' ;;
         unregistered-parent:*/issues/105/parent) printf '999\n' ;;
         defect-parent-closed:*/issues/103/sub_issues?*) printf '[]\n' ;;
@@ -51,6 +59,8 @@ if [ "$command" = view ]; then
         reopen-parent:100:*labels*) printf 'kind:task\n' ;;
         registered-parent:104:*labels*) printf 'kind:task\n' ;;
         registered-parent:184:*labels*) printf 'kind:requirement\nowner:approved\n' ;;
+        skill-*:565:*labels*) printf 'kind:task\n' ;;
+        skill-*:564:*labels*) printf 'kind:requirement\nowner:approved\n' ;;
         unregistered-parent:105:*labels*) printf 'kind:task\n' ;;
         unregistered-parent:999:*labels*) printf 'kind:requirement\nowner:approved\n' ;;
         defect-parent-closed:103:*labels* | defect-parent-reopened:103:*labels*)
@@ -76,14 +86,20 @@ run_fixture() {
     action=$3
     log="$fixture_dir/$fixture.log"
     : > "$log"
+    read_log="$fixture_dir/$fixture.read.log"
+    : > "$read_log"
+    (
+    cd "${4:-$repo_root}"
     PATH="$fixture_dir:$PATH" \
     GITHUB_REPOSITORY=dbuddha/alpine-gpui \
     ALPINE_ISSUE_NUMBER=$issue \
     ALPINE_ISSUE_ACTION=$action \
     ALPINE_HIERARCHY_FIXTURE=$fixture \
     ALPINE_HIERARCHY_LOG=$log \
+    ALPINE_HIERARCHY_READ_LOG=$read_log \
     ALPINE_ENFORCE_EVIDENCE=${ALPINE_ENFORCE_EVIDENCE:-false} \
-    scripts/reconcile-issue-hierarchy.sh
+    "$repo_root/scripts/reconcile-issue-hierarchy.sh"
+    )
 }
 
 run_fixture close-parent 100 closed
@@ -97,6 +113,30 @@ grep -Fxq 'reopen 90' "$fixture_dir/reopen-parent.log"
 
 ALPINE_ENFORCE_EVIDENCE=true run_fixture registered-parent 104 closed
 test ! -s "$fixture_dir/registered-parent.log"
+
+# Use the real requirement and repository registry, not a synthetic approved
+# parent. Installation is complete, but the evaluation experiment is still open.
+ALPINE_ENFORCE_EVIDENCE=true run_fixture skill-parent 565 closed
+test ! -s "$fixture_dir/skill-parent.log"
+grep -Fq 'issues/564/sub_issues?per_page=100' "$fixture_dir/skill-parent.read.log"
+
+# The same parent must fail before considering child completion if its claim
+# registration disappears. This does not edit or bypass the repository registry.
+mkdir -p "$fixture_dir/unregistered/assurance"
+: > "$fixture_dir/unregistered/assurance/evidence.toml"
+if ALPINE_ENFORCE_EVIDENCE=true run_fixture skill-missing-registration 565 closed \
+    "$fixture_dir/unregistered" > "$fixture_dir/skill-missing-registration.out" 2>&1; then
+    printf 'hierarchy test error: unregistered skill parent unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'parent #564 has no registered assurance claims' \
+    "$fixture_dir/skill-missing-registration.out"
+test ! -s "$fixture_dir/skill-missing-registration.log"
+if grep -Fq 'issues/564/sub_issues?per_page=100' \
+    "$fixture_dir/skill-missing-registration.read.log"; then
+    printf 'hierarchy test error: unregistered skill parent reached child reconciliation\n' >&2
+    exit 1
+fi
 
 if ALPINE_ENFORCE_EVIDENCE=true run_fixture unregistered-parent 105 closed \
     > "$fixture_dir/unregistered-parent.out" 2>&1; then

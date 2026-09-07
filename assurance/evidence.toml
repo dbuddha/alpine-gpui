@@ -6103,3 +6103,47 @@ artifact = "scripts/test-worktrees.sh"
 assertion = "Worktree fixtures refuse active pull requests, dirty state, unknown pull-request state, detached or missing registrations, unarchived unique commits, and excessive inventory."
 scope = "Read-only local Git worktree inventory and explicit removal planning."
 exclusions = ["automatic removal", "branch deletion", "remote archive publication"]
+
+[[claims]]
+id = "AEP-0564-C01"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0564-engineering-skill-assurance.md"
+requirement_issue = 564
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable"]
+required_evidence = ["integration"]
+
+[[claims]]
+id = "AEP-0564-C02"
+mission = "MP-04"
+capability_issue = 28
+aep = "docs/aep/0564-engineering-skill-assurance.md"
+requirement_issue = 564
+claim_type = "functional"
+risk = "high"
+kani_applicability = "not_applicable"
+tla_properties = []
+platform_scope = ["portable"]
+required_evidence = ["integration"]
+
+[[evidence]]
+id = "EV-0564-INTEGRATION01"
+claim = "AEP-0564-C01"
+kind = "integration"
+artifact = "scripts/test-agent-skills.sh"
+assertion = "The seven-skill manifest drives metadata and inventory rejection controls, idempotent installation, owned-link removal, and foreign-path preservation."
+scope = "Repository-owned seven-skill packaging and installation, not agent effectiveness."
+exclusions = ["behavioral forward evaluation", "Codex runtime effectiveness", "third-party skills", "live GitHub publication", "tamper-verifier implementation"]
+
+[[evidence]]
+id = "EV-0564-INTEGRATION02"
+claim = "AEP-0564-C02"
+kind = "integration"
+artifact = "scripts/test-hierarchy.sh"
+assertion = "Closing Task 565 reconciles registered approved parent 564 without closure while evaluation 566 remains open; missing registration fails before child reconciliation and performs no mutation."
+scope = "Production hierarchy script with fixture GitHub responses and the committed or explicitly absent registry."
+exclusions = ["live GitHub mutation acceptance", "agent effectiveness", "evaluation completion", "full requirement closure", "unrelated hierarchy limitations"]

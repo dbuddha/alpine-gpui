@@ -97,3 +97,4 @@
   - [AEP 0271: Bounded accessibility notifications and destruction](aep/0271-bounded-accessibility-notifications.md)
   - [AEP 0272: Real Studio native accessibility process journey](aep/0272-studio-native-accessibility-process.md)
   - [AEP 0273: Physical accessibility qualification](aep/0273-physical-accessibility-qualification.md)
+  - [AEP 0564: Engineering skill assurance registration](aep/0564-engineering-skill-assurance.md)
