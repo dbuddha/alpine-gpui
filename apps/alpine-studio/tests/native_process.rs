@@ -337,17 +337,15 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
         let capture_pid = child.id();
         let timeout = Duration::from_secs(8);
         let deadline = Instant::now() + timeout;
+        let mut timed_out = false;
         let status = loop {
             if let Some(status) = child.try_wait()? {
                 break status;
             }
             if Instant::now() >= deadline {
                 child.kill()?;
-                let status = child.wait()?;
-                return Err(format!(
-                    "shipping Alpine Studio exceeded {timeout:?} and was terminated with {status}"
-                )
-                .into());
+                timed_out = true;
+                break child.wait()?;
             }
             thread::sleep(Duration::from_millis(10));
         };
@@ -360,9 +358,17 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(mut pipe) = child.stderr.take() {
             pipe.read_to_string(&mut stderr)?;
         }
-        if !status.success() {
+        std::fs::write(root.join("shipping.stdout"), &stdout)?;
+        std::fs::write(root.join("shipping.stderr"), &stderr)?;
+        std::fs::write(
+            root.join("shipping.status"),
+            format!(
+                "pid={capture_pid} timeout={timeout:?} timed_out={timed_out} status={status}\n"
+            ),
+        )?;
+        if timed_out || !status.success() {
             return Err(format!(
-                "shipping Alpine Studio failed with {status}; stdout={stdout:?}; stderr={stderr:?}"
+                "shipping Alpine Studio failed with {status}; timed_out={timed_out}; timeout={timeout:?}; stdout={stdout:?}; stderr={stderr:?}"
             )
             .into());
         }
@@ -445,11 +451,13 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
         qualify_recovery_launch_processes(&root, expected_evidence)?;
         Ok(())
     })();
-    let cleanup = std::fs::remove_dir_all(root);
-    match (result, cleanup) {
-        (Err(error), _) => Err(error),
-        (Ok(()), Err(error)) => Err(Box::new(error)),
-        (Ok(()), Ok(())) => Ok(()),
+    match result {
+        Err(error) => Err(format!(
+            "{error}; native capture artifacts retained at {}",
+            root.display()
+        )
+        .into()),
+        Ok(()) => std::fs::remove_dir_all(root).map_err(Into::into),
     }
 }
 
@@ -485,6 +493,46 @@ fn qualify_scene_capture(
             .as_u64()
             .is_some_and(|value| value > 0)
     );
+    // Validate declared counts against actual arrays and painter kinds, then
+    // prove each count is discriminating with in-memory malformed controls.
+    let counts_match = |value: &serde_json::Value| {
+        let Some(operations) = value["operations"].as_array() else {
+            return false;
+        };
+        let Some(clips) = value["clips"].as_array() else {
+            return false;
+        };
+        let mut quads = 0_u64;
+        let mut glyphs = 0_u64;
+        for operation in operations {
+            match operation["kind"].as_str() {
+                Some("solid-quad") => quads += 1,
+                Some("monochrome-glyph") => glyphs += 1,
+                _ => return false,
+            }
+        }
+        value["counts"]["operations"] == operations.len()
+            && value["counts"]["clips"] == clips.len()
+            && value["counts"]["quads"].as_u64() == Some(quads)
+            && value["counts"]["glyphs"].as_u64() == Some(glyphs)
+    };
+    assert!(counts_match(&capture));
+    for field in ["operations", "clips", "quads", "glyphs"] {
+        let mut malformed = capture.clone();
+        malformed["counts"][field] = serde_json::json!(u64::MAX);
+        assert!(
+            !counts_match(&malformed),
+            "count control did not reject {field}"
+        );
+    }
+    let mut unknown_kind = capture.clone();
+    let unknown_operations = unknown_kind["operations"]
+        .as_array_mut()
+        .ok_or("unknown-kind control operations")?;
+    unknown_operations.push(serde_json::json!({"kind":"unsupported"}));
+    let unknown_operation_count = unknown_operations.len();
+    unknown_kind["counts"]["operations"] = serde_json::json!(unknown_operation_count);
+    assert!(!counts_match(&unknown_kind));
     let operations = capture["operations"]
         .as_array()
         .ok_or("captured operations")?;
