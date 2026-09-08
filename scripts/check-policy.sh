@@ -147,6 +147,14 @@ if [ -n "$workflow_files" ]; then
         || ! grep -Fq 'scripts/filter-assurance-failures.sh |' "$assurance_failure_workflow"; then
         fail 'assurance routing must suppress derivative ci-pass failures through the tested selector'
     fi
+    assurance_routing_guard="    if: github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'cancelled' || github.event.workflow_run.conclusion == 'timed_out'"
+    if [ ! -x scripts/collect-assurance-failures.sh ] \
+        || ! grep -Fqx "$assurance_routing_guard" "$assurance_failure_workflow" \
+        || ! grep -Fq 'scripts/collect-assurance-failures.sh |' "$assurance_failure_workflow" \
+        || ! grep -Fqx '  checks: read' "$assurance_failure_workflow" \
+        || ! grep -Fq 'set -euo pipefail' "$assurance_failure_workflow"; then
+        fail 'assurance routing must use the tested timeout collector with read-only checks and pipeline failure propagation'
+    fi
     extract_metal_step() {
         printf '%s\n' "$metal_validation_block" | awk -v target="      - name: $1" '
             $0 == target { capture = 1 }

@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+scripts/test-assurance-failure-collector.sh
+
 fixture_dir=$(mktemp -d)
 trap 'rm -rf "$fixture_dir"' EXIT HUP INT TERM
 
@@ -174,6 +176,24 @@ if ! grep -Fq 'assurance routing must suppress derivative ci-pass failures throu
     cat "$fixture_dir/unfiltered-assurance-failure.log" >&2
     exit 1
 fi
+for omitted in guard collector permission pipefail; do
+    case "$omitted" in
+        guard) expression="s/    if: github.event.workflow_run.conclusion.*/    if: github.event.workflow_run.conclusion == 'failure'/" ;;
+        collector) expression='/scripts\/collect-assurance-failures.sh |/d' ;;
+        permission) expression='/^  checks: read$/d' ;;
+        pipefail) expression='/set -euo pipefail/d' ;;
+    esac
+    sed "$expression" "$fixture_dir/assurance-failure.yml" > "$fixture_dir/omitted-$omitted.yml"
+    if ALPINE_ASSURANCE_FAILURE_WORKFLOW="$fixture_dir/omitted-$omitted.yml" \
+        run_policy > "$fixture_dir/omitted-$omitted.log" 2>&1; then
+        printf 'policy test error: missing assurance routing %s was accepted\n' "$omitted" >&2
+        exit 1
+    fi
+    if ! grep -Fq 'assurance routing must use the tested timeout collector' "$fixture_dir/omitted-$omitted.log"; then
+        cat "$fixture_dir/omitted-$omitted.log" >&2
+        exit 1
+    fi
+done
 unset ALPINE_ASSURANCE_FAILURE_WORKFLOW
 
 cp .github/workflows/nightly-assurance.yml "$fixture_dir/nightly-assurance.yml"
