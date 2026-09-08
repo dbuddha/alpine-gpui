@@ -56,6 +56,41 @@ fn workspace_contract_rosters_reject_independent_identity_and_duplicate_coordina
     }
     assert_eq!(std::fs::read_to_string(&path)?, input.snapshot.text());
     std::fs::remove_dir_all(root)?;
+
+    // A valid replacement roster must retire foreign workspace authority,
+    // even when its document path and buffer revision happen to be unchanged.
+    for coordinate in 0..3 {
+        let (mut model, mut input, root) = installed_workspace()?;
+        assert!(model.snapshot().active);
+        model.server_path = None;
+        match coordinate {
+            0 => input.workspace_root = root.parent().ok_or("parent")?.to_path_buf(),
+            1 => input.identity.workspace_id += 1,
+            _ => input.identity.workspace_revision += 1,
+        }
+        let wake_factories = std::cell::Cell::new(0);
+        let effect =
+            model.sync_workspace([input.clone()], Some(input.identity.document_id), |_| {
+                wake_factories.set(wake_factories.get() + 1);
+                Arc::new(|| {})
+            });
+        assert_eq!(wake_factories.get(), 0);
+        assert!(effect.visual_changed);
+        assert!(effect.continuation.is_none());
+        assert!(
+            model.session.is_none(),
+            "foreign workspace coordinate {coordinate} retained the old session"
+        );
+        let released = model.snapshot();
+        assert!(!released.active);
+        assert_eq!(released.process_starts, 0);
+        assert_eq!(released.overlay_documents, 0);
+        assert_eq!(released.overlay_retained_text_bytes, 0);
+        assert_eq!(released.overlay_reserved_text_bytes, 0);
+        assert_eq!(std::fs::read_to_string(&input.path)?, input.snapshot.text());
+        retire_inert_workspace(&mut model);
+        std::fs::remove_dir_all(root)?;
+    }
     Ok(())
 }
 

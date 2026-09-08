@@ -136,6 +136,48 @@ impl InputSequence {
     }
 }
 
+// Move the existing bounded fixture receiver, rather than replacing send or
+// fabricating writer acknowledgements. This owner may outlive session teardown.
+#[cfg(test)]
+pub(crate) struct ProcessInputObserver {
+    controls: std::sync::mpsc::Receiver<Control>,
+    identity: ProcessIdentity,
+    epoch: ProcessEpoch,
+    counters: Arc<Counters>,
+}
+
+#[cfg(test)]
+impl ProcessInputObserver {
+    pub(crate) fn take_input(&mut self) -> Result<Option<Vec<u8>>, ProcessFailure> {
+        for _ in 0..CONTROL_CAPACITY {
+            match self.controls.try_recv() {
+                Ok(Control::Input {
+                    identity,
+                    epoch,
+                    payload,
+                    ..
+                }) => {
+                    if identity != self.identity || epoch != self.epoch {
+                        return Err(ProcessFailure::io(
+                            ProcessStage::Input,
+                            &io::Error::new(io::ErrorKind::InvalidData, "foreign fixture input"),
+                        ));
+                    }
+                    return Ok(Some(payload.bytes.to_vec()));
+                }
+                // Lifecycle controls are not outbound protocol payloads.
+                Ok(_) => {}
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.counters.retained_bytes.load(Ordering::Acquire)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProcessStream {
     Stdout,
@@ -797,6 +839,21 @@ impl LanguageServerProcess {
                 Err(TryRecvError::Disconnected) => return Err(SupervisorStopped),
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_input_observer_for_test(
+        &mut self,
+    ) -> Result<ProcessInputObserver, ProcessFailure> {
+        Ok(ProcessInputObserver {
+            controls: self
+                .inert_control
+                .take()
+                .ok_or_else(|| broken_pipe(ProcessStage::Input))?,
+            identity: self.identity,
+            epoch: self.epoch,
+            counters: Arc::clone(&self.counters),
+        })
     }
 
     #[cfg(test)]

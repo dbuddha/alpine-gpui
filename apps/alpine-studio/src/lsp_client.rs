@@ -304,6 +304,15 @@ impl LspClient {
     }
 
     #[cfg(test)]
+    pub(crate) fn take_input_observer_for_test(
+        &mut self,
+    ) -> Result<crate::lsp_process::ProcessInputObserver, LspClientError> {
+        self.process
+            .take_input_observer_for_test()
+            .map_err(LspClientError::Process)
+    }
+
+    #[cfg(test)]
     pub(crate) fn take_input_for_test(&mut self) -> Result<Option<Vec<u8>>, LspClientError> {
         self.process
             .take_input_for_test()

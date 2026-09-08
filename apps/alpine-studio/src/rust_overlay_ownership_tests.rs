@@ -267,6 +267,81 @@ fn updating_parked_version_exhaustion_preserves_text() -> Result<(), Box<dyn Err
     assert_eq!(ownership(&session), before);
     assert!(!session.update_parked(input(2))?);
     assert_eq!(ownership(&session), before);
+
+    // Exercise the production roster boundary, not just the parked helper.
+    // The successful case proves the observer sees real framed submissions;
+    // the rejected case must not publish A before B's version check fails.
+    for exhausted in [false, true] {
+        let (mut model, mut first, root) = installed_workspace()?;
+        model.initialize_installed_transport_for_test()?;
+        let mut second = first.clone();
+        second.path = root.join("second.rs");
+        second.identity.document_id += 1;
+        let session = model.session.as_mut().ok_or("installed workspace")?;
+        assert!(session.update_parked(second.clone())?);
+        session.parked[0].opened = true;
+        if exhausted {
+            session.parked[0].lsp_version = i32::MAX;
+            session.parked[0].document.set_version(i32::MAX);
+        }
+        assert!(session.document_opened);
+        assert!(!session.pending_change);
+        assert!(session.overlay_write.is_none());
+        while session.client.take_input_for_test()?.is_some() {}
+        let active_uri = session.document.uri().to_owned();
+        let mut observer = session.client.take_input_observer_for_test()?;
+        for document in [&mut first, &mut second] {
+            let mut buffer = alpine_text::Buffer::new(&document.snapshot.text());
+            let mut edit = alpine_text::Transaction::new(buffer.revision());
+            edit.replace(0..0, "// newly admitted workspace edit\n")?;
+            let _ = buffer.apply(edit)?;
+            document.snapshot = buffer.snapshot();
+            document.identity.buffer_revision = buffer.revision().get();
+        }
+        let effect = model.sync_workspace(
+            [first.clone(), second],
+            Some(first.identity.document_id),
+            |_| Arc::new(|| {}),
+        );
+        let retained_session = model.session.is_some();
+        let _ = model.stop();
+        let mut messages = Vec::new();
+        while let Some(bytes) = observer.take_input()? {
+            assert!(messages.len() < 4, "bounded fixture output exceeded");
+            let mut framer =
+                crate::lsp_framing::LspFramer::new(crate::lsp_framing::LspFrameLimits::default());
+            let batch = framer.ingest(&bytes)?;
+            assert_eq!(batch.consumed(), bytes.len());
+            assert_eq!(batch.frames().len(), 1);
+            messages.push(serde_json::from_slice::<serde_json::Value>(
+                batch.frames()[0].body(),
+            )?);
+            framer.finish()?;
+        }
+        let active_changes: Vec<_> = messages
+            .iter()
+            .filter(|message| {
+                message["method"] == "textDocument/didChange"
+                    && message["params"]["textDocument"]["uri"] == active_uri
+            })
+            .collect();
+        let retained_bytes = observer.retained_bytes();
+        std::fs::remove_dir_all(root)?;
+        assert_eq!(retained_session, !exhausted);
+        assert_eq!(retained_bytes, 0);
+        if exhausted {
+            assert!(effect.visual_changed);
+            assert!(
+                active_changes.is_empty(),
+                "a rejected roster submitted active-document edits: {messages:?}"
+            );
+        } else {
+            assert_eq!(active_changes.len(), 1, "observer missed accepted payload");
+            let params = &active_changes[0]["params"];
+            assert_eq!(params["textDocument"]["version"], 2);
+            assert_eq!(params["contentChanges"][0]["text"], first.snapshot.text());
+        }
+    }
     Ok(())
 }
 

@@ -56,14 +56,6 @@ impl Write for TestWriter {
     }
 }
 
-struct FailingReader;
-
-impl Read for FailingReader {
-    fn read(&mut self, _bytes: &mut [u8]) -> io::Result<usize> {
-        Err(io::Error::other("injected read failure"))
-    }
-}
-
 struct ScriptedReader {
     steps: VecDeque<io::Result<&'static [u8]>>,
     reads: usize,
@@ -665,13 +657,27 @@ fn reader_bounds_success_io_queue_and_retained_budget_paths() -> Result<(), Box<
     drop(packet);
     assert_eq!(counters.retained_bytes.load(Ordering::Relaxed), 0);
 
+    // A finite fault script makes an incorrect retry observable instead of
+    // trapping the mutation runner in an always-failing Read implementation.
+    let mut source = ScriptedReader {
+        steps: vec![
+            Err(io::Error::other("injected read failure")),
+            Ok(&b"must not read after a fatal error"[..]),
+        ]
+        .into(),
+        reads: 0,
+    };
     reader(
-        FailingReader,
+        &mut source,
         ProcessStream::Stderr,
         &sender,
         &overflowed,
         &counters,
     );
+    assert_eq!(source.reads, 1, "fatal errors must not be retried");
+    assert_eq!(source.steps.len(), 1);
+    assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    assert_eq!(counters.retained_bytes.load(Ordering::Acquire), 0);
     assert!(!overflowed.load(Ordering::Relaxed));
     let (full_sender, _full_receiver) = sync_channel(0);
     reader(

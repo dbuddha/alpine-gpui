@@ -383,7 +383,7 @@ fn pending_responses_require_exact_request_overlay_process_and_document_authorit
 #[test]
 fn an_inactive_dependency_edit_revokes_unchanged_active_diagnostics() -> Result<(), Box<dyn Error>>
 {
-    let (mut model, active, root) = installed()?;
+    let (mut model, mut active, root) = installed()?;
     let mut buffer = alpine_text::Buffer::new("pub fn value() -> u32 { 1 }\n");
     let mut dependent = active.clone();
     dependent.path = root.join("a.rs");
@@ -409,12 +409,68 @@ fn an_inactive_dependency_edit_revokes_unchanged_active_diagnostics() -> Result<
     let _ = buffer.apply(edit)?;
     dependent.snapshot = buffer.snapshot();
     dependent.identity.buffer_revision = buffer.revision().get();
-    let effect = model.sync_workspace([active, dependent], Some(1), |_| Arc::new(|| {}));
+    let epoch = model
+        .session
+        .as_ref()
+        .ok_or("session")?
+        .diagnostic_pull
+        .epoch;
+    let effect = model.sync_workspace([active.clone(), dependent.clone()], Some(1), |_| {
+        Arc::new(|| {})
+    });
     assert!(effect.visual_changed);
     let session = model.session.as_ref().ok_or("session")?;
     assert!(session.diagnostics.is_none());
     assert_eq!(session.lsp_version, 1);
     assert_eq!(session.identity.document_id, 1);
+    assert_eq!(session.diagnostic_pull.epoch, epoch + 1);
+
+    // The workspace is the invalidation owner for an admitted roster. An
+    // active edit must not invalidate again inside single-document dispatch.
+    let mut active_buffer = alpine_text::Buffer::new(&active.snapshot.text());
+    let mut edit = alpine_text::Transaction::new(active_buffer.revision());
+    edit.replace(
+        0..active.snapshot.len_bytes(),
+        "fn main() { let _ = value(); }\n",
+    )?;
+    let _ = active_buffer.apply(edit)?;
+    active.snapshot = active_buffer.snapshot();
+    active.identity.buffer_revision = active_buffer.revision().get();
+    let epoch = session.diagnostic_pull.epoch;
+    let roster = [active.clone(), dependent];
+    let _ = model.sync_workspace(roster.clone(), Some(active.identity.document_id), |_| {
+        Arc::new(|| {})
+    });
+    let session = model
+        .session
+        .as_ref()
+        .ok_or("session lost during active edit")?;
+    assert_eq!(
+        session.diagnostic_pull.epoch,
+        epoch + 1,
+        "one admitted workspace edit must invalidate diagnostics exactly once"
+    );
+    assert_eq!(session.snapshot.text(), active.snapshot.text());
+    assert_eq!(session.lsp_version, 2);
+    assert_eq!(session.overlay_write, Some(InputSequence::for_test(7)));
+    assert!(session.pending_change);
+    assert!(session.diagnostics.is_none());
+
+    let epoch = session.diagnostic_pull.epoch;
+    let effect = model.sync_workspace(roster, Some(active.identity.document_id), |_| {
+        Arc::new(|| {})
+    });
+    assert!(!effect.visual_changed);
+    assert_eq!(
+        model
+            .session
+            .as_ref()
+            .ok_or("session")?
+            .diagnostic_pull
+            .epoch,
+        epoch,
+        "an unchanged roster must preserve diagnostic authority"
+    );
     let _ = model.shutdown();
     std::fs::remove_dir_all(root)?;
     Ok(())
