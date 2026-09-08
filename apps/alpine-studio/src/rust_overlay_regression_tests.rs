@@ -209,6 +209,99 @@ fn occupied_fixture_roots_are_preserved_and_allocation_exhaustion_is_bounded()
     Ok(())
 }
 
+#[test]
+fn fixture_allocation_returns_non_collision_errors_without_retrying() -> Result<(), Box<dyn Error>>
+{
+    let fixture = Fixture::new()?;
+    let parent = fixture.root.join("not-a-directory");
+    fs::write(&parent, "existing file owner")?;
+    let expected = fs::create_dir(parent.join("direct-control"))
+        .err()
+        .ok_or("non-directory parent accepted")?
+        .kind();
+    assert_ne!(expected, io::ErrorKind::AlreadyExists);
+    let sequence = AtomicUsize::new(0);
+    let actual = reserve_fixture_root(&parent, "allocation", &sequence)
+        .err()
+        .ok_or("fixture accepted a non-directory parent")?;
+    assert_eq!(actual.kind(), expected);
+    assert_eq!(sequence.load(Ordering::Relaxed), 1);
+    assert_eq!(fs::read_to_string(&parent)?, "existing file owner");
+    Ok(())
+}
+
+#[test]
+fn fixture_drop_releases_only_unretained_owned_roots() -> Result<(), Box<dyn Error>> {
+    let owner = Fixture::new()?;
+    let temporary = owner.root.join("temporary");
+    let retained = owner.root.join("retained");
+    let sibling = owner.root.join("sibling.txt");
+    fs::create_dir(&temporary)?;
+    fs::create_dir(&retained)?;
+    fs::write(temporary.join("owned.txt"), "temporary contents")?;
+    fs::write(retained.join("evidence.txt"), "retained evidence")?;
+    fs::write(&sibling, "unrelated sibling")?;
+
+    drop(Fixture {
+        root: temporary.clone(),
+        retained: false,
+    });
+    assert!(
+        !temporary.try_exists()?,
+        "temporary fixture was not removed"
+    );
+    assert_eq!(fs::read_to_string(&sibling)?, "unrelated sibling");
+
+    drop(Fixture {
+        root: retained.clone(),
+        retained: true,
+    });
+    assert_eq!(
+        fs::read_to_string(retained.join("evidence.txt"))?,
+        "retained evidence"
+    );
+    assert_eq!(fs::read_to_string(&sibling)?, "unrelated sibling");
+    Ok(())
+}
+
+#[test]
+fn wire_record_summary_keeps_only_twelve_newest_metadata_records() {
+    assert!(wire_record_summary(&[]).is_empty());
+    let records = (0..15)
+        .map(|index| {
+            json!({
+                "pid": 2000 + index,
+                "message": {
+                    "method": "textDocument/didChange",
+                    "id": 100 + index,
+                    "params": {
+                        "textDocument": {
+                            "uri": format!("file:///workspace/document-{index}.rs"),
+                            "version": index,
+                            "text": "document contents must not enter the summary"
+                        },
+                        "contentChanges": [{"text": "private edit contents"}]
+                    }
+                },
+                "unrelated": "not summary metadata"
+            })
+        })
+        .collect::<Vec<_>>();
+    let expected = (3..15)
+        .rev()
+        .map(|index| {
+            json!({
+                "pid": 2000 + index,
+                "method": "textDocument/didChange",
+                "id": 100 + index,
+                "uri": format!("file:///workspace/document-{index}.rs"),
+                "version": index
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(wire_record_summary(&records), expected);
+}
+
 fn wake_factory(
     sender: SyncSender<LanguageWake>,
     starts: Arc<AtomicUsize>,
