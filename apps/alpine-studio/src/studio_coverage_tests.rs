@@ -16,6 +16,10 @@ use crate::rust_navigation::SourceLocations;
 
 use super::*;
 
+#[cfg(unix)]
+#[path = "studio_saved_notification_tests.rs"]
+mod saved_notifications;
+
 static NEXT_TEST_FILE: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
@@ -6952,6 +6956,39 @@ fn folder_launch_primes_lazy_tree_without_stealing_editor_focus()
     Ok(())
 }
 
+#[test]
+fn fresh_document_language_epochs_are_nonzero_distinct_and_fail_closed_on_exhaustion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn main() {}\n")?;
+    let mut app = StudioApp::open_file(TestTextSystem, root.path().join("main.rs"))?;
+    assert_eq!(app.buffer().revision().get(), 0);
+    assert_eq!(app.runtime_document_revision, 0);
+    for (editor_epoch, language_epoch) in [(0, 1), (1, 2), (u64::MAX - 1, u64::MAX), (u64::MAX, 0)]
+    {
+        app.runtime_document_revision = editor_epoch;
+        let identity = app.language_identity();
+        assert_eq!(identity.document_revision, language_epoch);
+        assert_eq!(identity.workspace_revision, 1);
+        assert_eq!(identity.buffer_revision, 0);
+        assert_eq!(app.runtime_document_revision, editor_epoch);
+        assert_eq!(accessibility::revision(&app).document(), editor_epoch);
+        assert_eq!(
+            crate::lsp_json::RequestStamp::new(
+                identity.workspace_id,
+                identity.workspace_revision,
+                identity.document_id,
+                identity.document_revision,
+                identity.buffer_revision,
+                identity.selection_revision,
+            )
+            .is_some(),
+            editor_epoch != u64::MAX,
+        );
+    }
+    Ok(())
+}
+
 fn assert_event_continuation_is_queued(
     mut app: StudioApp,
     wake: LanguageWake,
@@ -7021,6 +7058,127 @@ fn assert_worker_continuation_is_drained(
     Ok(())
 }
 
+fn assert_runtime_diagnostic_render(
+    runtime: &mut Application<StudioApp>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    record_runtime_lsp_startup_phase("initial-frame-enter")?;
+    let (baseline_quads, baseline_geometry) = {
+        let frame = runtime.frame_if_dirty().ok_or("initial rust frame")?;
+        (
+            frame.scene().quads().len(),
+            format!("{:?}", frame.scene().quads()),
+        )
+    };
+
+    let mut rendered = false;
+    let mut frame_samples = Vec::new();
+    if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(3_000),
+    }) {
+        let quads = frame.scene().quads();
+        frame_samples.push((3_000, format!("{quads:?}")));
+        rendered = quads.len() >= baseline_quads + 2;
+    }
+    record_runtime_lsp_startup_phase("render-wait-enter")?;
+    // A fresh native subprocess may still be before Rust entry after 512 turns.
+    // Share the functional LSP readiness bound, not a physical frame-time budget.
+    let started = std::time::Instant::now();
+    let mut timestamp = 3_000_u64;
+    while !rendered && started.elapsed() < rust_diagnostics::tests::PRODUCT_DIAGNOSTIC_READINESS {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        timestamp = timestamp
+            .checked_add(1)
+            .ok_or("runtime fixture timestamp exhausted")?;
+        if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(timestamp),
+        }) {
+            if frame_samples.len() < 16 {
+                frame_samples.push((timestamp, format!("{:?}", frame.scene().quads())));
+            }
+            if frame.scene().quads().len() >= baseline_quads + 2 {
+                rendered = true;
+                break;
+            }
+        }
+    }
+    record_runtime_lsp_startup_phase(if rendered {
+        "diagnostic-rendered"
+    } else {
+        "render-wait-exhausted"
+    })?;
+    if !rendered {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "diagnostics never reached the accepted rendered geometry; baseline={baseline_geometry}; frames={frame_samples:?}; runtime={:?}",
+                runtime.snapshot(),
+            ),
+        )
+        .into());
+    }
+    let idle_timestamp = timestamp
+        .checked_add(1)
+        .ok_or("runtime fixture idle timestamp exhausted")?;
+    assert!(
+        runtime
+            .dispatch(&SurfaceEvent::Wake {
+                timestamp: EventTimestamp::new(idle_timestamp),
+            })
+            .is_none()
+    );
+
+    Ok(())
+}
+
+fn record_runtime_lsp_startup_phase(phase: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(path) = std::env::var_os("ALPINE_STUDIO_LSP_STARTUP_TIMING") else {
+        return Ok(());
+    };
+    // Sideband diagnosis only: retain the native trace format.
+    // Cross-process wall-clock observations are not qualified latency metrics.
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let record = format!("{timestamp}\tparent\t{}\t{phase}\n", std::process::id());
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    std::io::Write::write_all(&mut file, record.as_bytes())?;
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "requires foreground workers and a real process-start failure"
+)]
+fn runtime_diagnostic_readiness_rejects_status_without_diagnostics()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn broken( {\n")?;
+    let mut app = StudioApp::open_file(TestTextSystem, root.path().join("main.rs"))?;
+    let missing_server = root.path().join("not-installed-rust-analyzer");
+    app.rust_diagnostics = RustDiagnostics::with_server(&missing_server);
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let error = assert_runtime_diagnostic_render(&mut runtime)
+        .err()
+        .ok_or("a status-only frame incorrectly passed diagnostic readiness")?;
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::TimedOut),
+        "{error}"
+    );
+    // Observe actual foreground progress before rejecting missing diagnostics;
+    // an unrelated setup error or a completely unserviced runtime is not proof.
+    let message = error.to_string();
+    assert!(message.contains("diagnostics never reached"), "{message}");
+    assert!(message.contains("frames=[("), "{message}");
+    Ok(())
+}
+
 #[test]
 #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
@@ -7042,35 +7200,7 @@ fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
         alpine_platform_macos::SurfaceOperation::Application,
     ))?;
     let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
-    let baseline_quads = runtime
-        .frame_if_dirty()
-        .ok_or("initial rust frame")?
-        .scene()
-        .quads()
-        .len();
-
-    let _ = runtime.dispatch(&SurfaceEvent::Wake {
-        timestamp: EventTimestamp::new(3_000),
-    });
-    let mut rendered = false;
-    for timestamp in 3_001..3_513 {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        if let Some(frame) = runtime.dispatch(&SurfaceEvent::Wake {
-            timestamp: EventTimestamp::new(timestamp),
-        }) && frame.scene().quads().len() >= baseline_quads + 2
-        {
-            rendered = true;
-            break;
-        }
-    }
-    assert!(rendered);
-    assert!(
-        runtime
-            .dispatch(&SurfaceEvent::Wake {
-                timestamp: EventTimestamp::new(3_514),
-            })
-            .is_none()
-    );
+    assert_runtime_diagnostic_render(&mut runtime)?;
 
     let mut projected_app = StudioApp::open_file(TestTextSystem, &rust_path)?;
     let _initial_projection = projected_app.scene(SceneRevision::new(500), viewport);

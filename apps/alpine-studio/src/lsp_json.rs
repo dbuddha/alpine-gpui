@@ -212,6 +212,16 @@ pub(crate) struct RemoteError<'a> {
     data: Option<&'a RawValue>,
 }
 
+impl RemoteError<'_> {
+    pub(crate) const fn code(&self) -> i32 {
+        self.code
+    }
+
+    pub(crate) const fn data(&self) -> Option<&RawValue> {
+        self.data
+    }
+}
+
 struct RemoteErrorVisitor;
 
 impl<'de> Visitor<'de> for RemoteErrorVisitor {
@@ -507,8 +517,13 @@ pub(crate) enum PeerEvent<'a> {
     },
 }
 
+struct DiagnosticProvider {
+    identifier: Option<Box<str>>,
+}
+
 pub(crate) struct LspPeer {
     lifecycle: PeerLifecycle,
+    diagnostic_pull: Option<DiagnosticProvider>,
     next_id: u32,
     pending: Vec<PendingRequest>,
     cancelled: Vec<RequestId>,
@@ -521,6 +536,7 @@ impl LspPeer {
     pub(crate) const fn new() -> Self {
         Self {
             lifecycle: PeerLifecycle::Created,
+            diagnostic_pull: None,
             next_id: 0,
             pending: Vec::new(),
             cancelled: Vec::new(),
@@ -587,6 +603,15 @@ impl LspPeer {
         id: u32,
         method: &str,
     ) -> Result<OutboundMessage, ProtocolError> {
+        // A server request can already be in flight when shutdown is sent.
+        // Respond without admitting new editor work or a success-side refresh.
+        if self.lifecycle == PeerLifecycle::ShuttingDown {
+            return build_response(
+                RequestId(id),
+                None,
+                Some(r#"{"code":-32800,"message":"Client is shutting down"}"#),
+            );
+        }
         if self.lifecycle != PeerLifecycle::Running {
             return Err(ProtocolError::InvalidLifecycle);
         }
@@ -644,6 +669,8 @@ impl LspPeer {
         }
         let message = build_call("exit", None, None)?;
         self.pending = Vec::new();
+        self.cancelled = Vec::new();
+        self.diagnostic_pull = None;
         self.lifecycle = PeerLifecycle::Exited;
         Ok(message)
     }
@@ -694,6 +721,11 @@ impl LspPeer {
                 if matches!(value, ResponseValue::Error(_)) {
                     return Err(ProtocolError::InvalidLifecycle);
                 }
+                self.diagnostic_pull = match value {
+                    ResponseValue::Result(result) => parse_diagnostic_provider(result),
+                    ResponseValue::Error(_) => None,
+                };
+                self.peak_retained_bytes = self.peak_retained_bytes.max(self.retained_bytes());
                 self.lifecycle = PeerLifecycle::Running;
                 let initialized = build_call("initialized", None, Some("{}"))?;
                 Ok(PeerEvent::Initialized(initialized))
@@ -722,6 +754,14 @@ impl LspPeer {
                 })
             }
         }
+    }
+
+    pub(crate) const fn diagnostic_pull_supported(&self) -> bool {
+        self.diagnostic_pull.is_some()
+    }
+
+    pub(crate) fn diagnostic_provider_identifier(&self) -> Option<&str> {
+        self.diagnostic_pull.as_ref()?.identifier.as_deref()
     }
 
     pub(crate) fn rollback_unsent(&mut self, id: u32) -> Result<(), ProtocolError> {
@@ -788,7 +828,40 @@ impl LspPeer {
                 .map(|pending| pending.method.len())
                 .sum::<usize>()
             + self.cancelled.capacity() * size_of::<RequestId>()
+            + self.diagnostic_provider_identifier().map_or(0, str::len)
     }
+}
+
+fn parse_diagnostic_provider(result: &RawValue) -> Option<DiagnosticProvider> {
+    // Local admission bound for the optional opaque provider identity.
+    const MAX_PROVIDER_IDENTIFIER_BYTES: usize = 256;
+    let value = crate::lsp_value::parse(result).ok()?;
+    let provider = value
+        .get("capabilities")
+        .and_then(|capabilities| capabilities.get("diagnosticProvider"))
+        .and_then(serde_json::Value::as_object)?;
+    if provider
+        .get("interFileDependencies")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+        || provider
+            .get("workspaceDiagnostics")
+            .and_then(serde_json::Value::as_bool)
+            .is_none()
+    {
+        return None;
+    }
+    let identifier = match provider.get("identifier") {
+        None => None,
+        Some(value) => {
+            let identifier = value.as_str()?;
+            if identifier.len() > MAX_PROVIDER_IDENTIFIER_BYTES {
+                return None;
+            }
+            Some(identifier.into())
+        }
+    };
+    Some(DiagnosticProvider { identifier })
 }
 
 fn reserve_pending(pending: &mut Vec<PendingRequest>) -> Result<(), ProtocolError> {
@@ -1010,6 +1083,23 @@ mod tests {
             br#"{"jsonrpc":"2.0","id":9,"error":{"code":-32601,"message":"Method not found"}}"#
         );
         peer.begin_shutdown()?;
+        for method in ["workspace/diagnostic/refresh", "rust-analyzer/extension"] {
+            let cancelled = peer.respond_to_server_request(1, method)?;
+            assert_eq!(
+                cancelled.body(),
+                br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32800,"message":"Client is shutting down"}}"#
+            );
+        }
+        assert_eq!(
+            peer.begin_request("textDocument/hover", None, stamp(1)),
+            Err(ProtocolError::InvalidLifecycle)
+        );
+        assert_eq!(
+            peer.notification("textDocument/didChange", None),
+            Err(ProtocolError::InvalidLifecycle)
+        );
+        peer.receive(br#"{"jsonrpc":"2.0","id":2,"result":null}"#, None)?;
+        peer.exit()?;
         assert_eq!(
             peer.respond_to_server_request(1, "workspace/diagnostic/refresh"),
             Err(ProtocolError::InvalidLifecycle)

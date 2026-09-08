@@ -30,9 +30,43 @@ const MAX_ARGUMENTS: usize = 64;
 const MAX_ARGUMENT_BYTES: usize = 4_096;
 const MAX_CONFIGURATION_BYTES: usize = 65_536;
 const SUPERVISOR_POLL: Duration = Duration::from_millis(2);
-const SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) type ProcessWake = Arc<dyn Fn() + Send + Sync + 'static>;
+
+#[cfg(test)]
+fn record_lsp_startup_phase(phase: &str, detail: u64) {
+    static RECORDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    const MAX_RECORDS: usize = 64;
+    let Some(path) = std::env::var_os("ALPINE_STUDIO_LSP_STARTUP_TIMING") else {
+        return;
+    };
+    let Ok(index) = RECORDS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        value.checked_add(1).filter(|next| *next <= MAX_RECORDS)
+    }) else {
+        return;
+    };
+    let phase = if index == MAX_RECORDS - 1 {
+        "trace-budget-exhausted"
+    } else {
+        phase
+    };
+    let result = (|| -> io::Result<()> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos();
+        let record = format!(
+            "{timestamp}\ttransport\t{}\t{phase}\t{detail}\n",
+            std::process::id()
+        );
+        let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+        file.write_all(record.as_bytes())
+    })();
+    if let Err(error) = result {
+        eprintln!("invalid LSP startup capture: {error}");
+    }
+}
 
 trait ThreadSpawner {
     fn spawn<F>(
@@ -586,9 +620,9 @@ pub(crate) struct LanguageServerProcess {
     epoch: ProcessEpoch,
     next_sequence: u64,
     #[cfg(test)]
-    _inert_control: Option<Receiver<Control>>,
+    inert_control: Option<Receiver<Control>>,
     #[cfg(test)]
-    _inert_events: Option<SyncSender<ProcessEvent>>,
+    inert_events: Option<SyncSender<ProcessEvent>>,
 }
 
 impl LanguageServerProcess {
@@ -655,9 +689,9 @@ impl LanguageServerProcess {
             epoch,
             next_sequence: 0,
             #[cfg(test)]
-            _inert_control: None,
+            inert_control: None,
             #[cfg(test)]
-            _inert_events: None,
+            inert_events: None,
         })
     }
 
@@ -679,8 +713,8 @@ impl LanguageServerProcess {
             identity,
             epoch: ProcessEpoch(1),
             next_sequence: 0,
-            _inert_control: Some(control_receiver),
-            _inert_events: Some(event_sender),
+            inert_control: Some(control_receiver),
+            inert_events: Some(event_sender),
         }
     }
 
@@ -765,6 +799,60 @@ impl LanguageServerProcess {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn take_input_for_test(&mut self) -> Result<Option<Vec<u8>>, ProcessFailure> {
+        let controls = self
+            .inert_control
+            .as_ref()
+            .ok_or_else(|| broken_pipe(ProcessStage::Input))?;
+        match controls.try_recv() {
+            Ok(Control::Input {
+                identity,
+                epoch,
+                payload,
+                ..
+            }) if identity == self.identity && epoch == self.epoch => {
+                // Consume actual outbound bytes without fabricating writer
+                // acknowledgements or successful-write counters.
+                Ok(Some(payload.bytes.to_vec()))
+            }
+            Ok(_) => Err(ProcessFailure::io(
+                ProcessStage::Input,
+                &io::Error::new(io::ErrorKind::InvalidData, "unexpected fixture control"),
+            )),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => Err(broken_pipe(ProcessStage::Input)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_stdout_for_test(&mut self, bytes: &[u8]) -> Result<(), ProcessFailure> {
+        let events = self
+            .inert_events
+            .as_ref()
+            .ok_or_else(|| broken_pipe(ProcessStage::Output))?;
+        let payload = Payload::copy(bytes, &self.counters, ProcessStage::Output)?;
+        // Only replace the child producer. Admission, ownership, framing and
+        // the client consumer remain the production path under test.
+        if emit(
+            events,
+            ProcessEvent::Output {
+                identity: self.identity,
+                epoch: self.epoch,
+                stream: ProcessStream::Stdout,
+                payload,
+            },
+            &self.counters,
+        ) {
+            Ok(())
+        } else {
+            Err(ProcessFailure::io(
+                ProcessStage::Output,
+                &io::Error::new(io::ErrorKind::WouldBlock, "test event queue is full"),
+            ))
+        }
+    }
+
     pub(crate) fn snapshot(&self) -> ProcessSnapshot {
         ProcessSnapshot {
             configuration_bytes: self.configuration_bytes,
@@ -786,13 +874,17 @@ impl LanguageServerProcess {
     }
 
     pub(crate) fn shutdown(&mut self) -> ProcessSnapshot {
+        self.shutdown_with_budget(SUPERVISOR_SHUTDOWN_TIMEOUT)
+    }
+
+    pub(crate) fn shutdown_with_budget(&mut self, budget: Duration) -> ProcessSnapshot {
         self.control.take();
         self.shutdown.store(true, Ordering::Release);
         if let Some(supervisor) = self.supervisor.take() {
             join_supervisor(
                 supervisor,
                 &self.supervisor_complete,
-                SUPERVISOR_SHUTDOWN_TIMEOUT,
+                budget.min(SUPERVISOR_SHUTDOWN_TIMEOUT),
                 &self.counters,
             );
         }
@@ -839,6 +931,8 @@ fn supervise(
     shutdown: Arc<AtomicBool>,
     counters: Arc<Counters>,
 ) {
+    #[cfg(test)]
+    record_lsp_startup_phase("supervisor-enter", 0);
     let mut running = start_running(&spec, first_identity, first_epoch, &events, &counters);
     let mut continue_supervising = true;
     while continue_supervising && !shutdown.load(Ordering::Acquire) {
@@ -935,6 +1029,8 @@ fn start_running(
     match spawn_process(spec, identity, epoch, counters) {
         Ok(process) => {
             counters.starts.fetch_add(1, Ordering::Relaxed);
+            #[cfg(test)]
+            record_lsp_startup_phase("started-ready", u64::from(process.child.id()));
             if emit(
                 events,
                 ProcessEvent::Started {
@@ -1228,9 +1324,13 @@ fn spawn_process_with<S: ThreadSpawner>(
     if let Some(directory) = &spec.working_directory {
         command.current_dir(directory);
     }
+    #[cfg(test)]
+    record_lsp_startup_phase("spawn-enter", 0);
     let mut child = command
         .spawn()
         .map_err(|error| ProcessFailure::io(ProcessStage::SpawnChild, &error))?;
+    #[cfg(test)]
+    record_lsp_startup_phase("spawn-return", u64::from(child.id()));
     let stdin = take_pipe(child.stdin.take(), ProcessStage::SpawnInput)?;
     let stdout = take_pipe(child.stdout.take(), ProcessStage::SpawnStdout)?;
     let stderr = take_pipe(child.stderr.take(), ProcessStage::SpawnStderr)?;
@@ -1321,11 +1421,22 @@ fn writer<W: Write>(
 ) {
     while let Ok(request) = requests.recv() {
         let bytes = request.payload.bytes.len();
+        #[cfg(test)]
+        record_lsp_startup_phase("stdin-write-enter", request.sequence.get());
         let result = stdin
             .write_all(&request.payload.bytes)
             .and_then(|()| stdin.flush())
             .map_err(|error| ProcessFailure::io(ProcessStage::Input, &error));
         let failed = result.is_err();
+        #[cfg(test)]
+        record_lsp_startup_phase(
+            if failed {
+                "stdin-write-failed"
+            } else {
+                "stdin-write-complete"
+            },
+            request.sequence.get(),
+        );
         drop(request.payload);
         if results
             .try_send(WriteResult {
@@ -1350,10 +1461,31 @@ fn reader<R: Read>(
 ) {
     let mut buffer = vec![0u8; OUTPUT_CHUNK_BYTES].into_boxed_slice();
     loop {
+        #[cfg(test)]
+        record_lsp_startup_phase(
+            match stream {
+                ProcessStream::Stdout => "stdout-read-enter",
+                ProcessStream::Stderr => "stderr-read-enter",
+            },
+            0,
+        );
         let read = match source.read(&mut buffer) {
-            Ok(0) | Err(_) => return,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Ok(0) | Err(_) => {
+                #[cfg(test)]
+                record_lsp_startup_phase("pipe-read-terminal", 0);
+                return;
+            }
             Ok(read) => read,
         };
+        #[cfg(test)]
+        record_lsp_startup_phase(
+            match stream {
+                ProcessStream::Stdout => "stdout-read-complete",
+                ProcessStream::Stderr => "stderr-read-complete",
+            },
+            u64::try_from(read).unwrap_or(u64::MAX),
+        );
         let Ok(payload) = Payload::copy(&buffer[..read], counters, ProcessStage::Output) else {
             overflowed.store(true, Ordering::Release);
             return;
@@ -1371,11 +1503,17 @@ fn stop_running(process: &mut Running, kill: bool) -> bool {
         let _ = process.child.kill();
     }
     let _ = process.child.wait();
-    join_helpers(&mut process.helpers)
+    join_helpers(process.helpers.drain(..).map(JoinHandle::join))
 }
 
-fn join_helpers(helpers: &mut Vec<JoinHandle<()>>) -> bool {
-    helpers.drain(..).any(|helper| helper.join().is_err())
+fn join_helpers(joins: impl Iterator<Item = thread::Result<()>>) -> bool {
+    // Advancing this iterator performs each owned join. A short-circuiting
+    // reduction would detach the remaining helpers after the first panic.
+    let mut panicked = false;
+    for result in joins {
+        panicked |= result.is_err();
+    }
+    panicked
 }
 
 fn take_pipe<T>(pipe: Option<T>, stage: ProcessStage) -> Result<T, ProcessFailure> {

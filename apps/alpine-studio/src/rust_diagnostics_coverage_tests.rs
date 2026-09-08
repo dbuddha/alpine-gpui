@@ -405,7 +405,7 @@ fn lifecycle_failures_and_poll_classes_are_bounded() -> Result<(), Box<dyn Error
     assert!(!classes.apply_poll(LspClientPoll::Stopped(StopReason::Restart), &mut visual));
     classes.session.as_mut().ok_or("session")?.state = SessionState::Starting;
     classes.session.as_mut().ok_or("session")?.pending_change = true;
-    assert!(!classes.apply_poll(
+    assert!(classes.apply_poll(
         LspClientPoll::InputRejected {
             sequence: InputSequence::for_test(1),
             failure: ProcessFailure {
@@ -419,7 +419,7 @@ fn lifecycle_failures_and_poll_classes_are_bounded() -> Result<(), Box<dyn Error
     assert!(visual);
     assert!(!classes.session.as_ref().ok_or("session")?.pending_change);
     classes.session.as_mut().ok_or("session")?.state = SessionState::Open;
-    assert!(!classes.apply_poll(
+    assert!(classes.apply_poll(
         LspClientPoll::InputRejected {
             sequence: InputSequence::for_test(2),
             failure: ProcessFailure {
@@ -430,7 +430,7 @@ fn lifecycle_failures_and_poll_classes_are_bounded() -> Result<(), Box<dyn Error
         },
         &mut visual,
     ));
-    assert!(classes.session.as_ref().ok_or("session")?.pending_change);
+    assert!(!classes.session.as_ref().ok_or("session")?.pending_change);
     assert!(classes.apply_poll(
         LspClientPoll::Exited {
             success: false,
@@ -1153,19 +1153,40 @@ fn completion_cancellation_and_request_failures_are_bounded() -> Result<(), Box<
 
 fn wait_for_running_peer(model: &mut RustDiagnostics) -> Result<LanguageWake, Box<dyn Error>> {
     let wake = model.current_wake_for_test().ok_or("language wake")?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
         let _ = model.poll(wake);
         let running = model.session.as_ref().is_some_and(|session| {
             let snapshot = session.client.snapshot();
-            snapshot.started && snapshot.peer.lifecycle() == crate::lsp_json::PeerLifecycle::Running
+            snapshot.started
+                && snapshot.peer.lifecycle() == crate::lsp_json::PeerLifecycle::Running
+                && session.workspace_ready()
         });
         if running {
             return Ok(wake);
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    Err("timed out waiting for running language peer".into())
+    Err(format!(
+        "timed out waiting for running language peer after {:?}; \
+         wake={wake:?}; current_wake={:?}; status={:?}; model={:?}; \
+         client={:?}; readiness(active_view,open,document_opened,pending_change,writer,closes)={:?}",
+        started.elapsed(),
+        model.current_wake_for_test(),
+        model.status_message(),
+        model.snapshot(),
+        model.session.as_ref().map(|session| session.client.snapshot()),
+        model.session.as_ref().map(|session| (
+            session.active_view,
+            session.state == SessionState::Open,
+            session.document_opened,
+            session.pending_change,
+            session.overlay_write,
+            session.overlay_closes.len(),
+        )),
+    )
+    .into())
 }
 
 fn installed_process_model() -> Result<(RustDiagnostics, PathBuf), Box<dyn Error>> {

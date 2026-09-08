@@ -1,4 +1,4 @@
-use std::{env, thread, time::Instant};
+use std::{collections::VecDeque, env, thread, time::Instant};
 
 use super::*;
 
@@ -64,6 +64,142 @@ impl Read for FailingReader {
     }
 }
 
+struct ScriptedReader {
+    steps: VecDeque<io::Result<&'static [u8]>>,
+    reads: usize,
+}
+
+impl Read for ScriptedReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        self.reads += 1;
+        let bytes = self.steps.pop_front().unwrap_or(Ok(&[]))?;
+        output[..bytes.len()].copy_from_slice(bytes);
+        Ok(bytes.len())
+    }
+}
+
+#[test]
+fn transport_reader_retries_interrupts_without_losing_order_or_bytes() {
+    for stream in [ProcessStream::Stdout, ProcessStream::Stderr] {
+        let counters = Arc::new(Counters::default());
+        let overflowed = AtomicBool::new(false);
+        let (sender, receiver) = sync_channel(3);
+        let mut source = ScriptedReader {
+            steps: vec![
+                Err(io::Error::from(io::ErrorKind::Interrupted)),
+                Ok(&b"Content-Length: 2\r\n"[..]),
+                Err(io::Error::from(io::ErrorKind::Interrupted)),
+                Err(io::Error::from(io::ErrorKind::Interrupted)),
+                Ok(&b"\r\n{}"[..]),
+                Ok(&b""[..]),
+                Ok(&b"must not read after EOF"[..]),
+            ]
+            .into(),
+            reads: 0,
+        };
+        reader(&mut source, stream, &sender, &overflowed, &counters);
+        assert_eq!(source.reads, 6);
+        assert_eq!(source.steps.len(), 1);
+        let packets: Vec<_> = receiver.try_iter().collect();
+        assert_eq!(packets.len(), 2);
+        assert!(packets.iter().all(|packet| packet.stream == stream));
+        let bytes: Vec<_> = packets
+            .iter()
+            .flat_map(|packet| packet.payload.bytes.iter().copied())
+            .collect();
+        assert_eq!(bytes, b"Content-Length: 2\r\n\r\n{}");
+        assert!(!overflowed.load(Ordering::Acquire));
+        assert_eq!(counters.retained_bytes.load(Ordering::Acquire), bytes.len());
+        assert_eq!(
+            counters.peak_retained_bytes.load(Ordering::Acquire),
+            bytes.len()
+        );
+        drop(packets);
+        assert_eq!(counters.retained_bytes.load(Ordering::Acquire), 0);
+    }
+}
+
+#[test]
+fn transport_reader_does_not_retry_fatal_errors_or_consume_following_bytes()
+-> Result<(), Box<dyn Error>> {
+    for kind in [
+        io::ErrorKind::BrokenPipe,
+        io::ErrorKind::PermissionDenied,
+        io::ErrorKind::UnexpectedEof,
+    ] {
+        let counters = Arc::new(Counters::default());
+        let overflowed = AtomicBool::new(false);
+        let (sender, receiver) = sync_channel(3);
+        let mut source = ScriptedReader {
+            steps: vec![
+                Ok(&b"before"[..]),
+                Err(io::Error::from(kind)),
+                Ok(&b"must not read after error"[..]),
+            ]
+            .into(),
+            reads: 0,
+        };
+        reader(
+            &mut source,
+            ProcessStream::Stdout,
+            &sender,
+            &overflowed,
+            &counters,
+        );
+        assert_eq!(source.reads, 2);
+        assert_eq!(source.steps.len(), 1);
+        let packet = receiver.try_recv()?;
+        assert_eq!(&*packet.payload.bytes, b"before");
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+        assert!(!overflowed.load(Ordering::Acquire));
+        drop(packet);
+        assert_eq!(counters.retained_bytes.load(Ordering::Acquire), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn transport_join_consumes_all_results_after_every_panic_position() {
+    for panic_mask in 0_u8..8 {
+        let consumed = std::cell::Cell::new(0);
+        let joins = (0..3).map(|index| -> thread::Result<()> {
+            consumed.set(consumed.get() + 1);
+            if panic_mask & (1 << index) == 0 {
+                Ok(())
+            } else {
+                Err(Box::new(index))
+            }
+        });
+        assert_eq!(join_helpers(joins), panic_mask != 0);
+        assert_eq!(consumed.get(), 3);
+    }
+    assert!(!join_helpers(std::iter::empty()));
+}
+
+#[test]
+fn transport_join_drains_real_helpers_and_preserves_the_panic_result() {
+    for panic_at in [None, Some(0), Some(1), Some(2)] {
+        let completed = Arc::new(AtomicUsize::new(0));
+        let mut helpers: Vec<_> = (0..3)
+            .map(|index| {
+                let completed = Arc::clone(&completed);
+                thread::spawn(move || {
+                    completed.fetch_or(1 << index, Ordering::Release);
+                    if panic_at == Some(index) {
+                        std::panic::resume_unwind(Box::new("injected helper panic"));
+                    }
+                })
+            })
+            .collect();
+        assert_eq!(
+            join_helpers(helpers.drain(..).map(JoinHandle::join)),
+            panic_at.is_some()
+        );
+        assert!(helpers.is_empty());
+        assert_eq!(completed.load(Ordering::Acquire), 7);
+    }
+}
+
 fn started(identity: ProcessIdentity, epoch: ProcessEpoch) -> ProcessEvent {
     ProcessEvent::Started {
         identity,
@@ -88,9 +224,31 @@ fn detached_process(
         identity: identity(1),
         epoch: ProcessEpoch(1),
         next_sequence: 0,
-        _inert_control: None,
-        _inert_events: None,
+        inert_control: None,
+        inert_events: None,
     }
+}
+
+#[test]
+fn shutdown_budget_exhaustion_is_reported_without_a_second_wait() {
+    let (_event_sender, events) = sync_channel(1);
+    let mut process = detached_process(None, events);
+    let (release, released) = sync_channel(1);
+    let (finished, completion) = sync_channel(1);
+    process.supervisor_complete = completion;
+    process.supervisor = Some(thread::spawn(move || {
+        let _ = released.recv();
+        let _ = finished.send(());
+    }));
+    let report = process.shutdown_with_budget(Duration::ZERO);
+    assert_eq!(report.shutdown_timeouts, 1);
+    assert!(process.supervisor.is_none());
+    assert_eq!(
+        process.supervisor_complete.try_recv(),
+        Err(TryRecvError::Empty)
+    );
+    assert!(release.send(()).is_ok());
+    assert_eq!(process.supervisor_complete.recv_timeout(TIMEOUT), Ok(()));
 }
 
 fn wait_for(
@@ -427,7 +585,7 @@ fn pipe_wait_join_and_event_failures_are_structured() -> Result<(), Box<dyn Erro
     let mut helpers = vec![thread::spawn(|| {
         std::panic::resume_unwind(Box::new("injected helper panic"));
     })];
-    assert!(join_helpers(&mut helpers));
+    assert!(join_helpers(helpers.drain(..).map(JoinHandle::join)));
 
     let counters = Counters::default();
     let (full_sender, _full_receiver) = sync_channel(0);
@@ -1069,8 +1227,8 @@ fn drop_signals_and_joins_the_owned_supervisor() {
         identity: identity(1),
         epoch: ProcessEpoch(1),
         next_sequence: 0,
-        _inert_control: None,
-        _inert_events: None,
+        inert_control: None,
+        inert_events: None,
     };
     drop(process);
     assert!(observed.load(Ordering::Acquire));

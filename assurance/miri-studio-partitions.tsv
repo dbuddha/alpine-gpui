@@ -23,6 +23,7 @@ lsp_language::tests::diagnostics_are_revision_checked_and_byte_accounted	studio-
 lsp_language::tests::diagnostics_fail_closed_at_every_independent_bound	studio-language-protocol-08
 lsp_language::tests::document_identity_serializes_utf16_lsp_contracts	studio-language-protocol-09
 lsp_process::	studio-language-transport
+lsp_value::	studio-language-transport
 panes::	studio-model
 project_search::	studio-workspace
 project_search_tests::	studio-workspace
@@ -88,6 +89,7 @@ tests::find_scroll_and_replacement_budget_boundaries_are_exact	studio-app-03
 tests::focus_epoch_admission_preserves_current_and_cancels_future_sessions	studio-app-03
 tests::focus_epochs_cancel_every_composing_owner_and_reject_obsolete_mutation	studio-app-03
 tests::folder_launch_primes_lazy_tree_without_stealing_editor_focus	studio-app-03
+tests::fresh_document_language_epochs_are_nonzero_distinct_and_fail_closed_on_exhaustion	studio-app-06
 tests::full_atlas_adaptation_rejects_malformed_bytes	studio-app-03
 tests::grapheme_delete_and_command_undo_restore_text	studio-app-03
 tests::glyph_geometry_and_atlas_publication_axes_are_exact	studio-app-03
@@ -117,6 +119,7 @@ tests::rejected_recovery_launch_preserves_journal_bytes_and_failure_identity	stu
 tests::release_profile_event_kind_vocabulary_is_stable	studio-app-05
 tests::release_profile_points_preserve_event_frame_stage_order_and_failure_outcome	studio-app-05
 tests::runtime_builds_only_after_an_accepted_editor_change	studio-app-04
+tests::runtime_diagnostic_readiness_rejects_status_without_diagnostics	studio-app-06
 tests::runtime_file_tree_submission_admits_and_forced_failure_rolls_back	studio-app-05
 tests::runtime_find_failures_are_bounded_and_visible	studio-app-06
 tests::find_submission_errors_retry_only_saturation_and_reject_terminal_failures	studio-app-06
@@ -126,6 +129,7 @@ tests::runtime_quick_open_worker_admits_inventory_and_ranked_results	studio-app-
 tests::failed_rust_server_does_not_reinvalidate_noop_keyboard_events	studio-app-06
 tests::runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work	studio-app-06
 tests::rust_navigation_file_admission_and_document_state_fail_closed	studio-app-06
+tests::saved_notifications::	studio-app-06
 tests::scroll_and_pointer_selection_use_rendered_visible_lines	studio-app-04
 tests::selection_revision_advances_only_for_real_selection_changes	studio-app-06
 tests::selection_spans_lines_and_unchanged_atlas_storage_is_reused	studio-app-06
