@@ -231,12 +231,21 @@ fn saved_poll_foreign_reports_are_quiet_and_owned_clear_preserves_native_data()
     assert!(poll_saved_frames(&mut model, &[saved_params(&uri, false)])?.visual_changed);
     let accepted = model.snapshot();
     let status = model.status_message();
+    // This is rejected server input, never a shipping endpoint or network path.
+    let foreign: serde_json::Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/lsp-foreign-diagnostic.json"
+    ))?;
+    assert!(
+        foreign["uri"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with("https:"))
+    );
     assert!(
         !poll_saved_frames(
             &mut model,
             &[
                 saved_params("file:///tmp/unloaded-compiler-report.rs", false),
-                saved_params("https://invalid.example/not-local.rs", false),
+                foreign,
             ]
         )?
         .visual_changed

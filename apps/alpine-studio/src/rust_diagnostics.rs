@@ -1180,10 +1180,11 @@ impl RustDiagnostics {
     }
 
     pub(crate) fn status_message(&self) -> Option<Arc<str>> {
-        let saved = self.session.as_ref().and_then(|session| {
-            session.active_view.then_some(())?;
-            session.saved_compiler.as_ref()?.status()
-        });
+        let session = self.session.as_ref();
+        if session.is_some_and(|session| !session.active_view) {
+            return None;
+        }
+        let saved = session.and_then(|session| session.saved_compiler.as_ref()?.status());
         match (&self.status, saved) {
             (Some(current), Some(saved)) => Some(Arc::from(format!("{current} | {saved}"))),
             (Some(current), None) => Some(current.clone()),

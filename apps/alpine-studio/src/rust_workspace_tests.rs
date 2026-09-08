@@ -532,12 +532,16 @@ fn installed_workspace() -> Result<(RustDiagnostics, RustDocumentInput, PathBuf)
 fn inactive_workspace_reconciliation_is_quiet_after_the_view_transition()
 -> Result<(), Box<dyn Error>> {
     let (mut model, input, root) = installed_workspace()?;
+    let initial_status = model.status_message().ok_or("initial diagnostic status")?;
     let first = model.sync_workspace([input.clone()], None, |_| Arc::new(|| {}));
     assert!(first.visual_changed);
+    assert!(model.status_message().is_none());
+    assert_eq!(model.status.as_deref(), Some(initial_status.as_ref()));
     for _ in 0..100 {
         let next = model.sync_workspace([input.clone()], None, |_| Arc::new(|| {}));
         assert!(!next.visual_changed);
         assert!(next.continuation.is_none());
+        assert!(model.status_message().is_none());
         let session = model.session.as_ref().ok_or("workspace lost")?;
         assert!(!session.active_view);
         assert!(session.document_opened);
@@ -550,6 +554,10 @@ fn inactive_workspace_reconciliation_is_quiet_after_the_view_transition()
             .visual_changed
     );
     assert!(model.session.as_ref().ok_or("workspace")?.workspace_ready());
+    assert_eq!(
+        model.status_message().as_deref(),
+        Some(initial_status.as_ref())
+    );
     retire_inert_workspace(&mut model);
     std::fs::remove_dir_all(root)?;
     Ok(())
