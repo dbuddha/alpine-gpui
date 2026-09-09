@@ -27,7 +27,11 @@ fn prepared_cancellation_retains_original_bytes_through_both_pressure_bounds()
             .ok_or("prepared bytes")?
             .bytes()
             .to_vec();
-        let fill_count = if retained_budget { 1 } else { 8 };
+        let fill_count = if retained_budget {
+            1
+        } else {
+            crate::lsp_process::INPUT_CAPACITY
+        };
         for _ in 0..fill_count {
             if retained_budget {
                 // Occupy the real transport byte budget, not a server transcript.

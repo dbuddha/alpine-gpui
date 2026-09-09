@@ -446,6 +446,11 @@ impl LspClient {
     }
 
     #[cfg(test)]
+    pub(crate) fn fill_control_for_test(&self) -> Result<usize, LspClientError> {
+        self.process.fill_control_for_test().map_err(Into::into)
+    }
+
+    #[cfg(test)]
     pub(crate) fn take_input_observer_for_test(
         &mut self,
     ) -> Result<crate::lsp_process::ProcessInputObserver, LspClientError> {
@@ -665,15 +670,19 @@ impl LspClient {
             return Err(error);
         }
         let mut sent = 0;
-        while let Some(write) = self.protocol_writes.front() {
+        while let Some(write) = self.protocol_writes.pop_front() {
             match self.process.send(write.outbound.bytes()) {
                 Ok(_) => {}
-                Err(SubmitError::Saturated | SubmitError::RetainedBudget) => break,
-                Err(error) => return self.fail_protocol(error.into()),
+                Err(error) => {
+                    // Admission failed, so this owner retains the same FIFO
+                    // entry and byte reservation. Popping preserved capacity.
+                    self.protocol_writes.push_front(write);
+                    match error {
+                        SubmitError::Saturated | SubmitError::RetainedBudget => break,
+                        error => return self.fail_protocol(error.into()),
+                    }
+                }
             }
-            let Some(write) = self.protocol_writes.pop_front() else {
-                return self.fail_protocol(ProtocolError::InvalidLifecycle.into());
-            };
             self.protocol_payload_bytes -= write.outbound.bytes().len();
             sent += 1;
             Self::complete_protocol_write(write, visitor);
@@ -1265,27 +1274,42 @@ mod tests {
             thread::sleep(Duration::from_millis(2));
         }
 
-        client.begin_request("test/block", None, current)?;
-        thread::sleep(Duration::from_millis(20));
-        let queued_params = format!(r#"{{"value":"{}"}}"#, "q".repeat(262_144));
-        let queued_params = serde_json::from_str::<Box<RawValue>>(&queued_params)?;
-        for _ in 0..16 {
-            let _ = client.begin_request("test/queued", Some(&queued_params), current);
-        }
+        let _ = client.begin_request("test/crash", None, current)?;
+        let exited = wait_poll(&mut client, Some(current), |poll| {
+            matches!(poll, LspClientPoll::Exited { .. })
+        })?;
+        assert!(matches!(
+            exited,
+            LspClientPoll::Exited {
+                success: false,
+                code: Some(7)
+            }
+        ));
+        // Ordinary pressure is refused before ownership transfer. Exercise a
+        // genuine asynchronous failure through the still-owned supervisor
+        // after observing its child's exit, not through an overloaded queue.
+        let written = client.snapshot().process.written_inputs;
+        let sequence = client
+            .process
+            .send(b"unwritable after observed child exit")?;
         let rejected = wait_poll(&mut client, Some(current), |poll| {
             matches!(poll, LspClientPoll::InputRejected { .. })
         })?;
-        assert!(matches!(
-            rejected,
-            LspClientPoll::InputRejected {
-                failure: ProcessFailure {
-                    stage: ProcessStage::Input,
-                    kind: FailureKind::QueueSaturated,
-                    ..
-                },
-                ..
-            }
-        ));
+        assert!(
+            matches!(
+                rejected,
+                LspClientPoll::InputRejected {
+                    sequence: rejected_sequence,
+                    failure: ProcessFailure {
+                        stage: ProcessStage::Input,
+                        kind: FailureKind::Io(std::io::ErrorKind::BrokenPipe),
+                        raw_os_error: None,
+                    },
+                } if rejected_sequence == sequence
+            ),
+            "unexpected rejection: {rejected:?}"
+        );
+        assert_eq!(client.snapshot().process.written_inputs, written);
         client.shutdown();
 
         let mut overflowing = start_initialized(executable, 2)?;

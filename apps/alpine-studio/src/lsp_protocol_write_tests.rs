@@ -1,5 +1,7 @@
 use super::*;
 
+const PRESSURE_INPUTS: usize = crate::lsp_process::INPUT_CAPACITY;
+
 fn frame(value: &serde_json::Value) -> Vec<u8> {
     let body = value.to_string();
     format!("Content-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
@@ -34,9 +36,9 @@ fn ready() -> Result<LspClient, Box<dyn Error>> {
     Ok(client)
 }
 
-// Occupy the real bounded transport controls, not a server transcript.
+// Occupy real end-to-end input permits, not a server transcript.
 fn saturate(client: &mut LspClient) -> Result<(), Box<dyn Error>> {
-    for _ in 0..8 {
+    for _ in 0..PRESSURE_INPUTS {
         let _ = client.process.send(b"occupied")?;
     }
     assert_eq!(
@@ -47,7 +49,7 @@ fn saturate(client: &mut LspClient) -> Result<(), Box<dyn Error>> {
 }
 
 fn drain_pressure(client: &mut LspClient) -> Result<(), Box<dyn Error>> {
-    for _ in 0..8 {
+    for _ in 0..PRESSURE_INPUTS {
         assert_eq!(
             client.take_input_for_test()?.as_deref(),
             Some(b"occupied".as_slice())
@@ -69,6 +71,57 @@ fn poll_without_publication(client: &mut LspClient) -> Result<LspClientPoll, Lsp
 }
 
 #[test]
+fn protocol_writes_closed_transport_preserves_unsent_ownership_and_latches_failure()
+-> Result<(), Box<dyn Error>> {
+    for queued in [false, true] {
+        let mut client = ready()?;
+        if queued {
+            saturate(&mut client)?;
+            client.inject_stdout_for_test(&frame(&refresh(91)))?;
+            let mut published = 0;
+            let _ = client.poll(None, |_| published += 1)?;
+            assert_eq!(published, 1);
+            assert_eq!(client.snapshot().protocol_writes.queued, 1);
+            drain_pressure(&mut client)?;
+        }
+        let before = client.snapshot();
+        // Disconnect the actual bounded control receiver, not a fabricated
+        // send result. The independent child-output boundary remains usable.
+        drop(client.take_input_observer_for_test()?);
+        if !queued {
+            client.inject_stdout_for_test(&frame(&refresh(91)))?;
+        }
+        let failure = LspClientError::Submit(SubmitError::Closed);
+        assert_eq!(poll_without_publication(&mut client), Err(failure));
+        let failed = client.snapshot();
+        assert!(failed.protocol_writes.failed);
+        assert_eq!(failed.protocol_writes.queued, before.protocol_writes.queued);
+        assert_eq!(
+            failed.protocol_writes.payload_bytes,
+            before.protocol_writes.payload_bytes,
+        );
+        assert_eq!(
+            failed.protocol_writes.retained_bytes,
+            before.protocol_writes.retained_bytes,
+        );
+        assert_eq!(
+            failed.process.submitted_inputs,
+            before.process.submitted_inputs
+        );
+        assert_eq!(failed.process.retained_bytes, 0);
+        assert_eq!(client.notify("textDocument/didSave", None), Err(failure));
+        client.inject_stdout_for_test(&frame(&refresh(92)))?;
+        assert_eq!(poll_without_publication(&mut client), Err(failure));
+        assert_eq!(client.snapshot().process.queued_events, 0);
+        assert_eq!(client.snapshot().protocol_writes, failed.protocol_writes);
+        let report = client.shutdown();
+        assert_eq!(report.protocol_writes.retained_bytes, 0);
+        assert_eq!(report.process.retained_bytes, 0);
+    }
+    Ok(())
+}
+
+#[test]
 fn protocol_writes_graceful_shutdown_drains_pressure_with_one_deadline()
 -> Result<(), Box<dyn Error>> {
     let mut client = ready()?;
@@ -84,7 +137,7 @@ fn protocol_writes_graceful_shutdown_drains_pressure_with_one_deadline()
             (report, client.snapshot())
         });
         let mut messages = Vec::new();
-        while messages.len() < 10 {
+        while messages.len() < PRESSURE_INPUTS + 2 {
             assert!(
                 Instant::now() < deadline,
                 "shutdown did not drain its original pressure"
@@ -95,11 +148,14 @@ fn protocol_writes_graceful_shutdown_drains_pressure_with_one_deadline()
                 thread::sleep(Duration::from_millis(1));
             }
         }
-        for bytes in &messages[..8] {
+        for bytes in &messages[..PRESSURE_INPUTS] {
             assert_eq!(bytes.as_slice(), b"occupied");
         }
-        assert_eq!(decode(&messages[8])?["id"], 91);
-        assert_eq!(decode(&messages[9])?["method"], "shutdown");
+        assert_eq!(decode(&messages[PRESSURE_INPUTS])?["id"], 91);
+        assert_eq!(
+            decode(&messages[PRESSURE_INPUTS + 1])?["method"],
+            "shutdown"
+        );
         worker.join().map_err(|_| "shutdown worker panicked".into())
     })?;
     // The controlled transport supplies no shutdown reply or process exit.
@@ -108,7 +164,9 @@ fn protocol_writes_graceful_shutdown_drains_pressure_with_one_deadline()
     assert_eq!(snapshot.peer.lifecycle(), PeerLifecycle::ShuttingDown);
     assert_eq!(snapshot.protocol_writes.retained_bytes, 0);
     assert!(snapshot.protocol_writes.peak_retained_bytes > 0);
-    assert_eq!(snapshot.process.retained_bytes, 0);
+    // The worker snapshot can precede consumer drain. Observe the live owner.
+    assert!(observer.take_input()?.is_none());
+    assert_eq!(observer.retained_bytes(), 0);
     assert!(!snapshot.started);
     Ok(())
 }
@@ -146,7 +204,7 @@ fn protocol_writes_preserve_multiple_batches_partial_tail_and_fifo() -> Result<(
     );
     drain_pressure(&mut client)?;
     let mut delivered = Vec::new();
-    for _ in 0..5 {
+    for _ in 0..33_usize.div_ceil(PRESSURE_INPUTS) {
         let _ = poll_without_publication(&mut client)?;
         while let Some(bytes) = client.take_input_for_test()? {
             let response = decode(&bytes)?;
@@ -314,9 +372,18 @@ fn protocol_writes_restart_is_transactional_and_cannot_replay_old_replies()
     let _ = client.poll(None, |_| {})?;
     let snapshot = client.snapshot().protocol_writes;
     let identity = ProcessIdentity::new(1, 2).ok_or("replacement identity")?;
+    assert_eq!(client.fill_control_for_test()?, 8 - PRESSURE_INPUTS);
     assert_eq!(client.restart(identity), Err(SubmitError::Saturated.into()));
     assert_eq!(client.snapshot().protocol_writes, snapshot);
-    drain_pressure(&mut client)?;
+    let mut observer = client.take_input_observer_for_test()?;
+    for _ in 0..PRESSURE_INPUTS {
+        assert_eq!(
+            observer.take_input()?.as_deref(),
+            Some(b"occupied".as_slice())
+        );
+    }
+    assert!(observer.take_input()?.is_none());
+    assert_eq!(observer.retained_bytes(), 0);
     let _ = client.restart(identity)?;
     assert_eq!(client.snapshot().protocol_writes.retained_bytes, 0);
     assert!(!client.snapshot().started);

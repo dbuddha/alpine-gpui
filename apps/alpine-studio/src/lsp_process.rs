@@ -19,7 +19,7 @@ use std::{
 const CONTROL_CAPACITY: usize = 8;
 const EVENT_CAPACITY: usize = 16;
 const TERMINAL_EVENT_RESERVE: usize = 2;
-const INPUT_CAPACITY: usize = 4;
+pub(crate) const INPUT_CAPACITY: usize = 4;
 const OUTPUT_CAPACITY: usize = 8;
 const WRITE_RESULT_CAPACITY: usize = 8;
 const OUTPUT_CHUNK_BYTES: usize = 65_536;
@@ -398,6 +398,7 @@ struct Counters {
     peak_retained_bytes: AtomicUsize,
     queued_events: AtomicUsize,
     peak_queued_events: AtomicUsize,
+    outstanding_inputs: AtomicUsize,
     submitted_inputs: AtomicU64,
     written_inputs: AtomicU64,
     input_saturations: AtomicU64,
@@ -411,9 +412,38 @@ struct Counters {
     wake: Option<ProcessWake>,
 }
 
+// Reserve capacity across control admission, writer queuing and the active write.
+// Dequeuing or restarting does not release ownership; retirement or write/flush does.
+struct InputPermit(Arc<Counters>);
+
+impl InputPermit {
+    fn acquire(counters: &Arc<Counters>) -> Result<Self, SubmitError> {
+        counters
+            .outstanding_inputs
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current
+                    .checked_add(1)
+                    .filter(|next| *next <= INPUT_CAPACITY)
+            })
+            .map_err(|_| {
+                counters.input_saturations.fetch_add(1, Ordering::Relaxed);
+                SubmitError::Saturated
+            })?;
+        Ok(Self(Arc::clone(counters)))
+    }
+}
+
+impl Drop for InputPermit {
+    fn drop(&mut self) {
+        self.0.outstanding_inputs.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 pub(crate) struct Payload {
     bytes: Box<[u8]>,
     counters: Arc<Counters>,
+    // Outputs share the byte budget, but never consume input admission permits.
+    input_permit: Option<InputPermit>,
 }
 
 impl Payload {
@@ -437,6 +467,7 @@ impl Payload {
         Ok(Self {
             bytes: Box::from(bytes),
             counters: Arc::clone(counters),
+            input_permit: None,
         })
     }
 }
@@ -800,11 +831,13 @@ impl LanguageServerProcess {
             .next_sequence
             .checked_add(1)
             .ok_or(SubmitError::SequenceExhausted)?;
-        let payload = Payload::copy(bytes, &self.counters, ProcessStage::Input)
-            .map_err(|_| SubmitError::RetainedBudget)?;
         let Some(sender) = &self.control else {
             return Err(SubmitError::Closed);
         };
+        let permit = InputPermit::acquire(&self.counters)?;
+        let mut payload = Payload::copy(bytes, &self.counters, ProcessStage::Input)
+            .map_err(|_| SubmitError::RetainedBudget)?;
+        payload.input_permit = Some(permit);
         match sender.try_send(Control::Input {
             identity: self.identity,
             epoch: self.epoch,
@@ -871,6 +904,25 @@ impl LanguageServerProcess {
                 Err(TryRecvError::Disconnected) => return Err(SupervisorStopped),
             }
         }
+    }
+
+    // Fault-inject a genuinely full management queue without mutating the peer
+    // lifecycle. Input saturation intentionally leaves management capacity free.
+    #[cfg(test)]
+    pub(crate) fn fill_control_for_test(&self) -> Result<usize, SubmitError> {
+        let sender = self.control.as_ref().ok_or(SubmitError::Closed)?;
+        let mut admitted = 0;
+        while admitted < CONTROL_CAPACITY {
+            match sender.try_send(Control::Restart {
+                identity: self.identity,
+                epoch: self.epoch,
+            }) {
+                Ok(()) => admitted += 1,
+                Err(TrySendError::Full(_)) => break,
+                Err(TrySendError::Disconnected(_)) => return Err(SubmitError::Closed),
+            }
+        }
+        Ok(admitted)
     }
 
     #[cfg(test)]

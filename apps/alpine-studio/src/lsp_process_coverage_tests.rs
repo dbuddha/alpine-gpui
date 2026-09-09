@@ -1414,3 +1414,269 @@ fn ordinary_events_reserve_exact_capacity_for_terminal_classification() {
         Some(StopReason::EventOverflow)
     );
 }
+
+#[cfg(unix)]
+struct WriterAdmissionProbe<'a> {
+    process: &'a mut LanguageServerProcess,
+    write_admission: Option<Result<InputSequence, SubmitError>>,
+    flush_admission: Option<Result<InputSequence, SubmitError>>,
+    bytes: Vec<u8>,
+}
+
+#[cfg(unix)]
+impl Write for WriterAdmissionProbe<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.write_admission.is_none() {
+            self.write_admission = Some(self.process.send(b"write-probe"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.flush_admission.is_none() {
+            self.flush_admission = Some(self.process.send(b"flush-probe"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+struct InputAdmissionTrace {
+    overflow: Result<InputSequence, SubmitError>,
+    sequence_before: u64,
+    sequence_after: u64,
+    write_admission: Result<InputSequence, SubmitError>,
+    flush_admission: Result<InputSequence, SubmitError>,
+    bytes: Vec<u8>,
+    terminal_events: Vec<ProcessEvent>,
+    stop: Option<StopReason>,
+    recovered: InputSequence,
+    recovered_bytes: Vec<u8>,
+}
+
+#[cfg(unix)]
+fn route_admitted_input(
+    controls: &Receiver<Control>,
+    running: &mut Option<Running>,
+    events: &SyncSender<ProcessEvent>,
+    counters: &Counters,
+) -> Result<(), Box<dyn Error>> {
+    let Control::Input {
+        identity,
+        epoch,
+        sequence,
+        payload,
+    } = controls.recv_timeout(TIMEOUT)?
+    else {
+        return Err("expected an admitted input control".into());
+    };
+    handle_input_control(
+        running,
+        identity,
+        epoch,
+        WriteRequest { sequence, payload },
+        events,
+        counters,
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn capture_input_admission(
+    process: &mut LanguageServerProcess,
+    controls: &Receiver<Control>,
+    running: &mut Option<Running>,
+    requests: Receiver<WriteRequest>,
+    events: &SyncSender<ProcessEvent>,
+    counters: &Counters,
+) -> Result<InputAdmissionTrace, Box<dyn Error>> {
+    for byte in b"abcd" {
+        let _ = process.send(&[*byte])?;
+        route_admitted_input(controls, running, events, counters)?;
+    }
+    let sequence_before = process.next_sequence;
+    let overflow = process.send(b"overflow");
+    let sequence_after = process.next_sequence;
+    // On the old implementation this fifth accepted control reaches the real
+    // second-stage rejection. Retain it rather than masking that transition.
+    if overflow.is_ok() {
+        route_admitted_input(controls, running, events, counters)?;
+    }
+    running
+        .as_mut()
+        .ok_or("missing running child")?
+        .input
+        .take();
+    let (results, received_results) = sync_channel(WRITE_RESULT_CAPACITY);
+    let mut probe = WriterAdmissionProbe {
+        process,
+        write_admission: None,
+        flush_admission: None,
+        bytes: Vec::new(),
+    };
+    // A controlled Write boundary observes admission while production writer
+    // still owns its current request, including during flush. No sleeps or
+    // fabricated successful-write acknowledgements are needed.
+    writer(&mut probe, requests, &results);
+    let write_admission = probe.write_admission.ok_or("write probe did not execute")?;
+    let flush_admission = probe.flush_admission.ok_or("flush probe did not execute")?;
+    let bytes = probe.bytes;
+    let stop = forward_writes(
+        &received_results,
+        identity(1),
+        ProcessEpoch(1),
+        events,
+        counters,
+    );
+    let mut terminal_events = Vec::new();
+    while let Some(event) = process.try_event()? {
+        terminal_events.push(event);
+    }
+    let recovered = process.send(b"e")?;
+    let Control::Input { payload, .. } = controls.recv_timeout(TIMEOUT)? else {
+        return Err("recovered admission was not an input".into());
+    };
+    let recovered_bytes = payload.bytes.to_vec();
+    Ok(InputAdmissionTrace {
+        overflow,
+        sequence_before,
+        sequence_after,
+        write_admission,
+        flush_admission,
+        bytes,
+        terminal_events,
+        stop,
+        recovered,
+        recovered_bytes,
+    })
+}
+
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn input_credits_preserve_accepted_writes_across_writer_pressure() -> Result<(), Box<dyn Error>> {
+    let (control_sender, controls) = sync_channel(CONTROL_CAPACITY);
+    let (events, received_events) = sync_channel(EVENT_CAPACITY);
+    let mut process = detached_process(Some(control_sender), received_events);
+    let counters = Arc::clone(&process.counters);
+    let mut running = Some(spawn_process(
+        &ProcessSpec::new("/bin/sleep", ["30"], None)?,
+        identity(1),
+        ProcessEpoch(1),
+        &counters,
+    )?);
+    let (input, requests) = sync_channel(INPUT_CAPACITY);
+    running.as_mut().ok_or("child missing after spawn")?.input = Some(input);
+    let trace = capture_input_admission(
+        &mut process,
+        &controls,
+        &mut running,
+        requests,
+        &events,
+        &counters,
+    );
+    // Cleanup is unconditional and precedes assertions that fail on old code.
+    let panicked = running
+        .as_mut()
+        .is_some_and(|child| stop_running(child, true));
+    drop(running);
+    drop(controls);
+    let snapshot = process.shutdown();
+    let trace = trace?;
+    assert!(!panicked);
+    assert_eq!(trace.overflow, Err(SubmitError::Saturated));
+    assert_eq!(trace.sequence_before, 4);
+    assert_eq!(trace.sequence_after, trace.sequence_before);
+    assert_eq!(trace.write_admission, Err(SubmitError::Saturated));
+    assert_eq!(trace.flush_admission, Err(SubmitError::Saturated));
+    assert_eq!(trace.bytes, b"abcd");
+    assert_eq!(trace.stop, None);
+    assert_eq!(trace.terminal_events.len(), 4);
+    for (event, expected) in trace.terminal_events.iter().zip(1..=4) {
+        assert!(matches!(event, ProcessEvent::InputWritten {
+            identity: actual, epoch: ProcessEpoch(1), sequence, bytes: 1,
+        } if *actual == identity(1) && sequence.get() == expected));
+    }
+    assert_eq!(trace.recovered, InputSequence(5));
+    assert_eq!(trace.recovered_bytes, b"e");
+    assert_eq!(snapshot.written_inputs, 4);
+    assert_eq!(snapshot.submitted_inputs, 5);
+    assert_eq!(snapshot.restarts, 0);
+    assert_eq!(snapshot.retained_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn input_credits_keep_restart_independent_and_retire_old_owners() -> Result<(), Box<dyn Error>> {
+    let mut process = LanguageServerProcess::inert_for_test(identity(1));
+    let counters = Arc::clone(&process.counters);
+    let mut held = Vec::new();
+    for byte in b"abcd" {
+        let _ = process.send(&[*byte])?;
+        held.push(
+            process
+                .inert_control
+                .as_ref()
+                .ok_or("controls")?
+                .recv_timeout(TIMEOUT)?,
+        );
+    }
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 4);
+    assert_eq!(process.send(b"full"), Err(SubmitError::Saturated));
+    assert_eq!(process.restart(identity(2))?, ProcessEpoch(2));
+    // Accepting restart does not free permits still owned by the old epoch.
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 4);
+    assert_eq!(process.send(b"still-full"), Err(SubmitError::Saturated));
+    drop(held.pop());
+    assert_eq!(process.send(b"new")?, InputSequence(5));
+    let _ = process.shutdown();
+    assert!(process.shutdown.load(Ordering::Acquire));
+    drop(process);
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 3);
+    drop(held);
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    assert_eq!(counters.retained_bytes.load(Ordering::Acquire), 0);
+    Ok(())
+}
+
+#[test]
+fn input_credits_refund_every_failed_admission_without_charging_outputs()
+-> Result<(), Box<dyn Error>> {
+    let mut process = LanguageServerProcess::inert_for_test(identity(1));
+    let counters = Arc::clone(&process.counters);
+    process
+        .counters
+        .retained_bytes
+        .store(MAX_RETAINED_PAYLOAD_BYTES, Ordering::Release);
+    assert_eq!(process.send(b"x"), Err(SubmitError::RetainedBudget));
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    counters.retained_bytes.store(0, Ordering::Release);
+    process.inject_stdout_for_test(b"output")?;
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    drop(process.try_event()?.ok_or("output event")?);
+    assert_eq!(process.fill_control_for_test()?, CONTROL_CAPACITY);
+    assert_eq!(process.fill_control_for_test()?, 0);
+    assert_eq!(process.send(b"control-full"), Err(SubmitError::Saturated));
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    assert_eq!(process.next_sequence, 0);
+    let mut observer = process.take_input_observer_for_test()?;
+    assert!(observer.take_input()?.is_none());
+    assert_eq!(process.send(b"admitted")?, InputSequence(1));
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 1);
+    assert_eq!(
+        observer.take_input()?.as_deref(),
+        Some(b"admitted".as_slice())
+    );
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    drop(observer);
+    assert_eq!(process.send(b"disconnected"), Err(SubmitError::Closed));
+    assert_eq!(process.fill_control_for_test(), Err(SubmitError::Closed));
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    let _ = process.shutdown();
+    assert_eq!(process.send(b"closed"), Err(SubmitError::Closed));
+    assert_eq!(process.fill_control_for_test(), Err(SubmitError::Closed));
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    assert_eq!(counters.retained_bytes.load(Ordering::Acquire), 0);
+    Ok(())
+}

@@ -247,9 +247,18 @@ fn workspace_contract_budget_boundary_is_atomic_and_foreign_workspaces_release_r
     growing.snapshot = last_buffer.snapshot();
     growing.identity.buffer_revision = last_buffer.revision().get();
     assert!(matches!(
-        session.update_parked(growing),
+        session.update_parked(growing.clone()),
         Err(RustDiagnosticsError::OverlayBudget)
     ));
+    let active_identity = session.identity;
+    let active_version = session.lsp_version;
+    assert!(matches!(
+        session.park_and_activate(growing, true),
+        Err(RustDiagnosticsError::OverlayBudget)
+    ));
+    assert_eq!(session.identity, active_identity);
+    assert_eq!(session.lsp_version, active_version);
+    assert_eq!(session.snapshot.text(), input.snapshot.text());
     assert_eq!(session.parked.len(), 3);
     assert_eq!(session.parked[2].snapshot.len_bytes(), last_bytes);
     assert_eq!(session.parked[2].identity, roster[3].identity);
@@ -552,6 +561,41 @@ fn retire_inert_workspace(model: &mut RustDiagnostics) {
     assert_eq!(released.overlay_documents, 0);
     assert_eq!(released.overlay_retained_text_bytes, 0);
     assert_eq!(released.overlay_reserved_text_bytes, 0);
+}
+
+#[test]
+fn workspace_contract_deactivate_without_session_is_quiet() {
+    let mut model = RustDiagnostics::default();
+    let effect = model.deactivate_view();
+    assert!(!effect.visual_changed);
+    assert!(effect.continuation.is_none());
+    assert!(model.session.is_none());
+}
+
+#[test]
+fn workspace_contract_absent_active_owner_retires_authority() -> Result<(), Box<dyn Error>> {
+    let (mut model, input, root) = installed_workspace()?;
+    let starts = std::cell::Cell::new(0);
+    let effect = model.sync_workspace(
+        [input.clone()],
+        Some(input.identity.document_id + 1),
+        |_| {
+            starts.set(starts.get() + 1);
+            Arc::new(|| {})
+        },
+    );
+    assert!(effect.visual_changed);
+    assert!(effect.continuation.is_none());
+    assert!(model.session.is_none());
+    assert!(model.target.is_none());
+    assert_eq!(starts.get(), 0);
+    assert_eq!(model.snapshot().process_starts, 0);
+    let expected = RustDiagnosticsError::InvalidIdentity.to_string();
+    assert_eq!(model.status_message().as_deref(), Some(expected.as_str()));
+    assert_eq!(std::fs::read_to_string(&input.path)?, input.snapshot.text());
+    retire_inert_workspace(&mut model);
+    std::fs::remove_dir_all(root)?;
+    Ok(())
 }
 
 fn installed_workspace() -> Result<(RustDiagnostics, RustDocumentInput, PathBuf), Box<dyn Error>> {

@@ -718,13 +718,10 @@ impl LspPeer {
         }
         match pending.kind {
             PendingKind::Initialize => {
-                if matches!(value, ResponseValue::Error(_)) {
+                let ResponseValue::Result(result) = value else {
                     return Err(ProtocolError::InvalidLifecycle);
-                }
-                self.diagnostic_pull = match value {
-                    ResponseValue::Result(result) => parse_diagnostic_provider(result),
-                    ResponseValue::Error(_) => None,
                 };
+                self.diagnostic_pull = parse_diagnostic_provider(result);
                 self.peak_retained_bytes = self.peak_retained_bytes.max(self.retained_bytes());
                 self.lifecycle = PeerLifecycle::Running;
                 let initialized = build_call("initialized", None, Some("{}"))?;

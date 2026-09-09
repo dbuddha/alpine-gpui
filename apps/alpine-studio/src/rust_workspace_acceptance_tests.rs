@@ -214,6 +214,15 @@ fn workspace_acceptance_restart_cache_case(fail: bool) -> Result<(), Box<dyn Err
         .take_input_observer_for_test()?;
     workspace_acceptance_fill_input(&mut model)?;
     if fail {
+        assert_eq!(
+            model
+                .session
+                .as_ref()
+                .ok_or("workspace before rejected restart")?
+                .client
+                .fill_control_for_test()?,
+            8 - crate::lsp_process::INPUT_CAPACITY
+        );
         let failure = RustDiagnosticsError::Client(crate::lsp_client::LspClientError::Protocol(
             crate::lsp_json::ProtocolError::InvalidEnvelope,
         ));
@@ -302,6 +311,12 @@ fn workspace_acceptance_restart_ownership(exhausted: bool) -> Result<(), Box<dyn
         // Isolate the budget guard: replacement enqueue would otherwise succeed.
         workspace_acceptance_drain_pressure(&mut observer)?;
         session.restart_count = crate::rust_diagnostics::MAX_RESTARTS_PER_DOCUMENT;
+    } else {
+        // Full input ownership is not full management admission.
+        assert_eq!(
+            session.client.fill_control_for_test()?,
+            8 - crate::lsp_process::INPUT_CAPACITY
+        );
     }
     let restart_count = session.restart_count;
     let failure = RustDiagnosticsError::Client(crate::lsp_client::LspClientError::Protocol(
@@ -472,6 +487,179 @@ fn workspace_acceptance_ready_workspace()
         first,
         second,
     ))
+}
+
+#[test]
+fn workspace_acceptance_parked_position_rejection_preserves_pending_text()
+-> Result<(), Box<dyn Error>> {
+    let (mut model, _, mut second) = workspace_acceptance_ready_workspace()?;
+    let mut buffer = alpine_text::Buffer::new(&second.snapshot.text());
+    let long_line = "x".repeat(1_000_001);
+    let mut edit = alpine_text::Transaction::new(buffer.revision());
+    edit.replace(0..second.snapshot.len_bytes(), &long_line)?;
+    let _ = buffer.apply(edit)?;
+    second.snapshot = buffer.snapshot();
+    second.identity.buffer_revision = buffer.revision().get();
+    let session = model.session.as_mut().ok_or("workspace")?;
+    assert!(session.update_parked(second.clone())?);
+    assert!(session.flush_overlay()?);
+    let sequence = session.overlay_write.ok_or("long-line write")?;
+    let bytes = session
+        .client
+        .take_input_for_test()?
+        .ok_or("long-line wire missing")?;
+    let message = workspace_acceptance_decode(&bytes)?;
+    assert_eq!(message["method"], "textDocument/didChange");
+    assert_eq!(message["params"]["contentChanges"][0]["text"], long_line);
+    // Consume the real queued bytes before this state-control acknowledgement.
+    // No actual process writer or native qualification is represented here.
+    assert!(session.acknowledge_overlay(sequence));
+    assert_eq!(session.client.snapshot().process.written_inputs, 0);
+    let synced_revision = session.parked[0].synced_snapshot.revision();
+
+    let end = second.snapshot.len_bytes();
+    let mut edit = alpine_text::Transaction::new(buffer.revision());
+    edit.replace(end..end, "y")?;
+    let _ = buffer.apply(edit)?;
+    second.snapshot = buffer.snapshot();
+    second.identity.buffer_revision = buffer.revision().get();
+    assert!(session.update_parked(second.clone())?);
+    let submitted = session.client.snapshot().process.submitted_inputs;
+    assert!(matches!(
+        session.flush_overlay(),
+        Err(RustDiagnosticsError::Language(
+            LanguageProtocolError::InvalidPosition
+        ))
+    ));
+    assert!(session.overlay_write.is_none());
+    assert!(session.parked[0].pending_change);
+    assert_eq!(
+        session.parked[0].synced_snapshot.revision(),
+        synced_revision
+    );
+    assert_eq!(session.parked[0].synced_snapshot.text(), long_line);
+    assert_eq!(session.parked[0].snapshot.text(), second.snapshot.text());
+    assert_eq!(
+        session.client.snapshot().process.submitted_inputs,
+        submitted
+    );
+    assert!(session.client.take_input_for_test()?.is_none());
+    let _ = model.stop();
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_closed_cancel_retires_authority() -> Result<(), Box<dyn Error>> {
+    let (mut model, mut first, second) = workspace_acceptance_ready_workspace()?;
+    let mut observer = model
+        .session
+        .as_mut()
+        .ok_or("workspace")?
+        .client
+        .take_input_observer_for_test()?;
+    let _ = model.pump_diagnostics();
+    let messages = workspace_acceptance_messages(&mut observer)?;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["method"], "textDocument/diagnostic");
+    assert!(
+        model
+            .session
+            .as_ref()
+            .ok_or("workspace")?
+            .diagnostic_pull
+            .pending
+            .is_some()
+    );
+    drop(observer);
+    workspace_acceptance_edit(&mut first)?;
+    let expected_text = first.snapshot.text();
+    let starts = std::cell::Cell::new(0);
+    let effect = model.sync_workspace([first.clone(), second], Some(1), |_| {
+        starts.set(starts.get() + 1);
+        Arc::new(|| {})
+    });
+    assert!(effect.visual_changed);
+    assert!(effect.continuation.is_none());
+    assert!(model.session.is_none());
+    assert!(model.target.is_none());
+    assert_eq!(starts.get(), 0);
+    assert_eq!(model.snapshot().process_starts, 0);
+    let expected = RustDiagnosticsError::Client(crate::lsp_client::LspClientError::Submit(
+        crate::lsp_process::SubmitError::Closed,
+    ))
+    .to_string();
+    assert_eq!(model.status_message().as_deref(), Some(expected.as_str()));
+    assert_eq!(first.snapshot.text(), expected_text);
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_closing_budget_rejects_before_owner_replacement()
+-> Result<(), Box<dyn Error>> {
+    let (mut model, first, mut second) = workspace_acceptance_ready_workspace()?;
+    let first_text = first.snapshot.text();
+    let parked_text = second.snapshot.text();
+    let mut observer = model
+        .session
+        .as_mut()
+        .ok_or("workspace")?
+        .client
+        .take_input_observer_for_test()?;
+    workspace_acceptance_fill_input(&mut model)?;
+    for closed in 0..MAX_OVERLAY_DOCUMENTS {
+        let _ = model.record_saved_document(second.identity);
+        let session = model.session.as_ref().ok_or("workspace before close")?;
+        assert_eq!(session.overlay_closes.len(), closed);
+        assert_eq!(session.parked.len(), 1);
+        assert!(session.parked[0].pending_save.is_some());
+        let mut next = second.clone();
+        next.identity.document_id += 1;
+        next.path = next
+            .workspace_root
+            .join(format!("closing-budget-{}.rs", next.identity.document_id));
+        let _ = model.sync_workspace([first.clone(), next.clone()], Some(1), |_| Arc::new(|| {}));
+        let session = model
+            .session
+            .as_ref()
+            .ok_or("bounded close lost workspace")?;
+        assert_eq!(session.overlay_closes.len(), closed + 1);
+        assert_eq!(session.parked.len(), 1);
+        assert_eq!(session.parked[0].identity, next.identity);
+        assert!(session.overlay_write.is_none());
+        assert_eq!(model.snapshot().process_starts, 0);
+        second = next;
+    }
+    let _ = model.record_saved_document(second.identity);
+    assert_eq!(
+        model
+            .session
+            .as_ref()
+            .ok_or("full closing queue")?
+            .overlay_closes
+            .len(),
+        MAX_OVERLAY_DOCUMENTS
+    );
+    let mut next = second.clone();
+    next.identity.document_id += 1;
+    next.path = next.workspace_root.join("closing-budget-rejected.rs");
+    let starts = std::cell::Cell::new(0);
+    let effect = model.sync_workspace([first.clone(), next.clone()], Some(1), |_| {
+        starts.set(starts.get() + 1);
+        Arc::new(|| {})
+    });
+    assert!(effect.visual_changed);
+    assert!(effect.continuation.is_none());
+    assert!(model.session.is_none());
+    assert!(model.target.is_none());
+    assert_eq!(starts.get(), 0);
+    assert_eq!(model.snapshot().process_starts, 0);
+    let expected = RustDiagnosticsError::OverlayBudget.to_string();
+    assert_eq!(model.status_message().as_deref(), Some(expected.as_str()));
+    assert_eq!(first.snapshot.text(), first_text);
+    assert_eq!(second.snapshot.text(), parked_text);
+    assert_eq!(next.snapshot.text(), parked_text);
+    workspace_acceptance_drain_pressure(&mut observer)?;
+    Ok(())
 }
 
 fn workspace_acceptance_edit(input: &mut RustDocumentInput) -> Result<(), Box<dyn Error>> {
@@ -740,7 +928,7 @@ fn workspace_acceptance_unchanged_exhausted_anchor_allows_parked_edit() -> Resul
 fn workspace_acceptance_fill_input(model: &mut RustDiagnostics) -> Result<(), Box<dyn Error>> {
     let client = &mut model.session.as_mut().ok_or("workspace")?.client;
     let params = serde_json::value::RawValue::from_string("{\"value\":\"off\"}".into())?;
-    for _ in 0..8 {
+    for _ in 0..crate::lsp_process::INPUT_CAPACITY {
         let _ = client.notify("$/setTrace", Some(&params))?;
     }
     assert!(matches!(
@@ -755,7 +943,7 @@ fn workspace_acceptance_fill_input(model: &mut RustDiagnostics) -> Result<(), Bo
 fn workspace_acceptance_drain_pressure(
     observer: &mut crate::lsp_process::ProcessInputObserver,
 ) -> Result<(), Box<dyn Error>> {
-    for _ in 0..8 {
+    for _ in 0..crate::lsp_process::INPUT_CAPACITY {
         let bytes = observer.take_input()?.ok_or("bounded control missing")?;
         assert_eq!(workspace_acceptance_decode(&bytes)?["method"], "$/setTrace");
     }

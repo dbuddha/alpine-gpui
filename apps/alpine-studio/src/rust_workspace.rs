@@ -12,6 +12,14 @@ pub(super) const MAX_OVERLAY_DOCUMENTS: usize = 32;
 const MAX_OVERLAY_RETAINED_TEXT_BYTES: usize = 48 * 1_024 * 1_024;
 const MAX_DOCUMENT_BYTES: usize = 8_388_608;
 
+// Closing work owns the writer before ordinary overlay publication. An empty
+// close queue permits fallthrough only when no previous write is outstanding.
+enum ClosingFlush {
+    Empty,
+    Busy,
+    Sent,
+}
+
 // One coalescing disk-change notification per owned document. The revision
 // orders it behind overlay writes; it does not identify rustc's checked input.
 pub(super) struct PendingSave {
@@ -554,12 +562,13 @@ impl RustSession {
     // At most one overlay notification is awaiting the writer. A later update
     // coalesces into its COW snapshot; it cannot overtake an earlier wire write.
     pub(super) fn flush_overlay(&mut self) -> Result<bool, RustDiagnosticsError> {
-        if self.state != SessionState::Open || self.overlay_write.is_some() {
+        if self.state != SessionState::Open {
             return Ok(false);
         }
-        self.check_overlay_budget(0)?;
-        if !self.overlay_closes.is_empty() {
-            return self.flush_closing_document();
+        match self.flush_closing_document()? {
+            ClosingFlush::Empty => {}
+            ClosingFlush::Busy => return Ok(false),
+            ClosingFlush::Sent => return Ok(true),
         }
         if !self.document_opened || self.pending_change {
             let (method, params) = document_message(
@@ -602,9 +611,13 @@ impl RustSession {
         self.flush_saved_notification()
     }
 
-    fn flush_closing_document(&mut self) -> Result<bool, RustDiagnosticsError> {
+    fn flush_closing_document(&mut self) -> Result<ClosingFlush, RustDiagnosticsError> {
+        if self.overlay_write.is_some() {
+            return Ok(ClosingFlush::Busy);
+        }
+        self.check_overlay_budget(0)?;
         let Some(document) = self.overlay_closes.first_mut() else {
-            return Ok(false);
+            return Ok(ClosingFlush::Empty);
         };
         if let Some((current, synced)) = document.pending_text.as_ref() {
             let (method, params) =
@@ -618,12 +631,9 @@ impl RustSession {
             // The bounded process writer now owns the encoded payload. The
             // removed editor's snapshots are no longer needed by this owner.
             document.pending_text = None;
-            return Ok(true);
+            return Ok(ClosingFlush::Sent);
         }
         if let Some(save) = document.pending_save.as_mut() {
-            if save.submitted.is_some() {
-                return Ok(false);
-            }
             // A closing document cannot receive a later overlay revision.
             // This URI-only event reports its successful disk save, never the
             // authority or freshness of an in-memory text snapshot.
@@ -637,7 +647,7 @@ impl RustSession {
                 .map_err(RustDiagnosticsError::Client)?;
             save.submitted = Some(sequence);
             self.overlay_write = Some(sequence);
-            return Ok(true);
+            return Ok(ClosingFlush::Sent);
         }
         let params = document
             .document
@@ -649,7 +659,7 @@ impl RustSession {
             .map_err(RustDiagnosticsError::Client)?;
         self.overlay_write = Some(sequence);
         self.overlay_closes.remove(0);
-        Ok(true)
+        Ok(ClosingFlush::Sent)
     }
 
     fn flush_saved_notification(&mut self) -> Result<bool, RustDiagnosticsError> {

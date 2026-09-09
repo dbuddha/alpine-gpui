@@ -70,6 +70,8 @@ fn closing_saved_notifications_keep_text_save_close_and_reopen_order() -> Result
         next.path = root.join("b.rs");
         next.identity.document_id = 2;
         let session = model.session.as_mut().ok_or("workspace")?;
+        consume_closing_input(&mut session.client, "initialize", None)?;
+        let closing_uri = session.document.uri().to_owned();
         session.document_opened = opened;
         session.pending_change = opened;
         session.pending_save = Some(PendingSave {
@@ -78,6 +80,7 @@ fn closing_saved_notifications_keep_text_save_close_and_reopen_order() -> Result
         });
         let expected = session.retained_overlay_text_bytes();
         session.park_and_activate(next, false)?;
+        let reopened_uri = session.document.uri().to_owned();
         assert_eq!(session.overlay_closes.len(), 1);
         assert_eq!(session.overlay_closes[0].retained_text_bytes(), expected);
         assert!(session.flush_overlay()?);
@@ -86,6 +89,15 @@ fn closing_saved_notifications_keep_text_save_close_and_reopen_order() -> Result
         assert_eq!(session.overlay_closes[0].retained_text_bytes(), 0);
         assert!(session.overlay_closes[0].pending_save.is_some());
         assert!(!session.flush_overlay()?);
+        consume_closing_input(
+            &mut session.client,
+            if opened {
+                "textDocument/didChange"
+            } else {
+                "textDocument/didOpen"
+            },
+            Some(&closing_uri),
+        )?;
         assert!(session.acknowledge_overlay(text));
         assert!(session.flush_overlay()?);
         let save = session.overlay_write.ok_or("save write")?;
@@ -101,6 +113,11 @@ fn closing_saved_notifications_keep_text_save_close_and_reopen_order() -> Result
         assert!(!session.acknowledge_overlay(text));
         assert!(session.overlay_closes[0].pending_save.is_some());
         assert!(!session.flush_overlay()?);
+        consume_closing_input(
+            &mut session.client,
+            "textDocument/didSave",
+            Some(&closing_uri),
+        )?;
         assert!(session.acknowledge_overlay(save));
         assert!(session.overlay_closes[0].pending_save.is_none());
         assert!(session.flush_overlay()?);
@@ -110,11 +127,47 @@ fn closing_saved_notifications_keep_text_save_close_and_reopen_order() -> Result
         assert!(!session.document_opened);
         assert!(!session.flush_overlay()?);
         assert!(!session.acknowledge_overlay(save));
+        consume_closing_input(
+            &mut session.client,
+            "textDocument/didClose",
+            Some(&closing_uri),
+        )?;
         assert!(session.acknowledge_overlay(close));
         assert!(session.flush_overlay()?);
         assert!(session.document_opened);
+        consume_closing_input(
+            &mut session.client,
+            "textDocument/didOpen",
+            Some(&reopened_uri),
+        )?;
+        assert!(session.client.take_input_for_test()?.is_none());
+        assert_eq!(session.client.snapshot().process.retained_bytes, 0);
         assert!(!model.shutdown().active);
         std::fs::remove_dir_all(root)?;
+    }
+    Ok(())
+}
+
+// This is a state-transition control. Consume actual queued bytes before its
+// manual acknowledgement, but do not fabricate process writer-success counts.
+fn consume_closing_input(
+    client: &mut crate::lsp_client::LspClient,
+    method: &str,
+    uri: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    let bytes = client
+        .take_input_for_test()?
+        .ok_or("missing closing input")?;
+    let mut framer =
+        crate::lsp_framing::LspFramer::new(crate::lsp_framing::LspFrameLimits::default());
+    let batch = framer.ingest(&bytes)?;
+    assert_eq!(batch.consumed(), bytes.len());
+    assert_eq!(batch.frames().len(), 1);
+    let message: serde_json::Value = serde_json::from_slice(batch.frames()[0].body())?;
+    framer.finish()?;
+    assert_eq!(message["method"], method);
+    if let Some(uri) = uri {
+        assert_eq!(message["params"]["textDocument"]["uri"], uri);
     }
     Ok(())
 }
