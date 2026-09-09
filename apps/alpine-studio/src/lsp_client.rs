@@ -1084,6 +1084,38 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn graceful_shutdown_accepts_exit_acknowledged_before_entry() -> Result<(), Box<dyn Error>> {
+        let mut client = start_initialized(mock_executable(), 1)?;
+        client.begin_shutdown()?;
+        wait_peer_event(
+            &mut client,
+            None,
+            WAIT,
+            "shutdown acknowledgement missing",
+            |event| matches!(event, PeerEvent::ShutdownAcknowledged),
+        )?;
+        // The callback follows real exit enqueue. The owned child terminal
+        // event has not yet been consumed by graceful application teardown.
+        let entered = client.snapshot();
+        assert!(entered.started);
+        assert_eq!(entered.peer.lifecycle(), PeerLifecycle::Exited);
+        assert_eq!(entered.peer.pending_requests(), 0);
+        assert_eq!(entered.protocol_writes.queued, 0);
+        assert!(!entered.protocol_writes.failed);
+        let report = client.shutdown_gracefully();
+        assert_eq!(report.protocol, LspShutdownProtocol::AcknowledgedAndExited);
+        assert_eq!(report.transport.starts, 1);
+        assert_eq!(report.transport.restarts, 0);
+        assert_eq!(report.transport.exits, 1);
+        assert_eq!(report.transport.retained_bytes, 0);
+        assert_eq!(report.transport.queued_events, 0);
+        assert_eq!(report.transport.shutdown_timeouts, 0);
+        assert!(!client.snapshot().started);
+        Ok(())
+    }
+
     fn qualify_mock_requests(
         client: &mut LspClient,
         current: RequestStamp,

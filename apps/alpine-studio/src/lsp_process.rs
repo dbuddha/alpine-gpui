@@ -967,6 +967,38 @@ impl LanguageServerProcess {
     }
 
     #[cfg(test)]
+    pub(crate) fn inject_event_for_test<F>(&mut self, make: F) -> Result<(), ProcessFailure>
+    where
+        F: FnOnce(ProcessIdentity, ProcessEpoch) -> ProcessEvent,
+    {
+        let events = self
+            .inert_events
+            .as_ref()
+            .ok_or_else(|| broken_pipe(ProcessStage::Output))?;
+        let event = make(self.identity, self.epoch);
+        // Replace the child producer only. Consumer identity checks, wake
+        // admission, ordinary limits and terminal reserve remain production.
+        let admitted = if matches!(
+            event,
+            ProcessEvent::Exited { .. }
+                | ProcessEvent::Stopped { .. }
+                | ProcessEvent::Failed { .. }
+        ) {
+            emit_terminal(events, event, &self.counters)
+        } else {
+            emit(events, event, &self.counters)
+        };
+        if admitted {
+            Ok(())
+        } else {
+            Err(ProcessFailure::io(
+                ProcessStage::Output,
+                &io::Error::new(io::ErrorKind::WouldBlock, "test event queue rejected input"),
+            ))
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn inject_stdout_for_test(&mut self, bytes: &[u8]) -> Result<(), ProcessFailure> {
         let events = self
             .inert_events

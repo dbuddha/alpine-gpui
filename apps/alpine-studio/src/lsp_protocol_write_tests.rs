@@ -1,5 +1,172 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+enum TransportOutcome {
+    RejectedInput,
+    Exited,
+    Stopped,
+    Failed,
+}
+
+fn transport_failure(stage: crate::lsp_process::ProcessStage) -> ProcessFailure {
+    ProcessFailure {
+        stage,
+        kind: crate::lsp_process::FailureKind::Io(std::io::ErrorKind::BrokenPipe),
+        raw_os_error: None,
+    }
+}
+
+fn transport_event(
+    outcome: TransportOutcome,
+    identity: ProcessIdentity,
+    epoch: ProcessEpoch,
+    sequence: InputSequence,
+) -> ProcessEvent {
+    match outcome {
+        TransportOutcome::RejectedInput => ProcessEvent::InputRejected {
+            identity,
+            epoch,
+            sequence,
+            failure: transport_failure(crate::lsp_process::ProcessStage::Input),
+        },
+        TransportOutcome::Exited => ProcessEvent::Exited {
+            identity,
+            epoch,
+            success: true,
+            code: Some(0),
+        },
+        TransportOutcome::Stopped => ProcessEvent::Stopped {
+            identity,
+            epoch,
+            reason: StopReason::OutputOverflow,
+        },
+        TransportOutcome::Failed => ProcessEvent::Failed {
+            identity,
+            epoch,
+            failure: transport_failure(crate::lsp_process::ProcessStage::Output),
+        },
+    }
+}
+
+#[test]
+fn protocol_writes_fatal_terminal_retires_only_current_transport_ownership()
+-> Result<(), Box<dyn Error>> {
+    for outcome in [
+        TransportOutcome::Exited,
+        TransportOutcome::Stopped,
+        TransportOutcome::Failed,
+    ] {
+        let mut client = ready()?;
+        saturate(&mut client)?;
+        let mut bytes = Vec::new();
+        for id in 1..=257 {
+            bytes.extend(frame(&refresh(id)));
+        }
+        client.inject_stdout_for_test(&bytes)?;
+        let failure = LspClientError::ProtocolWriteBudget;
+        let mut expected_id = 1;
+        let result = client.poll(None, |event| {
+            let identity = match event {
+                PeerEvent::InboundRequest { id, method, .. } => Some((id, method)),
+                _ => None,
+            };
+            assert_eq!(
+                identity,
+                Some((expected_id, "workspace/diagnostic/refresh"))
+            );
+            expected_id += 1;
+        });
+        assert_eq!(result, Err(failure));
+        assert_eq!(expected_id, 257);
+        let retained = client.snapshot().protocol_writes;
+        assert!(retained.failed);
+        assert!(retained.queued > 0);
+        assert!(retained.retained_bytes > 0);
+        drain_pressure(&mut client)?;
+
+        // A terminal event from another owner must not retire this FIFO.
+        client.process.inject_event_for_test(|identity, epoch| {
+            let stale = ProcessIdentity {
+                workspace_revision: identity.workspace_revision,
+                generation: identity.generation + 1,
+            };
+            transport_event(outcome, stale, epoch, InputSequence::for_test(1))
+        })?;
+        assert_eq!(poll_without_publication(&mut client), Err(failure));
+        assert!(client.snapshot().started);
+        assert_eq!(client.snapshot().protocol_writes, retained);
+        assert_eq!(client.snapshot().process.stale_events, 1);
+
+        client.process.inject_event_for_test(|identity, epoch| {
+            transport_event(outcome, identity, epoch, InputSequence::for_test(1))
+        })?;
+        assert_eq!(client.snapshot().process.queued_events, 1);
+        assert_eq!(poll_without_publication(&mut client), Err(failure));
+        let terminal = client.snapshot();
+        assert!(!terminal.started);
+        assert!(terminal.protocol_writes.failed);
+        assert_eq!(terminal.protocol_writes.queued, 0);
+        assert_eq!(terminal.protocol_writes.retained_bytes, 0);
+        assert_eq!(
+            terminal.protocol_writes.peak_retained_bytes,
+            retained.peak_retained_bytes
+        );
+        assert_eq!(terminal.process.queued_events, 0);
+        assert_eq!(terminal.process.retained_bytes, 0);
+        assert_eq!(client.notify("textDocument/didSave", None), Err(failure));
+        assert_eq!(poll_without_publication(&mut client), Err(failure));
+        // Injected consumer evidence must not fabricate supervisor counters.
+        assert_eq!(terminal.process.starts, 0);
+        assert_eq!(terminal.process.exits, 0);
+        let _ = client.shutdown();
+    }
+    Ok(())
+}
+
+#[test]
+fn protocol_writes_shutdown_preserves_typed_transport_outcomes() -> Result<(), Box<dyn Error>> {
+    for outcome in [
+        TransportOutcome::RejectedInput,
+        TransportOutcome::Exited,
+        TransportOutcome::Stopped,
+        TransportOutcome::Failed,
+    ] {
+        let mut client = ready()?;
+        let shutdown = client.begin_shutdown()?;
+        let written = client
+            .take_input_for_test()?
+            .ok_or("owned shutdown input")?;
+        assert_eq!(decode(&written)?["method"], "shutdown");
+        assert_eq!(decode(&written)?["id"], shutdown.request_id);
+        client.process.inject_event_for_test(|identity, epoch| {
+            transport_event(outcome, identity, epoch, shutdown.input_sequence)
+        })?;
+        let expected = match outcome {
+            TransportOutcome::RejectedInput => LspShutdownProtocol::RejectedInput(
+                transport_failure(crate::lsp_process::ProcessStage::Input),
+            ),
+            TransportOutcome::Exited => LspShutdownProtocol::UnexpectedExit {
+                success: true,
+                code: Some(0),
+            },
+            TransportOutcome::Stopped => LspShutdownProtocol::Stopped(StopReason::OutputOverflow),
+            TransportOutcome::Failed => LspShutdownProtocol::Failed(LspClientError::Process(
+                transport_failure(crate::lsp_process::ProcessStage::Output),
+            )),
+        };
+        let report = client.shutdown_gracefully_until(Instant::now() + Duration::from_secs(1));
+        assert_eq!(report.protocol, expected);
+        assert!(!client.snapshot().started);
+        assert_eq!(client.snapshot().protocol_writes.retained_bytes, 0);
+        assert_eq!(report.transport.retained_bytes, 0);
+        assert_eq!(report.transport.queued_events, 0);
+        assert_eq!(report.transport.shutdown_timeouts, 0);
+        assert_eq!(report.transport.starts, 0);
+        assert_eq!(report.transport.exits, 0);
+    }
+    Ok(())
+}
+
 const PRESSURE_INPUTS: usize = crate::lsp_process::INPUT_CAPACITY;
 
 fn frame(value: &serde_json::Value) -> Vec<u8> {

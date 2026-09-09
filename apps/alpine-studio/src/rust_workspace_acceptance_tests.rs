@@ -1,5 +1,254 @@
 use super::*;
 
+fn workspace_acceptance_assert_peak_roster(
+    model: &RustDiagnostics,
+    parked_document: u64,
+) -> Result<(), Box<dyn Error>> {
+    const MIB: usize = 1_024 * 1_024;
+    let session = model
+        .session
+        .as_ref()
+        .ok_or("bounded grown parked overlay")?;
+    let reserved = std::iter::once((&session.snapshot, &session.synced_snapshot))
+        .chain(
+            session
+                .parked
+                .iter()
+                .map(|document| (&document.snapshot, &document.synced_snapshot)),
+        )
+        .map(|(current, synced)| current.len_bytes().max(synced.len_bytes()) * 2)
+        .sum::<usize>();
+    assert_eq!(reserved, 48 * MIB);
+    assert_eq!(session.snapshot.len_bytes(), 4 * MIB);
+    assert!(session.synced_snapshot.len_bytes() < MIB);
+    assert!(session.parked.iter().any(|document| {
+        document.identity.document_id == parked_document
+            && document.snapshot.len_bytes() == 8 * MIB
+            && document.synced_snapshot.len_bytes() < MIB
+    }));
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_immediate_cancel_writer_loss_is_terminal() -> Result<(), Box<dyn Error>> {
+    workspace_acceptance_cancel_writer_case(false)
+}
+
+#[test]
+fn workspace_acceptance_deferred_cancel_writer_loss_is_terminal() -> Result<(), Box<dyn Error>> {
+    workspace_acceptance_cancel_writer_case(true)
+}
+
+fn workspace_acceptance_cancel_writer_case(deferred: bool) -> Result<(), Box<dyn Error>> {
+    for disconnected in [false, true] {
+        let (mut model, first, second) = workspace_acceptance_ready_workspace()?;
+        let first_text = first.snapshot.text();
+        let second_text = second.snapshot.text();
+        let mut observer = Some(
+            model
+                .session
+                .as_mut()
+                .ok_or("workspace")?
+                .client
+                .take_input_observer_for_test()?,
+        );
+        assert!(!model.pump_diagnostics());
+        let messages = workspace_acceptance_messages(observer.as_mut().ok_or("writer observer")?)?;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["method"], "textDocument/diagnostic");
+        let request_id = messages[0]["id"].as_u64().ok_or("diagnostic request id")?;
+        let session = model.session.as_ref().ok_or("request owner")?;
+        assert!(session.diagnostic_pull.pending.is_some());
+        let generation = session.process_generation;
+        let process_epoch = session.process_epoch;
+        let wake = LanguageWake {
+            generation: session.generation,
+        };
+
+        if deferred {
+            workspace_acceptance_fill_input(&mut model)?;
+            let _ =
+                model.sync_workspace([first.clone(), second.clone()], None, |_| Arc::new(|| {}));
+            let session = model
+                .session
+                .as_ref()
+                .ok_or("deferred cancellation owner")?;
+            assert_eq!(session.state, SessionState::Open);
+            assert!(!session.active_view);
+            assert!(session.diagnostic_pull.pending.is_none());
+            assert_eq!(model.snapshot().restarts, 0);
+        }
+        if disconnected {
+            // Drop the actual bounded writer receiver, not a fabricated error.
+            drop(observer.take());
+        } else if deferred {
+            workspace_acceptance_drain_pressure(observer.as_mut().ok_or("live deferred writer")?)?;
+        }
+
+        if deferred {
+            let _ = model.poll(wake);
+        } else {
+            let _ =
+                model.sync_workspace([first.clone(), second.clone()], None, |_| Arc::new(|| {}));
+        }
+
+        let session = model
+            .session
+            .as_ref()
+            .ok_or("cancellation terminal owner")?;
+        assert!(!session.active_view);
+        assert!(session.diagnostic_pull.pending.is_none());
+        assert_eq!(session.process_generation, generation);
+        assert_eq!(session.process_epoch, process_epoch);
+        assert_eq!(model.snapshot().restarts, 0);
+        assert_eq!(model.snapshot().process_starts, 0);
+        if disconnected {
+            assert_eq!(session.state, SessionState::Starting);
+            assert!(!session.workspace_ready());
+            let expected = RustDiagnosticsError::Client(crate::lsp_client::LspClientError::Submit(
+                crate::lsp_process::SubmitError::Closed,
+            ))
+            .to_string();
+            // An inactive view suppresses display, not the retained failure.
+            assert_eq!(model.status.as_deref(), Some(expected.as_str()));
+            assert!(model.status_message().is_none());
+            assert_eq!(
+                session.client.snapshot().peer.lifecycle(),
+                crate::lsp_json::PeerLifecycle::Running
+            );
+        } else {
+            assert_eq!(session.state, SessionState::Open);
+            assert!(model.status.is_none());
+            let delivered = workspace_acceptance_messages(observer.as_mut().ok_or("live writer")?)?;
+            assert_eq!(delivered.len(), 1);
+            assert_eq!(delivered[0]["method"], "$/cancelRequest");
+            assert_eq!(delivered[0]["params"]["id"], request_id);
+        }
+        assert_eq!(first.snapshot.text(), first_text);
+        assert_eq!(second.snapshot.text(), second_text);
+        let _ = model.stop();
+    }
+    Ok(())
+}
+
+fn workspace_acceptance_resize_buffer(
+    input: &mut RustDocumentInput,
+    buffer: &mut alpine_text::Buffer,
+    bytes: usize,
+) -> Result<(), Box<dyn Error>> {
+    let text = " ".repeat(bytes);
+    let mut edit = alpine_text::Transaction::new(buffer.revision());
+    edit.replace(0..input.snapshot.len_bytes(), text.as_str())?;
+    let _ = buffer.apply(edit)?;
+    input.snapshot = buffer.snapshot();
+    input.identity.buffer_revision = buffer.revision().get();
+    input.identity.document_revision += 1;
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_anchor_growth_respects_retained_peak_budget() -> Result<(), Box<dyn Error>>
+{
+    const MIB: usize = 1_024 * 1_024;
+    for whole_workspace in [false, true] {
+        let (mut model, mut first, mut second) = workspace_acceptance_ready_workspace()?;
+        let mut observer = model
+            .session
+            .as_mut()
+            .ok_or("workspace")?
+            .client
+            .take_input_observer_for_test()?;
+        workspace_acceptance_fill_input(&mut model)?;
+        let mut first_buffer = alpine_text::Buffer::new(&first.snapshot.text());
+        let mut second_buffer = alpine_text::Buffer::new(&second.snapshot.text());
+        workspace_acceptance_resize_buffer(&mut first, &mut first_buffer, 4 * MIB)?;
+        workspace_acceptance_resize_buffer(&mut second, &mut second_buffer, 4 * MIB)?;
+        let mut third = second.clone();
+        third.identity.document_id = 3;
+        third.path = third.workspace_root.join("peak-third.rs");
+        third.snapshot = alpine_text::Buffer::new(&" ".repeat(8 * MIB)).snapshot();
+        third.identity.buffer_revision = third.snapshot.revision().get();
+        let mut fourth = second.clone();
+        fourth.identity.document_id = 4;
+        fourth.path = fourth.workspace_root.join("peak-fourth.rs");
+        let _ = model.sync_workspace(
+            [first.clone(), second.clone(), third.clone(), fourth.clone()],
+            Some(1),
+            |_| Arc::new(|| {}),
+        );
+        assert_eq!(
+            model
+                .session
+                .as_ref()
+                .ok_or("four admitted overlays")?
+                .parked
+                .len(),
+            3
+        );
+        workspace_acceptance_resize_buffer(&mut second, &mut second_buffer, 8 * MIB)?;
+        let _ = model.sync_workspace(
+            [first.clone(), second.clone(), third.clone(), fourth.clone()],
+            Some(1),
+            |_| Arc::new(|| {}),
+        );
+        workspace_acceptance_assert_peak_roster(&model, second.identity.document_id)?;
+
+        // The prospective roster fits 48 MiB, but updating the anchor first
+        // would retain 56 MiB before the parked shrink releases its ownership.
+        workspace_acceptance_resize_buffer(&mut first, &mut first_buffer, 8 * MIB)?;
+        workspace_acceptance_resize_buffer(&mut second, &mut second_buffer, 4 * MIB)?;
+        assert_eq!(
+            [&first, &second, &third, &fourth]
+                .iter()
+                .map(|input| input.snapshot.len_bytes() * 2)
+                .sum::<usize>(),
+            48 * MIB
+        );
+        let revisions = (
+            first_buffer.revision(),
+            second_buffer.revision(),
+            first.identity,
+            second.identity,
+        );
+        let starts = std::cell::Cell::new(0);
+        let wake = |_| {
+            starts.set(starts.get() + 1);
+            Arc::new(|| {}) as ProcessWake
+        };
+        let effect = if whole_workspace {
+            model.sync_workspace(
+                [first.clone(), second.clone(), third, fourth],
+                Some(1),
+                wake,
+            )
+        } else {
+            // The production anchor stage is checked separately so a later
+            // parked rejection cannot hide removal of its own budget guard.
+            model.sync_document(Some(first.clone()), wake, true, true, true)
+        };
+        assert!(effect.visual_changed);
+        assert!(effect.continuation.is_none());
+        assert!(model.session.is_none());
+        assert!(model.target.is_none());
+        assert_eq!(starts.get(), 0);
+        let expected = RustDiagnosticsError::OverlayBudget.to_string();
+        assert_eq!(model.status_message().as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            (
+                first_buffer.revision(),
+                second_buffer.revision(),
+                first.identity,
+                second.identity,
+            ),
+            revisions
+        );
+        assert_eq!(first.snapshot.len_bytes(), 8 * MIB);
+        assert_eq!(second.snapshot.len_bytes(), 4 * MIB);
+        workspace_acceptance_drain_pressure(&mut observer)?;
+    }
+    Ok(())
+}
+
 fn workspace_acceptance_terminal_restart_redraw(
     configure: impl FnOnce(&mut super::super::super::RustSession),
     expected: RustDiagnosticsError,

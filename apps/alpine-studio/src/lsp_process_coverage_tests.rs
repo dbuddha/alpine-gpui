@@ -2,6 +2,118 @@ use std::{collections::VecDeque, env, thread, time::Instant};
 
 use super::*;
 
+#[test]
+fn fixture_events_preserve_terminal_reserve_and_rejection_accounting() -> Result<(), Box<dyn Error>>
+{
+    let mut process = LanguageServerProcess::inert_for_test(identity(1));
+    let sequence = process.send(b"pending")?;
+    assert_eq!(
+        process.take_input_for_test()?.as_deref(),
+        Some(b"pending".as_slice())
+    );
+    for _ in 0..EVENT_CAPACITY - TERMINAL_EVENT_RESERVE {
+        process.inject_stdout_for_test(b"x")?;
+    }
+    let before = process.snapshot();
+    assert_eq!(
+        before.queued_events,
+        EVENT_CAPACITY - TERMINAL_EVENT_RESERVE
+    );
+    assert_eq!(
+        before.retained_bytes,
+        EVENT_CAPACITY - TERMINAL_EVENT_RESERVE
+    );
+    let rejection = process.inject_stdout_for_test(b"rejected");
+    assert_eq!(
+        rejection.map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::WouldBlock))
+    );
+    assert_eq!(process.snapshot().retained_bytes, before.retained_bytes);
+    let ordinary = process.inject_event_for_test(|identity, epoch| ProcessEvent::InputRejected {
+        identity,
+        epoch,
+        sequence,
+        failure: broken_pipe(ProcessStage::Input),
+    });
+    assert_eq!(
+        ordinary.map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::WouldBlock))
+    );
+    for _ in 0..TERMINAL_EVENT_RESERVE {
+        process.inject_event_for_test(|identity, epoch| ProcessEvent::Exited {
+            identity,
+            epoch,
+            success: true,
+            code: Some(0),
+        })?;
+    }
+    assert_eq!(process.snapshot().queued_events, EVENT_CAPACITY);
+    let overflow = process.inject_event_for_test(|identity, epoch| ProcessEvent::Stopped {
+        identity,
+        epoch,
+        reason: StopReason::EventOverflow,
+    });
+    assert_eq!(
+        overflow.map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::WouldBlock))
+    );
+    let mut count = 0;
+    while process.try_event()?.is_some() {
+        count += 1;
+    }
+    assert_eq!(count, EVENT_CAPACITY);
+    assert_eq!(process.snapshot().queued_events, 0);
+    assert_eq!(process.snapshot().retained_bytes, 0);
+    assert_eq!(process.snapshot().starts, 0);
+    assert_eq!(process.snapshot().exits, 0);
+    process.inert_events.take();
+    let missing = process.inject_event_for_test(|identity, epoch| ProcessEvent::Stopped {
+        identity,
+        epoch,
+        reason: StopReason::EventOverflow,
+    });
+    assert_eq!(
+        missing.map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::BrokenPipe))
+    );
+    Ok(())
+}
+
+#[test]
+fn fixture_observer_rejects_replacement_owner_without_retaining_its_payload()
+-> Result<(), Box<dyn Error>> {
+    let mut process = LanguageServerProcess::inert_for_test(identity(1));
+    let mut observer = process.take_input_observer_for_test()?;
+    let _ = process.restart(identity(2))?;
+    let _ = process.send(b"replacement owner")?;
+    assert_eq!(
+        observer.take_input().map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::InvalidData))
+    );
+    assert_eq!(observer.retained_bytes(), 0);
+    assert_eq!(process.snapshot().retained_bytes, 0);
+    assert!(observer.take_input()?.is_none());
+    Ok(())
+}
+
+#[test]
+fn fixture_input_reader_rejects_lifecycle_controls_and_disconnection() -> Result<(), Box<dyn Error>>
+{
+    let mut process = LanguageServerProcess::inert_for_test(identity(1));
+    let _ = process.restart(identity(2))?;
+    assert_eq!(
+        process.take_input_for_test().map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::InvalidData))
+    );
+    process.control.take();
+    assert_eq!(
+        process.take_input_for_test().map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::BrokenPipe))
+    );
+    assert_eq!(process.snapshot().retained_bytes, 0);
+    Ok(())
+}
+
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 fn identity(generation: u64) -> ProcessIdentity {
