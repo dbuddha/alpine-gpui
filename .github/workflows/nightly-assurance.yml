@@ -289,7 +289,7 @@ jobs:
           cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re 'validate_initialization_rollback|native_validation::arm_window_close|native_validation::NativeAccessibilityEvidence::|native_validation::arm_user_window_close|native_validation::arm_programmatic_window_close|native_validation::commit_native_text' --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-platform-contract-mutants-${{ matrix.id }}.out" -- --locked
           if [ "${{ matrix.id }}" = "1" ]; then
             # Hosted AppKit cannot qualify user-facing `performClose`; physical Tasks #72 and #253 own that contract.
-            cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --re 'native_validation::arm_programmatic_window_close|native_validation::commit_native_text' --test-package alpine-studio --no-shuffle --output target/native-platform-studio-contract-mutants.out -- --locked
+            cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --re 'native_validation::arm_programmatic_window_close|native_validation::commit_native_text' --test-package alpine-platform-macos --cargo-arg=--package=alpine-platform-macos --test-package alpine-studio --cargo-arg=--package=alpine-studio --no-shuffle --output target/native-platform-studio-contract-mutants.out -- --locked
           fi
       - name: Upload native platform contract mutation evidence
         if: always()
@@ -346,7 +346,7 @@ jobs:
       - name: Require exhaustive native surface mutants to be killed
         run: |
           mkdir -p target
-          cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|schedule_validation_user_window_close|NativeSurface::arm_window_close|NativeSurface::arm_user_window_close' --test-package alpine-platform-macos --test-package alpine-studio --no-shuffle --shard "${{ matrix.shard }}" --output "target/native-surface-mutants-${{ matrix.id }}.out" -- --locked
+          cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|schedule_validation_user_window_close|NativeSurface::arm_window_close|NativeSurface::arm_user_window_close' --test-package alpine-platform-macos --cargo-arg=--package=alpine-platform-macos --test-package alpine-studio --cargo-arg=--package=alpine-studio --no-shuffle --sharding round-robin --shard "${{ matrix.shard }}" --output "target/native-surface-mutants-${{ matrix.id }}.out" -- --locked
       - name: Upload native surface mutation evidence
         if: always()
         uses: ./.github/actions/upload-required-artifact
@@ -401,13 +401,13 @@ jobs:
         run: |
           mkdir -p target
           if [ "${{ matrix.id }}" = "1" ]; then
-            cargo mutants --no-config --file crates/alpine-runtime/src/lib.rs --re 'run_on_native_surface' --test-package alpine-studio --no-shuffle --output target/native-studio-runtime-mutants.out -- --locked native_process
+            cargo mutants --no-config --file crates/alpine-runtime/src/lib.rs --re 'run_on_native_surface' --test-package alpine-runtime --cargo-arg=--package=alpine-runtime --test-package alpine-studio --cargo-arg=--package=alpine-studio --no-shuffle --output target/native-studio-runtime-mutants.out -- --locked native_process
             if find target/native-studio-runtime-mutants.out -name unviable.txt -type f -size +0c | grep -q .; then
               find target/native-studio-runtime-mutants.out -name unviable.txt -type f -size +0c -exec cat {} \;
               exit 1
             fi
           fi
-          cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence|initial_scene' --test-package alpine-studio --no-shuffle --shard "${{ matrix.shard }}" --output "target/native-studio-contract-mutants-${{ matrix.id }}.out" -- --locked
+          cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence|initial_scene' --test-package alpine-studio --cargo-arg=--package=alpine-studio --no-shuffle --shard "${{ matrix.shard }}" --output "target/native-studio-contract-mutants-${{ matrix.id }}.out" -- --locked
       - name: Upload Studio native contract mutation evidence
         if: always()
         uses: ./.github/actions/upload-required-artifact
@@ -463,7 +463,7 @@ jobs:
       - name: Require exhaustive native accessibility mutants to be killed
         run: |
           mkdir -p target
-          cargo mutants --no-config --file crates/alpine-platform-macos/src/native_accessibility.rs --test-package alpine-platform-macos --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-accessibility-mutants-${{ matrix.id }}.out" -- --locked
+          cargo mutants --no-config --file crates/alpine-platform-macos/src/native_accessibility.rs --test-package alpine-platform-macos --cargo-arg=--package=alpine-platform-macos --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-accessibility-mutants-${{ matrix.id }}.out" -- --locked
       - name: Upload native accessibility mutation evidence
         if: always()
         uses: ./.github/actions/upload-required-artifact
@@ -517,7 +517,7 @@ jobs:
       - name: Require exhaustive Studio accessibility process mutants to be killed
         run: |
           mkdir -p target
-          env -u ALPINE_RUST_ANALYZER ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility cargo mutants --no-config --file apps/alpine-studio/src/native_validation/accessibility_process.rs --test-package alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out" -- --locked
+          env -u ALPINE_RUST_ANALYZER ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility cargo mutants --no-config --file apps/alpine-studio/src/native_validation/accessibility_process.rs --test-package alpine-studio --cargo-arg=--package=alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out" -- --locked
           env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence' --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-studio-language-evidence-mutants-${{ matrix.id }}.out" -- --locked
       - name: Upload Studio accessibility process mutation evidence
         if: always()

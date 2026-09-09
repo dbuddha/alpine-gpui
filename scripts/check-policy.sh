@@ -32,11 +32,72 @@ if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -n "${GITHUB_REPOSITORY:-}
     fi
 fi
 
+# cargo-mutants 27.1.0 derives baseline packages from mutated files, not from
+# --test-package. Common Cargo arguments must name both the mutated package and
+# every configured test package, making both effective package unions identical.
+# Keep commands on one line so this guard cannot silently miss a continuation.
+check_mutation_baseline() {
+    if ! awk '
+        /cargo mutants / {
+            mutated_package = ""
+            test_packages = 0
+            if ($NF == "\\") {
+                print FILENAME ":" FNR ": mutation command must remain on one line" > "/dev/stderr"
+                invalid = 1
+            }
+            for (i = 1; i <= NF; i++) {
+                if ($i == "--") break
+                if ($i == "--file") {
+                    count = split($(i + 1), path, "/")
+                    if (count >= 3 && path[1] ~ /^(crates|apps|tools)$/) mutated_package = path[2]
+                }
+                if ($i ~ /^--test-package=/ || $i ~ /^--test-workspace(=|$)/) {
+                    print FILENAME ":" FNR ": mutation package selector must use explicit --test-package entries" > "/dev/stderr"
+                    invalid = 1
+                }
+                if ($i == "--baseline=skip" || ($i == "--baseline" && $(i + 1) == "skip")) {
+                    print FILENAME ":" FNR ": mutation baseline must execute" > "/dev/stderr"
+                    invalid = 1
+                }
+                if ($i != "--test-package") continue
+                test_packages++
+                package = $(i + 1)
+                expected = "--cargo-arg=--package=" package
+                found = 0
+                for (j = 1; j <= NF; j++) {
+                    if ($j == "--") break
+                    if ($j == expected) found = 1
+                }
+                if (package !~ /^[a-z][a-z0-9-]*$/ || !found) {
+                    print FILENAME ":" FNR ": missing common baseline package " package > "/dev/stderr"
+                    invalid = 1
+                }
+            }
+            if (test_packages) {
+                expected = "--cargo-arg=--package=" mutated_package
+                found = 0
+                for (j = 1; j <= NF; j++) {
+                    if ($j == "--") break
+                    if ($j == expected) found = 1
+                }
+                if (mutated_package !~ /^[a-z][a-z0-9-]*$/ || !found) {
+                    print FILENAME ":" FNR ": missing common mutated package " mutated_package > "/dev/stderr"
+                    invalid = 1
+                }
+            }
+        }
+        END { exit invalid }
+    ' "$1"; then
+        fail 'mutation baseline and mutant package scopes must correspond'
+    fi
+}
+
 workflow_files=$(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print)
 action_files=$(find .github/actions -type f \( -name '*.yml' -o -name '*.yaml' \) -print 2>/dev/null || true)
 
 if [ -n "$workflow_files" ]; then
     ci_workflow=${ALPINE_CI_WORKFLOW:-.github/workflows/ci.yml}
+    check_mutation_baseline "$ci_workflow"
     assurance_failure_workflow=${ALPINE_ASSURANCE_FAILURE_WORKFLOW:-.github/workflows/assurance-failure.yml}
     action_source_files=$workflow_files
     if [ -n "$action_files" ]; then
@@ -304,6 +365,7 @@ if [ -n "$workflow_files" ]; then
 
     nightly_native_workflow=${ALPINE_NIGHTLY_ASSURANCE_WORKFLOW:-.github/workflows/nightly-assurance.yml}
     if [ -f "$nightly_native_workflow" ]; then
+        check_mutation_baseline "$nightly_native_workflow"
         if ! awk '
             function finish() {
                 if (helper && (!always || !name || !path || !retention || !required)) exit 1
@@ -779,7 +841,7 @@ if ! printf '%s\n' "${native_surface_mutation_job}" | grep -Fq -- "--exclude-re 
   echo "policy failure: native surface mutation must preserve the reviewed physical-only exclusions" >&2
   exit 1
 fi
-for required in '--test-package alpine-platform-macos' '--test-package alpine-studio' '--no-shuffle' '--shard "${{ matrix.shard }}"' 'mkdir -p target' 'target/native-surface-mutants-${{ matrix.id }}.out' 'if-no-files-found: error'; do
+for required in '--test-package alpine-platform-macos' '--test-package alpine-studio' '--no-shuffle' '--sharding round-robin' '--shard "${{ matrix.shard }}"' 'mkdir -p target' 'target/native-surface-mutants-${{ matrix.id }}.out' 'if-no-files-found: error'; do
   if ! printf '%s\n' "${native_surface_mutation_job}" | grep -Fq -- "${required}"; then
     echo "policy failure: native surface mutation is missing ${required}" >&2
     exit 1
@@ -811,6 +873,10 @@ done
 ci_native_surface_scope="$(printf '%s\n' "${ci_native_mutation_job}" | grep -- '--file crates/alpine-platform-macos/src/native.rs' || true)"
 ci_native_studio_scope="$(printf '%s\n' "${ci_native_mutation_job}" | grep -- '--file apps/alpine-studio/src/lib.rs' || true)"
 ci_native_runtime_scope="$(printf '%s\n' "${ci_native_mutation_job}" | grep -- '--file crates/alpine-runtime/src/lib.rs' || true)"
+if ! printf '%s\n' "${ci_native_surface_scope}" | grep -Fq -- '--sharding round-robin'; then
+  echo "policy failure: exact-head native surface mutation must retain round-robin partitioning" >&2
+  exit 1
+fi
 for scope in "${ci_native_surface_scope}" "${ci_native_studio_scope}"; do
   if [ -z "${scope}" ] || printf '%s\n' "${scope}" | grep -Fq -- '--in-diff'; then
     echo "policy failure: exact-head native process mutation scopes must be exhaustive" >&2
