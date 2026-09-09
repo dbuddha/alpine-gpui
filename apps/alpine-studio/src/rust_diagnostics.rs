@@ -399,6 +399,7 @@ pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) workspace_edit_wire_bytes: usize,
     pub(crate) peak_workspace_edit_wire_bytes: usize,
     pub(crate) process_retained_bytes: usize,
+    pub(crate) protocol_writes: crate::lsp_client::ProtocolWriteSnapshot,
     pub(crate) process_queued_events: usize,
     pub(crate) process_starts: u64,
     pub(crate) process_submitted_inputs: u64,
@@ -2080,10 +2081,13 @@ impl RustDiagnostics {
             self.session.as_ref().map_or((0, 0), |session| {
                 workspace::saved_compiler_counts(session.saved_compiler.as_ref(), &session.parked)
             });
-        let process = self
+        let (process, protocol_writes) = self
             .session
             .as_ref()
-            .map(|session| session.client.snapshot().process)
+            .map(|session| {
+                let client = session.client.snapshot();
+                (client.process, client.protocol_writes)
+            })
             .unwrap_or_default();
         RustDiagnosticsSnapshot {
             active: self.session.is_some(),
@@ -2141,6 +2145,7 @@ impl RustDiagnostics {
             workspace_edit_wire_bytes: self.workspace_edit_wire_bytes,
             peak_workspace_edit_wire_bytes: self.peak_workspace_edit_wire_bytes,
             process_retained_bytes: process.retained_bytes,
+            protocol_writes,
             process_queued_events: process.queued_events,
             process_starts: process.starts,
             process_submitted_inputs: process.submitted_inputs,
@@ -2373,6 +2378,10 @@ impl RustDiagnostics {
                 replace_status(&mut self.status, status)
             }
             Ok(false) => false,
+            // Overlay writers commit ownership only after enqueue succeeds.
+            // Keep their coalesced save/change/close intent until writer
+            // progress provides capacity, rather than restarting the server.
+            Err(error) if diagnostic_pull::is_input_pressure(error) => false,
             Err(error) => self.restart_or_fail(error),
         }
     }
@@ -2818,7 +2827,9 @@ impl RustDiagnostics {
             return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
         };
         session.state = SessionState::Starting;
-        session.reset_overlay_transport();
+        // Publication is revoked immediately, but wire ownership changes only
+        // after a replacement transport is admitted below.
+        let _ = session.clear_workspace_diagnostics();
         if session.restart_count == MAX_RESTARTS_PER_DOCUMENT {
             session.diagnostics = None;
             session.pending_completion = None;
@@ -2850,6 +2861,9 @@ impl RustDiagnostics {
                 )),
             );
         }
+        // A rejected restart still belongs to the current transport. Keep its
+        // save/close ownership until the replacement has actually been admitted.
+        session.reset_overlay_transport();
         session.process_generation = generation;
         session.restart_count += 1;
         session.state = SessionState::Starting;

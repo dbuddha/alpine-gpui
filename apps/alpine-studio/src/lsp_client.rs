@@ -1,8 +1,10 @@
 //! Bounded composition of one local process, LSP framer, and JSON-RPC peer.
 
 use std::{
+    collections::VecDeque,
     error::Error,
     fmt,
+    mem::size_of,
     num::NonZeroUsize,
     thread,
     time::{Duration, Instant},
@@ -17,8 +19,8 @@ use crate::{
         RequestStamp,
     },
     lsp_process::{
-        InputSequence, LanguageServerProcess, ProcessEpoch, ProcessEvent, ProcessFailure,
-        ProcessIdentity, ProcessSnapshot, ProcessSpec, ProcessStream, ProcessWake,
+        InputSequence, LanguageServerProcess, ProcessBinding, ProcessEpoch, ProcessEvent,
+        ProcessFailure, ProcessIdentity, ProcessSnapshot, ProcessSpec, ProcessStream, ProcessWake,
         SUPERVISOR_SHUTDOWN_TIMEOUT, StopReason, SubmitError, SupervisorStopped,
     },
 };
@@ -26,6 +28,8 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LspClientError {
     ProcessNotStarted,
+    StaleCancellation,
+    ProtocolWriteBudget,
     Process(ProcessFailure),
     Submit(SubmitError),
     SupervisorStopped,
@@ -71,6 +75,25 @@ pub(crate) struct SubmittedRequest {
     pub(crate) input_sequence: InputSequence,
 }
 
+/// One locally revoked request's process-bound delivery obligation.
+///
+/// The fixed cancellation method and u32 ID bound the retained frame below
+/// 128 bytes, outside the process payload counters until successful enqueue.
+/// This owner is deliberately not Clone. Successful enqueue releases its bytes.
+pub(crate) struct PreparedCancellation {
+    outbound: Option<OutboundMessage>,
+    binding: ProcessBinding,
+}
+
+#[cfg(test)]
+impl PreparedCancellation {
+    fn retained_bytes(&self) -> usize {
+        self.outbound
+            .as_ref()
+            .map_or(0, |outbound| outbound.bytes().len())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LspClientPoll {
     Idle,
@@ -101,12 +124,40 @@ pub(crate) enum LspClientPoll {
     Failed(ProcessFailure),
 }
 
+const MAX_PROTOCOL_WRITES: usize = 256;
+const MAX_PROTOCOL_PAYLOAD_BYTES: usize = 16_384;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Owned boxed payloads and deque storage, excluding allocator overhead,
+/// temporary encoding allocations, and unrelated client/process storage.
+pub(crate) struct ProtocolWriteSnapshot {
+    pub(crate) queued: usize,
+    pub(crate) payload_bytes: usize,
+    pub(crate) capacity_bytes: usize,
+    pub(crate) retained_bytes: usize,
+    pub(crate) peak_retained_bytes: usize,
+    pub(crate) failed: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ProtocolWriteKind {
+    Response,
+    Initialized,
+    Exit,
+}
+
+struct ProtocolWrite {
+    outbound: OutboundMessage,
+    kind: ProtocolWriteKind,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LspClientSnapshot {
     pub(crate) started: bool,
     pub(crate) process: ProcessSnapshot,
     pub(crate) framing: LspFramerSnapshot,
     pub(crate) peer: PeerSnapshot,
+    pub(crate) protocol_writes: ProtocolWriteSnapshot,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,6 +183,10 @@ pub(crate) struct LspClient {
     framer: LspFramer,
     peer: LspPeer,
     started: bool,
+    protocol_writes: VecDeque<ProtocolWrite>,
+    protocol_payload_bytes: usize,
+    protocol_peak_bytes: usize,
+    protocol_failure: Option<LspClientError>,
 }
 
 impl LspClient {
@@ -145,6 +200,10 @@ impl LspClient {
             process,
             framer: LspFramer::new(LspFrameLimits::default()),
             peer: LspPeer::new(),
+            protocol_writes: VecDeque::new(),
+            protocol_payload_bytes: 0,
+            protocol_peak_bytes: 0,
+            protocol_failure: None,
             started: false,
         })
     }
@@ -160,6 +219,10 @@ impl LspClient {
             process,
             framer: LspFramer::new(LspFrameLimits::default()),
             peer: LspPeer::new(),
+            protocol_writes: VecDeque::new(),
+            protocol_payload_bytes: 0,
+            protocol_peak_bytes: 0,
+            protocol_failure: None,
             started: false,
         })
     }
@@ -170,6 +233,10 @@ impl LspClient {
             process: LanguageServerProcess::inert_for_test(identity),
             framer: LspFramer::new(LspFrameLimits::default()),
             peer: LspPeer::new(),
+            protocol_writes: VecDeque::new(),
+            protocol_payload_bytes: 0,
+            protocol_peak_bytes: 0,
+            protocol_failure: None,
             started: true,
         }
     }
@@ -188,7 +255,7 @@ impl LspClient {
     }
 
     pub(crate) fn begin_initialize(&mut self) -> Result<SubmittedRequest, LspClientError> {
-        self.require_started()?;
+        self.require_write_order()?;
         let outbound = self.peer.begin_initialize()?;
         self.submit_pending(&outbound)
     }
@@ -197,7 +264,7 @@ impl LspClient {
         &mut self,
         params: &RawValue,
     ) -> Result<SubmittedRequest, LspClientError> {
-        self.require_started()?;
+        self.require_write_order()?;
         let outbound = self.peer.begin_initialize_with(Some(params))?;
         self.submit_pending(&outbound)
     }
@@ -208,15 +275,49 @@ impl LspClient {
         params: Option<&RawValue>,
         stamp: RequestStamp,
     ) -> Result<SubmittedRequest, LspClientError> {
-        self.require_started()?;
+        self.require_write_order()?;
         let outbound = self.peer.begin_request(method, params, stamp)?;
         self.submit_pending(&outbound)
     }
 
     pub(crate) fn cancel(&mut self, request_id: u32) -> Result<InputSequence, LspClientError> {
-        self.require_started()?;
+        self.require_write_order()?;
         let outbound = self.peer.cancel(request_id)?;
         self.process.send(outbound.bytes()).map_err(Into::into)
+    }
+
+    pub(crate) fn prepare_cancel(
+        &mut self,
+        request_id: u32,
+    ) -> Result<PreparedCancellation, LspClientError> {
+        self.require_started()?;
+        let outbound = self.peer.cancel(request_id)?;
+        Ok(PreparedCancellation {
+            outbound: Some(outbound),
+            binding: self.process.binding(),
+        })
+    }
+
+    pub(crate) fn send_cancel(
+        &mut self,
+        cancellation: &mut PreparedCancellation,
+    ) -> Result<InputSequence, LspClientError> {
+        // Check before require_started: a replacement may still be starting,
+        // but an obsolete token is retirement, not its transport failing.
+        if !self.process.owns_binding(&cancellation.binding) {
+            return Err(LspClientError::StaleCancellation);
+        }
+        self.require_write_order()?;
+        if self.peer.snapshot().lifecycle() != PeerLifecycle::Running {
+            return Err(ProtocolError::InvalidLifecycle.into());
+        }
+        let outbound = cancellation
+            .outbound
+            .as_ref()
+            .ok_or(ProtocolError::InvalidLifecycle)?;
+        let sequence = self.process.send(outbound.bytes())?;
+        cancellation.outbound = None;
+        Ok(sequence)
     }
 
     pub(crate) fn notify(
@@ -224,13 +325,13 @@ impl LspClient {
         method: &str,
         params: Option<&RawValue>,
     ) -> Result<InputSequence, LspClientError> {
-        self.require_started()?;
+        self.require_write_order()?;
         let outbound = self.peer.notification(method, params)?;
         self.process.send(outbound.bytes()).map_err(Into::into)
     }
 
     pub(crate) fn begin_shutdown(&mut self) -> Result<SubmittedRequest, LspClientError> {
-        self.require_started()?;
+        self.require_write_order()?;
         let outbound = self.peer.begin_shutdown()?;
         self.submit_pending(&outbound)
     }
@@ -240,6 +341,7 @@ impl LspClient {
         identity: ProcessIdentity,
     ) -> Result<ProcessEpoch, LspClientError> {
         let epoch = self.process.restart(identity)?;
+        self.retire_protocol_writes();
         self.framer = LspFramer::new(LspFrameLimits::default());
         self.peer = LspPeer::new();
         self.started = false;
@@ -254,10 +356,37 @@ impl LspClient {
     where
         F: FnMut(PeerEvent<'_>),
     {
+        if let Some(error) = self.protocol_failure {
+            // Failed ingress never publishes again, but still releases one
+            // bounded event per poll so it cannot starve transport teardown.
+            if let Ok(Some(event)) = self.process.try_event()
+                && matches!(
+                    event,
+                    ProcessEvent::Exited { .. }
+                        | ProcessEvent::Stopped { .. }
+                        | ProcessEvent::Failed { .. }
+                )
+            {
+                self.started = false;
+                self.retire_protocol_writes();
+                self.protocol_failure = Some(error);
+            }
+            return Err(error);
+        }
+        let sent_before = self.flush_protocol_writes(&mut visitor)?;
         let Some(event) = self.process.try_event()? else {
-            return Ok(LspClientPoll::Idle);
+            return Ok(if sent_before == 0 {
+                LspClientPoll::Idle
+            } else {
+                LspClientPoll::Protocol {
+                    frames: 0,
+                    body_bytes: 0,
+                }
+            });
         };
-        match event {
+        // Complete each admitted output event. A deferred response is not an
+        // excuse to drop later frames or suspend writer/terminal event intake.
+        let result = match event {
             ProcessEvent::Started {
                 epoch, process_id, ..
             } => {
@@ -281,18 +410,31 @@ impl LspClient {
             } => Ok(LspClientPoll::InputRejected { sequence, failure }),
             ProcessEvent::Exited { success, code, .. } => {
                 self.started = false;
+                self.retire_protocol_writes();
                 self.framer.finish()?;
                 Ok(LspClientPoll::Exited { success, code })
             }
             ProcessEvent::Stopped { reason, .. } => {
                 self.started = false;
+                self.retire_protocol_writes();
                 Ok(LspClientPoll::Stopped(reason))
             }
             ProcessEvent::Failed { failure, .. } => {
                 self.started = false;
+                self.retire_protocol_writes();
                 Ok(LspClientPoll::Failed(failure))
             }
+        };
+        let poll = match result {
+            Ok(poll) => poll,
+            Err(error) => return self.fail_protocol(error),
+        };
+        // The output payload has now dropped. Its released budget may admit
+        // the response without another external event or an idle retry loop.
+        if self.started {
+            let _ = self.flush_protocol_writes(&mut visitor)?;
         }
+        Ok(poll)
     }
 
     pub(crate) const fn diagnostic_pull_supported(&self) -> bool {
@@ -332,17 +474,20 @@ impl LspClient {
             process: self.process.snapshot(),
             framing: self.framer.snapshot(),
             peer: self.peer.snapshot(),
+            protocol_writes: self.protocol_write_snapshot(),
         }
     }
 
     pub(crate) fn shutdown(&mut self) -> LspClientSnapshot {
         self.started = false;
         let process = self.process.shutdown();
+        self.retire_protocol_writes();
         LspClientSnapshot {
             started: false,
             process,
             framing: self.framer.snapshot(),
             peer: self.peer.snapshot(),
+            protocol_writes: self.protocol_write_snapshot(),
         }
     }
 
@@ -359,6 +504,7 @@ impl LspClient {
         let transport = self
             .process
             .shutdown_with_budget(deadline.saturating_duration_since(Instant::now()));
+        self.retire_protocol_writes();
         LspShutdownReport {
             protocol,
             transport,
@@ -375,7 +521,9 @@ impl LspClient {
         {
             return LspShutdownProtocol::NotReady(lifecycle);
         }
-        let mut acknowledged = lifecycle == PeerLifecycle::Exited;
+        let mut acknowledged = lifecycle == PeerLifecycle::Exited
+            && self.protocol_writes.is_empty()
+            && self.protocol_failure.is_none();
         loop {
             if Instant::now() >= deadline {
                 return LspShutdownProtocol::Deadline;
@@ -384,6 +532,10 @@ impl LspClient {
             if peer.lifecycle() == PeerLifecycle::Running
                 && peer.pending_requests() == 0
                 && let Err(error) = self.begin_shutdown()
+                && !matches!(
+                    error,
+                    LspClientError::Submit(SubmitError::Saturated | SubmitError::RetainedBudget)
+                )
             {
                 return LspShutdownProtocol::Failed(error);
             }
@@ -418,7 +570,124 @@ impl LspClient {
         }
     }
 
+    fn require_write_order(&self) -> Result<(), LspClientError> {
+        self.require_started()?;
+        if !self.protocol_writes.is_empty() {
+            return Err(SubmitError::Saturated.into());
+        }
+        Ok(())
+    }
+
+    fn protocol_write_snapshot(&self) -> ProtocolWriteSnapshot {
+        let capacity_bytes = self.protocol_writes.capacity() * size_of::<ProtocolWrite>();
+        ProtocolWriteSnapshot {
+            queued: self.protocol_writes.len(),
+            payload_bytes: self.protocol_payload_bytes,
+            capacity_bytes,
+            retained_bytes: self.protocol_payload_bytes + capacity_bytes,
+            peak_retained_bytes: self.protocol_peak_bytes,
+            failed: self.protocol_failure.is_some(),
+        }
+    }
+
+    fn retire_protocol_writes(&mut self) {
+        self.protocol_writes = VecDeque::new();
+        self.protocol_payload_bytes = 0;
+        self.protocol_failure = None;
+    }
+
+    fn fail_protocol<T>(&mut self, error: LspClientError) -> Result<T, LspClientError> {
+        self.protocol_failure = Some(error);
+        Err(error)
+    }
+
+    fn complete_protocol_write<F>(write: ProtocolWrite, visitor: &mut F)
+    where
+        F: FnMut(PeerEvent<'_>),
+    {
+        match write.kind {
+            ProtocolWriteKind::Response => {}
+            ProtocolWriteKind::Initialized => visitor(PeerEvent::Initialized(write.outbound)),
+            ProtocolWriteKind::Exit => visitor(PeerEvent::ShutdownAcknowledged),
+        }
+    }
+
+    fn retain_protocol_write<F>(
+        &mut self,
+        outbound: OutboundMessage,
+        kind: ProtocolWriteKind,
+        visitor: &mut F,
+    ) -> Result<(), LspClientError>
+    where
+        F: FnMut(PeerEvent<'_>),
+    {
+        if let Some(error) = self.protocol_failure {
+            return Err(error);
+        }
+        let write = ProtocolWrite { outbound, kind };
+        if self.protocol_writes.is_empty() {
+            match self.process.send(write.outbound.bytes()) {
+                Ok(_) => {
+                    Self::complete_protocol_write(write, visitor);
+                    return Ok(());
+                }
+                Err(SubmitError::Saturated | SubmitError::RetainedBudget) => {}
+                Err(error) => return self.fail_protocol(error.into()),
+            }
+        }
+        let Some(bytes) = self
+            .protocol_payload_bytes
+            .checked_add(write.outbound.bytes().len())
+            .filter(|bytes| *bytes <= MAX_PROTOCOL_PAYLOAD_BYTES)
+        else {
+            return self.fail_protocol(LspClientError::ProtocolWriteBudget);
+        };
+        if self.protocol_writes.len() == MAX_PROTOCOL_WRITES {
+            return self.fail_protocol(LspClientError::ProtocolWriteBudget);
+        }
+        if self.protocol_writes.try_reserve(1).is_err() {
+            return self.fail_protocol(ProtocolError::AllocationFailed.into());
+        }
+        self.protocol_writes.push_back(write);
+        self.protocol_payload_bytes = bytes;
+        self.protocol_peak_bytes = self.protocol_peak_bytes.max(
+            self.protocol_payload_bytes
+                + self.protocol_writes.capacity() * size_of::<ProtocolWrite>(),
+        );
+        Ok(())
+    }
+
+    fn flush_protocol_writes<F>(&mut self, visitor: &mut F) -> Result<usize, LspClientError>
+    where
+        F: FnMut(PeerEvent<'_>),
+    {
+        if let Some(error) = self.protocol_failure {
+            return Err(error);
+        }
+        let mut sent = 0;
+        while let Some(write) = self.protocol_writes.front() {
+            match self.process.send(write.outbound.bytes()) {
+                Ok(_) => {}
+                Err(SubmitError::Saturated | SubmitError::RetainedBudget) => break,
+                Err(error) => return self.fail_protocol(error.into()),
+            }
+            let Some(write) = self.protocol_writes.pop_front() else {
+                return self.fail_protocol(ProtocolError::InvalidLifecycle.into());
+            };
+            self.protocol_payload_bytes -= write.outbound.bytes().len();
+            sent += 1;
+            Self::complete_protocol_write(write, visitor);
+        }
+        if self.protocol_writes.is_empty() {
+            self.protocol_writes = VecDeque::new();
+        }
+        Ok(sent)
+    }
+
     fn require_started(&self) -> Result<(), LspClientError> {
+        if let Some(error) = self.protocol_failure {
+            return Err(error);
+        }
         if !self.started {
             return Err(LspClientError::ProcessNotStarted);
         }
@@ -486,23 +755,21 @@ impl LspClient {
     {
         match event {
             PeerEvent::Initialized(outbound) => {
-                self.process.send(outbound.bytes())?;
-                visitor(PeerEvent::Initialized(outbound));
+                self.retain_protocol_write(outbound, ProtocolWriteKind::Initialized, visitor)?;
             }
             PeerEvent::ShutdownAcknowledged => {
                 let exit = self.peer.exit()?;
-                self.process.send(exit.bytes())?;
-                visitor(PeerEvent::ShutdownAcknowledged);
+                self.retain_protocol_write(exit, ProtocolWriteKind::Exit, visitor)?;
             }
             event @ PeerEvent::InboundRequest { id, method, .. } => {
                 let lifecycle = self.peer.snapshot().lifecycle();
-                // Exit is already queued. A late server request must not cause
+                // Exit is already owned. A late server request must not cause
                 // a forced kill before that notification reaches the server.
                 if lifecycle == PeerLifecycle::Exited {
                     return Ok(());
                 }
                 let response = self.peer.respond_to_server_request(id, method)?;
-                self.process.send(response.bytes())?;
+                self.retain_protocol_write(response, ProtocolWriteKind::Response, visitor)?;
                 if lifecycle == PeerLifecycle::Running {
                     visitor(event);
                 }
@@ -512,6 +779,14 @@ impl LspClient {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "lsp_cancellation_tests.rs"]
+mod cancellation_tests;
+
+#[cfg(test)]
+#[path = "lsp_protocol_write_tests.rs"]
+mod protocol_write_tests;
 
 #[cfg(test)]
 mod tests {

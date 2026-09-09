@@ -7,9 +7,22 @@ use super::{
     Arc, DiagnosticBatch, LanguageIdentity, LanguageProtocolError, PollCandidates, RequestStamp,
     RustDiagnostics, RustDiagnosticsError, RustSession, replace_status,
 };
+use crate::{
+    lsp_client::{LspClientError, PreparedCancellation},
+    lsp_process::SubmitError,
+};
 use serde_json::value::RawValue;
 
 const MAX_ATTEMPTS: u8 = 3;
+
+pub(super) fn is_input_pressure(error: RustDiagnosticsError) -> bool {
+    matches!(
+        error,
+        RustDiagnosticsError::Client(LspClientError::Submit(
+            SubmitError::Saturated | SubmitError::RetainedBudget
+        ))
+    )
+}
 
 pub(super) fn batch_from_response(
     value: super::ResponseValue<'_>,
@@ -64,6 +77,9 @@ pub(super) struct PendingDiagnostic {
 pub(super) struct PullState {
     pub(super) enabled: bool,
     pub(super) pending: Option<PendingDiagnostic>,
+    // Local authority is already revoked. Only delivery remains, in this
+    // process epoch; reset_overlay_transport retires this bounded obligation.
+    deferred_cancel: Option<PreparedCancellation>,
     epoch: u64,
     attempted: Option<DiagnosticKey>,
     settled: Option<DiagnosticKey>,
@@ -105,7 +121,11 @@ impl PullState {
     fn refund_interrupted_attempt(&mut self, pending: PendingDiagnostic) {
         // View changes and stale publication do not constitute server failures.
         // Do not refund an attempt belonging to a different current target.
-        if self.attempted == Some(pending.key) {
+        self.refund_attempt(pending.key);
+    }
+
+    fn refund_attempt(&mut self, key: DiagnosticKey) {
+        if self.attempted == Some(key) {
             self.attempts = self.attempts.saturating_sub(1);
         }
     }
@@ -128,11 +148,41 @@ impl RustSession {
         let pending = self.diagnostic_pull.invalidate()?;
         let changed = self.clear_workspace_diagnostics();
         if let Some(id) = pending {
-            self.client
-                .cancel(id)
-                .map_err(RustDiagnosticsError::Client)?;
+            self.cancel_diagnostic(id)?;
         }
         Ok(changed)
+    }
+
+    fn cancel_diagnostic(&mut self, id: u32) -> Result<(), RustDiagnosticsError> {
+        let prepared = self
+            .client
+            .prepare_cancel(id)
+            .map_err(RustDiagnosticsError::Client)?;
+        // Store ownership before a fallible send; repeated invalidation cannot
+        // add a replacement request while this one cancellation is deferred.
+        self.diagnostic_pull.deferred_cancel = Some(prepared);
+        self.flush_diagnostic_cancel().map(|_| ())
+    }
+
+    fn flush_diagnostic_cancel(&mut self) -> Result<bool, RustDiagnosticsError> {
+        let Some(prepared) = self.diagnostic_pull.deferred_cancel.as_mut() else {
+            return Ok(true);
+        };
+        // Send the original prepared bytes, never generic notify or a second
+        // peer cancellation. A late response may have consumed its tombstone.
+        match self
+            .client
+            .send_cancel(prepared)
+            .map_err(RustDiagnosticsError::Client)
+        {
+            Ok(_) | Err(RustDiagnosticsError::Client(LspClientError::StaleCancellation)) => {
+                // A retired token cannot restart a healthy replacement.
+                self.diagnostic_pull.deferred_cancel = None;
+                Ok(true)
+            }
+            Err(error) if is_input_pressure(error) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -204,6 +254,13 @@ impl RustDiagnostics {
         let Some(session) = self.session.as_mut() else {
             return false;
         };
+        // Existing writer/event progress drives retries, not an idle loop.
+        // Cancellation delivery does not require an active or ready view.
+        match session.flush_diagnostic_cancel() {
+            Ok(true) => {}
+            Ok(false) => return false,
+            Err(error) => return self.restart_or_fail(error),
+        }
         if !session.diagnostic_pull.enabled {
             return false;
         }
@@ -219,11 +276,12 @@ impl RustDiagnostics {
                 .take()
                 .unwrap_or_else(|| unreachable!());
             session.diagnostic_pull.refund_interrupted_attempt(pending);
-            if let Err(error) = session.client.cancel(pending.request_id) {
-                return self.restart_or_fail(RustDiagnosticsError::Client(error));
+            if let Err(error) = session.cancel_diagnostic(pending.request_id) {
+                return self.restart_or_fail(error);
             }
         }
         if !session.workspace_ready()
+            || session.diagnostic_pull.deferred_cancel.is_some()
             || session.diagnostic_pull.pending.is_some()
             || session.diagnostics.is_some()
             || !session.diagnostic_pull.admit_attempt(key)
@@ -254,6 +312,13 @@ impl RustDiagnostics {
                     stamp,
                     key,
                 });
+                false
+            }
+            Err(error) if is_input_pressure(error) => {
+                // submit_pending already rolled back the unsent peer request.
+                // Preserve previous server failures; this was not an attempt
+                // admitted to the server and must not consume the retry budget.
+                session.diagnostic_pull.refund_attempt(key);
                 false
             }
             Err(error) => self.restart_or_fail(error),

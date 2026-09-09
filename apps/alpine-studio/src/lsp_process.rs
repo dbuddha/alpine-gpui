@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError, sync_channel},
     },
@@ -650,6 +650,26 @@ impl fmt::Display for SupervisorStopped {
 
 impl Error for SupervisorStopped {}
 
+/// Instance identity without retaining the transport's counters or wake owner.
+/// The weak allocation identity cannot be reused until the token is dropped.
+pub(crate) struct ProcessBinding {
+    owner: Weak<Counters>,
+    epoch: ProcessEpoch,
+}
+
+#[cfg(test)]
+#[test]
+fn binding_does_not_retain_the_transport_owner() {
+    let identity = ProcessIdentity::new(1, 1).unwrap_or_else(|| unreachable!());
+    let process = LanguageServerProcess::inert_for_test(identity);
+    let strong = Arc::strong_count(&process.counters);
+    let binding = process.binding();
+    assert_eq!(Arc::strong_count(&process.counters), strong);
+    assert!(process.owns_binding(&binding));
+    drop(process);
+    assert!(binding.owner.upgrade().is_none());
+}
+
 pub(crate) struct LanguageServerProcess {
     control: Option<SyncSender<Control>>,
     events: Receiver<ProcessEvent>,
@@ -758,6 +778,18 @@ impl LanguageServerProcess {
             inert_control: Some(control_receiver),
             inert_events: Some(event_sender),
         }
+    }
+
+    pub(crate) fn binding(&self) -> ProcessBinding {
+        ProcessBinding {
+            owner: Arc::downgrade(&self.counters),
+            epoch: self.epoch,
+        }
+    }
+
+    pub(crate) fn owns_binding(&self, binding: &ProcessBinding) -> bool {
+        binding.epoch == self.epoch
+            && std::ptr::eq(binding.owner.as_ptr(), Arc::as_ptr(&self.counters))
     }
 
     pub(crate) fn send(&mut self, bytes: &[u8]) -> Result<InputSequence, SubmitError> {

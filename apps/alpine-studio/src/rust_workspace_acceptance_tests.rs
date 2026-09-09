@@ -1,5 +1,377 @@
 use super::*;
 
+fn workspace_acceptance_assert_refresh_delivery(messages: &[serde_json::Value], request_id: u64) {
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message["id"] == 91
+                && message
+                    .get("result")
+                    .is_some_and(serde_json::Value::is_null))
+            .count(),
+        1
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message["method"] == "$/cancelRequest"
+                && message["params"]["id"] == request_id)
+            .count(),
+        1
+    );
+    assert!(!messages.iter().any(|message| matches!(
+        message["method"].as_str(),
+        Some("initialize" | "textDocument/didOpen")
+    )));
+}
+
+#[test]
+fn workspace_acceptance_framed_refresh_preserves_delivery_ownership() -> Result<(), Box<dyn Error>>
+{
+    for saved_owner in [0, 1, 2] {
+        let (mut model, first, second) = workspace_acceptance_ready_workspace()?;
+        let mut observer = model
+            .session
+            .as_mut()
+            .ok_or("workspace")?
+            .client
+            .take_input_observer_for_test()?;
+        let _ = model.pump_diagnostics();
+        let request = workspace_acceptance_messages(&mut observer)?;
+        assert_eq!(request.len(), 1);
+        assert_eq!(request[0]["method"], "textDocument/diagnostic");
+        let request_id = request[0]["id"].as_u64().ok_or("diagnostic id")?;
+        workspace_acceptance_fill_input(&mut model)?;
+        if saved_owner == 1 {
+            let _ = model.record_saved_document(first.identity);
+        } else if saved_owner == 2 {
+            let _ = model.record_saved_document(second.identity);
+            let _ = model.sync_workspace([first.clone()], Some(1), |_| Arc::new(|| {}));
+        }
+        let before = model.session.as_ref().ok_or("workspace")?;
+        let ready = before.workspace_ready();
+        let close_count = before.overlay_closes.len();
+        let _ = workspace_acceptance_receive(
+            &mut model,
+            &serde_json::json!({
+                "jsonrpc":"2.0","id":91,"method":"workspace/diagnostic/refresh"
+            }),
+        )?;
+        let session = model.session.as_ref().ok_or("workspace after refresh")?;
+        assert_eq!(session.state, SessionState::Open);
+        assert_eq!(session.workspace_ready(), ready);
+        assert!(session.document_opened);
+        assert!(session.diagnostic_pull.enabled);
+        assert!(session.diagnostic_pull.pending.is_none());
+        assert_eq!(session.overlay_closes.len(), close_count);
+        assert_eq!(session.client.snapshot().protocol_writes.queued, 1);
+        assert_eq!(model.snapshot().restarts, 0);
+        assert!(
+            !model
+                .status_message()
+                .as_deref()
+                .is_some_and(|s| s.contains("unavailable"))
+        );
+        workspace_acceptance_drain_pressure(&mut observer)?;
+        let wake = LanguageWake {
+            generation: model.session.as_ref().ok_or("workspace")?.generation,
+        };
+        let _ = model.poll(wake);
+        let messages = workspace_acceptance_messages(&mut observer)?;
+        workspace_acceptance_assert_refresh_delivery(&messages, request_id);
+        assert_eq!(model.snapshot().protocol_writes.retained_bytes, 0);
+        if saved_owner != 0 {
+            let expected = if saved_owner == 1 { &first } else { &second };
+            let uri = LspDocument::from_file_path(&expected.path, "rust", 1)?;
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| message["method"] == "textDocument/didSave"
+                        && message["params"]["textDocument"]["uri"] == uri.uri())
+            );
+            // No writer acknowledgement was forged: close must remain owned.
+            assert_eq!(
+                model
+                    .session
+                    .as_ref()
+                    .ok_or("workspace")?
+                    .overlay_closes
+                    .len(),
+                close_count
+            );
+        }
+        let _ = workspace_acceptance_receive(
+            &mut model,
+            &serde_json::json!({
+                "jsonrpc":"2.0","id":request_id,"result":{"kind":"full","items":[{
+                    "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},
+                    "severity":1,"message":"obsolete pre-refresh diagnostic"
+                }]}
+            }),
+        )?;
+        assert_eq!(model.snapshot().diagnostic_items, 0);
+        assert_eq!(model.snapshot().restarts, 0);
+        let _ = model.stop();
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_refresh_reply_pressure_preserves_batch_invalidation()
+-> Result<(), Box<dyn Error>> {
+    for response_first in [false, true] {
+        let (mut model, _, _) = workspace_acceptance_ready_workspace()?;
+        let mut observer = model
+            .session
+            .as_mut()
+            .ok_or("workspace")?
+            .client
+            .take_input_observer_for_test()?;
+        let _ = model.pump_diagnostics();
+        let request = workspace_acceptance_messages(&mut observer)?;
+        let id = request[0]["id"].as_u64().ok_or("diagnostic id")?;
+        workspace_acceptance_fill_input(&mut model)?;
+        let response = workspace_acceptance_frame(&serde_json::json!({
+            "jsonrpc":"2.0","id":id,"result":{"kind":"full","items":[{
+                "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},
+                "severity":1,"message":"same-batch obsolete result"
+            }]}
+        }));
+        let mut refreshes = workspace_acceptance_frame(&serde_json::json!({
+            "jsonrpc":"2.0","id":91,"method":"workspace/diagnostic/refresh"
+        }));
+        refreshes.extend(workspace_acceptance_frame(&serde_json::json!({
+            "jsonrpc":"2.0","id":92,"method":"workspace/diagnostic/refresh"
+        })));
+        let bytes = if response_first {
+            [response, refreshes].concat()
+        } else {
+            [refreshes, response].concat()
+        };
+        let session = model.session.as_mut().ok_or("workspace")?;
+        let wake = LanguageWake {
+            generation: session.generation,
+        };
+        session.client.inject_stdout_for_test(&bytes)?;
+        let _ = model.poll(wake);
+        assert_eq!(model.snapshot().restarts, 0);
+        assert_eq!(model.snapshot().diagnostic_items, 0);
+        assert_eq!(model.snapshot().protocol_writes.queued, 2);
+        assert!(model.session.as_ref().ok_or("workspace")?.workspace_ready());
+        workspace_acceptance_drain_pressure(&mut observer)?;
+        let _ = model.poll(wake);
+        let messages = workspace_acceptance_messages(&mut observer)?;
+        let ids: Vec<_> = messages
+            .iter()
+            .filter(|message| message.get("result").is_some())
+            .map(|message| message["id"].as_u64().ok_or("response id"))
+            .collect::<Result<_, _>>()?;
+        assert_eq!(ids, [91, 92]);
+        assert!(
+            !messages
+                .iter()
+                .any(|message| message["method"] == "$/cancelRequest")
+        );
+        assert_eq!(model.snapshot().diagnostic_items, 0);
+        assert_eq!(model.snapshot().restarts, 0);
+        let _ = model.stop();
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_healthy_restart_control_preserves_native_caches()
+-> Result<(), Box<dyn Error>> {
+    workspace_acceptance_restart_cache_case(false)
+}
+
+#[test]
+fn workspace_acceptance_rejected_restart_revokes_native_caches() -> Result<(), Box<dyn Error>> {
+    workspace_acceptance_restart_cache_case(true)
+}
+
+fn workspace_acceptance_restart_cache_case(fail: bool) -> Result<(), Box<dyn Error>> {
+    let (mut model, first, second) = workspace_acceptance_ready_workspace()?;
+    workspace_acceptance_admit_native(&mut model)?;
+    let _ = model.sync_workspace([first.clone(), second.clone()], Some(2), |_| {
+        Arc::new(|| {})
+    });
+    workspace_acceptance_admit_native(&mut model)?;
+    let session = model
+        .session
+        .as_ref()
+        .ok_or("workspace with native caches")?;
+    assert!(session.diagnostics.is_some());
+    assert!(session.parked.iter().any(|document| {
+        document.identity.document_id == first.identity.document_id
+            && document.diagnostics.is_some()
+    }));
+    let mut observer = model
+        .session
+        .as_mut()
+        .ok_or("workspace")?
+        .client
+        .take_input_observer_for_test()?;
+    workspace_acceptance_fill_input(&mut model)?;
+    if fail {
+        let failure = RustDiagnosticsError::Client(crate::lsp_client::LspClientError::Protocol(
+            crate::lsp_json::ProtocolError::InvalidEnvelope,
+        ));
+        let _ = model.restart_or_fail(failure);
+        let session = model
+            .session
+            .as_ref()
+            .ok_or("workspace after protocol failure")?;
+        assert_eq!(session.state, SessionState::Starting);
+        assert!(session.diagnostics.is_none());
+        assert!(
+            session
+                .parked
+                .iter()
+                .all(|document| document.diagnostics.is_none())
+        );
+        assert_eq!(model.snapshot().diagnostic_items, 0);
+    }
+    let _ = model.sync_workspace([first, second], Some(1), |_| Arc::new(|| {}));
+    assert_eq!(model.snapshot().restarts, 0);
+    if fail {
+        assert_eq!(model.snapshot().diagnostic_items, 0);
+        assert!(!model.session.as_ref().ok_or("workspace")?.workspace_ready());
+        assert!(
+            !model
+                .status_message()
+                .as_deref()
+                .is_some_and(|status| status.contains("current native diagnostic"))
+        );
+    } else {
+        assert_eq!(model.snapshot().diagnostic_items, 1);
+        // Tab restoration publishes the cached primary message; the "Rust:"
+        // prefix belongs to the separate response-admission status path.
+        assert_eq!(
+            model.status_message().as_deref(),
+            Some("current native diagnostic")
+        );
+        assert!(model.session.as_ref().ok_or("workspace")?.workspace_ready());
+    }
+    workspace_acceptance_drain_pressure(&mut observer)?;
+    let _ = model.stop();
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_rejected_restart_preserves_overlay_ownership() -> Result<(), Box<dyn Error>>
+{
+    workspace_acceptance_restart_ownership(false)
+}
+
+#[test]
+fn workspace_acceptance_exhausted_restart_preserves_overlay_ownership() -> Result<(), Box<dyn Error>>
+{
+    workspace_acceptance_restart_ownership(true)
+}
+
+fn workspace_acceptance_restart_ownership(exhausted: bool) -> Result<(), Box<dyn Error>> {
+    let (mut model, first, second) = workspace_acceptance_ready_workspace()?;
+    let mut observer = model
+        .session
+        .as_mut()
+        .ok_or("workspace")?
+        .client
+        .take_input_observer_for_test()?;
+    workspace_acceptance_fill_input(&mut model)?;
+    let _ = model.record_saved_document(first.identity);
+    let _ = model.record_saved_document(second.identity);
+    let _ = model.sync_workspace([first.clone()], Some(1), |_| Arc::new(|| {}));
+    let session = model.session.as_mut().ok_or("workspace")?;
+    assert_eq!(session.state, SessionState::Open);
+    assert!(session.document_opened);
+    assert_eq!(session.overlay_closes.len(), 1);
+    let generation = session.process_generation;
+    let active_save_revision = session
+        .pending_save
+        .as_ref()
+        .ok_or("active save intent")?
+        .buffer_revision;
+    let closing_uri = session.overlay_closes[0].document.uri().to_owned();
+    let closing_save_revision = session.overlay_closes[0]
+        .pending_save
+        .as_ref()
+        .ok_or("closing save intent")?
+        .buffer_revision;
+    if exhausted {
+        // Isolate the budget guard: replacement enqueue would otherwise succeed.
+        workspace_acceptance_drain_pressure(&mut observer)?;
+        session.restart_count = crate::rust_diagnostics::MAX_RESTARTS_PER_DOCUMENT;
+    }
+    let restart_count = session.restart_count;
+    let failure = RustDiagnosticsError::Client(crate::lsp_client::LspClientError::Protocol(
+        crate::lsp_json::ProtocolError::InvalidEnvelope,
+    ));
+
+    let _ = model.restart_or_fail(failure);
+    let session = model
+        .session
+        .as_ref()
+        .ok_or("workspace after rejected restart")?;
+    // A genuine protocol failure must suppress publication even though the
+    // rejected replacement cannot take ownership of the existing transport.
+    assert_eq!(session.state, SessionState::Starting);
+    assert!(!session.workspace_ready());
+    assert_eq!(session.process_generation, generation);
+    assert_eq!(session.restart_count, restart_count);
+    assert!(session.client.snapshot().started);
+    assert_eq!(
+        session.client.snapshot().peer.lifecycle(),
+        crate::lsp_json::PeerLifecycle::Running
+    );
+    assert!(session.document_opened);
+    assert!(session.diagnostic_pull.enabled);
+    assert_eq!(
+        session
+            .pending_save
+            .as_ref()
+            .map(|save| save.buffer_revision),
+        Some(active_save_revision)
+    );
+    assert_eq!(session.overlay_closes.len(), 1);
+    assert_eq!(session.overlay_closes[0].document.uri(), closing_uri);
+    assert_eq!(
+        session.overlay_closes[0]
+            .pending_save
+            .as_ref()
+            .map(|save| save.buffer_revision),
+        Some(closing_save_revision)
+    );
+    assert_eq!(model.snapshot().restarts, 0);
+
+    if !exhausted {
+        workspace_acceptance_drain_pressure(&mut observer)?;
+        // This is an explicit recovery retry, not evidence of automatic retry
+        // scheduling. Ownership changes only after the real bounded enqueue.
+        let _ = model.restart_or_fail(failure);
+        let session = model
+            .session
+            .as_ref()
+            .ok_or("workspace after admitted restart")?;
+        assert_eq!(session.process_generation, generation + 1);
+        assert_eq!(session.restart_count, 1);
+        assert!(!session.client.snapshot().started);
+        assert!(!session.document_opened);
+        assert!(!session.diagnostic_pull.enabled);
+        assert!(session.overlay_closes.is_empty());
+        assert_eq!(
+            session
+                .pending_save
+                .as_ref()
+                .map(|save| save.buffer_revision),
+            Some(active_save_revision)
+        );
+        assert_eq!(model.snapshot().restarts, 1);
+    }
+    let _ = model.stop();
+    Ok(())
+}
+
 fn workspace_acceptance_frame(value: &serde_json::Value) -> Vec<u8> {
     let body = value.to_string();
     format!("Content-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
@@ -362,5 +734,342 @@ fn workspace_acceptance_unchanged_exhausted_anchor_allows_parked_edit() -> Resul
         messages[0]["params"]["contentChanges"][0]["text"],
         second.snapshot.text()
     );
+    Ok(())
+}
+
+fn workspace_acceptance_fill_input(model: &mut RustDiagnostics) -> Result<(), Box<dyn Error>> {
+    let client = &mut model.session.as_mut().ok_or("workspace")?.client;
+    let params = serde_json::value::RawValue::from_string("{\"value\":\"off\"}".into())?;
+    for _ in 0..8 {
+        let _ = client.notify("$/setTrace", Some(&params))?;
+    }
+    assert!(matches!(
+        client.notify("$/setTrace", Some(&params)),
+        Err(crate::lsp_client::LspClientError::Submit(
+            crate::lsp_process::SubmitError::Saturated
+        ))
+    ));
+    Ok(())
+}
+
+fn workspace_acceptance_drain_pressure(
+    observer: &mut crate::lsp_process::ProcessInputObserver,
+) -> Result<(), Box<dyn Error>> {
+    for _ in 0..8 {
+        let bytes = observer.take_input()?.ok_or("bounded control missing")?;
+        assert_eq!(workspace_acceptance_decode(&bytes)?["method"], "$/setTrace");
+    }
+    assert!(observer.take_input()?.is_none());
+    assert_eq!(observer.retained_bytes(), 0);
+    Ok(())
+}
+
+fn workspace_acceptance_receive(
+    model: &mut RustDiagnostics,
+    value: &serde_json::Value,
+) -> Result<LanguageEffect, Box<dyn Error>> {
+    let session = model.session.as_mut().ok_or("workspace")?;
+    let wake = LanguageWake {
+        generation: session.generation,
+    };
+    session
+        .client
+        .inject_stdout_for_test(&workspace_acceptance_frame(value))?;
+    Ok(model.poll(wake))
+}
+
+fn workspace_acceptance_assert_open(model: &RustDiagnostics) -> Result<(), Box<dyn Error>> {
+    let session = model.session.as_ref().ok_or("workspace lost")?;
+    assert_eq!(session.state, SessionState::Open);
+    assert!(session.document_opened);
+    assert!(session.parked.iter().all(|document| document.opened));
+    assert!(session.diagnostic_pull.enabled);
+    assert_eq!(session.restart_count, 0);
+    assert_eq!(model.snapshot().restarts, 0);
+    assert_eq!(model.snapshot().process_starts, 0);
+    assert_eq!(model.snapshot().process_written_inputs, 0);
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_pressure_preserves_readiness_and_real_retry_budget()
+-> Result<(), Box<dyn Error>> {
+    let (mut model, _, _) = workspace_acceptance_ready_workspace()?;
+    let mut observer = model
+        .session
+        .as_mut()
+        .ok_or("workspace")?
+        .client
+        .take_input_observer_for_test()?;
+    workspace_acceptance_fill_input(&mut model)?;
+    for _ in 0..8 {
+        assert!(!model.pump_diagnostics());
+        workspace_acceptance_assert_open(&model)?;
+        let session = model.session.as_ref().ok_or("workspace")?;
+        assert!(session.workspace_ready());
+        assert!(session.diagnostic_pull.pending.is_none());
+        assert_eq!(session.client.snapshot().peer.pending_requests(), 0);
+        assert!(model.status_message().is_none());
+    }
+    workspace_acceptance_drain_pressure(&mut observer)?;
+    assert!(!model.pump_diagnostics());
+    for attempt in 1..=3 {
+        let messages = workspace_acceptance_messages(&mut observer)?;
+        assert_eq!(messages.len(), 1, "pressure consumed an admitted retry");
+        assert_eq!(messages[0]["method"], "textDocument/diagnostic");
+        let id = messages[0]["id"].as_u64().ok_or("diagnostic id")?;
+        workspace_acceptance_fill_input(&mut model)?;
+        let _ = workspace_acceptance_receive(
+            &mut model,
+            &serde_json::json!({"jsonrpc":"2.0", "id":id, "error":{
+                "code":-32802, "message":"server busy", "data":{"retriggerRequest":true}
+            }}),
+        )?;
+        for _ in 0..8 {
+            assert!(!model.pump_diagnostics());
+            workspace_acceptance_assert_open(&model)?;
+        }
+        assert_eq!(
+            model.status_message().as_deref(),
+            Some(if attempt == 3 {
+                "Rust diagnostic retry budget exhausted; waiting for the next invalidation."
+            } else {
+                "Rust diagnostics canceled by the server; bounded retry pending."
+            })
+        );
+        workspace_acceptance_drain_pressure(&mut observer)?;
+        assert!(!model.pump_diagnostics());
+    }
+    assert!(workspace_acceptance_messages(&mut observer)?.is_empty());
+    let submitted = model.snapshot().process_submitted_inputs;
+    for _ in 0..32 {
+        assert!(!model.pump_diagnostics());
+    }
+    assert_eq!(model.snapshot().process_submitted_inputs, submitted);
+    let _ = model.stop();
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_pressure_cancellation_delivers_once_and_rejects_late_response()
+-> Result<(), Box<dyn Error>> {
+    for inactive in [false, true] {
+        for late_before_retry in [false, true] {
+            let (mut model, _, _) = workspace_acceptance_ready_workspace()?;
+            let mut observer = model
+                .session
+                .as_mut()
+                .ok_or("workspace")?
+                .client
+                .take_input_observer_for_test()?;
+            assert!(!model.pump_diagnostics());
+            let original = workspace_acceptance_messages(&mut observer)?;
+            assert_eq!(original.len(), 1);
+            let id = original[0]["id"].as_u64().ok_or("original id")?;
+            workspace_acceptance_fill_input(&mut model)?;
+            if inactive {
+                model.session.as_mut().ok_or("workspace")?.active_view = false;
+                assert!(!model.pump_diagnostics());
+            } else {
+                // Local invalidation only. Admission of a server-request
+                // response under pressure has a separate transport boundary.
+                let _ = model.refresh_diagnostics();
+            }
+            for _ in 0..8 {
+                assert!(!model.pump_diagnostics());
+                workspace_acceptance_assert_open(&model)?;
+                assert!(
+                    model
+                        .session
+                        .as_ref()
+                        .ok_or("workspace")?
+                        .diagnostic_pull
+                        .pending
+                        .is_none()
+                );
+            }
+            let late = serde_json::json!({"jsonrpc":"2.0", "id":id,
+                "result":{"kind":"full", "items":[]}});
+            if late_before_retry {
+                let _ = workspace_acceptance_receive(&mut model, &late)?;
+            }
+            workspace_acceptance_drain_pressure(&mut observer)?;
+            assert!(!model.pump_diagnostics());
+            let mut messages = workspace_acceptance_messages(&mut observer)?;
+            assert_eq!(messages.len(), if inactive { 1 } else { 2 });
+            assert_eq!(messages[0]["method"], "$/cancelRequest");
+            assert_eq!(messages[0]["params"]["id"], id);
+            if inactive {
+                model.session.as_mut().ok_or("workspace")?.active_view = true;
+                assert!(!model.pump_diagnostics());
+                messages.extend(workspace_acceptance_messages(&mut observer)?);
+            }
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[1]["method"], "textDocument/diagnostic");
+            let fresh = messages[1]["id"].as_u64().ok_or("fresh id")?;
+            assert!(fresh > id);
+            if !late_before_retry {
+                let _ = workspace_acceptance_receive(&mut model, &late)?;
+            }
+            let session = model.session.as_ref().ok_or("workspace")?;
+            assert_eq!(
+                u64::from(
+                    session
+                        .diagnostic_pull
+                        .pending
+                        .ok_or("fresh owner lost")?
+                        .request_id
+                ),
+                fresh
+            );
+            assert!(session.diagnostics.is_none());
+            let _ = workspace_acceptance_receive(
+                &mut model,
+                &serde_json::json!({"jsonrpc":"2.0", "id":fresh,
+                    "result":{"kind":"full", "items":[]}}),
+            )?;
+            assert!(
+                model
+                    .session
+                    .as_ref()
+                    .ok_or("workspace")?
+                    .diagnostics
+                    .is_some()
+            );
+            workspace_acceptance_assert_open(&model)?;
+            assert!(model.status_message().is_none());
+            assert!(workspace_acceptance_messages(&mut observer)?.is_empty());
+            let _ = model.stop();
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_pressure_preserves_unsaved_change_and_save_intent()
+-> Result<(), Box<dyn Error>> {
+    let (mut model, mut first, second) = workspace_acceptance_ready_workspace()?;
+    let mut observer = model
+        .session
+        .as_mut()
+        .ok_or("workspace")?
+        .client
+        .take_input_observer_for_test()?;
+    assert!(!model.pump_diagnostics());
+    let original = workspace_acceptance_messages(&mut observer)?;
+    assert_eq!(original.len(), 1);
+    workspace_acceptance_fill_input(&mut model)?;
+    workspace_acceptance_edit(&mut first)?;
+    let _ = model.sync_workspace([first.clone(), second], Some(1), |_| Arc::new(|| {}));
+    let save = model.record_saved_document(first.identity);
+    assert!(save.continuation.is_none());
+    workspace_acceptance_assert_open(&model)?;
+    let session = model.session.as_ref().ok_or("workspace")?;
+    assert_eq!(session.lsp_version, 2);
+    assert_eq!(session.snapshot.text(), first.snapshot.text());
+    assert!(session.pending_change);
+    assert!(session.overlay_write.is_none());
+    assert!(
+        session
+            .pending_save
+            .as_ref()
+            .ok_or("save lost")?
+            .submitted
+            .is_none()
+    );
+    assert!(!session.workspace_ready());
+    workspace_acceptance_drain_pressure(&mut observer)?;
+    let wake = LanguageWake {
+        generation: session.generation,
+    };
+    let effect = model.poll(wake);
+    assert!(effect.continuation.is_none());
+    let messages = workspace_acceptance_messages(&mut observer)?;
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["method"], "textDocument/didChange");
+    assert_eq!(messages[0]["params"]["textDocument"]["version"], 2);
+    assert_eq!(
+        messages[0]["params"]["contentChanges"][0]["text"],
+        first.snapshot.text()
+    );
+    assert_eq!(messages[1]["method"], "$/cancelRequest");
+    assert_eq!(messages[1]["params"]["id"], original[0]["id"]);
+    workspace_acceptance_assert_open(&model)?;
+    let session = model.session.as_ref().ok_or("workspace")?;
+    assert!(session.overlay_write.is_some());
+    assert!(!session.pending_change);
+    assert!(session.pending_save.is_some());
+    assert!(session.diagnostic_pull.pending.is_none());
+    assert!(
+        !session.workspace_ready(),
+        "observer must not fabricate a writer acknowledgement"
+    );
+    let change_sequence = session.overlay_write.ok_or("change sequence")?;
+    // Drive the ownership transition with its actual admitted sequence. This
+    // is a protocol control, not evidence that a physical child wrote bytes.
+    assert!(
+        model
+            .session
+            .as_mut()
+            .ok_or("workspace")?
+            .acknowledge_overlay(change_sequence)
+    );
+    let _ = model.poll(wake);
+    let saved = workspace_acceptance_messages(&mut observer)?;
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0]["method"], "textDocument/didSave");
+    let session = model.session.as_mut().ok_or("workspace")?;
+    let save_sequence = session.overlay_write.ok_or("save sequence")?;
+    assert_ne!(save_sequence, change_sequence);
+    assert_eq!(
+        session
+            .pending_save
+            .as_ref()
+            .ok_or("save ownership")?
+            .submitted,
+        Some(save_sequence)
+    );
+    assert!(!session.acknowledge_overlay(change_sequence));
+    assert!(!session.workspace_ready());
+    assert!(session.acknowledge_overlay(save_sequence));
+    assert!(session.pending_save.is_none());
+    assert!(session.workspace_ready());
+    let _ = model.poll(wake);
+    let resumed = workspace_acceptance_messages(&mut observer)?;
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0]["method"], "textDocument/diagnostic");
+    assert!(
+        model
+            .session
+            .as_ref()
+            .ok_or("workspace")?
+            .diagnostic_pull
+            .pending
+            .is_some()
+    );
+    workspace_acceptance_assert_open(&model)?;
+    let _ = model.stop();
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_pressure_does_not_hide_a_closed_transport() -> Result<(), Box<dyn Error>> {
+    let (mut model, _, _) = workspace_acceptance_ready_workspace()?;
+    let observer = model
+        .session
+        .as_mut()
+        .ok_or("workspace")?
+        .client
+        .take_input_observer_for_test()?;
+    drop(observer);
+    assert!(model.pump_diagnostics());
+    assert!(!model.session.as_ref().ok_or("workspace")?.workspace_ready());
+    assert!(
+        model
+            .status_message()
+            .ok_or("closed transport hidden")?
+            .contains("Closed")
+    );
+    let _ = model.stop();
     Ok(())
 }
