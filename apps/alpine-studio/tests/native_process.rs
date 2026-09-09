@@ -303,7 +303,9 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
     let home = root.join("home");
     let path = root.join("document.rs");
     let diagnostic = root.join("internal-diagnostic.json");
+    let scene_captures = root.join("scene-captures");
     std::fs::create_dir_all(&home)?;
+    std::fs::create_dir(&scene_captures)?;
     std::fs::write(&path, "fn main() {}\n")?;
     let expected_evidence = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
         None => "physical",
@@ -321,6 +323,7 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
                 "production-single-window",
             )
             .env("ALPINE_STUDIO_DOGFOOD_OUTPUT", &diagnostic)
+            .env("ALPINE_STUDIO_NATIVE_SCENE_CAPTURE_DIR", &scene_captures)
             .env("ALPINE_STUDIO_DOGFOOD_WORKLOAD_ID", "hosted-close")
             .env("ALPINE_STUDIO_DOGFOOD_REVISION", "a".repeat(40))
             .env(
@@ -331,19 +334,18 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
+        let capture_pid = child.id();
         let timeout = Duration::from_secs(8);
         let deadline = Instant::now() + timeout;
+        let mut timed_out = false;
         let status = loop {
             if let Some(status) = child.try_wait()? {
                 break status;
             }
             if Instant::now() >= deadline {
                 child.kill()?;
-                let status = child.wait()?;
-                return Err(format!(
-                    "shipping Alpine Studio exceeded {timeout:?} and was terminated with {status}"
-                )
-                .into());
+                timed_out = true;
+                break child.wait()?;
             }
             thread::sleep(Duration::from_millis(10));
         };
@@ -356,9 +358,17 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(mut pipe) = child.stderr.take() {
             pipe.read_to_string(&mut stderr)?;
         }
-        if !status.success() {
+        std::fs::write(root.join("shipping.stdout"), &stdout)?;
+        std::fs::write(root.join("shipping.stderr"), &stderr)?;
+        std::fs::write(
+            root.join("shipping.status"),
+            format!(
+                "pid={capture_pid} timeout={timeout:?} timed_out={timed_out} status={status}\n"
+            ),
+        )?;
+        if timed_out || !status.success() {
             return Err(format!(
-                "shipping Alpine Studio failed with {status}; stdout={stdout:?}; stderr={stderr:?}"
+                "shipping Alpine Studio failed with {status}; timed_out={timed_out}; timeout={timeout:?}; stdout={stdout:?}; stderr={stderr:?}"
             )
             .into());
         }
@@ -437,15 +447,110 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
             line.ends_with("Metal API Validation Enabled")
                 || line.ends_with("Metal GPU Validation Enabled")
         }));
+        qualify_scene_capture(&scene_captures, capture_pid)?;
         qualify_recovery_launch_processes(&root, expected_evidence)?;
         Ok(())
     })();
-    let cleanup = std::fs::remove_dir_all(root);
-    match (result, cleanup) {
-        (Err(error), _) => Err(error),
-        (Ok(()), Err(error)) => Err(Box::new(error)),
-        (Ok(()), Ok(())) => Ok(()),
+    match result {
+        Err(error) => Err(format!(
+            "{error}; native capture artifacts retained at {}",
+            root.display()
+        )
+        .into()),
+        Ok(()) => std::fs::remove_dir_all(root).map_err(Into::into),
     }
+}
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+fn qualify_scene_capture(
+    directory: &std::path::Path,
+    process_id: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let stem = format!("scene-{process_id}-0000");
+    let path = directory.join(format!("{stem}.json"));
+    assert!(std::fs::metadata(&path)?.len() <= 33_554_432);
+    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    assert_eq!(capture["schema"], "alpine-studio-scene-capture/v1");
+    assert_eq!(capture["origin"], "studio-app-delegate-frame");
+    assert_eq!(capture["process_id"], process_id);
+    assert_eq!(capture["capture_index"], 0);
+    assert_eq!(capture["capture_limit"], 16);
+    assert_eq!(capture["renderer_trace_admitted"], false);
+    assert_eq!(capture["timing_invalidated"], true);
+    assert!(capture["viewport"]["backing_scale_factor"].is_null());
+    assert!(
+        capture["scene_revision"]
+            .as_u64()
+            .is_some_and(|value| value > 0)
+    );
+    assert!(
+        capture["visible_editor_lines"]
+            .as_u64()
+            .is_some_and(|value| value > 0)
+    );
+    assert!(
+        capture["counts"]["glyphs"]
+            .as_u64()
+            .is_some_and(|value| value > 0)
+    );
+    // Validate declared counts against actual arrays and painter kinds, then
+    // prove each count is discriminating with in-memory malformed controls.
+    let counts_match = |value: &serde_json::Value| {
+        let Some(operations) = value["operations"].as_array() else {
+            return false;
+        };
+        let Some(clips) = value["clips"].as_array() else {
+            return false;
+        };
+        let mut quads = 0_u64;
+        let mut glyphs = 0_u64;
+        for operation in operations {
+            match operation["kind"].as_str() {
+                Some("solid-quad") => quads += 1,
+                Some("monochrome-glyph") => glyphs += 1,
+                _ => return false,
+            }
+        }
+        value["counts"]["operations"] == operations.len()
+            && value["counts"]["clips"] == clips.len()
+            && value["counts"]["quads"].as_u64() == Some(quads)
+            && value["counts"]["glyphs"].as_u64() == Some(glyphs)
+    };
+    assert!(counts_match(&capture));
+    for field in ["operations", "clips", "quads", "glyphs"] {
+        let mut malformed = capture.clone();
+        malformed["counts"][field] = serde_json::json!(u64::MAX);
+        assert!(
+            !counts_match(&malformed),
+            "count control did not reject {field}"
+        );
+    }
+    let mut unknown_kind = capture.clone();
+    let unknown_operations = unknown_kind["operations"]
+        .as_array_mut()
+        .ok_or("unknown-kind control operations")?;
+    unknown_operations.push(serde_json::json!({"kind":"unsupported"}));
+    let unknown_operation_count = unknown_operations.len();
+    unknown_kind["counts"]["operations"] = serde_json::json!(unknown_operation_count);
+    assert!(!counts_match(&unknown_kind));
+    let operations = capture["operations"]
+        .as_array()
+        .ok_or("captured operations")?;
+    assert!(!operations.is_empty());
+    assert_eq!(capture["counts"]["operations"], operations.len());
+    assert!(operations.len() <= 65_536);
+    for (sequence, operation) in operations.iter().enumerate() {
+        assert_eq!(operation["sequence"], sequence);
+    }
+    let atlas_name = format!("{stem}.a8");
+    assert_eq!(capture["atlas"]["file"], atlas_name);
+    let width = capture["atlas"]["width"].as_u64().ok_or("atlas width")?;
+    let height = capture["atlas"]["height"].as_u64().ok_or("atlas height")?;
+    let bytes = width.checked_mul(height).ok_or("atlas byte overflow")?;
+    assert!(bytes > 0 && bytes <= 16_777_216);
+    assert_eq!(capture["atlas"]["bytes"], bytes);
+    assert_eq!(std::fs::metadata(directory.join(atlas_name))?.len(), bytes);
+    Ok(())
 }
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]

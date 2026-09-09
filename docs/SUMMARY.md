@@ -97,3 +97,5 @@
   - [AEP 0271: Bounded accessibility notifications and destruction](aep/0271-bounded-accessibility-notifications.md)
   - [AEP 0272: Real Studio native accessibility process journey](aep/0272-studio-native-accessibility-process.md)
   - [AEP 0273: Physical accessibility qualification](aep/0273-physical-accessibility-qualification.md)
+
+- [Studio production-scene capture](quality/studio-scene-capture.md)

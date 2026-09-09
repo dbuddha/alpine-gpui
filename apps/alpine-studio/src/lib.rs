@@ -72,6 +72,8 @@ mod rust_workspace_edit;
 mod rust_workspace_publication_tests;
 mod rust_workspace_publish;
 mod rust_workspace_ui;
+#[cfg(any(test, alpine_native_validation))]
+mod scene_capture;
 mod session;
 mod settings;
 mod syntax;
@@ -7006,7 +7008,10 @@ impl AppDelegate for StudioApp {
     fn frame(&mut self, context: WindowContext) -> Scene {
         #[cfg(all(alpine_native_validation, not(test)))]
         NATIVE_VALIDATION_FRAME_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.scene(context.scene_revision(), context.viewport())
+        let scene = self.scene(context.scene_revision(), context.viewport());
+        #[cfg(alpine_native_validation)]
+        scene_capture::record_scene(&scene, self.rendered_lines.len());
+        scene
     }
 }
 
