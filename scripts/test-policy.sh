@@ -144,6 +144,133 @@ run_policy() {
 
 run_policy >/dev/null
 
+# Correspondence controls exercise the real workflow commands, not invented
+# package counts. Removing the common Studio package recreates Defect #590.
+for workflow in ci nightly-assurance; do
+    source_workflow=".github/workflows/$workflow.yml"
+    broken_workflow="$fixture_dir/missing-baseline-$workflow.yml"
+    sed '/--file crates\/alpine-platform-macos\/src\/native.rs/s/ --cargo-arg=--package=alpine-studio//' \
+        "$source_workflow" > "$broken_workflow"
+    if [ "$workflow" = ci ]; then
+        export ALPINE_CI_WORKFLOW="$broken_workflow"
+    else
+        export ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$broken_workflow"
+    fi
+    if run_policy > "$fixture_dir/missing-baseline-$workflow.log" 2>&1; then
+        printf 'policy test error: mismatched mutation baseline unexpectedly passed\n' >&2
+        exit 1
+    fi
+    if ! grep -Fq 'mutation baseline and mutant package scopes must correspond' \
+        "$fixture_dir/missing-baseline-$workflow.log"; then
+        cat "$fixture_dir/missing-baseline-$workflow.log" >&2
+        exit 1
+    fi
+    unset ALPINE_CI_WORKFLOW ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
+done
+
+sed '/--file crates\/alpine-platform-macos\/src\/native.rs/s/cargo mutants /cargo mutants --baseline skip /' \
+    .github/workflows/ci.yml > "$fixture_dir/skipped-mutation-baseline.yml"
+if ALPINE_CI_WORKFLOW="$fixture_dir/skipped-mutation-baseline.yml" \
+    run_policy > "$fixture_dir/skipped-mutation-baseline.log" 2>&1; then
+    printf 'policy test error: skipped mutation baseline unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'mutation baseline must execute' "$fixture_dir/skipped-mutation-baseline.log"
+
+# Preserve mutated-package ownership and the complete selected inventory.
+# A Studio-only selector previously included the mutated package in baseline
+# only. Removing both owner flags must fail even when every test-package token
+# still has its matching common Cargo argument.
+for workflow in ci nightly-assurance; do
+    broken_workflow="$fixture_dir/studio-only-baseline-$workflow.yml"
+    sed '/--file crates\/alpine-runtime\/src\/lib.rs/s/ --test-package alpine-runtime --cargo-arg=--package=alpine-runtime//' \
+        ".github/workflows/$workflow.yml" > "$broken_workflow"
+    if [ "$workflow" = ci ]; then
+        export ALPINE_CI_WORKFLOW="$broken_workflow"
+    else
+        export ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$broken_workflow"
+    fi
+    if run_policy > "$fixture_dir/studio-only-baseline-$workflow.log" 2>&1; then
+        printf 'policy test error: Studio-only baseline mismatch unexpectedly passed\n' >&2
+        exit 1
+    fi
+    grep -Fq 'missing common mutated package alpine-runtime' \
+        "$fixture_dir/studio-only-baseline-$workflow.log"
+    unset ALPINE_CI_WORKFLOW ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
+done
+
+sed '/--file crates\/alpine-platform-macos\/src\/lib.rs/s/ --test-package alpine-platform-macos --cargo-arg=--package=alpine-platform-macos//' \
+    .github/workflows/nightly-assurance.yml > "$fixture_dir/studio-only-platform-baseline.yml"
+if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/studio-only-platform-baseline.yml" \
+    run_policy > "$fixture_dir/studio-only-platform-baseline.log" 2>&1; then
+    printf 'policy test error: Studio-only platform baseline mismatch unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'missing common mutated package alpine-platform-macos' \
+    "$fixture_dir/studio-only-platform-baseline.log"
+
+for selector in '--test-package=alpine-runtime' '--test-workspace=true'; do
+    sed "/--file crates\\/alpine-runtime\\/src\\/lib.rs/s/--test-package alpine-runtime/$selector/" \
+        .github/workflows/ci.yml > "$fixture_dir/unsupported-package-selector.yml"
+    if ALPINE_CI_WORKFLOW="$fixture_dir/unsupported-package-selector.yml" \
+        run_policy > "$fixture_dir/unsupported-package-selector.log" 2>&1; then
+        printf 'policy test error: unsupported package selector unexpectedly passed\n' >&2
+        exit 1
+    fi
+    grep -Fq 'mutation package selector must use explicit --test-package entries' \
+        "$fixture_dir/unsupported-package-selector.log"
+done
+
+for workflow in ci nightly-assurance; do
+    broken_workflow="$fixture_dir/slice-partition-$workflow.yml"
+    sed '/--file crates\/alpine-platform-macos\/src\/native.rs/s/ --sharding round-robin//' \
+        ".github/workflows/$workflow.yml" > "$broken_workflow"
+    if [ "$workflow" = ci ]; then
+        export ALPINE_CI_WORKFLOW="$broken_workflow"
+    else
+        export ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$broken_workflow"
+    fi
+    if run_policy > "$fixture_dir/slice-partition-$workflow.log" 2>&1; then
+        printf 'policy test error: obsolete native surface partition unexpectedly passed\n' >&2
+        exit 1
+    fi
+    grep -Fq 'round-robin' "$fixture_dir/slice-partition-$workflow.log"
+    unset ALPINE_CI_WORKFLOW ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
+done
+
+for fault in missing duplicate-shard duplicate-id extra denominator timeout; do
+    broken_workflow="$fixture_dir/native-surface-matrix-$fault.yml"
+    awk -v fault="$fault" '
+        /^  native-surface-mutation:/ { active = 1 }
+        /^  native-studio-contract-mutation:/ { active = 0 }
+        active && fault == "missing" && /- id: 16$/ { getline; next }
+        active && fault == "duplicate-id" && /- id: 16$/ { sub("id: 16", "id: 15") }
+        active && fault == "duplicate-shard" && /shard: "15\/16"/ { sub("15/16", "14/16") }
+        active && fault == "denominator" && /shard: "15\/16"/ { sub("15/16", "15/8") }
+        active && fault == "timeout" && /timeout-minutes: 30$/ { sub("30", "60") }
+        { print }
+        active && fault == "extra" && /shard: "15\/16"/ {
+            print "          - id: 17"
+            print "            shard: \"16/16\""
+        }
+    ' .github/workflows/nightly-assurance.yml > "$broken_workflow"
+    if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$broken_workflow" \
+        run_policy > "$fixture_dir/native-surface-matrix-$fault.log" 2>&1; then
+        printf 'policy test error: invalid native surface matrix unexpectedly passed: %s\n' "$fault" >&2
+        exit 1
+    fi
+    if ! grep -Fq 'native surface mutation must retain exactly sixteen unique ordered shards' \
+        "$fixture_dir/native-surface-matrix-$fault.log"; then
+        cat "$fixture_dir/native-surface-matrix-$fault.log" >&2
+        exit 1
+    fi
+    unset ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
+done
+
+# POSIX shell-function prefix assignments persist. Negative overrides must
+# not contaminate the next positive policy check or a different gate family.
+run_policy >/dev/null
+
 cp scripts/check-tla.sh "$fixture_dir/check-tla.sh"
 ALPINE_TLA_DRIVER="$fixture_dir/check-tla.sh" run_policy >/dev/null
 sed 's/nightly) config=Nightly.cfg; lncheck=final ;;/nightly) config=Nightly.cfg; lncheck=default ;;/' \
@@ -618,7 +745,7 @@ fi
 
 native_surface_fixture="$(mktemp -d)"
 cp .github/workflows/nightly-assurance.yml "${native_surface_fixture}/nightly-assurance.yml"
-sed '/shard: "7\/8"/d' "${native_surface_fixture}/nightly-assurance.yml" \
+sed '/shard: "15\/16"/d' "${native_surface_fixture}/nightly-assurance.yml" \
   > "${native_surface_fixture}/nightly-assurance.modified.yml"
 mv "${native_surface_fixture}/nightly-assurance.modified.yml" \
   "${native_surface_fixture}/nightly-assurance.yml"
