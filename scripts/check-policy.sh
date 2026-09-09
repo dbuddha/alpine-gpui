@@ -826,12 +826,27 @@ if [ -z "${native_surface_mutation_job}" ]; then
   echo "policy failure: Nightly assurance must define native-surface-mutation" >&2
   exit 1
 fi
-for shard in 0 1 2 3 4 5 6 7; do
-  if ! printf '%s\n' "${native_surface_mutation_job}" | grep -Fq "shard: \"${shard}/8\""; then
-    echo "policy failure: native surface mutation must retain deterministic shard ${shard}/8" >&2
-    exit 1
-  fi
-done
+if ! printf '%s\n' "${native_surface_mutation_job}" | awk '
+    /^[[:space:]]+timeout-minutes:/ {
+        timeouts++
+        if ($2 != 30) invalid = 1
+    }
+    /^[[:space:]]+- id:/ {
+        id = $3
+        count++
+        if (waiting || id != count || id < 1 || id > 16 || seen[id]++) invalid = 1
+        waiting = 1
+    }
+    /^[[:space:]]+shard:/ {
+        expected = sprintf("\"%d/16\"", id - 1)
+        if (!waiting || $2 != expected) invalid = 1
+        waiting = 0
+        shards++
+    }
+    END { exit (invalid || waiting || count != 16 || shards != 16 || timeouts != 1) }
+'; then
+  fail 'native surface mutation must retain exactly sixteen unique ordered shards and artifact IDs within the 30-minute budget'
+fi
 native_surface_scope_count="$(printf '%s\n' "${native_surface_mutation_job}" | grep -Fc -- '--file crates/alpine-platform-macos/src/native.rs' || true)"
 if [ "${native_surface_scope_count}" -ne 1 ]; then
   echo "policy failure: native surface mutation must scope native.rs exactly once" >&2
