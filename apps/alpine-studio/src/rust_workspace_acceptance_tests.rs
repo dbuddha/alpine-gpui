@@ -65,6 +65,8 @@ fn workspace_acceptance_terminal_restart_redraw(
         changed,
         "new terminal error status did not request a redraw"
     );
+    // Repeated terminal failure must not keep an unchanged view dirty.
+    assert!(!model.restart_or_fail(expected));
     let session = model
         .session
         .as_ref()
