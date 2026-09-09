@@ -249,7 +249,12 @@ fn read_language_trace(path: &std::path::Path) -> String {
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn require_language_trace(trace: &str, scenario: &str) -> Result<(), Box<dyn std::error::Error>> {
     require_language_startup_trace(trace).map_err(|error| {
-        format!("language trace mismatch for scenario {scenario:?}: {error}").into()
+        // The fixture directory is cleaned after this result. Preserve the
+        // actual rejected trace in the bounded parent failure capture first.
+        format!(
+            "language trace mismatch for scenario {scenario:?}: {error}; language_trace={trace:?}"
+        )
+        .into()
     })
 }
 
@@ -259,7 +264,12 @@ fn require_language_trace_prefix(
     scenario: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     alpine_studio::native_validation::validate_native_language_startup_prefix(trace).map_err(
-        |error| format!("language trace prefix mismatch for scenario {scenario:?}: {error}").into(),
+        |error| {
+            format!(
+                "language trace prefix mismatch for scenario {scenario:?}: {error}; language_trace={trace:?}"
+            )
+            .into()
+        },
     )
 }
 

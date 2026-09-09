@@ -944,6 +944,146 @@ mod tests {
         Ok(client)
     }
 
+    fn mock_save_notify_written(
+        client: &mut LspClient,
+        method: &str,
+        params: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let params = serde_json::from_str::<Box<RawValue>>(params)?;
+        let submitted = client.notify(method, Some(&params))?;
+        let _ = wait_poll(
+            client,
+            Some(stamp(1)),
+            |poll| matches!(poll, LspClientPoll::InputWritten { sequence, .. } if *sequence == submitted),
+        )?;
+        Ok(())
+    }
+
+    const MOCK_SAVE_OPEN: &str = r#"{"textDocument":{"uri":"file:///workspace/save.rs","languageId":"rust","version":1,"text":"fn main() {}\n"}}"#;
+    const MOCK_SAVE_CHANGE: &str = r#"{"textDocument":{"uri":"file:///workspace/save.rs","version":2},"contentChanges":[{"text":"let ok = 1;\n"}]}"#;
+    const MOCK_SAVE_DOCUMENT: &str = r#"{"textDocument":{"uri":"file:///workspace/save.rs"}}"#;
+    const MOCK_SAVE_DIRTY_CHANGE: &str = r#"{"textDocument":{"uri":"file:///workspace/save.rs","version":2},"contentChanges":[{"text":"broken();\n"}]}"#;
+    const MOCK_SAVE_NEXT_CHANGE: &str = r#"{"textDocument":{"uri":"file:///workspace/save.rs","version":3},"contentChanges":[{"text":"let ok = 1;\n"}]}"#;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn mock_save_notification_preserves_the_live_overlay_and_process() -> Result<(), Box<dyn Error>>
+    {
+        let mut client = start_initialized(mock_executable(), 1)?;
+        mock_save_notify_written(&mut client, "textDocument/didOpen", MOCK_SAVE_OPEN)?;
+        mock_save_notify_written(
+            &mut client,
+            "textDocument/didChange",
+            MOCK_SAVE_DIRTY_CHANGE,
+        )?;
+        mock_save_notify_written(&mut client, "textDocument/didSave", MOCK_SAVE_DOCUMENT)?;
+
+        // A fresh response after the save proves server receipt and continued
+        // overlay authority, not just admission to the parent writer queue.
+        let params = serde_json::from_str::<Box<RawValue>>(MOCK_SAVE_DOCUMENT)?;
+        let request = client.begin_request("textDocument/diagnostic", Some(&params), stamp(1))?;
+        wait_peer_event(
+            &mut client,
+            Some(stamp(1)),
+            WAIT,
+            "save incorrectly cleared the live overlay diagnostics",
+            |event| {
+                matches!(
+                    event,
+                    PeerEvent::Response {
+                        id,
+                        value: ResponseValue::Result(value),
+                        ..
+                    } if id == request.request_id
+                        && serde_json::from_str::<serde_json::Value>(value.get())
+                            .is_ok_and(|value| value.get("items")
+                                .and_then(serde_json::Value::as_array)
+                                .is_some_and(|items| !items.is_empty()))
+                )
+            },
+        )?;
+        // Saving version 2 must not consume version 3. Require a new response
+        // for the immediately following edit, not only duplicate rejection.
+        mock_save_notify_written(&mut client, "textDocument/didChange", MOCK_SAVE_NEXT_CHANGE)?;
+        let request = client.begin_request("textDocument/diagnostic", Some(&params), stamp(1))?;
+        wait_peer_event(
+            &mut client,
+            Some(stamp(1)),
+            WAIT,
+            "save prevented the next version from replacing the overlay",
+            |event| {
+                matches!(
+                    event,
+                    PeerEvent::Response {
+                        id,
+                        value: ResponseValue::Result(value),
+                        ..
+                    } if id == request.request_id
+                        && serde_json::from_str::<serde_json::Value>(value.get())
+                            .is_ok_and(|value| value.get("items")
+                                .and_then(serde_json::Value::as_array)
+                                .is_some_and(Vec::is_empty))
+                )
+            },
+        )?;
+        mock_save_notify_written(&mut client, "textDocument/didClose", MOCK_SAVE_DOCUMENT)?;
+        let report = client.shutdown_gracefully();
+        assert_eq!(report.protocol, LspShutdownProtocol::AcknowledgedAndExited);
+        assert_eq!(report.transport.starts, 1);
+        assert_eq!(report.transport.restarts, 0);
+        assert_eq!(report.transport.exits, 1);
+        assert_eq!(report.transport.input_saturations, 0);
+        assert_eq!(report.transport.retained_bytes, 0);
+        assert_eq!(report.transport.shutdown_timeouts, 0);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn mock_save_notification_keeps_invalid_lifecycle_controls_discriminating()
+    -> Result<(), Box<dyn Error>> {
+        for scenario in ["missing-uri", "unopened", "closed", "version", "unknown"] {
+            let mut client = start_initialized(mock_executable(), 1)?;
+            mock_save_notify_written(&mut client, "textDocument/didOpen", MOCK_SAVE_OPEN)?;
+            if scenario == "closed" {
+                mock_save_notify_written(&mut client, "textDocument/didClose", MOCK_SAVE_DOCUMENT)?;
+            }
+            if scenario == "version" {
+                mock_save_notify_written(&mut client, "textDocument/didChange", MOCK_SAVE_CHANGE)?;
+                mock_save_notify_written(&mut client, "textDocument/didSave", MOCK_SAVE_DOCUMENT)?;
+            }
+            let (method, params) = match scenario {
+                "missing-uri" => ("textDocument/didSave", "{}"),
+                "unopened" => (
+                    "textDocument/didSave",
+                    r#"{"textDocument":{"uri":"file:///workspace/unopened.rs"}}"#,
+                ),
+                "version" => ("textDocument/didChange", MOCK_SAVE_CHANGE),
+                "unknown" => ("test/unknown-save-method", MOCK_SAVE_DOCUMENT),
+                _ => ("textDocument/didSave", MOCK_SAVE_DOCUMENT),
+            };
+            let params = serde_json::from_str::<Box<RawValue>>(params)?;
+            client.notify(method, Some(&params))?;
+            let exited = wait_poll(&mut client, Some(stamp(1)), |poll| {
+                matches!(poll, LspClientPoll::Exited { .. })
+            })?;
+            assert_eq!(
+                exited,
+                LspClientPoll::Exited {
+                    success: false,
+                    code: Some(2),
+                },
+                "invalid lifecycle was accepted: {scenario}"
+            );
+            let snapshot = client.shutdown();
+            assert_eq!(snapshot.process.starts, 1);
+            assert_eq!(snapshot.process.restarts, 0);
+            assert_eq!(snapshot.process.retained_bytes, 0);
+            assert_eq!(snapshot.process.shutdown_timeouts, 0);
+        }
+        Ok(())
+    }
+
     fn qualify_mock_requests(
         client: &mut LspClient,
         current: RequestStamp,

@@ -85,7 +85,7 @@ fn run() -> io::Result<()> {
                     write_frame(
                         &mut output,
                         &format!(
-                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"capabilities":{{"diagnosticProvider":{{"interFileDependencies":true,"workspaceDiagnostics":false}}}}}}}}"#
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"capabilities":{{"textDocumentSync":{{"openClose":true,"change":2,"save":{{"includeText":false}}}},"diagnosticProvider":{{"interFileDependencies":true,"workspaceDiagnostics":false}}}}}}}}"#
                         ),
                     )?;
                     trace.record("initialize-responded")?;
@@ -146,6 +146,19 @@ fn run() -> io::Result<()> {
                         continue;
                     }
                     write_diagnostics(&mut output, message, message.contains("let ok"))?;
+                }
+                Some("textDocument/didSave") if initialized => {
+                    let uri = json_string(message, "uri").ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "missing saved document URI")
+                    })?;
+                    if !open_documents.contains_key(uri) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "save for unopened document",
+                        ));
+                    }
+                    // A URI-only disk save does not replace the current overlay
+                    // or reset its version, even if newer unsaved edits exist.
                 }
                 Some("textDocument/didClose") if initialized => {
                     let uri = json_string(message, "uri").ok_or_else(|| {
