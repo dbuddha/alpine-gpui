@@ -347,7 +347,7 @@ mod tests {
             .saved_compiler
             .as_ref()
             .ok_or("missing owned report")?;
-        assert_eq!(report.uri(), format!("file:///tmp/compiler-{id}.rs"));
+        assert_eq!(report.uri(), document_uri(id)?);
         assert!(
             report
                 .batch
@@ -368,7 +368,7 @@ mod tests {
             if id != 1 {
                 session.park_and_activate(input(id), true)?;
             }
-            let report = report_at_limit(&format!("file:///tmp/compiler-{id}.rs"), 'a')?;
+            let report = report_at_limit(&document_uri(id)?, 'a')?;
             assert!(route(session, report)?);
         }
         let full = (256, MAX_WORKSPACE_BYTES);
@@ -376,20 +376,16 @@ mod tests {
             workspace::saved_compiler_counts(session.saved_compiler.as_ref(), &session.parked),
             full
         );
-        let active = report_at_limit("file:///tmp/compiler-4.rs", 'b')?;
+        let active = report_at_limit(&document_uri(4)?, 'b')?;
         assert!(route(session, active)?);
-        let inactive = report_at_limit("file:///tmp/compiler-2.rs", 'c')?;
+        let inactive = report_at_limit(&document_uri(2)?, 'c')?;
         assert!(!route(session, inactive)?);
         for (id, marker) in [(1, 'a'), (2, 'c'), (3, 'a'), (4, 'b')] {
             assert_compiler_owner(session, id, marker)?;
         }
         session.park_and_activate(input(5), true)?;
         assert_eq!(
-            route(
-                session,
-                report("file:///tmp/compiler-5.rs", vec![item("rustc")])?
-            )
-            .err(),
+            route(session, report(&document_uri(5)?, vec![item("rustc")])?).err(),
             Some(LanguageProtocolError::DiagnosticRetentionExceeded)
         );
         assert!(session.saved_compiler.is_none());
@@ -397,31 +393,22 @@ mod tests {
             assert_compiler_owner(session, id, marker)?;
         }
         session.park_and_activate(input(5), true)?;
-        assert!(!route(
-            session,
-            report("file:///tmp/compiler-5.rs", vec![])?
-        )?);
+        assert!(!route(session, report(&document_uri(5)?, vec![])?)?);
         assert_eq!(
             workspace::saved_compiler_counts(session.saved_compiler.as_ref(), &session.parked),
             full
         );
-        assert!(!route(
-            session,
-            report("file:///tmp/compiler-2.rs", vec![])?
-        )?);
+        assert!(!route(session, report(&document_uri(2)?, vec![])?)?);
         let after_clear = (192, MAX_WORKSPACE_BYTES - MAX_REPORT_BYTES);
         assert_eq!(
             workspace::saved_compiler_counts(session.saved_compiler.as_ref(), &session.parked),
             after_clear
         );
-        assert!(!route(
-            session,
-            report("file:///tmp/compiler-2.rs", vec![])?
-        )?);
+        assert!(!route(session, report(&document_uri(2)?, vec![])?)?);
         session.park_and_activate(input(2), true)?;
         assert!(session.saved_compiler.is_none());
         session.park_and_activate(input(5), true)?;
-        let replacement = report_at_limit("file:///tmp/compiler-2.rs", 'd')?;
+        let replacement = report_at_limit(&document_uri(2)?, 'd')?;
         assert!(!route(session, replacement)?);
         for (id, marker) in [(1, 'a'), (2, 'd'), (3, 'a'), (4, 'b')] {
             assert_compiler_owner(session, id, marker)?;
@@ -435,9 +422,10 @@ mod tests {
 
     fn input(id: u64) -> RustDocumentInput {
         let snapshot = alpine_text::Buffer::new("fn main() {}\n").snapshot();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("saved-compiler-fixture");
         RustDocumentInput::new(
-            &PathBuf::from(format!("/tmp/compiler-{id}.rs")),
-            Path::new("/tmp"),
+            &root.join(format!("compiler-{id}.rs")),
+            &root,
             LanguageIdentity {
                 workspace_id: 1,
                 workspace_revision: 1,
@@ -448,6 +436,23 @@ mod tests {
             },
             snapshot,
         )
+    }
+
+    fn document_uri(id: u64) -> Result<String, Box<dyn Error>> {
+        Ok(
+            crate::lsp_language::LspDocument::from_file_path(&input(id).path, "rust", 1)?
+                .uri()
+                .to_owned(),
+        )
+    }
+
+    #[test]
+    fn compiler_fixture_paths_are_absolute_and_document_uris_are_distinct()
+    -> Result<(), Box<dyn Error>> {
+        assert!(input(1).path.is_absolute());
+        assert!(input(2).path.is_absolute());
+        assert_ne!(document_uri(1)?, document_uri(2)?);
+        Ok(())
     }
 
     fn model() -> Result<RustDiagnostics, Box<dyn Error>> {
@@ -545,7 +550,7 @@ mod tests {
     #[test]
     fn native_and_saved_channels_clear_independently() -> Result<(), Box<dyn Error>> {
         let mut model = model()?;
-        let uri = String::from("file:///tmp/compiler-1.rs");
+        let uri = document_uri(1)?;
         let native = DiagnosticBatch::from_saved_items(&uri, &[item("rust-analyzer")])?;
         assert!(model.admit(Ok(native)));
         let session = model.session.as_mut().ok_or("missing session")?;
@@ -600,7 +605,7 @@ mod tests {
         let session = model.session.as_mut().ok_or("missing session")?;
         assert!(route(
             session,
-            report("file:///tmp/compiler-1.rs", vec![item("rustc")])?
+            report(&document_uri(1)?, vec![item("rustc")])?
         )?);
         session.park_and_activate(input(2), true)?;
         assert!(session.saved_compiler.is_none());
@@ -613,16 +618,12 @@ mod tests {
             (0, 0)
         );
         assert_eq!(
-            route(
-                session,
-                report("file:///tmp/compiler-1.rs", vec![item("rustc")])?
-            )
-            .err(),
+            route(session, report(&document_uri(1)?, vec![item("rustc")])?).err(),
             Some(LanguageProtocolError::DocumentMismatch)
         );
         assert!(route(
             session,
-            report("file:///tmp/compiler-2.rs", vec![item("rustc")])?
+            report(&document_uri(2)?, vec![item("rustc")])?
         )?);
         session.reset_overlay_transport();
         assert_eq!(
@@ -643,28 +644,21 @@ mod tests {
             }
             assert!(route(
                 session,
-                report(
-                    &format!("file:///tmp/compiler-{id}.rs"),
-                    vec![item("rustc"); MAX_ITEMS]
-                )?
+                report(&document_uri(id)?, vec![item("rustc"); MAX_ITEMS])?
             )?);
         }
         let mut changed = item("rustc");
         changed["message"] = Value::String("replacement at the item limit".into());
         assert!(route(
             session,
-            report("file:///tmp/compiler-4.rs", vec![changed; MAX_ITEMS])?
+            report(&document_uri(4)?, vec![changed; MAX_ITEMS])?
         )?);
         session.park_and_activate(input(5), true)?;
         let before =
             workspace::saved_compiler_counts(session.saved_compiler.as_ref(), &session.parked);
         assert_eq!(before.0, MAX_WORKSPACE_ITEMS);
         assert_eq!(
-            route(
-                session,
-                report("file:///tmp/compiler-5.rs", vec![item("rustc")])?
-            )
-            .err(),
+            route(session, report(&document_uri(5)?, vec![item("rustc")])?).err(),
             Some(LanguageProtocolError::DiagnosticRetentionExceeded)
         );
         assert_eq!(

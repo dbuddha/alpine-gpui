@@ -82,9 +82,10 @@ fn ownership(session: &RustSession) -> Ownership {
 
 fn input(id: u64) -> RustDocumentInput {
     let snapshot = alpine_text::Buffer::new("fn main() {}\n").snapshot();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("overlay-ownership-fixture");
     RustDocumentInput::new(
-        &PathBuf::from(format!("/tmp/alpine-owner-{id}.rs")),
-        Path::new("/tmp"),
+        &root.join(format!("alpine-owner-{id}.rs")),
+        &root,
         LanguageIdentity {
             workspace_id: 1,
             workspace_revision: 1,
@@ -106,6 +107,21 @@ fn session() -> Result<RustSession, Box<dyn Error>> {
     session.document_opened = false;
     session.pending_change = false;
     Ok(session)
+}
+
+fn owner_uri(id: u64) -> Result<String, Box<dyn Error>> {
+    Ok(LspDocument::from_file_path(&input(id).path, "rust", 1)?
+        .uri()
+        .to_owned())
+}
+
+#[test]
+fn ownership_fixture_paths_are_absolute_and_owner_uris_are_distinct() -> Result<(), Box<dyn Error>>
+{
+    assert!(input(1).path.is_absolute());
+    assert!(input(2).path.is_absolute());
+    assert_ne!(owner_uri(1)?, owner_uri(2)?);
+    Ok(())
 }
 
 fn unsent_save(revision: u64) -> PendingSave {
@@ -442,15 +458,9 @@ fn retention_membership() -> Result<(), Box<dyn Error>> {
         vec![before.parked[0].clone(), before.parked[4].clone()]
     );
     assert_eq!(session.overlay_closes.len(), 2);
-    assert_eq!(
-        session.overlay_closes[0].document.uri(),
-        "file:///tmp/alpine-owner-3.rs"
-    );
+    assert_eq!(session.overlay_closes[0].document.uri(), owner_uri(3)?);
     assert!(session.overlay_closes[0].pending_save.is_none());
-    assert_eq!(
-        session.overlay_closes[1].document.uri(),
-        "file:///tmp/alpine-owner-4.rs"
-    );
+    assert_eq!(session.overlay_closes[1].document.uri(), owner_uri(4)?);
     assert!(session.overlay_closes[1].pending_save.is_some());
     assert!(session.overlay_closes[1].pending_text.is_some());
     session.retain_overlays(&[1, 2, 6])?;
