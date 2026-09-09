@@ -1,5 +1,340 @@
 use super::*;
 
+fn workspace_acceptance_terminal_restart_redraw(
+    configure: impl FnOnce(&mut super::super::super::RustSession),
+    expected: RustDiagnosticsError,
+) -> Result<(), Box<dyn Error>> {
+    let (mut model, first, second) = workspace_acceptance_ready_workspace()?;
+    let mut observer = model
+        .session
+        .as_mut()
+        .ok_or("workspace")?
+        .client
+        .take_input_observer_for_test()?;
+    workspace_acceptance_fill_input(&mut model)?;
+    let _ = model.record_saved_document(first.identity);
+    let _ = model.record_saved_document(second.identity);
+    let _ = model.sync_workspace([first], Some(1), |_| Arc::new(|| {}));
+    assert!(model.workspace_edit_preparation.is_none());
+    let session = model
+        .session
+        .as_mut()
+        .ok_or("workspace before terminal error")?;
+    // A status-only redraw must not pass because another result was revoked.
+    assert!(session.diagnostics.is_none());
+    assert!(
+        session
+            .parked
+            .iter()
+            .all(|document| document.diagnostics.is_none())
+    );
+    assert!(session.pending_completion.is_none());
+    assert!(session.completion.is_none());
+    assert!(session.pending_navigation.is_none());
+    assert!(session.navigation.is_none());
+    assert!(session.pending_symbols.is_none());
+    assert!(session.symbols.is_none());
+    assert!(session.pending_workspace_edit.is_none());
+    assert!(session.document_opened);
+    assert_eq!(session.overlay_closes.len(), 1);
+    let save = session
+        .pending_save
+        .as_ref()
+        .ok_or("active save")?
+        .buffer_revision;
+    let closing_uri = session.overlay_closes[0].document.uri().to_owned();
+    let closing_save = session.overlay_closes[0]
+        .pending_save
+        .as_ref()
+        .ok_or("closing save")?
+        .buffer_revision;
+    configure(session);
+    let generation = session.process_generation;
+    let epoch = session.process_epoch;
+    let restarts = session.restart_count;
+    let client = session.client.snapshot();
+    let message = expected.to_string();
+    assert_ne!(model.status_message().as_deref(), Some(message.as_str()));
+    let failure = RustDiagnosticsError::Client(crate::lsp_client::LspClientError::Protocol(
+        crate::lsp_json::ProtocolError::InvalidEnvelope,
+    ));
+    let changed = model.restart_or_fail(failure);
+    // Observe this return before any poll, sync or unrelated visual effect.
+    assert_eq!(model.status_message().as_deref(), Some(message.as_str()));
+    assert!(
+        changed,
+        "new terminal error status did not request a redraw"
+    );
+    let session = model
+        .session
+        .as_ref()
+        .ok_or("workspace after terminal error")?;
+    assert_eq!(session.state, SessionState::Starting);
+    assert!(!session.workspace_ready());
+    assert_eq!(session.process_generation, generation);
+    assert_eq!(session.process_epoch, epoch);
+    assert_eq!(session.restart_count, restarts);
+    assert_eq!(session.client.snapshot().started, client.started);
+    assert_eq!(
+        session.client.snapshot().peer.lifecycle(),
+        client.peer.lifecycle()
+    );
+    assert_eq!(
+        session.client.snapshot().process.restarts,
+        client.process.restarts
+    );
+    assert!(session.document_opened);
+    assert_eq!(
+        session
+            .pending_save
+            .as_ref()
+            .map(|pending| pending.buffer_revision),
+        Some(save)
+    );
+    assert_eq!(session.overlay_closes.len(), 1);
+    assert_eq!(session.overlay_closes[0].document.uri(), closing_uri);
+    assert_eq!(
+        session.overlay_closes[0]
+            .pending_save
+            .as_ref()
+            .map(|pending| pending.buffer_revision),
+        Some(closing_save)
+    );
+    workspace_acceptance_drain_pressure(&mut observer)?;
+    let _ = model.stop();
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_restart_budget_error_redraw_without_publication()
+-> Result<(), Box<dyn Error>> {
+    // Reachable budget state; this control does not execute preceding restarts.
+    workspace_acceptance_terminal_restart_redraw(
+        |session| session.restart_count = crate::rust_diagnostics::MAX_RESTARTS_PER_DOCUMENT,
+        RustDiagnosticsError::Client(crate::lsp_client::LspClientError::Protocol(
+            crate::lsp_json::ProtocolError::InvalidEnvelope,
+        )),
+    )
+}
+
+#[test]
+fn workspace_acceptance_restart_generation_overflow_redraw_without_publication()
+-> Result<(), Box<dyn Error>> {
+    // Explicit counter-boundary injection, not an ordinary process journey.
+    workspace_acceptance_terminal_restart_redraw(
+        |session| session.process_generation = u64::MAX,
+        RustDiagnosticsError::GenerationExhausted,
+    )
+}
+
+#[test]
+fn workspace_acceptance_restart_invalid_identity_redraw_without_publication()
+-> Result<(), Box<dyn Error>> {
+    // Defensive invalid-state injection; normal reachability is not claimed.
+    workspace_acceptance_terminal_restart_redraw(
+        |session| session.identity.workspace_revision = 0,
+        RustDiagnosticsError::InvalidIdentity,
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RestartPublication {
+    Hover,
+    Completion,
+    Symbols,
+    Formatting,
+}
+
+const RESTART_PUBLICATIONS: [RestartPublication; 4] = [
+    RestartPublication::Hover,
+    RestartPublication::Completion,
+    RestartPublication::Symbols,
+    RestartPublication::Formatting,
+];
+
+fn workspace_acceptance_request_publication(
+    model: &mut RustDiagnostics,
+    kind: RestartPublication,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    let position = crate::lsp_language::LspPosition::new(0, 0)?;
+    let response = match kind {
+        RestartPublication::Hover => {
+            let _ = model.request_navigation(
+                crate::rust_diagnostics::NavigationRequestKind::Hover,
+                position,
+            );
+            serde_json::json!({"contents":{"kind":"plaintext","value":"current hover"}})
+        }
+        RestartPublication::Completion => {
+            let _ = model.request_completion(position);
+            serde_json::json!([{"label":"value","kind":3,"insertText":"value"}])
+        }
+        RestartPublication::Symbols => {
+            let _ = model.open_symbols(crate::rust_symbols::SymbolRequestKind::Document);
+            serde_json::json!([{
+                "name":"value","kind":12,
+                "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},
+                "selectionRange":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}}
+            }])
+        }
+        RestartPublication::Formatting => {
+            let _ = model.request_formatting(4, true);
+            serde_json::json!([{
+                "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},
+                "newText":"// formatted\n"
+            }])
+        }
+    };
+    Ok(response)
+}
+
+fn workspace_acceptance_has_publication(
+    model: &RustDiagnostics,
+    identity: LanguageIdentity,
+    kind: RestartPublication,
+) -> bool {
+    match kind {
+        RestartPublication::Hover => model.hover_content(identity).is_some(),
+        RestartPublication::Completion => model.completion_is_open(identity),
+        RestartPublication::Symbols => {
+            model.symbols_are_open(identity) && model.snapshot().symbol_items == 1
+        }
+        RestartPublication::Formatting => model.snapshot().workspace_edit_preparing,
+    }
+}
+
+fn workspace_acceptance_restart_publication_case(
+    kind: RestartPublication,
+    reject_restart: bool,
+    reply_before_restart: bool,
+) -> Result<(), Box<dyn Error>> {
+    let (mut model, first, _) = workspace_acceptance_ready_workspace()?;
+    workspace_acceptance_admit_native(&mut model)?;
+    // Isolate view publication: a separate diagnostic cache must not mask the
+    // redraw signal when the displayed error string is already unchanged.
+    let _ = model
+        .session
+        .as_mut()
+        .ok_or("workspace")?
+        .clear_workspace_diagnostics();
+    let mut observer = model
+        .session
+        .as_mut()
+        .ok_or("workspace")?
+        .client
+        .take_input_observer_for_test()?;
+    let result = workspace_acceptance_request_publication(&mut model, kind)?;
+    let messages = workspace_acceptance_messages(&mut observer)?;
+    assert_eq!(messages.len(), 1, "missing production request for {kind:?}");
+    let request_id = messages[0]["id"].as_u64().ok_or("view request ID")?;
+    let response = serde_json::json!({"jsonrpc":"2.0","id":request_id,"result":result});
+    if reply_before_restart {
+        let _ = workspace_acceptance_receive(&mut model, &response)?;
+        assert!(
+            workspace_acceptance_has_publication(&model, first.identity, kind),
+            "healthy response was not admitted for {kind:?}"
+        );
+    }
+    assert!(workspace_acceptance_messages(&mut observer)?.is_empty());
+    let before = model.snapshot();
+    let generation = model
+        .session
+        .as_ref()
+        .ok_or("workspace")?
+        .process_generation;
+    workspace_acceptance_fill_input(&mut model)?;
+    if reject_restart {
+        assert_eq!(
+            model
+                .session
+                .as_ref()
+                .ok_or("workspace before rejected restart")?
+                .client
+                .fill_control_for_test()?,
+            8 - crate::lsp_process::INPUT_CAPACITY
+        );
+        // Status equality must not conceal revocation of a visible result or
+        // pending request. The bounded channel supplies the real rejection.
+        model.status = Some(Arc::from(
+            RustDiagnosticsError::Client(crate::lsp_client::LspClientError::Submit(
+                crate::lsp_process::SubmitError::Saturated,
+            ))
+            .to_string(),
+        ));
+        let failure = RustDiagnosticsError::Client(crate::lsp_client::LspClientError::Protocol(
+            crate::lsp_json::ProtocolError::InvalidEnvelope,
+        ));
+        let changed = model.restart_or_fail(failure);
+        let session = model.session.as_ref().ok_or("workspace after rejection")?;
+        assert_eq!(session.state, SessionState::Starting);
+        assert_eq!(session.process_generation, generation);
+        assert_eq!(session.process_epoch, before.process_epoch);
+        assert_eq!(session.lsp_version, before.lsp_version);
+        assert_eq!(session.identity, first.identity);
+        assert!(session.document_opened);
+        assert!(session.client.snapshot().started);
+        assert_eq!(model.snapshot().restarts, before.restarts);
+        assert!(
+            !workspace_acceptance_has_publication(&model, first.identity, kind),
+            "rejected restart retained {kind:?} publication"
+        );
+        assert!(changed, "publication revocation did not request a redraw");
+        assert!(session.pending_completion.is_none());
+        assert!(session.pending_navigation.is_none());
+        assert!(session.pending_symbols.is_none());
+        assert!(session.pending_workspace_edit.is_none());
+    }
+    if !reply_before_restart {
+        let _ = workspace_acceptance_receive(&mut model, &response)?;
+    }
+    assert_eq!(
+        workspace_acceptance_has_publication(&model, first.identity, kind),
+        !reject_restart,
+        "late/retained publication disagrees with restart outcome for {kind:?}"
+    );
+    if reject_restart {
+        assert!(model.hover_content(first.identity).is_none());
+        assert!(!model.completion_is_open(first.identity));
+        assert!(!model.symbols_are_open(first.identity));
+        assert!(model.take_workspace_edit_preparation().is_none());
+    }
+    workspace_acceptance_drain_pressure(&mut observer)?;
+    let _ = model.stop();
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_restart_healthy_views_remain_published() -> Result<(), Box<dyn Error>> {
+    for kind in RESTART_PUBLICATIONS {
+        workspace_acceptance_restart_publication_case(kind, false, true)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_restart_rejection_revokes_published_views() -> Result<(), Box<dyn Error>> {
+    for kind in RESTART_PUBLICATIONS {
+        workspace_acceptance_restart_publication_case(kind, true, true)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_restart_healthy_late_views_are_admitted() -> Result<(), Box<dyn Error>> {
+    for kind in RESTART_PUBLICATIONS {
+        workspace_acceptance_restart_publication_case(kind, false, false)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_acceptance_restart_rejection_rejects_late_views() -> Result<(), Box<dyn Error>> {
+    for kind in RESTART_PUBLICATIONS {
+        workspace_acceptance_restart_publication_case(kind, true, false)?;
+    }
+    Ok(())
+}
+
 fn workspace_acceptance_assert_refresh_delivery(messages: &[serde_json::Value], request_id: u64) {
     assert_eq!(
         messages

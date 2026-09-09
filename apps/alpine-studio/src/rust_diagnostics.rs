@@ -2827,31 +2827,33 @@ impl RustDiagnostics {
             return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
         };
         session.state = SessionState::Starting;
-        // Publication is revoked immediately, but wire ownership changes only
-        // after a replacement transport is admitted below.
-        let _ = session.clear_workspace_diagnostics();
+        // Revoke publication before fallible restart admission. Pending wire,
+        // save and close ownership still belongs to the current transport.
+        let mut publication_changed = session.clear_workspace_diagnostics();
+        publication_changed |= session.pending_completion.take().is_some();
+        publication_changed |= session.completion.take().is_some();
+        publication_changed |= session.pending_navigation.take().is_some();
+        publication_changed |= session.navigation.take().is_some();
+        publication_changed |= session.pending_symbols.take().is_some();
+        publication_changed |= session.symbols.take().is_some();
+        publication_changed |= session.pending_workspace_edit.take().is_some();
+        publication_changed |= self.workspace_edit_preparation.take().is_some();
         if session.restart_count == MAX_RESTARTS_PER_DOCUMENT {
-            session.diagnostics = None;
-            session.pending_completion = None;
-            session.completion = None;
-            session.pending_navigation = None;
-            session.navigation = None;
-            session.pending_symbols = None;
-            session.symbols = None;
-            session.pending_workspace_edit = None;
-            self.workspace_edit_preparation = None;
-            return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
+            return replace_status(&mut self.status, Some(Arc::from(error.to_string())))
+                || publication_changed;
         }
         let Some(generation) = session.process_generation.checked_add(1) else {
             return self
                 .fail(RustDiagnosticsError::GenerationExhausted)
-                .visual_changed;
+                .visual_changed
+                || publication_changed;
         };
         let Some(identity) = ProcessIdentity::new(session.identity.workspace_revision, generation)
         else {
             return self
                 .fail(RustDiagnosticsError::InvalidIdentity)
-                .visual_changed;
+                .visual_changed
+                || publication_changed;
         };
         if let Err(restart_error) = session.client.restart(identity) {
             return replace_status(
@@ -2859,7 +2861,7 @@ impl RustDiagnostics {
                 Some(Arc::from(
                     RustDiagnosticsError::Client(restart_error).to_string(),
                 )),
-            );
+            ) || publication_changed;
         }
         // A rejected restart still belongs to the current transport. Keep its
         // save/close ownership until the replacement has actually been admitted.
@@ -2868,20 +2870,11 @@ impl RustDiagnostics {
         session.restart_count += 1;
         session.state = SessionState::Starting;
         session.pending_change = false;
-        session.diagnostics = None;
-        session.pending_completion = None;
-        session.completion = None;
-        session.pending_navigation = None;
-        session.navigation = None;
-        session.pending_symbols = None;
-        session.symbols = None;
-        session.pending_workspace_edit = None;
-        self.workspace_edit_preparation = None;
         self.restarts = self.restarts.saturating_add(1);
         replace_status(
             &mut self.status,
             Some(Arc::from("Rust analysis is restarting.")),
-        )
+        ) || publication_changed
     }
 
     fn fail(&mut self, error: RustDiagnosticsError) -> LanguageEffect {
