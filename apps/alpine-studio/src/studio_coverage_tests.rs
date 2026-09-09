@@ -20,6 +20,9 @@ use super::*;
 #[path = "studio_saved_notification_tests.rs"]
 mod saved_notifications;
 
+#[path = "studio_rust_workspace_entry_tests.rs"]
+mod rust_workspace_entry;
+
 static NEXT_TEST_FILE: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {

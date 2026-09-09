@@ -130,6 +130,7 @@ tests::failed_rust_server_does_not_reinvalidate_noop_keyboard_events	studio-app-
 tests::runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work	studio-app-06
 tests::rust_navigation_file_admission_and_document_state_fail_closed	studio-app-06
 tests::saved_notifications::	studio-app-06
+tests::rust_workspace_entry::	studio-app-06
 tests::scroll_and_pointer_selection_use_rendered_visible_lines	studio-app-04
 tests::selection_revision_advances_only_for_real_selection_changes	studio-app-06
 tests::selection_spans_lines_and_unchanged_atlas_storage_is_reused	studio-app-06
