@@ -473,6 +473,20 @@ impl LspClient {
             .map_err(LspClientError::Process)
     }
 
+    #[cfg(test)]
+    pub(crate) fn inject_fixture_exit_for_test(&mut self) -> Result<(), LspClientError> {
+        // The producer exists only for inert fixtures. A failed exit cannot
+        // turn an already-acknowledged peer into false graceful-success evidence.
+        self.process
+            .inject_event_for_test(|identity, epoch| ProcessEvent::Exited {
+                identity,
+                epoch,
+                success: false,
+                code: Some(1),
+            })
+            .map_err(LspClientError::Process)
+    }
+
     pub(crate) fn snapshot(&self) -> LspClientSnapshot {
         LspClientSnapshot {
             started: self.started,
@@ -1113,6 +1127,99 @@ mod tests {
         assert_eq!(report.transport.queued_events, 0);
         assert_eq!(report.transport.shutdown_timeouts, 0);
         assert!(!client.snapshot().started);
+        Ok(())
+    }
+
+    #[test]
+    fn inert_fixture_exit_preserves_terminal_classification_and_drains_owned_bytes()
+    -> Result<(), Box<dyn Error>> {
+        for lifecycle in [
+            PeerLifecycle::Created,
+            PeerLifecycle::Running,
+            PeerLifecycle::Exited,
+        ] {
+            let mut client = LspClient::inert_for_test(identity(1));
+            if lifecycle != PeerLifecycle::Created {
+                client.initialize_inert_for_test();
+            }
+            if lifecycle == PeerLifecycle::Exited {
+                let request = client.begin_shutdown()?;
+                let reply = format!(
+                    r#"{{"jsonrpc":"2.0","id":{},"result":null}}"#,
+                    request.request_id,
+                );
+                let framed = format!("Content-Length: {}\r\n\r\n{reply}", reply.len());
+                let _ = client.ingest_stdout(framed.as_bytes(), None, &mut |_| {})?;
+            }
+            assert_eq!(client.snapshot().peer.lifecycle(), lifecycle);
+            let mut input = client.take_input_observer_for_test()?;
+            client.inject_fixture_exit_for_test()?;
+            let report = client.shutdown_gracefully();
+            assert_eq!(
+                report.protocol,
+                if lifecycle == PeerLifecycle::Created {
+                    LspShutdownProtocol::NotReady(lifecycle)
+                } else {
+                    LspShutdownProtocol::UnexpectedExit {
+                        success: false,
+                        code: Some(1),
+                    }
+                },
+            );
+            assert_eq!(report.transport.starts, 0);
+            assert_eq!(report.transport.exits, 0);
+            assert_eq!(report.transport.queued_events, 0);
+            assert!(!client.snapshot().started);
+            // The observer owns the inert receiver. The earlier shutdown
+            // snapshot must not claim bytes released before this drain.
+            while input.take_input()?.is_some() {}
+            assert_eq!(input.retained_bytes(), 0);
+            assert_eq!(client.snapshot().process.retained_bytes, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn inert_fixture_exit_rejects_a_live_client_without_disrupting_protocol()
+    -> Result<(), Box<dyn Error>> {
+        let mut client = start_initialized(mock_executable(), 1)?;
+        assert!(matches!(
+            client.inject_fixture_exit_for_test(),
+            Err(LspClientError::Process(ProcessFailure {
+                stage: ProcessStage::Output,
+                kind: FailureKind::Io(std::io::ErrorKind::BrokenPipe),
+                ..
+            }))
+        ));
+        assert!(client.snapshot().started);
+        assert_eq!(client.snapshot().peer.lifecycle(), PeerLifecycle::Running);
+        assert_eq!(client.snapshot().peer.pending_requests(), 0);
+        let params = serde_json::from_str::<Box<RawValue>>(r#"{"value":1}"#)?;
+        let request = client.begin_request("test/echo", Some(&params), stamp(1))?;
+        wait_peer_event(
+            &mut client,
+            Some(stamp(1)),
+            WAIT,
+            "fixture rejection disrupted the live peer",
+            |event| {
+                matches!(
+                    event,
+                    PeerEvent::Response {
+                        id,
+                        value: ResponseValue::Result(value),
+                        ..
+                    } if id == request.request_id && value.get() == r#"{"ok":true}"#
+                )
+            },
+        )?;
+        let report = client.shutdown_gracefully();
+        assert_eq!(report.protocol, LspShutdownProtocol::AcknowledgedAndExited);
+        assert_eq!(report.transport.starts, 1);
+        assert_eq!(report.transport.exits, 1);
+        assert_eq!(report.transport.retained_bytes, 0);
+        assert_eq!(report.transport.queued_events, 0);
+        assert_eq!(report.transport.shutdown_timeouts, 0);
         Ok(())
     }
 

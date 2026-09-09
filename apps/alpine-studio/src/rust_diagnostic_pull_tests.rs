@@ -20,14 +20,34 @@ fn raw(value: &Value) -> Result<Box<RawValue>, serde_json::Error> {
 
 fn byte_sized_wire(mut value: Value, bytes: usize) -> Result<Box<RawValue>, Box<dyn Error>> {
     let padding = bytes
-        .checked_sub(raw(&value)?.get().len())
+        .checked_sub(value.to_string().len())
         .ok_or("fixture envelope exceeds requested byte size")?;
     // Multi-byte text distinguishes raw UTF-8 bytes from character counts.
     value["padding"] = Value::String("\u{00e9}".repeat(padding / 2) + &"x".repeat(padding % 2));
     let wire = raw(&value)?;
     assert_eq!(wire.get().len(), bytes);
-    assert!(wire.get().chars().count() < bytes);
+    assert!(wire.get().contains('\u{00e9}'));
     Ok(wire)
+}
+
+fn shutdown_fixture(model: &mut RustDiagnostics) -> Result<(), Box<dyn Error>> {
+    let mut input = if let Some(session) = model.session.as_mut() {
+        // Reject real processes before extracting any input ownership. Queue
+        // the terminal for shutdown itself, not the model's restart consumer.
+        session.client.inject_fixture_exit_for_test()?;
+        Some(session.client.take_input_observer_for_test()?)
+    } else {
+        None
+    };
+    let snapshot = model.shutdown();
+    assert!(!snapshot.active);
+    assert_eq!(snapshot.overlay_documents, 0);
+    assert_eq!(snapshot.process_retained_bytes, 0);
+    if let Some(input) = input.as_mut() {
+        while input.take_input()?.is_some() {}
+        assert_eq!(input.retained_bytes(), 0);
+    }
+    Ok(())
 }
 
 fn installed() -> Result<(RustDiagnostics, RustDocumentInput, PathBuf), Box<dyn Error>> {
@@ -103,7 +123,7 @@ fn attempts_and_request_ownership_are_bounded_and_exhaustion_does_not_wrap()
         Err(RustDiagnosticsError::GenerationExhausted)
     );
     assert_eq!(state.epoch, u64::MAX);
-    let _ = model.shutdown();
+    shutdown_fixture(&mut model)?;
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -303,7 +323,7 @@ fn stale_diagnostic_wire_response_refunds_only_its_matching_request() -> Result<
     assert!(fresh.request_id > pending.request_id);
     assert_eq!(fresh.key, pending.key);
     assert_eq!(session.diagnostic_pull.attempts, attempts);
-    let _ = model.shutdown();
+    shutdown_fixture(&mut model)?;
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -375,7 +395,7 @@ fn pending_responses_require_exact_request_overlay_process_and_document_authorit
             .diagnostics
             .is_some()
     );
-    let _ = model.shutdown();
+    shutdown_fixture(&mut model)?;
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -471,7 +491,7 @@ fn an_inactive_dependency_edit_revokes_unchanged_active_diagnostics() -> Result<
         epoch,
         "an unchanged roster must preserve diagnostic authority"
     );
-    let _ = model.shutdown();
+    shutdown_fixture(&mut model)?;
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -500,7 +520,7 @@ fn ten_thousand_idle_polls_do_not_issue_diagnostic_requests_for_a_settled_view()
             .pending
             .is_none()
     );
-    let _ = model.shutdown();
+    shutdown_fixture(&mut model)?;
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -573,7 +593,7 @@ fn named_provider_identity_is_negotiated_and_transmitted_by_the_client()
             assert!(messages[2]["params"].get("identifier").is_none());
         }
         assert!(messages[2]["params"].get("previousResultId").is_none());
-        let _ = model.shutdown();
+        shutdown_fixture(&mut model)?;
         std::fs::remove_dir_all(root)?;
     }
     Ok(())
@@ -680,7 +700,7 @@ fn server_cancellation_retry_directive_and_default_preserve_the_request_budget()
         }
         assert_eq!(model.snapshot().process_submitted_inputs, before);
         assert_eq!(model.restarts, 0);
-        let _ = model.shutdown();
+        shutdown_fixture(&mut model)?;
         std::fs::remove_dir_all(root)?;
     }
     Ok(())
@@ -730,7 +750,7 @@ fn server_deferred_diagnostics_wait_for_invalidation_not_idle_polling() -> Resul
             .is_some()
     );
     assert_eq!(model.restarts, 0);
-    let _ = model.shutdown();
+    shutdown_fixture(&mut model)?;
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -919,7 +939,7 @@ fn coalesced_response_and_refresh_retire_completed_ownership_in_both_wire_orders
                 .diagnostics
                 .is_some()
         );
-        let _ = model.shutdown();
+        shutdown_fixture(&mut model)?;
         std::fs::remove_dir_all(root)?;
     }
     Ok(())
@@ -991,7 +1011,7 @@ fn repeated_view_cancellation_preserves_a_stable_targets_retry_budget() -> Resul
             .is_some()
     );
     assert_eq!(model.restarts, 0);
-    let _ = model.shutdown();
+    shutdown_fixture(&mut model)?;
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -1029,7 +1049,7 @@ fn malformed_replies_still_exhaust_the_bounded_failure_budget() -> Result<(), Bo
     assert!(session.diagnostics.is_none());
     assert_eq!(session.diagnostic_pull.attempts, MAX_ATTEMPTS);
     assert_eq!(model.snapshot().process_submitted_inputs, before);
-    let _ = model.shutdown();
+    shutdown_fixture(&mut model)?;
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -1065,7 +1085,7 @@ fn initialization_reports_each_independent_status_change() -> Result<(), Box<dyn
             assert_eq!(messages.len(), 1);
             assert_eq!(messages[0]["method"], "textDocument/didOpen");
             assert!(!model.apply_diagnostic_candidates(&mut PollCandidates::default()));
-            let _ = model.shutdown();
+            shutdown_fixture(&mut model)?;
             std::fs::remove_dir_all(root)?;
         }
     }
@@ -1104,7 +1124,7 @@ fn wire_report_and_refresh_propagate_visual_changes_then_become_quiet() -> Resul
         assert!(model.status.is_none());
     }
     assert_eq!(model.restarts, 0);
-    let _ = model.shutdown();
+    shutdown_fixture(&mut model)?;
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -1135,7 +1155,7 @@ fn refresh_invalidates_diagnostics_without_dismissing_visible_completion()
         assert!(model.status.is_none());
         assert!(!model.refresh_diagnostics());
         assert_eq!(model.restarts, 0);
-        let _ = model.shutdown();
+        shutdown_fixture(&mut model)?;
         std::fs::remove_dir_all(root)?;
     }
     Ok(())
@@ -1169,7 +1189,7 @@ fn unsolicited_native_push_cannot_bypass_correlated_pull_admission() -> Result<(
     assert_eq!(model.snapshot().diagnostic_version, Some(1));
     assert_eq!(model.snapshot().diagnostic_items, 0);
     assert_eq!(model.restarts, 0);
-    let _ = model.shutdown();
+    shutdown_fixture(&mut model)?;
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -1234,7 +1254,7 @@ fn server_diagnostic_refresh_preserves_an_active_workspace_symbol_query()
     }));
     assert!(!visual_changed);
     assert_eq!(model.restarts, 0);
-    let _ = model.shutdown();
+    shutdown_fixture(&mut model)?;
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -1315,7 +1335,7 @@ fn diagnostic_refresh_preserves_other_pending_language_requests() -> Result<(), 
             1
         );
         assert_eq!(model.restarts, 0);
-        let _ = model.shutdown();
+        shutdown_fixture(&mut model)?;
         std::fs::remove_dir_all(root)?;
     }
     Ok(())
@@ -1364,7 +1384,7 @@ fn diagnostic_refresh_preserves_admitted_hover_and_symbol_results() -> Result<()
         );
         assert_eq!(model.hover_content(input.identity).is_some(), !symbols);
         assert!(!model.refresh_diagnostics());
-        let _ = model.shutdown();
+        shutdown_fixture(&mut model)?;
         std::fs::remove_dir_all(root)?;
     }
     Ok(())
@@ -1432,7 +1452,7 @@ fn symbol_response_and_diagnostic_refresh_preserve_results_in_both_wire_orders()
         assert!(session.diagnostics.is_none());
         assert!(session.diagnostic_pull.pending.is_some());
         assert_eq!(model.restarts, 0);
-        let _ = model.shutdown();
+        shutdown_fixture(&mut model)?;
         std::fs::remove_dir_all(root)?;
     }
     Ok(())

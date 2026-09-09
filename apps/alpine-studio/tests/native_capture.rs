@@ -7,10 +7,11 @@ mod bounded_capture;
 use std::{
     error::Error,
     fs, io,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 fn shell(script: &str) -> Command {
@@ -86,13 +87,41 @@ fn capture_preserves_invalid_utf8_for_strict_caller_rejection() -> Result<(), Bo
     Ok(())
 }
 
+const ROOT_ATTEMPTS: usize = 32;
+static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+fn claim_root(parent: &Path, sequence: &AtomicU64) -> io::Result<PathBuf> {
+    let mut last_collision = parent.to_path_buf();
+    for _ in 0..ROOT_ATTEMPTS {
+        let ordinal = sequence
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| io::Error::other("native capture fixture counter exhausted"))?;
+        let root = parent.join(format!(
+            "alpine-native-capture-{}-{ordinal}",
+            std::process::id(),
+        ));
+        match fs::create_dir(&root) {
+            Ok(()) => return Ok(root),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                // An existing path never becomes this capture's ownership.
+                last_collision = root;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!(
+            "native capture fixture allocation exhausted after {ROOT_ATTEMPTS} collisions; last: {}",
+            last_collision.display(),
+        ),
+    ))
+}
+
 fn with_root(run: impl FnOnce(&Path) -> Result<(), Box<dyn Error>>) -> Result<(), Box<dyn Error>> {
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "alpine-native-capture-{}-{nonce}",
-        std::process::id(),
-    ));
-    fs::create_dir(&root)?;
+    let root = claim_root(&std::env::temp_dir(), &NEXT_ROOT)?;
     let result = run(&root);
     if result.is_ok() {
         fs::remove_dir_all(&root)?;
@@ -197,4 +226,108 @@ fn capture_rejects_zero_deadline_and_reports_spawn_failure() {
     assert!(matches!(zero, Err(error) if error.kind() == io::ErrorKind::InvalidInput));
     let mut missing = Command::new("/dev/null/alpine-missing-capture-program");
     assert!(bounded_capture::run(&mut missing, Duration::from_secs(1)).is_err());
+}
+
+#[test]
+fn fixture_allocation_preserves_occupied_paths_and_bounds_collisions() -> Result<(), Box<dyn Error>>
+{
+    with_root(|parent| {
+        let occupied_sequence = AtomicU64::new(0);
+        let mut occupied = Vec::new();
+        for _ in 0..ROOT_ATTEMPTS {
+            let path = claim_root(parent, &occupied_sequence)?;
+            fs::write(path.join("owner"), b"preserve")?;
+            occupied.push(path);
+        }
+        let attempted = AtomicU64::new(0);
+        let error = claim_root(parent, &attempted)
+            .err()
+            .ok_or("occupied fixture candidates were reused")?;
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(attempted.load(Ordering::Relaxed), 32);
+        for path in &occupied {
+            assert_eq!(fs::read(path.join("owner"))?, b"preserve");
+        }
+        let available = claim_root(parent, &attempted)?;
+        assert!(!occupied.contains(&available));
+        assert!(available.is_dir());
+        assert_eq!(attempted.load(Ordering::Relaxed), 33);
+        Ok(())
+    })
+}
+
+#[test]
+fn fixture_allocation_retries_collision_without_touching_its_contents() -> Result<(), Box<dyn Error>>
+{
+    with_root(|parent| {
+        let occupied = claim_root(parent, &AtomicU64::new(0))?;
+        fs::write(occupied.join("owner"), b"foreign")?;
+        let sequence = AtomicU64::new(0);
+        let owned = claim_root(parent, &sequence)?;
+        assert_ne!(owned, occupied);
+        assert_eq!(sequence.load(Ordering::Relaxed), 2);
+        assert_eq!(fs::read(occupied.join("owner"))?, b"foreign");
+        assert!(owned.is_dir());
+        Ok(())
+    })
+}
+
+#[test]
+fn fixture_allocation_is_exclusive_under_concurrent_callers() -> Result<(), Box<dyn Error>> {
+    with_root(|parent| {
+        let sequence = AtomicU64::new(0);
+        let barrier = std::sync::Barrier::new(8);
+        let mut paths = thread::scope(|scope| -> io::Result<Vec<PathBuf>> {
+            let sequence = &sequence;
+            let barrier = &barrier;
+            let handles = (0..8)
+                .map(|_| {
+                    scope.spawn(move || {
+                        barrier.wait();
+                        claim_root(parent, sequence)
+                    })
+                })
+                .collect::<Vec<_>>();
+            let mut paths = Vec::new();
+            for handle in handles {
+                paths.push(
+                    handle
+                        .join()
+                        .map_err(|_| io::Error::other("fixture allocation thread panicked"))??,
+                );
+            }
+            Ok(paths)
+        })?;
+        paths.sort();
+        paths.dedup();
+        assert_eq!(paths.len(), 8);
+        assert_eq!(sequence.load(Ordering::Relaxed), 8);
+        assert!(paths.iter().all(|path| path.is_dir()));
+        Ok(())
+    })
+}
+
+#[test]
+fn fixture_allocation_rejects_counter_exhaustion_and_noncollision_errors()
+-> Result<(), Box<dyn Error>> {
+    with_root(|parent| {
+        let exhausted = AtomicU64::new(u64::MAX);
+        let error = claim_root(parent, &exhausted)
+            .err()
+            .ok_or("fixture counter wrapped")?;
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert!(error.to_string().contains("counter exhausted"));
+        assert_eq!(exhausted.load(Ordering::Relaxed), u64::MAX);
+
+        let file = parent.join("not-a-directory");
+        fs::write(&file, b"preserve")?;
+        let sequence = AtomicU64::new(0);
+        let error = claim_root(&file, &sequence)
+            .err()
+            .ok_or("non-directory parent was accepted")?;
+        assert_eq!(error.kind(), io::ErrorKind::NotADirectory);
+        assert_eq!(sequence.load(Ordering::Relaxed), 1);
+        assert_eq!(fs::read(file)?, b"preserve");
+        Ok(())
+    })
 }
