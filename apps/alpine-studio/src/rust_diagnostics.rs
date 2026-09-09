@@ -1003,7 +1003,7 @@ impl RustDiagnostics {
                 }
             }
             let Some(version) = session.lsp_version.checked_add(1) else {
-                return self.fail(RustDiagnosticsError::VersionExhausted);
+                return self.reject_workspace(RustDiagnosticsError::VersionExhausted);
             };
             session.document.set_version(version);
             session.lsp_version = version;
@@ -2364,7 +2364,14 @@ impl RustDiagnostics {
             return false;
         };
         match session.flush_overlay() {
-            Ok(true) => replace_status(&mut self.status, None),
+            Ok(true) => {
+                let status = session
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diagnostics| diagnostics.batch.primary_message())
+                    .map(|message| Arc::from(format!("Rust: {message}")));
+                replace_status(&mut self.status, status)
+            }
             Ok(false) => false,
             Err(error) => self.restart_or_fail(error),
         }

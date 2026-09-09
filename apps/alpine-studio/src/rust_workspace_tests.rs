@@ -12,6 +12,9 @@ mod status_channels;
 #[path = "rust_overlay_ownership_tests.rs"]
 mod overlay_ownership;
 
+#[path = "rust_workspace_acceptance_tests.rs"]
+mod acceptance;
+
 #[test]
 fn workspace_contract_rosters_reject_independent_identity_and_duplicate_coordinates()
 -> Result<(), Box<dyn Error>> {
