@@ -1491,6 +1491,23 @@ pub mod native_validation {
             .run_until_frame_terminal_with_handler(timeout, handler)
     }
 
+    /// Installs or clears a one-shot observation of a real active frame.
+    ///
+    /// The callback runs outside the presentation-driver borrow before the
+    /// next display callback can consume that owner. Capture surfaces weakly,
+    /// record copied evidence only, and assert after returning from `AppKit`.
+    /// Clear an unused observation when the bounded fixture ends.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error if observation ownership is unavailable.
+    pub fn set_active_frame_observer(
+        surface: &NativeSurface,
+        observer: Option<Box<dyn FnOnce()>>,
+    ) -> Result<(), SurfaceError> {
+        surface.implementation.set_active_frame_observer(observer)
+    }
+
     /// Copies a bounded, non-consuming diagnostic for a timed-out active frame.
     ///
     /// This reports missing or unavailable ownership explicitly. Command and

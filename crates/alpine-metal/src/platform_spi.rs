@@ -491,6 +491,8 @@ mod tests {
         assert!(pressure_pending.current_upload_bytes() > 0);
         assert_eq!(pressure_pending.upload_trims(), 0);
         assert!(fixture.backend.native.wait_drawable(submission.native));
+        #[cfg(alpine_native_validation)]
+        assert_completion_diagnostic_preserves_owner(&fixture.backend, submission);
         let DrawableCompletionPoll::Complete(completed) =
             poll_callback_drawable(&mut fixture.backend, submission)
         else {
@@ -536,6 +538,8 @@ mod tests {
                 .native
                 .wait_drawable(second_submission.native)
         );
+        #[cfg(alpine_native_validation)]
+        assert_completion_diagnostic_preserves_owner(&fixture.backend, second_submission);
         let DrawableCompletionPoll::Complete(second_completion) =
             poll_callback_drawable(&mut fixture.backend, second_submission)
         else {
@@ -543,6 +547,27 @@ mod tests {
         };
         assert_eq!(second_completion.into_result()?.submission, 2);
         Ok(())
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn assert_completion_diagnostic_preserves_owner(
+        backend: &crate::MetalBackend,
+        submission: super::DrawableSubmission,
+    ) {
+        let before = presentation_snapshot(backend);
+        let diagnostic = super::callback_completion_diagnostic(backend, submission);
+        assert!(diagnostic.contains(&format!("requested: {:?}", submission.native)));
+        assert!(diagnostic.contains(&format!("owner: Some({:?})", submission.native)));
+        assert!(diagnostic.contains("command_status: Some(Completed)"));
+        assert!(diagnostic.contains("terminal_published: true"));
+        assert_eq!(
+            diagnostic,
+            super::callback_completion_diagnostic(backend, submission)
+        );
+        let after = presentation_snapshot(backend);
+        assert_eq!(before.occupied_slots(), after.occupied_slots());
+        assert_eq!(before.current_upload_bytes(), after.current_upload_bytes());
+        assert_eq!(before.upload_trims(), after.upload_trims());
     }
 
     #[test]
