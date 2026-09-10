@@ -804,6 +804,9 @@ jobs:
           fetch-depth: 0
       - name: Install native mutation tooling
         run: cargo install --locked cargo-mutants --version 27.1.0
+      - name: Validate pinned mutation no-Rust-diff behavior
+        if: matrix.domain == 'platform' && matrix.id == 1
+        run: scripts/test-native-mutation-receipts.sh --pinned-cli
       - name: Install the optional Metal toolchain when absent
         run: |
           if ! xcrun --sdk macosx --find metal >/dev/null 2>&1; then

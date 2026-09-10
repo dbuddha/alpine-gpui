@@ -1,6 +1,9 @@
 #!/bin/sh
 # Deterministic receipt controls; fixtures do not claim native execution.
 set -eu
+case "${1-}" in ''|--pinned-cli) ;; *) echo 'usage: test-native-mutation-receipts.sh [--pinned-cli]' >&2; exit 2 ;; esac
+[ "$#" -le 1 ] || exit 2
+pinned_cli=${1-}
 script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 checker="$script_dir/check-native-mutation-receipts.sh"
 fixture=$(mktemp -d)
@@ -15,6 +18,10 @@ case_number=0
 prepare() {
     case_number=$((case_number + 1))
     root="$fixture/case-$case_number"
+    if [ "$1" = platform ]; then
+        mkdir -p "$root"
+        git diff --no-ext-diff --no-textconv "$ALPINE_NATIVE_BASE...$ALPINE_NATIVE_HEAD" > "$root/alpine.diff"
+    fi
     "$checker" prepare "$1" 1 "$root"
 }
 fail_finish() {
@@ -156,3 +163,115 @@ studio
 alter outcomes.json '.outcomes[1].phase_results[].argv+=["--package=alpine-studio@0.0.0","--package=alpine-studio"]'
 "$checker" finish studio 1 "$root" success
 printf 'native mutation receipt controls passed (%s isolated cases)\n' "$case_number"
+
+# Exercise real Git history independently of the verifier's path detection.
+# These receipts remain fixtures; the opt-in CLI control proves only the
+# pinned tool's no-work behavior, never successful native mutation execution.
+(
+    repository="$fixture/diff-repository"
+    mkdir -p "$repository/src" "$repository/tools/alpine-ax-client/src"
+    git init --quiet "$repository"
+    cd "$repository"
+    git config user.name 'Alpine receipt fixture'
+    git config user.email 'alpine-receipt-fixture@example.invalid'
+    git config commit.gpgsign false
+    git config core.hooksPath /dev/null
+    printf '[package]\nname = "receipt-fixture"\nversion = "0.0.0"\nedition = "2021"\n' > Cargo.toml
+    printf 'pub fn value() -> bool { true }\n' > src/lib.rs
+    printf '// fixture\n' > tools/alpine-ax-client/src/native_factory.rs
+    printf 'baseline\n' > README.md
+    git add Cargo.toml src/lib.rs tools/alpine-ax-client/src/native_factory.rs README.md
+    git commit --quiet -m 'Create isolated receipt fixture'
+    ALPINE_NATIVE_BASE=$(git rev-parse HEAD)
+    printf 'documentation only\n' >> README.md
+    git add README.md
+    git commit --quiet -m 'Change documentation only'
+    GITHUB_SHA=$(git rev-parse HEAD)
+    ALPINE_NATIVE_HEAD=$GITHUB_SHA GITHUB_WORKFLOW_SHA=$GITHUB_SHA
+    export ALPINE_NATIVE_BASE ALPINE_NATIVE_HEAD GITHUB_SHA GITHUB_WORKFLOW_SHA
+
+    full_platform() {
+        populate native-platform-mutants crates/alpine-platform-macos/src/native.rs alpine-platform-macos,alpine-studio
+    }
+    require_no_rust_receipt() {
+        jq -e '.status=="passed" and .identity.selection_diff.has_rust_changes==false
+            and ([.scopes[]|select(.reason=="verified-no-rust-diff")]|length)==9
+            and all(.scopes[]|select(.reason=="verified-no-rust-diff");
+                .selected==0 and .executed==0 and .baseline==false
+                and .inventory_present==false and .terminal_present==false)' \
+            "$root/native-mutation-receipts-platform-1/result.json" >/dev/null
+    }
+    prepare platform
+    full_platform
+    "$checker" finish platform 1 "$root" success
+    require_no_rust_receipt
+    if [ "$pinned_cli" = --pinned-cli ]; then
+        [ "$(cargo mutants --version)" = 'cargo-mutants 27.1.0' ] || {
+            echo 'pinned no-work control requires cargo-mutants 27.1.0' >&2; exit 1;
+        }
+        cargo mutants --no-config --file src/lib.rs --in-diff "$root/alpine.diff" \
+            --output "$root/cli-execution" -- --locked > "$root/cli-execution.log" 2>&1
+        [ ! -e "$root/cli-execution" ]
+        cargo mutants --no-config --file src/lib.rs --in-diff "$root/alpine.diff" \
+            --output "$root/cli-list" --list --json > "$root/cli-list.json" 2> "$root/cli-list.log"
+        [ ! -s "$root/cli-list.json" ]
+        [ ! -e "$root/cli-list" ]
+        printf 'pinned cargo-mutants 27.1.0 no-Rust-diff execution/list controls passed\n'
+    fi
+    for fault in partial-directory linked-output missing-diff tampered-diff retained-diff missing-full; do
+        prepare platform
+        full_platform
+        case "$fault" in
+            partial-directory) mkdir "$root/native-runtime-mutants-1.out" ;;
+            linked-output) ln -s "$root/absent" "$root/native-runtime-mutants-1.out" ;;
+            missing-diff) rm "$root/alpine.diff" ;;
+            tampered-diff) : > "$root/alpine.diff" ;;
+            retained-diff) : > "$root/native-mutation-receipts-platform-1/selection.diff" ;;
+            missing-full) rm -r "$root/native-platform-mutants-1.out" ;;
+        esac
+        fail_finish platform success "$fault"
+    done
+    prepare studio
+    fail_finish studio success missing-full-studio
+    for outcome in failure cancelled skipped; do
+        prepare platform
+        full_platform
+        fail_finish platform "$outcome" failed-no-rust-execution
+        jq -e '.status=="failed" and all(.scopes[];.status=="failed")' \
+            "$root/native-mutation-receipts-platform-1/result.json" >/dev/null
+    done
+    prepare platform
+    full_platform
+    ( ALPINE_NATIVE_BASE=0000000000000000000000000000000000000000
+      export ALPINE_NATIVE_BASE
+      fail_finish platform success nonexistent-base )
+    "$checker" finish platform 1 "$root" success
+    require_no_rust_receipt
+    root="$fixture/missing-input-diff"
+    mkdir "$root"
+    if "$checker" prepare platform 1 "$root" > "$root/rejected.log" 2>&1; then
+        echo 'missing input diff accepted during preparation' >&2; exit 1
+    fi
+    grep -Fq 'missing or linked native mutation input diff' "$root/rejected.log"
+
+    for change in modified renamed-out renamed-in deleted; do
+        ALPINE_NATIVE_BASE=$(git rev-parse HEAD)
+        case "$change" in
+            modified) printf 'pub fn value() -> bool { false }\n' > src/lib.rs ;;
+            renamed-out) mv src/lib.rs src/library.txt ;;
+            renamed-in) mv src/library.txt src/renamed.rs ;;
+            deleted) rm src/renamed.rs ;;
+        esac
+        git add -A src
+        git commit --quiet -m "Create $change Rust-path control"
+        GITHUB_SHA=$(git rev-parse HEAD)
+        ALPINE_NATIVE_HEAD=$GITHUB_SHA GITHUB_WORKFLOW_SHA=$GITHUB_SHA
+        prepare platform
+        full_platform
+        fail_finish platform success "$change-rust-missing-inventory"
+        jq -e '.status=="failed" and .identity.selection_diff.has_rust_changes==true
+            and all(.scopes[];.reason!="verified-no-rust-diff")' \
+            "$root/native-mutation-receipts-platform-1/result.json" >/dev/null
+    done
+    printf 'Git-bound no-Rust-diff controls passed (%s total isolated cases)\n' "$case_number"
+)

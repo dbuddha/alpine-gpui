@@ -36,12 +36,43 @@ native-ax-client-factory-mutants|tools/alpine-ax-client/src/native_factory.rs|op
 SCOPES
     fi
 }
+selection_witness() (
+    # cargo-mutants 27.1.0 returns before creating output for a diff with no
+    # Rust paths. Prove that exact input independently, not from its log text.
+    if [ "$domain" = studio ]; then
+        printf 'null\n'
+        exit 0
+    fi
+    [ -f "$root/alpine.diff" ] && [ ! -L "$root/alpine.diff" ] || {
+        echo 'missing or linked native mutation input diff' >&2; exit 1;
+    }
+    scratch=$(mktemp -d) || exit 1
+    trap 'rm -rf "$scratch"' EXIT HUP INT TERM
+    git diff --no-ext-diff --no-textconv "$ALPINE_NATIVE_BASE...$ALPINE_NATIVE_HEAD" > "$scratch/expected.diff" || exit 1
+    if ! cmp -s "$scratch/expected.diff" "$root/alpine.diff"; then
+        echo 'native mutation input diff does not match bound source and base' >&2
+        exit 1
+    fi
+    # No rename detection: both removed and added paths remain visible, even
+    # when a Rust file is renamed to a non-Rust extension or vice versa.
+    git diff --no-ext-diff --no-textconv --no-renames --name-only \
+        "$ALPINE_NATIVE_BASE...$ALPINE_NATIVE_HEAD" -- '*.rs' > "$scratch/rust-paths" || exit 1
+    merge_base=$(git merge-base "$ALPINE_NATIVE_BASE" "$ALPINE_NATIVE_HEAD") || exit 1
+    diff_hash=$(sha256 "$root/alpine.diff") || exit 1
+    paths_hash=$(sha256 "$scratch/rust-paths") || exit 1
+    has_rust_changes=false
+    if [ -s "$scratch/rust-paths" ]; then has_rust_changes=true; fi
+    jq -cn --arg hash "$diff_hash" --arg paths "$paths_hash" --arg merge_base "$merge_base" \
+        --argjson has_rust_changes "$has_rust_changes" '
+        {schema:"alpine-native-mutation-diff/v1",path:"alpine.diff",sha256:$hash,
+         merge_base:$merge_base,rust_paths_sha256:$paths,has_rust_changes:$has_rust_changes}'
+)
 identity() {
     checkout=$(git rev-parse HEAD) || return 1
     tree=$(git rev-parse 'HEAD^{tree}') || return 1
     checker=$(sha256 "$script_dir/check-native-mutation-receipts.sh") || return 1
     rules=$(sha256 "$script_dir/native-mutation-receipt.jq") || return 1
-    jq -cen --arg head "${ALPINE_NATIVE_HEAD:?}" --arg base "${ALPINE_NATIVE_BASE:?}" \
+    execution=$(jq -cen --arg head "${ALPINE_NATIVE_HEAD:?}" --arg base "${ALPINE_NATIVE_BASE:?}" \
         --arg tested "${GITHUB_SHA:?}" --arg checkout "$checkout" \
         --arg tree "$tree" --arg workflow "${GITHUB_WORKFLOW_SHA:?}" \
         --arg run "${GITHUB_RUN_ID:?}" --arg attempt "${GITHUB_RUN_ATTEMPT:?}" \
@@ -60,7 +91,10 @@ identity() {
             rustflags:$flags,encoded_rustflags:$encoded_flags,developer:$developer,
             deployment:$deployment,domain:$domain,id:$id,shard:$shard,
             checker_sha256:$checker,rules_sha256:$rules}
-        else error("invalid native mutation execution identity") end'
+        else error("invalid native mutation execution identity") end') || return 1
+    witness=$(selection_witness) || return 1
+    jq -cn --argjson execution "$execution" --argjson witness "$witness" \
+        '$execution + {selection_diff:$witness}'
 }
 current=$(identity)
 expected=$(scopes)
@@ -73,6 +107,11 @@ $expected
 EOF
     mkdir -p "$root"
     mkdir "$receipt"
+    if [ "$domain" = platform ]; then
+        cp "$root/alpine.diff" "$receipt/selection.diff"
+        retained_hash=$(sha256 "$receipt/selection.diff")
+        printf '%s\n' "$current" | jq -e --arg hash "$retained_hash" '.selection_diff.sha256 == $hash' >/dev/null
+    fi
     printf '%s\n' "$current" > "$receipt/identity.json"
     printf '%s\n' "$expected" > "$receipt/scopes.txt"
     date -u '+%Y-%m-%dT%H:%M:%SZ' > "$receipt/prepared-at.txt"
@@ -86,6 +125,17 @@ fi
 [ ! -e "$receipt/result.json" ] || { echo 'refusing to overwrite a terminal receipt' >&2; exit 1; }
 [ "$(cat "$receipt/scopes.txt")" = "$expected" ] || { echo 'scope identity changed' >&2; exit 1; }
 case "$outcome" in success|failure|cancelled|skipped) ;; *) echo 'missing execution-step outcome' >&2; exit 1 ;; esac
+no_rust_diff=false
+if [ "$domain" = platform ]; then
+    retained_hash=$(sha256 "$receipt/selection.diff")
+    if ! jq -e --arg hash "$retained_hash" '.selection_diff.sha256 == $hash' "$receipt/identity.json" >/dev/null; then
+        echo 'retained native mutation diff changed' >&2
+        exit 1
+    fi
+    if jq -e '.selection_diff.has_rust_changes == false' "$receipt/identity.json" >/dev/null; then
+        no_rust_diff=true
+    fi
+fi
 while IFS='|' read -r scope source kind; do
     directory="$root/$scope-$id.out/mutants.out"
     inventory="$directory/mutants.json"
@@ -96,6 +146,13 @@ while IFS='|' read -r scope source kind; do
         reason="execution step ended as $outcome; raw partial evidence is not accepted"
     elif [ "$kind" = optional ] && [ ! -f "$source" ] && [ ! -e "$root/$scope-$id.out" ]; then
         jq -n --arg scope "$scope" '{scope:$scope,status:"not-applicable",reason:"conditional source absent",selected:0,executed:0,baseline:false}' > "$destination"
+        continue
+    elif [ "$kind" != full ] && [ "$no_rust_diff" = true ] \
+        && [ ! -e "$root/$scope-$id.out" ] && [ ! -L "$root/$scope-$id.out" ]; then
+        jq -n --arg scope "$scope" --arg hash "$retained_hash" '
+            {scope:$scope,status:"not-required",reason:"verified-no-rust-diff",
+             selected:0,executed:0,baseline:false,inventory_present:false,
+             terminal_present:false,selection_diff_sha256:$hash}' > "$destination"
         continue
     elif [ ! -f "$inventory" ]; then
         reason='missing selected inventory'
