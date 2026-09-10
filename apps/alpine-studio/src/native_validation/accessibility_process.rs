@@ -838,7 +838,8 @@ fn await_frame_terminal(
                 "correctness-timeout",
                 observed_submissions,
                 &format!(
-                    "frame ownership did not become terminal before the correctness deadline; completion={}",
+                    "frame ownership did not become terminal before the correctness deadline; started={started:?} timeout={timeout:?} deadline={:?} completion={}",
+                    started.checked_add(timeout),
                     platform_validation::completion_diagnostic(surface)
                 ),
             ));
