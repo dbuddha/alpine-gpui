@@ -169,7 +169,8 @@ printf 'native mutation receipt controls passed (%s isolated cases)\n' "$case_nu
 # pinned tool's no-work behavior, never successful native mutation execution.
 (
     repository="$fixture/diff-repository"
-    mkdir -p "$repository/src" "$repository/tools/alpine-ax-client/src"
+    mkdir -p "$repository/src" "$repository/tools/alpine-ax-client/src" \
+        "$repository/crates/alpine-metal/src"
     git init --quiet "$repository"
     cd "$repository"
     git config user.name 'Alpine receipt fixture'
@@ -177,10 +178,13 @@ printf 'native mutation receipt controls passed (%s isolated cases)\n' "$case_nu
     git config commit.gpgsign false
     git config core.hooksPath /dev/null
     printf '[package]\nname = "receipt-fixture"\nversion = "0.0.0"\nedition = "2021"\n' > Cargo.toml
-    printf 'pub fn value() -> bool { true }\n' > src/lib.rs
+    printf 'pub mod other;\npub fn value() -> bool { true }\n' > src/lib.rs
+    printf 'pub fn other() -> bool { true }\n' > src/other.rs
+    printf 'pub fn native() -> bool { true }\n' > crates/alpine-metal/src/native.rs
     printf '// fixture\n' > tools/alpine-ax-client/src/native_factory.rs
     printf 'baseline\n' > README.md
-    git add Cargo.toml src/lib.rs tools/alpine-ax-client/src/native_factory.rs README.md
+    git add Cargo.toml src crates/alpine-metal/src/native.rs \
+        tools/alpine-ax-client/src/native_factory.rs README.md
     git commit --quiet -m 'Create isolated receipt fixture'
     ALPINE_NATIVE_BASE=$(git rev-parse HEAD)
     printf 'documentation only\n' >> README.md
@@ -254,15 +258,81 @@ printf 'native mutation receipt controls passed (%s isolated cases)\n' "$case_nu
     fi
     grep -Fq 'missing or linked native mutation input diff' "$root/rejected.log"
 
+    # A mixed Rust diff does not make every unchanged source a selected scope.
+    ALPINE_NATIVE_BASE=$(git rev-parse HEAD)
+    printf 'pub fn other() -> bool { false }\n' > src/other.rs
+    git add src/other.rs
+    git commit --quiet -m 'Change only an unrelated Rust source'
+    GITHUB_SHA=$(git rev-parse HEAD)
+    ALPINE_NATIVE_HEAD=$GITHUB_SHA GITHUB_WORKFLOW_SHA=$GITHUB_SHA
+    prepare platform
+    full_platform
+    "$checker" finish platform 1 "$root" success
+    jq -e '.status=="passed"
+        and .identity.selection_diff.schema=="alpine-native-mutation-diff/v2"
+        and .identity.selection_diff.has_rust_changes==true
+        and .identity.selection_diff.rust_paths==["src/other.rs"]
+        and ([.scopes[]|select(.reason=="verified-unchanged-rust-source")]|length)==9
+        and all(.scopes[]|select(.reason=="verified-unchanged-rust-source");
+            .selected==0 and .executed==0 and .baseline==false
+            and .inventory_present==false and .terminal_present==false)' \
+        "$root/native-mutation-receipts-platform-1/result.json" >/dev/null
+    for fault in partial-directory linked-output path-list-tampered; do
+        prepare platform
+        full_platform
+        case "$fault" in
+            partial-directory) mkdir "$root/native-runtime-mutants-1.out" ;;
+            linked-output) ln -s "$root/absent" "$root/native-runtime-mutants-1.out" ;;
+            path-list-tampered)
+                jq '.selection_diff.rust_paths=[]' "$root/native-mutation-receipts-platform-1/identity.json" > "$root/tampered.json"
+                mv "$root/tampered.json" "$root/native-mutation-receipts-platform-1/identity.json" ;;
+        esac
+        fail_finish platform success "$fault-mixed-rust-diff"
+        if [ "$fault" = path-list-tampered ]; then
+            grep -Fxq 'native mutation execution identity changed' "$root/rejected.log"
+        fi
+    done
+    for outcome in failure cancelled skipped; do
+        prepare platform
+        full_platform
+        fail_finish platform "$outcome" failed-mixed-rust-execution
+        jq -e 'all(.scopes[];.status=="failed")' "$root/native-mutation-receipts-platform-1/result.json" >/dev/null
+    done
+    if [ "$pinned_cli" = --pinned-cli ]; then
+        # Discovery proves this target was eligible before the diff filter.
+        cargo mutants --no-config --file src/lib.rs --list --json \
+            --output "$root/cli-discovery" > "$root/cli-discovery.json" 2> "$root/cli-discovery.log"
+        jq -e 'length>0 and all(.[];.file=="src/lib.rs")' "$root/cli-discovery.json" >/dev/null
+        cargo mutants --no-config --file src/lib.rs --in-diff "$root/alpine.diff" \
+            --output "$root/cli-unchanged-source" -- --locked > "$root/cli-unchanged-source.log" 2>&1
+        [ ! -e "$root/cli-unchanged-source" ]
+        cargo mutants --no-config --file src/lib.rs --in-diff "$root/alpine.diff" \
+            --output "$root/cli-unchanged-list" --list --json > "$root/cli-unchanged-list.json" 2> "$root/cli-unchanged-list.log"
+        [ ! -s "$root/cli-unchanged-list.json" ]
+        [ ! -e "$root/cli-unchanged-list" ]
+        selected_base=$(git rev-parse HEAD)
+        printf 'pub mod other;\npub fn value() -> bool { false }\n' > src/lib.rs
+        git add src/lib.rs
+        git commit --quiet -m 'Change the CLI-selected Rust source'
+        git diff "$selected_base...HEAD" > "$root/selected-source.diff"
+        cargo mutants --no-config --file src/lib.rs --in-diff "$root/selected-source.diff" \
+            --shard 15/16 --sharding round-robin --output "$root/cli-empty-shard" \
+            -- --locked > "$root/cli-empty-shard.log" 2>&1
+        jq -e 'type=="array" and length==0' "$root/cli-empty-shard/mutants.out/mutants.json" >/dev/null
+        [ ! -e "$root/cli-empty-shard/mutants.out/outcomes.json" ]
+        printf 'pinned CLI discoverable unchanged-source and changed-source empty-shard controls passed\n'
+    fi
+
+    # Mutate actual declared scope paths, not the unrelated fixture crate path.
     for change in modified renamed-out renamed-in deleted; do
         ALPINE_NATIVE_BASE=$(git rev-parse HEAD)
         case "$change" in
-            modified) printf 'pub fn value() -> bool { false }\n' > src/lib.rs ;;
-            renamed-out) mv src/lib.rs src/library.txt ;;
-            renamed-in) mv src/library.txt src/renamed.rs ;;
-            deleted) rm src/renamed.rs ;;
+            modified) printf 'pub fn native() -> bool { false }\n' > crates/alpine-metal/src/native.rs ;;
+            renamed-out) mv crates/alpine-metal/src/native.rs crates/alpine-metal/src/native.txt ;;
+            renamed-in) mv crates/alpine-metal/src/native.txt crates/alpine-metal/src/native.rs ;;
+            deleted) rm crates/alpine-metal/src/native.rs ;;
         esac
-        git add -A src
+        git add -A crates/alpine-metal/src
         git commit --quiet -m "Create $change Rust-path control"
         GITHUB_SHA=$(git rev-parse HEAD)
         ALPINE_NATIVE_HEAD=$GITHUB_SHA GITHUB_WORKFLOW_SHA=$GITHUB_SHA
@@ -270,8 +340,73 @@ printf 'native mutation receipt controls passed (%s isolated cases)\n' "$case_nu
         full_platform
         fail_finish platform success "$change-rust-missing-inventory"
         jq -e '.status=="failed" and .identity.selection_diff.has_rust_changes==true
-            and all(.scopes[];.reason!="verified-no-rust-diff")' \
+            and (.identity.selection_diff.rust_paths|index("crates/alpine-metal/src/native.rs"))!=null
+            and all(.scopes[]|select(.scope=="native-mutants");.status=="failed")' \
+            "$root/native-mutation-receipts-platform-1/result.json" >/dev/null
+        if [ "$change" = modified ]; then
+            prepare platform
+            full_platform
+            mkdir -p "$root/native-mutants-1.out/mutants.out"
+            printf '[]\n' > "$root/native-mutants-1.out/mutants.out/mutants.json"
+            "$checker" finish platform 1 "$root" success
+            jq -e '.status=="passed" and all(.scopes[]|select(.scope=="native-mutants");
+                .reason=="successful empty selection" and .baseline==false)' \
+                "$root/native-mutation-receipts-platform-1/result.json" >/dev/null
+        fi
+    done
+    for change in renamed-out renamed-in deleted; do
+        ALPINE_NATIVE_BASE=$(git rev-parse HEAD)
+        case "$change" in
+            renamed-out) mv tools/alpine-ax-client/src/native_factory.rs tools/alpine-ax-client/src/native_factory.txt ;;
+            renamed-in) mv tools/alpine-ax-client/src/native_factory.txt tools/alpine-ax-client/src/native_factory.rs ;;
+            deleted) rm tools/alpine-ax-client/src/native_factory.rs ;;
+        esac
+        git add -A tools/alpine-ax-client/src
+        git commit --quiet -m "Create optional-source $change control"
+        GITHUB_SHA=$(git rev-parse HEAD)
+        ALPINE_NATIVE_HEAD=$GITHUB_SHA GITHUB_WORKFLOW_SHA=$GITHUB_SHA
+        prepare platform
+        full_platform
+        fail_finish platform success "$change-optional-source"
+        jq -e 'any(.scopes[];.scope=="native-ax-client-factory-mutants" and .status=="failed")' \
             "$root/native-mutation-receipts-platform-1/result.json" >/dev/null
     done
-    printf 'Git-bound no-Rust-diff controls passed (%s total isolated cases)\n' "$case_number"
+    ALPINE_NATIVE_BASE=$(git rev-parse HEAD)
+    mkdir -p crates/alpine-platform-macos/src
+    printf '// shared-source fixture\n' > crates/alpine-platform-macos/src/native_accessibility.rs
+    git add crates/alpine-platform-macos/src/native_accessibility.rs
+    git commit --quiet -m 'Add a source shared by two mutation scopes'
+    GITHUB_SHA=$(git rev-parse HEAD)
+    ALPINE_NATIVE_HEAD=$GITHUB_SHA GITHUB_WORKFLOW_SHA=$GITHUB_SHA
+    prepare platform
+    full_platform
+    fail_finish platform success shared-source-missing-inventories
+    jq -e '([.scopes[]|select((.scope=="native-accessibility-mutants"
+        or .scope=="native-studio-accessibility-mutants") and .status=="failed")]|length)==2' \
+        "$root/native-mutation-receipts-platform-1/result.json" >/dev/null
+    ALPINE_NATIVE_BASE=$(git rev-parse HEAD)
+    printf 'unchanged optional absence\n' >> README.md
+    git add README.md
+    git commit --quiet -m 'Keep an absent optional source unchanged'
+    GITHUB_SHA=$(git rev-parse HEAD)
+    ALPINE_NATIVE_HEAD=$GITHUB_SHA GITHUB_WORKFLOW_SHA=$GITHUB_SHA
+    prepare platform
+    full_platform
+    "$checker" finish platform 1 "$root" success
+    jq -e '.status=="passed" and any(.scopes[];.scope=="native-ax-client-factory-mutants"
+        and .status=="not-applicable" and .reason=="conditional source absent and unchanged")' \
+        "$root/native-mutation-receipts-platform-1/result.json" >/dev/null
+    prepare platform
+    full_platform
+    ln -s "$root/absent" "$root/native-ax-client-factory-mutants-1.out"
+    fail_finish platform success dangling-optional-output
+    root="$fixture/stale-linked-optional-output"
+    mkdir "$root"
+    git diff "$ALPINE_NATIVE_BASE...$ALPINE_NATIVE_HEAD" > "$root/alpine.diff"
+    ln -s "$root/absent" "$root/native-ax-client-factory-mutants-1.out"
+    if "$checker" prepare platform 1 "$root" > "$root/rejected.log" 2>&1; then
+        echo 'linked optional output accepted during preparation' >&2; exit 1
+    fi
+    grep -Fq 'stale mutation output: native-ax-client-factory-mutants' "$root/rejected.log"
+    printf 'Git-bound per-source diff controls passed (%s prepared cases plus stale-output controls)\n' "$case_number"
 )

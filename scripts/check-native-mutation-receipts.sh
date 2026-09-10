@@ -37,8 +37,10 @@ SCOPES
     fi
 }
 selection_witness() (
-    # cargo-mutants 27.1.0 returns before creating output for a diff with no
-    # Rust paths. Prove that exact input independently, not from its log text.
+    # cargo-mutants 27.1.0 returns before creating output when the selected
+    # Rust source is unchanged, even if another Rust source changed. Bind the
+    # exact path set independently; an empty shard of a changed source still
+    # requires the tool's explicit empty inventory.
     if [ "$domain" = studio ]; then
         printf 'null\n'
         exit 0
@@ -55,7 +57,7 @@ selection_witness() (
     fi
     # No rename detection: both removed and added paths remain visible, even
     # when a Rust file is renamed to a non-Rust extension or vice versa.
-    git diff --no-ext-diff --no-textconv --no-renames --name-only \
+    git diff --no-ext-diff --no-textconv --no-renames --name-only -z \
         "$ALPINE_NATIVE_BASE...$ALPINE_NATIVE_HEAD" -- '*.rs' > "$scratch/rust-paths" || exit 1
     merge_base=$(git merge-base "$ALPINE_NATIVE_BASE" "$ALPINE_NATIVE_HEAD") || exit 1
     diff_hash=$(sha256 "$root/alpine.diff") || exit 1
@@ -63,9 +65,12 @@ selection_witness() (
     has_rust_changes=false
     if [ -s "$scratch/rust-paths" ]; then has_rust_changes=true; fi
     jq -cn --arg hash "$diff_hash" --arg paths "$paths_hash" --arg merge_base "$merge_base" \
+        --rawfile rust_paths "$scratch/rust-paths" \
         --argjson has_rust_changes "$has_rust_changes" '
-        {schema:"alpine-native-mutation-diff/v1",path:"alpine.diff",sha256:$hash,
-         merge_base:$merge_base,rust_paths_sha256:$paths,has_rust_changes:$has_rust_changes}'
+        {schema:"alpine-native-mutation-diff/v2",path:"alpine.diff",sha256:$hash,
+         merge_base:$merge_base,rust_paths_sha256:$paths,path_encoding:"git-nul",
+         rust_paths:($rust_paths|split("\u0000")|map(select(length>0))),
+         has_rust_changes:$has_rust_changes}'
 )
 identity() {
     checkout=$(git rev-parse HEAD) || return 1
@@ -101,7 +106,9 @@ expected=$(scopes)
 if [ "$mode" = prepare ]; then
     # A fresh identity cannot bless cached or partially mutated output.
     while IFS='|' read -r scope source kind; do
-        [ ! -e "$root/$scope-$id.out" ] || { echo "stale mutation output: $scope" >&2; exit 1; }
+        [ ! -e "$root/$scope-$id.out" ] && [ ! -L "$root/$scope-$id.out" ] || {
+            echo "stale mutation output: $scope" >&2; exit 1;
+        }
     done <<EOF
 $expected
 EOF
@@ -144,13 +151,22 @@ while IFS='|' read -r scope source kind; do
     reason=
     if [ "$outcome" != success ]; then
         reason="execution step ended as $outcome; raw partial evidence is not accepted"
-    elif [ "$kind" = optional ] && [ ! -f "$source" ] && [ ! -e "$root/$scope-$id.out" ]; then
-        jq -n --arg scope "$scope" '{scope:$scope,status:"not-applicable",reason:"conditional source absent",selected:0,executed:0,baseline:false}' > "$destination"
+    elif [ "$kind" = optional ] && [ ! -f "$source" ] \
+        && [ ! -e "$root/$scope-$id.out" ] && [ ! -L "$root/$scope-$id.out" ] \
+        && jq -e --arg source "$source" '(.selection_diff.rust_paths|type)=="array"
+            and (.selection_diff.rust_paths|index($source))==null' "$receipt/identity.json" >/dev/null; then
+        jq -n --arg scope "$scope" --arg source "$source" '{scope:$scope,source:$source,
+            status:"not-applicable",reason:"conditional source absent and unchanged",
+            selected:0,executed:0,baseline:false}' > "$destination"
         continue
-    elif [ "$kind" != full ] && [ "$no_rust_diff" = true ] \
-        && [ ! -e "$root/$scope-$id.out" ] && [ ! -L "$root/$scope-$id.out" ]; then
-        jq -n --arg scope "$scope" --arg hash "$retained_hash" '
-            {scope:$scope,status:"not-required",reason:"verified-no-rust-diff",
+    elif [ "$kind" != full ] \
+        && [ ! -e "$root/$scope-$id.out" ] && [ ! -L "$root/$scope-$id.out" ] \
+        && jq -e --arg source "$source" '(.selection_diff.rust_paths|type)=="array"
+            and (.selection_diff.rust_paths|index($source))==null' "$receipt/identity.json" >/dev/null; then
+        jq -n --arg scope "$scope" --arg source "$source" --arg hash "$retained_hash" \
+            --argjson no_rust "$no_rust_diff" '
+            {scope:$scope,source:$source,status:"not-required",
+             reason:(if $no_rust then "verified-no-rust-diff" else "verified-unchanged-rust-source" end),
              selected:0,executed:0,baseline:false,inventory_present:false,
              terminal_present:false,selection_diff_sha256:$hash}' > "$destination"
         continue
