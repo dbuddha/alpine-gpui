@@ -3450,6 +3450,10 @@ pub(crate) mod tests {
 
     #[cfg(feature = "platform-spi")]
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "three-slot ownership, non-consuming observation, reordered completion, and reuse are one native lifecycle journey"
+    )]
     fn split_phase_drawables_bound_reorder_and_reuse_three_slots() -> Result<(), Box<dyn Error>> {
         let (scene, descriptor) = discriminating_scene()?;
         let frame = ValidatedFrame::new(&scene, descriptor)?;
@@ -3510,7 +3514,39 @@ pub(crate) mod tests {
         for index in [2_usize, 0, 1] {
             let submission = submissions[index].ok_or("missing native submission")?;
             assert!(backend.native.wait_drawable(submission.id));
-            assert_completion_probe_is_non_consuming(&backend.native, submission.id);
+            let native = &backend.native;
+            let id = submission.id;
+            let before = native.presentation_snapshot();
+            let expected = super::NativeCompletionProbe {
+                requested: id,
+                slot_present: true,
+                owner: Some(id),
+                command_status: Some(crate::CommandStatus::Completed),
+                signal: super::CompletionSignalProbe::Observed {
+                    sequence: id.sequence,
+                    terminal_published: true,
+                },
+            };
+            assert_eq!(native.probe_drawable(id), expected);
+            assert_eq!(native.probe_drawable(id), expected);
+            let wrong = super::NativePresentationId {
+                slot: id.slot,
+                sequence: id.sequence + 1,
+            };
+            let mismatch = native.probe_drawable(wrong);
+            assert_eq!(mismatch.requested, wrong);
+            assert_eq!(mismatch.owner, Some(id));
+            assert_eq!(mismatch.command_status, None);
+            assert_eq!(mismatch.signal, expected.signal);
+            let absent = native.probe_drawable(super::NativePresentationId {
+                slot: 3,
+                sequence: id.sequence,
+            });
+            assert!(!absent.slot_present);
+            assert_eq!(absent.owner, None);
+            assert_eq!(absent.command_status, None);
+            assert_eq!(absent.signal, super::CompletionSignalProbe::NoSlot);
+            assert_eq!(native.presentation_snapshot(), before);
             let attempt = backend
                 .native
                 .poll_drawable(submission.id)?
@@ -3535,44 +3571,6 @@ pub(crate) mod tests {
         assert_eq!(reused.resources.allocated_bytes, 0);
         assert_eq!(backend.native.presentation_snapshot().upload_allocations, 3);
         Ok(())
-    }
-
-    #[cfg(feature = "platform-spi")]
-    fn assert_completion_probe_is_non_consuming(
-        backend: &NativeBackend,
-        id: super::NativePresentationId,
-    ) {
-        let before = backend.presentation_snapshot();
-        let expected = super::NativeCompletionProbe {
-            requested: id,
-            slot_present: true,
-            owner: Some(id),
-            command_status: Some(crate::CommandStatus::Completed),
-            signal: super::CompletionSignalProbe::Observed {
-                sequence: id.sequence,
-                terminal_published: true,
-            },
-        };
-        assert_eq!(backend.probe_drawable(id), expected);
-        assert_eq!(backend.probe_drawable(id), expected);
-        let wrong = super::NativePresentationId {
-            slot: id.slot,
-            sequence: id.sequence + 1,
-        };
-        let mismatch = backend.probe_drawable(wrong);
-        assert_eq!(mismatch.requested, wrong);
-        assert_eq!(mismatch.owner, Some(id));
-        assert_eq!(mismatch.command_status, None);
-        assert_eq!(mismatch.signal, expected.signal);
-        let absent = backend.probe_drawable(super::NativePresentationId {
-            slot: 3,
-            sequence: id.sequence,
-        });
-        assert!(!absent.slot_present);
-        assert_eq!(absent.owner, None);
-        assert_eq!(absent.command_status, None);
-        assert_eq!(absent.signal, super::CompletionSignalProbe::NoSlot);
-        assert_eq!(backend.presentation_snapshot(), before);
     }
 
     #[cfg(feature = "platform-spi")]

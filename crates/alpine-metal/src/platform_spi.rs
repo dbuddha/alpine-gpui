@@ -455,6 +455,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "diagnostic observation must bracket both initial completion and reused-slot completion in the same native lifecycle"
+    )]
     fn split_phase_spi_submits_polls_accounts_reuses_and_sheds() -> Result<(), Box<dyn Error>> {
         let mut fixture = callback_fixture()?;
         let slot = DrawableSlot::new(0).ok_or("slot zero")?;
@@ -492,7 +496,22 @@ mod tests {
         assert_eq!(pressure_pending.upload_trims(), 0);
         assert!(fixture.backend.native.wait_drawable(submission.native));
         #[cfg(alpine_native_validation)]
-        assert_completion_diagnostic_preserves_owner(&fixture.backend, submission);
+        {
+            let before = presentation_snapshot(&fixture.backend);
+            let diagnostic = super::callback_completion_diagnostic(&fixture.backend, submission);
+            assert!(diagnostic.contains(&format!("requested: {:?}", submission.native)));
+            assert!(diagnostic.contains(&format!("owner: Some({:?})", submission.native)));
+            assert!(diagnostic.contains("command_status: Some(Completed)"));
+            assert!(diagnostic.contains("terminal_published: true"));
+            assert_eq!(
+                diagnostic,
+                super::callback_completion_diagnostic(&fixture.backend, submission)
+            );
+            let after = presentation_snapshot(&fixture.backend);
+            assert_eq!(before.occupied_slots(), after.occupied_slots());
+            assert_eq!(before.current_upload_bytes(), after.current_upload_bytes());
+            assert_eq!(before.upload_trims(), after.upload_trims());
+        }
         let DrawableCompletionPoll::Complete(completed) =
             poll_callback_drawable(&mut fixture.backend, submission)
         else {
@@ -539,7 +558,23 @@ mod tests {
                 .wait_drawable(second_submission.native)
         );
         #[cfg(alpine_native_validation)]
-        assert_completion_diagnostic_preserves_owner(&fixture.backend, second_submission);
+        {
+            let before = presentation_snapshot(&fixture.backend);
+            let diagnostic =
+                super::callback_completion_diagnostic(&fixture.backend, second_submission);
+            assert!(diagnostic.contains(&format!("requested: {:?}", second_submission.native)));
+            assert!(diagnostic.contains(&format!("owner: Some({:?})", second_submission.native)));
+            assert!(diagnostic.contains("command_status: Some(Completed)"));
+            assert!(diagnostic.contains("terminal_published: true"));
+            assert_eq!(
+                diagnostic,
+                super::callback_completion_diagnostic(&fixture.backend, second_submission)
+            );
+            let after = presentation_snapshot(&fixture.backend);
+            assert_eq!(before.occupied_slots(), after.occupied_slots());
+            assert_eq!(before.current_upload_bytes(), after.current_upload_bytes());
+            assert_eq!(before.upload_trims(), after.upload_trims());
+        }
         let DrawableCompletionPoll::Complete(second_completion) =
             poll_callback_drawable(&mut fixture.backend, second_submission)
         else {
@@ -547,27 +582,6 @@ mod tests {
         };
         assert_eq!(second_completion.into_result()?.submission, 2);
         Ok(())
-    }
-
-    #[cfg(alpine_native_validation)]
-    fn assert_completion_diagnostic_preserves_owner(
-        backend: &crate::MetalBackend,
-        submission: super::DrawableSubmission,
-    ) {
-        let before = presentation_snapshot(backend);
-        let diagnostic = super::callback_completion_diagnostic(backend, submission);
-        assert!(diagnostic.contains(&format!("requested: {:?}", submission.native)));
-        assert!(diagnostic.contains(&format!("owner: Some({:?})", submission.native)));
-        assert!(diagnostic.contains("command_status: Some(Completed)"));
-        assert!(diagnostic.contains("terminal_published: true"));
-        assert_eq!(
-            diagnostic,
-            super::callback_completion_diagnostic(backend, submission)
-        );
-        let after = presentation_snapshot(backend);
-        assert_eq!(before.occupied_slots(), after.occupied_slots());
-        assert_eq!(before.current_upload_bytes(), after.current_upload_bytes());
-        assert_eq!(before.upload_trims(), after.upload_trims());
     }
 
     #[test]
