@@ -263,10 +263,89 @@ if [ -n "$workflow_files" ]; then
         'Retry rust-analyzer compatibility evidence upload' \
         'upload-rust-analyzer-compatibility-primary'
     if [ -z "$native_mutation_block" ] \
-        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec '^[[:space:]]+shard: ([0-9]|1[0-5])/16$')" -ne 16 ] \
-        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec 'cargo mutants ')" -ne 11 ] \
+        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec '^[[:space:]]+shard: ([0-9]|1[0-5])/16$')" -ne 32 ] \
+        || [ "$(printf '%s\n' "$native_mutation_block" | grep -Ec 'cargo mutants --no-config ')" -ne 11 ] \
         || [ "$(printf '%s\n' "$native_mutation_block" | grep -Fc -- '--shard "${{ matrix.shard }}"')" -ne 11 ]; then
         fail 'pull-request native mutation must preserve all eleven scopes across sixteen deterministic shards'
+    fi
+    # Preserve sixteen logical shards while separating serial platform/Studio cost.
+    if ! printf '%s\n' "$native_mutation_block" | awk '
+        function row( key) {
+            if (!pending) return
+            key = domain ":" id
+            if (id !~ /^[0-9]+$/ || id < 1 || id > 16 ||
+                (domain != "platform" && domain != "studio") ||
+                shard != (id - 1) "/16" || seen[key]++) invalid = 1
+            rows++
+            pending = 0
+        }
+        /^          - id:/ { row(); id = $3; domain = ""; shard = ""; pending = 1 }
+        /^            domain:/ { domain = $2 }
+        /^            shard:/ { shard = $2 }
+        /^    env:/ { row() }
+        /^    timeout-minutes:/ { job_timeout++; if ($2 != 30) invalid = 1 }
+        /^      - name:/ { owner = ""; guard = ""; cap = 0 }
+        /^        id: native-(platform|studio)-mutants$/ { owner = $2; owners[owner]++ }
+        /^        if: matrix.domain ==/ { guard = $4; gsub(/\047/, "", guard) }
+        /^        timeout-minutes:/ { cap = $2; caps++; if (cap != 24) invalid = 1 }
+        /cargo mutants --no-config / {
+            expected = index($0, "--file apps/alpine-studio/src/lib.rs ") ? "studio" : "platform"
+            if (owner != "native-" expected "-mutants" || guard != expected || cap != 24) invalid = 1
+            commands[expected]++
+        }
+        END {
+            row()
+            for (i = 1; i <= 16; i++)
+                if (seen["platform:" i] != 1 || seen["studio:" i] != 1) invalid = 1
+            if (rows != 32 || job_timeout != 1 || caps != 2 ||
+                owners["native-platform-mutants"] != 1 || owners["native-studio-mutants"] != 1 ||
+                commands["platform"] != 10 || commands["studio"] != 1) invalid = 1
+            exit invalid
+        }
+    '; then
+        fail 'native mutation placement must preserve disjoint domain/shard ownership and bounded execution'
+    fi
+    for required in \
+        '      - name: Bind native mutation execution identity' \
+        '          ALPINE_NATIVE_TOOLCHAIN=$(rustc -Vv)' \
+        '          ALPINE_NATIVE_MUTATOR=$(cargo mutants --version)' \
+        '          scripts/check-native-mutation-receipts.sh prepare "${{ matrix.domain }}" "${{ matrix.id }}" target' \
+        '      - name: Require complete native mutation receipts' \
+        '          scripts/check-native-mutation-receipts.sh finish "${{ matrix.domain }}" "${{ matrix.id }}" target "$EXECUTION_OUTCOME"' \
+        '        uses: ./.github/actions/upload-required-artifact' \
+        '            target/native-mutation-receipts-${{ matrix.domain }}-${{ matrix.id }}' \
+        '          if-no-files-found: error'
+    do
+        if ! printf '%s\n' "$native_mutation_block" | grep -Fqx "$required"; then
+            fail 'native mutation must retain identity-bound terminal receipts and blocking artifacts'
+            break
+        fi
+    done
+    if ! printf '%s\n' "$native_mutation_block" | awk '
+        /^      - name:/ {
+            if (required && !always) invalid = 1
+            required = ($0 == "      - name: Require complete native mutation receipts" ||
+                        $0 == "      - name: Upload native mutation evidence")
+            always = 0
+            if (required) count++
+        }
+        /^        if: always\(\)$/ { if (required) always = 1 }
+        /continue-on-error:/ { invalid = 1 }
+        END { if (required && !always) invalid = 1; exit (invalid || count != 2) }
+    '; then
+        fail 'native mutation receipts and blocking uploads must run after failed execution'
+    fi
+    for required in \
+        '      ALPINE_NATIVE_HEAD: ${{ needs.classify.outputs.head_sha }}' \
+        '      ALPINE_NATIVE_BASE: ${{ needs.classify.outputs.base_sha }}' \
+        '          EXECUTION_OUTCOME: ${{ matrix.domain == '"'"'platform'"'"' && steps.native-platform-mutants.outcome || steps.native-studio-mutants.outcome }}'
+    do
+        if ! printf '%s\n' "$native_mutation_block" | grep -Fqx "$required"; then
+            fail 'native mutation receipts must bind selected execution and source/base identity'
+        fi
+    done
+    if ! grep -Fqx 'scripts/test-native-mutation-receipts.sh' scripts/check.sh; then
+        fail 'local quality gate must exercise native mutation receipt controls'
     fi
     for shard in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         if ! printf '%s\n' "$native_mutation_block" | grep -Fq "shard: $shard/16"; then
@@ -316,7 +395,7 @@ if [ -n "$workflow_files" ]; then
     if printf '%s\n' "$metal_validation_block" | grep -Fq 'cargo mutants '; then
         fail 'Metal behavior validation must remain independent from native mutation enforcement'
     fi
-    if ! printf '%s\n' "$native_mutation_block" | grep -Fq 'name: native-mutation-${{ matrix.id }}-${{ github.sha }}' \
+    if ! printf '%s\n' "$native_mutation_block" | grep -Fq 'name: native-mutation-${{ matrix.domain }}-${{ matrix.id }}-${{ github.sha }}' \
         || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'native-mutation]' \
         || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'NATIVE_MUTATION_RESULT: ${{ needs.native-mutation.result }}' \
         || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'require_selected native-mutation "$METAL_REQUIRED" "$NATIVE_MUTATION_RESULT"'; then

@@ -681,6 +681,40 @@ if ! grep -Fq 'validation-only Studio language evidence mutation must transfer e
     exit 1
 fi
 
+
+# Preserve the same sixteen logical inventories in two separate execution domains.
+for fault in duplicate-domain duplicate-shard wrong-guard wrong-step-cap wrong-job-cap; do
+    NATIVE_PLACEMENT_FAULT="$fault" perl -0pe '
+        BEGIN { $fault = $ENV{NATIVE_PLACEMENT_FAULT} }
+        if ($fault eq "duplicate-domain") { s/(  native-mutation:.*?domain: )studio/$1 . "platform"/se }
+        elsif ($fault eq "duplicate-shard") { s/(  native-mutation:.*?domain: studio.*?shard: )0\/16/$1 . "1\/16"/se }
+        elsif ($fault eq "wrong-guard") { s/(id: native-studio-mutants\s+if: matrix.domain == )\047studio\047/$1 . "\047platform\047"/se }
+        elsif ($fault eq "wrong-step-cap") { s/(id: native-studio-mutants.*?timeout-minutes: )24/$1 . "30"/se }
+        elsif ($fault eq "wrong-job-cap") { s/(  native-mutation:.*?timeout-minutes: )30/$1 . "40"/se }
+    ' "$fixture_dir/ci.yml" > "$fixture_dir/native-placement-$fault.yml"
+    if ALPINE_CI_WORKFLOW="$fixture_dir/native-placement-$fault.yml" run_policy > "$fixture_dir/native-placement-$fault.log" 2>&1; then
+        echo "native mutation placement accepted $fault" >&2; exit 1
+    fi
+    if ! grep -Fq 'native mutation placement must preserve disjoint domain/shard ownership and bounded execution' "$fixture_dir/native-placement-$fault.log"; then
+        cat "$fixture_dir/native-placement-$fault.log" >&2; exit 1
+    fi
+done
+for fault in missing-prepare missing-finish missing-upload always-disabled detached-outcome; do
+    NATIVE_RECEIPT_FAULT="$fault" perl -0pe '
+        BEGIN { $fault = $ENV{NATIVE_RECEIPT_FAULT} }
+        if ($fault eq "missing-prepare") { s/^.*scripts\/check-native-mutation-receipts.sh prepare.*\n//m }
+        elsif ($fault eq "missing-finish") { s/^.*scripts\/check-native-mutation-receipts.sh finish.*\n//m }
+        elsif ($fault eq "missing-upload") { s/(  native-mutation:.*?)uses: \.\/\.github\/actions\/upload-required-artifact/$1 . "uses: .\/missing-action"/se }
+        elsif ($fault eq "always-disabled") { s/(name: Require complete native mutation receipts\s+if: )always\(\)/$1 . "success()"/se }
+        elsif ($fault eq "detached-outcome") { s/EXECUTION_OUTCOME:.*$/EXECUTION_OUTCOME: success/m }
+    ' "$fixture_dir/ci.yml" > "$fixture_dir/native-receipt-$fault.yml"
+    if ALPINE_CI_WORKFLOW="$fixture_dir/native-receipt-$fault.yml" run_policy > "$fixture_dir/native-receipt-$fault.log" 2>&1; then
+        echo "native mutation receipt policy accepted $fault" >&2; exit 1
+    fi
+    if ! grep -Eq 'native mutation (must retain identity-bound|receipts)' "$fixture_dir/native-receipt-$fault.log"; then
+        cat "$fixture_dir/native-receipt-$fault.log" >&2; exit 1
+    fi
+done
 sed 's/, native-mutation]/]/' "$fixture_dir/ci.yml" > "$fixture_dir/unrequired-native-mutation-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/unrequired-native-mutation-ci.yml" run_policy > "$fixture_dir/unrequired-native-mutation-ci.log" 2>&1; then
     printf 'policy test error: unrequired native mutation unexpectedly passed\n' >&2

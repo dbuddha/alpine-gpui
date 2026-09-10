@@ -350,6 +350,9 @@ fn qualify_workspace(
     let mut application = Application::new(delegate, viewport, clear, WorkerConfig::default())?;
     let surface = platform_validation::new_surface(&descriptor)
         .map_err(|error| format!("native accessibility surface construction failed: {error}"))?;
+    if platform_validation::completion_diagnostic(&surface) != "no-active-frame" {
+        return Err("new native surface reported spurious completion ownership".into());
+    }
     let initial_frame = application
         .frame_if_dirty()
         .ok_or("Studio did not build its initial accessibility frame")?;
@@ -834,7 +837,11 @@ fn await_frame_terminal(
             return Err(failure(
                 "correctness-timeout",
                 observed_submissions,
-                &"frame ownership did not become terminal before the correctness deadline",
+                &format!(
+                    "frame ownership did not become terminal before the correctness deadline; started={started:?} timeout={timeout:?} deadline={:?} completion={}",
+                    started.checked_add(timeout),
+                    platform_validation::completion_diagnostic(surface)
+                ),
             ));
         }
         if should_arm_hosted_observation(

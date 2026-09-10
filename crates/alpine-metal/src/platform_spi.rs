@@ -273,6 +273,19 @@ pub fn submit_callback_drawable(
     }
 }
 
+/// Copies a bounded validation-only diagnostic without consuming completion.
+///
+/// Command status and signal state are separate observations, not an atomic
+/// snapshot or proof that a callback was lost. No native handles are retained.
+#[cfg(alpine_native_validation)]
+#[must_use]
+pub fn callback_completion_diagnostic(
+    backend: &MetalBackend,
+    submission: DrawableSubmission,
+) -> String {
+    format!("{:?}", backend.native.probe_drawable(submission.native))
+}
+
 /// Polls one exact submission without waiting or exposing native handles.
 pub fn poll_callback_drawable(
     backend: &mut MetalBackend,
@@ -442,6 +455,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "diagnostic observation must bracket both initial completion and reused-slot completion in the same native lifecycle"
+    )]
     fn split_phase_spi_submits_polls_accounts_reuses_and_sheds() -> Result<(), Box<dyn Error>> {
         let mut fixture = callback_fixture()?;
         let slot = DrawableSlot::new(0).ok_or("slot zero")?;
@@ -478,6 +495,23 @@ mod tests {
         assert!(pressure_pending.current_upload_bytes() > 0);
         assert_eq!(pressure_pending.upload_trims(), 0);
         assert!(fixture.backend.native.wait_drawable(submission.native));
+        #[cfg(alpine_native_validation)]
+        {
+            let before = presentation_snapshot(&fixture.backend);
+            let diagnostic = super::callback_completion_diagnostic(&fixture.backend, submission);
+            assert!(diagnostic.contains(&format!("requested: {:?}", submission.native)));
+            assert!(diagnostic.contains(&format!("owner: Some({:?})", submission.native)));
+            assert!(diagnostic.contains("command_status: Some(Completed)"));
+            assert!(diagnostic.contains("terminal_published: true"));
+            assert_eq!(
+                diagnostic,
+                super::callback_completion_diagnostic(&fixture.backend, submission)
+            );
+            let after = presentation_snapshot(&fixture.backend);
+            assert_eq!(before.occupied_slots(), after.occupied_slots());
+            assert_eq!(before.current_upload_bytes(), after.current_upload_bytes());
+            assert_eq!(before.upload_trims(), after.upload_trims());
+        }
         let DrawableCompletionPoll::Complete(completed) =
             poll_callback_drawable(&mut fixture.backend, submission)
         else {
@@ -523,6 +557,24 @@ mod tests {
                 .native
                 .wait_drawable(second_submission.native)
         );
+        #[cfg(alpine_native_validation)]
+        {
+            let before = presentation_snapshot(&fixture.backend);
+            let diagnostic =
+                super::callback_completion_diagnostic(&fixture.backend, second_submission);
+            assert!(diagnostic.contains(&format!("requested: {:?}", second_submission.native)));
+            assert!(diagnostic.contains(&format!("owner: Some({:?})", second_submission.native)));
+            assert!(diagnostic.contains("command_status: Some(Completed)"));
+            assert!(diagnostic.contains("terminal_published: true"));
+            assert_eq!(
+                diagnostic,
+                super::callback_completion_diagnostic(&fixture.backend, second_submission)
+            );
+            let after = presentation_snapshot(&fixture.backend);
+            assert_eq!(before.occupied_slots(), after.occupied_slots());
+            assert_eq!(before.current_upload_bytes(), after.current_upload_bytes());
+            assert_eq!(before.upload_trims(), after.upload_trims());
+        }
         let DrawableCompletionPoll::Complete(second_completion) =
             poll_callback_drawable(&mut fixture.backend, second_submission)
         else {

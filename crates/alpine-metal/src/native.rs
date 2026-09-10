@@ -140,6 +140,47 @@ pub(crate) struct NativePresentationId {
     sequence: u64,
 }
 
+#[cfg(all(feature = "platform-spi", any(test, alpine_native_validation)))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CompletionSignalProbe {
+    NoSlot,
+    LockBusy,
+    LockPoisoned,
+    Observed {
+        sequence: u64,
+        terminal_published: bool,
+        observation: CompletionSignalObservation,
+    },
+}
+
+// These process-monotonic observations exist only in validation builds. They
+// identify publication and consumer lock acquisition, not GPU execution time.
+#[cfg(all(feature = "platform-spi", any(test, alpine_native_validation)))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CompletionSignalObservation {
+    reset_at: Option<Instant>,
+    published_at: Option<Instant>,
+    last_take: Option<CompletionTakeObservation>,
+}
+
+#[cfg(all(feature = "platform-spi", any(test, alpine_native_validation)))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CompletionTakeObservation {
+    sequence: u64,
+    acquired_at: Instant,
+    returned_terminal: bool,
+}
+
+#[cfg(all(feature = "platform-spi", any(test, alpine_native_validation)))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NativeCompletionProbe {
+    requested: NativePresentationId,
+    slot_present: bool,
+    owner: Option<NativePresentationId>,
+    command_status: Option<CommandStatus>,
+    signal: CompletionSignalProbe,
+}
+
 #[cfg(feature = "platform-spi")]
 #[derive(Clone, Copy)]
 pub(crate) struct NativeDrawableSubmission {
@@ -688,7 +729,7 @@ impl PresentationSlot {
         &mut self,
         device: &Device,
         frame: &ValidatedFrame,
-        #[cfg(any(test, alpine_native_validation))] fault: NativeFault,
+        #[cfg(test)] fault: NativeFault,
     ) -> Result<UploadPreparation, RenderError> {
         let required = frame.upload_bytes();
         let desired =
@@ -796,7 +837,14 @@ struct UploadPreparation {
 #[cfg(feature = "platform-spi")]
 struct PendingDrawable {
     id: NativePresentationId,
-    _command: CommandBuffer,
+    #[cfg_attr(
+        not(any(test, alpine_native_validation)),
+        expect(
+            dead_code,
+            reason = "shipping retains command ownership until terminal; only validation reads status"
+        )
+    )]
+    command: CommandBuffer,
     operations: FrameOperationUsage,
     resources: FrameResourceUsage,
     _atlas: Option<Buffer>,
@@ -813,6 +861,8 @@ struct NativeTerminal {
 struct CompletionState {
     sequence: u64,
     terminal: Option<NativeTerminal>,
+    #[cfg(any(test, alpine_native_validation))]
+    observation: CompletionSignalObservation,
 }
 
 #[cfg(feature = "platform-spi")]
@@ -828,6 +878,12 @@ impl CompletionSignal {
             state: Mutex::new(CompletionState {
                 sequence: 0,
                 terminal: None,
+                #[cfg(any(test, alpine_native_validation))]
+                observation: CompletionSignalObservation {
+                    reset_at: None,
+                    published_at: None,
+                    last_take: None,
+                },
             }),
             ready: Condvar::new(),
         }
@@ -846,12 +902,24 @@ impl CompletionSignal {
             return Err(RenderError::SubmissionInvariantViolated);
         }
         state.sequence = sequence;
+        #[cfg(any(test, alpine_native_validation))]
+        {
+            state.observation = CompletionSignalObservation {
+                reset_at: Some(Instant::now()),
+                published_at: None,
+                last_take: None,
+            };
+        }
         Ok(())
     }
 
     fn publish(&self, sequence: u64, terminal: NativeTerminal) {
         let mut state = self.lock();
         if state.sequence == sequence && state.terminal.is_none() {
+            #[cfg(any(test, alpine_native_validation))]
+            {
+                state.observation.published_at = Some(Instant::now());
+            }
             state.terminal = Some(terminal);
             self.ready.notify_one();
         }
@@ -859,10 +927,31 @@ impl CompletionSignal {
 
     fn take(&self, sequence: u64) -> Option<NativeTerminal> {
         let mut state = self.lock();
+        #[cfg(any(test, alpine_native_validation))]
+        {
+            state.observation.last_take = Some(CompletionTakeObservation {
+                sequence,
+                acquired_at: Instant::now(),
+                returned_terminal: state.sequence == sequence && state.terminal.is_some(),
+            });
+        }
         if state.sequence == sequence {
             state.terminal.take()
         } else {
             None
+        }
+    }
+
+    #[cfg(any(test, alpine_native_validation))]
+    fn probe(&self) -> CompletionSignalProbe {
+        match self.state.try_lock() {
+            Ok(state) => CompletionSignalProbe::Observed {
+                sequence: state.sequence,
+                terminal_published: state.terminal.is_some(),
+                observation: state.observation,
+            },
+            Err(std::sync::TryLockError::WouldBlock) => CompletionSignalProbe::LockBusy,
+            Err(std::sync::TryLockError::Poisoned(_)) => CompletionSignalProbe::LockPoisoned,
         }
     }
 
@@ -1306,7 +1395,7 @@ impl NativeBackend {
         let upload = match self.presentation.slots[index].prepare_upload(
             &self.initialized.device,
             frame,
-            #[cfg(any(test, alpine_native_validation))]
+            #[cfg(test)]
             self.fault,
         ) {
             Ok(upload) => upload,
@@ -1426,7 +1515,7 @@ impl NativeBackend {
         unsafe { command.addCompletedHandler(RcBlock::as_ptr(&handler)) };
         self.presentation.slots[index].pending = Some(PendingDrawable {
             id,
-            _command: command.clone(),
+            command: command.clone(),
             operations,
             resources: resource_usage,
             _atlas: resources.atlas,
@@ -1437,6 +1526,30 @@ impl NativeBackend {
         self.atlas_cache.commit(atlas_commit);
         drawable.present();
         NativeDrawableSubmitAttempt::Submitted(NativeDrawableSubmission { id })
+    }
+
+    #[cfg(all(feature = "platform-spi", any(test, alpine_native_validation)))]
+    pub(crate) fn probe_drawable(&self, id: NativePresentationId) -> NativeCompletionProbe {
+        let mut probe = NativeCompletionProbe {
+            requested: id,
+            slot_present: false,
+            owner: None,
+            command_status: None,
+            signal: CompletionSignalProbe::NoSlot,
+        };
+        if let Some(slot) = self.presentation.slots.get(usize::from(id.slot)) {
+            probe.slot_present = true;
+            if let Some(pending) = slot.pending.as_ref() {
+                probe.owner = Some(pending.id);
+                if pending.id == id {
+                    probe.command_status = Some(command_status(pending.command.status()));
+                }
+            }
+            // The status read and signal sample are not atomic. Never infer a
+            // missing callback from terminal status and an empty signal alone.
+            probe.signal = slot.completion.probe();
+        }
+        probe
     }
 
     #[cfg(feature = "platform-spi")]
@@ -3385,6 +3498,10 @@ pub(crate) mod tests {
 
     #[cfg(feature = "platform-spi")]
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "three-slot ownership, non-consuming observation, reordered completion, and reuse are one native lifecycle journey"
+    )]
     fn split_phase_drawables_bound_reorder_and_reuse_three_slots() -> Result<(), Box<dyn Error>> {
         let (scene, descriptor) = discriminating_scene()?;
         let frame = ValidatedFrame::new(&scene, descriptor)?;
@@ -3445,11 +3562,67 @@ pub(crate) mod tests {
         for index in [2_usize, 0, 1] {
             let submission = submissions[index].ok_or("missing native submission")?;
             assert!(backend.native.wait_drawable(submission.id));
+            let native = &backend.native;
+            let id = submission.id;
+            let before = native.presentation_snapshot();
+            let super::CompletionSignalProbe::Observed { observation, .. } =
+                native.probe_drawable(id).signal
+            else {
+                return Err("completed native signal could not be observed".into());
+            };
+            let reset_at = observation.reset_at.ok_or("missing native reset time")?;
+            let published_at = observation
+                .published_at
+                .ok_or("missing native publication time")?;
+            assert!(reset_at <= published_at);
+            assert!(published_at <= std::time::Instant::now());
+            assert_eq!(observation.last_take, None);
+            let expected = super::NativeCompletionProbe {
+                requested: id,
+                slot_present: true,
+                owner: Some(id),
+                command_status: Some(crate::CommandStatus::Completed),
+                signal: super::CompletionSignalProbe::Observed {
+                    sequence: id.sequence,
+                    terminal_published: true,
+                    observation,
+                },
+            };
+            assert_eq!(native.probe_drawable(id), expected);
+            assert_eq!(native.probe_drawable(id), expected);
+            let wrong = super::NativePresentationId {
+                slot: id.slot,
+                sequence: id.sequence + 1,
+            };
+            let mismatch = native.probe_drawable(wrong);
+            assert_eq!(mismatch.requested, wrong);
+            assert_eq!(mismatch.owner, Some(id));
+            assert_eq!(mismatch.command_status, None);
+            assert_eq!(mismatch.signal, expected.signal);
+            let absent = native.probe_drawable(super::NativePresentationId {
+                slot: 3,
+                sequence: id.sequence,
+            });
+            assert!(!absent.slot_present);
+            assert_eq!(absent.owner, None);
+            assert_eq!(absent.command_status, None);
+            assert_eq!(absent.signal, super::CompletionSignalProbe::NoSlot);
+            assert_eq!(native.presentation_snapshot(), before);
             let attempt = backend
                 .native
                 .poll_drawable(submission.id)?
                 .ok_or("terminal command was not observable")?;
             assert_eq!(attempt.result, Ok(()));
+            let super::CompletionSignalProbe::Observed { observation, .. } =
+                backend.native.probe_drawable(id).signal
+            else {
+                return Err("consumed native signal could not be observed".into());
+            };
+            let take = observation.last_take.ok_or("missing native take time")?;
+            assert_eq!(take.sequence, id.sequence);
+            assert!(take.returned_terminal);
+            assert!(published_at <= take.acquired_at);
+            assert_eq!(observation.published_at, Some(published_at));
         }
         assert_eq!(backend.native.presentation_snapshot().occupied_slots, 0);
 
@@ -3468,6 +3641,196 @@ pub(crate) mod tests {
             .ok_or("reused slot did not complete")?;
         assert_eq!(reused.resources.allocated_bytes, 0);
         assert_eq!(backend.native.presentation_snapshot().upload_allocations, 3);
+        Ok(())
+    }
+
+    #[cfg(feature = "platform-spi")]
+    #[test]
+    fn completion_probe_preserves_published_terminal_and_reports_contention()
+    -> Result<(), Box<dyn Error>> {
+        use super::CompletionSignalProbe;
+
+        let signal = super::CompletionSignal::new();
+        let before_reset = std::time::Instant::now();
+        signal.reset(73)?;
+        let observation = signal.lock().observation;
+        let reset_at = observation.reset_at.ok_or("missing signal reset time")?;
+        assert!(before_reset <= reset_at);
+        assert!(reset_at <= std::time::Instant::now());
+        assert_eq!(observation.published_at, None);
+        assert_eq!(observation.last_take, None);
+        assert_eq!(
+            signal.probe(),
+            CompletionSignalProbe::Observed {
+                sequence: 73,
+                terminal_published: false,
+                observation,
+            }
+        );
+        let guard = signal.lock();
+        assert_eq!(signal.probe(), CompletionSignalProbe::LockBusy);
+        drop(guard);
+        assert!(signal.take(73).is_none());
+        let pending_take = signal.lock().observation.last_take;
+        let pending_take = pending_take.ok_or("missing pending consumer time")?;
+        assert_eq!(pending_take.sequence, 73);
+        assert!(!pending_take.returned_terminal);
+        assert!(reset_at <= pending_take.acquired_at);
+        signal.publish(
+            72,
+            super::NativeTerminal {
+                device_lost: false,
+                result: Ok(()),
+            },
+        );
+        assert_eq!(signal.lock().observation.published_at, None);
+        signal.publish(
+            73,
+            super::NativeTerminal {
+                device_lost: false,
+                result: Ok(()),
+            },
+        );
+        let observation = signal.lock().observation;
+        let published_at = observation.published_at.ok_or("missing publication time")?;
+        assert!(pending_take.acquired_at <= published_at);
+        assert!(published_at <= std::time::Instant::now());
+        assert_eq!(observation.last_take, Some(pending_take));
+        let expected = CompletionSignalProbe::Observed {
+            sequence: 73,
+            terminal_published: true,
+            observation,
+        };
+        assert_eq!(signal.probe(), expected);
+        assert_eq!(signal.probe(), expected);
+        assert_eq!(
+            signal.take(73).map(|terminal| terminal.result),
+            Some(Ok(()))
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "platform-spi")]
+    #[test]
+    fn completion_probe_rejects_stale_publication_and_retains_terminal_timeline()
+    -> Result<(), Box<dyn Error>> {
+        use super::CompletionSignalProbe;
+
+        let signal = super::CompletionSignal::new();
+        signal.reset(73)?;
+        assert!(signal.take(73).is_none());
+        let pending_take = signal
+            .lock()
+            .observation
+            .last_take
+            .ok_or("missing pending consumer history")?;
+        assert_eq!(pending_take.sequence, 73);
+        assert!(!pending_take.returned_terminal);
+        signal.publish(
+            73,
+            super::NativeTerminal {
+                device_lost: false,
+                result: Ok(()),
+            },
+        );
+        let observation = signal.lock().observation;
+        let reset_at = observation.reset_at.ok_or("missing signal reset time")?;
+        let published_at = observation.published_at.ok_or("missing publication time")?;
+        assert_eq!(observation.last_take, Some(pending_take));
+        let expected = CompletionSignalProbe::Observed {
+            sequence: 73,
+            terminal_published: true,
+            observation,
+        };
+        signal.publish(
+            73,
+            super::NativeTerminal {
+                device_lost: false,
+                result: Err(RenderError::SubmissionInvariantViolated),
+            },
+        );
+        assert_eq!(signal.probe(), expected);
+        assert_eq!(
+            signal.reset(74),
+            Err(RenderError::SubmissionInvariantViolated)
+        );
+        assert_eq!(signal.probe(), expected);
+        assert!(signal.take(72).is_none());
+        let mismatch = signal
+            .lock()
+            .observation
+            .last_take
+            .ok_or("missing stale take time")?;
+        assert_eq!(mismatch.sequence, 72);
+        assert!(!mismatch.returned_terminal);
+        assert!(published_at <= mismatch.acquired_at);
+        assert_eq!(signal.lock().observation.published_at, Some(published_at));
+        assert_eq!(
+            signal.take(73).map(|terminal| terminal.result),
+            Some(Ok(()))
+        );
+        let observation = signal.lock().observation;
+        let taken = observation.last_take.ok_or("missing terminal take time")?;
+        assert_eq!(taken.sequence, 73);
+        assert!(taken.returned_terminal);
+        assert!(mismatch.acquired_at <= taken.acquired_at);
+        assert_eq!(observation.reset_at, Some(reset_at));
+        assert_eq!(observation.published_at, Some(published_at));
+        assert_eq!(
+            signal.probe(),
+            CompletionSignalProbe::Observed {
+                sequence: 73,
+                terminal_published: false,
+                observation,
+            }
+        );
+        signal.reset(74)?;
+        let observation = signal.lock().observation;
+        assert!(
+            observation
+                .reset_at
+                .ok_or("missing replacement reset time")?
+                >= taken.acquired_at
+        );
+        assert_eq!(observation.published_at, None);
+        assert_eq!(observation.last_take, None);
+        signal.publish(
+            73,
+            super::NativeTerminal {
+                device_lost: false,
+                result: Ok(()),
+            },
+        );
+        assert_eq!(signal.lock().observation, observation);
+        Ok(())
+    }
+
+    #[cfg(feature = "platform-spi")]
+    #[test]
+    #[allow(
+        clippy::panic,
+        reason = "the caught panic is a deliberate mutex-poison control"
+    )]
+    fn completion_probe_reports_poison_without_consuming_terminal() -> Result<(), RenderError> {
+        let signal = super::CompletionSignal::new();
+        signal.reset(91)?;
+        signal.publish(
+            91,
+            super::NativeTerminal {
+                device_lost: false,
+                result: Ok(()),
+            },
+        );
+        let poisoned = std::panic::catch_unwind(|| {
+            let _guard = signal.lock();
+            panic!("deliberate completion-signal poison");
+        });
+        assert!(poisoned.is_err());
+        assert_eq!(signal.probe(), super::CompletionSignalProbe::LockPoisoned);
+        assert_eq!(
+            signal.take(91).map(|terminal| terminal.result),
+            Some(Ok(()))
+        );
         Ok(())
     }
 

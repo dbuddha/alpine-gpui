@@ -3,6 +3,7 @@ set -eu
 
 scripts/check-policy.sh
 scripts/test-policy.sh
+scripts/test-native-mutation-receipts.sh
 scripts/check-worktrees.sh --check --offline --max-count 3
 scripts/test-worktrees.sh
 scripts/check-product-boundary.sh

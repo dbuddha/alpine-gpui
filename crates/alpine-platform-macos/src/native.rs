@@ -2758,6 +2758,8 @@ struct DisplayLinkDelegateIvars {
     #[cfg(alpine_native_validation)]
     clipboard_fault: Cell<Option<ClipboardError>>,
     #[cfg(alpine_native_validation)]
+    active_frame_observer: RefCell<Option<Box<dyn FnOnce()>>>,
+    #[cfg(alpine_native_validation)]
     validation_probe: Option<InitializationProbe>,
 }
 
@@ -2993,6 +2995,21 @@ define_class!(
                     && let Some(window) = &self.ivars().window
                 {
                     schedule_validation_window_close(window, Duration::ZERO);
+                }
+                // This one-shot validation observer is absent during ordinary
+                // execution. Invoke outside the driver borrow, before a later
+                // callback can consume the actual newly admitted owner.
+                #[cfg(alpine_native_validation)]
+                if lifecycle == SURFACE_LIVE
+                    && self.ivars().active_frame_observer.borrow().is_some()
+                    && driver
+                        .try_borrow()
+                        .is_ok_and(|driver| driver.active.is_some())
+                {
+                    let observer = self.ivars().active_frame_observer.borrow_mut().take();
+                    if let Some(observer) = observer {
+                        observer();
+                    }
                 }
             }
         }
@@ -4301,6 +4318,8 @@ impl NativeSurface {
                 #[cfg(alpine_native_validation)]
                 clipboard_fault: Cell::new(None),
                 #[cfg(alpine_native_validation)]
+                active_frame_observer: RefCell::new(None),
+                #[cfg(alpine_native_validation)]
                 validation_probe: builder.validation_probe.clone(),
             },
         );
@@ -5094,6 +5113,36 @@ impl NativeSurface {
     #[cfg(alpine_native_validation)]
     pub(crate) fn revoke_waker_for_validation(&self) {
         self.wake_bridge.revoke();
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn set_active_frame_observer(
+        &self,
+        observer: Option<Box<dyn FnOnce()>>,
+    ) -> Result<(), SurfaceError> {
+        *self
+            .delegate
+            .ivars()
+            .active_frame_observer
+            .try_borrow_mut()
+            .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))? = observer;
+        Ok(())
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn completion_diagnostic(&self) -> String {
+        let Ok(driver) = self.driver.try_borrow() else {
+            return "driver-borrow-unavailable".to_owned();
+        };
+        let Some(active) = driver.active.as_ref() else {
+            return "no-active-frame".to_owned();
+        };
+        let native =
+            platform_spi::callback_completion_diagnostic(&driver.backend, active.submission);
+        format!(
+            "frame={:?} owner_generation={:?} command_terminal={} native={native}",
+            active.token, driver.owner_generation, active.command_terminal
+        )
     }
 
     #[allow(

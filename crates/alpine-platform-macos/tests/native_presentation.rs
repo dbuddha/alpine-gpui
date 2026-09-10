@@ -7,7 +7,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 mod validation {
-    use std::{cell::Cell, error::Error, ffi::OsStr, rc::Rc, time::Duration};
+    use std::{
+        cell::{Cell, RefCell},
+        error::Error,
+        ffi::OsStr,
+        rc::Rc,
+        time::Duration,
+    };
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_metal::RenderError;
@@ -19,11 +25,18 @@ mod validation {
     use alpine_scene::{Primitive, SceneBuilder, SceneRevision};
 
     type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+    type CompletionObservation = (SurfaceSnapshot, String, SurfaceSnapshot);
 
     pub(super) fn run() -> TestResult {
         let hosted_direct = hosted_direct_mode()?;
         let descriptor = SurfaceDescriptor::new("Alpine presented frame", 96.0, 64.0, 1.0)?;
-        let surface = native_validation::new_surface(&descriptor)?;
+        let surface = Rc::new(native_validation::new_surface(&descriptor)?);
+        assert_eq!(
+            native_validation::completion_diagnostic(&surface),
+            "no-active-frame"
+        );
+        let observation = Rc::new(RefCell::new(None));
+        arm_completion_observation(&surface, &observation)?;
         native_validation::inject_driver_error(
             &surface,
             SurfaceError::invariant(alpine_platform_macos::SurfaceOperation::Application),
@@ -44,14 +57,81 @@ mod validation {
         );
         let color = LinearRgba::new(0.75, 0.25, 0.125, 1.0).ok_or("valid color")?;
         let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or("valid clear")?;
-        let Some(first) =
-            validate_first_frame(&surface, viewport, bounds, color, clear, hosted_direct)?
-        else {
+        let first = validate_first_frame(&surface, viewport, bounds, color, clear, hosted_direct)?;
+        native_validation::set_active_frame_observer(&surface, None)?;
+        validate_completion_observation(&observation)?;
+        assert_eq!(
+            native_validation::completion_diagnostic(&surface),
+            "no-active-frame"
+        );
+        assert_eq!(Rc::strong_count(&surface), 1);
+        let surface =
+            Rc::try_unwrap(surface).map_err(|_| "completion observer retained the surface")?;
+        let Some(first) = first else {
             surface.close();
             return Ok(());
         };
         validate_failure_and_recovery(&surface, &first, viewport, bounds, color, clear)?;
         surface.close();
+        Ok(())
+    }
+
+    fn arm_completion_observation(
+        surface: &Rc<NativeSurface>,
+        observation: &Rc<RefCell<Option<CompletionObservation>>>,
+    ) -> TestResult {
+        let weak_surface = Rc::downgrade(surface);
+        let observation = Rc::clone(observation);
+        native_validation::set_active_frame_observer(
+            surface,
+            Some(Box::new(move || {
+                if let Some(surface) = weak_surface.upgrade() {
+                    let before = surface.snapshot();
+                    let diagnostic = native_validation::completion_diagnostic(&surface);
+                    let after = surface.snapshot();
+                    *observation.borrow_mut() = Some((before, diagnostic, after));
+                }
+            })),
+        )?;
+        Ok(())
+    }
+
+    fn validate_completion_observation(
+        observation: &Rc<RefCell<Option<CompletionObservation>>>,
+    ) -> TestResult {
+        let (before, diagnostic, after) = observation
+            .borrow_mut()
+            .take()
+            .ok_or("real submitted frame was not observed before ownership drain")?;
+        assert!(before.submission_count() > 0);
+        assert_eq!(before.occupied_frame_slots(), 1);
+        assert_eq!(before.submitted_frame_slots(), 1);
+        assert_eq!(before.submission_count(), after.submission_count());
+        assert_eq!(before.occupied_frame_slots(), after.occupied_frame_slots());
+        assert_eq!(
+            before.submitted_frame_slots(),
+            after.submitted_frame_slots()
+        );
+        assert!(diagnostic.starts_with("frame=FrameToken {"), "{diagnostic}");
+        assert!(diagnostic.contains("owner_generation="), "{diagnostic}");
+        assert!(
+            diagnostic.contains("command_terminal=false"),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("slot_present: true"), "{diagnostic}");
+        assert!(diagnostic.contains("command_status: Some("), "{diagnostic}");
+        let (_, native) = diagnostic
+            .split_once("native=NativeCompletionProbe { requested: ")
+            .ok_or("missing native submission identity")?;
+        let (requested, owner) = native
+            .split_once(", slot_present: true, owner: Some(")
+            .ok_or("missing actual native owner")?;
+        let (owner, _) = owner
+            .split_once("), command_status:")
+            .ok_or("missing native command observation")?;
+        assert_eq!(requested, owner);
+        // Command status and signal publication may race. Only ownership and
+        // non-consumption are asserted while the GPU is in flight.
         Ok(())
     }
 

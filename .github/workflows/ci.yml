@@ -684,7 +684,7 @@ jobs:
           if-no-files-found: error
 
   native-mutation:
-    name: native-mutation-${{ matrix.id }}
+    name: native-mutation-${{ matrix.domain }}-${{ matrix.id }}
     needs: [classify, preflight]
     if: needs.classify.outputs.metal == 'true'
     runs-on: macos-26
@@ -694,36 +694,100 @@ jobs:
       matrix:
         include:
           - id: 1
+            domain: platform
             shard: 0/16
           - id: 2
+            domain: platform
             shard: 1/16
           - id: 3
+            domain: platform
             shard: 2/16
           - id: 4
+            domain: platform
             shard: 3/16
           - id: 5
+            domain: platform
             shard: 4/16
           - id: 6
+            domain: platform
             shard: 5/16
           - id: 7
+            domain: platform
             shard: 6/16
           - id: 8
+            domain: platform
             shard: 7/16
           - id: 9
+            domain: platform
             shard: 8/16
           - id: 10
+            domain: platform
             shard: 9/16
           - id: 11
+            domain: platform
             shard: 10/16
           - id: 12
+            domain: platform
             shard: 11/16
           - id: 13
+            domain: platform
             shard: 12/16
           - id: 14
+            domain: platform
             shard: 13/16
           - id: 15
+            domain: platform
             shard: 14/16
           - id: 16
+            domain: platform
+            shard: 15/16
+          - id: 1
+            domain: studio
+            shard: 0/16
+          - id: 2
+            domain: studio
+            shard: 1/16
+          - id: 3
+            domain: studio
+            shard: 2/16
+          - id: 4
+            domain: studio
+            shard: 3/16
+          - id: 5
+            domain: studio
+            shard: 4/16
+          - id: 6
+            domain: studio
+            shard: 5/16
+          - id: 7
+            domain: studio
+            shard: 6/16
+          - id: 8
+            domain: studio
+            shard: 7/16
+          - id: 9
+            domain: studio
+            shard: 8/16
+          - id: 10
+            domain: studio
+            shard: 9/16
+          - id: 11
+            domain: studio
+            shard: 10/16
+          - id: 12
+            domain: studio
+            shard: 11/16
+          - id: 13
+            domain: studio
+            shard: 12/16
+          - id: 14
+            domain: studio
+            shard: 13/16
+          - id: 15
+            domain: studio
+            shard: 14/16
+          - id: 16
+            domain: studio
             shard: 15/16
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -731,6 +795,8 @@ jobs:
       ALPINE_VALIDATION_DEPLOYMENT_TARGET: "26.0"
       ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
       RUSTFLAGS: --cfg alpine_native_validation
+      ALPINE_NATIVE_HEAD: ${{ needs.classify.outputs.head_sha }}
+      ALPINE_NATIVE_BASE: ${{ needs.classify.outputs.base_sha }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -738,6 +804,9 @@ jobs:
           fetch-depth: 0
       - name: Install native mutation tooling
         run: cargo install --locked cargo-mutants --version 27.1.0
+      - name: Validate pinned mutation no-Rust-diff behavior
+        if: matrix.domain == 'platform' && matrix.id == 1
+        run: scripts/test-native-mutation-receipts.sh --pinned-cli
       - name: Install the optional Metal toolchain when absent
         run: |
           if ! xcrun --sdk macosx --find metal >/dev/null 2>&1; then
@@ -749,7 +818,16 @@ jobs:
         run: |
           mkdir -p target
           git diff ${{ needs.classify.outputs.base_sha }}...${{ needs.classify.outputs.head_sha }} > target/alpine.diff
-      - name: Require changed native mutants to be killed
+      - name: Bind native mutation execution identity
+        run: |
+          ALPINE_NATIVE_TOOLCHAIN=$(rustc -Vv)
+          ALPINE_NATIVE_MUTATOR=$(cargo mutants --version)
+          export ALPINE_NATIVE_TOOLCHAIN ALPINE_NATIVE_MUTATOR
+          scripts/check-native-mutation-receipts.sh prepare "${{ matrix.domain }}" "${{ matrix.id }}" target
+      - name: Require platform native mutants to be killed
+        id: native-platform-mutants
+        if: matrix.domain == 'platform'
+        timeout-minutes: 24
         run: |
           cargo mutants --no-config --file crates/alpine-metal/src/native.rs --features platform-spi --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-mutants-${{ matrix.id }}.out" -- --locked
           cargo mutants --no-config --file crates/alpine-metal/src/platform_spi.rs --features platform-spi --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-platform-spi-mutants-${{ matrix.id }}.out" -- --locked
@@ -764,16 +842,31 @@ jobs:
             find "target/native-runtime-mutants-${{ matrix.id }}.out" -name unviable.txt -type f -size +0c -exec cat {} \;
             exit 1
           fi
-          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence|initial_scene' --test-package alpine-studio --cargo-arg=--package=alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-studio-mutants-${{ matrix.id }}.out" -- --locked
           if [ -f tools/alpine-ax-client/src/native_factory.rs ]; then
             cargo mutants --no-config --file tools/alpine-ax-client/src/native_factory.rs --test-package alpine-ax-client --cargo-arg=--package=alpine-ax-client --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-ax-client-factory-mutants-${{ matrix.id }}.out" -- --locked
           fi
+      - name: Require Studio native mutants to be killed
+        id: native-studio-mutants
+        if: matrix.domain == 'studio'
+        timeout-minutes: 24
+        run: |
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence|initial_scene' --test-package alpine-studio --cargo-arg=--package=alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-studio-mutants-${{ matrix.id }}.out" -- --locked
+      - name: Require complete native mutation receipts
+        if: always()
+        env:
+          EXECUTION_OUTCOME: ${{ matrix.domain == 'platform' && steps.native-platform-mutants.outcome || steps.native-studio-mutants.outcome }}
+        run: |
+          ALPINE_NATIVE_TOOLCHAIN=$(rustc -Vv)
+          ALPINE_NATIVE_MUTATOR=$(cargo mutants --version)
+          export ALPINE_NATIVE_TOOLCHAIN ALPINE_NATIVE_MUTATOR
+          scripts/check-native-mutation-receipts.sh finish "${{ matrix.domain }}" "${{ matrix.id }}" target "$EXECUTION_OUTCOME"
       - name: Upload native mutation evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: ./.github/actions/upload-required-artifact
         with:
-          name: native-mutation-${{ matrix.id }}-${{ github.sha }}
+          name: native-mutation-${{ matrix.domain }}-${{ matrix.id }}-${{ github.sha }}
           path: |
+            target/native-mutation-receipts-${{ matrix.domain }}-${{ matrix.id }}
             target/native-mutants-${{ matrix.id }}.out
             target/native-platform-spi-mutants-${{ matrix.id }}.out
             target/native-submission-mutants-${{ matrix.id }}.out
@@ -786,7 +879,7 @@ jobs:
             target/native-studio-mutants-${{ matrix.id }}.out
             target/native-ax-client-factory-mutants-${{ matrix.id }}.out
           retention-days: 7
-          if-no-files-found: warn
+          if-no-files-found: error
 
   ci-pass:
     name: ci-pass
