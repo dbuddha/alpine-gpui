@@ -834,7 +834,10 @@ fn await_frame_terminal(
             return Err(failure(
                 "correctness-timeout",
                 observed_submissions,
-                &"frame ownership did not become terminal before the correctness deadline",
+                &format!(
+                    "frame ownership did not become terminal before the correctness deadline; completion={}",
+                    platform_validation::completion_diagnostic(surface)
+                ),
             ));
         }
         if should_arm_hosted_observation(

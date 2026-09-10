@@ -1491,6 +1491,15 @@ pub mod native_validation {
             .run_until_frame_terminal_with_handler(timeout, handler)
     }
 
+    /// Copies a bounded, non-consuming diagnostic for a timed-out active frame.
+    ///
+    /// This reports missing or unavailable ownership explicitly. Command and
+    /// signal observations may race and do not establish callback loss.
+    #[must_use]
+    pub fn completion_diagnostic(surface: &NativeSurface) -> String {
+        surface.implementation.completion_diagnostic()
+    }
+
     /// Last display-link directive observed by native pause qualification.
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     pub enum PauseDirectiveEvidence {

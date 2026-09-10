@@ -273,6 +273,19 @@ pub fn submit_callback_drawable(
     }
 }
 
+/// Copies a bounded validation-only diagnostic without consuming completion.
+///
+/// Command status and signal state are separate observations, not an atomic
+/// snapshot or proof that a callback was lost. No native handles are retained.
+#[cfg(alpine_native_validation)]
+#[must_use]
+pub fn callback_completion_diagnostic(
+    backend: &MetalBackend,
+    submission: DrawableSubmission,
+) -> String {
+    format!("{:?}", backend.native.probe_drawable(submission.native))
+}
+
 /// Polls one exact submission without waiting or exposing native handles.
 pub fn poll_callback_drawable(
     backend: &mut MetalBackend,

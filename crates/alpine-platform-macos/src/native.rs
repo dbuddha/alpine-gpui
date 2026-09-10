@@ -5096,6 +5096,22 @@ impl NativeSurface {
         self.wake_bridge.revoke();
     }
 
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn completion_diagnostic(&self) -> String {
+        let Ok(driver) = self.driver.try_borrow() else {
+            return "driver-borrow-unavailable".to_owned();
+        };
+        let Some(active) = driver.active.as_ref() else {
+            return "no-active-frame".to_owned();
+        };
+        let native =
+            platform_spi::callback_completion_diagnostic(&driver.backend, active.submission);
+        format!(
+            "frame={:?} owner_generation={:?} command_terminal={} native={native}",
+            active.token, driver.owner_generation, active.command_terminal
+        )
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the handle-free snapshot copies independent native evidence without abstraction"
