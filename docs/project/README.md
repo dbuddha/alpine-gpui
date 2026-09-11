@@ -41,3 +41,10 @@ graph, milestone contract, authority model, or evidence policy changes. Change
 GitHub issues and Project fields when live ownership, status, priority, or
 blocking changes. A generated Wiki publication may summarize and link both, but
 it may not become the only copy of either.
+
+## CI intervention
+
+The [CI intervention and delivery convergence plan](ci-intervention-plan.md)
+records the approved affected-selection, early-failure, scheduling, caching,
+assurance-completeness, and runtime-calibration contract. GitHub owns its live
+execution and blockers; the plan does not replace the daily-driver milestones.

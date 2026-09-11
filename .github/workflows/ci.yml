@@ -8,6 +8,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Explicit comparison base commit for this dispatch
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -46,7 +51,7 @@ jobs:
       - id: classify
         name: Select required evidence
         env:
-          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
           ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           ALPINE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: scripts/classify-ci.sh
@@ -62,7 +67,7 @@ jobs:
           fetch-depth: 0
       - name: Validate repository and pull request policy
         env:
-          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
           ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           ALPINE_PR_BODY: ${{ github.event.pull_request.body }}
           ALPINE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}

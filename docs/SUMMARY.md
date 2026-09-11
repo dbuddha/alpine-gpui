@@ -14,6 +14,7 @@
   - [Private daily-driver path](project/daily-driver-path.md)
   - [Milestone gates](project/milestone-gates.md)
   - [GitHub project operating model](project/project-operating-model.md)
+  - [CI intervention and delivery convergence](project/ci-intervention-plan.md)
   - [Performance and memory claim readiness](project/claim-readiness.md)
   - [Deferred and rejected scope](project/deferred-scope.md)
 - [Research catalog](research/index.md)
