@@ -161,11 +161,11 @@ if [ -n "$workflow_files" ]; then
     if ! grep -Fqx '    types: [synchronize, reopened, edited, labeled, unlabeled]' "$ci_workflow"; then
         fail 'CI pull_request triggers must start after label settlement and retain source and metadata events'
     fi
-    if ! grep -Fqx "  group: ci-\${{ github.workflow }}-\${{ github.ref }}-\${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && github.run_id || 'source' }}" "$ci_workflow"; then
-        fail 'CI metadata events must not share a cancelable required-check concurrency group'
+    if ! grep -Fqx "  group: ci-\${{ github.workflow }}-\${{ github.ref }}" "$ci_workflow"; then
+        fail 'CI events for one ref must share a concurrency group'
     fi
-    if ! grep -Fqx "  cancel-in-progress: \${{ github.event_name != 'pull_request' || github.event.action == 'synchronize' }}" "$ci_workflow"; then
-        fail 'CI cancellation must be limited to source-changing or non-PR runs'
+    if ! grep -Fqx "  cancel-in-progress: true" "$ci_workflow"; then
+        fail 'CI must cancel superseded runs for the same ref'
     fi
     dispatch_block=$(awk '
         /^  workflow_dispatch:/ { capture = 1 }
@@ -218,7 +218,7 @@ if [ -n "$workflow_files" ]; then
         || printf '%s\n' "$preflight_block" | grep -Eq '^    (if|continue-on-error):'; then
         fail 'CI fast feedback must execute unconditionally and propagate failures'
     fi
-    if ! printf '%s\n' "$native_mutation_block" | grep -Fqx "    if: needs.classify.outputs.metal == 'true'" \
+    if ! printf '%s\n' "$native_mutation_block" | grep -Fqx "    if: needs.classify.outputs.native_mutation == 'true'" \
         || printf '%s\n' "$native_mutation_block" | grep -Eq '^    continue-on-error:'; then
         fail 'CI native mutation must retain success-gated admission'
     fi
@@ -228,6 +228,40 @@ if [ -n "$workflow_files" ]; then
         || ! printf '%s\n' "$ci_pass_block" | grep -Fqx '          MUTATION_REQUIRED: ${{ needs.classify.outputs.mutation_diff }}'; then
         fail 'CI diff mutation must bind proven-empty selection to its aggregate requirement'
     fi
+    for required in \
+        '      native_mutation: ${{ steps.classify.outputs.native_mutation }}' \
+        "          ALPINE_CI_ASSURANCE: \${{ github.event_name == 'workflow_dispatch' && inputs.assurance || false }}"
+    do
+        if ! printf '%s\n' "$classify_block" | grep -Fqx "$required"; then
+            fail 'specialized assurance must be explicitly manual and separately select native mutation'
+        fi
+    done
+    assurance_input=$(printf '%s\n' "$dispatch_block" | awk '
+        /^      assurance:/ { capture = 1; next }
+        capture && NF && !/^        / { exit }
+        capture
+    ')
+    for required in '        default: false' '        type: boolean' '        required: false'; do
+        if ! printf '%s\n' "$assurance_input" | grep -Fqx "$required"; then
+            fail 'manual specialized assurance must default to false'
+        fi
+    done
+    if ! printf '%s\n' "$ci_pass_block" | grep -Fqx '          NATIVE_MUTATION_REQUIRED: ${{ needs.classify.outputs.native_mutation }}'; then
+        fail 'native mutation aggregate must use its independent opt-in selection'
+    fi
+    if grep -Eq '^  schedule:' "${ALPINE_NIGHTLY_ASSURANCE_WORKFLOW:-.github/workflows/nightly-assurance.yml}"; then
+        fail 'nightly specialized assurance must remain manual only'
+    fi
+    for job in upstream-radar mutation coverage; do
+        weekly_job=$(awk -v job="$job" '
+            $0 == "  " job ":" { capture = 1; next }
+            capture && /^  [A-Za-z0-9_-]+:/ { exit }
+            capture
+        ' "${ALPINE_WEEKLY_ASSURANCE_WORKFLOW:-.github/workflows/weekly-assurance.yml}")
+        if ! printf '%s\n' "$weekly_job" | grep -Fqx "    if: github.event_name == 'workflow_dispatch'"; then
+            fail 'weekly expensive assurance and project radar must remain manual only'
+        fi
+    done
     mutation_proof_block=$(printf '%s\n' "$classify_block" | awk '
         /^      - id: mutation-diff$/ { capture = 1; next }
         capture && /^      - / { exit }
@@ -559,7 +593,7 @@ if [ -n "$workflow_files" ]; then
     if ! printf '%s\n' "$native_mutation_block" | grep -Fq 'name: native-mutation-${{ matrix.domain }}-${{ matrix.id }}-${{ github.sha }}' \
         || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'native-mutation]' \
         || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'NATIVE_MUTATION_RESULT: ${{ needs.native-mutation.result }}' \
-        || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'require_selected native-mutation "$METAL_REQUIRED" "$NATIVE_MUTATION_RESULT"'; then
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'require_selected native-mutation "$NATIVE_MUTATION_REQUIRED" "$NATIVE_MUTATION_RESULT"'; then
         fail 'ci-pass must require and retain exact-head native mutation matrix evidence'
     fi
 

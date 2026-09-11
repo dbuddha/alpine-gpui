@@ -23,6 +23,28 @@ and [claim readiness](claim-readiness.md) retain their acceptance authority.
 The evidence registry owns claims. This page owns the stable execution contract;
 mdBook navigation and the Wiki must not become alternate live task databases.
 
+## Immediate recovery override (2026-09-11)
+
+The owner authorized CI first, with skill and project-management work paused.
+For this intervention, the broader sequence below is deferred. Keep ordinary
+workspace tests, Clippy, native admission, Metal behavioral validation, and the
+fail-closed `ci-pass` aggregate. Coverage thresholds, mutation, Kani, Miri, and
+TLA+ require `workflow_dispatch` with `assurance: true` and an explicit base.
+Nightly assurance is manual only. Weekly assurance schedules only dependency
+advisories; upstream radar, mutation, and coverage remain manual.
+
+The reference is [Zed's pinned test workflow](https://github.com/zed-industries/zed/blob/d12e456be7c08a1dfaf21bd49ed0df1f3e2a26c6/.github/workflows/run_tests.yml):
+ordinary build and behavior feedback is the default. Alpine retains its current
+metadata triggers and validates live metadata because its merge policy depends
+on them; superseded runs on the same ref are canceled. No product behavior,
+native test scope, or native timeout is changed by this recovery.
+
+Acceptance requires successful native-selected PR and integrated-main runs,
+each within 15 minutes from workflow creation through completion, including
+queueing. Count executed jobs separately from skipped assurance definitions.
+A green ordinary run makes no claim that specialized assurance passed. Record
+actual run identities and timings in the recovery PR before calling this done.
+
 ## Bounded execution sequence
 
 | Work package | Change | Required acceptance |

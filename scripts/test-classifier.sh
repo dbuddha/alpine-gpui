@@ -36,6 +36,31 @@ assert_every_gate() {
     assert_output "$output" portable=true
 }
 
+# Default PR/main feedback must preserve native behavior without admitting
+# specialized assurance, even for broad or unknown changes and risk labels.
+unset ALPINE_CI_ASSURANCE
+for changed in .github/workflows/ci.yml crates/alpine-runtime/src/lib.rs unclassified/input.bin; do
+    ordinary=$(run_fixture "$changed" review:unsafe)
+    for gate in coverage mutation kani miri tla native_mutation; do
+        assert_output "$ordinary" "$gate=false"
+    done
+    assert_output "$ordinary" metal=true
+    assert_output "$ordinary" portable=true
+done
+if ALPINE_CI_ASSURANCE=invalid ALPINE_BASE_SHA=HEAD "$classifier_program" > "$temporary/invalid-mode" 2>&1; then
+    printf 'classifier accepted an invalid assurance mode\n' >&2
+    exit 1
+fi
+ALPINE_CI_PLAN="$temporary/ordinary-plan.json" run_fixture .github/workflows/ci.yml >/dev/null
+jq -e '.assurance == false and .gates.native_mutation == false and
+    ([.reasons[].gate] | all(. == "metal" or . == "portable"))' "$temporary/ordinary-plan.json" >/dev/null
+
+# Retain exhaustive impact-selection coverage for explicit manual assurance.
+export ALPINE_CI_ASSURANCE=true
+manual=$(run_fixture .github/workflows/ci.yml)
+assert_every_gate "$manual"
+assert_output "$manual" native_mutation=true
+
 docs=$(run_fixture README.md)
 assert_output "$docs" coverage=false
 assert_output "$docs" mutation=false

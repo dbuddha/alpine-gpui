@@ -105,7 +105,7 @@ Run before commit and again before requesting a push:
 scripts/check.sh
 ```
 
-Hosted `ci-pass` is authoritative. Local success is supporting evidence.
+Hosted `ci-pass` is authoritative. Local success is supporting evidence. During the owner-approved CI recovery, ordinary PR/main CI keeps workspace and native behavioral tests; coverage, mutation, Kani, Miri, and TLA+ require manual assurance opt-in. Nightly is manual; only dependency advisories recur. This supersedes broader gate expectations above. Skill development and project-management cleanup are paused until native-selected PR and main runs each finish within 15 minutes including queueing. Ordinary green does not establish specialized proof or product acceptance. Superseded canceled runs remain visible but are non-authoritative once the latest run for the current source, tested base, and metadata is terminal green and live protection permits merge; this overrides the older same-SHA cancellation prohibition in merge guidance.
 
 ## Definition of done
 

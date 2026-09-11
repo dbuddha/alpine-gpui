@@ -13,6 +13,11 @@ on:
         description: Explicit comparison base commit for this dispatch
         required: true
         type: string
+      assurance:
+        description: Opt into expensive specialized assurance for this run
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -20,8 +25,8 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && github.run_id || 'source' }}
-  cancel-in-progress: ${{ github.event_name != 'pull_request' || github.event.action == 'synchronize' }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_INCREMENTAL: "0"
@@ -42,6 +47,7 @@ jobs:
       kani: ${{ steps.classify.outputs.kani }}
       miri: ${{ steps.classify.outputs.miri }}
       metal: ${{ steps.classify.outputs.metal }}
+      native_mutation: ${{ steps.classify.outputs.native_mutation }}
       tla: ${{ steps.classify.outputs.tla }}
       portable: ${{ steps.classify.outputs.portable }}
     steps:
@@ -55,6 +61,7 @@ jobs:
           ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
           ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           ALPINE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          ALPINE_CI_ASSURANCE: ${{ github.event_name == 'workflow_dispatch' && inputs.assurance || false }}
         run: scripts/classify-ci.sh
       - id: mutation-diff
         name: Prove empty changed-Rust mutation selections
@@ -711,7 +718,7 @@ jobs:
   native-mutation:
     name: native-mutation-${{ matrix.domain }}-${{ matrix.id }}
     needs: [classify, preflight, native]
-    if: needs.classify.outputs.metal == 'true'
+    if: needs.classify.outputs.native_mutation == 'true'
     runs-on: macos-26
     timeout-minutes: 30
     strategy:
@@ -940,6 +947,7 @@ jobs:
           MIRI_RESULT: ${{ needs.miri.result }}
           METAL_REQUIRED: ${{ needs.classify.outputs.metal }}
           METAL_RESULT: ${{ needs.metal-validation.result }}
+          NATIVE_MUTATION_REQUIRED: ${{ needs.classify.outputs.native_mutation }}
           NATIVE_MUTATION_RESULT: ${{ needs.native-mutation.result }}
         run: |
           require_success() {
@@ -970,4 +978,4 @@ jobs:
           require_selected tla "$TLA_REQUIRED" "$TLA_RESULT"
           require_selected miri "$MIRI_REQUIRED" "$MIRI_RESULT"
           require_selected metal-validation "$METAL_REQUIRED" "$METAL_RESULT"
-          require_selected native-mutation "$METAL_REQUIRED" "$NATIVE_MUTATION_RESULT"
+          require_selected native-mutation "$NATIVE_MUTATION_REQUIRED" "$NATIVE_MUTATION_RESULT"

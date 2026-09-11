@@ -19,7 +19,20 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  advisories:
+    name: dependency-advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install dependency policy tool
+        run: cargo install --locked cargo-deny --version 0.20.2
+      - name: Check dependency advisories
+        run: cargo deny check advisories
+
   upstream-radar:
+    if: github.event_name == 'workflow_dispatch'
     name: upstream-radar
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -33,6 +46,7 @@ jobs:
         run: cargo run --locked -p alpine-assurance -- upstream-radar
 
   mutation:
+    if: github.event_name == 'workflow_dispatch'
     name: mutation-full
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -57,6 +71,7 @@ jobs:
           if-no-files-found: warn
 
   coverage:
+    if: github.event_name == 'workflow_dispatch'
     name: coverage-full
     runs-on: ubuntu-24.04
     timeout-minutes: 30
