@@ -71,8 +71,8 @@ enable_all() {
     enable "$1" coverage mutation kani miri metal tla portable
 }
 
-# This first recovery slice only broadens selection. A control plane must not
-# classify out the evidence needed to establish its own behavior.
+# Execution controls default to full selection. The narrowly reviewed
+# non-runtime control component is resolved below through its mandatory tests.
 if matches '^(\.github/(workflows/.+\.ya?ml$|actions/)|assurance/miri-[^/]+\.tsv$|scripts/(classify-ci|test-classifier|setup-kani|test-setup-kani|test-studio-concurrency-stress|check-coverage|test-coverage|run-miri-partition|test-miri-partitions|check-native-mutation-receipts|test-native-mutation-receipts|check-tla|test-formal-effectiveness)\.sh$)'; then
     enable_all ci-control-plane
 fi
@@ -147,6 +147,31 @@ if [ -n "$unknown_inputs" ]; then
     enable_all unmapped-input
 fi
 
+# These inputs belong to the control-test component, not the Rust/native
+# execution component. Keep the list exact: similarly named Metal or Miri
+# helpers are deliberately absent. Hosted and local policy tests exercise
+# these controls; workflow execution recipes retain the full fallback.
+ci_control_inputs='^(\.github/workflows/assurance-failure\.yml|scripts/(classify-ci|test-classifier|check-policy|test-policy|check|check-agent-skills|test-agent-skills|install-agent-skills|wiki|test-wiki|collect-assurance-failures|test-assurance-failure-collector)\.sh|scripts/lib/agent-skills\.sh|assurance/agent-skills/v1/(evolution\.tsv|prompts\.md|rubric\.md|scenarios\.tsv))$'
+ci_control_support='^(AGENTS\.md$|docs/|skills/)'
+outside_controls=$(printf '%s\n' "$changed_files" | sed '/^$/d' | grep -Ev "$ci_control_inputs|$ci_control_support") || {
+    result=$?
+    [ "$result" -eq 1 ] || fail 'CI control ownership classification failed'
+}
+ci_control_only=false
+if [ -n "$changed_files" ] && [ -z "$outside_controls" ] && matches "$ci_control_inputs" \
+    && ! matches '^docs/aep/'; then
+    if has_label review:unsafe; then
+        enable_all unsafe-control-plane
+    else
+        ci_control_only=true
+        coverage=false mutation=false kani=false miri=false metal=false tla=false
+        portable=true
+        unknown_inputs=
+        : > "$temporary/reasons.tsv"
+        printf 'portable\tci-control-contracts\n' > "$temporary/reasons.tsv"
+    fi
+fi
+
 # Explanations are optional planning artifacts, not test execution or acceptance
 # receipts. Existing workflow outputs retain their names and boolean values.
 if [ -n "${ALPINE_CI_PLAN:-}" ]; then
@@ -155,6 +180,7 @@ if [ -n "${ALPINE_CI_PLAN:-}" ]; then
         --arg base "$base_sha" --arg head "$head_sha" --arg merge_base "$merge_base" \
         --arg change_source "$change_source" --arg paths "$changed_files" \
         --arg labels "$labels" --arg unknown "$unknown_inputs" \
+        --argjson ci_control_only "$ci_control_only" \
         --rawfile reasons "$temporary/reasons.tsv" \
         --argjson coverage "$coverage" --argjson mutation "$mutation" \
         --argjson kani "$kani" --argjson miri "$miri" --argjson metal "$metal" \
@@ -164,6 +190,7 @@ if [ -n "${ALPINE_CI_PLAN:-}" ]; then
           changed_paths: ($paths | split("\n") | map(select(length > 0))),
           risk_labels: ($labels | gsub(","; "\n") | split("\n") | map(select(length > 0))),
           unmapped_paths: ($unknown | split("\n") | map(select(length > 0))),
+          ci_control_only: $ci_control_only,
           gates: {coverage: $coverage, mutation: $mutation, kani: $kani,
                   miri: $miri, metal: $metal, tla: $tla, portable: $portable},
           reasons: ($reasons | split("\n") | map(select(length > 0) | split("\t") |
@@ -183,6 +210,7 @@ fi
     printf 'metal=%s\n' "$metal"
     printf 'tla=%s\n' "$tla"
     printf 'portable=%s\n' "$portable"
+    printf 'ci_control_only=%s\n' "$ci_control_only"
 } > "$temporary/outputs"
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
     cat "$temporary/outputs" >> "$GITHUB_OUTPUT"
