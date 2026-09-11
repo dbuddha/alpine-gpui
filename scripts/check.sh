@@ -8,12 +8,9 @@ scripts/check-worktrees.sh --check --offline --max-count 3
 scripts/test-worktrees.sh
 scripts/check-product-boundary.sh
 scripts/test-product-boundary.sh
-scripts/check-agent-skills.sh
-scripts/test-agent-skills.sh
 scripts/check-research-retention.sh
 scripts/test-research-retention.sh
 scripts/check-wiki.sh
-scripts/test-wiki.sh
 scripts/test-classifier.sh
 scripts/test-ci-admission.sh
 scripts/test-ci-cache-selection.sh

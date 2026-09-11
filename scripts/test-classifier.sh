@@ -54,12 +54,38 @@ release_workflow=$(run_fixture .github/workflows/release-dry-run.yml)
 assert_every_gate "$release_workflow"
 
 classifier=$(run_fixture scripts/classify-ci.sh)
-assert_every_gate "$classifier"
-assert_output "$classifier" portable=true
+assert_ci_controls() {
+    for gate in coverage mutation kani miri metal tla; do
+        assert_output "$1" "$gate=false"
+    done
+    assert_output "$1" portable=true
+    assert_output "$1" ci_control_only=true
+}
+assert_ci_controls "$classifier"
 
 classifier_tests=$(run_fixture scripts/test-classifier.sh)
-assert_every_gate "$classifier_tests"
-assert_output "$classifier_tests" portable=true
+assert_ci_controls "$classifier_tests"
+
+for control in scripts/check-policy.sh scripts/test-policy.sh scripts/check.sh \
+    scripts/check-agent-skills.sh scripts/test-agent-skills.sh scripts/install-agent-skills.sh \
+    scripts/lib/agent-skills.sh scripts/wiki.sh scripts/test-wiki.sh \
+    scripts/collect-assurance-failures.sh scripts/test-assurance-failure-collector.sh \
+    .github/workflows/assurance-failure.yml assurance/agent-skills/v1/scenarios.tsv; do
+    assert_ci_controls "$(run_fixture "$control")"
+    assert_every_gate "$(run_fixture "$control" review:unsafe)"
+    assert_every_gate "$(run_fixture "$(printf '%s\nunclassified/input.bin' "$control")")"
+done
+for execution in .github/workflows/ci.yml .github/workflows/nightly-assurance.yml \
+    scripts/check-ci-native-admission.sh scripts/verify-metal-library.sh \
+    scripts/run-miri-partition.sh assurance/miri-studio-partitions.tsv \
+    Cargo.lock rust-toolchain.toml apps/alpine-studio/tests/native_process.rs; do
+    selected=$(run_fixture "$(printf 'scripts/check-policy.sh\n%s' "$execution")")
+    assert_every_gate "$selected"
+    assert_output "$selected" ci_control_only=false
+done
+formal_control=$(run_fixture "$(printf 'scripts/classify-ci.sh\ndocs/aep/0009-assurance.md')")
+assert_every_gate "$formal_control"
+assert_output "$formal_control" ci_control_only=false
 
 kani_setup=$(run_fixture scripts/setup-kani.sh)
 assert_every_gate "$kani_setup"
@@ -372,4 +398,35 @@ if run_git_fixture "$foreign" > "$temporary/foreign.stdout" 2> "$temporary/forei
 fi
 grep -q 'no available common ancestor' "$temporary/foreign.stderr"
 
+# Discover the whole Git comparison, including an earlier native change before
+# the latest controller edit. A latest-commit-only selector must fail this.
+control_repository="$temporary/control-git"
+git init -q "$control_repository"
+git -C "$control_repository" config user.name 'CI selection fixture'
+git -C "$control_repository" config user.email 'fixture@example.test'
+git -C "$control_repository" config commit.gpgsign false
+git -C "$control_repository" config core.hooksPath /dev/null
+printf 'baseline\n' > "$control_repository/README.md"
+git -C "$control_repository" add .
+git -C "$control_repository" commit -qm baseline
+control_base=$(git -C "$control_repository" rev-parse HEAD)
+mkdir -p "$control_repository/crates/alpine-runtime/src" "$control_repository/scripts"
+printf 'pub fn changed() {}\n' > "$control_repository/crates/alpine-runtime/src/lib.rs"
+git -C "$control_repository" add .
+git -C "$control_repository" commit -qm 'native consumer change'
+native_head=$(git -C "$control_repository" rev-parse HEAD)
+printf '# controller fixture\n' > "$control_repository/scripts/check-policy.sh"
+git -C "$control_repository" add .
+git -C "$control_repository" commit -qm 'controller change'
+for comparison in "$control_base" "$native_head"; do
+    actual=$(cd "$control_repository" && env -u ALPINE_CHANGED_FILES \
+        GITHUB_OUTPUT= ALPINE_CI_PLAN= ALPINE_PR_LABELS= \
+        ALPINE_BASE_SHA="$comparison" ALPINE_HEAD_SHA=HEAD "$classifier_program")
+    if [ "$comparison" = "$control_base" ]; then
+        assert_every_gate "$actual"
+        assert_output "$actual" ci_control_only=false
+    else
+        assert_ci_controls "$actual"
+    fi
+done
 printf 'CI classifier tests passed\n'

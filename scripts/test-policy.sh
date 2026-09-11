@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+# Shared control entrypoint for hosted quality and the canonical local check.
+scripts/check-agent-skills.sh
+scripts/test-agent-skills.sh
+scripts/test-wiki.sh
+
 scripts/test-assurance-failure-collector.sh
 
 fixture_dir=$(mktemp -d)

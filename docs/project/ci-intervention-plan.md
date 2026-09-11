@@ -67,6 +67,36 @@ metadata handling must not execute untrusted PR code or trust untrusted caches.
 
 ## Runtime targets and measurements
 
+### Non-runtime CI control component
+
+The emergency replay of 20 recently updated merged PRs found that a proposed
+Studio-leaf exemption would reach none of them. That source-reviewed candidate
+is preserved separately and is not an accepted performance correction.
+
+The useful first component is the exact set of classifier/policy controls,
+agent-skill installation and validation, Wiki controls, and the downstream
+assurance-failure collector. Historical PRs #581, #582 and #589 contain these
+inputs without changing Rust, Metal, Miri, or their execution recipes. Their
+control tests must run in both hosted quality and the local canonical gate.
+Portable workspace checks remain selected. For exclusively reviewed control
+inputs, repeated native validation, native mutation and Rust formal workloads
+are not required. This is not a claim of unchanged per-PR native coverage or
+live failure-routing qualification.
+
+The exemption requires every changed path to be recognized. Runtime sources,
+test fixtures, native helpers, Cargo/toolchain inputs, Miri partitions, CI test
+execution workflows, actions, unsafe labels, unknown or mixed inputs retain
+their conservative selection. Formal AEP changes cannot use this exemption.
+No mutation inventory, native command, proof bound or timeout changes.
+
+Acceptance separates the classifier's source-bound selection controls from
+hosted execution. A historical path replay establishes reach, not runtime
+savings. Retain observed allocated jobs, elapsed time and queue effects for the
+first qualifying controller change and integrated main before accepting a
+speedup claim. The original PR observation was 71m35s; PR #602 observed 69m39s,
+only 1m56s less, despite a larger difference from an intermediate slower run.
+The substantial CI objective remains open until the relevant reduction runs.
+
 The desired experience is seconds or minutes for small, safely affected changes
 and a roughly 15-minute feedback target where measured workloads and capacity
 support it. It is not yet a universal maximum or permission to cancel unfinished
