@@ -2,9 +2,7 @@ name: CI
 
 on:
   pull_request:
-    # Label application is the first settled metadata event for a new PR.
-    # Starting on opened as well creates two required checks at one source SHA.
-    types: [synchronize, reopened, edited, labeled, unlabeled]
+    types: [opened, synchronize, reopened]
   push:
     branches: [main]
   workflow_dispatch:
@@ -21,8 +19,6 @@ on:
 
 permissions:
   contents: read
-  issues: read
-  pull-requests: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -60,7 +56,6 @@ jobs:
         env:
           ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
           ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          ALPINE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           ALPINE_CI_ASSURANCE: ${{ github.event_name == 'workflow_dispatch' && inputs.assurance || false }}
         run: scripts/classify-ci.sh
       - id: mutation-diff
@@ -76,14 +71,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - name: Validate repository and pull request policy
-        env:
-          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
-          ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          ALPINE_PR_BODY: ${{ github.event.pull_request.body }}
-          ALPINE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-          ALPINE_PR_TITLE: ${{ github.event.pull_request.title }}
-          GH_TOKEN: ${{ github.token }}
+      - name: Check technical repository policy
         run: scripts/check-policy.sh
       - name: Require cheap source feedback before assurance fan-out
         run: scripts/check-ci-fast-feedback.sh
@@ -100,18 +88,9 @@ jobs:
           fetch-depth: 0
       - name: Install policy tools
         run: cargo install --locked cargo-deny --version 0.20.2
-      - name: Install documentation tools
-        run: cargo install --locked mdbook --version 0.5.4
       - name: Show toolchain
         run: rustc --version --verbose
-      - name: Check repository policy
-        env:
-          ALPINE_BASE_SHA: ${{ needs.classify.outputs.base_sha }}
-          ALPINE_HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
-          ALPINE_PR_BODY: ${{ github.event.pull_request.body }}
-          ALPINE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-          ALPINE_PR_TITLE: ${{ github.event.pull_request.title }}
-          GH_TOKEN: ${{ github.token }}
+      - name: Check technical repository policy
         run: scripts/check-policy.sh
       - name: Test repository automation
         run: |
@@ -119,22 +98,14 @@ jobs:
           scripts/test-classifier.sh
           scripts/test-ci-admission.sh
           scripts/test-ci-cache-selection.sh
-          scripts/test-hierarchy.sh
           scripts/test-assurance.sh
           scripts/test-qualification.sh
           scripts/test-zed-lab-evidence.sh
           scripts/check-release.sh
           scripts/test-core-contracts.sh
           scripts/test-metal-contracts.sh
-      - name: Validate qualified evidence and GitHub hierarchy
-        env:
-          GH_REPOSITORY: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: cargo run --locked -p alpine-assurance -- validate --github
-      - name: Build and test engineering guide
-        run: |
-          mdbook build
-          mdbook test
+      - name: Validate technical evidence registry
+        run: cargo run --locked -p alpine-assurance -- validate
       - name: Check dependencies and licenses
         run: cargo deny check bans licenses sources
       - name: Test all targets
@@ -151,12 +122,11 @@ jobs:
         run: |
           mkdir -p target/assurance
           cargo run --quiet --locked -p alpine-assurance -- report > target/assurance/report.md
-      - name: Upload engineering documentation and assurance report
+      - name: Upload technical assurance report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: engineering-evidence-${{ github.sha }}
           path: |
-            target/mdbook
             target/assurance/report.md
           retention-days: 7
           if-no-files-found: error

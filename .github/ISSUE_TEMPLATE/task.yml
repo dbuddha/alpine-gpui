@@ -1,5 +1,5 @@
-name: Defect
-description: A reproducible defect or blocker
+name: Multi-PR work
+description: Work that needs coordination across pull requests
 body:
   - type: textarea
     id: problem

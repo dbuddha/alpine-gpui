@@ -1,7 +1,0 @@
-id	skill	prompt	rubric
-ci-selection	alpine-ci-job-checker	ci-prompts.md#ci-selection	ci-rubric.md
-ci-baseline	alpine-ci-job-checker	ci-prompts.md#ci-baseline	ci-rubric.md
-ci-admission	alpine-ci-job-checker	ci-prompts.md#ci-admission	ci-rubric.md
-ci-sharding	alpine-ci-job-checker	ci-prompts.md#ci-sharding	ci-rubric.md
-ci-timing	alpine-ci-job-checker	ci-prompts.md#ci-timing	ci-rubric.md
-ci-shell	alpine-ci-job-checker	ci-prompts.md#ci-shell	ci-rubric.md

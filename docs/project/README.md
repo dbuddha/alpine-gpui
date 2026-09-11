@@ -1,3 +1,6 @@
+> Historical reference. This collection is not an active development gate.
+> See [current guidance](../README.md); live work is PR-first.
+
 # Project execution documentation
 
 This section explains the stable path from Alpine's mission to a private

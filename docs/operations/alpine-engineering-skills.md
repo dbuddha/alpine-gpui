@@ -1,3 +1,6 @@
+> Historical reference. Superseded by [AGENTS.md](../../AGENTS.md).
+> The governance and skill evaluation procedures below are retired.
+
 # Alpine engineering skill system
 
 The [skill manifest](https://github.com/dbuddha/alpine-gpui/blob/main/skills/manifest.tsv)

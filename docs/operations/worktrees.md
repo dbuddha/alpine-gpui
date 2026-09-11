@@ -1,3 +1,6 @@
+> Historical reference. Automatic worktree-count gates and the global skill installer
+> are retired. Preserve parked worktrees; use the current [operating guide](../../AGENTS.md).
+
 # Worktree inventory and cleanup
 
 Alpine keeps worktrees bounded so branch state, installed agent skills, pull

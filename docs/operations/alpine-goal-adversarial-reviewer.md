@@ -1,3 +1,6 @@
+> Historical reference. Superseded by [AGENTS.md](../../AGENTS.md).
+> The governance and skill evaluation procedures below are retired.
+
 # Bounded Alpine goal review
 
 The repository-owned `alpine-goal-adversarial-reviewer` challenges the connection

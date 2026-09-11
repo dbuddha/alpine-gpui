@@ -8,7 +8,6 @@ fail() {
 
 base_ref=${ALPINE_BASE_SHA:-}
 head_ref=${ALPINE_HEAD_SHA:-HEAD}
-labels=${ALPINE_PR_LABELS:-}
 assurance=${ALPINE_CI_ASSURANCE:-false}
 case "$assurance" in
     true|false) ;;
@@ -40,10 +39,6 @@ trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 
 matches() {
     printf '%s\n' "$changed_files" | grep -Eq "$1"
-}
-
-has_label() {
-    printf '%s\n' "$labels" | tr ',' '\n' | grep -Fxq "$1"
 }
 
 coverage=false
@@ -118,7 +113,7 @@ if matches '^(formal/tla/|docs/aep/|assurance/evidence\.toml$|assurance/qualific
     enable formal-contract tla
 fi
 
-if has_label review:unsafe || matches '^(crates/alpine-text-layout/|crates/.+/(unsafe|ffi|resource|lifetime))'; then
+if matches '^(crates/alpine-text-layout/|crates/.+/(unsafe|ffi|resource|lifetime))'; then
     enable unsafe-or-lifetime miri
 fi
 
@@ -143,7 +138,7 @@ fi
 # An explicit known-input list prevents a mapped file from masking an unknown
 # consumer in the same diff. Generic Rust/manifest matches above are not proof
 # that an otherwise unrecognized package or input has complete gate coverage.
-known_inputs='^(README\.md$|ARCHITECTURE\.md$|AGENTS\.md$|CONTRIBUTING\.md$|CHANGELOG\.md$|LICENSE([^/]*$)|NOTICE([^/]*$)|book\.toml$|docs/|skills/|\.github/(ISSUE_TEMPLATE/|pull_request_template\.md$|workflows/.+\.ya?ml$|actions/)|Cargo\.(toml|lock)$|rust-toolchain(\.toml)?$|\.cargo/|crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal|alpine-platform|alpine-platform-macos|alpine-text|alpine-text-layout|alpine-runtime)/(.+\.rs$|Cargo\.toml$|README\.md$)|apps/alpine-studio/(.+\.rs$|Cargo\.toml$|README\.md$|fixtures/|tests/|assets/|resources/)|tools/(alpine-assurance|alpine-trace|alpine-ax-client)/(src/.+\.rs$|Cargo\.toml$|README\.md$)|tools/alpine-(trace|assurance)/|tools/alpine-ax-client/(fixtures|tests|assets|resources)/|formal/tla/|assurance/(evidence\.toml$|qualification/|miri-[^/]+\.tsv$)|shaders/|.+\.metal$|scripts/(classify-ci|test-classifier|setup-kani|test-setup-kani|test-studio-concurrency-stress|check-coverage|test-coverage|run-miri-partition|test-miri-partitions|check-native-mutation-receipts|test-native-mutation-receipts|check-tla|test-formal-effectiveness|check-metal|check-native-benchmark-result|test-native-benchmark-result|check-portable-targets|test-portable-targets)\.sh$)'
+known_inputs='^(README\.md$|ARCHITECTURE\.md$|AGENTS\.md$|CONTRIBUTING\.md$|CHANGELOG\.md$|LICENSE([^/]*$)|NOTICE([^/]*$)|docs/|skills/|\.agents/skills/|\.github/(ISSUE_TEMPLATE/|pull_request_template\.md$|workflows/.+\.ya?ml$|actions/)|Cargo\.(toml|lock)$|rust-toolchain(\.toml)?$|\.cargo/|crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal|alpine-platform|alpine-platform-macos|alpine-text|alpine-text-layout|alpine-runtime)/(.+\.rs$|Cargo\.toml$|README\.md$)|apps/alpine-studio/(.+\.rs$|Cargo\.toml$|README\.md$|fixtures/|tests/|assets/|resources/)|tools/(alpine-assurance|alpine-trace|alpine-ax-client)/(src/.+\.rs$|Cargo\.toml$|README\.md$)|tools/alpine-(trace|assurance)/|tools/alpine-ax-client/(fixtures|tests|assets|resources)/|formal/tla/|assurance/(evidence\.toml$|qualification/|miri-[^/]+\.tsv$)|shaders/|.+\.metal$|scripts/(classify-ci|test-classifier|setup-kani|test-setup-kani|test-studio-concurrency-stress|check-coverage|test-coverage|run-miri-partition|test-miri-partitions|check-native-mutation-receipts|test-native-mutation-receipts|check-tla|test-formal-effectiveness|check-metal|check-native-benchmark-result|test-native-benchmark-result|check-portable-targets|test-portable-targets)\.sh$)'
 unknown_inputs=$(printf '%s\n' "$changed_files" | sed '/^$/d' | grep -Ev "$known_inputs") || {
     result=$?
     [ "$result" -eq 1 ] || fail 'known-input classification failed'
@@ -156,8 +151,8 @@ fi
 # execution component. Keep the list exact: similarly named Metal or Miri
 # helpers are deliberately absent. Hosted and local policy tests exercise
 # these controls; workflow execution recipes retain the full fallback.
-ci_control_inputs='^(\.github/workflows/assurance-failure\.yml|scripts/(classify-ci|test-classifier|check-policy|test-policy|check|check-agent-skills|test-agent-skills|install-agent-skills|wiki|test-wiki|collect-assurance-failures|test-assurance-failure-collector)\.sh|scripts/lib/agent-skills\.sh|assurance/agent-skills/v1/(evolution\.tsv|prompts\.md|rubric\.md|scenarios\.tsv))$'
-ci_control_support='^(AGENTS\.md$|docs/|skills/)'
+ci_control_inputs='^(\.github/workflows/assurance-failure\.yml|scripts/(classify-ci|test-classifier|check-policy|test-policy|check|check-agent-skills|test-agent-skills|collect-assurance-failures|test-assurance-failure-collector|route-assurance-failures|test-assurance-failure-routing)\.sh|scripts/check-agent-skills\.py)$'
+ci_control_support='^(AGENTS\.md$|docs/|skills/|\.agents/skills/)'
 outside_controls=$(printf '%s\n' "$changed_files" | sed '/^$/d' | grep -Ev "$ci_control_inputs|$ci_control_support") || {
     result=$?
     [ "$result" -eq 1 ] || fail 'CI control ownership classification failed'
@@ -165,16 +160,12 @@ outside_controls=$(printf '%s\n' "$changed_files" | sed '/^$/d' | grep -Ev "$ci_
 ci_control_only=false
 if [ -n "$changed_files" ] && [ -z "$outside_controls" ] && matches "$ci_control_inputs" \
     && ! matches '^docs/aep/'; then
-    if has_label review:unsafe; then
-        enable_all unsafe-control-plane
-    else
-        ci_control_only=true
-        coverage=false mutation=false kani=false miri=false metal=false tla=false
-        portable=true
-        unknown_inputs=
-        : > "$temporary/reasons.tsv"
-        printf 'portable\tci-control-contracts\n' > "$temporary/reasons.tsv"
-    fi
+    ci_control_only=true
+    coverage=false mutation=false kani=false miri=false metal=false tla=false
+    portable=true
+    unknown_inputs=
+    : > "$temporary/reasons.tsv"
+    printf 'portable\tci-control-contracts\n' > "$temporary/reasons.tsv"
 fi
 
 # Ordinary feedback retains behavioral validation. Specialized assurance is
@@ -198,7 +189,7 @@ if [ -n "${ALPINE_CI_PLAN:-}" ]; then
     jq -n \
         --arg base "$base_sha" --arg head "$head_sha" --arg merge_base "$merge_base" \
         --arg change_source "$change_source" --arg paths "$changed_files" \
-        --arg labels "$labels" --arg unknown "$unknown_inputs" \
+        --arg unknown "$unknown_inputs" \
         --argjson ci_control_only "$ci_control_only" \
         --argjson assurance "$assurance" --argjson native_mutation "$native_mutation" \
         --rawfile reasons "$temporary/reasons.tsv" \
@@ -208,7 +199,6 @@ if [ -n "${ALPINE_CI_PLAN:-}" ]; then
         '{schema: "alpine-ci-gate-plan/v1", base_sha: $base, head_sha: $head,
           merge_base: $merge_base, change_source: $change_source,
           changed_paths: ($paths | split("\n") | map(select(length > 0))),
-          risk_labels: ($labels | gsub(","; "\n") | split("\n") | map(select(length > 0))),
           unmapped_paths: ($unknown | split("\n") | map(select(length > 0))),
           ci_control_only: $ci_control_only, assurance: $assurance,
           gates: {native_mutation: $native_mutation, coverage: $coverage, mutation: $mutation, kani: $kani,

@@ -1,3 +1,6 @@
+> Historical proposal. Its governance features and AEP-0184 evidence records
+> are retired. See [AGENTS.md](../../AGENTS.md) for current development.
+
 # AEP 0184: Evidence-first GitHub operations
 
 - Status: Accepted

@@ -1,3 +1,6 @@
+> Historical reference. This collection is not an active development gate.
+> See [current guidance](../README.md). The remote Wiki is no longer maintained.
+
 # GitHub Wiki mirror
 
 Issue [#175](https://github.com/dbuddha/alpine-gpui/issues/175) implements

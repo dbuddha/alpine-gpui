@@ -59,6 +59,6 @@ half precision preserves glyph correctness, or use undocumented opcodes in Alpin
 Use the Metal compiler and a checked error/precision corpus for any shader change.
 
 Source agreement here supports methodological choices only. Each adopted
-mechanism still needs the relevant source pin, implementing issue, correctness
+mechanism still needs the relevant source pin, implementation PR, correctness
 control, measured result and historical lineage entry. Unknown proprietary driver
 allocations stay omissions. No E3/E4 result is supplied by this reference.

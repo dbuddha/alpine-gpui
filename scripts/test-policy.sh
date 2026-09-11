@@ -4,9 +4,9 @@ set -eu
 # Shared control entrypoint for hosted quality and the canonical local check.
 scripts/check-agent-skills.sh
 scripts/test-agent-skills.sh
-scripts/test-wiki.sh
 
 scripts/test-assurance-failure-collector.sh
+scripts/test-assurance-failure-routing.sh
 
 fixture_dir=$(mktemp -d)
 trap 'rm -rf "$fixture_dir"' EXIT HUP INT TERM
@@ -34,120 +34,22 @@ scripts/filter-assurance-failures.sh < "$fixture_dir/no-failures.tsv" \
     > "$fixture_dir/no-failures-actual.tsv"
 cmp "$fixture_dir/no-failures.tsv" "$fixture_dir/no-failures-actual.tsv"
 
+# Policy must work without issues, claims, labels or any GitHub access.
 cat > "$fixture_dir/gh" <<'EOF'
 #!/bin/sh
-set -eu
-
-if [ "$1" = api ]; then
-    case "$2" in
-        */issues/100/parent) printf '90\n' ;;
-        */issues/90/parent) printf '80\n' ;;
-        *) exit 1 ;;
-    esac
-    exit 0
-fi
-
-number=$3
-field=
-previous=
-for argument in "$@"; do
-    if [ "$previous" = --json ]; then
-        field=$argument
-        break
-    fi
-    previous=$argument
-done
-
-case "$field:$number" in
-    labels:100) printf 'kind:task\n' ;;
-    state:100) printf 'OPEN\n' ;;
-    body:100) printf '### Parent capability or requirement\n\n#90\n' ;;
-    labels:90)
-        printf 'kind:requirement\n'
-        if [ "${ALPINE_POLICY_FIXTURE:-valid}" != unapproved ]; then
-            printf 'owner:approved\n'
-        fi
-        ;;
-    state:90)
-        if [ "${ALPINE_POLICY_FIXTURE:-valid}" = closed-requirement ]; then
-            printf 'CLOSED\n'
-        else
-            printf 'OPEN\n'
-        fi
-        ;;
-    body:90) printf '### Parent capability or requirement\n\n#80\n' ;;
-    labels:80) printf 'kind:capability\nowner:approved\n' ;;
-    state:80) printf 'OPEN\n' ;;
-    labels,state,stateReason:70)
-        if [ "${ALPINE_POLICY_FIXTURE:-valid}" = rejected-decision ]; then
-            printf 'CLOSED\tNOT_PLANNED\tkind:decision\n'
-        else
-            printf 'CLOSED\tCOMPLETED\tkind:decision\n'
-        fi
-        ;;
-    *) exit 1 ;;
-esac
+printf 'unexpected GitHub access\n' >&2
+exit 99
 EOF
 chmod +x "$fixture_dir/gh"
-
-pr_body='## Closing issue
-
-Closes #100
-
-## Parent capability
-
-#80
-
-## Claims and evidence
-
-AEP-0009-C05 and EV-0009-INTEGRATION05.
-
-## Decision or research
-
-#70
-
-## Acceptance evidence
-
-Policy fixture.
-
-## Risk and scope
-
-Policy fixture.
-
-## Test plan
-
-Policy fixture.
-
-## Performance and memory
-
-None.
-
-## Release impact
-
-release:feature
-
-## Dependencies, provenance, and unsafe code
-
-None.
-
-## Adversarial review
-
-Policy fixture.'
-
 run_policy() {
     PATH="$fixture_dir:$PATH" \
-    GH_REPOSITORY=dbuddha/alpine-gpui \
-    ALPINE_BASE_SHA=fixture-base \
-    ALPINE_HEAD_SHA=fixture-head \
-    ALPINE_CHANGED_FILES="${ALPINE_POLICY_CHANGED_FILES:-crates/alpine-core/src/lib.rs}" \
-    ALPINE_PR_BODY="$pr_body" \
-    ALPINE_PR_LABELS=release:feature \
-    ALPINE_PR_TITLE='feat(core): exercise approval fixture' \
-    ALPINE_TLA_DRIVER="${ALPINE_TLA_DRIVER:-scripts/check-tla.sh}" \
+    GITHUB_EVENT_NAME=pull_request GITHUB_REPOSITORY=dbuddha/alpine-gpui \
+    ALPINE_PR_BODY= ALPINE_PR_TITLE= ALPINE_PR_LABELS= \
     scripts/check-policy.sh
 }
-
-run_policy >/dev/null
+for source in crates/alpine-core/src/lib.rs apps/alpine-studio/src/lib.rs ARCHITECTURE.md; do
+    ALPINE_CHANGED_FILES="$source" run_policy >/dev/null
+done
 
 # Correspondence controls exercise the real workflow commands, not invented
 # package counts. Removing the common Studio package recreates Defect #590.
@@ -295,25 +197,11 @@ cp .github/workflows/ci.yml "$fixture_dir/ci.yml"
 ALPINE_CI_WORKFLOW="$fixture_dir/ci.yml" run_policy >/dev/null
 
 cp .github/workflows/assurance-failure.yml "$fixture_dir/assurance-failure.yml"
-sed '/scripts\/filter-assurance-failures.sh |/d' \
-    "$fixture_dir/assurance-failure.yml" > "$fixture_dir/unfiltered-assurance-failure.yml"
-if ALPINE_ASSURANCE_FAILURE_WORKFLOW="$fixture_dir/unfiltered-assurance-failure.yml" \
-    run_policy > "$fixture_dir/unfiltered-assurance-failure.log" 2>&1; then
-    printf 'policy test error: derivative aggregate failure routing unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'assurance routing must suppress derivative ci-pass failures through the tested selector' \
-    "$fixture_dir/unfiltered-assurance-failure.log"; then
-    printf 'policy test error: expected derivative aggregate routing failure was not reported\n' >&2
-    cat "$fixture_dir/unfiltered-assurance-failure.log" >&2
-    exit 1
-fi
-for omitted in guard collector permission pipefail; do
+for omitted in guard router permission; do
     case "$omitted" in
-        guard) expression="s/    if: github.event.workflow_run.conclusion.*/    if: github.event.workflow_run.conclusion == 'failure'/" ;;
-        collector) expression='/scripts\/collect-assurance-failures.sh |/d' ;;
+        guard) expression="s/    if: github.event.workflow_run.conclusion.*/    if: always()/" ;;
+        router) expression='/run: scripts\/route-assurance-failures.sh/d' ;;
         permission) expression='/^  checks: read$/d' ;;
-        pipefail) expression='/set -euo pipefail/d' ;;
     esac
     sed "$expression" "$fixture_dir/assurance-failure.yml" > "$fixture_dir/omitted-$omitted.yml"
     if ALPINE_ASSURANCE_FAILURE_WORKFLOW="$fixture_dir/omitted-$omitted.yml" \
@@ -321,10 +209,7 @@ for omitted in guard collector permission pipefail; do
         printf 'policy test error: missing assurance routing %s was accepted\n' "$omitted" >&2
         exit 1
     fi
-    if ! grep -Fq 'assurance routing must use the tested timeout collector' "$fixture_dir/omitted-$omitted.log"; then
-        cat "$fixture_dir/omitted-$omitted.log" >&2
-        exit 1
-    fi
+    grep -Fq 'assurance routing must use the tested current-main failure router' "$fixture_dir/omitted-$omitted.log" || { cat "$fixture_dir/omitted-$omitted.log" >&2; exit 1; }
 done
 unset ALPINE_ASSURANCE_FAILURE_WORKFLOW
 
@@ -450,13 +335,13 @@ if ! grep -Fq 'nightly assurance must shard native platform contracts and route 
 fi
 unset ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
 
-sed 's/types: \[synchronize,/types: [opened, synchronize,/' \
+sed 's/types: \[opened,/types: [edited, opened,/' \
     "$fixture_dir/ci.yml" > "$fixture_dir/opened-pr-fanout-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/opened-pr-fanout-ci.yml" run_policy > "$fixture_dir/opened-pr-fanout-ci.log" 2>&1; then
     printf 'policy test error: opened PR fan-out unexpectedly passed\n' >&2
     exit 1
 fi
-if ! grep -Fq 'CI pull_request triggers must start after label settlement and retain source and metadata events' \
+if ! grep -Fq 'CI pull_request triggers must include opened, synchronize and reopened only' \
     "$fixture_dir/opened-pr-fanout-ci.log"; then
     printf 'policy test error: expected settled PR trigger failure was not reported\n' >&2
     cat "$fixture_dir/opened-pr-fanout-ci.log" >&2
@@ -493,7 +378,7 @@ for admission_fault in fast-feedback native-dependency native-command native-cfg
     case "$admission_fault" in
         fast-feedback)
             expression='s/run: scripts\/check-ci-fast-feedback\.sh/run: true/'
-            diagnostic='CI preflight must validate current repository and pull request policy before fan-out'
+            diagnostic='CI preflight must validate technical repository policy before fan-out'
             ;;
         native-dependency)
             expression='s/(  native-mutation:.*?needs:) \[classify, preflight, native\]/$1 [classify, preflight]/s'
@@ -591,7 +476,7 @@ fi
 grep -Fq 'weekly expensive assurance and project radar must remain manual only' "$fixture_dir/scheduled-weekly.log"
 unset ALPINE_NIGHTLY_ASSURANCE_WORKFLOW ALPINE_WEEKLY_ASSURANCE_WORKFLOW ALPINE_CI_WORKFLOW
 
-for dispatch_fault in missing-base optional-base non-string-base classify-base preflight-base; do
+for dispatch_fault in missing-base optional-base non-string-base classify-base; do
     case "$dispatch_fault" in
         missing-base)
             expression='s/    inputs:\n      base_sha:\n        description: [^\n]*\n        required: true\n        type: string\n//'
@@ -608,10 +493,6 @@ for dispatch_fault in missing-base optional-base non-string-base classify-base p
         classify-base)
             expression='s/(  classify:.*?ALPINE_BASE_SHA: [^\n]*?) \|\| inputs\.base_sha/$1/s'
             diagnostic='CI classifier must bind the PR, push, or explicit dispatch base'
-            ;;
-        preflight-base)
-            expression='s/(  preflight:.*?ALPINE_BASE_SHA: [^\n]*?) \|\| inputs\.base_sha/$1/s'
-            diagnostic='CI preflight must validate current repository and pull request policy before fan-out'
             ;;
     esac
     perl -0pe "$expression" "$fixture_dir/ci.yml" > "$fixture_dir/$dispatch_fault-ci.yml"
@@ -632,7 +513,7 @@ if ALPINE_CI_WORKFLOW="$fixture_dir/bypassed-preflight-ci.yml" run_policy > "$fi
     printf 'policy test error: bypassed fast policy preflight unexpectedly passed\n' >&2
     exit 1
 fi
-if ! grep -Fq 'CI preflight must validate current repository and pull request policy before fan-out' \
+if ! grep -Fq 'CI preflight must validate technical repository policy before fan-out' \
     "$fixture_dir/bypassed-preflight-ci.log"; then
     printf 'policy test error: expected fast policy preflight failure was not reported\n' >&2
     cat "$fixture_dir/bypassed-preflight-ci.log" >&2
@@ -868,56 +749,6 @@ if ! grep -Fq 'ci-pass must require and retain exact-head native mutation matrix
     exit 1
 fi
 unset ALPINE_CI_WORKFLOW
-
-ALPINE_POLICY_REFERENCE_INPUT='docs/research/index.md' run_policy >/dev/null
-
-retired_roadmap='docs/ROAD''MAP.md'
-if ALPINE_POLICY_REFERENCE_INPUT="$retired_roadmap" run_policy > "$fixture_dir/retired-reference.log" 2>&1; then
-    printf 'policy test error: retired documentation reference unexpectedly passed\n' >&2
-    exit 1
-fi
-
-if ! grep -Fq 'tracked files reference retired repository documents' "$fixture_dir/retired-reference.log"; then
-    printf 'policy test error: expected retired-reference failure was not reported\n' >&2
-    cat "$fixture_dir/retired-reference.log" >&2
-    exit 1
-fi
-unset ALPINE_POLICY_REFERENCE_INPUT
-
-if ALPINE_POLICY_FIXTURE=unapproved run_policy > "$fixture_dir/failure.log" 2>&1; then
-    printf 'policy test error: unapproved requirement unexpectedly passed\n' >&2
-    exit 1
-fi
-
-if ! grep -Fq 'requirement #90 requires owner:approved' "$fixture_dir/failure.log"; then
-    printf 'policy test error: expected approval failure was not reported\n' >&2
-    cat "$fixture_dir/failure.log" >&2
-    exit 1
-fi
-
-if ALPINE_POLICY_FIXTURE=closed-requirement run_policy > "$fixture_dir/closed-requirement.log" 2>&1; then
-    printf 'policy test error: closed requirement unexpectedly passed\n' >&2
-    exit 1
-fi
-
-if ! grep -Fq 'requirement #90 must be open' "$fixture_dir/closed-requirement.log"; then
-    printf 'policy test error: expected open-requirement failure was not reported\n' >&2
-    cat "$fixture_dir/closed-requirement.log" >&2
-    exit 1
-fi
-
-ALPINE_POLICY_CHANGED_FILES=ARCHITECTURE.md run_policy >/dev/null
-
-if ALPINE_POLICY_CHANGED_FILES=ARCHITECTURE.md ALPINE_POLICY_FIXTURE=rejected-decision run_policy > "$fixture_dir/decision-failure.log" 2>&1; then
-    printf 'policy test error: rejected decision unexpectedly passed\n' >&2
-    exit 1
-fi
-
-if ! grep -Fq 'architecture changes require a closed kind:decision issue' "$fixture_dir/decision-failure.log"; then
-    printf 'policy test error: expected accepted-decision failure was not reported\n' >&2
-    cat "$fixture_dir/decision-failure.log" >&2
-    exit 1
-fi
 
 native_surface_fixture="$(mktemp -d)"
 cp .github/workflows/nightly-assurance.yml "${native_surface_fixture}/nightly-assurance.yml"

@@ -47,7 +47,5 @@ algorithm with lost Unicode, stale-result or durability behavior is not valid.
   gain speed. Reduced shader precision needs output-equivalence evidence.
 
 Return a cost model, alternatives, crossover conditions, evidence-backed choice,
-failure bounds, tests and measured tradeoffs. Record the algorithm's primary
-reference and Alpine transformation in the lineage log. Read actual papers or
-official specifications before asserting niche results; use
-`$github-deep-researcher` when contradiction or source quality is decisive.
+failure bounds, tests and measured tradeoffs. Record the primary reference and Alpine transformation in the PR when relevant.
+Read actual papers or official specifications before asserting niche results.
