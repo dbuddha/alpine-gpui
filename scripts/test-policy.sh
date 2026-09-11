@@ -519,7 +519,7 @@ for admission_fault in fast-feedback native-dependency native-command native-cfg
     fi
 done
 
-for incremental_fault in native-missing native-disabled native-override global-disabled ordinary-override quoted-hash-double quoted-hash-single; do
+for incremental_fault in native-missing native-disabled native-override global-disabled ordinary-override quoted-hash-double quoted-hash-single quoted-hash-multiline; do
     case "$incremental_fault" in
         native-missing)
             expression='s/(  native-mutation:.*?)      CARGO_INCREMENTAL: "1"\n/$1/s' ;;
@@ -535,6 +535,8 @@ for incremental_fault in native-missing native-disabled native-override global-d
             expression='s/(      - name: Require platform native mutants to be killed.*?        run: \|\n)/$1          printf " # quoted marker"; export CARGO_INCREMENTAL=0\n/s' ;;
         quoted-hash-single)
             expression='s/(      - name: Require platform native mutants to be killed.*?        run: \|\n)/$1          printf \047 # quoted marker\047; export CARGO_INCREMENTAL=0\n/s' ;;
+        quoted-hash-multiline)
+            expression='s/(      - name: Require platform native mutants to be killed.*?        run: \|\n)/$1          printf \047\n           # quoted marker\047; export CARGO_INCREMENTAL=0\n/s' ;;
     esac
     perl -0pe "$expression" "$fixture_dir/ci.yml" > "$fixture_dir/$incremental_fault-ci.yml"
     if ALPINE_CI_WORKFLOW="$fixture_dir/$incremental_fault-ci.yml" run_policy > "$fixture_dir/$incremental_fault.log" 2>&1; then

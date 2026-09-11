@@ -475,7 +475,19 @@ if [ -n "$workflow_files" ]; then
             }
             return line
         }
-        { $0 = without_comment($0); sub(/[[:space:]]+$/, "") }
+        {
+            # Shell bodies are opaque, including multiline quoted strings.
+            # Mode declarations belong in the two reviewed YAML env entries.
+            match($0, /^ */); indentation = RLENGTH
+            if (in_run && $0 ~ /[^[:space:]]/ && indentation <= run_indentation)
+                in_run = 0
+            if (in_run || $0 ~ /^[[:space:]]+run:/) {
+                if (index($0, "CARGO_INCREMENTAL")) invalid = 1
+                if (!in_run) { in_run = 1; run_indentation = indentation }
+                next
+            }
+            $0 = without_comment($0); sub(/[[:space:]]+$/, "")
+        }
         /^[[:space:]]*#/ { next }
         /^[^[:space:]]/ { section = $0; job = ""; in_environment = 0 }
         section == "jobs:" && /^  [A-Za-z0-9_-]+:$/ {
