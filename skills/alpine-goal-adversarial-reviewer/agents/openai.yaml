@@ -1,0 +1,6 @@
+interface:
+  display_name: "Alpine Goal Adversarial Reviewer"
+  short_description: "Challenge bounded goals against actual evidence"
+  default_prompt: "Use $alpine-goal-adversarial-reviewer to review this Alpine candidate against its frozen objective and raw acceptance evidence."
+policy:
+  allow_implicit_invocation: true

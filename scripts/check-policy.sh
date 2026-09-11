@@ -200,11 +200,61 @@ if [ -n "$workflow_files" ]; then
         "          ALPINE_PR_LABELS: \${{ join(github.event.pull_request.labels.*.name, ',') }}" \
         '          ALPINE_PR_TITLE: ${{ github.event.pull_request.title }}' \
         '          GH_TOKEN: ${{ github.token }}' \
-        '        run: scripts/check-policy.sh'
+        '        run: scripts/check-policy.sh' \
+        '        run: scripts/check-ci-fast-feedback.sh'
     do
         if ! printf '%s\n' "$preflight_block" | grep -Fqx "$required"; then
             fail 'CI preflight must validate current repository and pull request policy before fan-out'
             break
+        fi
+    done
+    fast_feedback_block=$(printf '%s\n' "$preflight_block" | awk '
+        /^      - name: Require cheap source feedback before assurance fan-out$/ { capture = 1; next }
+        capture && /^      - / { exit }
+        capture
+    ')
+    if ! printf '%s\n' "$fast_feedback_block" | grep -Fqx '        run: scripts/check-ci-fast-feedback.sh' \
+        || printf '%s\n' "$fast_feedback_block" | grep -Eq '^[[:space:]]*(if|continue-on-error):' \
+        || printf '%s\n' "$preflight_block" | grep -Eq '^    (if|continue-on-error):'; then
+        fail 'CI fast feedback must execute unconditionally and propagate failures'
+    fi
+    if ! printf '%s\n' "$native_mutation_block" | grep -Fqx "    if: needs.classify.outputs.metal == 'true'" \
+        || printf '%s\n' "$native_mutation_block" | grep -Eq '^    continue-on-error:'; then
+        fail 'CI native mutation must retain success-gated admission'
+    fi
+    if ! printf '%s\n' "$mutation_diff_block" | grep -Fqx "    if: needs.classify.outputs.mutation_diff == 'true'" \
+        || ! printf '%s\n' "$classify_block" | grep -Fqx '      mutation_diff: ${{ steps.mutation-diff.outputs.required }}' \
+        || ! printf '%s\n' "$classify_block" | grep -Fqx '        run: scripts/classify-mutation-diff.sh "${{ steps.classify.outputs.mutation }}" "${{ steps.classify.outputs.base_sha }}" "${{ steps.classify.outputs.head_sha }}"' \
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fqx '          MUTATION_REQUIRED: ${{ needs.classify.outputs.mutation_diff }}'; then
+        fail 'CI diff mutation must bind proven-empty selection to its aggregate requirement'
+    fi
+    mutation_proof_block=$(printf '%s\n' "$classify_block" | awk '
+        /^      - id: mutation-diff$/ { capture = 1; next }
+        capture && /^      - / { exit }
+        capture
+    ')
+    if ! printf '%s\n' "$mutation_proof_block" | grep -Fqx '        run: scripts/classify-mutation-diff.sh "${{ steps.classify.outputs.mutation }}" "${{ steps.classify.outputs.base_sha }}" "${{ steps.classify.outputs.head_sha }}"' \
+        || printf '%s\n' "$mutation_proof_block" | grep -Eq '^[[:space:]]*(if|continue-on-error):' \
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fqx '              true|false) ;;' \
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fqx '              *) echo "$1 has an invalid requirement: $2" >&2; exit 1 ;;'; then
+        fail 'CI emptiness proof must run unconditionally and aggregate requirements must be boolean'
+    fi
+    for tool_job_block in "$mutation_diff_block" "$native_mutation_block"; do
+        if ! printf '%s\n' "$tool_job_block" | grep -Fqx '        run: scripts/prepare-mutation-tool.sh' \
+            || ! printf '%s\n' "$tool_job_block" | grep -Fqx '        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830' \
+            || ! printf '%s\n' "$tool_job_block" | grep -Fqx '          ALPINE_MUTATION_CACHE_SCOPE: ${{ github.ref }}' \
+            || printf '%s\n' "$tool_job_block" | grep -Eq 'restore-keys:|enableCrossOsArchive:|cache-hit.*true'; then
+            fail 'CI mutation tooling must validate exact scoped cache contents, including on a cache hit'
+        fi
+        tool_verification_block=$(printf '%s\n' "$tool_job_block" | awk '
+            /^      - name: Verify or install pinned mutation tooling$/ { capture = 1; next }
+            capture && /^      - / { exit }
+            capture
+        ')
+        if ! printf '%s\n' "$tool_verification_block" | grep -Fqx '        run: scripts/prepare-mutation-tool.sh' \
+            || printf '%s\n' "$tool_verification_block" | grep -Eq '^[[:space:]]*(if|continue-on-error):' \
+            || ! printf '%s\n' "$tool_job_block" | grep -Fqx "          key: alpine-mutants-v1-\${{ runner.os }}-\${{ runner.arch }}-\${{ github.ref }}-\${{ hashFiles('rust-toolchain.toml', 'scripts/prepare-mutation-tool.sh') }}"; then
+            fail 'CI mutation tool verification must run unconditionally with its exact scoped key'
         fi
     done
     for required_job in quality native coverage mutation-diff kani tla miri metal-validation native-mutation; do
@@ -213,12 +263,50 @@ if [ -n "$workflow_files" ]; then
             /^  [A-Za-z0-9_-]+:/ && $1 != job ":" && capture { exit }
             capture
         ' "$ci_workflow")
-        if ! printf '%s\n' "$required_job_block" | grep -Fqx '    needs: [classify, preflight]'; then
+        required_dependencies='    needs: [classify, preflight]'
+        if [ "$required_job" = native-mutation ]; then
+            required_dependencies='    needs: [classify, preflight, native]'
+        fi
+        if ! printf '%s\n' "$required_job_block" | grep -Fqx "$required_dependencies"; then
             fail "CI job $required_job must wait for the fast policy preflight"
+        fi
+        if [ "$required_job" = native ]; then
+            native_admission_block=$(printf '%s\n' "$required_job_block" | awk '
+                /^      - name: Require unmutated native admission before mutation fan-out$/ { capture = 1; next }
+                capture && /^      - / { exit }
+                capture
+            ')
+            for required in \
+                "        if: matrix.name == 'macos-arm64' && needs.classify.outputs.metal == 'true'" \
+                '          DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer' \
+                '          MACOSX_DEPLOYMENT_TARGET: "15.0"' \
+                '          ALPINE_VALIDATION_DEPLOYMENT_TARGET: "26.0"' \
+                '          ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct' \
+                '          RUSTFLAGS: --cfg alpine_native_validation' \
+                '        run: scripts/check-ci-native-admission.sh'
+            do
+                if ! printf '%s\n' "$native_admission_block" | grep -Fqx "$required"; then
+                    fail 'CI native mutation admission must preserve the explicit native baseline contract'
+                    break
+                fi
+            done
+            if printf '%s\n' "$native_admission_block" | grep -q 'continue-on-error'; then
+                fail 'CI native mutation admission must not ignore baseline failures'
+            fi
         fi
     done
     if ! printf '%s\n' "$ci_pass_block" | grep -Fqx '    if: ${{ always() && !cancelled() }}'; then
         fail 'ci-pass must run after ordinary failures but skip a canceled workflow'
+    fi
+    aggregate_enforcement_block=$(printf '%s\n' "$ci_pass_block" | awk '
+        /^      - name: Require selected evidence$/ { capture = 1; next }
+        capture && /^      - / { exit }
+        capture
+    ')
+    if ! printf '%s\n' "$aggregate_enforcement_block" | grep -Fqx '        run: |' \
+        || printf '%s\n' "$aggregate_enforcement_block" | grep -Eq '^[[:space:]]*(if|continue-on-error):' \
+        || printf '%s\n' "$ci_pass_block" | grep -Eq '^    continue-on-error:'; then
+        fail 'ci-pass enforcement must run unconditionally and propagate failures'
     fi
     if ! printf '%s\n' "$ci_pass_block" | grep -Fq 'needs: [classify, preflight,' \
         || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'PREFLIGHT_RESULT: ${{ needs.preflight.result }}' \

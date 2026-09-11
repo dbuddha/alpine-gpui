@@ -6,3 +6,5 @@ alpine-studio-gpui-engineer	engineering	assurance/agent-skills/v1/scenarios.tsv	
 apple-metal-performance-engineer	engineering	assurance/agent-skills/v1/scenarios.tsv	docs/operations/alpine-engineering-skills.md
 zed-gpui-architecture-expert	engineering	assurance/agent-skills/v1/scenarios.tsv	docs/operations/alpine-engineering-skills.md
 algorithmic-performance-engineer	engineering	assurance/agent-skills/v1/scenarios.tsv	docs/operations/alpine-engineering-skills.md
+alpine-ci-job-checker	engineering	assurance/agent-skills/v1/ci-scenarios.tsv	docs/operations/alpine-ci-job-checker.md
+alpine-goal-adversarial-reviewer	engineering	assurance/agent-skills/v1/goal-review-scenarios.tsv	docs/operations/alpine-goal-adversarial-reviewer.md

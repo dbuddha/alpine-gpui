@@ -9,6 +9,8 @@
   - [Alpine editor rendering doctrine](concepts/editor-rendering-doctrine.md)
 - [GitHub agent operations](operations/github-agent-skills.md)
   - [Alpine engineering skills](operations/alpine-engineering-skills.md)
+  - [Alpine CI job checker](operations/alpine-ci-job-checker.md)
+  - [Bounded goal adversarial review](operations/alpine-goal-adversarial-reviewer.md)
   - [Worktree inventory and cleanup](operations/worktrees.md)
 - [Project execution](project/README.md)
   - [Private daily-driver path](project/daily-driver-path.md)
