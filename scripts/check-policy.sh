@@ -167,9 +167,34 @@ if [ -n "$workflow_files" ]; then
     if ! grep -Fqx "  cancel-in-progress: \${{ github.event_name != 'pull_request' || github.event.action == 'synchronize' }}" "$ci_workflow"; then
         fail 'CI cancellation must be limited to source-changing or non-PR runs'
     fi
+    dispatch_block=$(awk '
+        /^  workflow_dispatch:/ { capture = 1 }
+        capture && /^[^[:space:]#]/ { exit }
+        capture && /^  [^ ]/ && !/^  workflow_dispatch:/ { exit }
+        capture
+    ' "$ci_workflow")
+    dispatch_base_block=$(printf '%s\n' "$dispatch_block" | awk '
+        /^      base_sha:/ { capture = 1; next }
+        capture && NF && !/^        / { exit }
+        capture
+    ')
+    for required in '        required: true' '        type: string'; do
+        if ! printf '%s\n' "$dispatch_base_block" | grep -Fqx "$required"; then
+            fail 'CI dispatch must require an explicit string base_sha input'
+            break
+        fi
+    done
+    classify_block=$(awk '
+        /^  classify:/ { capture = 1 }
+        /^  [A-Za-z0-9_-]+:/ && !/^  classify:/ && capture { exit }
+        capture
+    ' "$ci_workflow")
+    if ! printf '%s\n' "$classify_block" | grep -Fqx '          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}'; then
+        fail 'CI classifier must bind the PR, push, or explicit dispatch base'
+    fi
     for required in \
         '    name: preflight' \
-        '          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}' \
+        '          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}' \
         '          ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}' \
         '          ALPINE_PR_BODY: ${{ github.event.pull_request.body }}' \
         "          ALPINE_PR_LABELS: \${{ join(github.event.pull_request.labels.*.name, ',') }}" \

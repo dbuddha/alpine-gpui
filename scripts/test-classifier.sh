@@ -1,14 +1,18 @@
 #!/bin/sh
 set -eu
 
+temporary=$(mktemp -d)
+trap 'rm -rf "$temporary"' EXIT HUP INT TERM
+classifier_program=${ALPINE_CLASSIFIER_UNDER_TEST:-$(pwd)/scripts/classify-ci.sh}
+
 run_fixture() {
-    output_file=$(mktemp)
+    output_file=$(mktemp "$temporary/output.XXXXXX")
     GITHUB_OUTPUT=$output_file \
     ALPINE_BASE_SHA=HEAD \
     ALPINE_HEAD_SHA=HEAD \
     ALPINE_CHANGED_FILES=$1 \
     ALPINE_PR_LABELS=${2:-} \
-    scripts/classify-ci.sh
+    "$classifier_program"
     cat "$output_file"
 }
 
@@ -29,6 +33,7 @@ assert_every_gate() {
     assert_output "$output" miri=true
     assert_output "$output" metal=true
     assert_output "$output" tla=true
+    assert_output "$output" portable=true
 }
 
 docs=$(run_fixture README.md)
@@ -161,8 +166,7 @@ assert_output "$tool_docs" coverage=false
 assert_output "$tool_docs" mutation=false
 
 tool_fixture=$(run_fixture tools/alpine-ax-client/fixtures/tree.json)
-assert_output "$tool_fixture" coverage=false
-assert_output "$tool_fixture" mutation=false
+assert_every_gate "$tool_fixture"
 
 unsafe=$(run_fixture README.md review:unsafe)
 assert_output "$unsafe" miri=true
@@ -218,5 +222,154 @@ assert_output "$native_benchmark_classifier" metal=true
 
 native_benchmark_classifier_tests=$(run_fixture scripts/test-native-benchmark-result.sh)
 assert_output "$native_benchmark_classifier_tests" metal=true
+
+for path in \
+    crates/alpine-runtime/src/lib.rs \
+    Cargo.toml Cargo.lock rust-toolchain.toml .cargo/config.toml \
+    crates/alpine-core/Cargo.toml \
+    .github/workflows/weekly-assurance.yml \
+    .github/actions/upload-required-artifact/action.yml \
+    assurance/miri-text-layout-partitions.tsv \
+    scripts/check-native-mutation-receipts.sh \
+    scripts/test-native-mutation-receipts.sh \
+    scripts/check-tla.sh \
+    apps/alpine-studio/fixtures/rust-analyzer/Cargo.toml \
+    apps/alpine-studio/tests/fixtures/workspace/input.json \
+    crates/alpine-core/fixtures/non-rust.bin \
+    tools/unmapped-tool/src/lib.rs \
+    tools/unmapped-tool/Cargo.toml \
+    unclassified/input.bin; do
+    assert_every_gate "$(run_fixture "$path")"
+done
+
+assert_every_gate "$(run_fixture "$(printf 'README.md\nunclassified/input.bin')")"
+assert_every_gate "$(run_fixture "$(printf 'tools/alpine-assurance/src/main.rs\ntools/unmapped-tool/src/lib.rs\ntools/unmapped-tool/Cargo.toml')")"
+empty=$(run_fixture '')
+assert_output "$empty" mutation=false
+assert_output "$empty" metal=false
+assert_output "$empty" portable=false
+
+# Invalid source identity must fail before publishing any workflow outputs.
+for invalid in missing-base wrong-base wrong-head; do
+    base=HEAD
+    head=HEAD
+    case "$invalid" in
+        missing-base) base= ;;
+        wrong-base) base=alpine-nonexistent-base ;;
+        wrong-head) head=alpine-nonexistent-head ;;
+    esac
+    output_file="$temporary/$invalid.outputs"
+    : > "$output_file"
+    if GITHUB_OUTPUT="$output_file" ALPINE_BASE_SHA="$base" \
+        ALPINE_HEAD_SHA="$head" ALPINE_CHANGED_FILES=README.md \
+        "$classifier_program" > "$temporary/$invalid.stdout" 2> "$temporary/$invalid.stderr"; then
+        printf 'classifier test error: accepted %s\n' "$invalid" >&2
+        exit 1
+    fi
+    [ ! -s "$output_file" ] || {
+        printf 'classifier test error: invalid identity published outputs\n' >&2
+        exit 1
+    }
+    grep -q 'CI classifier error:' "$temporary/$invalid.stderr"
+done
+
+# Explain output is source-bound planning, not discovered or executed tests.
+ALPINE_CI_PLAN="$temporary/plan.json" \
+    run_fixture crates/alpine-runtime/src/lib.rs >/dev/null
+source_head=$(git rev-parse HEAD)
+jq -e --arg head "$source_head" '
+    .schema == "alpine-ci-gate-plan/v1" and
+    .head_sha == $head and .base_sha == $head and .merge_base == $head and
+    .change_source == "fixture" and .gates.metal and .gates.mutation and
+    .changed_paths == ["crates/alpine-runtime/src/lib.rs"] and
+    .inventory_status == "not-discovered" and .acceptance == "not-evaluated" and
+    any(.reasons[]; .gate == "metal" and .rule == "runtime-consumers")
+' "$temporary/plan.json" >/dev/null
+
+ALPINE_CI_PLAN="$temporary/unknown.json" \
+    run_fixture "$(printf 'README.md\nunclassified/input.bin')" >/dev/null
+jq -e '.unmapped_paths == ["unclassified/input.bin"] and
+    any(.reasons[]; .gate == "metal" and .rule == "unmapped-input")' \
+    "$temporary/unknown.json" >/dev/null
+
+# Exercise real Git discovery, not only the injected path fixtures. No fixture
+# repository touches the caller's index, branch, files, or Git configuration.
+repository="$temporary/repository"
+git init -q "$repository"
+git -C "$repository" config user.name 'Alpine classifier fixture'
+git -C "$repository" config user.email 'classifier@example.invalid'
+git -C "$repository" config commit.gpgsign false
+mkdir -p "$repository/crates/alpine-runtime/src" "$repository/docs"
+printf 'initial\n' > "$repository/crates/alpine-runtime/src/lib.rs"
+git -C "$repository" add .
+git -C "$repository" commit -qm initial
+initial=$(git -C "$repository" rev-parse HEAD)
+printf 'runtime change\n' >> "$repository/crates/alpine-runtime/src/lib.rs"
+git -C "$repository" add .
+git -C "$repository" commit -qm runtime
+printf 'documentation change\n' > "$repository/README.md"
+git -C "$repository" add .
+git -C "$repository" commit -qm documentation
+
+run_git_fixture() {
+    (
+        cd "$repository"
+        unset ALPINE_CHANGED_FILES GITHUB_OUTPUT ALPINE_PR_LABELS
+        ALPINE_BASE_SHA=$1 ALPINE_HEAD_SHA=HEAD \
+            ALPINE_CI_PLAN="$temporary/git-plan.json" "$classifier_program"
+    )
+}
+
+assert_every_gate "$(run_git_fixture "$initial")"
+jq -e '.change_source == "git" and
+    (.changed_paths | index("crates/alpine-runtime/src/lib.rs") != null)' \
+    "$temporary/git-plan.json" >/dev/null
+
+before_rename=$(git -C "$repository" rev-parse HEAD)
+git -C "$repository" mv crates/alpine-runtime/src/lib.rs docs/renamed.md
+git -C "$repository" commit -qm rename
+assert_every_gate "$(run_git_fixture "$before_rename")"
+jq -e '(.changed_paths | index("crates/alpine-runtime/src/lib.rs") != null) and
+    (.changed_paths | index("docs/renamed.md") != null)' \
+    "$temporary/git-plan.json" >/dev/null
+
+before_unusual=$(git -C "$repository" rev-parse HEAD)
+unusual_path=$(printf 'docs/two\nlines.md')
+printf 'unusual filename\n' > "$repository/$unusual_path"
+git -C "$repository" add .
+git -C "$repository" commit -qm unusual-path
+assert_every_gate "$(run_git_fixture "$before_unusual")"
+jq -e '(.unmapped_paths | length) == 1 and
+    any(.reasons[]; .rule == "unmapped-input")' "$temporary/git-plan.json" >/dev/null
+
+unchanged=$(run_git_fixture HEAD)
+assert_output "$unchanged" coverage=false
+assert_output "$unchanged" mutation=false
+assert_output "$unchanged" portable=false
+jq -e '.changed_paths == [] and .reasons == []' "$temporary/git-plan.json" >/dev/null
+
+# Dispatch is an explicit comparison, not an implicit one-commit fallback.
+# Its supplied baseline must include earlier runtime changes as well as the
+# most recent documentation change. Invalid/missing bases fail above for all
+# events; marking a command as dispatch cannot make either identity valid.
+dispatch=$(GITHUB_EVENT_NAME=workflow_dispatch run_git_fixture "$initial")
+assert_every_gate "$dispatch"
+jq -e --arg base "$initial" '.base_sha == $base and .change_source == "git"' \
+    "$temporary/git-plan.json" >/dev/null
+if GITHUB_EVENT_NAME=workflow_dispatch run_git_fixture '' \
+    > "$temporary/dispatch.stdout" 2> "$temporary/dispatch.stderr"; then
+    printf 'classifier test error: dispatch accepted a missing baseline\n' >&2
+    exit 1
+fi
+grep -q 'ALPINE_BASE_SHA is required' "$temporary/dispatch.stderr"
+
+# Unrelated histories cannot authorize a partial diff or an empty plan.
+foreign=$(printf 'foreign root\n' | git -C "$repository" commit-tree \
+    "$(git -C "$repository" rev-parse 'HEAD^{tree}')")
+if run_git_fixture "$foreign" > "$temporary/foreign.stdout" 2> "$temporary/foreign.stderr"; then
+    printf 'classifier test error: accepted unrelated histories\n' >&2
+    exit 1
+fi
+grep -q 'no available common ancestor' "$temporary/foreign.stderr"
 
 printf 'CI classifier tests passed\n'

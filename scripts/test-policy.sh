@@ -484,6 +484,41 @@ if ! grep -Fq 'CI cancellation must be limited to source-changing or non-PR runs
     exit 1
 fi
 
+for dispatch_fault in missing-base optional-base non-string-base classify-base preflight-base; do
+    case "$dispatch_fault" in
+        missing-base)
+            expression='s/    inputs:\n      base_sha:\n        description: [^\n]*\n        required: true\n        type: string\n//'
+            diagnostic='CI dispatch must require an explicit string base_sha input'
+            ;;
+        optional-base)
+            expression='s/(  workflow_dispatch:.*?required:) true/$1 false/s'
+            diagnostic='CI dispatch must require an explicit string base_sha input'
+            ;;
+        non-string-base)
+            expression='s/(  workflow_dispatch:.*?type:) string/$1 boolean/s'
+            diagnostic='CI dispatch must require an explicit string base_sha input'
+            ;;
+        classify-base)
+            expression='s/(  classify:.*?ALPINE_BASE_SHA: [^\n]*?) \|\| inputs\.base_sha/$1/s'
+            diagnostic='CI classifier must bind the PR, push, or explicit dispatch base'
+            ;;
+        preflight-base)
+            expression='s/(  preflight:.*?ALPINE_BASE_SHA: [^\n]*?) \|\| inputs\.base_sha/$1/s'
+            diagnostic='CI preflight must validate current repository and pull request policy before fan-out'
+            ;;
+    esac
+    perl -0pe "$expression" "$fixture_dir/ci.yml" > "$fixture_dir/$dispatch_fault-ci.yml"
+    if ALPINE_CI_WORKFLOW="$fixture_dir/$dispatch_fault-ci.yml" run_policy > "$fixture_dir/$dispatch_fault-ci.log" 2>&1; then
+        printf 'policy test error: dispatch fault %s unexpectedly passed\n' "$dispatch_fault" >&2
+        exit 1
+    fi
+    if ! grep -Fq "$diagnostic" "$fixture_dir/$dispatch_fault-ci.log"; then
+        printf 'policy test error: expected dispatch fault %s was not reported\n' "$dispatch_fault" >&2
+        cat "$fixture_dir/$dispatch_fault-ci.log" >&2
+        exit 1
+    fi
+done
+
 perl -0pe 's/(  preflight:.*?)(        run: scripts\/check-policy\.sh)/$1        run: true/s' \
     "$fixture_dir/ci.yml" > "$fixture_dir/bypassed-preflight-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/bypassed-preflight-ci.yml" run_policy > "$fixture_dir/bypassed-preflight-ci.log" 2>&1; then
