@@ -460,7 +460,22 @@ if [ -n "$workflow_files" ]; then
     # Only native mutation copies change compiler mode. Keep independent
     # ordinary validation and all other jobs at the existing global default.
     if ! awk '
-        { sub(/[[:space:]]+#.*$/, "") }
+        function without_comment(line, i, character, quote, escaped) {
+            for (i = 1; i <= length(line); i++) {
+                character = substr(line, i, 1)
+                if (escaped) { escaped = 0; continue }
+                if (character == "\\" && quote != "\047") { escaped = 1; continue }
+                if (quote != "") {
+                    if (character == quote) quote = ""
+                    continue
+                }
+                if (character == "\"" || character == "\047") { quote = character; continue }
+                if (character == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:]]/))
+                    return substr(line, 1, i - 1)
+            }
+            return line
+        }
+        { $0 = without_comment($0); sub(/[[:space:]]+$/, "") }
         /^[[:space:]]*#/ { next }
         /^[^[:space:]]/ { section = $0; job = ""; in_environment = 0 }
         section == "jobs:" && /^  [A-Za-z0-9_-]+:$/ {
