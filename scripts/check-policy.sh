@@ -457,6 +457,54 @@ if [ -n "$workflow_files" ]; then
             fail 'native mutation receipts must bind selected execution and source/base identity'
         fi
     done
+    # Only native mutation copies change compiler mode. Keep independent
+    # ordinary validation and all other jobs at the existing global default.
+    if ! awk '
+        function without_comment(line, i, character, quote, escaped) {
+            for (i = 1; i <= length(line); i++) {
+                character = substr(line, i, 1)
+                if (escaped) { escaped = 0; continue }
+                if (character == "\\" && quote != "\047") { escaped = 1; continue }
+                if (quote != "") {
+                    if (character == quote) quote = ""
+                    continue
+                }
+                if (character == "\"" || character == "\047") { quote = character; continue }
+                if (character == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:]]/))
+                    return substr(line, 1, i - 1)
+            }
+            return line
+        }
+        {
+            # Shell bodies are opaque, including multiline quoted strings.
+            # Mode declarations belong in the two reviewed YAML env entries.
+            match($0, /^ */); indentation = RLENGTH
+            if (in_run && $0 ~ /[^[:space:]]/ && indentation <= run_indentation)
+                in_run = 0
+            if (in_run || $0 ~ /^[[:space:]]+run:/) {
+                if (index($0, "CARGO_INCREMENTAL")) invalid = 1
+                if (!in_run) { in_run = 1; run_indentation = indentation }
+                next
+            }
+            $0 = without_comment($0); sub(/[[:space:]]+$/, "")
+        }
+        /^[[:space:]]*#/ { next }
+        /^[^[:space:]]/ { section = $0; job = ""; in_environment = 0 }
+        section == "jobs:" && /^  [A-Za-z0-9_-]+:$/ {
+            job = $1; sub(/:$/, "", job); in_environment = 0
+        }
+        /^    env:$/ { in_environment = 1; next }
+        /^    [^ ]/ { in_environment = 0 }
+        /CARGO_INCREMENTAL/ {
+            if (section == "env:" && $0 == "  CARGO_INCREMENTAL: \"0\"") global++
+            else if (section == "jobs:" && job == "native-mutation" && in_environment &&
+                $0 == "      CARGO_INCREMENTAL: \"1\"") native++
+            else invalid = 1
+        }
+        END { exit (invalid || global != 1 || native != 1) }
+    ' "${ALPINE_CI_WORKFLOW:-.github/workflows/ci.yml}"; then
+        fail 'CI mutation compilation mode must be explicit and scoped'
+    fi
     if ! grep -Fqx 'scripts/test-native-mutation-receipts.sh' scripts/check.sh; then
         fail 'local quality gate must exercise native mutation receipt controls'
     fi
