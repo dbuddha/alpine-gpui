@@ -4545,6 +4545,90 @@ assertion = "Repeated status and stale language wakes report no visual change, s
 scope = "One inactive language model, one stale generation, and one repeated bounded status."
 exclusions = ["native presentation", "run-loop wake latency", "real server traffic"]
 
+# Defect #576: additional application-composition evidence, not wider formal scope.
+# Existing single-document records and claim requirement associations stay intact.
+[[evidence]]
+id = "EV-0137-UNIT02D"
+claim = "AEP-0137-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_overlay_regression_tests.rs#workspace_roster_versions_close_reopen_and_restart_reach_the_wire"
+assertion = "The local mock child observes the expected per-document open, change, and close ordering and versions across roster changes, reopen, and an intentional restart."
+scope = "A fixed two-document workspace roster and one local mock language-server child at each process epoch."
+exclusions = ["real rust-analyzer semantics","AppKit folder-mode replay","physical process residency","Rust formal refinement"]
+
+[[evidence]]
+id = "EV-0137-UNIT02E"
+claim = "AEP-0137-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_workspace_acceptance_tests.rs#workspace_acceptance_anchor_exhaustion_rejects_before_publication"
+assertion = "Active-document version exhaustion rejects the roster before a changed parked document can be submitted through the current transport."
+scope = "One active and one parked Rust document, an explicitly exhausted anchor version, and controlled bounded submission observation."
+exclusions = ["ordinary reachability of exhausted counters","child receipt of rejected writes","AppKit input","Rust formal refinement"]
+
+[[evidence]]
+id = "EV-0137-UNIT02F"
+claim = "AEP-0137-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_workspace_acceptance_tests.rs#workspace_acceptance_restart_rejection_revokes_published_views"
+assertion = "Rejected process replacement revokes the fixture's admitted view publications without advancing the current transport generation or epoch."
+scope = "The fixed publication-family matrix, an inert bounded transport observer, and real control-queue saturation before restart admission."
+exclusions = ["operating-system process scheduling","GPU-visible pixels","native folder-mode replay","Rust formal refinement"]
+
+[[evidence]]
+id = "EV-0137-UNIT02G"
+claim = "AEP-0137-C02"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_workspace_acceptance_tests.rs#workspace_acceptance_restart_rejection_rejects_late_views"
+assertion = "Framed late replies cannot republish the fixture's pending views after replacement admission is rejected; current transport ownership remains unchanged."
+scope = "The fixed pending-reply matrix with controlled protocol input after bounded restart rejection."
+exclusions = ["real server timing","presentation latency","native folder-mode replay","Rust formal refinement"]
+
+[[evidence]]
+id = "EV-0137-UNIT03D"
+claim = "AEP-0137-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_workspace_acceptance_tests.rs#workspace_acceptance_save_preserves_current_native_status"
+assertion = "A save-only transition preserves the current native diagnostic status instead of clearing it without a replacement publication."
+scope = "A bounded prepared workspace model with an admitted diagnostic and a save-only notification."
+exclusions = ["compiler or server latency","native window presentation","on-disk save durability"]
+
+[[evidence]]
+id = "EV-0137-UNIT03E"
+claim = "AEP-0137-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_workspace_acceptance_tests.rs#workspace_acceptance_restart_budget_error_redraw_without_publication"
+assertion = "A newly reported exhausted-restart status requests redraw without another publication change; repeating the identical terminal failure does not request redraw or reset queued transport ownership."
+scope = "A preloaded reachable restart-budget boundary, no admitted or pending views, and preserved active-save and closing-document intents."
+exclusions = ["execution of preceding real process restarts","native frame submission","presentation latency"]
+
+[[evidence]]
+id = "EV-0137-UNIT03F"
+claim = "AEP-0137-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_workspace_acceptance_tests.rs#workspace_acceptance_restart_generation_overflow_redraw_without_publication"
+assertion = "Generation exhaustion reports a new terminal status as a visual change while an identical repeated failure stays quiet and preserves transport ownership."
+scope = "Explicit maximum-generation counter injection into a bounded workspace model with no other publication change."
+exclusions = ["normal journey to counter exhaustion","native process or frame execution","unbounded-counter proof"]
+
+[[evidence]]
+id = "EV-0137-UNIT03G"
+claim = "AEP-0137-C03"
+kind = "unit"
+artifact = "apps/alpine-studio/src/rust_workspace_acceptance_tests.rs#workspace_acceptance_restart_invalid_identity_redraw_without_publication"
+assertion = "An invalid replacement identity reports a new terminal status as a visual change while an identical repeated failure stays quiet and preserves transport ownership."
+scope = "Defensive zero-workspace-revision injection into the prepared model; normal production reachability is not asserted."
+exclusions = ["ordinary creation of an invalid identity","native process or frame execution","Rust formal refinement"]
+
+[[evidence]]
+id = "EV-0137-NATIVE02D"
+claim = "AEP-0137-C02"
+kind = "native"
+artifact = "apps/alpine-studio/src/rust_diagnostics_tests.rs#pinned_rust_analyzer_preserves_unsaved_workspace_semantics"
+assertion = "The pinned server produces fresh diagnostics reflecting an unsaved cross-file signature change, non-Rust active-view switching, undo and redo, and saved-file controls while the same workspace process is retained."
+scope = "The headless product language model, two Rust overlays, a non-Rust active-view identity, and the checksum-pinned Task #208 rust-analyzer."
+assumptions = ["The harness verifies the server release digest and version; discovered opt-in tests must actually execute."]
+exclusions = ["production AppKit folder-mode replay","keyboard or IME interaction","comparative latency","physical memory qualification","TLA+ coverage of LSP semantics"]
+
 [[evidence]]
 id = "EV-0137-TLA05"
 claim = "AEP-0137-C05"

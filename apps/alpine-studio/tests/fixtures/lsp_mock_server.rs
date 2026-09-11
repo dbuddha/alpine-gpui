@@ -1,33 +1,50 @@
 use std::{
+    collections::BTreeMap,
     env,
     fs::{File, OpenOptions},
     io::{self, Read, Write},
     path::PathBuf,
     process, thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const TRACE_ENVIRONMENT: &str = "ALPINE_STUDIO_NATIVE_LSP_TRACE";
 
 struct PhaseTrace {
     file: Option<File>,
+    startup_timing: Option<File>,
 }
 
 impl PhaseTrace {
     fn from_environment() -> io::Result<Self> {
-        let Some(path) = env::var_os(TRACE_ENVIRONMENT).map(PathBuf::from) else {
-            return Ok(Self { file: None });
-        };
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
-        Ok(Self { file: Some(file) })
+        let file = env::var_os(TRACE_ENVIRONMENT)
+            .map(PathBuf::from)
+            .map(|path| OpenOptions::new().create(true).append(true).open(path))
+            .transpose()?;
+        let startup_timing = env::var_os("ALPINE_STUDIO_LSP_STARTUP_TIMING")
+            .map(PathBuf::from)
+            .map(|path| OpenOptions::new().append(true).open(path))
+            .transpose()?;
+        Ok(Self {
+            file,
+            startup_timing,
+        })
     }
 
     fn record(&mut self, phase: &str) -> io::Result<()> {
-        let Some(file) = self.file.as_mut() else {
-            return Ok(());
-        };
-        let record = format!("{phase}\n");
-        file.write_all(record.as_bytes())
+        if let Some(file) = self.file.as_mut() {
+            let record = format!("{phase}\n");
+            file.write_all(record.as_bytes())?;
+        }
+        if let Some(file) = self.startup_timing.as_mut() {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(io::Error::other)?
+                .as_nanos();
+            let record = format!("{timestamp}\tchild\t{}\t{phase}\n", process::id());
+            file.write_all(record.as_bytes())?;
+        }
+        Ok(())
     }
 }
 
@@ -45,8 +62,11 @@ fn run() -> io::Result<()> {
     let mut buffered = Vec::new();
     let mut chunk = [0_u8; 4_096];
     let mut initialized = false;
-    let mut active_document: Option<Box<str>> = None;
+    let mut open_documents: BTreeMap<Box<str>, u64> = BTreeMap::new();
+    let mut clean_documents: BTreeMap<Box<str>, bool> = BTreeMap::new();
     let mut startup_document_observed = false;
+    let mut acknowledge_shutdown = true;
+    let mut successful_exit = true;
 
     loop {
         let read = input.read(&mut chunk)?;
@@ -65,7 +85,7 @@ fn run() -> io::Result<()> {
                     write_frame(
                         &mut output,
                         &format!(
-                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"capabilities":{{}}}}}}"#
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"capabilities":{{"textDocumentSync":{{"openClose":true,"change":2,"save":{{"includeText":false}}}},"diagnosticProvider":{{"interFileDependencies":true,"workspaceDiagnostics":false}}}}}}}}"#
                         ),
                     )?;
                     trace.record("initialize-responded")?;
@@ -78,13 +98,14 @@ fn run() -> io::Result<()> {
                     let uri = json_string(message, "uri").ok_or_else(|| {
                         io::Error::new(io::ErrorKind::InvalidData, "missing document URI")
                     })?;
-                    if active_document.is_some() {
+                    if open_documents.contains_key(uri) || open_documents.len() == 32 {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "document opened before the active document was closed",
+                            "duplicate document open or workspace overlay limit",
                         ));
                     }
-                    active_document = Some(uri.into());
+                    open_documents.insert(uri.into(), json_number(message, "version")?);
+                    clean_documents.insert(uri.into(), false);
                     if !startup_document_observed {
                         trace.record("did-open-received")?;
                     }
@@ -102,12 +123,18 @@ fn run() -> io::Result<()> {
                     let uri = json_string(message, "uri").ok_or_else(|| {
                         io::Error::new(io::ErrorKind::InvalidData, "missing document URI")
                     })?;
-                    if active_document.as_deref() != Some(uri) {
+                    let version = json_number(message, "version")?;
+                    let previous = open_documents.get_mut(uri).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "change for unopened document")
+                    })?;
+                    if version <= *previous {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "document change did not belong to the active document",
+                            "document change version did not advance",
                         ));
                     }
+                    *previous = version;
+                    clean_documents.insert(uri.into(), message.contains("let ok"));
                     if message.contains("ALPINE_CRASH") {
                         process::exit(7);
                     }
@@ -120,17 +147,53 @@ fn run() -> io::Result<()> {
                     }
                     write_diagnostics(&mut output, message, message.contains("let ok"))?;
                 }
+                Some("textDocument/didSave") if initialized => {
+                    let uri = json_string(message, "uri").ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "missing saved document URI")
+                    })?;
+                    if !open_documents.contains_key(uri) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "save for unopened document",
+                        ));
+                    }
+                    // A URI-only disk save does not replace the current overlay
+                    // or reset its version, even if newer unsaved edits exist.
+                }
                 Some("textDocument/didClose") if initialized => {
                     let uri = json_string(message, "uri").ok_or_else(|| {
                         io::Error::new(io::ErrorKind::InvalidData, "missing document URI")
                     })?;
-                    if active_document.as_deref() != Some(uri) {
+                    if open_documents.remove(uri).is_none() {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "document close did not belong to the active document",
+                            "document close did not belong to an open document",
                         ));
                     }
-                    active_document = None;
+                    clean_documents.remove(uri);
+                }
+                Some("textDocument/diagnostic") if initialized => {
+                    let uri = json_string(message, "uri").ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "missing diagnostic URI")
+                    })?;
+                    let clean = clean_documents.get(uri).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "diagnostic request for unopened document",
+                        )
+                    })?;
+                    let id = json_id(message)?;
+                    let items = if *clean {
+                        "[]"
+                    } else {
+                        r#"[{"range":{"start":{"line":0,"character":0},"end":{"line":1,"character":0}},"severity":1,"message":"mock broken"}]"#
+                    };
+                    write_frame(
+                        &mut output,
+                        &format!(
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"kind":"full","resultId":"constant-not-a-revision","items":{items}}}}}"#
+                        ),
+                    )?;
                 }
                 Some("textDocument/completion") if initialized => {
                     if message.contains(r#""character":99"#) {
@@ -272,14 +335,24 @@ fn run() -> io::Result<()> {
                         thread::sleep(Duration::from_secs(5));
                     }
                 }
+                Some("test/shutdown-without-ack") if initialized => acknowledge_shutdown = false,
+                Some("test/shutdown-exit-error") if initialized => successful_exit = false,
                 Some("shutdown") if initialized => {
+                    if !acknowledge_shutdown {
+                        return Ok(());
+                    }
                     let id = json_id(message)?;
                     write_frame(
                         &mut output,
                         &format!(r#"{{"jsonrpc":"2.0","id":{id},"result":null}}"#),
                     )?;
                 }
-                Some("exit") if initialized => return Ok(()),
+                Some("exit") if initialized => {
+                    if !successful_exit {
+                        process::exit(7);
+                    }
+                    return Ok(());
+                }
                 None if initialized && message == r#"{"jsonrpc":"2.0","id":0,"result":null}"# => {
                     write_frame(
                         &mut output,

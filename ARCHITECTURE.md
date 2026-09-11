@@ -150,7 +150,7 @@ checksum-pinned Apple Silicon rust-analyzer fixture qualifies initialize,
 document open, bounded diagnostics, cancellation, stale rejection, restart, and
 shutdown without adding discovery, download, network, or startup work.
 
-Task #210 composes that path into one active Rust document. Studio sends a full
+Task #210 introduced the initial single-active-document path. Studio sends a full
 document `didOpen` and revision-monotonic whole-document incremental `didChange`
 replacements matching rust-analyzer's declared synchronization capability, admits
 diagnostics only for the exact workspace, document, buffer, selection, process
@@ -164,6 +164,33 @@ shared result admission is temporarily saturated; unrelated current work then
 recovers polling without a timer, blocking wait, idle redraw, or duplicate
 document owner. Missing or failed servers leave editing and saving available and
 surface only bounded local status.
+
+Defect [#576](https://github.com/dbuddha/alpine-gpui/issues/576) extends that
+composition to a bounded workspace overlay roster. Workspace/process ownership,
+open-document ownership, and active-view publication are separate. Unsaved Rust
+overlays remain synchronized across Rust and non-Rust active views; actual
+document close, discard, and workspace teardown retire their owners. Exact
+per-document revisions and LSP versions remain distinct from process generation
+and epoch. A rejected roster admission does not partially publish newer parked
+text after its active anchor has failed validation.
+
+Bounded control and writer admission retain accepted wire ownership under
+pressure. Process replacement revokes obsolete diagnostic and view publication
+before its fallible enqueue; only an admitted replacement resets overlay
+transport and advances generation. Rejected replacement retains queued saves
+and closes. A new terminal status invalidates the view; an unchanged repeated
+failure does not create another invalidation.
+
+The independent regressions distinguish submission observation, actual mock-child
+wire receipt, headless pinned-server semantics, and production folder-mode
+replay. The input-credit and deferred-write controls support Defect #576's
+private transport contract; they do not extend the worker-queue TLA+ model to LSP
+framing or writer credits. The additional application-identity and invalidation
+mappings are explicit in `assurance/evidence.toml`; the earlier single-document
+records retain their narrower scope. Physical folder-mode, lifecycle, and
+residency acceptance remain distinct from these deterministic controls. This
+Alpine ownership correction imports no upstream runtime and makes no comparative
+performance claim.
 
 Task #218 adds one private completion owner to that same active Rust session.
 An explicit request captures workspace, document, buffer, selection, process,

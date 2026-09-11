@@ -1,6 +1,118 @@
-use std::{env, thread, time::Instant};
+use std::{collections::VecDeque, env, thread, time::Instant};
 
 use super::*;
+
+#[test]
+fn fixture_events_preserve_terminal_reserve_and_rejection_accounting() -> Result<(), Box<dyn Error>>
+{
+    let mut process = LanguageServerProcess::inert_for_test(identity(1));
+    let sequence = process.send(b"pending")?;
+    assert_eq!(
+        process.take_input_for_test()?.as_deref(),
+        Some(b"pending".as_slice())
+    );
+    for _ in 0..EVENT_CAPACITY - TERMINAL_EVENT_RESERVE {
+        process.inject_stdout_for_test(b"x")?;
+    }
+    let before = process.snapshot();
+    assert_eq!(
+        before.queued_events,
+        EVENT_CAPACITY - TERMINAL_EVENT_RESERVE
+    );
+    assert_eq!(
+        before.retained_bytes,
+        EVENT_CAPACITY - TERMINAL_EVENT_RESERVE
+    );
+    let rejection = process.inject_stdout_for_test(b"rejected");
+    assert_eq!(
+        rejection.map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::WouldBlock))
+    );
+    assert_eq!(process.snapshot().retained_bytes, before.retained_bytes);
+    let ordinary = process.inject_event_for_test(|identity, epoch| ProcessEvent::InputRejected {
+        identity,
+        epoch,
+        sequence,
+        failure: broken_pipe(ProcessStage::Input),
+    });
+    assert_eq!(
+        ordinary.map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::WouldBlock))
+    );
+    for _ in 0..TERMINAL_EVENT_RESERVE {
+        process.inject_event_for_test(|identity, epoch| ProcessEvent::Exited {
+            identity,
+            epoch,
+            success: true,
+            code: Some(0),
+        })?;
+    }
+    assert_eq!(process.snapshot().queued_events, EVENT_CAPACITY);
+    let overflow = process.inject_event_for_test(|identity, epoch| ProcessEvent::Stopped {
+        identity,
+        epoch,
+        reason: StopReason::EventOverflow,
+    });
+    assert_eq!(
+        overflow.map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::WouldBlock))
+    );
+    let mut count = 0;
+    while process.try_event()?.is_some() {
+        count += 1;
+    }
+    assert_eq!(count, EVENT_CAPACITY);
+    assert_eq!(process.snapshot().queued_events, 0);
+    assert_eq!(process.snapshot().retained_bytes, 0);
+    assert_eq!(process.snapshot().starts, 0);
+    assert_eq!(process.snapshot().exits, 0);
+    process.inert_events.take();
+    let missing = process.inject_event_for_test(|identity, epoch| ProcessEvent::Stopped {
+        identity,
+        epoch,
+        reason: StopReason::EventOverflow,
+    });
+    assert_eq!(
+        missing.map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::BrokenPipe))
+    );
+    Ok(())
+}
+
+#[test]
+fn fixture_observer_rejects_replacement_owner_without_retaining_its_payload()
+-> Result<(), Box<dyn Error>> {
+    let mut process = LanguageServerProcess::inert_for_test(identity(1));
+    let mut observer = process.take_input_observer_for_test()?;
+    let _ = process.restart(identity(2))?;
+    let _ = process.send(b"replacement owner")?;
+    assert_eq!(
+        observer.take_input().map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::InvalidData))
+    );
+    assert_eq!(observer.retained_bytes(), 0);
+    assert_eq!(process.snapshot().retained_bytes, 0);
+    assert!(observer.take_input()?.is_none());
+    Ok(())
+}
+
+#[test]
+fn fixture_input_reader_rejects_lifecycle_controls_and_disconnection() -> Result<(), Box<dyn Error>>
+{
+    let mut process = LanguageServerProcess::inert_for_test(identity(1));
+    let _ = process.restart(identity(2))?;
+    assert_eq!(
+        process.take_input_for_test().map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::InvalidData))
+    );
+    process.control.take();
+    assert_eq!(
+        process.take_input_for_test().map_err(|error| error.kind),
+        Err(FailureKind::Io(io::ErrorKind::BrokenPipe))
+    );
+    assert_eq!(process.snapshot().retained_bytes, 0);
+    Ok(())
+}
 
 const TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -56,11 +168,139 @@ impl Write for TestWriter {
     }
 }
 
-struct FailingReader;
+struct ScriptedReader {
+    steps: VecDeque<io::Result<&'static [u8]>>,
+    reads: usize,
+}
 
-impl Read for FailingReader {
-    fn read(&mut self, _bytes: &mut [u8]) -> io::Result<usize> {
-        Err(io::Error::other("injected read failure"))
+impl Read for ScriptedReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        self.reads += 1;
+        let bytes = self.steps.pop_front().unwrap_or(Ok(&[]))?;
+        output[..bytes.len()].copy_from_slice(bytes);
+        Ok(bytes.len())
+    }
+}
+
+#[test]
+fn transport_reader_retries_interrupts_without_losing_order_or_bytes() {
+    for stream in [ProcessStream::Stdout, ProcessStream::Stderr] {
+        let counters = Arc::new(Counters::default());
+        let overflowed = AtomicBool::new(false);
+        let (sender, receiver) = sync_channel(3);
+        let mut source = ScriptedReader {
+            steps: vec![
+                Err(io::Error::from(io::ErrorKind::Interrupted)),
+                Ok(&b"Content-Length: 2\r\n"[..]),
+                Err(io::Error::from(io::ErrorKind::Interrupted)),
+                Err(io::Error::from(io::ErrorKind::Interrupted)),
+                Ok(&b"\r\n{}"[..]),
+                Ok(&b""[..]),
+                Ok(&b"must not read after EOF"[..]),
+            ]
+            .into(),
+            reads: 0,
+        };
+        reader(&mut source, stream, &sender, &overflowed, &counters);
+        assert_eq!(source.reads, 6);
+        assert_eq!(source.steps.len(), 1);
+        let packets: Vec<_> = receiver.try_iter().collect();
+        assert_eq!(packets.len(), 2);
+        assert!(packets.iter().all(|packet| packet.stream == stream));
+        let bytes: Vec<_> = packets
+            .iter()
+            .flat_map(|packet| packet.payload.bytes.iter().copied())
+            .collect();
+        assert_eq!(bytes, b"Content-Length: 2\r\n\r\n{}");
+        assert!(!overflowed.load(Ordering::Acquire));
+        assert_eq!(counters.retained_bytes.load(Ordering::Acquire), bytes.len());
+        assert_eq!(
+            counters.peak_retained_bytes.load(Ordering::Acquire),
+            bytes.len()
+        );
+        drop(packets);
+        assert_eq!(counters.retained_bytes.load(Ordering::Acquire), 0);
+    }
+}
+
+#[test]
+fn transport_reader_does_not_retry_fatal_errors_or_consume_following_bytes()
+-> Result<(), Box<dyn Error>> {
+    for kind in [
+        io::ErrorKind::BrokenPipe,
+        io::ErrorKind::PermissionDenied,
+        io::ErrorKind::UnexpectedEof,
+    ] {
+        let counters = Arc::new(Counters::default());
+        let overflowed = AtomicBool::new(false);
+        let (sender, receiver) = sync_channel(3);
+        let mut source = ScriptedReader {
+            steps: vec![
+                Ok(&b"before"[..]),
+                Err(io::Error::from(kind)),
+                Ok(&b"must not read after error"[..]),
+            ]
+            .into(),
+            reads: 0,
+        };
+        reader(
+            &mut source,
+            ProcessStream::Stdout,
+            &sender,
+            &overflowed,
+            &counters,
+        );
+        assert_eq!(source.reads, 2);
+        assert_eq!(source.steps.len(), 1);
+        let packet = receiver.try_recv()?;
+        assert_eq!(&*packet.payload.bytes, b"before");
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+        assert!(!overflowed.load(Ordering::Acquire));
+        drop(packet);
+        assert_eq!(counters.retained_bytes.load(Ordering::Acquire), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn transport_join_consumes_all_results_after_every_panic_position() {
+    for panic_mask in 0_u8..8 {
+        let consumed = std::cell::Cell::new(0);
+        let joins = (0..3).map(|index| -> thread::Result<()> {
+            consumed.set(consumed.get() + 1);
+            if panic_mask & (1 << index) == 0 {
+                Ok(())
+            } else {
+                Err(Box::new(index))
+            }
+        });
+        assert_eq!(join_helpers(joins), panic_mask != 0);
+        assert_eq!(consumed.get(), 3);
+    }
+    assert!(!join_helpers(std::iter::empty()));
+}
+
+#[test]
+fn transport_join_drains_real_helpers_and_preserves_the_panic_result() {
+    for panic_at in [None, Some(0), Some(1), Some(2)] {
+        let completed = Arc::new(AtomicUsize::new(0));
+        let mut helpers: Vec<_> = (0..3)
+            .map(|index| {
+                let completed = Arc::clone(&completed);
+                thread::spawn(move || {
+                    completed.fetch_or(1 << index, Ordering::Release);
+                    if panic_at == Some(index) {
+                        std::panic::resume_unwind(Box::new("injected helper panic"));
+                    }
+                })
+            })
+            .collect();
+        assert_eq!(
+            join_helpers(helpers.drain(..).map(JoinHandle::join)),
+            panic_at.is_some()
+        );
+        assert!(helpers.is_empty());
+        assert_eq!(completed.load(Ordering::Acquire), 7);
     }
 }
 
@@ -88,9 +328,31 @@ fn detached_process(
         identity: identity(1),
         epoch: ProcessEpoch(1),
         next_sequence: 0,
-        _inert_control: None,
-        _inert_events: None,
+        inert_control: None,
+        inert_events: None,
     }
+}
+
+#[test]
+fn shutdown_budget_exhaustion_is_reported_without_a_second_wait() {
+    let (_event_sender, events) = sync_channel(1);
+    let mut process = detached_process(None, events);
+    let (release, released) = sync_channel(1);
+    let (finished, completion) = sync_channel(1);
+    process.supervisor_complete = completion;
+    process.supervisor = Some(thread::spawn(move || {
+        let _ = released.recv();
+        let _ = finished.send(());
+    }));
+    let report = process.shutdown_with_budget(Duration::ZERO);
+    assert_eq!(report.shutdown_timeouts, 1);
+    assert!(process.supervisor.is_none());
+    assert_eq!(
+        process.supervisor_complete.try_recv(),
+        Err(TryRecvError::Empty)
+    );
+    assert!(release.send(()).is_ok());
+    assert_eq!(process.supervisor_complete.recv_timeout(TIMEOUT), Ok(()));
 }
 
 fn wait_for(
@@ -427,7 +689,7 @@ fn pipe_wait_join_and_event_failures_are_structured() -> Result<(), Box<dyn Erro
     let mut helpers = vec![thread::spawn(|| {
         std::panic::resume_unwind(Box::new("injected helper panic"));
     })];
-    assert!(join_helpers(&mut helpers));
+    assert!(join_helpers(helpers.drain(..).map(JoinHandle::join)));
 
     let counters = Counters::default();
     let (full_sender, _full_receiver) = sync_channel(0);
@@ -507,13 +769,27 @@ fn reader_bounds_success_io_queue_and_retained_budget_paths() -> Result<(), Box<
     drop(packet);
     assert_eq!(counters.retained_bytes.load(Ordering::Relaxed), 0);
 
+    // A finite fault script makes an incorrect retry observable instead of
+    // trapping the mutation runner in an always-failing Read implementation.
+    let mut source = ScriptedReader {
+        steps: vec![
+            Err(io::Error::other("injected read failure")),
+            Ok(&b"must not read after a fatal error"[..]),
+        ]
+        .into(),
+        reads: 0,
+    };
     reader(
-        FailingReader,
+        &mut source,
         ProcessStream::Stderr,
         &sender,
         &overflowed,
         &counters,
     );
+    assert_eq!(source.reads, 1, "fatal errors must not be retried");
+    assert_eq!(source.steps.len(), 1);
+    assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    assert_eq!(counters.retained_bytes.load(Ordering::Acquire), 0);
     assert!(!overflowed.load(Ordering::Relaxed));
     let (full_sender, _full_receiver) = sync_channel(0);
     reader(
@@ -1069,8 +1345,8 @@ fn drop_signals_and_joins_the_owned_supervisor() {
         identity: identity(1),
         epoch: ProcessEpoch(1),
         next_sequence: 0,
-        _inert_control: None,
-        _inert_events: None,
+        inert_control: None,
+        inert_events: None,
     };
     drop(process);
     assert!(observed.load(Ordering::Acquire));
@@ -1249,4 +1525,270 @@ fn ordinary_events_reserve_exact_capacity_for_terminal_classification() {
         events[EVENT_CAPACITY - 1].stop_reason(),
         Some(StopReason::EventOverflow)
     );
+}
+
+#[cfg(unix)]
+struct WriterAdmissionProbe<'a> {
+    process: &'a mut LanguageServerProcess,
+    write_admission: Option<Result<InputSequence, SubmitError>>,
+    flush_admission: Option<Result<InputSequence, SubmitError>>,
+    bytes: Vec<u8>,
+}
+
+#[cfg(unix)]
+impl Write for WriterAdmissionProbe<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.write_admission.is_none() {
+            self.write_admission = Some(self.process.send(b"write-probe"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.flush_admission.is_none() {
+            self.flush_admission = Some(self.process.send(b"flush-probe"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+struct InputAdmissionTrace {
+    overflow: Result<InputSequence, SubmitError>,
+    sequence_before: u64,
+    sequence_after: u64,
+    write_admission: Result<InputSequence, SubmitError>,
+    flush_admission: Result<InputSequence, SubmitError>,
+    bytes: Vec<u8>,
+    terminal_events: Vec<ProcessEvent>,
+    stop: Option<StopReason>,
+    recovered: InputSequence,
+    recovered_bytes: Vec<u8>,
+}
+
+#[cfg(unix)]
+fn route_admitted_input(
+    controls: &Receiver<Control>,
+    running: &mut Option<Running>,
+    events: &SyncSender<ProcessEvent>,
+    counters: &Counters,
+) -> Result<(), Box<dyn Error>> {
+    let Control::Input {
+        identity,
+        epoch,
+        sequence,
+        payload,
+    } = controls.recv_timeout(TIMEOUT)?
+    else {
+        return Err("expected an admitted input control".into());
+    };
+    handle_input_control(
+        running,
+        identity,
+        epoch,
+        WriteRequest { sequence, payload },
+        events,
+        counters,
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn capture_input_admission(
+    process: &mut LanguageServerProcess,
+    controls: &Receiver<Control>,
+    running: &mut Option<Running>,
+    requests: Receiver<WriteRequest>,
+    events: &SyncSender<ProcessEvent>,
+    counters: &Counters,
+) -> Result<InputAdmissionTrace, Box<dyn Error>> {
+    for byte in b"abcd" {
+        let _ = process.send(&[*byte])?;
+        route_admitted_input(controls, running, events, counters)?;
+    }
+    let sequence_before = process.next_sequence;
+    let overflow = process.send(b"overflow");
+    let sequence_after = process.next_sequence;
+    // On the old implementation this fifth accepted control reaches the real
+    // second-stage rejection. Retain it rather than masking that transition.
+    if overflow.is_ok() {
+        route_admitted_input(controls, running, events, counters)?;
+    }
+    running
+        .as_mut()
+        .ok_or("missing running child")?
+        .input
+        .take();
+    let (results, received_results) = sync_channel(WRITE_RESULT_CAPACITY);
+    let mut probe = WriterAdmissionProbe {
+        process,
+        write_admission: None,
+        flush_admission: None,
+        bytes: Vec::new(),
+    };
+    // A controlled Write boundary observes admission while production writer
+    // still owns its current request, including during flush. No sleeps or
+    // fabricated successful-write acknowledgements are needed.
+    writer(&mut probe, requests, &results);
+    let write_admission = probe.write_admission.ok_or("write probe did not execute")?;
+    let flush_admission = probe.flush_admission.ok_or("flush probe did not execute")?;
+    let bytes = probe.bytes;
+    let stop = forward_writes(
+        &received_results,
+        identity(1),
+        ProcessEpoch(1),
+        events,
+        counters,
+    );
+    let mut terminal_events = Vec::new();
+    while let Some(event) = process.try_event()? {
+        terminal_events.push(event);
+    }
+    let recovered = process.send(b"e")?;
+    let Control::Input { payload, .. } = controls.recv_timeout(TIMEOUT)? else {
+        return Err("recovered admission was not an input".into());
+    };
+    let recovered_bytes = payload.bytes.to_vec();
+    Ok(InputAdmissionTrace {
+        overflow,
+        sequence_before,
+        sequence_after,
+        write_admission,
+        flush_admission,
+        bytes,
+        terminal_events,
+        stop,
+        recovered,
+        recovered_bytes,
+    })
+}
+
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn input_credits_preserve_accepted_writes_across_writer_pressure() -> Result<(), Box<dyn Error>> {
+    let (control_sender, controls) = sync_channel(CONTROL_CAPACITY);
+    let (events, received_events) = sync_channel(EVENT_CAPACITY);
+    let mut process = detached_process(Some(control_sender), received_events);
+    let counters = Arc::clone(&process.counters);
+    let mut running = Some(spawn_process(
+        &ProcessSpec::new("/bin/sleep", ["30"], None)?,
+        identity(1),
+        ProcessEpoch(1),
+        &counters,
+    )?);
+    let (input, requests) = sync_channel(INPUT_CAPACITY);
+    running.as_mut().ok_or("child missing after spawn")?.input = Some(input);
+    let trace = capture_input_admission(
+        &mut process,
+        &controls,
+        &mut running,
+        requests,
+        &events,
+        &counters,
+    );
+    // Cleanup is unconditional and precedes assertions that fail on old code.
+    let panicked = running
+        .as_mut()
+        .is_some_and(|child| stop_running(child, true));
+    drop(running);
+    drop(controls);
+    let snapshot = process.shutdown();
+    let trace = trace?;
+    assert!(!panicked);
+    assert_eq!(trace.overflow, Err(SubmitError::Saturated));
+    assert_eq!(trace.sequence_before, 4);
+    assert_eq!(trace.sequence_after, trace.sequence_before);
+    assert_eq!(trace.write_admission, Err(SubmitError::Saturated));
+    assert_eq!(trace.flush_admission, Err(SubmitError::Saturated));
+    assert_eq!(trace.bytes, b"abcd");
+    assert_eq!(trace.stop, None);
+    assert_eq!(trace.terminal_events.len(), 4);
+    for (event, expected) in trace.terminal_events.iter().zip(1..=4) {
+        assert!(matches!(event, ProcessEvent::InputWritten {
+            identity: actual, epoch: ProcessEpoch(1), sequence, bytes: 1,
+        } if *actual == identity(1) && sequence.get() == expected));
+    }
+    assert_eq!(trace.recovered, InputSequence(5));
+    assert_eq!(trace.recovered_bytes, b"e");
+    assert_eq!(snapshot.written_inputs, 4);
+    assert_eq!(snapshot.submitted_inputs, 5);
+    assert_eq!(snapshot.restarts, 0);
+    assert_eq!(snapshot.retained_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn input_credits_keep_restart_independent_and_retire_old_owners() -> Result<(), Box<dyn Error>> {
+    let mut process = LanguageServerProcess::inert_for_test(identity(1));
+    let counters = Arc::clone(&process.counters);
+    let mut held = Vec::new();
+    for byte in b"abcd" {
+        let _ = process.send(&[*byte])?;
+        held.push(
+            process
+                .inert_control
+                .as_ref()
+                .ok_or("controls")?
+                .recv_timeout(TIMEOUT)?,
+        );
+    }
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 4);
+    assert_eq!(process.send(b"full"), Err(SubmitError::Saturated));
+    assert_eq!(process.restart(identity(2))?, ProcessEpoch(2));
+    // Accepting restart does not free permits still owned by the old epoch.
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 4);
+    assert_eq!(process.send(b"still-full"), Err(SubmitError::Saturated));
+    drop(held.pop());
+    assert_eq!(process.send(b"new")?, InputSequence(5));
+    let _ = process.shutdown();
+    assert!(process.shutdown.load(Ordering::Acquire));
+    drop(process);
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 3);
+    drop(held);
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    assert_eq!(counters.retained_bytes.load(Ordering::Acquire), 0);
+    Ok(())
+}
+
+#[test]
+fn input_credits_refund_every_failed_admission_without_charging_outputs()
+-> Result<(), Box<dyn Error>> {
+    let mut process = LanguageServerProcess::inert_for_test(identity(1));
+    let counters = Arc::clone(&process.counters);
+    process
+        .counters
+        .retained_bytes
+        .store(MAX_RETAINED_PAYLOAD_BYTES, Ordering::Release);
+    assert_eq!(process.send(b"x"), Err(SubmitError::RetainedBudget));
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    counters.retained_bytes.store(0, Ordering::Release);
+    process.inject_stdout_for_test(b"output")?;
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    drop(process.try_event()?.ok_or("output event")?);
+    assert_eq!(process.fill_control_for_test()?, CONTROL_CAPACITY);
+    assert_eq!(process.fill_control_for_test()?, 0);
+    assert_eq!(process.send(b"control-full"), Err(SubmitError::Saturated));
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    assert_eq!(process.next_sequence, 0);
+    let mut observer = process.take_input_observer_for_test()?;
+    assert!(observer.take_input()?.is_none());
+    assert_eq!(process.send(b"admitted")?, InputSequence(1));
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 1);
+    assert_eq!(
+        observer.take_input()?.as_deref(),
+        Some(b"admitted".as_slice())
+    );
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    drop(observer);
+    assert_eq!(process.send(b"disconnected"), Err(SubmitError::Closed));
+    assert_eq!(process.fill_control_for_test(), Err(SubmitError::Closed));
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    let _ = process.shutdown();
+    assert_eq!(process.send(b"closed"), Err(SubmitError::Closed));
+    assert_eq!(process.fill_control_for_test(), Err(SubmitError::Closed));
+    assert_eq!(counters.outstanding_inputs.load(Ordering::Acquire), 0);
+    assert_eq!(counters.retained_bytes.load(Ordering::Acquire), 0);
+    Ok(())
 }

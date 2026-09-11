@@ -27,6 +27,7 @@ pub(crate) enum LanguageProtocolError {
     InvalidRename,
     InvalidFormatting,
     MalformedDiagnostics,
+    DiagnosticServerCancelled { retrigger_request: bool },
     DiagnosticWireTooLarge,
     TooManyDiagnostics,
     DiagnosticMessageTooLong,
@@ -46,6 +47,31 @@ impl fmt::Display for LanguageProtocolError {
 }
 
 impl Error for LanguageProtocolError {}
+
+impl LanguageProtocolError {
+    pub(crate) fn from_diagnostic_error(error: crate::lsp_json::RemoteError<'_>) -> Self {
+        if error.code() != -32802 {
+            return Self::MalformedDiagnostics;
+        }
+        // LSP 3.17 defaults omitted cancellation data to retriggerRequest=true.
+        let retrigger_request = match error.data() {
+            None => true,
+            Some(data) => {
+                if data.get().len() > MAX_DIAGNOSTIC_WIRE_BYTES {
+                    return Self::DiagnosticWireTooLarge;
+                }
+                let Ok(value) = crate::lsp_value::parse(data) else {
+                    return Self::MalformedDiagnostics;
+                };
+                let Some(retrigger) = value.get("retriggerRequest").and_then(Value::as_bool) else {
+                    return Self::MalformedDiagnostics;
+                };
+                retrigger
+            }
+        };
+        Self::DiagnosticServerCancelled { retrigger_request }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LspPosition {
@@ -304,6 +330,18 @@ pub(crate) struct DiagnosticBatch {
 }
 
 impl DiagnosticBatch {
+    // Saved compiler reports have no current-overlay revision authority.
+    pub(crate) fn from_saved_items(
+        uri: &str,
+        items: &[Value],
+    ) -> Result<Self, LanguageProtocolError> {
+        Self::from_items(uri, None, items)
+    }
+
+    pub(crate) fn uri(&self) -> &str {
+        &self.uri
+    }
+
     pub(crate) fn admit(
         params: &RawValue,
         expected: &LspDocument,
@@ -311,7 +349,7 @@ impl DiagnosticBatch {
         if params.get().len() > MAX_DIAGNOSTIC_WIRE_BYTES {
             return Err(LanguageProtocolError::DiagnosticWireTooLarge);
         }
-        let value: Value = serde_json::from_str(params.get())
+        let value = crate::lsp_value::parse(params)
             .map_err(|_| LanguageProtocolError::MalformedDiagnostics)?;
         let object = value
             .as_object()
@@ -341,6 +379,40 @@ impl DiagnosticBatch {
             .get("diagnostics")
             .and_then(Value::as_array)
             .ok_or(LanguageProtocolError::MalformedDiagnostics)?;
+        Self::from_items(uri, document_version, items)
+    }
+
+    pub(crate) fn admit_pull(
+        result: &RawValue,
+        expected: &LspDocument,
+    ) -> Result<Self, LanguageProtocolError> {
+        if result.get().len() > MAX_DIAGNOSTIC_WIRE_BYTES {
+            return Err(LanguageProtocolError::DiagnosticWireTooLarge);
+        }
+        let value = crate::lsp_value::parse(result)
+            .map_err(|_| LanguageProtocolError::MalformedDiagnostics)?;
+        let object = value
+            .as_object()
+            .ok_or(LanguageProtocolError::MalformedDiagnostics)?;
+        // We request full document reports, never previousResultId or related
+        // documents. The server's resultId is not a workspace revision.
+        if object.get("kind").and_then(Value::as_str) != Some("full")
+            || object.contains_key("relatedDocuments")
+        {
+            return Err(LanguageProtocolError::MalformedDiagnostics);
+        }
+        let items = object
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or(LanguageProtocolError::MalformedDiagnostics)?;
+        Self::from_items(expected.uri(), Some(expected.version), items)
+    }
+
+    fn from_items(
+        uri: &str,
+        document_version: Option<i32>,
+        items: &[Value],
+    ) -> Result<Self, LanguageProtocolError> {
         if items.len() > MAX_DIAGNOSTICS {
             return Err(LanguageProtocolError::TooManyDiagnostics);
         }
@@ -454,6 +526,22 @@ pub(crate) fn initialize_params(workspace: &Path) -> Result<Box<RawValue>, Langu
         },
         "workspaceFolders": [{ "uri": uri, "name": name }]
     }))
+}
+
+pub(crate) fn initialize_pull_params(
+    workspace: &Path,
+) -> Result<Box<RawValue>, LanguageProtocolError> {
+    let params = initialize_params(workspace)?;
+    let mut value: Value = serde_json::from_str(params.get())
+        .map_err(|_| LanguageProtocolError::MalformedDiagnostics)?;
+    value["capabilities"]["textDocument"]["diagnostic"] = serde_json::json!({
+        "dynamicRegistration": false,
+        "relatedDocumentSupport": false
+    });
+    value["capabilities"]["workspace"]["diagnostics"] = serde_json::json!({
+        "refreshSupport": true
+    });
+    raw_value(&value)
 }
 
 pub(crate) const fn pinned_server_version() -> &'static str {

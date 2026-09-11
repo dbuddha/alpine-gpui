@@ -1,4 +1,4 @@
-//! Bounded active-document Rust diagnostics above the local LSP client.
+//! Bounded workspace Rust overlays and active-view diagnostics above the local LSP client.
 
 use std::{
     env,
@@ -17,10 +17,10 @@ use alpine_text::BufferSnapshot;
 use serde_json::value::RawValue;
 
 use crate::{
-    lsp_client::{LspClient, LspClientError, LspClientPoll},
+    lsp_client::{LspClient, LspClientError, LspClientPoll, LspShutdownReport},
     lsp_json::{PeerEvent, RequestStamp, ResponseValue},
     lsp_language::{
-        DiagnosticBatch, LanguageProtocolError, LspDocument, LspPosition, initialize_params,
+        DiagnosticBatch, LanguageProtocolError, LspDocument, LspPosition, initialize_pull_params,
     },
     lsp_process::{ConfigError, ProcessIdentity, ProcessSpec, ProcessWake, StopReason},
     rust_completion::{CompletionBatch, CompletionError, CompletionItem},
@@ -37,6 +37,19 @@ use crate::{
 const MAX_POLLS_PER_TURN: usize = 8;
 const MAX_RESTARTS_PER_DOCUMENT: u8 = 2;
 pub(crate) const MAX_VISIBLE_DIAGNOSTIC_MARKERS: usize = 256;
+
+#[cfg(all(test, unix, not(miri)))]
+#[path = "rust_overlay_regression_tests.rs"]
+mod overlay_regression_tests;
+
+#[path = "rust_workspace.rs"]
+mod workspace;
+
+#[path = "rust_diagnostic_pull.rs"]
+mod diagnostic_pull;
+
+#[path = "rust_saved_compiler.rs"]
+mod saved_compiler;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(
@@ -336,6 +349,7 @@ impl NavigationRequestKind {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) active: bool,
+    pub(crate) last_shutdown: Option<LspShutdownReport>,
     pending: RustDiagnosticsPending,
     pub(crate) generation: u64,
     pub(crate) process_epoch: u64,
@@ -346,6 +360,10 @@ pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) diagnostic_bytes: usize,
     pub(crate) peak_diagnostic_items: usize,
     pub(crate) peak_diagnostic_bytes: usize,
+    pub(crate) saved_compiler_items: usize,
+    pub(crate) saved_compiler_bytes: usize,
+    pub(crate) peak_saved_compiler_bytes: usize,
+    pub(crate) saved_compiler_rejections: u64,
     pub(crate) completion_items: usize,
     pub(crate) completion_bytes: usize,
     pub(crate) peak_completion_items: usize,
@@ -381,12 +399,17 @@ pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) workspace_edit_wire_bytes: usize,
     pub(crate) peak_workspace_edit_wire_bytes: usize,
     pub(crate) process_retained_bytes: usize,
+    pub(crate) protocol_writes: crate::lsp_client::ProtocolWriteSnapshot,
     pub(crate) process_queued_events: usize,
     pub(crate) process_starts: u64,
     pub(crate) process_submitted_inputs: u64,
     pub(crate) process_written_inputs: u64,
     pub(crate) process_input_saturations: u64,
     pub(crate) document_switches: u64,
+    pub(crate) overlay_documents: usize,
+    pub(crate) overlay_retained_text_bytes: usize,
+    pub(crate) overlay_reserved_text_bytes: usize,
+    pub(crate) overlay_write_pending: bool,
     pub(crate) polls: u64,
     pub(crate) stale_wakes: u64,
     pub(crate) stale_diagnostics: u64,
@@ -541,8 +564,19 @@ enum NavigationCandidate {
 
 #[derive(Default)]
 struct PollCandidates {
-    initialized: bool,
-    diagnostics: Option<Result<DiagnosticBatch, LanguageProtocolError>>,
+    initialized: Option<bool>,
+    saved_visual_changed: bool,
+    saved_rejections: u64,
+    saved_error: Option<LanguageProtocolError>,
+    saved_peak_bytes: usize,
+    diagnostic_refresh: bool,
+    ignored_diagnostics: bool,
+    stale_diagnostic: Option<u32>,
+    diagnostic_response: Option<(
+        u32,
+        RequestStamp,
+        Result<DiagnosticBatch, LanguageProtocolError>,
+    )>,
     completion: Option<(u32, RequestStamp, Result<CompletionBatch, CompletionError>)>,
     navigation: Option<(
         u32,
@@ -563,6 +597,85 @@ struct PollCandidates {
         Result<WorkspaceEditWire, WorkspaceEditError>,
     )>,
     stale_response: Option<u32>,
+}
+
+impl PollCandidates {
+    fn record_response(
+        &mut self,
+        id: u32,
+        method: &str,
+        stamp: RequestStamp,
+        value: ResponseValue<'_>,
+        expected: &LspDocument,
+    ) {
+        match method {
+            "textDocument/diagnostic" => {
+                let batch = diagnostic_pull::batch_from_response(value, expected);
+                self.diagnostic_response = Some((id, stamp, batch));
+            }
+            "textDocument/completion" => {
+                self.completion = Some((id, stamp, completion_batch_from_response(value)));
+            }
+            method if method == WorkspaceEditKind::Rename.method() => {
+                self.workspace_edit = Some((
+                    id,
+                    stamp,
+                    WorkspaceEditKind::Rename,
+                    workspace_edit_wire(value),
+                ));
+            }
+            method if method == WorkspaceEditKind::Formatting.method() => {
+                self.workspace_edit = Some((
+                    id,
+                    stamp,
+                    WorkspaceEditKind::Formatting,
+                    workspace_edit_wire(value),
+                ));
+            }
+            _ => {
+                if let Some(kind) = SymbolRequestKind::from_method(method) {
+                    self.symbols = Some((
+                        id,
+                        stamp,
+                        kind,
+                        symbols_from_response(kind, value, expected.uri()),
+                    ));
+                } else if let Some(kind) = NavigationRequestKind::from_method(method) {
+                    self.navigation =
+                        Some((id, stamp, kind, navigation_from_response(kind, value)));
+                }
+            }
+        }
+    }
+
+    fn record_saved_compiler(
+        &mut self,
+        params: &serde_json::value::RawValue,
+        expected: &LspDocument,
+        active_view: bool,
+        saved: &mut Option<saved_compiler::SavedCompilerReport>,
+        parked: &mut [workspace::ParkedDocument],
+    ) {
+        let result = saved_compiler::SavedCompilerReport::parse(params).and_then(|report| {
+            let Some(report) = report else {
+                self.ignored_diagnostics = true;
+                return Ok(false);
+            };
+            workspace::route_saved_compiler(expected, active_view, saved, parked, report)
+        });
+        match result {
+            Ok(changed) => self.saved_visual_changed |= changed,
+            Err(error) => {
+                self.saved_rejections = self.saved_rejections.saturating_add(1);
+                if error != LanguageProtocolError::DocumentMismatch {
+                    self.saved_error = Some(error);
+                }
+            }
+        }
+        self.saved_peak_bytes = self
+            .saved_peak_bytes
+            .max(workspace::saved_compiler_counts(saved.as_ref(), parked).1);
+    }
 }
 
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
@@ -632,9 +745,17 @@ struct RustSession {
     snapshot: BufferSnapshot,
     synced_snapshot: BufferSnapshot,
     pending_change: bool,
+    active_view: bool,
+    document_opened: bool,
+    overlay_write: Option<crate::lsp_process::InputSequence>,
+    overlay_closes: Vec<workspace::ClosingDocument>,
+    pending_save: Option<workspace::PendingSave>,
+    parked: Vec<workspace::ParkedDocument>,
+    diagnostic_pull: diagnostic_pull::PullState,
     restart_count: u8,
     document: LspDocument,
     diagnostics: Option<AdmittedDiagnostics>,
+    saved_compiler: Option<saved_compiler::SavedCompilerReport>,
     pending_completion: Option<PendingCompletion>,
     completion: Option<AdmittedCompletion>,
     pending_navigation: Option<PendingNavigation>,
@@ -651,6 +772,7 @@ pub(crate) enum RustDiagnosticsError {
     InvalidIdentity,
     GenerationExhausted,
     VersionExhausted,
+    OverlayBudget,
     Configuration(ConfigError),
     Language(LanguageProtocolError),
     Client(LspClientError),
@@ -668,14 +790,30 @@ impl fmt::Display for RustDiagnosticsError {
 
 impl Error for RustDiagnosticsError {}
 
+#[derive(Default)]
+struct CurrentDocumentSnapshot {
+    generation: u64,
+    process_epoch: u64,
+    lsp_version: i32,
+    diagnostic_version: Option<i32>,
+    diagnostic_items: usize,
+    diagnostic_bytes: usize,
+    completion_pending: bool,
+    completion_items: usize,
+    completion_bytes: usize,
+}
+
 pub(crate) struct RustDiagnostics {
     server_path: Option<PathBuf>,
     target: Option<Target>,
     session: Option<RustSession>,
+    last_shutdown: Option<LspShutdownReport>,
     next_generation: u64,
     status: Option<Arc<str>>,
     peak_diagnostic_items: usize,
     peak_diagnostic_bytes: usize,
+    peak_saved_compiler_bytes: usize,
+    saved_compiler_rejections: u64,
     diagnostic_publications: u64,
     peak_completion_items: usize,
     peak_completion_bytes: usize,
@@ -717,10 +855,13 @@ impl Default for RustDiagnostics {
             server_path: env::var_os("ALPINE_RUST_ANALYZER").map(PathBuf::from),
             target: None,
             session: None,
+            last_shutdown: None,
             next_generation: 0,
             status: None,
             peak_diagnostic_items: 0,
             peak_diagnostic_bytes: 0,
+            peak_saved_compiler_bytes: 0,
+            saved_compiler_rejections: 0,
             diagnostic_publications: 0,
             peak_completion_items: 0,
             peak_completion_bytes: 0,
@@ -759,6 +900,9 @@ impl Default for RustDiagnostics {
 }
 
 impl RustDiagnostics {
+    // Legacy single-document tests share the production transition below;
+    // Studio itself must always supply the complete loaded workspace roster.
+    #[cfg(test)]
     pub(crate) fn sync<F>(
         &mut self,
         input: Option<RustDocumentInput>,
@@ -767,13 +911,26 @@ impl RustDiagnostics {
     where
         F: FnOnce(LanguageWake) -> ProcessWake,
     {
+        self.sync_document(input, wake_factory, true, false, true)
+    }
+
+    fn sync_document<F>(
+        &mut self,
+        input: Option<RustDocumentInput>,
+        wake_factory: F,
+        active_view: bool,
+        defer_flush: bool,
+        retain_previous: bool,
+    ) -> LanguageEffect
+    where
+        F: FnOnce(LanguageWake) -> ProcessWake,
+    {
         let Some(input) = input else {
-            let changed = self.stop();
-            return LanguageEffect {
-                visual_changed: changed,
-                continuation: None,
-            };
+            return self.deactivate_view();
         };
+        if let Err(error) = workspace::validate_input(&input) {
+            return self.fail(error);
+        }
         let target = Target {
             path: input.path.clone(),
             workspace_root: input.workspace_root.clone(),
@@ -781,7 +938,11 @@ impl RustDiagnostics {
         let shares_workspace = self
             .target
             .as_ref()
-            .is_some_and(|current| current.shares_workspace_with(&target));
+            .is_some_and(|current| current.shares_workspace_with(&target))
+            && self.session.as_ref().is_none_or(|session| {
+                session.identity.workspace_id == input.identity.workspace_id
+                    && session.identity.workspace_revision == input.identity.workspace_revision
+            });
         if self.target.as_ref() == Some(&target) && self.session.is_none() && self.status.is_some()
         {
             return LanguageEffect::default();
@@ -789,16 +950,29 @@ impl RustDiagnostics {
         if !shares_workspace {
             return self.replace_session(input, target, wake_factory);
         }
-        if self.target.as_ref() != Some(&target) {
+        if self.target.as_ref() != Some(&target)
+            || self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.identity.document_id != input.identity.document_id)
+        {
             if self.session.is_some() {
-                return self.switch_document(input, target);
+                return self.switch_document(input, target, defer_flush, retain_previous);
             }
             return self.replace_session(input, target, wake_factory);
         }
         let Some(session) = self.session.as_mut() else {
             return self.replace_session(input, target, wake_factory);
         };
-        let mut visual_changed = false;
+        if let Err(error) = session.check_overlay_budget(workspace::overlay_growth(
+            session.snapshot.len_bytes(),
+            session.synced_snapshot.len_bytes(),
+            input.snapshot.len_bytes(),
+        )) {
+            return self.reject_workspace(error);
+        }
+        let mut visual_changed = session.active_view != active_view;
+        session.active_view = active_view;
         if input.identity != session.identity {
             merge_visual_changed(&mut visual_changed, session.completion.take().is_some());
             merge_visual_changed(&mut visual_changed, session.navigation.take().is_some());
@@ -823,8 +997,14 @@ impl RustDiagnostics {
             self.workspace_edit_preparation = None;
         }
         if input.identity.buffer_revision != session.identity.buffer_revision {
+            if !defer_flush {
+                match session.invalidate_workspace_diagnostics() {
+                    Ok(changed) => merge_visual_changed(&mut visual_changed, changed),
+                    Err(error) => return self.fail(error),
+                }
+            }
             let Some(version) = session.lsp_version.checked_add(1) else {
-                return self.fail(RustDiagnosticsError::VersionExhausted);
+                return self.reject_workspace(RustDiagnosticsError::VersionExhausted);
             };
             session.document.set_version(version);
             session.lsp_version = version;
@@ -832,13 +1012,13 @@ impl RustDiagnostics {
             session.pending_change = session.state == SessionState::Open;
             merge_visual_changed(&mut visual_changed, session.diagnostics.take().is_some());
         }
-        if session.identity.selection_revision != input.identity.selection_revision
-            && let Some(diagnostics) = session.diagnostics.as_mut()
+        if let Some(diagnostics) = session.diagnostics.as_mut()
+            && diagnostics.identity.buffer_revision == input.identity.buffer_revision
         {
-            diagnostics.identity.selection_revision = input.identity.selection_revision;
+            diagnostics.identity = input.identity;
         }
         session.identity = input.identity;
-        if session.pending_change {
+        if session.pending_change && !defer_flush {
             merge_visual_changed(&mut visual_changed, self.flush_change());
         }
         LanguageEffect {
@@ -859,7 +1039,7 @@ impl RustDiagnostics {
         let mut visual_changed = false;
         for _ in 0..MAX_POLLS_PER_TURN {
             self.polls = self.polls.saturating_add(1);
-            let (poll, candidates) = match self.collect_poll_candidates() {
+            let (poll, mut candidates) = match self.collect_poll_candidates() {
                 Ok(value) => value,
                 Err(error) => {
                     let restarted = self.restart_or_fail(RustDiagnosticsError::Client(error));
@@ -867,13 +1047,24 @@ impl RustDiagnostics {
                     break;
                 }
             };
-            if candidates.initialized {
-                let opened = self.open_document();
-                merge_visual_changed(&mut visual_changed, opened);
-            }
-            if let Some(candidate) = candidates.diagnostics {
-                let admitted = self.admit(candidate);
-                merge_visual_changed(&mut visual_changed, admitted);
+            merge_visual_changed(
+                &mut visual_changed,
+                self.apply_diagnostic_candidates(&mut candidates),
+            );
+            visual_changed |= candidates.saved_visual_changed;
+            self.saved_compiler_rejections = self
+                .saved_compiler_rejections
+                .saturating_add(candidates.saved_rejections);
+            self.peak_saved_compiler_bytes = self
+                .peak_saved_compiler_bytes
+                .max(candidates.saved_peak_bytes);
+            if let Some(error) = candidates.saved_error {
+                visual_changed |= replace_status(
+                    &mut self.status,
+                    Some(Arc::from(format!(
+                        "Saved compiler report rejected: {error}"
+                    ))),
+                );
             }
             if let Some(id) = candidates.stale_response {
                 merge_visual_changed(&mut visual_changed, self.reject_stale_completion(id));
@@ -908,6 +1099,7 @@ impl RustDiagnostics {
         }
         let flushed = self.flush_change();
         merge_visual_changed(&mut visual_changed, flushed);
+        merge_visual_changed(&mut visual_changed, self.pump_diagnostics());
         #[allow(
             unused_mut,
             reason = "test pressure injection replaces an empty process queue"
@@ -934,52 +1126,37 @@ impl RustDiagnostics {
     ) -> Result<(LspClientPoll, PollCandidates), LspClientError> {
         let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
         let expected = &session.document;
+        let diagnostic_pending = session.diagnostic_pull.pending;
+        let saved_compiler = &mut session.saved_compiler;
+        let parked = &mut session.parked;
+        let active_view = session.active_view;
         let current = session
             .pending_workspace_edit
             .map(|pending| pending.stamp)
             .or_else(|| session.pending_symbols.map(|pending| pending.stamp))
             .or_else(|| session.pending_navigation.map(|pending| pending.stamp))
-            .or_else(|| session.pending_completion.map(|pending| pending.stamp));
+            .or_else(|| session.pending_completion.map(|pending| pending.stamp))
+            .or_else(|| diagnostic_pending.map(|pending| pending.stamp));
         let mut candidates = PollCandidates::default();
         let poll = session.client.poll(current, |event| match event {
-            PeerEvent::Initialized(_) => candidates.initialized = true,
+            PeerEvent::Initialized(_) => candidates.initialized = Some(false),
             PeerEvent::InboundNotification {
                 method: "textDocument/publishDiagnostics",
                 params: Some(params),
-            } => candidates.diagnostics = Some(DiagnosticBatch::admit(params, expected)),
-            PeerEvent::Response {
-                id,
-                method,
-                stamp,
-                value,
-            } if method.as_ref() == "textDocument/completion" => {
-                candidates.completion = Some((id, stamp, completion_batch_from_response(value)));
+            } => {
+                candidates.record_saved_compiler(
+                    params,
+                    expected,
+                    active_view,
+                    saved_compiler,
+                    parked,
+                );
             }
-            PeerEvent::Response {
-                id,
-                method,
-                stamp,
-                value,
-            } if method.as_ref() == WorkspaceEditKind::Rename.method() => {
-                candidates.workspace_edit = Some((
-                    id,
-                    stamp,
-                    WorkspaceEditKind::Rename,
-                    workspace_edit_wire(value),
-                ));
-            }
-            PeerEvent::Response {
-                id,
-                method,
-                stamp,
-                value,
-            } if method.as_ref() == WorkspaceEditKind::Formatting.method() => {
-                candidates.workspace_edit = Some((
-                    id,
-                    stamp,
-                    WorkspaceEditKind::Formatting,
-                    workspace_edit_wire(value),
-                ));
+            PeerEvent::InboundRequest {
+                method: "workspace/diagnostic/refresh",
+                ..
+            } => {
+                candidates.diagnostic_refresh = true;
             }
             PeerEvent::Response {
                 id,
@@ -987,26 +1164,33 @@ impl RustDiagnostics {
                 stamp,
                 value,
             } => {
-                if let Some(kind) = SymbolRequestKind::from_method(method.as_ref()) {
-                    candidates.symbols = Some((
-                        id,
-                        stamp,
-                        kind,
-                        symbols_from_response(kind, value, expected.uri()),
-                    ));
-                } else if let Some(kind) = NavigationRequestKind::from_method(method.as_ref()) {
-                    candidates.navigation =
-                        Some((id, stamp, kind, navigation_from_response(kind, value)));
-                }
+                candidates.record_response(id, method.as_ref(), stamp, value, expected);
             }
-            PeerEvent::StaleResponse { id } => candidates.stale_response = Some(id),
+            PeerEvent::StaleResponse { id } => {
+                if diagnostic_pending.is_some_and(|pending| pending.request_id == id) {
+                    candidates.stale_diagnostic = Some(id);
+                }
+                candidates.stale_response = Some(id);
+            }
             _ => {}
         })?;
+        candidates.initialized = candidates
+            .initialized
+            .map(|_| session.client.diagnostic_pull_supported());
         Ok((poll, candidates))
     }
 
     pub(crate) fn status_message(&self) -> Option<Arc<str>> {
-        self.status.clone()
+        let session = self.session.as_ref();
+        if session.is_some_and(|session| !session.active_view) {
+            return None;
+        }
+        let saved = session.and_then(|session| session.saved_compiler.as_ref()?.status());
+        match (&self.status, saved) {
+            (Some(current), Some(saved)) => Some(Arc::from(format!("{current} | {saved}"))),
+            (Some(current), None) => Some(current.clone()),
+            (None, saved) => saved,
+        }
     }
 
     pub(crate) fn record_symbol_error(&mut self, error: SymbolError) -> LanguageEffect {
@@ -1032,7 +1216,7 @@ impl RustDiagnostics {
                 continuation: None,
             };
         };
-        if session.state != SessionState::Open {
+        if !session.workspace_ready() {
             return LanguageEffect {
                 visual_changed: replace_status(
                     &mut self.status,
@@ -1091,7 +1275,7 @@ impl RustDiagnostics {
                 continuation: None,
             };
         };
-        if session.state != SessionState::Open {
+        if !session.workspace_ready() {
             return LanguageEffect {
                 visual_changed: replace_status(
                     &mut self.status,
@@ -1181,7 +1365,7 @@ impl RustDiagnostics {
         let Some(session) = self.session.as_mut() else {
             return self.workspace_edit_not_ready();
         };
-        if session.state != SessionState::Open {
+        if !session.workspace_ready() {
             return self.workspace_edit_not_ready();
         }
         let Some(stamp) = session.identity.request_stamp() else {
@@ -1315,7 +1499,7 @@ impl RustDiagnostics {
                 continuation: None,
             };
         };
-        if session.state != SessionState::Open {
+        if !session.workspace_ready() {
             return LanguageEffect {
                 visual_changed: replace_status(
                     &mut self.status,
@@ -1340,6 +1524,9 @@ impl RustDiagnostics {
         let Some(session) = self.session.as_mut() else {
             return LanguageEffect::default();
         };
+        if !session.workspace_ready() {
+            return LanguageEffect::default();
+        }
         if let Some(pending) = session.pending_symbols.take() {
             match session.client.cancel(pending.request_id) {
                 Ok(_) => {
@@ -1777,8 +1964,13 @@ impl RustDiagnostics {
             }
             LspClientPoll::Stopped(StopReason::Restart)
             | LspClientPoll::Protocol { .. }
-            | LspClientPoll::Stderr { .. }
-            | LspClientPoll::InputWritten { .. } => false,
+            | LspClientPoll::Stderr { .. } => false,
+            LspClientPoll::InputWritten { sequence, .. } => {
+                if let Some(session) = self.session.as_mut() {
+                    merge_visual_changed(visual_changed, session.acknowledge_overlay(sequence));
+                }
+                false
+            }
             LspClientPoll::Exited { .. } | LspClientPoll::Failed(_) | LspClientPoll::Stopped(_) => {
                 let restarted = self.restart_or_fail(RustDiagnosticsError::Client(
                     LspClientError::ProcessNotStarted,
@@ -1786,16 +1978,12 @@ impl RustDiagnostics {
                 merge_visual_changed(visual_changed, restarted);
                 true
             }
-            LspClientPoll::InputRejected { .. } => {
-                if let Some(session) = self.session.as_mut() {
-                    session.pending_change = session.state == SessionState::Open;
-                }
-                let status_changed = replace_status(
-                    &mut self.status,
-                    Some(Arc::from("Rust diagnostics input queue is saturated.")),
-                );
-                merge_visual_changed(visual_changed, status_changed);
-                false
+            LspClientPoll::InputRejected { failure, .. } => {
+                let changed = self.restart_or_fail(RustDiagnosticsError::Client(
+                    LspClientError::Process(failure),
+                ));
+                merge_visual_changed(visual_changed, changed);
+                true
             }
         }
     }
@@ -1886,59 +2074,44 @@ impl RustDiagnostics {
     }
 
     pub(crate) fn snapshot(&self) -> RustDiagnosticsSnapshot {
-        let (
-            generation,
-            process_epoch,
-            lsp_version,
-            diagnostic_version,
-            diagnostic_items,
-            diagnostic_bytes,
-            completion_pending,
-            completion_items,
-            completion_bytes,
-        ) = self
-            .session
-            .as_ref()
-            .map_or((0, 0, 0, None, 0, 0, false, 0, 0), |session| {
-                let diagnostics = session.diagnostics.as_ref();
-                let completion = session.completion.as_ref();
-                (
-                    session.generation,
-                    session.process_epoch,
-                    session.lsp_version,
-                    diagnostics.and_then(|value| value.batch.document_version()),
-                    diagnostics.map_or(0, |value| value.batch.diagnostics().len()),
-                    diagnostics.map_or(0, |value| value.batch.retained_bytes()),
-                    session.pending_completion.is_some(),
-                    completion.map_or(0, |value| value.batch.items().len()),
-                    completion.map_or(0, |value| value.batch.retained_bytes()),
-                )
-            });
+        let document = self.current_document_snapshot();
         let navigation = self.current_navigation_snapshot();
         let symbols = self.current_symbol_snapshot();
-        let process = self
+        let (saved_compiler_items, saved_compiler_bytes) =
+            self.session.as_ref().map_or((0, 0), |session| {
+                workspace::saved_compiler_counts(session.saved_compiler.as_ref(), &session.parked)
+            });
+        let (process, protocol_writes) = self
             .session
             .as_ref()
-            .map(|session| session.client.snapshot().process)
+            .map(|session| {
+                let client = session.client.snapshot();
+                (client.process, client.protocol_writes)
+            })
             .unwrap_or_default();
         RustDiagnosticsSnapshot {
             active: self.session.is_some(),
+            last_shutdown: self.last_shutdown,
             pending: RustDiagnosticsPending {
-                completion: completion_pending,
+                completion: document.completion_pending,
                 navigation: navigation.pending,
                 symbols: symbols.pending,
             },
-            generation,
-            process_epoch,
-            lsp_version,
+            generation: document.generation,
+            process_epoch: document.process_epoch,
+            lsp_version: document.lsp_version,
             diagnostic_publications: self.diagnostic_publications,
-            diagnostic_version,
-            diagnostic_items,
-            diagnostic_bytes,
+            diagnostic_version: document.diagnostic_version,
+            diagnostic_items: document.diagnostic_items,
+            diagnostic_bytes: document.diagnostic_bytes,
             peak_diagnostic_items: self.peak_diagnostic_items,
             peak_diagnostic_bytes: self.peak_diagnostic_bytes,
-            completion_items,
-            completion_bytes,
+            saved_compiler_items,
+            saved_compiler_bytes,
+            peak_saved_compiler_bytes: self.peak_saved_compiler_bytes,
+            saved_compiler_rejections: self.saved_compiler_rejections,
+            completion_items: document.completion_items,
+            completion_bytes: document.completion_bytes,
             peak_completion_items: self.peak_completion_items,
             peak_completion_bytes: self.peak_completion_bytes,
             completion_requests: self.completion_requests,
@@ -1972,17 +2145,56 @@ impl RustDiagnostics {
             workspace_edit_wire_bytes: self.workspace_edit_wire_bytes,
             peak_workspace_edit_wire_bytes: self.peak_workspace_edit_wire_bytes,
             process_retained_bytes: process.retained_bytes,
+            protocol_writes,
             process_queued_events: process.queued_events,
             process_starts: process.starts,
             process_submitted_inputs: process.submitted_inputs,
             process_written_inputs: process.written_inputs,
             process_input_saturations: process.input_saturations,
             document_switches: self.document_switches,
+            overlay_documents: self
+                .session
+                .as_ref()
+                .map_or(0, |session| session.parked.len() + 1),
+            overlay_retained_text_bytes: self
+                .session
+                .as_ref()
+                .map_or(0, RustSession::retained_overlay_text_bytes),
+            overlay_reserved_text_bytes: self
+                .session
+                .as_ref()
+                .map_or(0, RustSession::reserved_overlay_text_bytes),
+            overlay_write_pending: self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.overlay_write.is_some()),
             polls: self.polls,
             stale_wakes: self.stale_wakes,
             stale_diagnostics: self.stale_diagnostics,
             restarts: self.restarts,
         }
+    }
+
+    fn current_document_snapshot(&self) -> CurrentDocumentSnapshot {
+        self.session
+            .as_ref()
+            .map_or_else(CurrentDocumentSnapshot::default, |session| {
+                let diagnostics = session.diagnostics.as_ref();
+                let completion = session.completion.as_ref();
+                CurrentDocumentSnapshot {
+                    generation: session.generation,
+                    process_epoch: session.process_epoch,
+                    lsp_version: session.lsp_version,
+                    diagnostic_version: diagnostics
+                        .and_then(|value| value.batch.document_version()),
+                    diagnostic_items: diagnostics
+                        .map_or(0, |value| value.batch.diagnostics().len()),
+                    diagnostic_bytes: diagnostics.map_or(0, |value| value.batch.retained_bytes()),
+                    completion_pending: session.pending_completion.is_some(),
+                    completion_items: completion.map_or(0, |value| value.batch.items().len()),
+                    completion_bytes: completion.map_or(0, |value| value.batch.retained_bytes()),
+                }
+            })
     }
 
     fn workspace_edit_pending(&self) -> bool {
@@ -1993,7 +2205,7 @@ impl RustDiagnostics {
 
     pub(crate) fn shutdown(&mut self) -> RustDiagnosticsSnapshot {
         if let Some(session) = self.session.as_mut() {
-            let _ = session.client.shutdown();
+            self.last_shutdown = Some(session.client.shutdown_gracefully());
         }
         self.session = None;
         self.target = None;
@@ -2045,8 +2257,16 @@ impl RustDiagnostics {
             snapshot: input.snapshot,
             synced_snapshot,
             pending_change: false,
+            active_view: true,
+            document_opened: false,
+            overlay_write: None,
+            overlay_closes: Vec::new(),
+            pending_save: None,
+            parked: Vec::new(),
+            diagnostic_pull: diagnostic_pull::PullState::default(),
             restart_count: 0,
             document,
+            saved_compiler: None,
             diagnostics: None,
             pending_completion: None,
             completion: None,
@@ -2065,7 +2285,7 @@ impl RustDiagnostics {
             return false;
         };
         session.process_epoch = epoch;
-        let params = initialize_params(&session.target.workspace_root);
+        let params = initialize_pull_params(&session.target.workspace_root);
         let result = params
             .map_err(RustDiagnosticsError::Language)
             .and_then(|params| {
@@ -2088,24 +2308,9 @@ impl RustDiagnostics {
         let Some(session) = self.session.as_mut() else {
             return false;
         };
-        let text = session.snapshot.text();
-        let result = session
-            .document
-            .did_open_params(&text)
-            .map_err(RustDiagnosticsError::Language)
-            .and_then(|params| {
-                session
-                    .client
-                    .notify("textDocument/didOpen", Some(&params))
-                    .map_err(RustDiagnosticsError::Client)
-            });
-        if let Err(error) = result {
-            return self.restart_or_fail(error);
-        }
         session.state = SessionState::Open;
-        session.synced_snapshot = session.snapshot.clone();
-        session.pending_change = false;
-        replace_status(&mut self.status, None)
+        session.document_opened = false;
+        self.flush_change()
     }
 
     fn replace_session<F>(
@@ -2127,70 +2332,31 @@ impl RustDiagnostics {
         }
     }
 
-    fn switch_document(&mut self, input: RustDocumentInput, target: Target) -> LanguageEffect {
-        let document = match LspDocument::from_file_path(&input.path, "rust", 1) {
-            Ok(document) => document,
-            Err(error) => return self.fail(RustDiagnosticsError::Language(error)),
-        };
-        let session = self.session.as_ref().unwrap_or_else(|| unreachable!());
-        let transition = if session.state == SessionState::Open {
-            let text = input.snapshot.text();
-            let transition = session
-                .document
-                .did_close_params()
-                .and_then(|close| document.did_open_params(&text).map(|open| (close, open)));
-            match transition {
-                Ok(transition) => Some(transition),
-                Err(error) => return self.fail(RustDiagnosticsError::Language(error)),
-            }
-        } else {
-            None
-        };
-
-        let transition_result = {
-            let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
-            let _ = session.completion.take();
-            let _ = session.navigation.take();
-            let _ = session.symbols.take();
-            if let Some(pending) = session.pending_completion.take() {
-                let _ = session.client.cancel(pending.request_id);
-                self.completion_cancellations = self.completion_cancellations.saturating_add(1);
-            }
-            if let Some(pending) = session.pending_navigation.take() {
-                let _ = session.client.cancel(pending.request_id);
-                self.navigation_cancellations = self.navigation_cancellations.saturating_add(1);
-            }
-            if let Some(pending) = session.pending_symbols.take() {
-                let _ = session.client.cancel(pending.request_id);
-                self.symbol_cancellations = self.symbol_cancellations.saturating_add(1);
-            }
-            if let Some(pending) = session.pending_workspace_edit.take() {
-                let _ = session.client.cancel(pending.request_id);
-                self.workspace_edit_cancellations =
-                    self.workspace_edit_cancellations.saturating_add(1);
-            }
-            self.workspace_edit_preparation = None;
-            let _ = session.diagnostics.take();
-            session.target = target.clone();
-            session.identity = input.identity;
-            session.lsp_version = 1;
-            session.snapshot = input.snapshot;
-            session.synced_snapshot = session.snapshot.clone();
-            session.pending_change = false;
-            session.document = document;
-            transition.map_or(Ok(()), |(close, open)| {
-                session
-                    .client
-                    .notify("textDocument/didClose", Some(&close))
-                    .and_then(|_| session.client.notify("textDocument/didOpen", Some(&open)))
-                    .map(|_| ())
-            })
-        };
+    fn switch_document(
+        &mut self,
+        input: RustDocumentInput,
+        target: Target,
+        defer_flush: bool,
+        retain_previous: bool,
+    ) -> LanguageEffect {
+        if let Err(error) = workspace::validate_input(&input) {
+            return self.fail(error);
+        }
+        let _ = self.cancel_view_requests();
+        let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
+        if let Err(error) = session.park_and_activate(input, retain_previous) {
+            return self.reject_workspace(error);
+        }
+        let status = session
+            .diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.batch.primary_message())
+            .map(Arc::from);
         self.target = Some(target);
         self.document_switches = self.document_switches.saturating_add(1);
-        let _ = replace_status(&mut self.status, None);
-        if let Err(error) = transition_result {
-            let _ = self.restart_or_fail(RustDiagnosticsError::Client(error));
+        let _ = replace_status(&mut self.status, status);
+        if !defer_flush {
+            let _ = self.flush_change();
         }
         LanguageEffect {
             visual_changed: true,
@@ -2202,26 +2368,21 @@ impl RustDiagnostics {
         let Some(session) = self.session.as_mut() else {
             return false;
         };
-        if !session.pending_change || session.state != SessionState::Open {
-            return false;
-        }
-        let text = session.snapshot.text();
-        let result = document_end(&session.synced_snapshot)
-            .and_then(|previous_end| session.document.did_change_params(&text, previous_end))
-            .map_err(RustDiagnosticsError::Language)
-            .and_then(|params| {
-                session
-                    .client
-                    .notify("textDocument/didChange", Some(&params))
-                    .map_err(RustDiagnosticsError::Client)
-            });
-        match result {
-            Ok(_) => {
-                session.synced_snapshot = session.snapshot.clone();
-                session.pending_change = false;
-                replace_status(&mut self.status, None)
+        match session.flush_overlay() {
+            Ok(true) => {
+                let status = session
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diagnostics| diagnostics.batch.primary_message())
+                    .map(|message| Arc::from(format!("Rust: {message}")));
+                replace_status(&mut self.status, status)
             }
-            Err(error) => replace_status(&mut self.status, Some(Arc::from(error.to_string()))),
+            Ok(false) => false,
+            // Overlay writers commit ownership only after enqueue succeeds.
+            // Keep their coalesced save/change/close intent until writer
+            // progress provides capacity, rather than restarting the server.
+            Err(error) if diagnostic_pull::is_input_pressure(error) => false,
+            Err(error) => self.restart_or_fail(error),
         }
     }
 
@@ -2665,28 +2826,34 @@ impl RustDiagnostics {
         let Some(session) = self.session.as_mut() else {
             return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
         };
+        session.state = SessionState::Starting;
+        // Revoke publication before fallible restart admission. Pending wire,
+        // save and close ownership still belongs to the current transport.
+        let mut publication_changed = session.clear_workspace_diagnostics();
+        publication_changed |= session.pending_completion.take().is_some();
+        publication_changed |= session.completion.take().is_some();
+        publication_changed |= session.pending_navigation.take().is_some();
+        publication_changed |= session.navigation.take().is_some();
+        publication_changed |= session.pending_symbols.take().is_some();
+        publication_changed |= session.symbols.take().is_some();
+        publication_changed |= session.pending_workspace_edit.take().is_some();
+        publication_changed |= self.workspace_edit_preparation.take().is_some();
         if session.restart_count == MAX_RESTARTS_PER_DOCUMENT {
-            session.diagnostics = None;
-            session.pending_completion = None;
-            session.completion = None;
-            session.pending_navigation = None;
-            session.navigation = None;
-            session.pending_symbols = None;
-            session.symbols = None;
-            session.pending_workspace_edit = None;
-            self.workspace_edit_preparation = None;
-            return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
+            return replace_status(&mut self.status, Some(Arc::from(error.to_string())))
+                || publication_changed;
         }
         let Some(generation) = session.process_generation.checked_add(1) else {
             return self
                 .fail(RustDiagnosticsError::GenerationExhausted)
-                .visual_changed;
+                .visual_changed
+                || publication_changed;
         };
         let Some(identity) = ProcessIdentity::new(session.identity.workspace_revision, generation)
         else {
             return self
                 .fail(RustDiagnosticsError::InvalidIdentity)
-                .visual_changed;
+                .visual_changed
+                || publication_changed;
         };
         if let Err(restart_error) = session.client.restart(identity) {
             return replace_status(
@@ -2694,30 +2861,25 @@ impl RustDiagnostics {
                 Some(Arc::from(
                     RustDiagnosticsError::Client(restart_error).to_string(),
                 )),
-            );
+            ) || publication_changed;
         }
+        // A rejected restart still belongs to the current transport. Keep its
+        // save/close ownership until the replacement has actually been admitted.
+        session.reset_overlay_transport();
         session.process_generation = generation;
         session.restart_count += 1;
         session.state = SessionState::Starting;
         session.pending_change = false;
-        session.diagnostics = None;
-        session.pending_completion = None;
-        session.completion = None;
-        session.pending_navigation = None;
-        session.navigation = None;
-        session.pending_symbols = None;
-        session.symbols = None;
-        session.pending_workspace_edit = None;
-        self.workspace_edit_preparation = None;
         self.restarts = self.restarts.saturating_add(1);
         replace_status(
             &mut self.status,
             Some(Arc::from("Rust analysis is restarting.")),
-        )
+        ) || publication_changed
     }
 
     fn fail(&mut self, error: RustDiagnosticsError) -> LanguageEffect {
         if let Some(session) = self.session.as_mut() {
+            session.clear_saved_compiler();
             session.diagnostics = None;
             session.pending_completion = None;
             session.completion = None;
@@ -2907,8 +3069,16 @@ fn test_session(
         snapshot: input.snapshot,
         synced_snapshot,
         pending_change: false,
+        active_view: true,
+        document_opened: true,
+        overlay_write: None,
+        overlay_closes: Vec::new(),
+        pending_save: None,
+        parked: Vec::new(),
+        diagnostic_pull: diagnostic_pull::PullState::default(),
         restart_count: 0,
         document,
+        saved_compiler: None,
         diagnostics: Some(AdmittedDiagnostics {
             identity: input.identity,
             process_epoch: 1,
@@ -2939,3 +3109,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "rust_diagnostics_coverage_tests.rs"]
 mod coverage_tests;
+
+#[cfg(all(test, unix))]
+#[path = "rust_compiler_diagnostic_tests.rs"]
+mod compiler_diagnostic_tests;

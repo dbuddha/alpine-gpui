@@ -51,6 +51,7 @@ mod lsp_language;
     )
 )]
 mod lsp_process;
+mod lsp_value;
 mod panes;
 mod profiling;
 mod project_search;
@@ -141,8 +142,8 @@ use quick_open::{
 use rust_completion::{MAX_VISIBLE_COMPLETION_ROWS, position_for_byte};
 use rust_diagnostics::{
     CompletionApplication, LanguageEffect, LanguageIdentity, LanguageWake, LanguageWakeLatch,
-    MAX_VISIBLE_DIAGNOSTIC_MARKERS, NavigationRequestKind, RustDiagnostics, RustDocumentInput,
-    WorkspaceEditKind, WorkspaceEditPreparationOutput,
+    MAX_VISIBLE_DIAGNOSTIC_MARKERS, NavigationRequestKind, RustDiagnostics, RustDiagnosticsError,
+    RustDocumentInput, WorkspaceEditKind, WorkspaceEditPreparationOutput,
 };
 use rust_navigation::{
     MAX_VISIBLE_HOVER_LINES, MAX_VISIBLE_SOURCE_LOCATIONS, NavigationError, ResolvedSourceLocation,
@@ -6145,7 +6146,11 @@ impl StudioApp {
             Ok(Some(report)) => {
                 self.last_save = Some(report);
                 self.last_file_error = None;
-                self.clear_close_status()
+                let identity = self.language_identity();
+                let language = self.rust_diagnostics.record_saved_document(identity);
+                let mut effect = self.clear_close_status();
+                effect.visual_changed |= language.visual_changed;
+                effect
             }
             Ok(None) => EventEffect::default(),
             Err(error) => {
@@ -6177,7 +6182,9 @@ impl StudioApp {
             workspace_id: 1,
             workspace_revision: self.runtime_workspace_revision,
             document_id: self.tabs.active_id().map_or(1, |id| id.0),
-            document_revision: self.runtime_document_revision,
+            // Editor epochs start at zero; LSP stamps reserve zero as invalid.
+            // Keep buffer/AX epochs unchanged and reject exhausted translation.
+            document_revision: self.runtime_document_revision.checked_add(1).unwrap_or(0),
             buffer_revision: self.buffer().revision().get(),
             selection_revision: self.selection_revision,
         }
@@ -6625,29 +6632,85 @@ impl StudioApp {
         &mut self,
         context: &AppContext<'_, StudioWorkerOutput>,
     ) -> LanguageEffect {
-        let input = self.active_rust_document();
+        let active = self.active_rust_document();
+        let active_id = active
+            .as_ref()
+            .and_then(|_| self.tabs.active_id().ok().map(|id| id.0));
+        let root = self
+            .workspace
+            .as_ref()
+            .map(Workspace::root)
+            .or_else(|| {
+                active.as_ref().and_then(|_| {
+                    self.tabs
+                        .path_at(self.tabs.active_index())
+                        .and_then(Path::parent)
+                })
+            })
+            .or_else(|| self.rust_diagnostics.workspace_root())
+            .map(Path::to_path_buf);
+        let mut inputs = Vec::new();
+        if inputs.try_reserve_exact(self.tabs.len()).is_err() {
+            return self
+                .rust_diagnostics
+                .reject_workspace(RustDiagnosticsError::OverlayBudget);
+        }
+        if let Some(root) = root.as_deref() {
+            for index in 0..self.tabs.len() {
+                let Some(path) = self.tabs.path_at(index) else {
+                    continue;
+                };
+                if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                    continue;
+                }
+                if self.workspace.is_none() && path.parent() != Some(root) {
+                    continue;
+                }
+                // Deferred tabs have no payload and must not be loaded for LSP synchronization.
+                let Ok(document) = self.tabs.document_at(index, &self.document) else {
+                    continue;
+                };
+                if !matches!(document, StudioDocument::File { .. }) {
+                    continue;
+                }
+                let Some(id) = self.tabs.id_at(index) else {
+                    continue;
+                };
+                let mut identity = self.language_identity();
+                identity.document_id = id.0;
+                identity.buffer_revision = document.buffer().revision().get();
+                inputs.push(RustDocumentInput::new(
+                    path,
+                    root,
+                    identity,
+                    document.buffer().snapshot(),
+                ));
+            }
+        }
         let producer = context.external_producer();
         let latch = self.language_wake_latch.clone();
-        let effect = self.rust_diagnostics.sync(input, move |wake| {
-            let producer = producer.clone();
-            let latch = latch.clone();
-            Arc::new(move || {
-                #[cfg(all(alpine_native_validation, not(test)))]
-                NATIVE_VALIDATION_LANGUAGE_WAKE_CALLBACKS
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                latch.publish(wake);
-                #[cfg(all(alpine_native_validation, not(test)))]
-                record_native_validation_language_publication(
-                    wake.generation(),
-                    latch.pending_generation(),
-                );
-                let admission = producer.submit(StudioWorkerOutput::Language(wake), 0);
-                #[cfg(all(alpine_native_validation, not(test)))]
-                record_native_validation_language_submission(admission);
-                #[cfg(any(not(alpine_native_validation), test))]
-                let _ = admission;
-            })
-        });
+        let effect = self
+            .rust_diagnostics
+            .sync_workspace(inputs, active_id, move |wake| {
+                let producer = producer.clone();
+                let latch = latch.clone();
+                Arc::new(move || {
+                    #[cfg(all(alpine_native_validation, not(test)))]
+                    NATIVE_VALIDATION_LANGUAGE_WAKE_CALLBACKS
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    latch.publish(wake);
+                    #[cfg(all(alpine_native_validation, not(test)))]
+                    record_native_validation_language_publication(
+                        wake.generation(),
+                        latch.pending_generation(),
+                    );
+                    let admission = producer.submit(StudioWorkerOutput::Language(wake), 0);
+                    #[cfg(all(alpine_native_validation, not(test)))]
+                    record_native_validation_language_submission(admission);
+                    #[cfg(any(not(alpine_native_validation), test))]
+                    let _ = admission;
+                })
+            });
         #[cfg(all(alpine_native_validation, not(test)))]
         {
             NATIVE_VALIDATION_LANGUAGE_SYNC_CALLS

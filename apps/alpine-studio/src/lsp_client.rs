@@ -1,22 +1,35 @@
 //! Bounded composition of one local process, LSP framer, and JSON-RPC peer.
 
-use std::{error::Error, fmt, num::NonZeroUsize};
+use std::{
+    collections::VecDeque,
+    error::Error,
+    fmt,
+    mem::size_of,
+    num::NonZeroUsize,
+    thread,
+    time::{Duration, Instant},
+};
 
 use serde_json::value::RawValue;
 
 use crate::{
     lsp_framing::{LspFrameError, LspFrameLimits, LspFramer, LspFramerSnapshot},
-    lsp_json::{LspPeer, OutboundMessage, PeerEvent, PeerSnapshot, ProtocolError, RequestStamp},
+    lsp_json::{
+        LspPeer, OutboundMessage, PeerEvent, PeerLifecycle, PeerSnapshot, ProtocolError,
+        RequestStamp,
+    },
     lsp_process::{
-        InputSequence, LanguageServerProcess, ProcessEpoch, ProcessEvent, ProcessFailure,
-        ProcessIdentity, ProcessSnapshot, ProcessSpec, ProcessStream, ProcessWake, StopReason,
-        SubmitError, SupervisorStopped,
+        InputSequence, LanguageServerProcess, ProcessBinding, ProcessEpoch, ProcessEvent,
+        ProcessFailure, ProcessIdentity, ProcessSnapshot, ProcessSpec, ProcessStream, ProcessWake,
+        SUPERVISOR_SHUTDOWN_TIMEOUT, StopReason, SubmitError, SupervisorStopped,
     },
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LspClientError {
     ProcessNotStarted,
+    StaleCancellation,
+    ProtocolWriteBudget,
     Process(ProcessFailure),
     Submit(SubmitError),
     SupervisorStopped,
@@ -62,6 +75,25 @@ pub(crate) struct SubmittedRequest {
     pub(crate) input_sequence: InputSequence,
 }
 
+/// One locally revoked request's process-bound delivery obligation.
+///
+/// The fixed cancellation method and u32 ID bound the retained frame below
+/// 128 bytes, outside the process payload counters until successful enqueue.
+/// This owner is deliberately not Clone. Successful enqueue releases its bytes.
+pub(crate) struct PreparedCancellation {
+    outbound: Option<OutboundMessage>,
+    binding: ProcessBinding,
+}
+
+#[cfg(test)]
+impl PreparedCancellation {
+    fn retained_bytes(&self) -> usize {
+        self.outbound
+            .as_ref()
+            .map_or(0, |outbound| outbound.bytes().len())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LspClientPoll {
     Idle,
@@ -92,12 +124,58 @@ pub(crate) enum LspClientPoll {
     Failed(ProcessFailure),
 }
 
+const MAX_PROTOCOL_WRITES: usize = 256;
+const MAX_PROTOCOL_PAYLOAD_BYTES: usize = 16_384;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Owned boxed payloads and deque storage, excluding allocator overhead,
+/// temporary encoding allocations, and unrelated client/process storage.
+pub(crate) struct ProtocolWriteSnapshot {
+    pub(crate) queued: usize,
+    pub(crate) payload_bytes: usize,
+    pub(crate) capacity_bytes: usize,
+    pub(crate) retained_bytes: usize,
+    pub(crate) peak_retained_bytes: usize,
+    pub(crate) failed: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ProtocolWriteKind {
+    Response,
+    Initialized,
+    Exit,
+}
+
+struct ProtocolWrite {
+    outbound: OutboundMessage,
+    kind: ProtocolWriteKind,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LspClientSnapshot {
     pub(crate) started: bool,
     pub(crate) process: ProcessSnapshot,
     pub(crate) framing: LspFramerSnapshot,
     pub(crate) peer: PeerSnapshot,
+    pub(crate) protocol_writes: ProtocolWriteSnapshot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LspShutdownProtocol {
+    AcknowledgedAndExited,
+    NotReady(PeerLifecycle),
+    Deadline,
+    UnexpectedExit { success: bool, code: Option<i32> },
+    RejectedInput(ProcessFailure),
+    Stopped(StopReason),
+    Failed(LspClientError),
+}
+
+/// Protocol and direct-child drain evidence, never a descendant-residency claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LspShutdownReport {
+    pub(crate) protocol: LspShutdownProtocol,
+    pub(crate) transport: ProcessSnapshot,
 }
 
 pub(crate) struct LspClient {
@@ -105,6 +183,10 @@ pub(crate) struct LspClient {
     framer: LspFramer,
     peer: LspPeer,
     started: bool,
+    protocol_writes: VecDeque<ProtocolWrite>,
+    protocol_payload_bytes: usize,
+    protocol_peak_bytes: usize,
+    protocol_failure: Option<LspClientError>,
 }
 
 impl LspClient {
@@ -118,6 +200,10 @@ impl LspClient {
             process,
             framer: LspFramer::new(LspFrameLimits::default()),
             peer: LspPeer::new(),
+            protocol_writes: VecDeque::new(),
+            protocol_payload_bytes: 0,
+            protocol_peak_bytes: 0,
+            protocol_failure: None,
             started: false,
         })
     }
@@ -133,6 +219,10 @@ impl LspClient {
             process,
             framer: LspFramer::new(LspFrameLimits::default()),
             peer: LspPeer::new(),
+            protocol_writes: VecDeque::new(),
+            protocol_payload_bytes: 0,
+            protocol_peak_bytes: 0,
+            protocol_failure: None,
             started: false,
         })
     }
@@ -143,6 +233,10 @@ impl LspClient {
             process: LanguageServerProcess::inert_for_test(identity),
             framer: LspFramer::new(LspFrameLimits::default()),
             peer: LspPeer::new(),
+            protocol_writes: VecDeque::new(),
+            protocol_payload_bytes: 0,
+            protocol_peak_bytes: 0,
+            protocol_failure: None,
             started: true,
         }
     }
@@ -161,7 +255,7 @@ impl LspClient {
     }
 
     pub(crate) fn begin_initialize(&mut self) -> Result<SubmittedRequest, LspClientError> {
-        self.require_started()?;
+        self.require_write_order()?;
         let outbound = self.peer.begin_initialize()?;
         self.submit_pending(&outbound)
     }
@@ -170,7 +264,7 @@ impl LspClient {
         &mut self,
         params: &RawValue,
     ) -> Result<SubmittedRequest, LspClientError> {
-        self.require_started()?;
+        self.require_write_order()?;
         let outbound = self.peer.begin_initialize_with(Some(params))?;
         self.submit_pending(&outbound)
     }
@@ -181,15 +275,49 @@ impl LspClient {
         params: Option<&RawValue>,
         stamp: RequestStamp,
     ) -> Result<SubmittedRequest, LspClientError> {
-        self.require_started()?;
+        self.require_write_order()?;
         let outbound = self.peer.begin_request(method, params, stamp)?;
         self.submit_pending(&outbound)
     }
 
     pub(crate) fn cancel(&mut self, request_id: u32) -> Result<InputSequence, LspClientError> {
-        self.require_started()?;
+        self.require_write_order()?;
         let outbound = self.peer.cancel(request_id)?;
         self.process.send(outbound.bytes()).map_err(Into::into)
+    }
+
+    pub(crate) fn prepare_cancel(
+        &mut self,
+        request_id: u32,
+    ) -> Result<PreparedCancellation, LspClientError> {
+        self.require_started()?;
+        let outbound = self.peer.cancel(request_id)?;
+        Ok(PreparedCancellation {
+            outbound: Some(outbound),
+            binding: self.process.binding(),
+        })
+    }
+
+    pub(crate) fn send_cancel(
+        &mut self,
+        cancellation: &mut PreparedCancellation,
+    ) -> Result<InputSequence, LspClientError> {
+        // Check before require_started: a replacement may still be starting,
+        // but an obsolete token is retirement, not its transport failing.
+        if !self.process.owns_binding(&cancellation.binding) {
+            return Err(LspClientError::StaleCancellation);
+        }
+        self.require_write_order()?;
+        if self.peer.snapshot().lifecycle() != PeerLifecycle::Running {
+            return Err(ProtocolError::InvalidLifecycle.into());
+        }
+        let outbound = cancellation
+            .outbound
+            .as_ref()
+            .ok_or(ProtocolError::InvalidLifecycle)?;
+        let sequence = self.process.send(outbound.bytes())?;
+        cancellation.outbound = None;
+        Ok(sequence)
     }
 
     pub(crate) fn notify(
@@ -197,13 +325,13 @@ impl LspClient {
         method: &str,
         params: Option<&RawValue>,
     ) -> Result<InputSequence, LspClientError> {
-        self.require_started()?;
+        self.require_write_order()?;
         let outbound = self.peer.notification(method, params)?;
         self.process.send(outbound.bytes()).map_err(Into::into)
     }
 
     pub(crate) fn begin_shutdown(&mut self) -> Result<SubmittedRequest, LspClientError> {
-        self.require_started()?;
+        self.require_write_order()?;
         let outbound = self.peer.begin_shutdown()?;
         self.submit_pending(&outbound)
     }
@@ -213,6 +341,7 @@ impl LspClient {
         identity: ProcessIdentity,
     ) -> Result<ProcessEpoch, LspClientError> {
         let epoch = self.process.restart(identity)?;
+        self.retire_protocol_writes();
         self.framer = LspFramer::new(LspFrameLimits::default());
         self.peer = LspPeer::new();
         self.started = false;
@@ -227,10 +356,37 @@ impl LspClient {
     where
         F: FnMut(PeerEvent<'_>),
     {
+        if let Some(error) = self.protocol_failure {
+            // Failed ingress never publishes again, but still releases one
+            // bounded event per poll so it cannot starve transport teardown.
+            if let Ok(Some(event)) = self.process.try_event()
+                && matches!(
+                    event,
+                    ProcessEvent::Exited { .. }
+                        | ProcessEvent::Stopped { .. }
+                        | ProcessEvent::Failed { .. }
+                )
+            {
+                self.started = false;
+                self.retire_protocol_writes();
+                self.protocol_failure = Some(error);
+            }
+            return Err(error);
+        }
+        let sent_before = self.flush_protocol_writes(&mut visitor)?;
         let Some(event) = self.process.try_event()? else {
-            return Ok(LspClientPoll::Idle);
+            return Ok(if sent_before == 0 {
+                LspClientPoll::Idle
+            } else {
+                LspClientPoll::Protocol {
+                    frames: 0,
+                    body_bytes: 0,
+                }
+            });
         };
-        match event {
+        // Complete each admitted output event. A deferred response is not an
+        // excuse to drop later frames or suspend writer/terminal event intake.
+        let result = match event {
             ProcessEvent::Started {
                 epoch, process_id, ..
             } => {
@@ -254,18 +410,81 @@ impl LspClient {
             } => Ok(LspClientPoll::InputRejected { sequence, failure }),
             ProcessEvent::Exited { success, code, .. } => {
                 self.started = false;
+                self.retire_protocol_writes();
                 self.framer.finish()?;
                 Ok(LspClientPoll::Exited { success, code })
             }
             ProcessEvent::Stopped { reason, .. } => {
                 self.started = false;
+                self.retire_protocol_writes();
                 Ok(LspClientPoll::Stopped(reason))
             }
             ProcessEvent::Failed { failure, .. } => {
                 self.started = false;
+                self.retire_protocol_writes();
                 Ok(LspClientPoll::Failed(failure))
             }
+        };
+        let poll = match result {
+            Ok(poll) => poll,
+            Err(error) => return self.fail_protocol(error),
+        };
+        // The output payload has now dropped. Its released budget may admit
+        // the response without another external event or an idle retry loop.
+        if self.started {
+            let _ = self.flush_protocol_writes(&mut visitor)?;
         }
+        Ok(poll)
+    }
+
+    pub(crate) const fn diagnostic_pull_supported(&self) -> bool {
+        self.peer.diagnostic_pull_supported()
+    }
+
+    pub(crate) fn diagnostic_provider_identifier(&self) -> Option<&str> {
+        self.peer.diagnostic_provider_identifier()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fill_control_for_test(&self) -> Result<usize, LspClientError> {
+        self.process.fill_control_for_test().map_err(Into::into)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_input_observer_for_test(
+        &mut self,
+    ) -> Result<crate::lsp_process::ProcessInputObserver, LspClientError> {
+        self.process
+            .take_input_observer_for_test()
+            .map_err(LspClientError::Process)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_input_for_test(&mut self) -> Result<Option<Vec<u8>>, LspClientError> {
+        self.process
+            .take_input_for_test()
+            .map_err(LspClientError::Process)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_stdout_for_test(&mut self, bytes: &[u8]) -> Result<(), LspClientError> {
+        self.process
+            .inject_stdout_for_test(bytes)
+            .map_err(LspClientError::Process)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_fixture_exit_for_test(&mut self) -> Result<(), LspClientError> {
+        // The producer exists only for inert fixtures. A failed exit cannot
+        // turn an already-acknowledged peer into false graceful-success evidence.
+        self.process
+            .inject_event_for_test(|identity, epoch| ProcessEvent::Exited {
+                identity,
+                epoch,
+                success: false,
+                code: Some(1),
+            })
+            .map_err(LspClientError::Process)
     }
 
     pub(crate) fn snapshot(&self) -> LspClientSnapshot {
@@ -274,21 +493,224 @@ impl LspClient {
             process: self.process.snapshot(),
             framing: self.framer.snapshot(),
             peer: self.peer.snapshot(),
+            protocol_writes: self.protocol_write_snapshot(),
         }
     }
 
     pub(crate) fn shutdown(&mut self) -> LspClientSnapshot {
         self.started = false;
         let process = self.process.shutdown();
+        self.retire_protocol_writes();
         LspClientSnapshot {
             started: false,
             process,
             framing: self.framer.snapshot(),
             peer: self.peer.snapshot(),
+            protocol_writes: self.protocol_write_snapshot(),
         }
     }
 
+    /// Final application teardown only, not a foreground workspace-switch wait.
+    pub(crate) fn shutdown_gracefully(&mut self) -> LspShutdownReport {
+        self.shutdown_gracefully_until(Instant::now() + SUPERVISOR_SHUTDOWN_TIMEOUT)
+    }
+
+    fn shutdown_gracefully_until(&mut self, deadline: Instant) -> LspShutdownReport {
+        let protocol = self.drain_shutdown_protocol(deadline);
+        self.started = false;
+        // Protocol work and forced transport cleanup share the original budget.
+        // Exhaustion remains visible as an incomplete join, not another five seconds.
+        let transport = self
+            .process
+            .shutdown_with_budget(deadline.saturating_duration_since(Instant::now()));
+        self.retire_protocol_writes();
+        LspShutdownReport {
+            protocol,
+            transport,
+        }
+    }
+
+    fn drain_shutdown_protocol(&mut self, deadline: Instant) -> LspShutdownProtocol {
+        let lifecycle = self.peer.snapshot().lifecycle();
+        if !self.started
+            || matches!(
+                lifecycle,
+                PeerLifecycle::Created | PeerLifecycle::Initializing | PeerLifecycle::Failed
+            )
+        {
+            return LspShutdownProtocol::NotReady(lifecycle);
+        }
+        let mut acknowledged = lifecycle == PeerLifecycle::Exited
+            && self.protocol_writes.is_empty()
+            && self.protocol_failure.is_none();
+        loop {
+            if Instant::now() >= deadline {
+                return LspShutdownProtocol::Deadline;
+            }
+            let peer = self.peer.snapshot();
+            if peer.lifecycle() == PeerLifecycle::Running
+                && peer.pending_requests() == 0
+                && let Err(error) = self.begin_shutdown()
+                && !matches!(
+                    error,
+                    LspClientError::Submit(SubmitError::Saturated | SubmitError::RetainedBudget)
+                )
+            {
+                return LspShutdownProtocol::Failed(error);
+            }
+            // Pending replies drain without publishing back into editor state.
+            // A stuck request cannot prolong the shared teardown deadline.
+            match self.poll(None, |event| {
+                acknowledged |= matches!(event, PeerEvent::ShutdownAcknowledged);
+            }) {
+                Ok(LspClientPoll::Exited { success, code }) => {
+                    return if acknowledged && success {
+                        LspShutdownProtocol::AcknowledgedAndExited
+                    } else {
+                        LspShutdownProtocol::UnexpectedExit { success, code }
+                    };
+                }
+                Ok(LspClientPoll::InputRejected { failure, .. }) => {
+                    return LspShutdownProtocol::RejectedInput(failure);
+                }
+                Ok(LspClientPoll::Stopped(reason)) => {
+                    return LspShutdownProtocol::Stopped(reason);
+                }
+                Ok(LspClientPoll::Failed(failure)) => {
+                    return LspShutdownProtocol::Failed(LspClientError::Process(failure));
+                }
+                Err(error) => return LspShutdownProtocol::Failed(error),
+                Ok(LspClientPoll::Idle) => thread::sleep(
+                    Duration::from_millis(1)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                ),
+                Ok(_) => {}
+            }
+        }
+    }
+
+    fn require_write_order(&self) -> Result<(), LspClientError> {
+        self.require_started()?;
+        if !self.protocol_writes.is_empty() {
+            return Err(SubmitError::Saturated.into());
+        }
+        Ok(())
+    }
+
+    fn protocol_write_snapshot(&self) -> ProtocolWriteSnapshot {
+        let capacity_bytes = self.protocol_writes.capacity() * size_of::<ProtocolWrite>();
+        ProtocolWriteSnapshot {
+            queued: self.protocol_writes.len(),
+            payload_bytes: self.protocol_payload_bytes,
+            capacity_bytes,
+            retained_bytes: self.protocol_payload_bytes + capacity_bytes,
+            peak_retained_bytes: self.protocol_peak_bytes,
+            failed: self.protocol_failure.is_some(),
+        }
+    }
+
+    fn retire_protocol_writes(&mut self) {
+        self.protocol_writes = VecDeque::new();
+        self.protocol_payload_bytes = 0;
+        self.protocol_failure = None;
+    }
+
+    fn fail_protocol<T>(&mut self, error: LspClientError) -> Result<T, LspClientError> {
+        self.protocol_failure = Some(error);
+        Err(error)
+    }
+
+    fn complete_protocol_write<F>(write: ProtocolWrite, visitor: &mut F)
+    where
+        F: FnMut(PeerEvent<'_>),
+    {
+        match write.kind {
+            ProtocolWriteKind::Response => {}
+            ProtocolWriteKind::Initialized => visitor(PeerEvent::Initialized(write.outbound)),
+            ProtocolWriteKind::Exit => visitor(PeerEvent::ShutdownAcknowledged),
+        }
+    }
+
+    fn retain_protocol_write<F>(
+        &mut self,
+        outbound: OutboundMessage,
+        kind: ProtocolWriteKind,
+        visitor: &mut F,
+    ) -> Result<(), LspClientError>
+    where
+        F: FnMut(PeerEvent<'_>),
+    {
+        if let Some(error) = self.protocol_failure {
+            return Err(error);
+        }
+        let write = ProtocolWrite { outbound, kind };
+        if self.protocol_writes.is_empty() {
+            match self.process.send(write.outbound.bytes()) {
+                Ok(_) => {
+                    Self::complete_protocol_write(write, visitor);
+                    return Ok(());
+                }
+                Err(SubmitError::Saturated | SubmitError::RetainedBudget) => {}
+                Err(error) => return self.fail_protocol(error.into()),
+            }
+        }
+        let Some(bytes) = self
+            .protocol_payload_bytes
+            .checked_add(write.outbound.bytes().len())
+            .filter(|bytes| *bytes <= MAX_PROTOCOL_PAYLOAD_BYTES)
+        else {
+            return self.fail_protocol(LspClientError::ProtocolWriteBudget);
+        };
+        if self.protocol_writes.len() == MAX_PROTOCOL_WRITES {
+            return self.fail_protocol(LspClientError::ProtocolWriteBudget);
+        }
+        if self.protocol_writes.try_reserve(1).is_err() {
+            return self.fail_protocol(ProtocolError::AllocationFailed.into());
+        }
+        self.protocol_writes.push_back(write);
+        self.protocol_payload_bytes = bytes;
+        self.protocol_peak_bytes = self.protocol_peak_bytes.max(
+            self.protocol_payload_bytes
+                + self.protocol_writes.capacity() * size_of::<ProtocolWrite>(),
+        );
+        Ok(())
+    }
+
+    fn flush_protocol_writes<F>(&mut self, visitor: &mut F) -> Result<usize, LspClientError>
+    where
+        F: FnMut(PeerEvent<'_>),
+    {
+        if let Some(error) = self.protocol_failure {
+            return Err(error);
+        }
+        let mut sent = 0;
+        while let Some(write) = self.protocol_writes.pop_front() {
+            match self.process.send(write.outbound.bytes()) {
+                Ok(_) => {}
+                Err(error) => {
+                    // Admission failed, so this owner retains the same FIFO
+                    // entry and byte reservation. Popping preserved capacity.
+                    self.protocol_writes.push_front(write);
+                    match error {
+                        SubmitError::Saturated | SubmitError::RetainedBudget => break,
+                        error => return self.fail_protocol(error.into()),
+                    }
+                }
+            }
+            self.protocol_payload_bytes -= write.outbound.bytes().len();
+            sent += 1;
+            Self::complete_protocol_write(write, visitor);
+        }
+        if self.protocol_writes.is_empty() {
+            self.protocol_writes = VecDeque::new();
+        }
+        Ok(sent)
+    }
+
     fn require_started(&self) -> Result<(), LspClientError> {
+        if let Some(error) = self.protocol_failure {
+            return Err(error);
+        }
         if !self.started {
             return Err(LspClientError::ProcessNotStarted);
         }
@@ -356,24 +778,38 @@ impl LspClient {
     {
         match event {
             PeerEvent::Initialized(outbound) => {
-                self.process.send(outbound.bytes())?;
-                visitor(PeerEvent::Initialized(outbound));
+                self.retain_protocol_write(outbound, ProtocolWriteKind::Initialized, visitor)?;
             }
             PeerEvent::ShutdownAcknowledged => {
                 let exit = self.peer.exit()?;
-                self.process.send(exit.bytes())?;
-                visitor(PeerEvent::ShutdownAcknowledged);
+                self.retain_protocol_write(exit, ProtocolWriteKind::Exit, visitor)?;
             }
             event @ PeerEvent::InboundRequest { id, method, .. } => {
+                let lifecycle = self.peer.snapshot().lifecycle();
+                // Exit is already owned. A late server request must not cause
+                // a forced kill before that notification reaches the server.
+                if lifecycle == PeerLifecycle::Exited {
+                    return Ok(());
+                }
                 let response = self.peer.respond_to_server_request(id, method)?;
-                self.process.send(response.bytes())?;
-                visitor(event);
+                self.retain_protocol_write(response, ProtocolWriteKind::Response, visitor)?;
+                if lifecycle == PeerLifecycle::Running {
+                    visitor(event);
+                }
             }
             event => visitor(event),
         }
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "lsp_cancellation_tests.rs"]
+mod cancellation_tests;
+
+#[cfg(test)]
+#[path = "lsp_protocol_write_tests.rs"]
+mod protocol_write_tests;
 
 #[cfg(test)]
 mod tests {
@@ -522,6 +958,271 @@ mod tests {
         Ok(client)
     }
 
+    fn mock_save_notify_written(
+        client: &mut LspClient,
+        method: &str,
+        params: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let params = serde_json::from_str::<Box<RawValue>>(params)?;
+        let submitted = client.notify(method, Some(&params))?;
+        let _ = wait_poll(
+            client,
+            Some(stamp(1)),
+            |poll| matches!(poll, LspClientPoll::InputWritten { sequence, .. } if *sequence == submitted),
+        )?;
+        Ok(())
+    }
+
+    const MOCK_SAVE_OPEN: &str = r#"{"textDocument":{"uri":"file:///workspace/save.rs","languageId":"rust","version":1,"text":"fn main() {}\n"}}"#;
+    const MOCK_SAVE_CHANGE: &str = r#"{"textDocument":{"uri":"file:///workspace/save.rs","version":2},"contentChanges":[{"text":"let ok = 1;\n"}]}"#;
+    const MOCK_SAVE_DOCUMENT: &str = r#"{"textDocument":{"uri":"file:///workspace/save.rs"}}"#;
+    const MOCK_SAVE_DIRTY_CHANGE: &str = r#"{"textDocument":{"uri":"file:///workspace/save.rs","version":2},"contentChanges":[{"text":"broken();\n"}]}"#;
+    const MOCK_SAVE_NEXT_CHANGE: &str = r#"{"textDocument":{"uri":"file:///workspace/save.rs","version":3},"contentChanges":[{"text":"let ok = 1;\n"}]}"#;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn mock_save_notification_preserves_the_live_overlay_and_process() -> Result<(), Box<dyn Error>>
+    {
+        let mut client = start_initialized(mock_executable(), 1)?;
+        mock_save_notify_written(&mut client, "textDocument/didOpen", MOCK_SAVE_OPEN)?;
+        mock_save_notify_written(
+            &mut client,
+            "textDocument/didChange",
+            MOCK_SAVE_DIRTY_CHANGE,
+        )?;
+        mock_save_notify_written(&mut client, "textDocument/didSave", MOCK_SAVE_DOCUMENT)?;
+
+        // A fresh response after the save proves server receipt and continued
+        // overlay authority, not just admission to the parent writer queue.
+        let params = serde_json::from_str::<Box<RawValue>>(MOCK_SAVE_DOCUMENT)?;
+        let request = client.begin_request("textDocument/diagnostic", Some(&params), stamp(1))?;
+        wait_peer_event(
+            &mut client,
+            Some(stamp(1)),
+            WAIT,
+            "save incorrectly cleared the live overlay diagnostics",
+            |event| {
+                matches!(
+                    event,
+                    PeerEvent::Response {
+                        id,
+                        value: ResponseValue::Result(value),
+                        ..
+                    } if id == request.request_id
+                        && serde_json::from_str::<serde_json::Value>(value.get())
+                            .is_ok_and(|value| value.get("items")
+                                .and_then(serde_json::Value::as_array)
+                                .is_some_and(|items| !items.is_empty()))
+                )
+            },
+        )?;
+        // Saving version 2 must not consume version 3. Require a new response
+        // for the immediately following edit, not only duplicate rejection.
+        mock_save_notify_written(&mut client, "textDocument/didChange", MOCK_SAVE_NEXT_CHANGE)?;
+        let request = client.begin_request("textDocument/diagnostic", Some(&params), stamp(1))?;
+        wait_peer_event(
+            &mut client,
+            Some(stamp(1)),
+            WAIT,
+            "save prevented the next version from replacing the overlay",
+            |event| {
+                matches!(
+                    event,
+                    PeerEvent::Response {
+                        id,
+                        value: ResponseValue::Result(value),
+                        ..
+                    } if id == request.request_id
+                        && serde_json::from_str::<serde_json::Value>(value.get())
+                            .is_ok_and(|value| value.get("items")
+                                .and_then(serde_json::Value::as_array)
+                                .is_some_and(Vec::is_empty))
+                )
+            },
+        )?;
+        mock_save_notify_written(&mut client, "textDocument/didClose", MOCK_SAVE_DOCUMENT)?;
+        let report = client.shutdown_gracefully();
+        assert_eq!(report.protocol, LspShutdownProtocol::AcknowledgedAndExited);
+        assert_eq!(report.transport.starts, 1);
+        assert_eq!(report.transport.restarts, 0);
+        assert_eq!(report.transport.exits, 1);
+        assert_eq!(report.transport.input_saturations, 0);
+        assert_eq!(report.transport.retained_bytes, 0);
+        assert_eq!(report.transport.shutdown_timeouts, 0);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn mock_save_notification_keeps_invalid_lifecycle_controls_discriminating()
+    -> Result<(), Box<dyn Error>> {
+        for scenario in ["missing-uri", "unopened", "closed", "version", "unknown"] {
+            let mut client = start_initialized(mock_executable(), 1)?;
+            mock_save_notify_written(&mut client, "textDocument/didOpen", MOCK_SAVE_OPEN)?;
+            if scenario == "closed" {
+                mock_save_notify_written(&mut client, "textDocument/didClose", MOCK_SAVE_DOCUMENT)?;
+            }
+            if scenario == "version" {
+                mock_save_notify_written(&mut client, "textDocument/didChange", MOCK_SAVE_CHANGE)?;
+                mock_save_notify_written(&mut client, "textDocument/didSave", MOCK_SAVE_DOCUMENT)?;
+            }
+            let (method, params) = match scenario {
+                "missing-uri" => ("textDocument/didSave", "{}"),
+                "unopened" => (
+                    "textDocument/didSave",
+                    r#"{"textDocument":{"uri":"file:///workspace/unopened.rs"}}"#,
+                ),
+                "version" => ("textDocument/didChange", MOCK_SAVE_CHANGE),
+                "unknown" => ("test/unknown-save-method", MOCK_SAVE_DOCUMENT),
+                _ => ("textDocument/didSave", MOCK_SAVE_DOCUMENT),
+            };
+            let params = serde_json::from_str::<Box<RawValue>>(params)?;
+            client.notify(method, Some(&params))?;
+            let exited = wait_poll(&mut client, Some(stamp(1)), |poll| {
+                matches!(poll, LspClientPoll::Exited { .. })
+            })?;
+            assert_eq!(
+                exited,
+                LspClientPoll::Exited {
+                    success: false,
+                    code: Some(2),
+                },
+                "invalid lifecycle was accepted: {scenario}"
+            );
+            let snapshot = client.shutdown();
+            assert_eq!(snapshot.process.starts, 1);
+            assert_eq!(snapshot.process.restarts, 0);
+            assert_eq!(snapshot.process.retained_bytes, 0);
+            assert_eq!(snapshot.process.shutdown_timeouts, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn graceful_shutdown_accepts_exit_acknowledged_before_entry() -> Result<(), Box<dyn Error>> {
+        let mut client = start_initialized(mock_executable(), 1)?;
+        client.begin_shutdown()?;
+        wait_peer_event(
+            &mut client,
+            None,
+            WAIT,
+            "shutdown acknowledgement missing",
+            |event| matches!(event, PeerEvent::ShutdownAcknowledged),
+        )?;
+        // The callback follows real exit enqueue. The owned child terminal
+        // event has not yet been consumed by graceful application teardown.
+        let entered = client.snapshot();
+        assert!(entered.started);
+        assert_eq!(entered.peer.lifecycle(), PeerLifecycle::Exited);
+        assert_eq!(entered.peer.pending_requests(), 0);
+        assert_eq!(entered.protocol_writes.queued, 0);
+        assert!(!entered.protocol_writes.failed);
+        let report = client.shutdown_gracefully();
+        assert_eq!(report.protocol, LspShutdownProtocol::AcknowledgedAndExited);
+        assert_eq!(report.transport.starts, 1);
+        assert_eq!(report.transport.restarts, 0);
+        assert_eq!(report.transport.exits, 1);
+        assert_eq!(report.transport.retained_bytes, 0);
+        assert_eq!(report.transport.queued_events, 0);
+        assert_eq!(report.transport.shutdown_timeouts, 0);
+        assert!(!client.snapshot().started);
+        Ok(())
+    }
+
+    #[test]
+    fn inert_fixture_exit_preserves_terminal_classification_and_drains_owned_bytes()
+    -> Result<(), Box<dyn Error>> {
+        for lifecycle in [
+            PeerLifecycle::Created,
+            PeerLifecycle::Running,
+            PeerLifecycle::Exited,
+        ] {
+            let mut client = LspClient::inert_for_test(identity(1));
+            if lifecycle != PeerLifecycle::Created {
+                client.initialize_inert_for_test();
+            }
+            if lifecycle == PeerLifecycle::Exited {
+                let request = client.begin_shutdown()?;
+                let reply = format!(
+                    r#"{{"jsonrpc":"2.0","id":{},"result":null}}"#,
+                    request.request_id,
+                );
+                let framed = format!("Content-Length: {}\r\n\r\n{reply}", reply.len());
+                let _ = client.ingest_stdout(framed.as_bytes(), None, &mut |_| {})?;
+            }
+            assert_eq!(client.snapshot().peer.lifecycle(), lifecycle);
+            let mut input = client.take_input_observer_for_test()?;
+            client.inject_fixture_exit_for_test()?;
+            let report = client.shutdown_gracefully();
+            assert_eq!(
+                report.protocol,
+                if lifecycle == PeerLifecycle::Created {
+                    LspShutdownProtocol::NotReady(lifecycle)
+                } else {
+                    LspShutdownProtocol::UnexpectedExit {
+                        success: false,
+                        code: Some(1),
+                    }
+                },
+            );
+            assert_eq!(report.transport.starts, 0);
+            assert_eq!(report.transport.exits, 0);
+            assert_eq!(report.transport.queued_events, 0);
+            assert!(!client.snapshot().started);
+            // The observer owns the inert receiver. The earlier shutdown
+            // snapshot must not claim bytes released before this drain.
+            while input.take_input()?.is_some() {}
+            assert_eq!(input.retained_bytes(), 0);
+            assert_eq!(client.snapshot().process.retained_bytes, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn inert_fixture_exit_rejects_a_live_client_without_disrupting_protocol()
+    -> Result<(), Box<dyn Error>> {
+        let mut client = start_initialized(mock_executable(), 1)?;
+        assert!(matches!(
+            client.inject_fixture_exit_for_test(),
+            Err(LspClientError::Process(ProcessFailure {
+                stage: ProcessStage::Output,
+                kind: FailureKind::Io(std::io::ErrorKind::BrokenPipe),
+                ..
+            }))
+        ));
+        assert!(client.snapshot().started);
+        assert_eq!(client.snapshot().peer.lifecycle(), PeerLifecycle::Running);
+        assert_eq!(client.snapshot().peer.pending_requests(), 0);
+        let params = serde_json::from_str::<Box<RawValue>>(r#"{"value":1}"#)?;
+        let request = client.begin_request("test/echo", Some(&params), stamp(1))?;
+        wait_peer_event(
+            &mut client,
+            Some(stamp(1)),
+            WAIT,
+            "fixture rejection disrupted the live peer",
+            |event| {
+                matches!(
+                    event,
+                    PeerEvent::Response {
+                        id,
+                        value: ResponseValue::Result(value),
+                        ..
+                    } if id == request.request_id && value.get() == r#"{"ok":true}"#
+                )
+            },
+        )?;
+        let report = client.shutdown_gracefully();
+        assert_eq!(report.protocol, LspShutdownProtocol::AcknowledgedAndExited);
+        assert_eq!(report.transport.starts, 1);
+        assert_eq!(report.transport.exits, 1);
+        assert_eq!(report.transport.retained_bytes, 0);
+        assert_eq!(report.transport.queued_events, 0);
+        assert_eq!(report.transport.shutdown_timeouts, 0);
+        Ok(())
+    }
+
     fn qualify_mock_requests(
         client: &mut LspClient,
         current: RequestStamp,
@@ -655,6 +1356,157 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn graceful_shutdown_drains_a_pending_reply_and_observes_real_exit()
+    -> Result<(), Box<dyn Error>> {
+        let executable = mock_executable();
+        let mut client = start_initialized(executable, 1)?;
+        let params = serde_json::from_str::<Box<RawValue>>("{}")?;
+        client.begin_request("textDocument/hover", Some(&params), stamp(1))?;
+        assert_eq!(client.snapshot().peer.pending_requests(), 1);
+        let report = client.shutdown_gracefully();
+        assert_eq!(report.protocol, LspShutdownProtocol::AcknowledgedAndExited);
+        assert_eq!(report.transport.exits, 1);
+        assert_eq!(report.transport.retained_bytes, 0);
+        assert_eq!(report.transport.queued_events, 0);
+        assert_eq!(report.transport.shutdown_timeouts, 0);
+        assert_eq!(client.snapshot().peer.pending_requests(), 0);
+        assert!(!client.snapshot().started);
+        Ok(())
+    }
+
+    #[test]
+    fn shutdown_drains_racing_requests_without_reopening_editor_work() -> Result<(), Box<dyn Error>>
+    {
+        let mut client = LspClient::inert_for_test(identity(1));
+        client.initialize_inert_for_test();
+        assert!(client.take_input_for_test()?.is_some());
+        let shutdown = client.begin_shutdown()?;
+        assert_eq!(shutdown.request_id, 2);
+        assert!(client.take_input_for_test()?.is_some());
+
+        let frame = |body: &str| format!("Content-Length: {}\r\n\r\n{body}", body.len());
+        let input = [
+            r#"{"jsonrpc":"2.0","id":41,"method":"workspace/diagnostic/refresh"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"result":null}"#,
+            r#"{"jsonrpc":"2.0","id":42,"method":"workspace/diagnostic/refresh"}"#,
+            r#"{"jsonrpc":"2.0","id":43,"method":"rust-analyzer/extension"}"#,
+        ]
+        .map(frame)
+        .concat();
+        let mut acknowledged = 0;
+        let result = client.ingest_stdout(input.as_bytes(), None, &mut |event| {
+            assert!(
+                matches!(event, PeerEvent::ShutdownAcknowledged),
+                "shutdown must not publish server requests into editor state"
+            );
+            acknowledged += 1;
+        })?;
+        assert!(matches!(result, LspClientPoll::Protocol { frames: 4, .. }));
+        assert_eq!(acknowledged, 1);
+        assert_eq!(client.snapshot().peer.lifecycle(), PeerLifecycle::Exited);
+        assert_eq!(client.snapshot().peer.pending_requests(), 0);
+        let cancelled = frame(
+            r#"{"jsonrpc":"2.0","id":41,"error":{"code":-32800,"message":"Client is shutting down"}}"#,
+        );
+        assert_eq!(client.take_input_for_test()?, Some(cancelled.into_bytes()));
+        let exit = frame(r#"{"jsonrpc":"2.0","method":"exit"}"#);
+        assert_eq!(client.take_input_for_test()?, Some(exit.into_bytes()));
+        assert!(client.take_input_for_test()?.is_none());
+
+        // Closing changes admission, not JSON/framing validation.
+        assert!(matches!(
+            client.ingest_stdout(frame("{").as_bytes(), None, &mut |_| {}),
+            Err(LspClientError::Protocol(ProtocolError::MalformedJson))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn graceful_shutdown_rejects_false_success() -> Result<(), Box<dyn Error>> {
+        let executable = mock_executable();
+        for (method, lifecycle, success, code, pending) in [
+            (
+                "test/shutdown-without-ack",
+                PeerLifecycle::ShuttingDown,
+                true,
+                0,
+                1,
+            ),
+            (
+                "test/shutdown-exit-error",
+                PeerLifecycle::Exited,
+                false,
+                7,
+                0,
+            ),
+        ] {
+            let mut client = start_initialized(executable, 1)?;
+            client.notify(method, None)?;
+            let report = client.shutdown_gracefully();
+            assert_eq!(
+                report.protocol,
+                LspShutdownProtocol::UnexpectedExit {
+                    success,
+                    code: Some(code),
+                },
+                "{method}"
+            );
+            assert_eq!(client.snapshot().peer.lifecycle(), lifecycle, "{method}");
+            assert_eq!(client.snapshot().peer.pending_requests(), pending);
+            assert!(!client.snapshot().started);
+            assert_eq!(report.transport.exits, 1);
+            assert_eq!(report.transport.shutdown_timeouts, 0);
+            assert_eq!(report.transport.retained_bytes, 0);
+            assert_eq!(report.transport.queued_events, 0);
+            assert_eq!(
+                report.transport.written_inputs,
+                report.transport.submitted_inputs
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn graceful_shutdown_rejects_unready_and_malformed_protocols() -> Result<(), Box<dyn Error>> {
+        let mut unready = LspClient::inert_for_test(identity(1));
+        let report = unready.shutdown_gracefully();
+        assert_eq!(
+            report.protocol,
+            LspShutdownProtocol::NotReady(PeerLifecycle::Created)
+        );
+        assert_eq!(report.transport.submitted_inputs, 0);
+        assert_eq!(report.transport.shutdown_timeouts, 0);
+
+        let mut malformed = LspClient::inert_for_test(identity(2));
+        malformed.initialize_inert_for_test();
+        malformed.inject_stdout_for_test(b"Content-Length: 1\r\n\r\n{")?;
+        let report = malformed.shutdown_gracefully();
+        assert!(matches!(
+            report.protocol,
+            LspShutdownProtocol::Failed(LspClientError::Protocol(_))
+        ));
+        assert!(!malformed.snapshot().started);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn graceful_shutdown_unanswered_request_cannot_claim_protocol_success()
+    -> Result<(), Box<dyn Error>> {
+        let executable = mock_executable();
+        let mut client = start_initialized(executable, 1)?;
+        let params = serde_json::from_str::<Box<RawValue>>(r#"{"character":99}"#)?;
+        client.begin_request("textDocument/hover", Some(&params), stamp(1))?;
+        let report = client.shutdown_gracefully_until(Instant::now() + Duration::from_millis(20));
+        assert_eq!(report.protocol, LspShutdownProtocol::Deadline);
+        assert_eq!(client.snapshot().peer.pending_requests(), 1);
+        assert!(!client.snapshot().started);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
     fn requests_fail_closed_until_the_started_event_is_observed() -> Result<(), Box<dyn Error>> {
         let executable = mock_executable();
         let mut client = LspClient::start(mock_spec(&executable.path)?, identity(1))?;
@@ -701,27 +1553,42 @@ mod tests {
             thread::sleep(Duration::from_millis(2));
         }
 
-        client.begin_request("test/block", None, current)?;
-        thread::sleep(Duration::from_millis(20));
-        let queued_params = format!(r#"{{"value":"{}"}}"#, "q".repeat(262_144));
-        let queued_params = serde_json::from_str::<Box<RawValue>>(&queued_params)?;
-        for _ in 0..16 {
-            let _ = client.begin_request("test/queued", Some(&queued_params), current);
-        }
+        let _ = client.begin_request("test/crash", None, current)?;
+        let exited = wait_poll(&mut client, Some(current), |poll| {
+            matches!(poll, LspClientPoll::Exited { .. })
+        })?;
+        assert!(matches!(
+            exited,
+            LspClientPoll::Exited {
+                success: false,
+                code: Some(7)
+            }
+        ));
+        // Ordinary pressure is refused before ownership transfer. Exercise a
+        // genuine asynchronous failure through the still-owned supervisor
+        // after observing its child's exit, not through an overloaded queue.
+        let written = client.snapshot().process.written_inputs;
+        let sequence = client
+            .process
+            .send(b"unwritable after observed child exit")?;
         let rejected = wait_poll(&mut client, Some(current), |poll| {
             matches!(poll, LspClientPoll::InputRejected { .. })
         })?;
-        assert!(matches!(
-            rejected,
-            LspClientPoll::InputRejected {
-                failure: ProcessFailure {
-                    stage: ProcessStage::Input,
-                    kind: FailureKind::QueueSaturated,
-                    ..
-                },
-                ..
-            }
-        ));
+        assert!(
+            matches!(
+                rejected,
+                LspClientPoll::InputRejected {
+                    sequence: rejected_sequence,
+                    failure: ProcessFailure {
+                        stage: ProcessStage::Input,
+                        kind: FailureKind::Io(std::io::ErrorKind::BrokenPipe),
+                        raw_os_error: None,
+                    },
+                } if rejected_sequence == sequence
+            ),
+            "unexpected rejection: {rejected:?}"
+        );
+        assert_eq!(client.snapshot().process.written_inputs, written);
         client.shutdown();
 
         let mut overflowing = start_initialized(executable, 2)?;

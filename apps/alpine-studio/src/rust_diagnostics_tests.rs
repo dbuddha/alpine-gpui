@@ -13,6 +13,324 @@ use serde_json::value::RawValue;
 use super::*;
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
+
+// Functional asynchronous-server readiness, not a frame or startup latency gate.
+pub(crate) const PRODUCT_DIAGNOSTIC_READINESS: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
+const PINNED_DISK_A: &str = "pub fn value() -> &'static str { \"disk\" }\n";
+const PINNED_DIRTY_A: &str = "pub fn value() -> bool { true }\n";
+const PINNED_DEPENDENT_B: &str = "mod a;\npub fn caller() -> u32 { a::value() }\n";
+
+#[test]
+#[ignore = "requires the checksum-verified pinned rust-analyzer; headless workspace acceptance"]
+fn pinned_rust_analyzer_preserves_unsaved_workspace_semantics()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = pinned_workspace_fixture()?;
+    let a_path = root.join("a.rs");
+    let b_path = root.join("b.rs");
+    let mut a = alpine_text::Buffer::new(PINNED_DISK_A);
+    let b = alpine_text::Buffer::new(PINNED_DEPENDENT_B);
+    let identity = |document_id, buffer_revision| LanguageIdentity {
+        workspace_id: 1,
+        workspace_revision: 1,
+        document_id,
+        document_revision: 1,
+        buffer_revision,
+        selection_revision: 1,
+    };
+    let mut a_input = RustDocumentInput::new(
+        &a_path,
+        &root,
+        identity(1, a.revision().get()),
+        a.snapshot(),
+    );
+    let b_input = RustDocumentInput::new(
+        &b_path,
+        &root,
+        identity(2, b.revision().get()),
+        b.snapshot(),
+    );
+    let latch = LanguageWakeLatch::default();
+    let mut model = RustDiagnostics::default();
+    sync_pinned_workspace_inputs(
+        &mut model,
+        &latch,
+        [a_input.clone(), b_input.clone()],
+        Some(2),
+    );
+    wait_for_pinned_dependent_type(
+        &mut model,
+        &latch,
+        "baseline",
+        1,
+        "expected u32, found &'static str",
+        2,
+    )?;
+
+    pinned_unsaved_tab_switches(&mut model, &latch, &mut a, &mut a_input, &b_input)?;
+    assert_eq!(fs::read_to_string(&a_path)?, PINNED_DISK_A);
+    pinned_undo_redo_and_discard(&mut model, &latch, &mut a, &mut a_input, &b_input)?;
+    assert_eq!(fs::read_to_string(&a_path)?, PINNED_DISK_A);
+    pinned_reopen_save_and_close(&mut model, &latch, &root, &a_path, &b_input)?;
+    assert_eq!(fs::read_to_string(&b_path)?, PINNED_DEPENDENT_B);
+    let drained = model.shutdown();
+    assert!(!drained.active);
+    assert_eq!(drained.diagnostic_bytes, 0);
+    assert_eq!(drained.overlay_documents, 0);
+    assert_eq!(drained.overlay_retained_text_bytes, 0);
+    assert_eq!(drained.overlay_reserved_text_bytes, 0);
+    assert_eq!(drained.process_retained_bytes, 0);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+fn pinned_workspace_fixture() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let executable = env::var_os("ALPINE_RUST_ANALYZER")
+        .ok_or("ALPINE_RUST_ANALYZER must name the checksum-verified pinned server")?;
+    let version = Command::new(&executable).arg("--version").output()?;
+    assert!(version.status.success());
+    assert_eq!(
+        String::from_utf8(version.stdout)?.trim(),
+        crate::lsp_language::pinned_server_version()
+    );
+    let sequence = NEXT_FIXTURE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_add(1)
+        })
+        .map_err(|_| "workspace fixture identity exhausted")?;
+    let root = env::temp_dir().join(format!("alpine-576-pinned-{}-{sequence}", process::id()));
+    // Exclusive admission: a failed old fixture must never be overwritten.
+    fs::create_dir(&root)?;
+    let root = fs::canonicalize(root)?;
+    eprintln!("alpine-576 pinned workspace={}", root.display());
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"alpine_overlay_acceptance\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[lib]\npath = \"b.rs\"\n[workspace]\n",
+    )?;
+    fs::write(root.join("a.rs"), PINNED_DISK_A)?;
+    fs::write(root.join("b.rs"), PINNED_DEPENDENT_B)?;
+    Ok(root)
+}
+
+fn pinned_unsaved_tab_switches(
+    model: &mut RustDiagnostics,
+    latch: &LanguageWakeLatch,
+    a: &mut alpine_text::Buffer,
+    a_input: &mut RustDocumentInput,
+    b_input: &RustDocumentInput,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut edit = alpine_text::Transaction::new(a.revision());
+    edit.replace(0..a.snapshot().len_bytes(), PINNED_DIRTY_A)?;
+    let _ = a.apply(edit)?;
+    refresh_pinned_workspace_input(a_input, a)?;
+    let minimum = model.snapshot().diagnostic_publications + 1;
+    sync_pinned_workspace_inputs(model, latch, [a_input.clone(), b_input.clone()], Some(1));
+    sync_pinned_workspace_inputs(model, latch, [a_input.clone(), b_input.clone()], Some(2));
+    wait_for_pinned_dependent_type(
+        model,
+        latch,
+        "unsaved-A-to-B",
+        minimum,
+        "expected u32, found bool",
+        2,
+    )?;
+    let minimum = model.snapshot().diagnostic_publications;
+    sync_pinned_workspace_inputs(model, latch, [a_input.clone(), b_input.clone()], None);
+    let session = model
+        .session
+        .as_ref()
+        .ok_or("non-Rust view dropped the workspace")?;
+    assert!(!session.active_view);
+    assert_eq!(model.snapshot().process_starts, 1);
+    sync_pinned_workspace_inputs(model, latch, [a_input.clone(), b_input.clone()], Some(2));
+    // Unchanged overlay state may reuse a valid cached diagnostic; requiring a
+    // new request here would incorrectly penalize demand-driven reuse.
+    wait_for_pinned_dependent_type(
+        model,
+        latch,
+        "non-Rust-to-B",
+        minimum,
+        "expected u32, found bool",
+        2,
+    )?;
+    Ok(())
+}
+
+fn pinned_undo_redo_and_discard(
+    model: &mut RustDiagnostics,
+    latch: &LanguageWakeLatch,
+    a: &mut alpine_text::Buffer,
+    a_input: &mut RustDocumentInput,
+    b_input: &RustDocumentInput,
+) -> Result<(), Box<dyn std::error::Error>> {
+    sync_pinned_workspace_inputs(model, latch, [a_input.clone(), b_input.clone()], Some(1));
+    assert_eq!(a.snapshot().text(), PINNED_DIRTY_A);
+    assert!(a.undo()?);
+    assert_eq!(a.snapshot().text(), PINNED_DISK_A);
+    refresh_pinned_workspace_input(a_input, a)?;
+    let minimum = model.snapshot().diagnostic_publications + 1;
+    sync_pinned_workspace_inputs(model, latch, [a_input.clone(), b_input.clone()], Some(2));
+    wait_for_pinned_dependent_type(
+        model,
+        latch,
+        "undo-A-to-B",
+        minimum,
+        "expected u32, found &'static str",
+        2,
+    )?;
+
+    assert!(a.redo()?);
+    refresh_pinned_workspace_input(a_input, a)?;
+    let minimum = model.snapshot().diagnostic_publications + 1;
+    sync_pinned_workspace_inputs(model, latch, [a_input.clone(), b_input.clone()], Some(2));
+    wait_for_pinned_dependent_type(
+        model,
+        latch,
+        "redo-A-to-B",
+        minimum,
+        "expected u32, found bool",
+        2,
+    )?;
+
+    // Deliberately discard A's overlay. This is the discriminating control for
+    // accidentally doing the same thing on an ordinary tab switch.
+    let minimum = model.snapshot().diagnostic_publications + 1;
+    sync_pinned_workspace_inputs(model, latch, [b_input.clone()], Some(2));
+    wait_for_pinned_dependent_type(
+        model,
+        latch,
+        "discard-A-disk-control",
+        minimum,
+        "expected u32, found &'static str",
+        1,
+    )?;
+    Ok(())
+}
+
+fn pinned_reopen_save_and_close(
+    model: &mut RustDiagnostics,
+    latch: &LanguageWakeLatch,
+    root: &Path,
+    a_path: &Path,
+    b_input: &RustDocumentInput,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Reopen the URI under a new document incarnation, then edit again.
+    let mut a = alpine_text::Buffer::new(&fs::read_to_string(a_path)?);
+    let mut a_input = RustDocumentInput::new(
+        a_path,
+        root,
+        LanguageIdentity {
+            workspace_id: 1,
+            workspace_revision: 1,
+            document_id: 3,
+            document_revision: 1,
+            buffer_revision: a.revision().get(),
+            selection_revision: 1,
+        },
+        a.snapshot(),
+    );
+    let mut edit = alpine_text::Transaction::new(a.revision());
+    edit.replace(0..a.snapshot().len_bytes(), PINNED_DIRTY_A)?;
+    let _ = a.apply(edit)?;
+    refresh_pinned_workspace_input(&mut a_input, &a)?;
+    let minimum = model.snapshot().diagnostic_publications + 1;
+    sync_pinned_workspace_inputs(model, latch, [a_input.clone(), b_input.clone()], Some(2));
+    wait_for_pinned_dependent_type(
+        model,
+        latch,
+        "reopened-A-unsaved",
+        minimum,
+        "expected u32, found bool",
+        2,
+    )?;
+
+    // This is an on-disk server control, not qualification of Studio's atomic
+    // save UI. Closing the overlay must now reveal the saved bool signature.
+    fs::write(a_path, a.snapshot().text())?;
+    assert_eq!(fs::read_to_string(a_path)?, PINNED_DIRTY_A);
+    let minimum = model.snapshot().diagnostic_publications + 1;
+    sync_pinned_workspace_inputs(model, latch, [b_input.clone()], Some(2));
+    wait_for_pinned_dependent_type(
+        model,
+        latch,
+        "saved-A-close-control",
+        minimum,
+        "expected u32, found bool",
+        1,
+    )?;
+    Ok(())
+}
+
+fn sync_pinned_workspace_inputs<const N: usize>(
+    model: &mut RustDiagnostics,
+    latch: &LanguageWakeLatch,
+    inputs: [RustDocumentInput; N],
+    active: Option<u64>,
+) {
+    let wake_latch = latch.clone();
+    let effect = model.sync_workspace(inputs, active, move |wake| {
+        let wake_latch = wake_latch.clone();
+        Arc::new(move || wake_latch.publish(wake))
+    });
+    if let Some(continuation) = effect.continuation {
+        latch.publish(continuation);
+    }
+}
+
+fn refresh_pinned_workspace_input(
+    input: &mut RustDocumentInput,
+    buffer: &alpine_text::Buffer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    input.snapshot = buffer.snapshot();
+    input.identity.buffer_revision = buffer.revision().get();
+    input.identity.document_revision = input
+        .identity
+        .document_revision
+        .checked_add(1)
+        .ok_or("document revision exhausted")?;
+    Ok(())
+}
+
+fn wait_for_pinned_dependent_type(
+    model: &mut RustDiagnostics,
+    latch: &LanguageWakeLatch,
+    phase: &str,
+    minimum_publications: u64,
+    expected_message: &str,
+    expected_overlays: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let snapshot =
+        wait_for_product_diagnostics(model, latch, minimum_publications, 1, false, true)?;
+    let admitted = model
+        .session
+        .as_ref()
+        .and_then(|session| session.diagnostics.as_ref())
+        .ok_or("missing dependent diagnostics")?;
+    assert_eq!(admitted.identity.document_id, 2, "{phase}");
+    assert_eq!(admitted.identity.buffer_revision, 0, "{phase}");
+    assert_eq!(admitted.process_epoch, snapshot.process_epoch, "{phase}");
+    assert!(
+        admitted.batch.diagnostics().iter().any(|diagnostic| {
+            diagnostic.start().line() == 1
+                && diagnostic.start().utf16_character() == 25
+                && diagnostic.end().line() == 1
+                && diagnostic.end().utf16_character() == 35
+                && diagnostic.severity() == Some(1)
+                && diagnostic.message() == expected_message
+        }),
+        "{phase}: expected current dependent type {expected_message:?}, got {admitted:?}"
+    );
+    assert_eq!(snapshot.overlay_documents, expected_overlays, "{phase}");
+    assert_eq!(snapshot.process_starts, 1, "{phase}");
+    assert_eq!(snapshot.restarts, 0, "{phase}");
+    assert_eq!(snapshot.lsp_version, 1, "unchanged B version at {phase}");
+    assert!(!snapshot.overlay_write_pending, "{phase}");
+    assert!(snapshot.overlay_reserved_text_bytes <= 1024, "{phase}");
+    eprintln!("alpine-576 phase={phase} message={expected_message:?} snapshot={snapshot:?}");
+    Ok(())
+}
+
 #[cfg(not(miri))]
 static MOCK_EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
 #[cfg(miri)]
@@ -212,7 +530,7 @@ fn wait_for_product_diagnostics(
     allow_omitted_version: bool,
     expect_items: bool,
 ) -> Result<RustDiagnosticsSnapshot, Box<dyn std::error::Error>> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + PRODUCT_DIAGNOSTIC_READINESS;
     while std::time::Instant::now() < deadline {
         for _ in 0..32 {
             let Some(wake) = latch.take() else {
@@ -301,7 +619,11 @@ fn portable_mock_drives_open_change_clear_and_shutdown() -> Result<(), Box<dyn E
     )?;
     assert_eq!(cleared.diagnostic_items, 0);
     assert!(model.status_message().is_none());
-    assert!(model.sync(None, |_| Arc::new(|| {})).visual_changed);
+    assert!(
+        model
+            .sync_workspace(std::iter::empty(), None, |_| Arc::new(|| {}))
+            .visual_changed
+    );
     assert!(!model.snapshot().active);
     fs::remove_dir_all(root)?;
     Ok(())
@@ -384,14 +706,14 @@ fn portable_mock_reuses_one_process_across_workspace_document_switches()
             )
             .visual_changed
     );
-    let returned = wait_for_product_diagnostics(
-        &mut model,
-        &latch,
-        second.diagnostic_publications.saturating_add(1),
-        1,
-        false,
-        true,
-    )?;
+    // Returning to an open overlay reuses its admitted diagnostics, not a new
+    // didOpen publication. Process reuse and document lifetime are independent.
+    let returned = model.snapshot();
+    assert_eq!(returned.diagnostic_version, Some(1));
+    assert_eq!(
+        returned.diagnostic_publications,
+        second.diagnostic_publications
+    );
     assert_eq!(returned.process_starts, 1);
     assert_eq!(returned.process_epoch, first.process_epoch);
     assert_eq!(returned.document_switches, 2);
@@ -1367,8 +1689,10 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
     assert_eq!(corrected.lsp_version, 2);
     assert!(model.status_message().is_some());
 
+    // E0425 is experimental and disabled by the pinned server's defaults.
+    // Keep the completion target, but require a stable native E0308 report.
     let replacement =
-        "pub fn deliberately_invalid() -> String {\n    let value = String::new();\n    val\n}\n";
+        "pub fn deliberately_invalid() -> String {\n    let value: String = 123;\n    val\n}\n";
     let mut transaction = alpine_text::Transaction::new(buffer.revision());
     transaction.replace(0..buffer.snapshot().len_bytes(), replacement)?;
     buffer.apply(transaction)?;
@@ -1384,7 +1708,21 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
     assert_eq!(model.snapshot().diagnostic_version, None);
     assert_eq!(model.snapshot().diagnostic_items, 0);
     assert_eq!(model.snapshot().lsp_version, 3);
-    assert!(model.status_message().is_none());
+    // Saved compiler reports deliberately survive an unsaved edit. The
+    // independent status-channel fixture proves that combined status can be
+    // nonempty while native invalidation is correct.
+    assert!(
+        model.status.is_none(),
+        "status after native v3 invalidation: native={:?}; saved={:?}; combined={:?}; snapshot={:?}",
+        model.status,
+        model
+            .session
+            .as_ref()
+            .and_then(|session| session.saved_compiler.as_ref())
+            .and_then(super::saved_compiler::SavedCompilerReport::status),
+        model.status_message(),
+        model.snapshot(),
+    );
     let ready = wait_for_product_diagnostics(
         &mut model,
         &latch,
@@ -1395,6 +1733,15 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
     )?;
     assert_eq!(ready.diagnostic_version, Some(3));
     assert!(ready.diagnostic_items > 0);
+    let current_report = model
+        .session
+        .as_ref()
+        .and_then(|session| session.diagnostics.as_ref())
+        .ok_or("missing current completion-fixture diagnostics")?;
+    assert!(
+        current_completion_fixture_report(&current_report.batch),
+        "expected the stable type error at the new text's exact range: {current_report:?}"
+    );
 
     let completion_offset = replacement
         .rfind("val\n")
@@ -1505,5 +1852,60 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
     assert!(!drained.active);
     assert_eq!(drained.diagnostic_items, 0);
     assert_eq!(drained.diagnostic_bytes, 0);
+    Ok(())
+}
+
+fn current_completion_fixture_report(batch: &crate::lsp_language::DiagnosticBatch) -> bool {
+    batch.document_version() == Some(3)
+        && batch.diagnostics().iter().any(|diagnostic| {
+            diagnostic.start().line() == 1
+                && diagnostic.start().utf16_character() == 24
+                && diagnostic.end().line() == 1
+                && diagnostic.end().utf16_character() == 27
+                && diagnostic.severity() == Some(1)
+                && diagnostic.message() == "expected String, found i32"
+        })
+}
+
+#[test]
+fn stable_completion_diagnostic_oracle_rejects_stale_or_different_reports()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::lsp_language::{DiagnosticBatch, LspDocument};
+    use serde_json::{json, value::RawValue};
+
+    let item = json!({
+        "range":{"start":{"line":1,"character":24},"end":{"line":1,"character":27}},
+        "severity":1,"message":"expected String, found i32"
+    });
+    for case in 0..9 {
+        let mut changed = item.clone();
+        match case {
+            2 => changed["range"]["start"]["line"] = json!(0),
+            3 => changed["range"]["start"]["character"] = json!(23),
+            4 => changed["range"]["end"]["line"] = json!(2),
+            5 => changed["range"]["end"]["character"] = json!(28),
+            6 => changed["severity"] = json!(2),
+            7 => changed["message"] = json!("expected u32, found &'static str"),
+            _ => {}
+        }
+        let version = if case == 1 { 2 } else { 3 };
+        let document = LspDocument::from_file_path(
+            &std::env::temp_dir().join("alpine-native-completion-oracle.rs"),
+            "rust",
+            version,
+        )?;
+        let items = if case == 8 {
+            json!([])
+        } else {
+            json!([changed])
+        };
+        let raw = RawValue::from_string(json!({"kind":"full","items":items}).to_string())?;
+        let batch = DiagnosticBatch::admit_pull(&raw, &document)?;
+        assert_eq!(
+            current_completion_fixture_report(&batch),
+            case == 0,
+            "case {case}"
+        );
+    }
     Ok(())
 }

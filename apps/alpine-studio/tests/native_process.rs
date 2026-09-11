@@ -1,6 +1,10 @@
 //! Native process composition for Studio clipboard and dirty-close behavior.
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+#[path = "support/bounded_capture.rs"]
+mod bounded_capture;
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 #[path = "fixtures/lsp_mock_server.rs"]
 mod lsp_mock_server;
 
@@ -91,11 +95,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
     use std::{
-        io::Read as _,
         os::unix::fs::PermissionsExt as _,
-        process::{Command, Stdio},
-        thread,
-        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+        process::Command,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
@@ -122,38 +124,23 @@ fn qualify_accessibility_child() -> Result<(), Box<dyn std::error::Error>> {
                 .env("ALPINE_RUST_ANALYZER", &server)
                 .env("ALPINE_STUDIO_NATIVE_LSP_TRACE", &language_trace)
                 .env("HOME", home)
-                .env_remove("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_OMIT")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+                .env_remove("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_OMIT");
             if let Some(omitted) = omitted {
                 command.env("ALPINE_STUDIO_NATIVE_ACCESSIBILITY_OMIT", omitted);
             }
-            let mut child = command.spawn()?;
-            let timeout = Duration::from_secs(15);
-            let deadline = Instant::now() + timeout;
-            let status = loop {
-                if let Some(status) = child.try_wait()? {
-                    break status;
-                }
-                if Instant::now() >= deadline {
-                    child.kill()?;
-                    let status = child.wait()?;
-                    let trace = read_language_trace(&language_trace);
-                    return Err(format!(
-                        "native Studio accessibility child exceeded {timeout:?} and ended with {status}; language_trace={trace:?}"
+            let output = bounded_capture::run(&mut command, Duration::from_secs(15))
+                .map_err(|error| {
+                    std::io::Error::new(
+                        error.kind(),
+                        format!(
+                            "native Studio accessibility capture failed: {error}; language_trace={:?}",
+                            read_language_trace(&language_trace),
+                        ),
                     )
-                    .into());
-                }
-                thread::sleep(Duration::from_millis(10));
-            };
-            let mut stdout = String::new();
-            let mut stderr = String::new();
-            if let Some(mut pipe) = child.stdout.take() {
-                pipe.read_to_string(&mut stdout)?;
-            }
-            if let Some(mut pipe) = child.stderr.take() {
-                pipe.read_to_string(&mut stderr)?;
-            }
+                })?;
+            let status = output.status;
+            let stdout = String::from_utf8(output.stdout)?;
+            let stderr = String::from_utf8(output.stderr)?;
             let trace = read_language_trace(&language_trace);
             Ok::<_, Box<dyn std::error::Error>>((status, stdout, stderr, trace))
         };
@@ -262,7 +249,12 @@ fn read_language_trace(path: &std::path::Path) -> String {
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn require_language_trace(trace: &str, scenario: &str) -> Result<(), Box<dyn std::error::Error>> {
     require_language_startup_trace(trace).map_err(|error| {
-        format!("language trace mismatch for scenario {scenario:?}: {error}").into()
+        // The fixture directory is cleaned after this result. Preserve the
+        // actual rejected trace in the bounded parent failure capture first.
+        format!(
+            "language trace mismatch for scenario {scenario:?}: {error}; language_trace={trace:?}"
+        )
+        .into()
     })
 }
 
@@ -272,7 +264,12 @@ fn require_language_trace_prefix(
     scenario: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     alpine_studio::native_validation::validate_native_language_startup_prefix(trace).map_err(
-        |error| format!("language trace prefix mismatch for scenario {scenario:?}: {error}").into(),
+        |error| {
+            format!(
+                "language trace prefix mismatch for scenario {scenario:?}: {error}; language_trace={trace:?}"
+            )
+            .into()
+        },
     )
 }
 
@@ -289,10 +286,8 @@ fn require_language_startup_trace(trace: &str) -> Result<(), Box<dyn std::error:
 fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
     use std::{
         ffi::OsStr,
-        io::Read as _,
-        process::{Command, Stdio},
-        thread,
-        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+        process::Command,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
@@ -314,7 +309,8 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_alpine-studio"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_alpine-studio"));
+        command
             .arg(&path)
             .env(
                 "ALPINE_STUDIO_NATIVE_PROCESS_SCENARIO",
@@ -327,35 +323,11 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
                 "ALPINE_STUDIO_DOGFOOD_CAPTURED_AT_UTC",
                 "2026-08-30T12:00:00Z",
             )
-            .env("HOME", &home)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let timeout = Duration::from_secs(8);
-        let deadline = Instant::now() + timeout;
-        let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                child.kill()?;
-                let status = child.wait()?;
-                return Err(format!(
-                    "shipping Alpine Studio exceeded {timeout:?} and was terminated with {status}"
-                )
-                .into());
-            }
-            thread::sleep(Duration::from_millis(10));
-        };
-
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        if let Some(mut pipe) = child.stdout.take() {
-            pipe.read_to_string(&mut stdout)?;
-        }
-        if let Some(mut pipe) = child.stderr.take() {
-            pipe.read_to_string(&mut stderr)?;
-        }
+            .env("HOME", &home);
+        let output = bounded_capture::run(&mut command, Duration::from_secs(8))?;
+        let status = output.status;
+        let stdout = String::from_utf8(output.stdout)?;
+        let stderr = String::from_utf8(output.stderr)?;
         if !status.success() {
             return Err(format!(
                 "shipping Alpine Studio failed with {status}; stdout={stdout:?}; stderr={stderr:?}"
@@ -523,45 +495,18 @@ fn run_recovery_launch_process(
     scenario: &str,
     expected_evidence: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::{
-        io::Read as _,
-        process::{Command, Stdio},
-        thread,
-        time::{Duration, Instant},
-    };
+    use std::{process::Command, time::Duration};
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_alpine-studio"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_alpine-studio"));
+    command
         .arg(requested)
         .env("ALPINE_STUDIO_NATIVE_PROCESS_SCENARIO", scenario)
         .env("ALPINE_STUDIO_NATIVE_EXPECTED_PATH", requested)
-        .env("HOME", home)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let timeout = Duration::from_secs(8);
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            child.kill()?;
-            let status = child.wait()?;
-            return Err(format!(
-                "recovery launch {scenario} exceeded {timeout:?} and was terminated with {status}"
-            )
-            .into());
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_string(&mut stdout)?;
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        pipe.read_to_string(&mut stderr)?;
-    }
+        .env("HOME", home);
+    let output = bounded_capture::run(&mut command, Duration::from_secs(8))?;
+    let status = output.status;
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
     if !status.success() {
         return Err(format!(
             "recovery launch {scenario} failed with {status}; stdout={stdout:?}; stderr={stderr:?}"

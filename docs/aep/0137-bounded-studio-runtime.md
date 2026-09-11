@@ -120,6 +120,21 @@ omission rather than manufacturing a zero-valued observation.
 
 ## Evidence and remaining risk
 
+Defect [#576](https://github.com/dbuddha/alpine-gpui/issues/576) adds composition
+controls for bounded workspace overlays, per-document wire versions, rejected
+roster admission, obsolete-view revocation, and status-only invalidation. New
+registry entries supplement C02 and C03 without changing their requirement
+associations or the earlier single-document evidence. A headless pinned-server
+fixture checks unsaved cross-file semantics separately from production AppKit
+folder-mode replay.
+
+The private LSP transport's input-credit and deferred-protocol-write controls
+are task-level supporting evidence, not additional modeled runtime queues.
+Neither those controls nor the workspace fixtures extend the TLA+ abstraction
+to LSP framing, process-allocation identity, writer credits, concrete protocol
+semantics, or Rust refinement. No atomic claim or formal bound changes here.
+
+
 Unit controls cover worker and external saturation, external wake coalescing,
 cross-revision external delivery, stale worker rejection, retained-byte release,
 result backpressure, shutdown disconnection, shutdown revocation, worker panic,
