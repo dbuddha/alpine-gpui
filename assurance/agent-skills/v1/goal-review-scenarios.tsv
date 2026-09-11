@@ -1,5 +1,0 @@
-id	skill	prompt	rubric
-goal-admission	alpine-goal-adversarial-reviewer	goal-review-prompts.md#goal-admission	goal-review-rubric.md
-goal-evidence	alpine-goal-adversarial-reviewer	goal-review-prompts.md#goal-evidence	goal-review-rubric.md
-goal-observer	alpine-goal-adversarial-reviewer	goal-review-prompts.md#goal-observer	goal-review-rubric.md
-goal-discovery	alpine-goal-adversarial-reviewer	goal-review-prompts.md#goal-discovery	goal-review-rubric.md

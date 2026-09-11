@@ -57,5 +57,4 @@ TCC; never disable security, patch private driver state or relaunch an app merel
 to prove it closed. Track the original PID and process-start identity.
 
 Return the supported contract, measured bottleneck, competing hypothesis, bounded
-change, correctness/memory tradeoff, raw evidence and claim ceiling. Route
-statistical qualification and source packages to `$github-deep-researcher`.
+change, correctness/memory tradeoff, raw evidence and claim ceiling. State calibration and statistical limitations alongside measurements.

@@ -5,7 +5,7 @@ description: Dissect pinned Zed Editor and GPUI source, map behavior and ownersh
 
 # Zed and GPUI architecture translation
 
-Read the current comparator pin and [lineage source map](../../docs/research/alpine-lineage/source-map.md)
+Read the current comparator pin and [lineage source map](../../../docs/research/alpine-lineage/source-map.md)
 before inspection. Keep the accepted comparator revision separate from newer
 upstream review revisions. Never silently use `latest` documentation as the pinned
 implementation. Start from one editor behavior or measured renderer question.
@@ -49,9 +49,9 @@ replacing an unfavorable result with an easier endpoint.
 
 For each change record origin, Alpine destination, transformation, include/exclude
 decision, correctness evidence, performance and memory results independently,
-limitations, issue/PR and accepted revision in the existing lineage package.
+limitations and inspected revision in the PR; update existing lineage records
+when source adaptation changes their claims.
 Report narrower wins honestly; no percentage of "GPUI adapted" without a defined
 mechanism inventory and denominator. Route hardware interpretation to
-`$apple-metal-performance-engineer`, and editorial publication to
-`$github-documentation-architect`. WGPU and community GPUI projects remain source
+`$apple-metal-performance-engineer`. WGPU and community GPUI projects remain source
 or comparator inputs, not automatically approved dependencies.

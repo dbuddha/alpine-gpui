@@ -1,3 +1,6 @@
+> Historical reference. This evaluation programme is retired; active checks
+> validate only repository skill packaging.
+
 # Engineering skill evaluation and guarded evolution
 
 Requirement #564 and Experiment #566 own behavioral acceptance. Structural gates

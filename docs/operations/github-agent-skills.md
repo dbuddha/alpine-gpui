@@ -1,3 +1,6 @@
+> Historical reference. Superseded by [AGENTS.md](../../AGENTS.md).
+> The governance and skill evaluation procedures below are retired.
+
 # GitHub agent operations
 
 Alpine owns manifest-listed installable skills that turn repository policy into repeatable agent workflows. The three GitHub authorities below route to the focused [engineering skills](alpine-engineering-skills.md) when needed. They advise and validate work; they do not supersede `AGENTS.md`, approved issues, CI, or owner-held approvals.

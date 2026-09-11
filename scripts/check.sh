@@ -4,13 +4,9 @@ set -eu
 scripts/check-policy.sh
 scripts/test-policy.sh
 scripts/test-native-mutation-receipts.sh
-scripts/check-worktrees.sh --check --offline --max-count 3
 scripts/test-worktrees.sh
 scripts/check-product-boundary.sh
 scripts/test-product-boundary.sh
-scripts/check-research-retention.sh
-scripts/test-research-retention.sh
-scripts/check-wiki.sh
 scripts/test-classifier.sh
 scripts/test-ci-admission.sh
 scripts/test-ci-cache-selection.sh
@@ -19,7 +15,6 @@ scripts/check-portable-targets.sh
 scripts/test-setup-kani.sh
 scripts/test-coverage.sh
 scripts/test-miri-partitions.sh
-scripts/test-hierarchy.sh
 scripts/test-assurance.sh
 scripts/test-formal-effectiveness.sh
 scripts/test-qualification.sh
@@ -38,8 +33,6 @@ scripts/test-core-contracts.sh
 scripts/test-metal-contracts.sh
 scripts/verify-metal-library.sh
 scripts/check-release.sh
-mdbook build
-mdbook test
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 if [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; then

@@ -92,12 +92,12 @@ classifier_tests=$(run_fixture scripts/test-classifier.sh)
 assert_ci_controls "$classifier_tests"
 
 for control in scripts/check-policy.sh scripts/test-policy.sh scripts/check.sh \
-    scripts/check-agent-skills.sh scripts/test-agent-skills.sh scripts/install-agent-skills.sh \
-    scripts/lib/agent-skills.sh scripts/wiki.sh scripts/test-wiki.sh \
+    scripts/check-agent-skills.sh scripts/test-agent-skills.sh scripts/check-agent-skills.py \
+    scripts/route-assurance-failures.sh scripts/test-assurance-failure-routing.sh \
     scripts/collect-assurance-failures.sh scripts/test-assurance-failure-collector.sh \
-    .github/workflows/assurance-failure.yml assurance/agent-skills/v1/scenarios.tsv; do
+    .github/workflows/assurance-failure.yml; do
     assert_ci_controls "$(run_fixture "$control")"
-    assert_every_gate "$(run_fixture "$control" review:unsafe)"
+    test "$(run_fixture "$control" review:unsafe)" = "$(run_fixture "$control")"
     assert_every_gate "$(run_fixture "$(printf '%s\nunclassified/input.bin' "$control")")"
 done
 for execution in .github/workflows/ci.yml .github/workflows/nightly-assurance.yml \
@@ -220,7 +220,7 @@ tool_fixture=$(run_fixture tools/alpine-ax-client/fixtures/tree.json)
 assert_every_gate "$tool_fixture"
 
 unsafe=$(run_fixture README.md review:unsafe)
-assert_output "$unsafe" miri=true
+assert_output "$unsafe" miri=false
 
 metal=$(run_fixture crates/alpine-metal/src/lib.rs)
 assert_output "$metal" coverage=true

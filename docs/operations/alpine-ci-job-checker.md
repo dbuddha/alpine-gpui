@@ -1,3 +1,6 @@
+> Historical reference. Superseded by [AGENTS.md](../../AGENTS.md).
+> The governance and skill evaluation procedures below are retired.
+
 # Alpine CI job checker
 
 `alpine-ci-job-checker` is the focused CI engineering entry point for the

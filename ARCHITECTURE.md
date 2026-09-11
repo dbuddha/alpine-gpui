@@ -820,8 +820,8 @@ synthetic and making no
 hardware or performance claim. The repository
 acceptance command validates policy and the registry, tests automation and core
 contracts, then runs formatting, Clippy, all-target tests, doctests, and
-rustdoc. mdBook builds the durable engineering guide as a downloadable CI
-artifact.
+rustdoc. Engineering guidance is plain Markdown; it has no separate book or
+Wiki publication gate.
 The macOS platform crate separately tests all descriptor boundaries and runs
 seven harness-free integration executables on the process main thread. The
 surface smoke test creates the complete native object graph, verifies layer
@@ -875,65 +875,38 @@ callback counts during a bounded clean-idle interval. Deterministic
 validation controls can qualify state correlation and guarded recovery there,
 but they remain labeled separately from physical display evidence.
 
-Hosted CI classifies the changed paths and review labels, then runs the required
-evidence fail-closed under one `ci-pass` result. Locked native tests always run
-on Linux, Apple Silicon macOS, and Windows. Rust implementation changes add
-shipping-crate coverage, changed-code mutation, and Kani as selected. Portable
-mutation runs on Linux, while changed Direct Metal native code receives a
-second mutation pass on Apple Silicon macOS with the native tests and Metal
-driver available. The
-non-shipping assurance tool has a separate coverage floor and fixture suite.
-Unsafe and native Metal paths additionally select Miri or native macOS and
-Metal validation. The selected native job installs Xcode's optional Metal toolchain
-when necessary, compiles the shader source offline, records toolchain and
-artifact hashes, tests initialization and readback against that exact library,
-and mutation-tests changed native platform code. Unsafe Rust is denied
-workspace-wide and permitted only in the private native modules of
-`alpine-metal` and `alpine-platform-macos`. Their boundaries cover checked Metal
-resource binding, draw, blit, post-completion shared-buffer access, Objective-C
-delegate conformance, AppKit construction, and run-loop registration. Every use
-has a local safety argument and native validation coverage. Scheduled suites expand
-proofs, Miri, dependency advisories, mutation, coverage, fuzzing when a target
-exists, and Metal validation.
+Hosted CI selects checks from changed source paths and explicit manual inputs,
+then propagates every applicable failure through `ci-pass`. PR opening, source
+updates and reopening trigger code CI; title, body and label changes do not.
+Ordinary CI retains workspace tests, doctests, rustdoc, dependency/license checks,
+the source-selected Linux/macOS arm64/Windows matrix and native Metal validation.
+Coverage, mutation, Kani, Miri and TLA+ are opt-in manual assurance; their bounded
+claims do not substitute for native tests or physical acceptance. Nightly
+assurance is manual, and only dependency advisories recur on the weekly schedule.
+
+The selected Metal job installs Xcode's optional Metal toolchain when necessary,
+compiles the shader source offline, records toolchain and artifact hashes, and
+tests initialization and readback against that library. Unsafe Rust remains
+isolated in audited native boundary files in the Metal, macOS platform,
+CoreText layout and non-shipping AX client crates. The source-boundary check
+includes Studio application sources. Every unsafe use needs a local safety
+argument and relevant native validation.
+
+The technical evidence registry validates offline. Ordinary development requires
+no claim ID, issue hierarchy or Project access. A single failure router creates
+or updates deduplicated issues for current-main failures and timeouts; successful,
+skipped, canceled and superseded runs do not authorize publication. It rechecks
+the main revision and run attempt immediately before publishing and does not
+manage issue parents or declare product acceptance.
 
 ```mermaid
 flowchart TB
-    classify["Evidence classifier<br/>paths and review labels"]
-    policy["Quality<br/>policy, dependencies, format, Clippy"]
-    unit["Unit, integration, doctest, rustdoc"]
-    native["Locked native matrix<br/>Linux, macOS arm64, Windows"]
-    coverage["Coverage ratchet<br/>workspace, critical files, changed lines"]
-    mutation["Changed Rust mutation<br/>portable Linux plus native Metal"]
-    kani["Selected bounded Rust proofs"]
-    tla["Selected finite TLA+ models<br/>plus faulty controls"]
-    registry["Evidence registry<br/>claims, bounds, exclusions"]
-    guide["mdBook guide<br/>links and examples"]
-    miri["Selected Miri lifetime checks"]
-    metal["Selected Metal validation"]
-    aggregate["ci-pass"]
-    scheduled["Nightly and weekly expansion<br/>proofs, mutation, fuzz, advisories"]
-
-    classify --> policy
-    classify --> unit
-    classify --> native
-    classify --> coverage
-    classify --> mutation
-    classify --> kani
-    classify --> tla
-    classify --> miri
-    classify --> metal
-    policy --> aggregate
-    unit --> aggregate
+    source["Source paths"] --> quality["Policy, dependencies, tests, rustdoc"]
+    source --> native["Selected native matrix and Metal validation"]
+    manual["Explicit manual assurance"] --> specialized["Coverage, mutation, Kani, Miri, TLA+"]
+    quality --> aggregate["ci-pass: require every applicable check"]
     native --> aggregate
-    coverage --> aggregate
-    mutation --> aggregate
-    kani --> aggregate
-    miri --> aggregate
-    metal --> aggregate
-    registry --> policy
-    guide --> policy
-    tla --> aggregate
-    scheduled -. "failures create deduplicated issues" .-> policy
+    specialized --> aggregate
 ```
 
 Tests must use the narrowest layer that proves the behavior. Renderer work will
