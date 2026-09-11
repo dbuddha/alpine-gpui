@@ -484,6 +484,41 @@ if ! grep -Fq 'CI cancellation must be limited to source-changing or non-PR runs
     exit 1
 fi
 
+for admission_fault in fast-feedback native-dependency native-command native-cfg native-ignored; do
+    case "$admission_fault" in
+        fast-feedback)
+            expression='s/run: scripts\/check-ci-fast-feedback\.sh/run: true/'
+            diagnostic='CI preflight must validate current repository and pull request policy before fan-out'
+            ;;
+        native-dependency)
+            expression='s/(  native-mutation:.*?needs:) \[classify, preflight, native\]/$1 [classify, preflight]/s'
+            diagnostic='CI job native-mutation must wait for the fast policy preflight'
+            ;;
+        native-command)
+            expression='s/run: scripts\/check-ci-native-admission\.sh/run: true/'
+            diagnostic='CI native mutation admission must preserve the explicit native baseline contract'
+            ;;
+        native-cfg)
+            expression='s/(Require unmutated native admission before mutation fan-out.*?RUSTFLAGS:) --cfg alpine_native_validation/$1 ordinary/s'
+            diagnostic='CI native mutation admission must preserve the explicit native baseline contract'
+            ;;
+        native-ignored)
+            expression='s/(        run: scripts\/check-ci-native-admission\.sh)/        continue-on-error: true\n$1/'
+            diagnostic='CI native mutation admission must not ignore baseline failures'
+            ;;
+    esac
+    perl -0pe "$expression" "$fixture_dir/ci.yml" > "$fixture_dir/$admission_fault-ci.yml"
+    if ALPINE_CI_WORKFLOW="$fixture_dir/$admission_fault-ci.yml" run_policy > "$fixture_dir/$admission_fault-ci.log" 2>&1; then
+        printf 'policy test error: admission fault %s unexpectedly passed\n' "$admission_fault" >&2
+        exit 1
+    fi
+    if ! grep -Fq "$diagnostic" "$fixture_dir/$admission_fault-ci.log"; then
+        printf 'policy test error: expected admission fault %s was not reported\n' "$admission_fault" >&2
+        cat "$fixture_dir/$admission_fault-ci.log" >&2
+        exit 1
+    fi
+done
+
 for dispatch_fault in missing-base optional-base non-string-base classify-base preflight-base; do
     case "$dispatch_fault" in
         missing-base)
@@ -877,3 +912,65 @@ fi
 rm -rf "${ci_native_shard_fixture}"
 
 printf 'repository policy tests passed\n'
+
+# Adversarial admission controls: declared steps and dependencies are not proof
+# of execution if a step is skipped or a failed prerequisite is overridden.
+for fault in fast-skip fast-ignore native-always cache-skip cache-broad mutation-zero-bypass; do
+    workflow="$fixture_dir/$fault.yml"
+    case "$fault" in
+        fast-skip) sed '/name: Require cheap source feedback before assurance fan-out/a\
+        if: false
+' .github/workflows/ci.yml > "$workflow" ;;
+        fast-ignore) sed '/name: Require cheap source feedback before assurance fan-out/a\
+        continue-on-error: true
+' .github/workflows/ci.yml > "$workflow" ;;
+        native-always) sed '/^  native-mutation:/,/^  ci-pass:/s/if: needs.classify.outputs.metal/if: always() \&\& needs.classify.outputs.metal/' .github/workflows/ci.yml > "$workflow" ;;
+        cache-skip) sed 's#run: scripts/prepare-mutation-tool.sh#run: true#' .github/workflows/ci.yml > "$workflow" ;;
+        cache-broad) sed '/name: Restore scoped mutation tooling/a\
+        restore-keys: broad
+' .github/workflows/ci.yml > "$workflow" ;;
+        mutation-zero-bypass) sed "s/if: needs.classify.outputs.mutation_diff == 'true'/if: needs.classify.outputs.mutation == 'true'/" .github/workflows/ci.yml > "$workflow" ;;
+    esac
+    if ALPINE_CI_WORKFLOW="$workflow" scripts/check-policy.sh > "$fixture_dir/$fault.log" 2>&1; then
+        printf 'policy test error: %s was accepted\n' "$fault" >&2
+        exit 1
+    fi
+done
+printf 'CI admission bypass policy controls passed\n'
+
+for fault in proof-skip proof-ignore cache-conditional aggregate-domain; do
+    workflow="$fixture_dir/$fault.yml"
+    case "$fault" in
+        proof-skip) sed '/^      - id: mutation-diff$/a\
+        if: false
+' .github/workflows/ci.yml > "$workflow" ;;
+        proof-ignore) sed '/^      - id: mutation-diff$/a\
+        continue-on-error: true
+' .github/workflows/ci.yml > "$workflow" ;;
+        cache-conditional) sed '/name: Verify or install pinned mutation tooling/a\
+        if: false
+' .github/workflows/ci.yml > "$workflow" ;;
+        aggregate-domain) sed '/true|false) ;;/d' .github/workflows/ci.yml > "$workflow" ;;
+    esac
+    if ALPINE_CI_WORKFLOW="$workflow" scripts/check-policy.sh > "$fixture_dir/$fault.log" 2>&1; then
+        printf 'policy test error: %s was accepted\n' "$fault" >&2; exit 1
+    fi
+done
+printf 'CI proof and cache execution policy controls passed\n'
+
+for fault in aggregate-skip aggregate-ignore; do
+    workflow="$fixture_dir/$fault.yml"
+    if [ "$fault" = aggregate-skip ]; then
+        sed '/name: Require selected evidence/a\
+        if: false
+' .github/workflows/ci.yml > "$workflow"
+    else
+        sed '/name: Require selected evidence/a\
+        continue-on-error: true
+' .github/workflows/ci.yml > "$workflow"
+    fi
+    if ALPINE_CI_WORKFLOW="$workflow" scripts/check-policy.sh > "$fixture_dir/$fault.log" 2>&1; then
+        printf 'policy test error: %s was accepted\n' "$fault" >&2; exit 1
+    fi
+done
+printf 'CI aggregate execution policy controls passed\n'

@@ -15,6 +15,8 @@ scripts/test-research-retention.sh
 scripts/check-wiki.sh
 scripts/test-wiki.sh
 scripts/test-classifier.sh
+scripts/test-ci-admission.sh
+scripts/test-ci-cache-selection.sh
 scripts/test-portable-targets.sh
 scripts/check-portable-targets.sh
 scripts/test-setup-kani.sh

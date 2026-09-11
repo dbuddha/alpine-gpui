@@ -1,0 +1,6 @@
+interface:
+  display_name: "Alpine CI Job Checker"
+  short_description: "Complete, fast, evidence-backed Alpine CI"
+  default_prompt: "Use $alpine-ci-job-checker to diagnose this Alpine CI change, preserve required assurance, and measure the first actionable feedback."
+policy:
+  allow_implicit_invocation: true
