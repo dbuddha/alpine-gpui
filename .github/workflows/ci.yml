@@ -822,6 +822,8 @@ jobs:
       RUSTFLAGS: --cfg alpine_native_validation
       ALPINE_NATIVE_HEAD: ${{ needs.classify.outputs.head_sha }}
       ALPINE_NATIVE_BASE: ${{ needs.classify.outputs.base_sha }}
+      # Reuse compiler work inside each owned mutation copy, never test results.
+      CARGO_INCREMENTAL: "1"
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

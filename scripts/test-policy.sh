@@ -519,6 +519,37 @@ for admission_fault in fast-feedback native-dependency native-command native-cfg
     fi
 done
 
+for incremental_fault in native-missing native-disabled native-override global-disabled ordinary-override; do
+    case "$incremental_fault" in
+        native-missing)
+            expression='s/(  native-mutation:.*?)      CARGO_INCREMENTAL: "1"\n/$1/s' ;;
+        native-disabled)
+            expression='s/(  native-mutation:.*?)      CARGO_INCREMENTAL: "1"/$1      CARGO_INCREMENTAL: "0"/s' ;;
+        native-override)
+            expression='s/(  native-mutation:.*?      - name: Require platform native mutants to be killed\n)/$1        env:\n          CARGO_INCREMENTAL: "0"\n/s' ;;
+        global-disabled)
+            expression='s/^  CARGO_INCREMENTAL: "0"$/  CARGO_INCREMENTAL: "1"/m' ;;
+        ordinary-override)
+            expression='s/(  native:.*?    timeout-minutes: 15\n)/$1    env:\n      CARGO_INCREMENTAL: "1"\n/s' ;;
+    esac
+    perl -0pe "$expression" "$fixture_dir/ci.yml" > "$fixture_dir/$incremental_fault-ci.yml"
+    if ALPINE_CI_WORKFLOW="$fixture_dir/$incremental_fault-ci.yml" run_policy > "$fixture_dir/$incremental_fault.log" 2>&1; then
+        printf 'policy test error: compilation mode fault %s unexpectedly passed\n' "$incremental_fault" >&2
+        exit 1
+    fi
+    grep -Fq 'CI mutation compilation mode must be explicit and scoped' "$fixture_dir/$incremental_fault.log"
+done
+
+perl -0pe 's/(  native-mutation:.*?    env:\n)/$1      # CARGO_INCREMENTAL controls compiler reuse only.\n/s' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/incremental-comment-ci.yml"
+ALPINE_CI_WORKFLOW="$fixture_dir/incremental-comment-ci.yml" run_policy > "$fixture_dir/incremental-comment.log" 2>&1
+sed 's/CARGO_TERM_COLOR: always/CARGO_TERM_COLOR: always # CARGO_INCREMENTAL stays scoped/' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/incremental-inline-comment-ci.yml"
+ALPINE_CI_WORKFLOW="$fixture_dir/incremental-inline-comment-ci.yml" run_policy > "$fixture_dir/incremental-inline-comment.log" 2>&1
+sed 's/CARGO_INCREMENTAL: "1"/CARGO_INCREMENTAL: "1" # native mutation copies only/' \
+    "$fixture_dir/ci.yml" > "$fixture_dir/incremental-key-comment-ci.yml"
+ALPINE_CI_WORKFLOW="$fixture_dir/incremental-key-comment-ci.yml" run_policy > "$fixture_dir/incremental-key-comment.log" 2>&1
+
 for dispatch_fault in missing-base optional-base non-string-base classify-base preflight-base; do
     case "$dispatch_fault" in
         missing-base)

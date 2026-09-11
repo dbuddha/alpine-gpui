@@ -457,6 +457,27 @@ if [ -n "$workflow_files" ]; then
             fail 'native mutation receipts must bind selected execution and source/base identity'
         fi
     done
+    # Only native mutation copies change compiler mode. Keep independent
+    # ordinary validation and all other jobs at the existing global default.
+    if ! awk '
+        { sub(/[[:space:]]+#.*$/, "") }
+        /^[[:space:]]*#/ { next }
+        /^[^[:space:]]/ { section = $0; job = ""; in_environment = 0 }
+        section == "jobs:" && /^  [A-Za-z0-9_-]+:$/ {
+            job = $1; sub(/:$/, "", job); in_environment = 0
+        }
+        /^    env:$/ { in_environment = 1; next }
+        /^    [^ ]/ { in_environment = 0 }
+        /CARGO_INCREMENTAL/ {
+            if (section == "env:" && $0 == "  CARGO_INCREMENTAL: \"0\"") global++
+            else if (section == "jobs:" && job == "native-mutation" && in_environment &&
+                $0 == "      CARGO_INCREMENTAL: \"1\"") native++
+            else invalid = 1
+        }
+        END { exit (invalid || global != 1 || native != 1) }
+    ' "${ALPINE_CI_WORKFLOW:-.github/workflows/ci.yml}"; then
+        fail 'CI mutation compilation mode must be explicit and scoped'
+    fi
     if ! grep -Fqx 'scripts/test-native-mutation-receipts.sh' scripts/check.sh; then
         fail 'local quality gate must exercise native mutation receipt controls'
     fi

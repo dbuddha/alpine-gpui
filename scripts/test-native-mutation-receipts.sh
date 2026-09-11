@@ -12,6 +12,8 @@ GITHUB_SHA=$(git rev-parse HEAD)
 ALPINE_NATIVE_HEAD=$GITHUB_SHA ALPINE_NATIVE_BASE=$GITHUB_SHA GITHUB_WORKFLOW_SHA=$GITHUB_SHA
 GITHUB_RUN_ID=1 GITHUB_RUN_ATTEMPT=1
 ALPINE_NATIVE_TOOLCHAIN='fixture rustc' ALPINE_NATIVE_MUTATOR='cargo-mutants 27.1.0'
+CARGO_INCREMENTAL=0
+export CARGO_INCREMENTAL
 export GITHUB_SHA ALPINE_NATIVE_HEAD ALPINE_NATIVE_BASE GITHUB_WORKFLOW_SHA GITHUB_RUN_ID GITHUB_RUN_ATTEMPT
 export ALPINE_NATIVE_TOOLCHAIN ALPINE_NATIVE_MUTATOR
 case_number=0
@@ -140,6 +142,15 @@ studio
   grep -Fxq 'native mutation execution identity changed' "$root/rejected.log" )
 ( ALPINE_NATIVE_HEAD=invalid fail_finish studio success invalid-source
   grep -Fq 'invalid native mutation execution identity' "$root/rejected.log" )
+( CARGO_INCREMENTAL=1 fail_finish studio success changed-compilation-mode
+  grep -Fxq 'native mutation execution identity changed' "$root/rejected.log" )
+( CARGO_INCREMENTAL=invalid fail_finish studio success invalid-compilation-mode
+  grep -Fq 'invalid native mutation execution identity' "$root/rejected.log" )
+( unset CARGO_INCREMENTAL
+  fail_finish studio success missing-compilation-mode
+  grep -Fq 'invalid native mutation execution identity' "$root/rejected.log" )
+( CARGO_INCREMENTAL=unset fail_finish studio success literal-unset-compilation-mode
+  grep -Fq 'invalid native mutation execution identity' "$root/rejected.log" )
 [ "$GITHUB_RUN_ATTEMPT" = 1 ]
 [ "$ALPINE_NATIVE_HEAD" = "$GITHUB_SHA" ]
 "$checker" finish studio 1 "$root" success
@@ -163,6 +174,14 @@ studio
 alter outcomes.json '.outcomes[1].phase_results[].argv+=["--package=alpine-studio@0.0.0","--package=alpine-studio"]'
 "$checker" finish studio 1 "$root" success
 printf 'native mutation receipt controls passed (%s isolated cases)\n' "$case_number"
+
+export CARGO_INCREMENTAL=1
+prepare studio
+studio
+"$checker" finish studio 1 "$root" success
+jq -e '.status=="passed" and .identity.schema=="alpine-native-mutation-identity/v2"
+    and .identity.cargo_incremental=="1"' "$root/native-mutation-receipts-studio-1/result.json" >/dev/null
+export CARGO_INCREMENTAL=0
 
 # Exercise real Git history independently of the verifier's path detection.
 # These receipts remain fixtures; the opt-in CLI control proves only the

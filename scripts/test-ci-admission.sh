@@ -14,6 +14,7 @@ if [ "$1" = test ] && [ "${ALPINE_RUST_ANALYZER+x}" = x ]; then
     exit 91
 fi
 if [ "$1" = test ]; then
+    test "${CARGO_INCREMENTAL:-}" = 0 || exit 96
     test "${RUSTFLAGS:-}" = '--cfg alpine_native_validation' || exit 92
     test "${ALPINE_PRESENTATION_EVIDENCE_MODE:-}" = hosted-direct || exit 93
     test "${MACOSX_DEPLOYMENT_TARGET:-}" = 15.0 || exit 94
@@ -52,6 +53,7 @@ run_case() {
     actual=0
     PATH="$temporary/bin:$PATH" ADMISSION_CALLS="$temporary/$name.calls" \
         ADMISSION_FAULT="$fault" ALPINE_RUST_ANALYZER=must-be-removed \
+        CARGO_INCREMENTAL="${ADMISSION_TEST_INCREMENTAL-0}" \
         RUSTFLAGS="${ADMISSION_TEST_RUSTFLAGS:---cfg alpine_native_validation}" \
         ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct \
         MACOSX_DEPLOYMENT_TARGET=15.0 ALPINE_VALIDATION_DEPLOYMENT_TARGET=26.0 \
@@ -99,6 +101,10 @@ run_case metallib-fail check-ci-native-admission.sh metallib 35
 sed '/^cargo /d' "$temporary/native.expected" > "$temporary/metallib.expected"
 diff -u "$temporary/metallib.expected" "$temporary/metallib-fail.calls"
 ( ADMISSION_TEST_RUSTFLAGS=ordinary-build run_case missing-validation check-ci-native-admission.sh '' 2 )
+( ADMISSION_TEST_INCREMENTAL=1 run_case changed-incremental-validation check-ci-native-admission.sh '' 2 )
+( ADMISSION_TEST_INCREMENTAL= run_case missing-incremental check-ci-native-admission.sh '' 2 )
+test ! -s "$temporary/changed-incremental-validation.calls"
+test ! -s "$temporary/missing-incremental.calls"
 test ! -s "$temporary/missing-validation.calls"
 grep -q 'explicit hosted validation environment required' "$temporary/missing-validation.log"
 for name in studio-fail platform-fail toolchain-fail metallib-fail missing-validation; do
@@ -124,3 +130,16 @@ if grep -q 'CI native admission passed' "$temporary/cfg-loss.log"; then
     exit 1
 fi
 printf 'CI admission ordering and failure-propagation controls passed\n'
+
+# The environment must survive the entry guard and reach both Cargo commands.
+sed '/^unset ALPINE_RUST_ANALYZER/a\
+unset CARGO_INCREMENTAL
+' "$original_root/scripts/check-ci-native-admission.sh" > "$temporary/scripts/incremental-loss.sh"
+chmod +x "$temporary/scripts/incremental-loss.sh"
+root=$temporary
+run_case incremental-loss incremental-loss.sh '' 96
+root=$original_root
+if grep -q 'CI native admission passed' "$temporary/incremental-loss.log"; then
+    printf 'CI admission test error: lost compilation mode published success\n' >&2
+    exit 1
+fi

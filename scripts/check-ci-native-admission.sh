@@ -3,7 +3,8 @@ set -eu
 
 # This is an early guard for the two native mutation package selections, not a
 # reusable cargo-mutants baseline receipt. Mutator-copy baselines remain enabled.
-if [ "${RUSTFLAGS:-}" != '--cfg alpine_native_validation' ] ||
+if [ "${CARGO_INCREMENTAL:-}" != 0 ] ||
+    [ "${RUSTFLAGS:-}" != '--cfg alpine_native_validation' ] ||
     [ "${ALPINE_PRESENTATION_EVIDENCE_MODE:-}" != hosted-direct ] ||
     [ "${MACOSX_DEPLOYMENT_TARGET:-}" != 15.0 ] ||
     [ "${ALPINE_VALIDATION_DEPLOYMENT_TARGET:-}" != 26.0 ]; then
