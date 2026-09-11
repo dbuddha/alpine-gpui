@@ -463,28 +463,28 @@ if ! grep -Fq 'CI pull_request triggers must start after label settlement and re
     exit 1
 fi
 
-sed "s/github.run_id || 'source'/github.event.action || 'source'/" \
+sed 's/^  group: .*/  group: ci-superseded-${{ github.run_id }}/' \
     "$fixture_dir/ci.yml" > "$fixture_dir/shared-metadata-concurrency-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/shared-metadata-concurrency-ci.yml" run_policy > "$fixture_dir/shared-metadata-concurrency-ci.log" 2>&1; then
-    printf 'policy test error: shared metadata concurrency unexpectedly passed\n' >&2
+    printf 'policy test error: per-run metadata concurrency unexpectedly passed\n' >&2
     exit 1
 fi
-if ! grep -Fq 'CI metadata events must not share a cancelable required-check concurrency group' \
+if ! grep -Fq 'CI events for one ref must share a concurrency group' \
     "$fixture_dir/shared-metadata-concurrency-ci.log"; then
     printf 'policy test error: expected metadata concurrency failure was not reported\n' >&2
     cat "$fixture_dir/shared-metadata-concurrency-ci.log" >&2
     exit 1
 fi
 
-sed 's/^  cancel-in-progress: .*/  cancel-in-progress: true/' \
+sed 's/^  cancel-in-progress: .*/  cancel-in-progress: false/' \
     "$fixture_dir/ci.yml" > "$fixture_dir/unconditional-pr-cancellation-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/unconditional-pr-cancellation-ci.yml" run_policy > "$fixture_dir/unconditional-pr-cancellation-ci.log" 2>&1; then
-    printf 'policy test error: unconditional PR cancellation unexpectedly passed\n' >&2
+    printf 'policy test error: disabled superseded-run cancellation unexpectedly passed\n' >&2
     exit 1
 fi
-if ! grep -Fq 'CI cancellation must be limited to source-changing or non-PR runs' \
+if ! grep -Fq 'CI must cancel superseded runs for the same ref' \
     "$fixture_dir/unconditional-pr-cancellation-ci.log"; then
-    printf 'policy test error: expected conditional cancellation failure was not reported\n' >&2
+    printf 'policy test error: expected superseded-run cancellation failure was not reported\n' >&2
     cat "$fixture_dir/unconditional-pr-cancellation-ci.log" >&2
     exit 1
 fi
@@ -560,6 +560,36 @@ ALPINE_CI_WORKFLOW="$fixture_dir/incremental-inline-comment-ci.yml" run_policy >
 sed 's/CARGO_INCREMENTAL: "1"/CARGO_INCREMENTAL: "1" # native mutation copies only/' \
     "$fixture_dir/ci.yml" > "$fixture_dir/incremental-key-comment-ci.yml"
 ALPINE_CI_WORKFLOW="$fixture_dir/incremental-key-comment-ci.yml" run_policy > "$fixture_dir/incremental-key-comment.log" 2>&1
+
+# Manual opt-in cannot become the default or inherit PR-controlled state.
+for assurance_fault in default-on missing-input unguarded-input coupled-aggregate; do
+    case "$assurance_fault" in
+        default-on) expression='s/default: false/default: true/' ;;
+        missing-input) expression='s/      assurance:\n(?:        [^\n]*\n)*//' ;;
+        unguarded-input) expression="s/github.event_name == 'workflow_dispatch' && inputs.assurance/inputs.assurance/" ;;
+        coupled-aggregate) expression='s/NATIVE_MUTATION_REQUIRED: \$\{\{ needs.classify.outputs.native_mutation/NATIVE_MUTATION_REQUIRED: \$\{\{ needs.classify.outputs.metal/' ;;
+    esac
+    perl -0pe "$expression" "$fixture_dir/ci.yml" > "$fixture_dir/$assurance_fault-ci.yml"
+    if ALPINE_CI_WORKFLOW="$fixture_dir/$assurance_fault-ci.yml" run_policy > "$fixture_dir/$assurance_fault.log" 2>&1; then
+        printf 'policy test error: assurance fault %s unexpectedly passed\n' "$assurance_fault" >&2
+        exit 1
+    fi
+done
+sed '/^on:/a\
+  schedule:
+' .github/workflows/nightly-assurance.yml > "$fixture_dir/scheduled-nightly.yml"
+if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/scheduled-nightly.yml" run_policy > "$fixture_dir/scheduled-nightly.log" 2>&1; then
+    printf 'policy test error: scheduled nightly unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'nightly specialized assurance must remain manual only' "$fixture_dir/scheduled-nightly.log"
+sed '/^    if: github.event_name == /d' .github/workflows/weekly-assurance.yml > "$fixture_dir/scheduled-weekly.yml"
+if ALPINE_WEEKLY_ASSURANCE_WORKFLOW="$fixture_dir/scheduled-weekly.yml" run_policy > "$fixture_dir/scheduled-weekly.log" 2>&1; then
+    printf 'policy test error: scheduled expensive weekly jobs unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'weekly expensive assurance and project radar must remain manual only' "$fixture_dir/scheduled-weekly.log"
+unset ALPINE_NIGHTLY_ASSURANCE_WORKFLOW ALPINE_WEEKLY_ASSURANCE_WORKFLOW ALPINE_CI_WORKFLOW
 
 for dispatch_fault in missing-base optional-base non-string-base classify-base preflight-base; do
     case "$dispatch_fault" in
@@ -966,7 +996,7 @@ for fault in fast-skip fast-ignore native-always cache-skip cache-broad mutation
         fast-ignore) sed '/name: Require cheap source feedback before assurance fan-out/a\
         continue-on-error: true
 ' .github/workflows/ci.yml > "$workflow" ;;
-        native-always) sed '/^  native-mutation:/,/^  ci-pass:/s/if: needs.classify.outputs.metal/if: always() \&\& needs.classify.outputs.metal/' .github/workflows/ci.yml > "$workflow" ;;
+        native-always) sed '/^  native-mutation:/,/^  ci-pass:/s/if: needs.classify.outputs.native_mutation/if: always() \&\& needs.classify.outputs.native_mutation/' .github/workflows/ci.yml > "$workflow" ;;
         cache-skip) sed 's#run: scripts/prepare-mutation-tool.sh#run: true#' .github/workflows/ci.yml > "$workflow" ;;
         cache-broad) sed '/name: Restore scoped mutation tooling/a\
         restore-keys: broad

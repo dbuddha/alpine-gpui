@@ -9,6 +9,11 @@ fail() {
 base_ref=${ALPINE_BASE_SHA:-}
 head_ref=${ALPINE_HEAD_SHA:-HEAD}
 labels=${ALPINE_PR_LABELS:-}
+assurance=${ALPINE_CI_ASSURANCE:-false}
+case "$assurance" in
+    true|false) ;;
+    *) fail 'ALPINE_CI_ASSURANCE must be true or false' ;;
+esac
 [ -n "$base_ref" ] || fail 'ALPINE_BASE_SHA is required; a one-commit fallback is not a PR baseline'
 base_sha=$(git rev-parse --verify --end-of-options "$base_ref^{commit}" 2>/dev/null) ||
     fail 'base does not identify an available commit'
@@ -172,6 +177,20 @@ if [ -n "$changed_files" ] && [ -z "$outside_controls" ] && matches "$ci_control
     fi
 fi
 
+# Ordinary feedback retains behavioral validation. Specialized assurance is
+# available only through an explicit manual workflow input.
+native_mutation=false
+if [ "$assurance" = true ]; then
+    native_mutation=$metal
+    if [ "$native_mutation" = true ]; then
+        printf 'native_mutation\tmanual-native-assurance\n' >> "$temporary/reasons.tsv"
+    fi
+else
+    coverage=false mutation=false kani=false miri=false tla=false
+    awk -F '\t' '$1 == "metal" || $1 == "portable"' "$temporary/reasons.tsv" > "$temporary/ordinary-reasons.tsv"
+    mv "$temporary/ordinary-reasons.tsv" "$temporary/reasons.tsv"
+fi
+
 # Explanations are optional planning artifacts, not test execution or acceptance
 # receipts. Existing workflow outputs retain their names and boolean values.
 if [ -n "${ALPINE_CI_PLAN:-}" ]; then
@@ -181,6 +200,7 @@ if [ -n "${ALPINE_CI_PLAN:-}" ]; then
         --arg change_source "$change_source" --arg paths "$changed_files" \
         --arg labels "$labels" --arg unknown "$unknown_inputs" \
         --argjson ci_control_only "$ci_control_only" \
+        --argjson assurance "$assurance" --argjson native_mutation "$native_mutation" \
         --rawfile reasons "$temporary/reasons.tsv" \
         --argjson coverage "$coverage" --argjson mutation "$mutation" \
         --argjson kani "$kani" --argjson miri "$miri" --argjson metal "$metal" \
@@ -190,8 +210,8 @@ if [ -n "${ALPINE_CI_PLAN:-}" ]; then
           changed_paths: ($paths | split("\n") | map(select(length > 0))),
           risk_labels: ($labels | gsub(","; "\n") | split("\n") | map(select(length > 0))),
           unmapped_paths: ($unknown | split("\n") | map(select(length > 0))),
-          ci_control_only: $ci_control_only,
-          gates: {coverage: $coverage, mutation: $mutation, kani: $kani,
+          ci_control_only: $ci_control_only, assurance: $assurance,
+          gates: {native_mutation: $native_mutation, coverage: $coverage, mutation: $mutation, kani: $kani,
                   miri: $miri, metal: $metal, tla: $tla, portable: $portable},
           reasons: ($reasons | split("\n") | map(select(length > 0) | split("\t") |
                     {gate: .[0], rule: .[1]}) | unique),
@@ -203,6 +223,7 @@ fi
 {
     printf 'base_sha=%s\n' "$base_sha"
     printf 'head_sha=%s\n' "$head_sha"
+    printf 'native_mutation=%s\n' "$native_mutation"
     printf 'coverage=%s\n' "$coverage"
     printf 'mutation=%s\n' "$mutation"
     printf 'kani=%s\n' "$kani"

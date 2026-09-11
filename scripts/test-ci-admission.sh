@@ -143,3 +143,29 @@ if grep -q 'CI native admission passed' "$temporary/incremental-loss.log"; then
     printf 'CI admission test error: lost compilation mode published success\n' >&2
     exit 1
 fi
+
+# Execute the workflow's actual aggregate: skipped opt-in assurance must not
+# excuse a missing native check, and opt-in mutation must still fail closed.
+awk '
+    /^  ci-pass:/ { aggregate = 1 }
+    aggregate && /^        run: \|/ { body = 1; next }
+    body { sub(/^          /, ""); print }
+' .github/workflows/ci.yml > "$temporary/aggregate.sh"
+aggregate_case() (
+    export CLASSIFY_RESULT=success PREFLIGHT_RESULT=success QUALITY_RESULT=success NATIVE_RESULT=success
+    export COVERAGE_REQUIRED=false COVERAGE_RESULT=skipped MUTATION_REQUIRED=false MUTATION_RESULT=skipped
+    export KANI_REQUIRED=false KANI_RESULT=skipped TLA_REQUIRED=false TLA_RESULT=skipped MIRI_REQUIRED=false MIRI_RESULT=skipped
+    export METAL_REQUIRED=true METAL_RESULT=success NATIVE_MUTATION_REQUIRED=false NATIVE_MUTATION_RESULT=skipped
+    for override in "$@"; do export "$override"; done
+    sh "$temporary/aggregate.sh"
+)
+aggregate_case
+for override in METAL_RESULT=skipped METAL_RESULT=failure NATIVE_RESULT=skipped NATIVE_RESULT=failure \
+    QUALITY_RESULT=failure CLASSIFY_RESULT=failure NATIVE_MUTATION_REQUIRED=true NATIVE_MUTATION_REQUIRED=invalid; do
+    if aggregate_case "$override" > "$temporary/aggregate-fault" 2>&1; then
+        printf 'aggregate accepted %s\n' "$override" >&2
+        exit 1
+    fi
+done
+aggregate_case NATIVE_MUTATION_REQUIRED=true NATIVE_MUTATION_RESULT=success
+printf 'CI aggregate admission tests passed\n'
