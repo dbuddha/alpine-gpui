@@ -961,7 +961,7 @@ for fault in fast-skip fast-ignore native-always cache-skip cache-broad mutation
         fast-ignore) sed '/name: Require cheap source feedback before assurance fan-out/a\
         continue-on-error: true
 ' .github/workflows/ci.yml > "$workflow" ;;
-        native-always) sed '/^  native-mutation:/,/^  ci-pass:/s/if: needs.classify.outputs.metal/if: always() \&\& needs.classify.outputs.metal/' .github/workflows/ci.yml > "$workflow" ;;
+        native-always) sed '/^  native-mutation:/,/^  ci-pass:/s/if: needs.classify.outputs.native_mutation_required/if: always() \&\& needs.classify.outputs.native_mutation_required/' .github/workflows/ci.yml > "$workflow" ;;
         cache-skip) sed 's#run: scripts/prepare-mutation-tool.sh#run: true#' .github/workflows/ci.yml > "$workflow" ;;
         cache-broad) sed '/name: Restore scoped mutation tooling/a\
         restore-keys: broad
@@ -974,6 +974,25 @@ for fault in fast-skip fast-ignore native-always cache-skip cache-broad mutation
     fi
 done
 printf 'CI admission bypass policy controls passed\n'
+
+for selection_fault in missing-check ignored-check missing-output false-default old-admission wrong-event-base wrong-event-head; do
+    case "$selection_fault" in
+        missing-check) expression='s#          scripts/check-native-mutation-selection.sh#          true#' ;;
+        ignored-check) expression='s#          scripts/check-native-mutation-selection.sh#          scripts/check-native-mutation-selection.sh || true#' ;;
+        missing-output) expression='/^          NATIVE_MUTATION_REQUIRED:/d' ;;
+        false-default) expression='s/NATIVE_MUTATION_REQUIRED:.*$/NATIVE_MUTATION_REQUIRED: false/' ;;
+        wrong-event-base) expression='s/ALPINE_EVENT_BASE_SHA:.*$/ALPINE_EVENT_BASE_SHA: ${{ needs.classify.outputs.base_sha }}/' ;;
+        wrong-event-head) expression='s/ALPINE_EVENT_HEAD_SHA:.*$/ALPINE_EVENT_HEAD_SHA: ${{ needs.classify.outputs.head_sha }}/' ;;
+        old-admission) expression="s/if: needs.classify.outputs.native_mutation_required == 'true'/if: needs.classify.outputs.metal == 'true'/" ;;
+    esac
+    sed "$expression" .github/workflows/ci.yml > "$fixture_dir/selection-$selection_fault.yml"
+    if ALPINE_CI_WORKFLOW="$fixture_dir/selection-$selection_fault.yml" scripts/check-policy.sh > "$fixture_dir/selection-$selection_fault.log" 2>&1; then
+        printf 'policy test error: selection bypass %s was accepted\n' "$selection_fault" >&2
+        exit 1
+    fi
+    grep -Eq 'native mutation (selection|admission|must retain success-gated)' "$fixture_dir/selection-$selection_fault.log"
+done
+printf 'Native mutation selection policy controls passed\n'
 
 for fault in proof-skip proof-ignore cache-conditional aggregate-domain; do
     workflow="$fixture_dir/$fault.yml"

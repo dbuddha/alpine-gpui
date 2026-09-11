@@ -147,6 +147,24 @@ if [ -n "$unknown_inputs" ]; then
     enable_all unmapped-input
 fi
 
+# First affected-native boundary: reviewed, non-native Studio leaf modules.
+# Keep native owners, inline entry-point/harness code, dependencies, manifests,
+# mixed changes and uncertainty on the existing complete PR obligation.
+# Ordinary native admission remains controlled by metal, not this mode.
+native_selection=full
+leaf_inputs='^apps/alpine-studio/src/(commands|documents|file_tree|find|lsp_client|lsp_framing|lsp_json|lsp_language|lsp_process|panes|project_search|quick_open|recovery|rust_completion|rust_navigation|rust_symbols|rust_workspace_edit|rust_workspace_ui|rust_workspace_publish|session|settings|syntax)\.rs$'
+non_leaf_inputs=$(printf '%s\n' "$changed_files" | sed '/^$/d' | grep -Ev "$leaf_inputs") || {
+    result=$?
+    [ "$result" -eq 1 ] || fail 'native leaf classification failed'
+}
+if [ -n "$changed_files" ] && [ -z "$non_leaf_inputs" ] && ! has_label review:unsafe; then
+    native_selection=affected
+fi
+native_mutation_required=false
+if [ "$metal" = true ] && [ "$native_selection" = full ]; then
+    native_mutation_required=true
+fi
+
 # Explanations are optional planning artifacts, not test execution or acceptance
 # receipts. Existing workflow outputs retain their names and boolean values.
 if [ -n "${ALPINE_CI_PLAN:-}" ]; then
@@ -155,6 +173,8 @@ if [ -n "${ALPINE_CI_PLAN:-}" ]; then
         --arg base "$base_sha" --arg head "$head_sha" --arg merge_base "$merge_base" \
         --arg change_source "$change_source" --arg paths "$changed_files" \
         --arg labels "$labels" --arg unknown "$unknown_inputs" \
+        --arg native_selection "$native_selection" \
+        --argjson native_mutation_required "$native_mutation_required" \
         --rawfile reasons "$temporary/reasons.tsv" \
         --argjson coverage "$coverage" --argjson mutation "$mutation" \
         --argjson kani "$kani" --argjson miri "$miri" --argjson metal "$metal" \
@@ -169,6 +189,8 @@ if [ -n "${ALPINE_CI_PLAN:-}" ]; then
           reasons: ($reasons | split("\n") | map(select(length > 0) | split("\t") |
                     {gate: .[0], rule: .[1]}) | unique),
           inventory_status: "not-discovered", acceptance: "not-evaluated",
+          native_selection: $native_selection,
+          native_mutation_required: $native_mutation_required,
           scope: "optional-gate-selection-only"}' > "$temporary/plan.json"
     mv "$temporary/plan.json" "$ALPINE_CI_PLAN"
 fi
@@ -183,6 +205,8 @@ fi
     printf 'metal=%s\n' "$metal"
     printf 'tla=%s\n' "$tla"
     printf 'portable=%s\n' "$portable"
+    printf 'native_selection=%s\n' "$native_selection"
+    printf 'native_mutation_required=%s\n' "$native_mutation_required"
 } > "$temporary/outputs"
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
     cat "$temporary/outputs" >> "$GITHUB_OUTPUT"

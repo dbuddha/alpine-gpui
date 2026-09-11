@@ -15,6 +15,7 @@ scripts/test-research-retention.sh
 scripts/check-wiki.sh
 scripts/test-wiki.sh
 scripts/test-classifier.sh
+scripts/test-native-mutation-selection.sh
 scripts/test-ci-admission.sh
 scripts/test-ci-cache-selection.sh
 scripts/test-portable-targets.sh

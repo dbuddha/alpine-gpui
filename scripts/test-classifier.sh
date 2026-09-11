@@ -36,6 +36,27 @@ assert_every_gate() {
     assert_output "$output" portable=true
 }
 
+for leaf in find lsp_client rust_navigation settings project_search; do
+    selected=$(run_fixture "apps/alpine-studio/src/$leaf.rs")
+    assert_output "$selected" native_selection=affected
+    assert_output "$selected" metal=true
+    assert_output "$selected" native_mutation_required=false
+    selected=$(run_fixture "apps/alpine-studio/src/$leaf.rs" review:unsafe)
+    assert_output "$selected" native_selection=full
+    assert_output "$selected" native_mutation_required=true
+done
+for full_input in apps/alpine-studio/src/lib.rs apps/alpine-studio/src/main.rs \
+    apps/alpine-studio/src/native_validation/accessibility_process.rs \
+    apps/alpine-studio/src/settings_reload_tests.rs crates/alpine-text/src/lib.rs \
+    apps/alpine-studio/src/rust_diagnostics.rs \
+    crates/alpine-platform-macos/src/native.rs Cargo.lock scripts/check-policy.sh \
+    .github/workflows/ci.yml apps/alpine-studio/src/new_unreviewed_module.rs; do
+    selected=$(run_fixture "apps/alpine-studio/src/find.rs
+$full_input")
+    assert_output "$selected" native_selection=full
+done
+assert_output "$(run_fixture '')" native_selection=full
+
 docs=$(run_fixture README.md)
 assert_output "$docs" coverage=false
 assert_output "$docs" mutation=false

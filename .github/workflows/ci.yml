@@ -42,6 +42,8 @@ jobs:
       kani: ${{ steps.classify.outputs.kani }}
       miri: ${{ steps.classify.outputs.miri }}
       metal: ${{ steps.classify.outputs.metal }}
+      native_selection: ${{ steps.classify.outputs.native_selection }}
+      native_mutation_required: ${{ steps.classify.outputs.native_mutation_required }}
       tla: ${{ steps.classify.outputs.tla }}
       portable: ${{ steps.classify.outputs.portable }}
     steps:
@@ -711,7 +713,7 @@ jobs:
   native-mutation:
     name: native-mutation-${{ matrix.domain }}-${{ matrix.id }}
     needs: [classify, preflight, native]
-    if: needs.classify.outputs.metal == 'true'
+    if: needs.classify.outputs.native_mutation_required == 'true'
     runs-on: macos-26
     timeout-minutes: 30
     strategy:
@@ -922,8 +924,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Check out source for selection verification
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
       - name: Require selected evidence
         env:
+          ALPINE_BASE_SHA: ${{ needs.classify.outputs.base_sha }}
+          ALPINE_HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
+          ALPINE_EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
+          ALPINE_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ALPINE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          NATIVE_SELECTION_MODE: ${{ needs.classify.outputs.native_selection }}
+          NATIVE_MUTATION_REQUIRED: ${{ needs.classify.outputs.native_mutation_required }}
           CLASSIFY_RESULT: ${{ needs.classify.result }}
           PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
@@ -970,4 +983,12 @@ jobs:
           require_selected tla "$TLA_REQUIRED" "$TLA_RESULT"
           require_selected miri "$MIRI_REQUIRED" "$MIRI_RESULT"
           require_selected metal-validation "$METAL_REQUIRED" "$METAL_RESULT"
-          require_selected native-mutation "$METAL_REQUIRED" "$NATIVE_MUTATION_RESULT"
+          scripts/check-native-mutation-selection.sh
+          require_selected native-mutation "$NATIVE_MUTATION_REQUIRED" "$NATIVE_MUTATION_RESULT"
+      - name: Retain native mutation policy witness
+        uses: ./.github/actions/upload-required-artifact
+        with:
+          name: native-mutation-policy-${{ github.sha }}
+          path: target/native-mutation-policy.json
+          retention-days: 7
+          if-no-files-found: error

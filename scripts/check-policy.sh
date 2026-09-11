@@ -218,7 +218,7 @@ if [ -n "$workflow_files" ]; then
         || printf '%s\n' "$preflight_block" | grep -Eq '^    (if|continue-on-error):'; then
         fail 'CI fast feedback must execute unconditionally and propagate failures'
     fi
-    if ! printf '%s\n' "$native_mutation_block" | grep -Fqx "    if: needs.classify.outputs.metal == 'true'" \
+    if ! printf '%s\n' "$native_mutation_block" | grep -Fqx "    if: needs.classify.outputs.native_mutation_required == 'true'" \
         || printf '%s\n' "$native_mutation_block" | grep -Eq '^    continue-on-error:'; then
         fail 'CI native mutation must retain success-gated admission'
     fi
@@ -559,8 +559,29 @@ if [ -n "$workflow_files" ]; then
     if ! printf '%s\n' "$native_mutation_block" | grep -Fq 'name: native-mutation-${{ matrix.domain }}-${{ matrix.id }}-${{ github.sha }}' \
         || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'native-mutation]' \
         || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'NATIVE_MUTATION_RESULT: ${{ needs.native-mutation.result }}' \
-        || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'require_selected native-mutation "$METAL_REQUIRED" "$NATIVE_MUTATION_RESULT"'; then
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'require_selected native-mutation "$NATIVE_MUTATION_REQUIRED" "$NATIVE_MUTATION_RESULT"'; then
         fail 'ci-pass must require and retain exact-head native mutation matrix evidence'
+    fi
+    if ! printf '%s\n' "$classify_block" | grep -Fqx '      native_selection: ${{ steps.classify.outputs.native_selection }}' \
+        || ! printf '%s\n' "$classify_block" | grep -Fqx '      native_mutation_required: ${{ steps.classify.outputs.native_mutation_required }}'; then
+        fail 'native mutation admission must use the explicit affected-policy decision'
+    fi
+    for required in \
+        '          ALPINE_BASE_SHA: ${{ needs.classify.outputs.base_sha }}' \
+        '          ALPINE_HEAD_SHA: ${{ needs.classify.outputs.head_sha }}' \
+        '          ALPINE_EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}' \
+        '          ALPINE_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}' \
+        "          ALPINE_PR_LABELS: \${{ join(github.event.pull_request.labels.*.name, ',') }}" \
+        '          NATIVE_SELECTION_MODE: ${{ needs.classify.outputs.native_selection }}' \
+        '          NATIVE_MUTATION_REQUIRED: ${{ needs.classify.outputs.native_mutation_required }}' \
+        '          scripts/check-native-mutation-selection.sh'
+    do
+        if ! printf '%s\n' "$aggregate_enforcement_block" | grep -Fqx "$required"; then
+            fail 'native mutation selection must be independently verified without defaults'
+        fi
+    done
+    if ! grep -Fqx 'scripts/test-native-mutation-selection.sh' scripts/check.sh; then
+        fail 'local quality gate must exercise native mutation selection controls'
     fi
 
     required_artifact_action=${ALPINE_REQUIRED_ARTIFACT_ACTION:-.github/actions/upload-required-artifact/action.yml}

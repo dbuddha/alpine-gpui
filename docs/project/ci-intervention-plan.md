@@ -67,6 +67,42 @@ metadata handling must not execute untrusted PR code or trust untrusted caches.
 
 ## Runtime targets and measurements
 
+### Emergency native execution boundary
+
+The initial CI-I03 correction targets the admitted native workload, not installer
+time. The reviewed main run 34575548077 executed 32 native mutation jobs totaling
+19,383 job-seconds and 33 Miri jobs totaling 12,460 job-seconds. These are summed
+job durations, not CPU time or billing. The observed macOS concurrency was five;
+that workload cannot support a universal 15-minute promise.
+
+Ordinary edits confined to the explicitly reviewed non-native Studio leaf
+modules may use affected native selection. Native entry points, the monolithic
+Studio entry file, native validation, tests, dependencies, build inputs, unsafe
+review labels, mixed changes and unknown inputs retain full PR selection.
+Consequential ordinary native tests remain selected independently of mutation
+emptiness. This first boundary is not a complete Cargo affected graph or a
+module-level proof of every consumer.
+
+The first boundary skips the existing 32 native mutation workers only when
+every changed source belongs to that reviewed leaf set. The aggregate
+independently recomputes the decision from Git and retains a source/base-bound
+policy witness. Missing, invalid or contradictory outputs fail closed. The
+witness is not an inventory discovery receipt. Full-mode commands, partition
+methods, inventories, baselines, terminal receipts and timeouts are unchanged.
+A proposed serial discovery job and dynamic matrix were rejected as unnecessary
+for this boundary: all its eligible paths are outside the native mutation
+source set, so every supported affected selection is already empty.
+
+This changes when exhaustive native assurance is required, not the contents of
+the accepted exhaustive inventories. Existing scheduled native obligations stay
+required and unchanged. Their unfinished qualification remains unfinished.
+Miri affected-package selection is separate pending work. Neither a smaller
+policy decision nor a green infrastructure PR establishes the runtime outcome:
+acceptance needs measured hosted small-product and native/control-plane cases.
+
+The scoped [CI-I03 decision](https://github.com/dbuddha/alpine-gpui/issues/510#issuecomment-5633212972)
+retains the cost baseline, affected/full boundary and acceptance exclusions.
+
 The desired experience is seconds or minutes for small, safely affected changes
 and a roughly 15-minute feedback target where measured workloads and capacity
 support it. It is not yet a universal maximum or permission to cancel unfinished
