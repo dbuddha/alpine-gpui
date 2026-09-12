@@ -1,5 +1,8 @@
 # Alpine implementation lineage and evidence
 
+This is a dated technical reference, not current project tracking or a required
+research workflow. Read only the finding relevant to the question at hand.
+
 - Research record: [#315](https://github.com/dbuddha/alpine-gpui/issues/315)
 - Historical audit baseline: [`de8cd6397adc81632fe1103f1834214ae6ec6a1a`](https://github.com/dbuddha/alpine-gpui/tree/de8cd6397adc81632fe1103f1834214ae6ec6a1a)
 - Current reconciliation revision: [`ca46188bd31618a9e4d25858664e44cfae5dc04d`](https://github.com/dbuddha/alpine-gpui/tree/ca46188bd31618a9e4d25858664e44cfae5dc04d)
@@ -14,11 +17,10 @@ What did Alpine independently build, what upstream ideas influenced it, what did
 it deliberately modify or reject, and what evidence justifies each correctness,
 performance, memory, and product claim?
 
-This package is the canonical answer. It is deliberately more precise than a
-case study. A similarity is not a code lineage claim, a bounded design is not a
+This package records the audit findings at the revisions above. A similarity is not a code lineage claim, a bounded design is not a
 measured speedup, and an Alpine test is not a comparative qualification.
 
-## Current verdict
+## Verdict at the recorded revisions
 
 Alpine is going in the right architectural direction. It is not a fork of GPUI
 or Zed Editor. It is a smaller independent implementation of selected
