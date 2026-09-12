@@ -1026,6 +1026,12 @@ impl NativeAccessibilityAdapter {
         for (id, element) in elements {
             let role: Retained<NSString> = unsafe { msg_send![&*element, accessibilityRole] };
             let label: Retained<NSString> = unsafe { msg_send![&*element, accessibilityLabel] };
+            // SAFETY: The retained native element implements the title getter.
+            let title: Option<Retained<NSString>> =
+                unsafe { msg_send![&*element, accessibilityTitle] };
+            if !title.is_some_and(|title| title.to_string() == label.to_string()) {
+                return Err(SurfaceError::validation(SurfaceOperation::Accessibility));
+            }
             let identifier: Retained<NSString> =
                 unsafe { msg_send![&*element, accessibilityIdentifier] };
             let focused: bool = unsafe { msg_send![&*element, isAccessibilityFocused] };
@@ -1232,6 +1238,7 @@ impl NativeAccessibilityAdapter {
                                 && enabled == node.is_enabled()
                                 && [
                                     sel!(accessibilityRoleDescription),
+                                    sel!(accessibilityTitle),
                                     sel!(isAccessibilityElement),
                                     sel!(isAccessibilityEnabled),
                                 ]
@@ -1584,6 +1591,12 @@ define_class!(
                 .map_or_else(NSString::new, |node| NSString::from_str(node.name()))
         }
 
+        #[unsafe(method_id(accessibilityTitle))]
+        fn accessibility_title(&self) -> Retained<NSString> {
+            self.node()
+                .map_or_else(NSString::new, |node| NSString::from_str(node.name()))
+        }
+
         #[unsafe(method_id(accessibilityValue))]
         fn accessibility_value(&self) -> Option<Retained<NSString>> {
             self.accessibility_value_impl()
@@ -1682,6 +1695,7 @@ define_class!(
                 || selector == sel!(accessibilityIdentifier)
                 || selector == sel!(accessibilityFrame)
                 || selector == sel!(accessibilityLabel)
+                || selector == sel!(accessibilityTitle)
                 || selector == sel!(accessibilityValue)
                 || selector == sel!(accessibilityParent)
                 || selector == sel!(accessibilityChildren)

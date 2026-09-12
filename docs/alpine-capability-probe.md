@@ -114,11 +114,15 @@ They bound the complete observer event count and preserve private diagnostic
 prefixes on failure, including when copy or hashing fails. External inspection
 also demonstrated missing role descriptions and incorrect enabled state: the
 small selector/getter correction exposes container, tab-group, radio-button and
-outline roles with the appropriate enabled state. It does not qualify the editor
-text surface, which remains absent from the inspection output. The native capture
-client separately fails on missing `AXIdentifier` at a native application element;
-its mandatory-identifier assumption needs a scoped correction before AX evidence
-collection can qualify.
+outline roles with the appropriate enabled state. A subsequent external capture confirmed the text-area node exists but has an
+empty title. Exposing its existing semantic name through `accessibilityTitle`
+makes the editor discoverable as a named text entry area. The native client now
+keeps Alpine semantic IDs and assigns snapshot-scoped IDs to AppKit chrome, which
+can have absent or duplicate native identifiers. Chrome cannot become an automatic
+action target, output rows bind the actual application root, and queued events
+from replaced snapshots are rejected. A physical diagnostic traversed 89 nodes;
+zero observer events and a still-live stale control leave full AX qualification
+unfulfilled. Raw menu/window data stays local.
 
 The isolated lab admitted its existing verified release sampler bundle on this
 physical M4: Alpine, pinned GPUI and CPU readbacks matched exactly for one viewport
@@ -130,7 +134,9 @@ matched that same CPU/GPUI readback exactly. Its source-diff and binary identiti
 are in `current-alpine-identity.json` beside the readback. No performance claim
 was made. Existing offline shader binaries made this path usable without Xcode.
 
-Block 2 is not accepted yet. Physical presentation, external editor accessibility,
+PR #608 passed CI and merged the first recovery slice. The snapshot/title
+correction follows separately. Block 2 is not accepted yet. Physical presentation,
+full external editor accessibility,
 IME/VoiceOver and the remaining native journeys must be resolved or explicitly
 reviewed before comparator expansion. Keep the separate lab CI timing overrun
 visible without broadening this slice into another pipeline redesign.

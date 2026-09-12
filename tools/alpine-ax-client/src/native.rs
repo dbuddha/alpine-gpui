@@ -53,6 +53,11 @@ struct CallbackState {
 }
 
 impl CallbackState {
+    fn discard_previous_snapshot_events(&mut self) {
+        self.stale = self.stale.saturating_add(self.pending.len());
+        self.pending.clear();
+    }
+
     fn new(generation: AxGeneration, event_limit: usize) -> Self {
         let bindings = AxNotificationKind::ALL
             .into_iter()
@@ -130,6 +135,7 @@ struct Registration {
 pub struct NativeAxClient {
     pid: i32,
     generation: AxGeneration,
+    snapshot_sequence: u64,
     limits: AxLimits,
     application: CFRetained<AXUIElement>,
     observer: CFRetained<AXObserver>,
@@ -213,6 +219,7 @@ impl NativeAxClient {
         Ok(Self {
             pid,
             generation,
+            snapshot_sequence: 0,
             limits,
             application,
             observer,
@@ -346,9 +353,17 @@ impl AxClient for NativeAxClient {
         if self.closed {
             return Err(AxClientError::Closed);
         }
+        self.snapshot_sequence = self
+            .snapshot_sequence
+            .checked_add(1)
+            .ok_or(AxClientError::InvalidGeneration)?;
         self.remove_observers();
         self.elements.clear();
         self.element_identifiers.clear();
+
+        // Events buffered under the previous snapshot cannot acquire identities
+        // from its replacement. Account for their loss so capture fails closed.
+        self.callback.discard_previous_snapshot_events();
 
         // SAFETY: application is a live retained element.
         let root = unsafe { CFRetained::retain(CFRetained::as_ptr(&self.application)) };
@@ -373,6 +388,12 @@ impl AxClient for NativeAxClient {
                 parent_identifier,
                 depth,
                 self.limits.value_byte_limit(),
+                format!(
+                    "alpine.ax-client.{}.{}.{}",
+                    self.generation.get(),
+                    self.snapshot_sequence,
+                    nodes.len()
+                ),
             )?;
             let identifier = node.identifier.clone();
             if self.elements.contains_key(&identifier) {
@@ -516,8 +537,16 @@ fn query_node(
     parent_identifier: Option<String>,
     depth: u16,
     byte_limit: usize,
+    fallback_identifier: String,
 ) -> Result<AxNode, AxClientError> {
-    let identifier = required_string(element, ATTRIBUTE_IDENTIFIER, byte_limit, None)?;
+    // AppKit chrome may omit AXIdentifier or reuse it across menu items.
+    // Keep Alpine's explicit semantic identities; name other retained elements
+    // only within this snapshot, without claiming cross-snapshot identity.
+    let identifier = capture_identifier(
+        optional_string(element, ATTRIBUTE_IDENTIFIER, byte_limit)?,
+        fallback_identifier,
+        byte_limit,
+    )?;
     let role = required_string(
         element,
         ATTRIBUTE_ROLE,
@@ -553,6 +582,23 @@ fn query_node(
         frame,
         enabled_actions,
     })
+}
+
+fn capture_identifier(
+    native: Option<String>,
+    fallback: String,
+    byte_limit: usize,
+) -> Result<String, AxClientError> {
+    let identifier = native
+        .filter(|identifier| identifier.starts_with("alpine.ax."))
+        .unwrap_or(fallback);
+    if identifier.len() > byte_limit {
+        return Err(AxClientError::ValueBoundExceeded {
+            attribute: ATTRIBUTE_IDENTIFIER,
+            limit: byte_limit,
+        });
+    }
+    Ok(identifier)
 }
 
 fn required_string(
@@ -770,5 +816,58 @@ fn ax_result(operation: &'static str, result: AXError) -> Result<(), AxClientErr
             operation,
             code: result.0,
         })
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn chrome_identifiers_are_snapshot_scoped_even_when_native_ids_repeat()
+    -> Result<(), AxClientError> {
+        let first = capture_identifier(None, "alpine.ax-client.1.1.0".into(), 128)?;
+        let second = capture_identifier(
+            Some("_recentItemRequested:".into()),
+            "alpine.ax-client.1.1.1".into(),
+            128,
+        )?;
+        let third = capture_identifier(
+            Some("_recentItemRequested:".into()),
+            "alpine.ax-client.1.1.2".into(),
+            128,
+        )?;
+        assert_ne!(first, second);
+        assert_ne!(second, third);
+        assert_eq!(
+            capture_identifier(Some("alpine.ax.1.4.3".into()), "unused".into(), 128)?,
+            "alpine.ax.1.4.3"
+        );
+        assert!(capture_identifier(None, first, 1).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn replacement_snapshot_accounts_for_queued_events() -> Result<(), Box<dyn std::error::Error>> {
+        let generation = AxGeneration::new(1)?;
+        let mut state = CallbackState::new(generation, 4);
+        state.discard_previous_snapshot_events();
+        assert_eq!(state.stale, 0);
+        let pid = i32::try_from(std::process::id())?;
+        // SAFETY: This creates an owned AX reference for the positive test PID;
+        // the test performs no cross-process query or privacy change.
+        let element = unsafe { AXUIElement::new_application(pid) };
+        state.pending.push(PendingEvent {
+            generation,
+            kind: AxNotificationKind::Focus,
+            element,
+            monotonic_ns: 1,
+        });
+        state.discard_previous_snapshot_events();
+        assert!(state.pending.is_empty());
+        assert_eq!(state.stale, 1);
+        state.discard_previous_snapshot_events();
+        assert_eq!(state.stale, 1);
+        Ok(())
     }
 }

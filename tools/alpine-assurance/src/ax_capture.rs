@@ -196,6 +196,7 @@ fn select_action(nodes: &[AxNode]) -> Result<(&AxNode, AxAction), String> {
     for action in [AxAction::Confirm, AxAction::ShowMenu, AxAction::Press] {
         if let Some(node) = nodes.iter().find(|node| {
             !node.identifier.to_ascii_lowercase().contains("close")
+                && !node.identifier.starts_with("alpine.ax-client.")
                 && node
                     .enabled_actions
                     .iter()
@@ -282,6 +283,11 @@ fn render_rows(
     stale_error: i32,
     latency: [(u64, u64); 5],
 ) -> Result<CaptureRows, String> {
+    let application = nodes
+        .iter()
+        .find(|node| node.parent_identifier.is_none() && node.role == "AXApplication")
+        .ok_or("AX snapshot has no application root")?;
+    let application_identifier = application.identifier.as_str();
     let mut tree = Vec::with_capacity(nodes.len());
     for (index, node) in nodes.iter().enumerate() {
         tree.push(json(&TreeRow {
@@ -303,7 +309,7 @@ fn render_rows(
         &mut timestamp,
         "process",
         "launch",
-        "application",
+        application_identifier,
         "process-start",
         0,
         1,
@@ -340,7 +346,13 @@ fn render_rows(
         stale_timestamp,
     )?;
     let operations = ["query", "action", "notification", "stale-query", "close"];
-    let identifiers = ["application", action.0, action.0, action.0, "application"];
+    let identifiers = [
+        application_identifier,
+        action.0,
+        action.0,
+        action.0,
+        application_identifier,
+    ];
     let errors = [0, action.2, 0, stale_error, 0];
     let mut latency_rows = Vec::with_capacity(operations.len());
     for index in 0..operations.len() {
@@ -555,8 +567,22 @@ mod tests {
 
         fn snapshot_tree(&mut self) -> Result<Vec<AxNode>, AxClientError> {
             Ok(vec![
-                node("application", None, 0, "AXApplication", false, &[]),
-                node("window", Some("application"), 1, "AXWindow", false, &[]),
+                node(
+                    "alpine.ax-client.1.1.0",
+                    None,
+                    0,
+                    "AXApplication",
+                    false,
+                    &[],
+                ),
+                node(
+                    "window",
+                    Some("alpine.ax-client.1.1.0"),
+                    1,
+                    "AXWindow",
+                    false,
+                    &[],
+                ),
                 node(
                     "editor",
                     Some("window"),
@@ -691,12 +717,47 @@ mod tests {
         assert!(tree.contains("\"sequence\":2"));
         assert!(tree.contains("\"sequence\":3"));
         assert!(events.contains("\"kind\":\"focus\""));
+        assert!(
+            events
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains("\"identifier\":\"alpine.ax-client.1.1.0\""))
+        );
+        assert!(
+            latency
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains("\"identifier\":\"alpine.ax-client.1.1.0\""))
+        );
         assert!(events.contains("\"detail\":\"AXConfirm\""));
         assert!(events.contains("\"detail\":\"kAXErrorInvalidUIElement\""));
         assert!(events.contains("\"ax_error\":-25211"));
         assert_eq!(latency.lines().count(), 5);
         assert!(run_with_factory(&FakeFactory { trusted: true }, 42, 1, 1, 1, &output).is_err());
         fs::remove_dir_all(output).map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn native_chrome_is_never_an_automatic_action_target() -> Result<(), String> {
+        let mut nodes = vec![node(
+            "alpine.ax-client.1.1.7",
+            None,
+            0,
+            "AXButton",
+            false,
+            &["AXPress"],
+        )];
+        assert!(select_action(&nodes).is_err());
+        nodes.push(node(
+            "alpine.ax.1.3.1025",
+            None,
+            0,
+            "AXRadioButton",
+            false,
+            &["AXPress"],
+        ));
+        assert_eq!(select_action(&nodes)?.0.identifier, "alpine.ax.1.3.1025");
+        Ok(())
     }
 
     #[test]
