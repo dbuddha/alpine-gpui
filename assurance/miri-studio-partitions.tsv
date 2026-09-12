@@ -1,6 +1,7 @@
 accessibility::	studio-model
 command_palette_tests::	studio-command
 commands::	studio-command
+composition::	studio-model
 documents::	studio-model
 dogfood_diagnostic::	studio-app-07
 dogfood_accessibility_counter_tests::	studio-app-07
