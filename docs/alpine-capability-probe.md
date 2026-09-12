@@ -90,3 +90,47 @@ has reported equivalence failures. These are readiness gaps, not accepted result
 
 Block 1 work and source dispositions are in [consolidation](alpine-consolidation.md).
 No physical performance target or daily-driver acceptance is currently claimed.
+
+## Block 2 readiness findings, 2026-09-12
+
+Work is on `fix/native-readiness` from merged main `76d385d`. The release app
+visibly renders and, in an isolated disposable home, passed Unicode paste/save,
+keyboard typing, one-character undo/redo, dirty-close rejection, clean close and
+reopen. Clipboard automation reported an acknowledgement timeout, although saved
+bytes verified the paste. These are controlled UI observations, not latency, IME
+or VoiceOver qualification. Two real pinned rust-analyzer lifecycle/product tests
+passed with the CI-checksummed binary.
+
+Fresh hosted shipping and all-target native suites passed without concurrent UI
+input, including the new selector/enabled-state and revoked-element checks. Physical
+shipping still failed: one submitted frame, zero qualified presentations, zero
+keyboard/pointer events, `presentedTime=0`, and the five-second timeout. Its full
+output is retained in `target/block2-physical-shipping.log`. The quiet control
+rejects input interference as an explanation for this physical failure. No
+speculative presentation change or weakened assertion was made.
+
+The recovered AX accumulator and rejected-capture fixes passed focused independent review.
+They bound the complete observer event count and preserve private diagnostic
+prefixes on failure, including when copy or hashing fails. External inspection
+also demonstrated missing role descriptions and incorrect enabled state: the
+small selector/getter correction exposes container, tab-group, radio-button and
+outline roles with the appropriate enabled state. It does not qualify the editor
+text surface, which remains absent from the inspection output. The native capture
+client separately fails on missing `AXIdentifier` at a native application element;
+its mandatory-identifier assumption needs a scoped correction before AX evidence
+collection can qualify.
+
+The isolated lab admitted its existing verified release sampler bundle on this
+physical M4: Alpine, pinned GPUI and CPU readbacks matched exactly for one viewport
+fixture. Evidence is `artifacts/block2-physical-admission-20260912` in the lab. Its
+Alpine pin is `2fdf5aa`, Zed pin `e17dc4f`, and bundle lab revision `f6aa2c2`;
+this historical admission alone does not qualify current Alpine. The current
+release `alpine-assurance` built from this readiness tree then independently
+matched that same CPU/GPUI readback exactly. Its source-diff and binary identities
+are in `current-alpine-identity.json` beside the readback. No performance claim
+was made. Existing offline shader binaries made this path usable without Xcode.
+
+Block 2 is not accepted yet. Physical presentation, external editor accessibility,
+IME/VoiceOver and the remaining native journeys must be resolved or explicitly
+reviewed before comparator expansion. Keep the separate lab CI timing overrun
+visible without broadening this slice into another pipeline redesign.

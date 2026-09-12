@@ -1225,7 +1225,22 @@ impl NativeAccessibilityAdapter {
                         .is_some_and(|element| {
                             let actual: Retained<NSString> =
                                 unsafe { msg_send![&*element, accessibilityRole] };
+                            // SAFETY: The retained main-thread element implements
+                            // these read-only NSAccessibility selectors.
+                            let enabled: bool = unsafe { msg_send![&*element, isAccessibilityEnabled] };
                             actual.to_string() == role_name(node.role())
+                                && enabled == node.is_enabled()
+                                && [
+                                    sel!(accessibilityRoleDescription),
+                                    sel!(isAccessibilityElement),
+                                    sel!(isAccessibilityEnabled),
+                                ]
+                                .into_iter()
+                                .all(|selector| {
+                                    // SAFETY: The element implements this selector
+                                    // and the queried selector is a valid runtime value.
+                                    unsafe { msg_send![&*element, isAccessibilitySelectorAllowed: selector] }
+                                })
                         })
                 })
             });
@@ -1451,6 +1466,12 @@ impl NativeAccessibilityAdapter {
         let late_length: usize = unsafe { msg_send![&*editor, accessibilityNumberOfCharacters] };
         let revoked_activation_rejected: bool =
             unsafe { msg_send![&*tab, accessibilityPerformPress] };
+        // SAFETY: The retained element outlives revocation; its getter must
+        // report unavailable semantic ownership as disabled.
+        let revoked_enabled: bool = unsafe { msg_send![&*tab, isAccessibilityEnabled] };
+        if revoked_enabled {
+            return Err(SurfaceError::validation(SurfaceOperation::Accessibility));
+        }
         let final_counters = view.ivars().accessibility.borrow().counters;
         let retained_slot_bytes_after_revoke =
             view.ivars().accessibility.borrow().retained_slot_bytes();
@@ -1538,6 +1559,11 @@ define_class!(
     impl NativeAccessibilityElement {
         #[unsafe(method(isAccessibilityElement))]
         fn is_accessibility_element(&self) -> bool { self.with_adapter(|adapter| adapter.valid(self.ivars().generation, self.ivars().instance_generation, self.ivars().id)).unwrap_or(false) }
+
+        #[unsafe(method(isAccessibilityEnabled))]
+        fn is_accessibility_enabled(&self) -> bool {
+            self.node().is_some_and(|node| node.is_enabled())
+        }
 
         #[unsafe(method_id(accessibilityIdentifier))]
         fn accessibility_identifier(&self) -> Retained<NSString> {
@@ -1650,6 +1676,9 @@ define_class!(
                 .node()
                 .is_some_and(|node| node.role() == AccessibilityRole::CodeEditor);
             selector == sel!(accessibilityRole)
+                || selector == sel!(accessibilityRoleDescription)
+                || selector == sel!(isAccessibilityElement)
+                || selector == sel!(isAccessibilityEnabled)
                 || selector == sel!(accessibilityIdentifier)
                 || selector == sel!(accessibilityFrame)
                 || selector == sel!(accessibilityLabel)

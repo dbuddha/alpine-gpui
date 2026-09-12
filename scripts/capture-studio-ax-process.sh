@@ -14,10 +14,16 @@ Normal capture requires a clean Apple Silicon macOS checkout and uses
 /usr/bin/footprint. Fixture mode is non-physical and requires explicit fake
 assurance and sampler executables. The output is an intermediate Task #504 package
 and is not AEP-0273 physical qualification evidence.
+
+Rejected captures retain private, bounded diagnostics beside the requested
+output, never a successful package. Diagnostic copies may be truncated and
+cannot qualify a physical journey. If retention fails, the original temporary
+capture is left in place and its path is reported.
 EOF
 }
 
 fail() {
+    failure_reason=$1
     printf 'Studio AX process capture failed: %s\n' "$1" >&2
     exit 1
 }
@@ -35,7 +41,11 @@ canonical_file() {
 }
 
 sha256() {
-    /usr/bin/shasum -a 256 "$1" | awk '{print $1}'
+    hash_output=$(/usr/bin/shasum -a 256 "$1") || return 1
+    hash_digest=$(printf '%s\n' "$hash_output" | awk '{print $1}') || return 1
+    [ "${#hash_digest}" -eq 64 ] || return 1
+    case $hash_digest in *[!0-9a-f]*) return 1 ;; esac
+    printf '%s\n' "$hash_digest"
 }
 
 stream_sha256() {
@@ -58,6 +68,98 @@ bytes = $bytes
 EOF
 }
 
+retain_rejected_capture() {
+    [ ! -L "$capture_root" ] || return 1
+    umask 077
+    rejected_root=$(mktemp -d "$output_parent/.alpine-ax-rejected.XXXXXX") || return 1
+    mkdir "$rejected_root/raw-ax" "$rejected_root/residency-analysis" || return 1
+    rejected_file_limit=65536
+    rejected_metadata_limit=16384
+    rejected_total_limit=1048576
+    rejected_payload_bytes=0
+    cat > "$rejected_root/rejection.txt" <<EOF
+format=alpine-ax-rejection-diagnostic-v1
+status=rejected
+qualified=false
+complete=false
+performance_claim=false
+aep_0273_bundle_ready=false
+producer_quiescence=not_qualified
+fixture_only=$fixture
+wrapper_exit_status=$cleanup_status
+phase=$capture_phase
+repository_revision=$revision
+repository_clean=$repository_clean
+repository_status_sha256=$repository_status_sha
+workspace_identity_sha256=$workspace_identity_sha
+studio_binary_sha256=$capture_binary_sha
+harness_binary_sha256=$capture_harness_sha
+sampler_sha256=$capture_sampler_sha
+studio_pid=${captured_pid-unavailable}
+sampler_pid=${captured_sampler_pid-unavailable}
+ax_exit_status=${ax_status-unavailable}
+sampler_exit_status=${sampler_status-unavailable}
+studio_exit_status=${studio_status-unavailable}
+artifact_limit_bytes=$rejected_file_limit
+metadata_limit_bytes=$rejected_metadata_limit
+total_limit_bytes=$rejected_total_limit
+EOF
+    [ "$?" -eq 0 ] || return 1
+    printf 'reason=' >> "$rejected_root/rejection.txt" || return 1
+    printf '%s' "$failure_reason" | head -c 4096 >> "$rejected_root/rejection.txt" || return 1
+    printf '\nprocess_start=' >> "$rejected_root/rejection.txt" || return 1
+    printf '%s' "${process_start-unavailable}" | head -c 256 >> "$rejected_root/rejection.txt" || return 1
+    printf '\n' >> "$rejected_root/rejection.txt" || return 1
+    printf 'path\tstate\tobserved_bytes\tretained_bytes\tsha256\ttruncated\n' \
+        > "$rejected_root/artifacts.tsv" || return 1
+
+    # Only fixed capture-owned paths are eligible. A prefix is diagnostic input,
+    # not an atomic snapshot or a hash of the complete original artifact.
+    for rejected_relative in raw-ax/tree.jsonl raw-ax/events.jsonl \
+        raw-ax/latency.jsonl footprint.json footprint.log \
+        residency-analysis/samples.csv residency-analysis/summary.toml \
+        residency.log ax.stdout ax.stderr studio.stdout studio.stderr \
+        workspace-record.txt; do
+        rejected_source="$capture_root/$rejected_relative"
+        rejected_parent=$(dirname -- "$rejected_source")
+        if [ -L "$rejected_source" ] || [ -L "$rejected_parent" ]; then
+            printf '%s\tunsafe_path\tunavailable\tunavailable\tunavailable\tunavailable\n' \
+                "$rejected_relative" >> "$rejected_root/artifacts.tsv" || return 1
+        elif [ ! -f "$rejected_source" ]; then
+            printf '%s\tunavailable\tunavailable\tunavailable\tunavailable\tunavailable\n' \
+                "$rejected_relative" >> "$rejected_root/artifacts.tsv" || return 1
+        else
+            rejected_observed=$(wc -c < "$rejected_source" | tr -d '[:space:]')
+            is_uint "$rejected_observed" || return 1
+            head -c "$rejected_file_limit" "$rejected_source" \
+                > "$rejected_root/$rejected_relative" || return 1
+            rejected_bytes=$(wc -c < "$rejected_root/$rejected_relative" | tr -d '[:space:]')
+            is_uint "$rejected_bytes" || return 1
+            [ "$rejected_bytes" -le "$rejected_file_limit" ] || return 1
+            rejected_digest=$(sha256 "$rejected_root/$rejected_relative") || return 1
+            rejected_truncated=false
+            [ "$rejected_observed" -le "$rejected_bytes" ] || rejected_truncated=true
+            printf '%s\tprefix\t%s\t%s\t%s\t%s\n' "$rejected_relative" \
+                "$rejected_observed" "$rejected_bytes" "$rejected_digest" \
+                "$rejected_truncated" >> "$rejected_root/artifacts.tsv" || return 1
+            rejected_payload_bytes=$((rejected_payload_bytes + rejected_bytes))
+        fi
+    done
+    printf 'retained_payload_bytes=%s\n' "$rejected_payload_bytes" \
+        >> "$rejected_root/rejection.txt" || return 1
+    rejected_metadata_bytes=$(
+        wc -c < "$rejected_root/rejection.txt" | tr -d '[:space:]'
+    )
+    rejected_index_bytes=$(
+        wc -c < "$rejected_root/artifacts.tsv" | tr -d '[:space:]'
+    )
+    is_uint "$rejected_metadata_bytes" && is_uint "$rejected_index_bytes" || return 1
+    rejected_metadata_bytes=$((rejected_metadata_bytes + rejected_index_bytes))
+    [ "$rejected_metadata_bytes" -le "$rejected_metadata_limit" ] || return 1
+    [ "$((rejected_payload_bytes + rejected_metadata_bytes))" -le "$rejected_total_limit" ] || return 1
+    printf 'retained rejected AX diagnostics at %s\n' "$rejected_root" >&2
+}
+
 binary=
 assurance=
 repository=
@@ -72,6 +174,7 @@ post_close_timeout=
 opt_in=false
 fixture=false
 sampler=
+failure_reason=unhandled_failure
 
 while [ "$#" -gt 0 ]; do
     case $1 in
@@ -100,7 +203,7 @@ done
 [ -d "$repository" ] || fail "repository must identify a directory"
 [ -e "$workspace" ] || fail "workspace path is unavailable"
 [ -n "$output_dir" ] || fail "output directory is required"
-[ ! -e "$output_dir" ] || fail "output directory already exists"
+[ ! -e "$output_dir" ] && [ ! -L "$output_dir" ] || fail "output directory already exists"
 for value in "$generation" "$pre_action_ms" "$post_action_ms" \
     "$duration" "$interval" "$post_close_timeout"; do
     is_uint "$value" || fail "identity and duration values must be unsigned integers"
@@ -193,12 +296,19 @@ output_parent=$(dirname -- "$output_dir")
 output_parent=$(CDPATH= cd -- "$output_parent" && pwd -P) ||
     fail "output parent is unavailable"
 output_dir="$output_parent/$(basename -- "$output_dir")"
-[ ! -e "$output_dir" ] || fail "output directory already exists"
+[ ! -e "$output_dir" ] && [ ! -L "$output_dir" ] || fail "output directory already exists"
+capture_binary_sha=$(sha256 "$binary") || fail "Studio executable hash is unavailable"
+capture_harness_sha=$(sha256 "$assurance") || fail "AX client executable hash is unavailable"
+capture_sampler_sha=$(sha256 "$sampler") || fail "sampler executable hash is unavailable"
 capture_root=$(mktemp -d "$output_parent/.alpine-ax-process.XXXXXX")
 studio_pid=
 sampler_pid=
 published=false
+capture_phase=launch
 cleanup() {
+    cleanup_status=$?
+    trap - EXIT HUP INT TERM
+    set +e
     if [ -n "${sampler_pid-}" ] && kill -0 "$sampler_pid" 2>/dev/null; then
         kill "$sampler_pid" 2>/dev/null || true
     fi
@@ -206,10 +316,20 @@ cleanup() {
         kill "$studio_pid" 2>/dev/null || true
     fi
     if [ "$published" != true ] && [ -d "${capture_root-}" ]; then
-        rm -rf "$capture_root"
+        [ "$cleanup_status" -ne 0 ] || cleanup_status=1
+        if retain_rejected_capture; then
+            rm -rf "$capture_root"
+        else
+            printf 'failed to retain bounded AX diagnostics; original rejected capture remains at %s\n' \
+                "$capture_root" >&2
+        fi
     fi
+    exit "$cleanup_status"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'failure_reason="signal HUP"; exit 129' HUP
+trap 'failure_reason="signal INT"; exit 130' INT
+trap 'failure_reason="signal TERM"; exit 143' TERM
 
 studio_stdout="$capture_root/studio.stdout"
 studio_stderr="$capture_root/studio.stderr"
@@ -240,9 +360,11 @@ fi
     --sample-duration "$duration" --noCategories --format bytes \
     --json "$raw_footprint" > "$capture_root/footprint.log" 2>&1 &
 sampler_pid=$!
+captured_sampler_pid=$sampler_pid
 
 printf 'raw AX capture active for PID %s; perform only the approved Task #504 journey\n' \
     "$studio_pid"
+capture_phase=ax_client
 set +e
 "$assurance" capture-ax-client "$studio_pid" "$generation" \
     "$pre_action_ms" "$post_action_ms" "$capture_root/raw-ax" \
@@ -260,6 +382,7 @@ for artifact_path in tree.jsonl events.jsonl latency.jsonl; do
         fail "raw AX capture did not publish $artifact_path"
 done
 
+capture_phase=sampler
 set +e
 wait "$sampler_pid"
 sampler_status=$?
@@ -268,6 +391,7 @@ sampler_pid=
 [ "$sampler_status" -eq 0 ] || fail "footprint sampler failed"
 [ -s "$raw_footprint" ] || fail "footprint sampler did not publish machine-readable JSON"
 
+capture_phase=residency_analysis
 "$(dirname "$0")/analyze-studio-residency.sh" "$raw_footprint" \
     "$studio_pid" 0 "$capture_root/residency-analysis" \
     > "$capture_root/residency.log"
@@ -282,6 +406,7 @@ if [ "$fixture" != true ]; then
     [ "$current_start" = "$process_start" ] || fail "Studio process start identity drifted"
 fi
 
+capture_phase=close
 printf 'capture complete; close Alpine Studio within %s seconds\n' "$post_close_timeout"
 remaining=$post_close_timeout
 while kill -0 "$studio_pid" 2>/dev/null && [ "$remaining" -gt 0 ]; do
@@ -368,7 +493,8 @@ artifact studio_stdout studio.stdout
 artifact studio_stderr studio.stderr
 artifact workspace_record workspace-record.txt
 
-[ ! -e "$output_dir" ] || fail "output directory appeared during capture"
+capture_phase=publication
+[ ! -e "$output_dir" ] && [ ! -L "$output_dir" ] || fail "output directory appeared during capture"
 mv "$capture_root" "$output_dir"
 published=true
 printf 'retained no-claim Task #504 AX process input package at %s\n' "$output_dir"

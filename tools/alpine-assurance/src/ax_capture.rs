@@ -2,7 +2,7 @@
 
 use alpine_ax_client::{
     AxAction, AxClient, AxClientFactory, AxEventBatch, AxGeneration, AxLimits, AxNode,
-    AxNotificationKind, NativeAxClientFactory,
+    AxNotificationKind, MAX_EVENT_LIMIT, NativeAxClientFactory,
 };
 use serde::Serialize;
 use std::{
@@ -135,10 +135,11 @@ fn run_with_factory<F: AxClientFactory>(
     );
     let action_end = later_than(action_start, elapsed_ns(started));
     let notification_start = elapsed_ns(started);
-    let post_events = drain_for(
+    let post_events = drain_for_with_budget(
         &mut client,
         generation,
         Duration::from_millis(post_action_ms),
+        limits.event_limit().saturating_sub(pre_events.events.len()),
     )?;
     let notification_end = later_than(notification_start, elapsed_ns(started));
     let stale_start = elapsed_ns(started);
@@ -211,6 +212,15 @@ fn drain_for<C: AxClient>(
     generation: AxGeneration,
     duration: Duration,
 ) -> Result<AxEventBatch, String> {
+    drain_for_with_budget(client, generation, duration, MAX_EVENT_LIMIT)
+}
+
+fn drain_for_with_budget<C: AxClient>(
+    client: &mut C,
+    generation: AxGeneration,
+    duration: Duration,
+    event_limit: usize,
+) -> Result<AxEventBatch, String> {
     let started = Instant::now();
     let mut batch = AxEventBatch {
         events: Vec::new(),
@@ -226,9 +236,7 @@ fn drain_for<C: AxClient>(
             client.drain_events(generation, slice),
             "cannot drain AX observer: {error}"
         );
-        batch.events.extend(next.events);
-        batch.omitted_events = batch.omitted_events.saturating_add(next.omitted_events);
-        batch.stale_events = batch.stale_events.saturating_add(next.stale_events);
+        append_drain(&mut batch, next, event_limit)?;
     }
     if batch.omitted_events != 0 || batch.stale_events != 0 {
         return Err(format!(
@@ -238,6 +246,33 @@ fn drain_for<C: AxClient>(
     }
     Ok(batch)
 }
+
+fn append_drain(
+    batch: &mut AxEventBatch,
+    next: AxEventBatch,
+    event_limit: usize,
+) -> Result<(), String> {
+    if next.omitted_events != 0 || next.stale_events != 0 {
+        return Err(format!(
+            "AX observer omitted {} events and rejected {} stale events",
+            next.omitted_events, next.stale_events
+        ));
+    }
+    let Some(total) = batch.events.len().checked_add(next.events.len()) else {
+        return Err("AX capture event count overflow".to_owned());
+    };
+    if total > event_limit {
+        return Err(format!(
+            "AX capture event budget exceeded: {total} events for remaining phase budget {event_limit}"
+        ));
+    }
+    batch.events.extend(next.events);
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "ax_capture_event_bounds_tests.rs"]
+mod event_bounds_tests;
 
 fn render_rows(
     nodes: &[AxNode],
