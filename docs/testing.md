@@ -38,9 +38,13 @@ scripts/check-native.sh hosted all
 
 `shipping` exercises the real executable; `all` also runs Studio, macOS platform,
 Metal and runtime tests with native validation enabled. `hosted` selects the
-hosted-direct evidence contract, not physical acceptance. The command retains
-output under `target/native-acceptance/`, propagates failures and requires the
-Studio harness's completion receipt. A missing receipt is a failure, not a pass.
+hosted-direct evidence contract, not physical acceptance. The command uses
+`target/native-validation/` for builds by default so ordinary Cargo builds cannot
+replace its configuration-specific shipping executable. An
+explicit `CARGO_TARGET_DIR` overrides that location; keep it separate from other
+build configurations. The command retains output under `target/native-acceptance/`,
+propagates failures and requires the Studio harness's completion receipt. A
+missing receipt is a failure, not a pass.
 Use `physical` on an undisturbed target Mac. These commands do not claim release
 performance or replace a physical keyboard/VoiceOver check.
 

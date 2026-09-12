@@ -16,6 +16,7 @@ use alpine_platform_macos::{
     AccessibilityText, MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES,
 };
 use alpine_text::{BufferSnapshot, ByteOffset, Selection, TextError};
+use alpine_text_layout::TextShaper;
 
 use super::{EventEffect, MAX_VISIBLE_DIAGNOSTIC_MARKERS, StudioApp, StudioCommand};
 
@@ -225,6 +226,7 @@ fn transport_snapshot(
         line_count,
         app.document.is_dirty(),
     )
+    .map(|snapshot| snapshot.with_editor_composition(app.composition.is_some()))
 }
 
 fn selection_from_snapshot(
@@ -353,6 +355,27 @@ pub(super) fn respond(
             }),
             EventEffect::default(),
         ),
+        AccessibilityOperation::FirstRectForRange {
+            revision: expected,
+            range,
+            marked_text,
+        } => (
+            require_revision(*expected, observed).and_then(|()| {
+                require_revision(app.accessibility_projection_revision, observed)?;
+                text_geometry(app, *range, *marked_text)
+            }),
+            EventEffect::default(),
+        ),
+        AccessibilityOperation::IndexForPoint {
+            revision: expected,
+            point,
+        } => (
+            require_revision(*expected, observed).and_then(|()| {
+                require_revision(app.accessibility_projection_revision, observed)?;
+                text_index_at_point(app, *point).map(AccessibilityPayload::Index)
+            }),
+            EventEffect::default(),
+        ),
         AccessibilityOperation::Action(_) if app.workspace_edits.is_publication_pending() => (
             Ok(AccessibilityPayload::Action(
                 AccessibilityActionResult::Unchanged,
@@ -372,6 +395,341 @@ pub(super) fn respond(
         },
     };
     (finish_response(request, observed, result), effect)
+}
+
+fn geometry_unavailable() -> AccessibilityError {
+    PlatformAccessibilityError::InvalidBounds.into()
+}
+
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+#[allow(
+    clippy::float_cmp,
+    reason = "zero-width carets and exact logical line spacing are protocol requirements"
+)]
+mod native_text_geometry_tests {
+    use super::*;
+    use crate::{FONT_FAMILY, LINE_HEIGHT, StudioDocument};
+    use alpine_core::Size;
+    use alpine_platform_macos::AccessibilityRequestId;
+    use alpine_scene::SceneRevision;
+
+    fn app(text: &str) -> Result<StudioApp, Box<dyn Error>> {
+        let mut system = alpine_text_layout::CoreTextSystem::new();
+        system.register_font(FONT_FAMILY, "Menlo-Regular")?;
+        let mut app = StudioApp::from_document(system, StudioDocument::scratch(text), None)?;
+        let _ = app.scene(
+            SceneRevision::new(1),
+            Size::new(600.0, 240.0).ok_or("viewport")?,
+        );
+        Ok(app)
+    }
+
+    fn geometry(
+        app: &mut StudioApp,
+        start: usize,
+        length: usize,
+    ) -> Result<(AccessibilityBounds, AccessibilityTextRange), Box<dyn Error>> {
+        let request = AccessibilityRequest::first_rect_for_range(
+            AccessibilityRequestId::new(99),
+            revision(app),
+            AccessibilityTextRange::new(start, length),
+            false,
+        )?;
+        let (response, effect) = respond(app, &request);
+        assert!(!effect.visual_changed);
+        match response.result() {
+            Ok(AccessibilityPayload::TextGeometry { bounds, range }) => Ok((*bounds, *range)),
+            other => Err(format!("geometry: {other:?}").into()),
+        }
+    }
+
+    #[test]
+    fn native_text_geometry_carets_unicode_lines_and_hits() -> Result<(), Box<dyn Error>> {
+        let mut app = app("ab😀e\u{301}\txy\nsecond")?;
+        let (start, _) = geometry(&mut app, 0, 0)?;
+        let (after_emoji, _) = geometry(&mut app, 4, 0)?;
+        assert_eq!(start.width(), 0.0);
+        assert_eq!(after_emoji.width(), 0.0);
+        assert!(after_emoji.x() > start.x());
+        let (selection, actual) = geometry(&mut app, 0, 15)?;
+        assert_eq!(actual, AccessibilityTextRange::new(0, 10));
+        assert!(selection.width() > 0.0);
+        assert_eq!(selection.height(), LINE_HEIGHT);
+        let (next, _) = geometry(&mut app, 10, 0)?;
+        assert_eq!(next.y() - start.y(), LINE_HEIGHT);
+        let point = AccessibilityBounds::new(start.x() + 1.0, start.y() + 5.0, 0.0, 0.0)?;
+        assert_eq!(text_index_at_point(&mut app, point)?, 0);
+        assert!(
+            text_index_at_point(
+                &mut app,
+                AccessibilityBounds::new(580.0, start.y() + 5.0, 0.0, 0.0)?
+            )
+            .is_err()
+        );
+        assert!(text_geometry(&mut app, AccessibilityTextRange::new(3, 0), false).is_err());
+        assert!(
+            text_geometry(&mut app, AccessibilityTextRange::new(usize::MAX, 1), false).is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_character_hits_contain_the_final_cluster() -> Result<(), Box<dyn Error>> {
+        for text in ["aZ", "a😀"] {
+            let mut app = app(text)?;
+            let units = text.encode_utf16().count();
+            let (left, _) = geometry(&mut app, 1, 0)?;
+            let (right, _) = geometry(&mut app, units, 0)?;
+            for fraction in [0.25, 0.75] {
+                let point = AccessibilityBounds::new(
+                    left.x() + (right.x() - left.x()) * fraction,
+                    left.y() + 5.0,
+                    0.0,
+                    0.0,
+                )?;
+                assert_eq!(text_index_at_point(&mut app, point)?, 1);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_text_geometry_revision_scroll_and_marked_projection() -> Result<(), Box<dyn Error>> {
+        let mut app = app("prefix target suffix\nsecond\nthird")?;
+        let old_revision = revision(&app);
+        app.selection = Selection::new(ByteOffset::new(7), ByteOffset::new(13));
+        app.composition = Some(crate::Composition {
+            replacement: 7..13,
+            text: "漢字".into(),
+            selected_start_utf16: 1,
+            selected_length_utf16: 0,
+        });
+        app.advance_accessibility_semantic_revision(true);
+        let _ = app.scene(SceneRevision::new(2), app.last_viewport);
+        let request = AccessibilityRequest::first_rect_for_range(
+            AccessibilityRequestId::new(99),
+            old_revision,
+            AccessibilityTextRange::new(0, 0),
+            false,
+        )?;
+        assert!(respond(&mut app, &request).0.result().is_err());
+        let (anchor, _) = geometry(&mut app, 7, 0)?;
+        let marked = text_geometry(&mut app, AccessibilityTextRange::new(8, 0), true)?;
+        let AccessibilityPayload::TextGeometry { bounds, range } = marked else {
+            return Err("marked geometry".into());
+        };
+        assert_eq!(range, AccessibilityTextRange::new(8, 0));
+        assert!(bounds.x() > anchor.x());
+        assert_eq!(bounds.width(), 0.0);
+        let suffix = text_geometry(&mut app, AccessibilityTextRange::new(9, 1), true)?;
+        assert!(
+            matches!(suffix, AccessibilityPayload::TextGeometry { range, .. } if range == AccessibilityTextRange::new(9, 1))
+        );
+        app.scroll_y = LINE_HEIGHT * 2.0;
+        assert!(text_geometry(&mut app, AccessibilityTextRange::new(0, 0), false).is_err());
+        Ok(())
+    }
+}
+
+fn text_geometry(
+    app: &mut StudioApp,
+    requested: AccessibilityTextRange,
+    marked_text: bool,
+) -> Result<AccessibilityPayload, AccessibilityError> {
+    let snapshot = app.buffer().snapshot();
+    let mut range = requested;
+    let mut returned_range = None;
+    let composition = app.composition.clone().filter(|_| marked_text);
+    if let Some(composition) = &composition {
+        let start =
+            snapshot.appkit_utf16_of_byte(ByteOffset::new(composition.replacement.start))?;
+        let replaced_end =
+            snapshot.appkit_utf16_of_byte(ByteOffset::new(composition.replacement.end))?;
+        let marked_end = start
+            .checked_add(composition.text.encode_utf16().count())
+            .ok_or(AccessibilityError::ArithmeticOverflow)?;
+        if range.start_utf16() >= start
+            && (range.start_utf16() < marked_end
+                || (range.start_utf16() == marked_end && range.length_utf16() == 0))
+            && !composition.text.is_empty()
+        {
+            let local_start = range.start_utf16() - start;
+            let local_end = range.end_utf16()?.min(marked_end) - start;
+            let local_start_u32 = u32::try_from(local_start).map_err(|_| geometry_unavailable())?;
+            let local_end_u32 = u32::try_from(local_end).map_err(|_| geometry_unavailable())?;
+            super::byte_at_utf16(&composition.text, local_start_u32)
+                .ok_or_else(geometry_unavailable)?;
+            super::byte_at_utf16(&composition.text, local_end_u32)
+                .ok_or_else(geometry_unavailable)?;
+            let anchor = text_geometry(app, AccessibilityTextRange::new(start, 0), false)?;
+            let AccessibilityPayload::TextGeometry { bounds, .. } = anchor else {
+                return Err(geometry_unavailable());
+            };
+            let font = app.resolved_font().map_err(|_| geometry_unavailable())?;
+            let x0 = app
+                .text_system
+                .caret_offset(&composition.text, font, local_start)
+                .map_err(|_| geometry_unavailable())?;
+            let x1 = app
+                .text_system
+                .caret_offset(&composition.text, font, local_end)
+                .map_err(|_| geometry_unavailable())?;
+            return clipped_geometry(
+                app,
+                AccessibilityTextRange::new(requested.start_utf16(), local_end - local_start),
+                bounds.x() + x0.min(x1),
+                bounds.y(),
+                (x1 - x0).abs(),
+                bounds.height(),
+            );
+        }
+        if range.start_utf16() >= marked_end {
+            let mapped_start = range
+                .start_utf16()
+                .checked_sub(marked_end)
+                .and_then(|v| v.checked_add(replaced_end))
+                .ok_or(AccessibilityError::ArithmeticOverflow)?;
+            range = AccessibilityTextRange::new(mapped_start, range.length_utf16());
+            returned_range = Some(requested.start_utf16());
+        } else if range.end_utf16()? > start {
+            range = AccessibilityTextRange::new(range.start_utf16(), start - range.start_utf16());
+        }
+    }
+    document_text_geometry(app, range, returned_range)
+}
+
+fn document_text_geometry(
+    app: &mut StudioApp,
+    range: AccessibilityTextRange,
+    returned_range: Option<usize>,
+) -> Result<AccessibilityPayload, AccessibilityError> {
+    let snapshot = app.buffer().snapshot();
+    let start_byte = snapshot.byte_of_appkit_utf16(range.start_utf16())?;
+    let end_byte = snapshot.byte_of_appkit_utf16(range.end_utf16()?)?;
+    let line = snapshot.line_of_byte(start_byte)?;
+    let line_bytes = snapshot.line_byte_range(line)?;
+    if line_bytes.len() > alpine_text_layout::DEFAULT_MAX_LINE_BYTES {
+        return Err(geometry_unavailable());
+    }
+    let pane = app
+        .active_pane_bounds()
+        .map_err(|_| geometry_unavailable())?;
+    let top = pane.origin().y() + super::usize_as_f32(line) * super::LINE_HEIGHT - app.scroll_y;
+    if top + super::LINE_HEIGHT <= pane.origin().y()
+        || top >= pane.origin().y() + pane.size().height()
+    {
+        return Err(geometry_unavailable());
+    }
+    let actual_end = end_byte.get().min(line_bytes.end);
+    let actual_end_utf16 = snapshot.appkit_utf16_of_byte(ByteOffset::new(actual_end))?;
+    let line_start_utf16 = snapshot.appkit_utf16_of_byte(ByteOffset::new(line_bytes.start))?;
+    let text = snapshot.slice(line_bytes)?;
+    let content = text.trim_end_matches(['\r', '\n']);
+    let units = content.encode_utf16().count();
+    let start = (range.start_utf16() - line_start_utf16).min(units);
+    let end = (actual_end_utf16 - line_start_utf16).min(units);
+    let font = app.resolved_font().map_err(|_| geometry_unavailable())?;
+    let x0 = app
+        .text_system
+        .caret_offset(content, font, start)
+        .map_err(|_| geometry_unavailable())?;
+    let x1 = app
+        .text_system
+        .caret_offset(content, font, end)
+        .map_err(|_| geometry_unavailable())?;
+    let mut left = x0.min(x1);
+    let mut right = x0.max(x1);
+    if start != end {
+        // A logical range may cover discontiguous visual runs. Include their
+        // glyph advances rather than assuming monotonically increasing indices.
+        let layout = app
+            .text_system
+            .shape(content, font)
+            .map_err(|_| geometry_unavailable())?;
+        for glyph in layout.glyphs() {
+            let index =
+                usize::try_from(glyph.source_utf16()).map_err(|_| geometry_unavailable())?;
+            if index >= start && index < end {
+                left = left.min(glyph.x());
+                right = right.max(glyph.x() + glyph.advance());
+            }
+        }
+    }
+    let actual = AccessibilityTextRange::new(
+        returned_range.unwrap_or(range.start_utf16()),
+        actual_end_utf16 - range.start_utf16(),
+    );
+    clipped_geometry(
+        app,
+        actual,
+        pane.origin().x() + left,
+        top,
+        right - left,
+        super::LINE_HEIGHT,
+    )
+}
+
+fn clipped_geometry(
+    app: &StudioApp,
+    range: AccessibilityTextRange,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) -> Result<AccessibilityPayload, AccessibilityError> {
+    let pane = app
+        .active_pane_bounds()
+        .map_err(|_| geometry_unavailable())?;
+    let left = x.max(pane.origin().x());
+    let top = y.max(pane.origin().y());
+    let right = (x + width).min(pane.origin().x() + pane.size().width());
+    let bottom = (y + height).min(pane.origin().y() + pane.size().height());
+    if right < left || bottom <= top {
+        return Err(geometry_unavailable());
+    }
+    Ok(AccessibilityPayload::TextGeometry {
+        range,
+        bounds: AccessibilityBounds::new(left, top, right - left, bottom - top)?,
+    })
+}
+
+fn text_index_at_point(
+    app: &mut StudioApp,
+    point: AccessibilityBounds,
+) -> Result<usize, AccessibilityError> {
+    let pane = app
+        .active_pane_bounds()
+        .map_err(|_| geometry_unavailable())?;
+    if point.x() < pane.origin().x()
+        || point.x() >= pane.origin().x() + pane.size().width()
+        || point.y() < pane.origin().y()
+        || point.y() >= pane.origin().y() + pane.size().height()
+    {
+        return Err(geometry_unavailable());
+    }
+    let line = super::floor_f32_to_usize(
+        (point.y() - pane.origin().y() + app.scroll_y) / super::LINE_HEIGHT,
+    )
+    .ok_or_else(geometry_unavailable)?;
+    let snapshot = app.buffer().snapshot();
+    let bytes = snapshot.line_byte_range(line)?;
+    if bytes.len() > alpine_text_layout::DEFAULT_MAX_LINE_BYTES {
+        return Err(geometry_unavailable());
+    }
+    let base = snapshot.appkit_utf16_of_byte(ByteOffset::new(bytes.start))?;
+    let text = snapshot.slice(bytes)?;
+    let font = app.resolved_font().map_err(|_| geometry_unavailable())?;
+    let local = app
+        .text_system
+        .index_at_x(
+            text.trim_end_matches(['\r', '\n']),
+            font,
+            point.x() - pane.origin().x(),
+        )
+        .map_err(|_| geometry_unavailable())?
+        .ok_or_else(geometry_unavailable)?;
+    base.checked_add(local)
+        .ok_or(AccessibilityError::ArithmeticOverflow)
 }
 
 fn finish_response(

@@ -15,6 +15,7 @@ set -eu
 test "$1" = test
 test "$2" = --locked
 test "$ALPINE_REQUIRE_NATIVE_VALIDATION" = 1
+test "$CARGO_TARGET_DIR" = "$EXPECTED_TARGET"
 case "$RUSTFLAGS" in *'--cfg alpine_native_validation'*) ;; *) exit 98 ;; esac
 test -z "${ALPINE_STUDIO_NATIVE_ACCESSIBILITY_CHILD:-}"
 test -z "${ALPINE_STUDIO_NATIVE_LSP_SERVER:-}"
@@ -29,13 +30,17 @@ if [ "${FIXTURE_RECEIPT:-yes}" = yes ]; then echo "alpine-native-process-complet
 EOF
 chmod +x "$fixture/bin/"* "$fixture/repo/scripts/check-native.sh"
 export PATH="$fixture/bin:$PATH"
-unset CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_TARGET
+unset CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_TARGET CARGO_TARGET_DIR
+fixture_repo=$(CDPATH= cd -- "$fixture/repo" && pwd -P)
+export EXPECTED_TARGET="$fixture_repo/target/native-validation"
 run() { "$fixture/repo/scripts/check-native.sh" "$@" >"$fixture/result" 2>&1; }
 export EXPECTED_MODE=physical EXPECTED_SCOPE=shipping
 # An inherited hosted/child environment must not alter a requested physical run.
 ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct ALPINE_STUDIO_NATIVE_ACCESSIBILITY_CHILD=1 run physical shipping
 export EXPECTED_MODE=hosted-direct EXPECTED_SCOPE=all
 run hosted all
+# Deliberately configured isolated build directories remain usable.
+CARGO_TARGET_DIR="$fixture_repo/custom-native" EXPECTED_TARGET="$fixture_repo/custom-native" run hosted all
 if FIXTURE_RECEIPT=no run hosted all; then echo 'missing native receipt accepted' >&2; exit 1; fi
 grep -q 'completion receipt missing' "$fixture/result"
 if FIXTURE_RESULT=42 run hosted all; then exit 1; else result=$?; fi

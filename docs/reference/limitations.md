@@ -5,14 +5,17 @@ not qualified or distributed as a public daily driver. Physical typing latency,
 VoiceOver, sustained dogfood and residency still require target-Mac acceptance.
 Signing, notarization, updates and public release support remain future work.
 
-Native text input is incomplete: `NSTextInputClient.selectedRange` returns a
-zero-length range at offset zero, the substring callback returns no text, the first-rectangle callback returns a
-fixed 1x1 rectangle, and point-to-character lookup returns zero. These do not yet
-describe the editor's actual selection or caret geometry. Accessibility text-range
-geometry is also unsupported. Synthetic IME event tests and a bounded AX tree
-therefore do not qualify candidate-window placement or VoiceOver editing. Complete
-the native selection/text/geometry bridge and verify it on the physical Mac before
-claiming these journeys are ready.
+The native text-input bridge reports the focused editor's UTF-16 selection,
+bounded text, caret/first-line geometry and containing-glyph hits. Accessibility
+range rectangles enclose supported visible line fragments, with a 256-fragment
+limit; unavailable geometry returns no rectangle. Replacement callbacks validate
+UTF-16 boundaries and reject stale document, focus and composition ownership.
+
+This does not qualify physical candidate-window placement or VoiceOver editing.
+Find/palette and other overlay fields do not yet expose their own native text and
+geometry queries. Point lookup during marked text remains unavailable; composition
+painting still overlays preedit on the original line. Physical IME, VoiceOver and
+presentation timing therefore remain acceptance work before claiming readiness.
 
 The current implementation excludes collaboration, hosted AI, accounts, cloud sync, remote
 development, telemetry, executable plugins, an extension marketplace, a debugger,

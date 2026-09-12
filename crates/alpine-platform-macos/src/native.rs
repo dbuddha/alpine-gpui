@@ -1684,6 +1684,8 @@ pub(crate) struct SurfaceViewIvars {
     input_dispatch_failed: Cell<bool>,
     marked_text: RefCell<Box<str>>,
     marked_selection: Cell<NSRange>,
+    marked_replacement: Cell<NSRange>,
+    marked_owner: Cell<Option<(u64, u64, u64, InputEpoch)>>,
     input_epoch: Cell<InputEpoch>,
     input_active: Cell<bool>,
     discarding_marked_text: Cell<bool>,
@@ -1715,15 +1717,20 @@ define_class!(
         unsafe fn insertText_replacementRange(
             &self,
             string: &AnyObject,
-            _replacement_range: NSRange,
+            replacement_range: NSRange,
         ) {
             if !self.accepts_ime_callback() {
                 return;
             }
             let text = input_text(string);
+            let inserted_units = text.encode_utf16().count();
+            let mut insertion = NSRange::new(inserted_units, 0);
+            let Some(text) = self.prepare_native_edit(text, replacement_range, Some(&mut insertion)) else { return; };
             self.clear_marked_text();
-            if !text.is_empty() {
+            if insertion.location == text.encode_utf16().count() {
                 self.emit_ime(ImeEvent::Committed(text));
+            } else {
+                self.emit_ime(ImeEvent::CommittedWithCaret { text, caret_utf16: insertion.location });
             }
         }
 
@@ -1743,13 +1750,14 @@ define_class!(
             &self,
             string: &AnyObject,
             selected_range: NSRange,
-            _replacement_range: NSRange,
+            replacement_range: NSRange,
         ) {
             if !self.accepts_ime_callback() {
                 return;
             }
             let text = input_text(string);
             if text.is_empty() {
+                if !self.native_mark_is_current() { self.clear_marked_text(); return; }
                 if self.has_marked_text_value() {
                     self.clear_marked_text();
                     self.emit_ime(ImeEvent::Cancelled);
@@ -1757,7 +1765,20 @@ define_class!(
                 return;
             }
 
+            if text_input::slice_utf16(&text, selected_range).is_none()
+                || text.len() > crate::MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES
+            { return; }
+            let mut selected_range = selected_range;
+            let Some(text) = self.prepare_native_edit(text, replacement_range, Some(&mut selected_range)) else { return; };
+
             if !self.has_marked_text_value() {
+                if !self.capture_native_mark_owner() {
+                    // Remember rejected preedit locally so a later commit also
+                    // fails closed; no composition is published to another owner.
+                    self.ivars().marked_text.replace(text);
+                    self.ivars().marked_selection.set(selected_range);
+                    return;
+                }
                 self.emit_ime(ImeEvent::Started);
             }
             self.ivars().marked_text.replace(text.clone());
@@ -1782,6 +1803,7 @@ define_class!(
             if !self.accepts_ime_callback() {
                 return;
             }
+            if !self.native_mark_is_current() { self.clear_marked_text(); return; }
             let text = self.ivars().marked_text.borrow().clone();
             self.clear_marked_text();
             if !text.is_empty() {
@@ -1795,7 +1817,7 @@ define_class!(
             reason = "the generated protocol requires this Rust method name"
         )]
         fn selectedRange(&self) -> NSRange {
-            NSRange::new(0, 0)
+            self.native_selected_range()
         }
 
         #[unsafe(method(markedRange))]
@@ -1805,9 +1827,9 @@ define_class!(
         )]
         fn markedRange(&self) -> NSRange {
             if self.has_marked_text_value() {
-                NSRange::new(0, self.ivars().marked_text.borrow().encode_utf16().count())
+                self.native_marked_range()
             } else {
-                NSRange::new(NSUInteger::MAX, 0)
+                text_input::missing_range()
             }
         }
 
@@ -1827,10 +1849,16 @@ define_class!(
         #[unsafe(method_id(attributedSubstringForProposedRange:actualRange:))]
         unsafe fn attributedSubstringForProposedRange_actualRange(
             &self,
-            _range: NSRange,
-            _actual_range: *mut NSRange,
+            range: NSRange,
+            actual_range: *mut NSRange,
         ) -> Option<objc2::rc::Retained<NSAttributedString>> {
-            None
+            // SAFETY: AppKit provides null or writable storage for this callback.
+            if let Some(actual) = unsafe { actual_range.as_mut() } { *actual = text_input::missing_range(); }
+            self.native_substring(range).map(|(text, represented)| {
+                // SAFETY: The output has the same callback-scoped lifetime as above.
+                if let Some(actual) = unsafe { actual_range.as_mut() } { *actual = represented; }
+                NSAttributedString::initWithString(NSAttributedString::alloc(), &NSString::from_str(&text))
+            })
         }
 
         #[unsafe(method_id(validAttributesForMarkedText))]
@@ -1856,12 +1884,11 @@ define_class!(
         ) -> NSRect {
             // SAFETY: AppKit supplies either null or a writable output pointer
             // for the duration of this synchronous callback.
-            if let Some(actual_range) = unsafe { actual_range.as_mut() } {
-                *actual_range = range;
-            }
-            let local = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
-            self.window()
-                .map_or(local, |window| window.convertRectToScreen(local))
+            if let Some(actual) = unsafe { actual_range.as_mut() } { *actual = text_input::missing_range(); }
+            let Some((rect, represented)) = self.native_first_rect(range) else { return NSRect::ZERO; };
+            // SAFETY: The output has the same callback-scoped lifetime as above.
+            if let Some(actual) = unsafe { actual_range.as_mut() } { *actual = represented; }
+            rect
         }
 
         #[allow(
@@ -1869,8 +1896,8 @@ define_class!(
             reason = "the generated protocol requires this Rust method name"
         )]
         #[unsafe(method(characterIndexForPoint:))]
-        fn characterIndexForPoint(&self, _point: NSPoint) -> usize {
-            0
+        fn characterIndexForPoint(&self, point: NSPoint) -> usize {
+            self.native_character_index(point).unwrap_or(objc2_foundation::NSNotFound.unsigned_abs())
         }
     }
 
@@ -1997,6 +2024,8 @@ impl SurfaceView {
             input_dispatch_failed: Cell::new(false),
             marked_text: RefCell::new(Box::default()),
             marked_selection: Cell::new(NSRange::new(0, 0)),
+            marked_replacement: Cell::new(text_input::missing_range()),
+            marked_owner: Cell::new(None),
             input_epoch: Cell::new(InputEpoch::INITIAL),
             input_active: Cell::new(true),
             discarding_marked_text: Cell::new(false),
@@ -2213,12 +2242,19 @@ impl SurfaceView {
     fn clear_marked_text(&self) {
         self.ivars().marked_text.replace(Box::default());
         self.ivars().marked_selection.set(NSRange::new(0, 0));
+        self.ivars()
+            .marked_replacement
+            .set(text_input::missing_range());
+        self.ivars().marked_owner.set(None);
     }
 
     fn has_marked_text_value(&self) -> bool {
         !self.ivars().marked_text.borrow().is_empty()
     }
 }
+
+#[path = "native_text_input.rs"]
+mod text_input;
 
 fn keyboard_event(event: &NSEvent, state: KeyState) -> NativeInputEvent {
     let (logical_key, repeat) = keyboard_text_metadata(
@@ -2389,8 +2425,6 @@ fn resolve_input_dispatch(
         Ok(()) => Ok(()),
     }
 }
-
-type NSUInteger = usize;
 
 #[cfg(test)]
 mod native_input_tests {
@@ -4533,6 +4567,50 @@ impl NativeSurface {
     }
 
     #[cfg(alpine_native_validation)]
+    pub(crate) fn replay_native_text_round_trip<F>(
+        &self,
+        mut handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        let reject_snapshot = std::rc::Rc::new(Cell::new(false));
+        let reject = std::rc::Rc::clone(&reject_snapshot);
+        self.delegate.install_event_handler(move |event| {
+            if reject.get()
+                && let SurfaceEvent::Accessibility { request, .. } = &event
+                && matches!(request.operation(), crate::AccessibilityOperation::Snapshot)
+            {
+                let expected = crate::AccessibilityRevision::new(1, 1);
+                let actual = crate::AccessibilityRevision::new(2, 2);
+                return SurfaceResponse::from_channels(
+                    None,
+                    None,
+                    CloseDisposition::NotRequested,
+                    Some(AccessibilityResponse::failure(
+                        request,
+                        actual,
+                        crate::AccessibilityError::StaleRevision { expected, actual },
+                    )),
+                );
+            }
+            handler(event)
+        })?;
+        let delegate = self.delegate.clone();
+        if !self.view.install_input_handler(Box::new(move |event| {
+            delegate.dispatch_native_input_event(event);
+        })) {
+            self.delegate.clear_event_handler();
+            return Err(SurfaceError::validation(SurfaceOperation::Input));
+        }
+        let result = text_input::validate_round_trip(&self.view, &reject_snapshot);
+        let cleanup = self.view.detach_input_handler_for_validation();
+        self.delegate.clear_event_handler();
+        drop(cleanup?);
+        resolve_input_dispatch(result, self.view.take_input_dispatch_failure())
+    }
+
+    #[cfg(alpine_native_validation)]
     pub(crate) fn replay_native_input_path<F>(&self, handler: F) -> Result<(), SurfaceError>
     where
         F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
@@ -4568,6 +4646,7 @@ impl NativeSurface {
         .ok_or_else(|| native_unavailable(SurfaceStage::View));
         let replay_result = event.and_then(|event| {
             self.view.keyDown(&event);
+            let selected_before_mark = self.view.native_selected_range();
             let marked = NSString::from_str("漢字");
             // SAFETY: These messages target selectors implemented by
             // SurfaceView's NSTextInputClient conformance. Every object and
@@ -4577,7 +4656,7 @@ impl NativeSurface {
                     &*self.view,
                     setMarkedText: &*marked,
                     selectedRange: NSRange::new(1, 1),
-                    replacementRange: NSRange::new(usize::MAX, 0)
+                    replacementRange: text_input::missing_range()
                 ];
             }
             let has_marked: bool = unsafe { msg_send![&*self.view, hasMarkedText] };
@@ -4585,7 +4664,12 @@ impl NativeSurface {
             if !has_marked {
                 return Err(SurfaceError::validation(SurfaceOperation::Validation));
             }
-            if marked_range != NSRange::new(0, 2) {
+            // The event-only platform fixture has no editor provider. The
+            // Studio composition supplies one and must expose its actual position.
+            let expected_mark = if selected_before_mark.location == text_input::missing_range().location {
+                text_input::missing_range()
+            } else { NSRange::new(selected_before_mark.location, 2) };
+            if marked_range != expected_mark {
                 return Err(SurfaceError::validation(SurfaceOperation::Validation));
             }
             unsafe {
@@ -4596,7 +4680,7 @@ impl NativeSurface {
             if has_marked {
                 return Err(SurfaceError::validation(SurfaceOperation::Validation));
             }
-            if marked_range != NSRange::new(NSUInteger::MAX, 0) {
+            if marked_range != text_input::missing_range() {
                 return Err(SurfaceError::validation(SurfaceOperation::Validation));
             }
 
@@ -4607,7 +4691,7 @@ impl NativeSurface {
                     &*self.view,
                     setMarkedText: &*marked,
                     selectedRange: NSRange::new(1, 0),
-                    replacementRange: NSRange::new(usize::MAX, 0)
+                    replacementRange: text_input::missing_range()
                 ];
             }
             self.delegate.publish_input_focus(false);
@@ -4643,7 +4727,7 @@ impl NativeSurface {
                     &*self.view,
                     setMarkedText: &*blocked,
                     selectedRange: NSRange::new(0, 0),
-                    replacementRange: NSRange::new(usize::MAX, 0)
+                    replacementRange: text_input::missing_range()
                 ];
             }
             if self.view.rejected_ime_callbacks() != rejected_before.saturating_add(1) {
@@ -4741,7 +4825,7 @@ impl NativeSurface {
             let _: () = msg_send![
                 &*self.view,
                 insertText: &*committed,
-                replacementRange: NSRange::new(NSUInteger::MAX, 0)
+                replacementRange: text_input::missing_range()
             ];
         }
         let replay_result = if self.view.rejected_ime_callbacks() == rejected_before {
@@ -4932,7 +5016,7 @@ impl NativeSurface {
                     &*self.view,
                     &marked,
                     NSRange::new(1, 0),
-                    NSRange::new(0, 0),
+                    text_input::missing_range(),
                 );
             }
         }
