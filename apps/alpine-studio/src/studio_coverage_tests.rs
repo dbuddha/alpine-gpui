@@ -4568,7 +4568,7 @@ fn find_focus_rejections_and_empty_actions_remain_bounded() -> Result<(), Studio
             .visual_changed
     );
     assert!(
-        !app.handle_event(&ime(ImeEvent::Updated {
+        app.handle_event(&ime(ImeEvent::Updated {
             text: "x".into(),
             selected_start_utf16: 2,
             selected_length_utf16: 0,

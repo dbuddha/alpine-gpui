@@ -340,16 +340,14 @@ fn defensive_errors_admissions_and_display_paths_are_bounded()
     assert!(state.display_text()?.starts_with("Replace: replacement"));
     state.field = FindField::Query;
 
-    state.query = "é".repeat(MAX_DISPLAY_BYTES);
+    state.query = "é".repeat(256);
+    state.selection = None;
     state.composition = Some(Box::from(" composing"));
     state.record_error(&FindError::WorkerUnavailable);
     let display = state.display_text()?;
-    assert!(display.starts_with("Find: ..."));
+    assert!(display.starts_with("Find: é"));
     assert!(display.contains("composing"));
     assert!(display.contains("find worker admission failed"));
-    assert_eq!(suffix_boundary("éé", 3), 2);
-    assert_eq!(suffix_boundary("abcd", 3), 1);
-    assert_eq!(suffix_boundary("abcd", 4), 0);
 
     state.query = String::from("x");
     state.generation = u64::MAX;
@@ -364,5 +362,80 @@ fn defensive_errors_admissions_and_display_paths_are_bounded()
         Err(FindError::GenerationExhausted)
     ));
     assert_eq!(state.query, before);
+    Ok(())
+}
+
+#[test]
+fn native_field_selection_projection_and_grapheme_edits_preserve_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = FindState::default();
+    state.open(false);
+    state.commit_text("a😀e\u{301}z")?;
+    let original = state.query().to_owned();
+    state.set_selection(Selection::new(ByteOffset::new(5), ByteOffset::new(1)))?;
+    state.update_composition_selected("漢🐱", 1, 2)?;
+    assert_eq!(state.projected_value()?, "a漢🐱e\u{301}z");
+    assert_eq!(state.query(), original);
+    assert_eq!(state.projected_selection().range(), 4..8);
+    assert_eq!(state.source_index(5), 1);
+    assert_eq!(state.source_index(8), 5);
+    state.commit_text_at("X!Z", 2)?;
+    assert_eq!(state.query(), "aX!Ze\u{301}z");
+    assert_eq!(state.selection().head().get(), 3);
+    assert!(!state.is_composing());
+    state.move_caret(true, false, true)?;
+    state.delete_backward()?;
+    state.delete_backward()?;
+    assert_eq!(state.query(), "aX!Z");
+    state.move_caret(false, false, true)?;
+    state.delete(true)?;
+    assert_eq!(state.query(), "X!Z");
+    state.move_caret(true, true, false)?;
+    assert_eq!(state.selection().range(), 0..1);
+    state.commit_text("")?;
+    assert_eq!(state.query(), "!Z");
+    assert!(
+        state
+            .set_selection(Selection::caret(ByteOffset::new(99)))
+            .is_err()
+    );
+    state.open(true);
+    state.commit_text("replacement")?;
+    state.set_selection(Selection::new(ByteOffset::new(0), ByteOffset::new(7)))?;
+    state.update_composition_selected("new", 3, 0)?;
+    assert_eq!(state.projected_value()?, "newment");
+    state.toggle_field();
+    assert!(!state.is_composing());
+    assert_eq!(state.field_text(), "!Z");
+    assert_eq!(state.replacement(), "replacement");
+    Ok(())
+}
+
+#[test]
+fn native_field_failed_preedit_revokes_mark_without_mutating_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = FindState::default();
+    state.open(false);
+    state.commit_text("ab")?;
+    state.update_composition_selected("漢", 1, 0)?;
+    assert!(state.update_composition_selected("😀", 1, 0).is_err());
+    assert!(!state.is_composing());
+    assert_eq!(state.query(), "ab");
+    state.update_composition_selected("漢", 1, 0)?;
+    assert!(
+        state
+            .update_composition_selected(&"x".repeat(MAX_QUERY_BYTES), 0, 0)
+            .is_err()
+    );
+    assert!(!state.is_composing());
+    assert_eq!(state.query(), "ab");
+    state.select_all();
+    assert!(
+        state
+            .update_composition_selected(&"x".repeat(MAX_QUERY_BYTES), 0, 0)
+            .is_ok()
+    );
+    assert_eq!(state.projected_value()?.len(), MAX_QUERY_BYTES);
+    assert_eq!(state.query(), "ab");
     Ok(())
 }

@@ -12,6 +12,7 @@ mod documents;
 mod dogfood_diagnostic;
 mod file_tree;
 mod find;
+mod find_input;
 #[cfg_attr(
     not(test),
     expect(
@@ -3333,38 +3334,62 @@ impl StudioApp {
             }
         }
         if self.find.is_open() {
-            let width = FIND_BAR_WIDTH.min(content_size.width());
-            let left = (active_pane.bounds.origin().x() + content_size.width() - width)
-                .max(active_pane.bounds.origin().x());
-            let overlay_origin = Point::new(left, TAB_BAR_HEIGHT + FIND_BAR_INSET)
-                .ok_or(StudioRenderError::Domain)?;
-            let overlay_size =
-                Size::new(width.max(1.0), FIND_BAR_HEIGHT).ok_or(StudioRenderError::Domain)?;
-            let overlay_bounds = Rect::new(overlay_origin, overlay_size);
-            let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
-            builder.push_quad(Quad::new(overlay_bounds, find_background_color))?;
-            let display = self.find.display_text()?;
-            let layout = self.text_system.shape(&display, font)?;
-            let origin_x = left + FIND_BAR_INSET;
-            let baseline = overlay_origin.y() + layout.ascent() + 6.0;
+            let view = find_input::layout(self)?;
+            let overlay_clip = builder.push_clip(Clip::new(view.bounds));
+            builder.push_quad(Quad::new(view.bounds, find_background_color))?;
             if let Some(range) = self.find.display_selection() {
-                let start = u32::try_from(display[..range.start].encode_utf16().count())
-                    .map_err(|_| StudioRenderError::Domain)?;
-                let end = u32::try_from(display[..range.end].encode_utf16().count())
-                    .map_err(|_| StudioRenderError::Domain)?;
-                let start_x = x_for_utf16(&layout, start);
-                let end_x = x_for_utf16(&layout, end);
-                let origin = Point::new(origin_x + start_x.min(end_x), overlay_origin.y() + 6.0)
-                    .ok_or(StudioRenderError::Domain)?;
-                let size = Size::new((end_x - start_x).abs().max(1.0), LINE_HEIGHT)
-                    .ok_or(StudioRenderError::Domain)?;
-                builder.push_quad(
-                    Quad::new(Rect::new(origin, size), selection_color).clipped(overlay_clip),
-                )?;
+                let start = view.text[..range.start].encode_utf16().count();
+                let end = view.text[..range.end].encode_utf16().count();
+                for (left, right) in composition::visual_spans(
+                    &view.text,
+                    &view.line,
+                    font,
+                    &mut self.text_system,
+                    start..end,
+                )? {
+                    let origin = Point::new(view.origin_x + left, view.top)
+                        .ok_or(StudioRenderError::Domain)?;
+                    let size = Size::new((right - left).max(1.0), LINE_HEIGHT)
+                        .ok_or(StudioRenderError::Domain)?;
+                    builder.push_quad(
+                        Quad::new(Rect::new(origin, size), selection_color).clipped(overlay_clip),
+                    )?;
+                }
             }
-            let overlay_glyphs =
-                self.collect_glyphs(&layout, font, origin_x, baseline, overlay_clip)?;
-            pending_glyphs.extend(overlay_glyphs);
+            if let Some(range) = self.find.display_mark().filter(|range| !range.is_empty()) {
+                let start = view.text[..range.start].encode_utf16().count();
+                let end = view.text[..range.end].encode_utf16().count();
+                for (left, right) in composition::visual_spans(
+                    &view.text,
+                    &view.line,
+                    font,
+                    &mut self.text_system,
+                    start..end,
+                )? {
+                    let rect = Rect::new(
+                        Point::new(view.origin_x + left, view.top + LINE_HEIGHT - 1.0)
+                            .ok_or(StudioRenderError::Domain)?,
+                        Size::new((right - left).max(1.0), 1.0).ok_or(StudioRenderError::Domain)?,
+                    );
+                    builder.push_quad(Quad::new(rect, caret_color).clipped(overlay_clip))?;
+                }
+            }
+            let caret = view.text[..self.find.display_caret()]
+                .encode_utf16()
+                .count();
+            let caret_x = view.origin_x + self.text_system.caret_offset(&view.text, font, caret)?;
+            let caret = Rect::new(
+                Point::new(caret_x, view.top).ok_or(StudioRenderError::Domain)?,
+                Size::new(CARET_WIDTH, LINE_HEIGHT).ok_or(StudioRenderError::Domain)?,
+            );
+            builder.push_quad(Quad::new(caret, caret_color).clipped(overlay_clip))?;
+            pending_glyphs.extend(self.collect_glyphs(
+                &view.line,
+                font,
+                view.origin_x,
+                view.top + view.line.ascent(),
+                overlay_clip,
+            )?);
         }
         if self.quick_open.is_open() {
             let rows = self
@@ -4944,11 +4969,13 @@ impl StudioApp {
             StudioCommand::NavigateBack => self.navigate_document_history(false),
             StudioCommand::NavigateForward => self.navigate_document_history(true),
             StudioCommand::OpenFind => {
+                self.pointer_selecting = false;
                 let changed = self.find.open(false);
                 self.find_needs_search |= !self.find.query().is_empty();
                 changed.then(EventEffect::visual).unwrap_or_default()
             }
             StudioCommand::OpenReplace => {
+                self.pointer_selecting = false;
                 let changed = self.find.open(true);
                 self.find_needs_search |= !self.find.query().is_empty();
                 changed.then(EventEffect::visual).unwrap_or_default()
@@ -5253,6 +5280,22 @@ impl StudioApp {
         shift: bool,
     ) -> EventEffect {
         match physical_key {
+            KEY_LEFT | KEY_RIGHT | KEY_HOME | KEY_END => {
+                let forward = matches!(physical_key, KEY_RIGHT | KEY_END);
+                let edge = command || matches!(physical_key, KEY_HOME | KEY_END);
+                match self.find.move_caret(forward, shift, edge) {
+                    Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+                    Err(error) => self.record_find_error(&error),
+                }
+            }
+            KEY_DELETE_FORWARD if !command => match self.find.delete(true) {
+                Ok(changed) => {
+                    self.find_needs_search |= changed;
+                    EventEffect::visual()
+                }
+                Err(error) => self.record_find_error(&error),
+            },
+
             KEY_ESCAPE => self
                 .find
                 .close()
@@ -5290,18 +5333,17 @@ impl StudioApp {
                 text,
                 selected_start_utf16,
                 selected_length_utf16,
-            } => {
-                let selected_end = selected_start_utf16.checked_add(*selected_length_utf16);
-                let units = u32::try_from(text.encode_utf16().count()).ok();
-                if selected_end.is_none_or(|end| units.is_none_or(|units| end > units)) {
-                    self.input_failures = self.input_failures.saturating_add(1);
-                    return EventEffect::default();
-                }
-                self.find.update_composition(text)
-            }
-            ImeEvent::Committed(text) | ImeEvent::CommittedWithCaret { text, .. } => {
-                self.find.commit_text(text)
-            }
+            } => self.find.update_composition_selected(
+                text,
+                *selected_start_utf16,
+                *selected_length_utf16,
+            ),
+            ImeEvent::Committed(text) => self.find.commit_text(text),
+            ImeEvent::CommittedWithCaret { text, caret_utf16 } => u32::try_from(*caret_utf16)
+                .ok()
+                .and_then(|index| byte_at_utf16(text, index))
+                .ok_or(FindError::InvalidSelection)
+                .and_then(|caret| self.find.commit_text_at(text, caret)),
             ImeEvent::Cancelled => {
                 return self
                     .find
@@ -5312,10 +5354,17 @@ impl StudioApp {
         };
         match result {
             Ok(changed_query) => {
-                self.find_needs_search |= changed_query;
+                self.find_needs_search |= changed_query
+                    && matches!(
+                        event,
+                        ImeEvent::Committed(_) | ImeEvent::CommittedWithCaret { .. }
+                    );
                 EventEffect::visual()
             }
-            Err(error) => self.record_find_error(&error),
+            Err(error) => {
+                self.find.cancel_composition();
+                self.record_find_error(&error)
+            }
         }
     }
 
@@ -5545,6 +5594,52 @@ impl StudioApp {
     }
 
     fn handle_pointer(
+        &mut self,
+        action: PointerAction,
+        position: Point,
+        button: PointerButton,
+        modifiers: Modifiers,
+    ) -> EventEffect {
+        self.last_pointer_position = Some(position);
+        let mut closed = false;
+        if accessibility::focus_owner(self) == Some(accessibility::find_node(self))
+            && !self.workspace_edits.is_publication_pending()
+        {
+            let inside = find_input::bounds(self).is_ok_and(|bounds| {
+                position.x() >= bounds.origin().x()
+                    && position.x() < bounds.origin().x() + bounds.size().width()
+                    && position.y() >= bounds.origin().y()
+                    && position.y() < bounds.origin().y() + bounds.size().height()
+            });
+            if inside || self.pointer_selecting {
+                let selecting = (action == PointerAction::Down && button == PointerButton::Primary)
+                    || (action == PointerAction::Moved && self.pointer_selecting);
+                if selecting {
+                    let extend = self.pointer_selecting || modifiers.contains(Modifiers::SHIFT);
+                    self.pointer_selecting = true;
+                    return match find_input::pointer_selection(self, position, extend) {
+                        Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+                        Err(_) => EventEffect::default(),
+                    };
+                }
+                if action == PointerAction::Up {
+                    self.pointer_selecting = false;
+                }
+                return EventEffect::default();
+            }
+            if action == PointerAction::Down && button == PointerButton::Primary {
+                closed = self.find.close();
+            }
+        }
+        let effect = self.handle_content_pointer(action, position, button, modifiers);
+        if closed {
+            effect.merge(EventEffect::visual())
+        } else {
+            effect
+        }
+    }
+
+    fn handle_content_pointer(
         &mut self,
         action: PointerAction,
         position: Point,

@@ -313,6 +313,14 @@ pub(super) fn validate_round_trip(
     stage.set("mark");
     validate_mark_queries(view, length, &before)?;
     validate_edit_edges(view, length, &before)?;
+    stage.set("Find/Replace native fields");
+    validate_find_fields(view)?;
+    if view
+        .native_substring(NSRange::new(0, length.min(64)))
+        .is_none_or(|(text, _)| text != before)
+    {
+        return Err(failure());
+    }
     // A real provider becoming unavailable must never act like an unowned fixture.
     let before_rejection = view.input_state().ok_or_else(failure)?;
     reject_snapshot.set(true);
@@ -557,5 +565,96 @@ fn validate_edit_edges(
     if !unchanged() {
         return Err(failure());
     }
+    Ok(())
+}
+
+#[cfg(alpine_native_validation)]
+fn validate_find_fields(view: &SurfaceView) -> Result<(), super::SurfaceError> {
+    let failure = || super::SurfaceError::validation(super::SurfaceOperation::Input);
+    let select = |range| {
+        view.input_state().is_some_and(|(revision, _, _)| {
+            NativeAccessibilityAdapter::input_selection(view, revision, range)
+        })
+    };
+    let text_is = |expected: &str| {
+        let units = expected.encode_utf16().count();
+        view.input_state()
+            .and_then(|(_, length, _)| view.projected_length(length))
+            == Some(units)
+            && view
+                .native_substring(NSRange::new(0, units))
+                .is_some_and(|(text, _)| &*text == expected)
+    };
+    validation_key(view, 3, "f", super::Modifiers::COMMAND);
+    if view.native_selected_range() != NSRange::new(0, 0) {
+        return Err(failure());
+    }
+    validation_insert(view, "a😀e\u{301}z", missing_range());
+    if !text_is("a😀e\u{301}z") || !select(NSRange::new(1, 2)) {
+        return Err(failure());
+    }
+    validation_mark(view, &super::NSString::from_str("漢🐱"), NSRange::new(1, 2));
+    if view.native_marked_range() != NSRange::new(1, 3)
+        || view.native_selected_range() != NSRange::new(2, 2)
+        || !text_is("a漢🐱e\u{301}z")
+    {
+        eprintln!("native-find: projected selection or text mismatch");
+        return Err(failure());
+    }
+    let (rect, _) = view
+        .native_first_rect(NSRange::new(1, 1))
+        .ok_or_else(failure)?;
+    if view.native_character_index(NSPoint::new(
+        rect.origin.x + rect.size.width * 0.5,
+        rect.origin.y + rect.size.height * 0.5,
+    )) != Some(1)
+    {
+        return Err(failure());
+    }
+    validation_insert(view, "!", NSRange::new(2, 2));
+    if !text_is("a漢!e\u{301}z") || view.native_selected_range() != NSRange::new(3, 0) {
+        return Err(failure());
+    }
+    if !select(NSRange::new(1, 1)) {
+        return Err(failure());
+    }
+    validation_insert(view, "", missing_range());
+    if !text_is("a!e\u{301}z") {
+        return Err(failure());
+    }
+    validation_mark(
+        view,
+        &super::NSString::from_str("old query"),
+        NSRange::new(0, 0),
+    );
+    validation_key(
+        view,
+        3,
+        "f",
+        super::Modifiers::COMMAND | super::Modifiers::OPTION,
+    );
+    validation_insert(view, "stale", missing_range());
+    if !text_is("") || view.native_selected_range() != NSRange::new(0, 0) {
+        return Err(failure());
+    }
+    validation_mark(
+        view,
+        &super::NSString::from_str("replacement"),
+        NSRange::new(11, 0),
+    );
+    super::NSTextInputClient::unmarkText(view);
+    if !text_is("replacement") {
+        return Err(failure());
+    }
+    if !select(NSRange::new(0, 11)) {
+        return Err(failure());
+    }
+    validation_insert(view, "", missing_range());
+    validation_key(view, 48, "", 0);
+    if !text_is("a!e\u{301}z") || !select(NSRange::new(0, 5)) {
+        return Err(failure());
+    }
+    validation_insert(view, "", missing_range());
+    validation_key(view, 53, "", 0);
     Ok(())
 }
