@@ -39,6 +39,13 @@ assert_every_gate() {
 # Default PR/main feedback must preserve native behavior without admitting
 # specialized assurance, even for broad or unknown changes and risk labels.
 unset ALPINE_CI_ASSURANCE
+for changed in README.md docs/alpine-capability-probe.md; do
+    assert_output "$(run_fixture "$changed")" code=false
+done
+for changed in '' docs/input.json 'docs/unusual name.md' unclassified/input.bin scripts/check-policy.sh; do
+    assert_output "$(run_fixture "$changed")" code=true
+done
+assert_output "$(run_fixture "$(printf 'docs/README.md\napps/alpine-studio/src/lib.rs')")" code=true
 for changed in .github/workflows/ci.yml crates/alpine-runtime/src/lib.rs unclassified/input.bin; do
     ordinary=$(run_fixture "$changed" review:unsafe)
     for gate in coverage mutation kani miri tla native_mutation; do
@@ -57,6 +64,7 @@ jq -e '.assurance == false and .gates.native_mutation == false and
 
 # Retain exhaustive impact-selection coverage for explicit manual assurance.
 export ALPINE_CI_ASSURANCE=true
+assert_output "$(run_fixture README.md)" code=true
 manual=$(run_fixture .github/workflows/ci.yml)
 assert_every_gate "$manual"
 assert_output "$manual" native_mutation=true

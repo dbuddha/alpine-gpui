@@ -3288,6 +3288,21 @@ impl StudioApp {
             let layout = self.text_system.shape(&display, font)?;
             let origin_x = left + FIND_BAR_INSET;
             let baseline = overlay_origin.y() + layout.ascent() + 6.0;
+            if let Some(range) = self.find.display_selection() {
+                let start = u32::try_from(display[..range.start].encode_utf16().count())
+                    .map_err(|_| StudioRenderError::Domain)?;
+                let end = u32::try_from(display[..range.end].encode_utf16().count())
+                    .map_err(|_| StudioRenderError::Domain)?;
+                let start_x = x_for_utf16(&layout, start);
+                let end_x = x_for_utf16(&layout, end);
+                let origin = Point::new(origin_x + start_x.min(end_x), overlay_origin.y() + 6.0)
+                    .ok_or(StudioRenderError::Domain)?;
+                let size = Size::new((end_x - start_x).abs().max(1.0), LINE_HEIGHT)
+                    .ok_or(StudioRenderError::Domain)?;
+                builder.push_quad(
+                    Quad::new(Rect::new(origin, size), selection_color).clipped(overlay_clip),
+                )?;
+            }
             let overlay_glyphs =
                 self.collect_glyphs(&layout, font, origin_x, baseline, overlay_clip)?;
             pending_glyphs.extend(overlay_glyphs);
@@ -4304,6 +4319,13 @@ impl StudioApp {
             return self.dispatch_command(command);
         }
         if self.find.is_open() {
+            if action == Some(KeyAction::SelectAll) {
+                return self
+                    .find
+                    .select_all()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
             return self.handle_find_key(physical_key, command, option, shift);
         }
         if self.file_tree.is_focused() {

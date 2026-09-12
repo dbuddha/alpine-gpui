@@ -46,7 +46,10 @@ performance or replace a physical keyboard/VoiceOver check.
 
 ## Hosted acceptance
 
-Ordinary CI selects native/portable checks from source changes and fails `ci-pass`
+Ordinary CI skips code builds only for changes confined to Markdown under `docs/`
+and the named root guidance files. Policy still runs; mixed, unknown and empty
+change sets retain code checks, as do explicit manual assurance requests.
+CI selects native/portable checks from source changes and fails `ci-pass`
 if an applicable job fails or is unexpectedly skipped. PR opening, source updates
 and reopening trigger code CI; title/body/label edits do not. Retain the tested
 source and base identities, native execution and failure artifacts. The current

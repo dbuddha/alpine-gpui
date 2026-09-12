@@ -409,6 +409,7 @@ pub(crate) struct FindState {
     query: String,
     replacement: String,
     composition: Option<Box<str>>,
+    all_selected: bool,
     generation: u64,
     pending: Option<FindIdentity>,
     result: Option<FindResult>,
@@ -427,6 +428,7 @@ impl Default for FindState {
             query: String::new(),
             replacement: String::new(),
             composition: None,
+            all_selected: false,
             generation: 0,
             pending: None,
             result: None,
@@ -491,15 +493,21 @@ impl FindState {
     }
 
     pub(crate) fn open(&mut self, replace_visible: bool) -> bool {
-        let changed = !self.open || (replace_visible && !self.replace_visible);
-        self.open = true;
-        self.replace_visible |= replace_visible;
-        self.field = if replace_visible {
+        let next_field = if replace_visible {
             FindField::Replacement
         } else {
             FindField::Query
         };
+        let changed = !self.open
+            || (replace_visible && !self.replace_visible)
+            || self.field != next_field
+            || self.all_selected
+            || self.composition.is_some();
+        self.open = true;
+        self.replace_visible |= replace_visible;
+        self.field = next_field;
         self.composition = None;
+        self.all_selected = false;
         changed
     }
 
@@ -507,6 +515,7 @@ impl FindState {
         let changed = self.open;
         self.open = false;
         self.composition = None;
+        self.all_selected = false;
         self.pending = None;
         self.result = None;
         self.active = None;
@@ -523,7 +532,33 @@ impl FindState {
             FindField::Replacement => FindField::Query,
         };
         self.composition = None;
+        self.all_selected = false;
         true
+    }
+
+    pub(crate) fn select_all(&mut self) -> bool {
+        let value = match self.field {
+            FindField::Query => &self.query,
+            FindField::Replacement => &self.replacement,
+        };
+        let selected = !value.is_empty();
+        let changed = self.all_selected != selected || self.composition.is_some();
+        self.composition = None;
+        self.all_selected = selected;
+        changed
+    }
+
+    pub(crate) fn display_selection(&self) -> Option<Range<usize>> {
+        if !self.all_selected || self.composition.is_some() {
+            return None;
+        }
+        let (prefix, value) = match self.field {
+            FindField::Query => (6, &self.query),
+            FindField::Replacement => (9, &self.replacement),
+        };
+        let suffix = suffix_boundary(value, MAX_DISPLAY_BYTES);
+        let length = value.len() - suffix + if suffix > 0 { 3 } else { 0 };
+        Some(prefix..prefix + length)
     }
 
     pub(crate) fn begin_composition(&mut self) -> bool {
@@ -576,8 +611,8 @@ impl FindState {
             FindField::Query => &mut self.query,
             FindField::Replacement => &mut self.replacement,
         };
-        let next = target
-            .len()
+        let retained = if self.all_selected { 0 } else { target.len() };
+        let next = retained
             .checked_add(text.len())
             .ok_or(FindError::OffsetOverflow)?;
         if next > MAX_QUERY_BYTES {
@@ -593,9 +628,13 @@ impl FindState {
             });
         }
         target
-            .try_reserve_exact(text.len())
+            .try_reserve_exact(next.saturating_sub(target.len()))
             .map_err(|_| FindError::AllocationFailed)?;
+        if self.all_selected {
+            target.clear();
+        }
         target.push_str(text);
+        self.all_selected = false;
         if let Some(generation) = next_generation {
             self.query_changed(generation);
         }
@@ -618,9 +657,15 @@ impl FindState {
             FindField::Query => &mut self.query,
             FindField::Replacement => &mut self.replacement,
         };
-        if target.pop().is_none() {
+        if target.is_empty() {
             return Ok(false);
         }
+        if self.all_selected {
+            target.clear();
+        } else {
+            target.pop();
+        }
+        self.all_selected = false;
         if let Some(generation) = next_generation {
             self.query_changed(generation);
         }
@@ -811,6 +856,11 @@ impl FindState {
             FindField::Query => &self.query,
             FindField::Replacement => &self.replacement,
         };
+        let value = if self.all_selected && self.composition.is_some() {
+            ""
+        } else {
+            value.as_str()
+        };
         let start = suffix_boundary(value, MAX_DISPLAY_BYTES);
         if start > 0 {
             display.push_str("...");
@@ -976,6 +1026,55 @@ mod tests {
             }
         }
         assert!(accepted);
+        Ok(())
+    }
+
+    #[test]
+    fn select_all_replaces_unicode_and_preserves_selection_on_rejected_input()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut state = FindState::default();
+        state.open(false);
+        state.commit_text("café 🏔️")?;
+        let generation = state.generation();
+        assert!(state.select_all());
+        assert_eq!(state.generation(), generation);
+        assert_eq!(state.display_selection(), Some(6..6 + "café 🏔️".len()));
+        assert!(state.commit_text(&"x".repeat(MAX_QUERY_BYTES + 1)).is_err());
+        assert_eq!(state.query(), "café 🏔️");
+        assert!(state.display_selection().is_some());
+        state.begin_composition();
+        state.update_composition("漢")?;
+        assert_eq!(state.display_text()?, "Find: 漢");
+        assert!(state.display_selection().is_none());
+        state.cancel_composition();
+        assert_eq!(state.query(), "café 🏔️");
+        assert_eq!(state.display_text()?, "Find: café 🏔️");
+        assert!(state.display_selection().is_some());
+        state.begin_composition();
+        state.update_composition("漢")?;
+        assert!(state.commit_text("漢字")?);
+        assert_eq!(state.query(), "漢字");
+        assert_eq!(state.generation(), generation + 1);
+        assert!(state.display_selection().is_none());
+        state.select_all();
+        assert!(state.delete_backward()?);
+        assert!(state.query().is_empty());
+        assert!(!state.select_all());
+        state.open(true);
+        state.commit_text("before")?;
+        state.select_all();
+        assert!(!state.commit_text("after")?);
+        assert_eq!(state.replacement(), "after");
+        state.select_all();
+        state.toggle_field();
+        assert!(state.display_selection().is_none());
+        state.commit_text(&"é".repeat(MAX_QUERY_BYTES / 2))?;
+        state.select_all();
+        let display = state.display_text()?;
+        let selected = state.display_selection().ok_or("selection")?;
+        assert!(display[selected].starts_with("..."));
+        assert!(state.commit_text("short")?);
+        assert_eq!(state.query(), "short");
         Ok(())
     }
 

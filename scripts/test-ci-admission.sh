@@ -152,6 +152,7 @@ awk '
     body { sub(/^          /, ""); print }
 ' .github/workflows/ci.yml > "$temporary/aggregate.sh"
 aggregate_case() (
+    export CODE_REQUIRED=true
     export CLASSIFY_RESULT=success PREFLIGHT_RESULT=success QUALITY_RESULT=success NATIVE_RESULT=success
     export COVERAGE_REQUIRED=false COVERAGE_RESULT=skipped MUTATION_REQUIRED=false MUTATION_RESULT=skipped
     export KANI_REQUIRED=false KANI_RESULT=skipped TLA_REQUIRED=false TLA_RESULT=skipped MIRI_REQUIRED=false MIRI_RESULT=skipped
@@ -161,11 +162,15 @@ aggregate_case() (
 )
 aggregate_case
 for override in METAL_RESULT=skipped METAL_RESULT=failure NATIVE_RESULT=skipped NATIVE_RESULT=failure \
-    QUALITY_RESULT=failure CLASSIFY_RESULT=failure NATIVE_MUTATION_REQUIRED=true NATIVE_MUTATION_REQUIRED=invalid; do
+    QUALITY_RESULT=failure CLASSIFY_RESULT=failure CODE_REQUIRED=invalid NATIVE_MUTATION_REQUIRED=true NATIVE_MUTATION_REQUIRED=invalid; do
     if aggregate_case "$override" > "$temporary/aggregate-fault" 2>&1; then
         printf 'aggregate accepted %s\n' "$override" >&2
         exit 1
     fi
 done
 aggregate_case NATIVE_MUTATION_REQUIRED=true NATIVE_MUTATION_RESULT=success
+aggregate_case CODE_REQUIRED=false QUALITY_RESULT=skipped NATIVE_RESULT=skipped METAL_REQUIRED=false METAL_RESULT=skipped
+if aggregate_case CODE_REQUIRED=false QUALITY_RESULT=failure > "$temporary/docs-fault" 2>&1; then
+    echo 'documentation selection hid a failed quality job' >&2; exit 1
+fi
 printf 'CI aggregate admission tests passed\n'

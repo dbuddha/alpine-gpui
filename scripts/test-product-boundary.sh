@@ -89,4 +89,37 @@ if ALPINE_PRODUCT_DEPENDENCY_INPUT=$dependencies \
 fi
 grep -Fq 'release binary contains a network endpoint' "$fixture_dir/endpoint.log"
 
+# Exercise the real workflow command using GitHub's shell semantics. The
+# isolated fixture avoids overwriting evidence from an actual release build.
+mkdir -p "$fixture_dir/workflow/scripts" "$fixture_dir/workflow/assurance" "$fixture_dir/workflow/target"
+cp scripts/check-product-boundary.sh "$fixture_dir/workflow/scripts/"
+cp assurance/alpine-studio-dependencies.txt "$fixture_dir/workflow/assurance/"
+step=$(awk '/- name: Audit Alpine Studio release product boundary/ { active=1; next }
+    active && /- name:/ { exit } active { print }' .github/workflows/ci.yml)
+command=$(printf '%s\n' "$step" | sed -n 's/^        run: //p')
+test -n "$command"
+if printf '%s\n' "$step" | grep -Fq '        shell: bash'; then
+    set -- --noprofile --norc -eo pipefail
+else
+    set -- -e
+fi
+for fixture in valid invalid; do
+    input=$dependencies
+    [ "$fixture" != invalid ] || input=$invalid_dependencies
+    result=0
+    (cd "$fixture_dir/workflow" &&
+        ALPINE_PRODUCT_DEPENDENCY_INPUT=$input \
+        ALPINE_PRODUCT_SOURCE_INPUT='' ALPINE_PRODUCT_FEATURE_INPUT='' \
+        ALPINE_PRODUCT_PATH_INPUT='' ALPINE_PRODUCT_SYMBOL_INPUT='_objc_msgSend' \
+        ALPINE_PRODUCT_STRING_INPUT='Alpine Studio' \
+        bash "$@" -c "$command") > "$fixture_dir/workflow-$fixture.log" 2>&1 || result=$?
+    expected=0
+    [ "$fixture" != invalid ] || expected=1
+    if [ "$result" -ne "$expected" ]; then
+        printf 'product boundary workflow returned %s for %s input, expected %s\n' "$result" "$fixture" "$expected" >&2
+        cat "$fixture_dir/workflow-$fixture.log" >&2
+        exit 1
+    fi
+done
+
 printf 'Alpine Studio product boundary tests passed\n'

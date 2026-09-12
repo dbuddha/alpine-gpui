@@ -25,3 +25,17 @@ infrastructure, not a signed public release. See [limitations](reference/limitat
 
 Use a focused branch and preserve dirty or parked work. Repository-local skills
 are discovered from `.agents/skills` when working in a checkout containing them.
+
+For an isolated readiness session, first provision the checksummed rust-analyzer
+archive using the pinned command in CI, then build from a clean commit:
+
+```sh
+python3 scripts/prepare-readiness-probe.py target/readiness-<new-run>
+python3 scripts/prepare-readiness-probe.py target/readiness-<new-run> --verify
+```
+
+Open the printed application path. Each run has a separate home, disposable Rust
+workspace, pinned language server and runtime log. The verifier checks both bundle
+and outer identities and immutable file hashes. Preserve previous runs and unsaved
+buffers; never replace an executable inside an existing probe. This establishes
+artifact identity, not physical or performance acceptance.

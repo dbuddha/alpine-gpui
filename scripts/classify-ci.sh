@@ -182,6 +182,17 @@ else
     mv "$temporary/ordinary-reasons.tsv" "$temporary/reasons.tsv"
 fi
 
+# Only ordinary Markdown guidance may skip code checks. Unknown paths, empty
+# comparisons, mixed changes and explicit assurance retain code validation.
+code=true
+non_docs=$(printf '%s\n' "$changed_files" | sed '/^$/d' | grep -Ev '^(README\.md|AGENTS\.md|ARCHITECTURE\.md|CONTRIBUTING\.md|CHANGELOG\.md|docs/[^[:space:]]+\.md)$') || {
+    result=$?
+    [ "$result" -eq 1 ] || fail 'documentation ownership classification failed'
+}
+if [ "$assurance" = false ] && [ -n "$changed_files" ] && [ -z "$non_docs" ]; then
+    code=false
+fi
+
 # Explanations are optional planning artifacts, not test execution or acceptance
 # receipts. Existing workflow outputs retain their names and boolean values.
 if [ -n "${ALPINE_CI_PLAN:-}" ]; then
@@ -193,7 +204,7 @@ if [ -n "${ALPINE_CI_PLAN:-}" ]; then
         --argjson ci_control_only "$ci_control_only" \
         --argjson assurance "$assurance" --argjson native_mutation "$native_mutation" \
         --rawfile reasons "$temporary/reasons.tsv" \
-        --argjson coverage "$coverage" --argjson mutation "$mutation" \
+        --argjson code "$code" --argjson coverage "$coverage" --argjson mutation "$mutation" \
         --argjson kani "$kani" --argjson miri "$miri" --argjson metal "$metal" \
         --argjson tla "$tla" --argjson portable "$portable" \
         '{schema: "alpine-ci-gate-plan/v1", base_sha: $base, head_sha: $head,
@@ -201,7 +212,7 @@ if [ -n "${ALPINE_CI_PLAN:-}" ]; then
           changed_paths: ($paths | split("\n") | map(select(length > 0))),
           unmapped_paths: ($unknown | split("\n") | map(select(length > 0))),
           ci_control_only: $ci_control_only, assurance: $assurance,
-          gates: {native_mutation: $native_mutation, coverage: $coverage, mutation: $mutation, kani: $kani,
+          gates: {code: $code, native_mutation: $native_mutation, coverage: $coverage, mutation: $mutation, kani: $kani,
                   miri: $miri, metal: $metal, tla: $tla, portable: $portable},
           reasons: ($reasons | split("\n") | map(select(length > 0) | split("\t") |
                     {gate: .[0], rule: .[1]}) | unique),
@@ -213,6 +224,7 @@ fi
 {
     printf 'base_sha=%s\n' "$base_sha"
     printf 'head_sha=%s\n' "$head_sha"
+    printf 'code=%s\n' "$code"
     printf 'native_mutation=%s\n' "$native_mutation"
     printf 'coverage=%s\n' "$coverage"
     printf 'mutation=%s\n' "$mutation"
