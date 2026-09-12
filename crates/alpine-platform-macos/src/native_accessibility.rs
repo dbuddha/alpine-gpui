@@ -393,7 +393,13 @@ impl NativeAccessibilityAdapter {
             snapshot.revision().document(),
             snapshot.revision().buffer(),
             focused.id().get(),
-            focused.role() != AccessibilityRole::CodeEditor || snapshot.is_editor_composing(),
+            snapshot.focused_text_input().map_or_else(
+                || {
+                    focused.role() != AccessibilityRole::CodeEditor
+                        || snapshot.is_editor_composing()
+                },
+                crate::accessibility::AccessibilityTextInput::is_composing,
+            ),
         ))
     }
 
@@ -411,6 +417,13 @@ impl NativeAccessibilityAdapter {
         let mut adapter = view.ivars().accessibility.try_borrow_mut().ok()?;
         adapter.record_posted(&posted);
         let snapshot = adapter.snapshot.as_ref()?;
+        if let Some(input) = snapshot.focused_text_input() {
+            return Some((
+                snapshot.revision(),
+                input.text_len_utf16(),
+                to_ns_range(input.selection().range()),
+            ));
+        }
         if !snapshot
             .nodes()
             .iter()
@@ -431,10 +444,17 @@ impl NativeAccessibilityAdapter {
         range: NSRange,
     ) -> Option<Box<str>> {
         let mut adapter = view.ivars().accessibility.try_borrow_mut().ok()?;
-        adapter.text(
+        let request = AccessibilityRequest::text(
+            adapter.next_id().ok()?,
             revision,
             AccessibilityTextRange::new(range.location, range.length),
         )
+        .ok()?;
+        let request = adapter.target_focused_text(request);
+        match adapter.dispatch(&request).ok()?.result() {
+            Ok(AccessibilityPayload::Text(text)) => Some(text.as_str().into()),
+            _ => None,
+        }
     }
 
     pub(crate) fn input_selection(
@@ -448,10 +468,30 @@ impl NativeAccessibilityAdapter {
             .try_borrow_mut()
             .ok()
             .is_some_and(|mut adapter| {
-                adapter.set_selection(
-                    revision,
-                    AccessibilityTextRange::new(range.location, range.length),
-                )
+                let request = adapter.next_id().ok().and_then(|id| {
+                    AccessibilityRequest::action(
+                        id,
+                        AccessibilityAction::set_selection(
+                            revision,
+                            range.location,
+                            range.location.checked_add(range.length)?,
+                        ),
+                    )
+                    .ok()
+                });
+                let Some(request) = request else {
+                    return false;
+                };
+                let request = adapter.target_focused_text(request);
+                adapter.dispatch(&request).ok().is_some_and(|response| {
+                    matches!(
+                        response.result(),
+                        Ok(AccessibilityPayload::Action(
+                            AccessibilityActionResult::Applied
+                                | AccessibilityActionResult::Unchanged
+                        ))
+                    )
+                })
             });
         applied && Self::input_metadata(view).is_some()
     }
@@ -538,6 +578,7 @@ impl NativeAccessibilityAdapter {
         let mut adapter = view.ivars().accessibility.try_borrow_mut().ok()?;
         let request =
             AccessibilityRequest::index_for_point(adapter.next_id().ok()?, revision, x, y).ok()?;
+        let request = adapter.target_focused_text(request);
         let response = adapter.dispatch(&request).ok()?;
         match response.result() {
             Ok(AccessibilityPayload::Index(index)) => Some(*index),
@@ -558,6 +599,11 @@ impl NativeAccessibilityAdapter {
             marked_text,
         )
         .ok()?;
+        let request = if marked_text {
+            self.target_focused_text(request)
+        } else {
+            request
+        };
         let response = self.dispatch(&request).ok()?;
         match response.result() {
             Ok(AccessibilityPayload::TextGeometry { bounds, range }) => Some((*bounds, *range)),
@@ -1070,6 +1116,18 @@ impl NativeAccessibilityAdapter {
             .filter(|node| is_direct_child(node.parent(), id))
             .filter_map(|node| self.element(node.id()))
             .collect()
+    }
+
+    fn target_focused_text(&self, request: AccessibilityRequest) -> AccessibilityRequest {
+        if let Some(input) = self
+            .snapshot
+            .as_ref()
+            .and_then(AccessibilitySnapshot::focused_text_input)
+        {
+            request.targeting_text(input.node())
+        } else {
+            request
+        }
     }
 
     fn text(

@@ -50,6 +50,14 @@ struct PaletteTextSystem {
 }
 
 impl TextShaper for PaletteTextSystem {
+    fn caret_offset(
+        &mut self,
+        text: &str,
+        font: FontKey,
+        index: usize,
+    ) -> Result<f32, LayoutError> {
+        crate::tests::TestTextSystem.caret_offset(text, font, index)
+    }
     fn shape(&mut self, text: &str, _font: FontKey) -> Result<LineLayout, LayoutError> {
         let mut glyphs = Vec::new();
         let mut x = 0.0;
