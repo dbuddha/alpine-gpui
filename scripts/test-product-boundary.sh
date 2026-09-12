@@ -122,4 +122,27 @@ for fixture in valid invalid; do
     fi
 done
 
+# Cargo's human-facing color setting must not affect the parsed closure, and
+# an upstream failure must propagate even when Cargo printed a valid closure.
+mkdir -p "$fixture_dir/cargo-bin"
+cat > "$fixture_dir/cargo-bin/cargo" <<'CARGO'
+#!/bin/sh
+[ "$1 $2 $3" = 'tree --color never' ] || exit 73
+cat "$ALPINE_BOUNDARY_TEST_CLOSURE"
+exit "$ALPINE_BOUNDARY_TEST_EXIT"
+CARGO
+chmod +x "$fixture_dir/cargo-bin/cargo"
+for status in 0 42; do
+    result=0
+    CARGO_TERM_COLOR=always PATH="$fixture_dir/cargo-bin:$PATH" \
+        ALPINE_BOUNDARY_TEST_CLOSURE="$PWD/assurance/alpine-studio-dependencies.txt" \
+        ALPINE_BOUNDARY_TEST_EXIT=$status ALPINE_PRODUCT_SOURCE_INPUT='' \
+        ALPINE_PRODUCT_FEATURE_INPUT='' ALPINE_PRODUCT_PATH_INPUT='' \
+        scripts/check-product-boundary.sh > "$fixture_dir/cargo-$status.log" 2>&1 || result=$?
+    [ "$result" -eq "$status" ] || {
+        cat "$fixture_dir/cargo-$status.log" >&2
+        echo "product boundary lost Cargo status $status (got $result)" >&2; exit 1
+    }
+done
+
 printf 'Alpine Studio product boundary tests passed\n'

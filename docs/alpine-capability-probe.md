@@ -199,6 +199,9 @@ current-Alpine, pinned GPUI and CPU readbacks match. The fixture is only 64x32,
 seven glyphs and four quads. It proves a minimal usable comparison path; it is
 not representative editor, text-shaping, memory or latency evidence.
 
+The restored `tee` failure propagation exposed ANSI-colored Cargo tree output
+that the boundary parser mistook for dependency drift. The parser now requests
+colorless output and preserves upstream Cargo failure before normalization.
 The CI correction preserves product-boundary failures through `tee` and skips
 code builds only for a conservative Markdown-only change set. Regression fixtures
 reject failed required native jobs and invalid selection. Full local policy,
