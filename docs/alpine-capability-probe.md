@@ -218,3 +218,32 @@ guard because Python validation generated cache files. Redirect those outputs
 under `.lab/`; keep the guard. Neither an attempted CI optimization nor the smoke
 match accepts block 2. Physical presentation and the human checkpoint still block
 comparator expansion.
+
+## Resumed readiness verification, 2026-09-12
+
+Lab PR 31 is merged at `8a56be8264b7947f73ca7c8ff0980571775c4399`.
+Its [PR run](https://github.com/dbuddha/alpine-zed-lab/actions/runs/34707549351)
+passed in 14m02s including queueing. Packaging selects the shader from the current
+Cargo build's exact GPUI output directory and verifies its bytes in the sampler,
+instead of comparing unrelated cache outputs. Main publication and physical
+bundle admission are separate gates from that PR result.
+
+The release probe at source `462386819d2cb63fe0b5c2f502e3029f1e4aa501` fixes
+inverted native accessibility coordinates. Its eight immutable files verify in
+`target/readiness-ax-fixed-20260912`. The external AX snapshot places the tab at
+screen y=442, matching the visible content top; main previously reported y=958.
+The editor remains at y=466. External tab targeting succeeds, while external
+editor targeting still reports offscreen. Coordinate clicking, Find query
+replacement, text entry and undo were observed; real rust-analyzer diagnostics
+are visible. This does not qualify full assistive-technology behavior.
+
+The platform native geometry regression, policy and Clippy checks pass. The
+first full native run failed the Studio assertion requiring one focused AX node
+(observed zero); its output is retained in
+`target/native-acceptance/hosted-all.d1Bp70`. An unchanged assertion with added
+focus-epoch diagnostics passed the full rerun in
+`target/native-acceptance/hosted-all.maHjiC`. Review identified a possible stale
+initial focus epoch in fixture setup, not a demonstrated coordinate regression.
+Treat this as an unresolved test-reliability concern, not a fixed focus defect.
+Physical presentation timing and the human IME/VoiceOver checkpoint remain open;
+block 2 is not accepted and benchmark expansion has not begun.
