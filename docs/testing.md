@@ -26,6 +26,24 @@ changes or failures justify it. The full script also exercises technical tooling
 workspace tests, native-compatible tests, doctests and rustdoc. Review its output;
 expected negative fixtures are not failing checks.
 
+The full script compiles the native Studio harness on Apple Silicon but does not
+execute its native journeys. Ordinary Cargo tests leave these targets disabled.
+Run native acceptance explicitly:
+
+```sh
+scripts/check-native.sh physical shipping
+scripts/check-native.sh physical all
+scripts/check-native.sh hosted all
+```
+
+`shipping` exercises the real executable; `all` also runs Studio, macOS platform,
+Metal and runtime tests with native validation enabled. `hosted` selects the
+hosted-direct evidence contract, not physical acceptance. The command retains
+output under `target/native-acceptance/`, propagates failures and requires the
+Studio harness's completion receipt. A missing receipt is a failure, not a pass.
+Use `physical` on an undisturbed target Mac. These commands do not claim release
+performance or replace a physical keyboard/VoiceOver check.
+
 ## Hosted acceptance
 
 Ordinary CI selects native/portable checks from source changes and fails `ci-pass`

@@ -24,6 +24,9 @@ intensity and measured bandwidth/throughput as a roofline-style diagnostic, not
 marketing peak rates. Include queueing and synchronization outside the kernel.
 Define whether a byte count is logical payload, capacity, copied bytes or physical
 residency before comparing memory.
+For the current memory-first probe, preserve responsiveness floors and account for
+retained work and relevant child processes. A smaller replay with omitted text,
+accessibility or background work is not an equivalent lower-memory implementation.
 
 Read the [editor decision table](references/editor-algorithms.md) when choosing a
 data structure. Keep an independent oracle and adversarial corpus. A faster

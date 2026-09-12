@@ -1,8 +1,10 @@
 # Alpine engineering
 
-Alpine Studio is a local-only Apple Silicon editor built on Alpine GPUI and
-Direct Metal. Keep changes focused; do not grow a general GPUI clone, network
-service or plugin platform.
+Alpine targets an Apple Silicon macOS workspace for a terminal, Alpine Editor,
+database views and an agent dock. The current executable is still `alpine-studio`;
+only the local editor exists. The [capability probe](docs/alpine-capability-probe.md)
+defines the active scope: native readiness, then equivalent memory and latency
+experiments. Do not expand a replay into a full integration or a general GPUI clone.
 
 ## Working rules
 
@@ -42,6 +44,8 @@ service or plugin platform.
 ```sh
 cargo run --locked -p alpine-studio
 cargo test --locked -p <affected-crate>
+scripts/check-native.sh physical shipping # real native shipping smoke
+scripts/check-native.sh hosted all # hosted-native behavior, not physical acceptance
 cargo fmt --all -- --check
 scripts/check.sh # full local gate when warranted by scope
 ```
@@ -56,3 +60,5 @@ Load support only when the task reaches its domain. Documentation needs no skill
 
 Add standing rules only for recurring, non-obvious, actionable mistakes. Keep
 research conclusions in topic notes and implementation detail near its code.
+Archived recovery plans and parked branch instructions are historical context;
+they do not restore retired hierarchy, Wiki or skill-evaluation requirements.

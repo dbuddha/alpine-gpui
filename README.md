@@ -12,10 +12,16 @@ with additional lessons drawn from GPUI-CE, `gpui-component`, WGPUI, the
 independent implementation, not a fork or source-compatible distribution. It
 is not affiliated with or endorsed by Zed Industries.
 
-The flagship target is Apple Silicon running macOS 15 or newer, using a direct
-Metal backend. Direct Vulkan with Wayland on Linux and direct D3D12 with Win32
-on Windows are later directions. Cross-platform contracts must preserve native
-specialization rather than reduce Metal to a least-common-denominator API.
+The product target is Apple Silicon running macOS 15 or newer, using Direct
+Metal. Linux and Windows currently test portable contracts; native backends for
+those systems are outside the active plan.
+
+The ambition is one keyboard-first, accessible workspace containing a terminal,
+Alpine Editor, database views and an agent dock. Only the editor prototype exists
+today, with the executable and source paths still named `alpine-studio`. The
+[capability probe](docs/alpine-capability-probe.md) first establishes native
+readiness, then tests a memory advantage with responsiveness floors against
+matched implementations. Superiority is an unproven hypothesis.
 
 ## Version 1 boundaries
 
@@ -67,11 +73,16 @@ stabilization, signing, notarization and release support remain later work.
 
 ## Development and project state
 
-Run the repository acceptance gate:
+Run the full deterministic and tooling gate:
 
 ```sh
 scripts/check.sh
 ```
+
+Native execution is separate: `scripts/check-native.sh physical shipping` runs
+the shipping smoke; `scripts/check-native.sh physical all` runs the broader
+native suite. Neither ordinary workspace tests nor hosted CI prove physical
+presentation or daily-driver readiness.
 
 Build the canonical unsigned private-dogfood application from a clean revision:
 

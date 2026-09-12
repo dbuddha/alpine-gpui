@@ -724,7 +724,9 @@ if [ -n "$workflow_files" ]; then
     fi
 fi
 
-manifest_files=$(find . -name Cargo.toml -not -path './target/*' -print)
+# Prune the build tree instead of traversing every cached file and then filtering.
+# Keep the same source-manifest inventory, including untracked source manifests.
+manifest_files=$(find . -path './target' -prune -o -name Cargo.toml -print)
 if [ -n "$manifest_files" ] && grep -nE 'git[[:space:]]*=[[:space:]]*"https?://' $manifest_files >/dev/null; then
     fail 'shipping Cargo manifests may not contain Git dependencies'
     grep -nE 'git[[:space:]]*=[[:space:]]*"https?://' $manifest_files >&2 || true
