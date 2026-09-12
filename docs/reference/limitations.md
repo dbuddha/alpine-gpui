@@ -5,11 +5,16 @@ not qualified or distributed as a public daily driver. Physical typing latency,
 VoiceOver, sustained dogfood and residency still require target-Mac acceptance.
 Signing, notarization, updates and public release support remain future work.
 
-The current scope excludes collaboration, hosted AI, accounts, cloud sync, remote
+The current implementation excludes collaboration, hosted AI, accounts, cloud sync, remote
 development, telemetry, executable plugins, an extension marketplace, a debugger,
 integrated terminal/task/Git UI, and multi-window qualification. Use external
 terminal and Git tools. Linux and Windows test portable contracts; they do not
 provide native Studio implementations.
+
+The [capability probe](../alpine-capability-probe.md) records the approved macOS
+terminal/editor/database/agent-workspace ambition. Its terminal, grid and dock
+replays are non-shipping experiments, not implemented integrations. Network and
+Unix-socket shipping restrictions remain until a scoped connectivity change.
 
 Alpine does not ship GPUI, WGPU, a general async runtime, or a general reactive
 entity/component framework. Keep bounded local ownership and Direct Metal.

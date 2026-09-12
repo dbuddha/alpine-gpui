@@ -1,6 +1,6 @@
 ---
 name: alpine-studio-gpui-engineer
-description: Deliver Alpine Studio and Alpine GPUI through bounded Rust changes, production editor semantics, measured performance, and evidence-backed macOS acceptance.
+description: Implement and debug Alpine Editor and Alpine GPUI using bounded Rust ownership, production editor semantics and scoped macOS acceptance. The executable remains alpine-studio.
 ---
 
 # Alpine Studio and GPUI engineering
@@ -17,9 +17,11 @@ outcome. Read the repository operating guide; use historical plans only as conte
   unrelated onscreen timestamp or Accessibility gate.
 - Choose one bounded change and state its failure, hypothesis, regression check
   and observable outcome. Tooling must remove a concrete execution or evidence gap.
-- Prioritize correctness, responsiveness, memory, then delivery. Keep Direct
-  Metal, bounded ownership and queues, local-only scope, and explicit scene
-  ordering. No shipping GPUI/WGPU, game engine, plugin or network-service scope.
+- Preserve correctness and accessibility. The current probe prioritizes lower
+  memory with responsiveness floors; consult its workload before optimizing.
+  Keep Direct Metal, bounded ownership and explicit scene ordering. Terminal,
+  database and agent replays do not authorize shipping integrations, dependencies
+  or network services. Keep future product ambition separate from implemented scope.
 - A sub-millisecond mutation stage with tens of milliseconds to presentation
   does not justify rewriting the rope, renderer or reactive runtime. Route
   timestamp validity and scheduling to `$apple-metal-performance-engineer`.
@@ -54,7 +56,7 @@ Hosted tests, physical interaction, residency and dogfood have different ceiling
 
 Report implemented, reproduced, calibrated, optimized, qualified and product
 accepted separately. End a change with the artifact, observed result, omissions
-and next leaf. Keep outputs proportional to scope: a small task needs a bounded
+and next useful action. Keep outputs proportional to scope: a small task needs a bounded
 answer and relevant evidence, not a new general plan or unrelated changes.
 For CI work, inspect selected jobs and exact source/base identities; distinguish
 queue time, execution and retries. Preserve native execution and aggregate failure
@@ -62,3 +64,5 @@ propagation. Specialized assurance is opt-in and does not substitute for behavio
 tests. Review the diff for missed failure paths and misleading acceptance claims.
 Before merging, verify live branch protection and terminal required checks for the
 tested source and base. After merge, inspect the actual main run.
+Use `scripts/check-native.sh` when native execution is required. Default workspace
+tests can compile configuration-disabled native targets without exercising them.

@@ -2,6 +2,7 @@
 
 Start with the topic you need:
 
+- [Current capability probe](alpine-capability-probe.md) and [workspace consolidation](alpine-consolidation.md).
 - [Build and run](development.md).
 - [Testing and acceptance](testing.md).
 - [Architecture map](../ARCHITECTURE.md), with links to detailed invariants.

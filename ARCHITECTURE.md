@@ -3,6 +3,8 @@
 Alpine Studio is a local-only Apple Silicon macOS editor. Alpine GPUI supplies
 its safe Rust contracts, bounded runtime and Direct Metal native backend.
 Read only the topic relevant to the change; source and tests establish behavior.
+The broader product ambition and current experiment are separated in the
+[capability probe](docs/alpine-capability-probe.md); this map describes existing code.
 
 | Owner | Responsibility |
 | --- | --- |

@@ -20,6 +20,9 @@ Check clock domains, units, omissions and caller boundaries. GPU work overlaps
 host waits: neither add them nor label their difference "driver overhead".
 Zero or absent actual presentation is missing evidence, not a timestamp to replace
 with callback arrival, a target deadline or GPU completion.
+Before a new physical experiment, inspect the existing presentation investigation
+and require a discriminating hypothesis. A hosted-native pass cannot qualify the
+physical Mac, and missing presentation evidence alone does not prove a blank window.
 
 Calibrate ordinary/instrumented A/A and use matched complete endpoints before
 selecting an optimization. Preserve unfavorable full submit-readback while adding

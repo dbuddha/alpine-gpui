@@ -30,8 +30,10 @@ frame-local element phases, line-layout reuse, glyph admission, batching and
 bounded GPU buffers when the Alpine workload consumes them. Do not port GPUI's
 entity graph, registries or compatibility surface solely for resemblance.
 
-Exclude collaboration clocks, remote operations, AI/accounts, telemetry, plugin
-hosting and other rejected product scope. Removing a feature does not prove lower
+Keep collaboration, hosted AI/accounts, telemetry and plugin hosting outside the
+current experiment. A local agent dock or terminal replay is distinct from these
+services; consult the current product scope rather than old rejection lists.
+Removing a feature does not prove lower
 latency or memory: inspect what work/resources actually disappear. Preserve the
 accepted local editing, IME, accessibility and durability semantics.
 

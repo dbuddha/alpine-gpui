@@ -62,6 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         == Some(std::ffi::OsStr::new("shipping"))
     {
         qualify_shipping_executable()?;
+        println!("alpine-native-process-complete scope=shipping");
         return Ok(());
     }
     qualify_shipping_executable()?;
@@ -85,6 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(search.matched_bytes(), 6);
     assert_eq!(search.released_owner_classes(), 9);
     qualify_accessibility_child()?;
+    println!("alpine-native-process-complete scope=all");
     Ok(())
 }
 
@@ -578,4 +580,10 @@ fn run_recovery_launch_process(
 }
 
 #[cfg(not(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64")))]
-fn main() {}
+fn main() {
+    assert!(
+        std::env::var_os("ALPINE_REQUIRE_NATIVE_VALIDATION").is_none()
+            && std::env::var_os("ALPINE_STUDIO_NATIVE_PROCESS_SCOPE").is_none(),
+        "native execution requested, but alpine_native_validation on Apple Silicon macOS is missing"
+    );
+}
