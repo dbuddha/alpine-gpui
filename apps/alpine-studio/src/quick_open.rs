@@ -95,6 +95,7 @@ pub(crate) enum QuickOpenError {
     QueryTooLong { actual: usize, limit: usize },
     AllocationFailed,
     MissingSelection,
+    InvalidSelection,
 }
 
 impl fmt::Display for QuickOpenError {
@@ -112,6 +113,7 @@ impl fmt::Display for QuickOpenError {
                 )
             }
             Self::AllocationFailed => formatter.write_str("quick-open allocation failed"),
+            Self::InvalidSelection => formatter.write_str("quick-open selection is invalid"),
             Self::MissingSelection => formatter.write_str("quick open has no selected result"),
         }
     }
@@ -264,7 +266,7 @@ pub(crate) struct QuickOpenState {
     inventory: Option<Arc<Inventory>>,
     result: Option<QueryResult>,
     query: String,
-    composition: Option<Box<str>>,
+    pub(crate) edit: super::field_edit::FieldEdit,
     selected: usize,
     first_visible: usize,
     needs_inventory: bool,
@@ -281,6 +283,18 @@ impl Default for QuickOpenState {
     }
 }
 
+impl From<super::field_edit::EditError> for QuickOpenError {
+    fn from(error: super::field_edit::EditError) -> Self {
+        match error {
+            super::field_edit::EditError::InvalidSelection => Self::InvalidSelection,
+            super::field_edit::EditError::TooLong { actual, limit } => {
+                Self::QueryTooLong { actual, limit }
+            }
+            super::field_edit::EditError::AllocationFailed => Self::AllocationFailed,
+        }
+    }
+}
+
 impl QuickOpenState {
     fn with_limits(limits: QuickOpenLimits) -> Self {
         Self {
@@ -291,7 +305,7 @@ impl QuickOpenState {
             inventory: None,
             result: None,
             query: String::new(),
-            composition: None,
+            edit: super::field_edit::FieldEdit::default(),
             selected: 0,
             first_visible: 0,
             needs_inventory: false,
@@ -321,7 +335,7 @@ impl QuickOpenState {
         }
         self.open = true;
         self.error = None;
-        self.composition = None;
+        self.edit.reset_focus();
         self.selected = 0;
         self.first_visible = 0;
         if self.workspace != Some(workspace) {
@@ -348,61 +362,87 @@ impl QuickOpenState {
             return false;
         }
         self.open = false;
-        self.composition = None;
+        self.edit.reset_focus();
         self.pending_inventory = None;
         self.pending_query = None;
         true
     }
 
-    pub(crate) fn begin_composition(&mut self) -> bool {
-        if self.composition.is_some() {
-            false
-        } else {
-            self.composition = Some(Box::default());
-            true
-        }
+    pub(crate) fn query(&self) -> &str {
+        &self.query
     }
 
+    pub(crate) fn edit_parts(&mut self) -> (&str, &mut super::field_edit::FieldEdit) {
+        (&self.query, &mut self.edit)
+    }
+
+    pub(crate) fn begin_composition(&mut self) -> bool {
+        self.edit.begin_composition()
+    }
+
+    #[cfg(test)]
     pub(crate) fn update_composition(&mut self, text: &str) -> Result<bool, QuickOpenError> {
-        Self::check_query_len(self.query.len().saturating_add(text.len()))?;
-        let changed = self.composition.as_deref() != Some(text);
-        self.composition = Some(text.into());
+        self.update_composition_selected(
+            text,
+            u32::try_from(text.encode_utf16().count())
+                .map_err(|_| QuickOpenError::InvalidSelection)?,
+            0,
+        )
+    }
+
+    pub(crate) fn update_composition_selected(
+        &mut self,
+        text: &str,
+        start: u32,
+        length: u32,
+    ) -> Result<bool, QuickOpenError> {
+        let changed =
+            self.edit
+                .update_composition(&self.query, text, start, length, MAX_QUERY_BYTES)?;
         Ok(changed)
     }
 
     pub(crate) fn cancel_composition(&mut self) -> bool {
-        self.composition.take().is_some()
+        self.edit.cancel_composition()
     }
 
     pub(crate) fn commit_text(&mut self, text: &str) -> Result<bool, QuickOpenError> {
-        let length =
-            self.query
-                .len()
-                .checked_add(text.len())
-                .ok_or(QuickOpenError::QueryTooLong {
-                    actual: usize::MAX,
-                    limit: MAX_QUERY_BYTES,
-                })?;
-        Self::check_query_len(length)?;
-        self.composition = None;
-        if text.is_empty() {
-            return Ok(false);
-        }
-        self.query
-            .try_reserve(text.len())
-            .map_err(|_| QuickOpenError::AllocationFailed)?;
-        self.query.push_str(text);
-        self.query_changed()?;
-        Ok(true)
+        self.commit_text_at(text, text.len())
+    }
+
+    pub(crate) fn commit_text_at(
+        &mut self,
+        text: &str,
+        caret: usize,
+    ) -> Result<bool, QuickOpenError> {
+        let prepared = self
+            .edit
+            .prepare(&self.query, text, caret, MAX_QUERY_BYTES)?;
+        self.apply_edit(prepared)
     }
 
     pub(crate) fn delete_backward(&mut self) -> Result<bool, QuickOpenError> {
-        self.composition = None;
-        if self.query.pop().is_none() {
-            return Ok(false);
+        self.delete(false)
+    }
+
+    pub(crate) fn delete(&mut self, forward: bool) -> Result<bool, QuickOpenError> {
+        let prepared = self
+            .edit
+            .prepare_delete(&self.query, forward, MAX_QUERY_BYTES)?;
+        self.apply_edit(prepared)
+    }
+
+    pub(crate) fn apply_edit(
+        &mut self,
+        mut prepared: super::field_edit::Prepared,
+    ) -> Result<bool, QuickOpenError> {
+        let changed = self.query != prepared.value;
+        if changed {
+            self.query_changed()?;
         }
-        self.query_changed()?;
-        Ok(true)
+        self.query = std::mem::take(&mut prepared.value);
+        self.edit.accept(prepared, changed);
+        Ok(changed)
     }
 
     pub(crate) fn take_request(&mut self, root: &Path) -> Option<QuickOpenRequest> {
@@ -589,7 +629,7 @@ impl QuickOpenState {
     }
 
     pub(crate) fn display_text(&self) -> Result<String, QuickOpenError> {
-        let composition = self.composition.as_deref().unwrap_or_default();
+        let projected = self.edit.projected_value(&self.query)?;
         let count = self.result.as_ref().map_or(0, |result| result.paths.len());
         let total = self
             .inventory
@@ -629,7 +669,7 @@ impl QuickOpenState {
             .try_reserve(
                 self.query
                     .len()
-                    .saturating_add(composition.len())
+                    .saturating_add(projected.len())
                     .saturating_add(suffix.len())
                     .saturating_add(inventory_evidence.len())
                     .saturating_add(result_evidence.len())
@@ -638,8 +678,7 @@ impl QuickOpenState {
             .map_err(|_| QuickOpenError::AllocationFailed)?;
         write!(
             display,
-            "Quick Open: {}{} ({count}/{total}){inventory_evidence}{result_evidence}{suffix}",
-            self.query, composition,
+            "Quick Open: {projected} ({count}/{total}){inventory_evidence}{result_evidence}{suffix}",
         )
         .map_err(|_| QuickOpenError::AllocationFailed)?;
         Ok(display)
@@ -660,11 +699,6 @@ impl QuickOpenState {
                 result.identity,
             )
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn query(&self) -> &str {
-        &self.query
     }
 
     #[cfg(test)]
@@ -690,17 +724,6 @@ impl QuickOpenState {
             .ok_or(QuickOpenError::GenerationExhausted)?;
         self.pending_query = None;
         Ok(())
-    }
-
-    fn check_query_len(length: usize) -> Result<(), QuickOpenError> {
-        if length > MAX_QUERY_BYTES {
-            Err(QuickOpenError::QueryTooLong {
-                actual: length,
-                limit: MAX_QUERY_BYTES,
-            })
-        } else {
-            Ok(())
-        }
     }
 
     fn record_error(&mut self, error: &QuickOpenError) {

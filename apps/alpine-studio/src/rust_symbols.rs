@@ -18,7 +18,8 @@ pub(crate) const MAX_SYMBOL_RETAINED_BYTES: usize = 512 * 1_024;
 pub(crate) const MAX_VISIBLE_SYMBOL_ROWS: usize = 12;
 const MAX_SYMBOL_BATCH_RETAINED_BYTES: usize = MAX_SYMBOL_RETAINED_BYTES
     - MAX_SYMBOL_ITEMS * size_of::<SymbolMatch>()
-    - 2 * MAX_SYMBOL_QUERY_BYTES;
+    - 2 * MAX_SYMBOL_QUERY_BYTES
+    - super::field_edit::history_budget(MAX_SYMBOL_QUERY_BYTES);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SymbolRequestKind {
@@ -364,7 +365,7 @@ pub(crate) struct SymbolPickerReport {
 pub(crate) struct SymbolPicker {
     kind: SymbolRequestKind,
     query: String,
-    composition: Option<String>,
+    pub(crate) edit: super::field_edit::FieldEdit,
     query_revision: u64,
     batch: SymbolBatch,
     matches: Vec<SymbolMatch>,
@@ -373,12 +374,22 @@ pub(crate) struct SymbolPicker {
     peak_retained_bytes: usize,
 }
 
+impl From<super::field_edit::EditError> for SymbolError {
+    fn from(error: super::field_edit::EditError) -> Self {
+        match error {
+            super::field_edit::EditError::InvalidSelection => Self::InvalidComposition,
+            super::field_edit::EditError::TooLong { .. } => Self::QueryTooLong,
+            super::field_edit::EditError::AllocationFailed => Self::AllocationFailed,
+        }
+    }
+}
+
 impl SymbolPicker {
     pub(crate) fn new(kind: SymbolRequestKind) -> Self {
         Self {
             kind,
             query: String::new(),
-            composition: None,
+            edit: super::field_edit::FieldEdit::default(),
             query_revision: 1,
             batch: SymbolBatch::empty(),
             matches: Vec::new(),
@@ -405,7 +416,7 @@ impl SymbolPicker {
         let retained_bytes = batch
             .retained_bytes()
             .saturating_add(self.query.capacity())
-            .saturating_add(self.composition.as_ref().map_or(0, String::capacity))
+            .saturating_add(self.edit.retained_bytes())
             .saturating_add(matches.capacity().saturating_mul(size_of::<SymbolMatch>()));
         if retained_bytes > MAX_SYMBOL_RETAINED_BYTES {
             return Err(SymbolError::RetentionExceeded);
@@ -427,94 +438,71 @@ impl SymbolPicker {
         changed
     }
 
+    pub(crate) fn edit_parts(&mut self) -> (&str, &mut super::field_edit::FieldEdit) {
+        (&self.query, &mut self.edit)
+    }
+
     pub(crate) fn commit_text(&mut self, text: &str) -> Result<bool, SymbolError> {
-        let next = self
-            .query
-            .len()
-            .checked_add(text.len())
-            .ok_or(SymbolError::QueryTooLong)?;
-        if next > MAX_SYMBOL_QUERY_BYTES || text.chars().any(char::is_control) {
+        self.commit_text_at(text, text.len())
+    }
+
+    pub(crate) fn commit_text_at(&mut self, text: &str, caret: usize) -> Result<bool, SymbolError> {
+        if text.chars().any(char::is_control) {
             return Err(SymbolError::QueryTooLong);
         }
-        if text.is_empty() {
-            return Ok(false);
-        }
-        let mut query = bounded_string(next)?;
-        query.push_str(&self.query);
-        query.push_str(text);
-        self.replace_query(query)?;
-        Ok(true)
+        let prepared = self
+            .edit
+            .prepare(&self.query, text, caret, MAX_SYMBOL_QUERY_BYTES)?;
+        self.apply_edit(prepared)
     }
 
     pub(crate) fn delete_backward(&mut self) -> Result<bool, SymbolError> {
-        if self.query.is_empty() {
-            return Ok(false);
-        }
-        let mut query = bounded_string(self.query.len())?;
-        query.push_str(&self.query);
-        let removed = query.pop();
-        debug_assert!(removed.is_some());
-        self.replace_query(query)?;
-        Ok(true)
+        self.delete(false)
+    }
+
+    pub(crate) fn delete(&mut self, forward: bool) -> Result<bool, SymbolError> {
+        let prepared = self
+            .edit
+            .prepare_delete(&self.query, forward, MAX_SYMBOL_QUERY_BYTES)?;
+        self.apply_edit(prepared)
     }
 
     pub(crate) fn begin_composition(&mut self) -> bool {
-        if self.composition.is_some() {
-            return false;
-        }
-        self.composition = Some(String::new());
-        true
+        self.edit.begin_composition()
     }
 
     pub(crate) fn update_composition(
         &mut self,
         text: &str,
-        selected_start_utf16: u32,
-        selected_length_utf16: u32,
+        start: u32,
+        length: u32,
     ) -> Result<bool, SymbolError> {
-        if self.composition.is_none() {
+        if !self.edit.is_composing() || text.chars().any(char::is_control) {
+            self.edit.cancel_composition();
             return Err(SymbolError::InvalidComposition);
         }
-        let selected_end = selected_start_utf16
-            .checked_add(selected_length_utf16)
-            .ok_or(SymbolError::InvalidComposition)?;
-        let units = u32::try_from(text.encode_utf16().count())
-            .map_err(|_| SymbolError::InvalidComposition)?;
-        if selected_end > units
-            || self.query.len().saturating_add(text.len()) > MAX_SYMBOL_QUERY_BYTES
-            || text.chars().any(char::is_control)
-        {
-            return Err(SymbolError::InvalidComposition);
-        }
-        let changed = self.composition.as_deref() != Some(text);
-        if !changed {
-            return Ok(false);
-        }
-        let mut composition = bounded_string(text.len())?;
-        composition.push_str(text);
-        let previous = self.composition.replace(composition);
+        let changed = self
+            .edit
+            .update_composition(&self.query, text, start, length, MAX_SYMBOL_QUERY_BYTES)
+            .map_err(|error| match error {
+                super::field_edit::EditError::TooLong { .. } => SymbolError::InvalidComposition,
+                other => other.into(),
+            })?;
         if self.retained_bytes() > MAX_SYMBOL_RETAINED_BYTES {
-            self.composition = previous;
+            self.edit.cancel_composition();
             return Err(SymbolError::RetentionExceeded);
         }
         self.update_peak();
-        Ok(true)
+        Ok(changed)
     }
 
     pub(crate) fn cancel_composition(&mut self) -> bool {
-        self.composition.take().is_some()
+        self.edit.cancel_composition()
     }
 
+    #[cfg(test)]
     pub(crate) fn display_text(&self) -> Result<String, SymbolError> {
-        let composition = self.composition.as_deref().unwrap_or_default();
-        let bytes = self.query.len().saturating_add(composition.len());
-        if bytes > MAX_SYMBOL_QUERY_BYTES {
-            return Err(SymbolError::QueryTooLong);
-        }
-        let mut value = bounded_string(bytes)?;
-        value.push_str(&self.query);
-        value.push_str(composition);
-        Ok(value)
+        Ok(self.edit.projected_value(&self.query)?)
     }
 
     pub(crate) fn navigate(&mut self, delta: isize) -> bool {
@@ -581,38 +569,51 @@ impl SymbolPicker {
             peak_retained_bytes: self.peak_retained_bytes,
             omitted: self.batch.omitted(),
             query_bytes: self.query.len(),
-            composition_bytes: self.composition.as_deref().map_or(0, str::len),
+            composition_bytes: self.edit.composition().map_or(0, str::len),
             query_revision: self.query_revision,
         }
     }
 
-    fn replace_query(&mut self, query: String) -> Result<(), SymbolError> {
-        let revision = self
-            .query_revision
-            .checked_add(1)
-            .ok_or(SymbolError::RevisionExhausted)?;
-        let matches = rank_matches(&self.batch, &query)?;
-        let previous_query = std::mem::replace(&mut self.query, query);
-        let previous_composition = self.composition.take();
-        let previous_matches = std::mem::replace(&mut self.matches, matches);
-        if self.retained_bytes() > MAX_SYMBOL_RETAINED_BYTES {
-            self.query = previous_query;
-            self.composition = previous_composition;
-            self.matches = previous_matches;
+    pub(crate) fn apply_edit(
+        &mut self,
+        mut prepared: super::field_edit::Prepared,
+    ) -> Result<bool, SymbolError> {
+        let changed = self.query != prepared.value;
+        if !changed {
+            self.edit.accept(prepared, false);
+            self.update_peak();
+            return Ok(false);
+        }
+        let revision = if changed {
+            self.query_revision
+                .checked_add(1)
+                .ok_or(SymbolError::RevisionExhausted)?
+        } else {
+            self.query_revision
+        };
+        let matches = rank_matches(&self.batch, &prepared.value)?;
+        let retained = self.batch.retained_bytes()
+            + prepared.value.capacity()
+            + self.edit.retained_after(&prepared, changed)
+            + matches.capacity() * size_of::<SymbolMatch>();
+        if retained > MAX_SYMBOL_RETAINED_BYTES {
             return Err(SymbolError::RetentionExceeded);
         }
+        self.query = std::mem::take(&mut prepared.value);
+        self.edit.accept(prepared, changed);
+        self.matches = matches;
         self.query_revision = revision;
         self.selected = 0;
         self.first_visible = 0;
         self.update_peak();
-        Ok(())
+        Ok(changed)
     }
 
     fn retained_bytes(&self) -> usize {
         self.batch
             .retained_bytes()
             .saturating_add(self.query.capacity())
-            .saturating_add(self.composition.as_ref().map_or(0, String::capacity))
+            .saturating_add(self.edit.retained_bytes())
             .saturating_add(
                 self.matches
                     .capacity()
@@ -629,6 +630,7 @@ const fn selection_precedes_visible(selected: usize, first_visible: usize) -> bo
     selected < first_visible
 }
 
+#[cfg(test)]
 fn bounded_string(capacity: usize) -> Result<String, SymbolError> {
     let mut value = String::new();
     value
@@ -945,7 +947,8 @@ mod tests {
         assert_eq!(
             MAX_SYMBOL_BATCH_RETAINED_BYTES
                 + MAX_SYMBOL_ITEMS * size_of::<SymbolMatch>()
-                + 2 * MAX_SYMBOL_QUERY_BYTES,
+                + 2 * MAX_SYMBOL_QUERY_BYTES
+                + super::super::field_edit::history_budget(MAX_SYMBOL_QUERY_BYTES),
             MAX_SYMBOL_RETAINED_BYTES
         );
         assert_eq!(SymbolRequestKind::Document.label(), "Rust document symbols");
@@ -1085,6 +1088,7 @@ mod tests {
         assert_eq!(picker.display_text(), Ok(exact_query));
         picker.query.clear();
         picker.query.shrink_to_fit();
+        picker.edit.reset_focus();
         assert_eq!(picker.commit_text("\n"), Err(SymbolError::QueryTooLong));
         assert_eq!(
             picker.commit_text(&"x".repeat(MAX_SYMBOL_QUERY_BYTES + 1)),
@@ -1106,16 +1110,23 @@ mod tests {
             picker.update_composition("\n", 0, 0),
             Err(SymbolError::InvalidComposition)
         );
+        assert!(picker.begin_composition());
         assert_eq!(picker.update_composition("x", 1, 0), Ok(true));
         assert_eq!(picker.update_composition("x", 1, 0), Ok(false));
         picker.query = "x".repeat(MAX_SYMBOL_QUERY_BYTES);
+        picker.edit.reset_focus();
+        assert!(picker.begin_composition());
         assert_eq!(
             picker.update_composition("y", 1, 0),
             Err(SymbolError::InvalidComposition)
         );
-        assert_eq!(picker.display_text(), Err(SymbolError::QueryTooLong));
+        assert_eq!(
+            picker.display_text().map(|text| text.len()),
+            Ok(MAX_SYMBOL_QUERY_BYTES)
+        );
         picker.query.clear();
-        assert!(picker.cancel_composition());
+        picker.edit.reset_focus();
+        assert!(!picker.cancel_composition());
         assert!(!picker.cancel_composition());
 
         let mut exact_composed_query = SymbolPicker::new(SymbolRequestKind::Workspace);
@@ -1156,7 +1167,7 @@ mod tests {
             over_retention.update_composition("xy", 2, 0),
             Err(SymbolError::RetentionExceeded)
         );
-        assert_eq!(over_retention.composition.as_deref(), Some(""));
+        assert_eq!(over_retention.edit.composition(), None);
 
         picker.query_revision = u64::MAX;
         assert_eq!(picker.commit_text("x"), Err(SymbolError::RevisionExhausted));
@@ -1169,8 +1180,9 @@ mod tests {
             picker.update_composition("x", 1, 0),
             Err(SymbolError::RetentionExceeded)
         );
-        assert_eq!(picker.composition.as_deref(), Some(""));
-        assert!(picker.cancel_composition());
+        assert_eq!(picker.edit.composition(), None);
+        assert!(!picker.cancel_composition());
+        picker.edit = super::super::field_edit::FieldEdit::default();
         picker.batch = SymbolBatch {
             items: Box::new([]),
             retained_bytes: MAX_SYMBOL_RETAINED_BYTES,
@@ -1180,7 +1192,8 @@ mod tests {
         picker.matches.shrink_to_fit();
         picker.query.clear();
         picker.query.shrink_to_fit();
-        assert_eq!(picker.replace_query(String::new()), Ok(()));
+        picker.edit.reset_focus();
+        assert_eq!(picker.admit(picker.batch.clone()), Ok(true));
         assert_eq!(
             picker.report().peak_retained_bytes,
             MAX_SYMBOL_RETAINED_BYTES

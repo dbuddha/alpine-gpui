@@ -272,7 +272,7 @@ impl Error for CommandPaletteError {}
 pub(crate) struct CommandPalette {
     open: bool,
     query: String,
-    composition: Option<String>,
+    pub(crate) edit: super::field_edit::FieldEdit,
     matches: Vec<CommandMatch>,
     selected: usize,
     first_visible: usize,
@@ -288,6 +288,18 @@ pub(crate) struct CommandPalette {
     fail_next_open: bool,
     #[cfg(test)]
     fail_next_query_update: bool,
+}
+
+impl From<super::field_edit::EditError> for CommandPaletteError {
+    fn from(error: super::field_edit::EditError) -> Self {
+        match error {
+            super::field_edit::EditError::InvalidSelection => Self::InvalidComposition,
+            super::field_edit::EditError::TooLong { actual, limit } => {
+                Self::QueryTooLong { actual, limit }
+            }
+            super::field_edit::EditError::AllocationFailed => Self::AllocationFailed,
+        }
+    }
 }
 
 impl CommandPalette {
@@ -306,7 +318,7 @@ impl CommandPalette {
         let matches = rank_matches("", context)?;
         self.open = true;
         self.query = String::new();
-        self.composition = None;
+        self.edit = super::field_edit::FieldEdit::default();
         self.matches = matches;
         self.selected = 0;
         self.first_visible = 0;
@@ -323,45 +335,33 @@ impl CommandPalette {
         true
     }
 
+    pub(crate) fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub(crate) fn edit_parts(&mut self) -> (&str, &mut super::field_edit::FieldEdit) {
+        (&self.query, &mut self.edit)
+    }
+
     pub(crate) fn begin_composition(&mut self) -> bool {
-        if !self.open || self.composition.is_some() {
-            false
-        } else {
-            self.composition = Some(String::new());
-            true
-        }
+        self.open && self.edit.begin_composition()
     }
 
     pub(crate) fn update_composition(
         &mut self,
         text: &str,
-        selected_start_utf16: u32,
-        selected_length_utf16: u32,
+        start: u32,
+        length: u32,
     ) -> Result<bool, CommandPaletteError> {
-        let selected_end = selected_start_utf16
-            .checked_add(selected_length_utf16)
-            .ok_or(CommandPaletteError::InvalidComposition)?;
-        let text_units = u32::try_from(text.encode_utf16().count())
-            .map_err(|_| CommandPaletteError::InvalidComposition)?;
-        if selected_end > text_units {
-            return Err(CommandPaletteError::InvalidComposition);
-        }
-        Self::check_query_length(self.query.len().saturating_add(text.len()))?;
-        let changed = self.composition.as_deref() != Some(text);
-        if changed {
-            let mut composition = String::new();
-            composition
-                .try_reserve_exact(text.len())
-                .map_err(|_| CommandPaletteError::AllocationFailed)?;
-            composition.push_str(text);
-            self.composition = Some(composition);
-            self.observe_peak();
-        }
+        let changed =
+            self.edit
+                .update_composition(&self.query, text, start, length, MAX_QUERY_BYTES)?;
+        self.observe_peak();
         Ok(changed)
     }
 
     pub(crate) fn cancel_composition(&mut self) -> bool {
-        self.composition.take().is_some()
+        self.edit.cancel_composition()
     }
 
     pub(crate) fn commit_text(
@@ -369,45 +369,54 @@ impl CommandPalette {
         text: &str,
         context: CommandContext,
     ) -> Result<bool, CommandPaletteError> {
+        self.commit_text_at(text, text.len(), context)
+    }
+
+    pub(crate) fn commit_text_at(
+        &mut self,
+        text: &str,
+        caret: usize,
+        context: CommandContext,
+    ) -> Result<bool, CommandPaletteError> {
         if !self.open {
             return Ok(false);
         }
-        let next_length =
-            self.query
-                .len()
-                .checked_add(text.len())
-                .ok_or(CommandPaletteError::QueryTooLong {
-                    actual: usize::MAX,
-                    limit: MAX_QUERY_BYTES,
-                })?;
-        Self::check_query_length(next_length)?;
-        self.composition = None;
-        if text.is_empty() {
-            return Ok(false);
-        }
-        let mut query = String::new();
-        query
-            .try_reserve_exact(next_length)
-            .map_err(|_| CommandPaletteError::AllocationFailed)?;
-        query.push_str(&self.query);
-        query.push_str(text);
-        self.replace_query(query, context)
+        let prepared = self
+            .edit
+            .prepare(&self.query, text, caret, MAX_QUERY_BYTES)?;
+        self.apply_edit(prepared, context)
     }
 
     pub(crate) fn delete_backward(
         &mut self,
         context: CommandContext,
     ) -> Result<bool, CommandPaletteError> {
-        self.composition = None;
-        let mut query = String::new();
-        query
-            .try_reserve_exact(self.query.len())
-            .map_err(|_| CommandPaletteError::AllocationFailed)?;
-        query.push_str(&self.query);
-        if query.pop().is_none() {
-            return Ok(false);
+        self.delete(false, context)
+    }
+
+    pub(crate) fn delete(
+        &mut self,
+        forward: bool,
+        context: CommandContext,
+    ) -> Result<bool, CommandPaletteError> {
+        let prepared = self
+            .edit
+            .prepare_delete(&self.query, forward, MAX_QUERY_BYTES)?;
+        self.apply_edit(prepared, context)
+    }
+
+    pub(crate) fn apply_edit(
+        &mut self,
+        mut prepared: super::field_edit::Prepared,
+        context: CommandContext,
+    ) -> Result<bool, CommandPaletteError> {
+        let changed = self.query != prepared.value;
+        if changed {
+            self.replace_query(std::mem::take(&mut prepared.value), context)?;
         }
-        self.replace_query(query, context)
+        self.edit.accept(prepared, changed);
+        self.observe_peak();
+        Ok(changed)
     }
 
     pub(crate) fn refresh(&mut self, context: CommandContext) -> Result<bool, CommandPaletteError> {
@@ -500,24 +509,18 @@ impl CommandPalette {
     }
 
     pub(crate) fn display_text(&self) -> Result<String, CommandPaletteError> {
-        let composition = self.composition.as_deref().unwrap_or_default();
+        let projected = self.edit.projected_value(&self.query)?;
         let mut display = String::new();
         let required = self
             .query
             .len()
-            .saturating_add(composition.len())
+            .saturating_add(projected.len())
             .saturating_add(48);
         display
             .try_reserve(required)
             .map_err(|_| CommandPaletteError::AllocationFailed)?;
-        write!(
-            display,
-            "> {}{} | {} commands",
-            self.query,
-            composition,
-            self.matches.len()
-        )
-        .map_err(|_| CommandPaletteError::AllocationFailed)?;
+        write!(display, "> {} | {} commands", projected, self.matches.len())
+            .map_err(|_| CommandPaletteError::AllocationFailed)?;
         Ok(display)
     }
 
@@ -526,7 +529,7 @@ impl CommandPalette {
         reason = "the opt-in local diagnostic overlay will consume this tested snapshot"
     )]
     pub(crate) fn report(&self) -> CommandPaletteReport {
-        let composition_bytes = self.composition.as_deref().map_or(0, str::len);
+        let composition_bytes = self.edit.composition().map_or(0, str::len);
         CommandPaletteReport {
             query_bytes: self.query.len(),
             composition_bytes,
@@ -575,27 +578,16 @@ impl CommandPalette {
     fn release(&mut self) {
         self.open = false;
         self.query = String::new();
-        self.composition = None;
+        self.edit = super::field_edit::FieldEdit::default();
         self.matches = Vec::new();
         self.selected = 0;
         self.first_visible = 0;
     }
 
-    fn check_query_length(actual: usize) -> Result<(), CommandPaletteError> {
-        if actual > MAX_QUERY_BYTES {
-            Err(CommandPaletteError::QueryTooLong {
-                actual,
-                limit: MAX_QUERY_BYTES,
-            })
-        } else {
-            Ok(())
-        }
-    }
-
     fn retained_bytes(&self) -> usize {
         self.query
             .capacity()
-            .saturating_add(self.composition.as_ref().map_or(0, String::capacity))
+            .saturating_add(self.edit.retained_bytes())
             .saturating_add(
                 self.matches
                     .capacity()
@@ -702,6 +694,23 @@ mod tests {
     }
 
     #[test]
+    fn no_op_delete_preserves_highlight_and_history_peaks_are_reported()
+    -> Result<(), Box<dyn Error>> {
+        let mut palette = CommandPalette::default();
+        palette.open(all_available())?;
+        palette.navigate(true);
+        let selected = palette.selected;
+        assert!(!palette.delete_backward(all_available())?);
+        assert_eq!(palette.selected, selected);
+        palette.begin_composition();
+        palette.update_composition("save", 4, 0)?;
+        assert!(palette.report().peak_retained_bytes >= palette.report().retained_bytes);
+        palette.commit_text("save", all_available())?;
+        assert!(palette.report().peak_retained_bytes >= palette.report().retained_bytes);
+        Ok(())
+    }
+
+    #[test]
     fn locked_registry_query_and_memory_limits_are_exact() -> Result<(), Box<dyn Error>> {
         assert_eq!(REGISTRY.len(), 22);
         assert!(REGISTRY.len() <= MAX_COMMANDS);
@@ -775,7 +784,7 @@ mod tests {
             palette.update_composition("save", 5, 0),
             Err(CommandPaletteError::InvalidComposition)
         ));
-        assert!(palette.cancel_composition());
+        assert!(!palette.cancel_composition());
         palette.cancel();
 
         let save_only = CommandContext {

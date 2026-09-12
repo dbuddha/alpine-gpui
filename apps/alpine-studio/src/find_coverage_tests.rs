@@ -341,8 +341,8 @@ fn defensive_errors_admissions_and_display_paths_are_bounded()
     state.field = FindField::Query;
 
     state.query = "é".repeat(256);
-    state.selection = None;
-    state.composition = Some(Box::from(" composing"));
+    state.query_edit.reset_focus();
+    state.update_composition(" composing")?;
     state.record_error(&FindError::WorkerUnavailable);
     let display = state.display_text()?;
     assert!(display.starts_with("Find: é"));

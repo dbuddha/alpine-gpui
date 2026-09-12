@@ -522,13 +522,25 @@ fn command_palette_scene_geometry_is_exact_at_a_narrow_viewport()
     assert!(scene.quads().iter().any(|quad| quad.bounds() == overlay));
     assert!(scene.quads().iter().any(|quad| quad.bounds() == selected));
     for (x, y) in [(32.0, 67.0), (32.0, 98.0), (32.0, 122.0)] {
+        let expected_clip = if f32::to_bits(y) == 67.0_f32.to_bits() {
+            scene
+                .clips()
+                .iter()
+                .position(|clip| {
+                    clip.bounds().origin() == overlay.origin()
+                        && clip.bounds().size().height() == COMMAND_PALETTE_QUERY_HEIGHT
+                })
+                .ok_or("query clip")?
+        } else {
+            overlay_clip
+        };
         let first_x = scene
             .glyphs()
             .iter()
             .filter(|glyph| {
                 glyph
                     .clip()
-                    .is_some_and(|clip| clip.index() == overlay_clip)
+                    .is_some_and(|clip| clip.index() == expected_clip)
                     && glyph.bounds().origin().y().to_bits() == f32::to_bits(y)
             })
             .map(|glyph| glyph.bounds().origin().x())

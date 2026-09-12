@@ -16,6 +16,15 @@ struct FailingRasterTextSystem {
 }
 
 impl TextShaper for FailingRasterTextSystem {
+    fn caret_offset(
+        &mut self,
+        text: &str,
+        font: FontKey,
+        index: usize,
+    ) -> Result<f32, LayoutError> {
+        crate::tests::TestTextSystem.caret_offset(text, font, index)
+    }
+
     fn shape(&mut self, text: &str, font: FontKey) -> Result<LineLayout, LayoutError> {
         tests::TestTextSystem.shape(text, font)
     }
@@ -445,7 +454,7 @@ fn symbol_overlay_scene_ime_and_key_guards_are_exact() -> Result<(), Box<dyn Err
         .visual_changed
     );
     assert_eq!(app.input_failures, failures + 1);
-    assert!(app.handle_ime(&ImeEvent::Cancelled).visual_changed);
+    assert!(!app.handle_ime(&ImeEvent::Cancelled).visual_changed);
     assert!(app.handle_ime(&ImeEvent::Started).visual_changed);
     assert!(app.cancel_focused_composition().visual_changed);
     assert!(app.handle_ime(&ImeEvent::Started).visual_changed);
@@ -562,7 +571,15 @@ fn symbol_overlay_accessibility_and_checked_navigation_are_exact() -> Result<(),
         .iter()
         .find(|node| node.name().starts_with("Rust workspace symbols:"))
         .ok_or("symbol accessibility node")?;
-    assert!(symbol_node.is_focused());
+    assert!(!symbol_node.is_focused());
+    assert!(
+        snapshot
+            .nodes()
+            .iter()
+            .any(|node| node.parent() == Some(symbol_node.id())
+                && node.name() == "Search Rust symbols"
+                && node.is_focused())
+    );
     assert!(symbol_node.supports_activate());
     assert!(
         app.handle_key(KEY_DOWN, Modifiers::from_bits(0))

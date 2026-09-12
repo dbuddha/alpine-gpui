@@ -1,6 +1,8 @@
 accessibility::	studio-model
 command_palette_tests::	studio-command
 commands::	studio-command
+field_edit::	studio-model
+overlay_field::	studio-model
 composition::	studio-model
 documents::	studio-model
 dogfood_diagnostic::	studio-app-07
