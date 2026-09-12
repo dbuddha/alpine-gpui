@@ -173,3 +173,48 @@ open. The disposable release app is available for the requested human check.
 Continue independent readiness work within the block budget; comparator expansion
 still requires the human checkpoint. Keep the lab CI overrun visible without
 broadening native recovery into another pipeline redesign.
+
+
+## Adversarial audit corrections
+
+The earlier probe's executable had been replaced without updating its outer and
+embedded identities. Preserve it as an unqualified historical artifact. The new
+`prepare-readiness-probe.py` command in [development](development.md) creates a
+fresh release app from clean committed source, with an isolated workspace/home
+and the checksummed rust-analyzer. Run its verifier before using a probe.
+
+At source `c49a43a1517c513841758b295cc6444c23e7f61d`, the new probe verified all
+eight immutable files. Controlled UI checks observed real rust-analyzer diagnostic
+rows and the expected type mismatch. Find Command-A highlighted the query;
+subsequent typing replaced it and found the expected single match. The app and
+observations are in `target/readiness-audit-20260912`. An external accessibility
+click on the editor still failed as offscreen after foregrounding, while a visible
+coordinate click worked. Full AX and human IME/VoiceOver acceptance remain open.
+
+The previous current-Alpine smoke receipt stored a diff hash without its patch,
+so it cannot independently reconstruct that tree. Its refreshed replacement in
+the lab's `artifacts/readiness-audit-smoke-20260912` uses clean committed source
+`c49a43a`, retained release binary/build log, toolchain and exact commands. Fresh
+current-Alpine, pinned GPUI and CPU readbacks match. The fixture is only 64x32,
+seven glyphs and four quads. It proves a minimal usable comparison path; it is
+not representative editor, text-shaping, memory or latency evidence.
+
+The restored `tee` failure propagation exposed ANSI-colored Cargo tree output
+that the boundary parser mistook for dependency drift. The parser now requests
+colorless output and preserves upstream Cargo failure before normalization.
+The CI correction preserves product-boundary failures through `tee` and skips
+code builds only for a conservative Markdown-only change set. Regression fixtures
+reject failed required native jobs and invalid selection. Full local policy,
+Clippy and explicit hosted-native execution passed. One ordinary concurrent local
+editor run had five mock language-server initialization timeouts; all 44 language
+server tests passed in isolation and the native-enabled run passed 541 editor
+tests. Retain that first failure as a test reliability concern.
+
+[Product PR 611](https://github.com/dbuddha/alpine-gpui/pull/611) and
+[lab PR 31](https://github.com/dbuddha/alpine-zed-lab/pull/31) carry the corrections
+and live CI evidence. Lab publication now reuses one verified release candidate.
+The first combined run passed native equivalence but stopped at the clean-source
+guard because Python validation generated cache files. Redirect those outputs
+under `.lab/`; keep the guard. Neither an attempted CI optimization nor the smoke
+match accepts block 2. Physical presentation and the human checkpoint still block
+comparator expansion.

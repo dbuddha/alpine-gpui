@@ -185,9 +185,12 @@ if [ -n "$workflow_files" ]; then
         capture
     ')
     if ! printf '%s\n' "$fast_feedback_block" | grep -Fqx '        run: scripts/check-ci-fast-feedback.sh' \
-        || printf '%s\n' "$fast_feedback_block" | grep -Eq '^[[:space:]]*(if|continue-on-error):' \
+        || ! printf '%s\n' "$fast_feedback_block" | grep -Fqx "        if: needs.classify.outputs.code == 'true'" \
+        || [ "$(printf '%s\n' "$fast_feedback_block" | grep -Ec '^[[:space:]]*if:')" -ne 1 ] \
+        || printf '%s\n' "$fast_feedback_block" | grep -Eq '^[[:space:]]*continue-on-error:' \
+        || ! printf '%s\n' "$preflight_block" | grep -Fqx '    needs: classify' \
         || printf '%s\n' "$preflight_block" | grep -Eq '^    (if|continue-on-error):'; then
-        fail 'CI fast feedback must execute unconditionally and propagate failures'
+        fail 'CI fast feedback must follow code selection and propagate failures'
     fi
     if ! printf '%s\n' "$native_mutation_block" | grep -Fqx "    if: needs.classify.outputs.native_mutation == 'true'" \
         || printf '%s\n' "$native_mutation_block" | grep -Eq '^    continue-on-error:'; then
