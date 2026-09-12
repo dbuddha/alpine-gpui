@@ -501,7 +501,14 @@ fn qualify_workspace(
         .count();
     assert_eq!(query_frames, 0);
     assert_eq!(accessor_focused_nodes, tree.focused_nodes());
-    assert_eq!(tree.focused_nodes(), 1);
+    assert_eq!(
+        tree.focused_nodes(),
+        1,
+        "stable AX tree lost focus: native_focus={:?}, semantic_revision={:?}, node_count={}",
+        platform_validation::input_focus_state(&surface),
+        tree.revision(),
+        tree.nodes().len(),
+    );
     assert!(selected_nodes > 0);
     assert!(selected_nodes < tree.nodes().len());
     assert!(activate_allowed_nodes > 0);
