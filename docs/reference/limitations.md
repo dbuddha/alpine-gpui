@@ -13,9 +13,12 @@ UTF-16 boundaries and reject stale document, focus and composition ownership.
 
 This does not qualify physical candidate-window placement or VoiceOver editing.
 Find/palette and other overlay fields do not yet expose their own native text and
-geometry queries. Point lookup during marked text remains unavailable; composition
-painting still overlays preedit on the original line. Physical IME, VoiceOver and
-presentation timing therefore remain acceptance work before claiming readiness.
+geometry queries. Editor composition now replaces the displayed span, moves the
+suffix and following lines, and shares projected coordinates with native text
+geometry and glyph hits. Projection retains at most 1 MiB of boundary text plus
+preedit combined; oversized projections revoke composition rather than exposing
+text that differs from the scene. Physical IME, VoiceOver and presentation timing
+remain acceptance work before claiming readiness.
 
 The current implementation excludes collaboration, hosted AI, accounts, cloud sync, remote
 development, telemetry, executable plugins, an extension marketplace, a debugger,
