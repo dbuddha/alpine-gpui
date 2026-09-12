@@ -6975,6 +6975,42 @@ fn assert_event_continuation_is_queued(
     Ok(())
 }
 
+/// Injects the pending language wake at a real Find-result delivery boundary.
+struct WorkerContinuationObserver {
+    app: StudioApp,
+    wake: LanguageWake,
+    consumed: std::rc::Rc<Cell<bool>>,
+}
+
+impl AppDelegate for WorkerContinuationObserver {
+    type WorkerOutput = StudioWorkerOutput;
+
+    fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, StudioWorkerOutput>) {
+        self.app.event(event, context);
+    }
+
+    fn worker_result(
+        &mut self,
+        token: alpine_runtime::WorkToken,
+        result: StudioWorkerOutput,
+        context: &mut AppContext<'_, StudioWorkerOutput>,
+    ) {
+        let find_result = matches!(&result, StudioWorkerOutput::Find(_));
+        if find_result {
+            self.app.rust_diagnostics.force_continuation_once_for_test();
+            self.app.language_wake_latch.publish(self.wake);
+        }
+        self.app.worker_result(token, result, context);
+        if find_result {
+            self.consumed.set(true);
+        }
+    }
+
+    fn frame(&mut self, context: WindowContext) -> Scene {
+        self.app.frame(context)
+    }
+}
+
 fn assert_worker_continuation_is_drained(
     rust_path: &Path,
     viewport: Size,
@@ -6992,9 +7028,17 @@ fn assert_worker_continuation_is_drained(
         .rust_diagnostics
         .current_wake_for_test()
         .ok_or("worker language wake")?;
-    let latch = app.language_wake_latch.clone();
-    app.rust_diagnostics.force_continuation_once_for_test();
-    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let consumed = std::rc::Rc::new(Cell::new(false));
+    let mut runtime = Application::new(
+        WorkerContinuationObserver {
+            app,
+            wake,
+            consumed: std::rc::Rc::clone(&consumed),
+        },
+        viewport,
+        clear,
+        WorkerConfig::default(),
+    )?;
     let command = Modifiers::from_bits(Modifiers::COMMAND);
     runtime
         .dispatch(&key(KEY_F, command))
@@ -7003,22 +7047,26 @@ fn assert_worker_continuation_is_drained(
         .dispatch(&ime(ImeEvent::Committed("fn".into())))
         .ok_or("worker query frame")?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while runtime.snapshot().worker().queued_results() == 0 {
+    loop {
+        // A queue reservation is not a published result. The forwarding
+        // delegate identifies the actual Find delivery, even when settings
+        // or other background results arrive first.
+        let before = runtime.snapshot().external();
+        let _ = runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(3_517),
+        });
+        if consumed.get() {
+            let after = runtime.snapshot().external();
+            assert_eq!(after.admitted(), before.admitted() + 1);
+            assert_eq!(after.drained(), before.drained() + 1);
+            assert_eq!(after.current_items(), 0);
+            return Ok(());
+        }
         if std::time::Instant::now() >= deadline {
-            return Err("find worker did not publish a result".into());
+            return Err("find worker result was not consumed before the deadline".into());
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    latch.publish(wake);
-    let before = runtime.snapshot().external();
-    let _ = runtime.dispatch(&SurfaceEvent::Wake {
-        timestamp: EventTimestamp::new(3_517),
-    });
-    let after = runtime.snapshot().external();
-    assert_eq!(after.admitted(), before.admitted() + 1);
-    assert_eq!(after.drained(), before.drained() + 1);
-    assert_eq!(after.current_items(), 0);
-    Ok(())
 }
 
 #[test]
