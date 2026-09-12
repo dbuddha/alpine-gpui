@@ -201,11 +201,6 @@ impl SurfaceView {
 
     pub(super) fn native_character_index(&self, point: NSPoint) -> Option<usize> {
         let (revision, _, _) = self.input_state()?;
-        // Marked glyphs are separately painted over the document. Do not return
-        // an unrelated document hit until the mark has been committed/cancelled.
-        if self.has_marked_text_value() {
-            return None;
-        }
         NativeAccessibilityAdapter::input_index(self, revision, point)
     }
 
@@ -435,6 +430,17 @@ fn validate_mark_queries(
             })
     {
         eprintln!("native-text-round-trip: marked projection failed");
+        return Err(failure());
+    }
+    let (glyph_rect, _) = view
+        .native_first_rect(NSRange::new(5, 1))
+        .ok_or_else(failure)?;
+    let hit = super::NSPoint::new(
+        glyph_rect.origin.x + glyph_rect.size.width * 0.5,
+        glyph_rect.origin.y + glyph_rect.size.height * 0.5,
+    );
+    if view.native_character_index(hit) != Some(5) {
+        eprintln!("native-text-round-trip: marked glyph hit failed");
         return Err(failure());
     }
     // A surrogate-interior selection must not replace the valid current mark.

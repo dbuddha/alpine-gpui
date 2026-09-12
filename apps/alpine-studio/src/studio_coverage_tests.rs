@@ -86,6 +86,17 @@ impl Drop for TestWorkspace {
 pub(super) struct TestTextSystem;
 
 impl TextShaper for TestTextSystem {
+    fn caret_offset(
+        &mut self,
+        text: &str,
+        _font: FontKey,
+        index: usize,
+    ) -> Result<f32, LayoutError> {
+        let index = u32::try_from(index).map_err(|_| LayoutError::ArithmeticOverflow)?;
+        let byte = byte_at_utf16(text, index).ok_or(LayoutError::InvalidShaperOutput)?;
+        Ok(usize_as_f32(text[..byte].chars().count()) * 8.0)
+    }
+
     fn shape(&mut self, text: &str, _font: FontKey) -> Result<LineLayout, LayoutError> {
         TEST_SHAPE_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
         let mut glyphs = Vec::new();
@@ -2679,15 +2690,16 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
         selected_length_utf16: 0,
     });
     let composition_scene = app.try_scene(SceneRevision::new(4), viewport)?;
-    assert_eq!(
+    let first = app.rendered_lines.first().ok_or("missing projected line")?;
+    assert_eq!(first.layout.glyphs()[1].glyph_id(), u32::from('q'));
+    assert_eq!(first.layout.glyphs()[1].x(), 8.0);
+    assert_eq!(first.layout.glyphs()[2].glyph_id(), u32::from('i'));
+    assert_eq!(first.layout.glyphs()[2].x(), 16.0);
+    assert!(
         composition_scene
             .glyphs()
-            .last()
-            .ok_or("missing composition glyph")?
-            .bounds()
-            .origin()
-            .x(),
-        268.0
+            .iter()
+            .any(|glyph| glyph.bounds().origin().x() == 268.0)
     );
     app.composition = None;
     app.local_status = Some(LocalStatus::Workspace(Arc::from("s")));

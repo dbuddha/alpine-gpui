@@ -7,6 +7,7 @@
 
 mod accessibility;
 mod commands;
+mod composition;
 mod documents;
 mod dogfood_diagnostic;
 mod file_tree;
@@ -2871,6 +2872,11 @@ impl StudioApp {
             )?);
         }
         self.record_profile(StudioSignpostStage::VisibleLayoutBegin, revision, [0; 3]);
+        let projection = self
+            .composition
+            .as_ref()
+            .map(|composition| composition::Projection::new(snapshot.clone(), composition))
+            .transpose()?;
         for (pane_index, pane) in pane_layout.iter().enumerate() {
             let pane_clip = pane_clips[pane_index].ok_or(StudioRenderError::Domain)?;
             let (pane_tab, pane_view) = self
@@ -2893,8 +2899,12 @@ impl StudioApp {
                 .ok_or(StudioRenderError::Domain)?;
             let wrap_width =
                 PositiveFinite::new(pane.bounds.size().width()).ok_or(StudioRenderError::Domain)?;
+            let pane_projection = projection.as_ref().filter(|_| pane.active);
             let visible = VisibleLines::new(
-                pane_snapshot.line_count(),
+                pane_projection.map_or_else(
+                    || pane_snapshot.line_count(),
+                    composition::Projection::line_count,
+                ),
                 pane_scroll,
                 viewport_height,
                 line_height,
@@ -2903,20 +2913,34 @@ impl StudioApp {
             let pane_origin_x = pane.bounds.origin().x();
             let pane_selection = pane_view.selection.range();
             for line in visible.laid_out() {
+                let projected_line = pane_projection
+                    .map(|projection| projection.line(line))
+                    .transpose()?;
+                let (layout_snapshot, local_line) = projected_line
+                    .as_ref()
+                    .map_or((&pane_snapshot, line), |value| {
+                        (value.snapshot, value.local)
+                    });
+                let source_line = projected_line
+                    .as_ref()
+                    .map_or(Some(line), |value| value.source);
                 let layout = self.layout_cache.layout_line(
-                    &pane_snapshot,
-                    line,
+                    layout_snapshot,
+                    local_line,
                     font,
                     wrap_width,
                     &mut self.text_system,
                 )?;
                 let top = pane.bounds.origin().y() + usize_as_f32(line) * LINE_HEIGHT - pane_scroll;
                 let baseline = top + layout.ascent();
-                let line_range = pane_snapshot.line_byte_range(line)?;
-                let syntax_line = self
-                    .syntax_cache
-                    .line(&pane_snapshot, line, syntax_language)?;
-                if pane.active {
+                let line_range = layout_snapshot.line_byte_range(local_line)?;
+                let syntax_line = source_line
+                    .map(|line| {
+                        self.syntax_cache
+                            .line(&pane_snapshot, line, syntax_language)
+                    })
+                    .transpose()?;
+                if pane.active && pane_projection.is_none() {
                     for found in self.find.visible_ranges(
                         self.runtime_document_revision,
                         pane_snapshot.revision().get(),
@@ -2935,7 +2959,7 @@ impl StudioApp {
                         )?;
                     }
                 }
-                if !pane_selection.is_empty() {
+                if !pane_selection.is_empty() && pane_projection.is_none() {
                     let selection_result = Self::paint_selection(
                         &mut builder,
                         pane_clip,
@@ -2950,6 +2974,7 @@ impl StudioApp {
                     selection_result?;
                 }
                 if pane.active
+                    && pane_projection.is_none()
                     && let Some(remaining) = remaining_diagnostic_markers(diagnostic_markers)
                 {
                     #[allow(
@@ -2989,15 +3014,20 @@ impl StudioApp {
                     )?;
                     diagnostic_markers += added;
                 }
-                pending_glyphs.extend(self.collect_syntax_glyphs(
-                    &layout,
-                    font,
-                    pane_origin_x,
-                    baseline,
-                    pane_clip,
-                    &syntax_line,
-                    syntax_palette,
-                )?);
+                let glyphs = if let Some(syntax_line) = &syntax_line {
+                    self.collect_syntax_glyphs(
+                        &layout,
+                        font,
+                        pane_origin_x,
+                        baseline,
+                        pane_clip,
+                        syntax_line,
+                        syntax_palette,
+                    )?
+                } else {
+                    self.collect_glyphs(&layout, font, pane_origin_x, baseline, pane_clip)?
+                };
+                pending_glyphs.extend(glyphs);
                 if pane.active {
                     rendered_lines.push(RenderedLine {
                         line,
@@ -3014,34 +3044,63 @@ impl StudioApp {
             [usize_to_u64(rendered_lines.len()), 0, 0],
         );
 
-        let mut composition_underline = None;
-        if let Some(composition) = self.composition.clone()
-            && let Some(line) = Self::line_for_offset(&snapshot, composition.replacement.start)?
-            && let Some(rendered) = rendered_lines.iter().find(|rendered| rendered.line == line)
-        {
-            let source = snapshot.line_byte_range(line)?;
-            let prefix_end = composition.replacement.start.min(source.end);
-            let prefix = snapshot.slice(source.start..prefix_end)?;
-            let prefix_utf16 = u32::try_from(prefix.encode_utf16().count())
-                .map_err(|_| StudioRenderError::Domain)?;
-            let start_x = editor_origin_x + x_for_utf16(&rendered.layout, prefix_utf16);
-            let composition_layout = self.text_system.shape(&composition.text, font)?;
-            let composition_glyphs = self.collect_glyphs(
-                &composition_layout,
-                font,
-                start_x,
-                rendered.baseline,
-                active_clip,
-            );
-            pending_glyphs.extend(composition_glyphs?);
-            let underline_origin = Point::new(
-                start_x,
-                rendered.baseline + composition_layout.descent() + 1.0,
-            )
-            .ok_or(StudioRenderError::Domain)?;
-            let underline_size = Size::new(composition_layout.width().max(1.0), 1.0)
-                .ok_or(StudioRenderError::Domain)?;
-            composition_underline = Some(Rect::new(underline_origin, underline_size));
+        let mut composition_underlines = Vec::new();
+        if let (Some(projection), Some(composition)) = (&projection, &self.composition) {
+            let mark = projection.mark();
+            let selected_start = mark.start + composition.selected_start_utf16 as usize;
+            let selected_end = selected_start + composition.selected_length_utf16 as usize;
+            for rendered in &rendered_lines {
+                let line = projection.line(rendered.line)?;
+                let bytes = line.snapshot.line_byte_range(line.local)?;
+                let text = line.snapshot.slice(bytes)?;
+                let units = text.trim_end_matches(['\r', '\n']).encode_utf16().count();
+                let line_end = line.base_utf16 + units;
+                if mark.start > line_end || mark.end < line.base_utf16 {
+                    continue;
+                }
+                let start = mark.start.saturating_sub(line.base_utf16).min(units);
+                let end = mark.end.saturating_sub(line.base_utf16).min(units);
+                let content = text.trim_end_matches(['\r', '\n']);
+                for (left, right) in composition::visual_spans(
+                    content,
+                    &rendered.layout,
+                    font,
+                    &mut self.text_system,
+                    start..end,
+                )? {
+                    let origin = Point::new(
+                        editor_origin_x + left,
+                        rendered.baseline + rendered.layout.descent() + 1.0,
+                    )
+                    .ok_or(StudioRenderError::Domain)?;
+                    let size =
+                        Size::new((right - left).max(1.0), 1.0).ok_or(StudioRenderError::Domain)?;
+                    composition_underlines.push(Rect::new(origin, size));
+                }
+                if selected_start < selected_end
+                    && selected_start < line_end
+                    && selected_end > line.base_utf16
+                {
+                    let selected = selected_start.saturating_sub(line.base_utf16).min(units)
+                        ..selected_end.saturating_sub(line.base_utf16).min(units);
+                    for (left, right) in composition::visual_spans(
+                        content,
+                        &rendered.layout,
+                        font,
+                        &mut self.text_system,
+                        selected,
+                    )? {
+                        let bounds = Rect::new(
+                            Point::new(editor_origin_x + left, rendered.top)
+                                .ok_or(StudioRenderError::Domain)?,
+                            Size::new((right - left).max(1.0), LINE_HEIGHT)
+                                .ok_or(StudioRenderError::Domain)?,
+                        );
+                        builder
+                            .push_quad(Quad::new(bounds, selection_color).clipped(active_clip))?;
+                    }
+                }
+            }
         }
 
         let language_status = self.rust_diagnostics.status_message();
@@ -3522,7 +3581,7 @@ impl StudioApp {
                 builder.push_glyph(glyph)?;
             }
         }
-        if let Some(bounds) = composition_underline {
+        for bounds in composition_underlines {
             builder.push_quad(Quad::new(bounds, caret_color).clipped(active_clip))?;
         }
         if self.focused
@@ -3530,6 +3589,7 @@ impl StudioApp {
             && !self.find.is_open()
             && !self.quick_open.is_open()
             && !self.project_search.is_open()
+            && !self.command_palette.is_open()
             && !self.file_tree.is_focused()
             && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_origin_x)?
         {
@@ -3810,21 +3870,63 @@ impl StudioApp {
     }
 
     fn caret_bounds(
-        &self,
+        &mut self,
         snapshot: &BufferSnapshot,
         rendered_lines: &[RenderedLine],
         origin_x: f32,
     ) -> Result<Option<Rect>, StudioRenderError> {
+        let projection = self
+            .composition
+            .as_ref()
+            .map(|composition| composition::Projection::new(snapshot.clone(), composition))
+            .transpose()?;
+        let projected_caret = if let (Some(projection), Some(composition)) =
+            (&projection, &self.composition)
+        {
+            let index = projection.mark().start
+                + composition.selected_start_utf16 as usize
+                + composition.selected_length_utf16 as usize;
+            let line = projection.line_at_utf16(index)?;
+            Some((
+                line.display,
+                u32::try_from(index - line.base_utf16).map_err(|_| StudioRenderError::Domain)?,
+            ))
+        } else {
+            None
+        };
         let offset = self.selection.head();
-        let Some(line) = Self::line_for_offset(snapshot, offset.get())? else {
+        let line = if let Some((line, _)) = projected_caret {
+            line
+        } else if let Some(line) = Self::line_for_offset(snapshot, offset.get())? {
+            line
+        } else {
             return Ok(None);
         };
         let Some(rendered) = rendered_lines.iter().find(|rendered| rendered.line == line) else {
             return Ok(None);
         };
-        let line_range = snapshot.line_byte_range(line)?;
-        let utf16 = local_utf16(snapshot, line_range.start, offset.get())?;
-        let x = origin_x + x_for_utf16(&rendered.layout, utf16);
+        let utf16 = if let Some((_, column)) = projected_caret {
+            column
+        } else {
+            let line_range = snapshot.line_byte_range(line)?;
+            local_utf16(snapshot, line_range.start, offset.get())?
+        };
+        let offset_x = if let Some(projection) = &projection {
+            let line = projection.line(line)?;
+            let text = line
+                .snapshot
+                .slice(line.snapshot.line_byte_range(line.local)?)?;
+            let font = self.resolved_font()?;
+            let content = text.trim_end_matches(['\r', '\n']);
+            self.text_system.caret_offset(
+                content,
+                font,
+                (utf16 as usize).min(content.encode_utf16().count()),
+            )?
+        } else {
+            x_for_utf16(&rendered.layout, utf16)
+        };
+        let x = origin_x + offset_x;
         let origin = Point::new(x, rendered.top).ok_or(StudioRenderError::Domain)?;
         let size = Size::new(CARET_WIDTH, LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
         Ok(Some(Rect::new(origin, size)))
@@ -4387,12 +4489,17 @@ impl StudioApp {
         }
         match event {
             ImeEvent::Started => {
-                self.composition = Some(Composition {
+                let composition = Composition {
                     replacement: self.selection.range(),
                     text: Box::default(),
                     selected_start_utf16: 0,
                     selected_length_utf16: 0,
-                });
+                };
+                if composition::Projection::new(self.buffer().snapshot(), &composition).is_err() {
+                    self.input_failures = self.input_failures.saturating_add(1);
+                    return EventEffect::default();
+                }
+                self.composition = Some(composition);
                 EventEffect::visual()
             }
             ImeEvent::Updated {
@@ -4410,13 +4517,29 @@ impl StudioApp {
                     .composition
                     .as_ref()
                     .map_or_else(|| self.selection.range(), |value| value.replacement.clone());
-                self.composition = Some(Composition {
+                let composition = Composition {
                     replacement,
                     text: text.clone(),
                     selected_start_utf16: *selected_start_utf16,
                     selected_length_utf16: *selected_length_utf16,
-                });
-                EventEffect::visual()
+                };
+                if byte_at_utf16(text, *selected_start_utf16).is_none()
+                    || selected_end
+                        .and_then(|end| byte_at_utf16(text, end))
+                        .is_none()
+                {
+                    self.input_failures = self.input_failures.saturating_add(1);
+                    return EventEffect::default();
+                }
+                if composition::Projection::new(self.buffer().snapshot(), &composition).is_err() {
+                    self.input_failures = self.input_failures.saturating_add(1);
+                    // The native callback already holds the new preedit. Retaining
+                    // an older application mark would make native text disagree
+                    // with the scene; revoke composition ownership instead.
+                    return self.cancel_composition();
+                }
+                self.composition = Some(composition);
+                EventEffect::visual().merge(self.reveal_primary_caret())
             }
             ImeEvent::CommittedWithCaret { text, caret_utf16 } => {
                 let Some(caret) = u32::try_from(*caret_utf16)
@@ -5413,10 +5536,12 @@ impl StudioApp {
     }
 
     fn cancel_composition(&mut self) -> EventEffect {
-        self.composition
-            .take()
-            .map(|_| EventEffect::visual())
-            .unwrap_or_default()
+        if self.composition.take().is_some() {
+            self.clamp_scroll();
+            EventEffect::visual()
+        } else {
+            EventEffect::default()
+        }
     }
 
     fn handle_pointer(
@@ -5557,9 +5682,27 @@ impl StudioApp {
         }
         let line = floor_f32_to_usize(line_position)?;
         let snapshot = self.buffer().snapshot();
-        let line = line.min(snapshot.line_count().saturating_sub(1));
-        let line_range = snapshot.line_byte_range(line).ok()?;
-        let text = snapshot.slice(line_range.clone()).ok()?;
+        let projection = self
+            .composition
+            .as_ref()
+            .map(|composition| composition::Projection::new(snapshot.clone(), composition))
+            .transpose()
+            .ok()?;
+        let count = projection.as_ref().map_or_else(
+            || snapshot.line_count(),
+            composition::Projection::line_count,
+        );
+        let line = line.min(count.saturating_sub(1));
+        let projected_line = projection
+            .as_ref()
+            .map(|projection| projection.line(line))
+            .transpose()
+            .ok()?;
+        let (display_snapshot, local) = projected_line
+            .as_ref()
+            .map_or((&snapshot, line), |line| (line.snapshot, line.local));
+        let line_range = display_snapshot.line_byte_range(local).ok()?;
+        let text = display_snapshot.slice(line_range.clone()).ok()?;
         let content = text.trim_end_matches(['\r', '\n']);
         let x = (position.x() - origin_x).max(0.0);
         let target_utf16 = self
@@ -5568,11 +5711,18 @@ impl StudioApp {
             .find(|rendered| rendered.line == line)
             .map_or(0, |rendered| utf16_at_x(&rendered.layout, x));
         let relative = byte_at_utf16(content, target_utf16).unwrap_or(content.len());
-        Some(ByteOffset::new(line_range.start + relative))
+        if let (Some(projection), Some(line)) = (&projection, &projected_line) {
+            let index = line.base_utf16 + content[..relative].encode_utf16().count();
+            snapshot
+                .byte_of_appkit_utf16(projection.display_to_source(index)?)
+                .ok()
+        } else {
+            Some(ByteOffset::new(line_range.start + relative))
+        }
     }
 
     fn set_selection(&mut self, selection: Selection) -> EventEffect {
-        let effect = if selection == self.selection {
+        let effect = if selection == self.selection && self.composition.is_none() {
             EventEffect::default()
         } else {
             self.selection = selection;
@@ -5789,8 +5939,18 @@ impl StudioApp {
         let content_height = self
             .active_pane_bounds()
             .map_or(1.0, |bounds| bounds.size().height().max(1.0));
-        (usize_as_f32(self.buffer().snapshot().line_count()) * LINE_HEIGHT - content_height)
-            .max(0.0)
+        let snapshot = self.buffer().snapshot();
+        let lines = self
+            .composition
+            .as_ref()
+            .and_then(|composition| {
+                composition::Projection::new(snapshot.clone(), composition).ok()
+            })
+            .map_or_else(
+                || snapshot.line_count(),
+                |projection| projection.line_count(),
+            );
+        (usize_as_f32(lines) * LINE_HEIGHT - content_height).max(0.0)
     }
 
     fn caret_scroll_target(
@@ -5814,7 +5974,24 @@ impl StudioApp {
             return EventEffect::default();
         };
         let snapshot = self.buffer().snapshot();
-        let Ok(Some(line)) = Self::line_for_offset(&snapshot, self.selection.head().get()) else {
+        let line = if let Some(composition) = &self.composition {
+            composition::Projection::new(snapshot.clone(), composition)
+                .ok()
+                .and_then(|projection| {
+                    let index = projection.mark().start
+                        + composition.selected_start_utf16 as usize
+                        + composition.selected_length_utf16 as usize;
+                    projection
+                        .line_at_utf16(index)
+                        .ok()
+                        .map(|line| line.display)
+                })
+        } else {
+            Self::line_for_offset(&snapshot, self.selection.head().get())
+                .ok()
+                .flatten()
+        };
+        let Some(line) = line else {
             self.input_failures = self.input_failures.saturating_add(1);
             return EventEffect::default();
         };
