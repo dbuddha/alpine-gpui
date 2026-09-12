@@ -1188,6 +1188,11 @@ impl NativeAccessibilityAdapter {
         ]);
         let frame: NSRect = unsafe { msg_send![&*tab, accessibilityFrame] };
         let bounded_screen_frame = bounded_screen_frame(frame);
+        // The fixture places the tab directly above the editor. AppKit screen
+        // coordinates increase upward, unlike Alpine's top-origin layout.
+        // SAFETY: Both retained main-thread elements implement this selector.
+        let editor_frame: NSRect = unsafe { msg_send![&*editor, accessibilityFrame] };
+        let screen_order_valid = frame.origin.y >= editor_frame.origin.y + editor_frame.size.height;
         let tab_activate_selector_allowed: bool = unsafe {
             msg_send![&*tab, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
         };
@@ -1420,6 +1425,7 @@ impl NativeAccessibilityAdapter {
         ]);
         let semantic_tree_valid = all_conditions([
             role_mapping_valid,
+            screen_order_valid,
             root_has_children,
             editor_focused,
             tab_selected,
@@ -1792,8 +1798,22 @@ impl NativeAccessibilityElement {
             .view
             .load()
             .and_then(|view| {
-                view.window()
-                    .map(|window| window.convertRectToScreen(local))
+                view.window().map(|window| {
+                    let view_bounds = view.bounds();
+                    let y = if view.isFlipped() {
+                        local.origin.y
+                    } else {
+                        view_bounds.size.height - local.origin.y - local.size.height
+                    };
+                    let view_rect = NSRect::new(
+                        NSPoint::new(
+                            view_bounds.origin.x + local.origin.x,
+                            view_bounds.origin.y + y,
+                        ),
+                        local.size,
+                    );
+                    window.convertRectToScreen(view.convertRect_toView(view_rect, None))
+                })
             })
             .unwrap_or(local)
     }
