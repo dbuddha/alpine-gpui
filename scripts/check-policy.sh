@@ -751,6 +751,7 @@ unsafe_source_files=$(find crates apps tools -type f -name '*.rs' -print0 \
 expected_unsafe_source_files='crates/alpine-metal/src/native.rs
 crates/alpine-platform-macos/src/native.rs
 crates/alpine-platform-macos/src/native_accessibility.rs
+crates/alpine-platform-macos/src/native_text_input.rs
 crates/alpine-platform-macos/src/signpost.rs
 crates/alpine-text-layout/src/native.rs
 tools/alpine-ax-client/src/native.rs'

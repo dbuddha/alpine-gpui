@@ -303,6 +303,55 @@ impl Default for CoreTextSystem {
 }
 
 impl TextShaper for CoreTextSystem {
+    fn caret_offset(
+        &mut self,
+        text: &str,
+        font: FontKey,
+        index: usize,
+    ) -> Result<f32, LayoutError> {
+        let native_font = self.font(font)?;
+        let (expanded, indices) = Self::expand_tabs(text, font.tab_columns())?;
+        let length = text.encode_utf16().count();
+        let expanded_index = if index == length {
+            indices.len()
+        } else {
+            indices
+                .iter()
+                .position(|value| usize::try_from(*value).ok() == Some(index))
+                .ok_or(LayoutError::InvalidShaperOutput)?
+        };
+        let line = Self::attributed_line(&expanded, &native_font)?;
+        let index =
+            CFIndex::try_from(expanded_index).map_err(|_| LayoutError::ArithmeticOverflow)?;
+        // SAFETY: The line is live, index is within its UTF-16 string, and the
+        // optional secondary offset is deliberately omitted.
+        let offset = unsafe { line.offset_for_string_index(index, ptr::null_mut()) };
+        if !offset.is_finite() || offset < 0.0 || offset > f64::from(f32::MAX) {
+            return Err(LayoutError::InvalidShaperOutput);
+        }
+        Ok(offset as f32)
+    }
+
+    fn index_at_x(
+        &mut self,
+        text: &str,
+        font: FontKey,
+        x: f32,
+    ) -> Result<Option<usize>, LayoutError> {
+        if !x.is_finite() || x < 0.0 {
+            return Ok(None);
+        }
+        // A native character query asks for the containing shaped cluster,
+        // not the nearest insertion boundary (which may be EOF).
+        let layout = self.shape(text, font)?;
+        Ok(layout.glyphs().iter().find_map(|glyph| {
+            let other = glyph.x() + glyph.advance();
+            (x >= glyph.x().min(other) && x < glyph.x().max(other))
+                .then(|| usize::try_from(glyph.source_utf16()).ok())
+                .flatten()
+        }))
+    }
+
     fn shape(&mut self, text: &str, font_key: FontKey) -> Result<LineLayout, LayoutError> {
         let font = self.font(font_key)?;
         let (expanded, source_indices) = Self::expand_tabs(text, font_key.tab_columns())?;

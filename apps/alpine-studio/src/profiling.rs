@@ -45,6 +45,30 @@ impl MeasuredTextSystem {
 }
 
 impl TextShaper for MeasuredTextSystem {
+    fn caret_offset(
+        &mut self,
+        text: &str,
+        font: FontKey,
+        index: usize,
+    ) -> Result<f32, LayoutError> {
+        if self.enabled {
+            self.shape_calls = self.shape_calls.saturating_add(1);
+        }
+        self.inner.caret_offset(text, font, index)
+    }
+
+    fn index_at_x(
+        &mut self,
+        text: &str,
+        font: FontKey,
+        x: f32,
+    ) -> Result<Option<usize>, LayoutError> {
+        if self.enabled {
+            self.shape_calls = self.shape_calls.saturating_add(1);
+        }
+        self.inner.index_at_x(text, font, x)
+    }
+
     fn shape(&mut self, text: &str, font: FontKey) -> Result<LineLayout, LayoutError> {
         if self.enabled {
             self.shape_calls = self.shape_calls.saturating_add(1);

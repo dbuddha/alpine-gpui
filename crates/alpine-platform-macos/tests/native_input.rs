@@ -61,18 +61,107 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let received = Arc::new(Mutex::new(Vec::new()));
     let callback_received = Arc::clone(&received);
+    // AppKit now reads a real text owner before interpreting a key. Model the
+    // empty editor for this transport fixture; Studio tests own document edits.
+    use alpine_platform_macos::{
+        AccessibilityBounds, AccessibilityNode, AccessibilityNodeId, AccessibilityOperation,
+        AccessibilityPayload, AccessibilityResponse, AccessibilityRevision, AccessibilityRole,
+        AccessibilitySelection, AccessibilitySnapshot, AccessibilityText,
+    };
+    let root = AccessibilityNodeId::new(1);
+    let snapshot = AccessibilitySnapshot::new(
+        AccessibilityRevision::new(1, 1),
+        root,
+        vec![
+            AccessibilityNode::new(
+                root,
+                None,
+                AccessibilityRole::Window,
+                "Input fixture".into(),
+                false,
+                false,
+                false,
+            )?,
+            AccessibilityNode::new(
+                AccessibilityNodeId::new(2),
+                Some(root),
+                AccessibilityRole::CodeEditor,
+                "Editor".into(),
+                true,
+                false,
+                false,
+            )?,
+        ],
+        AccessibilitySelection::new(0, 0),
+        0,
+        1,
+        false,
+    )?;
+    let mut composing = false;
     native_validation::replay_native_input_path(&surface, move |event| {
+        let response = match &event {
+            SurfaceEvent::Accessibility { request, .. } => {
+                let payload = match request.operation() {
+                    AccessibilityOperation::Snapshot => Some(AccessibilityPayload::Snapshot(
+                        snapshot.clone().with_editor_composition(composing),
+                    )),
+                    AccessibilityOperation::Text { range, .. }
+                        if range.start_utf16() == 0 && range.length_utf16() == 0 =>
+                    {
+                        Some(AccessibilityPayload::Text(
+                            AccessibilityText::new("").expect("empty text"),
+                        ))
+                    }
+                    AccessibilityOperation::FirstRectForRange { range, .. }
+                        if range.start_utf16() == 0 && range.length_utf16() == 0 =>
+                    {
+                        Some(AccessibilityPayload::TextGeometry {
+                            range: *range,
+                            bounds: AccessibilityBounds::new(0.0, 0.0, 0.0, 16.0).expect("caret"),
+                        })
+                    }
+                    _ => None,
+                };
+                payload
+                    .and_then(|payload| {
+                        AccessibilityResponse::success(request, snapshot.revision(), payload).ok()
+                    })
+                    .map_or_else(SurfaceResponse::default, |response| {
+                        SurfaceResponse::from_channels(
+                            None,
+                            None,
+                            alpine_platform_macos::CloseDisposition::NotRequested,
+                            Some(response),
+                        )
+                    })
+            }
+            SurfaceEvent::Ime { event, .. } => {
+                composing = matches!(event, ImeEvent::Started | ImeEvent::Updated { .. });
+                SurfaceResponse::default()
+            }
+            _ => SurfaceResponse::default(),
+        };
         if let Ok(mut received) = callback_received.lock() {
             received.push(event);
         }
-        SurfaceResponse::default()
+        response
     })
     .map_err(|error| format!("native input replay failed: {error}"))?;
 
     let received = received
         .lock()
         .map_err(|_| "native input receiver poisoned")?;
-    assert_eq!(received.len(), 12);
+    assert!(
+        received
+            .iter()
+            .any(|event| matches!(event, SurfaceEvent::Accessibility { .. }))
+    );
+    // Metadata requests have their own AX contract; retain the exact input journey.
+    let received: Vec<_> = received
+        .iter()
+        .filter(|event| !matches!(event, SurfaceEvent::Accessibility { .. }))
+        .collect();
+    assert_eq!(received.len(), 12, "native input events: {received:?}");
     assert!(matches!(
         &received[0],
         SurfaceEvent::Keyboard {

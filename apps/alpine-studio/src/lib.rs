@@ -4418,6 +4418,20 @@ impl StudioApp {
                 });
                 EventEffect::visual()
             }
+            ImeEvent::CommittedWithCaret { text, caret_utf16 } => {
+                let Some(caret) = u32::try_from(*caret_utf16)
+                    .ok()
+                    .and_then(|index| byte_at_utf16(text, index))
+                else {
+                    self.input_failures = self.input_failures.saturating_add(1);
+                    return EventEffect::default();
+                };
+                let replacement = self
+                    .composition
+                    .take()
+                    .map_or_else(|| self.selection.range(), |value| value.replacement);
+                self.replace_range_with_caret(replacement, text, caret)
+            }
             ImeEvent::Committed(text) => {
                 let replacement = self
                     .composition
@@ -4456,7 +4470,7 @@ impl StudioApp {
                         .unwrap_or_default()
                 }
             },
-            ImeEvent::Committed(text) => {
+            ImeEvent::Committed(text) | ImeEvent::CommittedWithCaret { text, .. } => {
                 let effect = self.rust_diagnostics.commit_symbol_text(identity, text);
                 effect
                     .visual_changed
@@ -4492,7 +4506,9 @@ impl StudioApp {
                 *selected_start_utf16,
                 *selected_length_utf16,
             ),
-            ImeEvent::Committed(text) => self.workspace_edits.commit_text(text),
+            ImeEvent::Committed(text) | ImeEvent::CommittedWithCaret { text, .. } => {
+                self.workspace_edits.commit_text(text)
+            }
             ImeEvent::Cancelled => {
                 return self
                     .workspace_edits
@@ -4684,7 +4700,9 @@ impl StudioApp {
                 *selected_start_utf16,
                 *selected_length_utf16,
             ),
-            ImeEvent::Committed(text) => self.command_palette.commit_text(text, context),
+            ImeEvent::Committed(text) | ImeEvent::CommittedWithCaret { text, .. } => {
+                self.command_palette.commit_text(text, context)
+            }
             ImeEvent::Cancelled => {
                 return self
                     .command_palette
@@ -4761,7 +4779,9 @@ impl StudioApp {
                 *selected_start_utf16,
                 *selected_length_utf16,
             ),
-            ImeEvent::Committed(text) => self.project_search.commit_text(text),
+            ImeEvent::Committed(text) | ImeEvent::CommittedWithCaret { text, .. } => {
+                self.project_search.commit_text(text)
+            }
             ImeEvent::Cancelled => {
                 return self
                     .project_search
@@ -5085,7 +5105,9 @@ impl StudioApp {
                 }
                 self.quick_open.update_composition(text)
             }
-            ImeEvent::Committed(text) => self.quick_open.commit_text(text),
+            ImeEvent::Committed(text) | ImeEvent::CommittedWithCaret { text, .. } => {
+                self.quick_open.commit_text(text)
+            }
             ImeEvent::Cancelled => {
                 return self
                     .quick_open
@@ -5154,7 +5176,9 @@ impl StudioApp {
                 }
                 self.find.update_composition(text)
             }
-            ImeEvent::Committed(text) => self.find.commit_text(text),
+            ImeEvent::Committed(text) | ImeEvent::CommittedWithCaret { text, .. } => {
+                self.find.commit_text(text)
+            }
             ImeEvent::Cancelled => {
                 return self
                     .find
@@ -5563,7 +5587,20 @@ impl StudioApp {
     }
 
     fn replace_range(&mut self, range: Range<usize>, text: &str) -> EventEffect {
-        let Some(next_offset) = range.start.checked_add(text.len()) else {
+        self.replace_range_with_caret(range, text, text.len())
+    }
+
+    fn replace_range_with_caret(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        caret: usize,
+    ) -> EventEffect {
+        let Some(next_offset) = range
+            .start
+            .checked_add(caret)
+            .filter(|_| text.is_char_boundary(caret))
+        else {
             self.input_failures = self.input_failures.saturating_add(1);
             return EventEffect::default();
         };
@@ -8233,6 +8270,11 @@ pub mod native_validation {
 
     impl NativeInputEvidence {
         fn observe(&mut self, event: &SurfaceEvent) {
+            // Native text input now reads revision-checked editor metadata.
+            // These queries are not keyboard/IME events in the input receipt.
+            if matches!(event, SurfaceEvent::Accessibility { .. }) {
+                return;
+            }
             self.events = self.events.saturating_add(1);
             match event {
                 SurfaceEvent::Keyboard { .. } => {
@@ -8247,7 +8289,7 @@ pub mod native_validation {
                     ..
                 } => self.ime_updated = self.ime_updated.saturating_add(1),
                 SurfaceEvent::Ime {
-                    event: ImeEvent::Committed(_),
+                    event: ImeEvent::Committed(_) | ImeEvent::CommittedWithCaret { .. },
                     ..
                 } => self.ime_committed = self.ime_committed.saturating_add(1),
                 SurfaceEvent::Ime {

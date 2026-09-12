@@ -385,12 +385,19 @@ fn qualify_workspace(
     .map_err(|error| format!("initial native accessibility frame failed: {error}"))?;
 
     let mut timestamp = 10_u64;
+    // Initial frame processing can advance the native focus epoch. Establish
+    // the fixture's requested focus using that current epoch, not INITIAL.
+    let (input_epoch, _) = platform_validation::input_focus_state(&surface);
+    platform_validation::set_input_focus_state(&surface, input_epoch, true);
+    if platform_validation::input_focus_state(&surface) != (input_epoch, true) {
+        return Err("initial native accessibility focus ownership was not established".into());
+    }
     dispatch(
         &surface,
         &state,
         &[SurfaceEvent::Focus {
             timestamp: EventTimestamp::new(timestamp),
-            input_epoch: InputEpoch::INITIAL,
+            input_epoch,
             focused: true,
         }],
     )
@@ -454,6 +461,21 @@ fn qualify_workspace(
     };
     maximum_action_frames = maximum_action_frames.max(main_tab_frames);
     tab_actions = tab_actions.saturating_add(1);
+    // Activating the tab transfers focus from Files to the editor. The next
+    // toggle focuses Files again, so native document queries belong here.
+    let input_tree = inspect(&surface, &state)?;
+    let focused: Vec<_> = input_tree
+        .nodes()
+        .iter()
+        .filter(|node| node.focused())
+        .collect();
+    if focused.len() != 1 || focused[0].role() != "AXTextArea" {
+        return Err(format!("native text round trip requires editor focus: {focused:?}").into());
+    }
+    let input_baseline = surface.snapshot();
+    platform_validation::replay_native_text_round_trip(&surface, event_handler(&state))
+        .map_err(|error| format!("native text round trip failed: {error}"))?;
+    await_frame_terminal(&surface, &state, input_baseline, FRAME_TERMINAL_TIMEOUT)?;
     dispatch(
         &surface,
         &state,

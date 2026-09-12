@@ -403,6 +403,7 @@ pub struct AccessibilitySnapshot {
     line_count: usize,
     dirty: bool,
     report: AccessibilityReport,
+    composing: bool,
 }
 
 impl AccessibilitySnapshot {
@@ -457,7 +458,20 @@ impl AccessibilitySnapshot {
             line_count,
             dirty,
             report,
+            composing: false,
         })
+    }
+
+    /// Records whether the editor has an active composition.
+    #[must_use]
+    pub const fn with_editor_composition(mut self, composing: bool) -> Self {
+        self.composing = composing;
+        self
+    }
+    /// Returns whether the editor has an active composition.
+    #[must_use]
+    pub const fn is_editor_composing(&self) -> bool {
+        self.composing
     }
 
     /// Returns exact document and buffer identity.
@@ -655,6 +669,22 @@ pub enum AccessibilityOperation {
         /// Global `AppKit` UTF-16 index to map.
         index_utf16: usize,
     },
+    /// First visible line fragment for a UTF-16 range, or its insertion caret.
+    FirstRectForRange {
+        /// Exact document and layout revision.
+        revision: AccessibilityRevision,
+        /// Requested range; the response reports the fragment actually represented.
+        range: AccessibilityTextRange,
+        /// Interpret indices in the native marked-text projection.
+        marked_text: bool,
+    },
+    /// Hit-test an Alpine view-local point against the current editor layout.
+    IndexForPoint {
+        /// Exact document and layout revision.
+        revision: AccessibilityRevision,
+        /// A validated point encoded as a zero-sized rectangle.
+        point: AccessibilityBounds,
+    },
     /// Apply one revision-checked action.
     Action(AccessibilityAction),
 }
@@ -674,6 +704,10 @@ pub enum AccessibilityRequestKind {
     RangeForLine,
     /// UTF-16 index to grapheme-range mapping request.
     RangeForIndex,
+    /// UTF-16 range to visible layout fragment.
+    FirstRectForRange,
+    /// Current layout point to UTF-16 index.
+    IndexForPoint,
     /// Revision-checked action request.
     Action,
 }
@@ -784,6 +818,42 @@ impl AccessibilityRequest {
             },
         )
     }
+    /// Requests a visible text fragment without forcing scrolling or painting.
+    ///
+    /// # Errors
+    /// Rejects zero identity and overflowing ranges.
+    pub fn first_rect_for_range(
+        id: AccessibilityRequestId,
+        revision: AccessibilityRevision,
+        range: AccessibilityTextRange,
+        marked_text: bool,
+    ) -> Result<Self, AccessibilityError> {
+        range.end_utf16()?;
+        Self::new(
+            id,
+            AccessibilityOperation::FirstRectForRange {
+                revision,
+                range,
+                marked_text,
+            },
+        )
+    }
+    /// Requests the UTF-16 index under a finite view-local point.
+    ///
+    /// # Errors
+    /// Rejects zero identity and invalid coordinates.
+    pub fn index_for_point(
+        id: AccessibilityRequestId,
+        revision: AccessibilityRevision,
+        x: f32,
+        y: f32,
+    ) -> Result<Self, AccessibilityError> {
+        let point = AccessibilityBounds::new(x, y, 0.0, 0.0)?;
+        Self::new(
+            id,
+            AccessibilityOperation::IndexForPoint { revision, point },
+        )
+    }
     /// Creates a revision-checked action request.
     ///
     /// # Errors
@@ -815,6 +885,10 @@ impl AccessibilityRequest {
             AccessibilityOperation::LineForIndex { .. } => AccessibilityRequestKind::LineForIndex,
             AccessibilityOperation::RangeForLine { .. } => AccessibilityRequestKind::RangeForLine,
             AccessibilityOperation::RangeForIndex { .. } => AccessibilityRequestKind::RangeForIndex,
+            AccessibilityOperation::FirstRectForRange { .. } => {
+                AccessibilityRequestKind::FirstRectForRange
+            }
+            AccessibilityOperation::IndexForPoint { .. } => AccessibilityRequestKind::IndexForPoint,
             AccessibilityOperation::Action(_) => AccessibilityRequestKind::Action,
         }
     }
@@ -827,7 +901,9 @@ impl AccessibilityRequest {
             | AccessibilityOperation::Selection { revision }
             | AccessibilityOperation::LineForIndex { revision, .. }
             | AccessibilityOperation::RangeForLine { revision, .. }
-            | AccessibilityOperation::RangeForIndex { revision, .. } => Some(revision),
+            | AccessibilityOperation::RangeForIndex { revision, .. }
+            | AccessibilityOperation::FirstRectForRange { revision, .. }
+            | AccessibilityOperation::IndexForPoint { revision, .. } => Some(revision),
             AccessibilityOperation::Action(action) => Some(action.revision()),
         }
     }
@@ -882,6 +958,15 @@ pub enum AccessibilityPayload {
     Line(usize),
     /// Global UTF-16 range.
     Range(AccessibilityTextRange),
+    /// First visible fragment and the exact range it represents.
+    TextGeometry {
+        /// Actual represented UTF-16 fragment.
+        range: AccessibilityTextRange,
+        /// Rectangle in Alpine view-local coordinates.
+        bounds: AccessibilityBounds,
+    },
+    /// Global UTF-16 index at the requested point.
+    Index(usize),
     /// Terminal action result.
     Action(AccessibilityActionResult),
 }
@@ -900,6 +985,11 @@ impl AccessibilityPayload {
                     Self::Range(_),
                 )
                 | (AccessibilityRequestKind::Action, Self::Action(_))
+                | (
+                    AccessibilityRequestKind::FirstRectForRange,
+                    Self::TextGeometry { .. }
+                )
+                | (AccessibilityRequestKind::IndexForPoint, Self::Index(_))
         )
     }
 }

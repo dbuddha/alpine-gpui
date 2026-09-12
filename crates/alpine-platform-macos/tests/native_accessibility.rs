@@ -121,6 +121,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 Ok(AccessibilityPayload::Selection(state.selection))
             }
+            alpine_platform_macos::AccessibilityOperation::FirstRectForRange {
+                revision,
+                range,
+                ..
+            } if *revision == observed && range.start_utf16() == 5 && range.length_utf16() == 0 => {
+                Ok(AccessibilityPayload::TextGeometry {
+                    range: *range,
+                    bounds: AccessibilityBounds::new(20.0, 40.0, 0.0, 16.0)?,
+                })
+            }
+            alpine_platform_macos::AccessibilityOperation::FirstRectForRange {
+                revision,
+                range,
+                ..
+            } if *revision == observed
+                && range.start_utf16() == 0
+                && range.length_utf16() == 12 =>
+            {
+                Ok(AccessibilityPayload::TextGeometry {
+                    range: AccessibilityTextRange::new(0, 5),
+                    bounds: AccessibilityBounds::new(10.0, 20.0, 30.0, 16.0)?,
+                })
+            }
+            alpine_platform_macos::AccessibilityOperation::FirstRectForRange {
+                revision,
+                range,
+                ..
+            } if *revision == observed && range.start_utf16() == 5 && range.length_utf16() == 7 => {
+                Ok(AccessibilityPayload::TextGeometry {
+                    range: *range,
+                    bounds: AccessibilityBounds::new(20.0, 40.0, 60.0, 16.0)?,
+                })
+            }
+            alpine_platform_macos::AccessibilityOperation::IndexForPoint { revision, point }
+                if *revision == observed
+                    && point.x() > 20.0
+                    && point.x() < 21.0
+                    && point.y().to_bits() == 48.0_f32.to_bits() =>
+            {
+                Ok(AccessibilityPayload::Index(5))
+            }
             alpine_platform_macos::AccessibilityOperation::LineForIndex {
                 revision,
                 index_utf16,
@@ -298,7 +339,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         AccessibilityTextRange::new(3, 1)
     );
     assert!(evidence.bounded_text_selector_allowed());
-    assert!(!evidence.geometry_selector_allowed());
+    assert!(evidence.geometry_selector_allowed());
     assert!(evidence.semantic_tree_valid());
     assert!(evidence.text_selector_scope_valid());
     assert_eq!(
@@ -364,7 +405,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_evidence = state
         .lock()
         .map_err(|_| "accessibility state lock poisoned")?;
-    assert_eq!(state_evidence.snapshot_requests, 8);
+    assert_eq!(state_evidence.snapshot_requests, 12);
     assert_eq!(state_evidence.activations, 1);
     drop(state_evidence);
 

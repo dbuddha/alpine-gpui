@@ -412,6 +412,33 @@ pub trait TextShaper {
     ///
     /// Returns a structured unsupported, native, allocation, or output error.
     fn shape(&mut self, text: &str, font: FontKey) -> Result<LineLayout, LayoutError>;
+
+    /// Returns the primary insertion offset for a scalar-aligned UTF-16 index.
+    ///
+    /// # Errors
+    /// Returns an error when precise native geometry is unavailable or invalid.
+    fn caret_offset(
+        &mut self,
+        _text: &str,
+        _font: FontKey,
+        _index: usize,
+    ) -> Result<f32, LayoutError> {
+        Err(LayoutError::NativeFailure("text geometry unavailable"))
+    }
+
+    /// Maps a point inside the typographic line to a source UTF-16 index.
+    /// Outside points return `None`, without clamping into the text.
+    ///
+    /// # Errors
+    /// Returns an error when precise native geometry is unavailable or invalid.
+    fn index_at_x(
+        &mut self,
+        _text: &str,
+        _font: FontKey,
+        _x: f32,
+    ) -> Result<Option<usize>, LayoutError> {
+        Err(LayoutError::NativeFailure("text geometry unavailable"))
+    }
 }
 
 /// Copied monochrome raster output and its logical baseline bearings.

@@ -28,6 +28,9 @@ if [ "$scope" = shipping ]; then
 fi
 export ALPINE_REQUIRE_NATIVE_VALIDATION=1
 export RUSTFLAGS="${RUSTFLAGS:-} --cfg alpine_native_validation"
+# Cargo's top-level executable path is shared across RUSTFLAGS configurations.
+# Keep native fixture binaries separate from ordinary development/test builds.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$repo_root/target/native-validation}"
 mkdir -p target/native-acceptance
 log=$(mktemp "target/native-acceptance/$mode-$scope.XXXXXX")
 printf 'Native acceptance: mode=%s scope=%s log=%s/%s\n' "$mode" "$scope" "$repo_root" "$log"
