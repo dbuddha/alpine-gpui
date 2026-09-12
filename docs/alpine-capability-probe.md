@@ -93,7 +93,8 @@ No physical performance target or daily-driver acceptance is currently claimed.
 
 ## Block 2 readiness findings, 2026-09-12
 
-Work is on `fix/native-readiness` from merged main `76d385d`. The release app
+The first recovery slices merged through PRs #608 and #609; product main is
+`e683352`. The release app
 visibly renders and, in an isolated disposable home, passed Unicode paste/save,
 keyboard typing, one-character undo/redo, dirty-close rejection, clean close and
 reopen. Clipboard automation reported an acknowledgement timeout, although saved
@@ -110,8 +111,9 @@ rejects input interference as an explanation for this physical failure. No
 speculative presentation change or weakened assertion was made.
 
 The recovered AX accumulator and rejected-capture fixes passed focused independent review.
-They bound the complete observer event count and preserve private diagnostic
-prefixes on failure, including when copy or hashing fails. External inspection
+They bound the complete observer event count and retain bounded private diagnostic
+prefixes when retention succeeds. If copying or hashing fails, the original
+temporary capture survives instead. External inspection
 also demonstrated missing role descriptions and incorrect enabled state: the
 small selector/getter correction exposes container, tab-group, radio-button and
 outline roles with the appropriate enabled state. A subsequent external capture confirmed the text-area node exists but has an
@@ -134,9 +136,40 @@ matched that same CPU/GPUI readback exactly. Its source-diff and binary identiti
 are in `current-alpine-identity.json` beside the readback. No performance claim
 was made. Existing offline shader binaries made this path usable without Xcode.
 
-PR #608 passed CI and merged the first recovery slice. The snapshot/title
-correction follows separately. Block 2 is not accepted yet. Physical presentation,
-full external editor accessibility,
-IME/VoiceOver and the remaining native journeys must be resolved or explicitly
-reviewed before comparator expansion. Keep the separate lab CI timing overrun
-visible without broadening this slice into another pipeline redesign.
+PR #608 passed PR CI in 7m06s and main CI in 6m45s. PR #609 passed PR CI in
+8m08s and resulting main CI in 7m18s, including queueing. The lab cleanup main run
+passed in 25m08s, exceeding the 15-minute target. Its pipeline rebuilds the release
+sampler after the aggregate gate instead of reusing the already verified candidate;
+this overhead remains unresolved and is not a product performance result.
+
+Further release UI checks observed an exact Find match, command-palette split/close
+and repaint after narrowing the window. Find's Command-A does not select the query:
+`handle_find_key` has no select-all route. This is separate from the archived LSP
+workspace-overlay changes. Do not treat the latter as a ready fix for Find.
+Automation entered only the ASCII prefix of an accented search string; that
+observation does not qualify or diagnose real IME input. A hide shortcut was sent,
+but its lifecycle outcome was not independently observed.
+
+An original Swift/MetalKit endpoint control, using command-buffer presentation,
+submitted 240 frames while its application was active and its window key. All GPU
+work completed and all presented handlers ran, but every actual `presentedTime`
+was zero. An independent review verified source/binary identities and matching raw
+frame records. Alpine-specific code is unnecessary to reproduce this observation
+in this machine/session. Focus was checked at submission, not physical presentation;
+this establishes neither an Apple defect nor visibility, refresh rate or latency.
+The first control was unfocused and is retained as a limited diagnostic, not the
+foreground result. Sources and private receipts remain in the lab's
+`.lab/block2-mtkview-control` and `.lab/block2-mtkview-foreground`, with a
+checksum-verified recovery copy at
+`/Users/deepak/alpine-recovery/block2-20260912T065728Z`. The foreground
+observation SHA-256 is
+`389ba1a1cd65cb3e8860099050a1687229e54459d10863d38afcc656fd55822c`.
+Do not substitute GPU completion for presentation or repeat presentation variants
+without a new discriminator.
+
+Block 2 is not accepted yet. Physical presentation, full external editor
+accessibility, human keyboard/IME/VoiceOver and unobserved native journeys remain
+open. The disposable release app is available for the requested human check.
+Continue independent readiness work within the block budget; comparator expansion
+still requires the human checkpoint. Keep the lab CI overrun visible without
+broadening native recovery into another pipeline redesign.
