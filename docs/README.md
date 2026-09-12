@@ -1,31 +1,24 @@
-# Alpine documentation
+# Documentation
 
-Current guidance:
+Start with the topic you need:
 
-- [Build and run](../README.md#development-and-project-state), including current limitations.
-- [Operating guide](../AGENTS.md): focused development, verification and PR acceptance.
-- [Architecture](../ARCHITECTURE.md): implemented ownership and subsystem invariants.
-- [Studio settings](reference/studio-settings.md).
-- [Dogfood capture](quality/studio-dogfood-capture.md), [release profiling](quality/studio-release-profiling.md), and [residency diagnosis](quality/studio-residency.md).
-- [Rendering doctrine](concepts/editor-rendering-doctrine.md) and [measurement boundaries](quality/performance.md).
-- Rust API documentation and doctests remain part of the build.
+- [Build and run](development.md).
+- [Testing and acceptance](testing.md).
+- [Architecture map](../ARCHITECTURE.md), with links to detailed invariants.
+- [Settings](reference/studio-settings.md) and [current limitations](reference/limitations.md).
+- [Debugging](debugging/README.md).
+- [Research findings](research/index.md), only when a question needs source comparison.
 
-Use plain Markdown. Correct existing guidance when behavior changes; a document
-is not required for every implementation change. No mdBook or Wiki build,
-synchronization or drift audit is required. The remote Wiki is left as history
-and is no longer presented as maintained.
+Use plain Markdown and Rust API docs. Correct guidance when behavior changes it;
+batch new explanations after a feature settles or before a release. There is no
+book, Wiki, documentation skill or mandatory per-PR documentation workflow.
 
-## Historical reference
+Technical [AEPs](aep/) and [case studies](case-studies/README.md) remain references
+because existing tests and evidence cite them. They are not default onboarding.
+The [evidence registry](../assurance/evidence.toml) retains technical measurement
+and verification contracts. Preserve their references when reorganizing material.
 
-[Research](research/index.md), [case studies](case-studies/README.md),
-[AEPs](aep/), [project plans](project/README.md), and the old
-[governance operations](operations/) are retained at their existing paths. They
-contain dated status and superseded procedures, not current development gates.
-Use current code, tests and the operating guide when those procedures conflict.
-Technical product contracts and measurement evidence remain in the
-[evidence registry](../assurance/evidence.toml).
-
-The pre-cleanup revision is
-[`f3c7cfb561b1a250859ea3162d0dff105a5cc61c`](https://github.com/dbuddha/alpine-gpui/tree/f3c7cfb561b1a250859ea3162d0dff105a5cc61c).
-It retains removed governance evidence, installation/evaluation tooling and book
-configuration. Their removal does not invalidate retained technical measurements.
+Obsolete project/governance guides and Wiki templates are retained in
+[pre-cleanup Git history](https://github.com/dbuddha/alpine-gpui/tree/da69bd30cbfde922ca7e8966bfb63eee2d65a7cf/docs).
+The retired remote Wiki snapshot is `aeab9e09ffea95c4080dd1459131b9e4c1d064e8`;
+its content was generated from repository sources at `93df44b`.

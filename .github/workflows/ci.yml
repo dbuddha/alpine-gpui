@@ -112,9 +112,9 @@ jobs:
         run: cargo test --workspace --all-targets --all-features --locked
       - name: Stress Studio concurrency admission
         run: scripts/test-studio-concurrency-stress.sh
-      - name: Test documentation examples
+      - name: Test Rust API examples
         run: cargo test --workspace --doc --all-features --locked
-      - name: Build documentation
+      - name: Build Rust API documentation
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps --locked

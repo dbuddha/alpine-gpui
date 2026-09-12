@@ -95,10 +95,9 @@ Development is PR-first: explain the problem and outcome, change, and verificati
 with remaining risks. A user request is sufficient scope for a focused fix. Use
 [issues](https://github.com/dbuddha/alpine-gpui/issues) for deferred defects,
 blockers or multi-PR work; labels, hierarchy and Projects are optional.
-See [AGENTS.md](AGENTS.md) for engineering and protected-merge safeguards and
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and acceptance and
 [Actions](https://github.com/dbuddha/alpine-gpui/actions/workflows/ci.yml) for CI.
-Documentation is plain Markdown plus Rust API docs and doctests. The historical
-Wiki is no longer maintained. Update existing guidance when behavior changes it.
+Documentation is plain Markdown plus Rust API docs and doctests. The Wiki is retired; repository Markdown is canonical. Update existing guidance when behavior changes it.
 
 ## Ownership and license
 

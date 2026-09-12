@@ -7,9 +7,9 @@ later startup and interaction baselines in
 qualification in
 [Task #241](https://github.com/dbuddha/alpine-gpui/issues/241).
 
-The repository page is canonical. The GitHub Wiki is a revision-pinned retrieval
-mirror, Issues own live status, and a validated bundle owns facts about one
-captured session.
+This repository page is canonical. A validated bundle records facts about one
+captured session. Report the result and remaining limitations in the PR; linked
+issues retain historical context.
 
 ## Current implementation status
 
