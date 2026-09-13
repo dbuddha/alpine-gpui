@@ -4,9 +4,13 @@
 //! sessions and recovery journals live under `Application Support`, so the
 //! rename would otherwise orphan existing local state.
 //!
-//! Data already present in the new location always wins. The legacy directory
-//! is never modified or removed, so a failed import leaves the original intact
-//! and can be retried or inspected by hand.
+//! Completion is recorded by a marker file rather than inferred from the
+//! current directory existing. An ordinary launch creates that directory as
+//! soon as it writes a session, so directory existence cannot distinguish "this
+//! was imported" from "an import failed and the app then saved". Without the
+//! marker the import is retried, and it copies only files the current location
+//! does not already have. The legacy directory is never modified, so a failure
+//! leaves the original intact and inspectable.
 
 use std::{
     ffi::OsString,
@@ -18,19 +22,22 @@ use std::{
 pub(crate) const LEGACY_DIRECTORY: &str = "Alpine Studio";
 /// Directory name used by this application.
 pub(crate) const CURRENT_DIRECTORY: &str = "Alpine Editor";
+/// Written into the current directory once an import completes.
+pub(crate) const MARKER: &str = ".imported-from-alpine-studio";
 
 /// Result of one migration attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum MigrationOutcome {
     /// No home directory was available, so no location could be resolved.
     MissingHome,
-    /// Current data already exists and legacy data was left untouched.
-    CurrentDataPresent,
-    /// No legacy directory exists, so there was nothing to import.
+    /// An import already completed, recorded by the marker file.
+    AlreadyImported,
+    /// No legacy directory exists, so there is nothing to import.
     NoLegacyData,
-    /// Legacy files were copied into the current location.
-    Imported { files: usize },
-    /// The import failed. The legacy directory is unchanged.
+    /// Import finished. `copied` excludes files the current location already had.
+    Imported { copied: usize, skipped: usize },
+    /// The import failed. The legacy directory is unchanged and no marker was
+    /// written, so the next launch retries.
     Failed {
         operation: &'static str,
         kind: io::ErrorKind,
@@ -41,7 +48,7 @@ fn support_root(home: &Path) -> PathBuf {
     home.join("Library").join("Application Support")
 }
 
-/// Imports the legacy support directory when the current one is absent.
+/// Imports the legacy support directory unless an import already completed.
 pub(crate) fn migrate(home: Option<OsString>) -> MigrationOutcome {
     let Some(home) = home.filter(|value| !value.is_empty()).map(PathBuf::from) else {
         return MigrationOutcome::MissingHome;
@@ -50,8 +57,8 @@ pub(crate) fn migrate(home: Option<OsString>) -> MigrationOutcome {
     let current = root.join(CURRENT_DIRECTORY);
     let legacy = root.join(LEGACY_DIRECTORY);
 
-    if current.exists() {
-        return MigrationOutcome::CurrentDataPresent;
+    if current.join(MARKER).exists() {
+        return MigrationOutcome::AlreadyImported;
     }
     if !legacy.is_dir() {
         return MigrationOutcome::NoLegacyData;
@@ -66,24 +73,19 @@ pub(crate) fn migrate(home: Option<OsString>) -> MigrationOutcome {
             };
         }
     };
-
-    // Stage into a temporary sibling so a partial copy never becomes the
-    // current directory. Only a complete import is published.
-    let staging = root.join(".alpine-editor-import");
-    let _ = fs::remove_dir_all(&staging);
-    if let Err(error) = fs::create_dir_all(&staging) {
+    if let Err(error) = fs::create_dir_all(&current) {
         return MigrationOutcome::Failed {
-            operation: "create-staging",
+            operation: "create-current",
             kind: error.kind(),
         };
     }
 
-    let mut files = 0_usize;
+    let mut copied = 0_usize;
+    let mut skipped = 0_usize;
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                let _ = fs::remove_dir_all(&staging);
                 return MigrationOutcome::Failed {
                     operation: "read-entry",
                     kind: error.kind(),
@@ -91,35 +93,54 @@ pub(crate) fn migrate(home: Option<OsString>) -> MigrationOutcome {
             }
         };
         let source = entry.path();
-        if !source.is_file() {
+        // Only regular files migrate. A symlink is not followed, so a hostile
+        // or stale link in the legacy directory cannot write outside it.
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
             continue;
         }
         let Some(name) = source.file_name() else {
             continue;
         };
-        if let Err(error) = fs::copy(&source, staging.join(name)) {
-            let _ = fs::remove_dir_all(&staging);
+        let destination = current.join(name);
+        // Data already in the current location always wins.
+        if destination.exists() {
+            skipped = skipped.saturating_add(1);
+            continue;
+        }
+        // Copy to a temporary name first so an interrupted copy never presents
+        // itself as a complete file at the destination.
+        let staged = current.join(format!(".{}.import", name.to_string_lossy()));
+        if let Err(error) = fs::copy(&source, &staged) {
+            let _ = fs::remove_file(&staged);
             return MigrationOutcome::Failed {
                 operation: "copy",
                 kind: error.kind(),
             };
         }
-        files = files.saturating_add(1);
+        if let Err(error) = fs::rename(&staged, &destination) {
+            let _ = fs::remove_file(&staged);
+            return MigrationOutcome::Failed {
+                operation: "publish",
+                kind: error.kind(),
+            };
+        }
+        copied = copied.saturating_add(1);
     }
 
-    if let Err(error) = fs::rename(&staging, &current) {
-        let _ = fs::remove_dir_all(&staging);
+    if let Err(error) = fs::write(current.join(MARKER), b"alpine-studio\n") {
         return MigrationOutcome::Failed {
-            operation: "publish",
+            operation: "mark",
             kind: error.kind(),
         };
     }
-    MigrationOutcome::Imported { files }
+    MigrationOutcome::Imported { copied, skipped }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CURRENT_DIRECTORY, LEGACY_DIRECTORY, MigrationOutcome, migrate, support_root};
+    use super::{
+        CURRENT_DIRECTORY, LEGACY_DIRECTORY, MARKER, MigrationOutcome, migrate, support_root,
+    };
     use std::{ffi::OsString, fs, path::PathBuf};
 
     /// Owns one disposable home so a failed assertion still removes the tree.
@@ -138,6 +159,14 @@ mod tests {
 
         fn os_string(&self) -> OsString {
             self.0.as_os_str().to_owned()
+        }
+
+        fn legacy(&self) -> PathBuf {
+            support_root(&self.0).join(LEGACY_DIRECTORY)
+        }
+
+        fn current(&self) -> PathBuf {
+            support_root(&self.0).join(CURRENT_DIRECTORY)
         }
     }
 
@@ -170,72 +199,137 @@ mod tests {
     fn legacy_files_are_imported_and_the_original_is_preserved()
     -> Result<(), Box<dyn std::error::Error>> {
         let home = DisposableHome::new("import")?;
-        let legacy = support_root(&home.0).join(LEGACY_DIRECTORY);
-        fs::create_dir_all(&legacy)?;
-        fs::write(legacy.join("settings.json"), b"{\"font_size\":15}")?;
-        fs::write(legacy.join("session-v1.bin"), b"ALPNSESS")?;
+        fs::create_dir_all(home.legacy())?;
+        fs::write(home.legacy().join("settings.json"), b"{\"font_size\":15}")?;
+        fs::write(home.legacy().join("session-v1.bin"), b"ALPNSESS")?;
 
         assert_eq!(
             migrate(Some(home.os_string())),
-            MigrationOutcome::Imported { files: 2 }
+            MigrationOutcome::Imported {
+                copied: 2,
+                skipped: 0
+            }
         );
 
-        let current = support_root(&home.0).join(CURRENT_DIRECTORY);
         assert_eq!(
-            fs::read(current.join("settings.json"))?,
+            fs::read(home.current().join("settings.json"))?,
             b"{\"font_size\":15}"
         );
-        assert_eq!(fs::read(current.join("session-v1.bin"))?, b"ALPNSESS");
+        assert_eq!(
+            fs::read(home.current().join("session-v1.bin"))?,
+            b"ALPNSESS"
+        );
         // The legacy directory is evidence and must survive the import.
-        assert!(legacy.join("settings.json").is_file());
+        assert!(home.legacy().join("settings.json").is_file());
+        assert!(home.current().join(MARKER).is_file());
         Ok(())
     }
 
     #[test]
-    fn existing_current_data_always_wins() -> Result<(), Box<dyn std::error::Error>> {
+    fn current_files_win_while_absent_ones_are_still_imported()
+    -> Result<(), Box<dyn std::error::Error>> {
         let home = DisposableHome::new("conflict")?;
-        let root = support_root(&home.0);
-        let legacy = root.join(LEGACY_DIRECTORY);
-        let current = root.join(CURRENT_DIRECTORY);
-        fs::create_dir_all(&legacy)?;
-        fs::create_dir_all(&current)?;
-        fs::write(legacy.join("settings.json"), b"legacy")?;
-        fs::write(current.join("settings.json"), b"current")?;
+        fs::create_dir_all(home.legacy())?;
+        fs::create_dir_all(home.current())?;
+        fs::write(home.legacy().join("settings.json"), b"legacy")?;
+        fs::write(home.legacy().join("session-v1.bin"), b"legacy-session")?;
+        fs::write(home.current().join("settings.json"), b"current")?;
 
         assert_eq!(
             migrate(Some(home.os_string())),
-            MigrationOutcome::CurrentDataPresent
+            MigrationOutcome::Imported {
+                copied: 1,
+                skipped: 1
+            }
         );
-        assert_eq!(fs::read(current.join("settings.json"))?, b"current");
+        assert_eq!(fs::read(home.current().join("settings.json"))?, b"current");
+        assert_eq!(
+            fs::read(home.current().join("session-v1.bin"))?,
+            b"legacy-session"
+        );
+        Ok(())
+    }
+
+    /// The defect this guards: an ordinary launch creates the current directory
+    /// as soon as it saves, so directory existence must not end the import.
+    #[test]
+    fn a_session_written_before_import_does_not_strand_legacy_data()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let home = DisposableHome::new("stranded")?;
+        fs::create_dir_all(home.legacy())?;
+        fs::write(home.legacy().join("settings.json"), b"legacy")?;
+        // The application saved a session without any import having happened.
+        fs::create_dir_all(home.current())?;
+        fs::write(home.current().join("session-v1.bin"), b"fresh")?;
+
+        assert_eq!(
+            migrate(Some(home.os_string())),
+            MigrationOutcome::Imported {
+                copied: 1,
+                skipped: 0
+            }
+        );
+        assert_eq!(fs::read(home.current().join("settings.json"))?, b"legacy");
+        assert_eq!(fs::read(home.current().join("session-v1.bin"))?, b"fresh");
         Ok(())
     }
 
     #[test]
     fn a_second_run_is_a_no_op() -> Result<(), Box<dyn std::error::Error>> {
         let home = DisposableHome::new("repeat")?;
-        let legacy = support_root(&home.0).join(LEGACY_DIRECTORY);
-        fs::create_dir_all(&legacy)?;
-        fs::write(legacy.join("settings.json"), b"once")?;
+        fs::create_dir_all(home.legacy())?;
+        fs::write(home.legacy().join("settings.json"), b"once")?;
         let first = migrate(Some(home.os_string()));
         let second = migrate(Some(home.os_string()));
-        assert_eq!(first, MigrationOutcome::Imported { files: 1 });
-        assert_eq!(second, MigrationOutcome::CurrentDataPresent);
+        assert_eq!(
+            first,
+            MigrationOutcome::Imported {
+                copied: 1,
+                skipped: 0
+            }
+        );
+        assert_eq!(second, MigrationOutcome::AlreadyImported);
         Ok(())
     }
 
     #[test]
-    fn directories_inside_the_legacy_location_are_skipped() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn directories_and_symlinks_in_the_legacy_location_are_skipped()
+    -> Result<(), Box<dyn std::error::Error>> {
         let home = DisposableHome::new("nested")?;
-        let legacy = support_root(&home.0).join(LEGACY_DIRECTORY);
-        fs::create_dir_all(legacy.join("nested"))?;
-        fs::write(legacy.join("settings.json"), b"flat")?;
+        fs::create_dir_all(home.legacy().join("nested"))?;
+        fs::write(home.legacy().join("settings.json"), b"flat")?;
+        let outside = home.0.join("outside.txt");
+        fs::write(&outside, b"must not be copied")?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, home.legacy().join("link.txt"))?;
+
         assert_eq!(
             migrate(Some(home.os_string())),
-            MigrationOutcome::Imported { files: 1 }
+            MigrationOutcome::Imported {
+                copied: 1,
+                skipped: 0
+            }
         );
-        let current = support_root(&home.0).join(CURRENT_DIRECTORY);
-        assert!(!current.join("nested").exists());
+        assert!(!home.current().join("nested").exists());
+        assert!(!home.current().join("link.txt").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn no_staging_files_survive_a_successful_import() -> Result<(), Box<dyn std::error::Error>> {
+        let home = DisposableHome::new("staging")?;
+        fs::create_dir_all(home.legacy())?;
+        fs::write(home.legacy().join("settings.json"), b"value")?;
+        assert!(matches!(
+            migrate(Some(home.os_string())),
+            MigrationOutcome::Imported { .. }
+        ));
+        let leftovers: Vec<_> = fs::read_dir(home.current())?
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".import"))
+            .collect();
+        assert!(leftovers.is_empty(), "staging files left: {leftovers:?}");
         Ok(())
     }
 }

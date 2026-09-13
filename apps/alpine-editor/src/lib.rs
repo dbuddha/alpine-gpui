@@ -715,13 +715,28 @@ pub fn initial_scene() -> Result<Scene, SurfaceError> {
     }
 }
 
-/// Imports the pre-rename `Alpine Studio` support directory when the current
-/// `Alpine Editor` directory does not exist yet.
+/// Imports the pre-rename `Alpine Studio` support directory once.
 ///
-/// Data already in the current location always wins, and the legacy directory
-/// is never modified, so this is safe to call on every launch.
+/// Data already in the current location always wins per file, the legacy
+/// directory is never modified, and completion is recorded by a marker so an
+/// interrupted import is retried. Safe to call on every launch.
+///
+/// A failure is reported on stderr and leaves the legacy data in place rather
+/// than being swallowed; there is no user-facing dialog to carry it yet.
 pub fn migrate_legacy_data() {
-    let _ = legacy_migration::migrate(std::env::var_os("HOME"));
+    match legacy_migration::migrate(std::env::var_os("HOME")) {
+        legacy_migration::MigrationOutcome::Failed { operation, kind } => {
+            eprintln!(
+                "alpine-editor: could not import the previous Alpine Studio data directory ({operation}: {kind:?}); the original is unchanged and the import will be retried on the next launch"
+            );
+        }
+        legacy_migration::MigrationOutcome::Imported { copied, skipped } if copied > 0 => {
+            eprintln!(
+                "alpine-editor: imported {copied} file(s) from the previous Alpine Studio data directory ({skipped} already present)"
+            );
+        }
+        _ => {}
+    }
 }
 
 /// Opens one native Alpine Editor window, requests one frame, and runs until close.
