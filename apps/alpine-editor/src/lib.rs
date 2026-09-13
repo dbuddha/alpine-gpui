@@ -2152,12 +2152,19 @@ impl EditorApp {
         Ok(())
     }
 
+    fn initial_runtime_document_revision(document: &EditorDocument) -> u64 {
+        document.buffer().revision().get().max(1)
+    }
+
     fn initial_accessibility_projection_revision(
         document: &EditorDocument,
+        runtime_document_revision: u64,
     ) -> alpine_platform_macos::AccessibilityRevision {
-        let document_revision = document.buffer().revision().get();
-        alpine_platform_macos::AccessibilityRevision::new(document_revision, document_revision)
-            .with_semantic(1)
+        alpine_platform_macos::AccessibilityRevision::new(
+            runtime_document_revision,
+            document.buffer().revision().get(),
+        )
+        .with_semantic(1)
     }
 
     fn initial_text_budgets() -> Result<(NonZeroUsize, NonZeroUsize), SurfaceError> {
@@ -2190,9 +2197,11 @@ impl EditorApp {
         let settings_reload = settings_reload_for(workspace.as_ref());
         let last_viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(APPLICATION_INVARIANT)?;
         let (layout_budget, atlas_budget) = Self::initial_text_budgets()?;
-        let runtime_document_revision = document.buffer().revision().get();
+        // RequestStamp rejects a zero document revision. A newly opened buffer
+        // starts at BufferRevision 0, so the runtime identity cannot copy it.
+        let runtime_document_revision = Self::initial_runtime_document_revision(&document);
         let accessibility_projection_revision =
-            Self::initial_accessibility_projection_revision(&document);
+            Self::initial_accessibility_projection_revision(&document, runtime_document_revision);
         let (tabs, panes) = Self::initial_tabs_and_panes(path)?;
         let profiler = EditorProfiler::default();
         let text_system = MeasuredTextSystem::new(text_system, profiler.enabled());
