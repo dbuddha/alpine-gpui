@@ -4481,6 +4481,26 @@ impl NativeSurface {
             self.delegate.clear_event_handler();
             return Err(SurfaceError::invariant(SurfaceOperation::RunLoop));
         }
+        let menu_delegate = self.delegate.clone();
+        let menu_installed = MainThreadMarker::new().is_some_and(|main_thread| {
+            crate::menu::install_handler(
+                main_thread,
+                Box::new(move |action| {
+                    // A menu command the editor never sees is worse than a
+                    // visible failure, but the run loop owns error reporting,
+                    // so record it the same way input dispatch failures are.
+                    let _ = menu_delegate.dispatch_surface_event(SurfaceEvent::Menu {
+                        timestamp: menu_delegate.next_event_timestamp(),
+                        action,
+                    });
+                }),
+            )
+        });
+        if !menu_installed {
+            self.view.clear_input_handler();
+            self.delegate.clear_event_handler();
+            return Err(SurfaceError::invariant(SurfaceOperation::RunLoop));
+        }
         let (input_epoch, focused) = self.view.input_focus_state();
         if input_epoch != InputEpoch::INITIAL || !focused {
             let _close = self.delegate.dispatch_surface_event(SurfaceEvent::Focus {
@@ -4496,6 +4516,7 @@ impl NativeSurface {
         self.wake_bridge.revoke();
         self.view.revoke_accessibility();
         self.view.clear_input_handler();
+        crate::menu::clear_handler();
         self.delegate.clear_event_handler();
         resolve_input_dispatch(run_result, self.view.take_input_dispatch_failure())
     }

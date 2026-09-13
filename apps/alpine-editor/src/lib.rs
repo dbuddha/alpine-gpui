@@ -106,7 +106,8 @@ use alpine_platform_macos::{AccessibilityPayload, AccessibilityRequest, Accessib
 use alpine_platform_macos::{
     AccessibilityRequestKind, ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText,
     ClipboardWrite, EditorSignpost, EditorSignpostStage, EventTimestamp, ImeEvent, InputEpoch,
-    InputEpochAdmission, KeyState, Modifiers, PointerAction, PointerButton, SurfaceError,
+    InputEpochAdmission, KeyState, MenuAction, Modifiers, PointerAction, PointerButton,
+    SurfaceError,
     SurfaceEvent,
 };
 use alpine_runtime::{
@@ -2063,7 +2064,10 @@ impl EditorApp {
     ) -> Result<Self, SurfaceError> {
         #[cfg(test)]
         let omitted_entries = workspace.snapshot().omitted_entries;
-        let document = EditorDocument::scratch(INITIAL_TEXT);
+        // Opening a folder must not look like a file the user wrote. Zed shows
+        // an empty editor beside the project panel; the placeholder sample this
+        // used to show was the single loudest signal that this was a toy.
+        let document = EditorDocument::scratch("");
         let app = Self::from_parts(text_system, document, None, Some(workspace))?;
         #[cfg(test)]
         let mut app = app;
@@ -4072,6 +4076,7 @@ impl EditorApp {
                 return self.handle_clipboard_completion(event);
             }
             SurfaceEvent::CloseRequested { .. } => return self.handle_close_request(),
+            SurfaceEvent::Menu { action, .. } => self.handle_menu_action(action),
             SurfaceEvent::Accessibility { .. }
             | SurfaceEvent::Keyboard { .. }
             | SurfaceEvent::Resize { .. }
@@ -6597,6 +6602,88 @@ impl EditorApp {
         self.set_local_status(LocalStatus::Workspace(message))
     }
 
+    /// Applies one menu command whose file choice the platform already made.
+    fn handle_menu_action(&mut self, action: &MenuAction) -> EventEffect {
+        match action {
+            MenuAction::NewFile => self.open_scratch_document(),
+            MenuAction::OpenPath(path) => self.open_menu_path(path),
+            MenuAction::Save => self.save_document(),
+            MenuAction::SaveAsPath(path) => self.save_document_as(path),
+        }
+    }
+
+    /// Opens a chosen file as a tab, or a chosen folder as the workspace.
+    fn open_menu_path(&mut self, path: &Path) -> EventEffect {
+        let metadata = match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(source) => {
+                return self.record_workspace_error(&WorkspaceSelectionError::Workspace(
+                    WorkspaceError::io("read chosen path", path, source),
+                ));
+            }
+        };
+        if metadata.is_dir() {
+            return self.open_workspace_root(path);
+        }
+        match self.open_workspace_path(path, None) {
+            Ok(effect) => effect,
+            Err(error) => self.record_workspace_error(&error),
+        }
+    }
+
+    /// Replaces the workspace with the chosen folder and reloads the tree.
+    fn open_workspace_root(&mut self, path: &Path) -> EventEffect {
+        let workspace = match Workspace::open_root(path) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                return self.record_workspace_error(&WorkspaceSelectionError::Workspace(error));
+            }
+        };
+        let Some(next_revision) = self.runtime_workspace_revision.checked_add(1) else {
+            return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
+        };
+        self.runtime_workspace_revision = next_revision;
+        self.workspace = Some(workspace);
+        let result = self
+            .settings_reload
+            .replace_project(self.workspace.as_ref().map(Workspace::root));
+        record_project_settings_result(self, result);
+        self.active_workspace_entry = None;
+        self.file_tree = FileTreeState::default();
+        if self.prime_workspace_launch().is_err() {
+            return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
+        }
+        EventEffect::document_replacement()
+    }
+
+    /// Replaces the active document with an empty untitled buffer.
+    fn open_scratch_document(&mut self) -> EventEffect {
+        let Some(next_revision) = self.runtime_document_revision.checked_add(1) else {
+            return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
+        };
+        self.document = EditorDocument::scratch("");
+        self.runtime_document_revision = next_revision;
+        self.apply_document_view(DocumentViewState::default());
+        EventEffect::document_replacement()
+    }
+
+    /// Writes the active buffer to `path`, then opens that file as the tab.
+    ///
+    /// Reopening rather than retargeting the current document means the saved
+    /// file is the one on disk, not a buffer that merely believes it was saved.
+    fn save_document_as(&mut self, path: &Path) -> EventEffect {
+        let text = self.buffer().snapshot().text();
+        if let Err(source) = std::fs::write(path, text) {
+            return self.record_workspace_error(&WorkspaceSelectionError::Workspace(
+                WorkspaceError::io("write chosen path", path, source),
+            ));
+        }
+        match self.open_workspace_path(path, None) {
+            Ok(effect) => effect,
+            Err(error) => self.record_workspace_error(&error),
+        }
+    }
+
     fn save_document(&mut self) -> EventEffect {
         match self.document.save() {
             Ok(Some(report)) => {
@@ -7479,6 +7566,7 @@ const fn surface_event_kind(event: &SurfaceEvent) -> u64 {
         SurfaceEvent::Accessibility { .. } => 8,
         SurfaceEvent::Wake { .. } => 9,
         SurfaceEvent::CloseRequested { .. } => 10,
+        SurfaceEvent::Menu { .. } => 11,
     }
 }
 

@@ -375,6 +375,23 @@ pub enum ImeEvent {
     Cancelled,
 }
 
+/// One menu command, with any file choice already resolved to a path.
+///
+/// The panels run inside this crate because they are `AppKit` objects, so the
+/// application never sees a native handle: it receives the chosen path or
+/// nothing at all when the user cancels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MenuAction {
+    /// Replace the active document with an empty untitled buffer.
+    NewFile,
+    /// Open this file or folder, chosen in an open panel.
+    OpenPath(std::path::PathBuf),
+    /// Write the active document to its existing path.
+    Save,
+    /// Write the active document to this path, chosen in a save panel.
+    SaveAsPath(std::path::PathBuf),
+}
+
 /// Handle-free event vocabulary crossing the native surface boundary.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SurfaceEvent {
@@ -470,6 +487,13 @@ pub enum SurfaceEvent {
         /// Monotonic event sequence.
         timestamp: EventTimestamp,
     },
+    /// Menu command with any file choice already resolved.
+    Menu {
+        /// Monotonic event sequence.
+        timestamp: EventTimestamp,
+        /// The command the user chose.
+        action: MenuAction,
+    },
 }
 
 impl SurfaceEvent {
@@ -485,6 +509,7 @@ impl SurfaceEvent {
             | Self::Resize { timestamp, .. }
             | Self::Clipboard { timestamp, .. }
             | Self::Ime { timestamp, .. }
+            | Self::Menu { timestamp, .. }
             | Self::Wake { timestamp }
             | Self::CloseRequested { timestamp } => *timestamp,
         }
