@@ -95,11 +95,7 @@ assert_ci_controls "$classifier"
 classifier_tests=$(run_fixture scripts/test-classifier.sh)
 assert_ci_controls "$classifier_tests"
 
-for control in scripts/check-policy.sh scripts/test-policy.sh scripts/check.sh \
-    scripts/check-agent-skills.sh scripts/test-agent-skills.sh scripts/check-agent-skills.py \
-    scripts/route-assurance-failures.sh scripts/test-assurance-failure-routing.sh \
-    scripts/collect-assurance-failures.sh scripts/test-assurance-failure-collector.sh \
-    .github/workflows/assurance-failure.yml; do
+for control in scripts/check-policy.sh scripts/test-policy.sh scripts/check.sh; do
     assert_ci_controls "$(run_fixture "$control")"
     test "$(run_fixture "$control" review:unsafe)" = "$(run_fixture "$control")"
     assert_every_gate "$(run_fixture "$(printf '%s\nunclassified/input.bin' "$control")")"

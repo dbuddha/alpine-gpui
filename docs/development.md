@@ -24,7 +24,7 @@ infrastructure, not a signed public release. See [limitations](reference/limitat
 [settings](reference/studio-settings.md) and [testing](testing.md).
 
 Use a focused branch and preserve dirty or parked work. Repository-local skills
-are discovered from `.agents/skills` when working in a checkout containing them.
+is discovered from `.agents/skills` when working in a checkout containing it.
 
 For an isolated readiness session, first provision the checksummed rust-analyzer
 archive using the pinned command in CI, then build from a clean commit:
