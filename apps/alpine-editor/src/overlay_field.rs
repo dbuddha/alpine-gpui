@@ -18,6 +18,7 @@ pub(super) enum Owner {
     ProjectSearch,
     Symbols,
     Rename,
+    GoToLine,
 }
 
 impl Owner {
@@ -25,6 +26,7 @@ impl Owner {
         let node = crate::accessibility::focus_owner(app)?;
         [
             Self::Find,
+            Self::GoToLine,
             Self::Palette,
             Self::QuickOpen,
             Self::ProjectSearch,
@@ -39,6 +41,7 @@ impl Owner {
         use crate::accessibility as ax;
         match self {
             Self::Find => ax::find_node(app),
+            Self::GoToLine => ax::GO_TO_LINE_NODE,
             Self::Palette => ax::COMMAND_PALETTE_FIELD,
             Self::QuickOpen => ax::QUICK_OPEN_FIELD,
             Self::ProjectSearch => ax::PROJECT_SEARCH_FIELD,
@@ -50,6 +53,7 @@ impl Owner {
     pub(super) fn read(self, app: &EditorApp) -> Option<(&str, &FieldEdit)> {
         Some(match self {
             Self::Find => (app.find.field_text(), app.find.edit()),
+            Self::GoToLine => (app.go_to_line.query(), app.go_to_line.edit()),
             Self::Palette => (app.command_palette.query(), &app.command_palette.edit),
             Self::QuickOpen => (app.quick_open.query(), &app.quick_open.edit),
             Self::ProjectSearch => (app.project_search.query(), &app.project_search.edit),
@@ -66,6 +70,7 @@ impl Owner {
     pub(super) fn parts(self, app: &mut EditorApp) -> Option<(&str, &mut FieldEdit)> {
         Some(match self {
             Self::Find => app.find.edit_parts(),
+            Self::GoToLine => app.go_to_line.edit_parts(),
             Self::Palette => app.command_palette.edit_parts(),
             Self::QuickOpen => app.quick_open.edit_parts(),
             Self::ProjectSearch => app.project_search.edit_parts(),
@@ -82,6 +87,7 @@ impl Owner {
     pub(super) fn prefix(self, app: &EditorApp) -> &'static str {
         match self {
             Self::Find => app.find.display_prefix(),
+            Self::GoToLine => crate::go_to_line::DISPLAY_PREFIX,
             Self::Palette => "> ",
             Self::QuickOpen => "Quick Open: ",
             Self::ProjectSearch => "Project Search: ",
@@ -93,6 +99,7 @@ impl Owner {
     pub(super) const fn limit(self) -> usize {
         match self {
             Self::Find => crate::find::MAX_QUERY_BYTES,
+            Self::GoToLine => crate::go_to_line::MAX_QUERY_BYTES,
             Self::Palette => crate::commands::MAX_QUERY_BYTES,
             Self::QuickOpen => crate::quick_open::MAX_QUERY_BYTES,
             Self::ProjectSearch => crate::project_search::MAX_QUERY_BYTES,
@@ -125,6 +132,10 @@ impl Owner {
                 }
                 Err(error) => app.record_find_error(&error),
             },
+            Self::GoToLine => {
+                app.go_to_line.apply_edit(prepared);
+                EventEffect::visual()
+            }
             Self::Palette => {
                 let context = app.command_context();
                 match app.command_palette.apply_edit(prepared, context) {
@@ -183,6 +194,7 @@ impl Owner {
         }
         match self {
             Self::Find => app.record_find_error(&error.into()),
+            Self::GoToLine => app.record_go_to_line_error(&error.into()),
             Self::Palette => app.record_command_palette_error(&error.into()),
             Self::QuickOpen => app.record_quick_open_error(&error.into()),
             Self::ProjectSearch => app.record_project_search_error(&error.into()),
@@ -399,6 +411,9 @@ mod tests {
             Owner::Find => {
                 app.find.open(false);
             }
+            Owner::GoToLine => {
+                app.go_to_line.open(1)?;
+            }
             Owner::Palette => {
                 app.command_palette.open(app.command_context())?;
             }
@@ -421,6 +436,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         for owner in [
             Owner::Find,
+            Owner::GoToLine,
             Owner::Palette,
             Owner::QuickOpen,
             Owner::ProjectSearch,
@@ -481,6 +497,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         for owner in [
             Owner::Find,
+            Owner::GoToLine,
             Owner::Palette,
             Owner::QuickOpen,
             Owner::ProjectSearch,

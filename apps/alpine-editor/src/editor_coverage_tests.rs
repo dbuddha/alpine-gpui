@@ -6892,6 +6892,18 @@ fn accessibility_non_identity_state_and_every_focus_owner_are_exact()
             .any(|node| { node.name() == "Find in document" && node.is_focused() })
     );
 
+    let mut go_to_line =
+        EditorApp::from_document(TestTextSystem, EditorDocument::scratch("x"), None)?;
+    assert!(go_to_line.go_to_line.open(1)?);
+    let go_to_line_snapshot = go_to_line.accessibility_snapshot()?;
+    assert_single_accessibility_focus(&go_to_line_snapshot);
+    assert!(
+        go_to_line_snapshot
+            .nodes()
+            .iter()
+            .any(|node| { node.name() == "Go to line" && node.is_focused() })
+    );
+
     let mut quick = EditorApp::from_document(TestTextSystem, EditorDocument::scratch("x"), None)?;
     assert!(quick.quick_open.open(1)?);
     let quick_snapshot = quick.accessibility_snapshot()?;

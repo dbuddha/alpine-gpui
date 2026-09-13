@@ -42,6 +42,7 @@ pub(super) const PROJECT_SEARCH_FIELD: AccessibilityNodeId = AccessibilityNodeId
 pub(super) const COMMAND_PALETTE_FIELD: AccessibilityNodeId = AccessibilityNodeId::new(17);
 pub(super) const SYMBOL_FIELD: AccessibilityNodeId = AccessibilityNodeId::new(18);
 pub(super) const RENAME_FIELD: AccessibilityNodeId = AccessibilityNodeId::new(19);
+pub(super) const GO_TO_LINE_NODE: AccessibilityNodeId = AccessibilityNodeId::new(20);
 const TAB_NODE_BASE: u64 = 1_024;
 const FILE_ROW_NODE_BASE: u64 = 1 << 20;
 const COMMAND_ROW_NODE_BASE: u64 = 2 << 20;
@@ -474,6 +475,7 @@ mod native_text_geometry_tests {
         use crate::overlay_field::Owner;
         for owner in [
             Owner::Find,
+            Owner::GoToLine,
             Owner::Palette,
             Owner::QuickOpen,
             Owner::ProjectSearch,
@@ -483,6 +485,9 @@ mod native_text_geometry_tests {
             match owner {
                 Owner::Find => {
                     app.find.open(false);
+                }
+                Owner::GoToLine => {
+                    app.go_to_line.open(1)?;
                 }
                 Owner::Palette => {
                     app.command_palette.open(app.command_context())?;
@@ -1318,6 +1323,7 @@ fn build_nodes(app: &EditorApp) -> Result<Vec<AccessibilityNode>, AccessibilityE
     let overlays = [
         app.file_tree.is_visible(),
         app.find.is_open(),
+        app.go_to_line.is_open(),
         app.quick_open.is_open(),
         app.project_search.is_open(),
         app.command_palette.is_open(),
@@ -1358,7 +1364,7 @@ fn build_nodes(app: &EditorApp) -> Result<Vec<AccessibilityNode>, AccessibilityE
 
 fn required_node_count(
     tab_count: usize,
-    overlays: [bool; 9],
+    overlays: [bool; 10],
     has_status: bool,
 ) -> Result<usize, AccessibilityError> {
     let overlay_count = overlays
@@ -1427,6 +1433,8 @@ pub(super) fn focus_owner(app: &EditorApp) -> Option<AccessibilityNodeId> {
         Some(PROJECT_SEARCH_FIELD)
     } else if app.quick_open.is_open() {
         Some(QUICK_OPEN_FIELD)
+    } else if app.go_to_line.is_open() {
+        Some(GO_TO_LINE_NODE)
     } else if app.find.is_open() {
         Some(find_node(app))
     } else if app.file_tree.is_focused() {
@@ -1481,6 +1489,12 @@ fn push_overlays(
             } else {
                 "Replace in document"
             },
+        ),
+        (
+            app.go_to_line.is_open(),
+            GO_TO_LINE_NODE,
+            AccessibilityRole::SearchField,
+            "Go to line",
         ),
         (
             app.quick_open.is_open(),
@@ -1957,7 +1971,7 @@ fn overlay_node(
 ) -> Result<AccessibilityNode, AccessibilityError> {
     let viewport = app.last_viewport;
     let sidebar = app.sidebar_width(viewport);
-    let node_bounds = if id == FIND_NODE || id == REPLACE_NODE {
+    let node_bounds = if id == FIND_NODE || id == REPLACE_NODE || id == GO_TO_LINE_NODE {
         let rect = crate::find_input::bounds(app).map_err(|_| AccessibilityError::InvalidTree)?;
         bounds(
             rect.origin().x(),
@@ -2371,17 +2385,17 @@ mod tests {
 
     #[test]
     fn node_count_and_tree_shape_boundaries_are_exact() {
-        assert_eq!(required_node_count(0, [false; 9], false), Ok(3));
+        assert_eq!(required_node_count(0, [false; 10], false), Ok(3));
         assert_eq!(
-            required_node_count(258, [true; 9], true),
+            required_node_count(257, [true; 10], true),
             Ok(MAX_ACCESSIBILITY_NODES)
         );
         assert_eq!(
-            required_node_count(259, [true; 9], true),
+            required_node_count(258, [true; 10], true),
             Err(AccessibilityError::InvalidTree)
         );
         assert_eq!(
-            required_node_count(usize::MAX, [false; 9], false),
+            required_node_count(usize::MAX, [false; 10], false),
             Err(AccessibilityError::ArithmeticOverflow)
         );
         assert_eq!(validate_tree_shape(4, 4, 1, true), Ok(()));

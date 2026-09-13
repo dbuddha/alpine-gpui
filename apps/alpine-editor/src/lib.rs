@@ -14,6 +14,7 @@ mod field_edit;
 mod file_tree;
 mod find;
 mod find_input;
+mod go_to_line;
 mod legacy_migration;
 #[cfg_attr(
     not(test),
@@ -171,6 +172,11 @@ use settings::FONT_FAMILY;
     target_arch = "aarch64"
 ))]
 use settings::FONT_SCALE as DEFAULT_SCALE;
+use settings::{
+    ChordPrefix, KEY_DELETE_BACKWARD, KEY_DELETE_FORWARD, KEY_DOWN, KEY_END, KEY_ESCAPE, KEY_HOME,
+    KEY_LEFT, KEY_RETURN, KEY_RIGHT, KEY_TAB, KEY_UP, KeyAction, LINE_HEIGHT, SettingsReloadError,
+    SettingsState,
+};
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use settings::{FONT_FAMILY, FONT_NAME};
 #[cfg(all(
@@ -183,11 +189,6 @@ use settings::{FONT_SCALE as DEFAULT_SCALE, KEY_A, KEY_E, KEY_F, KEY_P, KEY_S};
 #[cfg(test)]
 use settings::{
     KEY_A, KEY_E, KEY_F, KEY_LEFT_BRACKET, KEY_P, KEY_RIGHT_BRACKET, KEY_S, KEY_W, KEY_Z,
-};
-use settings::{
-    KEY_DELETE_BACKWARD, KEY_DELETE_FORWARD, KEY_DOWN, KEY_END, KEY_ESCAPE, KEY_HOME, KEY_LEFT,
-    KEY_RETURN, KEY_RIGHT, KEY_TAB, KEY_UP, KeyAction, LINE_HEIGHT, SettingsReloadError,
-    SettingsState,
 };
 #[cfg(test)]
 use syntax::SyntaxClass;
@@ -1937,6 +1938,8 @@ struct EditorApp {
     local_status: Option<LocalStatus>,
     find: FindState,
     find_needs_search: bool,
+    go_to_line: go_to_line::GoToLineState,
+    pending_chord: Option<ChordPrefix>,
     quick_open: QuickOpenState,
     project_search: ProjectSearchState,
     file_tree: FileTreeState,
@@ -2173,6 +2176,10 @@ impl EditorApp {
         Ok((tabs, panes))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the constructor names every retained editor field"
+    )]
     fn from_parts(
         text_system: impl EditorTextSystem + 'static,
         document: EditorDocument,
@@ -2250,6 +2257,8 @@ impl EditorApp {
             local_status: None,
             find: FindState::default(),
             find_needs_search: false,
+            go_to_line: go_to_line::GoToLineState::default(),
+            pending_chord: None,
             quick_open: QuickOpenState::default(),
             project_search: ProjectSearchState::default(),
             file_tree: FileTreeState::default(),
@@ -3224,6 +3233,7 @@ impl EditorApp {
         if self.focused
             && !self.workspace_edits.is_open()
             && !self.find.is_open()
+            && !self.go_to_line.is_open()
             && !self.quick_open.is_open()
             && !self.project_search.is_open()
             && !self.command_palette.is_open()
@@ -3234,7 +3244,9 @@ impl EditorApp {
         }
 
         let language_status = self.rust_diagnostics.status_message();
-        let status = status_bar_text(self.local_status.as_ref(), language_status.as_deref());
+        let chord_status = self.pending_chord.map(|_| "Cmd+K waiting for second key");
+        let status = chord_status
+            .or_else(|| status_bar_text(self.local_status.as_ref(), language_status.as_deref()));
         let status_background = if let Some(status) = status {
             let layout = self.text_system.shape(status, font)?;
             let top = (active_pane.bounds.origin().y() + content_size.height() - LINE_HEIGHT)
@@ -3466,6 +3478,17 @@ impl EditorApp {
             builder.push_quad(Quad::new(bounds, find_background_color))?;
             pending_glyphs.extend(self.paint_overlay_field(
                 overlay_field::Owner::Find,
+                &mut builder,
+                selection_color,
+                caret_color,
+            )?);
+        }
+        if self.go_to_line.is_open() {
+            let bounds = find_input::bounds(self)?;
+            builder.flush_glyphs(&pending_glyphs);
+            builder.push_quad(Quad::new(bounds, find_background_color))?;
+            pending_glyphs.extend(self.paint_overlay_field(
+                overlay_field::Owner::GoToLine,
                 &mut builder,
                 selection_color,
                 caret_color,
@@ -4075,6 +4098,7 @@ impl EditorApp {
             return EditorTransition::effect(dismissed_recovery);
         }
         if (self.find.is_open()
+            || self.go_to_line.is_open()
             || self.quick_open.is_open()
             || self.project_search.is_open()
             || self.command_palette.is_open()
@@ -4526,6 +4550,7 @@ impl EditorApp {
     fn toggle_file_tree(&mut self) -> EventEffect {
         self.find.close();
         self.find_needs_search = false;
+        self.go_to_line.close();
         self.quick_open.close();
         self.project_search.close();
         if self.workspace.is_none() {
@@ -4551,6 +4576,7 @@ impl EditorApp {
         {
             return effect;
         }
+        let overlay_active = overlay_field::Owner::active(self).is_some();
         let command = modifiers.contains(Modifiers::COMMAND);
         let shift = modifiers.contains(Modifiers::SHIFT);
         let option = modifiers.contains(Modifiers::OPTION);
@@ -4559,6 +4585,11 @@ impl EditorApp {
             .active()
             .keymap
             .resolve(physical_key, modifiers);
+        if let Some(effect) =
+            self.continue_or_start_chord(physical_key, modifiers, action, overlay_active)
+        {
+            return effect;
+        }
         if let Some(effect) = self.handle_workspace_edit_key(physical_key, command) {
             return effect;
         }
@@ -4581,16 +4612,7 @@ impl EditorApp {
             return self.toggle_file_tree();
         }
         if action == Some(KeyAction::Command(EditorCommand::OpenQuickOpen)) {
-            if self.workspace.is_none() {
-                return self.record_quick_open_error(&QuickOpenError::NoWorkspace);
-            }
-            self.find.close();
-            self.find_needs_search = false;
-            self.project_search.close();
-            return match self.quick_open.open(1) {
-                Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
-                Err(error) => self.record_quick_open_error(&error),
-            };
+            return self.open_quick_open_from_key();
         }
         if self.quick_open.is_open() {
             return self.handle_quick_open_key(physical_key, command);
@@ -4601,15 +4623,12 @@ impl EditorApp {
         {
             return self.dispatch_command(command);
         }
-        if self.find.is_open() {
-            if action == Some(KeyAction::SelectAll) {
-                return self
-                    .find
-                    .select_all()
-                    .then(EventEffect::visual)
-                    .unwrap_or_default();
-            }
-            return self.handle_find_key(physical_key, command, option, shift);
+        if let Some(effect) = self.handle_go_to_line_if_open(action, physical_key, modifiers) {
+            return effect;
+        }
+        if let Some(effect) = self.handle_find_if_open(action, physical_key, command, option, shift)
+        {
+            return effect;
         }
         if self.file_tree.is_focused() {
             return self.handle_file_tree_key(physical_key, command);
@@ -4647,6 +4666,7 @@ impl EditorApp {
 
     fn handle_ime(&mut self, event: &ImeEvent) -> EventEffect {
         self.field_pointer_owner = None;
+        self.pending_chord = None;
         if let Some(owner) = overlay_field::Owner::active(self) {
             match event {
                 ImeEvent::Committed(text) => return owner.commit(self, text, text.len()),
@@ -4662,6 +4682,7 @@ impl EditorApp {
                 _ => {
                     return match owner {
                         overlay_field::Owner::Find => self.handle_find_ime(event),
+                        overlay_field::Owner::GoToLine => self.handle_go_to_line_ime(event),
                         overlay_field::Owner::Palette => self.handle_command_palette_ime(event),
                         overlay_field::Owner::QuickOpen => self.handle_quick_open_ime(event),
                         overlay_field::Owner::ProjectSearch => {
@@ -4690,6 +4711,9 @@ impl EditorApp {
         }
         if self.quick_open.is_open() {
             return self.handle_quick_open_ime(event);
+        }
+        if self.go_to_line.is_open() {
+            return self.handle_go_to_line_ime(event);
         }
         if self.find.is_open() {
             return self.handle_find_ime(event);
@@ -4970,6 +4994,7 @@ impl EditorApp {
     fn open_command_palette(&mut self) -> EventEffect {
         self.find.close();
         self.find_needs_search = false;
+        self.go_to_line.close();
         self.quick_open.close();
         self.project_search.close();
         self.file_tree.unfocus();
@@ -5062,6 +5087,7 @@ impl EditorApp {
         }
         self.find.close();
         self.find_needs_search = false;
+        self.go_to_line.close();
         self.quick_open.close();
         self.command_palette.cancel();
         self.file_tree.unfocus();
@@ -5161,16 +5187,19 @@ impl EditorApp {
             EditorCommand::NavigateForward => self.navigate_document_history(true),
             EditorCommand::OpenFind => {
                 self.pointer_selecting = false;
+                self.go_to_line.close();
                 let changed = self.find.open(false);
                 self.find_needs_search |= !self.find.query().is_empty();
                 changed.then(EventEffect::visual).unwrap_or_default()
             }
             EditorCommand::OpenReplace => {
                 self.pointer_selecting = false;
+                self.go_to_line.close();
                 let changed = self.find.open(true);
                 self.find_needs_search |= !self.find.query().is_empty();
                 changed.then(EventEffect::visual).unwrap_or_default()
             }
+            EditorCommand::GoToLine => self.open_go_to_line(),
             EditorCommand::TriggerCompletion => self.trigger_rust_completion(),
             EditorCommand::ShowRustHover => {
                 self.trigger_rust_navigation(NavigationRequestKind::Hover)
@@ -5217,6 +5246,190 @@ impl EditorApp {
             EditorCommand::FocusNextPane => self.focus_next_pane(),
             EditorCommand::ClosePane => self.close_active_pane(),
         }
+    }
+
+    fn open_quick_open_from_key(&mut self) -> EventEffect {
+        if self.workspace.is_none() {
+            return self.record_quick_open_error(&QuickOpenError::NoWorkspace);
+        }
+        self.find.close();
+        self.find_needs_search = false;
+        self.go_to_line.close();
+        self.project_search.close();
+        match self.quick_open.open(1) {
+            Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+            Err(error) => self.record_quick_open_error(&error),
+        }
+    }
+
+    fn continue_or_start_chord(
+        &mut self,
+        physical_key: u16,
+        modifiers: Modifiers,
+        action: Option<KeyAction>,
+        overlay_active: bool,
+    ) -> Option<EventEffect> {
+        if overlay_active {
+            return matches!(action, Some(KeyAction::ChordPrefix(_)))
+                .then_some(EventEffect::default());
+        }
+        if let Some(prefix) = self.pending_chord.take() {
+            if physical_key == KEY_ESCAPE {
+                return Some(EventEffect::visual());
+            }
+            if let Some(chord_action) =
+                settings::Keymap::resolve_chord(prefix, physical_key, modifiers)
+            {
+                return Some(self.dispatch_resolved_action(chord_action));
+            }
+        }
+        if let Some(KeyAction::ChordPrefix(prefix)) = action {
+            self.pending_chord = Some(prefix);
+            return Some(EventEffect::visual());
+        }
+        None
+    }
+
+    fn dispatch_resolved_action(&mut self, action: KeyAction) -> EventEffect {
+        match action {
+            KeyAction::Command(command) => self.dispatch_command(command),
+            KeyAction::CommandPalette => self.open_command_palette(),
+            KeyAction::SelectAll => self.set_selection(Selection::new(
+                ByteOffset::new(0),
+                ByteOffset::new(self.buffer().snapshot().len_bytes()),
+            )),
+            KeyAction::Undo => self.undo(),
+            KeyAction::Redo => self.redo(),
+            KeyAction::ChordPrefix(prefix) => {
+                self.pending_chord = Some(prefix);
+                EventEffect::visual()
+            }
+        }
+    }
+
+    fn open_go_to_line(&mut self) -> EventEffect {
+        self.pointer_selecting = false;
+        self.find.close();
+        self.find_needs_search = false;
+        self.quick_open.close();
+        self.project_search.close();
+        self.command_palette.cancel();
+        self.file_tree.unfocus();
+        let snapshot = self.buffer().snapshot();
+        let line = snapshot
+            .line_of_byte(self.selection.head())
+            .unwrap_or(0)
+            .saturating_add(1);
+        match self.go_to_line.open(line) {
+            Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+            Err(error) => self.record_go_to_line_error(&error),
+        }
+    }
+
+    fn handle_go_to_line_if_open(
+        &mut self,
+        action: Option<KeyAction>,
+        physical_key: u16,
+        modifiers: Modifiers,
+    ) -> Option<EventEffect> {
+        if !self.go_to_line.is_open() {
+            return None;
+        }
+        if action == Some(KeyAction::SelectAll) {
+            return Some(
+                self.go_to_line
+                    .select_all()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default(),
+            );
+        }
+        Some(self.handle_go_to_line_key(physical_key, modifiers))
+    }
+
+    fn handle_go_to_line_key(&mut self, physical_key: u16, modifiers: Modifiers) -> EventEffect {
+        let command = modifiers.contains(Modifiers::COMMAND);
+        match physical_key {
+            KEY_ESCAPE => self
+                .go_to_line
+                .close()
+                .then(EventEffect::visual)
+                .unwrap_or_default(),
+            KEY_RETURN if !command => self.submit_go_to_line(),
+            _ => overlay_field::Owner::GoToLine
+                .key(self, physical_key, modifiers)
+                .unwrap_or_default(),
+        }
+    }
+
+    fn submit_go_to_line(&mut self) -> EventEffect {
+        let query = match self.go_to_line.projected_value() {
+            Ok(query) => query,
+            Err(error) => return self.record_go_to_line_error(&error),
+        };
+        let snapshot = self.buffer().snapshot();
+        match go_to_line::offset_in(&snapshot, &query) {
+            Ok(offset) => {
+                self.go_to_line.close();
+                self.set_selection(Selection::caret(offset))
+            }
+            Err(error) => self.record_go_to_line_error(&error),
+        }
+    }
+
+    fn handle_go_to_line_ime(&mut self, event: &ImeEvent) -> EventEffect {
+        let result = match event {
+            ImeEvent::Started => {
+                return self
+                    .go_to_line
+                    .begin_composition()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
+            ImeEvent::Updated {
+                text,
+                selected_start_utf16,
+                selected_length_utf16,
+            } => self.go_to_line.update_composition(
+                text,
+                *selected_start_utf16,
+                *selected_length_utf16,
+            ),
+            ImeEvent::Committed(text) => {
+                let prepared = {
+                    let (value, edit) = self.go_to_line.edit_parts();
+                    edit.prepare(value, text, text.len(), go_to_line::MAX_QUERY_BYTES)
+                };
+                match prepared {
+                    Ok(prepared) => return overlay_field::Owner::GoToLine.apply(self, prepared),
+                    Err(error) => return overlay_field::Owner::GoToLine.reject(self, error),
+                }
+            }
+            ImeEvent::CommittedWithCaret { text, caret_utf16 } => {
+                return match u32::try_from(*caret_utf16)
+                    .ok()
+                    .and_then(|index| byte_at_utf16(text, index))
+                {
+                    Some(caret) => overlay_field::Owner::GoToLine.commit(self, text, caret),
+                    None => overlay_field::Owner::GoToLine
+                        .reject(self, field_edit::EditError::InvalidSelection),
+                };
+            }
+            ImeEvent::Cancelled => {
+                return self
+                    .go_to_line
+                    .cancel_composition()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default();
+            }
+        };
+        match result {
+            Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
+            Err(error) => self.record_go_to_line_error(&error),
+        }
+    }
+
+    fn record_go_to_line_error(&mut self, error: &go_to_line::GoToLineError) -> EventEffect {
+        self.set_local_status(LocalStatus::Command(Arc::from(error.to_string())))
     }
 
     fn split_active_pane(&mut self, axis: SplitAxis) -> EventEffect {
@@ -5465,6 +5678,28 @@ impl EditorApp {
             Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
             Err(error) => self.record_quick_open_error(&error),
         }
+    }
+
+    fn handle_find_if_open(
+        &mut self,
+        action: Option<KeyAction>,
+        physical_key: u16,
+        command: bool,
+        option: bool,
+        shift: bool,
+    ) -> Option<EventEffect> {
+        if !self.find.is_open() {
+            return None;
+        }
+        if action == Some(KeyAction::SelectAll) {
+            return Some(
+                self.find
+                    .select_all()
+                    .then(EventEffect::visual)
+                    .unwrap_or_default(),
+            );
+        }
+        Some(self.handle_find_key(physical_key, command, option, shift))
     }
 
     fn handle_find_key(
@@ -5808,6 +6043,7 @@ impl EditorApp {
         }
         if action == PointerAction::Down {
             self.field_pointer_owner = None;
+            self.pending_chord = None;
         }
         if let Some(owner) = active
             && !self.workspace_edits.is_publication_pending()
@@ -5841,7 +6077,13 @@ impl EditorApp {
                 && button == PointerButton::Primary
             {
                 closed = self.find.close();
-            } else if owner != overlay_field::Owner::Find {
+            } else if owner == overlay_field::Owner::GoToLine
+                && action == PointerAction::Down
+                && button == PointerButton::Primary
+            {
+                closed = self.go_to_line.close();
+            } else if owner != overlay_field::Owner::Find && owner != overlay_field::Owner::GoToLine
+            {
                 // A modal field retains focus until activation or dismissal;
                 // outside gestures must not start an editor selection behind it.
                 self.pointer_selecting = false;
@@ -6560,6 +6802,7 @@ impl EditorApp {
         self.local_status = None;
         self.find.close();
         self.find_needs_search = false;
+        self.go_to_line.close();
         self.quick_open.close();
         self.project_search.close();
         self.ensure_active_tab_visible();
@@ -6860,6 +7103,7 @@ impl EditorApp {
         }
         self.find.close();
         self.find_needs_search = false;
+        self.go_to_line.close();
         self.quick_open.close();
         self.project_search.close();
         self.command_palette.cancel();
@@ -7390,6 +7634,7 @@ impl EditorApp {
             if effect.document_identity_advanced {
                 self.find.close();
                 self.find_needs_search = false;
+                self.go_to_line.close();
             } else {
                 effect = effect.merge(self.update_find_after_document_change());
             }
@@ -9805,6 +10050,10 @@ pub mod native_validation {
 #[cfg(test)]
 #[path = "command_palette_tests.rs"]
 mod command_palette_tests;
+
+#[cfg(test)]
+#[path = "keymap_parity_tests.rs"]
+mod keymap_parity_tests;
 
 #[cfg(test)]
 #[path = "project_search_tests.rs"]

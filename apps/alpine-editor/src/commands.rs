@@ -24,6 +24,7 @@ pub(crate) enum EditorCommand {
     OpenProjectSearch,
     OpenFind,
     OpenReplace,
+    GoToLine,
     TriggerCompletion,
     ShowRustHover,
     GoToRustDefinition,
@@ -69,6 +70,7 @@ impl CommandContext {
             | EditorCommand::ToggleFileTree => self.has_workspace,
             EditorCommand::OpenFind
             | EditorCommand::OpenReplace
+            | EditorCommand::GoToLine
             | EditorCommand::ReloadSettings => true,
             EditorCommand::TriggerCompletion
             | EditorCommand::ShowRustHover
@@ -92,7 +94,7 @@ struct CommandSpec {
     search_terms: &'static str,
 }
 
-const REGISTRY: [CommandSpec; 22] = [
+const REGISTRY: [CommandSpec; 23] = [
     CommandSpec {
         command: EditorCommand::SaveFile,
         title: "File: Save",
@@ -132,6 +134,11 @@ const REGISTRY: [CommandSpec; 22] = [
         command: EditorCommand::OpenReplace,
         title: "Editor: Find and Replace",
         search_terms: "search document change",
+    },
+    CommandSpec {
+        command: EditorCommand::GoToLine,
+        title: "Editor: Go to Line",
+        search_terms: "jump navigate number",
     },
     CommandSpec {
         command: EditorCommand::TriggerCompletion,
@@ -712,7 +719,7 @@ mod tests {
 
     #[test]
     fn locked_registry_query_and_memory_limits_are_exact() -> Result<(), Box<dyn Error>> {
-        assert_eq!(REGISTRY.len(), 22);
+        assert_eq!(REGISTRY.len(), 23);
         assert!(REGISTRY.len() <= MAX_COMMANDS);
         let mut palette = CommandPalette::default();
         assert!(palette.open(all_available())?);
@@ -793,14 +800,14 @@ mod tests {
             ..CommandContext::default()
         };
         palette.open(save_only)?;
-        assert_eq!(palette.visible_commands()?.len(), 4);
+        assert_eq!(palette.visible_commands()?.len(), 5);
         let unavailable = CommandContext::default();
         assert!(matches!(
             palette.execute_selected(unavailable),
             Err(CommandPaletteError::Unavailable(EditorCommand::SaveFile))
         ));
         assert!(palette.is_open());
-        assert_eq!(palette.report().retained_matches, 3);
+        assert_eq!(palette.report().retained_matches, 4);
         Ok(())
     }
 

@@ -16,10 +16,12 @@ use crate::{commands::EditorCommand, syntax::SyntaxClass};
 pub(crate) const KEY_A: u16 = 0;
 pub(crate) const KEY_S: u16 = 1;
 pub(crate) const KEY_F: u16 = 3;
+pub(crate) const KEY_G: u16 = 5;
 pub(crate) const KEY_Z: u16 = 6;
 pub(crate) const KEY_T: u16 = 17;
 pub(crate) const KEY_O: u16 = 31;
 pub(crate) const KEY_I: u16 = 34;
+pub(crate) const KEY_K: u16 = 40;
 pub(crate) const KEY_W: u16 = 13;
 pub(crate) const KEY_E: u16 = 14;
 pub(crate) const KEY_RIGHT_BRACKET: u16 = 30;
@@ -195,13 +197,36 @@ impl EditorTheme {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ChordPrefix {
+    CommandK,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum KeyAction {
     CommandPalette,
     Command(EditorCommand),
     SelectAll,
     Undo,
     Redo,
+    ChordPrefix(ChordPrefix),
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ChordBinding {
+    prefix: ChordPrefix,
+    physical_key: u16,
+    required_modifiers: u8,
+    action: KeyAction,
+    label: &'static str,
+}
+
+const DEFAULT_CHORDS: [ChordBinding; 1] = [ChordBinding {
+    prefix: ChordPrefix::CommandK,
+    physical_key: KEY_I,
+    required_modifiers: Modifiers::COMMAND,
+    action: KeyAction::Command(EditorCommand::ShowRustHover),
+    label: "Cmd+K Cmd+I",
+}];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct KeyBinding {
@@ -217,7 +242,7 @@ struct KeyBinding {
 /// are all held, and `validate_bindings` rejects a binding shadowed by an
 /// earlier one on the same key. Both require the more specific combination
 /// first, which is why Opt+Shift+F12 precedes F12.
-static DEFAULT_BINDINGS: [KeyBinding; 20] = [
+static DEFAULT_BINDINGS: [KeyBinding; 22] = [
     binding(
         KEY_F12,
         OPTION_SHIFT,
@@ -241,6 +266,18 @@ static DEFAULT_BINDINGS: [KeyBinding; 20] = [
         COMMAND_SHIFT,
         KeyAction::Command(EditorCommand::PreviewRustFormatting),
         "Cmd+Shift+I",
+    ),
+    binding(
+        KEY_K,
+        Modifiers::COMMAND,
+        KeyAction::ChordPrefix(ChordPrefix::CommandK),
+        "Cmd+K",
+    ),
+    binding(
+        KEY_G,
+        Modifiers::CONTROL,
+        KeyAction::Command(EditorCommand::GoToLine),
+        "Ctrl+G",
     ),
     binding(
         KEY_O,
@@ -370,8 +407,29 @@ impl Keymap {
     }
 
     pub(crate) fn shortcut_for(&self, command: EditorCommand) -> Option<&str> {
-        self.bindings.iter().find_map(|binding| {
-            (binding.action == KeyAction::Command(command)).then_some(binding.label.as_ref())
+        self.bindings
+            .iter()
+            .find_map(|binding| {
+                (binding.action == KeyAction::Command(command)).then_some(binding.label.as_ref())
+            })
+            .or_else(|| {
+                DEFAULT_CHORDS.iter().find_map(|chord| {
+                    (chord.action == KeyAction::Command(command)).then_some(chord.label)
+                })
+            })
+    }
+
+    pub(crate) fn resolve_chord(
+        prefix: ChordPrefix,
+        physical_key: u16,
+        modifiers: Modifiers,
+    ) -> Option<KeyAction> {
+        DEFAULT_CHORDS.iter().find_map(|chord| {
+            let exact = modifiers.bits() & !Modifiers::CAPS_LOCK;
+            (chord.prefix == prefix
+                && chord.physical_key == physical_key
+                && exact == chord.required_modifiers)
+                .then_some(chord.action)
         })
     }
 
@@ -859,6 +917,35 @@ mod tests {
             resolved(KEY_E, COMMAND_SHIFT),
             Some(KeyAction::Command(EditorCommand::ToggleFileTree))
         );
+        assert_eq!(
+            resolved(KEY_K, Modifiers::COMMAND),
+            Some(KeyAction::ChordPrefix(ChordPrefix::CommandK))
+        );
+        assert_eq!(
+            resolved(KEY_G, Modifiers::CONTROL),
+            Some(KeyAction::Command(EditorCommand::GoToLine))
+        );
+        assert_eq!(
+            Keymap::resolve_chord(
+                ChordPrefix::CommandK,
+                KEY_I,
+                Modifiers::from_bits(Modifiers::COMMAND)
+            ),
+            Some(KeyAction::Command(EditorCommand::ShowRustHover))
+        );
+        assert_eq!(
+            Keymap::resolve_chord(
+                ChordPrefix::CommandK,
+                KEY_I,
+                Modifiers::from_bits(COMMAND_SHIFT)
+            ),
+            None
+        );
+        assert_eq!(
+            keymap.shortcut_for(EditorCommand::ShowRustHover),
+            Some("Cmd+K Cmd+I")
+        );
+        assert_eq!(keymap.shortcut_for(EditorCommand::GoToLine), Some("Ctrl+G"));
         Ok(())
     }
 
@@ -867,7 +954,7 @@ mod tests {
         let settings = AppSettings::compiled()?;
         assert_eq!(settings.editor.font_name.as_ref(), "Menlo-Regular");
         assert_eq!(settings.editor.tab_columns, 4);
-        assert_eq!(settings.keymap.bindings.len(), 20);
+        assert_eq!(settings.keymap.bindings.len(), 22);
         assert!(std::mem::size_of::<AppSettings>() <= 512);
         let classes = [
             SyntaxClass::Comment,
