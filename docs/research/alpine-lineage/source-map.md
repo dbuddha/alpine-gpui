@@ -51,9 +51,9 @@
 | ALP-S105 | [`FrameReport`](https://github.com/dbuddha/alpine-gpui/blob/de8cd6397adc81632fe1103f1834214ae6ec6a1a/crates/alpine-renderer/src/lib.rs#L20) | Handle-free frame evidence boundary |
 | ALP-S106 | [`BufferSnapshot`](https://github.com/dbuddha/alpine-gpui/blob/de8cd6397adc81632fe1103f1834214ae6ec6a1a/crates/alpine-text/src/lib.rs#L390) and [`Buffer`](https://github.com/dbuddha/alpine-gpui/blob/de8cd6397adc81632fe1103f1834214ae6ec6a1a/crates/alpine-text/src/lib.rs#L990) | Local revisioned rope buffer and immutable snapshots |
 | ALP-S107 | [`GlyphAtlasPublication`](https://github.com/dbuddha/alpine-gpui/blob/de8cd6397adc81632fe1103f1834214ae6ec6a1a/crates/alpine-text-layout/src/lib.rs#L1109) and [`GlyphAtlas`](https://github.com/dbuddha/alpine-gpui/blob/de8cd6397adc81632fe1103f1834214ae6ec6a1a/crates/alpine-text-layout/src/lib.rs#L1224) | Byte-budgeted indexed A8 atlas with no/full/row-delta publication |
-| ALP-S108 | [Warm viewport regression](https://github.com/dbuddha/alpine-gpui/blob/de8cd6397adc81632fe1103f1834214ae6ec6a1a/apps/alpine-studio/src/studio_coverage_tests.rs#L256) | 10,000 modeled warm frames avoid rasterization and atlas publication |
+| ALP-S108 | [Warm viewport regression](https://github.com/dbuddha/alpine-gpui/blob/de8cd6397adc81632fe1103f1834214ae6ec6a1a/apps/alpine-editor/src/editor_coverage_tests.rs#L256) | 10,000 modeled warm frames avoid rasterization and atlas publication |
 | ALP-S109 | [Metal native renderer](https://github.com/dbuddha/alpine-gpui/blob/de8cd6397adc81632fe1103f1834214ae6ec6a1a/crates/alpine-metal/src/native.rs) | Direct Metal lowering, retained resources, async completion, and atlas delta upload |
-| ALP-S110 | [Studio application](https://github.com/dbuddha/alpine-gpui/tree/de8cd6397adc81632fe1103f1834214ae6ec6a1a/apps/alpine-studio) | Local editor, workspace, settings, syntax, accessibility, and bounded LSP paths |
+| ALP-S110 | [Studio application](https://github.com/dbuddha/alpine-gpui/tree/de8cd6397adc81632fe1103f1834214ae6ec6a1a/apps/alpine-editor) | Local editor, workspace, settings, syntax, accessibility, and bounded LSP paths |
 
 ## WGPU and awesome-gpui anchors
 

@@ -12,8 +12,8 @@ if [ "${CARGO_INCREMENTAL:-}" != 0 ] ||
     exit 2
 fi
 unset ALPINE_RUST_ANALYZER
-unset ALPINE_STUDIO_NATIVE_PROCESS_SCOPE ALPINE_STUDIO_NATIVE_ACCESSIBILITY_CHILD
-unset ALPINE_STUDIO_NATIVE_ACCESSIBILITY_OMIT ALPINE_STUDIO_NATIVE_LSP_SERVER
+unset ALPINE_EDITOR_NATIVE_PROCESS_SCOPE ALPINE_EDITOR_NATIVE_ACCESSIBILITY_CHILD
+unset ALPINE_EDITOR_NATIVE_ACCESSIBILITY_OMIT ALPINE_EDITOR_NATIVE_LSP_SERVER
 export ALPINE_REQUIRE_NATIVE_VALIDATION=1
 
 printf 'CI native admission: Metal toolchain\n'
@@ -28,7 +28,7 @@ xcrun --sdk macosx --find metallib
 printf 'CI native admission: platform and Studio default-feature tests\n'
 mkdir -p target/native-acceptance
 log=$(mktemp target/native-acceptance/ci-admission.XXXXXX)
-if cargo test --locked --package=alpine-platform-macos --package=alpine-studio 2>&1 | tee "$log"; then
+if cargo test --locked --package=alpine-platform-macos --package=alpine-editor 2>&1 | tee "$log"; then
     :
 else
     result=$?

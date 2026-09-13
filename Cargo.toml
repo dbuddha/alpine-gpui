@@ -1,6 +1,6 @@
 [workspace]
 members = [
-  "apps/alpine-studio",
+  "apps/alpine-editor",
   "crates/alpine-core",
   "crates/alpine-metal",
   "crates/alpine-platform",

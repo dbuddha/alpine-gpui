@@ -10,7 +10,7 @@
 ## Decision question
 
 What is the smallest correct macOS VoiceOver and accessibility lifecycle that
-can qualify Alpine Studio without test theater, a second semantic tree,
+can qualify Alpine Editor without test theater, a second semantic tree,
 unbounded CI cost, or product weight unrelated to a local daily driver?
 
 This package retains decision-grade findings and protocols. It is not a

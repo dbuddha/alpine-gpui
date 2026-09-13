@@ -7,9 +7,9 @@ repository_revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 repository_clean = true
 started_unix_ns = 1000000
 ended_unix_ns = 2000000
-studio_pid = 100
+editor_pid = 100
 harness_pid = 101
-studio_exit_status = 0
+editor_exit_status = 0
 macos_build = "fixture-macos-build"
 sdk_build = "fixture-sdk-build"
 rustc_version = "fixture-rustc"
@@ -32,7 +32,7 @@ event_count = 16
 latency_sample_count = 5
 residency_sample_count = 4
 
-[artifacts.studio_binary]
+[artifacts.editor_binary]
 path = "studio.bin"
 sha256 = "4cc0abf648ef233f1aaf44bf0b26396804d0b45e1d050a4c30b1ce042699579b"
 
@@ -46,7 +46,7 @@ sha256 = "2df21ae836cc324edefb1200adc74cc37c6cb024686a3d652cfa581dc2f26d9d"
 
 [artifacts.tree]
 path = "tree.jsonl"
-sha256 = "a57d3758f76a40fbcaa1f96781d3c6fff1cdc978f32a7fbd915704d1d8c161d2"
+sha256 = "b74873fcafa73494806e5f5cc9dda84c311f2c23db3bde68ca1c2aaab412dc36"
 
 [artifacts.events]
 path = "events.jsonl"

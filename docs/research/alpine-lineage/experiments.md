@@ -145,7 +145,7 @@ Admission:
 - No timing from runtime shader compilation.
 - No stock-product process weight mixed into renderer-only results.
 
-## EXP-PROD-001: Alpine Studio versus Zed and Sublime
+## EXP-PROD-001: Alpine Editor versus Zed and Sublime
 
 Journeys:
 

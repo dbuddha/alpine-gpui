@@ -60,13 +60,13 @@ use dispatch2::DispatchQueue;
 use crate::native_accessibility::{NativeAccessibilityAdapter, NativeAccessibilityElement};
 use crate::{
     AccessibilityRequest, AccessibilityResponse, ClipboardError, ClipboardEvent,
-    ClipboardOperation, ClipboardText, ClipboardWrite, CloseDisposition, EventTimestamp,
-    FrameLatencyEvidence, FrameTerminalEvidence, ImeEvent, InputEpoch, InputEpochAdmission,
-    KeyState, Modifiers, PointerAction, PointerButton, SURFACE_CLOSING, SURFACE_LIVE, ScrollPhase,
-    SdrColorContract, StudioSignposts, SurfaceConfiguration, SurfaceDescriptor, SurfaceError,
-    SurfaceEvent, SurfaceLifecycle, SurfaceObserver, SurfaceOperation, SurfaceResponse,
-    SurfaceSnapshot, SurfaceStage, SurfaceWakeAdmission, SurfaceWakeCounters, SurfaceWaker,
-    begin_close_observer_state, finish_close_observer_state, new_observer_state,
+    ClipboardOperation, ClipboardText, ClipboardWrite, CloseDisposition, EditorSignposts,
+    EventTimestamp, FrameLatencyEvidence, FrameTerminalEvidence, ImeEvent, InputEpoch,
+    InputEpochAdmission, KeyState, Modifiers, PointerAction, PointerButton, SURFACE_CLOSING,
+    SURFACE_LIVE, ScrollPhase, SdrColorContract, SurfaceConfiguration, SurfaceDescriptor,
+    SurfaceError, SurfaceEvent, SurfaceLifecycle, SurfaceObserver, SurfaceOperation,
+    SurfaceResponse, SurfaceSnapshot, SurfaceStage, SurfaceWakeAdmission, SurfaceWakeCounters,
+    SurfaceWaker, begin_close_observer_state, finish_close_observer_state, new_observer_state,
     presentation_visible,
 };
 
@@ -743,7 +743,7 @@ struct PresentationSignal {
     display_link_target_seconds: f64,
     target_presentation_seconds: f64,
     lifecycle: Arc<AtomicU8>,
-    signposts: StudioSignposts,
+    signposts: EditorSignposts,
 }
 
 impl PresentationSignal {
@@ -754,7 +754,7 @@ impl PresentationSignal {
         display_link_target_seconds: f64,
         target_presentation_seconds: f64,
         lifecycle: Arc<AtomicU8>,
-        signposts: StudioSignposts,
+        signposts: EditorSignposts,
     ) -> Self {
         Self {
             published: AtomicBool::new(false),
@@ -825,7 +825,7 @@ struct PresentationDriver {
     frame_slots: FrameSlotRing,
     owner_generation: FrameOwnerGeneration,
     backend: MetalBackend,
-    latency_signposts: StudioSignposts,
+    latency_signposts: EditorSignposts,
     last_error: Option<SurfaceError>,
     last_terminal: Option<FrameTerminalEvidence>,
     last_superseded: Option<FrameTerminalEvidence>,
@@ -887,7 +887,7 @@ impl PresentationDriver {
             frame_slots: FrameSlotRing::new(),
             owner_generation,
             backend,
-            latency_signposts: StudioSignposts::new(),
+            latency_signposts: EditorSignposts::new(),
             last_error: None,
             last_terminal: None,
             last_superseded: None,
@@ -1635,7 +1635,7 @@ fn install_observation(
     display_link_target_seconds: f64,
     target_presentation_seconds: f64,
     lifecycle: Arc<AtomicU8>,
-    signposts: StudioSignposts,
+    signposts: EditorSignposts,
     counters: &FrameCounters,
 ) -> Arc<PresentationSignal> {
     let presentation = Arc::new(PresentationSignal::new(
@@ -6224,7 +6224,7 @@ mod tests {
             0.0,
             0.0,
             Arc::clone(&lifecycle),
-            StudioSignposts::new(),
+            EditorSignposts::new(),
         ));
         let observation = PresentationObservation::new(Arc::clone(&signal));
         assert!(!observation.observed());
@@ -6250,7 +6250,7 @@ mod tests {
             101.005,
             101.010,
             Arc::clone(&lifecycle),
-            StudioSignposts::for_test(false, true),
+            EditorSignposts::for_test(false, true),
         ));
         let timed_observation = PresentationObservation::new(Arc::clone(&timed_signal));
         assert_eq!(timed_observation.event_to_presented_handler_ns(), None);
@@ -6280,7 +6280,7 @@ mod tests {
             101.005,
             101.010,
             Arc::clone(&lifecycle),
-            StudioSignposts::for_test(false, true),
+            EditorSignposts::for_test(false, true),
         ));
         lifecycle.store(SURFACE_CLOSING, Ordering::Release);
         assert_eq!(stale_signal.publish(101.012_f64.to_bits(), 101.014), None);
@@ -6293,7 +6293,7 @@ mod tests {
                 101.005,
                 101.010,
                 Arc::new(AtomicU8::new(SURFACE_LIVE)),
-                StudioSignposts::for_test(false, true),
+                EditorSignposts::for_test(false, true),
             ));
             let mut injected = PresentationObservation::new(Arc::clone(&signal));
             injected.inject(23);
@@ -6407,7 +6407,7 @@ mod tests {
             1.0,
             1.25,
             Arc::new(AtomicU8::new(SURFACE_LIVE)),
-            StudioSignposts::new(),
+            EditorSignposts::new(),
         ));
         assert_eq!(signal.publish(1.25_f64.to_bits(), 1.25), None);
         let mut observation = PresentationObservation::new(signal);

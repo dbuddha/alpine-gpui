@@ -2596,7 +2596,7 @@ mod adapter_refresh_tests {
             AccessibilityNodeId::new(1),
             None,
             AccessibilityRole::Window,
-            "Alpine Studio".into(),
+            "Alpine Editor".into(),
             false,
             false,
             false,

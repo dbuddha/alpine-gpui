@@ -244,7 +244,7 @@ required before Task #220 can close or this behavior can be classified E3.
 
 ### Bounded static command discovery
 
-Alpine Studio owns a closed compile-time command registry and a private bounded
+Alpine Editor owns a closed compile-time command registry and a private bounded
 palette state. Command availability is derived from current Studio state, and
 execution refreshes that availability before dispatching an existing typed
 transition. Matching is deterministic and allocation ceilings cover query,
@@ -271,7 +271,7 @@ network work during startup.
 
 ### Bounded streaming local project search
 
-Alpine Studio privately owns a lazy local project-search state machine. One
+Alpine Editor privately owns a lazy local project-search state machine. One
 explicit Command-Shift-F or static command opens it; no inventory or content
 read exists on direct-file launch, folder admission, first frame, or idle. A
 serial project-local ignore-aware inventory admits at most 250,000 entries,

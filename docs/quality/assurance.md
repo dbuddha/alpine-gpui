@@ -36,10 +36,10 @@ Lean remains deferred. It becomes relevant only when Alpine has a mathematical
 specification and a credible, testable refinement path that Kani, Loom,
 and native evidence cannot cover economically.
 
-## Alpine Studio product boundary
+## Alpine Editor product boundary
 
 The editor-first build has an exact, versioned Apple Silicon normal and build
-dependency closure in `assurance/alpine-studio-dependencies.txt`. The fast
+dependency closure in `assurance/alpine-editor-dependencies.txt`. The fast
 repository gate rejects any unreviewed direct or transitive package in either
 class, network-capable shipping source, excluded Cargo feature, or excluded
 subsystem path. Build-only packages remain visible for supply-chain review even

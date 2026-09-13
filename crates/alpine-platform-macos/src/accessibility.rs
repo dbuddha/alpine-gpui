@@ -92,7 +92,7 @@ const fn normalized_bits(value: f32) -> u32 {
     }
 }
 
-/// Semantic role vocabulary supported by Alpine Studio v1.
+/// Semantic role vocabulary supported by Alpine Editor v1.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccessibilityRole {
     /// Top-level application window.

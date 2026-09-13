@@ -80,7 +80,7 @@ Any future statement about one of these areas must be labeled as a hypothesis
 and cannot justify an Alpine architecture decision without independent
 evidence.
 
-## Product philosophy adopted by Alpine Studio
+## Product philosophy adopted by Alpine Editor
 
 - Open directly into useful local editing.
 - Keep input, scrolling, save, search, and navigation predictable under load.

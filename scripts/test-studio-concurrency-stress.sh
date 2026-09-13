@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-iterations=${ALPINE_STUDIO_CONCURRENCY_STRESS_ITERATIONS:-25}
+iterations=${ALPINE_EDITOR_CONCURRENCY_STRESS_ITERATIONS:-25}
 case "$iterations" in
     '' | *[!0-9]*)
         echo "Studio concurrency stress iterations must be an integer" >&2
@@ -20,7 +20,7 @@ run_exact_test() {
     test_name=$1
     iteration=1
     while [ "$iteration" -le "$iterations" ]; do
-        if ! output=$(cargo test --locked -p alpine-studio --lib "$test_name" -- --exact 2>&1); then
+        if ! output=$(cargo test --locked -p alpine-editor --lib "$test_name" -- --exact 2>&1); then
             printf '%s\n' "$output" >&2
             echo "Studio concurrency stress failed: $test_name iteration $iteration/$iterations" >&2
             return 1

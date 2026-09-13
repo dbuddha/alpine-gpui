@@ -103,7 +103,7 @@ gates, not from issue percentages.
 - [Methodology](methodology.md): classifications, evidence levels, and update workflow.
 - [Pinned source map](source-map.md): exact revisions, licenses, boundaries, and source anchors.
 - [Framework lineage](framework-lineage.md): Alpine GPUI against Zed GPUI, WGPU, and awesome-gpui.
-- [Studio lineage](studio-lineage.md): Alpine Studio against Zed Editor.
+- [Studio lineage](studio-lineage.md): Alpine Editor against Zed Editor.
 - [Evidence ledger](evidence-ledger.md): mechanism-level origin, modification, evidence, and claim status.
 - [Historical log](history.md): adoption, correction, and supersession chronology.
 - [Adversarial review](adversarial-review.md): defects, wrong-direction risks, and retained strengths.

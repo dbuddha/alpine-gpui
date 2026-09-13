@@ -20,7 +20,7 @@ run_policy() {
     ALPINE_PR_BODY= ALPINE_PR_TITLE= ALPINE_PR_LABELS= \
     scripts/check-policy.sh
 }
-for source in crates/alpine-core/src/lib.rs apps/alpine-studio/src/lib.rs ARCHITECTURE.md; do
+for source in crates/alpine-core/src/lib.rs apps/alpine-editor/src/lib.rs ARCHITECTURE.md; do
     ALPINE_CHANGED_FILES="$source" run_policy >/dev/null
 done
 ( LC_ALL=en_US.UTF-8 run_policy >/dev/null )
@@ -45,7 +45,7 @@ done
 for workflow in ci nightly-assurance; do
     source_workflow=".github/workflows/$workflow.yml"
     broken_workflow="$fixture_dir/missing-baseline-$workflow.yml"
-    sed '/--file crates\/alpine-platform-macos\/src\/native.rs/s/ --cargo-arg=--package=alpine-studio//' \
+    sed '/--file crates\/alpine-platform-macos\/src\/native.rs/s/ --cargo-arg=--package=alpine-editor//' \
         "$source_workflow" > "$broken_workflow"
     if [ "$workflow" = ci ]; then
         export ALPINE_CI_WORKFLOW="$broken_workflow"
@@ -613,7 +613,7 @@ if ! grep -Fq 'changed-code mutation must preserve shipping and assurance scopes
     exit 1
 fi
 
-sed "s/ --exclude 'apps\/alpine-studio\/src\/native_validation\/accessibility_process.rs'//" \
+sed "s/ --exclude 'apps\/alpine-editor\/src\/native_validation\/accessibility_process.rs'//" \
     "$fixture_dir/ci.yml" > "$fixture_dir/linux-owned-studio-process-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/linux-owned-studio-process-ci.yml" run_policy > "$fixture_dir/linux-owned-studio-process-ci.log" 2>&1; then
     printf 'policy test error: Linux-owned Studio process mutation unexpectedly passed\n' >&2
@@ -625,7 +625,7 @@ if ! grep -Fq 'Studio accessibility process mutation must transfer explicitly fr
     exit 1
 fi
 
-sed 's#--file apps/alpine-studio/src/native_validation/accessibility_process.rs#--file apps/alpine-studio/src/native_validation/missing-process.rs#' \
+sed 's#--file apps/alpine-editor/src/native_validation/accessibility_process.rs#--file apps/alpine-editor/src/native_validation/missing-process.rs#' \
     "$fixture_dir/ci.yml" > "$fixture_dir/missing-native-studio-process-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/missing-native-studio-process-ci.yml" run_policy > "$fixture_dir/missing-native-studio-process-ci.log" 2>&1; then
     printf 'policy test error: missing native Studio process mutation unexpectedly passed\n' >&2
@@ -637,7 +637,7 @@ if ! grep -Fq 'Studio accessibility process mutation must transfer explicitly fr
     exit 1
 fi
 
-sed 's/ ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility//' \
+sed 's/ ALPINE_EDITOR_NATIVE_PROCESS_SCOPE=accessibility//' \
     "$fixture_dir/ci.yml" > "$fixture_dir/unscoped-native-studio-process-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/unscoped-native-studio-process-ci.yml" run_policy > "$fixture_dir/unscoped-native-studio-process-ci.log" 2>&1; then
     printf 'policy test error: unscoped native Studio process mutation unexpectedly passed\n' >&2
@@ -720,15 +720,15 @@ if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="${native_surface_fixture}/nightly-assuranc
 fi
 rm -rf "${native_surface_fixture}"
 
-native_studio_fixture="$(mktemp -d)"
+native_editor_fixture="$(mktemp -d)"
 sed '/^  native-studio-contract-mutation:/d' .github/workflows/nightly-assurance.yml \
-  > "${native_studio_fixture}/nightly-assurance.yml"
-if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="${native_studio_fixture}/nightly-assurance.yml" scripts/check-policy.sh >/dev/null 2>&1; then
+  > "${native_editor_fixture}/nightly-assurance.yml"
+if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="${native_editor_fixture}/nightly-assurance.yml" scripts/check-policy.sh >/dev/null 2>&1; then
   echo "policy test failure: missing Studio native contract job was accepted" >&2
-  rm -rf "${native_studio_fixture}"
+  rm -rf "${native_editor_fixture}"
   exit 1
 fi
-rm -rf "${native_studio_fixture}"
+rm -rf "${native_editor_fixture}"
 
 native_runtime_filter_fixture="$(mktemp -d)"
 sed '/--file crates\/alpine-runtime\/src\/lib.rs/s/ native_process$//' \

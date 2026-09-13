@@ -1,6 +1,6 @@
-# Alpine Studio settings
+# Alpine Editor settings
 
-Alpine Studio reads local JSON settings only. It does not load extensions,
+Alpine Editor reads local JSON settings only. It does not load extensions,
 plugins, executable configuration, remote schemas, accounts, AI services, or
 telemetry.
 
@@ -8,7 +8,7 @@ telemetry.
 
 1. Compiled defaults.
 2. Global settings at
-   `~/Library/Application Support/Alpine Studio/settings.json`.
+   `~/Library/Application Support/Alpine Editor/settings.json`.
 3. Project settings at `<workspace>/.alpine/settings.json`.
 
 Each later layer overrides the earlier layer. Missing files are ignored. A

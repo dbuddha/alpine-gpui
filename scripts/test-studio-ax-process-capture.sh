@@ -175,7 +175,7 @@ assert_rejection() {
     grep -Fxq 'complete=false' "$rejected/rejection.txt"
     grep -Fxq 'fixture_only=true' "$rejected/rejection.txt"
     grep -Fxq "repository_revision=$(git rev-parse HEAD)" "$rejected/rejection.txt"
-    grep -Fxq "studio_binary_sha256=$(/usr/bin/shasum -a 256 "$binary" | awk '{print $1}')" \
+    grep -Fxq "editor_binary_sha256=$(/usr/bin/shasum -a 256 "$binary" | awk '{print $1}')" \
         "$rejected/rejection.txt"
     case $(uname -s) in
         Darwin) test "$(stat -f %Lp "$rejected")" = 700

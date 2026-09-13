@@ -1,6 +1,6 @@
 # Ownership from state to submission
 
-Alpine Studio owns application state; `alpine-runtime` dispatches application
+Alpine Editor owns application state; `alpine-runtime` dispatches application
 events and bounded worker completions. Portable invalidation and one-surface
 attempt ownership live in `alpine-platform`. Scene construction remains
 application-owned. Finishing a

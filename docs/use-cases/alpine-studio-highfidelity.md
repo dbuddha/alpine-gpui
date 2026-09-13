@@ -1,6 +1,6 @@
-# Alpine Studio daily-driver path
+# Alpine Editor daily-driver path
 
-Alpine Studio is a local, editor-first application for one developer. It uses
+Alpine Editor is a local, editor-first application for one developer. It uses
 Alpine GPUI to prove a correct, demand-driven, memory-bounded native UI while
 delivering the focused product philosophy associated with Sublime Text and the
 modern editing quality represented by Zed.
@@ -53,7 +53,7 @@ authority for live task and check status.
 | 4: workspace shell | Functionally implemented by closed Task #127 | Folder launch, bounded lazy tree, tabs, splits, history, find and replace, quick open, command palette, project search, clean and dirty restoration, lazy inactive tabs | Sustained repository-scale dogfood and large-workspace evidence |
 | 5: daily-driver profile | In progress | Compiled syntax, typed settings and shortcuts, no-bloat enforcement, revisioned accessibility semantics, bounded LSP framing, local process ownership, JSON-RPC, pinned rust-analyzer qualification, runtime wake admission, and visible Rust diagnostics | Finish completion, hover and navigation, rename and formatting, symbols, configuration reload, native accessibility and recovery, sustained dogfood, and blocking defect closure |
 
-Alpine Studio is therefore a real bounded editor foundation, not merely a solid
+Alpine Editor is therefore a real bounded editor foundation, not merely a solid
 quad demo. It is not yet the promised daily driver because Gate 5 and sustained
 qualification remain open.
 
@@ -108,12 +108,12 @@ counts alone do not describe product depth.
 | M1 and M2 | Renderer and native presentation | Core behavior exists, but residual milestone issues still require explicit disposition |
 | M3 | Local workspace shell | Closed product slice, not complete daily-driver readiness |
 | M4 | Text, IME, accessibility, recovery | Text is complete; native accessibility and recovery remain open |
-| M5 | Rust-first Alpine Studio daily-driver profile | Daily-driver behavior and dogfood gate for Apple Silicon macOS |
+| M5 | Rust-first Alpine Editor daily-driver profile | Daily-driver behavior and dogfood gate for Apple Silicon macOS |
 | M6 | Linux and Windows backends | Explicitly after the Apple daily driver |
 | M7 | Version 1 stabilization and distribution | Release gate after daily-driver behavior and qualification |
 
 Passing M5 means the selected Apple Silicon macOS editor profile has met its
-daily-driver behavior and dogfood gate. It does not mean Alpine Studio is a
+daily-driver behavior and dogfood gate. It does not mean Alpine Editor is a
 supportable version 1 release. M7 separately owns fixed-hardware regression
 qualification, API stabilization, packaging, signing, notarization, update
 recovery, and release evidence. M6 is not on the macOS critical path.
@@ -170,7 +170,7 @@ asynchronous while avoiding stalls
   context, synchronous main-thread events, and bounded worker handoff.
 - Define keyboard, pointer, scroll, focus, resize, clipboard, IME, wake, and
   close events with timestamps and modifier identity.
-- Use direct `StudioApp -> Workspace -> Editor -> Buffer` ownership.
+- Use direct `EditorApp -> Workspace -> Editor -> Buffer` ownership.
 - Tag every worker result with document and workspace revisions; discard stale
   work before mutation.
 - Use standard threads and bounded channels, not a general async runtime.
@@ -263,7 +263,7 @@ The governing rules are in [Alpine comparator protocol v1](../quality/comparator
 Two claim families are permitted:
 
 - Alpine GPUI versus pinned GPUI for semantically matched renderer workloads.
-- Alpine Studio versus pinned Zed and externally measured Sublime for named,
+- Alpine Editor versus pinned Zed and externally measured Sublime for named,
   normalized local-editor journeys.
 
 No editor result supports a universal fastest-framework claim. Correctness is

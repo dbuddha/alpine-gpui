@@ -12,10 +12,10 @@ awk -F '\t' '
     exit 1
 }
 
-tests=$(cargo test --locked -p alpine-studio --lib -- --list 2>/dev/null \
+tests=$(cargo test --locked -p alpine-editor --lib -- --list 2>/dev/null \
     | sed -n 's/: test$//p')
 if [ -z "$tests" ]; then
-    printf 'Alpine Studio test discovery returned no tests.\n' >&2
+    printf 'Alpine Editor test discovery returned no tests.\n' >&2
     exit 1
 fi
 

@@ -171,7 +171,7 @@ if [ -n "$slope_limit" ]; then
 fi
 
 cat > "$summary" <<EOF
-schema = "alpine-studio-residency-analysis/v1"
+schema = "alpine-editor-residency-analysis/v1"
 raw_sha256 = "$raw_sha"
 pid = $expected_pid
 sample_count = $sample_count

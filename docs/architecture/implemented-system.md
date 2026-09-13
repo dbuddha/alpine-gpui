@@ -75,12 +75,12 @@ application-owned identity for exact delegate admission across revisions. Both
 sources share bounded fair foreground draining and coalesced run-loop wake, while
 only the delegate can invalidate a frame. The runtime exposes no native handle
 and adds no general async executor, timer poller, or reactive graph.
-`alpine-studio` privately depends on exact-version, default-feature-disabled
+`alpine-editor` privately depends on exact-version, default-feature-disabled
 `ignore` 0.4.33 for project-local recursive traversal. It uses only the serial
 walker, disables global and parent ignore state, includes hidden paths except
 `.git`, never follows symlinks, and exposes no dependency type outside the
 application crate.
-`alpine-studio` is the first shipping application. It owns exactly one local
+`alpine-editor` is the first shipping application. It owns exactly one local
 document as either an unbound scratch `Buffer` or a path-bound `Editor`, plus
 primary selection, IME composition, viewport state, two-frame layout cache, and
 a hard-budgeted glyph atlas, as accepted by
@@ -101,7 +101,7 @@ confirmation. The cache has a 4 MiB logical metadata and span ceiling, each
 line scans at most 64 KiB and retains at most 1,024 spans, and oversized or
 over-complex lines degrade to unstyled text. This initial compiled lexer adds no
 runtime grammar loading, plugin boundary, background work, dependency, native
-handle, or syntax authority outside Alpine Studio.
+handle, or syntax authority outside Alpine Editor.
 
 Studio also owns a private local language-server process boundary under
 Requirement #34 and Task #128. Construction canonicalizes one explicit local
@@ -219,7 +219,7 @@ extension host, telemetry, AI, or general async runtime.
 
 Under [Decision #146](https://github.com/dbuddha/alpine-gpui/issues/146), the
 repository-owned private-dogfood packager copies that same release executable
-into a stable unsigned `Alpine Studio.app`; it adds no second application
+into a stable unsigned `Alpine Editor.app`; it adds no second application
 runtime. The bundle declares the Apple Silicon macOS 15 product identity and
 retains a timestamp-free manifest containing the exact source revision,
 workspace version, executable checksum and size, target, profile, property-list
@@ -339,7 +339,7 @@ turn hosted selector invocation into external delivery evidence.
 
 ```mermaid
 flowchart LR
-    caller["alpine-studio or test caller<br/>public Alpine APIs only"]
+    caller["alpine-editor or test caller<br/>public Alpine APIs only"]
     core["alpine-core<br/>Point, Size, Rect, LinearRgba"]
     scene["alpine-scene<br/>SceneRevision, Primitive, SceneBuilder, Scene"]
     renderer["alpine-renderer<br/>Renderer, capabilities, FrameReport"]

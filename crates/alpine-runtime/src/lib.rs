@@ -1,4 +1,4 @@
-//! Bounded single-window application runtime for Alpine Studio.
+//! Bounded single-window application runtime for Alpine Editor.
 
 use core::{error::Error, fmt, num::NonZeroUsize};
 use std::{
@@ -1016,7 +1016,7 @@ impl WindowContext {
     }
 }
 
-/// Synchronous main-thread application behavior owned by Alpine Studio.
+/// Synchronous main-thread application behavior owned by Alpine Editor.
 pub trait AppDelegate {
     /// Result type produced by this application's bounded workers.
     type WorkerOutput: Send + 'static;

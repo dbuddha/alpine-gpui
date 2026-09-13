@@ -52,7 +52,7 @@ populate() {
              {scenario:{Mutant:($inventory[0][1]|del(.diff))},summary:"Unviable",
                 phase_results:[phase("Build";{Failure:101})]}]}' > "$directory/outcomes.json"
 }
-studio() { populate native-studio-mutants apps/alpine-studio/src/lib.rs alpine-studio; }
+studio() { populate native-studio-mutants apps/alpine-editor/src/lib.rs alpine-editor; }
 platform() {
     for scope in native-mutants native-platform-spi-mutants native-submission-mutants \
         native-platform-contract-mutants native-accessibility-mutants \
@@ -62,7 +62,7 @@ platform() {
         mkdir -p "$root/$scope-1.out/mutants.out"
         printf '[]\n' > "$root/$scope-1.out/mutants.out/mutants.json"
     done
-    populate native-platform-mutants crates/alpine-platform-macos/src/native.rs alpine-platform-macos,alpine-studio
+    populate native-platform-mutants crates/alpine-platform-macos/src/native.rs alpine-platform-macos,alpine-editor
 }
 alter() {
     jq "$2" "$directory/$1" > "$root/altered.json"
@@ -130,7 +130,7 @@ for fault in absent-one absent-all empty-terminal truncated-terminal malformed-e
         truncated-terminal) : > "$root/native-runtime-mutants-1.out/mutants.out/outcomes.json" ;;
         malformed-empty) printf '[\n' > "$root/native-runtime-mutants-1.out/mutants.out/mutants.json" ;;
         scopes-tampered) : > "$root/native-mutation-receipts-platform-1/scopes.txt" ;;
-        strict-unviable) populate native-runtime-mutants crates/alpine-runtime/src/lib.rs alpine-runtime,alpine-studio ;;
+        strict-unviable) populate native-runtime-mutants crates/alpine-runtime/src/lib.rs alpine-runtime,alpine-editor ;;
     esac
     fail_finish platform success "$fault"
 done
@@ -171,7 +171,7 @@ fi
 grep -Fq 'injected hash-command failure' "$fixture/hash.log"
 prepare studio
 studio
-alter outcomes.json '.outcomes[1].phase_results[].argv+=["--package=alpine-studio@0.0.0","--package=alpine-studio"]'
+alter outcomes.json '.outcomes[1].phase_results[].argv+=["--package=alpine-editor@0.0.0","--package=alpine-editor"]'
 "$checker" finish studio 1 "$root" success
 printf 'native mutation receipt controls passed (%s isolated cases)\n' "$case_number"
 
@@ -214,7 +214,7 @@ export CARGO_INCREMENTAL=0
     export ALPINE_NATIVE_BASE ALPINE_NATIVE_HEAD GITHUB_SHA GITHUB_WORKFLOW_SHA
 
     full_platform() {
-        populate native-platform-mutants crates/alpine-platform-macos/src/native.rs alpine-platform-macos,alpine-studio
+        populate native-platform-mutants crates/alpine-platform-macos/src/native.rs alpine-platform-macos,alpine-editor
     }
     require_no_rust_receipt() {
         jq -e '.status=="passed" and .identity.selection_diff.has_rust_changes==false

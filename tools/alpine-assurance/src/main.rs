@@ -3,8 +3,8 @@
 mod ax;
 mod ax_capture;
 mod calibration;
-mod dogfood;
-mod dogfood_live;
+#[cfg(test)]
+mod digest;
 mod lab;
 mod lab_lifecycle;
 mod lab_v2;
@@ -152,25 +152,6 @@ fn run() -> Result<String, Vec<String>> {
     ) {
         return run_onscreen_command(&command, &mut arguments);
     }
-    if command == "record-studio-dogfood" {
-        return run_dogfood_record_command(&mut arguments);
-    }
-    if command == "validate-live-studio-dogfood-draft" {
-        let Some(path) = arguments.next() else {
-            return Err(vec![
-                "validate-live-studio-dogfood-draft requires a draft path".to_owned(),
-            ]);
-        };
-        if arguments.next().is_some() {
-            return Err(vec![
-                "validate-live-studio-dogfood-draft accepts exactly one draft path".to_owned(),
-            ]);
-        }
-        return dogfood_live::validate_draft(Path::new(&path));
-    }
-    if command == "seal-live-studio-dogfood" {
-        return run_live_dogfood_seal_command(&mut arguments);
-    }
     if matches!(
         command.as_str(),
         "validate-ax-fixture" | "validate-ax-evidence" | "ax-evidence-report"
@@ -208,12 +189,6 @@ fn run() -> Result<String, Vec<String>> {
             Path::new(&output),
             Path::new("."),
         );
-    }
-    if matches!(
-        command.as_str(),
-        "validate-studio-dogfood" | "studio-dogfood-report"
-    ) {
-        return run_dogfood_command(&command, &mut arguments);
     }
     if matches!(
         command.as_str(),
@@ -310,7 +285,7 @@ fn run() -> Result<String, Vec<String>> {
         )),
         "report" => Ok(render_report(&registry)),
         other => Err(vec![format!(
-            "unknown command {other:?}; expected validate, report, validate-scene-trace, validate-trace-sequence, render-scene-reference, render-scene-native, benchmark-scene-reference, benchmark-scene-native, profile-scene-native, render-trace-sequence-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, capture-ax-client, record-studio-dogfood, validate-live-studio-dogfood-draft, seal-live-studio-dogfood, validate-studio-dogfood, studio-dogfood-report, or upstream-radar"
+            "unknown command {other:?}; expected validate, report, validate-scene-trace, validate-trace-sequence, render-scene-reference, render-scene-native, benchmark-scene-reference, benchmark-scene-native, profile-scene-native, render-trace-sequence-native, validate-qualification, qualification-report, validate-aa-calibration, aa-calibration-report, validate-zed-lab-evidence, zed-lab-evidence-report, validate-onscreen-sdr, onscreen-sdr-report, validate-ax-fixture, validate-ax-evidence, ax-evidence-report, capture-ax-client, or upstream-radar"
         )]),
     }
 }
@@ -383,92 +358,6 @@ fn run_qualification_command(
         return qualification::run_scene(Path::new(&path), Path::new("."));
     }
     qualification::run(command, Path::new(&path), Path::new("."))
-}
-
-fn run_dogfood_command(
-    command: &str,
-    arguments: &mut impl Iterator<Item = String>,
-) -> Result<String, Vec<String>> {
-    let Some(path) = arguments.next() else {
-        return Err(vec![format!("{command} requires a manifest path")]);
-    };
-    if arguments.next().is_some() {
-        return Err(vec![format!("{command} accepts exactly one manifest path")]);
-    }
-    let path = Path::new(&path);
-    if dogfood_live::is_v2(path) {
-        dogfood_live::run(command, path)
-    } else {
-        dogfood::run(command, path)
-    }
-}
-
-fn run_live_dogfood_seal_command(
-    arguments: &mut impl Iterator<Item = String>,
-) -> Result<String, Vec<String>> {
-    let values = arguments.collect::<Vec<_>>();
-    if values.len() != 15 {
-        return Err(vec![
-            "seal-live-studio-dogfood requires draft, internal JSON, footprint JSON, stdout, stderr, binary, sampler, PID, duration ms, interval ms, evidence scope, process start, expected revision, capture timestamp, and destination"
-                .to_owned(),
-        ]);
-    }
-    let expected_pid = values[7]
-        .parse::<u32>()
-        .map_err(|_| vec!["seal-live-studio-dogfood PID must be an unsigned integer".to_owned()])?;
-    let requested_duration_ms = values[8].parse::<u64>().map_err(|_| {
-        vec!["seal-live-studio-dogfood duration must be unsigned milliseconds".to_owned()]
-    })?;
-    let interval_ms = values[9].parse::<u64>().map_err(|_| {
-        vec!["seal-live-studio-dogfood interval must be unsigned milliseconds".to_owned()]
-    })?;
-    dogfood_live::seal(&dogfood_live::SealRequest {
-        draft: PathBuf::from(&values[0]),
-        internal: PathBuf::from(&values[1]),
-        footprint: PathBuf::from(&values[2]),
-        stdout: PathBuf::from(&values[3]),
-        stderr: PathBuf::from(&values[4]),
-        binary: PathBuf::from(&values[5]),
-        sampler: PathBuf::from(&values[6]),
-        expected_pid,
-        requested_duration_ms,
-        interval_ms,
-        evidence_scope: values[10].clone(),
-        process_start: values[11].clone(),
-        expected_revision: values[12].clone(),
-        expected_captured_at: values[13].clone(),
-        destination: PathBuf::from(&values[14]),
-    })
-}
-
-fn run_dogfood_record_command(
-    arguments: &mut impl Iterator<Item = String>,
-) -> Result<String, Vec<String>> {
-    let Some(draft) = arguments.next() else {
-        return Err(vec![
-            "record-studio-dogfood requires a draft, snapshot, and destination".to_owned(),
-        ]);
-    };
-    let Some(snapshot) = arguments.next() else {
-        return Err(vec![
-            "record-studio-dogfood requires a snapshot and destination".to_owned(),
-        ]);
-    };
-    let Some(destination) = arguments.next() else {
-        return Err(vec![
-            "record-studio-dogfood requires a destination".to_owned(),
-        ]);
-    };
-    if arguments.next().is_some() {
-        return Err(vec![
-            "record-studio-dogfood accepts exactly three paths".to_owned(),
-        ]);
-    }
-    dogfood::record(
-        Path::new(&draft),
-        Path::new(&snapshot),
-        Path::new(&destination),
-    )
 }
 
 fn run_ax_command(
@@ -1143,8 +1032,7 @@ fn display_list(items: &[String]) -> String {
 mod tests {
     use super::{
         Diagnostics, Registry, artifact_anchor, artifact_path, discover_kani_file, load_registry,
-        registry_path, render_report, run_dogfood_command, run_dogfood_record_command,
-        run_qualification_command, valid_identifier, validate_kani_inventory, validate_registry,
+        registry_path, render_report, valid_identifier, validate_kani_inventory, validate_registry,
     };
     use std::{
         collections::BTreeSet,
@@ -1162,38 +1050,6 @@ mod tests {
         assert!(valid_identifier("EV-0016-KANI01", "EV-", "-"));
         assert!(!valid_identifier("AEP-16", "AEP-", "-C"));
         assert!(!valid_identifier("EV-0016-lower", "EV-", "-"));
-    }
-
-    #[test]
-    fn dogfood_cli_dispatch_preserves_validation_and_argument_errors() {
-        let manifest = repository_root().join("assurance/dogfood/v1/session.toml");
-        let mut validation_arguments = [manifest.display().to_string()].into_iter();
-        let validation = run_dogfood_command("validate-studio-dogfood", &mut validation_arguments);
-        assert!(validation.is_ok_and(|message| {
-            message.starts_with("validated Studio dogfood capture fixture-dogfood-session")
-        }));
-
-        let mut missing_validation_arguments = std::iter::empty();
-        assert!(
-            run_dogfood_command(
-                "validate-studio-dogfood",
-                &mut missing_validation_arguments,
-            )
-            .is_err_and(|errors| errors == ["validate-studio-dogfood requires a manifest path"])
-        );
-        let mut missing_record_arguments = std::iter::empty();
-        assert!(
-            run_dogfood_record_command(&mut missing_record_arguments).is_err_and(|errors| {
-                errors == ["record-studio-dogfood requires a draft, snapshot, and destination"]
-            })
-        );
-        let mut missing_arguments = std::iter::empty();
-        assert_eq!(
-            run_qualification_command("validate-qualification", &mut missing_arguments),
-            Err(vec![
-                "validate-qualification requires a manifest path".to_owned()
-            ])
-        );
     }
 
     #[test]

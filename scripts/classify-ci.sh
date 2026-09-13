@@ -93,7 +93,7 @@ if matches '^crates/alpine-runtime/'; then
     enable_all runtime-consumers
 fi
 
-if matches '^(apps/alpine-studio/.+\.rs$|apps/alpine-studio/Cargo\.toml$)'; then
+if matches '^(apps/alpine-editor/.+\.rs$|apps/alpine-editor/Cargo\.toml$)'; then
     enable studio-rust mutation
 fi
 
@@ -109,13 +109,13 @@ if matches '^(crates/alpine-text-layout/|crates/.+/(unsafe|ffi|resource|lifetime
     enable unsafe-or-lifetime miri
 fi
 
-if matches '^(apps/alpine-studio/(.+\.rs|Cargo\.toml)$|crates/(alpine-metal|alpine-platform-macos)/|tools/alpine-ax-client/(src/.+\.rs|Cargo\.toml)$|shaders/|.+\.metal$)'; then
+if matches '^(apps/alpine-editor/(.+\.rs|Cargo\.toml)$|crates/(alpine-metal|alpine-platform-macos)/|tools/alpine-ax-client/(src/.+\.rs|Cargo\.toml)$|shaders/|.+\.metal$)'; then
     enable native-rendering metal
 fi
 
 # Non-Rust inputs participate in production tests. Until their individual
 # inventories are mapped, keep all native and deterministic consumers selected.
-if matches '^(apps/alpine-studio|tools/alpine-ax-client)/(fixtures|tests|assets|resources)/'; then
+if matches '^(apps/alpine-editor|tools/alpine-ax-client)/(fixtures|tests|assets|resources)/'; then
     enable_all native-test-input
 fi
 
@@ -126,7 +126,7 @@ fi
 # An explicit known-input list prevents a mapped file from masking an unknown
 # consumer in the same diff. Generic Rust/manifest matches above are not proof
 # that an otherwise unrecognized package or input has complete gate coverage.
-known_inputs='^(README\.md$|ARCHITECTURE\.md$|AGENTS\.md$|CONTRIBUTING\.md$|CHANGELOG\.md$|LICENSE([^/]*$)|NOTICE([^/]*$)|docs/|skills/|\.agents/skills/|\.github/(pull_request_template\.md$|workflows/.+\.ya?ml$|actions/)|Cargo\.(toml|lock)$|rust-toolchain(\.toml)?$|\.cargo/|crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal|alpine-platform|alpine-platform-macos|alpine-text|alpine-text-layout|alpine-runtime)/(.+\.rs$|Cargo\.toml$|README\.md$)|apps/alpine-studio/(.+\.rs$|Cargo\.toml$|README\.md$|fixtures/|tests/|assets/|resources/)|tools/(alpine-assurance|alpine-trace|alpine-ax-client)/(src/.+\.rs$|Cargo\.toml$|README\.md$)|tools/alpine-(trace|assurance)/|tools/alpine-ax-client/(fixtures|tests|assets|resources)/|assurance/(evidence\.toml$|qualification/|miri-[^/]+\.tsv$)|shaders/|.+\.metal$|scripts/(classify-ci|test-classifier|setup-kani|test-setup-kani|test-studio-concurrency-stress|check-coverage|test-coverage|run-miri-partition|test-miri-partitions|check-native-mutation-receipts|test-native-mutation-receipts|test-formal-effectiveness|check-metal|check-native-benchmark-result|test-native-benchmark-result)\.sh$)'
+known_inputs='^(README\.md$|ARCHITECTURE\.md$|AGENTS\.md$|CONTRIBUTING\.md$|CHANGELOG\.md$|LICENSE([^/]*$)|NOTICE([^/]*$)|docs/|skills/|\.agents/skills/|\.github/(pull_request_template\.md$|workflows/.+\.ya?ml$|actions/)|Cargo\.(toml|lock)$|rust-toolchain(\.toml)?$|\.cargo/|crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal|alpine-platform|alpine-platform-macos|alpine-text|alpine-text-layout|alpine-runtime)/(.+\.rs$|Cargo\.toml$|README\.md$)|apps/alpine-editor/(.+\.rs$|Cargo\.toml$|README\.md$|fixtures/|tests/|assets/|resources/)|tools/(alpine-assurance|alpine-trace|alpine-ax-client)/(src/.+\.rs$|Cargo\.toml$|README\.md$)|tools/alpine-(trace|assurance)/|tools/alpine-ax-client/(fixtures|tests|assets|resources)/|assurance/(evidence\.toml$|qualification/|miri-[^/]+\.tsv$)|shaders/|.+\.metal$|scripts/(classify-ci|test-classifier|setup-kani|test-setup-kani|test-studio-concurrency-stress|check-coverage|test-coverage|run-miri-partition|test-miri-partitions|check-native-mutation-receipts|test-native-mutation-receipts|test-formal-effectiveness|check-metal|check-native-benchmark-result|test-native-benchmark-result)\.sh$)'
 unknown_inputs=$(printf '%s\n' "$changed_files" | sed '/^$/d' | grep -Ev "$known_inputs") || {
     result=$?
     [ "$result" -eq 1 ] || fail 'known-input classification failed'

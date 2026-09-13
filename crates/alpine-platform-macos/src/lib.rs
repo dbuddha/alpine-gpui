@@ -2409,7 +2409,7 @@ pub enum SurfaceStage {
 /// Handle-free operation identity for native ownership and invariant failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SurfaceOperation {
-    /// Alpine Studio or runtime application-state construction.
+    /// Alpine Editor or runtime application-state construction.
     Application,
     /// Frame admission, submission, completion, or presentation state.
     Presentation,

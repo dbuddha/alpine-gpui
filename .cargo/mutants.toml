@@ -4,7 +4,7 @@
 exclude_globs = [
     # The executable wrapper is proven through CARGO_BIN_EXE process tests;
     # cargo-mutants does not substitute that spawned binary.
-    "apps/alpine-studio/src/main.rs",
+    "apps/alpine-editor/src/main.rs",
     "crates/*/src/proofs.rs",
     "tools/*/src/proofs.rs",
     "crates/alpine-metal/src/native.rs",

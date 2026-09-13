@@ -103,7 +103,7 @@ ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct \
     cargo test --locked -p alpine-platform-macos --test native_onscreen_sdr
 /usr/bin/env -u ALPINE_RUST_ANALYZER \
     RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
-    cargo test --locked -p alpine-studio --test native_process
+    cargo test --locked -p alpine-editor --test native_process
 /usr/bin/env \
     -u MTL_DEBUG_LAYER \
     -u MTL_DEBUG_LAYER_ERROR_MODE \

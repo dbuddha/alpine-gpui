@@ -8,14 +8,14 @@
 
 ## Context
 
-Alpine Studio needs one discoverable route to its growing local command set.
+Alpine Editor needs one discoverable route to its growing local command set.
 Runtime registration, closure-backed actions, and background fuzzy matching
 would create plugin architecture, lifecycle ambiguity, and unnecessary memory
 for a product whose commands are known at compile time.
 
 ## Decision
 
-The Studio owns a private closed `StudioCommand` enum, a static registry, and a
+The Studio owns a private closed `EditorCommand` enum, a static registry, and a
 bounded foreground palette state machine. Direct shortcuts and palette actions
 call the same existing Studio transitions. Availability is recomputed before
 execution. Keyboard and IME focus are exclusive while the palette is open.

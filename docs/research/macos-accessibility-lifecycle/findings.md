@@ -7,7 +7,7 @@
 | AX-253-003 | Observed | Selection mutation exists, but tabs, files, commands, diagnostics, save, and close are not operable through accessibility. | Add only the bounded activation vocabulary in #270. |
 | AX-253-004 | Observed | Announcement posting lacks complete user-info semantics, and removed elements lack destruction evidence. | Implement post-borrow notification and destruction in #271. |
 | AX-253-005 | Observed | Focus exists internally, but external focused-element forwarding and stable external identifiers are absent. | Add focused child, identity, and bounded rectangles in #270. |
-| AX-253-006 | Observed | The native adapter fixture is not the real `StudioApp` journey. | Add a real process E2E in #272. |
+| AX-253-006 | Observed | The native adapter fixture is not the real `EditorApp` journey. | Add a real process E2E in #272. |
 | AX-253-007 | Observed | Hosted counters show post intentions, not delivery to assistive technology. | Keep physical AX and VoiceOver evidence in #273. |
 | AX-253-008 | Inference | Bounded semantic rectangles are needed for practical external navigation and hit testing. | Include element rectangles, but exclude arbitrary text-range geometry. |
 | AX-253-009 | Inference | Main-thread serialization does not identify an obsolete conversion session after refocus. | Carry one monotonic input epoch and reject stale callbacks. |

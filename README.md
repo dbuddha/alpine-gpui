@@ -1,119 +1,88 @@
-# Alpine GPUI
+# Alpine Editor
 
-Alpine GPUI is a publicly readable, proprietary desktop application framework
-written in Rust for applications that need predictable latency, bounded memory
-use, and native desktop behavior. It is intended first for editors, terminals,
-database tools, and other data-heavy productivity applications.
+Alpine Editor is a local code editor for Apple Silicon macOS, written in Rust on
+Alpine GPUI, an independently written application framework with a direct Metal
+renderer. The goal is one editor its author can use every day, with a memory
+footprint the alternatives cannot match, owned end to end and understandable
+without a plugin API.
 
-The programming model is conceptually adapted from
-[Zed GPUI](https://github.com/zed-industries/zed/tree/e17dc4f9d50db73a458b64dcce50ecd4878b98a3/crates/gpui),
-with additional lessons drawn from GPUI-CE, `gpui-component`, WGPUI, the
-`gpui-wgpu` lineage, Kael, and the wider GPUI ecosystem. Alpine is an
-independent implementation, not a fork or source-compatible distribution. It
-is not affiliated with or endorsed by Zed Industries.
+Alpine GPUI's programming model is conceptually adapted from
+[Zed GPUI](https://github.com/zed-industries/zed/tree/e17dc4f9d50db73a458b64dcce50ecd4878b98a3/crates/gpui).
+Alpine is an independent implementation, not a fork or a source-compatible
+distribution, and is not affiliated with or endorsed by Zed Industries. Upstream
+source is not copied, vendored, or linked.
 
-The product target is Apple Silicon running macOS 15 or newer, using Direct
-Metal. Linux and Windows currently test portable contracts; native backends for
-those systems are outside the active plan.
+## Current state
 
-The ambition is one keyboard-first, accessible workspace containing a terminal,
-Alpine Editor, database views and an agent dock. Only the editor prototype exists
-today, with the executable and source paths still named `alpine-studio`. The
-[capability probe](docs/alpine-capability-probe.md) first establishes native
-readiness, then tests a memory advantage with responsiveness floors against
-matched implementations. Superiority is an unproven hypothesis.
+Alpine Editor is a prototype. It builds, launches, renders, and edits files, and
+it is not yet a daily driver. Being accurate about the gap matters more than the
+feature list, so:
 
-## Version 1 boundaries
+**Works today**
 
-Alpine aims to own its application runtime, demand-driven scheduling, immutable
-scene protocol, renderer policy, resource lifetimes, native windowing, input,
-text, accessibility, headless testing, and application-ready components.
+- Opening a file or folder passed at launch, editing, atomic save, undo and redo
+- Tabs, bounded splits, a virtualized file tree, session restore
+- Find and replace, quick open, project search
+- Syntax highlighting for Rust, Markdown, TOML and JSON
+- Rust language support against a pinned `rust-analyzer`: diagnostics,
+  completion, hover, go to definition, references, document and workspace
+  symbols, and rename and format previews
+- Unicode, IME composition, clipboard, and accessibility semantics
 
-Version 1 does not target Intel Macs, web, mobile, GPUI source compatibility,
-or a generic GPU abstraction in the direct Metal hot path. Upstream source is
-not copied, vendored, or linked. Source-level adaptation requires explicit
-owner approval and conditional provenance records.
+**Not built yet**
 
-## Current maturity
+- No menu bar, so every command is keyboard-only
+- No open or save dialog, so files and folders can only be chosen at launch
+- One window per process
+- No git integration, no file watcher, no terminal, no extensions
+- No language support beyond the four above
+- No design system, which is why surfaces are not yet visually consistent
 
-Alpine is pre-release and its public framework contracts are not version 1
-stable. Alpine Studio is a working local editor prototype on the path to the
-selected Apple Silicon macOS daily-driver profile, but it is not yet qualified
-or distributed as a daily driver.
+**Not planned for version 1**
 
-The workspace currently provides:
+Intel Macs, Linux, Windows, web, mobile, GPUI source compatibility, AI features,
+and multiplayer editing.
 
-- an immutable scene protocol, deterministic Direct Metal renderer, CPU oracle,
-  native AppKit window, demand-driven display-link presentation, bounded
-  asynchronous frame slots, and explicit resource accounting;
-- a safe application runtime with synchronous native events, dirty-only scene
-  construction, bounded workers, external-source wake admission, and no general
-  async executor or reactive graph;
-- local copy-on-write text, Unicode and UTF-16 mappings, transactions, bounded
-  undo and redo, atomic save, CoreText shaping, visible-range layout, and
-  hard-budgeted glyph and line caches;
-- Alpine Studio file and folder launch, virtualized file tree, tabs, bounded
-  splits, find and replace, quick open, command discovery, project search,
-  restoration, compiled syntax, bounded local settings reload and migration,
-  typed themes and keymaps, keyboard, pointer, clipboard,
-  IME, and revisioned accessibility semantics;
-- a bounded local process, JSON-RPC, and LSP path qualified with a pinned
-  `rust-analyzer`, including revision-safe visible Rust diagnostics and no
-  network, extension, AI, collaboration, or telemetry subsystem;
-- fail-closed qualification tooling plus policy, formatting, lint, tests,
-  rustdoc, coverage, changed-code mutation, selected models and proofs,
-  three-platform CI and native Metal validation. Specialized assurance is
-  available through explicit manual runs.
+## Performance
 
-Physical typing latency, VoiceOver, sustained dogfood and residency still need
-qualification on the target Mac. Fixed-hardware comparator evidence, API
-stabilization, signing, notarization and release support remain later work.
-[Architecture](ARCHITECTURE.md) describes implemented boundaries and invariants;
-[documentation](docs/README.md) separates current guidance from historical plans.
+The premise is lower memory use than comparable editors. That premise is
+**unverified**. An early comparison measured only idle footprint after opening a
+folder, which is not a like-for-like test because Alpine does not read file
+contents until a file is opened. No performance claim is currently supported by
+evidence, and an earlier renderer measurement favored pinned Zed GPUI by about
+12 percent at one stage on one workload.
 
-## Development and project state
-
-Run the full deterministic and tooling gate:
+## Build and run
 
 ```sh
-scripts/check.sh
+cargo run --locked -p alpine-editor              # run against the current tree
+cargo run --locked -p alpine-editor path/to/file # open a file or folder
+scripts/check.sh                                 # full local gate
 ```
 
-Native execution is separate: `scripts/check-native.sh physical shipping` runs
-the shipping smoke; `scripts/check-native.sh physical all` runs the broader
-native suite. Neither ordinary workspace tests nor hosted CI prove physical
-presentation or daily-driver readiness.
-
-Build the canonical unsigned private-dogfood application from a clean revision:
+Build a local application bundle:
 
 ```sh
-scripts/build-alpine-studio-app.sh
+scripts/build-alpine-editor-app.sh
+scripts/launch-alpine-editor-app.sh path/to/file-or-folder
 ```
 
-The command creates the release bundle at
-`target/release/Alpine Studio.app`. Launch a scratch editor, file, or folder
-through its stable LaunchServices identity with:
+The bundle is local dogfood infrastructure. Signing, notarization and
+distribution are later work.
 
-```sh
-scripts/launch-alpine-studio-app.sh
-scripts/launch-alpine-studio-app.sh path/to/file-or-folder
-```
+Native execution is separate from the ordinary test suite:
+`scripts/check-native.sh physical shipping` runs the shipping smoke. Neither
+workspace tests nor hosted CI prove physical presentation.
 
-The bundle is local dogfood infrastructure, not a public release artifact.
-Signing, notarization, distribution, and updates remain later release gates.
-
-Development is PR-first: explain the problem and outcome, change, and verification
-with remaining risks. A user request is sufficient scope for a focused fix. Use
-[issues](https://github.com/dbuddha/alpine-gpui/issues) for deferred defects,
-blockers or multi-PR work; labels, hierarchy and Projects are optional.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development and acceptance and
-[Actions](https://github.com/dbuddha/alpine-gpui/actions/workflows/ci.yml) for CI.
-Documentation is plain Markdown plus Rust API docs and doctests. The Wiki is retired; repository Markdown is canonical. Update existing guidance when behavior changes it.
+Development is PR-first: problem and outcome, change, then verification and
+remaining risks. See [CONTRIBUTING.md](CONTRIBUTING.md) and
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Ownership and license
 
-Public visibility does not make Alpine open source. At the reviewed commit,
-Zed's `gpui` crate declares Apache-2.0, and that license governs Zed source.
-Alpine's independently written source remains proprietary under
-[LICENSE.md](LICENSE.md), which grants no permission beyond viewing the public
-repository and using GitHub's permitted repository features.
+Public visibility does not make Alpine open source. Alpine's independently
+written source is proprietary under [LICENSE.md](LICENSE.md), which grants no
+permission beyond viewing this repository and using GitHub's permitted
+repository features. Zed's `gpui` crate declares Apache-2.0 at the reviewed
+commit, and that license governs Zed source, which is kept in a separate GPL
+comparison repository and never in this one.

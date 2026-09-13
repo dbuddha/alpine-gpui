@@ -44,8 +44,8 @@ demand(type=="array" and length==1;"exactly one inventory document required")
             phases(["Build"]) and ((phase("Build")).process_status|failed_status)
           else false end));"invalid terminal classification or mutant identity")
     | (if $scope=="native-platform-contract-mutants" or $scope=="native-platform-mutants"
-          or $scope=="native-studio-accessibility-mutants" then ["--package=alpine-platform-macos","--package=alpine-studio"]
-        elif $scope=="native-runtime-mutants" then ["--package=alpine-runtime","--package=alpine-studio"]
+          or $scope=="native-studio-accessibility-mutants" then ["--package=alpine-platform-macos","--package=alpine-editor"]
+        elif $scope=="native-runtime-mutants" then ["--package=alpine-runtime","--package=alpine-editor"]
         else ["--package="+($source|split("/")[1])] end) as $packages
     | demand(all($baseline.phase_results[];(.argv|command|.packages)==($packages|sort));"baseline omits required package scope")
     | demand(all($mutants[];. as $result | all(.phase_results[];. as $phase |

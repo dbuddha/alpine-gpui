@@ -1,12 +1,17 @@
 # Alpine engineering
 
-Alpine is one personal Apple Silicon macOS editor: Alpine Editor on Alpine GPUI,
-with a memory footprint Zed cannot match. Ownership and comprehension are the
-product. No comparative performance claim is pursued and the comparison lab is
-parked. The executable is still `alpine-studio`. Terminal, database views, an
-agent dock, multi-window, plugins, AI and collaboration are out of scope.
+Alpine is one personal Apple Silicon macOS editor: Alpine Editor on Alpine GPUI.
+It aims at a smaller memory footprint than comparable editors. That aim is
+unverified, so publish no comparative claim; the comparison lab is parked.
+Terminal, database views, an agent dock, plugins, AI and collaboration are out
+of scope.
+
+It must behave as a real macOS application: menu bar, open and save dialogs,
+multiple windows, and an installed bundle with an icon. Every surface follows
+one written design spec, with Zed as the visual reference.
 
 Daily use is the acceptance test. A defect you hit while editing is the backlog.
+Judge the product by using it, not by reading its code.
 
 ## Working rules
 
@@ -21,8 +26,8 @@ Daily use is the acceptance test. A defect you hit while editing is the backlog.
   relevant topic. Do not bulk-read docs.
 - Verify relevant behavior once; repeat after changes or failures. Review the
   full diff, including untracked files.
-- Report implemented, reproduced, measured and daily-driver accepted separately.
-  Keep outputs proportional to scope.
+- Report implemented, measured and daily-driver accepted separately. Keep
+  outputs proportional to scope.
 - An environmental blocker needs a re-check after a real delay before it becomes
   a blocked goal. Three reads in one minute is one observation.
 - Ask about a new public contract, dependency, unsafe boundary, license or
@@ -50,7 +55,7 @@ Daily use is the acceptance test. A defect you hit while editing is the backlog.
 ## Commands
 
 ```sh
-cargo run --locked -p alpine-studio
+cargo run --locked -p alpine-editor
 cargo test --locked -p <affected-crate>
 scripts/check-native.sh physical shipping
 cargo fmt --all -- --check
@@ -63,7 +68,5 @@ One optional skill lives in `.agents/skills`: Apple Metal for lifecycle,
 presentation and residency. `docs/AGENTS.md` applies to documentation work.
 
 This file is capped at 500 words; adding a rule requires removing one. No new
-script may test another script; `test-policy.sh` and `test-classifier.sh` are the
-last two and retire with `check-policy.sh`. No workflow may file issues. Retired
-process is deleted rather than archived: history at tag `pre-cleanup-2026-09` is
-the only record, and it restores nothing.
+script may test another script. No workflow may file issues. Retired process is
+deleted, not archived; history at tag `pre-cleanup-2026-09` restores nothing.

@@ -9,7 +9,7 @@
 
 ## Motivation and boundary
 
-Alpine Studio needs a correct local editing state before shaping, rendering,
+Alpine Editor needs a correct local editing state before shaping, rendering,
 native input, syntax, or language services can consume it. Crop 0.4.3 was the
 preferred candidate because it is byte-indexed and copy-on-write, but it failed
 the accepted corpus: a nested slice can return unrelated text and its UTF-16

@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AccessibilityNodeId::new(1),
                 None,
                 AccessibilityRole::Window,
-                "Alpine Studio".into(),
+                "Alpine Editor".into(),
                 false,
                 false,
                 false,
