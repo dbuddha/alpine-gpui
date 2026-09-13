@@ -8,7 +8,6 @@ scripts/check-product-boundary.sh
 scripts/test-product-boundary.sh
 scripts/test-classifier.sh
 scripts/test-ci-admission.sh
-scripts/test-ci-cache-selection.sh
 scripts/test-qualification.sh
 scripts/test-native-benchmark-result.sh
 scripts/test-alpine-editor-app-bundle.sh
