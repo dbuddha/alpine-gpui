@@ -8798,7 +8798,11 @@ pub mod native_validation {
                 SurfaceEvent::Scroll { .. } => {
                     self.scroll = self.scroll.saturating_add(1);
                 }
+                // A menu command is not native input. Counting it as
+                // unexpected is correct for this receipt: qualification drives
+                // the keyboard and pointer, never the menu bar.
                 SurfaceEvent::Accessibility { .. }
+                | SurfaceEvent::Menu { .. }
                 | SurfaceEvent::Resize { .. }
                 | SurfaceEvent::Clipboard { .. }
                 | SurfaceEvent::Wake { .. }
