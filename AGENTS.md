@@ -1,64 +1,69 @@
 # Alpine engineering
 
-Alpine targets an Apple Silicon macOS workspace for a terminal, Alpine Editor,
-database views and an agent dock. The current executable is still `alpine-studio`;
-only the local editor exists. The [capability probe](docs/alpine-capability-probe.md)
-defines the active scope: native readiness, then equivalent memory and latency
-experiments. Do not expand a replay into a full integration or a general GPUI clone.
+Alpine is one personal Apple Silicon macOS editor: Alpine Editor on Alpine GPUI,
+with a memory footprint Zed cannot match. Ownership and comprehension are the
+product. No comparative performance claim is pursued and the comparison lab is
+parked. The executable is still `alpine-studio`. Terminal, database views, an
+agent dock, multi-window, plugins, AI and collaboration are out of scope.
+
+Daily use is the acceptance test. A defect you hit while editing is the backlog.
 
 ## Working rules
 
-- Inspect branch, upstream and dirty state. Preserve unfinished work and parked
-  worktrees. Fetch before comparing remote branches.
+- Inspect branch, upstream and dirty state. Preserve unfinished work. Fetch
+  before comparing remote branches.
+- Measure the differentiator before building on it. An unmeasured hypothesis
+  outranks any feature.
 - The user request or an existing issue supplies scope. State the observable
-  outcome and relevant verification. Honor authorization already given.
-- Read affected code and tests first. Use the short `ARCHITECTURE.md` map when
-  needed, then only relevant topic references. Do not bulk-read docs or research.
-- Follow `CONTRIBUTING.md` for publication and acceptance. Verify relevant local
-  behavior once; repeat when changes or failures justify it. Review the full diff.
-- Routine authorized work can proceed through implementation, independent review
-  and protected merge. Ask about a new public contract, dependency, unsafe boundary,
-  license, copied source or acceptance safeguard when not already authorized.
-- Never publish secrets, overwrite unrelated work, rewrite published history,
-  bypass branch protection or weaken a check merely to obtain green.
-- Use live required checks for the tested source and current base before merging;
-  verify the resulting main run. AI approval is not execution evidence.
+  outcome, the failure it fixes and its regression check. Honor authorization
+  already given.
+- Read affected code and tests first. Use `ARCHITECTURE.md`, then only the
+  relevant topic. Do not bulk-read docs.
+- Verify relevant behavior once; repeat after changes or failures. Review the
+  full diff, including untracked files.
+- Report implemented, reproduced, measured and daily-driver accepted separately.
+  Keep outputs proportional to scope.
+- An environmental blocker needs a re-check after a real delay before it becomes
+  a blocked goal. Three reads in one minute is one observation.
+- Ask about a new public contract, dependency, unsafe boundary, license or
+  copied source when not already authorized.
+- Never publish secrets, overwrite unrelated work, rewrite published history or
+  bypass branch protection.
 
 ## Concrete pitfalls
 
-- Reject stale worker results with document/workspace revisions. Preserve Unicode,
-  IME, Accessibility, unsaved documents and save durability across lifecycle events.
-- Avoid lock/RefCell reentrancy across native callbacks and main-thread blocking.
-  Native handles, callback generations, in-flight resources and teardown need
-  explicit ownership. Unsafe code needs a local safety argument and focused tests.
-- Preserve blended painter order. Native rendering needs semantic/readback checks;
-  a cross-GPU pixel hash alone is insufficient.
-- GPU completion is not presentation. Requested bytes are not physical residency.
-  Performance claims need matched endpoints, workloads and measured distributions.
-- Review dependency licenses, features and ownership; no shipping Git dependencies.
-  Source copying needs exact provenance, applicable notices, approval and tests.
-  Zed application source stays in the isolated GPL lab.
+- Reject stale worker results with document and workspace revisions. Preserve
+  Unicode, IME, unsaved documents and save durability across lifecycle events.
+- Avoid lock and RefCell reentrancy across native callbacks, and main-thread
+  blocking. Native handles, callback generations, in-flight resources and
+  teardown need explicit ownership. Unsafe code needs a local safety argument
+  and focused tests.
+- Preserve blended painter order. Native rendering needs semantic and readback
+  checks; a cross-GPU pixel hash alone is insufficient.
+- GPU completion is not presentation. Requested bytes are not physical
+  residency. Absent presentation is missing evidence, never a timestamp to
+  substitute from callback arrival or a target deadline.
+- A sub-millisecond mutation stage with tens of milliseconds to presentation
+  does not justify rewriting the rope, renderer or runtime.
+- Zed application source stays in the isolated GPL lab.
 
-## Useful commands
+## Commands
 
 ```sh
 cargo run --locked -p alpine-studio
 cargo test --locked -p <affected-crate>
-scripts/check-native.sh physical shipping # real native shipping smoke
-scripts/check-native.sh hosted all # hosted-native behavior, not physical acceptance
+scripts/check-native.sh physical shipping
 cargo fmt --all -- --check
-scripts/check.sh # full local gate when warranted by scope
+scripts/check.sh
 ```
 
-## On-demand context
+## Standing limits
 
-Four optional skills live in `.agents/skills`: Alpine engineering for editor
-implementation, Apple Metal for lifecycle/presentation/residency, Zed architecture
-for pinned source comparison, and algorithmic performance for measured algorithms.
-Load support only when the task reaches its domain. Documentation needs no skill.
-`docs/AGENTS.md` applies only to documentation work.
+One optional skill lives in `.agents/skills`: Apple Metal for lifecycle,
+presentation and residency. `docs/AGENTS.md` applies to documentation work.
 
-Add standing rules only for recurring, non-obvious, actionable mistakes. Keep
-research conclusions in topic notes and implementation detail near its code.
-Archived recovery plans and parked branch instructions are historical context;
-they do not restore retired hierarchy, Wiki or skill-evaluation requirements.
+This file is capped at 500 words; adding a rule requires removing one. No new
+script may test another script; `test-policy.sh` and `test-classifier.sh` are the
+last two and retire with `check-policy.sh`. No workflow may file issues. Retired
+process is deleted rather than archived: history at tag `pre-cleanup-2026-09` is
+the only record, and it restores nothing.

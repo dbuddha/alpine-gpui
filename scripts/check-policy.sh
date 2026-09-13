@@ -88,7 +88,6 @@ if [ -n "$workflow_files" ]; then
         fi
     done
     check_mutation_baseline "$ci_workflow"
-    assurance_failure_workflow=${ALPINE_ASSURANCE_FAILURE_WORKFLOW:-.github/workflows/assurance-failure.yml}
     action_source_files=$workflow_files
     if [ -n "$action_files" ]; then
         action_source_files="$action_source_files $action_files"
@@ -239,7 +238,7 @@ if [ -n "$workflow_files" ]; then
     if grep -Eq '^  schedule:' "${ALPINE_NIGHTLY_ASSURANCE_WORKFLOW:-.github/workflows/nightly-assurance.yml}"; then
         fail 'nightly specialized assurance must remain manual only'
     fi
-    for job in upstream-radar mutation coverage; do
+    for job in mutation coverage; do
         weekly_job=$(awk -v job="$job" '
             $0 == "  " job ":" { capture = 1; next }
             capture && /^  [A-Za-z0-9_-]+:/ { exit }
@@ -337,12 +336,8 @@ if [ -n "$workflow_files" ]; then
     if ! printf '%s\n' "$ci_pass_block" | grep -Fq 'test "$2" = success || {'; then
         fail 'ci-pass must reject every required result other than success'
     fi
-    assurance_routing_guard="    if: github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'timed_out'"
-    if [ ! -x scripts/route-assurance-failures.sh ] \
-        || ! grep -Fqx "$assurance_routing_guard" "$assurance_failure_workflow" \
-        || ! grep -Fqx '        run: scripts/route-assurance-failures.sh' "$assurance_failure_workflow" \
-        || ! grep -Fqx '  checks: read' "$assurance_failure_workflow"; then
-        fail 'assurance routing must use the tested current-main failure router and read-only checks'
+    if grep -lE '^[[:space:]]*issues:[[:space:]]*write' $workflow_files >/dev/null 2>&1; then
+        fail 'no workflow may file issues automatically; defects are entered by a human'
     fi
     if grep -Eq 'ALPINE_PR_|pull_request\.(body|title|labels)|mdbook|validate --github|test-hierarchy|check-wiki|test-wiki' "$ci_workflow"; then
         fail 'ordinary CI must not depend on PR metadata, book, Wiki or live hierarchy'

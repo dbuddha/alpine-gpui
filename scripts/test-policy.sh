@@ -2,38 +2,10 @@
 set -eu
 
 # Shared control entrypoint for hosted quality and the canonical local check.
-scripts/check-agent-skills.sh
-scripts/test-agent-skills.sh
 scripts/test-native-command.sh
-
-scripts/test-assurance-failure-collector.sh
-scripts/test-assurance-failure-routing.sh
 
 fixture_dir=$(mktemp -d)
 trap 'rm -rf "$fixture_dir"' EXIT HUP INT TERM
-
-cat > "$fixture_dir/mixed-assurance-failures.tsv" <<'EOF'
-native-macos-arm64	Test workspace
-ci-pass	Require selected evidence
-metal-validation	Validate Metal
-EOF
-cat > "$fixture_dir/mixed-assurance-expected.tsv" <<'EOF'
-native-macos-arm64	Test workspace
-metal-validation	Validate Metal
-EOF
-scripts/filter-assurance-failures.sh < "$fixture_dir/mixed-assurance-failures.tsv" \
-    > "$fixture_dir/mixed-assurance-actual.tsv"
-cmp "$fixture_dir/mixed-assurance-expected.tsv" "$fixture_dir/mixed-assurance-actual.tsv"
-
-printf 'ci-pass\tRequire selected evidence\n' > "$fixture_dir/aggregate-only.tsv"
-scripts/filter-assurance-failures.sh < "$fixture_dir/aggregate-only.tsv" \
-    > "$fixture_dir/aggregate-only-actual.tsv"
-cmp "$fixture_dir/aggregate-only.tsv" "$fixture_dir/aggregate-only-actual.tsv"
-
-: > "$fixture_dir/no-failures.tsv"
-scripts/filter-assurance-failures.sh < "$fixture_dir/no-failures.tsv" \
-    > "$fixture_dir/no-failures-actual.tsv"
-cmp "$fixture_dir/no-failures.tsv" "$fixture_dir/no-failures-actual.tsv"
 
 # Policy must work without issues, claims, labels or any GitHub access.
 cat > "$fixture_dir/gh" <<'EOF'
@@ -197,23 +169,6 @@ run_policy >/dev/null
 
 cp .github/workflows/ci.yml "$fixture_dir/ci.yml"
 ALPINE_CI_WORKFLOW="$fixture_dir/ci.yml" run_policy >/dev/null
-
-cp .github/workflows/assurance-failure.yml "$fixture_dir/assurance-failure.yml"
-for omitted in guard router permission; do
-    case "$omitted" in
-        guard) expression="s/    if: github.event.workflow_run.conclusion.*/    if: always()/" ;;
-        router) expression='/run: scripts\/route-assurance-failures.sh/d' ;;
-        permission) expression='/^  checks: read$/d' ;;
-    esac
-    sed "$expression" "$fixture_dir/assurance-failure.yml" > "$fixture_dir/omitted-$omitted.yml"
-    if ALPINE_ASSURANCE_FAILURE_WORKFLOW="$fixture_dir/omitted-$omitted.yml" \
-        run_policy > "$fixture_dir/omitted-$omitted.log" 2>&1; then
-        printf 'policy test error: missing assurance routing %s was accepted\n' "$omitted" >&2
-        exit 1
-    fi
-    grep -Fq 'assurance routing must use the tested current-main failure router' "$fixture_dir/omitted-$omitted.log" || { cat "$fixture_dir/omitted-$omitted.log" >&2; exit 1; }
-done
-unset ALPINE_ASSURANCE_FAILURE_WORKFLOW
 
 cp .github/workflows/nightly-assurance.yml "$fixture_dir/nightly-assurance.yml"
 cp .github/actions/upload-required-artifact/action.yml "$fixture_dir/upload-required-artifact.yml"

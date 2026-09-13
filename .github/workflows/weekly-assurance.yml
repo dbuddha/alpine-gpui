@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: weekly-assurance
@@ -30,20 +29,6 @@ jobs:
         run: cargo install --locked cargo-deny --version 0.20.2
       - name: Check dependency advisories
         run: cargo deny check advisories
-
-  upstream-radar:
-    if: github.event_name == 'workflow_dispatch'
-    name: upstream-radar
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Detect material upstream movement
-        env:
-          GH_REPOSITORY: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: cargo run --locked -p alpine-assurance -- upstream-radar
 
   mutation:
     if: github.event_name == 'workflow_dispatch'
