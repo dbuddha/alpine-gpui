@@ -16,7 +16,6 @@ use crate::{commands::EditorCommand, syntax::SyntaxClass};
 pub(crate) const KEY_A: u16 = 0;
 pub(crate) const KEY_S: u16 = 1;
 pub(crate) const KEY_F: u16 = 3;
-pub(crate) const KEY_G: u16 = 5;
 pub(crate) const KEY_Z: u16 = 6;
 pub(crate) const KEY_T: u16 = 17;
 pub(crate) const KEY_O: u16 = 31;

@@ -1651,6 +1651,30 @@ fn install_observation(
 
 pub(crate) type NativeInputHandler = Box<dyn FnMut(NativeInputEvent) + 'static>;
 
+/// Virtual key codes for the Edit menu's key equivalents.
+const KEY_CODE_A: u16 = 0;
+const KEY_CODE_Z: u16 = 6;
+const KEY_CODE_X: u16 = 7;
+const KEY_CODE_C: u16 = 8;
+const KEY_CODE_V: u16 = 9;
+
+/// Builds the key press a menu selector stands in for.
+///
+/// Never a repeat: a held menu item is one invocation.
+fn synthetic_shortcut(
+    physical_key: u16,
+    logical_key: &str,
+    modifiers: Modifiers,
+) -> NativeInputEvent {
+    NativeInputEvent::Keyboard {
+        state: KeyState::Down,
+        physical_key,
+        logical_key: Box::from(logical_key),
+        modifiers,
+        repeat: false,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum NativeInputEvent {
     Keyboard {
@@ -1920,6 +1944,48 @@ define_class!(
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             true
+        }
+
+        // The Edit menu's standard selectors. Implementing them here rather
+        // than on the menu's own target keeps them on the responder chain, so
+        // a focused open or save panel field still wins over the editor.
+        //
+        // Each one replays the keystroke the editor already handles, so the
+        // menu and the keyboard cannot drift apart. Enabling these items also
+        // makes AppKit consume their key equivalents, which is exactly why
+        // they must land on the same path the keys used to take.
+        #[unsafe(method(undo:))]
+        fn menu_undo(&self, _sender: Option<&AnyObject>) {
+            self.emit(synthetic_shortcut(KEY_CODE_Z, "z", Modifiers::from_bits(Modifiers::COMMAND)));
+        }
+
+        #[unsafe(method(redo:))]
+        fn menu_redo(&self, _sender: Option<&AnyObject>) {
+            self.emit(synthetic_shortcut(
+                KEY_CODE_Z,
+                "z",
+                Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT),
+            ));
+        }
+
+        #[unsafe(method(cut:))]
+        fn menu_cut(&self, _sender: Option<&AnyObject>) {
+            self.emit(synthetic_shortcut(KEY_CODE_X, "x", Modifiers::from_bits(Modifiers::COMMAND)));
+        }
+
+        #[unsafe(method(copy:))]
+        fn menu_copy(&self, _sender: Option<&AnyObject>) {
+            self.emit(synthetic_shortcut(KEY_CODE_C, "c", Modifiers::from_bits(Modifiers::COMMAND)));
+        }
+
+        #[unsafe(method(paste:))]
+        fn menu_paste(&self, _sender: Option<&AnyObject>) {
+            self.emit(synthetic_shortcut(KEY_CODE_V, "v", Modifiers::from_bits(Modifiers::COMMAND)));
+        }
+
+        #[unsafe(method(selectAll:))]
+        fn menu_select_all(&self, _sender: Option<&AnyObject>) {
+            self.emit(synthetic_shortcut(KEY_CODE_A, "a", Modifiers::from_bits(Modifiers::COMMAND)));
         }
 
         #[unsafe(method(keyDown:))]
