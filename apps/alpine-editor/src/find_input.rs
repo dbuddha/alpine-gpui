@@ -47,7 +47,7 @@ pub(super) fn bounds_for(app: &EditorApp, owner: Owner) -> Result<Rect, EditorRe
         PROJECT_SEARCH_QUERY_HEIGHT, PROJECT_SEARCH_WIDTH, QUICK_OPEN_QUERY_HEIGHT,
         QUICK_OPEN_WIDTH,
     };
-    if owner == Owner::Find {
+    if matches!(owner, Owner::Find | Owner::GoToLine) {
         return bounds(app);
     }
     if matches!(owner, Owner::Symbols | Owner::Rename) {
@@ -104,6 +104,10 @@ pub(super) fn layout_for(app: &mut EditorApp, owner: Owner) -> Result<Layout, Ed
     let field_len_utf16 = projected.encode_utf16().count();
     let text = match owner {
         Owner::Find => app.find.display_text()?,
+        Owner::GoToLine => app
+            .go_to_line
+            .display_text()
+            .map_err(|_| EditorRenderError::Domain)?,
         Owner::Palette => app.command_palette.display_text()?,
         Owner::QuickOpen => app.quick_open.display_text()?,
         Owner::ProjectSearch => app.project_search.display_text()?,
@@ -116,7 +120,7 @@ pub(super) fn layout_for(app: &mut EditorApp, owner: Owner) -> Result<Layout, Ed
     .max(0.0);
     let origin_x = bounds.origin().x() + FIND_BAR_INSET - shift;
     let inset_y = match owner {
-        Owner::Find => 6.0,
+        Owner::Find | Owner::GoToLine => 6.0,
         Owner::Symbols | Owner::Rename => 3.0,
         _ => 7.0,
     };

@@ -1106,6 +1106,7 @@ fn decode_action(value: &str) -> Option<KeyAction> {
         "select_all" => Some(KeyAction::SelectAll),
         "undo" => Some(KeyAction::Undo),
         "redo" => Some(KeyAction::Redo),
+        "chord_command_k" => Some(KeyAction::ChordPrefix(super::ChordPrefix::CommandK)),
         value => decode_command(value).map(KeyAction::Command),
     }
 }
@@ -1120,6 +1121,7 @@ fn decode_command(value: &str) -> Option<EditorCommand> {
         "open_project_search" => Some(EditorCommand::OpenProjectSearch),
         "open_find" => Some(EditorCommand::OpenFind),
         "open_replace" => Some(EditorCommand::OpenReplace),
+        "go_to_line" => Some(EditorCommand::GoToLine),
         "trigger_completion" => Some(EditorCommand::TriggerCompletion),
         "show_rust_hover" => Some(EditorCommand::ShowRustHover),
         "go_to_rust_definition" => Some(EditorCommand::GoToRustDefinition),
@@ -1347,6 +1349,8 @@ mod tests {
             "open_project_search",
             "open_find",
             "open_replace",
+            "go_to_line",
+            "chord_command_k",
             "trigger_completion",
             "show_rust_hover",
             "go_to_rust_definition",
