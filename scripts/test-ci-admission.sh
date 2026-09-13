@@ -23,9 +23,14 @@ fi
 case "${ADMISSION_FAULT:-}:$*" in
     format:fmt*) exit 31 ;;
     clippy:clippy*) exit 32 ;;
-    studio:'test --locked --package=alpine-studio') exit 33 ;;
     platform:'test --locked --package=alpine-platform-macos --package=alpine-studio') exit 34 ;;
 esac
+if [ "$1" = test ]; then
+    test "${ALPINE_REQUIRE_NATIVE_VALIDATION:-}" = 1 || exit 97
+    if [ "${ADMISSION_FAULT:-}" != receipt ]; then
+        printf 'alpine-native-process-complete scope=all\n'
+    fi
+fi
 EOF
 cat > "$temporary/bin/xcrun" <<'EOF'
 #!/bin/sh
@@ -84,13 +89,10 @@ fi
 run_case native-pass check-ci-native-admission.sh '' 0
 printf '%s\n' 'xcrun --sdk macosx --find metal' \
     'xcrun --sdk macosx --find metal' 'xcrun --sdk macosx --find metallib' \
-    'cargo test --locked --package=alpine-studio' \
     'cargo test --locked --package=alpine-platform-macos --package=alpine-studio' \
     > "$temporary/native.expected"
 diff -u "$temporary/native.expected" "$temporary/native-pass.calls"
-run_case studio-fail check-ci-native-admission.sh studio 33
-sed '$d' "$temporary/native.expected" > "$temporary/studio.expected"
-diff -u "$temporary/studio.expected" "$temporary/studio-fail.calls"
+run_case receipt-fail check-ci-native-admission.sh receipt 1
 run_case platform-fail check-ci-native-admission.sh platform 34
 diff -u "$temporary/native.expected" "$temporary/platform-fail.calls"
 run_case toolchain-fail check-ci-native-admission.sh toolchain 36
@@ -107,7 +109,7 @@ test ! -s "$temporary/changed-incremental-validation.calls"
 test ! -s "$temporary/missing-incremental.calls"
 test ! -s "$temporary/missing-validation.calls"
 grep -q 'explicit hosted validation environment required' "$temporary/missing-validation.log"
-for name in studio-fail platform-fail toolchain-fail metallib-fail missing-validation; do
+for name in receipt-fail platform-fail toolchain-fail metallib-fail missing-validation; do
     if grep -q 'CI native admission passed' "$temporary/$name.log"; then
         printf 'CI admission test error: %s published native success\n' "$name" >&2
         exit 1
@@ -131,7 +133,7 @@ if grep -q 'CI native admission passed' "$temporary/cfg-loss.log"; then
 fi
 printf 'CI admission ordering and failure-propagation controls passed\n'
 
-# The environment must survive the entry guard and reach both Cargo commands.
+# The environment must survive the entry guard and reach the combined Cargo command.
 sed '/^unset ALPINE_RUST_ANALYZER/a\
 unset CARGO_INCREMENTAL
 ' "$original_root/scripts/check-ci-native-admission.sh" > "$temporary/scripts/incremental-loss.sh"
@@ -155,13 +157,13 @@ aggregate_case() (
     export CODE_REQUIRED=true
     export CLASSIFY_RESULT=success PREFLIGHT_RESULT=success QUALITY_RESULT=success NATIVE_RESULT=success
     export COVERAGE_REQUIRED=false COVERAGE_RESULT=skipped MUTATION_REQUIRED=false MUTATION_RESULT=skipped
-    export KANI_REQUIRED=false KANI_RESULT=skipped TLA_REQUIRED=false TLA_RESULT=skipped MIRI_REQUIRED=false MIRI_RESULT=skipped
+    export KANI_REQUIRED=false KANI_RESULT=skipped MIRI_REQUIRED=false MIRI_RESULT=skipped
     export METAL_REQUIRED=true METAL_RESULT=success NATIVE_MUTATION_REQUIRED=false NATIVE_MUTATION_RESULT=skipped
     for override in "$@"; do export "$override"; done
     sh "$temporary/aggregate.sh"
 )
 aggregate_case
-for override in METAL_RESULT=skipped METAL_RESULT=failure NATIVE_RESULT=skipped NATIVE_RESULT=failure \
+for override in METAL_RESULT=skipped METAL_RESULT=failure METAL_RESULT=cancelled NATIVE_RESULT=cancelled NATIVE_RESULT=skipped NATIVE_RESULT=failure \
     QUALITY_RESULT=failure CLASSIFY_RESULT=failure CODE_REQUIRED=invalid NATIVE_MUTATION_REQUIRED=true NATIVE_MUTATION_REQUIRED=invalid; do
     if aggregate_case "$override" > "$temporary/aggregate-fault" 2>&1; then
         printf 'aggregate accepted %s\n' "$override" >&2
@@ -174,3 +176,30 @@ if aggregate_case CODE_REQUIRED=false QUALITY_RESULT=failure > "$temporary/docs-
     echo 'documentation selection hid a failed quality job' >&2; exit 1
 fi
 printf 'CI aggregate admission tests passed\n'
+
+# Execute the actual boundary step in a fresh checkout without any earlier
+# Cargo invocation. Preserve failure through tee as well as successful output.
+awk '
+    /name: Audit Alpine Studio release product boundary/ { selected = 1; next }
+    selected && /^      - name:/ { exit }
+    selected && /^        run: \|/ { body = 1; next }
+    body { sub(/^          /, ""); print }
+' .github/workflows/ci.yml > "$temporary/boundary-step.sh"
+test -s "$temporary/boundary-step.sh"
+mkdir -p "$temporary/boundary/scripts"
+cat > "$temporary/boundary/scripts/check-product-boundary.sh" <<'EOF'
+#!/bin/sh
+printf 'boundary-fixture\n'
+exit "${BOUNDARY_FAULT:-0}"
+EOF
+chmod +x "$temporary/boundary/scripts/check-product-boundary.sh"
+(
+    cd "$temporary/boundary"
+    test ! -e target
+    bash -e -o pipefail "$temporary/boundary-step.sh" >/dev/null
+    grep -Fxq boundary-fixture target/studio-product-boundary.txt
+    actual=0
+    BOUNDARY_FAULT=38 bash -e -o pipefail "$temporary/boundary-step.sh" >/dev/null || actual=$?
+    test "$actual" -eq 38
+)
+printf 'Fresh-checkout product-boundary output and failure controls passed\n'

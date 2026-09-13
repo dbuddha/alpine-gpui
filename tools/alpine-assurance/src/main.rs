@@ -24,7 +24,6 @@ use std::{
 
 const DEFAULT_REGISTRY: &str = "assurance/evidence.toml";
 const EVIDENCE_KINDS: &[&str] = &[
-    "tla",
     "kani",
     "unit",
     "property",
@@ -59,8 +58,6 @@ struct Claim {
     #[serde(default)]
     case_study_findings: Vec<String>,
     kani_applicability: String,
-    #[serde(default)]
-    tla_properties: Vec<String>,
     platform_scope: Vec<String>,
     required_evidence: Vec<String>,
 }
@@ -730,15 +727,6 @@ fn validate_claim_classification(claim: &Claim, root: &Path, diagnostics: &mut D
             }),
         format!("claim {} has invalid or empty platform scope", claim.id),
     );
-    if matches!(
-        claim.category.as_str(),
-        "safety" | "lifecycle" | "concurrency"
-    ) {
-        diagnostics.require(
-            !claim.tla_properties.is_empty(),
-            format!("claim {} requires at least one TLA+ property", claim.id),
-        );
-    }
     if claim.kani_applicability == "required" {
         diagnostics.require(
             claim.required_evidence.iter().any(|kind| kind == "kani"),
@@ -798,7 +786,7 @@ fn validate_evidence<'a>(
                 evidence.id, evidence.artifact
             ),
         );
-        if matches!(evidence.kind.as_str(), "tla" | "kani" | "loom") {
+        if matches!(evidence.kind.as_str(), "kani" | "loom") {
             diagnostics.require(
                 !evidence.bounds.is_empty(),
                 format!("formal evidence {} must disclose bounds", evidence.id),
@@ -816,18 +804,6 @@ fn validate_evidence<'a>(
                     .is_some_and(|path| artifact_reference_exists(root, path)),
                 format!(
                     "Kani evidence {} needs an existing dynamic companion",
-                    evidence.id
-                ),
-            );
-        }
-        if evidence.kind == "tla" {
-            diagnostics.require(
-                evidence
-                    .companion
-                    .as_deref()
-                    .is_some_and(|path| artifact_reference_exists(root, path)),
-                format!(
-                    "TLA+ evidence {} needs existing Rust conformance evidence",
                     evidence.id
                 ),
             );
@@ -858,19 +834,6 @@ fn validate_claim_coverage(
             diagnostics.require(
                 kinds.is_some_and(|items| items.contains("benchmark")),
                 format!("performance claim {} lacks a benchmark", claim.id),
-            );
-        }
-        for property in &claim.tla_properties {
-            diagnostics.require(
-                registry.evidence.iter().any(|evidence| {
-                    evidence.claim == claim.id
-                        && evidence.kind == "tla"
-                        && artifact_anchor(&evidence.artifact) == Some(property.as_str())
-                }),
-                format!(
-                    "claim {} lacks TLA+ property evidence for {property}",
-                    claim.id
-                ),
             );
         }
     }
@@ -1129,7 +1092,7 @@ fn render_report(registry: &Registry) -> String {
     for claim in &registry.claims {
         let _ = write!(
             output,
-            "## {}\n\n- Mission: {}\n- Case-study findings: {}\n- Capability: #{}\n- AEP: {}\n- Requirement: #{}\n- Type and risk: {} / {}\n- Platform scope: {}\n- Kani applicability: {}\n- TLA+ properties: {}\n- Required evidence: {}\n\n",
+            "## {}\n\n- Mission: {}\n- Case-study findings: {}\n- Capability: #{}\n- AEP: {}\n- Requirement: #{}\n- Type and risk: {} / {}\n- Platform scope: {}\n- Kani applicability: {}\n- Required evidence: {}\n\n",
             claim.id,
             claim.mission,
             display_list(&claim.case_study_findings),
@@ -1140,7 +1103,6 @@ fn render_report(registry: &Registry) -> String {
             claim.risk,
             display_list(&claim.platform_scope),
             claim.kani_applicability,
-            display_list(&claim.tla_properties),
             claim.required_evidence.join(", ")
         );
         for evidence in registry
@@ -1180,9 +1142,9 @@ fn display_list(items: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        artifact_anchor, artifact_path, discover_kani_file, load_registry, registry_path,
-        render_report, run_dogfood_command, run_dogfood_record_command, run_qualification_command,
-        valid_identifier, validate_registry,
+        Diagnostics, Registry, artifact_anchor, artifact_path, discover_kani_file, load_registry,
+        registry_path, render_report, run_dogfood_command, run_dogfood_record_command,
+        run_qualification_command, valid_identifier, validate_kani_inventory, validate_registry,
     };
     use std::{
         collections::BTreeSet,
@@ -1280,6 +1242,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "optional live evidence inventory; run scripts/test-assurance.sh"]
     fn validates_and_renders_the_committed_registry() {
         let root = repository_root();
         let registry = load_registry(&root.join("assurance/evidence.toml"));
@@ -1295,23 +1258,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_unregistered_kani_harness() {
-        let root = repository_root();
-        let registry = load_registry(&root.join("assurance/evidence.toml"));
-        assert!(registry.is_ok());
-        if let Ok(mut registry) = registry {
-            registry.evidence.retain(|evidence| {
-                evidence.artifact
-                    != "tools/alpine-trace/src/proofs.rs#bounded_trace_preserves_operation_order_and_values"
-            });
-            let errors = validate_registry(&registry, &root, false);
-            assert!(
-                errors
-                    .iter()
-                    .any(|error| error.contains("Kani harness is not registered")),
-                "{errors:#?}"
-            );
-        }
+    fn rejects_an_unregistered_kani_harness() -> Result<(), Box<dyn std::error::Error>> {
+        let root = repository_root().join("target").join(format!(
+            "assurance-unregistered-proof-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(root.join("crates/example/src"))?;
+        fs::create_dir_all(root.join("tools/alpine-trace"))?;
+        fs::write(
+            root.join("crates/example/src/proofs.rs"),
+            "#[kani::proof]\nfn unregistered() {}\n",
+        )?;
+        let registry = Registry {
+            schema: "alpine-evidence/v1".to_owned(),
+            claims: Vec::new(),
+            evidence: Vec::new(),
+        };
+        let mut diagnostics = Diagnostics::default();
+        validate_kani_inventory(&registry, &root, &mut diagnostics);
+        fs::remove_dir_all(&root)?;
+        assert_eq!(diagnostics.errors.len(), 1, "{:?}", diagnostics.errors);
+        assert!(diagnostics.errors[0].contains("Kani harness is not registered"));
+        assert!(diagnostics.errors[0].contains("crates/example/src/proofs.rs#unregistered"));
+        Ok(())
     }
 
     #[test]

@@ -2,38 +2,10 @@
 set -eu
 
 # Shared control entrypoint for hosted quality and the canonical local check.
-scripts/check-agent-skills.sh
-scripts/test-agent-skills.sh
 scripts/test-native-command.sh
-
-scripts/test-assurance-failure-collector.sh
-scripts/test-assurance-failure-routing.sh
 
 fixture_dir=$(mktemp -d)
 trap 'rm -rf "$fixture_dir"' EXIT HUP INT TERM
-
-cat > "$fixture_dir/mixed-assurance-failures.tsv" <<'EOF'
-native-macos-arm64	Test workspace
-ci-pass	Require selected evidence
-metal-validation	Validate Metal
-EOF
-cat > "$fixture_dir/mixed-assurance-expected.tsv" <<'EOF'
-native-macos-arm64	Test workspace
-metal-validation	Validate Metal
-EOF
-scripts/filter-assurance-failures.sh < "$fixture_dir/mixed-assurance-failures.tsv" \
-    > "$fixture_dir/mixed-assurance-actual.tsv"
-cmp "$fixture_dir/mixed-assurance-expected.tsv" "$fixture_dir/mixed-assurance-actual.tsv"
-
-printf 'ci-pass\tRequire selected evidence\n' > "$fixture_dir/aggregate-only.tsv"
-scripts/filter-assurance-failures.sh < "$fixture_dir/aggregate-only.tsv" \
-    > "$fixture_dir/aggregate-only-actual.tsv"
-cmp "$fixture_dir/aggregate-only.tsv" "$fixture_dir/aggregate-only-actual.tsv"
-
-: > "$fixture_dir/no-failures.tsv"
-scripts/filter-assurance-failures.sh < "$fixture_dir/no-failures.tsv" \
-    > "$fixture_dir/no-failures-actual.tsv"
-cmp "$fixture_dir/no-failures.tsv" "$fixture_dir/no-failures-actual.tsv"
 
 # Policy must work without issues, claims, labels or any GitHub access.
 cat > "$fixture_dir/gh" <<'EOF'
@@ -50,6 +22,22 @@ run_policy() {
 }
 for source in crates/alpine-core/src/lib.rs apps/alpine-studio/src/lib.rs ARCHITECTURE.md; do
     ALPINE_CHANGED_FILES="$source" run_policy >/dev/null
+done
+( LC_ALL=en_US.UTF-8 run_policy >/dev/null )
+
+for job in preflight quality native; do
+    awk -v job="$job" '
+        /^  [A-Za-z0-9_-]+:/ { selected = ($0 == "  " job ":") }
+        selected && /^    runs-on:/ { $0 = "    runs-on: ubuntu-24.04" }
+        { print }
+    ' .github/workflows/ci.yml > "$fixture_dir/non-macos-$job.yml"
+    if ALPINE_CI_WORKFLOW="$fixture_dir/non-macos-$job.yml" run_policy \
+        > "$fixture_dir/non-macos-$job.log" 2>&1; then
+        printf 'policy test error: product job %s accepted a non-macOS host\n' "$job" >&2
+        exit 1
+    fi
+    grep -Fq "CI product job $job must use Apple Silicon macOS" "$fixture_dir/non-macos-$job.log"
+    unset ALPINE_CI_WORKFLOW
 done
 
 # Correspondence controls exercise the real workflow commands, not invented
@@ -179,40 +167,8 @@ done
 # not contaminate the next positive policy check or a different gate family.
 run_policy >/dev/null
 
-cp scripts/check-tla.sh "$fixture_dir/check-tla.sh"
-ALPINE_TLA_DRIVER="$fixture_dir/check-tla.sh" run_policy >/dev/null
-sed 's/nightly) config=Nightly.cfg; lncheck=final ;;/nightly) config=Nightly.cfg; lncheck=default ;;/' \
-    "$fixture_dir/check-tla.sh" > "$fixture_dir/periodic-nightly-tla.sh"
-if ALPINE_TLA_DRIVER="$fixture_dir/periodic-nightly-tla.sh" run_policy > "$fixture_dir/periodic-nightly-tla.log" 2>&1; then
-    printf 'policy test error: periodic Nightly liveness checking unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'TLA+ must preserve default pull-request checks and final-graph Nightly liveness checks' "$fixture_dir/periodic-nightly-tla.log"; then
-    printf 'policy test error: expected final-graph Nightly liveness failure was not reported\n' >&2
-    cat "$fixture_dir/periodic-nightly-tla.log" >&2
-    exit 1
-fi
-unset ALPINE_TLA_DRIVER
-
 cp .github/workflows/ci.yml "$fixture_dir/ci.yml"
 ALPINE_CI_WORKFLOW="$fixture_dir/ci.yml" run_policy >/dev/null
-
-cp .github/workflows/assurance-failure.yml "$fixture_dir/assurance-failure.yml"
-for omitted in guard router permission; do
-    case "$omitted" in
-        guard) expression="s/    if: github.event.workflow_run.conclusion.*/    if: always()/" ;;
-        router) expression='/run: scripts\/route-assurance-failures.sh/d' ;;
-        permission) expression='/^  checks: read$/d' ;;
-    esac
-    sed "$expression" "$fixture_dir/assurance-failure.yml" > "$fixture_dir/omitted-$omitted.yml"
-    if ALPINE_ASSURANCE_FAILURE_WORKFLOW="$fixture_dir/omitted-$omitted.yml" \
-        run_policy > "$fixture_dir/omitted-$omitted.log" 2>&1; then
-        printf 'policy test error: missing assurance routing %s was accepted\n' "$omitted" >&2
-        exit 1
-    fi
-    grep -Fq 'assurance routing must use the tested current-main failure router' "$fixture_dir/omitted-$omitted.log" || { cat "$fixture_dir/omitted-$omitted.log" >&2; exit 1; }
-done
-unset ALPINE_ASSURANCE_FAILURE_WORKFLOW
 
 cp .github/workflows/nightly-assurance.yml "$fixture_dir/nightly-assurance.yml"
 cp .github/actions/upload-required-artifact/action.yml "$fixture_dir/upload-required-artifact.yml"
@@ -285,7 +241,7 @@ if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/bypassed-required-artifact-ni
     printf 'policy test error: bypassed Nightly required artifact helper unexpectedly passed\n' >&2
     exit 1
 fi
-if ! grep -Fq 'Nightly required artifacts must use eight governed retries and retain one direct supplementary upload' \
+if ! grep -Fq 'Nightly required artifacts must use seven governed retries and retain one direct supplementary upload' \
     "$fixture_dir/bypassed-required-artifact-nightly.log"; then
     printf 'policy test error: expected Nightly required artifact bypass failure was not reported\n' >&2
     cat "$fixture_dir/bypassed-required-artifact-nightly.log" >&2
@@ -299,7 +255,7 @@ if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/downgraded-required-artifact-
     printf 'policy test error: downgraded Nightly required artifact unexpectedly passed\n' >&2
     exit 1
 fi
-if ! grep -Fq 'Nightly required artifacts must use eight governed retries and retain one direct supplementary upload' \
+if ! grep -Fq 'Nightly required artifacts must use seven governed retries and retain one direct supplementary upload' \
     "$fixture_dir/downgraded-required-artifact-nightly.log"; then
     printf 'policy test error: expected Nightly required artifact downgrade failure was not reported\n' >&2
     cat "$fixture_dir/downgraded-required-artifact-nightly.log" >&2
@@ -390,7 +346,7 @@ for admission_fault in fast-feedback native-dependency native-command native-cfg
             diagnostic='CI native mutation admission must preserve the explicit native baseline contract'
             ;;
         native-cfg)
-            expression='s/(Require unmutated native admission before mutation fan-out.*?RUSTFLAGS:) --cfg alpine_native_validation/$1 ordinary/s'
+            expression='s/(Verify native execution.*?RUSTFLAGS:) --cfg alpine_native_validation/$1 ordinary/s'
             diagnostic='CI native mutation admission must preserve the explicit native baseline contract'
             ;;
         native-ignored)

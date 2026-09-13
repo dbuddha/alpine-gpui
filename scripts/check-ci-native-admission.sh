@@ -1,8 +1,8 @@
-#!/bin/sh
-set -eu
+#!/bin/bash
+set -euo pipefail
 
-# This is an early guard for the two native mutation package selections, not a
-# reusable cargo-mutants baseline receipt. Mutator-copy baselines remain enabled.
+# Execute the union of the native package selections once. Mutator-copy
+# baselines remain enabled for explicitly requested assurance.
 if [ "${CARGO_INCREMENTAL:-}" != 0 ] ||
     [ "${RUSTFLAGS:-}" != '--cfg alpine_native_validation' ] ||
     [ "${ALPINE_PRESENTATION_EVIDENCE_MODE:-}" != hosted-direct ] ||
@@ -12,6 +12,9 @@ if [ "${CARGO_INCREMENTAL:-}" != 0 ] ||
     exit 2
 fi
 unset ALPINE_RUST_ANALYZER
+unset ALPINE_STUDIO_NATIVE_PROCESS_SCOPE ALPINE_STUDIO_NATIVE_ACCESSIBILITY_CHILD
+unset ALPINE_STUDIO_NATIVE_ACCESSIBILITY_OMIT ALPINE_STUDIO_NATIVE_LSP_SERVER
+export ALPINE_REQUIRE_NATIVE_VALIDATION=1
 
 printf 'CI native admission: Metal toolchain\n'
 if ! xcrun --sdk macosx --find metal >/dev/null 2>&1; then
@@ -22,8 +25,18 @@ xcrun --sdk macosx --find metallib
 
 # Do not use --all-features or a test-name filter: the failing mutator baselines
 # use these package sets with default features and the native validation cfg.
-printf 'CI native admission: Studio default-feature baseline\n'
-cargo test --locked --package=alpine-studio
-printf 'CI native admission: platform and Studio default-feature baseline\n'
-cargo test --locked --package=alpine-platform-macos --package=alpine-studio
+printf 'CI native admission: platform and Studio default-feature tests\n'
+mkdir -p target/native-acceptance
+log=$(mktemp target/native-acceptance/ci-admission.XXXXXX)
+if cargo test --locked --package=alpine-platform-macos --package=alpine-studio 2>&1 | tee "$log"; then
+    :
+else
+    result=$?
+    printf 'Native admission failed; retained %s\n' "$log" >&2
+    exit "$result"
+fi
+grep -Fxq 'alpine-native-process-complete scope=all' "$log" || {
+    printf 'Native admission failed: process completion receipt missing; retained %s\n' "$log" >&2
+    exit 1
+}
 printf 'CI native admission passed; mutation-copy baselines still required\n'

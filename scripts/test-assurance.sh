@@ -34,3 +34,5 @@ assert_fixture_fails assurance/fixtures/kani-without-companion.toml \
     'needs an existing dynamic companion'
 assert_fixture_fails assurance/fixtures/performance-without-benchmark.toml \
     'performance claim AEP-0009-C01 lacks a benchmark'
+
+cargo test --locked -p alpine-assurance --bin alpine-assurance validates_and_renders_the_committed_registry -- --ignored

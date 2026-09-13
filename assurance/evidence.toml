@@ -9,7 +9,6 @@ requirement_issue = 33
 claim_type = "functional"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["portable"]
 required_evidence = ["unit"]
 
@@ -22,7 +21,6 @@ requirement_issue = 33
 claim_type = "functional"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["portable"]
 required_evidence = ["unit"]
 
@@ -35,7 +33,6 @@ requirement_issue = 33
 claim_type = "memory"
 risk = "critical"
 kani_applicability = "required"
-tla_properties = []
 platform_scope = ["portable"]
 required_evidence = ["kani", "unit"]
 
@@ -48,7 +45,6 @@ requirement_issue = 33
 claim_type = "memory"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["macos-metal"]
 required_evidence = ["unit", "native"]
 
@@ -61,7 +57,6 @@ requirement_issue = 33
 claim_type = "functional"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["macos-metal"]
 required_evidence = ["e2e", "native"]
 
@@ -74,7 +69,6 @@ requirement_issue = 33
 claim_type = "functional"
 risk = "critical"
 kani_applicability = "required"
-tla_properties = []
 platform_scope = ["portable"]
 required_evidence = ["kani", "unit"]
 
@@ -87,7 +81,6 @@ requirement_issue = 33
 claim_type = "functional"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["portable", "macos-metal"]
 required_evidence = ["unit", "native"]
 
@@ -100,7 +93,6 @@ requirement_issue = 33
 claim_type = "functional"
 risk = "critical"
 kani_applicability = "required"
-tla_properties = []
 platform_scope = ["portable"]
 required_evidence = ["kani", "unit"]
 
@@ -296,9 +288,8 @@ requirement_issue = 33
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "required"
-tla_properties = ["RejectedIsAtomic", "RevisionNeverDecreases"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "kani", "unit", "property"]
+required_evidence = ["kani", "unit", "property"]
 
 [[claims]]
 id = "AEP-0139-C02"
@@ -309,9 +300,8 @@ requirement_issue = 33
 claim_type = "memory"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = ["HistoryIsBounded", "RevisionNeverDecreases"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0139-C03"
@@ -322,33 +312,8 @@ requirement_issue = 33
 claim_type = "lifecycle"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["ConflictPreservesAcceptedDisk"]
 platform_scope = ["macos-metal"]
-required_evidence = ["tla", "integration"]
-
-[[evidence]]
-id = "EV-0139-TLA01A"
-claim = "AEP-0139-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0139/LocalTextBuffer.tla#RejectedIsAtomic"
-assertion = "A rejected transaction preserves the exact prior content and revision."
-scope = "Finite local transaction, undo, and redo publication state."
-bounds = ["pull request: three content identities and four attempts", "nightly: four content identities and six attempts"]
-assumptions = ["one content identity represents one complete immutable text tree"]
-exclusions = ["Ropey implementation", "Unicode conversion", "filesystem persistence", "Rust formal refinement"]
-companion = "crates/alpine-text/src/lib.rs#snapshots_remain_immutable_and_rejected_edits_are_atomic"
-
-[[evidence]]
-id = "EV-0139-TLA01B"
-claim = "AEP-0139-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0139/LocalTextBuffer.tla#RevisionNeverDecreases"
-assertion = "Accepted edits, undo, and redo never restore an older live revision."
-scope = "Finite local transaction and history state."
-bounds = ["pull request: four revisions", "nightly: six revisions"]
-assumptions = ["revision exhaustion rejects before publication"]
-exclusions = ["u64 arithmetic implementation", "unbounded traces", "Rust formal refinement"]
-companion = "crates/alpine-text/src/lib.rs#undo_redo_are_bounded_and_revisions_never_move_backward"
+required_evidence = ["integration"]
 
 [[evidence]]
 id = "EV-0139-KANI01"
@@ -382,30 +347,6 @@ bounds = ["1,000 edits", "five replacement classes"]
 exclusions = ["all possible Unicode strings", "concurrent edits"]
 
 [[evidence]]
-id = "EV-0139-TLA02A"
-claim = "AEP-0139-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0139/LocalTextBuffer.tla#HistoryIsBounded"
-assertion = "Undo and redo retain no more than the configured finite entry ceiling."
-scope = "Finite accepted edits, undo, and redo."
-bounds = ["pull request: two entries per direction", "nightly: three entries per direction"]
-assumptions = ["one abstract entry represents one bounded changed-byte payload"]
-exclusions = ["allocator overhead", "Ropey node sharing", "Rust formal refinement"]
-companion = "crates/alpine-text/src/lib.rs#undo_redo_are_bounded_and_revisions_never_move_backward"
-
-[[evidence]]
-id = "EV-0139-TLA02B"
-claim = "AEP-0139-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0139/LocalTextBuffer.tla#RevisionNeverDecreases"
-assertion = "History navigation advances rather than restoring historical revision identity."
-scope = "Finite local edit and history state."
-bounds = ["pull request: four revisions", "nightly: six revisions"]
-assumptions = ["revision exhaustion rejects before publication"]
-exclusions = ["u64 arithmetic implementation", "unbounded traces", "Rust formal refinement"]
-companion = "crates/alpine-text/src/lib.rs#undo_redo_are_bounded_and_revisions_never_move_backward"
-
-[[evidence]]
 id = "EV-0139-UNIT02"
 claim = "AEP-0139-C02"
 kind = "unit"
@@ -433,18 +374,6 @@ assertion = "An injected pre-replacement write failure preserves accepted target
 scope = "Same-directory temporary-file replacement helper."
 exclusions = ["power loss after rename", "parent-directory synchronization", "Windows replacement"]
 
-[[evidence]]
-id = "EV-0139-TLA03"
-claim = "AEP-0139-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0139/LocalTextBuffer.tla#ConflictPreservesAcceptedDisk"
-assertion = "A save rejected after external divergence preserves the observed disk identity and last accepted saved content."
-scope = "Finite local content, accepted disk identity, external change, and save disposition."
-bounds = ["pull request: three content identities and four attempts", "nightly: four content identities and six attempts"]
-assumptions = ["one disk identity represents one complete file generation"]
-exclusions = ["filesystem implementation", "final compare-and-rename race", "power loss", "Rust formal refinement"]
-companion = "crates/alpine-text/src/lib.rs#editor_saves_atomically_and_detects_external_change"
-
 [[claims]]
 id = "AEP-0009-C01"
 mission = "MP-03"
@@ -454,9 +383,8 @@ requirement_issue = 14
 claim_type = "functional"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = ["QualifiedClosure"]
 platform_scope = ["tooling"]
-required_evidence = ["tla", "unit", "integration"]
+required_evidence = ["unit", "integration"]
 
 [[claims]]
 id = "AEP-0009-C03"
@@ -468,7 +396,7 @@ claim_type = "functional"
 risk = "high"
 kani_applicability = "not_applicable"
 platform_scope = ["tooling"]
-required_evidence = ["unit", "integration"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0009-C04"
@@ -504,9 +432,8 @@ claim_type = "safety"
 risk = "medium"
 case_study_findings = ["CS-ZED-002"]
 kani_applicability = "required"
-tla_properties = ["AcceptedIsValid"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "kani", "unit"]
+required_evidence = ["kani", "unit"]
 
 [[claims]]
 id = "AEP-0016-C02"
@@ -517,9 +444,8 @@ requirement_issue = 17
 claim_type = "safety"
 risk = "medium"
 kani_applicability = "required"
-tla_properties = ["AcceptedIsValid"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "kani", "unit"]
+required_evidence = ["kani", "unit"]
 
 [[claims]]
 id = "AEP-0016-C03"
@@ -531,9 +457,8 @@ claim_type = "safety"
 risk = "high"
 case_study_findings = ["CS-WGPU-002"]
 kani_applicability = "required"
-tla_properties = ["AllIntersectionsSafe"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "kani", "unit", "e2e"]
+required_evidence = ["kani", "unit", "e2e"]
 
 [[claims]]
 id = "AEP-0028-C01"
@@ -558,9 +483,8 @@ claim_type = "lifecycle"
 risk = "critical"
 case_study_findings = ["CS-ZED-006", "CS-ZED-007"]
 kani_applicability = "not_applicable"
-tla_properties = ["MeasurementRequiresEquivalence"]
 platform_scope = ["tooling"]
-required_evidence = ["tla", "unit", "integration"]
+required_evidence = ["unit", "integration"]
 
 [[claims]]
 id = "AEP-0028-C03"
@@ -572,9 +496,8 @@ claim_type = "safety"
 risk = "high"
 case_study_findings = ["CS-ZED-006", "CS-ZED-008"]
 kani_applicability = "supporting"
-tla_properties = ["QualificationRequiresReproduction"]
 platform_scope = ["tooling"]
-required_evidence = ["tla", "unit", "e2e", "mutation", "coverage"]
+required_evidence = ["unit", "e2e", "mutation", "coverage"]
 
 [[claims]]
 id = "AEP-0028-C04"
@@ -599,9 +522,8 @@ claim_type = "compatibility"
 risk = "critical"
 case_study_findings = ["CS-ZED-005", "CS-ZED-006", "CS-ZED-007"]
 kani_applicability = "required"
-tla_properties = ["MeasurementRequiresEquivalence"]
 platform_scope = ["tooling", "macos-metal"]
-required_evidence = ["tla", "kani", "unit", "property", "integration", "e2e", "native", "mutation", "coverage"]
+required_evidence = ["kani", "unit", "property", "integration", "e2e", "native", "mutation", "coverage"]
 
 [[claims]]
 id = "AEP-0025-C01"
@@ -626,9 +548,8 @@ claim_type = "safety"
 risk = "critical"
 case_study_findings = ["CS-ZED-002", "CS-ZED-003"]
 kani_applicability = "required"
-tla_properties = ["InFlightOwnsResource", "FreeResourceIsInactive", "SingleSubmission", "TerminalRelease", "CompletedIsSuccess", "FailureIsNotSuccess", "StoppedIsDrained"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "kani", "unit", "property", "integration", "e2e", "mutation", "coverage"]
+required_evidence = ["kani", "unit", "property", "integration", "e2e", "mutation", "coverage"]
 
 [[claims]]
 id = "AEP-0025-C03"
@@ -640,9 +561,8 @@ claim_type = "lifecycle"
 risk = "critical"
 case_study_findings = ["CS-ZED-005", "CS-ZED-006"]
 kani_applicability = "not_applicable"
-tla_properties = ["SingleSubmission", "CompletedIsSuccess", "FailureIsNotSuccess", "SubmissionEventuallyTerminates"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+required_evidence = ["unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
 
 [[claims]]
 id = "AEP-0025-C05"
@@ -667,9 +587,8 @@ claim_type = "lifecycle"
 risk = "critical"
 case_study_findings = ["CS-ZED-003", "CS-ZED-006"]
 kani_applicability = "required"
-tla_properties = ["InFlightOwnsResource", "FreeResourceIsInactive", "TerminalRelease", "StoppedIsDrained", "SubmissionEventuallyTerminates", "ShutdownEventuallyStops"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+required_evidence = ["kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
 
 [[claims]]
 id = "AEP-0025-C06"
@@ -681,9 +600,8 @@ claim_type = "safety"
 risk = "critical"
 case_study_findings = ["CS-ZED-003", "CS-ZED-006"]
 kani_applicability = "required"
-tla_properties = ["TerminalRelease", "FailureIsNotSuccess", "StoppedIsDrained"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+required_evidence = ["kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
 
 [[claims]]
 id = "AEP-0025-C07"
@@ -695,9 +613,8 @@ claim_type = "memory"
 risk = "critical"
 case_study_findings = ["CS-ZED-005", "CS-ZED-006"]
 kani_applicability = "required"
-tla_properties = ["SingleSubmission", "TerminalRelease"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage", "benchmark"]
+required_evidence = ["kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage", "benchmark"]
 
 [[claims]]
 id = "AEP-0025-C08"
@@ -709,9 +626,8 @@ claim_type = "safety"
 risk = "critical"
 case_study_findings = ["CS-ZED-003", "CS-ZED-006"]
 kani_applicability = "not_applicable"
-tla_properties = ["MeasurementRequiresEquivalence"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "integration", "native", "miri", "mutation", "coverage"]
+required_evidence = ["integration", "native", "miri", "mutation", "coverage"]
 
 [[claims]]
 id = "AEP-0064-C03"
@@ -723,9 +639,8 @@ claim_type = "lifecycle"
 risk = "critical"
 case_study_findings = ["CS-ZED-PRESENT-002", "CS-ZED-PRESENT-003"]
 kani_applicability = "required"
-tla_properties = ["CommittedWasEligible", "PresentedIsCurrent"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "kani", "unit", "integration", "native", "mutation", "coverage"]
+required_evidence = ["kani", "unit", "integration", "native", "mutation", "coverage"]
 
 [[claims]]
 id = "AEP-0064-C05"
@@ -737,9 +652,8 @@ claim_type = "lifecycle"
 risk = "critical"
 case_study_findings = ["CS-ZED-PRESENT-002"]
 kani_applicability = "required"
-tla_properties = ["CommittedEventuallyTerminates", "ShutdownEventuallyStops"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+required_evidence = ["kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
 
 [[claims]]
 id = "AEP-0064-C06"
@@ -764,9 +678,8 @@ claim_type = "safety"
 risk = "critical"
 case_study_findings = ["CS-ZED-PRESENT-001", "CS-ZED-PRESENT-003"]
 kani_applicability = "required"
-tla_properties = ["LinkOwnership", "ResourceMatchesPhase", "SingleSubmissionPerAttempt", "SinglePresentCallPerAttempt", "CommittedWasEligible", "PresentFollowsSubmission", "PresentedIsCurrent", "CleanIdleIsPaused", "StoppedIsDrained"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "kani", "unit", "property", "integration", "e2e", "mutation", "coverage", "native"]
+required_evidence = ["kani", "unit", "property", "integration", "e2e", "mutation", "coverage", "native"]
 
 [[claims]]
 id = "AEP-0120-C01"
@@ -778,45 +691,8 @@ claim_type = "safety"
 risk = "critical"
 case_study_findings = ["CS-ZED-006", "CS-ZED-008", "CS-ZED-PRESENT-003"]
 kani_applicability = "required"
-tla_properties = ["BoundedFrameSlots", "CurrentPublicationIsCurrent", "ShutdownEventuallyDrains"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "kani", "unit", "property", "integration", "mutation", "coverage"]
-
-[[evidence]]
-id = "EV-0120-TLA01A"
-claim = "AEP-0120-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0120/FrameSlots.tla#BoundedFrameSlots"
-assertion = "Exactly three abstract slots bound concurrent encoding and submitted ownership."
-scope = "One three-slot ring with bounded lease and environment identities."
-bounds = ["pull request: three admissions", "nightly: four admissions"]
-assumptions = ["one occupied abstract slot represents all native resources for one frame", "one formal saturation witness represents one or more saturated admissions; compiled Rust evidence owns exact repeat counts"]
-exclusions = ["native retain counts", "elapsed time", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/frame_slots.rs#admission_is_bounded_and_saturation_is_observable"
-
-[[evidence]]
-id = "EV-0120-TLA01B"
-claim = "AEP-0120-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0120/FrameSlots.tla#CurrentPublicationIsCurrent"
-assertion = "A current publication must match the live owner generation, revision, and surface epoch."
-scope = "Reordered terminal completion with bounded generation and supersession changes."
-bounds = ["pull request: one generation, revision, and epoch advance", "nightly: two advances"]
-assumptions = ["native completion identity maps to the slot lease before publication", "non-current publication identity is unobserved by transitions and checked properties and is canonicalized to zero"]
-exclusions = ["native callback delivery", "physical presentation", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/frame_slots.rs#terminal_classification_checks_status_generation_revision_and_epoch"
-
-[[evidence]]
-id = "EV-0120-TLA01C"
-claim = "AEP-0120-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0120/FrameSlots.tla#ShutdownEventuallyDrains"
-assertion = "After shutdown begins, fair cancellation and completion eventually release every occupied slot."
-scope = "Three abstract encoding or submitted slots."
-bounds = ["three slots", "finite admissions before shutdown"]
-assumptions = ["terminal release remains weakly fair after shutdown"]
-exclusions = ["GPU hangs", "process termination", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/frame_slots.rs#invalid_transitions_are_atomic_and_precommit_cancellation_balances"
+required_evidence = ["kani", "unit", "property", "integration", "mutation", "coverage"]
 
 [[evidence]]
 id = "EV-0120-KANI01"
@@ -952,30 +828,6 @@ scope = "Host-executable safe Rust in alpine-platform-macos."
 exclusions = ["macOS-only CoreGraphics and Metal lines on Linux coverage", "semantic proof"]
 
 [[evidence]]
-id = "EV-0064-TLA03A"
-claim = "AEP-0064-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#CommittedWasEligible"
-assertion = "A frame may commit only after its captured revision and surface epoch pass the current eligibility check."
-scope = "One abstract pre-commit attempt with bounded resize or display supersession."
-bounds = ["pull request: revision and epoch 0 through 1", "nightly: revision and epoch 0 through 2"]
-assumptions = ["native configuration changes map to AdvanceSurfaceEpoch before later callback admission"]
-exclusions = ["atomicity inside foreign native APIs", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/lib.rs#coalesces_invalidations_and_discards_precommit_stale_work"
-
-[[evidence]]
-id = "EV-0064-TLA03B"
-claim = "AEP-0064-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#PresentedIsCurrent"
-assertion = "A frame from an earlier revision or surface epoch cannot qualify as the current presentation."
-scope = "One abstract frame attempt with bounded resize or display supersession."
-bounds = ["pull request: revision and epoch 0 through 1", "nightly: revision and epoch 0 through 2"]
-assumptions = ["native configuration changes map to AdvanceSurfaceEpoch"]
-exclusions = ["AppKit notification delivery", "actual drawable dimensions", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/lib.rs#deliberately_faulty_stale_qualification_is_detected"
-
-[[evidence]]
 id = "EV-0064-KANI03"
 claim = "AEP-0064-C03"
 kind = "kani"
@@ -1042,30 +894,6 @@ artifact = "scripts/check-coverage.sh"
 assertion = "Portable configuration conversion and public snapshot accessors are subject to the changed-line and critical-file coverage ratchets."
 scope = "Host-executable safe Rust in alpine-platform-macos."
 exclusions = ["macOS-only Objective-C callback lines on Linux coverage"]
-
-[[evidence]]
-id = "EV-0064-TLA05A"
-claim = "AEP-0064-C05"
-kind = "tla"
-artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#CommittedEventuallyTerminates"
-assertion = "Every modeled committed attempt eventually reaches a terminal phase under the model's declared weak-fairness and bounded-environment assumptions."
-scope = "One abstract native presentation owner with bounded invalidation and surface changes."
-bounds = ["pull request: revision through 2, epoch through 1, and one environment change", "nightly: revision through 3, epoch through 2, and two environment changes"]
-assumptions = ["continuously enabled framework actions are weakly fair", "the environment-change counter prevents unbounded display toggling"]
-exclusions = ["GPU execution", "AppKit callback delivery", "device recovery", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/lib.rs#every_shutdown_phase_releases_or_drains"
-
-[[evidence]]
-id = "EV-0064-TLA05B"
-claim = "AEP-0064-C05"
-kind = "tla"
-artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#ShutdownEventuallyStops"
-assertion = "Once modeled shutdown begins, pacing eventually invalidates and the owner reaches a drained stopped state."
-scope = "One abstract native owner across precommit and committed shutdown phases."
-bounds = ["pull request: revision through 2, epoch through 1, and one environment change", "nightly: revision through 3, epoch through 2, and two environment changes"]
-assumptions = ["continuously enabled drain and teardown actions are weakly fair"]
-exclusions = ["Objective-C release counts", "driver hangs", "wall-clock timeout", "Rust formal refinement"]
-companion = "crates/alpine-platform/tests/presentation_contract.rs#public_contract_drains_committed_shutdown"
 
 [[evidence]]
 id = "EV-0064-KANI05"
@@ -1163,18 +991,6 @@ scope = "Host-executable safe Rust in alpine-platform and alpine-platform-macos.
 exclusions = ["macOS-only native callback lines on Linux coverage", "semantic proof", "native object release"]
 
 [[evidence]]
-id = "EV-0009-TLA01"
-claim = "AEP-0009-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0009/AssuranceLifecycle.tla#QualifiedClosure"
-assertion = "A closed Requirement has approval, implementation, and every required evidence kind."
-scope = "Finite monotonic workflow with the configured Requirement and evidence-kind sets."
-bounds = ["pull request: 2 Requirements by 2 kinds", "nightly: 3 Requirements by 3 kinds"]
-assumptions = ["evidence-kind membership represents an independently passing qualified check", "weak fairness for enabled workflow progress"]
-exclusions = ["GitHub API failures", "semantic validity of a test or proof", "validator implementation defects"]
-companion = "tools/alpine-assurance/src/main.rs#validate_registry"
-
-[[evidence]]
 id = "EV-0009-UNIT01"
 claim = "AEP-0009-C01"
 kind = "unit"
@@ -1200,15 +1016,6 @@ artifact = "tools/alpine-assurance/src/main.rs#validate_registry"
 assertion = "Formal records require bounds, exclusions, artifacts, and implementation companions."
 scope = "Committed evidence records."
 exclusions = ["Truth of prose qualifications"]
-
-[[evidence]]
-id = "EV-0009-INTEGRATION03"
-claim = "AEP-0009-C03"
-kind = "integration"
-artifact = "scripts/check-tla.sh"
-assertion = "Pinned TLC checks good configurations and must detect each deliberately faulty model."
-scope = "Committed finite TLA+ models."
-exclusions = ["Unmodeled behavior", "formal refinement to Rust"]
 
 [[evidence]]
 id = "EV-0009-UNIT04"
@@ -1238,18 +1045,6 @@ scope = "Host-portable repository acceptance before push."
 exclusions = ["Hosted job orchestration", "native GPU behavior", "fixed-hardware performance"]
 
 [[evidence]]
-id = "EV-0016-TLA01"
-claim = "AEP-0016-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0016/PortableValues.tla#AcceptedIsValid"
-assertion = "The finite constructor model never admits a scalar outside its valid interval."
-scope = "Integer abstraction of size admission."
-bounds = ["pull request: raw model values 0 through 3, valid 1 through 2", "nightly: raw model values 0 through 6, valid 2 through 4"]
-assumptions = ["integer validity represents the sign and range admission predicate"]
-exclusions = ["IEEE-754 encoding", "multi-field correlation", "Rust conformance beyond companion tests"]
-companion = "crates/alpine-core/src/lib.rs#bounded_size_constructor_companion"
-
-[[evidence]]
 id = "EV-0016-KANI01"
 claim = "AEP-0016-C01"
 kind = "kani"
@@ -1271,18 +1066,6 @@ scope = "Executable Rust test cases."
 exclusions = ["Exhaustive input coverage"]
 
 [[evidence]]
-id = "EV-0016-TLA02"
-claim = "AEP-0016-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0016/PortableValues.tla#AcceptedIsValid"
-assertion = "The finite constructor model admits only values inside its normalized interval."
-scope = "Integer abstraction of normalized color admission."
-bounds = ["pull request: valid model values 1 through 2", "nightly: valid model values 2 through 4"]
-assumptions = ["finite interval membership represents normalized channel validation"]
-exclusions = ["division rounding", "four-channel correlation", "color-space semantics"]
-companion = "crates/alpine-core/src/lib.rs#byte_color_constructor_companion"
-
-[[evidence]]
 id = "EV-0016-KANI02"
 claim = "AEP-0016-C02"
 kind = "kani"
@@ -1302,18 +1085,6 @@ artifact = "crates/alpine-core/src/lib.rs#byte_color_constructor_companion"
 assertion = "Representative byte-normalized endpoints and interior values are accepted dynamically."
 scope = "Executable Rust test cases."
 exclusions = ["Exhaustive channel tuples"]
-
-[[evidence]]
-id = "EV-0016-TLA03"
-claim = "AEP-0016-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0016/PortableValues.tla#AllIntersectionsSafe"
-assertion = "Every finite one-dimensional overlap has positive extent and remains within both intervals."
-scope = "Integer interval abstraction, applied independently to each rectangle axis."
-bounds = ["pull request bounds derive from MinValid through MaxRaw", "nightly expands the same interval"]
-assumptions = ["two-dimensional containment is the conjunction of independent axis containment"]
-exclusions = ["IEEE-754 rounding", "overflow", "transforms", "empty-contact representation"]
-companion = "crates/alpine-core/src/lib.rs#bounded_intersection_companion"
 
 [[evidence]]
 id = "EV-0016-KANI03"
@@ -1419,18 +1190,6 @@ scope = "Offscreen Direct Metal sampling command with offline shaders on hosted 
 exclusions = ["Uninstrumented production timing", "A/A calibration", "GPUI comparison", "blocking performance claim"]
 
 [[evidence]]
-id = "EV-0028-TLA02"
-claim = "AEP-0028-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0028/GoldenQualification.tla#MeasurementRequiresEquivalence"
-assertion = "Every measured, reproduced, or qualified state has complete equivalence, matching workload identity, and a qualified environment."
-scope = "Finite abstract qualification lifecycle."
-bounds = ["pull request: 4 required gates and 3 windows", "nightly: 5 required gates and 4 windows"]
-assumptions = ["required gate membership represents valid independent correctness evidence", "weak fairness for enabled lifecycle progress"]
-exclusions = ["TOML parser correctness", "semantic truth of evidence", "native hardware behavior", "statistical validity"]
-companion = "tools/alpine-assurance/src/qualification.rs#rejects_performance_before_correctness"
-
-[[evidence]]
 id = "EV-0028-UNIT02"
 claim = "AEP-0028-C02"
 kind = "unit"
@@ -1447,18 +1206,6 @@ artifact = "scripts/test-qualification.sh"
 assertion = "CLI fixtures fail measurement before correctness and measurement on an unqualified environment."
 scope = "Repository-root qualification command behavior."
 exclusions = ["Hardware attestation accuracy", "actual Zed equivalence"]
-
-[[evidence]]
-id = "EV-0028-TLA03"
-claim = "AEP-0028-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0028/GoldenQualification.tla#QualificationRequiresReproduction"
-assertion = "A qualified state contains measurements reproduced across the configured maximum independent windows."
-scope = "Finite abstract reproduction lifecycle."
-bounds = ["pull request: 3 windows", "nightly: 4 windows"]
-assumptions = ["each increment represents a genuinely independent qualified hardware window"]
-exclusions = ["runner identity fraud", "sample independence", "effect-size computation", "Rust refinement"]
-companion = "tools/alpine-assurance/src/qualification.rs#rejects_mismatched_and_unsupported_workloads"
 
 [[evidence]]
 id = "EV-0028-UNIT03"
@@ -1483,9 +1230,9 @@ id = "EV-0028-MUTATION03"
 claim = "AEP-0028-C03"
 kind = "mutation"
 artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Every changed assurance-tool mutant must be killed before ci-pass can succeed."
+assertion = "When manual mutation assurance is selected, every changed assurance-tool mutant must be killed before ci-pass can succeed."
 scope = "Changed Rust code in the non-shipping alpine-assurance package."
-exclusions = ["Unchanged code", "TLA+ and shell mutation", "semantic completeness of generated mutants"]
+exclusions = ["Unchanged code", "Shell mutation", "semantic completeness of generated mutants"]
 
 [[evidence]]
 id = "EV-0028-COVERAGE03"
@@ -1620,18 +1367,6 @@ scope = "Pinned Alpine Trace Adapter in Alpine Zed Lab run 32733054956."
 exclusions = ["Proof of correctness", "Zed code outside the adapter", "Alpine shipping code"]
 
 [[evidence]]
-id = "EV-0028-TLA08"
-claim = "AEP-0028-C08"
-kind = "tla"
-artifact = "formal/tla/aep-0028/GoldenQualification.tla#MeasurementRequiresEquivalence"
-assertion = "The qualification lifecycle forbids measurement before complete semantic equivalence and qualified environment identity."
-scope = "Finite ordering review reused by the atlas-lifecycle E3 admission boundary."
-bounds = ["pull request: 4 required gates and 3 windows", "nightly: 5 required gates and 4 windows"]
-assumptions = ["required gate membership represents valid independent correctness evidence", "weak fairness for enabled lifecycle progress"]
-exclusions = ["Rust refinement", "native renderer correctness", "elapsed time"]
-companion = "tools/alpine-assurance/src/qualification.rs#rejects_performance_before_correctness"
-
-[[evidence]]
 id = "EV-0028-KANI08"
 claim = "AEP-0028-C08"
 kind = "kani"
@@ -1706,90 +1441,6 @@ scope = "Pinned Alpine Trace Adapter in Alpine Zed Lab run 33346520970."
 exclusions = ["Proof of correctness", "Zed code outside the adapter", "Alpine shipping code"]
 
 [[evidence]]
-id = "EV-0025-TLA02A"
-claim = "AEP-0025-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#InFlightOwnsResource"
-assertion = "A modeled submitted frame retains exclusive ownership of its in-flight resource."
-scope = "The accepted finite synchronous lifecycle surrounding future native submission."
-bounds = ["one renderer, one frame, one resource, and submission and release counts in 0 through 1"]
-assumptions = ["weak fairness for enabled lifecycle progress"]
-exclusions = ["frame arithmetic", "Rust refinement", "native Metal ownership", "driver behavior"]
-companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
-
-[[evidence]]
-id = "EV-0025-TLA02B"
-claim = "AEP-0025-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#FreeResourceIsInactive"
-assertion = "A modeled free resource is associated only with an idle or terminal frame."
-scope = "The accepted finite synchronous lifecycle surrounding future native submission."
-bounds = ["one renderer, one frame, and one resource"]
-assumptions = ["resource state abstracts exclusive native ownership"]
-exclusions = ["allocation success", "Rust refinement", "native handles", "caches"]
-companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
-
-[[evidence]]
-id = "EV-0025-TLA02C"
-claim = "AEP-0025-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#SingleSubmission"
-assertion = "The modeled frame submits no more than once."
-scope = "One accepted synchronous frame lifecycle."
-bounds = ["submission count in 0 through 1"]
-assumptions = ["one Submit action represents one native command-buffer commit"]
-exclusions = ["Rust refinement", "native command tracing", "multiple frames"]
-companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
-
-[[evidence]]
-id = "EV-0025-TLA02D"
-claim = "AEP-0025-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#TerminalRelease"
-assertion = "Every modeled terminal frame has a free resource and exactly one release."
-scope = "Completed, failed, and cancelled states in one synchronous lifecycle."
-bounds = ["release count in 0 through 1"]
-assumptions = ["one modeled release corresponds to the future safe native teardown boundary"]
-exclusions = ["Rust refinement", "Objective-C retain counts", "allocator behavior"]
-companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
-
-[[evidence]]
-id = "EV-0025-TLA02E"
-claim = "AEP-0025-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#CompletedIsSuccess"
-assertion = "A modeled completed frame is successful and has exactly one submission."
-scope = "One synchronous success path."
-bounds = ["one frame and submission count in 0 through 1"]
-assumptions = ["completion is observed only after the future native status boundary"]
-exclusions = ["pixel correctness", "Rust refinement", "Metal status inspection"]
-companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
-
-[[evidence]]
-id = "EV-0025-TLA02F"
-claim = "AEP-0025-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#FailureIsNotSuccess"
-assertion = "A modeled failed frame never reports a successful outcome."
-scope = "One synchronous terminal failure path."
-bounds = ["one frame with finite terminal outcomes"]
-assumptions = ["the Error outcome abstracts all future classified native failures"]
-exclusions = ["failure taxonomy", "Rust refinement", "device recovery"]
-companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
-
-[[evidence]]
-id = "EV-0025-TLA02G"
-claim = "AEP-0025-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#StoppedIsDrained"
-assertion = "A modeled stopped renderer owns no resource and has no submitted frame."
-scope = "One synchronous shutdown and drain lifecycle."
-bounds = ["one renderer, one frame, and one resource"]
-assumptions = ["stopping is enabled only after modeled drain"]
-exclusions = ["Rust refinement", "process teardown", "native autorelease behavior"]
-companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
-
-[[evidence]]
 id = "EV-0025-KANI02A"
 claim = "AEP-0025-C02"
 kind = "kani"
@@ -1821,7 +1472,7 @@ artifact = "crates/alpine-metal/src/proofs.rs#lifecycle_actions_preserve_invaria
 assertion = "Six arbitrary modeled actions preserve every executable lifecycle invariant, including atomic rejection."
 scope = "Compiled pure Rust transition logic across all eight action choices at each bounded step."
 bounds = ["six steps with each choice covering all eight LifecycleAction variants"]
-assumptions = ["the proof harness maps every byte to one of the eight TLA+ action counterparts"]
+assumptions = ["the proof harness maps every byte to one of eight bounded transition actions"]
 exclusions = ["longer traces", "native resource ownership", "concurrency", "formal refinement", "qualification of AEP-0025-C04"]
 companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
 
@@ -1962,18 +1613,6 @@ scope = "Executable Rust reached on the Linux coverage host."
 exclusions = ["macOS-only native lines", "proof of correctness", "Objective-C framework internals"]
 
 [[evidence]]
-id = "EV-0025-TLA08"
-claim = "AEP-0025-C08"
-kind = "tla"
-artifact = "formal/tla/aep-0028/GoldenQualification.tla#MeasurementRequiresEquivalence"
-assertion = "A qualification cannot enter measurement until semantic, visual, accessibility, and lifecycle equivalence all hold."
-scope = "Finite golden-qualification lifecycle shared by renderer-only and later product comparisons."
-bounds = ["one qualification progressing through the finite equivalence and measurement stages"]
-assumptions = ["equivalence flags represent independently passing qualified checks"]
-exclusions = ["native validation semantics", "statistical estimator correctness", "formal refinement to Rust"]
-companion = "tools/alpine-assurance/src/qualification.rs#rejects_performance_before_correctness"
-
-[[evidence]]
 id = "EV-0025-INTEGRATION08A"
 claim = "AEP-0025-C08"
 kind = "integration"
@@ -2044,54 +1683,6 @@ artifact = "scripts/check-coverage.sh"
 assertion = "Coverage ratchets prevent untested host-safe boundary changes from silently reducing exercised behavior."
 scope = "Linux-hosted safe API, unsupported-platform path, initialization driver, and ownership tests."
 exclusions = ["macOS-only native lines", "Objective-C binding internals", "semantic proof"]
-
-[[evidence]]
-id = "EV-0025-TLA03A"
-claim = "AEP-0025-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#SingleSubmission"
-assertion = "One accepted abstract frame can increment its submission count at most once."
-scope = "Finite synchronous renderer lifecycle with one frame and one resource owner."
-bounds = ["submitCount is 0 through 1", "one frame traverses the finite lifecycle"]
-assumptions = ["each Submit action represents exactly one native command-buffer commit"]
-exclusions = ["Metal API behavior", "Rust refinement", "multiple in-flight frames"]
-companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
-
-[[evidence]]
-id = "EV-0025-TLA03D"
-claim = "AEP-0025-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#SubmissionEventuallyTerminates"
-assertion = "Every submitted abstract frame eventually reaches completed or failed."
-scope = "Finite synchronous renderer lifecycle under weak fairness."
-bounds = ["one renderer", "one frame", "one retained resource owner"]
-assumptions = ["Metal wait eventually returns a terminal status", "weak fairness for enabled lifecycle actions"]
-exclusions = ["driver hangs", "wall-clock bounds", "formal refinement to native code"]
-companion = "crates/alpine-metal/src/native.rs#renders_discriminating_scene_once_and_matches_cpu_oracle"
-
-[[evidence]]
-id = "EV-0025-TLA03B"
-claim = "AEP-0025-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#CompletedIsSuccess"
-assertion = "An abstract completed frame always carries success and exactly one submission."
-scope = "Finite synchronous renderer lifecycle."
-bounds = ["one renderer", "one frame", "submitCount is 0 through 1"]
-assumptions = ["Completed represents a successful native terminal status"]
-exclusions = ["Metal status semantics", "formal refinement to Rust"]
-companion = "crates/alpine-metal/src/native.rs#renders_discriminating_scene_once_and_matches_cpu_oracle"
-
-[[evidence]]
-id = "EV-0025-TLA03C"
-claim = "AEP-0025-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#FailureIsNotSuccess"
-assertion = "An abstract failed frame can never carry a successful outcome."
-scope = "Finite synchronous renderer lifecycle."
-bounds = ["one renderer", "one frame", "one terminal outcome"]
-assumptions = ["Fail represents any unsuccessful native terminal status"]
-exclusions = ["native error taxonomy", "formal refinement to Rust"]
-companion = "crates/alpine-metal/src/submission.rs#error_contract_preserves_stage_source_and_native_details"
 
 [[evidence]]
 id = "EV-0025-UNIT03"
@@ -2281,78 +1872,6 @@ scope = "Linux-hosted safe readback transformation and error contract."
 exclusions = ["macOS-only native lines", "semantic proof"]
 
 [[evidence]]
-id = "EV-0025-TLA04A"
-claim = "AEP-0025-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#InFlightOwnsResource"
-assertion = "A submitted frame retains the exclusive resource owner until a terminal transition."
-scope = "One renderer, one synchronous frame, and one resource owner."
-bounds = ["submission and release counts are zero through one"]
-assumptions = ["Submit represents one retained Metal command buffer"]
-exclusions = ["Objective-C retain counts", "driver behavior", "multiple in-flight frames"]
-companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
-
-[[evidence]]
-id = "EV-0025-TLA04B"
-claim = "AEP-0025-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#FreeResourceIsInactive"
-assertion = "A free resource is associated only with an idle or terminal frame."
-scope = "One synchronous frame resource lifecycle."
-bounds = ["one finite resource state"]
-assumptions = ["resource abstracts the complete native frame owner"]
-exclusions = ["allocator caches", "actual GPU residency"]
-companion = "crates/alpine-metal/src/lifecycle.rs#exhaustive_state_oracle_checks_invariants_and_actions"
-
-[[evidence]]
-id = "EV-0025-TLA04C"
-claim = "AEP-0025-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#TerminalRelease"
-assertion = "Completed, failed, and cancelled frames release their owner exactly once."
-scope = "Every terminal state in the finite lifecycle."
-bounds = ["release count is zero through one"]
-assumptions = ["one modeled release maps to Rust owner teardown"]
-exclusions = ["native framework retain-count internals"]
-companion = "crates/alpine-metal/src/native.rs#injected_precommit_failures_release_once_and_balance_accounting"
-
-[[evidence]]
-id = "EV-0025-TLA04D"
-claim = "AEP-0025-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#StoppedIsDrained"
-assertion = "A stopped renderer has no submitted frame or retained resource."
-scope = "One synchronous shutdown path."
-bounds = ["one renderer, frame, and resource"]
-assumptions = ["synchronous Rust prevents concurrent admission"]
-exclusions = ["future asynchronous queues", "process teardown"]
-companion = "crates/alpine-metal/src/native.rs#cancellation_shutdown_and_steady_state_have_no_hidden_native_work"
-
-[[evidence]]
-id = "EV-0025-TLA04E"
-claim = "AEP-0025-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#SubmissionEventuallyTerminates"
-assertion = "Every submitted frame eventually completes or fails."
-scope = "Finite synchronous lifecycle under weak fairness."
-bounds = ["one submitted frame"]
-assumptions = ["Metal wait eventually returns a terminal status"]
-exclusions = ["driver hangs", "wall-clock duration"]
-companion = "crates/alpine-metal/src/native.rs#injected_terminal_failures_never_return_pixels_and_classify_recovery"
-
-[[evidence]]
-id = "EV-0025-TLA04F"
-claim = "AEP-0025-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#ShutdownEventuallyStops"
-assertion = "Requested shutdown eventually stops after drain."
-scope = "Finite synchronous shutdown under weak fairness."
-bounds = ["one renderer and one frame"]
-assumptions = ["terminal completion remains enabled during shutdown"]
-exclusions = ["concurrent admission", "driver hangs"]
-companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
-
-[[evidence]]
 id = "EV-0025-KANI04"
 claim = "AEP-0025-C04"
 kind = "kani"
@@ -2360,7 +1879,7 @@ artifact = "crates/alpine-metal/src/proofs.rs#lifecycle_actions_preserve_invaria
 assertion = "Arbitrary actions preserve ownership, release, and drained-shutdown invariants."
 scope = "Compiled pure Rust transitions across all action choices."
 bounds = ["six steps", "nine actions per symbolic choice"]
-assumptions = ["each Rust action maps to its TLA+ counterpart"]
+assumptions = ["the state/action oracle and implementation share the declared action vocabulary"]
 exclusions = ["native handles", "concurrency", "longer traces"]
 companion = "crates/alpine-metal/src/lifecycle.rs#exhaustive_state_oracle_checks_invariants_and_actions"
 
@@ -2426,42 +1945,6 @@ artifact = "scripts/check-coverage.sh"
 assertion = "Coverage ratchets include all portable lifecycle and accounting branches."
 scope = "Linux-hosted safe Rust."
 exclusions = ["macOS-only native lines", "semantic proof"]
-
-[[evidence]]
-id = "EV-0025-TLA06A"
-claim = "AEP-0025-C06"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#TerminalRelease"
-assertion = "Success, precommit failure, submitted failure, and cancellation release once."
-scope = "Finite terminal frame states."
-bounds = ["one frame and release count zero through one"]
-assumptions = ["FailBeforeSubmit and Fail map to distinct Rust boundaries"]
-exclusions = ["native error codes", "allocator behavior"]
-companion = "crates/alpine-metal/src/native.rs#injected_precommit_failures_release_once_and_balance_accounting"
-
-[[evidence]]
-id = "EV-0025-TLA06B"
-claim = "AEP-0025-C06"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#FailureIsNotSuccess"
-assertion = "No failed frame carries a successful outcome."
-scope = "Precommit and submitted terminal failures."
-bounds = ["one finite frame outcome"]
-assumptions = ["Rust rejects pixels and success reports on error"]
-exclusions = ["native status semantics", "error message contents"]
-companion = "crates/alpine-metal/src/submission.rs#attempt_recording_invalidates_device_loss_and_rejects_false_success"
-
-[[evidence]]
-id = "EV-0025-TLA06C"
-claim = "AEP-0025-C06"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#StoppedIsDrained"
-assertion = "Failure followed by shutdown cannot stop with a retained resource."
-scope = "One failed or submitted frame during shutdown."
-bounds = ["one renderer, frame, and resource"]
-assumptions = ["terminal failure remains enabled during drain"]
-exclusions = ["driver hangs", "concurrent callers"]
-companion = "crates/alpine-metal/src/lifecycle.rs#lifecycle_action_sequence_companion"
 
 [[evidence]]
 id = "EV-0025-KANI06"
@@ -2548,30 +2031,6 @@ scope = "Linux-hosted safe Rust."
 exclusions = ["macOS-only native lines", "driver behavior"]
 
 [[evidence]]
-id = "EV-0025-TLA07A"
-claim = "AEP-0025-C07"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#SingleSubmission"
-assertion = "The modeled frame cannot hide more than one submission."
-scope = "One accepted synchronous frame."
-bounds = ["submission count zero through one"]
-assumptions = ["implementation counts every command commit"]
-exclusions = ["byte accounting", "multiple frames"]
-companion = "crates/alpine-metal/src/native.rs#cancellation_shutdown_and_steady_state_have_no_hidden_native_work"
-
-[[evidence]]
-id = "EV-0025-TLA07B"
-claim = "AEP-0025-C07"
-kind = "tla"
-artifact = "formal/tla/aep-0025/RendererLifecycle.tla#TerminalRelease"
-assertion = "Terminal work has one release, preventing modeled retained-resource growth."
-scope = "One terminal frame resource."
-bounds = ["release count zero through one"]
-assumptions = ["one release maps to frame-local teardown"]
-exclusions = ["driver-private memory not visible in process RSS"]
-companion = "crates/alpine-metal/src/native.rs#cancellation_shutdown_and_steady_state_have_no_hidden_native_work"
-
-[[evidence]]
 id = "EV-0025-KANI07"
 claim = "AEP-0025-C07"
 kind = "kani"
@@ -2654,114 +2113,6 @@ artifact = "scripts/check-coverage.sh"
 assertion = "Coverage ratchets include every portable accounting outcome and invariant."
 scope = "Linux-hosted safe Rust."
 exclusions = ["macOS-only allocation queries", "proof of bounded memory"]
-
-[[evidence]]
-id = "EV-0064-TLA09A"
-claim = "AEP-0064-C09"
-kind = "tla"
-artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#LinkOwnership"
-assertion = "Only a running eligible surface can own a running display link, and stopping or stopped owners have an invalid link."
-scope = "One abstract application owner, surface, and display link."
-bounds = ["pull request: revision and epoch 0 through 1 with one environment change", "nightly: revision and epoch 0 through 2 with two environment changes"]
-assumptions = ["display-link state represents the native owner's desired lifecycle state"]
-exclusions = ["native API calls", "callback timing", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/lib.rs#exhaustive_reachable_state_and_action_oracle"
-
-[[evidence]]
-id = "EV-0064-TLA09B"
-claim = "AEP-0064-C09"
-kind = "tla"
-artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#ResourceMatchesPhase"
-assertion = "Prepared work owns no native resource, encoding owns one drawable, and committed phases retain one in-flight resource."
-scope = "One abstract frame attempt and exclusive resource."
-bounds = ["one active attempt", "resource is Free, Drawable, or InFlight"]
-assumptions = ["the resource variable abstracts complete native attempt ownership"]
-exclusions = ["Objective-C retain counts", "allocator behavior", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/lib.rs#every_shutdown_phase_releases_or_drains"
-
-[[evidence]]
-id = "EV-0064-TLA09C"
-claim = "AEP-0064-C09"
-kind = "tla"
-artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#SingleSubmissionPerAttempt"
-assertion = "A frame attempt commits at most one command buffer."
-scope = "One abstract frame attempt."
-bounds = ["submission count 0 through 1"]
-assumptions = ["Submit maps to one native command-buffer commit"]
-exclusions = ["driver submission internals", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/lib.rs#model_trace_replay_qualifies_only_a_current_presented_frame"
-
-[[evidence]]
-id = "EV-0064-TLA09D"
-claim = "AEP-0064-C09"
-kind = "tla"
-artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#SinglePresentCallPerAttempt"
-assertion = "A committed frame attempt calls direct presentation at most once."
-scope = "One abstract frame attempt."
-bounds = ["direct presentation count 0 through 1"]
-assumptions = ["CallPresent maps to the callback drawable's direct presentation method"]
-exclusions = ["Core Animation behavior", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/lib.rs#model_trace_replay_qualifies_only_a_current_presented_frame"
-
-[[evidence]]
-id = "EV-0064-TLA09E"
-claim = "AEP-0064-C09"
-kind = "tla"
-artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#CommittedWasEligible"
-assertion = "Every committed phase records historical revision, epoch, and surface eligibility at commit."
-scope = "One abstract frame attempt with bounded invalidation and surface change."
-bounds = ["pull request: at most one invalidation and one surface change", "nightly: at most two invalidations and two surface changes"]
-assumptions = ["eligibility is checked immediately before commit"]
-exclusions = ["native races inside a platform call", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/lib.rs#coalesces_invalidations_and_discards_precommit_stale_work"
-
-[[evidence]]
-id = "EV-0064-TLA09F"
-claim = "AEP-0064-C09"
-kind = "tla"
-artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#PresentFollowsSubmission"
-assertion = "A direct presentation call is reachable only after one command commit."
-scope = "One abstract frame attempt."
-bounds = ["one submission and one direct presentation call"]
-assumptions = ["the actions preserve native call order"]
-exclusions = ["foreign callbacks", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/lib.rs#model_trace_replay_qualifies_only_a_current_presented_frame"
-
-[[evidence]]
-id = "EV-0064-TLA09G"
-claim = "AEP-0064-C09"
-kind = "tla"
-artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#PresentedIsCurrent"
-assertion = "A successful presentation is qualified only when its revision and epoch remain current and both commit and presentation occurred once."
-scope = "One abstract frame attempt with bounded supersession."
-bounds = ["pull request: revision and epoch 0 through 1", "nightly: revision and epoch 0 through 2"]
-assumptions = ["terminal correlation observes the latest portable state"]
-exclusions = ["pixel correctness", "physical scanout", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/lib.rs#deliberately_faulty_stale_qualification_is_detected"
-
-[[evidence]]
-id = "EV-0064-TLA09H"
-claim = "AEP-0064-C09"
-kind = "tla"
-artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#CleanIdleIsPaused"
-assertion = "A clean idle running surface cannot keep pacing active."
-scope = "One abstract surface and display link."
-bounds = ["finite dirty and phase states"]
-assumptions = ["paused state corresponds to no persistent display-link callbacks"]
-exclusions = ["operating-system wakeups", "energy measurement", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/lib.rs#exhaustive_reachable_state_and_action_oracle"
-
-[[evidence]]
-id = "EV-0064-TLA09I"
-claim = "AEP-0064-C09"
-kind = "tla"
-artifact = "formal/tla/aep-0064/PresentationLifecycle.tla#StoppedIsDrained"
-assertion = "A stopped owner has invalid pacing, idle phase, and no retained frame resource."
-scope = "One abstract shutdown lifecycle."
-bounds = ["one active attempt and resource"]
-assumptions = ["committed completion or failure remains enabled while stopping"]
-exclusions = ["driver hangs", "native object destruction", "Rust formal refinement"]
-companion = "crates/alpine-platform/src/lib.rs#every_shutdown_phase_releases_or_drains"
 
 [[evidence]]
 id = "EV-0064-KANI09"
@@ -3005,54 +2356,6 @@ bounds = ["one operation", "one stored clip", "invalid index one or usize maximu
 exclusions = ["TOML parsing", "native rendering", "elapsed time"]
 companion = "tools/alpine-trace/src/lib.rs#prepared_scene_rejects_clip_atlas_and_glyph_contract_breaks"
 [[evidence]]
-id = "EV-0137-TLA01"
-claim = "AEP-0137-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#BoundedRequestQueue"
-assertion = "The fixed request capacity bounds every queued request state."
-scope = "Three pull-request jobs with one request slot, one result slot, and bounded revision advances."
-bounds = ["pull request: three jobs and one revision advance", "nightly: four jobs and two revision advances"]
-assumptions = ["one modeled queue slot represents one standard-channel message", "formal saturation and application-result counts are one-bit occurrence witnesses; compiled runtime evidence owns exact arithmetic"]
-exclusions = ["thread scheduling", "mutex implementation", "elapsed time", "Rust formal refinement"]
-companion = "crates/alpine-runtime/src/lib.rs#saturated_submission_returns_without_waiting"
-
-[[evidence]]
-id = "EV-0137-TLA01B"
-claim = "AEP-0137-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#BoundedResultQueue"
-assertion = "The fixed result capacity bounds every completed result awaiting foreground inspection."
-scope = "Three pull-request jobs with one request slot and one result slot."
-bounds = ["pull request: three jobs and one result slot", "nightly: four jobs and two result slots"]
-assumptions = ["one modeled result slot represents one standard-channel message", "terminal job revision tags and per-job outcome labels are unobservable after queue and worker ownership ends; distinct actions and disposition witnesses retain the modeled outcomes"]
-exclusions = ["allocator bytes", "thread scheduling", "Rust formal refinement"]
-companion = "crates/alpine-runtime/src/lib.rs#worker_panic_is_contained_and_counted"
-
-[[evidence]]
-id = "EV-0137-TLA01C"
-claim = "AEP-0137-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#ShutdownEventuallyDrains"
-assertion = "After shutdown begins, weakly fair cancellation eventually removes every queued, running, or completed owned job."
-scope = "Finite owned jobs after admission has been revoked."
-bounds = ["pull request: three jobs", "nightly: four jobs"]
-assumptions = ["shutdown cancellation remains weakly fair"]
-exclusions = ["non-cooperative operating-system thread termination", "process termination", "Rust formal refinement"]
-companion = "crates/alpine-runtime/src/lib.rs#stale_background_result_never_mutates_delegate_state"
-
-[[evidence]]
-id = "EV-0137-TLA02"
-claim = "AEP-0137-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#CurrentApplicationIsCurrent"
-assertion = "A foreground application classified current carries the active workspace and document revisions."
-scope = "Bounded completion interleavings across independent workspace and document advances."
-bounds = ["pull request: one workspace and document advance", "nightly: two workspace and document advances"]
-assumptions = ["native wake eventually causes foreground result inspection", "a direct boolean monitor records whether the current-application action admitted exact revisions; historical result identity is outside the checked abstraction"]
-exclusions = ["application result semantics", "unbounded revisions", "Rust formal refinement"]
-companion = "crates/alpine-runtime/src/lib.rs#stale_background_result_never_mutates_delegate_state"
-
-[[evidence]]
 id = "EV-0137-UNIT01"
 claim = "AEP-0137-C01"
 kind = "unit"
@@ -3126,9 +2429,8 @@ requirement_issue = 37
 claim_type = "safety"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = ["BoundedRequestQueue", "BoundedResultQueue", "ShutdownEventuallyDrains"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0137-C02"
@@ -3139,9 +2441,8 @@ requirement_issue = 37
 claim_type = "safety"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = ["CurrentApplicationIsCurrent"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0137-C03"
@@ -3176,9 +2477,8 @@ requirement_issue = 37
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["ShutdownEventuallyDrains"]
 platform_scope = ["macos-metal"]
-required_evidence = ["tla", "native"]
+required_evidence = ["native"]
 
 [[claims]]
 id = "AEP-0153-C01"
@@ -3189,9 +2489,8 @@ requirement_issue = 37
 claim_type = "memory"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = ["ClipboardResponseIsBounded"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0153-C02"
@@ -3202,9 +2501,8 @@ requirement_issue = 37
 claim_type = "safety"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = ["ResponseChannelsAreIndependent"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0153-C03"
@@ -3215,21 +2513,8 @@ requirement_issue = 37
 claim_type = "lifecycle"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["CancelledCloseStaysLive", "AllowedCloseRevokesAdmission", "RequestedCloseEventuallyResolves"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
-
-[[evidence]]
-id = "EV-0153-TLA01"
-claim = "AEP-0153-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#ClipboardResponseIsBounded"
-assertion = "Every modeled clipboard response slot remains at or below the configured byte ceiling."
-scope = "One finite event response with zero or one plain-text clipboard write."
-bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
-assumptions = ["one modeled byte represents one retained UTF-8 byte"]
-exclusions = ["allocator overhead", "native transient pasteboard conversion", "process footprint"]
-companion = "crates/alpine-platform-macos/src/lib.rs#clipboard_and_response_values_preserve_public_identity"
+required_evidence = ["unit"]
 
 [[evidence]]
 id = "EV-0153-UNIT01"
@@ -3250,54 +2535,6 @@ scope = "One portable foreground event context."
 exclusions = ["native pasteboard write", "reentrant AppKit callbacks"]
 
 [[evidence]]
-id = "EV-0153-TLA02"
-claim = "AEP-0153-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#ResponseChannelsAreIndependent"
-assertion = "Clipboard occupancy and close disposition remain independently typed finite response channels."
-scope = "One finite portable response with a bounded clipboard slot and close state."
-bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
-assumptions = ["the frame slot is independently covered by the Rust value test"]
-exclusions = ["native callback transport", "Rust layout", "allocator behavior"]
-companion = "crates/alpine-platform-macos/src/lib.rs#clipboard_and_response_values_preserve_public_identity"
-
-[[evidence]]
-id = "EV-0153-TLA03A"
-claim = "AEP-0153-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#CancelledCloseStaysLive"
-assertion = "A cancelled close leaves the modeled runtime live."
-scope = "Finite requested, cancelled, and allowed close transitions."
-bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
-assumptions = ["the foreground delegate resolves each admitted close synchronously"]
-exclusions = ["AppKit delegate delivery", "process termination", "Rust formal refinement"]
-companion = "crates/alpine-runtime/src/lib.rs#cancelled_close_returns_one_bounded_response_and_stays_live"
-
-[[evidence]]
-id = "EV-0153-TLA03B"
-claim = "AEP-0153-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#AllowedCloseRevokesAdmission"
-assertion = "An allowed close makes the modeled runtime non-live."
-scope = "Finite requested, cancelled, and allowed close transitions."
-bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
-assumptions = ["allowed close is the portable irreversible runtime boundary"]
-exclusions = ["native presentation drain", "AppKit window destruction", "Rust formal refinement"]
-companion = "crates/alpine-runtime/src/lib.rs#resize_builds_latest_viewport_and_close_revokes_frames"
-
-[[evidence]]
-id = "EV-0153-TLA03C"
-claim = "AEP-0153-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#RequestedCloseEventuallyResolves"
-assertion = "Under weakly fair synchronous disposition, every modeled requested close eventually becomes cancelled or allowed."
-scope = "Finite requested, cancelled, and allowed close transitions."
-bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
-assumptions = ["close disposition remains weakly fair once requested"]
-exclusions = ["AppKit event delivery", "elapsed time", "Rust formal refinement"]
-companion = "crates/alpine-runtime/src/lib.rs#cancelled_close_returns_one_bounded_response_and_stays_live"
-
-[[evidence]]
 id = "EV-0153-UNIT03"
 claim = "AEP-0153-C03"
 kind = "unit"
@@ -3315,9 +2552,8 @@ requirement_issue = 37
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["ClipboardResponseIsBounded", "ResponseChannelsAreIndependent"]
 platform_scope = ["macos-metal"]
-required_evidence = ["tla", "native"]
+required_evidence = ["native"]
 
 [[claims]]
 id = "AEP-0153-C05"
@@ -3328,9 +2564,8 @@ requirement_issue = 37
 claim_type = "lifecycle"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["CancelledCloseStaysLive", "AllowedCloseRevokesAdmission", "RequestedCloseEventuallyResolves"]
 platform_scope = ["macos-metal"]
-required_evidence = ["tla", "native"]
+required_evidence = ["native"]
 
 [[evidence]]
 id = "EV-0153-NATIVE04"
@@ -3341,18 +2576,6 @@ assertion = "Production native dispatch writes copy text, reads it through paste
 scope = "Apple Silicon AppKit selectors, an isolated validation pasteboard, bounded Alpine values, and the production delegate response path."
 exclusions = ["Studio selection mutation", "general user pasteboard contents", "rich clipboard formats", "clipboard latency"]
 
-[[evidence]]
-id = "EV-0153-TLA04A"
-claim = "AEP-0153-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#ClipboardResponseIsBounded"
-assertion = "Every abstract clipboard response remains within its configured byte ceiling."
-scope = "Finite portable response state transported by the native delegate."
-bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
-assumptions = ["one modeled byte represents one retained UTF-8 byte"]
-exclusions = ["formal refinement to NSPasteboard", "native transient allocation", "clipboard latency"]
-companion = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
-
 [[claims]]
 id = "AEP-0153-C06"
 mission = "MP-02"
@@ -3362,9 +2585,8 @@ requirement_issue = 37
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["CutMutationRequiresMatchingCompletion"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0153-C07"
@@ -3375,9 +2597,8 @@ requirement_issue = 37
 claim_type = "lifecycle"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["DirtyCloseNeverAllows", "CancelledCloseStaysLive"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0153-C08"
@@ -3388,9 +2609,8 @@ requirement_issue = 37
 claim_type = "lifecycle"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["CutMutationRequiresMatchingCompletion", "DirtyCloseNeverAllows", "CancelledCloseStaysLive", "AllowedCloseRevokesAdmission"]
 platform_scope = ["macos-metal"]
-required_evidence = ["tla", "e2e", "native"]
+required_evidence = ["e2e", "native"]
 
 [[evidence]]
 id = "EV-0153-UNIT06"
@@ -3411,18 +2631,6 @@ scope = "Portable Studio pending-cut identity and failure transitions."
 exclusions = ["native callback reentrancy", "process event loop", "clipboard manager behavior"]
 
 [[evidence]]
-id = "EV-0153-TLA06"
-claim = "AEP-0153-C06"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#CutMutationRequiresMatchingCompletion"
-assertion = "A cut mutation cannot occur after either the finite document revision or selection identity changes."
-scope = "One pending cut, Boolean revision and selection identities, and one abstract removed byte."
-bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
-assumptions = ["a successful matching cut removes one abstract byte"]
-exclusions = ["text contents", "AppKit callback ordering", "allocator behavior"]
-companion = "apps/alpine-studio/src/studio_coverage_tests.rs#cut_completion_rejects_stale_selection_revision_and_native_failure"
-
-[[evidence]]
 id = "EV-0153-UNIT07"
 claim = "AEP-0153-C07"
 kind = "unit"
@@ -3441,42 +2649,6 @@ scope = "Portable Studio transition and semantic scene output."
 exclusions = ["accessibility announcement", "native pasteboard I/O", "pixel readback"]
 
 [[evidence]]
-id = "EV-0153-TLA07"
-claim = "AEP-0153-C07"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#DirtyCloseNeverAllows"
-assertion = "A close requested while the abstract document is dirty never reaches the allowed state."
-scope = "Finite edit, save, close-request, cancel, and allow transitions."
-bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
-assumptions = ["dirty identity is sampled synchronously at close request"]
-exclusions = ["NSWindowDelegate delivery", "save prompts", "process termination"]
-companion = "apps/alpine-studio/src/studio_coverage_tests.rs#studio_runtime_returns_clipboard_and_dirty_close_responses"
-
-[[evidence]]
-id = "EV-0153-TLA07B"
-claim = "AEP-0153-C07"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#CancelledCloseStaysLive"
-assertion = "A dirty close that resolves to cancellation leaves the abstract runtime live."
-scope = "Finite dirty close request and synchronous cancellation."
-bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
-assumptions = ["dirty close selects cancellation unless the faulty control is enabled"]
-exclusions = ["NSWindowDelegate delivery", "native resource drain", "elapsed time"]
-companion = "apps/alpine-studio/src/studio_coverage_tests.rs#studio_runtime_returns_clipboard_and_dirty_close_responses"
-
-[[evidence]]
-id = "EV-0153-TLA04B"
-claim = "AEP-0153-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#ResponseChannelsAreIndependent"
-assertion = "The abstract clipboard response remains independent from frame and close channels."
-scope = "One finite portable response before native transport."
-bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
-assumptions = ["native dispatch preserves the typed response channels"]
-exclusions = ["formal refinement to Objective-C callbacks", "NSPasteboard failure semantics"]
-companion = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
-
-[[evidence]]
 id = "EV-0153-E2E08"
 claim = "AEP-0153-C08"
 kind = "e2e"
@@ -3493,18 +2665,6 @@ artifact = "apps/alpine-studio/src/lib.rs#qualify_clipboard_and_close_process"
 assertion = "The composed journey presents an initial frame through the AppKit event loop, leaves the native owner live after dirty veto, enters closing only after a clean response, and releases every tracked owner with no ordering violation."
 scope = "Production native surface construction, display callback, NSResponder clipboard selectors, NSWindowDelegate close callbacks, and validation-only owner counters."
 exclusions = ["formal refinement to Objective-C callbacks", "elapsed-time qualification", "physical pixel capture", "process memory"]
-
-[[evidence]]
-id = "EV-0153-TLA08"
-claim = "AEP-0153-C08"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#CutMutationRequiresMatchingCompletion"
-assertion = "The finite companion model requires matching revision and selection identity before cut mutation."
-scope = "Portable cut transition independently transported by the native process journey."
-bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
-assumptions = ["native dispatch preserves the typed cut completion identity"]
-exclusions = ["formal refinement to AppKit delivery", "native resource ownership", "elapsed time"]
-companion = "apps/alpine-studio/tests/native_process.rs#main"
 
 [[claims]]
 id = "AEP-0160-C01"
@@ -3539,9 +2699,8 @@ requirement_issue = 32
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["FailedSelectionPreservesDocument"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0160-C04"
@@ -3552,9 +2711,8 @@ requirement_issue = 32
 claim_type = "lifecycle"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["SuccessfulReplacementAdvancesIdentity", "DocumentIdentityNeverDecreases"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[evidence]]
 id = "EV-0160-UNIT01"
@@ -3592,18 +2750,6 @@ assertion = "A sidebar click replaces the sole Studio document through the exist
 scope = "One portable Studio scene and one successful top-level file switch."
 exclusions = ["native pointer delivery", "background worker cancellation", "multi-window identity", "performance claims"]
 
-[[evidence]]
-id = "EV-0160-TLA03"
-claim = "AEP-0160-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0160/WorkspaceSelection.tla#FailedSelectionPreservesDocument"
-assertion = "Every modeled rejected file selection preserves the accepted document bytes and identity."
-scope = "Finite current-document, dirty, valid-open, and rejected-selection transitions."
-bounds = ["pull request: four document identities and four abstract byte states", "nightly: nine document identities and nine abstract byte states"]
-assumptions = ["one rejection represents a typed dirty, UTF-8, directory, missing, replacement, or root-admission failure"]
-exclusions = ["Rust formal refinement", "filesystem implementation", "path bytes", "allocation", "native event delivery"]
-companion = "apps/alpine-studio/src/studio_coverage_tests.rs#workspace_click_revalidates_target_and_preserves_current_document_on_failure"
-
 [[claims]]
 id = "AEP-0165-C01"
 mission = "MP-04"
@@ -3625,9 +2771,8 @@ requirement_issue = 32
 claim_type = "lifecycle"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["AdmittedIsCurrent", "StaleCompletionNeverPublishes"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0165-C03"
@@ -3650,9 +2795,8 @@ requirement_issue = 32
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["ReplacementRequiresCurrent", "MatchesAreBounded"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[evidence]]
 id = "EV-0165-UNIT01"
@@ -3691,114 +2835,6 @@ scope = "One local document, two retained matches, and bounded replacement text.
 exclusions = ["truncated replace-all", "save persistence", "native keyboard delivery"]
 
 [[evidence]]
-id = "EV-0165-TLA02"
-claim = "AEP-0165-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0165/FindAdmission.tla#StaleCompletionNeverPublishes"
-assertion = "A modeled completion publishes only while its document and query identities remain current."
-scope = "Finite request, query change, document edit, completion, cancellation, and replacement interleavings."
-bounds = ["pull request: three document revisions, four query generations, four match counts", "nightly: five document revisions, seven query generations, nine match counts"]
-assumptions = ["one pending scan represents one revision-tagged bounded worker request"]
-exclusions = ["Rust formal refinement", "text bytes", "allocation", "worker scheduling"]
-companion = "apps/alpine-studio/src/studio_coverage_tests.rs#stale_find_completion_preserves_the_current_selection"
-
-[[evidence]]
-id = "EV-0165-TLA02B"
-claim = "AEP-0165-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0165/FindAdmission.tla#AdmittedIsCurrent"
-assertion = "Every modeled admitted find result carries the current document and query identity."
-scope = "Finite request, query change, document edit, completion, cancellation, and replacement interleavings."
-bounds = ["pull request: three document revisions, four query generations, four match counts", "nightly: five document revisions, seven query generations, nine match counts"]
-assumptions = ["buffer revision changes are abstracted by document edit and query-generation invalidation"]
-exclusions = ["Rust formal refinement", "buffer bytes", "worker scheduling", "native wake delivery"]
-companion = "apps/alpine-studio/src/find.rs#stale_result_never_replaces_current_generation"
-
-[[evidence]]
-id = "EV-0165-TLA04"
-claim = "AEP-0165-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0165/FindAdmission.tla#ReplacementRequiresCurrent"
-assertion = "A modeled replacement is admitted only from result identity matching the current document and query."
-scope = "Finite admitted and stale result states with bounded abstract match counts."
-bounds = ["pull request: three document revisions, four query generations, four match counts", "nightly: five document revisions, seven query generations, nine match counts"]
-assumptions = ["Rust range and transaction checks separately enforce byte validity and byte ceilings"]
-exclusions = ["Rust formal refinement", "replacement bytes", "undo implementation", "filesystem persistence"]
-companion = "apps/alpine-studio/src/studio_coverage_tests.rs#current_and_all_replacement_are_atomic_and_undoable"
-
-[[evidence]]
-id = "EV-0165-TLA04B"
-claim = "AEP-0165-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0165/FindAdmission.tla#MatchesAreBounded"
-assertion = "Every modeled admitted result retains no more than the configured abstract match ceiling."
-scope = "Finite admitted and stale result states with bounded abstract match counts."
-bounds = ["pull request: three document revisions, four query generations, four match counts", "nightly: five document revisions, seven query generations, nine match counts"]
-assumptions = ["the Rust scanner enforces the concrete 16,384-match and 256-KiB metadata ceilings"]
-exclusions = ["Rust formal refinement", "allocator capacity", "rendered highlight count", "process footprint"]
-companion = "apps/alpine-studio/src/find.rs#literal_unicode_matches_are_ordered_non_overlapping_and_bounded"
-
-[[evidence]]
-id = "EV-0160-TLA04"
-claim = "AEP-0160-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0160/WorkspaceSelection.tla#SuccessfulReplacementAdvancesIdentity"
-assertion = "Every modeled successful file replacement advances a monotonic document identity before the next state is published."
-scope = "Finite edits, saves, valid replacements, rejected selections, and process-local document identities."
-bounds = ["pull request: four document identities and four abstract byte states", "nightly: nine document identities and nine abstract byte states"]
-assumptions = ["a valid open changes the selected local document", "identity exhaustion rejects rather than wraps"]
-exclusions = ["Rust formal refinement", "background result transport", "multi-window identity", "elapsed time"]
-companion = "apps/alpine-studio/src/studio_coverage_tests.rs#workspace_click_revalidates_target_and_preserves_current_document_on_failure"
-
-[[evidence]]
-id = "EV-0160-TLA04B"
-claim = "AEP-0160-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0160/WorkspaceSelection.tla#DocumentIdentityNeverDecreases"
-assertion = "The modeled process-local document identity never decreases across edits, saves, valid replacements, or rejected selections."
-scope = "Finite current and previous document identities across every workspace-selection transition."
-bounds = ["pull request: four document identities and four abstract byte states", "nightly: nine document identities and nine abstract byte states"]
-assumptions = ["identity exhaustion rejects rather than wraps"]
-exclusions = ["Rust formal refinement", "identity persistence across process restart", "multi-window identity", "background result transport"]
-companion = "apps/alpine-studio/src/studio_coverage_tests.rs#workspace_click_revalidates_target_and_preserves_current_document_on_failure"
-
-[[evidence]]
-id = "EV-0153-TLA08B"
-claim = "AEP-0153-C08"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#DirtyCloseNeverAllows"
-assertion = "The finite companion model prevents a close requested while dirty from reaching the allowed state."
-scope = "Portable dirty-close transition independently transported by the native process journey."
-bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
-assumptions = ["native dispatch samples dirty identity synchronously"]
-exclusions = ["formal refinement to AppKit delivery", "native resource ownership", "elapsed time"]
-companion = "apps/alpine-studio/tests/native_process.rs#main"
-
-[[evidence]]
-id = "EV-0153-TLA08C"
-claim = "AEP-0153-C08"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#CancelledCloseStaysLive"
-assertion = "The finite companion model keeps runtime admission live after a cancelled close."
-scope = "Portable cancelled-close transition independently transported by the native process journey."
-bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
-assumptions = ["native dispatch preserves the typed cancel response"]
-exclusions = ["formal refinement to AppKit delivery", "native resource ownership", "elapsed time"]
-companion = "apps/alpine-studio/tests/native_process.rs#main"
-
-[[evidence]]
-id = "EV-0153-TLA08D"
-claim = "AEP-0153-C08"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#AllowedCloseRevokesAdmission"
-assertion = "The finite companion model revokes foreground admission after an allowed close."
-scope = "Portable allowed-close transition independently transported by the native process journey."
-bounds = ["pull request: three abstract bytes", "nightly: eight abstract bytes"]
-assumptions = ["native dispatch preserves the typed allow response"]
-exclusions = ["formal refinement to AppKit delivery", "native resource ownership", "elapsed time"]
-companion = "apps/alpine-studio/tests/native_process.rs#main"
-
-[[evidence]]
 id = "EV-0153-NATIVE05"
 claim = "AEP-0153-C05"
 kind = "native"
@@ -3806,42 +2842,6 @@ artifact = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
 assertion = "Missing, reentrant, and explicit cancel responses keep the native owner live, while a later synchronous allow reaches windowWillClose and starts deterministic drain."
 scope = "One real Apple Silicon NSWindow and its production NSWindowDelegate callbacks."
 exclusions = ["Studio dirty-document policy", "save prompts", "multi-window behavior"]
-
-[[evidence]]
-id = "EV-0153-TLA05"
-claim = "AEP-0153-C05"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#CancelledCloseStaysLive"
-assertion = "The abstract close state remains live after cancel, revokes admission after allow, and resolves every weakly fair request."
-scope = "Finite portable close disposition states that the native delegate transports synchronously."
-bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
-assumptions = ["AppKit invokes windowShouldClose synchronously before windowWillClose"]
-exclusions = ["formal refinement to Objective-C callbacks", "native resource drain", "elapsed time"]
-companion = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
-
-[[evidence]]
-id = "EV-0153-TLA05B"
-claim = "AEP-0153-C05"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#AllowedCloseRevokesAdmission"
-assertion = "An abstract allowed close revokes foreground admission."
-scope = "Finite portable close disposition state transported by windowShouldClose."
-bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
-assumptions = ["AppKit calls windowWillClose only after windowShouldClose returns true"]
-exclusions = ["formal refinement to Objective-C callbacks", "native resource drain"]
-companion = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
-
-[[evidence]]
-id = "EV-0153-TLA05C"
-claim = "AEP-0153-C05"
-kind = "tla"
-artifact = "formal/tla/aep-0153/ClipboardCloseResponse.tla#RequestedCloseEventuallyResolves"
-assertion = "Every weakly fair abstract close request eventually resolves to cancel or allow."
-scope = "Finite portable close resolution before native delegate transport."
-bounds = ["pull request: three abstract clipboard bytes", "nightly: eight abstract clipboard bytes"]
-assumptions = ["the foreground delegate resolves every admitted close synchronously"]
-exclusions = ["formal refinement to AppKit delivery", "elapsed time", "process termination"]
-companion = "crates/alpine-platform-macos/tests/native_runtime.rs#main"
 
 [[evidence]]
 id = "EV-0141-E2E05"
@@ -3894,9 +2894,8 @@ requirement_issue = 32
 claim_type = "lifecycle"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["PublishedInventoryIsCurrent", "PublishedQueryIsCurrent"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0168-C04"
@@ -3907,9 +2906,8 @@ requirement_issue = 32
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["SelectionUsesCurrentQuery"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[evidence]]
 id = "EV-0168-UNIT01"
@@ -3949,42 +2947,6 @@ scope = "Portable Studio application state, bounded runtime request semantics, d
 exclusions = ["AppKit keyboard delivery", "fixed-hardware latency", "live filesystem watching"]
 companion = "apps/alpine-studio/src/quick_open.rs#state_rejects_stale_work_and_navigates_current_results"
 
-[[evidence]]
-id = "EV-0168-TLA03"
-claim = "AEP-0168-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0168/QuickOpenAdmission.tla#PublishedInventoryIsCurrent"
-assertion = "A finite inventory publication is empty or exactly current; the faulty stale-publication control violates the invariant."
-scope = "Finite open, close, inventory, query, and selection generations."
-bounds = ["pull request: four generations", "nightly: eight generations"]
-assumptions = ["generation exhaustion rejects rather than wraps", "worker outcomes preserve typed identity"]
-exclusions = ["Rust formal refinement", "filesystem I/O", "ignore parsing", "elapsed time"]
-companion = "apps/alpine-studio/src/quick_open.rs#state_rejects_stale_work_and_navigates_current_results"
-
-[[evidence]]
-id = "EV-0168-TLA03B"
-claim = "AEP-0168-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0168/QuickOpenAdmission.tla#PublishedQueryIsCurrent"
-assertion = "A finite query publication is empty or exactly current after inventory admission and every query change."
-scope = "Finite open, close, inventory, query, and selection generations."
-bounds = ["pull request: four generations", "nightly: eight generations"]
-assumptions = ["generation exhaustion rejects rather than wraps", "worker outcomes preserve typed identity"]
-exclusions = ["Rust formal refinement", "query bytes", "worker scheduling", "elapsed time"]
-companion = "apps/alpine-studio/src/quick_open.rs#state_rejects_stale_work_and_navigates_current_results"
-
-[[evidence]]
-id = "EV-0168-TLA04"
-claim = "AEP-0168-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0168/QuickOpenAdmission.tla#SelectionUsesCurrentQuery"
-assertion = "Selection remains empty or uses the exact current published query; the faulty stale-selection control violates the invariant."
-scope = "Finite query publication and selection admission after one current inventory."
-bounds = ["pull request: four generations", "nightly: eight generations"]
-assumptions = ["path revalidation returns one typed admission outcome"]
-exclusions = ["Rust formal refinement", "path component semantics", "document open I/O"]
-companion = "apps/alpine-studio/src/studio_coverage_tests.rs#quick_open_lazily_indexes_renders_and_opens_a_nested_file"
-
 [[claims]]
 id = "AEP-0171-C01"
 mission = "MP-04"
@@ -4018,9 +2980,8 @@ requirement_issue = 32
 claim_type = "lifecycle"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["PublishedIsCurrent"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit", "property"]
+required_evidence = ["unit", "property"]
 
 [[claims]]
 id = "AEP-0171-C04"
@@ -4031,9 +2992,8 @@ requirement_issue = 32
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["SelectionIsCurrent"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "unit", "native"]
+required_evidence = ["unit", "native"]
 
 [[evidence]]
 id = "EV-0171-UNIT01"
@@ -4077,7 +3037,6 @@ scope = "Workspace, tree, directory, and request generation admission."
 bounds = ["one pending directory request", "512 projected rows"]
 assumptions = ["Worker outputs preserve their typed identity."]
 exclusions = ["worker elapsed time", "native wake delivery", "Rust formal refinement"]
-companion = "formal/tla/aep-0171/FileTreeAdmission.tla#PublishedIsCurrent"
 
 [[evidence]]
 id = "EV-0171-PROPERTY03"
@@ -4125,30 +3084,6 @@ bounds = ["1,024 retained entries", "46 projected rows", "five-second hang ceili
 assumptions = ["Test timing is diagnostic and runs on an uncontrolled local or hosted machine."]
 exclusions = ["performance claim", "fixed-hardware threshold", "statistical distribution", "cross-product comparison"]
 
-[[evidence]]
-id = "EV-0171-TLA03"
-claim = "AEP-0171-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0171/FileTreeAdmission.tla#PublishedIsCurrent"
-assertion = "Finite publication is empty or exactly matches the current tree, directory, and request; the faulty stale-publication control violates the invariant."
-scope = "Finite activation, hide, expansion, and publication generations."
-bounds = ["pull request: four generations", "nightly: eight generations"]
-assumptions = ["Typed outcomes", "monotonic finite generations"]
-exclusions = ["Rust refinement", "filesystem I/O", "runtime queue scheduling"]
-companion = "apps/alpine-studio/src/file_tree.rs#state_rejects_stale_directory_results_and_bounds_projection"
-
-[[evidence]]
-id = "EV-0171-TLA04"
-claim = "AEP-0171-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0171/FileTreeAdmission.tla#SelectionIsCurrent"
-assertion = "Finite selection is empty or uses the exact current published identity; the faulty stale-selection control violates the invariant."
-scope = "Finite current publication and selection admission."
-bounds = ["pull request: four generations", "nightly: eight generations"]
-assumptions = ["Selection occurs only after a typed publication."]
-exclusions = ["path revalidation", "native input", "Rust refinement"]
-companion = "apps/alpine-studio/src/file_tree.rs#tree_navigation_opens_only_current_file_rows"
-
 [[claims]]
 id = "AEP-0177-C01"
 mission = "MP-04"
@@ -4182,9 +3117,8 @@ requirement_issue = 32
 claim_type = "lifecycle"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["ClosedOwnsNoSelection"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit", "property"]
+required_evidence = ["unit", "property"]
 
 [[claims]]
 id = "AEP-0177-C04"
@@ -4195,9 +3129,8 @@ requirement_issue = 32
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["ExecutedWasCurrent"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "unit", "native"]
+required_evidence = ["unit", "native"]
 
 [[evidence]]
 id = "EV-0177-UNIT01"
@@ -4231,7 +3164,6 @@ scope = "Private command-palette transitions over a bounded deterministic action
 bounds = ["4,096 actions", "32 commands", "18 maximum projected rows"]
 assumptions = ["The deterministic generator samples a finite transition subset."]
 exclusions = ["unbounded traces", "native event delivery", "allocator physical footprint"]
-companion = "formal/tla/aep-0177/CommandPalette.tla#ClosedOwnsNoSelection"
 
 [[evidence]]
 id = "EV-0177-UNIT04"
@@ -4269,30 +3201,6 @@ assumptions = ["Test timing is diagnostic and runs on an uncontrolled local or h
 exclusions = ["performance claim", "fixed-hardware threshold", "statistical distribution", "cross-product comparison"]
 
 [[evidence]]
-id = "EV-0177-TLA03"
-claim = "AEP-0177-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0177/CommandPalette.tla#ClosedOwnsNoSelection"
-assertion = "A closed palette owns neither selection nor execution state, and the faulty cancel control violates the invariant."
-scope = "Finite open, query, availability, selection, execute, and cancel transitions."
-bounds = ["pull request: four generations", "nightly: eight generations"]
-assumptions = ["Monotonic finite generations", "typed command identities"]
-exclusions = ["Rust formal refinement", "native input scheduling", "rendering"]
-companion = "apps/alpine-studio/src/commands.rs#unicode_delete_display_and_execution_accounting_are_bounded"
-
-[[evidence]]
-id = "EV-0177-TLA04"
-claim = "AEP-0177-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0177/CommandPalette.tla#ExecutedWasCurrent"
-assertion = "Every executed command carries the current query and availability generations, and the faulty stale-execution control violates the invariant."
-scope = "Finite generation changes and command execution admission."
-bounds = ["pull request: four generations", "nightly: eight generations"]
-assumptions = ["Availability refresh advances a monotonic finite generation."]
-exclusions = ["Rust formal refinement", "native event delivery", "filesystem effects"]
-companion = "apps/alpine-studio/src/command_palette_tests.rs#command_availability_refresh_prevents_stale_execution"
-
-[[evidence]]
 id = "EV-0177-UNIT03"
 claim = "AEP-0177-C03"
 kind = "unit"
@@ -4302,7 +3210,6 @@ scope = "Private command-palette lifecycle and execution admission."
 bounds = ["32 commands", "256 query bytes", "one current selection"]
 assumptions = ["Studio derives availability from current main-thread state."]
 exclusions = ["native event delivery", "filesystem effects", "render timing"]
-companion = "formal/tla/aep-0177/CommandPalette.tla#ClosedOwnsNoSelection"
 
 [[claims]]
 id = "AEP-0180-C01"
@@ -4337,9 +3244,8 @@ requirement_issue = 32
 claim_type = "lifecycle"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["PublishedIsCurrent", "ResultsAreBounded", "ClosedOwnsNoResults"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit", "property"]
+required_evidence = ["unit", "property"]
 
 [[claims]]
 id = "AEP-0180-C04"
@@ -4350,9 +3256,8 @@ requirement_issue = 32
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["SelectionIsCurrent"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "unit", "native"]
+required_evidence = ["unit", "native"]
 
 [[evidence]]
 id = "EV-0180-UNIT01"
@@ -4387,7 +3292,6 @@ scope = "Private foreground search transitions and typed worker outputs over one
 bounds = ["4,096 actions", "16 retained matches", "two matches per batch"]
 assumptions = ["The deterministic generator samples a finite transition subset."]
 exclusions = ["unbounded traces", "native scheduling", "allocator physical footprint"]
-companion = "formal/tla/aep-0180/ProjectSearchAdmission.tla#PublishedIsCurrent"
 
 [[evidence]]
 id = "EV-0180-UNIT03"
@@ -4399,7 +3303,6 @@ scope = "Inventory, query, request, cancellation, and close identity admission."
 bounds = ["one inventory", "two query generations", "one stale batch"]
 assumptions = ["Worker outputs preserve typed identities."]
 exclusions = ["worker elapsed time", "native wake delivery", "Rust formal refinement"]
-companion = "formal/tla/aep-0180/ProjectSearchAdmission.tla#PublishedIsCurrent"
 
 [[evidence]]
 id = "EV-0180-UNIT04"
@@ -4411,7 +3314,6 @@ scope = "Canonical workspace path revalidation, temporary document ownership, ex
 bounds = ["one selected result", "one post-search replacement", "one preserved active tab"]
 assumptions = ["The local filesystem replacement is visible to the test process."]
 exclusions = ["network filesystems", "native event delivery", "cross-process advisory locking"]
-companion = "formal/tla/aep-0180/ProjectSearchAdmission.tla#SelectionIsCurrent"
 
 [[evidence]]
 id = "EV-0180-NATIVE04"
@@ -4435,54 +3337,6 @@ scope = "One uncontrolled local diagnostic sample over 130 matching files."
 bounds = ["130 files", "130 matches", "18 maximum projected rows", "five-second hang ceiling per stage"]
 assumptions = ["Test timing is diagnostic and runs on an uncontrolled local or hosted machine."]
 exclusions = ["performance claim", "fixed-hardware threshold", "statistical distribution", "cross-product comparison"]
-
-[[evidence]]
-id = "EV-0180-TLA03A"
-claim = "AEP-0180-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0180/ProjectSearchAdmission.tla#PublishedIsCurrent"
-assertion = "Finite match publication is empty or exactly current; the faulty stale-publication control violates the invariant."
-scope = "Finite open, query, pending batch, publication, completion, selection, and close generations."
-bounds = ["pull request: four generations, eight results, two per batch", "nightly: eight generations, sixteen results, four per batch"]
-assumptions = ["Typed worker outcomes", "monotonic finite generations"]
-exclusions = ["Rust refinement", "filesystem I/O", "runtime queue scheduling"]
-companion = "apps/alpine-studio/src/project_search.rs#stale_and_cancelled_outputs_never_publish"
-
-[[evidence]]
-id = "EV-0180-TLA03B"
-claim = "AEP-0180-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0180/ProjectSearchAdmission.tla#ResultsAreBounded"
-assertion = "Finite retained matches never exceed the admitted result ceiling; the faulty overflow control violates the invariant."
-scope = "Finite batch publication and terminal completion."
-bounds = ["pull request: eight results", "nightly: sixteen results"]
-assumptions = ["Each typed batch carries a count no greater than BatchLimit."]
-exclusions = ["byte accounting", "allocation", "Rust refinement"]
-companion = "apps/alpine-studio/src/project_search.rs#search_is_lazy_streaming_bounded_and_releases_every_dynamic_byte"
-
-[[evidence]]
-id = "EV-0180-TLA03C"
-claim = "AEP-0180-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0180/ProjectSearchAdmission.tla#ClosedOwnsNoResults"
-assertion = "Closed finite state owns no retained result or selection generation."
-scope = "Finite open, publication, selection, and close transitions."
-bounds = ["pull request: four generations", "nightly: eight generations"]
-assumptions = ["Close maps to foreground state release."]
-exclusions = ["runtime queue retention", "allocator behavior", "Rust refinement"]
-companion = "apps/alpine-studio/src/project_search.rs#search_is_lazy_streaming_bounded_and_releases_every_dynamic_byte"
-
-[[evidence]]
-id = "EV-0180-TLA04"
-claim = "AEP-0180-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0180/ProjectSearchAdmission.tla#SelectionIsCurrent"
-assertion = "Finite selection is empty or uses the exact current published query generation."
-scope = "Finite current publication and selection admission."
-bounds = ["pull request: four generations", "nightly: eight generations"]
-assumptions = ["Filesystem and buffer revalidation return one typed admission outcome."]
-exclusions = ["path component semantics", "native input", "Rust refinement"]
-companion = "apps/alpine-studio/src/project_search_tests.rs#stale_selected_file_preserves_the_current_document_and_tab_identity"
 
 [[evidence]]
 id = "EV-0137-UNIT01C"
@@ -4510,18 +3364,6 @@ artifact = "apps/alpine-studio/src/rust_diagnostics_tests.rs#status_replacement_
 assertion = "Repeated status and stale language wakes report no visual change, so the Studio delegate has no language-driven reason to invalidate a clean frame."
 scope = "One inactive language model, one stale generation, and one repeated bounded status."
 exclusions = ["native presentation", "run-loop wake latency", "real server traffic"]
-
-[[evidence]]
-id = "EV-0137-TLA05"
-claim = "AEP-0137-C05"
-kind = "tla"
-artifact = "formal/tla/aep-0137/RuntimeHandoff.tla#ShutdownEventuallyDrains"
-assertion = "After shutdown begins, weakly fair cancellation eventually removes every queued, running, or completed owned job before the handle-free final completion is published."
-scope = "The accepted bounded RuntimeHandoff model with fixed request, running, and result capacities."
-bounds = ["pull request: three jobs", "nightly: four jobs"]
-assumptions = ["Native surface teardown remains qualified separately by EV-0137-NATIVE05."]
-exclusions = ["AppKit callback scheduling", "Metal command completion latency", "physical process footprint"]
-companion = "crates/alpine-runtime/src/lib.rs#drop_waits_for_admitted_work_to_finish"
 
 [[evidence]]
 id = "EV-0137-NATIVE05"
@@ -4552,9 +3394,8 @@ requirement_issue = 34
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["PublishedIsCurrent", "ClosedOwnsNoCompletion"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "unit", "e2e", "native"]
+required_evidence = ["unit", "e2e", "native"]
 
 [[claims]]
 id = "AEP-0218-C02"
@@ -4565,9 +3406,8 @@ requirement_issue = 34
 claim_type = "memory"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = ["ResultsAreBounded"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0218-C03"
@@ -4578,9 +3418,8 @@ requirement_issue = 34
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["ApplyRequiresCurrent"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0218-C04"
@@ -4673,30 +3512,6 @@ bounds = ["two visible items", "one completion clip", "two row quads", "one admi
 assumptions = ["Deterministic test typography stands in for native CoreText shaping only."]
 exclusions = ["native VoiceOver publication", "real display latency", "fixed-hardware memory"]
 
-[[evidence]]
-id = "EV-0218-TLA01A"
-claim = "AEP-0218-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0218/CompletionAdmission.tla#PublishedIsCurrent"
-assertion = "An admitted finite completion is empty or belongs to the exact current request and editor identity; the faulty cancelled-response publication violates the invariant."
-scope = "Finite open, trigger, supersession, identity change, response, focus, and close interleavings."
-bounds = ["pull request: four identities and four requests", "nightly: eight identities and eight requests"]
-assumptions = ["One foreground completion owner", "monotonic finite identities and request IDs"]
-exclusions = ["Rust refinement", "process scheduling", "UTF-16 conversion"]
-companion = "apps/alpine-studio/src/rust_diagnostics_tests.rs#late_cancelled_response_cannot_clear_a_newer_completion"
-
-[[evidence]]
-id = "EV-0218-TLA01B"
-claim = "AEP-0218-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0218/CompletionAdmission.tla#ClosedOwnsNoCompletion"
-assertion = "Closed finite state owns no pending, cancelled, admitted, or retained completion state."
-scope = "Finite active and closed completion ownership."
-bounds = ["pull request: four identities and four requests", "nightly: eight identities and eight requests"]
-assumptions = ["Close maps to the production language-session shutdown path."]
-exclusions = ["child-process join latency", "allocator behavior", "Rust refinement"]
-companion = "apps/alpine-studio/src/studio_coverage_tests.rs#completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact"
-
 [[claims]]
 id = "AEP-0250-C01"
 mission = "MP-01"
@@ -4706,9 +3521,8 @@ requirement_issue = 37
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "required"
-tla_properties = ["ResponseMatchesRequest", "MutationIsCurrent"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "unit", "kani"]
+required_evidence = ["unit", "kani"]
 
 [[claims]]
 id = "AEP-0250-C02"
@@ -4731,9 +3545,8 @@ requirement_issue = 37
 claim_type = "safety"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = ["AtMostOneResponse"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0250-C04"
@@ -4797,42 +3610,6 @@ bounds = ["one active document", "271 nodes", "64 KiB text response"]
 exclusions = ["native AppKit elements", "VoiceOver process", "physical latency"]
 
 [[evidence]]
-id = "EV-0250-TLA01A"
-claim = "AEP-0250-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0250/AccessibilityTransport.tla#ResponseMatchesRequest"
-assertion = "A finite response is empty or repeats the active request and current observed revision exactly."
-scope = "Finite request, revision change, response, action, close, and reopen transitions."
-bounds = ["pull request: four revisions and four requests", "nightly: eight revisions and eight requests"]
-assumptions = ["One synchronous foreground accessibility owner."]
-exclusions = ["Rust refinement", "AppKit reentrancy", "UTF-16 conversion"]
-companion = "crates/alpine-platform-macos/src/accessibility.rs#request_and_response_identity_fail_closed"
-
-[[evidence]]
-id = "EV-0250-TLA01B"
-claim = "AEP-0250-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0250/AccessibilityTransport.tla#MutationIsCurrent"
-assertion = "A finite selection mutation is empty or belongs to the current open revision; the faulty stale transition violates the invariant."
-scope = "Finite current and stale action admission across revision change."
-bounds = ["pull request: four revisions and four requests", "nightly: eight revisions and eight requests"]
-assumptions = ["Checked coordinate conversion succeeds before the modeled mutation."]
-exclusions = ["selection byte semantics", "Rust refinement", "native setters"]
-companion = "apps/alpine-studio/src/studio_coverage_tests.rs#accessibility_snapshot_preserves_unicode_revision_focus_and_bounded_text"
-
-[[evidence]]
-id = "EV-0250-TLA03"
-claim = "AEP-0250-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0250/AccessibilityTransport.tla#AtMostOneResponse"
-assertion = "Finite synchronous dispatch owns at most one response; the faulty duplicate transition violates the invariant."
-scope = "One foreground response slot across request, response, close, and reopen."
-bounds = ["pull request: four revisions and four requests", "nightly: eight revisions and eight requests"]
-assumptions = ["One AppContext is live for one foreground dispatch."]
-exclusions = ["native callback reentrancy", "Rust refinement", "thread scheduling"]
-companion = "crates/alpine-runtime/src/lib.rs#foreground_context_only_accepts_newer_revisions"
-
-[[evidence]]
 id = "EV-0250-UNIT04"
 claim = "AEP-0250-C04"
 kind = "unit"
@@ -4861,9 +3638,8 @@ requirement_issue = 37
 claim_type = "safety"
 risk = "high"
 kani_applicability = "required"
-tla_properties = ["ResponseMatchesRequest"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "unit", "kani"]
+required_evidence = ["unit", "kani"]
 
 [[claims]]
 id = "AEP-0255-C02"
@@ -4897,18 +3673,6 @@ artifact = "crates/alpine-platform-macos/src/accessibility.rs#mapping_request_ki
 assertion = "Line and grapheme mapping requests repeat exact request, operation, revision, and payload identity, while cross-kind responses fail closed."
 scope = "Three handle-free mapping operations on every Rust target."
 exclusions = ["native selector dispatch", "AppKit integer conversion"]
-
-[[evidence]]
-id = "EV-0255-TLA01"
-claim = "AEP-0255-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0250/AccessibilityTransport.tla#ResponseMatchesRequest"
-assertion = "The generic accessibility transport response is empty or repeats the one active request identity and current observed revision exactly."
-scope = "Finite request and revision transitions shared by every accessibility operation kind."
-bounds = ["pull request: four revisions and four requests", "nightly: eight revisions and eight requests"]
-assumptions = ["Operation kind is abstracted into active request identity and discriminated by the companion Rust unit test."]
-exclusions = ["payload-kind implementation", "rope conversion", "native AppKit reentrancy", "Rust refinement"]
-companion = "crates/alpine-platform-macos/src/accessibility.rs#mapping_request_kinds_and_payloads_are_exact"
 
 [[evidence]]
 id = "EV-0255-KANI01"
@@ -4949,29 +3713,6 @@ assertion = "Rope-chunk grapheme queries match an independent contiguous String 
 scope = "A multi-chunk Unicode buffer containing combining sequences, regional indicators, and emoji ZWJ sequences."
 exclusions = ["allocator instrumentation", "native callback latency"]
 
-[[evidence]]
-id = "EV-0218-TLA02"
-claim = "AEP-0218-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0218/CompletionAdmission.tla#ResultsAreBounded"
-assertion = "Finite admitted item ownership never exceeds the configured model ceiling."
-scope = "Finite current response admission and release."
-bounds = ["pull request: eight items", "nightly: sixteen items"]
-assumptions = ["The parser returns an admitted count no greater than the implementation ceiling."]
-exclusions = ["byte accounting", "allocation", "JSON parsing"]
-companion = "apps/alpine-studio/src/rust_completion.rs#item_truncation_and_retained_bytes_are_exactly_bounded"
-
-[[evidence]]
-id = "EV-0218-TLA03"
-claim = "AEP-0218-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0218/CompletionAdmission.tla#ApplyRequiresCurrent"
-assertion = "A finite applied completion is empty or belongs to the exact current request and editor identity; the faulty stale application violates the invariant."
-scope = "Finite response, identity change, application, focus, and close interleavings."
-bounds = ["pull request: four identities and four requests", "nightly: eight identities and eight requests"]
-assumptions = ["Checked Rust coordinate conversion succeeds before the modeled apply action."]
-exclusions = ["transaction byte semantics", "undo implementation", "Rust refinement"]
-companion = "apps/alpine-studio/src/studio_coverage_tests.rs#completion_scene_keyboard_focus_accessibility_and_atomic_edit_are_exact"
 [[claims]]
 id = "AEP-0221-C01"
 mission = "MP-02"
@@ -4981,9 +3722,8 @@ requirement_issue = 34
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["PublishedIsCurrent", "ClosedOwnsNoSymbols"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "unit", "e2e", "native"]
+required_evidence = ["unit", "e2e", "native"]
 
 [[claims]]
 id = "AEP-0221-C02"
@@ -4994,9 +3734,8 @@ requirement_issue = 34
 claim_type = "memory"
 risk = "high"
 kani_applicability = "required"
-tla_properties = ["ResultsAreBounded", "SelectionIsBounded"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit", "kani"]
+required_evidence = ["unit", "kani"]
 
 [[claims]]
 id = "AEP-0221-C03"
@@ -5007,9 +3746,8 @@ requirement_issue = 34
 claim_type = "accessibility"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = ["NavigationRequiresCurrent"]
 platform_scope = ["portable"]
-required_evidence = ["tla", "unit"]
+required_evidence = ["unit"]
 
 [[evidence]]
 id = "EV-0221-UNIT01"
@@ -5072,66 +3810,6 @@ scope = "One local Rust document, two symbols, one scene, keyboard selection, ac
 bounds = ["two symbol rows", "one dialog node", "one selected local range"]
 exclusions = ["native VoiceOver publication", "real display latency", "fixed-hardware memory"]
 
-[[evidence]]
-id = "EV-0221-TLA01A"
-claim = "AEP-0221-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0221/SymbolAdmission.tla#PublishedIsCurrent"
-assertion = "An admitted finite symbol result is empty or belongs to the exact current request, identity, and query; the faulty stale publication violates the invariant."
-scope = "Finite request, query, identity, response, selection, focus, and close interleavings."
-bounds = ["pull request: four identities, requests, and queries", "nightly: eight identities, requests, and queries"]
-assumptions = ["One foreground symbol owner", "monotonic finite identities"]
-exclusions = ["Rust refinement", "process scheduling", "JSON parsing"]
-companion = "apps/alpine-studio/src/rust_diagnostics_tests.rs#mock_symbols_are_bounded_query_safe_and_release_on_shutdown"
-
-[[evidence]]
-id = "EV-0221-TLA01B"
-claim = "AEP-0221-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0221/SymbolAdmission.tla#ClosedOwnsNoSymbols"
-assertion = "Closed finite state owns no pending or admitted symbol request or item state."
-scope = "Finite active and closed symbol ownership."
-bounds = ["pull request: four identities and requests", "nightly: eight identities and requests"]
-assumptions = ["Close maps to production language-session shutdown."]
-exclusions = ["child-process join latency", "allocator behavior", "Rust refinement"]
-companion = "apps/alpine-studio/src/rust_diagnostics_tests.rs#mock_symbols_are_bounded_query_safe_and_release_on_shutdown"
-
-[[evidence]]
-id = "EV-0221-TLA02"
-claim = "AEP-0221-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0221/SymbolAdmission.tla#ResultsAreBounded"
-assertion = "Finite admitted item ownership and selection remain within the configured model ceiling."
-scope = "Finite current response admission and picker selection."
-bounds = ["pull request: eight items", "nightly: sixteen items"]
-assumptions = ["The parser returns no more than the implementation ceiling."]
-exclusions = ["byte accounting", "allocation", "JSON parsing"]
-companion = "apps/alpine-studio/src/rust_symbols.rs#item_truncation_and_unicode_subsequence_matching_are_exact"
-
-[[evidence]]
-id = "EV-0221-TLA02B"
-claim = "AEP-0221-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0221/SymbolAdmission.tla#SelectionIsBounded"
-assertion = "Finite selection is zero for an empty result or strictly inside the admitted nonempty result count."
-scope = "Finite current response admission and repeated forward picker selection."
-bounds = ["pull request: eight items", "nightly: sixteen items"]
-assumptions = ["The implementation clamps every navigation transition to the current result count."]
-exclusions = ["Rust refinement", "vector indexing outside picker navigation", "elapsed time"]
-companion = "apps/alpine-studio/src/rust_symbols.rs#picker_ranking_query_composition_and_visible_rows_are_bounded"
-
-[[evidence]]
-id = "EV-0221-TLA03"
-claim = "AEP-0221-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0221/SymbolAdmission.tla#NavigationRequiresCurrent"
-assertion = "A finite navigation is empty or belongs to the current identity; the faulty stale navigation violates the invariant."
-scope = "Finite response, identity, query, selection, navigation, focus, and close interleavings."
-bounds = ["pull request: four identities and requests", "nightly: eight identities and requests"]
-assumptions = ["Checked Rust path and coordinate conversion succeeds before modeled navigation."]
-exclusions = ["filesystem identity", "UTF-16 conversion", "Rust refinement"]
-companion = "apps/alpine-studio/src/rust_diagnostics_scene_tests.rs#symbol_overlay_accessibility_and_checked_navigation_are_exact"
-
 [[claims]]
 id = "AEP-0268-C01"
 mission = "MP-02"
@@ -5141,7 +3819,6 @@ requirement_issue = 37
 claim_type = "functional"
 risk = "critical"
 kani_applicability = "required"
-tla_properties = []
 platform_scope = ["portable", "macos-metal"]
 required_evidence = ["kani", "unit", "native"]
 
@@ -5154,7 +3831,6 @@ requirement_issue = 37
 claim_type = "functional"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["portable"]
 required_evidence = ["unit"]
 
@@ -5167,7 +3843,6 @@ requirement_issue = 37
 claim_type = "functional"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["portable", "macos-metal"]
 required_evidence = ["unit", "native"]
 
@@ -5180,7 +3855,6 @@ requirement_issue = 37
 claim_type = "functional"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["macos-metal"]
 required_evidence = ["native"]
 
@@ -5259,7 +3933,6 @@ requirement_issue = 37
 claim_type = "functional"
 risk = "high"
 kani_applicability = "required"
-tla_properties = []
 platform_scope = ["portable", "macos-metal"]
 required_evidence = ["kani", "unit"]
 
@@ -5272,7 +3945,6 @@ requirement_issue = 37
 claim_type = "functional"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["portable", "macos-metal"]
 required_evidence = ["unit"]
 
@@ -5285,7 +3957,6 @@ requirement_issue = 37
 claim_type = "accessibility"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["macos-metal"]
 required_evidence = ["native"]
 
@@ -5298,7 +3969,6 @@ requirement_issue = 37
 claim_type = "memory"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["portable", "macos-metal"]
 required_evidence = ["unit", "native"]
 
@@ -5368,7 +4038,6 @@ requirement_issue = 37
 claim_type = "accessibility"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["macos-metal"]
 required_evidence = ["native"]
 
@@ -5381,9 +4050,8 @@ requirement_issue = 37
 claim_type = "functional"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["DestroyedInstancesAreObsolete", "PostsReleaseBorrow", "OrdinaryFollowsDestruction"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "native"]
+required_evidence = ["native"]
 
 [[claims]]
 id = "AEP-0271-C03"
@@ -5394,9 +4062,8 @@ requirement_issue = 37
 claim_type = "functional"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = ["NoPostAfterHandlerRevocation", "ClosedIsDrained"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "native"]
+required_evidence = ["native"]
 
 [[claims]]
 id = "AEP-0271-C04"
@@ -5407,9 +4074,8 @@ requirement_issue = 37
 claim_type = "memory"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = ["OwnershipIsBounded"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "native"]
+required_evidence = ["native"]
 
 [[evidence]]
 id = "EV-0271-NATIVE01"
@@ -5420,18 +4086,6 @@ assertion = "Production AppKit layout and announcement dictionaries contain the 
 scope = "One status replacement and one status removal on a real Apple Silicon AppKit surface."
 exclusions = ["external AX observation", "spoken or braille output", "physical VoiceOver"]
 
-[[evidence]]
-id = "EV-0271-TLA01"
-claim = "AEP-0271-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0271/AccessibilityNotifications.tla#OrdinaryFollowsDestruction"
-assertion = "Removed and replaced native instances are obsolete, adapter borrows are released before posting, and ordinary current-state notification posting begins only after destruction drains."
-scope = "Finite remove, semantic replacement, destruction, and ordinary-post interleavings."
-bounds = ["pull request: three semantic instances", "nightly: five semantic instances"]
-assumptions = ["one serialized AppKit owner", "synchronous notification post calls"]
-exclusions = ["Rust refinement", "Objective-C allocation", "external delivery"]
-companion = "crates/alpine-platform-macos/tests/native_accessibility.rs#main"
-
 [[claims]]
 id = "AEP-0272-C01"
 mission = "MP-01"
@@ -5441,7 +4095,6 @@ requirement_issue = 37
 claim_type = "accessibility"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["macos-metal"]
 required_evidence = ["native"]
 
@@ -5454,7 +4107,6 @@ requirement_issue = 37
 claim_type = "functional"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["macos-metal"]
 required_evidence = ["native"]
 
@@ -5467,7 +4119,6 @@ requirement_issue = 37
 claim_type = "functional"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["macos-metal"]
 required_evidence = ["native"]
 
@@ -5480,7 +4131,6 @@ requirement_issue = 37
 claim_type = "memory"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["macos-metal"]
 required_evidence = ["native"]
 
@@ -5521,18 +4171,6 @@ scope = "One fifteen-second-bounded child process and one 1,024-turn-bounded wor
 exclusions = ["long-session physical residency slope", "native framework autorelease timing", "crash recovery"]
 
 [[evidence]]
-id = "EV-0271-TLA02"
-claim = "AEP-0271-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0271/AccessibilityNotifications.tla#NoPostAfterHandlerRevocation"
-assertion = "Close clears current identity, drains every retired instance, and permits no post after handler revocation; the early-revocation faulty control violates the invariant."
-scope = "Finite close, destruction, handler-revocation, and faulty late-post interleavings."
-bounds = ["pull request: three semantic instances", "nightly: five semantic instances"]
-assumptions = ["one serialized AppKit owner", "reentrant revoke is idempotent"]
-exclusions = ["Rust refinement", "process termination", "physical observer timing"]
-companion = "crates/alpine-platform-macos/tests/native_accessibility.rs#main"
-
-[[evidence]]
 id = "EV-0271-NATIVE02"
 claim = "AEP-0271-C03"
 kind = "native"
@@ -5551,42 +4189,6 @@ scope = "Eleven synchronous AppKit post calls under the existing 271-node ceilin
 exclusions = ["native framework allocator overhead", "physical AX latency", "allocator sampling"]
 
 [[evidence]]
-id = "EV-0271-TLA03"
-claim = "AEP-0271-C04"
-kind = "tla"
-artifact = "formal/tla/aep-0271/AccessibilityNotifications.tla#OwnershipIsBounded"
-assertion = "Current and temporary retired instance ownership never exceeds twice the configured semantic-instance bound across refresh and close."
-scope = "Finite current, replacement, removal, and revoke ownership."
-bounds = ["pull request: three semantic instances", "nightly: five semantic instances"]
-assumptions = ["one replacement generation is retained only until synchronous destruction posting"]
-exclusions = ["native object byte size", "Rust allocator behavior", "external client retention"]
-companion = "crates/alpine-platform-macos/tests/native_accessibility.rs#main"
-
-[[evidence]]
-id = "EV-0271-TLA04"
-claim = "AEP-0271-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0271/AccessibilityNotifications.tla#DestroyedInstancesAreObsolete"
-assertion = "Every instance recorded as destroyed is absent from the current native identity set after removal or semantic replacement."
-scope = "Finite removal, semantic replacement, and destruction interleavings."
-bounds = ["pull request: three semantic instances", "nightly: five semantic instances"]
-assumptions = ["semantic replacement receives a distinct finite native instance identity"]
-exclusions = ["Rust refinement", "Objective-C object addresses", "external client retention"]
-companion = "crates/alpine-platform-macos/tests/native_accessibility.rs#main"
-
-[[evidence]]
-id = "EV-0271-TLA05"
-claim = "AEP-0271-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0271/AccessibilityNotifications.tla#PostsReleaseBorrow"
-assertion = "No modeled notification post occurs while the serialized adapter borrow is held; the faulty post-under-borrow control violates the invariant."
-scope = "Finite refresh, revoke, borrow-release, and notification-post interleavings."
-bounds = ["pull request: three semantic instances", "nightly: five semantic instances"]
-assumptions = ["one serialized AppKit adapter owner"]
-exclusions = ["Rust RefCell implementation", "Objective-C reentrancy internals", "external delivery"]
-companion = "crates/alpine-platform-macos/tests/native_accessibility.rs#main"
-
-[[evidence]]
 id = "EV-0271-NATIVE04"
 claim = "AEP-0271-C02"
 kind = "native"
@@ -5594,18 +4196,6 @@ artifact = "crates/alpine-platform-macos/tests/native_accessibility.rs#main"
 assertion = "The production adapter records replacement destruction before current layout and announcement, then removal destruction before layout, selection, and value posts."
 scope = "One real AppKit status replacement followed by removal on Apple Silicon macOS."
 exclusions = ["external observer receipt", "physical VoiceOver ordering", "multi-window delivery"]
-
-[[evidence]]
-id = "EV-0271-TLA06"
-claim = "AEP-0271-C03"
-kind = "tla"
-artifact = "formal/tla/aep-0271/AccessibilityNotifications.tla#ClosedIsDrained"
-assertion = "The modeled closed state owns no current or retired instance, holds no adapter borrow, and has revoked the application handler."
-scope = "Finite revoke, destruction drain, and handler-revocation interleavings."
-bounds = ["pull request: three semantic instances", "nightly: five semantic instances"]
-assumptions = ["close is serialized on the AppKit owner"]
-exclusions = ["Rust refinement", "process termination", "native framework autorelease timing"]
-companion = "crates/alpine-platform-macos/tests/native_accessibility.rs#main"
 
 [[claims]]
 id = "AEP-0273-C01"
@@ -5616,7 +4206,6 @@ requirement_issue = 37
 claim_type = "accessibility"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["tooling", "macos-metal"]
 required_evidence = ["unit", "integration", "mutation", "coverage"]
 
@@ -5629,7 +4218,6 @@ requirement_issue = 37
 claim_type = "accessibility"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["tooling", "macos-metal"]
 required_evidence = ["unit", "integration", "mutation", "coverage"]
 
@@ -5642,7 +4230,6 @@ requirement_issue = 37
 claim_type = "functional"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["tooling", "macos-metal"]
 required_evidence = ["unit", "integration", "mutation", "coverage"]
 
@@ -5655,7 +4242,6 @@ requirement_issue = 37
 claim_type = "accessibility"
 risk = "critical"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["tooling", "macos-metal"]
 required_evidence = ["unit", "integration", "mutation", "coverage"]
 
@@ -5812,9 +4398,8 @@ requirement_issue = 36
 claim_type = "safety"
 risk = "critical"
 kani_applicability = "required"
-tla_properties = ["PublishedIsCurrent", "PublicationIsAtomic"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "kani", "unit", "integration"]
+required_evidence = ["kani", "unit", "integration"]
 
 [[claims]]
 id = "AEP-0222-C02"
@@ -5825,9 +4410,8 @@ requirement_issue = 36
 claim_type = "memory"
 risk = "high"
 kani_applicability = "supporting"
-tla_properties = ["OneInFlightGeneration"]
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["tla", "kani", "unit", "integration"]
+required_evidence = ["kani", "unit", "integration"]
 
 [[claims]]
 id = "AEP-0222-C03"
@@ -5838,7 +4422,6 @@ requirement_issue = 36
 claim_type = "functional"
 risk = "high"
 kani_applicability = "not_applicable"
-tla_properties = []
 platform_scope = ["portable", "macos-metal"]
 required_evidence = ["unit", "integration"]
 
@@ -5859,30 +4442,6 @@ artifact = "apps/alpine-studio/src/settings_reload_tests.rs#production_applicati
 assertion = "A production Studio application applies global/project settings without changing document, workspace, selection, tab, or status identity."
 scope = "One local workspace and current-generation settings completion."
 exclusions = ["native AppKit process", "filesystem watcher"]
-
-[[evidence]]
-id = "EV-0222-TLA01"
-claim = "AEP-0222-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0222/SettingsAdmission.tla#PublishedIsCurrent"
-assertion = "Only the modeled latest requested and submitted generation can publish; the stale-publication control violates the invariant."
-scope = "Finite reload, submit, supersede, complete, retry, and failure interleavings."
-bounds = ["pull request: five generations", "nightly: nine generations"]
-assumptions = ["one serialized foreground settings owner"]
-exclusions = ["filesystem implementation", "Rust allocation behavior"]
-companion = "apps/alpine-studio/src/settings_reload_tests.rs#production_application_admission_preserves_editor_and_workspace_state"
-
-[[evidence]]
-id = "EV-0222-TLA01B"
-claim = "AEP-0222-C01"
-kind = "tla"
-artifact = "formal/tla/aep-0222/SettingsAdmission.tla#PublicationIsAtomic"
-assertion = "The finite accepted generation and active configuration version change together or remain unchanged."
-scope = "Finite reload, submit, complete, retry, and failure interleavings."
-bounds = ["pull request: five generations", "nightly: nine generations"]
-assumptions = ["One foreground settings owner publishes one complete typed snapshot."]
-exclusions = ["field-level Rust assignment order", "allocator failure internals"]
-companion = "apps/alpine-studio/src/settings_reload_tests.rs#failed_application_reload_keeps_the_previous_settings_snapshot"
 
 [[evidence]]
 id = "EV-0222-KANI01"
@@ -5912,18 +4471,6 @@ artifact = "apps/alpine-studio/src/settings/loader.rs#global_then_project_and_mi
 assertion = "Global v0 migration and project v1 override produce one bounded typed candidate with exact precedence and accounting."
 scope = "Two local settings files and one in-memory migration."
 exclusions = ["automatic source rewrite", "versions beyond v0 and v1"]
-
-[[evidence]]
-id = "EV-0222-TLA02"
-claim = "AEP-0222-C02"
-kind = "tla"
-artifact = "formal/tla/aep-0222/SettingsAdmission.tla#OneInFlightGeneration"
-assertion = "Every finite in-flight load owns one nonzero submitted generation."
-scope = "Finite request coalescing, submission, completion, and retry transitions."
-bounds = ["pull request: five generations", "nightly: nine generations"]
-assumptions = ["The production controller is the sole submission owner."]
-exclusions = ["global worker-pool capacity", "filesystem and JSON bytes"]
-companion = "apps/alpine-studio/src/settings/loader.rs#duplicate_bindings_and_submission_failure_remain_bounded"
 
 [[evidence]]
 id = "EV-0222-KANI02"

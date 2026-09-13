@@ -460,8 +460,8 @@ physical extent agree, computes compact and 256-byte-aligned readback layouts,
 clips and lowers all current solid quads in painter order, and accounts for
 omitted primitives and upload bytes. Its deterministic CPU oracle samples pixel
 centers and evaluates linear source-over composition into premultiplied BGRA8.
-Its single-frame lifecycle is an executable transition system corresponding to
-AEP 0025's finite TLA+ model. On Apple Silicon macOS, `MetalBackend::new`
+Its single-frame lifecycle is an executable transition system tested against
+state-transition and terminal-failure controls. On Apple Silicon macOS, `MetalBackend::new`
 creates the default device and one command queue, requires Metal 3 and unified
 memory, loads an embedded offline library, resolves fixed vertex and fragment
 entry points, and creates two premultiplied-source-over pipelines. The existing
