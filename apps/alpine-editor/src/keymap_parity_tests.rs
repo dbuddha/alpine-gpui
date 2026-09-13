@@ -8,6 +8,14 @@ use crate::settings::{
 use crate::tests::TestTextSystem;
 
 #[test]
+fn unedited_buffer_can_stamp_an_lsp_request() -> Result<(), Box<dyn std::error::Error>> {
+    let app = EditorApp::new(TestTextSystem)?;
+    assert!(app.runtime_document_revision >= 1);
+    assert!(app.language_identity().request_stamp().is_some());
+    Ok(())
+}
+
+#[test]
 fn ctrl_g_opens_go_to_line_and_return_jumps() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = EditorApp::new(TestTextSystem)?;
     let control = Modifiers::from_bits(Modifiers::CONTROL);

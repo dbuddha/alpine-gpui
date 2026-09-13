@@ -1249,7 +1249,7 @@ fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeEr
             alpine_platform_macos::SurfaceOperation::Application,
         ))?;
     assert!(changed.scene().glyphs().len() > first.scene().glyphs().len());
-    assert_eq!(application.snapshot().document_revision().get(), 1);
+    assert_eq!(application.snapshot().document_revision().get(), 2);
     assert!(
         application
             .dispatch(&SurfaceEvent::Wake {
@@ -1352,7 +1352,7 @@ fn runtime_find_worker_admits_current_results_and_schedules_replacement()
     runtime
         .dispatch(&key(KEY_RETURN, command))
         .ok_or("replace current frame")?;
-    assert_eq!(runtime.snapshot().document_revision().get(), 1);
+    assert_eq!(runtime.snapshot().document_revision().get(), 2);
 
     let root = TestWorkspace::new()?;
     root.write("alpha.rs", "alpha")?;
@@ -6089,7 +6089,7 @@ fn assert_single_accessibility_focus(snapshot: &AccessibilitySnapshot) {
 fn assert_initial_accessibility_snapshot(
     snapshot: &AccessibilitySnapshot,
 ) -> Result<(), AccessibilityError> {
-    assert_eq!(snapshot.revision().document(), 0);
+    assert_eq!(snapshot.revision().document(), 1);
     assert_eq!(snapshot.revision().buffer(), 0);
     assert_eq!(snapshot.text_len_utf16(), 4);
     assert_eq!(snapshot.line_count(), 1);
