@@ -3,6 +3,7 @@
 use std::{
     env,
     error::Error,
+    ffi::OsString,
     fmt,
     ops::Range,
     path::{Path, PathBuf},
@@ -668,6 +669,7 @@ impl fmt::Display for RustDiagnosticsError {
 
 impl Error for RustDiagnosticsError {}
 
+#[derive(Default)]
 pub(crate) struct RustDiagnostics {
     server_path: Option<PathBuf>,
     target: Option<Target>,
@@ -711,52 +713,65 @@ pub(crate) struct RustDiagnostics {
     force_continuation_once: bool,
 }
 
-impl Default for RustDiagnostics {
-    fn default() -> Self {
-        Self {
-            server_path: env::var_os("ALPINE_RUST_ANALYZER").map(PathBuf::from),
-            target: None,
-            session: None,
-            next_generation: 0,
-            status: None,
-            peak_diagnostic_items: 0,
-            peak_diagnostic_bytes: 0,
-            diagnostic_publications: 0,
-            peak_completion_items: 0,
-            peak_completion_bytes: 0,
-            completion_requests: 0,
-            completion_cancellations: 0,
-            stale_completions: 0,
-            completion_truncations: 0,
-            peak_hover_bytes: 0,
-            peak_location_items: 0,
-            peak_location_bytes: 0,
-            navigation_requests: 0,
-            navigation_cancellations: 0,
-            stale_navigation: 0,
-            navigation_truncations: 0,
-            peak_symbol_items: 0,
-            peak_symbol_bytes: 0,
-            symbol_requests: 0,
-            symbol_cancellations: 0,
-            stale_symbols: 0,
-            symbol_truncations: 0,
-            workspace_edit_preparation: None,
-            workspace_edit_requests: 0,
-            workspace_edit_cancellations: 0,
-            stale_workspace_edits: 0,
-            workspace_edit_wire_bytes: 0,
-            peak_workspace_edit_wire_bytes: 0,
-            polls: 0,
-            stale_wakes: 0,
-            stale_diagnostics: 0,
-            restarts: 0,
-            document_switches: 0,
-            #[cfg(test)]
-            force_continuation_once: false,
-        }
+/// Locates rust-analyzer without requiring the user to configure anything.
+///
+/// `ALPINE_RUST_ANALYZER` still wins so qualification runs can pin an exact
+/// binary, but an ordinary launch from the Dock has no environment to speak of:
+/// `PATH` is the bare `LaunchServices` default, which is why the rustup and
+/// Homebrew locations are probed directly rather than shelling out to `which`.
+/// Builds the model with whatever server this machine actually has.
+///
+/// Kept off `Default` so tests describe their own server state instead of
+/// inheriting the developer's installation.
+pub(crate) fn discovered() -> RustDiagnostics {
+    RustDiagnostics {
+        server_path: discover_server_from(
+            env::var_os("ALPINE_RUST_ANALYZER"),
+            env::var_os("PATH"),
+            env::var_os("HOME"),
+        ),
+        ..RustDiagnostics::default()
     }
 }
+
+/// The discovery order, separated from the environment so it can be tested.
+fn discover_server_from(
+    pinned: Option<OsString>,
+    path: Option<OsString>,
+    home: Option<OsString>,
+) -> Option<PathBuf> {
+    if let Some(pinned) = pinned {
+        return Some(PathBuf::from(pinned));
+    }
+    if let Some(path) = path
+        && let Some(found) = env::split_paths(&path)
+            .map(|directory| directory.join(SERVER_NAME))
+            .find(|candidate| is_executable_file(candidate))
+    {
+        return Some(found);
+    }
+    let rustup = home
+        .map(PathBuf::from)
+        .map(|home| home.join(".cargo").join("bin").join(SERVER_NAME));
+    [
+        rustup,
+        Some(PathBuf::from("/opt/homebrew/bin").join(SERVER_NAME)),
+        Some(PathBuf::from("/usr/local/bin").join(SERVER_NAME)),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|candidate| is_executable_file(candidate))
+}
+
+/// Reports whether the path is a regular file with an execute bit set.
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|metadata| {
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    })
+}
+
+const SERVER_NAME: &str = "rust-analyzer";
 
 impl RustDiagnostics {
     pub(crate) fn sync<F>(
@@ -2953,6 +2968,76 @@ fn workspace_edit_wire(value: ResponseValue<'_>) -> Result<WorkspaceEditWire, Wo
     match value {
         ResponseValue::Result(result) => WorkspaceEditWire::capture(result),
         ResponseValue::Error(_) => Err(WorkspaceEditError::Malformed),
+    }
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::{SERVER_NAME, discover_server_from};
+    use std::ffi::OsString;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    /// Writes an executable stub named like the server and returns its
+    /// directory, so discovery has something real to find.
+    fn server_directory(label: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!("alpine-discovery-{label}"));
+        let _ = fs::create_dir_all(&directory);
+        let binary = directory.join(SERVER_NAME);
+        let _ = fs::write(&binary, b"#!/bin/sh\n");
+        let _ = fs::set_permissions(&binary, fs::Permissions::from_mode(0o755));
+        directory
+    }
+
+    #[test]
+    fn the_pinned_binary_wins_over_every_discovered_one() {
+        let directory = server_directory("pinned");
+        let found = discover_server_from(
+            Some(OsString::from("/pinned/rust-analyzer")),
+            Some(directory.clone().into_os_string()),
+            None,
+        );
+        assert_eq!(found, Some(PathBuf::from("/pinned/rust-analyzer")));
+    }
+
+    #[test]
+    fn an_unset_environment_still_finds_the_server_on_path() {
+        let directory = server_directory("path");
+        let found = discover_server_from(None, Some(directory.clone().into_os_string()), None);
+        assert_eq!(found, Some(directory.join(SERVER_NAME)));
+    }
+
+    #[test]
+    fn the_rustup_location_is_probed_when_path_is_empty() {
+        let home = std::env::temp_dir().join("alpine-discovery-home");
+        let bin = home.join(".cargo").join("bin");
+        let _ = fs::create_dir_all(&bin);
+        let binary = bin.join(SERVER_NAME);
+        let _ = fs::write(&binary, b"#!/bin/sh\n");
+        let _ = fs::set_permissions(&binary, fs::Permissions::from_mode(0o755));
+        let found = discover_server_from(None, None, Some(home.clone().into_os_string()));
+        assert_eq!(found, Some(binary));
+    }
+
+    #[test]
+    fn a_directory_or_unexecutable_file_is_not_a_server() {
+        let directory = std::env::temp_dir().join("alpine-discovery-reject");
+        // A directory named exactly like the binary must not be accepted.
+        let _ = fs::create_dir_all(directory.join(SERVER_NAME));
+        assert_eq!(
+            discover_server_from(None, Some(directory.clone().into_os_string()), None),
+            None
+        );
+        let plain = std::env::temp_dir().join("alpine-discovery-plain");
+        let _ = fs::create_dir_all(&plain);
+        let binary = plain.join(SERVER_NAME);
+        let _ = fs::write(&binary, b"not executable");
+        let _ = fs::set_permissions(&binary, fs::Permissions::from_mode(0o644));
+        assert_eq!(
+            discover_server_from(None, Some(plain.into_os_string()), None),
+            None
+        );
     }
 }
 

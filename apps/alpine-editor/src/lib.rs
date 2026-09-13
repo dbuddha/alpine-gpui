@@ -2168,7 +2168,7 @@ impl EditorApp {
             dogfood_accessibility_actions: 0,
             profile_event_timestamp: EventTimestamp::new(0),
             profile_scene_revision: SceneRevision::new(0),
-            rust_diagnostics: RustDiagnostics::default(),
+            rust_diagnostics: rust_diagnostics::discovered(),
             language_wake_latch: LanguageWakeLatch::default(),
             workspace_edits: WorkspaceEditPanel::default(),
             #[cfg(test)]
