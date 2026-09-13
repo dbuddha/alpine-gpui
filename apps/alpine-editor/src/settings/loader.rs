@@ -430,10 +430,13 @@ impl SettingsReload {
         })
     }
 
-    /// Releases a submission the worker pool refused outright.
+    /// Releases a submission that failed terminally, recording `cause`.
     ///
-    /// Saturation is not a rejection and is handled by `defer_submission`, so
-    /// reaching here means the pool cannot accept this or any later request.
+    /// Saturation is handled by `defer_submission` and never arrives here, so
+    /// retrying this request cannot succeed. The two causes are not the same
+    /// fault: a closed pool has stopped accepting work, while an exhausted
+    /// sequence is rejected by `Workers::submit` before the sender is consulted
+    /// and says nothing about the pool.
     pub(crate) fn reject_submission(
         &mut self,
         generation: u64,
