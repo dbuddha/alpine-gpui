@@ -54,7 +54,7 @@ pub(crate) struct LanguageIdentity {
 }
 
 impl LanguageIdentity {
-    fn request_stamp(self) -> Option<RequestStamp> {
+    pub(crate) fn request_stamp(self) -> Option<RequestStamp> {
         RequestStamp::new(
             self.workspace_id,
             self.workspace_revision,
