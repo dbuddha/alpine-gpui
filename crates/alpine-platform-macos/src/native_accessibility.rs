@@ -705,6 +705,20 @@ impl NativeAccessibilityAdapter {
         NSArray::from_retained_slice(&roots)
     }
 
+    pub(crate) fn focused_element(view: &SurfaceView) -> Option<Retained<AnyObject>> {
+        let adapter = view.ivars().accessibility.try_borrow().ok()?;
+        if !adapter.active {
+            return None;
+        }
+        let node = adapter
+            .snapshot
+            .as_ref()?
+            .nodes()
+            .iter()
+            .find(|node| node.is_focused())?;
+        adapter.element(node.id()).map(Into::into)
+    }
+
     pub(crate) fn revoke_view(view: &SurfaceView) {
         let outcome = view.ivars().accessibility.borrow_mut().begin_revoke();
         let Some(outcome) = outcome else {
@@ -1322,11 +1336,67 @@ impl NativeAccessibilityAdapter {
     }
 
     #[cfg(alpine_native_validation)]
+    fn validate_window_relationships(view: &SurfaceView) -> Result<(), SurfaceError> {
+        let failure = || SurfaceError::validation(SurfaceOperation::Accessibility);
+        let (root, elements, expected_focus) = {
+            let adapter = view
+                .ivars()
+                .accessibility
+                .try_borrow()
+                .map_err(|_| failure())?;
+            let snapshot = adapter.snapshot.as_ref().ok_or_else(failure)?;
+            let root = adapter.element(snapshot.root()).ok_or_else(failure)?;
+            let elements = snapshot
+                .nodes()
+                .iter()
+                .filter_map(|node| adapter.element(node.id()))
+                .collect::<Vec<_>>();
+            let focus = snapshot
+                .nodes()
+                .iter()
+                .find(|node| node.is_focused())
+                .and_then(|node| adapter.element(node.id()))
+                .map(Into::<Retained<AnyObject>>::into);
+            (root, elements, focus)
+        };
+        let window: Retained<AnyObject> = view.window().ok_or_else(failure)?.into();
+        if root
+            .accessibility_parent_impl()
+            .is_none_or(|parent| !core::ptr::eq(&*parent, &*window))
+        {
+            return Err(failure());
+        }
+        for element in elements {
+            // SAFETY: live main-thread elements implement these object-returning
+            // selectors; retained results follow Objective-C getter ownership.
+            let parent_window: Option<Retained<AnyObject>> =
+                unsafe { msg_send![&*element, accessibilityWindow] };
+            let top_level: Option<Retained<AnyObject>> =
+                unsafe { msg_send![&*element, accessibilityTopLevelUIElement] };
+            if parent_window.is_none_or(|value| !core::ptr::eq(&*value, &*window))
+                || top_level.is_none_or(|value| !core::ptr::eq(&*value, &*window))
+            {
+                return Err(failure());
+            }
+        }
+        // SAFETY: this live SurfaceView implements the object-returning focus
+        // selector; no adapter borrow survives into Objective-C dispatch.
+        let focus: Option<Retained<AnyObject>> =
+            unsafe { msg_send![view, accessibilityFocusedUIElement] };
+        match (focus, expected_focus) {
+            (Some(actual), Some(expected)) if core::ptr::eq(&*actual, &*expected) => Ok(()),
+            (None, None) => Ok(()),
+            _ => Err(failure()),
+        }
+    }
+
+    #[cfg(alpine_native_validation)]
     pub(super) fn validate_focused_field_text(
         view: &SurfaceView,
         expected: &str,
     ) -> Result<(), SurfaceError> {
         Self::refresh_view(view)?;
+        Self::validate_window_relationships(view)?;
         let failure = || SurfaceError::validation(SurfaceOperation::Accessibility);
         let (element, document, document_length) = {
             let adapter = view
@@ -1514,6 +1584,7 @@ impl NativeAccessibilityAdapter {
         let root = roots
             .firstObject()
             .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
+        Self::validate_window_relationships(view)?;
         let stable_root_identity = repeated
             .firstObject()
             .is_some_and(|candidate| core::ptr::eq(&*root, &*candidate));
@@ -2029,8 +2100,18 @@ define_class!(
         }
 
         #[unsafe(method_id(accessibilityParent))]
-        fn accessibility_parent(&self) -> Option<Retained<NativeAccessibilityElement>> {
+        fn accessibility_parent(&self) -> Option<Retained<AnyObject>> {
             self.accessibility_parent_impl()
+        }
+
+        #[unsafe(method_id(accessibilityWindow))]
+        fn accessibility_window(&self) -> Option<Retained<AnyObject>> {
+            self.accessibility_window_impl()
+        }
+
+        #[unsafe(method_id(accessibilityTopLevelUIElement))]
+        fn accessibility_top_level(&self) -> Option<Retained<AnyObject>> {
+            self.accessibility_window_impl()
         }
 
         #[unsafe(method_id(accessibilityChildren))]
@@ -2130,6 +2211,8 @@ define_class!(
                 || selector == sel!(accessibilityTitle)
                 || selector == sel!(accessibilityValue)
                 || selector == sel!(accessibilityParent)
+                || selector == sel!(accessibilityWindow)
+                || selector == sel!(accessibilityTopLevelUIElement)
                 || selector == sel!(accessibilityChildren)
                 || selector == sel!(isAccessibilityFocused)
                 || selector == sel!(isAccessibilitySelected)
@@ -2218,10 +2301,19 @@ impl NativeAccessibilityElement {
         Some(NSString::from_str(node.name()))
     }
 
-    fn accessibility_parent_impl(&self) -> Option<Retained<NativeAccessibilityElement>> {
-        let parent = self.node()?.parent()?;
-        self.with_adapter(|adapter| adapter.element(parent))
-            .flatten()
+    fn accessibility_parent_impl(&self) -> Option<Retained<AnyObject>> {
+        match self.node()?.parent() {
+            Some(parent) => self
+                .with_adapter(|adapter| adapter.element(parent))
+                .flatten()
+                .map(Into::into),
+            None => self.accessibility_window_impl(),
+        }
+    }
+
+    fn accessibility_window_impl(&self) -> Option<Retained<AnyObject>> {
+        self.node()?; // Reject revoked or replaced element instances.
+        self.ivars().view.load()?.window().map(Into::into)
     }
 
     fn accessibility_frame_impl(&self) -> NSRect {

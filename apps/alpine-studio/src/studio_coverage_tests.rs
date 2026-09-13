@@ -2827,7 +2827,12 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
         Point::new(40.0, CONTENT_INSET).ok_or("caret origin")?,
         Size::new(CARET_WIDTH, LINE_HEIGHT).ok_or("caret size")?,
     );
-    assert_eq!(exact_scene.quads()[2].bounds(), expected_selection);
+    assert!(
+        exact_scene
+            .quads()
+            .iter()
+            .any(|quad| quad.bounds() == expected_selection)
+    );
     assert_eq!(
         exact_scene.quads().last().ok_or("missing caret")?.bounds(),
         expected_caret

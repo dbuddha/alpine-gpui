@@ -76,6 +76,7 @@ mod rust_workspace_edit;
 mod rust_workspace_publication_tests;
 mod rust_workspace_publish;
 mod rust_workspace_ui;
+mod scene_paint;
 mod session;
 mod settings;
 mod syntax;
@@ -110,8 +111,8 @@ use alpine_runtime::{
     AppContext, AppDelegate, DocumentRevision, RuntimeError, SubmitError, WindowContext,
 };
 use alpine_scene::{
-    AtlasBounds, Clip, Glyph, GlyphAtlasImage, GlyphAtlasRowPatch, Primitive, Quad, Scene,
-    SceneBuilder, SceneError, SceneRevision,
+    AtlasBounds, Clip, GlyphAtlasImage, GlyphAtlasRowPatch, Primitive, Quad, Scene, SceneBuilder,
+    SceneError, SceneRevision,
 };
 use alpine_text::{
     Buffer, BufferSnapshot, ByteOffset, Editor, ExternalChange, FileError, SaveReport, Selection,
@@ -2799,7 +2800,7 @@ impl StudioApp {
         let command_palette_background = theme.command_palette_background;
         let command_palette_selected = theme.command_palette_selected;
 
-        let mut builder = SceneBuilder::new(revision, viewport);
+        let mut builder = scene_paint::DeferredScene::new(revision, viewport);
         builder.push_quad(Quad::new(Rect::new(origin, viewport), background))?;
         let mut pane_clips = [None; MAX_PANES];
         for (index, pane) in pane_layout.iter().enumerate() {
@@ -2866,6 +2867,21 @@ impl StudioApp {
         let tab_labels: Vec<(usize, Arc<str>)> = tab_range
             .filter_map(|index| self.tabs.label(index).map(|label| (index, label)))
             .collect();
+        builder.push_quad(Quad::new(tab_bounds, tab_background).clipped(tab_clip))?;
+        if tab_labels
+            .iter()
+            .any(|(index, _)| *index == self.tabs.active_index())
+        {
+            let active_left = sidebar_width + usize_as_f32(self.tabs.active_index()) * TAB_WIDTH
+                - self.tab_scroll_x;
+            let active_origin = Point::new(active_left, 0.0).ok_or(StudioRenderError::Domain)?;
+            let active_size =
+                Size::new(TAB_WIDTH, TAB_BAR_HEIGHT).ok_or(StudioRenderError::Domain)?;
+            let active_quad = Quad::new(Rect::new(active_origin, active_size), active_tab_color)
+                .clipped(tab_clip);
+            builder.push_quad(active_quad)?;
+        }
+
         for (index, label) in &tab_labels {
             let left = sidebar_width + usize_as_f32(*index) * TAB_WIDTH - self.tab_scroll_x;
             let layout = self.text_system.shape(label, font)?;
@@ -3109,6 +3125,22 @@ impl StudioApp {
             }
         }
 
+        builder.flush_glyphs(&pending_glyphs);
+        for bounds in composition_underlines {
+            builder.push_quad(Quad::new(bounds, caret_color).clipped(active_clip))?;
+        }
+        if self.focused
+            && !self.workspace_edits.is_open()
+            && !self.find.is_open()
+            && !self.quick_open.is_open()
+            && !self.project_search.is_open()
+            && !self.command_palette.is_open()
+            && !self.file_tree.is_focused()
+            && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_origin_x)?
+        {
+            builder.push_quad(Quad::new(caret, caret_color).clipped(active_clip))?;
+        }
+
         let language_status = self.rust_diagnostics.status_message();
         let status = self
             .local_status
@@ -3158,6 +3190,7 @@ impl StudioApp {
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
             let background =
                 Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(background)?;
             for (visible_row, index) in rows.enumerate() {
                 let row = self
@@ -3201,6 +3234,7 @@ impl StudioApp {
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
             let background =
                 Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(background)?;
             for row in 0..row_count {
                 let line = self
@@ -3233,6 +3267,7 @@ impl StudioApp {
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
             let background =
                 Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(background)?;
             for (visible_row, index) in rows.enumerate() {
                 let row = self
@@ -3273,6 +3308,7 @@ impl StudioApp {
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
             let background =
                 Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(background)?;
             pending_glyphs.extend(self.paint_overlay_field(
                 overlay_field::Owner::Symbols,
@@ -3312,6 +3348,7 @@ impl StudioApp {
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
             let background =
                 Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(background)?;
             for row in 0..row_count {
                 if row == 0 && self.workspace_edits.is_rename_input() {
@@ -3337,6 +3374,7 @@ impl StudioApp {
         }
         if self.find.is_open() {
             let bounds = find_input::bounds(self)?;
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(Quad::new(bounds, find_background_color))?;
             pending_glyphs.extend(self.paint_overlay_field(
                 overlay_field::Owner::Find,
@@ -3358,6 +3396,7 @@ impl StudioApp {
                 Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
             let overlay_bounds = Rect::new(overlay_origin, overlay_size);
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(Quad::new(overlay_bounds, quick_open_background))?;
             pending_glyphs.extend(self.paint_overlay_field(
                 overlay_field::Owner::QuickOpen,
@@ -3412,6 +3451,7 @@ impl StudioApp {
             } else {
                 project_selection_clip
             };
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(Quad::new(overlay_bounds, project_search_background))?;
             pending_glyphs.extend(self.paint_overlay_field(
                 overlay_field::Owner::ProjectSearch,
@@ -3476,6 +3516,7 @@ impl StudioApp {
             } else {
                 command_selection_clip
             };
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(Quad::new(overlay_bounds, command_palette_background))?;
             pending_glyphs.extend(self.paint_overlay_field(
                 overlay_field::Owner::Palette,
@@ -3519,56 +3560,11 @@ impl StudioApp {
                 }
             }
         }
-        builder.push_quad(Quad::new(tab_bounds, tab_background).clipped(tab_clip))?;
-        if tab_labels
-            .iter()
-            .any(|(index, _)| *index == self.tabs.active_index())
-        {
-            let active_left = sidebar_width + usize_as_f32(self.tabs.active_index()) * TAB_WIDTH
-                - self.tab_scroll_x;
-            let active_origin = Point::new(active_left, 0.0).ok_or(StudioRenderError::Domain)?;
-            let active_size =
-                Size::new(TAB_WIDTH, TAB_BAR_HEIGHT).ok_or(StudioRenderError::Domain)?;
-            let active_quad = Quad::new(Rect::new(active_origin, active_size), active_tab_color)
-                .clipped(tab_clip);
-            builder.push_quad(active_quad)?;
-        }
-
         self.publish_atlas_if_needed(&pending_glyphs)?;
-        if !pending_glyphs.is_empty() {
-            let atlas = self
-                .published_atlas
-                .clone()
-                .ok_or(StudioRenderError::Domain)?;
-            builder.set_glyph_atlas(atlas)?;
-            for pending in pending_glyphs {
-                let glyph = Glyph::new(
-                    pending.bounds,
-                    pending.atlas_bounds,
-                    pending.color.unwrap_or(text_color),
-                )
-                .clipped(pending.clip);
-                builder.push_glyph(glyph)?;
-            }
-        }
-        for bounds in composition_underlines {
-            builder.push_quad(Quad::new(bounds, caret_color).clipped(active_clip))?;
-        }
-        if self.focused
-            && !self.workspace_edits.is_open()
-            && !self.find.is_open()
-            && !self.quick_open.is_open()
-            && !self.project_search.is_open()
-            && !self.command_palette.is_open()
-            && !self.file_tree.is_focused()
-            && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_origin_x)?
-        {
-            builder.push_quad(Quad::new(caret, caret_color).clipped(active_clip))?;
-        }
-
+        let scene = builder.finish(self.published_atlas.clone(), &pending_glyphs, text_color)?;
         self.rendered_lines = rendered_lines;
         self.publish_accessibility_projection();
-        Ok(builder.finish())
+        Ok(scene)
     }
 
     fn language_overlay_bounds(
@@ -3593,7 +3589,7 @@ impl StudioApp {
         reason = "selection painting keeps all scene-local values explicit"
     )]
     fn paint_selection(
-        builder: &mut SceneBuilder,
+        builder: &mut scene_paint::DeferredScene,
         clip: alpine_scene::ClipId,
         snapshot: &BufferSnapshot,
         line: usize,
@@ -3635,7 +3631,7 @@ impl StudioApp {
     fn paint_overlay_field(
         &mut self,
         owner: overlay_field::Owner,
-        builder: &mut SceneBuilder,
+        builder: &mut scene_paint::DeferredScene,
         selection_color: LinearRgba,
         caret_color: LinearRgba,
     ) -> Result<Vec<PendingGlyph>, StudioRenderError> {
