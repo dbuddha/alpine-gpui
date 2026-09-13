@@ -278,14 +278,22 @@ impl SettingsLoadRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SettingsReloadError {
     GenerationExhausted,
-    SubmissionFailed,
+    /// The worker pool stopped accepting work, so no later reload can succeed.
+    WorkerUnavailable,
+    /// The submission sequence wrapped, which retrying cannot resolve.
+    SequenceExhausted,
 }
 
 impl fmt::Display for SettingsReloadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::GenerationExhausted => formatter.write_str("settings generation exhausted"),
-            Self::SubmissionFailed => formatter.write_str("settings worker queue rejected reload"),
+            Self::WorkerUnavailable => {
+                formatter.write_str("settings worker pool stopped accepting reloads")
+            }
+            Self::SequenceExhausted => {
+                formatter.write_str("settings submission sequence exhausted")
+            }
         }
     }
 }
@@ -422,10 +430,18 @@ impl SettingsReload {
         })
     }
 
+    /// Releases a submission that failed terminally, recording `cause`.
+    ///
+    /// Saturation is handled by `defer_submission` and never arrives here, so
+    /// retrying this request cannot succeed. The two causes are not the same
+    /// fault: a closed pool has stopped accepting work, while an exhausted
+    /// sequence is rejected by `Workers::submit` before the sender is consulted
+    /// and says nothing about the pool.
     pub(crate) fn reject_submission(
         &mut self,
         generation: u64,
         _announce: bool,
+        cause: SettingsReloadError,
     ) -> Result<(), SettingsReloadError> {
         if !self.in_flight || generation != self.submitted_generation {
             self.report.stale_results = self.report.stale_results.saturating_add(1);
@@ -435,7 +451,7 @@ impl SettingsReload {
         self.in_flight = false;
         self.report.in_flight = false;
         self.report.failures = self.report.failures.saturating_add(1);
-        Err(SettingsReloadError::SubmissionFailed)
+        Err(cause)
     }
 
     pub(crate) fn defer_submission(&mut self, generation: u64, announce: bool) -> bool {
@@ -1491,8 +1507,8 @@ mod tests {
             "settings generation exhausted"
         );
         assert_eq!(
-            SettingsReloadError::SubmissionFailed.to_string(),
-            "settings worker queue rejected reload"
+            SettingsReloadError::WorkerUnavailable.to_string(),
+            "settings worker pool stopped accepting reloads"
         );
     }
 
@@ -1719,7 +1735,10 @@ mod tests {
     fn reload_identity_and_loader_failures_are_explicit() -> Result<(), Box<dyn Error>> {
         let mut unchanged_project = SettingsReload::explicit(None, None);
         assert!(!unchanged_project.replace_project(None)?);
-        assert_eq!(unchanged_project.reject_submission(99, false), Ok(()));
+        assert_eq!(
+            unchanged_project.reject_submission(99, false, SettingsReloadError::WorkerUnavailable),
+            Ok(())
+        );
         unchanged_project.exhaust_generation();
         assert_eq!(
             unchanged_project.request(false),
@@ -1975,8 +1994,12 @@ mod tests {
         reload.request(true)?;
         let request = reload.take_request().ok_or("missing retry")?;
         assert_eq!(
-            reload.reject_submission(request.generation(), request.announce()),
-            Err(SettingsReloadError::SubmissionFailed)
+            reload.reject_submission(
+                request.generation(),
+                request.announce(),
+                SettingsReloadError::WorkerUnavailable,
+            ),
+            Err(SettingsReloadError::WorkerUnavailable)
         );
         assert!(!reload.report().in_flight);
         assert!(!reload.report().pending);
@@ -2001,7 +2024,11 @@ mod tests {
         let request = reload.take_request().ok_or("missing project request")?;
 
         assert_eq!(
-            reload.reject_submission(request.generation().saturating_add(1), false),
+            reload.reject_submission(
+                request.generation().saturating_add(1),
+                false,
+                SettingsReloadError::WorkerUnavailable,
+            ),
             Ok(())
         );
         assert!(reload.report().in_flight);
@@ -2016,7 +2043,10 @@ mod tests {
         assert_eq!(reload.report().path_bytes, project.as_os_str().len());
 
         let mut idle = SettingsReload::explicit(None, None);
-        assert_eq!(idle.reject_submission(0, false), Ok(()));
+        assert_eq!(
+            idle.reject_submission(0, false, SettingsReloadError::WorkerUnavailable),
+            Ok(())
+        );
         assert_eq!(idle.report().stale_results, 1);
         Ok(())
     }

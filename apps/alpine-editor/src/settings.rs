@@ -2,7 +2,9 @@
 
 mod loader;
 
-pub(crate) use loader::{SettingsLoadOutput, SettingsReload, SettingsReloadAdmission};
+pub(crate) use loader::{
+    SettingsLoadOutput, SettingsReload, SettingsReloadAdmission, SettingsReloadError,
+};
 
 use std::{borrow::Cow, error::Error, fmt, mem::size_of};
 

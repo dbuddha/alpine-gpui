@@ -223,7 +223,7 @@ fn settings_submission_retries_only_saturation_without_a_failure_banner()
     assert_eq!(
         app.local_status,
         Some(LocalStatus::Command(Arc::from(
-            "Settings reload failed: settings worker queue rejected reload"
+            "Settings reload failed: settings worker pool stopped accepting reloads"
         )))
     );
     assert_eq!(app.settings_reload.report().failures, 1);
@@ -241,7 +241,14 @@ fn settings_submission_retries_only_saturation_without_a_failure_banner()
         terminal_retry.announce(),
         Err(SubmitError::SequenceExhausted)
     ));
-    assert!(matches!(app.local_status, Some(LocalStatus::Command(_))));
+    // A wrapped sequence and a dead worker pool are different failures and must
+    // not share a message, because only one of them implicates the pool.
+    assert_eq!(
+        app.local_status,
+        Some(LocalStatus::Command(Arc::from(
+            "Settings reload failed: settings submission sequence exhausted"
+        )))
+    );
     assert_eq!(app.settings_reload.report().failures, 2);
     assert!(!app.settings_reload.report().pending);
     assert!(app.settings_reload.take_request().is_none());

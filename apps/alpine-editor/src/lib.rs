@@ -186,7 +186,8 @@ use settings::{
 };
 use settings::{
     KEY_DELETE_BACKWARD, KEY_DELETE_FORWARD, KEY_DOWN, KEY_END, KEY_ESCAPE, KEY_HOME, KEY_LEFT,
-    KEY_RETURN, KEY_RIGHT, KEY_TAB, KEY_UP, KeyAction, LINE_HEIGHT, SettingsState,
+    KEY_RETURN, KEY_RIGHT, KEY_TAB, KEY_UP, KeyAction, LINE_HEIGHT, SettingsReloadError,
+    SettingsState,
 };
 #[cfg(test)]
 use syntax::SyntaxClass;
@@ -7518,8 +7519,16 @@ impl EditorApp {
                 let _ = self.settings_reload.defer_submission(generation, announce);
                 false
             }
-            Err(SubmitError::Closed | SubmitError::SequenceExhausted) => {
-                if let Err(error) = self.settings_reload.reject_submission(generation, announce) {
+            Err(cause @ (SubmitError::Closed | SubmitError::SequenceExhausted)) => {
+                let reason = if matches!(cause, SubmitError::Closed) {
+                    SettingsReloadError::WorkerUnavailable
+                } else {
+                    SettingsReloadError::SequenceExhausted
+                };
+                if let Err(error) = self
+                    .settings_reload
+                    .reject_submission(generation, announce, reason)
+                {
                     self.local_status = Some(LocalStatus::Command(Arc::from(format!(
                         "Settings reload failed: {error}"
                     ))));
