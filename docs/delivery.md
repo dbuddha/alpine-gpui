@@ -13,7 +13,7 @@ so an agent reads them before starting work.
 
 | Phase | Scope | Estimate | State |
 | --- | --- | --- | --- |
-| 1 | Reachable | 3 to 5 days | **active**, 6 of 7 criteria pass |
+| 1 | Reachable | 3 to 5 days | **active**, 6 of 7 criteria pass; 1.4 still partial |
 | 2 | Language agnostic | 1.5 weeks | blocked on 1 |
 | 3 | Editing parity | 2 to 2.5 weeks | blocked on 2 |
 | 4 | Context | 1 week | blocked on 3 |
@@ -43,21 +43,25 @@ All wiring. Converts the editor from unusable to usable. No new capability.
 | 1.3 | Folder open shows the tree and an empty buffer, never the `INITIAL_TEXT` sample | **passes.** Criterion reworded from "a real file": the tree loads asynchronously so there is no file to choose at construction, and Zed shows an empty editor here too. What mattered was removing the placeholder sample, which is done |
 | 1.4 | Keybindings match pinned Zed: `f12` definition, `f2` rename, `cmd-shift-i` format, `alt-shift-f12` references, `cmd-k cmd-i` hover, `ctrl-g` go to line, `cmd-shift-o` outline, `cmd-shift-e` project panel, `cmd-o` open, `cmd-shift-s` save as, `cmd-s` save | **partial.** Bound and unit-tested: F12, F2, Cmd+Shift+I, Opt+Shift+F12, Cmd+Shift+O, Cmd+T, Cmd+Shift+E. Menu key equivalents: Cmd+O, Cmd+Shift+O, Cmd+S, Cmd+Shift+S. Missing: `cmd-k cmd-i` hover needs chord support the resolver does not have, and `ctrl-g` needs a go-to-line command that does not exist |
 | 1.5 | Edit menu Undo, Cut, Copy, Paste and Select All are enabled and perform the action | **passes.** All report enabled through the accessibility tree, and Select All from the menu selected the document |
-| 1.6 | rust-analyzer starts with `ALPINE_RUST_ANALYZER` unset | **partial.** The installed binary starts `rust-analyzer` and its proc-macro server, with no error status, when run directly with the real `HOME` and the launch `PATH`. Under `open`, the same bundle and arguments start no server. Unexplained, see below |
+| 1.6 | rust-analyzer starts with `ALPINE_RUST_ANALYZER` unset | **passes on this branch.** `open -n ~/Applications/Alpine Editor.app --args` on `apps/alpine-editor/src/lib.rs`, from `/`, `ALPINE_RUST_ANALYZER` unset: process cwd is `/`, child is `~/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rust-analyzer` plus its proc-macro server. The rustup shim is not spawned |
 | 1.7 | The app launches from `~/Applications/Alpine Editor.app` with an icon | **passes.** Installed, registered with `lsregister`, launches with `CFBundleIconFile` set, the correct menu bar, and the requested file rendered and highlighted |
 
-Two defects keep this phase open.
+Phase 1 stays open for 1.4: `cmd-k cmd-i` hover still needs chord
+support, and `ctrl-g` still needs a go-to-line command.
 
-The same executable, arguments, `HOME` and `PATH` start rust-analyzer
-from a shell and not through `open`, so something in the
-LaunchServices context differs. Discovery itself is proven by the shell
-launch: what fails is whether the spawn happens at all, not finding the
-binary.
+The Dock rust-analyzer miss was not LaunchServices-specific spawn
+failure. `rustup which rust-analyzer` follows process CWD. Under `open`
+that CWD is `/`, so rustup consults the default toolchain (`stable`),
+which has no rust-analyzer, and discovery gave up. Discovery now scans
+`$RUSTUP_HOME`/`~/.rustup/toolchains` and never spawns the rustup shim
+or asks `rustup which`. A `rust-toolchain.toml` next to the opened
+files selects that channel when it has a working server.
 
-A stale recovery banner ("Recovered 3 dirty buffer(s); 2 external
-conflict(s)") sits over the status bar on every launch with the real
-profile. It hides the language status, and it never clears, so the one
-place the editor reports what it is doing is permanently occupied.
+The recovery banner was `LocalStatus::Workspace`, which always beat
+language status and never cleared. It is now `LocalStatus::Recovery`:
+language status wins while present, and the first key or pointer down
+dismisses it. After a Right Arrow on the same `open` launch, the banner
+was gone and rust-analyzer stayed running.
 
 Two findings worth keeping. `screencapture -l` cannot see the Metal
 layer and returns a window that looks blank, so on-screen checks go
