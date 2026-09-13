@@ -3069,8 +3069,12 @@ mod discovery_tests {
     #[test]
     fn an_unset_environment_still_finds_the_server_on_path() {
         let directory = server_directory("path", 0);
-        let found =
-            discover_server_with(None, Some(directory.clone().into_os_string()), None, present);
+        let found = discover_server_with(
+            None,
+            Some(directory.clone().into_os_string()),
+            None,
+            present,
+        );
         assert_eq!(found, Some(directory.join(SERVER_NAME)));
     }
 

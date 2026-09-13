@@ -107,8 +107,7 @@ use alpine_platform_macos::{
     AccessibilityRequestKind, ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText,
     ClipboardWrite, EditorSignpost, EditorSignpostStage, EventTimestamp, ImeEvent, InputEpoch,
     InputEpochAdmission, KeyState, MenuAction, Modifiers, PointerAction, PointerButton,
-    SurfaceError,
-    SurfaceEvent,
+    SurfaceError, SurfaceEvent,
 };
 use alpine_runtime::{
     AppContext, AppDelegate, DocumentRevision, RuntimeError, SubmitError, WindowContext,
