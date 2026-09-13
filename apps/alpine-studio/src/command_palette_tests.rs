@@ -196,6 +196,14 @@ fn command_palette_focus_cancel_and_scene_are_bounded() -> Result<(), Box<dyn st
         app.command_palette.report().visible_rows
             <= commands::MAX_VISIBLE_COMMANDS + commands::MAX_VISIBLE_OVERSCAN * 2
     );
+    // The first raw Escape belongs to the native input method while marked
+    // text is active. After its cancellation callback, Escape closes the panel.
+    assert!(
+        !app.handle_event(&key(KEY_ESCAPE, Modifiers::default()))
+            .visual_changed
+    );
+    assert!(app.command_palette.is_open());
+    assert!(app.handle_event(&ime(ImeEvent::Cancelled)).visual_changed);
     assert!(
         app.handle_event(&key(KEY_ESCAPE, Modifiers::default()))
             .visual_changed

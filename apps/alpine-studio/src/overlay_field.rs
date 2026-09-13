@@ -207,6 +207,24 @@ impl Owner {
     ) -> Option<EventEffect> {
         let command = modifiers.contains(Modifiers::COMMAND);
         let shift = modifiers.contains(Modifiers::SHIFT);
+        // AppKit interprets raw keys after this dispatch. Keep marked ownership
+        // alive so its next update/commit can still address the same field.
+        let edits_field = matches!(key, KEY_LEFT | KEY_RIGHT | KEY_HOME | KEY_END)
+            || (command && matches!(key, KEY_A | KEY_Z))
+            || (!command
+                && matches!(
+                    key,
+                    KEY_DELETE_BACKWARD
+                        | KEY_DELETE_FORWARD
+                        | crate::KEY_UP
+                        | crate::KEY_DOWN
+                        | crate::KEY_RETURN
+                        | crate::KEY_TAB
+                        | crate::KEY_ESCAPE
+                ));
+        if edits_field && self.read(app).is_some_and(|(_, edit)| edit.is_composing()) {
+            return Some(EventEffect::default());
+        }
         if matches!(key, KEY_LEFT | KEY_RIGHT | KEY_HOME | KEY_END) || (command && key == KEY_A) {
             let result = (|| {
                 let (value, edit) = self.parts(app).ok_or(EditError::InvalidSelection)?;
@@ -394,6 +412,66 @@ mod tests {
                 app.workspace_edits.open_rename()?;
             }
             Owner::Symbols => unreachable!(),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn marked_fields_keep_native_ownership_through_raw_editing_keys()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for owner in [
+            Owner::Find,
+            Owner::Palette,
+            Owner::QuickOpen,
+            Owner::ProjectSearch,
+            Owner::Rename,
+        ] {
+            for (key, modifiers) in [
+                (KEY_LEFT, 0),
+                (KEY_RIGHT, 0),
+                (KEY_HOME, 0),
+                (KEY_END, 0),
+                (KEY_DELETE_BACKWARD, 0),
+                (KEY_DELETE_FORWARD, 0),
+                (crate::KEY_UP, 0),
+                (crate::KEY_DOWN, 0),
+                (crate::KEY_RETURN, 0),
+                (crate::KEY_TAB, 0),
+                (crate::KEY_ESCAPE, 0),
+                (KEY_A, Modifiers::COMMAND),
+                (KEY_Z, Modifiers::COMMAND),
+                (KEY_Z, Modifiers::COMMAND | Modifiers::SHIFT),
+            ] {
+                let mut app = StudioApp::new(TestTextSystem)?;
+                open(&mut app, owner)?;
+                owner.commit(&mut app, "a😀z", 6);
+                let selection = Selection::new(ByteOffset::new(1), ByteOffset::new(5));
+                owner.set_selection(&mut app, selection)?;
+                app.handle_ime(&ImeEvent::Started);
+                app.handle_ime(&ImeEvent::Updated {
+                    text: "日本".into(),
+                    selected_start_utf16: 1,
+                    selected_length_utf16: 1,
+                });
+                app.handle_key(key, Modifiers::from_bits(modifiers));
+                assert_eq!(Owner::active(&app), Some(owner), "raw key {key}");
+                let (value, edit) = owner.read(&app).ok_or("field")?;
+                assert!(
+                    edit.is_composing(),
+                    "raw key {key} canceled marked ownership"
+                );
+                assert_eq!(value, "a😀z");
+                assert_eq!(edit.selection(value), selection);
+                app.handle_ime(&ImeEvent::Updated {
+                    text: "語".into(),
+                    selected_start_utf16: 1,
+                    selected_length_utf16: 0,
+                });
+                app.handle_ime(&ImeEvent::Committed("語".into()));
+                assert_eq!(owner.read(&app).ok_or("field")?.0, "a語z");
+                app.handle_key(KEY_Z, Modifiers::from_bits(Modifiers::COMMAND));
+                assert_eq!(owner.read(&app).ok_or("field")?.0, "a😀z");
+            }
         }
         Ok(())
     }
