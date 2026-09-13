@@ -584,7 +584,7 @@ mod native_text_geometry_tests {
             let units = text[..byte].encode_utf16().count();
             app.find
                 .set_selection(Selection::caret(ByteOffset::new(byte)))?;
-            let view = crate::find_input::layout(&mut app)?;
+            let view = crate::find_input::layout_for(&mut app, crate::overlay_field::Owner::Find)?;
             let expected = view.origin_x
                 + app.text_system.caret_offset(
                     &view.text,
@@ -634,7 +634,7 @@ mod native_text_geometry_tests {
         app.find.select_all();
         app.find.commit_text(&"é".repeat(400))?;
         let end = app.find.field_text().encode_utf16().count();
-        let view = crate::find_input::layout(&mut app)?;
+        let view = crate::find_input::layout_for(&mut app, crate::overlay_field::Owner::Find)?;
         assert!(view.origin_x < view.bounds.origin().x());
         let AccessibilityPayload::TextGeometry { bounds, .. } =
             crate::find_input::geometry(&mut app, AccessibilityTextRange::new(end, 0))?
@@ -644,7 +644,7 @@ mod native_text_geometry_tests {
         assert!(bounds.x() >= view.bounds.origin().x());
         assert!(bounds.x() < view.bounds.origin().x() + view.bounds.size().width());
         app.find.move_caret(false, false, true)?;
-        let view = crate::find_input::layout(&mut app)?;
+        let view = crate::find_input::layout_for(&mut app, crate::overlay_field::Owner::Find)?;
         assert!(view.origin_x >= view.bounds.origin().x());
         app.try_scene(
             SceneRevision::new(2),

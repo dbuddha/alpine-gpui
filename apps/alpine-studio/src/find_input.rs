@@ -83,11 +83,6 @@ pub(super) fn bounds_for(app: &StudioApp, owner: Owner) -> Result<Rect, StudioRe
     ))
 }
 
-#[cfg(test)]
-pub(super) fn layout(app: &mut StudioApp) -> Result<Layout, StudioRenderError> {
-    layout_for(app, Owner::Find)
-}
-
 pub(super) fn layout_for(app: &mut StudioApp, owner: Owner) -> Result<Layout, StudioRenderError> {
     let bounds = bounds_for(app, owner)?;
     let font = app.resolved_font()?;
