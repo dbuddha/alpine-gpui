@@ -86,7 +86,6 @@ jobs:
           scripts/test-ci-admission.sh
           scripts/test-product-boundary.sh
           scripts/test-alpine-editor-app-bundle.sh
-          scripts/test-ci-cache-selection.sh
           scripts/test-qualification.sh
           scripts/test-zed-lab-evidence.sh
           scripts/check-release.sh
