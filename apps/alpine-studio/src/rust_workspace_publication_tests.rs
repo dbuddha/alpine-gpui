@@ -1,4 +1,4 @@
-use std::fs;
+use std::{cell::Cell, fs, rc::Rc};
 
 use alpine_core::{LinearRgba, Point, Size};
 use alpine_platform_macos::{
@@ -6,16 +6,19 @@ use alpine_platform_macos::{
     AccessibilityRequestId, EventTimestamp, ImeEvent, KeyState, Modifiers, PointerAction,
     PointerButton, ScrollPhase, SurfaceEvent,
 };
-use alpine_runtime::{Application, WorkerConfig};
-use alpine_scene::SceneRevision;
+use alpine_runtime::{
+    AppContext, AppDelegate, Application, WindowContext, WorkToken, WorkerConfig,
+};
+use alpine_scene::{Scene, SceneRevision};
 use alpine_text::{ByteOffset, Selection, Transaction};
 use serde_json::value::RawValue;
 
 use super::{
     KEY_DELETE_BACKWARD, KEY_ESCAPE, KEY_RETURN, LocalStatus, StudioApp, StudioCommand,
-    WorkspaceEditApplicationError, WorkspaceEditKind, WorkspaceEditPublicationError,
-    WorkspaceEditPublicationOutput, WorkspaceEditPublicationRequest, accessibility,
-    journal_path_for_session, recover_explicit_workspace_edit, recover_workspace_edit_for_session,
+    StudioWorkerOutput, WorkspaceEditApplicationError, WorkspaceEditKind,
+    WorkspaceEditPublicationError, WorkspaceEditPublicationOutput, WorkspaceEditPublicationRequest,
+    accessibility, journal_path_for_session, recover_explicit_workspace_edit,
+    recover_workspace_edit_for_session,
     rust_diagnostics::{
         RustDocumentInput, WorkspaceEditIdentity, WorkspaceEditPreparationOutput,
         tests::{diagnostics, fixture, mock_executable},
@@ -798,6 +801,72 @@ fn preparation_outcomes_publish_only_current_nonempty_previews()
     Ok(())
 }
 
+/// Observes a specific delivery without replacing the production delegate.
+struct WorkspaceHandoffObserver {
+    app: StudioApp,
+    consumed: Rc<Cell<bool>>,
+    preparation: bool,
+}
+
+impl AppDelegate for WorkspaceHandoffObserver {
+    type WorkerOutput = StudioWorkerOutput;
+
+    fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, StudioWorkerOutput>) {
+        self.app.event(event, context);
+    }
+
+    fn worker_result(
+        &mut self,
+        token: WorkToken,
+        result: StudioWorkerOutput,
+        context: &mut AppContext<'_, StudioWorkerOutput>,
+    ) {
+        let expected = matches!(
+            (self.preparation, &result),
+            (true, StudioWorkerOutput::WorkspaceEdit(_))
+                | (false, StudioWorkerOutput::WorkspaceEditPublication(_))
+        );
+        self.app.worker_result(token, result, context);
+        if expected {
+            if self.preparation {
+                assert!(self.app.workspace_edits.preview().is_some());
+            }
+            self.consumed.set(true);
+        }
+    }
+
+    fn frame(&mut self, context: WindowContext) -> Scene {
+        self.app.frame(context)
+    }
+}
+
+fn await_workspace_handoff(
+    runtime: &mut Application<WorkspaceHandoffObserver>,
+    consumed: &Cell<bool>,
+    timestamp: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // queued_results includes a reservation before channel publication, and
+    // unrelated settings or language results can arrive first. Observe actual
+    // production consumption instead of treating either as a readiness fence.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let frame = runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(timestamp),
+        });
+        if consumed.get() {
+            assert!(
+                frame.is_some(),
+                "workspace handoff did not invalidate its frame"
+            );
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("workspace edit result was not consumed before the deadline".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 #[test]
 #[cfg_attr(
     miri,
@@ -847,8 +916,17 @@ fn runtime_workspace_edit_handoffs_invalidate_and_admit_production_frames()
     preparation_app
         .rust_diagnostics
         .stage_workspace_edit_preparation_for_test(preparation_identity, &root, &uri, &raw)?;
-    let mut preparation_runtime =
-        Application::new(preparation_app, viewport, clear, WorkerConfig::default())?;
+    let preparation_consumed = Rc::new(Cell::new(false));
+    let mut preparation_runtime = Application::new(
+        WorkspaceHandoffObserver {
+            app: preparation_app,
+            consumed: Rc::clone(&preparation_consumed),
+            preparation: true,
+        },
+        viewport,
+        clear,
+        WorkerConfig::default(),
+    )?;
     preparation_runtime
         .frame_if_dirty()
         .ok_or("initial preparation frame")?;
@@ -859,20 +937,7 @@ fn runtime_workspace_edit_handoffs_invalidate_and_admit_production_frames()
             })
             .is_some()
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while preparation_runtime.snapshot().worker().queued_results() == 0 {
-        if std::time::Instant::now() >= deadline {
-            return Err("workspace edit preparation worker timed out".into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    assert!(
-        preparation_runtime
-            .dispatch(&SurfaceEvent::Wake {
-                timestamp: EventTimestamp::new(81),
-            })
-            .is_some()
-    );
+    await_workspace_handoff(&mut preparation_runtime, &preparation_consumed, 81)?;
     drop(preparation_runtime);
 
     let mut publication_app = StudioApp::open_file(TestTextSystem, &path)?;
@@ -901,8 +966,17 @@ fn runtime_workspace_edit_handoffs_invalidate_and_admit_production_frames()
             .workspace_edits
             .queue_publication(language_identity, &language)?
     );
-    let mut publication_runtime =
-        Application::new(publication_app, viewport, clear, WorkerConfig::default())?;
+    let publication_consumed = Rc::new(Cell::new(false));
+    let mut publication_runtime = Application::new(
+        WorkspaceHandoffObserver {
+            app: publication_app,
+            consumed: Rc::clone(&publication_consumed),
+            preparation: false,
+        },
+        viewport,
+        clear,
+        WorkerConfig::default(),
+    )?;
     publication_runtime
         .frame_if_dirty()
         .ok_or("initial publication frame")?;
@@ -913,20 +987,7 @@ fn runtime_workspace_edit_handoffs_invalidate_and_admit_production_frames()
             })
             .is_some()
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while publication_runtime.snapshot().worker().queued_results() == 0 {
-        if std::time::Instant::now() >= deadline {
-            return Err("workspace edit publication worker timed out".into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    assert!(
-        publication_runtime
-            .dispatch(&SurfaceEvent::Wake {
-                timestamp: EventTimestamp::new(83),
-            })
-            .is_some()
-    );
+    await_workspace_handoff(&mut publication_runtime, &publication_consumed, 83)?;
     assert!(fs::read_to_string(&path)?.starts_with("publish_"));
     drop(publication_runtime);
 
