@@ -43,8 +43,18 @@ All wiring. Converts the editor from unusable to usable. No new capability.
 | 1.3 | Folder open shows a real file, not the `INITIAL_TEXT` scratch buffer | **passes,** with a deviation: opening a folder now shows an empty Untitled buffer beside the tree rather than a file. The tree loads asynchronously, so there is no file to choose at construction, and Zed also shows an empty editor here |
 | 1.4 | Keybindings match pinned Zed: `f12` definition, `f2` rename, `cmd-shift-i` format, `alt-shift-f12` references, `cmd-k cmd-i` hover, `ctrl-g` go to line, `cmd-shift-o` outline, `cmd-shift-e` project panel, `cmd-o` open, `cmd-shift-s` save as, `cmd-s` save | **partial.** Bound and unit-tested: F12, F2, Cmd+Shift+I, Opt+Shift+F12, Cmd+Shift+O, Cmd+T, Cmd+Shift+E. Menu key equivalents: Cmd+O, Cmd+Shift+O, Cmd+S, Cmd+Shift+S. Missing: `cmd-k cmd-i` hover needs chord support the resolver does not have, and `ctrl-g` needs a go-to-line command that does not exist |
 | 1.5 | Edit menu Undo, Cut, Copy, Paste and Select All are enabled and perform the action | **passes.** All report enabled through the accessibility tree, and Select All from the menu selected the document |
-| 1.6 | rust-analyzer starts with `ALPINE_RUST_ANALYZER` unset | **passes.** In a Dock-like environment (real `HOME`, `PATH` of `/usr/bin:/bin:/usr/sbin:/sbin`) the editor started `rust-analyzer` and its proc-macro server with no error status |
-| 1.7 | The app launches from `~/Applications/Alpine Editor.app` with an icon | |
+| 1.6 | rust-analyzer starts with `ALPINE_RUST_ANALYZER` unset | **partial.** The installed binary starts `rust-analyzer` and its proc-macro server, with no error status, when run directly with the real `HOME` and the launch `PATH`. Under `open`, the same bundle and arguments start no server. Unexplained, see below |
+| 1.7 | The app launches from `~/Applications/Alpine Editor.app` with an icon | **passes.** Installed, registered with `lsregister`, launches with `CFBundleIconFile` set, the correct menu bar, and the requested file rendered and highlighted |
+
+The gap in 1.6 is the last open item in this phase. The same executable,
+arguments, `HOME` and `PATH` start the server from a shell and not from
+`open`, so something else in the LaunchServices context differs.
+Discovery itself is proven: the failure is in whether the spawn happens
+at all, not in finding the binary.
+
+A second thing to fix before calling the phase closed: a stale recovery
+banner ("Recovered 3 dirty buffer(s)") sits over the status bar on every
+launch with the real profile, hiding the language status behind it.
 
 Two findings worth keeping. `screencapture -l` cannot see the Metal
 layer and returns a window that looks blank, so on-screen checks go
