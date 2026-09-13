@@ -1823,8 +1823,8 @@ fn editor_runtime_returns_clipboard_and_dirty_close_responses()
             timestamp: EventTimestamp::new(3),
         })
         .into_parts();
-    assert_eq!(close, CloseDisposition::Cancel);
-    assert!(!dirty_runtime.snapshot().is_shutting_down());
+    assert_eq!(close, CloseDisposition::Allow);
+    assert!(dirty_runtime.snapshot().is_shutting_down());
 
     let mut clean_runtime =
         Application::new(test_app()?, viewport, clear, WorkerConfig::default())?;
@@ -1871,6 +1871,33 @@ fn dirty_file_close_is_blocked_until_atomic_save_succeeds() -> Result<(), Box<dy
     assert!(
         !app.handle_event_with_response(&SurfaceEvent::CloseRequested {
             timestamp: EventTimestamp::new(3),
+        })
+        .cancel_close
+    );
+    Ok(())
+}
+
+#[test]
+fn dirty_untitled_close_is_allowed_because_command_s_cannot_persist_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app()?;
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    assert!(app.document.is_dirty());
+    assert!(
+        app.handle_event(&key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND)))
+            .visual_changed
+    );
+    assert!(app.document.is_dirty());
+    assert_eq!(
+        app.local_status.as_ref().map(LocalStatus::message),
+        Some("Untitled has no path. Use File > Save As to keep it, or close to discard.")
+    );
+    assert!(
+        !app.handle_event_with_response(&SurfaceEvent::CloseRequested {
+            timestamp: EventTimestamp::new(1),
         })
         .cancel_close
     );

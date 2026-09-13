@@ -4310,6 +4310,11 @@ impl EditorApp {
                 if !document.is_dirty() && !file_error {
                     return None;
                 }
+                // Scratch has no path. Command-S is a no-op, so blocking quit
+                // leaves the process running with no way to persist or exit.
+                if !document.is_file() && !file_error {
+                    return None;
+                }
                 let label = self
                     .tabs
                     .label(index)
@@ -7028,6 +7033,11 @@ impl EditorApp {
                 self.last_save = Some(report);
                 self.last_file_error = None;
                 self.clear_close_status()
+            }
+            Ok(None) if self.document.is_dirty() => {
+                self.set_local_status(LocalStatus::Command(Arc::from(
+                    "Untitled has no path. Use File > Save As to keep it, or close to discard.",
+                )))
             }
             Ok(None) => EventEffect::default(),
             Err(error) => {
