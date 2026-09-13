@@ -8,7 +8,7 @@
 
 ## Context
 
-Alpine Studio needs useful local Rust completion without allowing a late or
+Alpine Editor needs useful local Rust completion without allowing a late or
 oversized language-server result to mutate another editor revision, retain
 unbounded JSON data, block the foreground, or create an idle redraw loop. The
 merged local process, framing, JSON-RPC, rust-analyzer, wake, and diagnostic
@@ -98,7 +98,7 @@ Malformed, unsupported, oversized, allocation-failed, stale, cancelled, and
 unknown responses preserve document bytes and saving. Queue saturation rolls
 back peer admission without blocking and exposes bounded local status. Process
 crash or protocol failure uses the existing bounded restart path. Shutdown uses
-the same production language-session drain invoked by `StudioApp::drop` and
+the same production language-session drain invoked by `EditorApp::drop` and
 releases pending requests, admitted items, retained bytes, and child ownership.
 
 ## Atomic claims and evidence contract

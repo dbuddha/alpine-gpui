@@ -1614,7 +1614,7 @@ mod benchmark_tests {
         ] {
             let path = root.join(manifest_string(&manifest, path_field)?);
             let expected = manifest_string(&manifest, hash_field)?;
-            let actual = crate::dogfood::calculate_sha256(&path)?;
+            let actual = crate::digest::calculate_sha256(&path)?;
             if actual != expected {
                 return Err(format!(
                     "renderer stage profile {path_field} hash drifted: expected {expected}, observed {actual}"

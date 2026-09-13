@@ -10,7 +10,7 @@ case "$mode" in
         ;;
 esac
 
-expected_dependencies=assurance/alpine-studio-dependencies.txt
+expected_dependencies=assurance/alpine-editor-dependencies.txt
 if [ ! -f "$expected_dependencies" ]; then
     printf 'product boundary error: missing dependency closure %s\n' "$expected_dependencies" >&2
     exit 1
@@ -23,7 +23,7 @@ actual_dependencies="$temporary_dir/dependencies.txt"
 if [ "${ALPINE_PRODUCT_DEPENDENCY_INPUT+x}" = x ]; then
     printf '%s\n' "$ALPINE_PRODUCT_DEPENDENCY_INPUT" > "$actual_dependencies"
 else
-    cargo tree --color never --locked -p alpine-studio \
+    cargo tree --color never --locked -p alpine-editor \
         --target aarch64-apple-darwin \
         --edges normal,build \
         --prefix none \
@@ -34,7 +34,7 @@ else
 fi
 
 if ! cmp -s "$expected_dependencies" "$actual_dependencies"; then
-    printf 'product boundary error: Alpine Studio shipping dependency closure changed\n' >&2
+    printf 'product boundary error: Alpine Editor shipping dependency closure changed\n' >&2
     diff -u "$expected_dependencies" "$actual_dependencies" >&2 || true
     exit 1
 fi
@@ -44,7 +44,7 @@ if [ "${ALPINE_PRODUCT_SOURCE_INPUT+x}" = x ]; then
 else
     network_source=$(git grep -n -I -E \
         'std::net|TcpStream|TcpListener|UdpSocket|UnixStream|UnixListener|https?://|wss?://' \
-        -- 'apps/alpine-studio/src/*.rs' 'crates/*/src/*.rs' || true)
+        -- 'apps/alpine-editor/src/*.rs' 'crates/*/src/*.rs' || true)
 fi
 if [ -n "$network_source" ]; then
     printf 'product boundary error: shipping source contains a network capability\n' >&2
@@ -55,7 +55,7 @@ fi
 if [ "${ALPINE_PRODUCT_FEATURE_INPUT+x}" = x ]; then
     excluded_features=$ALPINE_PRODUCT_FEATURE_INPUT
 else
-    excluded_features=$(find apps/alpine-studio crates -name Cargo.toml -type f -print0 \
+    excluded_features=$(find apps/alpine-editor crates -name Cargo.toml -type f -print0 \
         | xargs -0 grep -nEH \
             '^[[:space:]]*(ai|cloud|collab|collaboration|debugger|extension|marketplace|plugin|remote|telemetry)s?[[:space:]]*=' \
             2>/dev/null || true)
@@ -69,7 +69,7 @@ fi
 if [ "${ALPINE_PRODUCT_PATH_INPUT+x}" = x ]; then
     excluded_paths=$ALPINE_PRODUCT_PATH_INPUT
 else
-    excluded_paths=$(find apps/alpine-studio/src crates -type f \
+    excluded_paths=$(find apps/alpine-editor/src crates -type f \
         | grep -Ei '/(ai|cloud|collab|collaboration|debugger|extension|marketplace|plugin|remote|telemetry)s?([-_.]|/)' \
         || true)
 fi
@@ -91,10 +91,10 @@ if [ "$mode" = --binary ]; then
         printf 'product boundary error: binary fixture requires both symbol and string input\n' >&2
         exit 2
     else
-        cargo build --release -p alpine-studio --locked
-        binary=target/release/alpine-studio
+        cargo build --release -p alpine-editor --locked
+        binary=target/release/alpine-editor
         if [ ! -x "$binary" ]; then
-            printf 'product boundary error: missing Alpine Studio release binary\n' >&2
+            printf 'product boundary error: missing Alpine Editor release binary\n' >&2
             exit 1
         fi
         binary_symbols=$(nm -u "$binary")
@@ -125,4 +125,4 @@ if [ "$mode" = --binary ]; then
     printf 'binary_bytes=%s\n' "$binary_bytes"
 fi
 
-printf 'Alpine Studio product boundary checks passed\n'
+printf 'Alpine Editor product boundary checks passed\n'

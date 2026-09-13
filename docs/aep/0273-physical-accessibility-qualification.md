@@ -17,7 +17,7 @@ shipping dependency or another semantic tree.
 
 ## Goals
 
-- Launch an exact Alpine Studio binary and attach externally by PID.
+- Launch an exact Alpine Editor binary and attach externally by PID.
 - Query bounded stable identifiers, roles, labels, focus, values, selection,
   actions, and hierarchy through `AXUIElement`.
 - Observe real focus, value, selection, layout, announcement, minimize,

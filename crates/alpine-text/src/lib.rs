@@ -1,4 +1,4 @@
-//! Checked local text storage and one-file editing for Alpine Studio.
+//! Checked local text storage and one-file editing for Alpine Editor.
 //!
 //! Byte offsets are canonical. Third-party rope values never cross this crate's
 //! public boundary, and every externally supplied coordinate is validated before

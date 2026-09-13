@@ -10,7 +10,7 @@ Before any run:
 
 1. Pin Alpine, WGPU, Rust, macOS, hardware, display, font, shader, and workload
    identities.
-2. Build WGPU only in an isolated lab target that cannot enter Alpine Studio's
+2. Build WGPU only in an isolated lab target that cannot enter Alpine Editor's
    feature or dependency graph.
 3. Prove both adapters consume the same canonical scene trace and produce the
    same semantic omission log.

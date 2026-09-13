@@ -8,7 +8,7 @@
 
 ## Context
 
-Alpine Studio needs fast keyboard document and workspace navigation without a
+Alpine Editor needs fast keyboard document and workspace navigation without a
 general picker framework, unbounded language results, remote URI authority, or
 late server responses mutating another editor revision. The existing bounded
 local process, JSON-RPC peer, Rust document owner, command palette, scene, and

@@ -6,7 +6,7 @@ Build toward one keyboard-first, accessible Apple Silicon macOS application:
 a low-memory terminal, Alpine Editor, database views and an agent dock. Alpine
 GPUI and Direct Metal are a candidate foundation, not an assumed winner over
 pinned Zed GPUI, AppKit or SwiftUI. Source paths and the executable remain
-`alpine-studio` during this probe.
+`alpine-editor` during this probe.
 
 The immediate deliverable is a reliable physical editor slice and a scoped
 comparison. Terminal output, database grids and dock updates are bounded replays;

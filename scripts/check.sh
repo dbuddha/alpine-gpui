@@ -11,16 +11,10 @@ scripts/test-ci-admission.sh
 scripts/test-ci-cache-selection.sh
 scripts/test-qualification.sh
 scripts/test-native-benchmark-result.sh
-scripts/test-studio-residency.sh
-scripts/test-alpine-studio-app-bundle.sh
-scripts/test-dogfood-capture.sh
-scripts/test-live-dogfood-capture.sh
+scripts/test-alpine-editor-app-bundle.sh
 scripts/test-studio-ax-process-capture.sh
 scripts/test-zed-lab-evidence.sh
 scripts/test-calibration.sh
-scripts/test-studio-profile.sh
-scripts/test-studio-profile-v2.sh
-scripts/test-studio-profile-evidence.sh
 scripts/test-core-contracts.sh
 scripts/test-metal-contracts.sh
 scripts/verify-metal-library.sh
@@ -29,7 +23,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 if [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
     RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
-        cargo check --locked -p alpine-studio --test native_process
+        cargo check --locked -p alpine-editor --test native_process
 fi
 cargo test --workspace --all-targets --all-features --locked
 scripts/test-studio-concurrency-stress.sh

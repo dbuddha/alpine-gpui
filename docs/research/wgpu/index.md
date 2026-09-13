@@ -23,7 +23,7 @@ promotional overview.
 
 Which WGPU architecture, lifecycle, validation, testing, submission, and memory
 patterns should affect Alpine GPUI, and which would add work that does not help
-the Apple-first Alpine Studio daily-driver goal?
+the Apple-first Alpine Editor daily-driver goal?
 
 ## Answer in one paragraph
 

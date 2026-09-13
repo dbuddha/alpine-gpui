@@ -415,7 +415,7 @@ if [ -n "$workflow_files" ]; then
         /^        if: matrix.domain ==/ { guard = $4; gsub(/\047/, "", guard) }
         /^        timeout-minutes:/ { cap = $2; caps++; if (cap != 24) invalid = 1 }
         /cargo mutants --no-config / {
-            expected = index($0, "--file apps/alpine-studio/src/lib.rs ") ? "studio" : "platform"
+            expected = index($0, "--file apps/alpine-editor/src/lib.rs ") ? "studio" : "platform"
             if (owner != "native-" expected "-mutants" || guard != expected || cap != 24) invalid = 1
             commands[expected]++
         }
@@ -537,9 +537,9 @@ if [ -n "$workflow_files" ]; then
             fail "changed-code mutation is missing shard $shard/8"
         fi
     done
-    if ! printf '%s\n' "$mutation_diff_block" | grep -Fq -- "--exclude 'apps/alpine-studio/src/native_validation/accessibility_process.rs'" \
-        || ! printf '%s\n' "$native_mutation_block" | grep -Fq -- '--file apps/alpine-studio/src/native_validation/accessibility_process.rs' \
-        || ! printf '%s\n' "$native_mutation_block" | grep -Fq 'ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility' \
+    if ! printf '%s\n' "$mutation_diff_block" | grep -Fq -- "--exclude 'apps/alpine-editor/src/native_validation/accessibility_process.rs'" \
+        || ! printf '%s\n' "$native_mutation_block" | grep -Fq -- '--file apps/alpine-editor/src/native_validation/accessibility_process.rs' \
+        || ! printf '%s\n' "$native_mutation_block" | grep -Fq 'ALPINE_EDITOR_NATIVE_PROCESS_SCOPE=accessibility' \
         || ! printf '%s\n' "$native_mutation_block" | grep -Fq 'target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out'; then
         fail 'Studio accessibility process mutation must transfer explicitly from Linux to accessibility-scoped retained native shards'
     fi
@@ -655,7 +655,7 @@ if [ -n "$workflow_files" ]; then
             /^  [A-Za-z0-9_-]+:/ && $1 != "native-platform-contract-mutation:" && capture { exit }
             capture
         ' "$nightly_native_workflow")
-        nightly_studio_accessibility_block=$(awk '
+        nightly_editor_accessibility_block=$(awk '
             /^  native-studio-accessibility-mutation:/ { capture = 1 }
             /^  [A-Za-z0-9_-]+:/ && $1 != "native-studio-accessibility-mutation:" && capture { exit }
             capture
@@ -665,9 +665,9 @@ if [ -n "$workflow_files" ]; then
             || ! grep -Fq 'native-studio-accessibility-mutation:' "$nightly_native_workflow" \
             || [ "$(grep -Ec '^[[:space:]]+shard: [0-7]/8$' "$nightly_native_workflow")" -ne 16 ] \
             || [ "$(grep -Fc -- '--file crates/alpine-platform-macos/src/native_accessibility.rs' "$nightly_native_workflow")" -ne 1 ] \
-            || [ "$(grep -Fc -- '--file apps/alpine-studio/src/native_validation/accessibility_process.rs' "$nightly_native_workflow")" -ne 1 ] \
-            || [ "$(grep -Fc 'ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility' "$nightly_native_workflow")" -ne 1 ] \
-            || [ "$(grep -Fc -- "--file apps/alpine-studio/src/lib.rs --re 'reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence'" "$nightly_native_workflow")" -ne 1 ] \
+            || [ "$(grep -Fc -- '--file apps/alpine-editor/src/native_validation/accessibility_process.rs' "$nightly_native_workflow")" -ne 1 ] \
+            || [ "$(grep -Fc 'ALPINE_EDITOR_NATIVE_PROCESS_SCOPE=accessibility' "$nightly_native_workflow")" -ne 1 ] \
+            || [ "$(grep -Fc -- "--file apps/alpine-editor/src/lib.rs --re 'reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence'" "$nightly_native_workflow")" -ne 1 ] \
             || ! grep -Fq -- '--shard "${{ matrix.shard }}"' "$nightly_native_workflow" \
             || ! grep -Fq 'target/native-accessibility-mutants-${{ matrix.id }}.out' "$nightly_native_workflow" \
             || ! grep -Fq 'target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out' "$nightly_native_workflow" \
@@ -677,7 +677,7 @@ if [ -n "$workflow_files" ]; then
         if [ "$(printf '%s\n' "$nightly_platform_contract_block" | grep -Ec '^[[:space:]]+shard: [0-3]/4$')" -ne 4 ] \
             || [ "$(printf '%s\n' "$nightly_platform_contract_block" | grep -Fc -- '--file crates/alpine-platform-macos/src/lib.rs')" -ne 2 ] \
             || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq -- '--shard "${{ matrix.shard }}"' \
-            || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq -- '--test-package alpine-studio' \
+            || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq -- '--test-package alpine-editor' \
             || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq -- "--re 'native_validation::arm_programmatic_window_close|native_validation::commit_native_text'" \
             || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq 'Hosted AppKit cannot qualify user-facing `performClose`; physical Tasks #72 and #253 own that contract.' \
             || ! printf '%s\n' "$nightly_platform_contract_block" | grep -Fq 'target/native-platform-contract-mutants-${{ matrix.id }}.out' \
@@ -707,7 +707,7 @@ if [ -n "$workflow_files" ]; then
         for mutation_block in \
             "$nightly_platform_contract_block" \
             "$nightly_accessibility_block" \
-            "$nightly_studio_accessibility_block"; do
+            "$nightly_editor_accessibility_block"; do
             output_parent_line=$(printf '%s\n' "$mutation_block" \
                 | grep -nF 'mkdir -p target' | head -n 1 | cut -d: -f1 || true)
             mutation_line=$(printf '%s\n' "$mutation_block" \
@@ -770,7 +770,7 @@ fi
 nightly_assurance_workflow="${ALPINE_NIGHTLY_ASSURANCE_WORKFLOW:-.github/workflows/nightly-assurance.yml}"
 ci_workflow="${ALPINE_CI_WORKFLOW:-.github/workflows/ci.yml}"
 native_surface_mutation_job="$(sed -n '/^  native-surface-mutation:/,/^  [A-Za-z0-9_-][A-Za-z0-9_-]*:$/p' "${nightly_assurance_workflow}")"
-native_studio_contract_mutation_job="$(sed -n '/^  native-studio-contract-mutation:/,/^  [A-Za-z0-9_-][A-Za-z0-9_-]*:$/p' "${nightly_assurance_workflow}")"
+native_editor_contract_mutation_job="$(sed -n '/^  native-studio-contract-mutation:/,/^  [A-Za-z0-9_-][A-Za-z0-9_-]*:$/p' "${nightly_assurance_workflow}")"
 metal_validation_job="$(sed -n '/^  metal-validation:/,/^  [A-Za-z0-9_-][A-Za-z0-9_-]*:$/p' "${nightly_assurance_workflow}")"
 ci_native_mutation_job="$(sed -n '/^  native-mutation:/,/^  [A-Za-z0-9_-][A-Za-z0-9_-]*:$/p' "${ci_workflow}")"
 ci_pass_job="$(sed -n '/^  ci-pass:/,/^  [A-Za-z0-9_-][A-Za-z0-9_-]*:$/p' "${ci_workflow}")"
@@ -809,29 +809,29 @@ if ! printf '%s\n' "${native_surface_mutation_job}" | grep -Fq -- "--exclude-re 
   echo "policy failure: native surface mutation must preserve the reviewed physical-only exclusions" >&2
   exit 1
 fi
-for required in '--test-package alpine-platform-macos' '--test-package alpine-studio' '--no-shuffle' '--sharding round-robin' '--shard "${{ matrix.shard }}"' 'mkdir -p target' 'target/native-surface-mutants-${{ matrix.id }}.out' 'if-no-files-found: error'; do
+for required in '--test-package alpine-platform-macos' '--test-package alpine-editor' '--no-shuffle' '--sharding round-robin' '--shard "${{ matrix.shard }}"' 'mkdir -p target' 'target/native-surface-mutants-${{ matrix.id }}.out' 'if-no-files-found: error'; do
   if ! printf '%s\n' "${native_surface_mutation_job}" | grep -Fq -- "${required}"; then
     echo "policy failure: native surface mutation is missing ${required}" >&2
     exit 1
   fi
 done
-if [ -z "${native_studio_contract_mutation_job}" ]; then
+if [ -z "${native_editor_contract_mutation_job}" ]; then
   echo "policy failure: Nightly assurance must define native-studio-contract-mutation" >&2
   exit 1
 fi
 for shard in 0 1 2 3 4 5 6 7; do
-  if ! printf '%s\n' "${native_studio_contract_mutation_job}" | grep -Fq "shard: \"${shard}/8\""; then
+  if ! printf '%s\n' "${native_editor_contract_mutation_job}" | grep -Fq "shard: \"${shard}/8\""; then
     echo "policy failure: Studio native contract mutation must retain deterministic shard ${shard}/8" >&2
     exit 1
   fi
 done
-for required in '--file crates/alpine-runtime/src/lib.rs' '--file apps/alpine-studio/src/lib.rs' '--test-package alpine-studio' '-- --locked native_process' 'initial_scene' '--shard "${{ matrix.shard }}"' 'target/native-studio-contract-mutants-${{ matrix.id }}.out' 'if-no-files-found: error'; do
-  if ! printf '%s\n' "${native_studio_contract_mutation_job}" | grep -Fq -- "${required}"; then
+for required in '--file crates/alpine-runtime/src/lib.rs' '--file apps/alpine-editor/src/lib.rs' '--test-package alpine-editor' '-- --locked native_process' 'initial_scene' '--shard "${{ matrix.shard }}"' 'target/native-studio-contract-mutants-${{ matrix.id }}.out' 'if-no-files-found: error'; do
+  if ! printf '%s\n' "${native_editor_contract_mutation_job}" | grep -Fq -- "${required}"; then
     echo "policy failure: Studio native contract mutation is missing ${required}" >&2
     exit 1
   fi
 done
-for forbidden in '--file crates/alpine-platform-macos/src/native.rs' '--file crates/alpine-runtime/src/lib.rs' '--file apps/alpine-studio/src/lib.rs'; do
+for forbidden in '--file crates/alpine-platform-macos/src/native.rs' '--file crates/alpine-runtime/src/lib.rs' '--file apps/alpine-editor/src/lib.rs'; do
   if printf '%s\n' "${metal_validation_job}" | grep -Fq -- "${forbidden}"; then
     echo "policy failure: serial metal-validation must not absorb ${forbidden}" >&2
     exit 1
@@ -839,24 +839,24 @@ for forbidden in '--file crates/alpine-platform-macos/src/native.rs' '--file cra
 done
 
 ci_native_surface_scope="$(printf '%s\n' "${ci_native_mutation_job}" | grep -- '--file crates/alpine-platform-macos/src/native.rs' || true)"
-ci_native_studio_scope="$(printf '%s\n' "${ci_native_mutation_job}" | grep -- '--file apps/alpine-studio/src/lib.rs' || true)"
+ci_native_editor_scope="$(printf '%s\n' "${ci_native_mutation_job}" | grep -- '--file apps/alpine-editor/src/lib.rs' || true)"
 ci_native_runtime_scope="$(printf '%s\n' "${ci_native_mutation_job}" | grep -- '--file crates/alpine-runtime/src/lib.rs' || true)"
 if ! printf '%s\n' "${ci_native_surface_scope}" | grep -Fq -- '--sharding round-robin'; then
   echo "policy failure: exact-head native surface mutation must retain round-robin partitioning" >&2
   exit 1
 fi
-for scope in "${ci_native_surface_scope}" "${ci_native_studio_scope}"; do
+for scope in "${ci_native_surface_scope}" "${ci_native_editor_scope}"; do
   if [ -z "${scope}" ] || printf '%s\n' "${scope}" | grep -Fq -- '--in-diff'; then
     echo "policy failure: exact-head native process mutation scopes must be exhaustive" >&2
     exit 1
   fi
-  if ! printf '%s\n' "${scope}" | grep -Fq -- '--test-package alpine-studio'; then
+  if ! printf '%s\n' "${scope}" | grep -Fq -- '--test-package alpine-editor'; then
     echo "policy failure: exact-head native process mutation scopes must run Studio process tests" >&2
     exit 1
   fi
 done
 if [ -z "${ci_native_runtime_scope}" ] \
-  || ! printf '%s\n' "${ci_native_runtime_scope}" | grep -Fq -- '--test-package alpine-studio' \
+  || ! printf '%s\n' "${ci_native_runtime_scope}" | grep -Fq -- '--test-package alpine-editor' \
   || ! printf '%s\n' "${ci_native_runtime_scope}" | grep -Fq -- '-- --locked native_process'; then
   echo "policy failure: exact-head runtime mutation must use the bounded Studio native process control" >&2
   exit 1

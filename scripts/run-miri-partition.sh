@@ -26,7 +26,7 @@ run_studio() {
                 fi
             done
         fi
-        cargo "+$toolchain" miri test -p alpine-studio --lib --locked -- "$filter" "$@"
+        cargo "+$toolchain" miri test -p alpine-editor --lib --locked -- "$filter" "$@"
     done
 }
 

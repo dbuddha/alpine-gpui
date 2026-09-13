@@ -21,7 +21,7 @@ are included or explicitly reported as separate stages.
 
 ### Product journey
 
-Measure an externally observable editor outcome across Alpine Studio, pinned
+Measure an externally observable editor outcome across Alpine Editor, pinned
 Zed stable, and Sublime safe mode. The result is valid only when final bytes,
 selection, viewport, visible output, accessibility, lifecycle, and exclusions
 match.

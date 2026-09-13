@@ -1,6 +1,6 @@
-# Alpine Studio dogfood capture
+# Alpine Editor dogfood capture
 
-This protocol records local Alpine Studio sessions as revision-bound evidence for
+This protocol records local Alpine Editor sessions as revision-bound evidence for
 [Task #238](https://github.com/dbuddha/alpine-gpui/issues/238). It supports the
 later startup and interaction baselines in
 [Task #240](https://github.com/dbuddha/alpine-gpui/issues/240) and residency
@@ -14,8 +14,8 @@ issues retain historical context.
 ## Current implementation status
 
 `alpine-assurance` can validate, report, and atomically seal version 1 and
-version 2 Alpine Studio dogfood bundles. Studio can emit one bounded
-`alpine-studio-internal-diagnostic/v1` JSON record after a clean close when all
+version 2 Alpine Editor dogfood bundles. Studio can emit one bounded
+`alpine-editor-internal-diagnostic/v1` JSON record after a clean close when all
 four explicit local environment values are present. The output copies final
 runtime, surface, queue, cache, language, accessibility, and lifecycle evidence,
 refuses overwrite and symbolic-link traversal, and identifies unavailable
@@ -32,10 +32,10 @@ establishes no baseline or comparative claim.
 
 The opt-in internal contract requires:
 
-- `ALPINE_STUDIO_DOGFOOD_OUTPUT`: normalized absolute new JSON file path.
-- `ALPINE_STUDIO_DOGFOOD_WORKLOAD_ID`: bounded lowercase workload slug.
-- `ALPINE_STUDIO_DOGFOOD_REVISION`: exact lowercase 40-character revision.
-- `ALPINE_STUDIO_DOGFOOD_CAPTURED_AT_UTC`: UTC capture start timestamp.
+- `ALPINE_EDITOR_DOGFOOD_OUTPUT`: normalized absolute new JSON file path.
+- `ALPINE_EDITOR_DOGFOOD_WORKLOAD_ID`: bounded lowercase workload slug.
+- `ALPINE_EDITOR_DOGFOOD_REVISION`: exact lowercase 40-character revision.
+- `ALPINE_EDITOR_DOGFOOD_CAPTURED_AT_UTC`: UTC capture start timestamp.
 
 Partial identity, an existing output, an unavailable parent, and a parent path
 that traverses a symbolic link fail before publication. Task #462 owns the only
@@ -164,7 +164,7 @@ and the destination must not.
 The canonical minimal draft shape is:
 
 ```toml
-schema = "alpine-studio-dogfood-draft/v2"
+schema = "alpine-editor-dogfood-draft/v2"
 
 [identity]
 id = "physical-alpine-session"
@@ -210,7 +210,7 @@ fail without creating visible or physical work.
 
 ```sh
 scripts/capture-studio-dogfood.sh \
-  --binary 'target/release/Alpine Studio.app/Contents/MacOS/alpine-studio' \
+  --binary 'target/release/Alpine Editor.app/Contents/MacOS/alpine-editor' \
   --repository . \
   --workspace . \
   --draft path/to/draft-v2.toml \

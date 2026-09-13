@@ -9,7 +9,7 @@
 
 ## Motivation and daily-driver journey
 
-Alpine Studio already shapes and renders marked text for the editor, find,
+Alpine Editor already shapes and renders marked text for the editor, find,
 quick open, command palette, and project search. Before this decision, those
 owners trusted main-thread ordering alone. AppKit can discard an old conversion
 session during focus or lifecycle changes and still deliver delayed callbacks.
@@ -78,7 +78,7 @@ marked text, discard reentrancy guard, and rejected-callback count. All native
 state remains main-thread-only and private; no AppKit handle crosses the public
 contract.
 
-`StudioApp` owns the expected epoch and stale/future evidence counters. It
+`EditorApp` owns the expected epoch and stale/future evidence counters. It
 remains the sole owner of editor and transient-surface composition state.
 Cancellation does not clone text, retain a callback, or enqueue work.
 

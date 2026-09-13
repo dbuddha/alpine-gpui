@@ -100,7 +100,7 @@ jobs:
           scripts/test-classifier.sh
           scripts/test-ci-admission.sh
           scripts/test-product-boundary.sh
-          scripts/test-alpine-studio-app-bundle.sh
+          scripts/test-alpine-editor-app-bundle.sh
           scripts/test-ci-cache-selection.sh
           scripts/test-qualification.sh
           scripts/test-zed-lab-evidence.sh
@@ -161,12 +161,12 @@ jobs:
           path: target/native-acceptance
           retention-days: 7
           if-no-files-found: warn
-      - name: Audit Alpine Studio release product boundary
+      - name: Audit Alpine Editor release product boundary
         shell: bash
         run: |
           mkdir -p target
           scripts/check-product-boundary.sh --binary | tee target/studio-product-boundary.txt
-      - name: Upload Alpine Studio product-boundary evidence
+      - name: Upload Alpine Editor product-boundary evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: studio-product-boundary-${{ github.sha }}
@@ -394,7 +394,7 @@ jobs:
       - name: Require changed shipping mutants to be killed
         # Linux cannot execute macOS-only validation entry points. Their
         # mutations are owned by the required Apple Silicon Metal job below.
-        run: cargo mutants --workspace --exclude alpine-assurance --exclude 'crates/alpine-text-layout/src/native.rs' --exclude 'crates/alpine-platform-macos/src/native_accessibility.rs' --exclude 'tools/alpine-ax-client/src/native.rs' --exclude 'tools/alpine-ax-client/src/native_factory.rs' --exclude 'apps/alpine-studio/src/native_validation/accessibility_process.rs' --exclude-re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence|initial_scene|run_on_native_surface|activation_revision_and_target_identity_are_preserved' --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/mutants-${{ matrix.id }}.out" -- --locked
+        run: cargo mutants --workspace --exclude alpine-assurance --exclude 'crates/alpine-text-layout/src/native.rs' --exclude 'crates/alpine-platform-macos/src/native_accessibility.rs' --exclude 'tools/alpine-ax-client/src/native.rs' --exclude 'tools/alpine-ax-client/src/native_factory.rs' --exclude 'apps/alpine-editor/src/native_validation/accessibility_process.rs' --exclude-re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence|initial_scene|run_on_native_surface|activation_revision_and_target_identity_are_preserved' --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/mutants-${{ matrix.id }}.out" -- --locked
       - name: Require changed assurance mutants to be killed
         run: cargo mutants -p alpine-assurance --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/assurance-mutants-${{ matrix.id }}.out" -- --locked
       - name: Upload mutation evidence
@@ -563,7 +563,7 @@ jobs:
             > target/rust-analyzer-qualification/rust-analyzer
           chmod +x target/rust-analyzer-qualification/rust-analyzer
           echo "ALPINE_RUST_ANALYZER=$PWD/target/rust-analyzer-qualification/rust-analyzer" >> "$GITHUB_ENV"
-          find apps/alpine-studio/tests/fixtures/rust-analyzer-workspace -type f -print0 \
+          find apps/alpine-editor/tests/fixtures/rust-analyzer-workspace -type f -print0 \
             | sort -z \
             | xargs -0 shasum -a 256 \
             > target/rust-analyzer-qualification/workspace-files.sha256
@@ -578,10 +578,10 @@ jobs:
           } | tee target/rust-analyzer-qualification/environment.txt
       - name: Qualify the real rust-analyzer document lifecycle
         run: |
-          cargo test --locked -p alpine-studio \
+          cargo test --locked -p alpine-editor \
             lsp_client::tests::pinned_rust_analyzer_qualifies_real_document_lifecycle \
             -- --ignored --exact --nocapture
-          cargo test --locked -p alpine-studio \
+          cargo test --locked -p alpine-editor \
             rust_diagnostics::tests::pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission \
             -- --ignored --exact --nocapture
       - name: Run Metal API and shader validation
@@ -807,12 +807,12 @@ jobs:
           cargo mutants --no-config --file crates/alpine-metal/src/native.rs --features platform-spi --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-mutants-${{ matrix.id }}.out" -- --locked
           cargo mutants --no-config --file crates/alpine-metal/src/platform_spi.rs --features platform-spi --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-platform-spi-mutants-${{ matrix.id }}.out" -- --locked
           cargo mutants --no-config --file crates/alpine-metal/src/submission.rs --features platform-spi --re 'MetalBackend::render_callback_drawable|record_drawable_attempt|verify_drawable_attempt_lifecycle|complete_drawable_attempt' --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-submission-mutants-${{ matrix.id }}.out" -- --locked
-          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re 'validate_initialization_rollback|native_validation::arm_window_close|native_validation::arm_user_window_close|native_validation::NativeAccessibilityEvidence::' --test-package alpine-platform-macos --cargo-arg=--package=alpine-platform-macos --test-package alpine-studio --cargo-arg=--package=alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-platform-contract-mutants-${{ matrix.id }}.out" -- --locked
-          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|schedule_validation_user_window_close|NativeSurface::arm_window_close|NativeSurface::arm_user_window_close' --test-package alpine-platform-macos --cargo-arg=--package=alpine-platform-macos --test-package alpine-studio --cargo-arg=--package=alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --sharding round-robin --output "target/native-platform-mutants-${{ matrix.id }}.out" -- --locked
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/lib.rs --exclude-re 'validate_initialization_rollback|native_validation::arm_window_close|native_validation::arm_user_window_close|native_validation::NativeAccessibilityEvidence::' --test-package alpine-platform-macos --cargo-arg=--package=alpine-platform-macos --test-package alpine-editor --cargo-arg=--package=alpine-editor --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-platform-contract-mutants-${{ matrix.id }}.out" -- --locked
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/native.rs --exclude-re 'validate_initialization_rollback|run_until_frame_terminal|stop_validation_event_loop|schedule_validation_window_close|schedule_validation_user_window_close|NativeSurface::arm_window_close|NativeSurface::arm_user_window_close' --test-package alpine-platform-macos --cargo-arg=--package=alpine-platform-macos --test-package alpine-editor --cargo-arg=--package=alpine-editor --shard "${{ matrix.shard }}" --no-shuffle --sharding round-robin --output "target/native-platform-mutants-${{ matrix.id }}.out" -- --locked
           env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/native_accessibility.rs --re 'RefreshOutcome::post|NotificationIntent::kind|NotificationIntent::record|NotificationIntent::retained_bytes|NotificationIntent::post|NativeAccessibilityAdapter::refresh_view_if_active|NativeAccessibilityAdapter::refresh_view|NativeAccessibilityAdapter::reconcile_elements|NativeAccessibilityAdapter::append_notification_intents|NativeAccessibilityAdapter::push_notification|NativeAccessibilityAdapter::push_layout_notification|NativeAccessibilityAdapter::push_announcement|NativeAccessibilityAdapter::record_posted|NativeAccessibilityAdapter::begin_revoke|NativeAccessibilityAdapter::finish_revoke|NativeAccessibilityAdapter::set_selection|NativeAccessibilityAdapter::activate|NativeAccessibilityElement::with_adapter|NativeAccessibilityElement::with_adapter_mut|NativeAccessibilityElement::accessibility_frame_impl|layout_user_info_valid|announcement_user_info_valid|layout_semantics_changed|reusable_semantics|checked_range' --test-package alpine-platform-macos --cargo-arg=--package=alpine-platform-macos --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-accessibility-mutants-${{ matrix.id }}.out" -- --locked --test native_accessibility
-          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/native_accessibility.rs --re 'bounded_screen_frame|NativeAccessibilityAdapter::inspect_view|NativeAccessibilityAdapter::activate_named_view' --test-package alpine-platform-macos --cargo-arg=--package=alpine-platform-macos --test-package alpine-studio --cargo-arg=--package=alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-studio-accessibility-mutants-${{ matrix.id }}.out" -- --locked
-          env -u ALPINE_RUST_ANALYZER ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility cargo mutants --no-config --file apps/alpine-studio/src/native_validation/accessibility_process.rs --test-package alpine-studio --cargo-arg=--package=alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out" -- --locked
-          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-runtime/src/lib.rs --re 'run_on_native_surface' --test-package alpine-runtime --cargo-arg=--package=alpine-runtime --test-package alpine-studio --cargo-arg=--package=alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-runtime-mutants-${{ matrix.id }}.out" -- --locked native_process
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-platform-macos/src/native_accessibility.rs --re 'bounded_screen_frame|NativeAccessibilityAdapter::inspect_view|NativeAccessibilityAdapter::activate_named_view' --test-package alpine-platform-macos --cargo-arg=--package=alpine-platform-macos --test-package alpine-editor --cargo-arg=--package=alpine-editor --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-studio-accessibility-mutants-${{ matrix.id }}.out" -- --locked
+          env -u ALPINE_RUST_ANALYZER ALPINE_EDITOR_NATIVE_PROCESS_SCOPE=accessibility cargo mutants --no-config --file apps/alpine-editor/src/native_validation/accessibility_process.rs --test-package alpine-editor --cargo-arg=--package=alpine-editor --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-studio-accessibility-process-mutants-${{ matrix.id }}.out" -- --locked
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file crates/alpine-runtime/src/lib.rs --re 'run_on_native_surface' --test-package alpine-runtime --cargo-arg=--package=alpine-runtime --test-package alpine-editor --cargo-arg=--package=alpine-editor --shard "${{ matrix.shard }}" --no-shuffle --in-diff target/alpine.diff --output "target/native-runtime-mutants-${{ matrix.id }}.out" -- --locked native_process
           if find "target/native-runtime-mutants-${{ matrix.id }}.out" -name unviable.txt -type f -size +0c | grep -q .; then
             find "target/native-runtime-mutants-${{ matrix.id }}.out" -name unviable.txt -type f -size +0c -exec cat {} \;
             exit 1
@@ -825,7 +825,7 @@ jobs:
         if: matrix.domain == 'studio'
         timeout-minutes: 24
         run: |
-          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-studio/src/lib.rs --re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence|initial_scene' --test-package alpine-studio --cargo-arg=--package=alpine-studio --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-studio-mutants-${{ matrix.id }}.out" -- --locked
+          env -u ALPINE_RUST_ANALYZER cargo mutants --no-config --file apps/alpine-editor/src/lib.rs --re 'native_validation::|native_file_app|native_explicit_path_app|reset_native_validation_dispatch_counts|native_validation_dispatch_counts|reset_native_validation_language_evidence|record_native_validation_language_snapshot|record_native_validation_language_publication|record_native_validation_language_submission|record_native_validation_language_observation|native_validation_language_evidence|initial_scene' --test-package alpine-editor --cargo-arg=--package=alpine-editor --shard "${{ matrix.shard }}" --no-shuffle --output "target/native-studio-mutants-${{ matrix.id }}.out" -- --locked
       - name: Require complete native mutation receipts
         if: always()
         env:

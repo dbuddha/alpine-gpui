@@ -20,7 +20,7 @@ sha256() {
 }
 scopes() {
     if [ "$domain" = studio ]; then
-        printf '%s\n' 'native-studio-mutants|apps/alpine-studio/src/lib.rs|full'
+        printf '%s\n' 'native-studio-mutants|apps/alpine-editor/src/lib.rs|full'
     else
         cat <<'SCOPES'
 native-mutants|crates/alpine-metal/src/native.rs|changed
@@ -30,7 +30,7 @@ native-platform-contract-mutants|crates/alpine-platform-macos/src/lib.rs|changed
 native-platform-mutants|crates/alpine-platform-macos/src/native.rs|full
 native-accessibility-mutants|crates/alpine-platform-macos/src/native_accessibility.rs|changed
 native-studio-accessibility-mutants|crates/alpine-platform-macos/src/native_accessibility.rs|changed
-native-studio-accessibility-process-mutants|apps/alpine-studio/src/native_validation/accessibility_process.rs|changed
+native-studio-accessibility-process-mutants|apps/alpine-editor/src/native_validation/accessibility_process.rs|changed
 native-runtime-mutants|crates/alpine-runtime/src/lib.rs|strict
 native-ax-client-factory-mutants|tools/alpine-ax-client/src/native_factory.rs|optional
 SCOPES

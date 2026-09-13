@@ -17,14 +17,14 @@ case "$scope" in shipping|all) ;; *) echo 'invalid native scope' >&2; exit 2 ;; 
     echo 'unset CARGO_ENCODED_RUSTFLAGS and CARGO_BUILD_TARGET for native acceptance' >&2; exit 2;
 }
 # Prevent inherited child/scoping controls from selecting a different journey.
-unset ALPINE_STUDIO_NATIVE_ACCESSIBILITY_CHILD ALPINE_STUDIO_NATIVE_ACCESSIBILITY_OMIT
-unset ALPINE_STUDIO_NATIVE_LSP_SERVER ALPINE_STUDIO_NATIVE_PROCESS_SCOPE
+unset ALPINE_EDITOR_NATIVE_ACCESSIBILITY_CHILD ALPINE_EDITOR_NATIVE_ACCESSIBILITY_OMIT
+unset ALPINE_EDITOR_NATIVE_LSP_SERVER ALPINE_EDITOR_NATIVE_PROCESS_SCOPE
 unset ALPINE_PRESENTATION_EVIDENCE_MODE
 if [ "$mode" = hosted ]; then
     export ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct
 fi
 if [ "$scope" = shipping ]; then
-    export ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=shipping
+    export ALPINE_EDITOR_NATIVE_PROCESS_SCOPE=shipping
 fi
 export ALPINE_REQUIRE_NATIVE_VALIDATION=1
 export RUSTFLAGS="${RUSTFLAGS:-} --cfg alpine_native_validation"
@@ -35,9 +35,9 @@ mkdir -p target/native-acceptance
 log=$(mktemp "target/native-acceptance/$mode-$scope.XXXXXX")
 printf 'Native acceptance: mode=%s scope=%s log=%s/%s\n' "$mode" "$scope" "$repo_root" "$log"
 if [ "$scope" = shipping ]; then
-    set -- --package=alpine-studio --test=native_process
+    set -- --package=alpine-editor --test=native_process
 else
-    set -- --package=alpine-studio --package=alpine-platform-macos --package=alpine-metal --package=alpine-runtime --all-targets
+    set -- --package=alpine-editor --package=alpine-platform-macos --package=alpine-metal --package=alpine-runtime --all-targets
 fi
 if cargo test --locked "$@" >"$log" 2>&1; then
     cat "$log"

@@ -17,12 +17,12 @@ test "$2" = --locked
 test "$ALPINE_REQUIRE_NATIVE_VALIDATION" = 1
 test "$CARGO_TARGET_DIR" = "$EXPECTED_TARGET"
 case "$RUSTFLAGS" in *'--cfg alpine_native_validation'*) ;; *) exit 98 ;; esac
-test -z "${ALPINE_STUDIO_NATIVE_ACCESSIBILITY_CHILD:-}"
-test -z "${ALPINE_STUDIO_NATIVE_LSP_SERVER:-}"
+test -z "${ALPINE_EDITOR_NATIVE_ACCESSIBILITY_CHILD:-}"
+test -z "${ALPINE_EDITOR_NATIVE_LSP_SERVER:-}"
 test "${ALPINE_PRESENTATION_EVIDENCE_MODE:-physical}" = "$EXPECTED_MODE"
-test "${ALPINE_STUDIO_NATIVE_PROCESS_SCOPE:-all}" = "$EXPECTED_SCOPE"
+test "${ALPINE_EDITOR_NATIVE_PROCESS_SCOPE:-all}" = "$EXPECTED_SCOPE"
 case "$EXPECTED_SCOPE" in
- shipping) test "$3" = --package=alpine-studio; test "$4" = --test=native_process ;;
+ shipping) test "$3" = --package=alpine-editor; test "$4" = --test=native_process ;;
  all) test "$#" = 7; test "$7" = --all-targets ;;
 esac
 if [ "${FIXTURE_RESULT:-0}" != 0 ]; then echo 'retained-native-fixture-failure'; exit "$FIXTURE_RESULT"; fi
@@ -36,7 +36,7 @@ export EXPECTED_TARGET="$fixture_repo/target/native-validation"
 run() { "$fixture/repo/scripts/check-native.sh" "$@" >"$fixture/result" 2>&1; }
 export EXPECTED_MODE=physical EXPECTED_SCOPE=shipping
 # An inherited hosted/child environment must not alter a requested physical run.
-ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct ALPINE_STUDIO_NATIVE_ACCESSIBILITY_CHILD=1 run physical shipping
+ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct ALPINE_EDITOR_NATIVE_ACCESSIBILITY_CHILD=1 run physical shipping
 export EXPECTED_MODE=hosted-direct EXPECTED_SCOPE=all
 run hosted all
 # Deliberately configured isolated build directories remain usable.

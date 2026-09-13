@@ -8,7 +8,7 @@
 
 ## Context
 
-Alpine Studio needs local folder search that becomes useful before every file has
+Alpine Editor needs local folder search that becomes useful before every file has
 been scanned, without adding a persistent content index, watcher, regex engine,
 unbounded producer channel, or startup work. Search must preserve exact UTF-8
 byte identity so selecting a stale result cannot navigate to unrelated text.

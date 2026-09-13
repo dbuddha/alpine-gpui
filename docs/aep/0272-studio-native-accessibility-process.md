@@ -115,7 +115,7 @@ These constants detect hangs and runaway work; they are not latency budgets or
 performance qualification.
 
 Mutation jobs for this module set
-`ALPINE_STUDIO_NATIVE_PROCESS_SCOPE=accessibility`. The native process target
+`ALPINE_EDITOR_NATIVE_PROCESS_SCOPE=accessibility`. The native process target
 therefore runs the accessibility child and omission controls without also
 running unrelated shipping, recovery, clipboard, file-tree, or search journeys.
 The complete native process remains required by Metal behavior validation. This

@@ -1,7 +1,7 @@
-# Alpine Studio adversarial review
+# Alpine Editor adversarial review
 
 This review records the accepted 2026-08 implementation verdict for Alpine
-GPUI and Alpine Studio. It evaluates correctness first, then performance,
+GPUI and Alpine Editor. It evaluates correctness first, then performance,
 resource efficiency, and delivery speed. Research history and future updates
 belong to [Research #118](https://github.com/dbuddha/alpine-gpui/issues/118).
 The current-state correction is tracked by
@@ -36,7 +36,7 @@ packaging, and defensible fixed-hardware evidence remain open.
 | Native lifecycle | One AppKit surface, CAMetalDisplayLink, visibility gating, latest-wins invalidation, deterministic close | Exercise only production paths and preserve bounded watchdog evidence | Multi-window runtime | Correctness |
 | Presentation | Direct drawable presentation, three completion-owned slots, zero idle work | Finish native close, compositor, idle, and lifecycle evidence without reintroducing callback waits | Background rendering and deep queues | Performance, responsiveness |
 | Scene | Deterministic semantic and CPU oracles, clips, glyph instances, ordered operations, and Direct Metal specialization | Stabilize realistic code-viewport traces and qualification workloads | Rich images, shadows, arbitrary paths, animation | Correctness, memory |
-| Product state | Direct StudioApp to Workspace to Editor to Buffer ownership and explicit revisions | Finish language, settings, accessibility, and dogfood slices without a general component graph | GPUI entity compatibility and distributed state | Correctness, delivery |
+| Product state | Direct EditorApp to Workspace to Editor to Buffer ownership and explicit revisions | Finish language, settings, accessibility, and dogfood slices without a general component graph | GPUI entity compatibility and distributed state | Correctness, delivery |
 | Text | Local snapshots, Unicode mappings, bounded undo, visible-range CoreText shaping, and byte-accounted caches | Qualify large files, IME, external changes, and sustained editing | Collaboration clocks and a custom rope | Correctness, memory |
 | Product scope | Local-only editor-first boundary | Enforce excluded subsystems through binary and process audits | AI, collaboration, cloud, telemetry, plugins, remote, debugger, terminal, tasks, Git UI | Efficiency, delivery |
 | Qualification | Exact trace identity and semantic admission | Separate adaptation, renderer stages, product journeys, memory, and exclusions | Headline averages and universal fastest-framework claims | Claim validity |
@@ -100,7 +100,7 @@ an Alpine implementation choice.
    [comparator protocol](../quality/comparator-protocol.md).
 
 The exact gate status and open PR order are retained in the
-[daily-driver path](../use-cases/alpine-studio-highfidelity.md). M5 is the
+[daily-driver path](../use-cases/alpine-editor-highfidelity.md). M5 is the
 selected Apple Silicon macOS daily-driver behavior and dogfood gate. M7 is the
 separate supported, packaged, fixed-hardware-qualified version 1 gate.
 
@@ -129,7 +129,7 @@ physical footprint are both required. A stable cache does not excuse total
 footprint growth, and a low footprint does not excuse inaccurate accounting.
 
 The permitted claims are Alpine GPUI versus pinned GPUI for named matched
-renderer workloads, and Alpine Studio versus pinned Zed and externally measured
+renderer workloads, and Alpine Editor versus pinned Zed and externally measured
 Sublime for named normalized local-editor journeys. Editor evidence never proves
 that Alpine is the fastest general UI framework.
 

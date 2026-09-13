@@ -5,7 +5,7 @@ Start with the topic you need:
 - [Current capability probe](alpine-capability-probe.md) and [workspace consolidation](alpine-consolidation.md).
 - [Build and run](development.md).
 - [Testing and acceptance](testing.md).
-- [Architecture map](../ARCHITECTURE.md), with links to detailed invariants.
+- [Architecture map](architecture/README.md), with links to detailed invariants.
 - [Settings](reference/studio-settings.md) and [current limitations](reference/limitations.md).
 - [Debugging](debugging/README.md).
 - [Research findings](research/index.md), only when a question needs source comparison.

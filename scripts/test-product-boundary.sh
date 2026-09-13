@@ -4,11 +4,11 @@ set -eu
 fixture_dir=$(mktemp -d)
 trap 'rm -rf "$fixture_dir"' EXIT HUP INT TERM
 
-dependencies=$(cat assurance/alpine-studio-dependencies.txt)
+dependencies=$(cat assurance/alpine-editor-dependencies.txt)
 
 ALPINE_PRODUCT_DEPENDENCY_INPUT=$dependencies \
 ALPINE_PRODUCT_SYMBOL_INPUT='_objc_msgSend' \
-ALPINE_PRODUCT_STRING_INPUT='Alpine Studio' \
+ALPINE_PRODUCT_STRING_INPUT='Alpine Editor' \
     scripts/check-product-boundary.sh --binary >/dev/null
 
 invalid_dependencies=$(printf '%s\nreqwest v0.12.0\n' "$dependencies")
@@ -39,7 +39,7 @@ grep -Fq 'shipping manifest declares an excluded product feature' "$fixture_dir/
 if ALPINE_PRODUCT_DEPENDENCY_INPUT=$dependencies \
     ALPINE_PRODUCT_SOURCE_INPUT='' \
     ALPINE_PRODUCT_FEATURE_INPUT='' \
-    ALPINE_PRODUCT_PATH_INPUT='apps/alpine-studio/src/plugin_host.rs' \
+    ALPINE_PRODUCT_PATH_INPUT='apps/alpine-editor/src/plugin_host.rs' \
     scripts/check-product-boundary.sh > "$fixture_dir/path.log" 2>&1; then
     printf 'product boundary test error: excluded subsystem path unexpectedly passed\n' >&2
     exit 1
@@ -58,7 +58,7 @@ grep -Fq 'shipping manifest declares an excluded product feature' "$fixture_dir/
 if ALPINE_PRODUCT_DEPENDENCY_INPUT=$dependencies \
     ALPINE_PRODUCT_SOURCE_INPUT='' \
     ALPINE_PRODUCT_FEATURE_INPUT='' \
-    ALPINE_PRODUCT_PATH_INPUT='apps/alpine-studio/src/extensions/mod.rs' \
+    ALPINE_PRODUCT_PATH_INPUT='apps/alpine-editor/src/extensions/mod.rs' \
     scripts/check-product-boundary.sh > "$fixture_dir/plural-path.log" 2>&1; then
     printf 'product boundary test error: plural excluded subsystem path unexpectedly passed\n' >&2
     exit 1
@@ -70,7 +70,7 @@ if ALPINE_PRODUCT_DEPENDENCY_INPUT=$dependencies \
     ALPINE_PRODUCT_FEATURE_INPUT='' \
     ALPINE_PRODUCT_PATH_INPUT='' \
     ALPINE_PRODUCT_SYMBOL_INPUT='_socket' \
-    ALPINE_PRODUCT_STRING_INPUT='Alpine Studio' \
+    ALPINE_PRODUCT_STRING_INPUT='Alpine Editor' \
     scripts/check-product-boundary.sh --binary > "$fixture_dir/symbol.log" 2>&1; then
     printf 'product boundary test error: network symbol unexpectedly passed\n' >&2
     exit 1
@@ -93,8 +93,8 @@ grep -Fq 'release binary contains a network endpoint' "$fixture_dir/endpoint.log
 # isolated fixture avoids overwriting evidence from an actual release build.
 mkdir -p "$fixture_dir/workflow/scripts" "$fixture_dir/workflow/assurance"
 cp scripts/check-product-boundary.sh "$fixture_dir/workflow/scripts/"
-cp assurance/alpine-studio-dependencies.txt "$fixture_dir/workflow/assurance/"
-step=$(awk '/- name: Audit Alpine Studio release product boundary/ { active=1; next }
+cp assurance/alpine-editor-dependencies.txt "$fixture_dir/workflow/assurance/"
+step=$(awk '/- name: Audit Alpine Editor release product boundary/ { active=1; next }
     active && /- name:/ { exit } active { print }' .github/workflows/ci.yml)
 command=$(printf '%s\n' "$step" | awk '
     /^        run: \|$/ { body=1; next }
@@ -114,7 +114,7 @@ for fixture in valid invalid; do
         ALPINE_PRODUCT_DEPENDENCY_INPUT=$input \
         ALPINE_PRODUCT_SOURCE_INPUT='' ALPINE_PRODUCT_FEATURE_INPUT='' \
         ALPINE_PRODUCT_PATH_INPUT='' ALPINE_PRODUCT_SYMBOL_INPUT='_objc_msgSend' \
-        ALPINE_PRODUCT_STRING_INPUT='Alpine Studio' \
+        ALPINE_PRODUCT_STRING_INPUT='Alpine Editor' \
         bash "$@" -c "$command") > "$fixture_dir/workflow-$fixture.log" 2>&1 || result=$?
     expected=0
     [ "$fixture" != invalid ] || expected=1
@@ -138,7 +138,7 @@ chmod +x "$fixture_dir/cargo-bin/cargo"
 for status in 0 42; do
     result=0
     CARGO_TERM_COLOR=always PATH="$fixture_dir/cargo-bin:$PATH" \
-        ALPINE_BOUNDARY_TEST_CLOSURE="$PWD/assurance/alpine-studio-dependencies.txt" \
+        ALPINE_BOUNDARY_TEST_CLOSURE="$PWD/assurance/alpine-editor-dependencies.txt" \
         ALPINE_BOUNDARY_TEST_EXIT=$status ALPINE_PRODUCT_SOURCE_INPUT='' \
         ALPINE_PRODUCT_FEATURE_INPUT='' ALPINE_PRODUCT_PATH_INPUT='' \
         scripts/check-product-boundary.sh > "$fixture_dir/cargo-$status.log" 2>&1 || result=$?
@@ -148,4 +148,4 @@ for status in 0 42; do
     }
 done
 
-printf 'Alpine Studio product boundary tests passed\n'
+printf 'Alpine Editor product boundary tests passed\n'

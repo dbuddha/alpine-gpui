@@ -25,7 +25,7 @@ E3 when they depend on measured behavior. Comparative dominance requires E4.
 | Avoided work, such as zero warm glyph rasterization | Deterministic counters and regression | Correct viewport output and cache lifecycle remain green |
 | Alpine revision improved a local metric | Reproduced before and after distributions | Same behavior, workload, environment, and build identity |
 | Alpine GPUI is faster or more memory-efficient than pinned GPUI for a workload | E4 paired renderer qualification | Semantically equivalent scene, adaptation reported separately, no omitted operations |
-| Alpine Studio is faster or more memory-efficient than Zed or Sublime for a journey | E4 paired product qualification | Matched local behavior, normalized and stock configurations reported separately |
+| Alpine Editor is faster or more memory-efficient than Zed or Sublime for a journey | E4 paired product qualification | Matched local behavior, normalized and stock configurations reported separately |
 | Active editing meets 120 Hz deadlines | Fixed-hardware frame and latency evidence | Named active journey and calibrated display mode; idle remains zero frames |
 | Input-to-photon latency | Calibrated optical E4 evidence | Endpoint, actuator or event source, display state, sensor, and raw traces retained |
 

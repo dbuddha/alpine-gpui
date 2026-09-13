@@ -6,7 +6,7 @@ native ownership, dependency, unsafe, and qualification-policy changes.
 
 ## Product and rendering target
 
-Alpine Studio is a full graphical native editor with terminal-like
+Alpine Editor is a full graphical native editor with terminal-like
 implementation discipline. It is not a terminal emulator, fixed-cell TUI,
 browser runtime, game engine, or GPUI compatibility layer.
 
@@ -66,7 +66,7 @@ GPU completion alone as an input-latency claim.
   glyph rasterization, atlas publication, or atlas upload.
 - Accessibility semantics are separate from visual primitives and remain a
   first-class correctness gate.
-- Alpine Studio remains local only, with no collaboration, hosted AI, cloud,
+- Alpine Editor remains local only, with no collaboration, hosted AI, cloud,
   telemetry, plugin host, marketplace, or remote-development subsystem.
 
 Any change to these boundaries requires an accepted issue and the applicable

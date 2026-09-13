@@ -1,10 +1,10 @@
-# Alpine Studio and Zed Editor lineage
+# Alpine Editor and Zed Editor lineage
 
 ## Product boundary
 
 Zed is a broad production editor with collaboration, remote projects, accounts,
 AI, extensions, terminal, Git, debugger, and multi-window or multi-platform
-concerns. Alpine Studio is a local Apple-first editor and renderer proving
+concerns. Alpine Editor is a local Apple-first editor and renderer proving
 ground. Feature parity with all of Zed is neither expected nor desirable.
 
 The comparison therefore has two views:
@@ -80,7 +80,7 @@ failure modes, but physical memory savings remain unqualified.
 
 Zed editor behavior is composed through GPUI entities, views, contexts,
 actions, subscriptions, and async tasks. Alpine uses direct
-`StudioApp -> Workspace -> Editor -> Buffer` ownership and bounded channels.
+`EditorApp -> Workspace -> Editor -> Buffer` ownership and bounded channels.
 This removes framework machinery but can concentrate complexity in Studio and
 increase manual routing. The large Studio source surface is now a maintenance
 risk, so extraction should target repeated measured contracts rather than a
@@ -115,7 +115,7 @@ current-generation publication without a watcher or dynamic registry.
 
 ## Fair product comparison
 
-Alpine Studio versus Zed must be reported in two lanes:
+Alpine Editor versus Zed must be reported in two lanes:
 
 1. Normalized local-editor journeys with accounts, AI, collaboration, telemetry,
    extensions, remote development, and plugins disabled where configurable.

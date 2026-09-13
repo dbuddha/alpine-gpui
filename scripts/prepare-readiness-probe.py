@@ -61,13 +61,13 @@ def prepare(output):
     output.mkdir(parents=True, mode=0o700)
     pristine = output / "initial-workspace"
     pristine.mkdir()
-    fixture = ROOT / "apps/alpine-studio/tests/fixtures/rust-analyzer-workspace"
+    fixture = ROOT / "apps/alpine-editor/tests/fixtures/rust-analyzer-workspace"
     (pristine / "Cargo.toml").write_text((fixture / "Cargo.toml").read_text().replace("src/lib.rs", "probe.rs"))
     (pristine / "probe.rs").write_text("// Unicode probe: café 🏔️\n" + (fixture / "src/lib.rs").read_text())
     shutil.copytree(pristine, output / "workspace")
     (output / "home").mkdir(mode=0o700)
-    build_output = output / "Alpine Studio.app"
-    command = [str(ROOT / "scripts/build-alpine-studio-app.sh"), "--output", str(build_output)]
+    build_output = output / "Alpine Editor.app"
+    command = [str(ROOT / "scripts/build-alpine-editor-app.sh"), "--output", str(build_output)]
     toolchain = manifest_string(ROOT / "rust-toolchain.toml", "channel")
     build_env = os.environ.copy()
     for key in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET", "ALPINE_BUNDLE_FIXTURE_REVISION"):
@@ -80,7 +80,7 @@ def prepare(output):
     original = build_output / "Contents/Resources/alpine-build-identity.toml"
     if after_source != source or after_status or manifest_string(original, "revision") != source:
         raise SystemExit("source changed during probe build; output retained but is not accepted")
-    if manifest_string(original, "executable_sha256") != sha(build_output / "Contents/MacOS/alpine-studio"):
+    if manifest_string(original, "executable_sha256") != sha(build_output / "Contents/MacOS/alpine-editor"):
         raise SystemExit("built executable differs from the original bundle receipt")
     name = f"Alpine Readiness {source[:8]}"
     bundle = output / f"{name}.app"
@@ -91,7 +91,7 @@ def prepare(output):
     with gzip.open(archive, "rb") as compressed, analyzer.open("wb") as target:
         shutil.copyfileobj(compressed, target)
     analyzer.chmod(0o755)
-    native = bundle / "Contents/MacOS/alpine-studio"
+    native = bundle / "Contents/MacOS/alpine-editor"
     launcher = bundle / "Contents/MacOS/probe-launcher"
     rustup_home = os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup"))
     cargo_home = os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))

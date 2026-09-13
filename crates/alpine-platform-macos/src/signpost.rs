@@ -1,4 +1,4 @@
-//! Handle-free Alpine Studio points for externally retained Instruments traces.
+//! Handle-free Alpine Editor points for externally retained Instruments traces.
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::env;
@@ -6,12 +6,12 @@ use std::env;
 use std::ffi::OsStr;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-const PERSISTED_PROFILE_ENVIRONMENT: &str = "ALPINE_STUDIO_PERSISTED_PROFILE";
+const PERSISTED_PROFILE_ENVIRONMENT: &str = "ALPINE_EDITOR_PERSISTED_PROFILE";
 
-/// Stable stage vocabulary emitted by the Alpine Studio release hot path.
+/// Stable stage vocabulary emitted by the Alpine Editor release hot path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
-pub enum StudioSignpostStage {
+pub enum EditorSignpostStage {
     /// Native event dispatch entered Studio state.
     EventDispatchBegin = 0,
     /// Synchronous Studio state mutation and admission completed.
@@ -62,8 +62,8 @@ pub enum StudioSignpostStage {
 
 /// One numeric, revision-correlated point suitable for a dynamic signpost.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StudioSignpost {
-    stage: StudioSignpostStage,
+pub struct EditorSignpost {
+    stage: EditorSignpostStage,
     event_timestamp: u64,
     scene_revision: u64,
     document_revision: u64,
@@ -71,11 +71,11 @@ pub struct StudioSignpost {
     values: [u64; 3],
 }
 
-impl StudioSignpost {
+impl EditorSignpost {
     /// Creates one handle-free point without formatting or retaining payloads.
     #[must_use]
     pub const fn new(
-        stage: StudioSignpostStage,
+        stage: EditorSignpostStage,
         event_timestamp: u64,
         scene_revision: u64,
         document_revision: u64,
@@ -94,7 +94,7 @@ impl StudioSignpost {
 
     /// Returns the stable stage identity.
     #[must_use]
-    pub const fn stage(self) -> StudioSignpostStage {
+    pub const fn stage(self) -> EditorSignpostStage {
         self.stage
     }
 
@@ -144,12 +144,12 @@ impl StudioSignpost {
 
 /// Process-lifetime dynamic signpost writer with no retained sample storage.
 #[derive(Clone, Copy, Debug)]
-pub struct StudioSignposts {
+pub struct EditorSignposts {
     dynamic_enabled: bool,
     persisted_enabled: bool,
 }
 
-impl StudioSignposts {
+impl EditorSignposts {
     /// Initializes the static dynamic-tracing category before the event loop starts.
     #[must_use]
     pub fn new() -> Self {
@@ -180,7 +180,7 @@ impl StudioSignposts {
 
     /// Emits one point and returns its correlation when recording is enabled.
     #[must_use]
-    pub fn emit(self, point: StudioSignpost) -> Option<u64> {
+    pub fn emit(self, point: EditorSignpost) -> Option<u64> {
         if self.enabled() {
             Some(imp::emit(
                 point,
@@ -214,8 +214,8 @@ impl StudioSignposts {
         event_timestamp: crate::EventTimestamp,
         duration_ns: u64,
     ) -> Option<u64> {
-        self.emit(StudioSignpost::new(
-            StudioSignpostStage::NativePresentedHandlerLatency,
+        self.emit(EditorSignpost::new(
+            EditorSignpostStage::NativePresentedHandlerLatency,
             event_timestamp.get(),
             0,
             0,
@@ -237,24 +237,24 @@ impl StudioSignposts {
         let correlation = self.emit_presented_handler_latency(event_timestamp, callback_ns);
         for (stage, duration_ns) in [
             (
-                StudioSignpostStage::NativeDisplayLinkTargetLatency,
+                EditorSignpostStage::NativeDisplayLinkTargetLatency,
                 display_link_target_ns,
             ),
             (
-                StudioSignpostStage::NativeTargetPresentationLatency,
+                EditorSignpostStage::NativeTargetPresentationLatency,
                 target_presentation_ns,
             ),
             (
-                StudioSignpostStage::NativeActualPresentationLatency,
+                EditorSignpostStage::NativeActualPresentationLatency,
                 actual_presentation_ns,
             ),
             (
-                StudioSignpostStage::NativePresentationCallbackLag,
+                EditorSignpostStage::NativePresentationCallbackLag,
                 callback_lag_ns,
             ),
         ] {
             if let Some(duration_ns) = duration_ns {
-                let _additional = self.emit(StudioSignpost::new(
+                let _additional = self.emit(EditorSignpost::new(
                     stage,
                     event_timestamp.get(),
                     0,
@@ -275,11 +275,11 @@ fn persisted_profile_requested(value: Option<&OsStr>) -> bool {
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn frame_latency_point(
-    stage: StudioSignpostStage,
+    stage: EditorSignpostStage,
     evidence: crate::FrameLatencyEvidence,
     duration_ns: u64,
-) -> StudioSignpost {
-    StudioSignpost::new(
+) -> EditorSignpost {
+    EditorSignpost::new(
         stage,
         evidence.event_timestamp().get(),
         0,
@@ -292,23 +292,23 @@ fn frame_latency_point(
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn terminal_frame_latency_points(
     evidence: crate::FrameLatencyEvidence,
-) -> [Option<StudioSignpost>; 5] {
+) -> [Option<EditorSignpost>; 5] {
     [
         Some(frame_latency_point(
-            StudioSignpostStage::NativeEventHandlerLatency,
+            EditorSignpostStage::NativeEventHandlerLatency,
             evidence,
             evidence.event_handler_ns(),
         )),
         evidence.frame_queue_ns().map(|duration_ns| {
             frame_latency_point(
-                StudioSignpostStage::NativeFrameQueueLatency,
+                EditorSignpostStage::NativeFrameQueueLatency,
                 evidence,
                 duration_ns,
             )
         }),
         evidence.submission_ns().map(|duration_ns| {
             frame_latency_point(
-                StudioSignpostStage::NativeSubmissionLatency,
+                EditorSignpostStage::NativeSubmissionLatency,
                 evidence,
                 duration_ns,
             )
@@ -317,13 +317,13 @@ fn terminal_frame_latency_points(
             .event_to_gpu_terminal_observed_ns()
             .map(|duration_ns| {
                 frame_latency_point(
-                    StudioSignpostStage::NativeGpuTerminalObservedLatency,
+                    EditorSignpostStage::NativeGpuTerminalObservedLatency,
                     evidence,
                     duration_ns,
                 )
             }),
         Some(frame_latency_point(
-            StudioSignpostStage::NativeTerminalRecordLatency,
+            EditorSignpostStage::NativeTerminalRecordLatency,
             evidence,
             evidence.event_to_terminal_record_ns(),
         )),
@@ -332,20 +332,20 @@ fn terminal_frame_latency_points(
 
 struct DynamicTracingState(bool);
 
-impl Default for StudioSignposts {
+impl Default for EditorSignposts {
     fn default() -> Self {
         Self::new()
     }
 }
 
 mod imp {
-    use super::{DynamicTracingState, StudioSignpost};
+    use super::{DynamicTracingState, EditorSignpost};
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     unsafe extern "C" {
-        fn alpine_studio_signposts_enabled() -> bool;
+        fn alpine_editor_signposts_enabled() -> bool;
         #[cfg(not(test))]
-        fn alpine_studio_signpost_emit(
+        fn alpine_editor_signpost_emit(
             stage: u8,
             correlation: u64,
             event_timestamp: u64,
@@ -364,14 +364,14 @@ mod imp {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         // SAFETY: The Alpine-owned C shim takes no pointers and initializes its
         // process-lifetime os_log handle through dispatch_once.
-        let enabled = unsafe { alpine_studio_signposts_enabled() };
+        let enabled = unsafe { alpine_editor_signposts_enabled() };
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         let enabled = false;
         DynamicTracingState(enabled)
     }
 
     pub(super) fn emit(
-        point: StudioSignpost,
+        point: EditorSignpost,
         dynamic_enabled: bool,
         persisted_enabled: bool,
     ) -> u64 {
@@ -381,7 +381,7 @@ mod imp {
             // SAFETY: Every argument is a copied integer. The stage discriminant is
             // repr(u8), and the C shim neither retains Rust storage nor calls back.
             unsafe {
-                alpine_studio_signpost_emit(
+                alpine_editor_signpost_emit(
                     point.stage() as u8,
                     point.correlation(),
                     point.event_timestamp(),
@@ -409,15 +409,15 @@ mod tests {
 
     #[test]
     fn point_identity_and_disabled_contract_are_handle_free() {
-        let point = StudioSignpost::new(
-            StudioSignpostStage::GlyphAtlasSummary,
+        let point = EditorSignpost::new(
+            EditorSignpostStage::GlyphAtlasSummary,
             17,
             23,
             29,
             31,
             [37, 41, 43],
         );
-        assert_eq!(point.stage(), StudioSignpostStage::GlyphAtlasSummary);
+        assert_eq!(point.stage(), EditorSignpostStage::GlyphAtlasSummary);
         assert_eq!(point.event_timestamp(), 17);
         assert_eq!(point.scene_revision(), 23);
         assert_eq!(point.document_revision(), 29);
@@ -425,13 +425,13 @@ mod tests {
         assert_eq!(point.values(), [37, 41, 43]);
         assert_eq!(point.correlation(), 17);
 
-        let startup = StudioSignpost::new(StudioSignpostStage::FrameBuildBegin, 0, 5, 1, 1, [0; 3]);
+        let startup = EditorSignpost::new(EditorSignpostStage::FrameBuildBegin, 0, 5, 1, 1, [0; 3]);
         assert_eq!(startup.correlation(), (1_u64 << 63) | 5);
         let zero_startup =
-            StudioSignpost::new(StudioSignpostStage::FrameBuildBegin, 0, 0, 1, 1, [0; 3]);
+            EditorSignpost::new(EditorSignpostStage::FrameBuildBegin, 0, 0, 1, 1, [0; 3]);
         assert_eq!(zero_startup.correlation(), (1_u64 << 63) | 1);
-        let high_bit_startup = StudioSignpost::new(
-            StudioSignpostStage::FrameBuildBegin,
+        let high_bit_startup = EditorSignpost::new(
+            EditorSignpostStage::FrameBuildBegin,
             0,
             1_u64 << 63,
             1,
@@ -440,22 +440,22 @@ mod tests {
         );
         assert_eq!(high_bit_startup.correlation(), 1_u64 << 63);
 
-        let disabled = StudioSignposts {
+        let disabled = EditorSignposts {
             dynamic_enabled: false,
             persisted_enabled: false,
         };
         assert!(!disabled.enabled());
         assert_eq!(disabled.emit(point), None);
         for enabled in [
-            StudioSignposts {
+            EditorSignposts {
                 dynamic_enabled: true,
                 persisted_enabled: false,
             },
-            StudioSignposts {
+            EditorSignposts {
                 dynamic_enabled: false,
                 persisted_enabled: true,
             },
-            StudioSignposts {
+            EditorSignposts {
                 dynamic_enabled: true,
                 persisted_enabled: true,
             },
@@ -470,7 +470,7 @@ mod tests {
         assert!(persisted_profile_requested(Some(OsStr::new("1"))));
 
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        assert!(!StudioSignposts::new().enabled());
+        assert!(!EditorSignposts::new().enabled());
     }
 
     #[test]
@@ -486,22 +486,22 @@ mod tests {
         );
         let points = terminal_frame_latency_points(complete).map(Option::unwrap);
         assert_eq!(
-            points.map(StudioSignpost::stage),
+            points.map(EditorSignpost::stage),
             [
-                StudioSignpostStage::NativeEventHandlerLatency,
-                StudioSignpostStage::NativeFrameQueueLatency,
-                StudioSignpostStage::NativeSubmissionLatency,
-                StudioSignpostStage::NativeGpuTerminalObservedLatency,
-                StudioSignpostStage::NativeTerminalRecordLatency,
+                EditorSignpostStage::NativeEventHandlerLatency,
+                EditorSignpostStage::NativeFrameQueueLatency,
+                EditorSignpostStage::NativeSubmissionLatency,
+                EditorSignpostStage::NativeGpuTerminalObservedLatency,
+                EditorSignpostStage::NativeTerminalRecordLatency,
             ]
         );
-        assert_eq!(points.map(StudioSignpost::event_timestamp), [53; 5]);
+        assert_eq!(points.map(EditorSignpost::event_timestamp), [53; 5]);
         assert_eq!(
             points.map(|point| point.values()[0]),
             [0, 59, 61, 67, u64::MAX]
         );
         assert_eq!(
-            StudioSignposts {
+            EditorSignposts {
                 dynamic_enabled: true,
                 persisted_enabled: false,
             }
@@ -509,12 +509,12 @@ mod tests {
             5
         );
         assert_eq!(
-            StudioSignposts::for_test(false, true)
+            EditorSignposts::for_test(false, true)
                 .emit_presented_handler_latency(EventTimestamp::new(53), 71),
             Some(53)
         );
         assert_eq!(
-            StudioSignposts::for_test(false, true).emit_presentation_latency(
+            EditorSignposts::for_test(false, true).emit_presentation_latency(
                 EventTimestamp::new(53),
                 71,
                 Some(73),
@@ -532,18 +532,18 @@ mod tests {
             FrameLatencyEvidence::new(EventTimestamp::new(73), 79, None, None, None, None, 83);
         let [handler, queue, submission, gpu, terminal] = terminal_frame_latency_points(omitted);
         assert_eq!(
-            handler.map(StudioSignpost::stage),
-            Some(StudioSignpostStage::NativeEventHandlerLatency)
+            handler.map(EditorSignpost::stage),
+            Some(EditorSignpostStage::NativeEventHandlerLatency)
         );
         assert_eq!(queue, None);
         assert_eq!(submission, None);
         assert_eq!(gpu, None);
         assert_eq!(
-            terminal.map(StudioSignpost::stage),
-            Some(StudioSignpostStage::NativeTerminalRecordLatency)
+            terminal.map(EditorSignpost::stage),
+            Some(EditorSignpostStage::NativeTerminalRecordLatency)
         );
         assert_eq!(
-            StudioSignposts {
+            EditorSignposts {
                 dynamic_enabled: false,
                 persisted_enabled: true,
             }
@@ -551,7 +551,7 @@ mod tests {
             2
         );
         assert_eq!(
-            StudioSignposts {
+            EditorSignposts {
                 dynamic_enabled: false,
                 persisted_enabled: false,
             }
@@ -559,7 +559,7 @@ mod tests {
             0
         );
         assert_eq!(
-            StudioSignposts::for_test(false, false)
+            EditorSignposts::for_test(false, false)
                 .emit_presented_handler_latency(EventTimestamp::new(53), 71),
             None
         );
@@ -567,11 +567,11 @@ mod tests {
 
     #[test]
     fn persisted_c_route_is_lazy_static_and_vocabulary_complete() {
-        let source = include_str!("studio_signposts.c");
+        let source = include_str!("editor_signposts.c");
         assert!(source.contains("\"PersistedProfile\""));
         assert!(source.contains("OS_LOG_TYPE_DEFAULT"));
         assert!(source.contains("if (emit_persisted)"));
-        assert!(source.contains("alpine_studio_get_persisted_log()"));
+        assert!(source.contains("alpine_editor_get_persisted_log()"));
         for stage in [
             "Event Dispatch Begin",
             "State Mutation Complete",
@@ -597,7 +597,7 @@ mod tests {
             "Native Actual Presentation Latency",
             "Native Presentation Callback Lag",
         ] {
-            assert!(source.contains(&format!("ALPINE_STUDIO_ROUTE(\"{stage}\")")));
+            assert!(source.contains(&format!("ALPINE_EDITOR_ROUTE(\"{stage}\")")));
         }
     }
 }

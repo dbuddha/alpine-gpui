@@ -1,4 +1,4 @@
-# Alpine Studio release profiling
+# Alpine Editor release profiling
 
 This protocol captures diagnostic evidence for Defect #304. It does not activate
 a latency threshold and does not qualify a comparison claim.
@@ -8,7 +8,7 @@ and static footprint evidence are retained in [Decision #311](https://github.com
 
 ## Instrumentation boundary
 
-The release application emits `com.dbuddha.alpine-studio` signposts in Apple's
+The release application emits `com.dbuddha.alpine-editor` signposts in Apple's
 `DynamicTracing` category. The category is disabled unless a performance tool is
 recording. Alpine initializes the process-lifetime log before entering AppKit,
 checks whether dynamic tracing is enabled once, emits only copied integers with
@@ -65,8 +65,8 @@ retained v1 packages remain byte-stable and are never reinterpreted as v2.
 ## Opt-in persisted fallback
 
 When full Xcode is unavailable, the exact process-start opt-in
-`ALPINE_STUDIO_PERSISTED_PROFILE=1` mirrors the same points into macOS unified
-logging under subsystem `com.dbuddha.alpine-studio` and category
+`ALPINE_EDITOR_PERSISTED_PROFILE=1` mirrors the same points into macOS unified
+logging under subsystem `com.dbuddha.alpine-editor` and category
 `PersistedProfile`. The dynamic Instruments route remains unchanged and can run
 at the same time. Alpine samples the opt-in once, creates the persisted log
 handle lazily on first emission, uses static format strings and copied integers,
@@ -77,11 +77,11 @@ Use the canonical release bundle and record the exact start and end wall-clock
 times before interacting with Studio:
 
 ```sh
-scripts/build-alpine-studio-app.sh
-APP="$PWD/target/release/Alpine Studio.app/Contents/MacOS/alpine-studio"
+scripts/build-alpine-editor-app.sh
+APP="$PWD/target/release/Alpine Editor.app/Contents/MacOS/alpine-editor"
 START_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 START_LOCAL=$(date '+%Y-%m-%d %H:%M:%S')
-ALPINE_STUDIO_PERSISTED_PROFILE=1 "$APP" WORKLOAD_PATH
+ALPINE_EDITOR_PERSISTED_PROFILE=1 "$APP" WORKLOAD_PATH
 # Perform exactly one accepted workload, close Studio, then record both end times.
 END_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 END_LOCAL=$(date '+%Y-%m-%d %H:%M:%S')
@@ -89,7 +89,7 @@ log show \
   --start "$START_LOCAL" \
   --end "$END_LOCAL" \
   --style json \
-  --predicate 'subsystem == "com.dbuddha.alpine-studio" && category == "PersistedProfile"' \
+  --predicate 'subsystem == "com.dbuddha.alpine-editor" && category == "PersistedProfile"' \
   > persisted-profile.json
 ```
 
@@ -158,8 +158,8 @@ active developer directory because Command Line Tools alone do not contain
 ```sh
 xcrun --find xctrace
 xcodebuild -version
-scripts/build-alpine-studio-app.sh
-test -x 'target/release/Alpine Studio.app/Contents/MacOS/alpine-studio'
+scripts/build-alpine-editor-app.sh
+test -x 'target/release/Alpine Editor.app/Contents/MacOS/alpine-editor'
 ```
 
 Record each tool separately so its observer cost is not mixed with another
@@ -169,7 +169,7 @@ accepted workload values.
 ```sh
 WORKLOAD_PATH="$PWD"
 TRACE_ROOT="$PWD/target/qualification/studio-$(git rev-parse HEAD)"
-APP="$PWD/target/release/Alpine Studio.app/Contents/MacOS/alpine-studio"
+APP="$PWD/target/release/Alpine Editor.app/Contents/MacOS/alpine-editor"
 mkdir -p "$TRACE_ROOT"
 
 xcrun xctrace record \

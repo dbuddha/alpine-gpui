@@ -92,14 +92,14 @@ repository_revision=$revision
 repository_clean=$repository_clean
 repository_status_sha256=$repository_status_sha
 workspace_identity_sha256=$workspace_identity_sha
-studio_binary_sha256=$capture_binary_sha
+editor_binary_sha256=$capture_binary_sha
 harness_binary_sha256=$capture_harness_sha
 sampler_sha256=$capture_sampler_sha
-studio_pid=${captured_pid-unavailable}
+editor_pid=${captured_pid-unavailable}
 sampler_pid=${captured_sampler_pid-unavailable}
 ax_exit_status=${ax_status-unavailable}
 sampler_exit_status=${sampler_status-unavailable}
-studio_exit_status=${studio_status-unavailable}
+editor_exit_status=${editor_status-unavailable}
 artifact_limit_bytes=$rejected_file_limit
 metadata_limit_bytes=$rejected_metadata_limit
 total_limit_bytes=$rejected_total_limit
@@ -301,7 +301,7 @@ capture_binary_sha=$(sha256 "$binary") || fail "Studio executable hash is unavai
 capture_harness_sha=$(sha256 "$assurance") || fail "AX client executable hash is unavailable"
 capture_sampler_sha=$(sha256 "$sampler") || fail "sampler executable hash is unavailable"
 capture_root=$(mktemp -d "$output_parent/.alpine-ax-process.XXXXXX")
-studio_pid=
+editor_pid=
 sampler_pid=
 published=false
 capture_phase=launch
@@ -312,8 +312,8 @@ cleanup() {
     if [ -n "${sampler_pid-}" ] && kill -0 "$sampler_pid" 2>/dev/null; then
         kill "$sampler_pid" 2>/dev/null || true
     fi
-    if [ -n "${studio_pid-}" ] && kill -0 "$studio_pid" 2>/dev/null; then
-        kill "$studio_pid" 2>/dev/null || true
+    if [ -n "${editor_pid-}" ] && kill -0 "$editor_pid" 2>/dev/null; then
+        kill "$editor_pid" 2>/dev/null || true
     fi
     if [ "$published" != true ] && [ -d "${capture_root-}" ]; then
         [ "$cleanup_status" -ne 0 ] || cleanup_status=1
@@ -331,8 +331,8 @@ trap 'failure_reason="signal HUP"; exit 129' HUP
 trap 'failure_reason="signal INT"; exit 130' INT
 trap 'failure_reason="signal TERM"; exit 143' TERM
 
-studio_stdout="$capture_root/studio.stdout"
-studio_stderr="$capture_root/studio.stderr"
+editor_stdout="$capture_root/studio.stdout"
+editor_stderr="$capture_root/studio.stderr"
 ax_stdout="$capture_root/ax.stdout"
 ax_stderr="$capture_root/ax.stderr"
 raw_footprint="$capture_root/footprint.json"
@@ -340,33 +340,33 @@ capture_started=$(date +%s)
 captured_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 (CDPATH= cd -- "$repository" && exec "$binary" "$workspace") \
-    > "$studio_stdout" 2> "$studio_stderr" &
-studio_pid=$!
-captured_pid=$studio_pid
-kill -0 "$studio_pid" 2>/dev/null || fail "Studio process did not remain alive after launch"
+    > "$editor_stdout" 2> "$editor_stderr" &
+editor_pid=$!
+captured_pid=$editor_pid
+kill -0 "$editor_pid" 2>/dev/null || fail "Studio process did not remain alive after launch"
 
 if [ "$fixture" = true ]; then
     process_start=fixture-process-start
 else
-    running_binary=$(ps -ww -p "$studio_pid" -o comm= | sed 's/^[[:space:]]*//')
+    running_binary=$(ps -ww -p "$editor_pid" -o comm= | sed 's/^[[:space:]]*//')
     [ -n "$running_binary" ] || fail "Studio process executable identity is unavailable"
     running_binary=$(canonical_file "$running_binary") || fail "running executable path is unavailable"
     [ "$running_binary" = "$binary" ] || fail "running process does not match the declared binary"
-    process_start=$(ps -ww -p "$studio_pid" -o lstart= | sed 's/^[[:space:]]*//')
+    process_start=$(ps -ww -p "$editor_pid" -o lstart= | sed 's/^[[:space:]]*//')
     [ -n "$process_start" ] || fail "Studio process start identity is unavailable"
 fi
 
-"$sampler" --pid "$studio_pid" --sample "$interval" \
+"$sampler" --pid "$editor_pid" --sample "$interval" \
     --sample-duration "$duration" --noCategories --format bytes \
     --json "$raw_footprint" > "$capture_root/footprint.log" 2>&1 &
 sampler_pid=$!
 captured_sampler_pid=$sampler_pid
 
 printf 'raw AX capture active for PID %s; perform only the approved Task #504 journey\n' \
-    "$studio_pid"
+    "$editor_pid"
 capture_phase=ax_client
 set +e
-"$assurance" capture-ax-client "$studio_pid" "$generation" \
+"$assurance" capture-ax-client "$editor_pid" "$generation" \
     "$pre_action_ms" "$post_action_ms" "$capture_root/raw-ax" \
     > "$ax_stdout" 2> "$ax_stderr"
 ax_status=$?
@@ -393,35 +393,35 @@ sampler_pid=
 
 capture_phase=residency_analysis
 "$(dirname "$0")/analyze-studio-residency.sh" "$raw_footprint" \
-    "$studio_pid" 0 "$capture_root/residency-analysis" \
+    "$editor_pid" 0 "$capture_root/residency-analysis" \
     > "$capture_root/residency.log"
 
 if [ "$fixture" != true ]; then
-    running_binary=$(ps -ww -p "$studio_pid" -o comm= | sed 's/^[[:space:]]*//')
+    running_binary=$(ps -ww -p "$editor_pid" -o comm= | sed 's/^[[:space:]]*//')
     [ -n "$running_binary" ] || fail "Studio exited before capture completed"
     running_binary=$(canonical_file "$running_binary") ||
         fail "post-capture executable path is unavailable"
     [ "$running_binary" = "$binary" ] || fail "Studio process identity drifted during capture"
-    current_start=$(ps -ww -p "$studio_pid" -o lstart= | sed 's/^[[:space:]]*//')
+    current_start=$(ps -ww -p "$editor_pid" -o lstart= | sed 's/^[[:space:]]*//')
     [ "$current_start" = "$process_start" ] || fail "Studio process start identity drifted"
 fi
 
 capture_phase=close
-printf 'capture complete; close Alpine Studio within %s seconds\n' "$post_close_timeout"
+printf 'capture complete; close Alpine Editor within %s seconds\n' "$post_close_timeout"
 remaining=$post_close_timeout
-while kill -0 "$studio_pid" 2>/dev/null && [ "$remaining" -gt 0 ]; do
+while kill -0 "$editor_pid" 2>/dev/null && [ "$remaining" -gt 0 ]; do
     sleep 1
     remaining=$((remaining - 1))
 done
-if kill -0 "$studio_pid" 2>/dev/null; then
+if kill -0 "$editor_pid" 2>/dev/null; then
     fail "Studio remained alive after the post-close timeout"
 fi
 set +e
-wait "$studio_pid"
-studio_status=$?
+wait "$editor_pid"
+editor_status=$?
 set -e
-studio_pid=
-[ "$studio_status" -eq 0 ] || fail "Studio process failed with status $studio_status"
+editor_pid=
+[ "$editor_status" -eq 0 ] || fail "Studio process failed with status $editor_status"
 capture_ended=$(date +%s)
 
 cat > "$capture_root/workspace-record.txt" <<EOF
@@ -457,12 +457,12 @@ repository_clean = $repository_clean
 repository_status_sha256 = "$repository_status_sha"
 workspace_kind = "$workspace_kind"
 workspace_identity_sha256 = "$workspace_identity_sha"
-studio_binary_sha256 = "$(sha256 "$binary")"
+editor_binary_sha256 = "$(sha256 "$binary")"
 harness_binary_sha256 = "$(sha256 "$assurance")"
 sampler_sha256 = "$(sha256 "$sampler")"
-studio_pid = $captured_pid
+editor_pid = $captured_pid
 process_start = "$process_start"
-studio_exit_status = $studio_status
+editor_exit_status = $editor_status
 post_close_absent = true
 generation = $generation
 pre_action_ms = $pre_action_ms
@@ -489,8 +489,8 @@ artifact residency_summary residency-analysis/summary.toml
 artifact residency_log residency.log
 artifact ax_stdout ax.stdout
 artifact ax_stderr ax.stderr
-artifact studio_stdout studio.stdout
-artifact studio_stderr studio.stderr
+artifact editor_stdout studio.stdout
+artifact editor_stderr studio.stderr
 artifact workspace_record workspace-record.txt
 
 capture_phase=publication

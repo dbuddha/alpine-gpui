@@ -43,7 +43,7 @@ done
 for changed in '' docs/input.json 'docs/unusual name.md' unclassified/input.bin scripts/check-policy.sh; do
     assert_output "$(run_fixture "$changed")" code=true
 done
-assert_output "$(run_fixture "$(printf 'docs/README.md\napps/alpine-studio/src/lib.rs')")" code=true
+assert_output "$(run_fixture "$(printf 'docs/README.md\napps/alpine-editor/src/lib.rs')")" code=true
 for changed in .github/workflows/ci.yml crates/alpine-runtime/src/lib.rs unclassified/input.bin; do
     ordinary=$(run_fixture "$changed" review:unsafe)
     for gate in coverage mutation kani miri native_mutation; do
@@ -103,7 +103,7 @@ done
 for execution in .github/workflows/ci.yml .github/workflows/nightly-assurance.yml \
     scripts/check-ci-native-admission.sh scripts/verify-metal-library.sh \
     scripts/run-miri-partition.sh assurance/miri-studio-partitions.tsv \
-    Cargo.lock rust-toolchain.toml apps/alpine-studio/tests/native_process.rs; do
+    Cargo.lock rust-toolchain.toml apps/alpine-editor/tests/native_process.rs; do
     selected=$(run_fixture "$(printf 'scripts/check-policy.sh\n%s' "$execution")")
     assert_every_gate "$selected"
     assert_output "$selected" ci_control_only=false
@@ -118,8 +118,8 @@ assert_every_gate "$kani_setup"
 kani_setup_tests=$(run_fixture scripts/test-setup-kani.sh)
 assert_every_gate "$kani_setup_tests"
 
-studio_concurrency_stress=$(run_fixture scripts/test-studio-concurrency-stress.sh)
-assert_every_gate "$studio_concurrency_stress"
+editor_concurrency_stress=$(run_fixture scripts/test-studio-concurrency-stress.sh)
+assert_every_gate "$editor_concurrency_stress"
 
 coverage_checker=$(run_fixture scripts/check-coverage.sh)
 assert_every_gate "$coverage_checker"
@@ -154,22 +154,22 @@ assert_output "$text_layout" kani=true
 assert_output "$text_layout" miri=true
 assert_output "$text_layout" metal=false
 
-studio=$(run_fixture apps/alpine-studio/src/lib.rs)
+studio=$(run_fixture apps/alpine-editor/src/lib.rs)
 assert_output "$studio" coverage=true
 assert_output "$studio" mutation=true
 assert_output "$studio" kani=false
 assert_output "$studio" metal=true
 
-studio_manifest=$(run_fixture apps/alpine-studio/Cargo.toml)
-assert_output "$studio_manifest" coverage=true
-assert_output "$studio_manifest" mutation=true
-assert_output "$studio_manifest" kani=false
-assert_output "$studio_manifest" metal=true
+editor_manifest=$(run_fixture apps/alpine-editor/Cargo.toml)
+assert_output "$editor_manifest" coverage=true
+assert_output "$editor_manifest" mutation=true
+assert_output "$editor_manifest" kani=false
+assert_output "$editor_manifest" metal=true
 
-studio_docs=$(run_fixture apps/alpine-studio/README.md)
-assert_output "$studio_docs" coverage=false
-assert_output "$studio_docs" mutation=false
-assert_output "$studio_docs" kani=false
+editor_docs=$(run_fixture apps/alpine-editor/README.md)
+assert_output "$editor_docs" coverage=false
+assert_output "$editor_docs" mutation=false
+assert_output "$editor_docs" kani=false
 
 
 qualification=$(run_fixture assurance/qualification/v1/valid.toml)
@@ -268,8 +268,8 @@ for path in \
     assurance/miri-text-layout-partitions.tsv \
     scripts/check-native-mutation-receipts.sh \
     scripts/test-native-mutation-receipts.sh \
-    apps/alpine-studio/fixtures/rust-analyzer/Cargo.toml \
-    apps/alpine-studio/tests/fixtures/workspace/input.json \
+    apps/alpine-editor/fixtures/rust-analyzer/Cargo.toml \
+    apps/alpine-editor/tests/fixtures/workspace/input.json \
     crates/alpine-core/fixtures/non-rust.bin \
     tools/unmapped-tool/src/lib.rs \
     tools/unmapped-tool/Cargo.toml \

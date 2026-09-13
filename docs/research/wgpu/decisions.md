@@ -32,7 +32,7 @@ not copy WGPU source.
 | --- | --- | --- |
 | WGPU-D040 | WGPU as Alpine's Apple renderer | Duplicates and obscures the direct-Metal ownership and performance target |
 | WGPU-D041 | `wgpu-hal` as a shortcut | Unsafe, broad, and documented by WGPU as complex; does not simplify Alpine's proof burden |
-| WGPU-D042 | WebGPU-compatible public API | Introduces generalized states and conformance obligations Alpine Studio does not need |
+| WGPU-D042 | WebGPU-compatible public API | Introduces generalized states and conformance obligations Alpine Editor does not need |
 | WGPU-D043 | Naga, WGSL, or runtime shader translation | Alpine v1 ships reviewed compiled Metal libraries and has no cross-backend shader need |
 | WGPU-D044 | Remote-core registries or generalized IDs | Serves remote and multi-client architectures excluded from local Studio v1 |
 | WGPU-D045 | Browser, GLES, Vulkan, or D3D12 work before daily-driver | Moves effort away from the Apple-first acceptance gate |

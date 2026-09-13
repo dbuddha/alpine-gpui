@@ -1,4 +1,4 @@
-# Alpine Studio residency protocol
+# Alpine Editor residency protocol
 
 This protocol captures process memory for Task
 [#241](https://github.com/dbuddha/alpine-gpui/issues/241). It complements, but
@@ -34,7 +34,7 @@ production UI during the post-capture timeout. A four-hour capture at a
 ```sh
 scripts/capture-studio-residency.sh \
   --pid "$STUDIO_PID" \
-  --binary target/release/alpine-studio \
+  --binary target/release/alpine-editor \
   --repository . \
   --output-dir target/residency/alpine-repository-long-edit \
   --revision "$(git rev-parse HEAD)" \

@@ -62,7 +62,7 @@ struct Artifact {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ArtifactSet {
-    studio_binary: Artifact,
+    editor_binary: Artifact,
     harness_binary: Artifact,
     scenario: Artifact,
     tree: Artifact,
@@ -98,9 +98,9 @@ struct AxEvidence {
     repository_clean: EvidenceFlag,
     started_unix_ns: u64,
     ended_unix_ns: u64,
-    studio_pid: u32,
+    editor_pid: u32,
     harness_pid: u32,
-    studio_exit_status: i32,
+    editor_exit_status: i32,
     macos_build: String,
     sdk_build: String,
     rustc_version: String,
@@ -353,14 +353,14 @@ fn validate_capture_identity(
         evidence.started_unix_ns > 0 && evidence.ended_unix_ns > evidence.started_unix_ns,
         "capture times must be positive and ordered",
     );
-    diagnostics.require(evidence.studio_pid != 0, "Studio PID must be nonzero");
+    diagnostics.require(evidence.editor_pid != 0, "Studio PID must be nonzero");
     diagnostics.require(evidence.harness_pid != 0, "harness PID must be nonzero");
     diagnostics.require(
-        evidence.studio_pid != evidence.harness_pid,
+        evidence.editor_pid != evidence.harness_pid,
         "Studio and harness PIDs must differ",
     );
     diagnostics.require(
-        evidence.studio_exit_status == 0,
+        evidence.editor_exit_status == 0,
         "Studio must terminate with exit status zero",
     );
 }
@@ -454,7 +454,7 @@ fn validate_sample_counts(evidence: &AxEvidence, diagnostics: &mut Diagnostics) 
 fn validate_artifacts(bundle: &Path, evidence: &AxEvidence, diagnostics: &mut Diagnostics) {
     let artifacts = &evidence.artifacts;
     let required = [
-        ("Studio binary", &artifacts.studio_binary, MAX_BINARY_BYTES),
+        ("Studio binary", &artifacts.editor_binary, MAX_BINARY_BYTES),
         (
             "harness binary",
             &artifacts.harness_binary,
@@ -1334,7 +1334,7 @@ mod tests {
 
     fn tree() -> (&'static str, TreeSummary) {
         let source = concat!(
-            r#"{"sequence":1,"depth":0,"identifier":"application","parent_identifier":null,"role":"AXApplication","label":"Alpine Studio","focused":false}"#,
+            r#"{"sequence":1,"depth":0,"identifier":"application","parent_identifier":null,"role":"AXApplication","label":"Alpine Editor","focused":false}"#,
             "\n",
             r#"{"sequence":2,"depth":1,"identifier":"window","parent_identifier":"application","role":"AXWindow","label":"Alpine, Studio\\nWindow","focused":false}"#,
             "\n",
@@ -1544,7 +1544,7 @@ mod mutation_controls {
 
     fn tree_source() -> &'static str {
         concat!(
-            r#"{"sequence":1,"depth":0,"identifier":"application","parent_identifier":null,"role":"AXApplication","label":"Alpine Studio","focused":false}"#,
+            r#"{"sequence":1,"depth":0,"identifier":"application","parent_identifier":null,"role":"AXApplication","label":"Alpine Editor","focused":false}"#,
             "\n",
             r#"{"sequence":2,"depth":1,"identifier":"window","parent_identifier":"application","role":"AXWindow","label":"Window","focused":false}"#,
             "\n",

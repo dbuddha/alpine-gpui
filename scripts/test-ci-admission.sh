@@ -23,7 +23,7 @@ fi
 case "${ADMISSION_FAULT:-}:$*" in
     format:fmt*) exit 31 ;;
     clippy:clippy*) exit 32 ;;
-    platform:'test --locked --package=alpine-platform-macos --package=alpine-studio') exit 34 ;;
+    platform:'test --locked --package=alpine-platform-macos --package=alpine-editor') exit 34 ;;
 esac
 if [ "$1" = test ]; then
     test "${ALPINE_REQUIRE_NATIVE_VALIDATION:-}" = 1 || exit 97
@@ -89,7 +89,7 @@ fi
 run_case native-pass check-ci-native-admission.sh '' 0
 printf '%s\n' 'xcrun --sdk macosx --find metal' \
     'xcrun --sdk macosx --find metal' 'xcrun --sdk macosx --find metallib' \
-    'cargo test --locked --package=alpine-platform-macos --package=alpine-studio' \
+    'cargo test --locked --package=alpine-platform-macos --package=alpine-editor' \
     > "$temporary/native.expected"
 diff -u "$temporary/native.expected" "$temporary/native-pass.calls"
 run_case receipt-fail check-ci-native-admission.sh receipt 1
@@ -180,7 +180,7 @@ printf 'CI aggregate admission tests passed\n'
 # Execute the actual boundary step in a fresh checkout without any earlier
 # Cargo invocation. Preserve failure through tee as well as successful output.
 awk '
-    /name: Audit Alpine Studio release product boundary/ { selected = 1; next }
+    /name: Audit Alpine Editor release product boundary/ { selected = 1; next }
     selected && /^      - name:/ { exit }
     selected && /^        run: \|/ { body = 1; next }
     body { sub(/^          /, ""); print }

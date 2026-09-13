@@ -13,7 +13,7 @@
 
 Which parts of Zed make a modern local editor correct and responsive, which
 parts exist for a broader networked product, and what is the smallest coherent
-subset Alpine Studio needs to become a solo developer's daily driver?
+subset Alpine Editor needs to become a solo developer's daily driver?
 
 ## Scope and method
 
@@ -89,7 +89,7 @@ context. It also documents temporary leasing to satisfy Rust's aliasing rules
 and notes that reentrant updates must be avoided
 ([Zed, 2024](https://zed.dev/blog/gpui-ownership)).
 
-Alpine consequence: keep explicit `StudioApp -> Workspace -> Editor -> Buffer`
+Alpine consequence: keep explicit `EditorApp -> Workspace -> Editor -> Buffer`
 ownership and main-thread mutation, but do not reproduce GPUI entities,
 subscriptions, a reactive graph, or temporary entity leasing before a Studio
 slice proves they are needed. Revision-tagged worker results are a smaller and

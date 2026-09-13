@@ -36,6 +36,23 @@ name = "alpine-core"
 version = "0.0.0"
 
 [[package]]
+name = "alpine-editor"
+version = "0.0.0"
+dependencies = [
+ "alpine-core",
+ "alpine-platform-macos",
+ "alpine-runtime",
+ "alpine-scene",
+ "alpine-text",
+ "alpine-text-layout",
+ "ignore",
+ "mutants",
+ "same-file",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "alpine-metal"
 version = "0.0.0"
 dependencies = [
@@ -95,23 +112,6 @@ name = "alpine-scene"
 version = "0.0.0"
 dependencies = [
  "alpine-core",
-]
-
-[[package]]
-name = "alpine-studio"
-version = "0.0.0"
-dependencies = [
- "alpine-core",
- "alpine-platform-macos",
- "alpine-runtime",
- "alpine-scene",
- "alpine-text",
- "alpine-text-layout",
- "ignore",
- "mutants",
- "same-file",
- "serde",
- "serde_json",
 ]
 
 [[package]]
