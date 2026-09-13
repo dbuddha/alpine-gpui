@@ -4410,6 +4410,11 @@ impl NativeSurface {
             let _ = self
                 .application
                 .setActivationPolicy(NSApplicationActivationPolicy::Regular);
+            // The menu bar must exist before the first activation, otherwise
+            // macOS shows the executable name until the app is re-focused.
+            if let Some(main_thread) = MainThreadMarker::new() {
+                crate::menu::install(&self.application, main_thread);
+            }
             self.application.finishLaunching();
         }
         self.window.makeKeyAndOrderFront(None);

@@ -688,6 +688,8 @@ impl From<Option<SurfaceFrame>> for SurfaceResponse {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod menu;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native_accessibility;
