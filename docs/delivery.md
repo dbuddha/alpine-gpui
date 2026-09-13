@@ -13,7 +13,7 @@ so an agent reads them before starting work.
 
 | Phase | Scope | Estimate | State |
 | --- | --- | --- | --- |
-| 1 | Reachable | 3 to 5 days | **active** |
+| 1 | Reachable | 3 to 5 days | **active**, 6 of 7 criteria pass |
 | 2 | Language agnostic | 1.5 weeks | blocked on 1 |
 | 3 | Editing parity | 2 to 2.5 weeks | blocked on 2 |
 | 4 | Context | 1 week | blocked on 3 |
@@ -46,15 +46,18 @@ All wiring. Converts the editor from unusable to usable. No new capability.
 | 1.6 | rust-analyzer starts with `ALPINE_RUST_ANALYZER` unset | **partial.** The installed binary starts `rust-analyzer` and its proc-macro server, with no error status, when run directly with the real `HOME` and the launch `PATH`. Under `open`, the same bundle and arguments start no server. Unexplained, see below |
 | 1.7 | The app launches from `~/Applications/Alpine Editor.app` with an icon | **passes.** Installed, registered with `lsregister`, launches with `CFBundleIconFile` set, the correct menu bar, and the requested file rendered and highlighted |
 
-The gap in 1.6 is the last open item in this phase. The same executable,
-arguments, `HOME` and `PATH` start the server from a shell and not from
-`open`, so something else in the LaunchServices context differs.
-Discovery itself is proven: the failure is in whether the spawn happens
-at all, not in finding the binary.
+Two defects keep this phase open.
 
-A second thing to fix before calling the phase closed: a stale recovery
-banner ("Recovered 3 dirty buffer(s)") sits over the status bar on every
-launch with the real profile, hiding the language status behind it.
+The same executable, arguments, `HOME` and `PATH` start rust-analyzer
+from a shell and not through `open`, so something in the
+LaunchServices context differs. Discovery itself is proven by the shell
+launch: what fails is whether the spawn happens at all, not finding the
+binary.
+
+A stale recovery banner ("Recovered 3 dirty buffer(s); 2 external
+conflict(s)") sits over the status bar on every launch with the real
+profile. It hides the language status, and it never clears, so the one
+place the editor reports what it is doing is permanently occupied.
 
 Two findings worth keeping. `screencapture -l` cannot see the Metal
 layer and returns a window that looks blank, so on-screen checks go
