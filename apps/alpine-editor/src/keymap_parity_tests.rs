@@ -2,7 +2,9 @@ use alpine_platform_macos::{ImeEvent, Modifiers};
 use alpine_text::{ByteOffset, Selection};
 
 use super::*;
-use crate::settings::{ChordPrefix, KEY_ESCAPE, KEY_G, KEY_I, KEY_K, KEY_RETURN, KEY_S};
+use crate::settings::{
+    ChordPrefix, KEY_DELETE_BACKWARD, KEY_ESCAPE, KEY_G, KEY_I, KEY_K, KEY_LEFT, KEY_RETURN, KEY_S,
+};
 use crate::tests::TestTextSystem;
 
 #[test]
@@ -92,5 +94,25 @@ fn cmd_k_cmd_i_does_not_fire_when_shift_makes_the_format_binding()
     app.handle_key(KEY_K, command);
     app.handle_key(KEY_I, command_shift);
     assert_eq!(app.pending_chord, None);
+    Ok(())
+}
+
+#[test]
+fn go_to_line_field_edits_with_delete_and_arrows() -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = EditorApp::new(TestTextSystem)?;
+    app.handle_key(KEY_G, Modifiers::from_bits(Modifiers::CONTROL));
+    app.handle_ime(&ImeEvent::Committed("12".into()));
+    assert_eq!(app.go_to_line.query(), "12");
+    assert!(
+        app.handle_key(KEY_DELETE_BACKWARD, Modifiers::default())
+            .visual_changed
+    );
+    assert_eq!(app.go_to_line.query(), "1");
+    assert!(
+        app.handle_key(KEY_LEFT, Modifiers::default())
+            .visual_changed
+    );
+    app.handle_ime(&ImeEvent::Committed("9".into()));
+    assert_eq!(app.go_to_line.query(), "91");
     Ok(())
 }

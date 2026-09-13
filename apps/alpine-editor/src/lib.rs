@@ -4623,7 +4623,7 @@ impl EditorApp {
         {
             return self.dispatch_command(command);
         }
-        if let Some(effect) = self.handle_go_to_line_if_open(action, physical_key, command) {
+        if let Some(effect) = self.handle_go_to_line_if_open(action, physical_key, modifiers) {
             return effect;
         }
         if let Some(effect) = self.handle_find_if_open(action, physical_key, command, option, shift)
@@ -5330,7 +5330,7 @@ impl EditorApp {
         &mut self,
         action: Option<KeyAction>,
         physical_key: u16,
-        command: bool,
+        modifiers: Modifiers,
     ) -> Option<EventEffect> {
         if !self.go_to_line.is_open() {
             return None;
@@ -5343,10 +5343,11 @@ impl EditorApp {
                     .unwrap_or_default(),
             );
         }
-        Some(self.handle_go_to_line_key(physical_key, command))
+        Some(self.handle_go_to_line_key(physical_key, modifiers))
     }
 
-    fn handle_go_to_line_key(&mut self, physical_key: u16, command: bool) -> EventEffect {
+    fn handle_go_to_line_key(&mut self, physical_key: u16, modifiers: Modifiers) -> EventEffect {
+        let command = modifiers.contains(Modifiers::COMMAND);
         match physical_key {
             KEY_ESCAPE => self
                 .go_to_line
@@ -5354,7 +5355,9 @@ impl EditorApp {
                 .then(EventEffect::visual)
                 .unwrap_or_default(),
             KEY_RETURN if !command => self.submit_go_to_line(),
-            _ => EventEffect::default(),
+            _ => overlay_field::Owner::GoToLine
+                .key(self, physical_key, modifiers)
+                .unwrap_or_default(),
         }
     }
 
