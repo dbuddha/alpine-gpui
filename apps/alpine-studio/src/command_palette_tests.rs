@@ -196,6 +196,14 @@ fn command_palette_focus_cancel_and_scene_are_bounded() -> Result<(), Box<dyn st
         app.command_palette.report().visible_rows
             <= commands::MAX_VISIBLE_COMMANDS + commands::MAX_VISIBLE_OVERSCAN * 2
     );
+    // The first raw Escape belongs to the native input method while marked
+    // text is active. After its cancellation callback, Escape closes the panel.
+    assert!(
+        !app.handle_event(&key(KEY_ESCAPE, Modifiers::default()))
+            .visual_changed
+    );
+    assert!(app.command_palette.is_open());
+    assert!(app.handle_event(&ime(ImeEvent::Cancelled)).visual_changed);
     assert!(
         app.handle_event(&key(KEY_ESCAPE, Modifiers::default()))
             .visual_changed
@@ -522,13 +530,25 @@ fn command_palette_scene_geometry_is_exact_at_a_narrow_viewport()
     assert!(scene.quads().iter().any(|quad| quad.bounds() == overlay));
     assert!(scene.quads().iter().any(|quad| quad.bounds() == selected));
     for (x, y) in [(32.0, 67.0), (32.0, 98.0), (32.0, 122.0)] {
+        let expected_clip = if f32::to_bits(y) == 67.0_f32.to_bits() {
+            scene
+                .clips()
+                .iter()
+                .position(|clip| {
+                    clip.bounds().origin() == overlay.origin()
+                        && clip.bounds().size().height() == COMMAND_PALETTE_QUERY_HEIGHT
+                })
+                .ok_or("query clip")?
+        } else {
+            overlay_clip
+        };
         let first_x = scene
             .glyphs()
             .iter()
             .filter(|glyph| {
                 glyph
                     .clip()
-                    .is_some_and(|clip| clip.index() == overlay_clip)
+                    .is_some_and(|clip| clip.index() == expected_clip)
                     && glyph.bounds().origin().y().to_bits() == f32::to_bits(y)
             })
             .map(|glyph| glyph.bounds().origin().x())

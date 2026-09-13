@@ -1,4 +1,4 @@
-//! Find/Replace native text queries share the exact single-line display layout.
+//! Overlay native text queries share the exact painted field layout.
 
 use alpine_core::{Point, Rect, Size};
 use alpine_platform_macos::{
@@ -9,6 +9,7 @@ use alpine_text::{Buffer, Selection};
 use alpine_text_layout::{FontKey, LineLayout, TextShaper};
 
 use crate::accessibility::AccessibilityError;
+use crate::overlay_field::Owner;
 use crate::{
     EventEffect, FIND_BAR_HEIGHT, FIND_BAR_INSET, FIND_BAR_WIDTH, LINE_HEIGHT, StudioApp,
     StudioRenderError, TAB_BAR_HEIGHT,
@@ -23,6 +24,9 @@ pub(super) struct Layout {
     pub top: f32,
     pub field_start_utf16: usize,
     pub field_len_utf16: usize,
+    pub selection: std::ops::Range<usize>,
+    pub mark: Option<std::ops::Range<usize>>,
+    pub caret: usize,
 }
 
 pub(super) fn bounds(app: &StudioApp) -> Result<Rect, StudioRenderError> {
@@ -37,24 +41,86 @@ pub(super) fn bounds(app: &StudioApp) -> Result<Rect, StudioRenderError> {
     ))
 }
 
-pub(super) fn layout(app: &mut StudioApp) -> Result<Layout, StudioRenderError> {
-    let bounds = bounds(app)?;
+pub(super) fn bounds_for(app: &StudioApp, owner: Owner) -> Result<Rect, StudioRenderError> {
+    use crate::{
+        COMMAND_PALETTE_QUERY_HEIGHT, COMMAND_PALETTE_WIDTH, CONTENT_INSET,
+        PROJECT_SEARCH_QUERY_HEIGHT, PROJECT_SEARCH_WIDTH, QUICK_OPEN_QUERY_HEIGHT,
+        QUICK_OPEN_WIDTH,
+    };
+    if owner == Owner::Find {
+        return bounds(app);
+    }
+    if matches!(owner, Owner::Symbols | Owner::Rename) {
+        let rows = if owner == Owner::Symbols {
+            app.rust_diagnostics
+                .symbol_visible_range(app.language_identity())
+                .ok_or(StudioRenderError::Domain)?
+                .len()
+                + 1
+        } else {
+            app.workspace_edits.line_count()
+        };
+        let pane = app
+            .active_pane_bounds()
+            .map_err(|_| StudioRenderError::Domain)?;
+        let bounds = StudioApp::language_overlay_bounds(pane, rows)?;
+        return Ok(Rect::new(
+            bounds.origin(),
+            Size::new(bounds.size().width(), LINE_HEIGHT).ok_or(StudioRenderError::Domain)?,
+        ));
+    }
+    let (width, height) = match owner {
+        Owner::Palette => (COMMAND_PALETTE_WIDTH, COMMAND_PALETTE_QUERY_HEIGHT),
+        Owner::QuickOpen => (QUICK_OPEN_WIDTH, QUICK_OPEN_QUERY_HEIGHT),
+        Owner::ProjectSearch => (PROJECT_SEARCH_WIDTH, PROJECT_SEARCH_QUERY_HEIGHT),
+        _ => unreachable!(),
+    };
+    let width = width.min((app.last_viewport.width() - CONTENT_INSET * 2.0).max(1.0));
+    let left = ((app.last_viewport.width() - width) * 0.5).max(0.0);
+    Ok(Rect::new(
+        Point::new(left, TAB_BAR_HEIGHT + CONTENT_INSET).ok_or(StudioRenderError::Domain)?,
+        Size::new(width, height).ok_or(StudioRenderError::Domain)?,
+    ))
+}
+
+pub(super) fn layout_for(app: &mut StudioApp, owner: Owner) -> Result<Layout, StudioRenderError> {
+    let bounds = bounds_for(app, owner)?;
     let font = app.resolved_font()?;
-    let text = app.find.display_text()?;
-    let caret_byte = app.find.display_caret();
-    let caret = text
-        .get(..caret_byte)
-        .ok_or(StudioRenderError::Domain)?
-        .encode_utf16()
-        .count();
+    let (value, edit) = owner.read(app).ok_or(StudioRenderError::Domain)?;
+    let projected = edit
+        .projected_value(value)
+        .map_err(|_| StudioRenderError::Domain)?;
+    let prefix = owner.prefix(app);
+    let selected = edit.projected_selection(value);
+    let offset_range = |range: std::ops::Range<usize>| {
+        prefix.encode_utf16().count() + projected[..range.start].encode_utf16().count()
+            ..prefix.encode_utf16().count() + projected[..range.end].encode_utf16().count()
+    };
+    let selection = offset_range(selected.range());
+    let mark = edit.mark_range(value).map(offset_range);
+    let caret =
+        prefix.encode_utf16().count() + projected[..selected.head().get()].encode_utf16().count();
+    let field_start_utf16 = prefix.encode_utf16().count();
+    let field_len_utf16 = projected.encode_utf16().count();
+    let text = match owner {
+        Owner::Find => app.find.display_text()?,
+        Owner::Palette => app.command_palette.display_text()?,
+        Owner::QuickOpen => app.quick_open.display_text()?,
+        Owner::ProjectSearch => app.project_search.display_text()?,
+        Owner::Symbols => projected,
+        Owner::Rename => format!("{prefix}{projected} | Enter submits"),
+    };
     let caret_x = app.text_system.caret_offset(&text, font, caret)?;
     let shift = (caret_x
         - (bounds.size().width() - 2.0 * FIND_BAR_INSET - crate::CARET_WIDTH).max(0.0))
     .max(0.0);
     let origin_x = bounds.origin().x() + FIND_BAR_INSET - shift;
-    let top = bounds.origin().y() + 6.0;
-    let field_start_utf16 = app.find.display_prefix().encode_utf16().count();
-    let field_len_utf16 = app.find.projected_value()?.encode_utf16().count();
+    let inset_y = match owner {
+        Owner::Find => 6.0,
+        Owner::Symbols | Owner::Rename => 3.0,
+        _ => 7.0,
+    };
+    let top = bounds.origin().y() + inset_y;
     let line = app.text_system.shape(&text, font)?;
     Ok(Layout {
         text,
@@ -65,6 +131,9 @@ pub(super) fn layout(app: &mut StudioApp) -> Result<Layout, StudioRenderError> {
         top,
         field_start_utf16,
         field_len_utf16,
+        selection,
+        mark,
+        caret,
     })
 }
 
@@ -76,7 +145,11 @@ pub(super) fn respond(
     app: &mut StudioApp,
     operation: &AccessibilityOperation,
 ) -> Result<(AccessibilityPayload, EventEffect), AccessibilityError> {
-    let source = Buffer::new(app.find.field_text()).snapshot();
+    let owner = Owner::active(app).ok_or_else(unavailable)?;
+    let (value, edit) = owner.read(app).ok_or_else(unavailable)?;
+    let selected = edit.selection(value);
+    let composing = edit.is_composing();
+    let source = Buffer::new(value).snapshot();
     let payload = match operation {
         AccessibilityOperation::Text { range, .. } => {
             let start = source.byte_of_appkit_utf16(range.start_utf16())?;
@@ -86,7 +159,6 @@ pub(super) fn respond(
             )?)
         }
         AccessibilityOperation::Selection { .. } => {
-            let selected = app.find.selection();
             AccessibilityPayload::Selection(AccessibilitySelection::new(
                 source.appkit_utf16_of_byte(selected.anchor())?,
                 source.appkit_utf16_of_byte(selected.head())?,
@@ -97,9 +169,8 @@ pub(super) fn respond(
                 source.byte_of_appkit_utf16(selection.anchor_utf16())?,
                 source.byte_of_appkit_utf16(selection.head_utf16())?,
             );
-            let changed = app
-                .find
-                .set_selection(selection)
+            let changed = owner
+                .set_selection(app, selection)
                 .map_err(|_| unavailable())?;
             return Ok((
                 AccessibilityPayload::Action(if changed {
@@ -114,10 +185,19 @@ pub(super) fn respond(
                 },
             ));
         }
+        AccessibilityOperation::LineForIndex { index_utf16, .. } => AccessibilityPayload::Line(
+            crate::accessibility::line_for_index_from_snapshot(&source, *index_utf16)?,
+        ),
+        AccessibilityOperation::RangeForLine { line, .. } => AccessibilityPayload::Range(
+            crate::accessibility::range_for_line_from_snapshot(&source, *line)?,
+        ),
+        AccessibilityOperation::RangeForIndex { index_utf16, .. } => AccessibilityPayload::Range(
+            crate::accessibility::range_for_index_from_snapshot(&source, *index_utf16)?,
+        ),
         AccessibilityOperation::FirstRectForRange {
             range, marked_text, ..
         } => {
-            if !marked_text && app.find.is_composing() {
+            if !marked_text && composing {
                 return Err(unavailable());
             }
             geometry(app, *range)?
@@ -134,11 +214,14 @@ pub(super) fn geometry(
     app: &mut StudioApp,
     range: AccessibilityTextRange,
 ) -> Result<AccessibilityPayload, AccessibilityError> {
-    let projected = app.find.projected_value().map_err(|_| unavailable())?;
+    let owner = Owner::active(app).ok_or_else(unavailable)?;
+    let (value, edit) = owner.read(app).ok_or_else(unavailable)?;
+    let projected = edit.projected_value(value).map_err(|_| unavailable())?;
     let text = Buffer::new(&projected).snapshot();
     text.byte_of_appkit_utf16(range.start_utf16())?;
     text.byte_of_appkit_utf16(range.end_utf16()?)?;
-    let view = layout(app).map_err(|_| unavailable())?;
+    let owner = Owner::active(app).ok_or_else(unavailable)?;
+    let view = layout_for(app, owner).map_err(|_| unavailable())?;
     let start = view.field_start_utf16 + range.start_utf16();
     let end = view.field_start_utf16 + range.end_utf16()?;
     let spans = if start == end {
@@ -184,7 +267,8 @@ pub(super) fn index_at_point(
     app: &mut StudioApp,
     point: AccessibilityBounds,
 ) -> Result<usize, AccessibilityError> {
-    let view = layout(app).map_err(|_| unavailable())?;
+    let owner = Owner::active(app).ok_or_else(unavailable)?;
+    let view = layout_for(app, owner).map_err(|_| unavailable())?;
     if point.x() < view.bounds.origin().x()
         || point.x() >= view.bounds.origin().x() + view.bounds.size().width()
         || point.y() < view.top
@@ -214,8 +298,11 @@ pub(super) fn pointer_selection(
     point: Point,
     extend: bool,
 ) -> Result<bool, AccessibilityError> {
-    let view = layout(app).map_err(|_| unavailable())?;
-    let projected = app.find.projected_value().map_err(|_| unavailable())?;
+    let owner = Owner::active(app).ok_or_else(unavailable)?;
+    let view = layout_for(app, owner).map_err(|_| unavailable())?;
+    let owner = Owner::active(app).ok_or_else(unavailable)?;
+    let (value, edit) = owner.read(app).ok_or_else(unavailable)?;
+    let projected = edit.projected_value(value).map_err(|_| unavailable())?;
     let target_x = point.x() - view.origin_x;
     let field_end = view.field_start_utf16 + view.field_len_utf16;
     let cluster = view
@@ -263,12 +350,16 @@ pub(super) fn pointer_selection(
         .snapshot()
         .byte_of_appkit_utf16(nearest - view.field_start_utf16)?
         .get();
-    let source = app.find.source_index(nearest);
+    let (value, edit) = owner.read(app).ok_or_else(unavailable)?;
+    let source = edit.source_index(value, nearest);
+    let anchor = edit.selection(value).anchor();
     let source = alpine_text::ByteOffset::new(source);
     let selected = if extend {
-        Selection::new(app.find.selection().anchor(), source)
+        Selection::new(anchor, source)
     } else {
         Selection::caret(source)
     };
-    app.find.set_selection(selected).map_err(|_| unavailable())
+    owner
+        .set_selection(app, selected)
+        .map_err(|_| unavailable())
 }

@@ -29,14 +29,19 @@ const EDITOR_NODE: AccessibilityNodeId = AccessibilityNodeId::new(3);
 const FILE_TREE_NODE: AccessibilityNodeId = AccessibilityNodeId::new(4);
 const FIND_NODE: AccessibilityNodeId = AccessibilityNodeId::new(5);
 const REPLACE_NODE: AccessibilityNodeId = AccessibilityNodeId::new(14);
-const QUICK_OPEN_NODE: AccessibilityNodeId = AccessibilityNodeId::new(6);
-const PROJECT_SEARCH_NODE: AccessibilityNodeId = AccessibilityNodeId::new(7);
-const COMMAND_PALETTE_NODE: AccessibilityNodeId = AccessibilityNodeId::new(8);
+pub(super) const QUICK_OPEN_NODE: AccessibilityNodeId = AccessibilityNodeId::new(6);
+pub(super) const PROJECT_SEARCH_NODE: AccessibilityNodeId = AccessibilityNodeId::new(7);
+pub(super) const COMMAND_PALETTE_NODE: AccessibilityNodeId = AccessibilityNodeId::new(8);
 const STATUS_NODE: AccessibilityNodeId = AccessibilityNodeId::new(9);
 const COMPLETION_NODE: AccessibilityNodeId = AccessibilityNodeId::new(10);
 const NAVIGATION_NODE: AccessibilityNodeId = AccessibilityNodeId::new(11);
-const SYMBOL_NODE: AccessibilityNodeId = AccessibilityNodeId::new(12);
-const WORKSPACE_EDIT_NODE: AccessibilityNodeId = AccessibilityNodeId::new(13);
+pub(super) const SYMBOL_NODE: AccessibilityNodeId = AccessibilityNodeId::new(12);
+pub(super) const WORKSPACE_EDIT_NODE: AccessibilityNodeId = AccessibilityNodeId::new(13);
+pub(super) const QUICK_OPEN_FIELD: AccessibilityNodeId = AccessibilityNodeId::new(15);
+pub(super) const PROJECT_SEARCH_FIELD: AccessibilityNodeId = AccessibilityNodeId::new(16);
+pub(super) const COMMAND_PALETTE_FIELD: AccessibilityNodeId = AccessibilityNodeId::new(17);
+pub(super) const SYMBOL_FIELD: AccessibilityNodeId = AccessibilityNodeId::new(18);
+pub(super) const RENAME_FIELD: AccessibilityNodeId = AccessibilityNodeId::new(19);
 const TAB_NODE_BASE: u64 = 1_024;
 const FILE_ROW_NODE_BASE: u64 = 1 << 20;
 const COMMAND_ROW_NODE_BASE: u64 = 2 << 20;
@@ -229,18 +234,20 @@ fn transport_snapshot(
     )
     .and_then(|snapshot| {
         let snapshot = snapshot.with_editor_composition(app.composition.is_some());
-        if focus_owner(app) == Some(find_node(app)) {
-            let text = app.find.field_text();
-            let selected = app.find.selection();
+        if let Some(owner) = crate::overlay_field::Owner::active(app) {
+            let (text, edit) = owner
+                .read(app)
+                .ok_or(PlatformAccessibilityError::InvalidTree)?;
+            let selected = edit.selection(text);
             let selection = AccessibilitySelection::new(
                 text[..selected.anchor().get()].encode_utf16().count(),
                 text[..selected.head().get()].encode_utf16().count(),
             );
             snapshot.with_focused_text_input(
-                find_node(app),
+                owner.node(app),
                 selection,
                 text.encode_utf16().count(),
-                app.find.is_composing(),
+                edit.is_composing(),
             )
         } else {
             Ok(snapshot)
@@ -288,7 +295,7 @@ fn require_revision(
     Ok(())
 }
 
-fn line_for_index_from_snapshot(
+pub(super) fn line_for_index_from_snapshot(
     text: &BufferSnapshot,
     index_utf16: usize,
 ) -> Result<usize, AccessibilityError> {
@@ -296,7 +303,7 @@ fn line_for_index_from_snapshot(
     text.line_of_byte(byte).map_err(Into::into)
 }
 
-fn range_for_line_from_snapshot(
+pub(super) fn range_for_line_from_snapshot(
     text: &BufferSnapshot,
     line: usize,
 ) -> Result<AccessibilityTextRange, AccessibilityError> {
@@ -309,7 +316,7 @@ fn range_for_line_from_snapshot(
     Ok(AccessibilityTextRange::new(start, length))
 }
 
-fn range_for_index_from_snapshot(
+pub(super) fn range_for_index_from_snapshot(
     text: &BufferSnapshot,
     index_utf16: usize,
 ) -> Result<AccessibilityTextRange, AccessibilityError> {
@@ -335,7 +342,7 @@ fn respond_to_field(
             observed,
         )?;
         require_revision(app.accessibility_projection_revision, observed)?;
-        if target != find_node(app) || focus_owner(app) != Some(target) {
+        if crate::overlay_field::Owner::active(app).is_none_or(|owner| owner.node(app) != target) {
             return Err(AccessibilityError::InvalidTree);
         }
         crate::find_input::respond(app, request.operation())
@@ -462,6 +469,107 @@ mod native_text_geometry_tests {
     use alpine_scene::SceneRevision;
 
     #[test]
+    fn overlay_fields_expose_distinct_native_text_selection_and_geometry()
+    -> Result<(), Box<dyn Error>> {
+        use crate::overlay_field::Owner;
+        for owner in [
+            Owner::Find,
+            Owner::Palette,
+            Owner::QuickOpen,
+            Owner::ProjectSearch,
+            Owner::Rename,
+        ] {
+            let mut app = app("document remains unchanged")?;
+            match owner {
+                Owner::Find => {
+                    app.find.open(false);
+                }
+                Owner::Palette => {
+                    app.command_palette.open(app.command_context())?;
+                }
+                Owner::QuickOpen => {
+                    app.quick_open.open(1)?;
+                }
+                Owner::ProjectSearch => {
+                    app.project_search.open(1)?;
+                }
+                Owner::Rename => {
+                    app.workspace_edits.open_rename()?;
+                }
+                Owner::Symbols => unreachable!(),
+            }
+            owner.commit(&mut app, "a😀z", 6);
+            let metadata = snapshot(&app)?
+                .transport
+                .focused_text_input()
+                .ok_or("metadata")?;
+            assert_eq!(metadata.node(), owner.node(&app));
+            assert_eq!(metadata.text_len_utf16(), 4);
+            let request = AccessibilityRequest::text(
+                AccessibilityRequestId::new(500),
+                revision(&app),
+                AccessibilityTextRange::new(0, 4),
+            )?
+            .targeting_text(owner.node(&app));
+            assert!(
+                matches!(respond(&mut app, &request).0.result(), Ok(AccessibilityPayload::Text(text)) if text.as_str() == "a😀z")
+            );
+            owner.set_selection(
+                &mut app,
+                Selection::new(ByteOffset::new(1), ByteOffset::new(5)),
+            )?;
+            app.handle_ime(&crate::ImeEvent::Started);
+            app.handle_ime(&crate::ImeEvent::Updated {
+                text: "漢字".into(),
+                selected_start_utf16: 1,
+                selected_length_utf16: 1,
+            });
+            let view = crate::find_input::layout_for(&mut app, owner)?;
+            assert_eq!(view.field_len_utf16, 4);
+            let AccessibilityPayload::TextGeometry { bounds, .. } =
+                crate::find_input::geometry(&mut app, AccessibilityTextRange::new(1, 1))?
+            else {
+                return Err("geometry".into());
+            };
+            let point = AccessibilityBounds::new(
+                bounds.x() + bounds.width() * 0.5,
+                bounds.y() + 5.0,
+                0.0,
+                0.0,
+            )?;
+            assert_eq!(crate::find_input::index_at_point(&mut app, point)?, 1);
+            let document = AccessibilityRequest::text(
+                AccessibilityRequestId::new(501),
+                revision(&app),
+                AccessibilityTextRange::new(0, 8),
+            )?;
+            assert!(
+                matches!(respond(&mut app, &document).0.result(), Ok(AccessibilityPayload::Text(text)) if text.as_str() == "document")
+            );
+            app.try_scene(SceneRevision::new(90), app.last_viewport)?;
+            assert_eq!(app.buffer().snapshot().text(), "document remains unchanged");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn maximum_project_search_query_keeps_end_caret_and_paintable_layout()
+    -> Result<(), Box<dyn Error>> {
+        let mut app = app("document")?;
+        app.project_search.open(1)?;
+        let query = "x".repeat(4096);
+        crate::overlay_field::Owner::ProjectSearch.commit(&mut app, &query, query.len());
+        assert_eq!(app.project_search.query(), query);
+        let view =
+            crate::find_input::layout_for(&mut app, crate::overlay_field::Owner::ProjectSearch)?;
+        assert_eq!(view.field_len_utf16, 4096);
+        assert_eq!(view.caret, view.field_start_utf16 + 4096);
+        assert!(view.text.ends_with(&query));
+        app.try_scene(SceneRevision::new(91), app.last_viewport)?;
+        Ok(())
+    }
+
+    #[test]
     fn find_geometry_selection_pointer_and_scroll_share_native_layout() -> Result<(), Box<dyn Error>>
     {
         let mut app = app("document remains unchanged")?;
@@ -476,7 +584,7 @@ mod native_text_geometry_tests {
             let units = text[..byte].encode_utf16().count();
             app.find
                 .set_selection(Selection::caret(ByteOffset::new(byte)))?;
-            let view = crate::find_input::layout(&mut app)?;
+            let view = crate::find_input::layout_for(&mut app, crate::overlay_field::Owner::Find)?;
             let expected = view.origin_x
                 + app.text_system.caret_offset(
                     &view.text,
@@ -526,7 +634,7 @@ mod native_text_geometry_tests {
         app.find.select_all();
         app.find.commit_text(&"é".repeat(400))?;
         let end = app.find.field_text().encode_utf16().count();
-        let view = crate::find_input::layout(&mut app)?;
+        let view = crate::find_input::layout_for(&mut app, crate::overlay_field::Owner::Find)?;
         assert!(view.origin_x < view.bounds.origin().x());
         let AccessibilityPayload::TextGeometry { bounds, .. } =
             crate::find_input::geometry(&mut app, AccessibilityTextRange::new(end, 0))?
@@ -536,7 +644,7 @@ mod native_text_geometry_tests {
         assert!(bounds.x() >= view.bounds.origin().x());
         assert!(bounds.x() < view.bounds.origin().x() + view.bounds.size().width());
         app.find.move_caret(false, false, true)?;
-        let view = crate::find_input::layout(&mut app)?;
+        let view = crate::find_input::layout_for(&mut app, crate::overlay_field::Owner::Find)?;
         assert!(view.origin_x >= view.bounds.origin().x());
         app.try_scene(
             SceneRevision::new(2),
@@ -1293,14 +1401,18 @@ pub(super) fn focus_owner(app: &StudioApp) -> Option<AccessibilityNodeId> {
     if !app.focused {
         None
     } else if app.command_palette.is_open() {
-        Some(COMMAND_PALETTE_NODE)
+        Some(COMMAND_PALETTE_FIELD)
     } else if app.workspace_edits.is_open() {
-        Some(WORKSPACE_EDIT_NODE)
+        Some(if app.workspace_edits.is_rename_input() {
+            RENAME_FIELD
+        } else {
+            WORKSPACE_EDIT_NODE
+        })
     } else if app
         .rust_diagnostics
         .symbols_are_open(app.language_identity())
     {
-        Some(SYMBOL_NODE)
+        Some(SYMBOL_FIELD)
     } else if app
         .rust_diagnostics
         .navigation_is_open(app.language_identity())
@@ -1312,9 +1424,9 @@ pub(super) fn focus_owner(app: &StudioApp) -> Option<AccessibilityNodeId> {
     {
         Some(COMPLETION_NODE)
     } else if app.project_search.is_open() {
-        Some(PROJECT_SEARCH_NODE)
+        Some(PROJECT_SEARCH_FIELD)
     } else if app.quick_open.is_open() {
-        Some(QUICK_OPEN_NODE)
+        Some(QUICK_OPEN_FIELD)
     } else if app.find.is_open() {
         Some(find_node(app))
     } else if app.file_tree.is_focused() {
@@ -1425,6 +1537,71 @@ fn push_overlays(
         let focused = focus_owner == Some(WORKSPACE_EDIT_NODE);
         nodes.push(workspace_edit_node(app, label, focused)?);
     }
+    push_overlay_fields(app, focus_owner, nodes)
+}
+
+fn push_overlay_fields(
+    app: &StudioApp,
+    focus_owner: Option<AccessibilityNodeId>,
+    nodes: &mut Vec<AccessibilityNode>,
+) -> Result<(), AccessibilityError> {
+    use crate::overlay_field::Owner;
+    let fields = [
+        (
+            Owner::Palette,
+            app.command_palette.is_open(),
+            COMMAND_PALETTE_NODE,
+            "Command search",
+        ),
+        (
+            Owner::QuickOpen,
+            app.quick_open.is_open(),
+            QUICK_OPEN_NODE,
+            "File search",
+        ),
+        (
+            Owner::ProjectSearch,
+            app.project_search.is_open(),
+            PROJECT_SEARCH_NODE,
+            "Search project text",
+        ),
+        (
+            Owner::Symbols,
+            app.rust_diagnostics
+                .symbols_are_open(app.language_identity()),
+            SYMBOL_NODE,
+            "Search Rust symbols",
+        ),
+        (
+            Owner::Rename,
+            app.workspace_edits.is_rename_input(),
+            WORKSPACE_EDIT_NODE,
+            "New Rust symbol name",
+        ),
+    ];
+    for (owner, present, parent, label) in fields {
+        if !present {
+            continue;
+        }
+        let rect = crate::find_input::bounds_for(app, owner)
+            .map_err(|_| AccessibilityError::InvalidTree)?;
+        nodes.push(node(
+            owner.node(app),
+            Some(parent),
+            AccessibilityRole::SearchField,
+            Arc::from(label),
+            focus_owner == Some(owner.node(app)),
+            false,
+            false,
+            bounds(
+                rect.origin().x(),
+                rect.origin().y(),
+                rect.size().width(),
+                rect.size().height(),
+            )?,
+            None,
+        )?);
+    }
     Ok(())
 }
 
@@ -1460,6 +1637,7 @@ pub(super) fn apply_action(
             if !node.supports_activate() || !node.is_enabled() {
                 return Err(PlatformAccessibilityError::ActionDisabled(target).into());
             }
+            app.field_pointer_owner = None;
             activate_node(app, target, node.parent())
         }
     }

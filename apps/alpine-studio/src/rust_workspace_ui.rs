@@ -47,7 +47,7 @@ impl Error for WorkspaceEditPanelError {}
 #[derive(Default)]
 struct RenameInput {
     text: String,
-    composition: Option<String>,
+    edit: super::field_edit::FieldEdit,
 }
 
 #[derive(Default)]
@@ -80,6 +80,27 @@ pub(crate) struct WorkspaceEditPanel {
     force_line_lookup_failure: bool,
 }
 
+impl From<super::field_edit::EditError> for WorkspaceEditPanelError {
+    fn from(error: super::field_edit::EditError) -> Self {
+        match error {
+            super::field_edit::EditError::InvalidSelection => Self::InvalidComposition,
+            super::field_edit::EditError::TooLong { .. } => Self::InputTooLong,
+            super::field_edit::EditError::AllocationFailed => Self::AllocationFailed,
+        }
+    }
+}
+
+fn rename_lines(value: &str) -> Result<(Vec<Box<str>>, Arc<str>), WorkspaceEditPanelError> {
+    let mut line = String::new();
+    line.try_reserve_exact(value.len() + 36)
+        .map_err(|_| WorkspaceEditPanelError::AllocationFailed)?;
+    line.push_str("Rename Rust symbol: ");
+    line.push_str(value);
+    line.push_str(" | Enter submits");
+    let label = Arc::from(line.as_str());
+    Ok((vec![line.into_boxed_str()], label))
+}
+
 impl WorkspaceEditPanel {
     pub(crate) fn is_open(&self) -> bool {
         !matches!(self.state, PanelState::Closed)
@@ -105,49 +126,62 @@ impl WorkspaceEditPanel {
         Ok(true)
     }
 
-    pub(crate) fn begin_composition(&mut self) -> bool {
+    pub(crate) fn input(&self) -> Option<(&str, &super::field_edit::FieldEdit)> {
+        let PanelState::Rename(input) = &self.state else {
+            return None;
+        };
+        Some((&input.text, &input.edit))
+    }
+
+    pub(crate) fn input_mut(&mut self) -> Option<(&str, &mut super::field_edit::FieldEdit)> {
         let PanelState::Rename(input) = &mut self.state else {
+            return None;
+        };
+        Some((&input.text, &mut input.edit))
+    }
+
+    pub(crate) fn begin_composition(&mut self) -> bool {
+        let Some((_, edit)) = self.input_mut() else {
             return false;
         };
-        if input.composition.is_some() {
+        let changed = edit.begin_composition();
+        if self.rebuild_rename_lines().is_err() {
+            self.cancel_composition();
             return false;
         }
-        input.composition = Some(String::new());
-        true
+        changed
     }
 
     pub(crate) fn update_composition(
         &mut self,
         text: &str,
-        selected_start_utf16: u32,
-        selected_length_utf16: u32,
+        start: u32,
+        length: u32,
     ) -> Result<bool, WorkspaceEditPanelError> {
-        let PanelState::Rename(input) = &mut self.state else {
-            return Ok(false);
-        };
-        validate_composition(text, selected_start_utf16, selected_length_utf16)?;
-        checked_input_length(input.text.len(), text.len())?;
-        if text.chars().any(char::is_control) {
-            return Err(WorkspaceEditPanelError::InvalidName);
+        let result = (|| {
+            if text.chars().any(char::is_control) {
+                return Err(WorkspaceEditPanelError::InvalidName);
+            }
+            let Some((value, edit)) = self.input_mut() else {
+                return Ok(false);
+            };
+            let changed =
+                edit.update_composition(value, text, start, length, MAX_RENAME_INPUT_BYTES)?;
+            self.rebuild_rename_lines()?;
+            Ok(changed)
+        })();
+        if result.is_err() {
+            self.cancel_composition();
+            let _ = self.rebuild_rename_lines();
         }
-        if input.composition.as_deref() == Some(text) {
-            return Ok(false);
-        }
-        let mut composition = String::new();
-        composition
-            .try_reserve_exact(text.len())
-            .map_err(|_| WorkspaceEditPanelError::AllocationFailed)?;
-        composition.push_str(text);
-        input.composition = Some(composition);
-        self.rebuild_rename_lines()?;
-        Ok(true)
+        result
     }
 
     pub(crate) fn cancel_composition(&mut self) -> bool {
-        let PanelState::Rename(input) = &mut self.state else {
+        let Some((_, edit)) = self.input_mut() else {
             return false;
         };
-        let changed = input.composition.take().is_some();
+        let changed = edit.cancel_composition();
         if changed {
             let _ = self.rebuild_rename_lines();
         }
@@ -155,43 +189,62 @@ impl WorkspaceEditPanel {
     }
 
     pub(crate) fn commit_text(&mut self, text: &str) -> Result<bool, WorkspaceEditPanelError> {
-        let PanelState::Rename(input) = &mut self.state else {
-            return Ok(false);
-        };
+        self.commit_text_at(text, text.len())
+    }
+
+    pub(crate) fn commit_text_at(
+        &mut self,
+        text: &str,
+        caret: usize,
+    ) -> Result<bool, WorkspaceEditPanelError> {
         if text.chars().any(char::is_control) {
             return Err(WorkspaceEditPanelError::InvalidName);
         }
-        let next_length = checked_input_length(input.text.len(), text.len())?;
-        input.composition = None;
-        if text.is_empty() {
+        let Some((value, edit)) = self.input_mut() else {
             return Ok(false);
-        }
-        input
-            .text
-            .try_reserve(next_length.saturating_sub(input.text.len()))
-            .map_err(|_| WorkspaceEditPanelError::AllocationFailed)?;
-        input.text.push_str(text);
-        self.rebuild_rename_lines()?;
-        Ok(true)
+        };
+        let prepared = edit.prepare(value, text, caret, MAX_RENAME_INPUT_BYTES)?;
+        self.apply_edit(prepared)
     }
 
     pub(crate) fn delete_backward(&mut self) -> Result<bool, WorkspaceEditPanelError> {
-        let PanelState::Rename(input) = &mut self.state else {
+        self.delete(false)
+    }
+
+    pub(crate) fn delete(&mut self, forward: bool) -> Result<bool, WorkspaceEditPanelError> {
+        let Some((value, edit)) = self.input_mut() else {
             return Ok(false);
         };
-        input.composition = None;
-        if input.text.pop().is_none() {
+        let prepared = edit.prepare_delete(value, forward, MAX_RENAME_INPUT_BYTES)?;
+        self.apply_edit(prepared)
+    }
+
+    pub(crate) fn apply_edit(
+        &mut self,
+        mut prepared: super::field_edit::Prepared,
+    ) -> Result<bool, WorkspaceEditPanelError> {
+        let Some((value, _)) = self.input() else {
             return Ok(false);
-        }
-        self.rebuild_rename_lines()?;
-        Ok(true)
+        };
+        let changed = value != prepared.value;
+        // Prepare and admit the derived presentation before committing source or
+        // history. Failure leaves the old input and cached lines coherent.
+        let (lines, label) = rename_lines(&prepared.value)?;
+        self.replace_lines(lines, label)?;
+        let PanelState::Rename(input) = &mut self.state else {
+            unreachable!()
+        };
+        input.text = std::mem::take(&mut prepared.value);
+        input.edit.accept(prepared, changed);
+        self.peak_retained_bytes = self.peak_retained_bytes.max(self.current_retained_bytes());
+        Ok(changed)
     }
 
     pub(crate) fn take_rename_for_request(&mut self) -> Result<Box<str>, WorkspaceEditPanelError> {
         let PanelState::Rename(input) = &mut self.state else {
             return Err(WorkspaceEditPanelError::InvalidName);
         };
-        if input.composition.is_some()
+        if input.edit.is_composing()
             || input.text.is_empty()
             || input.text.chars().any(char::is_control)
         {
@@ -424,18 +477,13 @@ impl WorkspaceEditPanel {
         self.force_line_lookup_failure = true;
     }
 
-    fn rebuild_rename_lines(&mut self) -> Result<(), WorkspaceEditPanelError> {
-        let PanelState::Rename(input) = &self.state else {
+    pub(crate) fn rebuild_rename_lines(&mut self) -> Result<(), WorkspaceEditPanelError> {
+        let Some((value, edit)) = self.input() else {
             return Ok(());
         };
-        let composition = input.composition.as_deref().unwrap_or_default();
-        let mut line = String::new();
-        line.push_str("Rename Rust symbol: ");
-        line.push_str(&input.text);
-        line.push_str(composition);
-        line.push_str(" | Enter submits");
-        let label = Arc::from(line.clone());
-        self.replace_lines(vec![line.into_boxed_str()], label)
+        let projected = edit.projected_value(value)?;
+        let (lines, label) = rename_lines(&projected)?;
+        self.replace_lines(lines, label)
     }
 
     fn replace_lines(
@@ -467,7 +515,7 @@ impl WorkspaceEditPanel {
             PanelState::Rename(input) => input
                 .text
                 .capacity()
-                .saturating_add(input.composition.as_ref().map_or(0, String::capacity)),
+                .saturating_add(input.edit.retained_bytes()),
             PanelState::Preview { prepared, .. } | PanelState::Queued { prepared, .. } => {
                 prepared.retained_bytes()
             }
@@ -493,6 +541,7 @@ impl WorkspaceEditPanel {
     }
 }
 
+#[cfg(test)]
 fn checked_input_length(current: usize, added: usize) -> Result<usize, WorkspaceEditPanelError> {
     let length = current
         .checked_add(added)
@@ -504,6 +553,7 @@ fn checked_input_length(current: usize, added: usize) -> Result<usize, Workspace
     }
 }
 
+#[cfg(test)]
 fn validate_composition(
     text: &str,
     selected_start_utf16: u32,
@@ -598,7 +648,15 @@ mod tests {
             panel.update_composition("x", 2, 0),
             Err(WorkspaceEditPanelError::InvalidComposition)
         );
-        assert!(panel.cancel_composition());
+        assert_eq!(
+            panel.input().ok_or("input")?.1.projected_value("renamed")?,
+            "renamed"
+        );
+        assert_eq!(
+            panel.line(0),
+            Some("Rename Rust symbol: renamed | Enter submits")
+        );
+        assert!(!panel.cancel_composition());
         assert!(panel.delete_backward()?);
         assert_eq!(panel.take_rename_for_request()?.as_ref(), "rename");
         assert!(panel.is_open());
@@ -757,7 +815,7 @@ mod tests {
             panel.take_rename_for_request(),
             Err(WorkspaceEditPanelError::InvalidName)
         );
-        assert!(panel.cancel_composition());
+        assert!(!panel.cancel_composition());
         assert!(panel.commit_text("name")?);
         assert!(panel.accessibility_label().is_some());
         assert!(panel.cancel());

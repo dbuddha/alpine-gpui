@@ -315,6 +315,8 @@ pub(super) fn validate_round_trip(
     validate_edit_edges(view, length, &before)?;
     stage.set("Find/Replace native fields");
     validate_find_fields(view)?;
+    stage.set("palette/file/project native fields");
+    validate_search_fields(view)?;
     if view
         .native_substring(NSRange::new(0, length.min(64)))
         .is_none_or(|(text, _)| text != before)
@@ -560,8 +562,30 @@ fn validate_edit_edges(
     }
     validation_key(view, 3, "f", super::Modifiers::COMMAND);
     mark("overlay");
-    validation_key(view, 53, "", 0);
+    let old_owner = NativeAccessibilityAdapter::input_owner(view).ok_or_else(failure)?;
+    // Switch the owner explicitly. A raw Escape now remains with the input
+    // method while composing and therefore cannot model a lost owner.
+    validation_key(
+        view,
+        35,
+        "p",
+        super::Modifiers::COMMAND | super::Modifiers::SHIFT,
+    );
+    let new_owner = NativeAccessibilityAdapter::input_owner(view).ok_or_else(failure)?;
+    if old_owner.2 == new_owner.2 {
+        return Err(failure());
+    }
     validation_insert(view, "stale overlay", missing_range());
+    if NativeAccessibilityAdapter::input_owner(view) != Some(new_owner)
+        || view
+            .input_state()
+            .is_none_or(|(_, length, selected)| length != 0 || selected != NSRange::new(0, 0))
+        || view.has_marked_text_value()
+    {
+        return Err(failure());
+    }
+    NativeAccessibilityAdapter::validate_focused_field_text(view, "")?;
+    validation_key(view, 53, "", 0);
     if !unchanged() {
         return Err(failure());
     }
@@ -656,5 +680,84 @@ fn validate_find_fields(view: &SurfaceView) -> Result<(), super::SurfaceError> {
     }
     validation_insert(view, "", missing_range());
     validation_key(view, 53, "", 0);
+    Ok(())
+}
+
+#[cfg(alpine_native_validation)]
+fn validate_search_fields(view: &SurfaceView) -> Result<(), super::SurfaceError> {
+    let command = super::Modifiers::COMMAND;
+    let shift = super::Modifiers::SHIFT;
+    for (key, logical, modifiers, label) in [
+        (35, "p", command | shift, "command palette"),
+        (35, "p", command, "quick open"),
+        (3, "f", command | shift, "project search"),
+    ] {
+        let failure = || {
+            eprintln!("native-overlay: {label} field round trip failed");
+            super::SurfaceError::validation(super::SurfaceOperation::Input)
+        };
+        let text_is = |expected: &str| {
+            let units = expected.encode_utf16().count();
+            view.input_state()
+                .and_then(|(_, length, _)| view.projected_length(length))
+                == Some(units)
+                && view
+                    .native_substring(NSRange::new(0, units))
+                    .is_some_and(|(text, _)| &*text == expected)
+        };
+        validation_key(view, key, logical, modifiers);
+        if !text_is("") {
+            return Err(failure());
+        }
+        validation_insert(view, "a😀z", missing_range());
+        let (revision, _, _) = view.input_state().ok_or_else(failure)?;
+        if !text_is("a😀z")
+            || !NativeAccessibilityAdapter::input_selection(view, revision, NSRange::new(1, 2))
+        {
+            return Err(failure());
+        }
+        validation_mark(view, &super::NSString::from_str("漢🐱"), NSRange::new(1, 2));
+        if !text_is("a漢🐱z") || view.native_marked_range() != NSRange::new(1, 3) {
+            return Err(failure());
+        }
+        // Raw navigation arrives before AppKit's next marked-text callback.
+        validation_key(view, 123, "", 0);
+        if !view.native_mark_is_current() || !text_is("a漢🐱z") {
+            return Err(failure());
+        }
+        validation_mark(view, &super::NSString::from_str("漢🐱"), NSRange::new(1, 2));
+        if !view.native_mark_is_current() || !text_is("a漢🐱z") {
+            return Err(failure());
+        }
+        let (rect, _) = view
+            .native_first_rect(NSRange::new(1, 1))
+            .ok_or_else(failure)?;
+        if view.native_character_index(NSPoint::new(
+            rect.origin.x + rect.size.width * 0.5,
+            rect.origin.y + rect.size.height * 0.5,
+        )) != Some(1)
+        {
+            return Err(failure());
+        }
+        validation_insert(view, "!", NSRange::new(2, 2));
+        if !text_is("a漢!z") || view.native_selected_range() != NSRange::new(3, 0) {
+            return Err(failure());
+        }
+        validation_key(view, 6, "z", command);
+        if !text_is("a😀z") {
+            return Err(failure());
+        }
+        validation_key(view, 6, "z", command | shift);
+        if !text_is("a漢!z") {
+            return Err(failure());
+        }
+        NativeAccessibilityAdapter::validate_focused_field_text(view, "a漢!z")?;
+        validation_key(view, 0, "a", command);
+        validation_insert(view, "", missing_range());
+        if !text_is("") {
+            return Err(failure());
+        }
+        validation_key(view, 53, "", 0);
+    }
     Ok(())
 }

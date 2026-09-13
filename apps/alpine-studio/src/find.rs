@@ -2,7 +2,7 @@
 
 use std::{error::Error, fmt, fmt::Write as _, mem::size_of, ops::Range};
 
-use alpine_text::{Buffer, BufferSnapshot, ByteOffset, Selection, TextError};
+use alpine_text::{BufferSnapshot, ByteOffset, Selection, TextError};
 
 pub(crate) const MAX_QUERY_BYTES: usize = 4 * 1_024;
 pub(crate) const MAX_SOURCE_BYTES: usize = 16 * 1_024 * 1_024;
@@ -411,9 +411,8 @@ pub(crate) struct FindState {
     field: FindField,
     query: String,
     replacement: String,
-    composition: Option<Box<str>>,
-    selection: Option<Selection>,
-    composition_selection: Range<usize>,
+    query_edit: super::field_edit::FieldEdit,
+    replacement_edit: super::field_edit::FieldEdit,
     generation: u64,
     pending: Option<FindIdentity>,
     result: Option<FindResult>,
@@ -431,9 +430,8 @@ impl Default for FindState {
             field: FindField::Query,
             query: String::new(),
             replacement: String::new(),
-            composition: None,
-            selection: None,
-            composition_selection: 0..0,
+            query_edit: super::field_edit::FieldEdit::default(),
+            replacement_edit: super::field_edit::FieldEdit::default(),
             generation: 0,
             pending: None,
             result: None,
@@ -442,6 +440,23 @@ impl Default for FindState {
             failures: 0,
             stale_results: 0,
         }
+    }
+}
+
+impl From<super::field_edit::EditError> for FindError {
+    fn from(error: super::field_edit::EditError) -> Self {
+        field_error(FindField::Query, error)
+    }
+}
+
+fn field_error(field: FindField, error: super::field_edit::EditError) -> FindError {
+    match error {
+        super::field_edit::EditError::InvalidSelection => FindError::InvalidSelection,
+        super::field_edit::EditError::AllocationFailed => FindError::AllocationFailed,
+        super::field_edit::EditError::TooLong { actual, limit } => match field {
+            FindField::Query => FindError::QueryTooLong { actual, limit },
+            FindField::Replacement => FindError::ReplacementTooLong { actual, limit },
+        },
     }
 }
 
@@ -505,21 +520,21 @@ impl FindState {
         let changed = !self.open
             || (replace_visible && !self.replace_visible)
             || self.field != next_field
-            || self.selection.is_some()
-            || self.composition.is_some();
+            || self.selection() != Selection::caret(ByteOffset::new(self.field_text().len()))
+            || self.is_composing();
         self.open = true;
         self.replace_visible |= replace_visible;
         self.field = next_field;
-        self.composition = None;
-        self.selection = None;
+        self.query_edit.reset_focus();
+        self.replacement_edit.reset_focus();
         changed
     }
 
     pub(crate) fn close(&mut self) -> bool {
         let changed = self.open;
         self.open = false;
-        self.composition = None;
-        self.selection = None;
+        self.query_edit.reset_focus();
+        self.replacement_edit.reset_focus();
         self.pending = None;
         self.result = None;
         self.active = None;
@@ -535,8 +550,8 @@ impl FindState {
             FindField::Query => FindField::Replacement,
             FindField::Replacement => FindField::Query,
         };
-        self.composition = None;
-        self.selection = None;
+        self.query_edit.reset_focus();
+        self.replacement_edit.reset_focus();
         true
     }
 
@@ -547,75 +562,53 @@ impl FindState {
         }
     }
 
+    pub(crate) fn edit(&self) -> &super::field_edit::FieldEdit {
+        match self.field {
+            FindField::Query => &self.query_edit,
+            FindField::Replacement => &self.replacement_edit,
+        }
+    }
+
+    pub(crate) fn edit_parts(&mut self) -> (&str, &mut super::field_edit::FieldEdit) {
+        match self.field {
+            FindField::Query => (&self.query, &mut self.query_edit),
+            FindField::Replacement => (&self.replacement, &mut self.replacement_edit),
+        }
+    }
+
     pub(crate) fn selection(&self) -> Selection {
-        self.selection
-            .unwrap_or_else(|| Selection::caret(ByteOffset::new(self.field_text().len())))
+        self.edit().selection(self.field_text())
     }
 
     pub(crate) fn set_selection(&mut self, selection: Selection) -> Result<bool, FindError> {
-        let text = self.field_text();
-        if !text.is_char_boundary(selection.anchor().get())
-            || !text.is_char_boundary(selection.head().get())
-        {
-            return Err(FindError::InvalidSelection);
-        }
-        let changed = self.selection() != selection || self.composition.is_some();
-        self.composition = None;
-        self.selection = Some(selection);
-        Ok(changed)
+        let (text, edit) = self.edit_parts();
+        Ok(edit.set_selection(text, selection)?)
     }
 
     pub(crate) fn select_all(&mut self) -> bool {
-        let selection =
-            Selection::new(ByteOffset::new(0), ByteOffset::new(self.field_text().len()));
-        self.set_selection(selection).unwrap_or(false)
+        self.set_selection(Selection::new(
+            ByteOffset::new(0),
+            ByteOffset::new(self.field_text().len()),
+        ))
+        .unwrap_or(false)
     }
 
-    pub(crate) const fn is_composing(&self) -> bool {
-        self.composition.is_some()
+    pub(crate) fn is_composing(&self) -> bool {
+        self.edit().is_composing()
     }
 
     pub(crate) fn projected_value(&self) -> Result<String, FindError> {
-        let text = self.field_text();
-        let Some(mark) = &self.composition else {
-            return Ok(text.to_owned());
-        };
-        let range = self.selection().range();
-        let mut value = String::new();
-        value
-            .try_reserve_exact(text.len() - range.len() + mark.len())
-            .map_err(|_| FindError::AllocationFailed)?;
-        value.push_str(&text[..range.start]);
-        value.push_str(mark);
-        value.push_str(&text[range.end..]);
-        Ok(value)
+        Ok(self.edit().projected_value(self.field_text())?)
     }
 
+    #[cfg(test)]
     pub(crate) fn source_index(&self, projected: usize) -> usize {
-        let Some(mark) = &self.composition else {
-            return projected;
-        };
-        let range = self.selection().range();
-        if projected <= range.start {
-            projected
-        } else if projected < range.start + mark.len() {
-            range.start
-        } else {
-            projected - mark.len() + range.len()
-        }
+        self.edit().source_index(self.field_text(), projected)
     }
 
+    #[cfg(test)]
     pub(crate) fn projected_selection(&self) -> Selection {
-        let selection = self.selection();
-        if self.composition.is_some() {
-            let start = selection.range().start;
-            Selection::new(
-                ByteOffset::new(start + self.composition_selection.start),
-                ByteOffset::new(start + self.composition_selection.end),
-            )
-        } else {
-            selection
-        }
+        self.edit().projected_selection(self.field_text())
     }
 
     pub(crate) const fn display_prefix(&self) -> &'static str {
@@ -625,37 +618,25 @@ impl FindState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn display_selection(&self) -> Option<Range<usize>> {
-        let selection = self.projected_selection().range();
-        (!selection.is_empty()).then(|| {
-            self.display_prefix().len() + selection.start
-                ..self.display_prefix().len() + selection.end
+        let range = self.projected_selection().range();
+        (!range.is_empty()).then(|| {
+            self.display_prefix().len() + range.start..self.display_prefix().len() + range.end
         })
-    }
-
-    pub(crate) fn display_mark(&self) -> Option<Range<usize>> {
-        self.composition.as_ref().map(|mark| {
-            let start = self.display_prefix().len() + self.selection().range().start;
-            start..start + mark.len()
-        })
-    }
-
-    pub(crate) fn display_caret(&self) -> usize {
-        self.display_prefix().len() + self.projected_selection().head().get()
     }
 
     pub(crate) fn begin_composition(&mut self) -> bool {
-        let changed = self.composition.as_deref() != Some("");
-        self.composition = Some(Box::from(""));
-        self.composition_selection = 0..0;
-        changed
+        self.edit_parts().1.begin_composition()
     }
 
     #[cfg(test)]
     pub(crate) fn update_composition(&mut self, text: &str) -> Result<bool, FindError> {
-        let end =
-            u32::try_from(text.encode_utf16().count()).map_err(|_| FindError::InvalidSelection)?;
-        self.update_composition_selected(text, end, 0)
+        self.update_composition_selected(
+            text,
+            u32::try_from(text.encode_utf16().count()).map_err(|_| FindError::InvalidSelection)?,
+            0,
+        )
     }
 
     pub(crate) fn update_composition_selected(
@@ -664,55 +645,14 @@ impl FindState {
         start: u32,
         length: u32,
     ) -> Result<bool, FindError> {
-        let result = self.prepare_composition(text, start, length);
-        if result.is_err() {
-            // The native side has already received this update; revoke stale preedit.
-            self.cancel_composition();
-        }
-        result
-    }
-
-    fn prepare_composition(
-        &mut self,
-        text: &str,
-        start: u32,
-        length: u32,
-    ) -> Result<bool, FindError> {
-        let end = start
-            .checked_add(length)
-            .ok_or(FindError::InvalidSelection)?;
-        let start = super::byte_at_utf16(text, start).ok_or(FindError::InvalidSelection)?;
-        let end = super::byte_at_utf16(text, end).ok_or(FindError::InvalidSelection)?;
-        let next = self.field_text().len() - self.selection().range().len() + text.len();
-        if next > MAX_QUERY_BYTES {
-            // Native AppKit already holds this update. Revoke the application
-            // mark so subsequent native queries/commits cannot use an older one.
-            self.composition = None;
-            return Err(match self.field {
-                FindField::Query => FindError::QueryTooLong {
-                    actual: next,
-                    limit: MAX_QUERY_BYTES,
-                },
-                FindField::Replacement => FindError::ReplacementTooLong {
-                    actual: next,
-                    limit: MAX_QUERY_BYTES,
-                },
-            });
-        }
-        let changed =
-            self.composition.as_deref() != Some(text) || self.composition_selection != (start..end);
-        let mut owned = String::new();
-        owned
-            .try_reserve_exact(text.len())
-            .map_err(|_| FindError::AllocationFailed)?;
-        owned.push_str(text);
-        self.composition = Some(owned.into_boxed_str());
-        self.composition_selection = start..end;
-        Ok(changed)
+        let field = self.field;
+        let (value, edit) = self.edit_parts();
+        edit.update_composition(value, text, start, length, MAX_QUERY_BYTES)
+            .map_err(|e| field_error(field, e))
     }
 
     pub(crate) fn cancel_composition(&mut self) -> bool {
-        self.composition.take().is_some()
+        self.edit_parts().1.cancel_composition()
     }
 
     pub(crate) fn commit_text(&mut self, text: &str) -> Result<bool, FindError> {
@@ -720,11 +660,20 @@ impl FindState {
     }
 
     pub(crate) fn commit_text_at(&mut self, text: &str, caret: usize) -> Result<bool, FindError> {
-        if !text.is_char_boundary(caret) {
-            return Err(FindError::InvalidSelection);
-        }
-        let range = self.selection().range();
-        let query_changed = self.field == FindField::Query;
+        let field = self.field;
+        let (value, edit) = self.edit_parts();
+        let prepared = edit
+            .prepare(value, text, caret, MAX_QUERY_BYTES)
+            .map_err(|e| field_error(field, e))?;
+        self.apply_edit(prepared)
+    }
+
+    pub(crate) fn apply_edit(
+        &mut self,
+        mut prepared: super::field_edit::Prepared,
+    ) -> Result<bool, FindError> {
+        let changed = self.field_text() != prepared.value;
+        let query_changed = changed && self.field == FindField::Query;
         let generation = if query_changed {
             Some(
                 self.generation
@@ -734,33 +683,11 @@ impl FindState {
         } else {
             None
         };
-        let target = match self.field {
-            FindField::Query => &mut self.query,
-            FindField::Replacement => &mut self.replacement,
-        };
-        let next = target
-            .len()
-            .checked_sub(range.len())
-            .and_then(|v| v.checked_add(text.len()))
-            .ok_or(FindError::OffsetOverflow)?;
-        if next > MAX_QUERY_BYTES {
-            return Err(match self.field {
-                FindField::Query => FindError::QueryTooLong {
-                    actual: next,
-                    limit: MAX_QUERY_BYTES,
-                },
-                FindField::Replacement => FindError::ReplacementTooLong {
-                    actual: next,
-                    limit: MAX_QUERY_BYTES,
-                },
-            });
+        match self.field {
+            FindField::Query => self.query = std::mem::take(&mut prepared.value),
+            FindField::Replacement => self.replacement = std::mem::take(&mut prepared.value),
         }
-        target
-            .try_reserve_exact(next.saturating_sub(target.len()))
-            .map_err(|_| FindError::AllocationFailed)?;
-        target.replace_range(range.clone(), text);
-        self.selection = Some(Selection::caret(ByteOffset::new(range.start + caret)));
-        self.composition = None;
+        self.edit_parts().1.accept(prepared, changed);
         if let Some(generation) = generation {
             self.query_changed(generation);
         }
@@ -772,36 +699,9 @@ impl FindState {
     }
 
     pub(crate) fn delete(&mut self, forward: bool) -> Result<bool, FindError> {
-        let selection = self.selection();
-        let mut range = selection.range();
-        if range.is_empty() {
-            let text = self.field_text();
-            let index = if forward {
-                if range.start == text.len() {
-                    self.composition = None;
-                    return Ok(false);
-                }
-                range.start
-            } else {
-                let Some((index, _)) = text[..range.start].char_indices().next_back() else {
-                    self.composition = None;
-                    return Ok(false);
-                };
-                index
-            };
-            range = Buffer::new(text)
-                .snapshot()
-                .grapheme_byte_range_at(ByteOffset::new(index))?;
-        }
-        self.selection = Some(Selection::new(
-            ByteOffset::new(range.start),
-            ByteOffset::new(range.end),
-        ));
-        let result = self.commit_text("");
-        if result.is_err() {
-            self.selection = Some(selection);
-        }
-        result
+        let (value, edit) = self.edit_parts();
+        let prepared = edit.prepare_delete(value, forward, MAX_QUERY_BYTES)?;
+        self.apply_edit(prepared)
     }
 
     pub(crate) fn move_caret(
@@ -810,41 +710,8 @@ impl FindState {
         extend: bool,
         edge: bool,
     ) -> Result<bool, FindError> {
-        let selection = self.selection();
-        let text = self.field_text();
-        let head = selection.head().get();
-        let target = if edge {
-            if forward { text.len() } else { 0 }
-        } else if !extend && !selection.range().is_empty() {
-            if forward {
-                selection.range().end
-            } else {
-                selection.range().start
-            }
-        } else if forward && head < text.len() {
-            Buffer::new(text)
-                .snapshot()
-                .grapheme_byte_range_at(ByteOffset::new(head))?
-                .end
-        } else if !forward && head > 0 {
-            let previous = text[..head]
-                .char_indices()
-                .next_back()
-                .ok_or(FindError::InvalidSelection)?
-                .0;
-            Buffer::new(text)
-                .snapshot()
-                .grapheme_byte_range_at(ByteOffset::new(previous))?
-                .start
-        } else {
-            head
-        };
-        let target = ByteOffset::new(target);
-        self.set_selection(if extend {
-            Selection::new(selection.anchor(), target)
-        } else {
-            Selection::caret(target)
-        })
+        let (value, edit) = self.edit_parts();
+        Ok(edit.move_caret(value, forward, extend, edge)?)
     }
 
     fn query_changed(&mut self, generation: u64) {
