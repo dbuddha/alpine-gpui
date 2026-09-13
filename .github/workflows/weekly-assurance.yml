@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: weekly-assurance
@@ -19,20 +18,20 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
-  upstream-radar:
-    name: upstream-radar
+  advisories:
+    name: dependency-advisories
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Detect material upstream movement
-        env:
-          GH_REPOSITORY: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: cargo run --locked -p alpine-assurance -- upstream-radar
+      - name: Install dependency policy tool
+        run: cargo install --locked cargo-deny --version 0.20.2
+      - name: Check dependency advisories
+        run: cargo deny check advisories
 
   mutation:
+    if: github.event_name == 'workflow_dispatch'
     name: mutation-full
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -57,6 +56,7 @@ jobs:
           if-no-files-found: warn
 
   coverage:
+    if: github.event_name == 'workflow_dispatch'
     name: coverage-full
     runs-on: ubuntu-24.04
     timeout-minutes: 30

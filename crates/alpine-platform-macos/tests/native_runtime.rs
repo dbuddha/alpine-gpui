@@ -380,11 +380,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         alpine_platform_macos::InputEpoch::INITIAL,
         true,
     );
+    // The quit fixture owns a pending editor composition. Supply that owner
+    // through the same metadata channel required by production text callbacks.
+    let cancelled_owner = pending_text_owner()?;
+    let admitted_owner = cancelled_owner.clone();
     let cancelled_shortcut_received = Arc::clone(&shortcut_events);
     assert!(
         !native_validation::replay_application_quit_shortcut_with_handler(
             &shortcut_surface,
             move |event| {
+                // Text-owner metadata is queried before composition callbacks.
+                // This fixture verifies the exact close/input event order.
+                if let SurfaceEvent::Accessibility { request, .. } = &event {
+                    return alpine_platform_macos::AccessibilityResponse::success(
+                        request,
+                        cancelled_owner.revision(),
+                        alpine_platform_macos::AccessibilityPayload::Snapshot(
+                            cancelled_owner.clone(),
+                        ),
+                    )
+                    .map_or_else(
+                        |_| SurfaceResponse::default(),
+                        |response| {
+                            SurfaceResponse::from_channels(
+                                None,
+                                None,
+                                CloseDisposition::NotRequested,
+                                Some(response),
+                            )
+                        },
+                    );
+                }
                 let close_requested = matches!(&event, SurfaceEvent::CloseRequested { .. });
                 if let Ok(mut received) = cancelled_shortcut_received.lock() {
                     received.push(event);
@@ -428,6 +454,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         native_validation::replay_application_quit_shortcut_with_handler(
             &shortcut_surface,
             move |event| {
+                // Text-owner metadata is queried before composition callbacks.
+                // This fixture verifies the exact close/input event order.
+                if let SurfaceEvent::Accessibility { request, .. } = &event {
+                    return alpine_platform_macos::AccessibilityResponse::success(
+                        request,
+                        admitted_owner.revision(),
+                        alpine_platform_macos::AccessibilityPayload::Snapshot(
+                            admitted_owner.clone(),
+                        ),
+                    )
+                    .map_or_else(
+                        |_| SurfaceResponse::default(),
+                        |response| {
+                            SurfaceResponse::from_channels(
+                                None,
+                                None,
+                                CloseDisposition::NotRequested,
+                                Some(response),
+                            )
+                        },
+                    );
+                }
                 let close_requested = matches!(&event, SurfaceEvent::CloseRequested { .. });
                 if let Ok(mut received) = admitted_shortcut_received.lock() {
                     received.push(event);
@@ -459,6 +507,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(shortcut_evidence.active(), [0; 10]);
     assert_eq!(shortcut_evidence.release_order_violations(), 0);
     Ok(())
+}
+
+#[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
+fn pending_text_owner()
+-> Result<alpine_platform_macos::AccessibilitySnapshot, alpine_platform_macos::AccessibilityError> {
+    use alpine_platform_macos::{
+        AccessibilityNode, AccessibilityNodeId, AccessibilityRevision, AccessibilityRole,
+        AccessibilitySelection, AccessibilitySnapshot,
+    };
+    let root = AccessibilityNodeId::new(1);
+    AccessibilitySnapshot::new(
+        AccessibilityRevision::new(1, 1),
+        root,
+        vec![
+            AccessibilityNode::new(
+                root,
+                None,
+                AccessibilityRole::Window,
+                "Quit fixture".into(),
+                false,
+                false,
+                false,
+            )?,
+            AccessibilityNode::new(
+                AccessibilityNodeId::new(2),
+                Some(root),
+                AccessibilityRole::CodeEditor,
+                "Editor".into(),
+                true,
+                false,
+                false,
+            )?,
+        ],
+        AccessibilitySelection::new(0, 0),
+        0,
+        1,
+        false,
+    )
+    .map(|snapshot| snapshot.with_editor_composition(true))
 }
 
 #[cfg(not(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64")))]

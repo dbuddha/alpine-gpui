@@ -23,12 +23,12 @@ actual_dependencies="$temporary_dir/dependencies.txt"
 if [ "${ALPINE_PRODUCT_DEPENDENCY_INPUT+x}" = x ]; then
     printf '%s\n' "$ALPINE_PRODUCT_DEPENDENCY_INPUT" > "$actual_dependencies"
 else
-    cargo tree --locked -p alpine-studio \
+    cargo tree --color never --locked -p alpine-studio \
         --target aarch64-apple-darwin \
         --edges normal,build \
         --prefix none \
-        --format '{p}' \
-        | sed -E 's/ \(\*\)$//; s# \(/[^)]*\)$##' \
+        --format '{p}' > "$temporary_dir/raw-dependencies.txt"
+    sed -E 's/ \(\*\)$//; s# \(/[^)]*\)$##' "$temporary_dir/raw-dependencies.txt" \
         | LC_ALL=C sort -u \
         > "$actual_dependencies"
 fi

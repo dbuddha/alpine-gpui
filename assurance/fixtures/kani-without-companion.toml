@@ -9,7 +9,6 @@ requirement_issue = 17
 claim_type = "safety"
 risk = "high"
 kani_applicability = "required"
-tla_properties = ["AcceptedIsValid"]
 platform_scope = ["portable"]
 required_evidence = ["kani"]
 

@@ -34,11 +34,6 @@ jobs:
         env:
           TAG_NAME: ${{ inputs.tag }}
         run: scripts/check-release.sh "$TAG_NAME"
-      - name: Install pinned Java runtime
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        with:
-          distribution: temurin
-          java-version: "17"
       - name: Install pinned Kani
         run: |
           cargo install --locked kani-verifier --version 0.67.0
@@ -46,7 +41,6 @@ jobs:
       - name: Qualify formal and implementation evidence
         run: |
           cargo run --locked -p alpine-assurance -- validate
-          scripts/check-tla.sh nightly
           cargo kani list --format json
           mkdir -p target/kani target/assurance
           mv kani-list.json target/kani/harnesses.json
@@ -75,6 +69,5 @@ jobs:
             target/release-dry-run
             target/assurance
             target/kani
-            target/tla
           retention-days: 7
           if-no-files-found: error

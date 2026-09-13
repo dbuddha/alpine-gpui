@@ -1,36 +1,15 @@
 #!/bin/sh
 set -eu
 
+# Path allowlists use byte order, independent of the hosted runner's locale.
+export LC_ALL=C
+
 failures=0
-tla_driver=${ALPINE_TLA_DRIVER:-scripts/check-tla.sh}
 
 fail() {
     printf 'policy error: %s\n' "$1" >&2
     failures=$((failures + 1))
 }
-
-if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -n "${GITHUB_REPOSITORY:-}" ] && [ -f "${GITHUB_EVENT_PATH:-}" ] && command -v gh >/dev/null 2>&1; then
-    pull_request_number=$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH" 2>/dev/null || true)
-    if [ -z "$pull_request_number" ]; then
-        pull_request_number=$(printf '%s\n' "${GITHUB_REF:-}" | sed -n 's#refs/pull/\([0-9]\+\)/.*#\1#p' || true)
-    fi
-
-    if [ -n "$pull_request_number" ]; then
-        refreshed_pr_title=$(gh pr view "$pull_request_number" --repo "$GITHUB_REPOSITORY" --json title --jq .title 2>/dev/null || true)
-        refreshed_pr_body=$(gh pr view "$pull_request_number" --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null || true)
-        refreshed_pr_labels=$(gh pr view "$pull_request_number" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || true)
-
-        if [ -n "$refreshed_pr_title" ]; then
-            ALPINE_PR_TITLE=$refreshed_pr_title
-        fi
-        if [ -n "$refreshed_pr_body" ]; then
-            ALPINE_PR_BODY=$refreshed_pr_body
-        fi
-        if [ -n "$refreshed_pr_labels" ]; then
-            ALPINE_PR_LABELS=$refreshed_pr_labels
-        fi
-    fi
-fi
 
 # cargo-mutants 27.1.0 derives baseline packages from mutated files, not from
 # --test-package. Common Cargo arguments must name both the mutated package and
@@ -97,8 +76,18 @@ action_files=$(find .github/actions -type f \( -name '*.yml' -o -name '*.yaml' \
 
 if [ -n "$workflow_files" ]; then
     ci_workflow=${ALPINE_CI_WORKFLOW:-.github/workflows/ci.yml}
+    for product_job in preflight quality native; do
+        product_job_block=$(awk -v job="$product_job" '
+            $0 == "  " job ":" { capture = 1 }
+            /^  [A-Za-z0-9_-]+:/ && $1 != job ":" && capture { exit }
+            capture
+        ' "$ci_workflow")
+        if ! printf '%s\n' "$product_job_block" | grep -Fqx '    runs-on: macos-26' \
+            || printf '%s\n' "$product_job_block" | grep -Eq '^[[:space:]]+matrix:'; then
+            fail "CI product job $product_job must use Apple Silicon macOS without a platform matrix"
+        fi
+    done
     check_mutation_baseline "$ci_workflow"
-    assurance_failure_workflow=${ALPINE_ASSURANCE_FAILURE_WORKFLOW:-.github/workflows/assurance-failure.yml}
     action_source_files=$workflow_files
     if [ -n "$action_files" ]; then
         action_source_files="$action_source_files $action_files"
@@ -158,42 +147,186 @@ if [ -n "$workflow_files" ]; then
         /^  ci-pass:/ { capture = 1 }
         capture
     ' "$ci_workflow")
-    if ! grep -Fqx '    types: [synchronize, reopened, edited, labeled, unlabeled]' "$ci_workflow"; then
-        fail 'CI pull_request triggers must start after label settlement and retain source and metadata events'
+    if ! grep -Fqx '    types: [opened, synchronize, reopened]' "$ci_workflow"; then
+        fail 'CI pull_request triggers must include opened, synchronize and reopened only'
     fi
-    if ! grep -Fqx "  group: ci-\${{ github.workflow }}-\${{ github.ref }}-\${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && github.run_id || 'source' }}" "$ci_workflow"; then
-        fail 'CI metadata events must not share a cancelable required-check concurrency group'
+    if ! grep -Fqx "  group: ci-\${{ github.workflow }}-\${{ github.ref }}" "$ci_workflow"; then
+        fail 'CI events for one ref must share a concurrency group'
     fi
-    if ! grep -Fqx "  cancel-in-progress: \${{ github.event_name != 'pull_request' || github.event.action == 'synchronize' }}" "$ci_workflow"; then
-        fail 'CI cancellation must be limited to source-changing or non-PR runs'
+    if ! grep -Fqx "  cancel-in-progress: true" "$ci_workflow"; then
+        fail 'CI must cancel superseded runs for the same ref'
     fi
-    for required in \
-        '    name: preflight' \
-        '          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}' \
-        '          ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}' \
-        '          ALPINE_PR_BODY: ${{ github.event.pull_request.body }}' \
-        "          ALPINE_PR_LABELS: \${{ join(github.event.pull_request.labels.*.name, ',') }}" \
-        '          ALPINE_PR_TITLE: ${{ github.event.pull_request.title }}' \
-        '          GH_TOKEN: ${{ github.token }}' \
-        '        run: scripts/check-policy.sh'
-    do
-        if ! printf '%s\n' "$preflight_block" | grep -Fqx "$required"; then
-            fail 'CI preflight must validate current repository and pull request policy before fan-out'
+    dispatch_block=$(awk '
+        /^  workflow_dispatch:/ { capture = 1 }
+        capture && /^[^[:space:]#]/ { exit }
+        capture && /^  [^ ]/ && !/^  workflow_dispatch:/ { exit }
+        capture
+    ' "$ci_workflow")
+    dispatch_base_block=$(printf '%s\n' "$dispatch_block" | awk '
+        /^      base_sha:/ { capture = 1; next }
+        capture && NF && !/^        / { exit }
+        capture
+    ')
+    for required in '        required: true' '        type: string'; do
+        if ! printf '%s\n' "$dispatch_base_block" | grep -Fqx "$required"; then
+            fail 'CI dispatch must require an explicit string base_sha input'
             break
         fi
     done
-    for required_job in quality native coverage mutation-diff kani tla miri metal-validation native-mutation; do
+    classify_block=$(awk '
+        /^  classify:/ { capture = 1 }
+        /^  [A-Za-z0-9_-]+:/ && !/^  classify:/ && capture { exit }
+        capture
+    ' "$ci_workflow")
+    if ! printf '%s\n' "$classify_block" | grep -Fqx '          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}'; then
+        fail 'CI classifier must bind the PR, push, or explicit dispatch base'
+    fi
+    for required in \
+        '    name: preflight' \
+        '        run: scripts/check-policy.sh' \
+        '        run: scripts/check-ci-fast-feedback.sh'
+    do
+        if ! printf '%s\n' "$preflight_block" | grep -Fqx "$required"; then
+            fail 'CI preflight must validate technical repository policy before fan-out'
+            break
+        fi
+    done
+    fast_feedback_block=$(printf '%s\n' "$preflight_block" | awk '
+        /^      - name: Require cheap source feedback before assurance fan-out$/ { capture = 1; next }
+        capture && /^      - / { exit }
+        capture
+    ')
+    if ! printf '%s\n' "$fast_feedback_block" | grep -Fqx '        run: scripts/check-ci-fast-feedback.sh' \
+        || ! printf '%s\n' "$fast_feedback_block" | grep -Fqx "        if: needs.classify.outputs.code == 'true'" \
+        || [ "$(printf '%s\n' "$fast_feedback_block" | grep -Ec '^[[:space:]]*if:')" -ne 1 ] \
+        || printf '%s\n' "$fast_feedback_block" | grep -Eq '^[[:space:]]*continue-on-error:' \
+        || ! printf '%s\n' "$preflight_block" | grep -Fqx '    needs: classify' \
+        || printf '%s\n' "$preflight_block" | grep -Eq '^    (if|continue-on-error):'; then
+        fail 'CI fast feedback must follow code selection and propagate failures'
+    fi
+    if ! printf '%s\n' "$native_mutation_block" | grep -Fqx "    if: needs.classify.outputs.native_mutation == 'true'" \
+        || printf '%s\n' "$native_mutation_block" | grep -Eq '^    continue-on-error:'; then
+        fail 'CI native mutation must retain success-gated admission'
+    fi
+    if ! printf '%s\n' "$mutation_diff_block" | grep -Fqx "    if: needs.classify.outputs.mutation_diff == 'true'" \
+        || ! printf '%s\n' "$classify_block" | grep -Fqx '      mutation_diff: ${{ steps.mutation-diff.outputs.required }}' \
+        || ! printf '%s\n' "$classify_block" | grep -Fqx '        run: scripts/classify-mutation-diff.sh "${{ steps.classify.outputs.mutation }}" "${{ steps.classify.outputs.base_sha }}" "${{ steps.classify.outputs.head_sha }}"' \
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fqx '          MUTATION_REQUIRED: ${{ needs.classify.outputs.mutation_diff }}'; then
+        fail 'CI diff mutation must bind proven-empty selection to its aggregate requirement'
+    fi
+    for required in \
+        '      native_mutation: ${{ steps.classify.outputs.native_mutation }}' \
+        "          ALPINE_CI_ASSURANCE: \${{ github.event_name == 'workflow_dispatch' && inputs.assurance || false }}"
+    do
+        if ! printf '%s\n' "$classify_block" | grep -Fqx "$required"; then
+            fail 'specialized assurance must be explicitly manual and separately select native mutation'
+        fi
+    done
+    assurance_input=$(printf '%s\n' "$dispatch_block" | awk '
+        /^      assurance:/ { capture = 1; next }
+        capture && NF && !/^        / { exit }
+        capture
+    ')
+    for required in '        default: false' '        type: boolean' '        required: false'; do
+        if ! printf '%s\n' "$assurance_input" | grep -Fqx "$required"; then
+            fail 'manual specialized assurance must default to false'
+        fi
+    done
+    if ! printf '%s\n' "$ci_pass_block" | grep -Fqx '          NATIVE_MUTATION_REQUIRED: ${{ needs.classify.outputs.native_mutation }}'; then
+        fail 'native mutation aggregate must use its independent opt-in selection'
+    fi
+    if grep -Eq '^  schedule:' "${ALPINE_NIGHTLY_ASSURANCE_WORKFLOW:-.github/workflows/nightly-assurance.yml}"; then
+        fail 'nightly specialized assurance must remain manual only'
+    fi
+    for job in mutation coverage; do
+        weekly_job=$(awk -v job="$job" '
+            $0 == "  " job ":" { capture = 1; next }
+            capture && /^  [A-Za-z0-9_-]+:/ { exit }
+            capture
+        ' "${ALPINE_WEEKLY_ASSURANCE_WORKFLOW:-.github/workflows/weekly-assurance.yml}")
+        if ! printf '%s\n' "$weekly_job" | grep -Fqx "    if: github.event_name == 'workflow_dispatch'"; then
+            fail 'weekly expensive assurance and project radar must remain manual only'
+        fi
+    done
+    mutation_proof_block=$(printf '%s\n' "$classify_block" | awk '
+        /^      - id: mutation-diff$/ { capture = 1; next }
+        capture && /^      - / { exit }
+        capture
+    ')
+    if ! printf '%s\n' "$mutation_proof_block" | grep -Fqx '        run: scripts/classify-mutation-diff.sh "${{ steps.classify.outputs.mutation }}" "${{ steps.classify.outputs.base_sha }}" "${{ steps.classify.outputs.head_sha }}"' \
+        || printf '%s\n' "$mutation_proof_block" | grep -Eq '^[[:space:]]*(if|continue-on-error):' \
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fqx '              true|false) ;;' \
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fqx '              *) echo "$1 has an invalid requirement: $2" >&2; exit 1 ;;'; then
+        fail 'CI emptiness proof must run unconditionally and aggregate requirements must be boolean'
+    fi
+    for tool_job_block in "$mutation_diff_block" "$native_mutation_block"; do
+        if ! printf '%s\n' "$tool_job_block" | grep -Fqx '        run: scripts/prepare-mutation-tool.sh' \
+            || ! printf '%s\n' "$tool_job_block" | grep -Fqx '        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830' \
+            || ! printf '%s\n' "$tool_job_block" | grep -Fqx '          ALPINE_MUTATION_CACHE_SCOPE: ${{ github.ref }}' \
+            || printf '%s\n' "$tool_job_block" | grep -Eq 'restore-keys:|enableCrossOsArchive:|cache-hit.*true'; then
+            fail 'CI mutation tooling must validate exact scoped cache contents, including on a cache hit'
+        fi
+        tool_verification_block=$(printf '%s\n' "$tool_job_block" | awk '
+            /^      - name: Verify or install pinned mutation tooling$/ { capture = 1; next }
+            capture && /^      - / { exit }
+            capture
+        ')
+        if ! printf '%s\n' "$tool_verification_block" | grep -Fqx '        run: scripts/prepare-mutation-tool.sh' \
+            || printf '%s\n' "$tool_verification_block" | grep -Eq '^[[:space:]]*(if|continue-on-error):' \
+            || ! printf '%s\n' "$tool_job_block" | grep -Fqx "          key: alpine-mutants-v1-\${{ runner.os }}-\${{ runner.arch }}-\${{ github.ref }}-\${{ hashFiles('rust-toolchain.toml', 'scripts/prepare-mutation-tool.sh') }}"; then
+            fail 'CI mutation tool verification must run unconditionally with its exact scoped key'
+        fi
+    done
+    for required_job in quality native coverage mutation-diff kani miri metal-validation native-mutation; do
         required_job_block=$(awk -v job="$required_job" '
             $0 == "  " job ":" { capture = 1 }
             /^  [A-Za-z0-9_-]+:/ && $1 != job ":" && capture { exit }
             capture
         ' "$ci_workflow")
-        if ! printf '%s\n' "$required_job_block" | grep -Fqx '    needs: [classify, preflight]'; then
+        required_dependencies='    needs: [classify, preflight]'
+        if [ "$required_job" = native-mutation ]; then
+            required_dependencies='    needs: [classify, preflight, native]'
+        fi
+        if ! printf '%s\n' "$required_job_block" | grep -Fqx "$required_dependencies"; then
             fail "CI job $required_job must wait for the fast policy preflight"
+        fi
+        if [ "$required_job" = native ]; then
+            native_admission_block=$(printf '%s\n' "$required_job_block" | awk '
+                /^      - name: Verify native execution$/ { capture = 1; next }
+                capture && /^      - / { exit }
+                capture
+            ')
+            for required in \
+                "        if: needs.classify.outputs.metal == 'true'" \
+                '          DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer' \
+                '          MACOSX_DEPLOYMENT_TARGET: "15.0"' \
+                '          ALPINE_VALIDATION_DEPLOYMENT_TARGET: "26.0"' \
+                '          ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct' \
+                '          RUSTFLAGS: --cfg alpine_native_validation' \
+                '        run: scripts/check-ci-native-admission.sh'
+            do
+                if ! printf '%s\n' "$native_admission_block" | grep -Fqx "$required"; then
+                    fail 'CI native mutation admission must preserve the explicit native baseline contract'
+                    break
+                fi
+            done
+            if printf '%s\n' "$native_admission_block" | grep -q 'continue-on-error'; then
+                fail 'CI native mutation admission must not ignore baseline failures'
+            fi
         fi
     done
     if ! printf '%s\n' "$ci_pass_block" | grep -Fqx '    if: ${{ always() && !cancelled() }}'; then
         fail 'ci-pass must run after ordinary failures but skip a canceled workflow'
+    fi
+    aggregate_enforcement_block=$(printf '%s\n' "$ci_pass_block" | awk '
+        /^      - name: Require selected evidence$/ { capture = 1; next }
+        capture && /^      - / { exit }
+        capture
+    ')
+    if ! printf '%s\n' "$aggregate_enforcement_block" | grep -Fqx '        run: |' \
+        || printf '%s\n' "$aggregate_enforcement_block" | grep -Eq '^[[:space:]]*(if|continue-on-error):' \
+        || printf '%s\n' "$ci_pass_block" | grep -Eq '^    continue-on-error:'; then
+        fail 'ci-pass enforcement must run unconditionally and propagate failures'
     fi
     if ! printf '%s\n' "$ci_pass_block" | grep -Fq 'needs: [classify, preflight,' \
         || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'PREFLIGHT_RESULT: ${{ needs.preflight.result }}' \
@@ -203,18 +336,11 @@ if [ -n "$workflow_files" ]; then
     if ! printf '%s\n' "$ci_pass_block" | grep -Fq 'test "$2" = success || {'; then
         fail 'ci-pass must reject every required result other than success'
     fi
-    if [ ! -x scripts/filter-assurance-failures.sh ] \
-        || [ ! -f "$assurance_failure_workflow" ] \
-        || ! grep -Fq 'scripts/filter-assurance-failures.sh |' "$assurance_failure_workflow"; then
-        fail 'assurance routing must suppress derivative ci-pass failures through the tested selector'
+    if grep -lE '^[[:space:]]*issues:[[:space:]]*write' $workflow_files >/dev/null 2>&1; then
+        fail 'no workflow may file issues automatically; defects are entered by a human'
     fi
-    assurance_routing_guard="    if: github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'cancelled' || github.event.workflow_run.conclusion == 'timed_out'"
-    if [ ! -x scripts/collect-assurance-failures.sh ] \
-        || ! grep -Fqx "$assurance_routing_guard" "$assurance_failure_workflow" \
-        || ! grep -Fq 'scripts/collect-assurance-failures.sh |' "$assurance_failure_workflow" \
-        || ! grep -Fqx '  checks: read' "$assurance_failure_workflow" \
-        || ! grep -Fq 'set -euo pipefail' "$assurance_failure_workflow"; then
-        fail 'assurance routing must use the tested timeout collector with read-only checks and pipeline failure propagation'
+    if grep -Eq 'ALPINE_PR_|pull_request\.(body|title|labels)|mdbook|validate --github|test-hierarchy|check-wiki|test-wiki' "$ci_workflow"; then
+        fail 'ordinary CI must not depend on PR metadata, book, Wiki or live hierarchy'
     fi
     extract_metal_step() {
         printf '%s\n' "$metal_validation_block" | awk -v target="      - name: $1" '
@@ -344,8 +470,53 @@ if [ -n "$workflow_files" ]; then
             fail 'native mutation receipts must bind selected execution and source/base identity'
         fi
     done
-    if ! grep -Fqx 'scripts/test-native-mutation-receipts.sh' scripts/check.sh; then
-        fail 'local quality gate must exercise native mutation receipt controls'
+    # Only native mutation copies change compiler mode. Keep independent
+    # ordinary validation and all other jobs at the existing global default.
+    if ! awk '
+        function without_comment(line, i, character, quote, escaped) {
+            for (i = 1; i <= length(line); i++) {
+                character = substr(line, i, 1)
+                if (escaped) { escaped = 0; continue }
+                if (character == "\\" && quote != "\047") { escaped = 1; continue }
+                if (quote != "") {
+                    if (character == quote) quote = ""
+                    continue
+                }
+                if (character == "\"" || character == "\047") { quote = character; continue }
+                if (character == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:]]/))
+                    return substr(line, 1, i - 1)
+            }
+            return line
+        }
+        {
+            # Shell bodies are opaque, including multiline quoted strings.
+            # Mode declarations belong in the two reviewed YAML env entries.
+            match($0, /^ */); indentation = RLENGTH
+            if (in_run && $0 ~ /[^[:space:]]/ && indentation <= run_indentation)
+                in_run = 0
+            if (in_run || $0 ~ /^[[:space:]]+run:/) {
+                if (index($0, "CARGO_INCREMENTAL")) invalid = 1
+                if (!in_run) { in_run = 1; run_indentation = indentation }
+                next
+            }
+            $0 = without_comment($0); sub(/[[:space:]]+$/, "")
+        }
+        /^[[:space:]]*#/ { next }
+        /^[^[:space:]]/ { section = $0; job = ""; in_environment = 0 }
+        section == "jobs:" && /^  [A-Za-z0-9_-]+:$/ {
+            job = $1; sub(/:$/, "", job); in_environment = 0
+        }
+        /^    env:$/ { in_environment = 1; next }
+        /^    [^ ]/ { in_environment = 0 }
+        /CARGO_INCREMENTAL/ {
+            if (section == "env:" && $0 == "  CARGO_INCREMENTAL: \"0\"") global++
+            else if (section == "jobs:" && job == "native-mutation" && in_environment &&
+                $0 == "      CARGO_INCREMENTAL: \"1\"") native++
+            else invalid = 1
+        }
+        END { exit (invalid || global != 1 || native != 1) }
+    ' "${ALPINE_CI_WORKFLOW:-.github/workflows/ci.yml}"; then
+        fail 'CI mutation compilation mode must be explicit and scoped'
     fi
     for shard in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         if ! printf '%s\n' "$native_mutation_block" | grep -Fq "shard: $shard/16"; then
@@ -398,7 +569,7 @@ if [ -n "$workflow_files" ]; then
     if ! printf '%s\n' "$native_mutation_block" | grep -Fq 'name: native-mutation-${{ matrix.domain }}-${{ matrix.id }}-${{ github.sha }}' \
         || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'native-mutation]' \
         || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'NATIVE_MUTATION_RESULT: ${{ needs.native-mutation.result }}' \
-        || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'require_selected native-mutation "$METAL_REQUIRED" "$NATIVE_MUTATION_RESULT"'; then
+        || ! printf '%s\n' "$ci_pass_block" | grep -Fq 'require_selected native-mutation "$NATIVE_MUTATION_REQUIRED" "$NATIVE_MUTATION_RESULT"'; then
         fail 'ci-pass must require and retain exact-head native mutation matrix evidence'
     fi
 
@@ -464,10 +635,10 @@ if [ -n "$workflow_files" ]; then
             /^[[:space:]]+if-no-files-found: warn$/ { supplementary = 1 }
             END {
                 finish()
-                if (helper_count != 8 || direct_count != 1) exit 1
+                if (helper_count != 7 || direct_count != 1) exit 1
             }
         ' "$nightly_native_workflow"; then
-            fail 'Nightly required artifacts must use eight governed retries and retain one direct supplementary upload'
+            fail 'Nightly required artifacts must use seven governed retries and retain one direct supplementary upload'
         fi
         nightly_metal_block=$(awk '
             /^  metal-validation:/ { capture = 1 }
@@ -561,7 +732,9 @@ if [ -n "$workflow_files" ]; then
     fi
 fi
 
-manifest_files=$(find . -name Cargo.toml -not -path './target/*' -print)
+# Prune the build tree instead of traversing every cached file and then filtering.
+# Keep the same source-manifest inventory, including untracked source manifests.
+manifest_files=$(find . -path './target' -prune -o -name Cargo.toml -print)
 if [ -n "$manifest_files" ] && grep -nE 'git[[:space:]]*=[[:space:]]*"https?://' $manifest_files >/dev/null; then
     fail 'shipping Cargo manifests may not contain Git dependencies'
     grep -nE 'git[[:space:]]*=[[:space:]]*"https?://' $manifest_files >&2 || true
@@ -577,318 +750,19 @@ if [ "$unsafe_override_files" != "$expected_unsafe_override_files" ]; then
     printf '%s\n' "$unsafe_override_files" >&2
 fi
 
-unsafe_source_files=$(find crates tools -type f -name '*.rs' -print0 \
+unsafe_source_files=$(find crates apps tools -type f -name '*.rs' -print0 \
     | xargs -0 grep -lE 'unsafe[[:space:]]+(extern|fn|impl|trait)|unsafe[[:space:]]*\{' 2>/dev/null \
     | sort || true)
 expected_unsafe_source_files='crates/alpine-metal/src/native.rs
 crates/alpine-platform-macos/src/native.rs
 crates/alpine-platform-macos/src/native_accessibility.rs
+crates/alpine-platform-macos/src/native_text_input.rs
 crates/alpine-platform-macos/src/signpost.rs
 crates/alpine-text-layout/src/native.rs
 tools/alpine-ax-client/src/native.rs'
 if [ "$unsafe_source_files" != "$expected_unsafe_source_files" ]; then
     fail 'unsafe Rust constructs must remain isolated in audited native boundary files'
     printf '%s\n' "$unsafe_source_files" >&2
-fi
-
-old_project='Ro''ck GPUI'
-old_probe='ro''ck-metal-probe'
-if git grep -n -I -e "$old_project" -e "$old_probe" -- . ':!scripts/check-policy.sh' >/dev/null 2>&1; then
-    fail 'retired project names remain in tracked files'
-    git grep -n -I -e "$old_project" -e "$old_probe" -- . ':!scripts/check-policy.sh' >&2 || true
-fi
-
-for retired_path in \
-    PRODUCT.md \
-    CHANGELOG.md \
-    CONTRIBUTING.md \
-    crates/AGENTS.md \
-    crates/README.md \
-    .github/AGENTS.md
-do
-    if [ -e "$retired_path" ]; then
-        fail "unexpected standing artifact: $retired_path"
-    fi
-done
-
-for retired_directory in changes; do
-    if [ -d "$retired_directory" ] && find "$retired_directory" -type f -print -quit | grep -q .; then
-        fail "unexpected files under retired directory: $retired_directory"
-    fi
-done
-
-deleted_references='PRODUCT\.md|CHANGELOG\.md|changes/|docs/(MASTER_PLAN|ROADMAP|adr|DEPENDENCIES|ci|engineering)|crates/(AGENTS|README)\.md|provenance-ledger'
-if [ "${ALPINE_POLICY_REFERENCE_INPUT+x}" = x ]; then
-    retired_reference_matches=$(printf '%s\n' "$ALPINE_POLICY_REFERENCE_INPUT" \
-        | grep -nE "$deleted_references" || true)
-else
-    retired_reference_matches=$(git grep -n -I -E "$deleted_references" -- . ':!scripts/check-policy.sh' || true)
-fi
-if [ -n "$retired_reference_matches" ]; then
-    fail 'tracked files reference retired repository documents'
-    printf '%s\n' "$retired_reference_matches" >&2
-fi
-
-research_files=$(find docs/research -type f -print 2>/dev/null | sort || true)
-expected_research_files='docs/research/alpine-lineage/adversarial-review.md
-docs/research/alpine-lineage/alpine-decisions.md
-docs/research/alpine-lineage/evidence-ledger.md
-docs/research/alpine-lineage/experiments.md
-docs/research/alpine-lineage/framework-lineage.md
-docs/research/alpine-lineage/history.md
-docs/research/alpine-lineage/index.md
-docs/research/alpine-lineage/methodology.md
-docs/research/alpine-lineage/references.bib
-docs/research/alpine-lineage/source-map.md
-docs/research/alpine-lineage/studio-lineage.md
-docs/research/alpine-studio-adversarial-review.md
-docs/research/index.md
-docs/research/macos-accessibility-lifecycle/decisions.md
-docs/research/macos-accessibility-lifecycle/experiments.md
-docs/research/macos-accessibility-lifecycle/findings.md
-docs/research/macos-accessibility-lifecycle/index.md
-docs/research/macos-accessibility-lifecycle/source-map.md
-docs/research/native-idle-energy/decisions.md
-docs/research/native-idle-energy/experiments.md
-docs/research/native-idle-energy/findings.md
-docs/research/native-idle-energy/index.md
-docs/research/native-idle-energy/source-map.md
-docs/research/wgpu/decisions.md
-docs/research/wgpu/experiments.md
-docs/research/wgpu/findings.md
-docs/research/wgpu/index.md
-docs/research/wgpu/source-map.md'
-if [ "$research_files" != "$expected_research_files" ]; then
-    fail 'docs/research may contain only accepted catalog, review, and decision-grade package artifacts'
-    printf '%s\n' "$research_files" >&2
-fi
-
-agent_lines=$(wc -l < AGENTS.md | tr -d ' ')
-if [ "$agent_lines" -lt 80 ] || [ "$agent_lines" -gt 120 ]; then
-    fail "AGENTS.md must remain between 80 and 120 lines, found $agent_lines"
-fi
-
-if ! sed -n '1,4p' AGENTS.md | grep -q '^schema: alpine-agent-policy/v1$'; then
-    fail 'AGENTS.md must declare schema alpine-agent-policy/v1 in frontmatter'
-fi
-
-for required_path in \
-    book.toml \
-    docs/SUMMARY.md \
-    docs/vision.md \
-    docs/concepts/traceability.md \
-    docs/quality/assurance.md \
-    assurance/evidence.toml \
-    assurance/alpine-studio-dependencies.txt \
-    scripts/check-product-boundary.sh \
-    scripts/test-product-boundary.sh \
-    scripts/test-assurance.sh \
-    scripts/test-metal-library.sh \
-    scripts/verify-metal-library.sh \
-    scripts/check-workload-hashes.sh \
-    scripts/check-research-retention.sh \
-    scripts/test-research-retention.sh \
-    scripts/check-tla.sh \
-    docs/research/index.md \
-    docs/research/alpine-lineage/index.md \
-    docs/research/alpine-lineage/methodology.md \
-    docs/research/alpine-lineage/source-map.md \
-    docs/research/alpine-lineage/framework-lineage.md \
-    docs/research/alpine-lineage/studio-lineage.md \
-    docs/research/alpine-lineage/evidence-ledger.md \
-    docs/research/alpine-lineage/history.md \
-    docs/research/alpine-lineage/adversarial-review.md \
-    docs/research/alpine-lineage/experiments.md \
-    docs/research/alpine-lineage/alpine-decisions.md \
-    docs/research/alpine-lineage/references.bib \
-    docs/research/alpine-studio-adversarial-review.md \
-    docs/research/wgpu/index.md \
-    docs/research/wgpu/source-map.md \
-    docs/research/wgpu/findings.md \
-    docs/research/wgpu/experiments.md \
-    docs/research/wgpu/decisions.md \
-    .cargo/mutants.toml
-do
-    if [ ! -f "$required_path" ]; then
-        fail "required assurance artifact is missing: $required_path"
-    fi
-done
-
-if [ ! -f "$tla_driver" ]; then
-    fail "TLA+ driver is missing: $tla_driver"
-elif ! grep -Fq 'pull-request) config=PullRequest.cfg; lncheck=default ;;' "$tla_driver" \
-    || ! grep -Fq 'nightly) config=Nightly.cfg; lncheck=final ;;' "$tla_driver" \
-    || [ "$(grep -Fc -- '-lncheck "$lncheck"' "$tla_driver" || true)" -ne 2 ]; then
-    fail 'TLA+ must preserve default pull-request checks and final-graph Nightly liveness checks'
-fi
-
-issue_form_count=$(find .github/ISSUE_TEMPLATE -maxdepth 1 -type f -name '*.yml' ! -name config.yml | wc -l | tr -d ' ')
-if [ "$issue_form_count" -ne 5 ]; then
-    fail "exactly five structured issue forms are required, found $issue_form_count"
-fi
-
-if [ ! -f .github/ISSUE_TEMPLATE/capability.yml ] || [ -f .github/ISSUE_TEMPLATE/user-journey.yml ]; then
-    fail 'the top-level work item must be the capability issue form'
-fi
-
-for release_label in release:breaking release:feature release:fix release:none; do
-    if ! grep -q -- "- $release_label" .github/release.yml; then
-        fail "release-note configuration is missing $release_label"
-    fi
-done
-
-if [ -n "${ALPINE_PR_BODY:-}" ] || [ -n "${ALPINE_PR_TITLE:-}" ]; then
-    release_label_count=$(printf '%s\n' "${ALPINE_PR_LABELS:-}" | tr ',' '\n' | grep -Ec '^release:(breaking|feature|fix|none)$' || true)
-    if [ "$release_label_count" -ne 1 ]; then
-        fail "pull requests require exactly one release-impact label, found $release_label_count"
-    fi
-
-    if ! printf '%s\n' "${ALPINE_PR_TITLE:-}" | grep -Eq '^(build|chore|ci|docs|feat|fix|perf|refactor|revert|test)(\([a-z0-9_-]+\))?!?: .+'; then
-        fail 'pull request title must use a Conventional Commit summary'
-    fi
-
-    for heading in \
-        '## Closing issue' \
-        '## Parent capability' \
-        '## Claims and evidence' \
-        '## Decision or research' \
-        '## Acceptance evidence' \
-        '## Risk and scope' \
-        '## Test plan' \
-        '## Performance and memory' \
-        '## Release impact' \
-        '## Dependencies, provenance, and unsafe code' \
-        '## Adversarial review'
-    do
-        if ! printf '%s\n' "$ALPINE_PR_BODY" | grep -Fqx "$heading"; then
-            fail "pull request body is missing required heading: $heading"
-        fi
-    done
-fi
-
-if [ -n "${ALPINE_BASE_SHA:-}" ] && [ -n "${ALPINE_HEAD_SHA:-}" ]; then
-    if [ -n "${ALPINE_CHANGED_FILES:-}" ]; then
-        changed_files=$ALPINE_CHANGED_FILES
-    else
-        changed_files=$(git diff --name-only "$ALPINE_BASE_SHA...$ALPINE_HEAD_SHA")
-    fi
-    implementation_changes=$(printf '%s\n' "$changed_files" | grep -E '^(Cargo\.toml$|Cargo\.lock$|crates/.+/Cargo\.toml$|crates/.+\.rs$|tools/alpine-trace/|shaders/)' || true)
-
-    if [ -n "$implementation_changes" ] && { [ -n "${ALPINE_PR_BODY:-}" ] || [ -n "${ALPINE_PR_TITLE:-}" ]; }; then
-        closing_issue=$(printf '%s\n' "${ALPINE_PR_BODY:-}" | sed -nE 's/.*([Cc]loses|[Cc]ontributes to)[[:space:]]+#([0-9]+).*/\2/p' | head -n 1)
-        if [ -z "$closing_issue" ]; then
-            fail 'implementation pull requests must close or contribute to a requirement or task issue'
-        elif [ -n "${GH_REPOSITORY:-}" ] && command -v gh >/dev/null 2>&1; then
-            issue_labels=$(gh issue view "$closing_issue" --repo "$GH_REPOSITORY" --json labels --jq '.labels[].name' 2>/dev/null || true)
-            issue_state=$(gh issue view "$closing_issue" --repo "$GH_REPOSITORY" --json state --jq .state 2>/dev/null || true)
-            issue_kind=$(printf '%s\n' "$issue_labels" | grep -E '^kind:(requirement|task)$' || true)
-            if [ -z "$issue_kind" ]; then
-                fail "linked issue #$closing_issue must have kind:requirement or kind:task"
-            elif [ "$issue_state" != OPEN ]; then
-                fail "linked issue #$closing_issue must be open"
-            else
-                issue_body=$(gh issue view "$closing_issue" --repo "$GH_REPOSITORY" --json body --jq .body 2>/dev/null || true)
-                if printf '%s\n' "$issue_kind" | grep -Fxq kind:task; then
-                    requirement_issue=$(printf '%s\n' "$issue_body" | awk '/^### Parent capability or requirement$/{capture=1; next} /^### /{if (capture) exit} capture' | grep -Eo '#[0-9]+' | tr -d '#' | head -n 1 || true)
-                else
-                    requirement_issue=$closing_issue
-                fi
-
-                if [ -z "${requirement_issue:-}" ]; then
-                    fail "linked task #$closing_issue must name its parent requirement"
-                else
-                    if printf '%s\n' "$issue_kind" | grep -Fxq kind:task; then
-                        native_requirement=$(gh api "repos/$GH_REPOSITORY/issues/$closing_issue/parent" --jq .number 2>/dev/null || true)
-                        if [ "$native_requirement" != "$requirement_issue" ]; then
-                            fail "task #$closing_issue must be a native sub-issue of requirement #$requirement_issue"
-                        fi
-                    fi
-
-                    requirement_labels=$(gh issue view "$requirement_issue" --repo "$GH_REPOSITORY" --json labels --jq '.labels[].name' 2>/dev/null || true)
-                    requirement_state=$(gh issue view "$requirement_issue" --repo "$GH_REPOSITORY" --json state --jq .state 2>/dev/null || true)
-                    if ! printf '%s\n' "$requirement_labels" | grep -Fxq kind:requirement; then
-                        fail "parent issue #$requirement_issue must have kind:requirement"
-                    fi
-                    if [ "$requirement_state" != OPEN ]; then
-                        fail "requirement #$requirement_issue must be open"
-                    fi
-                    if ! printf '%s\n' "$requirement_labels" | grep -Fxq owner:approved; then
-                        fail "requirement #$requirement_issue requires owner:approved"
-                    fi
-
-                    requirement_body=$(gh issue view "$requirement_issue" --repo "$GH_REPOSITORY" --json body --jq .body 2>/dev/null || true)
-                    capability_issue=$(printf '%s\n' "$requirement_body" | awk '/^### Parent capability or requirement$/{capture=1; next} /^### /{if (capture) exit} capture' | grep -Eo '#[0-9]+' | tr -d '#' | head -n 1 || true)
-                    if [ -z "$capability_issue" ]; then
-                        fail "requirement #$requirement_issue must name its parent capability"
-                    else
-                        native_capability=$(gh api "repos/$GH_REPOSITORY/issues/$requirement_issue/parent" --jq .number 2>/dev/null || true)
-                        if [ "$native_capability" != "$capability_issue" ]; then
-                            fail "requirement #$requirement_issue must be a native sub-issue of capability #$capability_issue"
-                        fi
-
-                        capability_labels=$(gh issue view "$capability_issue" --repo "$GH_REPOSITORY" --json labels --jq '.labels[].name' 2>/dev/null || true)
-                        capability_state=$(gh issue view "$capability_issue" --repo "$GH_REPOSITORY" --json state --jq .state 2>/dev/null || true)
-                        if ! printf '%s\n' "$capability_labels" | grep -Fxq kind:capability; then
-                            fail "parent issue #$capability_issue must have kind:capability"
-                        fi
-                        if [ "$capability_state" != OPEN ]; then
-                            fail "capability #$capability_issue must be open"
-                        fi
-                        if ! printf '%s\n' "$capability_labels" | grep -Fxq owner:approved; then
-                            fail "capability #$capability_issue requires owner:approved"
-                        fi
-
-                        pr_capability_section=$(printf '%s\n' "${ALPINE_PR_BODY:-}" | awk '/^## Parent capability$/{capture=1; next} /^## /{if (capture) exit} capture')
-                        pr_capability=$(printf '%s\n' "$pr_capability_section" | grep -Eo '(#[0-9]+|https://github\.com/[^/]+/[^/]+/issues/[0-9]+)' | sed -E 's#^.*/issues/##; s/^#//' | head -n 1 || true)
-                        if [ "$pr_capability" != "$capability_issue" ]; then
-                            fail "pull request must link parent capability #$capability_issue"
-                        fi
-                    fi
-                fi
-            fi
-        fi
-    fi
-
-    if { [ -n "${ALPINE_PR_BODY:-}" ] || [ -n "${ALPINE_PR_TITLE:-}" ]; } && printf '%s\n' "$changed_files" | grep -Fxq ARCHITECTURE.md; then
-        decision_section=$(printf '%s\n' "${ALPINE_PR_BODY:-}" | awk '/^## Decision or research$/{capture=1; next} /^## /{if (capture) exit} capture')
-        decision_issues=$(printf '%s\n' "$decision_section" | grep -Eo '(#[0-9]+|https://github\.com/[^/]+/[^/]+/issues/[0-9]+)' | sed -E 's#^.*/issues/##; s/^#//' | awk '!seen[$0]++' || true)
-        if [ -z "$decision_issues" ]; then
-            fail 'architecture changes must link an accepted decision issue'
-        elif [ -n "${GH_REPOSITORY:-}" ] && command -v gh >/dev/null 2>&1; then
-            accepted_decision=false
-            for decision_issue in $decision_issues; do
-                decision_metadata=$(gh issue view "$decision_issue" --repo "$GH_REPOSITORY" --json labels,state,stateReason --jq '[.state, .stateReason, (.labels[].name)] | @tsv' 2>/dev/null || true)
-                if printf '%s\n' "$decision_metadata" | grep -Fq CLOSED && printf '%s\n' "$decision_metadata" | grep -Fq COMPLETED && printf '%s\n' "$decision_metadata" | grep -Fq kind:decision; then
-                    accepted_decision=true
-                fi
-            done
-            if [ "$accepted_decision" != true ]; then
-                fail 'architecture changes require a closed kind:decision issue'
-            fi
-        fi
-    fi
-fi
-
-if printf '%s\n' "${ALPINE_PR_LABELS:-}" | tr ',' '\n' | grep -Fxq review:provenance; then
-    if [ ! -f provenance.toml ]; then
-        fail 'review:provenance requires provenance.toml in the same pull request'
-    fi
-    research_section=$(printf '%s\n' "${ALPINE_PR_BODY:-}" | awk '/^## Decision or research$/{capture=1; next} /^## /{if (capture) exit} capture')
-    research_issues=$(printf '%s\n' "$research_section" | grep -Eo '(#[0-9]+|https://github\.com/[^/]+/[^/]+/issues/[0-9]+)' | sed -E 's#^.*/issues/##; s/^#//' | awk '!seen[$0]++' || true)
-    if [ -z "$research_issues" ]; then
-        fail 'source-level influence must link its research issue'
-    elif [ -n "${GH_REPOSITORY:-}" ] && command -v gh >/dev/null 2>&1; then
-        accepted_research=false
-        for research_issue in $research_issues; do
-            research_metadata=$(gh issue view "$research_issue" --repo "$GH_REPOSITORY" --json labels,state,stateReason --jq '[.state, .stateReason, (.labels[].name)] | @tsv' 2>/dev/null || true)
-            if printf '%s\n' "$research_metadata" | grep -Fq CLOSED && printf '%s\n' "$research_metadata" | grep -Fq COMPLETED && printf '%s\n' "$research_metadata" | grep -Fq kind:research; then
-                accepted_research=true
-            fi
-        done
-        if [ "$accepted_research" != true ]; then
-            fail 'source-level influence requires a closed kind:research issue'
-        fi
-    fi
 fi
 
 # Native surface mutation proof must remain complete, deterministic, retained,

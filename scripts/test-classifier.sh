@@ -1,14 +1,18 @@
 #!/bin/sh
 set -eu
 
+temporary=$(mktemp -d)
+trap 'rm -rf "$temporary"' EXIT HUP INT TERM
+classifier_program=${ALPINE_CLASSIFIER_UNDER_TEST:-$(pwd)/scripts/classify-ci.sh}
+
 run_fixture() {
-    output_file=$(mktemp)
+    output_file=$(mktemp "$temporary/output.XXXXXX")
     GITHUB_OUTPUT=$output_file \
     ALPINE_BASE_SHA=HEAD \
     ALPINE_HEAD_SHA=HEAD \
     ALPINE_CHANGED_FILES=$1 \
     ALPINE_PR_LABELS=${2:-} \
-    scripts/classify-ci.sh
+    "$classifier_program"
     cat "$output_file"
 }
 
@@ -28,19 +32,50 @@ assert_every_gate() {
     assert_output "$output" kani=true
     assert_output "$output" miri=true
     assert_output "$output" metal=true
-    assert_output "$output" tla=true
 }
+
+# Default PR/main feedback must preserve native behavior without admitting
+# specialized assurance, even for broad or unknown changes and risk labels.
+unset ALPINE_CI_ASSURANCE
+for changed in README.md docs/alpine-capability-probe.md; do
+    assert_output "$(run_fixture "$changed")" code=false
+done
+for changed in '' docs/input.json 'docs/unusual name.md' unclassified/input.bin scripts/check-policy.sh; do
+    assert_output "$(run_fixture "$changed")" code=true
+done
+assert_output "$(run_fixture "$(printf 'docs/README.md\napps/alpine-studio/src/lib.rs')")" code=true
+for changed in .github/workflows/ci.yml crates/alpine-runtime/src/lib.rs unclassified/input.bin; do
+    ordinary=$(run_fixture "$changed" review:unsafe)
+    for gate in coverage mutation kani miri native_mutation; do
+        assert_output "$ordinary" "$gate=false"
+    done
+    assert_output "$ordinary" metal=true
+done
+if ALPINE_CI_ASSURANCE=invalid ALPINE_BASE_SHA=HEAD "$classifier_program" > "$temporary/invalid-mode" 2>&1; then
+    printf 'classifier accepted an invalid assurance mode\n' >&2
+    exit 1
+fi
+ALPINE_CI_PLAN="$temporary/ordinary-plan.json" run_fixture .github/workflows/ci.yml >/dev/null
+jq -e '.assurance == false and .gates.native_mutation == false and
+    ([.reasons[].gate] | all(. == "metal"))' "$temporary/ordinary-plan.json" >/dev/null
+
+# Retain exhaustive impact-selection coverage for explicit manual assurance.
+export ALPINE_CI_ASSURANCE=true
+assert_output "$(run_fixture README.md)" code=true
+manual=$(run_fixture .github/workflows/ci.yml)
+assert_every_gate "$manual"
+if printf '%s\n' "$manual" | grep -q '^portable='; then
+    echo 'classifier retained retired portable selection' >&2; exit 1
+fi
+assert_output "$manual" native_mutation=true
 
 docs=$(run_fixture README.md)
 assert_output "$docs" coverage=false
 assert_output "$docs" mutation=false
 assert_output "$docs" kani=false
-assert_output "$docs" tla=false
-assert_output "$docs" portable=false
 
 ci_workflow=$(run_fixture .github/workflows/ci.yml)
 assert_every_gate "$ci_workflow"
-assert_output "$ci_workflow" portable=true
 
 nightly_workflow=$(run_fixture .github/workflows/nightly-assurance.yml)
 assert_every_gate "$nightly_workflow"
@@ -49,12 +84,33 @@ release_workflow=$(run_fixture .github/workflows/release-dry-run.yml)
 assert_every_gate "$release_workflow"
 
 classifier=$(run_fixture scripts/classify-ci.sh)
-assert_every_gate "$classifier"
-assert_output "$classifier" portable=true
+assert_ci_controls() {
+    for gate in coverage mutation kani miri metal; do
+        assert_output "$1" "$gate=false"
+    done
+    assert_output "$1" ci_control_only=true
+}
+assert_ci_controls "$classifier"
 
 classifier_tests=$(run_fixture scripts/test-classifier.sh)
-assert_every_gate "$classifier_tests"
-assert_output "$classifier_tests" portable=true
+assert_ci_controls "$classifier_tests"
+
+for control in scripts/check-policy.sh scripts/test-policy.sh scripts/check.sh; do
+    assert_ci_controls "$(run_fixture "$control")"
+    test "$(run_fixture "$control" review:unsafe)" = "$(run_fixture "$control")"
+    assert_every_gate "$(run_fixture "$(printf '%s\nunclassified/input.bin' "$control")")"
+done
+for execution in .github/workflows/ci.yml .github/workflows/nightly-assurance.yml \
+    scripts/check-ci-native-admission.sh scripts/verify-metal-library.sh \
+    scripts/run-miri-partition.sh assurance/miri-studio-partitions.tsv \
+    Cargo.lock rust-toolchain.toml apps/alpine-studio/tests/native_process.rs; do
+    selected=$(run_fixture "$(printf 'scripts/check-policy.sh\n%s' "$execution")")
+    assert_every_gate "$selected"
+    assert_output "$selected" ci_control_only=false
+done
+formal_control=$(run_fixture "$(printf 'scripts/classify-ci.sh\ndocs/aep/0009-assurance.md')")
+assert_every_gate "$formal_control"
+assert_output "$formal_control" ci_control_only=false
 
 kani_setup=$(run_fixture scripts/setup-kani.sh)
 assert_every_gate "$kani_setup"
@@ -84,7 +140,6 @@ core=$(run_fixture crates/alpine-core/src/lib.rs)
 assert_output "$core" coverage=true
 assert_output "$core" mutation=true
 assert_output "$core" kani=true
-assert_output "$core" portable=true
 
 text=$(run_fixture crates/alpine-text/src/lib.rs)
 assert_output "$text" coverage=true
@@ -110,33 +165,26 @@ assert_output "$studio_manifest" coverage=true
 assert_output "$studio_manifest" mutation=true
 assert_output "$studio_manifest" kani=false
 assert_output "$studio_manifest" metal=true
-assert_output "$studio_manifest" portable=true
 
 studio_docs=$(run_fixture apps/alpine-studio/README.md)
 assert_output "$studio_docs" coverage=false
 assert_output "$studio_docs" mutation=false
 assert_output "$studio_docs" kani=false
 
-formal=$(run_fixture formal/tla/aep-0009/AssuranceLifecycle.tla)
-assert_output "$formal" tla=true
-assert_output "$formal" kani=false
 
 qualification=$(run_fixture assurance/qualification/v1/valid.toml)
 assert_output "$qualification" coverage=true
-assert_output "$qualification" tla=true
 assert_output "$qualification" mutation=true
 assert_output "$qualification" kani=false
 
 assurance=$(run_fixture tools/alpine-assurance/src/qualification.rs)
 assert_output "$assurance" coverage=true
 assert_output "$assurance" mutation=true
-assert_output "$assurance" tla=true
 
 trace=$(run_fixture tools/alpine-trace/src/lib.rs)
 assert_output "$trace" coverage=true
 assert_output "$trace" mutation=true
 assert_output "$trace" kani=true
-assert_output "$trace" tla=true
 
 ax_client=$(run_fixture tools/alpine-ax-client/src/lib.rs)
 assert_output "$ax_client" coverage=true
@@ -161,11 +209,10 @@ assert_output "$tool_docs" coverage=false
 assert_output "$tool_docs" mutation=false
 
 tool_fixture=$(run_fixture tools/alpine-ax-client/fixtures/tree.json)
-assert_output "$tool_fixture" coverage=false
-assert_output "$tool_fixture" mutation=false
+assert_every_gate "$tool_fixture"
 
 unsafe=$(run_fixture README.md review:unsafe)
-assert_output "$unsafe" miri=true
+assert_output "$unsafe" miri=false
 
 metal=$(run_fixture crates/alpine-metal/src/lib.rs)
 assert_output "$metal" coverage=true
@@ -202,13 +249,6 @@ assert_output "$shader" coverage=false
 assert_output "$shader" mutation=false
 assert_output "$shader" kani=false
 assert_output "$shader" metal=true
-assert_output "$shader" portable=false
-
-portable_checker=$(run_fixture scripts/check-portable-targets.sh)
-assert_output "$portable_checker" portable=true
-
-portable_tests=$(run_fixture scripts/test-portable-targets.sh)
-assert_output "$portable_tests" portable=true
 
 metal_gate=$(run_fixture scripts/check-metal.sh)
 assert_output "$metal_gate" metal=true
@@ -219,4 +259,181 @@ assert_output "$native_benchmark_classifier" metal=true
 native_benchmark_classifier_tests=$(run_fixture scripts/test-native-benchmark-result.sh)
 assert_output "$native_benchmark_classifier_tests" metal=true
 
+for path in \
+    crates/alpine-runtime/src/lib.rs \
+    Cargo.toml Cargo.lock rust-toolchain.toml .cargo/config.toml \
+    crates/alpine-core/Cargo.toml \
+    .github/workflows/weekly-assurance.yml \
+    .github/actions/upload-required-artifact/action.yml \
+    assurance/miri-text-layout-partitions.tsv \
+    scripts/check-native-mutation-receipts.sh \
+    scripts/test-native-mutation-receipts.sh \
+    apps/alpine-studio/fixtures/rust-analyzer/Cargo.toml \
+    apps/alpine-studio/tests/fixtures/workspace/input.json \
+    crates/alpine-core/fixtures/non-rust.bin \
+    tools/unmapped-tool/src/lib.rs \
+    tools/unmapped-tool/Cargo.toml \
+    unclassified/input.bin; do
+    assert_every_gate "$(run_fixture "$path")"
+done
+
+assert_every_gate "$(run_fixture "$(printf 'README.md\nunclassified/input.bin')")"
+assert_every_gate "$(run_fixture "$(printf 'tools/alpine-assurance/src/main.rs\ntools/unmapped-tool/src/lib.rs\ntools/unmapped-tool/Cargo.toml')")"
+empty=$(run_fixture '')
+assert_output "$empty" mutation=false
+assert_output "$empty" metal=false
+
+# Invalid source identity must fail before publishing any workflow outputs.
+for invalid in missing-base wrong-base wrong-head; do
+    base=HEAD
+    head=HEAD
+    case "$invalid" in
+        missing-base) base= ;;
+        wrong-base) base=alpine-nonexistent-base ;;
+        wrong-head) head=alpine-nonexistent-head ;;
+    esac
+    output_file="$temporary/$invalid.outputs"
+    : > "$output_file"
+    if GITHUB_OUTPUT="$output_file" ALPINE_BASE_SHA="$base" \
+        ALPINE_HEAD_SHA="$head" ALPINE_CHANGED_FILES=README.md \
+        "$classifier_program" > "$temporary/$invalid.stdout" 2> "$temporary/$invalid.stderr"; then
+        printf 'classifier test error: accepted %s\n' "$invalid" >&2
+        exit 1
+    fi
+    [ ! -s "$output_file" ] || {
+        printf 'classifier test error: invalid identity published outputs\n' >&2
+        exit 1
+    }
+    grep -q 'CI classifier error:' "$temporary/$invalid.stderr"
+done
+
+# Explain output is source-bound planning, not discovered or executed tests.
+ALPINE_CI_PLAN="$temporary/plan.json" \
+    run_fixture crates/alpine-runtime/src/lib.rs >/dev/null
+source_head=$(git rev-parse HEAD)
+jq -e --arg head "$source_head" '
+    .schema == "alpine-ci-gate-plan/v1" and
+    .head_sha == $head and .base_sha == $head and .merge_base == $head and
+    .change_source == "fixture" and .gates.metal and .gates.mutation and
+    .changed_paths == ["crates/alpine-runtime/src/lib.rs"] and
+    .inventory_status == "not-discovered" and .acceptance == "not-evaluated" and
+    any(.reasons[]; .gate == "metal" and .rule == "runtime-consumers")
+' "$temporary/plan.json" >/dev/null
+
+ALPINE_CI_PLAN="$temporary/unknown.json" \
+    run_fixture "$(printf 'README.md\nunclassified/input.bin')" >/dev/null
+jq -e '.unmapped_paths == ["unclassified/input.bin"] and
+    any(.reasons[]; .gate == "metal" and .rule == "unmapped-input")' \
+    "$temporary/unknown.json" >/dev/null
+
+# Exercise real Git discovery, not only the injected path fixtures. No fixture
+# repository touches the caller's index, branch, files, or Git configuration.
+repository="$temporary/repository"
+git init -q "$repository"
+git -C "$repository" config user.name 'Alpine classifier fixture'
+git -C "$repository" config user.email 'classifier@example.invalid'
+git -C "$repository" config commit.gpgsign false
+mkdir -p "$repository/crates/alpine-runtime/src" "$repository/docs"
+printf 'initial\n' > "$repository/crates/alpine-runtime/src/lib.rs"
+git -C "$repository" add .
+git -C "$repository" commit -qm initial
+initial=$(git -C "$repository" rev-parse HEAD)
+printf 'runtime change\n' >> "$repository/crates/alpine-runtime/src/lib.rs"
+git -C "$repository" add .
+git -C "$repository" commit -qm runtime
+printf 'documentation change\n' > "$repository/README.md"
+git -C "$repository" add .
+git -C "$repository" commit -qm documentation
+
+run_git_fixture() {
+    (
+        cd "$repository"
+        unset ALPINE_CHANGED_FILES GITHUB_OUTPUT ALPINE_PR_LABELS
+        ALPINE_BASE_SHA=$1 ALPINE_HEAD_SHA=HEAD \
+            ALPINE_CI_PLAN="$temporary/git-plan.json" "$classifier_program"
+    )
+}
+
+assert_every_gate "$(run_git_fixture "$initial")"
+jq -e '.change_source == "git" and
+    (.changed_paths | index("crates/alpine-runtime/src/lib.rs") != null)' \
+    "$temporary/git-plan.json" >/dev/null
+
+before_rename=$(git -C "$repository" rev-parse HEAD)
+git -C "$repository" mv crates/alpine-runtime/src/lib.rs docs/renamed.md
+git -C "$repository" commit -qm rename
+assert_every_gate "$(run_git_fixture "$before_rename")"
+jq -e '(.changed_paths | index("crates/alpine-runtime/src/lib.rs") != null) and
+    (.changed_paths | index("docs/renamed.md") != null)' \
+    "$temporary/git-plan.json" >/dev/null
+
+before_unusual=$(git -C "$repository" rev-parse HEAD)
+unusual_path=$(printf 'docs/two\nlines.md')
+printf 'unusual filename\n' > "$repository/$unusual_path"
+git -C "$repository" add .
+git -C "$repository" commit -qm unusual-path
+assert_every_gate "$(run_git_fixture "$before_unusual")"
+jq -e '(.unmapped_paths | length) == 1 and
+    any(.reasons[]; .rule == "unmapped-input")' "$temporary/git-plan.json" >/dev/null
+
+unchanged=$(run_git_fixture HEAD)
+assert_output "$unchanged" coverage=false
+assert_output "$unchanged" mutation=false
+jq -e '.changed_paths == [] and .reasons == []' "$temporary/git-plan.json" >/dev/null
+
+# Dispatch is an explicit comparison, not an implicit one-commit fallback.
+# Its supplied baseline must include earlier runtime changes as well as the
+# most recent documentation change. Invalid/missing bases fail above for all
+# events; marking a command as dispatch cannot make either identity valid.
+dispatch=$(GITHUB_EVENT_NAME=workflow_dispatch run_git_fixture "$initial")
+assert_every_gate "$dispatch"
+jq -e --arg base "$initial" '.base_sha == $base and .change_source == "git"' \
+    "$temporary/git-plan.json" >/dev/null
+if GITHUB_EVENT_NAME=workflow_dispatch run_git_fixture '' \
+    > "$temporary/dispatch.stdout" 2> "$temporary/dispatch.stderr"; then
+    printf 'classifier test error: dispatch accepted a missing baseline\n' >&2
+    exit 1
+fi
+grep -q 'ALPINE_BASE_SHA is required' "$temporary/dispatch.stderr"
+
+# Unrelated histories cannot authorize a partial diff or an empty plan.
+foreign=$(printf 'foreign root\n' | git -C "$repository" commit-tree \
+    "$(git -C "$repository" rev-parse 'HEAD^{tree}')")
+if run_git_fixture "$foreign" > "$temporary/foreign.stdout" 2> "$temporary/foreign.stderr"; then
+    printf 'classifier test error: accepted unrelated histories\n' >&2
+    exit 1
+fi
+grep -q 'no available common ancestor' "$temporary/foreign.stderr"
+
+# Discover the whole Git comparison, including an earlier native change before
+# the latest controller edit. A latest-commit-only selector must fail this.
+control_repository="$temporary/control-git"
+git init -q "$control_repository"
+git -C "$control_repository" config user.name 'CI selection fixture'
+git -C "$control_repository" config user.email 'fixture@example.test'
+git -C "$control_repository" config commit.gpgsign false
+git -C "$control_repository" config core.hooksPath /dev/null
+printf 'baseline\n' > "$control_repository/README.md"
+git -C "$control_repository" add .
+git -C "$control_repository" commit -qm baseline
+control_base=$(git -C "$control_repository" rev-parse HEAD)
+mkdir -p "$control_repository/crates/alpine-runtime/src" "$control_repository/scripts"
+printf 'pub fn changed() {}\n' > "$control_repository/crates/alpine-runtime/src/lib.rs"
+git -C "$control_repository" add .
+git -C "$control_repository" commit -qm 'native consumer change'
+native_head=$(git -C "$control_repository" rev-parse HEAD)
+printf '# controller fixture\n' > "$control_repository/scripts/check-policy.sh"
+git -C "$control_repository" add .
+git -C "$control_repository" commit -qm 'controller change'
+for comparison in "$control_base" "$native_head"; do
+    actual=$(cd "$control_repository" && env -u ALPINE_CHANGED_FILES \
+        GITHUB_OUTPUT= ALPINE_CI_PLAN= ALPINE_PR_LABELS= \
+        ALPINE_BASE_SHA="$comparison" ALPINE_HEAD_SHA=HEAD "$classifier_program")
+    if [ "$comparison" = "$control_base" ]; then
+        assert_every_gate "$actual"
+        assert_output "$actual" ci_control_only=false
+    else
+        assert_ci_controls "$actual"
+    fi
+done
 printf 'CI classifier tests passed\n'

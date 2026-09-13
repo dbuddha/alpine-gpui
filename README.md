@@ -12,10 +12,16 @@ with additional lessons drawn from GPUI-CE, `gpui-component`, WGPUI, the
 independent implementation, not a fork or source-compatible distribution. It
 is not affiliated with or endorsed by Zed Industries.
 
-The flagship target is Apple Silicon running macOS 15 or newer, using a direct
-Metal backend. Direct Vulkan with Wayland on Linux and direct D3D12 with Win32
-on Windows are later directions. Cross-platform contracts must preserve native
-specialization rather than reduce Metal to a least-common-denominator API.
+The product target is Apple Silicon running macOS 15 or newer, using Direct
+Metal. Linux and Windows currently test portable contracts; native backends for
+those systems are outside the active plan.
+
+The ambition is one keyboard-first, accessible workspace containing a terminal,
+Alpine Editor, database views and an agent dock. Only the editor prototype exists
+today, with the executable and source paths still named `alpine-studio`. The
+[capability probe](docs/alpine-capability-probe.md) first establishes native
+readiness, then tests a memory advantage with responsiveness floors against
+matched implementations. Superiority is an unproven hypothesis.
 
 ## Version 1 boundaries
 
@@ -56,39 +62,27 @@ The workspace currently provides:
   network, extension, AI, collaboration, or telemetry subsystem;
 - fail-closed qualification tooling plus policy, formatting, lint, tests,
   rustdoc, coverage, changed-code mutation, selected models and proofs,
-  three-platform CI, native Metal validation, and scheduled assurance.
+  three-platform CI and native Metal validation. Specialized assurance is
+  available through explicit manual runs.
 
-The private daily-driver critical path is physical typing-latency qualification
-([#304](https://github.com/dbuddha/alpine-gpui/issues/304) and
-[#331](https://github.com/dbuddha/alpine-gpui/issues/331)), physical VoiceOver
-and lifecycle qualification ([#223](https://github.com/dbuddha/alpine-gpui/issues/223),
-[#253](https://github.com/dbuddha/alpine-gpui/issues/253), and
-[#273](https://github.com/dbuddha/alpine-gpui/issues/273)), sustained dogfood
-and residency acceptance ([#224](https://github.com/dbuddha/alpine-gpui/issues/224)
-and [#239 through #242](https://github.com/dbuddha/alpine-gpui/issues/239)), and
-renderer E4 qualification ([#470](https://github.com/dbuddha/alpine-gpui/issues/470),
-[#471](https://github.com/dbuddha/alpine-gpui/issues/471), and
-[#472](https://github.com/dbuddha/alpine-gpui/issues/472) under
-[#53](https://github.com/dbuddha/alpine-gpui/issues/53)). The revision-pinned
-dogfood capture mechanism #238 and realistic renderer lifecycle task #353 are
-complete prerequisites, not remaining acceptance gates. Fixed-hardware
-comparator evidence, API stabilization, signing, notarization, packaging, and
-release support remain later gates. The exact implemented boundaries and
-invariants are documented in [Architecture](ARCHITECTURE.md); GitHub Issues own
-live delivery state.
-
-The [engineering guide](docs/SUMMARY.md) owns durable mission principles, user
-journeys, case-study conclusions, enhancement proposals, and the assurance
-method. GitHub issues remain authoritative for active research, approvals, and
-delivery state. The guide describes accepted knowledge, not a second roadmap.
+Physical typing latency, VoiceOver, sustained dogfood and residency still need
+qualification on the target Mac. Fixed-hardware comparator evidence, API
+stabilization, signing, notarization and release support remain later work.
+[Architecture](ARCHITECTURE.md) describes implemented boundaries and invariants;
+[documentation](docs/README.md) separates current guidance from historical plans.
 
 ## Development and project state
 
-Run the repository acceptance gate:
+Run the full deterministic and tooling gate:
 
 ```sh
 scripts/check.sh
 ```
+
+Native execution is separate: `scripts/check-native.sh physical shipping` runs
+the shipping smoke; `scripts/check-native.sh physical all` runs the broader
+native suite. Neither ordinary workspace tests nor hosted CI prove physical
+presentation or daily-driver readiness.
 
 Build the canonical unsigned private-dogfood application from a clean revision:
 
@@ -108,24 +102,13 @@ scripts/launch-alpine-studio-app.sh path/to/file-or-folder
 The bundle is local dogfood infrastructure, not a public release artifact.
 Signing, notarization, distribution, and updates remain later release gates.
 
-GitHub is the operational system for this project:
-
-- [Project](https://github.com/users/dbuddha/projects/1) for priority and state;
-- [issues](https://github.com/dbuddha/alpine-gpui/issues) for capabilities,
-  requirements, tasks, decisions, defects, and research;
-- [Actions](https://github.com/dbuddha/alpine-gpui/actions/workflows/ci.yml) for
-  CI evidence and downloadable rustdoc artifacts;
-- [releases](https://github.com/dbuddha/alpine-gpui/releases) for shipped
-  history;
-- [agent and contributor policy](AGENTS.md) for how changes are made;
-- [engineering guide](docs/SUMMARY.md) for durable requirements and assurance
-  concepts;
-- [evidence registry](assurance/evidence.toml) for machine-checked claim and
-  evidence traceability.
-
-GitHub Project views are a planning projection, not a fallback source of truth.
-If the active token lacks `read:project`, operators use the issue hierarchy and
-must not infer Project fields, status, blockers, or charts.
+Development is PR-first: explain the problem and outcome, change, and verification
+with remaining risks. A user request is sufficient scope for a focused fix. Use
+[issues](https://github.com/dbuddha/alpine-gpui/issues) for deferred defects,
+blockers or multi-PR work; labels, hierarchy and Projects are optional.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and acceptance and
+[Actions](https://github.com/dbuddha/alpine-gpui/actions/workflows/ci.yml) for CI.
+Documentation is plain Markdown plus Rust API docs and doctests. The Wiki is retired; repository Markdown is canonical. Update existing guidance when behavior changes it.
 
 ## Ownership and license
 

@@ -1,5 +1,8 @@
 # Alpine lineage decisions
 
+Historical decisions from the lineage audit. Current development rules live in
+[CONTRIBUTING.md](../../../CONTRIBUTING.md); issue states below are not a live work queue.
+
 | ID | Decision | Status | Rationale | Revisit gate |
 | --- | --- | --- | --- | --- |
 | ALD-001 | Direct Metal remains the Apple v1 shipping renderer | Accepted | Lowest controlled stack for the current platform and qualification goal | Only after M5/E4 evidence shows an unfixable backend limitation |
@@ -17,8 +20,8 @@
 | ALD-013 | Report 120 Hz active deadline behavior, not universal FPS | Accepted | Idle zero frames are correct; active latency is the user outcome | Never replace with a headline FPS score |
 | ALD-014 | Finish M4, typing latency, Rust/config gaps, and dogfood before feature expansion | Accepted | These are the shortest uncompromised path to a trusted editor | After M5 acceptance report |
 | ALD-015 | Exclude AI, collaboration, cloud, telemetry, plugins, remote, debugger, terminal, and Git from M5 | Accepted | Avoids product weight and state machines outside the solo-editor goal | Separate accepted post-dogfood requirement |
-| ALD-016 | mdBook is canonical and Wiki is a generated retrieval mirror | Accepted | Versioned review and revision identity remain authoritative | Never store unique evidence in Wiki |
-| ALD-017 | Maintain this ledger in material architecture and performance PRs | Accepted | Prevents stale origin and evidence narratives | CI may automate stronger checks after the first maintenance cycle |
+| ALD-016 | mdBook is canonical and Wiki is a generated retrieval mirror | Superseded | Plain repository Markdown is canonical and Wiki is retired | Preserve useful technical references |
+| ALD-017 | Maintain this ledger in material architecture and performance PRs | Superseded | Correct inaccurate guidance as needed; no per-PR ledger ritual | Add process only for a demonstrated problem |
 | ALD-018 | Keep comparator pin and current-upstream review separate | Accepted | Prevents silent benchmark drift while allowing learning | Requirement #40 requalification |
 
 ## Rejected interpretations
@@ -31,9 +34,9 @@
 - Nineteen implemented feature families do not mean 79 percent readiness.
 - Zed feature exclusion does not permit unfair normalized comparison.
 
-## Immediate execution decision
+## Historical execution decision
 
-The critical path is:
+The audit recorded this critical path. Consult current code and PRs before using it:
 
 1. #304 and #314 typing latency capture and correction.
 2. #253, #272, and #273 physical accessibility and lifecycle qualification.

@@ -67,39 +67,18 @@ Every material entry in [evidence-ledger.md](evidence-ledger.md) records:
 - Implementing issue or PR.
 - Current claim status and the next experiment.
 
-## Update workflow
+## Maintaining this reference
 
-Update this package in the same PR when any of the following occurs:
+This package records a dated source audit. Its classifications and evidence levels
+explain existing findings; they do not require a new package, ledger event or issue
+for each implementation PR. Correct a conclusion when new evidence makes it wrong.
+For a new research question, one note with the conclusion, pinned sources, relevant
+evidence and limitations is enough. Preserve contradictory and invalid measurements
+when they affect the conclusion.
 
-- A new shipping architecture or performance mechanism is introduced.
-- A mechanism changes its ownership, bounds, caching, scheduling, or failure behavior.
-- An upstream GPUI, Zed, WGPU, or awesome-gpui review changes an accepted conclusion.
-- A new E3 reproduction or E4 qualification is retained.
-- A mechanism is superseded, reverted, or removed.
-- A milestone or issue state changes the current critical path materially.
-
-The author performs this sequence:
-
-1. Pin source and Alpine revisions in [source-map.md](source-map.md).
-2. Add or update the capability row.
-3. Update the mechanism row without overwriting old evidence.
-4. Append a dated event to [history.md](history.md).
-5. Record contradictions, invalid runs, and regressions rather than deleting them.
-6. Link the implementation PR, issue, raw evidence, workload hash, and environment hash.
-7. Advance an evidence level only when its stated gate passes.
-8. Update the current verdict and Wiki retrieval summary if the critical path changes.
-
-## Upstream review policy
-
-The comparator pin and current-upstream review are separate lanes.
-
-- Zed `v1.15.0` remains the immutable comparator until Requirement
-  [#40](https://github.com/dbuddha/alpine-gpui/issues/40) accepts a requalification.
-- Current Zed stable is reviewed under [#95](https://github.com/dbuddha/alpine-gpui/issues/95)
-  and [#96](https://github.com/dbuddha/alpine-gpui/issues/96) without silently
-  changing comparator artifacts.
-- WGPU review changes are tracked under [#302](https://github.com/dbuddha/alpine-gpui/issues/302).
-- awesome-gpui catalog drift is tracked under [#100](https://github.com/dbuddha/alpine-gpui/issues/100) and remains workload discovery, not architecture evidence.
+Keep the comparator pin separate from current-upstream inspection. Do not silently
+change a benchmark's source, workload or environment identity. Existing research
+issues provide history, not a required approval hierarchy.
 
 ## Claim grammar
 
@@ -120,7 +99,7 @@ Do not use:
 
 ## Review ownership
 
-Repository Markdown and mdBook are canonical. GitHub Issues own live research
-state and follow-up work. The Wiki is a revision-pinned retrieval mirror. Raw
-samples belong in retained assurance evidence or immutable release assets, not
-inside this narrative package.
+Repository Markdown is canonical; the Wiki is retired. Record actionable findings
+and acceptance in the PR, with issues only for deferred defects, blockers or work
+spanning PRs. Raw samples belong in retained assurance evidence or immutable
+release assets rather than this narrative package.

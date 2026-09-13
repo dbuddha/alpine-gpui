@@ -50,6 +50,14 @@ struct PaletteTextSystem {
 }
 
 impl TextShaper for PaletteTextSystem {
+    fn caret_offset(
+        &mut self,
+        text: &str,
+        font: FontKey,
+        index: usize,
+    ) -> Result<f32, LayoutError> {
+        crate::tests::TestTextSystem.caret_offset(text, font, index)
+    }
     fn shape(&mut self, text: &str, _font: FontKey) -> Result<LineLayout, LayoutError> {
         let mut glyphs = Vec::new();
         let mut x = 0.0;
@@ -696,6 +704,54 @@ fn command_dispatch_records_missing_workspace_and_queued_find_work()
         assert!(app.dispatch_command(command).visual_changed);
         assert!(app.find_needs_search);
     }
+    Ok(())
+}
+
+#[test]
+fn find_select_all_replaces_query_without_selecting_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut app = StudioApp::new(PaletteTextSystem::default())?;
+    let original_selection = app.selection;
+    let original_text = app
+        .buffer()
+        .snapshot()
+        .slice(0..app.buffer().snapshot().len_bytes())?;
+    app.dispatch_command(StudioCommand::OpenFind);
+    app.handle_event(&ime(ImeEvent::Committed("café".into())));
+    assert!(
+        app.handle_event(&key(KEY_A, Modifiers::from_bits(Modifiers::COMMAND)))
+            .visual_changed
+    );
+    assert_eq!(app.selection, original_selection);
+    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?;
+    let selected = app.try_scene(SceneRevision::new(901), viewport)?;
+    let selected_quads = selected.quads().len();
+    app.find_needs_search = false;
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("漢字".into())))
+            .visual_changed
+    );
+    assert_eq!(app.find.query(), "漢字");
+    assert!(app.find_needs_search);
+    let replaced = app.try_scene(SceneRevision::new(902), viewport)?;
+    assert_eq!(selected_quads, replaced.quads().len() + 1);
+    assert_eq!(
+        app.buffer()
+            .snapshot()
+            .slice(0..app.buffer().snapshot().len_bytes())?,
+        original_text
+    );
+    app.find.select_all();
+    app.find.delete_backward()?;
+    app.find_needs_search = false;
+    app.dispatch_command(StudioCommand::OpenReplace);
+    app.handle_event(&ime(ImeEvent::Committed("before".into())));
+    app.handle_event(&key(KEY_A, Modifiers::from_bits(Modifiers::COMMAND)));
+    assert!(
+        app.dispatch_command(StudioCommand::OpenReplace)
+            .visual_changed
+    );
+    assert!(app.find.display_selection().is_none());
     Ok(())
 }
 

@@ -1,66 +1,18 @@
-# Alpine research catalog
+# Research references
 
-This is the canonical retrieval surface for durable Alpine GPUI and Alpine
-Studio research. GitHub issues own investigation state, decisions, approval,
-and implementation status. These documents retain accepted findings and exact
-measurement rules so implementation does not depend on chat history.
+Read a topic only when the task needs it. Findings describe their pinned revisions;
+verify current source before applying them. Historical issues and decisions record
+context, not mandatory approvals or a second project tracker.
 
-## Daily-driver decision set
+- [Zed/GPUI source map](alpine-lineage/source-map.md) and [adaptation decisions](alpine-lineage/alpine-decisions.md).
+- [Zed editor](../case-studies/zed-editor.md) and [GPUI](../case-studies/zed-gpui.md) findings.
+- [AppKit input and accessibility](macos-accessibility-lifecycle/index.md).
+- [Native idle energy](native-idle-energy/index.md).
+- [WGPU comparison](wgpu/index.md), a research input rather than a shipping backend.
+- [Sublime observations](../case-studies/sublime-editor.md), with proprietary internals explicitly unknown.
 
-| Artifact | Durable purpose | Live record |
-| --- | --- | --- |
-| [Alpine implementation lineage and evidence](alpine-lineage/index.md) | Mechanism-level GPUI, Zed Editor, WGPU, and awesome-gpui origin, modification, history, evidence, and adversarial status | [Research #315](https://github.com/dbuddha/alpine-gpui/issues/315) |
-| [Alpine Studio adversarial review](alpine-studio-adversarial-review.md) | Keep, change, defer, and execution verdict for the current codebase | [Research #118](https://github.com/dbuddha/alpine-gpui/issues/118) |
-| [Alpine Studio daily-driver path](../use-cases/alpine-studio-highfidelity.md) | Accepted product boundary and gate sequence | [Capability #28](https://github.com/dbuddha/alpine-gpui/issues/28) |
-| [Comparator protocol v1](../quality/comparator-protocol.md) | Correctness admission, stage separation, identities, sampling, memory, and claim grammar | [Research #115](https://github.com/dbuddha/alpine-gpui/issues/115) |
-| Research retention requirement | Queryable evidence and deterministic CI audit | [Requirement #132](https://github.com/dbuddha/alpine-gpui/issues/132) |
-| Local LSP and rust-analyzer boundary | Normative JSON-RPC/LSP constraints, pinned Zed mechanisms, bounded Alpine decisions, and explicit exclusions | [Research #204](https://github.com/dbuddha/alpine-gpui/issues/204), [Task #205](https://github.com/dbuddha/alpine-gpui/issues/205) |
-| [macOS accessibility and input lifecycle](macos-accessibility-lifecycle/index.md) | Source-pinned VoiceOver, AppKit input epoch, AX evidence-lane, include/exclude, and physical qualification decisions | [Research #267](https://github.com/dbuddha/alpine-gpui/issues/267), [Decision #268](https://github.com/dbuddha/alpine-gpui/issues/268) |
-| [GitHub Wiki mirror policy](../wiki/README.md) | Revision-pinned, one-way retrieval mirror with mdBook as canonical authority | [Decision #174](https://github.com/dbuddha/alpine-gpui/issues/174), [Task #175](https://github.com/dbuddha/alpine-gpui/issues/175) |
-
-## Comparative case studies
-
-| Comparator | Retained conclusions | Research record |
-| --- | --- | --- |
-| [Zed stable application](../case-studies/zed-editor.md) | Product architecture, editor behavior, useful patterns, and excluded collaborative weight | [Research #113](https://github.com/dbuddha/alpine-gpui/issues/113) |
-| [Zed GPUI and macOS renderer](../case-studies/zed-gpui.md) | Invalidation, render phases, scene organization, batching, caches, atlas ownership, and Metal scheduling | [Research #113](https://github.com/dbuddha/alpine-gpui/issues/113) |
-| [Sublime Text local-speed model](../case-studies/sublime-editor.md) | Official public facts, Alpine inferences, and explicitly unknown proprietary internals | [Research #114](https://github.com/dbuddha/alpine-gpui/issues/114) |
-| [WGPU case study](../case-studies/wgpu.md) and [deep research package](wgpu/index.md) | Pinned architecture, lifecycle, validation, test, memory, experiment, and non-shipping decisions | [Research #23](https://github.com/dbuddha/alpine-gpui/issues/23), [re-evaluation #99](https://github.com/dbuddha/alpine-gpui/issues/99), [Task #202](https://github.com/dbuddha/alpine-gpui/issues/202) |
-| [awesome-gpui workload survey](../case-studies/awesome-gpui.md) | Workload discovery only; never architecture or performance evidence without a pinned project audit | [Research #24](https://github.com/dbuddha/alpine-gpui/issues/24), [re-evaluation #100](https://github.com/dbuddha/alpine-gpui/issues/100) |
-
-## Qualification records
-
-- [Research #115](https://github.com/dbuddha/alpine-gpui/issues/115) owns
-  comparator adaptation separation and renderer-only fairness.
-- [Research #116](https://github.com/dbuddha/alpine-gpui/issues/116) owns the
-  fixed-hardware protocol and evidence-window qualification.
-- [Decision #119](https://github.com/dbuddha/alpine-gpui/issues/119) authorizes
-  this narrow catalog and its deterministic retention audit.
-- [Decision #120](https://github.com/dbuddha/alpine-gpui/issues/120) authorizes
-  the bounded asynchronous presentation design derived from the research.
-- [Decision #174](https://github.com/dbuddha/alpine-gpui/issues/174) and
-  [Task #175](https://github.com/dbuddha/alpine-gpui/issues/175) own the
-  mdBook-canonical GitHub Wiki retrieval mirror.
-
-## Retrieval rules
-
-- Start here for accepted research, then follow the linked GitHub issue for
-  current state and implementation tasks.
-- Use the [lineage package](alpine-lineage/index.md) for current implementation
-  origin, modification, historical changes, evidence level, and missing proof.
-- Treat repository docs and mdBook as authoritative. Wiki pages are generated
-  retrieval mirrors and may not contain unique evidence or decisions.
-- Treat immutable revision links and official product sources as evidence.
-- For substantial research, keep a decision-facing case study plus a package
-  containing the pinned source map, detailed findings, experiments, and decision
-  ledger. Summary prose without that chain is not deep research.
-- Treat Alpine design conclusions as inferences unless implementation evidence
-  proves them.
-- Never infer private Sublime internals from external timing or memory results.
-- Never turn a normalized product comparison into a universal framework claim.
-- Preserve workload, environment, exclusion, raw sample, and invalid-run
-  identities for every performance statement.
-
-## Native idle wakeup and energy
-
-- [Decision-grade research package](native-idle-energy/index.md): source map, findings, experiments, decisions, and the fixed-hardware claim boundary for Task #237.
+New research normally needs one note: question, conclusion, exact source revision,
+relevant experiment/result and limitations. Use separate files only when they help
+an actual investigation. Existing packages retain technical provenance and raw
+measurement references; their old publication and tracking procedures are retired.
+No research note is required for an ordinary implementation change.

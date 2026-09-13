@@ -164,4 +164,46 @@ if "$repository_root/scripts/launch-alpine-studio-app.sh" first second \
 fi
 grep -Fq 'expected at most one file or folder' "$fixture_dir/launch.log"
 
+# Probe receipts must detect stale embedded identities and changed executables.
+python3 - "$repository_root" "$fixture_dir" <<'PYPROBE'
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+repo, fixture = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("readiness", repo / "scripts/prepare-readiness-probe.py")
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+root = fixture / "probe"
+bundle = root / "probe.app"
+resources = bundle / "Contents/Resources"
+resources.mkdir(parents=True)
+native = bundle / "Contents/MacOS/alpine-studio"
+native.parent.mkdir()
+native.write_bytes(b"original executable")
+record = {"source": "fixture", "bundle": str(bundle), "files": {
+    str(native.relative_to(root)): hashlib.sha256(native.read_bytes()).hexdigest()}}
+receipt = json.dumps(record).encode()
+(root / "identity.json").write_bytes(receipt)
+embedded = resources / "probe-identity.json"
+embedded.write_bytes(receipt)
+probe.verify(root)
+for fault in ("missing-embedded", "stale-embedded", "changed-executable"):
+    embedded.write_bytes(receipt)
+    native.write_bytes(b"original executable")
+    if fault == "missing-embedded":
+        embedded.unlink()
+    elif fault == "stale-embedded":
+        embedded.write_bytes(b"{}")
+    else:
+        native.write_bytes(b"replacement executable")
+    try:
+        probe.verify(root)
+    except SystemExit:
+        continue
+    raise SystemExit(f"probe accepted {fault}")
+PYPROBE
+
 printf 'Alpine Studio app bundle contract checks passed\n'

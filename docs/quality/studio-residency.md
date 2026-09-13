@@ -95,3 +95,38 @@ strictly monotonic, sampled peaks are valid, non-byte evidence is rejected, and
 warm-window bounds are enforced. It does not prove macOS measurement accuracy,
 long-session boundedness, post-close baseline recovery, or comparative
 superiority. Those require retained physical-hardware artifacts under #241.
+
+## Rejected AX process captures
+
+`scripts/capture-studio-ax-process.sh` combines raw AX-client output with process
+residency input for Task [#479](https://github.com/dbuddha/alpine-gpui/issues/479).
+Its successful output remains an intermediate Task #504 package, not accepted
+[physical accessibility evidence](../aep/0273-physical-accessibility-qualification.md).
+
+On failure, the wrapper reports a separate private `.alpine-ax-rejected.*`
+directory beside the requested output. It never publishes a successful manifest
+there or overwrites an existing destination. `rejection.txt` records the failure
+phase, exit statuses, available source and executable identities, and an explicit
+unqualified disposition. `artifacts.tsv` records unavailable or unsafe paths,
+observed source sizes, retained prefix sizes, SHA-256 hashes of those prefixes,
+and truncation. Missing evidence is not recorded as a zero measurement.
+
+Each allowlisted artifact is capped at 64 KiB, diagnostic metadata at 16 KiB,
+and total retained logical file bytes at 1 MiB. These are file-content limits,
+not a physical-footprint or filesystem-allocation claim. Symlinked files and
+artifact parent directories are not copied. Directory permissions are 0700;
+retained files are private to the capturing user. Raw diagnostics can contain
+workspace text and must not be uploaded automatically.
+
+The wrapper retains the existing capture-owned child termination policy. A
+rejected prefix is not an atomic multi-file snapshot, proof of producer
+quiescence, normal process exit, accessibility trust, or a qualified journey.
+If diagnostic retention fails, the original temporary capture remains in place
+and its path is reported; that fallback is not a bounded published package.
+Review and retain useful evidence before explicitly removing such directories.
+
+The fixture suite covers partial raw output followed by failure, denied-client
+simulation, missing output, sampler and child errors, close timeout, truncation,
+hash integrity, private permissions, unsafe paths, destination collisions, and
+failed diagnostic writes. Defect [#580](https://github.com/dbuddha/alpine-gpui/issues/580)
+owns this correction; these controls do not close physical M4 or M5 acceptance.

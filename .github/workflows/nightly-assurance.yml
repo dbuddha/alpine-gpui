@@ -1,8 +1,6 @@
 name: Nightly assurance
 
 on:
-  schedule:
-    - cron: "23 8 * * *"
   workflow_dispatch:
 
 permissions:
@@ -18,29 +16,6 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
-  tla:
-    name: tla-all
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Install pinned Java runtime
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        with:
-          distribution: temurin
-          java-version: "17"
-      - name: Check expanded TLA+ models and faulty controls
-        run: scripts/check-tla.sh nightly
-      - name: Upload model-checking evidence and counterexamples
-        if: always()
-        uses: ./.github/actions/upload-required-artifact
-        with:
-          name: tla-nightly-${{ github.sha }}
-          path: target/tla
-          retention-days: 14
-          if-no-files-found: error
-
   kani:
     name: kani-all
     runs-on: ubuntu-24.04

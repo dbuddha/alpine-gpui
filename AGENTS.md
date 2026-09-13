@@ -1,120 +1,69 @@
----
-schema: alpine-agent-policy/v1
-scope: repository
----
+# Alpine engineering
 
-# Alpine GPUI Change Policy
+Alpine is one personal Apple Silicon macOS editor: Alpine Editor on Alpine GPUI,
+with a memory footprint Zed cannot match. Ownership and comprehension are the
+product. No comparative performance claim is pursued and the comparison lab is
+parked. The executable is still `alpine-studio`. Terminal, database views, an
+agent dock, multi-window, plugins, AI and collaboration are out of scope.
 
-## Scope
+Daily use is the acceptance test. A defect you hit while editing is the backlog.
 
-This is the complete repository operating contract. Do not add nested agent
-files. `README.md` owns stable purpose, `ARCHITECTURE.md` owns implemented
-truth, the engineering guide owns durable product knowledge, rustdoc owns APIs,
-the evidence registry owns claim mappings, and GitHub owns live capabilities,
-requirements, tasks, decisions, research, results, and releases.
+## Working rules
 
-## Required context
+- Inspect branch, upstream and dirty state. Preserve unfinished work. Fetch
+  before comparing remote branches.
+- Measure the differentiator before building on it. An unmeasured hypothesis
+  outranks any feature.
+- The user request or an existing issue supplies scope. State the observable
+  outcome, the failure it fixes and its regression check. Honor authorization
+  already given.
+- Read affected code and tests first. Use `ARCHITECTURE.md`, then only the
+  relevant topic. Do not bulk-read docs.
+- Verify relevant behavior once; repeat after changes or failures. Review the
+  full diff, including untracked files.
+- Report implemented, reproduced, measured and daily-driver accepted separately.
+  Keep outputs proportional to scope.
+- An environmental blocker needs a re-check after a real delay before it becomes
+  a blocked goal. Three reads in one minute is one observation.
+- Ask about a new public contract, dependency, unsafe boundary, license or
+  copied source when not already authorized.
+- Never publish secrets, overwrite unrelated work, rewrite published history or
+  bypass branch protection.
 
-Before changing anything:
+## Concrete pitfalls
 
-1. Identify repository, branch, upstream, and dirty state.
-2. Read this file completely.
-3. Read the linked task or requirement and its parent chain, stopping at
-   Capability -> Requirement -> Task.
-4. Confirm the capability and requirement have `owner:approved`.
-5. Read `ARCHITECTURE.md` for subsystem, ownership, unsafe, renderer, platform,
-   or architecture work.
-6. Read the linked AEP and registry claims for consequential design or formal
-   work. Read only case studies, decisions, or research linked by that chain.
-7. Fetch `origin` before comparing the branch with its base.
+- Reject stale worker results with document and workspace revisions. Preserve
+  Unicode, IME, unsaved documents and save durability across lifecycle events.
+- Avoid lock and RefCell reentrancy across native callbacks, and main-thread
+  blocking. Native handles, callback generations, in-flight resources and
+  teardown need explicit ownership. Unsafe code needs a local safety argument
+  and focused tests.
+- Preserve blended painter order. Native rendering needs semantic and readback
+  checks; a cross-GPU pixel hash alone is insufficient.
+- GPU completion is not presentation. Requested bytes are not physical
+  residency. Absent presentation is missing evidence, never a timestamp to
+  substitute from callback arrival or a target deadline.
+- A sub-millisecond mutation stage with tens of milliseconds to presentation
+  does not justify rewriting the rope, renderer or runtime.
+- Zed application source stays in the isolated GPL lab.
 
-If observable acceptance or required approval is missing, stop and ask. Do not
-turn chat into a durable requirement without an approved GitHub issue.
-
-## Safety and dependencies
-
-- Preserve unrelated and uncommitted user work.
-- Never force push, rewrite published history, bypass a gate, or hide a failure.
-- Never commit secrets, private data, build output, or machine configuration.
-- Safe Rust is the default. Unsafe code requires owner approval, a local safety
-  argument, focused tests, adversarial review, and `review:unsafe`.
-- Native handles, callbacks, queues, surfaces, and teardown are explicit
-  ownership boundaries.
-- Do not hide allocation, upload, synchronization, or continuous redraw.
-- Ask before adding, removing, or materially changing any dependency.
-- Shipping manifests must not use Git dependencies.
-- Admit dependencies only behind Alpine-owned boundaries after license,
-  maintenance, features, transitive graph, lifecycle, and performance review.
-- Do not copy upstream source without owner approval. Source adaptation requires
-  `review:provenance`, `provenance.toml`, notices when required, and independent
-  tests in the same pull request.
-
-## Branches, commits, and pull requests
-
-- Use a focused branch and normally one task per pull request.
-- Keep behavior and its tests in the same logical commit.
-- Use `type(scope): summary` Conventional Commit messages with no WIP or agent
-  attribution. Commits must remain buildable and bisectable.
-- Inspect status, all diffs, untracked files, and recent history before commit.
-- Ask the owner immediately before every push and release publication.
-- Every implementation PR closes or contributes to a requirement or task and
-  links its parent capability.
-- Every PR has exactly one `release:breaking`, `release:feature`, `release:fix`,
-  or `release:none` label.
-- Architecture changes link an accepted decision. Upstream influence links the
-  exact research record and states the influence mode.
-- Consequential behavior lists exact AEP claim and evidence IDs in the PR.
-- Complete every PR template section with concrete evidence and remaining risk.
-- Squash merge only after required checks and conversations are resolved. Never assume `--auto` waits: use it only for the protected default branch, never an intermediate stack. Require exact source and tested-base identity, terminal-green applicable checks and `ci-pass`, live protection and mergeability, and subsequent exact-main evidence. Follow the snapshot checker and recheck procedure in `docs/operations/github-agent-skills.md`; Defect #520 retains the incident. Stacks merge manually and require fresh post-stack main acceptance.
-
-## Owner approval required
-
-Get explicit approval before changing a public contract, supported platform,
-architecture boundary, performance budget, required gate, CI provider, unsafe
-code, dependency, license, source adaptation, repository setting, secret, or
-release. Approval must be visible on the relevant issue or pull request.
-`owner:approved` represents approval only for a capability or requirement.
-
-## Engineering and evidence
-
-- Define acceptance evidence before implementation.
-- Prefer validated domain types, private representation, meaningful errors,
-  explicit ownership, common traits, `must_use`, and documented failure modes.
-- Add the narrowest proof: unit or property tests for pure behavior, model or
-  integration tests for boundaries, and native validation for backend behavior.
-- TLA+ models declare finite bounds, fairness, exclusions, mapped Rust events,
-  and a faulty configuration that must expose a known invariant violation.
-- Kani harnesses live in crate-local `cfg(kani)` modules, use stable explicit
-  proofs and cover statements, disclose assumptions, and link dynamic tests.
-- Report model checking separately from implementation verification. Never
-  claim refinement unless an accepted decision introduces a verified proof.
-- Rendering changes require semantic or CPU oracles and offscreen readback
-  before image comparison. A cross-GPU pixel hash is not a sufficient oracle.
-- Concurrency, unsafe, parser, lifecycle, and hot-path changes add Kani, Miri,
-  Loom, fuzzing, mutation, coverage, or fixed-hardware evidence by risk.
-- Kani proves selected bounded Rust properties. Lean requires a separate,
-  owner-approved research decision and is not a default dependency or gate.
-- Performance claims require distributions and qualified hardware. Hosted Mac
-  timing is informational until a fixed machine is qualified.
-- Never rerun, weaken, or disable a failing check to obtain green CI. A flaky
-  test is a defect and must be tracked.
-
-Run before commit and again before requesting a push:
+## Commands
 
 ```sh
+cargo run --locked -p alpine-studio
+cargo test --locked -p <affected-crate>
+scripts/check-native.sh physical shipping
+cargo fmt --all -- --check
 scripts/check.sh
 ```
 
-Hosted `ci-pass` is authoritative. Local success is supporting evidence.
+## Standing limits
 
-## Definition of done
+One optional skill lives in `.agents/skills`: Apple Metal for lifecycle,
+presentation and residency. `docs/AGENTS.md` applies to documentation work.
 
-A change is done only when scope matches the approved parent chain, acceptance
-tests cover success and failure, risk-selected evidence passes, architecture and
-rustdoc are current, dependency and provenance policy is satisfied, the PR
-records exact results and remaining risk, `ci-pass` succeeds, and the merged PR
-closes its task. Requirements and capabilities close only when all child work
-and end-to-end acceptance are complete.
-## Repository skills
-- Select one primary skill and load support only at an actual boundary: alpine-studio-gpui-engineer for delivery/editor correctness, apple-metal-performance-engineer for native GPU/presentation/residency, zed-gpui-architecture-expert for pinned translation, algorithmic-performance-engineer for measured algorithms, github-project-operator for planning, github-documentation-architect for mdBook/Wiki/releases, and github-deep-researcher for research/evaluation. skills/manifest.tsv owns the installable inventory.
-- Install only repository-owned links with scripts/install-agent-skills.sh; skills never supersede this policy, accepted issues, required checks, or owner-held approvals.
+This file is capped at 500 words; adding a rule requires removing one. No new
+script may test another script; `test-policy.sh` and `test-classifier.sh` are the
+last two and retire with `check-policy.sh`. No workflow may file issues. Retired
+process is deleted rather than archived: history at tag `pre-cleanup-2026-09` is
+the only record, and it restores nothing.

@@ -364,6 +364,13 @@ pub enum ImeEvent {
     },
     /// Composition committed owned text.
     Committed(Box<str>),
+    /// Commits a native replacement with its final caret in the same undo transaction.
+    CommittedWithCaret {
+        /// Owned replacement text, including preserved composition fragments.
+        text: Box<str>,
+        /// Final scalar-aligned UTF-16 caret relative to the replacement text.
+        caret_utf16: usize,
+    },
     /// Composition ended without committed text.
     Cancelled,
 }
@@ -1877,6 +1884,22 @@ pub mod native_validation {
         F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
     {
         surface.implementation.replay_native_input_path(handler)
+    }
+
+    /// Exercises editor-backed native composition, cancellation, replacement and undo.
+    ///
+    /// # Errors
+    /// Returns an error when a native callback or its editor result is incorrect.
+    pub fn replay_native_text_round_trip<F>(
+        surface: &NativeSurface,
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        surface
+            .implementation
+            .replay_native_text_round_trip(handler)
     }
 
     /// Commits exact text through the production AppKit text-input selector.

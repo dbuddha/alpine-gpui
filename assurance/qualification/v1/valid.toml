@@ -36,7 +36,7 @@ evidence = "assurance/qualification/v1/journey.toml#expected-layout"
 [[equivalence]]
 kind = "lifecycle"
 status = "passed"
-evidence = "formal/tla/aep-0028/GoldenQualification.tla#MeasurementRequiresEquivalence"
+evidence = "tools/alpine-assurance/src/qualification.rs#rejects_performance_before_correctness"
 
 [[equivalence]]
 kind = "resources"

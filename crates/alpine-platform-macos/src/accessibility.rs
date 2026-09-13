@@ -403,6 +403,40 @@ pub struct AccessibilitySnapshot {
     line_count: usize,
     dirty: bool,
     report: AccessibilityReport,
+    composing: bool,
+    focused_text: Option<AccessibilityTextInput>,
+}
+
+/// Metadata for a focused editable field, separate from the document's AX text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AccessibilityTextInput {
+    node: AccessibilityNodeId,
+    selection: AccessibilitySelection,
+    text_len_utf16: usize,
+    composing: bool,
+}
+
+impl AccessibilityTextInput {
+    /// Returns the exact focused field identity.
+    #[must_use]
+    pub const fn node(self) -> AccessibilityNodeId {
+        self.node
+    }
+    /// Returns the committed field selection.
+    #[must_use]
+    pub const fn selection(self) -> AccessibilitySelection {
+        self.selection
+    }
+    /// Returns the committed field length in UTF-16 units.
+    #[must_use]
+    pub const fn text_len_utf16(self) -> usize {
+        self.text_len_utf16
+    }
+    /// Reports whether the field still owns an uncommitted composition.
+    #[must_use]
+    pub const fn is_composing(self) -> bool {
+        self.composing
+    }
 }
 
 impl AccessibilitySnapshot {
@@ -457,7 +491,64 @@ impl AccessibilitySnapshot {
             line_count,
             dirty,
             report,
+            composing: false,
+            focused_text: None,
         })
+    }
+
+    /// Adds bounded native-input metadata for one currently focused field.
+    /// Document metadata remains unchanged for independent AX editor queries.
+    ///
+    /// # Errors
+    /// Rejects an unfocused/missing node, an invalid selection or an oversized field.
+    pub fn with_focused_text_input(
+        mut self,
+        node: AccessibilityNodeId,
+        selection: AccessibilitySelection,
+        text_len_utf16: usize,
+        composing: bool,
+    ) -> Result<Self, AccessibilityError> {
+        if !self
+            .nodes
+            .iter()
+            .any(|value| value.id() == node && value.is_focused())
+        {
+            return Err(AccessibilityError::InvalidTree);
+        }
+        if selection.anchor_utf16() > text_len_utf16 || selection.head_utf16() > text_len_utf16 {
+            return Err(AccessibilityError::InvalidSelection { text_len_utf16 });
+        }
+        if text_len_utf16 > MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES {
+            return Err(AccessibilityError::TextResponseTooLarge {
+                actual: text_len_utf16,
+                limit: MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES,
+            });
+        }
+        self.focused_text = Some(AccessibilityTextInput {
+            node,
+            selection,
+            text_len_utf16,
+            composing,
+        });
+        Ok(self)
+    }
+
+    /// Returns focused-field native input metadata, independently of editor AX text.
+    #[must_use]
+    pub const fn focused_text_input(&self) -> Option<AccessibilityTextInput> {
+        self.focused_text
+    }
+
+    /// Records whether the editor has an active composition.
+    #[must_use]
+    pub const fn with_editor_composition(mut self, composing: bool) -> Self {
+        self.composing = composing;
+        self
+    }
+    /// Returns whether the editor has an active composition.
+    #[must_use]
+    pub const fn is_editor_composing(&self) -> bool {
+        self.composing
     }
 
     /// Returns exact document and buffer identity.
@@ -655,6 +746,22 @@ pub enum AccessibilityOperation {
         /// Global `AppKit` UTF-16 index to map.
         index_utf16: usize,
     },
+    /// First visible line fragment for a UTF-16 range, or its insertion caret.
+    FirstRectForRange {
+        /// Exact document and layout revision.
+        revision: AccessibilityRevision,
+        /// Requested range; the response reports the fragment actually represented.
+        range: AccessibilityTextRange,
+        /// Interpret indices in the native marked-text projection.
+        marked_text: bool,
+    },
+    /// Hit-test an Alpine view-local point against the current editor layout.
+    IndexForPoint {
+        /// Exact document and layout revision.
+        revision: AccessibilityRevision,
+        /// A validated point encoded as a zero-sized rectangle.
+        point: AccessibilityBounds,
+    },
     /// Apply one revision-checked action.
     Action(AccessibilityAction),
 }
@@ -674,6 +781,10 @@ pub enum AccessibilityRequestKind {
     RangeForLine,
     /// UTF-16 index to grapheme-range mapping request.
     RangeForIndex,
+    /// UTF-16 range to visible layout fragment.
+    FirstRectForRange,
+    /// Current layout point to UTF-16 index.
+    IndexForPoint,
     /// Revision-checked action request.
     Action,
 }
@@ -683,6 +794,7 @@ pub enum AccessibilityRequestKind {
 pub struct AccessibilityRequest {
     id: AccessibilityRequestId,
     operation: AccessibilityOperation,
+    text_node: Option<AccessibilityNodeId>,
 }
 
 impl AccessibilityRequest {
@@ -702,7 +814,25 @@ impl AccessibilityRequest {
                 });
             }
         }
-        Ok(Self { id, operation })
+        Ok(Self {
+            id,
+            operation,
+            text_node: None,
+        })
+    }
+
+    /// Targets a field instead of the document for a text query/selection action.
+    /// The provider must reject stale, missing or inapplicable targets.
+    #[must_use]
+    pub const fn targeting_text(mut self, node: AccessibilityNodeId) -> Self {
+        self.text_node = Some(node);
+        self
+    }
+
+    /// Returns the optional exact field identity for this text operation.
+    #[must_use]
+    pub const fn text_node(&self) -> Option<AccessibilityNodeId> {
+        self.text_node
     }
     /// Creates a semantic snapshot pull.
     ///
@@ -784,6 +914,42 @@ impl AccessibilityRequest {
             },
         )
     }
+    /// Requests a visible text fragment without forcing scrolling or painting.
+    ///
+    /// # Errors
+    /// Rejects zero identity and overflowing ranges.
+    pub fn first_rect_for_range(
+        id: AccessibilityRequestId,
+        revision: AccessibilityRevision,
+        range: AccessibilityTextRange,
+        marked_text: bool,
+    ) -> Result<Self, AccessibilityError> {
+        range.end_utf16()?;
+        Self::new(
+            id,
+            AccessibilityOperation::FirstRectForRange {
+                revision,
+                range,
+                marked_text,
+            },
+        )
+    }
+    /// Requests the UTF-16 index under a finite view-local point.
+    ///
+    /// # Errors
+    /// Rejects zero identity and invalid coordinates.
+    pub fn index_for_point(
+        id: AccessibilityRequestId,
+        revision: AccessibilityRevision,
+        x: f32,
+        y: f32,
+    ) -> Result<Self, AccessibilityError> {
+        let point = AccessibilityBounds::new(x, y, 0.0, 0.0)?;
+        Self::new(
+            id,
+            AccessibilityOperation::IndexForPoint { revision, point },
+        )
+    }
     /// Creates a revision-checked action request.
     ///
     /// # Errors
@@ -815,6 +981,10 @@ impl AccessibilityRequest {
             AccessibilityOperation::LineForIndex { .. } => AccessibilityRequestKind::LineForIndex,
             AccessibilityOperation::RangeForLine { .. } => AccessibilityRequestKind::RangeForLine,
             AccessibilityOperation::RangeForIndex { .. } => AccessibilityRequestKind::RangeForIndex,
+            AccessibilityOperation::FirstRectForRange { .. } => {
+                AccessibilityRequestKind::FirstRectForRange
+            }
+            AccessibilityOperation::IndexForPoint { .. } => AccessibilityRequestKind::IndexForPoint,
             AccessibilityOperation::Action(_) => AccessibilityRequestKind::Action,
         }
     }
@@ -827,7 +997,9 @@ impl AccessibilityRequest {
             | AccessibilityOperation::Selection { revision }
             | AccessibilityOperation::LineForIndex { revision, .. }
             | AccessibilityOperation::RangeForLine { revision, .. }
-            | AccessibilityOperation::RangeForIndex { revision, .. } => Some(revision),
+            | AccessibilityOperation::RangeForIndex { revision, .. }
+            | AccessibilityOperation::FirstRectForRange { revision, .. }
+            | AccessibilityOperation::IndexForPoint { revision, .. } => Some(revision),
             AccessibilityOperation::Action(action) => Some(action.revision()),
         }
     }
@@ -882,6 +1054,15 @@ pub enum AccessibilityPayload {
     Line(usize),
     /// Global UTF-16 range.
     Range(AccessibilityTextRange),
+    /// First visible fragment and the exact range it represents.
+    TextGeometry {
+        /// Actual represented UTF-16 fragment.
+        range: AccessibilityTextRange,
+        /// Rectangle in Alpine view-local coordinates.
+        bounds: AccessibilityBounds,
+    },
+    /// Global UTF-16 index at the requested point.
+    Index(usize),
     /// Terminal action result.
     Action(AccessibilityActionResult),
 }
@@ -900,6 +1081,11 @@ impl AccessibilityPayload {
                     Self::Range(_),
                 )
                 | (AccessibilityRequestKind::Action, Self::Action(_))
+                | (
+                    AccessibilityRequestKind::FirstRectForRange,
+                    Self::TextGeometry { .. }
+                )
+                | (AccessibilityRequestKind::IndexForPoint, Self::Index(_))
         )
     }
 }
@@ -1318,6 +1504,72 @@ mod tests {
             false,
             false,
         )
+    }
+
+    #[test]
+    fn focused_text_metadata_is_bounded_and_independent_of_document()
+    -> Result<(), AccessibilityError> {
+        let root = AccessibilityNodeId::new(1);
+        let field = AccessibilityNodeId::new(2);
+        let snapshot = AccessibilitySnapshot::new(
+            AccessibilityRevision::new(3, 5),
+            root,
+            vec![node(1, None, false)?, node(2, Some(1), true)?],
+            AccessibilitySelection::new(50, 20),
+            100,
+            4,
+            true,
+        )?;
+        assert!(snapshot.focused_text_input().is_none());
+        let focused = snapshot.clone().with_focused_text_input(
+            field,
+            AccessibilitySelection::new(3, 1),
+            4,
+            true,
+        )?;
+        assert_eq!(focused.selection(), snapshot.selection());
+        assert_eq!(focused.text_len_utf16(), 100);
+        assert_eq!(focused.line_count(), 4);
+        let input = focused
+            .focused_text_input()
+            .ok_or(AccessibilityError::InvalidTree)?;
+        assert_eq!(input.node(), field);
+        assert_eq!(input.selection(), AccessibilitySelection::new(3, 1));
+        assert_eq!(input.text_len_utf16(), 4);
+        assert!(input.is_composing());
+        assert!(
+            snapshot
+                .clone()
+                .with_focused_text_input(root, AccessibilitySelection::new(0, 0), 0, false)
+                .is_err()
+        );
+        assert!(
+            snapshot
+                .clone()
+                .with_focused_text_input(field, AccessibilitySelection::new(0, 5), 4, false)
+                .is_err()
+        );
+        assert!(
+            snapshot
+                .with_focused_text_input(
+                    field,
+                    AccessibilitySelection::new(0, 0),
+                    MAX_ACCESSIBILITY_TEXT_RESPONSE_BYTES + 1,
+                    false
+                )
+                .is_err()
+        );
+        let request = AccessibilityRequest::text(
+            AccessibilityRequestId::new(1),
+            focused.revision(),
+            AccessibilityTextRange::new(0, 4),
+        )?;
+        assert_eq!(request.text_node(), None);
+        let target = request.clone().targeting_text(field);
+        assert_eq!(target.text_node(), Some(field));
+        assert_eq!(target.operation(), request.operation());
+        assert_eq!(target.revision(), request.revision());
+        Ok(())
     }
 
     #[test]

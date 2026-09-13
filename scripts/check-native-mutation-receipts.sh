@@ -83,6 +83,7 @@ identity() {
         --arg run "${GITHUB_RUN_ID:?}" --arg attempt "${GITHUB_RUN_ATTEMPT:?}" \
         --arg toolchain "${ALPINE_NATIVE_TOOLCHAIN:?}" --arg mutator "${ALPINE_NATIVE_MUTATOR:?}" \
         --arg flags "${RUSTFLAGS-}" --arg encoded_flags "${CARGO_ENCODED_RUSTFLAGS-}" \
+        --arg incremental "${CARGO_INCREMENTAL-}" \
         --arg developer "${DEVELOPER_DIR-}" --arg deployment "${MACOSX_DEPLOYMENT_TARGET-}" \
         --arg domain "$domain" --argjson id "$id" --arg shard "$((id - 1))/16" \
         --arg checker "$checker" --arg rules "$rules" '
@@ -90,10 +91,12 @@ identity() {
             and $tested == $checkout and ($run|test("^[1-9][0-9]*$"))
             and ($attempt|test("^[1-9][0-9]*$")) and ($toolchain|length)>0
             and $mutator == "cargo-mutants 27.1.0"
-        then {schema:"alpine-native-mutation-identity/v1",head:$head,base:$base,
+            and (["0","1"] | index($incremental) != null)
+        then {schema:"alpine-native-mutation-identity/v2",head:$head,base:$base,
             tested_commit:$tested,tested_tree:$tree,workflow_commit:$workflow,
             run_id:$run,attempt:$attempt,toolchain:$toolchain,mutator:$mutator,
             rustflags:$flags,encoded_rustflags:$encoded_flags,developer:$developer,
+            cargo_incremental:$incremental,
             deployment:$deployment,domain:$domain,id:$id,shard:$shard,
             checker_sha256:$checker,rules_sha256:$rules}
         else error("invalid native mutation execution identity") end') || return 1
