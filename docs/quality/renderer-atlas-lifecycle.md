@@ -64,8 +64,9 @@ allocation counts remain the isolated lab's responsibility.
 - Rust unit and property tests cover every transition and identity axis.
 - Kani selects whether compatible reuse changes content identity and proves the
   bounded validator rejects exactly that fault.
-- Existing AEP 0028 TLA+ invariants continue to require lifecycle and resource
-  equivalence before measurement.
+- Rust qualification checks reject measurement without required equivalence,
+  including lifecycle and resource gates. Synthetic fixtures test admission
+  policy; they do not prove physical renderer lifecycle equivalence.
 - The CLI integration test proves the committed sequence reaches all five CPU
   oracle images through the public non-shipping binary.
 - Physical Apple Silicon Direct Metal and pinned GPUI execution remain required

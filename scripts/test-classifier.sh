@@ -32,8 +32,6 @@ assert_every_gate() {
     assert_output "$output" kani=true
     assert_output "$output" miri=true
     assert_output "$output" metal=true
-    assert_output "$output" tla=true
-    assert_output "$output" portable=true
 }
 
 # Default PR/main feedback must preserve native behavior without admitting
@@ -48,11 +46,10 @@ done
 assert_output "$(run_fixture "$(printf 'docs/README.md\napps/alpine-studio/src/lib.rs')")" code=true
 for changed in .github/workflows/ci.yml crates/alpine-runtime/src/lib.rs unclassified/input.bin; do
     ordinary=$(run_fixture "$changed" review:unsafe)
-    for gate in coverage mutation kani miri tla native_mutation; do
+    for gate in coverage mutation kani miri native_mutation; do
         assert_output "$ordinary" "$gate=false"
     done
     assert_output "$ordinary" metal=true
-    assert_output "$ordinary" portable=true
 done
 if ALPINE_CI_ASSURANCE=invalid ALPINE_BASE_SHA=HEAD "$classifier_program" > "$temporary/invalid-mode" 2>&1; then
     printf 'classifier accepted an invalid assurance mode\n' >&2
@@ -60,25 +57,25 @@ if ALPINE_CI_ASSURANCE=invalid ALPINE_BASE_SHA=HEAD "$classifier_program" > "$te
 fi
 ALPINE_CI_PLAN="$temporary/ordinary-plan.json" run_fixture .github/workflows/ci.yml >/dev/null
 jq -e '.assurance == false and .gates.native_mutation == false and
-    ([.reasons[].gate] | all(. == "metal" or . == "portable"))' "$temporary/ordinary-plan.json" >/dev/null
+    ([.reasons[].gate] | all(. == "metal"))' "$temporary/ordinary-plan.json" >/dev/null
 
 # Retain exhaustive impact-selection coverage for explicit manual assurance.
 export ALPINE_CI_ASSURANCE=true
 assert_output "$(run_fixture README.md)" code=true
 manual=$(run_fixture .github/workflows/ci.yml)
 assert_every_gate "$manual"
+if printf '%s\n' "$manual" | grep -q '^portable='; then
+    echo 'classifier retained retired portable selection' >&2; exit 1
+fi
 assert_output "$manual" native_mutation=true
 
 docs=$(run_fixture README.md)
 assert_output "$docs" coverage=false
 assert_output "$docs" mutation=false
 assert_output "$docs" kani=false
-assert_output "$docs" tla=false
-assert_output "$docs" portable=false
 
 ci_workflow=$(run_fixture .github/workflows/ci.yml)
 assert_every_gate "$ci_workflow"
-assert_output "$ci_workflow" portable=true
 
 nightly_workflow=$(run_fixture .github/workflows/nightly-assurance.yml)
 assert_every_gate "$nightly_workflow"
@@ -88,10 +85,9 @@ assert_every_gate "$release_workflow"
 
 classifier=$(run_fixture scripts/classify-ci.sh)
 assert_ci_controls() {
-    for gate in coverage mutation kani miri metal tla; do
+    for gate in coverage mutation kani miri metal; do
         assert_output "$1" "$gate=false"
     done
-    assert_output "$1" portable=true
     assert_output "$1" ci_control_only=true
 }
 assert_ci_controls "$classifier"
@@ -148,7 +144,6 @@ core=$(run_fixture crates/alpine-core/src/lib.rs)
 assert_output "$core" coverage=true
 assert_output "$core" mutation=true
 assert_output "$core" kani=true
-assert_output "$core" portable=true
 
 text=$(run_fixture crates/alpine-text/src/lib.rs)
 assert_output "$text" coverage=true
@@ -174,33 +169,26 @@ assert_output "$studio_manifest" coverage=true
 assert_output "$studio_manifest" mutation=true
 assert_output "$studio_manifest" kani=false
 assert_output "$studio_manifest" metal=true
-assert_output "$studio_manifest" portable=true
 
 studio_docs=$(run_fixture apps/alpine-studio/README.md)
 assert_output "$studio_docs" coverage=false
 assert_output "$studio_docs" mutation=false
 assert_output "$studio_docs" kani=false
 
-formal=$(run_fixture formal/tla/aep-0009/AssuranceLifecycle.tla)
-assert_output "$formal" tla=true
-assert_output "$formal" kani=false
 
 qualification=$(run_fixture assurance/qualification/v1/valid.toml)
 assert_output "$qualification" coverage=true
-assert_output "$qualification" tla=true
 assert_output "$qualification" mutation=true
 assert_output "$qualification" kani=false
 
 assurance=$(run_fixture tools/alpine-assurance/src/qualification.rs)
 assert_output "$assurance" coverage=true
 assert_output "$assurance" mutation=true
-assert_output "$assurance" tla=true
 
 trace=$(run_fixture tools/alpine-trace/src/lib.rs)
 assert_output "$trace" coverage=true
 assert_output "$trace" mutation=true
 assert_output "$trace" kani=true
-assert_output "$trace" tla=true
 
 ax_client=$(run_fixture tools/alpine-ax-client/src/lib.rs)
 assert_output "$ax_client" coverage=true
@@ -265,13 +253,6 @@ assert_output "$shader" coverage=false
 assert_output "$shader" mutation=false
 assert_output "$shader" kani=false
 assert_output "$shader" metal=true
-assert_output "$shader" portable=false
-
-portable_checker=$(run_fixture scripts/check-portable-targets.sh)
-assert_output "$portable_checker" portable=true
-
-portable_tests=$(run_fixture scripts/test-portable-targets.sh)
-assert_output "$portable_tests" portable=true
 
 metal_gate=$(run_fixture scripts/check-metal.sh)
 assert_output "$metal_gate" metal=true
@@ -291,7 +272,6 @@ for path in \
     assurance/miri-text-layout-partitions.tsv \
     scripts/check-native-mutation-receipts.sh \
     scripts/test-native-mutation-receipts.sh \
-    scripts/check-tla.sh \
     apps/alpine-studio/fixtures/rust-analyzer/Cargo.toml \
     apps/alpine-studio/tests/fixtures/workspace/input.json \
     crates/alpine-core/fixtures/non-rust.bin \
@@ -306,7 +286,6 @@ assert_every_gate "$(run_fixture "$(printf 'tools/alpine-assurance/src/main.rs\n
 empty=$(run_fixture '')
 assert_output "$empty" mutation=false
 assert_output "$empty" metal=false
-assert_output "$empty" portable=false
 
 # Invalid source identity must fail before publishing any workflow outputs.
 for invalid in missing-base wrong-base wrong-head; do
@@ -404,7 +383,6 @@ jq -e '(.unmapped_paths | length) == 1 and
 unchanged=$(run_git_fixture HEAD)
 assert_output "$unchanged" coverage=false
 assert_output "$unchanged" mutation=false
-assert_output "$unchanged" portable=false
 jq -e '.changed_paths == [] and .reasons == []' "$temporary/git-plan.json" >/dev/null
 
 # Dispatch is an explicit comparison, not an implicit one-commit fallback.

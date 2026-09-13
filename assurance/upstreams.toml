@@ -61,12 +61,6 @@ baseline_commit = "4feaaad1d6a2378a6ff6caa3b4fc5d6999c7bb5d"
 research_issue = 8
 
 [[upstreams]]
-name = "TLA+"
-repository = "tlaplus/tlaplus"
-baseline_commit = "5a47802b5c391f59ecdd44117981f4ff8c0656ba"
-research_issue = 8
-
-[[upstreams]]
 name = "Vulkan specifications"
 repository = "KhronosGroup/Vulkan-Docs"
 baseline_commit = "090f1b190d60ced4a1d198fd3747d071cc271b1c"

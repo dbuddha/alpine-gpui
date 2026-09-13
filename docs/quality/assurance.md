@@ -5,7 +5,6 @@ the failure mode and recorded against atomic AEP claims.
 
 | Layer | Establishes | Cannot establish |
 | --- | --- | --- |
-| TLA+ and TLC | Finite abstract safety, reachability, ordering, and liveness | Rust conformance, drivers, pixels, or elapsed time |
 | Kani | Bounded properties of compiled sequential Rust | Trusted concurrency, native APIs, or performance |
 | Loom | Explored Rust synchronization interleavings | Hidden synchronization or operating-system behavior |
 | Unit and property tests | Executable examples and broad pure input coverage | Complete state spaces or native integration |
@@ -18,26 +17,23 @@ the failure mode and recorded against atomic AEP claims.
 ```mermaid
 flowchart TD
     claim["Atomic AEP claim"] --> classify{"Claim and risk"}
-    classify --> model["TLA+ design model"]
     classify --> implementation["Kani or Loom implementation evidence"]
     classify --> dynamic["Unit, property, integration, E2E"]
     classify --> native["Native platform evidence"]
     classify --> measured["Fixed-hardware distribution"]
-    model --> report["Qualified evidence report"]
-    implementation --> report
+    implementation --> report["Qualified evidence report"]
     dynamic --> report
     native --> report
     measured --> report
 ```
 
 Every formal artifact states its bounds, assumptions, exclusions, tool version,
-and implementation companion. Every model has a known-bad configuration that
-must produce a counterexample. Counterexamples become conventional regression
-tests when they expose implementation behavior. Flaky tests are defects, and a
+and implementation companion. Optional proof controls must distinguish the specific fault they target.
+Counterexamples become regression tests when they expose implementation behavior. Flaky tests are defects, and a
 threshold or assumption is never weakened merely to obtain a green result.
 
 Lean remains deferred. It becomes relevant only when Alpine has a mathematical
-specification and a credible, testable refinement path that TLA+, Kani, Loom,
+specification and a credible, testable refinement path that Kani, Loom,
 and native evidence cannot cover economically.
 
 ## Alpine Studio product boundary
@@ -58,21 +54,14 @@ observation remain separate journey evidence and cannot be inferred from the
 static audit alone. A reviewed local language-server dependency changes the
 allowlist explicitly but does not weaken the network prohibition.
 
-## Portable cfg compile-contract gate
+## Supported platform checks
 
-`scripts/check-portable-targets.sh` type-checks the locked workspace, all targets,
-and all features for `x86_64-unknown-linux-gnu` and
-`x86_64-pc-windows-msvc`. Both official Rust targets are mandatory. A missing
-target fails with the exact `rustup target add` command instead of skipping the
-evidence.
+Product acceptance targets Apple Silicon macOS. Product lint, workspace tests,
+native execution and the release boundary audit run on `macos-26`; ordinary CI
+has no Linux/Windows product matrix or mandatory cross-compilation targets.
+Changes to unsupported-platform branches are not qualified by this workflow.
 
-`scripts/test-portable-targets.sh` proves that an invalid non-macOS-only call
-site is rejected and its corrected form is accepted under both target cfgs. The
-CI classifier selects `portable=true` for Rust, Cargo, toolchain, workflow, and
-portable-gate control paths. Hosted Linux and Windows runners then execute the
-workspace test under their native targets, while the macOS native lane remains
-unconditional.
-
-This gate protects unsupported-host and portable contracts before push. It does
-not add Linux or Windows runtime behavior, shipping support, or a non-Metal
-renderer to Alpine's Apple Silicon macOS product scope.
+Native admission executes the combined platform and editor package selection
+once and requires the full native-process completion receipt. Metal API/shader
+validation remains a separate configuration. Failed, canceled or unexpectedly
+skipped required native jobs block the protected `ci-pass` aggregate.
