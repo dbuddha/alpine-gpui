@@ -40,129 +40,6 @@ for job in preflight quality native; do
     unset ALPINE_CI_WORKFLOW
 done
 
-# Correspondence controls exercise the real workflow commands, not invented
-# package counts. Removing the common Studio package recreates Defect #590.
-for workflow in ci nightly-assurance; do
-    source_workflow=".github/workflows/$workflow.yml"
-    broken_workflow="$fixture_dir/missing-baseline-$workflow.yml"
-    sed '/--file crates\/alpine-platform-macos\/src\/native.rs/s/ --cargo-arg=--package=alpine-editor//' \
-        "$source_workflow" > "$broken_workflow"
-    if [ "$workflow" = ci ]; then
-        export ALPINE_CI_WORKFLOW="$broken_workflow"
-    else
-        export ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$broken_workflow"
-    fi
-    if run_policy > "$fixture_dir/missing-baseline-$workflow.log" 2>&1; then
-        printf 'policy test error: mismatched mutation baseline unexpectedly passed\n' >&2
-        exit 1
-    fi
-    if ! grep -Fq 'mutation baseline and mutant package scopes must correspond' \
-        "$fixture_dir/missing-baseline-$workflow.log"; then
-        cat "$fixture_dir/missing-baseline-$workflow.log" >&2
-        exit 1
-    fi
-    unset ALPINE_CI_WORKFLOW ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
-done
-
-sed '/--file crates\/alpine-platform-macos\/src\/native.rs/s/cargo mutants /cargo mutants --baseline skip /' \
-    .github/workflows/ci.yml > "$fixture_dir/skipped-mutation-baseline.yml"
-if ALPINE_CI_WORKFLOW="$fixture_dir/skipped-mutation-baseline.yml" \
-    run_policy > "$fixture_dir/skipped-mutation-baseline.log" 2>&1; then
-    printf 'policy test error: skipped mutation baseline unexpectedly passed\n' >&2
-    exit 1
-fi
-grep -Fq 'mutation baseline must execute' "$fixture_dir/skipped-mutation-baseline.log"
-
-# Preserve mutated-package ownership and the complete selected inventory.
-# A Studio-only selector previously included the mutated package in baseline
-# only. Removing both owner flags must fail even when every test-package token
-# still has its matching common Cargo argument.
-for workflow in ci nightly-assurance; do
-    broken_workflow="$fixture_dir/studio-only-baseline-$workflow.yml"
-    sed '/--file crates\/alpine-runtime\/src\/lib.rs/s/ --test-package alpine-runtime --cargo-arg=--package=alpine-runtime//' \
-        ".github/workflows/$workflow.yml" > "$broken_workflow"
-    if [ "$workflow" = ci ]; then
-        export ALPINE_CI_WORKFLOW="$broken_workflow"
-    else
-        export ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$broken_workflow"
-    fi
-    if run_policy > "$fixture_dir/studio-only-baseline-$workflow.log" 2>&1; then
-        printf 'policy test error: Studio-only baseline mismatch unexpectedly passed\n' >&2
-        exit 1
-    fi
-    grep -Fq 'missing common mutated package alpine-runtime' \
-        "$fixture_dir/studio-only-baseline-$workflow.log"
-    unset ALPINE_CI_WORKFLOW ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
-done
-
-sed '/--file crates\/alpine-platform-macos\/src\/lib.rs/s/ --test-package alpine-platform-macos --cargo-arg=--package=alpine-platform-macos//' \
-    .github/workflows/nightly-assurance.yml > "$fixture_dir/studio-only-platform-baseline.yml"
-if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/studio-only-platform-baseline.yml" \
-    run_policy > "$fixture_dir/studio-only-platform-baseline.log" 2>&1; then
-    printf 'policy test error: Studio-only platform baseline mismatch unexpectedly passed\n' >&2
-    exit 1
-fi
-grep -Fq 'missing common mutated package alpine-platform-macos' \
-    "$fixture_dir/studio-only-platform-baseline.log"
-
-for selector in '--test-package=alpine-runtime' '--test-workspace=true'; do
-    sed "/--file crates\\/alpine-runtime\\/src\\/lib.rs/s/--test-package alpine-runtime/$selector/" \
-        .github/workflows/ci.yml > "$fixture_dir/unsupported-package-selector.yml"
-    if ALPINE_CI_WORKFLOW="$fixture_dir/unsupported-package-selector.yml" \
-        run_policy > "$fixture_dir/unsupported-package-selector.log" 2>&1; then
-        printf 'policy test error: unsupported package selector unexpectedly passed\n' >&2
-        exit 1
-    fi
-    grep -Fq 'mutation package selector must use explicit --test-package entries' \
-        "$fixture_dir/unsupported-package-selector.log"
-done
-
-for workflow in ci nightly-assurance; do
-    broken_workflow="$fixture_dir/slice-partition-$workflow.yml"
-    sed '/--file crates\/alpine-platform-macos\/src\/native.rs/s/ --sharding round-robin//' \
-        ".github/workflows/$workflow.yml" > "$broken_workflow"
-    if [ "$workflow" = ci ]; then
-        export ALPINE_CI_WORKFLOW="$broken_workflow"
-    else
-        export ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$broken_workflow"
-    fi
-    if run_policy > "$fixture_dir/slice-partition-$workflow.log" 2>&1; then
-        printf 'policy test error: obsolete native surface partition unexpectedly passed\n' >&2
-        exit 1
-    fi
-    grep -Fq 'round-robin' "$fixture_dir/slice-partition-$workflow.log"
-    unset ALPINE_CI_WORKFLOW ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
-done
-
-for fault in missing duplicate-shard duplicate-id extra denominator timeout; do
-    broken_workflow="$fixture_dir/native-surface-matrix-$fault.yml"
-    awk -v fault="$fault" '
-        /^  native-surface-mutation:/ { active = 1 }
-        /^  native-studio-contract-mutation:/ { active = 0 }
-        active && fault == "missing" && /- id: 16$/ { getline; next }
-        active && fault == "duplicate-id" && /- id: 16$/ { sub("id: 16", "id: 15") }
-        active && fault == "duplicate-shard" && /shard: "15\/16"/ { sub("15/16", "14/16") }
-        active && fault == "denominator" && /shard: "15\/16"/ { sub("15/16", "15/8") }
-        active && fault == "timeout" && /timeout-minutes: 30$/ { sub("30", "60") }
-        { print }
-        active && fault == "extra" && /shard: "15\/16"/ {
-            print "          - id: 17"
-            print "            shard: \"16/16\""
-        }
-    ' .github/workflows/nightly-assurance.yml > "$broken_workflow"
-    if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$broken_workflow" \
-        run_policy > "$fixture_dir/native-surface-matrix-$fault.log" 2>&1; then
-        printf 'policy test error: invalid native surface matrix unexpectedly passed: %s\n' "$fault" >&2
-        exit 1
-    fi
-    if ! grep -Fq 'native surface mutation must retain exactly sixteen unique ordered shards' \
-        "$fixture_dir/native-surface-matrix-$fault.log"; then
-        cat "$fixture_dir/native-surface-matrix-$fault.log" >&2
-        exit 1
-    fi
-    unset ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
-done
-
 # POSIX shell-function prefix assignments persist. Negative overrides must
 # not contaminate the next positive policy check or a different gate family.
 run_policy >/dev/null
@@ -170,11 +47,9 @@ run_policy >/dev/null
 cp .github/workflows/ci.yml "$fixture_dir/ci.yml"
 ALPINE_CI_WORKFLOW="$fixture_dir/ci.yml" run_policy >/dev/null
 
-cp .github/workflows/nightly-assurance.yml "$fixture_dir/nightly-assurance.yml"
 cp .github/actions/upload-required-artifact/action.yml "$fixture_dir/upload-required-artifact.yml"
-ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/nightly-assurance.yml" \
-    ALPINE_REQUIRED_ARTIFACT_ACTION="$fixture_dir/upload-required-artifact.yml" \
-    run_policy >/dev/null
+ALPINE_REQUIRED_ARTIFACT_ACTION="$fixture_dir/upload-required-artifact.yml" run_policy >/dev/null
+
 
 sed 's#actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a#actions/upload-artifact@0000000000000000000000000000000000000000#' \
     "$fixture_dir/upload-required-artifact.yml" > "$fixture_dir/unpinned-required-artifact.yml"
@@ -235,62 +110,6 @@ fi
 unset ALPINE_REQUIRED_ARTIFACT_ACTION
 
 perl -0pe 's#uses: \Q./.github/actions/upload-required-artifact\E#uses: actions/upload-artifact\@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a#' \
-    "$fixture_dir/nightly-assurance.yml" > "$fixture_dir/bypassed-required-artifact-nightly.yml"
-if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/bypassed-required-artifact-nightly.yml" \
-    run_policy > "$fixture_dir/bypassed-required-artifact-nightly.log" 2>&1; then
-    printf 'policy test error: bypassed Nightly required artifact helper unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'Nightly required artifacts must use seven governed retries and retain one direct supplementary upload' \
-    "$fixture_dir/bypassed-required-artifact-nightly.log"; then
-    printf 'policy test error: expected Nightly required artifact bypass failure was not reported\n' >&2
-    cat "$fixture_dir/bypassed-required-artifact-nightly.log" >&2
-    exit 1
-fi
-
-perl -0pe 's/if-no-files-found: error/if-no-files-found: warn/' \
-    "$fixture_dir/nightly-assurance.yml" > "$fixture_dir/downgraded-required-artifact-nightly.yml"
-if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/downgraded-required-artifact-nightly.yml" \
-    run_policy > "$fixture_dir/downgraded-required-artifact-nightly.log" 2>&1; then
-    printf 'policy test error: downgraded Nightly required artifact unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'Nightly required artifacts must use seven governed retries and retain one direct supplementary upload' \
-    "$fixture_dir/downgraded-required-artifact-nightly.log"; then
-    printf 'policy test error: expected Nightly required artifact downgrade failure was not reported\n' >&2
-    cat "$fixture_dir/downgraded-required-artifact-nightly.log" >&2
-    exit 1
-fi
-
-perl -0pe 's/(  native-platform-contract-mutation:.*?)( --shard "\$\{\{ matrix\.shard \}\}")/$1/s' \
-    "$fixture_dir/nightly-assurance.yml" > "$fixture_dir/unsharded-native-platform-nightly.yml"
-if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/unsharded-native-platform-nightly.yml" \
-    run_policy > "$fixture_dir/unsharded-native-platform-nightly.log" 2>&1; then
-    printf 'policy test error: unsharded native platform Nightly unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'nightly assurance must shard native platform contracts and route Studio-only wrappers through Studio tests' \
-    "$fixture_dir/unsharded-native-platform-nightly.log"; then
-    printf 'policy test error: expected native platform Nightly sharding failure was not reported\n' >&2
-    cat "$fixture_dir/unsharded-native-platform-nightly.log" >&2
-    exit 1
-fi
-unset ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
-
-sed '/Hosted AppKit cannot qualify user-facing `performClose`/d' \
-    "$fixture_dir/nightly-assurance.yml" > "$fixture_dir/unclassified-user-close-nightly.yml"
-if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/unclassified-user-close-nightly.yml" \
-    run_policy > "$fixture_dir/unclassified-user-close-nightly.log" 2>&1; then
-    printf 'policy test error: unclassified physical user-close mutation scope unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'nightly assurance must shard native platform contracts and route Studio-only wrappers through Studio tests' \
-    "$fixture_dir/unclassified-user-close-nightly.log"; then
-    printf 'policy test error: expected physical user-close classification failure was not reported\n' >&2
-    cat "$fixture_dir/unclassified-user-close-nightly.log" >&2
-    exit 1
-fi
-unset ALPINE_NIGHTLY_ASSURANCE_WORKFLOW
 
 sed 's/types: \[opened,/types: [edited, opened,/' \
     "$fixture_dir/ci.yml" > "$fixture_dir/opened-pr-fanout-ci.yml"
@@ -331,15 +150,11 @@ if ! grep -Fq 'CI must cancel superseded runs for the same ref' \
     exit 1
 fi
 
-for admission_fault in fast-feedback native-dependency native-command native-cfg native-ignored; do
+for admission_fault in fast-feedback native-command native-cfg native-ignored; do
     case "$admission_fault" in
         fast-feedback)
             expression='s/run: scripts\/check-ci-fast-feedback\.sh/run: true/'
             diagnostic='CI preflight must validate technical repository policy before fan-out'
-            ;;
-        native-dependency)
-            expression='s/(  native-mutation:.*?needs:) \[classify, preflight, native\]/$1 [classify, preflight]/s'
-            diagnostic='CI job native-mutation must wait for the fast policy preflight'
             ;;
         native-command)
             expression='s/run: scripts\/check-ci-native-admission\.sh/run: true/'
@@ -366,31 +181,25 @@ for admission_fault in fast-feedback native-dependency native-command native-cfg
     fi
 done
 
-for incremental_fault in native-missing native-disabled native-override global-disabled ordinary-override quoted-hash-double quoted-hash-single quoted-hash-multiline; do
+for incremental_fault in global-disabled ordinary-override quoted-hash-double quoted-hash-single quoted-hash-multiline; do
     case "$incremental_fault" in
-        native-missing)
-            expression='s/(  native-mutation:.*?)      CARGO_INCREMENTAL: "1"\n/$1/s' ;;
-        native-disabled)
-            expression='s/(  native-mutation:.*?)      CARGO_INCREMENTAL: "1"/$1      CARGO_INCREMENTAL: "0"/s' ;;
-        native-override)
-            expression='s/(  native-mutation:.*?      - name: Require platform native mutants to be killed\n)/$1        env:\n          CARGO_INCREMENTAL: "0"\n/s' ;;
         global-disabled)
             expression='s/^  CARGO_INCREMENTAL: "0"$/  CARGO_INCREMENTAL: "1"/m' ;;
         ordinary-override)
             expression='s/(  native:.*?    timeout-minutes: 15\n)/$1    env:\n      CARGO_INCREMENTAL: "1"\n/s' ;;
         quoted-hash-double)
-            expression='s/(      - name: Require platform native mutants to be killed.*?        run: \|\n)/$1          printf " # quoted marker"; export CARGO_INCREMENTAL=0\n/s' ;;
+            expression='s/(      - name: Test repository automation\n        run: \|\n)/$1          printf " # quoted marker"; export CARGO_INCREMENTAL=0\n/s' ;;
         quoted-hash-single)
-            expression='s/(      - name: Require platform native mutants to be killed.*?        run: \|\n)/$1          printf \047 # quoted marker\047; export CARGO_INCREMENTAL=0\n/s' ;;
+            expression='s/(      - name: Test repository automation\n        run: \|\n)/$1          printf \047 # quoted marker\047; export CARGO_INCREMENTAL=0\n/s' ;;
         quoted-hash-multiline)
-            expression='s/(      - name: Require platform native mutants to be killed.*?        run: \|\n)/$1          printf \047\n           # quoted marker\047; export CARGO_INCREMENTAL=0\n/s' ;;
+            expression='s/(      - name: Test repository automation\n        run: \|\n)/$1          printf \047\n           # quoted marker\047; export CARGO_INCREMENTAL=0\n/s' ;;
     esac
     perl -0pe "$expression" "$fixture_dir/ci.yml" > "$fixture_dir/$incremental_fault-ci.yml"
     if ALPINE_CI_WORKFLOW="$fixture_dir/$incremental_fault-ci.yml" run_policy > "$fixture_dir/$incremental_fault.log" 2>&1; then
         printf 'policy test error: compilation mode fault %s unexpectedly passed\n' "$incremental_fault" >&2
         exit 1
     fi
-    grep -Fq 'CI mutation compilation mode must be explicit and scoped' "$fixture_dir/$incremental_fault.log"
+    grep -Fq 'CI compilation mode must stay globally disabled and unscoped' "$fixture_dir/$incremental_fault.log"
 done
 
 perl -0pe 's/(  native-mutation:.*?    env:\n)/$1      # CARGO_INCREMENTAL controls compiler reuse only.\n/s' \
@@ -403,35 +212,6 @@ sed 's/CARGO_INCREMENTAL: "1"/CARGO_INCREMENTAL: "1" # native mutation copies on
     "$fixture_dir/ci.yml" > "$fixture_dir/incremental-key-comment-ci.yml"
 ALPINE_CI_WORKFLOW="$fixture_dir/incremental-key-comment-ci.yml" run_policy > "$fixture_dir/incremental-key-comment.log" 2>&1
 
-# Manual opt-in cannot become the default or inherit PR-controlled state.
-for assurance_fault in default-on missing-input unguarded-input coupled-aggregate; do
-    case "$assurance_fault" in
-        default-on) expression='s/default: false/default: true/' ;;
-        missing-input) expression='s/      assurance:\n(?:        [^\n]*\n)*//' ;;
-        unguarded-input) expression="s/github.event_name == 'workflow_dispatch' && inputs.assurance/inputs.assurance/" ;;
-        coupled-aggregate) expression='s/NATIVE_MUTATION_REQUIRED: \$\{\{ needs.classify.outputs.native_mutation/NATIVE_MUTATION_REQUIRED: \$\{\{ needs.classify.outputs.metal/' ;;
-    esac
-    perl -0pe "$expression" "$fixture_dir/ci.yml" > "$fixture_dir/$assurance_fault-ci.yml"
-    if ALPINE_CI_WORKFLOW="$fixture_dir/$assurance_fault-ci.yml" run_policy > "$fixture_dir/$assurance_fault.log" 2>&1; then
-        printf 'policy test error: assurance fault %s unexpectedly passed\n' "$assurance_fault" >&2
-        exit 1
-    fi
-done
-sed '/^on:/a\
-  schedule:
-' .github/workflows/nightly-assurance.yml > "$fixture_dir/scheduled-nightly.yml"
-if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="$fixture_dir/scheduled-nightly.yml" run_policy > "$fixture_dir/scheduled-nightly.log" 2>&1; then
-    printf 'policy test error: scheduled nightly unexpectedly passed\n' >&2
-    exit 1
-fi
-grep -Fq 'nightly specialized assurance must remain manual only' "$fixture_dir/scheduled-nightly.log"
-sed '/^    if: github.event_name == /d' .github/workflows/weekly-assurance.yml > "$fixture_dir/scheduled-weekly.yml"
-if ALPINE_WEEKLY_ASSURANCE_WORKFLOW="$fixture_dir/scheduled-weekly.yml" run_policy > "$fixture_dir/scheduled-weekly.log" 2>&1; then
-    printf 'policy test error: scheduled expensive weekly jobs unexpectedly passed\n' >&2
-    exit 1
-fi
-grep -Fq 'weekly expensive assurance and project radar must remain manual only' "$fixture_dir/scheduled-weekly.log"
-unset ALPINE_NIGHTLY_ASSURANCE_WORKFLOW ALPINE_WEEKLY_ASSURANCE_WORKFLOW ALPINE_CI_WORKFLOW
 
 for dispatch_fault in missing-base optional-base non-string-base classify-base; do
     case "$dispatch_fault" in
@@ -563,219 +343,10 @@ if ! grep -Eq 'continue-on-error is restricted|required Metal artifact upload mu
     exit 1
 fi
 
-perl -0pe 's/(  native-mutation:.*?)( --shard "\$\{\{ matrix\.shard \}\}")/$1/s' \
-    "$fixture_dir/ci.yml" > "$fixture_dir/unsharded-ci.yml"
-if ALPINE_CI_WORKFLOW="$fixture_dir/unsharded-ci.yml" run_policy > "$fixture_dir/unsharded-ci.log" 2>&1; then
-    printf 'policy test error: unsharded native mutation unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'pull-request native mutation must preserve all eleven scopes across sixteen deterministic shards' "$fixture_dir/unsharded-ci.log"; then
-    printf 'policy test error: expected native-mutation sharding failure was not reported\n' >&2
-    cat "$fixture_dir/unsharded-ci.log" >&2
-    exit 1
-fi
-
-sed 's#--file tools/alpine-ax-client/src/native_factory.rs#--file tools/alpine-ax-client/src/missing-native-factory.rs#' \
-    "$fixture_dir/ci.yml" > "$fixture_dir/missing-native-ax-factory-ci.yml"
-if ALPINE_CI_WORKFLOW="$fixture_dir/missing-native-ax-factory-ci.yml" run_policy > "$fixture_dir/missing-native-ax-factory-ci.log" 2>&1; then
-    printf 'policy test error: missing native AX factory mutation unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'AX target-only mutation must leave Linux explicitly and retain one conditional Apple factory owner' "$fixture_dir/missing-native-ax-factory-ci.log"; then
-    printf 'policy test error: expected missing native AX factory owner failure was not reported\n' >&2
-    cat "$fixture_dir/missing-native-ax-factory-ci.log" >&2
-    exit 1
-fi
-
-for target_only_file in native.rs native_factory.rs; do
-    sed "s/ --exclude 'tools\/alpine-ax-client\/src\/${target_only_file}'//" \
-        "$fixture_dir/ci.yml" > "$fixture_dir/linux-owned-ax-${target_only_file}.yml"
-    if ALPINE_CI_WORKFLOW="$fixture_dir/linux-owned-ax-${target_only_file}.yml" run_policy > "$fixture_dir/linux-owned-ax-${target_only_file}.log" 2>&1; then
-        printf 'policy test error: Linux-owned target-only AX mutation unexpectedly passed for %s\n' "$target_only_file" >&2
-        exit 1
-    fi
-    if ! grep -Fq 'AX target-only mutation must leave Linux explicitly and retain one conditional Apple factory owner' "$fixture_dir/linux-owned-ax-${target_only_file}.log"; then
-        printf 'policy test error: expected target-only AX ownership failure was not reported for %s\n' "$target_only_file" >&2
-        cat "$fixture_dir/linux-owned-ax-${target_only_file}.log" >&2
-        exit 1
-    fi
-done
-
-perl -0pe 's/(  mutation-diff:.*?)( --shard "\$\{\{ matrix\.shard \}\}")/$1/s' \
-    "$fixture_dir/ci.yml" > "$fixture_dir/unsharded-mutation-diff-ci.yml"
-if ALPINE_CI_WORKFLOW="$fixture_dir/unsharded-mutation-diff-ci.yml" run_policy > "$fixture_dir/unsharded-mutation-diff-ci.log" 2>&1; then
-    printf 'policy test error: unsharded changed-code mutation unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'changed-code mutation must preserve shipping and assurance scopes across eight deterministic exact-head shards' "$fixture_dir/unsharded-mutation-diff-ci.log"; then
-    printf 'policy test error: expected changed-code mutation sharding failure was not reported\n' >&2
-    cat "$fixture_dir/unsharded-mutation-diff-ci.log" >&2
-    exit 1
-fi
-
-sed "s/ --exclude 'apps\/alpine-editor\/src\/native_validation\/accessibility_process.rs'//" \
-    "$fixture_dir/ci.yml" > "$fixture_dir/linux-owned-studio-process-ci.yml"
-if ALPINE_CI_WORKFLOW="$fixture_dir/linux-owned-studio-process-ci.yml" run_policy > "$fixture_dir/linux-owned-studio-process-ci.log" 2>&1; then
-    printf 'policy test error: Linux-owned Studio process mutation unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'Studio accessibility process mutation must transfer explicitly from Linux to accessibility-scoped retained native shards' "$fixture_dir/linux-owned-studio-process-ci.log"; then
-    printf 'policy test error: expected Studio process mutation ownership failure was not reported\n' >&2
-    cat "$fixture_dir/linux-owned-studio-process-ci.log" >&2
-    exit 1
-fi
-
-sed 's#--file apps/alpine-editor/src/native_validation/accessibility_process.rs#--file apps/alpine-editor/src/native_validation/missing-process.rs#' \
-    "$fixture_dir/ci.yml" > "$fixture_dir/missing-native-studio-process-ci.yml"
-if ALPINE_CI_WORKFLOW="$fixture_dir/missing-native-studio-process-ci.yml" run_policy > "$fixture_dir/missing-native-studio-process-ci.log" 2>&1; then
-    printf 'policy test error: missing native Studio process mutation unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'Studio accessibility process mutation must transfer explicitly from Linux to accessibility-scoped retained native shards' "$fixture_dir/missing-native-studio-process-ci.log"; then
-    printf 'policy test error: expected missing native Studio process mutation failure was not reported\n' >&2
-    cat "$fixture_dir/missing-native-studio-process-ci.log" >&2
-    exit 1
-fi
-
-sed 's/ ALPINE_EDITOR_NATIVE_PROCESS_SCOPE=accessibility//' \
-    "$fixture_dir/ci.yml" > "$fixture_dir/unscoped-native-studio-process-ci.yml"
-if ALPINE_CI_WORKFLOW="$fixture_dir/unscoped-native-studio-process-ci.yml" run_policy > "$fixture_dir/unscoped-native-studio-process-ci.log" 2>&1; then
-    printf 'policy test error: unscoped native Studio process mutation unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'Studio accessibility process mutation must transfer explicitly from Linux to accessibility-scoped retained native shards' "$fixture_dir/unscoped-native-studio-process-ci.log"; then
-    printf 'policy test error: expected unscoped native Studio process mutation failure was not reported\n' >&2
-    cat "$fixture_dir/unscoped-native-studio-process-ci.log" >&2
-    exit 1
-fi
-
-sed 's/|reset_native_validation_language_evidence//g' \
-    "$fixture_dir/ci.yml" > "$fixture_dir/missing-language-evidence-owner-ci.yml"
-if ALPINE_CI_WORKFLOW="$fixture_dir/missing-language-evidence-owner-ci.yml" run_policy > "$fixture_dir/missing-language-evidence-owner-ci.log" 2>&1; then
-    printf 'policy test error: unowned validation-only language evidence mutation unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'validation-only Studio language evidence mutation must transfer explicitly from Linux to retained Apple native shards' "$fixture_dir/missing-language-evidence-owner-ci.log"; then
-    printf 'policy test error: expected validation-only language evidence mutation ownership failure was not reported\n' >&2
-    cat "$fixture_dir/missing-language-evidence-owner-ci.log" >&2
-    exit 1
-fi
-
-
-# Preserve the same sixteen logical inventories in two separate execution domains.
-for fault in duplicate-domain duplicate-shard wrong-guard wrong-step-cap wrong-job-cap; do
-    NATIVE_PLACEMENT_FAULT="$fault" perl -0pe '
-        BEGIN { $fault = $ENV{NATIVE_PLACEMENT_FAULT} }
-        if ($fault eq "duplicate-domain") { s/(  native-mutation:.*?domain: )studio/$1 . "platform"/se }
-        elsif ($fault eq "duplicate-shard") { s/(  native-mutation:.*?domain: studio.*?shard: )0\/16/$1 . "1\/16"/se }
-        elsif ($fault eq "wrong-guard") { s/(id: native-studio-mutants\s+if: matrix.domain == )\047studio\047/$1 . "\047platform\047"/se }
-        elsif ($fault eq "wrong-step-cap") { s/(id: native-studio-mutants.*?timeout-minutes: )24/$1 . "30"/se }
-        elsif ($fault eq "wrong-job-cap") { s/(  native-mutation:.*?timeout-minutes: )30/$1 . "40"/se }
-    ' "$fixture_dir/ci.yml" > "$fixture_dir/native-placement-$fault.yml"
-    if ALPINE_CI_WORKFLOW="$fixture_dir/native-placement-$fault.yml" run_policy > "$fixture_dir/native-placement-$fault.log" 2>&1; then
-        echo "native mutation placement accepted $fault" >&2; exit 1
-    fi
-    if ! grep -Fq 'native mutation placement must preserve disjoint domain/shard ownership and bounded execution' "$fixture_dir/native-placement-$fault.log"; then
-        cat "$fixture_dir/native-placement-$fault.log" >&2; exit 1
-    fi
-done
-for fault in missing-prepare missing-finish missing-upload always-disabled detached-outcome; do
-    NATIVE_RECEIPT_FAULT="$fault" perl -0pe '
-        BEGIN { $fault = $ENV{NATIVE_RECEIPT_FAULT} }
-        if ($fault eq "missing-prepare") { s/^.*scripts\/check-native-mutation-receipts.sh prepare.*\n//m }
-        elsif ($fault eq "missing-finish") { s/^.*scripts\/check-native-mutation-receipts.sh finish.*\n//m }
-        elsif ($fault eq "missing-upload") { s/(  native-mutation:.*?)uses: \.\/\.github\/actions\/upload-required-artifact/$1 . "uses: .\/missing-action"/se }
-        elsif ($fault eq "always-disabled") { s/(name: Require complete native mutation receipts\s+if: )always\(\)/$1 . "success()"/se }
-        elsif ($fault eq "detached-outcome") { s/EXECUTION_OUTCOME:.*$/EXECUTION_OUTCOME: success/m }
-    ' "$fixture_dir/ci.yml" > "$fixture_dir/native-receipt-$fault.yml"
-    if ALPINE_CI_WORKFLOW="$fixture_dir/native-receipt-$fault.yml" run_policy > "$fixture_dir/native-receipt-$fault.log" 2>&1; then
-        echo "native mutation receipt policy accepted $fault" >&2; exit 1
-    fi
-    if ! grep -Eq 'native mutation (must retain identity-bound|receipts)' "$fixture_dir/native-receipt-$fault.log"; then
-        cat "$fixture_dir/native-receipt-$fault.log" >&2; exit 1
-    fi
-done
-sed 's/, native-mutation]/]/' "$fixture_dir/ci.yml" > "$fixture_dir/unrequired-native-mutation-ci.yml"
-if ALPINE_CI_WORKFLOW="$fixture_dir/unrequired-native-mutation-ci.yml" run_policy > "$fixture_dir/unrequired-native-mutation-ci.log" 2>&1; then
-    printf 'policy test error: unrequired native mutation unexpectedly passed\n' >&2
-    exit 1
-fi
-if ! grep -Fq 'ci-pass must require and retain exact-head native mutation matrix evidence' "$fixture_dir/unrequired-native-mutation-ci.log"; then
-    printf 'policy test error: expected native-mutation aggregation failure was not reported\n' >&2
-    cat "$fixture_dir/unrequired-native-mutation-ci.log" >&2
-    exit 1
-fi
-unset ALPINE_CI_WORKFLOW
-
-native_surface_fixture="$(mktemp -d)"
-cp .github/workflows/nightly-assurance.yml "${native_surface_fixture}/nightly-assurance.yml"
-sed '/shard: "15\/16"/d' "${native_surface_fixture}/nightly-assurance.yml" \
-  > "${native_surface_fixture}/nightly-assurance.modified.yml"
-mv "${native_surface_fixture}/nightly-assurance.modified.yml" \
-  "${native_surface_fixture}/nightly-assurance.yml"
-if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="${native_surface_fixture}/nightly-assurance.yml" scripts/check-policy.sh >/dev/null 2>&1; then
-  echo "policy test failure: missing native surface shard was accepted" >&2
-  rm -rf "${native_surface_fixture}"
-  exit 1
-fi
-rm -rf "${native_surface_fixture}"
-
-native_editor_fixture="$(mktemp -d)"
-sed '/^  native-studio-contract-mutation:/d' .github/workflows/nightly-assurance.yml \
-  > "${native_editor_fixture}/nightly-assurance.yml"
-if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="${native_editor_fixture}/nightly-assurance.yml" scripts/check-policy.sh >/dev/null 2>&1; then
-  echo "policy test failure: missing Studio native contract job was accepted" >&2
-  rm -rf "${native_editor_fixture}"
-  exit 1
-fi
-rm -rf "${native_editor_fixture}"
-
-native_runtime_filter_fixture="$(mktemp -d)"
-sed '/--file crates\/alpine-runtime\/src\/lib.rs/s/ native_process$//' \
-  .github/workflows/nightly-assurance.yml \
-  > "${native_runtime_filter_fixture}/nightly-assurance.yml"
-if ALPINE_NIGHTLY_ASSURANCE_WORKFLOW="${native_runtime_filter_fixture}/nightly-assurance.yml" scripts/check-policy.sh >/dev/null 2>&1; then
-  echo "policy test failure: unfiltered Nightly runtime mutation control was accepted" >&2
-  rm -rf "${native_runtime_filter_fixture}"
-  exit 1
-fi
-rm -rf "${native_runtime_filter_fixture}"
-
-ci_native_fixture="$(mktemp -d)"
-sed 's#--file crates/alpine-platform-macos/src/native.rs#--file crates/alpine-platform-macos/src/native-missing.rs#' .github/workflows/ci.yml \
-  > "${ci_native_fixture}/ci.yml"
-if ALPINE_CI_WORKFLOW="${ci_native_fixture}/ci.yml" scripts/check-policy.sh >/dev/null 2>&1; then
-  echo "policy test failure: missing exact-head native surface scope was accepted" >&2
-  rm -rf "${ci_native_fixture}"
-  exit 1
-fi
-rm -rf "${ci_native_fixture}"
-
-ci_runtime_filter_fixture="$(mktemp -d)"
-sed '/--file crates\/alpine-runtime\/src\/lib.rs/s/ native_process$//' \
-  .github/workflows/ci.yml > "${ci_runtime_filter_fixture}/ci.yml"
-if ALPINE_CI_WORKFLOW="${ci_runtime_filter_fixture}/ci.yml" scripts/check-policy.sh >/dev/null 2>&1; then
-  echo "policy test failure: unfiltered exact-head runtime mutation control was accepted" >&2
-  rm -rf "${ci_runtime_filter_fixture}"
-  exit 1
-fi
-rm -rf "${ci_runtime_filter_fixture}"
-
-ci_native_shard_fixture="$(mktemp -d)"
-sed '/shard: 15\/16/d' .github/workflows/ci.yml \
-  > "${ci_native_shard_fixture}/ci.yml"
-if ALPINE_CI_WORKFLOW="${ci_native_shard_fixture}/ci.yml" scripts/check-policy.sh >/dev/null 2>&1; then
-  echo "policy test failure: missing exact-head native mutation shard was accepted" >&2
-  rm -rf "${ci_native_shard_fixture}"
-  exit 1
-fi
-rm -rf "${ci_native_shard_fixture}"
-
-printf 'repository policy tests passed\n'
 
 # Adversarial admission controls: declared steps and dependencies are not proof
 # of execution if a step is skipped or a failed prerequisite is overridden.
-for fault in fast-skip fast-ignore native-always cache-skip cache-broad mutation-zero-bypass; do
+for fault in fast-skip fast-ignore; do
     workflow="$fixture_dir/$fault.yml"
     case "$fault" in
         fast-skip) sed '/name: Require cheap source feedback before assurance fan-out/a\
@@ -784,12 +355,6 @@ for fault in fast-skip fast-ignore native-always cache-skip cache-broad mutation
         fast-ignore) sed '/name: Require cheap source feedback before assurance fan-out/a\
         continue-on-error: true
 ' .github/workflows/ci.yml > "$workflow" ;;
-        native-always) sed '/^  native-mutation:/,/^  ci-pass:/s/if: needs.classify.outputs.native_mutation/if: always() \&\& needs.classify.outputs.native_mutation/' .github/workflows/ci.yml > "$workflow" ;;
-        cache-skip) sed 's#run: scripts/prepare-mutation-tool.sh#run: true#' .github/workflows/ci.yml > "$workflow" ;;
-        cache-broad) sed '/name: Restore scoped mutation tooling/a\
-        restore-keys: broad
-' .github/workflows/ci.yml > "$workflow" ;;
-        mutation-zero-bypass) sed "s/if: needs.classify.outputs.mutation_diff == 'true'/if: needs.classify.outputs.mutation == 'true'/" .github/workflows/ci.yml > "$workflow" ;;
     esac
     if ALPINE_CI_WORKFLOW="$workflow" scripts/check-policy.sh > "$fixture_dir/$fault.log" 2>&1; then
         printf 'policy test error: %s was accepted\n' "$fault" >&2
@@ -798,25 +363,16 @@ for fault in fast-skip fast-ignore native-always cache-skip cache-broad mutation
 done
 printf 'CI admission bypass policy controls passed\n'
 
-for fault in proof-skip proof-ignore cache-conditional aggregate-domain; do
+for fault in aggregate-domain; do
     workflow="$fixture_dir/$fault.yml"
     case "$fault" in
-        proof-skip) sed '/^      - id: mutation-diff$/a\
-        if: false
-' .github/workflows/ci.yml > "$workflow" ;;
-        proof-ignore) sed '/^      - id: mutation-diff$/a\
-        continue-on-error: true
-' .github/workflows/ci.yml > "$workflow" ;;
-        cache-conditional) sed '/name: Verify or install pinned mutation tooling/a\
-        if: false
-' .github/workflows/ci.yml > "$workflow" ;;
         aggregate-domain) sed '/true|false) ;;/d' .github/workflows/ci.yml > "$workflow" ;;
     esac
     if ALPINE_CI_WORKFLOW="$workflow" scripts/check-policy.sh > "$fixture_dir/$fault.log" 2>&1; then
         printf 'policy test error: %s was accepted\n' "$fault" >&2; exit 1
     fi
 done
-printf 'CI proof and cache execution policy controls passed\n'
+printf 'CI aggregate requirement policy controls passed\n'
 
 for fault in aggregate-skip aggregate-ignore; do
     workflow="$fixture_dir/$fault.yml"

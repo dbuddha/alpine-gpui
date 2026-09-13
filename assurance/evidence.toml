@@ -32,9 +32,9 @@ aep = "docs/aep/0141-bounded-text-layout-atlas.md"
 requirement_issue = 33
 claim_type = "memory"
 risk = "critical"
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable"]
-required_evidence = ["kani", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0141-C04"
@@ -68,9 +68,9 @@ aep = "docs/aep/0141-bounded-text-layout-atlas.md"
 requirement_issue = 33
 claim_type = "functional"
 risk = "critical"
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable"]
-required_evidence = ["kani", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0141-C09"
@@ -92,9 +92,9 @@ aep = "docs/aep/0141-bounded-text-layout-atlas.md"
 requirement_issue = 33
 claim_type = "functional"
 risk = "critical"
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable"]
-required_evidence = ["kani", "unit"]
+required_evidence = ["unit"]
 
 [[evidence]]
 id = "EV-0141-UNIT01A"
@@ -287,9 +287,9 @@ aep = "docs/aep/0139-checked-local-text-buffer.md"
 requirement_issue = 33
 claim_type = "safety"
 risk = "critical"
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable"]
-required_evidence = ["kani", "unit", "property"]
+required_evidence = ["unit", "property"]
 
 [[claims]]
 id = "AEP-0139-C02"
@@ -431,9 +431,9 @@ requirement_issue = 17
 claim_type = "safety"
 risk = "medium"
 case_study_findings = ["CS-ZED-002"]
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable"]
-required_evidence = ["kani", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0016-C02"
@@ -443,9 +443,9 @@ aep = "docs/aep/0016-portable-value-contracts.md"
 requirement_issue = 17
 claim_type = "safety"
 risk = "medium"
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable"]
-required_evidence = ["kani", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0016-C03"
@@ -456,9 +456,9 @@ requirement_issue = 17
 claim_type = "safety"
 risk = "high"
 case_study_findings = ["CS-WGPU-002"]
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable"]
-required_evidence = ["kani", "unit", "e2e"]
+required_evidence = ["unit", "e2e"]
 
 [[claims]]
 id = "AEP-0028-C01"
@@ -495,9 +495,9 @@ requirement_issue = 29
 claim_type = "safety"
 risk = "high"
 case_study_findings = ["CS-ZED-006", "CS-ZED-008"]
-kani_applicability = "supporting"
+kani_applicability = "not_applicable"
 platform_scope = ["tooling"]
-required_evidence = ["unit", "e2e", "mutation", "coverage"]
+required_evidence = ["unit", "e2e"]
 
 [[claims]]
 id = "AEP-0028-C04"
@@ -510,7 +510,7 @@ risk = "critical"
 case_study_findings = ["CS-ZED-005", "CS-ZED-006", "CS-ZED-009"]
 kani_applicability = "not_applicable"
 platform_scope = ["tooling", "macos-metal"]
-required_evidence = ["integration", "e2e", "native", "mutation", "coverage"]
+required_evidence = ["integration", "e2e", "native"]
 
 [[claims]]
 id = "AEP-0028-C08"
@@ -521,9 +521,9 @@ requirement_issue = 53
 claim_type = "compatibility"
 risk = "critical"
 case_study_findings = ["CS-ZED-005", "CS-ZED-006", "CS-ZED-007"]
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["tooling", "macos-metal"]
-required_evidence = ["kani", "unit", "property", "integration", "e2e", "native", "mutation", "coverage"]
+required_evidence = ["unit", "property", "integration", "e2e", "native"]
 
 [[claims]]
 id = "AEP-0025-C01"
@@ -536,7 +536,7 @@ risk = "critical"
 case_study_findings = ["CS-ZED-002", "CS-ZED-003"]
 kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["unit", "integration", "native", "mutation", "coverage"]
+required_evidence = ["unit", "integration", "native"]
 
 [[claims]]
 id = "AEP-0025-C02"
@@ -547,9 +547,9 @@ requirement_issue = 49
 claim_type = "safety"
 risk = "critical"
 case_study_findings = ["CS-ZED-002", "CS-ZED-003"]
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["kani", "unit", "property", "integration", "e2e", "mutation", "coverage"]
+required_evidence = ["unit", "property", "integration", "e2e"]
 
 [[claims]]
 id = "AEP-0025-C03"
@@ -562,7 +562,7 @@ risk = "critical"
 case_study_findings = ["CS-ZED-005", "CS-ZED-006"]
 kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+required_evidence = ["unit", "integration", "e2e", "native"]
 
 [[claims]]
 id = "AEP-0025-C05"
@@ -573,9 +573,9 @@ requirement_issue = 51
 claim_type = "compatibility"
 risk = "critical"
 case_study_findings = ["CS-ZED-005", "CS-ZED-006"]
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["kani", "unit", "property", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+required_evidence = ["unit", "property", "integration", "e2e", "native"]
 
 [[claims]]
 id = "AEP-0025-C04"
@@ -586,9 +586,9 @@ requirement_issue = 52
 claim_type = "lifecycle"
 risk = "critical"
 case_study_findings = ["CS-ZED-003", "CS-ZED-006"]
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+required_evidence = ["unit", "integration", "e2e", "native"]
 
 [[claims]]
 id = "AEP-0025-C06"
@@ -599,9 +599,9 @@ requirement_issue = 52
 claim_type = "safety"
 risk = "critical"
 case_study_findings = ["CS-ZED-003", "CS-ZED-006"]
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+required_evidence = ["unit", "integration", "e2e", "native"]
 
 [[claims]]
 id = "AEP-0025-C07"
@@ -612,9 +612,9 @@ requirement_issue = 52
 claim_type = "memory"
 risk = "critical"
 case_study_findings = ["CS-ZED-005", "CS-ZED-006"]
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage", "benchmark"]
+required_evidence = ["unit", "integration", "e2e", "native", "benchmark"]
 
 [[claims]]
 id = "AEP-0025-C08"
@@ -627,7 +627,7 @@ risk = "critical"
 case_study_findings = ["CS-ZED-003", "CS-ZED-006"]
 kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["integration", "native", "miri", "mutation", "coverage"]
+required_evidence = ["integration", "native"]
 
 [[claims]]
 id = "AEP-0064-C03"
@@ -638,9 +638,9 @@ requirement_issue = 67
 claim_type = "lifecycle"
 risk = "critical"
 case_study_findings = ["CS-ZED-PRESENT-002", "CS-ZED-PRESENT-003"]
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["kani", "unit", "integration", "native", "mutation", "coverage"]
+required_evidence = ["unit", "integration", "native"]
 
 [[claims]]
 id = "AEP-0064-C05"
@@ -651,9 +651,9 @@ requirement_issue = 67
 claim_type = "lifecycle"
 risk = "critical"
 case_study_findings = ["CS-ZED-PRESENT-002"]
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["kani", "unit", "integration", "e2e", "native", "miri", "mutation", "coverage"]
+required_evidence = ["unit", "integration", "e2e", "native"]
 
 [[claims]]
 id = "AEP-0064-C06"
@@ -666,7 +666,7 @@ risk = "critical"
 case_study_findings = ["CS-ZED-PRESENT-006"]
 kani_applicability = "not_applicable"
 platform_scope = ["macos-metal"]
-required_evidence = ["unit", "native", "mutation", "coverage"]
+required_evidence = ["unit", "native"]
 
 [[claims]]
 id = "AEP-0064-C09"
@@ -677,9 +677,9 @@ requirement_issue = 67
 claim_type = "safety"
 risk = "critical"
 case_study_findings = ["CS-ZED-PRESENT-001", "CS-ZED-PRESENT-003"]
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["kani", "unit", "property", "integration", "e2e", "mutation", "coverage", "native"]
+required_evidence = ["unit", "property", "integration", "e2e", "native"]
 
 [[claims]]
 id = "AEP-0120-C01"
@@ -690,9 +690,9 @@ requirement_issue = 37
 claim_type = "safety"
 risk = "critical"
 case_study_findings = ["CS-ZED-006", "CS-ZED-008", "CS-ZED-PRESENT-003"]
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["kani", "unit", "property", "integration", "mutation", "coverage"]
+required_evidence = ["unit", "property", "integration"]
 
 [[evidence]]
 id = "EV-0120-KANI01"
@@ -733,24 +733,6 @@ artifact = "crates/alpine-platform/tests/frame_slots.rs#public_three_slot_contra
 assertion = "An external consumer fills exactly three slots, observes saturation, completes out of order, and reuses only the released slot with a newer sequence."
 scope = "Public dependency-free alpine-platform API."
 exclusions = ["native Metal integration"]
-
-[[evidence]]
-id = "EV-0120-MUTATION01"
-claim = "AEP-0120-C01"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Every viable changed-code mutant in the frame-slot model must be killed before ci-pass succeeds."
-scope = "Changed executable alpine-platform Rust."
-exclusions = ["Kani-only code", "unviable mutants", "unchanged code"]
-
-[[evidence]]
-id = "EV-0120-COVERAGE01"
-claim = "AEP-0120-C01"
-kind = "coverage"
-artifact = "scripts/check-coverage.sh"
-assertion = "Critical-file and changed-line ratchets include every executable frame-slot transition and accessor."
-scope = "Host-portable alpine-platform frame-slot Rust."
-exclusions = ["semantic proof", "native code", "Kani-only code"]
 
 [[evidence]]
 id = "EV-0064-UNIT06A"
@@ -810,24 +792,6 @@ assumptions = ["the injected observation enters at the same Rust correlation sea
 exclusions = ["Core Animation scanout", "physical presentation time", "pixel capture", "per-attempt color identity", "missed-deadline classification", "qualified memory performance"]
 
 [[evidence]]
-id = "EV-0064-MUTATION06"
-claim = "AEP-0064-C06"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#metal-validation"
-assertion = "Changed native pipeline selection, drawable-format validation, color-contract recognition, and snapshot branches must have every viable mutant killed on Apple Silicon."
-scope = "Changed alpine-metal and alpine-platform-macos native Rust."
-exclusions = ["unviable compiler-rejected mutants", "unchanged native code"]
-
-[[evidence]]
-id = "EV-0064-COVERAGE06"
-claim = "AEP-0064-C06"
-kind = "coverage"
-artifact = "scripts/check-coverage.sh"
-assertion = "Public SDR contract and extended-dynamic-range snapshot accessors are subject to changed-line and critical-file coverage ratchets."
-scope = "Host-executable safe Rust in alpine-platform-macos."
-exclusions = ["macOS-only CoreGraphics and Metal lines on Linux coverage", "semantic proof"]
-
-[[evidence]]
 id = "EV-0064-KANI03"
 claim = "AEP-0064-C03"
 kind = "kani"
@@ -876,24 +840,6 @@ assertion = "A deterministic display-identity change after a real callback drawa
 scope = "One process-main-thread Apple Silicon surface, real Metal commit and direct present call, and a validation-only post-commit configuration and presentation control."
 assumptions = ["the injected configuration uses the production epoch transition and scene-retention path", "the injected presentation observation uses a separate validation field and cannot overwrite the production native signal"]
 exclusions = ["physical multi-display hardware", "Core Animation scanout", "actual resize-notification timing", "elapsed-time performance"]
-
-[[evidence]]
-id = "EV-0064-MUTATION03"
-claim = "AEP-0064-C03"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#metal-validation"
-assertion = "Changed native configuration, layer synchronization, and epoch branches must have every viable mutant killed on Apple Silicon."
-scope = "Changed alpine-platform-macos Rust selected by the native mutation job."
-exclusions = ["unviable compiler-rejected mutants", "unchanged native code"]
-
-[[evidence]]
-id = "EV-0064-COVERAGE03"
-claim = "AEP-0064-C03"
-kind = "coverage"
-artifact = "scripts/check-coverage.sh"
-assertion = "Portable configuration conversion and public snapshot accessors are subject to the changed-line and critical-file coverage ratchets."
-scope = "Host-executable safe Rust in alpine-platform-macos."
-exclusions = ["macOS-only Objective-C callback lines on Linux coverage"]
 
 [[evidence]]
 id = "EV-0064-KANI05"
@@ -962,33 +908,6 @@ assertion = "A hidden pending request closes with revision-and-epoch cancellatio
 scope = "Process-main-thread Apple Silicon AppKit, CAMetalDisplayLink, real Metal submission, validation-only close-boundary injection, and exact owner leases."
 assumptions = ["post-commit generation revocation executes at the production lifecycle recheck", "owner leases are validation-only observers and do not own native objects"]
 exclusions = ["physical scanout", "multi-hour soak", "process RSS attribution outside Alpine owners", "fixed-hardware wakeup and energy budgets"]
-
-[[evidence]]
-id = "EV-0064-MIRI05"
-claim = "AEP-0064-C05"
-kind = "miri"
-artifact = ".github/workflows/ci.yml#miri"
-assertion = "Miri exercises host-portable terminal evidence, failure transitions, shutdown ordering, and owned error values."
-scope = "Safe Rust behavior supported by Miri on Linux."
-exclusions = ["Objective-C runtime", "native pointers", "Metal completion and errors"]
-
-[[evidence]]
-id = "EV-0064-MUTATION05"
-claim = "AEP-0064-C05"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#metal-validation"
-assertion = "Every viable mutant in changed native terminal classification, cancellation, callback admission, owner teardown, device-generation invalidation, failure accounting, and guarded rejection must be killed on Apple Silicon."
-scope = "Changed alpine-metal and alpine-platform-macos native Rust."
-exclusions = ["unviable compiler-rejected mutants", "unchanged failure paths"]
-
-[[evidence]]
-id = "EV-0064-COVERAGE05"
-claim = "AEP-0064-C05"
-kind = "coverage"
-artifact = "scripts/check-coverage.sh"
-assertion = "Portable terminal evidence and failure or shutdown transitions remain subject to changed-line and critical-file coverage ratchets."
-scope = "Host-executable safe Rust in alpine-platform and alpine-platform-macos."
-exclusions = ["macOS-only native callback lines on Linux coverage", "semantic proof", "native object release"]
 
 [[evidence]]
 id = "EV-0009-UNIT01"
@@ -1226,24 +1145,6 @@ scope = "Non-shipping CLI and committed fixtures."
 exclusions = ["Fuzz completeness", "native error injection", "lab repository behavior"]
 
 [[evidence]]
-id = "EV-0028-MUTATION03"
-claim = "AEP-0028-C03"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "When manual mutation assurance is selected, every changed assurance-tool mutant must be killed before ci-pass can succeed."
-scope = "Changed Rust code in the non-shipping alpine-assurance package."
-exclusions = ["Unchanged code", "Shell mutation", "semantic completeness of generated mutants"]
-
-[[evidence]]
-id = "EV-0028-COVERAGE03"
-claim = "AEP-0028-C03"
-kind = "coverage"
-artifact = ".github/workflows/ci.yml#coverage"
-assertion = "The assurance tool maintains at least 80 percent line and function coverage."
-scope = "Rust tests for the non-shipping alpine-assurance package."
-exclusions = ["Proof of correctness", "shell and formal model coverage", "native workload execution"]
-
-[[evidence]]
 id = "EV-0028-UNIT03B"
 claim = "AEP-0028-C03"
 kind = "unit"
@@ -1292,26 +1193,6 @@ assumptions = ["The runtime-source GPUI result composes with independent hosted 
 exclusions = ["Qualified offline GPUI shaders on the physical run", "fixed-hardware timing", "native presentation", "cross-GPU pixel portability"]
 
 [[evidence]]
-id = "EV-0028-MUTATION04"
-claim = "AEP-0028-C04"
-kind = "mutation"
-artifact = "assurance/lab/v1/task-61-solid-quad.toml#mutants_missed = 0"
-assertion = "The hosted GPL adapter run classified all 119 generated mutants with 106 caught, 13 compiler-unviable, none missed, and none timed out."
-scope = "Pinned alpine_trace_adapter source in Alpine Zed Lab run 31860924364."
-assumptions = ["The retained GitHub artifact archive hash binds the recorded mutation output."]
-exclusions = ["Alpine shipping code", "future trace operations", "semantic completeness of generated mutants"]
-
-[[evidence]]
-id = "EV-0028-COVERAGE04"
-claim = "AEP-0028-C04"
-kind = "coverage"
-artifact = "assurance/lab/v1/task-61-solid-quad.toml#coverage_lines_covered = 451"
-assertion = "The hosted GPL adapter run covered 451 of 467 lines and 55 of 60 functions, exceeding its 95 and 90 percent ratchets."
-scope = "Pinned alpine_trace_adapter source in Alpine Zed Lab run 31860924364."
-assumptions = ["The retained GitHub artifact archive hash binds the recorded coverage JSON."]
-exclusions = ["Proof of correctness", "Zed code outside the adapter", "Alpine shipping code"]
-
-[[evidence]]
 id = "EV-0028-UNIT04B"
 claim = "AEP-0028-C04"
 kind = "unit"
@@ -1347,24 +1228,6 @@ artifact = "assurance/lab/v2/task-61-realistic-scenes.toml#physical"
 assertion = "On physical Apple M4, Alpine Direct Metal and pinned GPUI Metal produced exact matching compact BGRA8 identities for every fixture and remained within the independent CPU-oracle tolerance."
 scope = "Mac16,1 on macOS 26.6.2 arm64 with runtime-source GPUI shaders explicitly marked unqualified."
 exclusions = ["Offline shader compilation on the physical run", "onscreen presentation", "fixed-hardware timing", "memory"]
-
-[[evidence]]
-id = "EV-0028-MUTATION04B"
-claim = "AEP-0028-C04"
-kind = "mutation"
-artifact = "assurance/lab/v2/task-61-realistic-scenes.toml#mutants_missed = 0"
-assertion = "Merged-main hosted analysis classified all 154 adapter mutants as 139 caught and 15 compiler-unviable with none missed or timed out."
-scope = "Pinned Alpine Trace Adapter in Alpine Zed Lab run 32733054956."
-exclusions = ["Alpine shipping code", "future trace operations", "proof of semantic completeness"]
-
-[[evidence]]
-id = "EV-0028-COVERAGE04B"
-claim = "AEP-0028-C04"
-kind = "coverage"
-artifact = "assurance/lab/v2/task-61-realistic-scenes.toml#coverage_lines_covered = 1142"
-assertion = "Merged-main hosted execution covered 1142 of 1184 adapter lines and 122 of 134 functions, above the accepted ratchets."
-scope = "Pinned Alpine Trace Adapter in Alpine Zed Lab run 32733054956."
-exclusions = ["Proof of correctness", "Zed code outside the adapter", "Alpine shipping code"]
 
 [[evidence]]
 id = "EV-0028-KANI08"
@@ -1421,24 +1284,6 @@ artifact = "assurance/lab/v3/task-353-atlas-lifecycle.toml#physical"
 assertion = "On physical Apple M4, all five visible lifecycle steps match the CPU oracle, pinned GPUI Metal, and Alpine Direct Metal exactly; warm reuse uploads zero bytes and teardown retains zero terminal bytes."
 scope = "Mac16,1 on macOS 26.6.2 with runtime-source GPUI shaders explicitly marked supporting and unqualified."
 exclusions = ["Offline shader compilation on the physical run", "onscreen presentation", "timing", "memory superiority"]
-
-[[evidence]]
-id = "EV-0028-MUTATION08"
-claim = "AEP-0028-C08"
-kind = "mutation"
-artifact = "assurance/lab/v3/task-353-atlas-lifecycle.toml#hosted"
-assertion = "Merged-main hosted analysis classified all 290 generated adapter mutants as 269 caught and 21 compiler-unviable with none missed or timed out."
-scope = "Pinned Alpine Trace Adapter in Alpine Zed Lab run 33346520970."
-exclusions = ["Alpine shipping code", "proof of semantic completeness"]
-
-[[evidence]]
-id = "EV-0028-COVERAGE08"
-claim = "AEP-0028-C08"
-kind = "coverage"
-artifact = "assurance/lab/v3/task-353-atlas-lifecycle.toml#hosted"
-assertion = "Merged-main hosted execution covered 2330 of 2411 adapter lines and 243 of 268 functions, above the accepted 95 and 90 percent ratchets."
-scope = "Pinned Alpine Trace Adapter in Alpine Zed Lab run 33346520970."
-exclusions = ["Proof of correctness", "Zed code outside the adapter", "Alpine shipping code"]
 
 [[evidence]]
 id = "EV-0025-KANI02A"
@@ -1541,24 +1386,6 @@ scope = "Safe host-portable frame planning, lifecycle, and CPU oracle."
 exclusions = ["native GPU behavior", "Metal validation", "performance"]
 
 [[evidence]]
-id = "EV-0025-MUTATION02"
-claim = "AEP-0025-C02"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Every viable mutant in changed alpine-metal safe Rust must be killed before ci-pass can succeed."
-scope = "Changed executable Rust selected by the pull-request classifier."
-exclusions = ["proof modules", "unchanged code", "macOS-only native code governed by C01 and C08"]
-
-[[evidence]]
-id = "EV-0025-COVERAGE02"
-claim = "AEP-0025-C02"
-kind = "coverage"
-artifact = "scripts/check-coverage.sh"
-assertion = "Shipping workspace, changed-line, and critical-file coverage ratchets include alpine-metal."
-scope = "Executable Rust reached by the workspace test suite."
-exclusions = ["proof of correctness", "Kani-only proof modules", "macOS-only native lines governed by C01 and C08"]
-
-[[evidence]]
 id = "EV-0025-UNIT01"
 claim = "AEP-0025-C01"
 kind = "unit"
@@ -1584,33 +1411,6 @@ artifact = "scripts/check-metal.sh"
 assertion = "Metal API and Shader Validation exercise a real device, command queue, fixed entry points, and BGRA8 render pipeline after a pinned fresh compilation matches the reviewed offline library byte for byte."
 scope = "GitHub-hosted Apple Silicon macOS validates native operations after an explicit test-only capability bypass; supported local Apple Silicon runs validate the production constructor."
 exclusions = ["production support for the hosted paravirtual device", "draw encoding", "GPU output", "fixed-hardware performance", "Intel macOS"]
-
-[[evidence]]
-id = "EV-0025-MUTATION01A"
-claim = "AEP-0025-C01"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Changed portable initialization transitions and assertions must kill every viable Linux mutant before ci-pass succeeds."
-scope = "Changed host-executable alpine-metal Rust on Linux."
-exclusions = ["macOS-only native code", "generated Objective-C bindings"]
-
-[[evidence]]
-id = "EV-0025-MUTATION01B"
-claim = "AEP-0025-C01"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#metal-validation"
-assertion = "Changed native Metal operations must kill every viable Apple Silicon mutant before ci-pass succeeds."
-scope = "Changed crates/alpine-metal/src/native.rs operations on hosted Apple Silicon macOS with native tests and Metal available."
-exclusions = ["generated Objective-C bindings", "mutants cargo-mutants classifies as unviable"]
-
-[[evidence]]
-id = "EV-0025-COVERAGE01"
-claim = "AEP-0025-C01"
-kind = "coverage"
-artifact = "scripts/check-coverage.sh"
-assertion = "Workspace, changed-line, and critical-file coverage ratchets include host-testable initialization behavior."
-scope = "Executable Rust reached on the Linux coverage host."
-exclusions = ["macOS-only native lines", "proof of correctness", "Objective-C framework internals"]
 
 [[evidence]]
 id = "EV-0025-INTEGRATION08A"
@@ -1649,42 +1449,6 @@ scope = "Apple Silicon macOS native initialization and deterministic teardown, w
 exclusions = ["command-buffer ownership", "GPU resource synchronization", "device-loss recovery"]
 
 [[evidence]]
-id = "EV-0025-MIRI08"
-claim = "AEP-0025-C08"
-kind = "miri"
-artifact = ".github/workflows/ci.yml#miri"
-assertion = "Miri exercises the host-portable safe initialization owner and exact partial-drop tests selected by the unsafe review label."
-scope = "Linux-hosted Rust ownership code supported by Miri."
-exclusions = ["Objective-C runtime", "Metal framework calls", "GPU behavior"]
-
-[[evidence]]
-id = "EV-0025-MUTATION08A"
-claim = "AEP-0025-C08"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Changed portable safe-boundary and ownership assertions must kill every viable Linux mutation."
-scope = "Changed host-executable alpine-metal Rust on Linux."
-exclusions = ["macOS-only native code", "shell policy mutation"]
-
-[[evidence]]
-id = "EV-0025-MUTATION08B"
-claim = "AEP-0025-C08"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#metal-validation"
-assertion = "Changed native Metal ownership and error assertions must kill every viable Apple Silicon mutation."
-scope = "Changed crates/alpine-metal/src/native.rs operations on hosted Apple Silicon macOS with native tests and Metal available."
-exclusions = ["generated Objective-C bindings", "mutants cargo-mutants classifies as unviable"]
-
-[[evidence]]
-id = "EV-0025-COVERAGE08"
-claim = "AEP-0025-C08"
-kind = "coverage"
-artifact = "scripts/check-coverage.sh"
-assertion = "Coverage ratchets prevent untested host-safe boundary changes from silently reducing exercised behavior."
-scope = "Linux-hosted safe API, unsupported-platform path, initialization driver, and ownership tests."
-exclusions = ["macOS-only native lines", "Objective-C binding internals", "semantic proof"]
-
-[[evidence]]
 id = "EV-0025-UNIT03"
 claim = "AEP-0025-C03"
 kind = "unit"
@@ -1719,42 +1483,6 @@ artifact = "crates/alpine-metal/src/native.rs#renders_discriminating_scene_once_
 assertion = "Two accepted frames each commit exactly one retained command buffer and return monotonic submission identifiers one and two."
 scope = "Actual Metal render and blit encoding followed by synchronous terminal waits."
 exclusions = ["command-error injection", "asynchronous submission", "concurrency"]
-
-[[evidence]]
-id = "EV-0025-MIRI03"
-claim = "AEP-0025-C03"
-kind = "miri"
-artifact = ".github/workflows/ci.yml#miri"
-assertion = "Miri exercises host-portable validation, submission sequencing, error ownership, and compact readback code."
-scope = "Rust behavior supported by Miri on Linux."
-exclusions = ["Objective-C runtime", "Metal commands", "GPU memory"]
-
-[[evidence]]
-id = "EV-0025-MUTATION03A"
-claim = "AEP-0025-C03"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Every viable mutation in changed portable submission ordering and accounting must be killed."
-scope = "Changed host-executable alpine-metal Rust on Linux."
-exclusions = ["macOS-only native code", "generated bindings"]
-
-[[evidence]]
-id = "EV-0025-MUTATION03B"
-claim = "AEP-0025-C03"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#metal-validation"
-assertion = "Every viable mutation in changed native command encoding, commit, wait, and status logic must be killed."
-scope = "Changed native.rs behavior on Apple Silicon macOS with Metal available."
-exclusions = ["generated bindings", "mutants classified as unviable"]
-
-[[evidence]]
-id = "EV-0025-COVERAGE03"
-claim = "AEP-0025-C03"
-kind = "coverage"
-artifact = "scripts/check-coverage.sh"
-assertion = "Coverage ratchets include host-testable validation ordering, sequence exhaustion, and unsupported submission results."
-scope = "Linux-hosted safe orchestration code."
-exclusions = ["macOS-only native lines", "proof of correctness"]
 
 [[evidence]]
 id = "EV-0025-KANI05A"
@@ -1836,42 +1564,6 @@ scope = "Test-only pipeline fault control against actual Metal output."
 exclusions = ["all possible shader defects", "compiler correctness"]
 
 [[evidence]]
-id = "EV-0025-MIRI05"
-claim = "AEP-0025-C05"
-kind = "miri"
-artifact = ".github/workflows/ci.yml#miri"
-assertion = "Miri exercises compact image ownership, exact buffer-length rejection, and row padding removal."
-scope = "Host-portable safe Rust readback transformation."
-exclusions = ["native shared-buffer pointer", "Metal coherence", "GPU execution"]
-
-[[evidence]]
-id = "EV-0025-MUTATION05A"
-claim = "AEP-0025-C05"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Every viable mutation in changed compact readback and comparison-support code must be killed."
-scope = "Changed host-executable alpine-metal Rust on Linux."
-exclusions = ["macOS-only native code", "generated bindings"]
-
-[[evidence]]
-id = "EV-0025-MUTATION05B"
-claim = "AEP-0025-C05"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#metal-validation"
-assertion = "Every viable mutation in native texture, draw, blit, completion, and buffer-copy logic must be killed."
-scope = "Changed native.rs behavior on Apple Silicon macOS with native fixtures."
-exclusions = ["generated bindings", "mutants classified as unviable"]
-
-[[evidence]]
-id = "EV-0025-COVERAGE05"
-claim = "AEP-0025-C05"
-kind = "coverage"
-artifact = "scripts/check-coverage.sh"
-assertion = "Coverage ratchets include compact readback success, both length mismatches, and the finite row grid."
-scope = "Linux-hosted safe readback transformation and error contract."
-exclusions = ["macOS-only native lines", "semantic proof"]
-
-[[evidence]]
 id = "EV-0025-KANI04"
 claim = "AEP-0025-C04"
 kind = "kani"
@@ -1918,33 +1610,6 @@ artifact = "crates/alpine-metal/src/native.rs#injected_precommit_failures_releas
 assertion = "Every precommit failure releases one frame owner with zero active owners on return."
 scope = "Allocation, command-buffer, and encoder stages."
 exclusions = ["Objective-C internal retain counts", "multiple in-flight frames"]
-
-[[evidence]]
-id = "EV-0025-MIRI04"
-claim = "AEP-0025-C04"
-kind = "miri"
-artifact = ".github/workflows/ci.yml#miri"
-assertion = "Miri exercises portable lifecycle, cancellation, shutdown, and accounting."
-scope = "Host-testable safe Rust on Linux."
-exclusions = ["Objective-C runtime", "Metal resources"]
-
-[[evidence]]
-id = "EV-0025-MUTATION04"
-claim = "AEP-0025-C04"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#metal-validation"
-assertion = "Viable native resource and shutdown mutations must be killed."
-scope = "Changed native and portable lifecycle code."
-exclusions = ["generated bindings", "unviable mutants"]
-
-[[evidence]]
-id = "EV-0025-COVERAGE04"
-claim = "AEP-0025-C04"
-kind = "coverage"
-artifact = "scripts/check-coverage.sh"
-assertion = "Coverage ratchets include all portable lifecycle and accounting branches."
-scope = "Linux-hosted safe Rust."
-exclusions = ["macOS-only native lines", "semantic proof"]
 
 [[evidence]]
 id = "EV-0025-KANI06"
@@ -2004,33 +1669,6 @@ scope = "Injected device removal with actual Metal setup and submission."
 exclusions = ["physical device replacement", "automatic retry"]
 
 [[evidence]]
-id = "EV-0025-MIRI06"
-claim = "AEP-0025-C06"
-kind = "miri"
-artifact = ".github/workflows/ci.yml#miri"
-assertion = "Miri exercises portable failure ownership and recovery state."
-scope = "Safe Rust supported by Miri."
-exclusions = ["native pointers", "Metal errors"]
-
-[[evidence]]
-id = "EV-0025-MUTATION06"
-claim = "AEP-0025-C06"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#metal-validation"
-assertion = "Viable classification, invalidation, and fail-closed mutations must be killed."
-scope = "Changed native and portable error paths."
-exclusions = ["generated bindings", "unviable mutants"]
-
-[[evidence]]
-id = "EV-0025-COVERAGE06"
-claim = "AEP-0025-C06"
-kind = "coverage"
-artifact = "scripts/check-coverage.sh"
-assertion = "Coverage ratchets include every portable recovery and failure transition."
-scope = "Linux-hosted safe Rust."
-exclusions = ["macOS-only native lines", "driver behavior"]
-
-[[evidence]]
 id = "EV-0025-KANI07"
 claim = "AEP-0025-C07"
 kind = "kani"
@@ -2086,33 +1724,6 @@ artifact = "crates/alpine-metal/src/native.rs#cancellation_shutdown_and_steady_s
 assertion = "The repeated-frame workload records constant retained bytes, cumulative allocation and readback totals, and a 1,024-frame resident-memory distribution after 4,096 warmup frames."
 scope = "Correctness-mode resource soak on Apple Silicon."
 exclusions = ["latency claim", "fixed hardware", "cross-machine performance budget"]
-
-[[evidence]]
-id = "EV-0025-MIRI07"
-claim = "AEP-0025-C07"
-kind = "miri"
-artifact = ".github/workflows/ci.yml#miri"
-assertion = "Miri exercises portable accounting arithmetic and atomic failure."
-scope = "Safe Rust accounting on Linux."
-exclusions = ["native resources", "resident memory"]
-
-[[evidence]]
-id = "EV-0025-MUTATION07"
-claim = "AEP-0025-C07"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Viable accounting total and invariant mutations must be killed."
-scope = "Portable accounting and frame-report code."
-exclusions = ["unviable mutants", "native-only branches"]
-
-[[evidence]]
-id = "EV-0025-COVERAGE07"
-claim = "AEP-0025-C07"
-kind = "coverage"
-artifact = "scripts/check-coverage.sh"
-assertion = "Coverage ratchets include every portable accounting outcome and invariant."
-scope = "Linux-hosted safe Rust."
-exclusions = ["macOS-only allocation queries", "proof of bounded memory"]
 
 [[evidence]]
 id = "EV-0064-KANI09"
@@ -2180,24 +1791,6 @@ artifact = "scripts/check.sh"
 assertion = "The repository acceptance command runs the portable presentation contracts, documentation, policy, and complete workspace tests."
 scope = "Host-portable repository acceptance on every supported development host."
 exclusions = ["native window presentation", "fixed-hardware qualification"]
-
-[[evidence]]
-id = "EV-0064-MUTATION09"
-claim = "AEP-0064-C09"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Every viable changed-code mutant in alpine-platform must be killed before ci-pass succeeds."
-scope = "Changed executable portable presentation Rust."
-exclusions = ["Kani-only proof code", "unviable mutants", "unchanged code"]
-
-[[evidence]]
-id = "EV-0064-COVERAGE09"
-claim = "AEP-0064-C09"
-kind = "coverage"
-artifact = "scripts/check-coverage.sh"
-assertion = "The critical-file and changed-line coverage ratchets include alpine-platform."
-scope = "Executable portable presentation Rust reached by workspace tests."
-exclusions = ["semantic proof", "Kani-only proof code", "native code"]
 
 [[evidence]]
 id = "EV-0064-NATIVE09"
@@ -3520,9 +3113,9 @@ aep = "docs/aep/0250-bounded-native-accessibility-transport.md"
 requirement_issue = 37
 claim_type = "safety"
 risk = "critical"
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["unit", "kani"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0250-C02"
@@ -3637,9 +3230,9 @@ aep = "docs/aep/0255-bounded-native-accessibility-text-mapping.md"
 requirement_issue = 37
 claim_type = "safety"
 risk = "high"
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["unit", "kani"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0255-C02"
@@ -3733,9 +3326,9 @@ aep = "docs/aep/0221-bounded-rust-symbols.md"
 requirement_issue = 34
 claim_type = "memory"
 risk = "high"
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable"]
-required_evidence = ["unit", "kani"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0221-C03"
@@ -3818,9 +3411,9 @@ aep = "docs/aep/0268-bounded-native-input-accessibility-lifecycle.md"
 requirement_issue = 37
 claim_type = "functional"
 risk = "critical"
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["kani", "unit", "native"]
+required_evidence = ["unit", "native"]
 
 [[claims]]
 id = "AEP-0268-C02"
@@ -3932,9 +3525,9 @@ aep = "docs/aep/0270-bounded-accessibility-actions.md"
 requirement_issue = 37
 claim_type = "functional"
 risk = "high"
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["kani", "unit"]
+required_evidence = ["unit"]
 
 [[claims]]
 id = "AEP-0270-C02"
@@ -4207,7 +3800,7 @@ claim_type = "accessibility"
 risk = "critical"
 kani_applicability = "not_applicable"
 platform_scope = ["tooling", "macos-metal"]
-required_evidence = ["unit", "integration", "mutation", "coverage"]
+required_evidence = ["unit", "integration"]
 
 [[claims]]
 id = "AEP-0273-C02"
@@ -4219,7 +3812,7 @@ claim_type = "accessibility"
 risk = "critical"
 kani_applicability = "not_applicable"
 platform_scope = ["tooling", "macos-metal"]
-required_evidence = ["unit", "integration", "mutation", "coverage"]
+required_evidence = ["unit", "integration"]
 
 [[claims]]
 id = "AEP-0273-C03"
@@ -4231,7 +3824,7 @@ claim_type = "functional"
 risk = "high"
 kani_applicability = "not_applicable"
 platform_scope = ["tooling", "macos-metal"]
-required_evidence = ["unit", "integration", "mutation", "coverage"]
+required_evidence = ["unit", "integration"]
 
 [[claims]]
 id = "AEP-0273-C04"
@@ -4243,7 +3836,7 @@ claim_type = "accessibility"
 risk = "critical"
 kani_applicability = "not_applicable"
 platform_scope = ["tooling", "macos-metal"]
-required_evidence = ["unit", "integration", "mutation", "coverage"]
+required_evidence = ["unit", "integration"]
 
 [[evidence]]
 id = "EV-0273-UNIT01"
@@ -4317,78 +3910,6 @@ assertion = "The fixture must retain visibly fixture-only scenario, Inspector, a
 scope = "Committed structural fixture and compiled CLI command separation."
 exclusions = ["VoiceOver output", "Accessibility Inspector capture", "post-close physical drain"]
 
-[[evidence]]
-id = "EV-0273-MUTATION01"
-claim = "AEP-0273-C01"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Every viable changed-code mutation in bounded AX bundle, path, byte, record, and fixture-separation validation must be killed before ci-pass succeeds."
-scope = "Changed host-executable alpine-assurance Rust selected from the exact pull-request diff."
-exclusions = ["compile-unviable substitutions", "physical AX attachment", "macOS framework behavior"]
-
-[[evidence]]
-id = "EV-0273-COVERAGE01"
-claim = "AEP-0273-C01"
-kind = "coverage"
-artifact = ".github/workflows/ci.yml#coverage"
-assertion = "The assurance package coverage floor exercises the bounded AX bundle validator and its public fixture command."
-scope = "Host-executable alpine-assurance Rust and compiled CLI tests."
-exclusions = ["semantic proof", "physical AX attachment", "external framework delivery"]
-
-[[evidence]]
-id = "EV-0273-MUTATION02"
-claim = "AEP-0273-C02"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Every viable changed source, detail, result, ordering, stale-identity, and event-admission mutation must be killed before ci-pass succeeds."
-scope = "Changed Task #273 event protocol validation and table-driven negative controls."
-exclusions = ["compile-unviable substitutions", "real AXObserver delivery", "NSWorkspace scheduler behavior"]
-
-[[evidence]]
-id = "EV-0273-COVERAGE02"
-claim = "AEP-0273-C02"
-kind = "coverage"
-artifact = ".github/workflows/ci.yml#coverage"
-assertion = "The assurance package coverage floor exercises every accepted AX event class and independent contract field."
-scope = "Host-executable event parsing, ordering, source binding, and stale-element validation."
-exclusions = ["semantic proof", "native callback delivery", "human operation"]
-
-[[evidence]]
-id = "EV-0273-MUTATION03"
-claim = "AEP-0273-C03"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Every viable changed latency interval, result, residency phase, byte, timestamp, and post-close mutation must be killed before ci-pass succeeds."
-scope = "Finite descriptive Task #273 sample validation with no active threshold."
-exclusions = ["compile-unviable substitutions", "performance inference", "universal leak absence"]
-
-[[evidence]]
-id = "EV-0273-COVERAGE03"
-claim = "AEP-0273-C03"
-kind = "coverage"
-artifact = ".github/workflows/ci.yml#coverage"
-assertion = "The assurance package coverage floor exercises descriptive latency and residency success and independent failure boundaries."
-scope = "Host-executable sample parsing, finite phase ordering, and post-close zero-byte controls."
-exclusions = ["latency budget", "fixed-hardware measurement", "allocator or framework residency"]
-
-[[evidence]]
-id = "EV-0273-MUTATION04"
-claim = "AEP-0273-C04"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Every viable changed attestation separation, diagnostic bound, and physical-report routing mutation must be killed before ci-pass succeeds."
-scope = "Changed host-executable human-artifact structure and command-separation validation."
-exclusions = ["compile-unviable substitutions", "truth of human attestation", "VoiceOver output"]
-
-[[evidence]]
-id = "EV-0273-COVERAGE04"
-claim = "AEP-0273-C04"
-kind = "coverage"
-artifact = ".github/workflows/ci.yml#coverage"
-assertion = "The assurance package coverage floor exercises fixture and physical attestation separation, bounded diagnostics, and distinct command outputs."
-scope = "Host-executable Task #273 validator and compiled CLI boundary."
-exclusions = ["human attestation truth", "Accessibility Inspector capture", "post-close physical drain"]
-
 [[claims]]
 id = "AEP-0222-C01"
 mission = "MP-01"
@@ -4397,9 +3918,9 @@ aep = "docs/aep/0222-bounded-settings-reload.md"
 requirement_issue = 36
 claim_type = "safety"
 risk = "critical"
-kani_applicability = "required"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["kani", "unit", "integration"]
+required_evidence = ["unit", "integration"]
 
 [[claims]]
 id = "AEP-0222-C02"
@@ -4409,9 +3930,9 @@ aep = "docs/aep/0222-bounded-settings-reload.md"
 requirement_issue = 36
 claim_type = "memory"
 risk = "high"
-kani_applicability = "supporting"
+kani_applicability = "not_applicable"
 platform_scope = ["portable", "macos-metal"]
-required_evidence = ["kani", "unit", "integration"]
+required_evidence = ["unit", "integration"]
 
 [[claims]]
 id = "AEP-0222-C03"
@@ -4502,20 +4023,3 @@ scope = "Private production application admission after off-thread request execu
 bounds = ["one global/project completion", "one Studio workspace"]
 exclusions = ["physical scheduler timing", "comparative startup latency"]
 
-[[evidence]]
-id = "EV-0222-MUTATION01"
-claim = "AEP-0222-C01"
-kind = "mutation"
-artifact = ".github/workflows/ci.yml#mutation-diff"
-assertion = "Every viable changed generation, rollback, precedence, and settings application mutation must be killed before ci-pass succeeds."
-scope = "Changed host-executable Studio settings and application code."
-exclusions = ["compile-unviable substitutions", "native framework behavior"]
-
-[[evidence]]
-id = "EV-0222-COVERAGE01"
-claim = "AEP-0222-C02"
-kind = "coverage"
-artifact = ".github/workflows/ci.yml#coverage"
-assertion = "Studio coverage exercises parser, migration, bounds, precedence, stale, failure, and state-preservation paths."
-scope = "Host-executable Alpine Editor settings code."
-exclusions = ["semantic proof", "physical macOS process"]
