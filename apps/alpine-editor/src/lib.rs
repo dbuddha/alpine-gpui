@@ -1366,6 +1366,7 @@ enum LocalStatus {
     Clipboard(Arc<str>),
     CloseBlocked(Arc<str>),
     Command(Arc<str>),
+    Recovery(Arc<str>),
     Workspace(Arc<str>),
 }
 
@@ -1375,8 +1376,20 @@ impl LocalStatus {
             Self::Clipboard(message)
             | Self::CloseBlocked(message)
             | Self::Command(message)
+            | Self::Recovery(message)
             | Self::Workspace(message) => message,
         }
+    }
+}
+
+fn status_bar_text<'a>(
+    local: Option<&'a LocalStatus>,
+    language: Option<&'a str>,
+) -> Option<&'a str> {
+    match local {
+        Some(LocalStatus::Recovery(message)) => language.or(Some(message.as_ref())),
+        Some(status) => Some(status.message()),
+        None => language,
     }
 }
 
@@ -1394,6 +1407,11 @@ impl EditorTransition {
             clipboard_write: None,
             cancel_close: false,
         }
+    }
+
+    fn merge_effect(mut self, other: EventEffect) -> Self {
+        self.effect = self.effect.merge(other);
+        self
     }
 }
 
@@ -2110,9 +2128,18 @@ impl EditorApp {
     ///
     /// Called from the entry points that actually run the editor, never from
     /// construction, so test constructors do not probe the host or pay to
-    /// spawn a process.
+    /// spawn a process. The overlay is the opened workspace or file so rustup
+    /// resolution does not depend on the process working directory.
     pub(crate) fn adopt_discovered_language_server(&mut self) {
-        self.rust_diagnostics = rust_diagnostics::discovered();
+        self.rust_diagnostics =
+            rust_diagnostics::discovered_with_overlay(self.language_overlay_path());
+    }
+
+    fn language_overlay_path(&self) -> Option<&Path> {
+        self.workspace
+            .as_ref()
+            .map(Workspace::root)
+            .or_else(|| self.tabs.path_at(self.tabs.active_index()))
     }
 
     fn prime_workspace_launch(&mut self) -> Result<(), EditorError> {
@@ -2420,7 +2447,7 @@ impl EditorApp {
                 "",
                 |_| " The prior workspace is unavailable; document recovery remains active.",
             );
-            self.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
+            self.local_status = Some(LocalStatus::Recovery(Arc::from(format!(
                 "Recovered {recovered_count} dirty buffer(s); {conflicted_count} external conflict(s) and {unavailable_count} unavailable clean file(s) remain save-blocked.{workspace_status}"
             ))));
         }
@@ -3208,11 +3235,7 @@ impl EditorApp {
         }
 
         let language_status = self.rust_diagnostics.status_message();
-        let status = self
-            .local_status
-            .as_ref()
-            .map(LocalStatus::message)
-            .or(language_status.as_deref());
+        let status = status_bar_text(self.local_status.as_ref(), language_status.as_deref());
         let status_background = if let Some(status) = status {
             let layout = self.text_system.shape(status, font)?;
             let top = (active_pane.bounds.origin().y() + content_size.height() - LINE_HEIGHT)
@@ -4027,6 +4050,7 @@ impl EditorApp {
     }
 
     fn handle_event_with_response(&mut self, event: &SurfaceEvent) -> EditorTransition {
+        let dismissed_recovery = self.dismiss_recovery_on_interaction(event);
         if matches!(
             event,
             SurfaceEvent::Keyboard { .. }
@@ -4041,13 +4065,15 @@ impl EditorApp {
         if let Some(operation) = editor_clipboard_shortcut(event)
             && let Some(owner) = overlay_field::Owner::active(self)
         {
-            return self.begin_field_clipboard(owner, operation);
+            return self
+                .begin_field_clipboard(owner, operation)
+                .merge_effect(dismissed_recovery);
         }
 
         if self.workspace_edits.is_publication_pending()
             && editor_clipboard_shortcut(event).is_some()
         {
-            return EditorTransition::default();
+            return EditorTransition::effect(dismissed_recovery);
         }
         if (self.find.is_open()
             || self.quick_open.is_open()
@@ -4056,13 +4082,15 @@ impl EditorApp {
             || self.file_tree.is_focused())
             && editor_clipboard_shortcut(event).is_some()
         {
-            return EditorTransition::default();
+            return EditorTransition::effect(dismissed_recovery);
         }
         if let Some(operation) = editor_clipboard_shortcut(event) {
             if operation == ClipboardOperation::Paste {
-                return EditorTransition::default();
+                return EditorTransition::effect(dismissed_recovery);
             }
-            return self.begin_clipboard_operation(operation);
+            return self
+                .begin_clipboard_operation(operation)
+                .merge_effect(dismissed_recovery);
         }
         let effect = match event {
             SurfaceEvent::Keyboard {
@@ -4117,7 +4145,7 @@ impl EditorApp {
             | SurfaceEvent::Resize { .. }
             | SurfaceEvent::Wake { .. } => EventEffect::default(),
         };
-        EditorTransition::effect(effect)
+        EditorTransition::effect(effect.merge(dismissed_recovery))
     }
 
     #[cfg(test)]
@@ -4337,6 +4365,30 @@ impl EditorApp {
             EventEffect::visual()
         } else {
             EventEffect::default()
+        }
+    }
+
+    fn clear_recovery_status(&mut self) -> EventEffect {
+        if matches!(self.local_status, Some(LocalStatus::Recovery(_))) {
+            self.local_status = None;
+            EventEffect::visual()
+        } else {
+            EventEffect::default()
+        }
+    }
+
+    fn dismiss_recovery_on_interaction(&mut self, event: &SurfaceEvent) -> EventEffect {
+        match event {
+            SurfaceEvent::Keyboard {
+                state: KeyState::Down,
+                ..
+            }
+            | SurfaceEvent::Pointer {
+                action: PointerAction::Down,
+                ..
+            }
+            | SurfaceEvent::Menu { .. } => self.clear_recovery_status(),
+            _ => EventEffect::default(),
         }
     }
 
@@ -7189,7 +7241,10 @@ impl EditorApp {
     }
 
     fn active_rust_document(&self) -> Option<RustDocumentInput> {
-        if !matches!(self.document, EditorDocument::File { .. }) {
+        if !matches!(
+            self.document,
+            EditorDocument::File { .. } | EditorDocument::Recovered { .. }
+        ) {
             return None;
         }
         let path = self.tabs.path_at(self.tabs.active_index())?;
@@ -10282,7 +10337,7 @@ mod session_integration_tests {
         assert!(!modified.document.is_unavailable());
         assert_eq!(
             modified.local_status,
-            Some(LocalStatus::Workspace(Arc::from(
+            Some(LocalStatus::Recovery(Arc::from(
                 "Recovered 1 dirty buffer(s); 1 external conflict(s) and 0 unavailable clean file(s) remain save-blocked."
             )))
         );
@@ -10348,7 +10403,7 @@ mod session_integration_tests {
         assert!(!app.document.is_dirty());
         assert_eq!(
             app.local_status,
-            Some(LocalStatus::Workspace(Arc::from(
+            Some(LocalStatus::Recovery(Arc::from(
                 "Recovered 1 dirty buffer(s); 0 external conflict(s) and 1 unavailable clean file(s) remain save-blocked. The prior workspace is unavailable; document recovery remains active."
             )))
         );
@@ -10362,6 +10417,70 @@ mod session_integration_tests {
             .map_err(|error| error.to_string())?;
         assert_eq!(clean.local_status, None);
 
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn recovered_rust_buffers_admit_language_and_yield_the_banner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            status_bar_text(
+                Some(&LocalStatus::Recovery(Arc::from("recovered"))),
+                Some("Rust: ready"),
+            ),
+            Some("Rust: ready")
+        );
+        assert_eq!(
+            status_bar_text(Some(&LocalStatus::Recovery(Arc::from("recovered"))), None),
+            Some("recovered")
+        );
+        assert_eq!(
+            status_bar_text(
+                Some(&LocalStatus::Workspace(Arc::from("workspace"))),
+                Some("Rust: ready"),
+            ),
+            Some("workspace")
+        );
+
+        let root = std::env::temp_dir().join(format!(
+            "alpine-editor-recovery-banner-{}-{}",
+            std::process::id(),
+            SESSION_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        fs::write(root.join("alpha.rs"), "alpha\n")?;
+        fs::write(root.join("beta.rs"), "external\n")?;
+        let recovery = recovery::RecoveryState {
+            session: test_state(&root),
+            documents: vec![recovery::RecoveredDocument {
+                tab: 1,
+                base: Box::from("beta\n"),
+                local: Box::from("local beta\n"),
+            }],
+        };
+        let mut app = EditorApp::from_recovery(tests::TestTextSystem, recovery)
+            .map_err(|error| error.to_string())?;
+        assert!(app.document.has_recovery_conflict());
+        assert!(app.active_rust_document().is_some());
+        assert!(matches!(app.local_status, Some(LocalStatus::Recovery(_))));
+        let before_focus = app.local_status.clone();
+        let _ = app.handle_event(&SurfaceEvent::Focus {
+            timestamp: EventTimestamp::new(1),
+            input_epoch: app.input_epoch,
+            focused: true,
+        });
+        assert_eq!(app.local_status, before_focus);
+        let _ = app.handle_event(&SurfaceEvent::Keyboard {
+            timestamp: EventTimestamp::new(2),
+            state: KeyState::Down,
+            physical_key: KEY_RIGHT,
+            logical_key: Box::default(),
+            modifiers: Modifiers::from_bits(0),
+            repeat: false,
+        });
+        assert_eq!(app.local_status, None);
         fs::remove_dir_all(root)?;
         Ok(())
     }

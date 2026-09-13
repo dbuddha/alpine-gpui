@@ -2512,6 +2512,10 @@ fn workspace_errors_and_statuses_preserve_exact_sources_and_messages()
         "close owner"
     );
     assert_eq!(
+        LocalStatus::Recovery(Arc::from("recovered status")).message(),
+        "recovered status"
+    );
+    assert_eq!(
         LocalStatus::Workspace(Arc::from("workspace status")).message(),
         "workspace status"
     );

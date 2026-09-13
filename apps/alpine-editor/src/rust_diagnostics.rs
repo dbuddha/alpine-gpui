@@ -4,7 +4,7 @@ use std::{
     env,
     error::Error,
     ffi::OsString,
-    fmt,
+    fmt, fs,
     ops::Range,
     path::{Path, PathBuf},
     sync::{
@@ -723,13 +723,23 @@ pub(crate) struct RustDiagnostics {
 ///
 /// Kept off `Default` so tests describe their own server state instead of
 /// inheriting the developer's installation.
-pub(crate) fn discovered() -> RustDiagnostics {
+///
+/// `rustup which rust-analyzer` follows the process working directory, which
+/// under Dock/`open` is typically `/` and therefore the default toolchain. The
+/// overlay path is the document's project, not that CWD, so a
+/// `rust-toolchain.toml` next to the opened files still selects the matching
+/// rust-analyzer.
+pub(crate) fn discovered_with_overlay(overlay: Option<&Path>) -> RustDiagnostics {
+    let rustup_home = rustup_home_from_env();
+    let overlay = overlay.map(Path::to_path_buf);
     RustDiagnostics {
         server_path: discover_server_with(
             env::var_os("ALPINE_RUST_ANALYZER"),
             env::var_os("PATH"),
             env::var_os("HOME"),
-            resolve_server,
+            move |candidate| {
+                resolve_server_from(candidate, rustup_home.as_deref(), overlay.as_deref())
+            },
         ),
         ..RustDiagnostics::default()
     }
@@ -767,44 +777,173 @@ fn discover_server_with(
         .find_map(|directory| resolve(&directory.join(SERVER_NAME)))
 }
 
-/// Turns a candidate path into the server binary to spawn.
+/// Resolves a candidate without reading process CWD.
 ///
-/// `~/.cargo/bin/rust-analyzer` is normally a link to `rustup`, which execs the
-/// real binary. That shim answers `--version` but does not survive being run as
-/// a long-lived server here, so it is resolved to the toolchain binary rather
-/// than spawned. A candidate that cannot report a version is skipped: with the
-/// component uninstalled the shim exits "Unknown binary", and starting that as
-/// a language server fails far from its cause.
-fn resolve_server(candidate: &Path) -> Option<PathBuf> {
+/// `~/.cargo/bin/rust-analyzer` is normally a link to `rustup`. That shim
+/// answers `--version` under a toolchain overlay but does not survive being
+/// run as a long-lived server, so it is never spawned. `rustup which` is also
+/// never used: it consults the default toolchain when CWD has no overlay, which
+/// is the Dock launch case. Toolchain binaries are found by scanning rustup
+/// home instead. A candidate that cannot report a version is skipped.
+fn resolve_server_from(
+    candidate: &Path,
+    rustup_home: Option<&Path>,
+    overlay: Option<&Path>,
+) -> Option<PathBuf> {
     if !is_executable_file(candidate) {
         return None;
     }
-    let resolved = resolve_rustup_shim(candidate).unwrap_or_else(|| candidate.to_path_buf());
-    responds_to_version(&resolved).then_some(resolved)
+    if is_rustup_shim(candidate) {
+        return rustup_home.and_then(|home| resolve_toolchain_server(home, overlay));
+    }
+    responds_to_version(candidate).then(|| candidate.to_path_buf())
 }
 
-/// Asks rustup which binary the shim stands for, if this is a shim at all.
-fn resolve_rustup_shim(candidate: &Path) -> Option<PathBuf> {
-    let target = std::fs::canonicalize(candidate).ok()?;
-    if target.file_name()? != "rustup" {
-        return None;
+fn rustup_home_from_env() -> Option<PathBuf> {
+    env::var_os("RUSTUP_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".rustup")))
+}
+
+fn is_rustup_shim(candidate: &Path) -> bool {
+    fs::canonicalize(candidate)
+        .is_ok_and(|target| target.file_name().is_some_and(|name| name == "rustup"))
+}
+
+fn resolve_toolchain_server(rustup_home: &Path, overlay: Option<&Path>) -> Option<PathBuf> {
+    let toolchains = rustup_home.join("toolchains");
+    let mut preferred = Vec::new();
+    if let Some(channel) = overlay.and_then(overlay_toolchain_name) {
+        preferred.push(channel);
     }
-    let output = std::process::Command::new(&target)
-        .args(["which", SERVER_NAME])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    if let Some(default) = default_toolchain_name(rustup_home)
+        && !preferred.iter().any(|channel| channel == &default)
+    {
+        preferred.push(default);
     }
-    let resolved = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
-    resolved.is_absolute().then_some(resolved)
+    for channel in &preferred {
+        if let Some(path) = toolchain_server(&toolchains, channel)
+            && responds_to_version(&path)
+        {
+            return Some(path);
+        }
+    }
+    best_working_toolchain(&toolchains, &preferred)
+}
+
+fn overlay_toolchain_name(start: &Path) -> Option<String> {
+    let mut current = if start.is_file() {
+        start.parent()?
+    } else {
+        start
+    };
+    loop {
+        if let Ok(text) = fs::read_to_string(current.join("rust-toolchain.toml"))
+            && let Some(channel) = quoted_assignment_value(&text, "channel")
+        {
+            return Some(channel);
+        }
+        if let Ok(text) = fs::read_to_string(current.join("rust-toolchain")) {
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
+                    continue;
+                }
+                return Some(line.to_string());
+            }
+        }
+        current = current.parent()?;
+    }
+}
+
+fn default_toolchain_name(rustup_home: &Path) -> Option<String> {
+    quoted_assignment_value(
+        &fs::read_to_string(rustup_home.join("settings.toml")).ok()?,
+        "default_toolchain",
+    )
+}
+
+fn quoted_assignment_value(text: &str, key: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix(key) else {
+            continue;
+        };
+        let rest = rest.trim();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let value = rest.trim().trim_matches(['"', '\'']);
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn toolchain_server(toolchains: &Path, channel: &str) -> Option<PathBuf> {
+    let exact = toolchains.join(channel).join("bin").join(SERVER_NAME);
+    if is_executable_file(&exact) {
+        return Some(exact);
+    }
+    let prefix = format!("{channel}-");
+    let mut matched = None;
+    for entry in fs::read_dir(toolchains).ok()?.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name == channel || name.starts_with(&prefix) {
+            let path = entry.path().join("bin").join(SERVER_NAME);
+            if is_executable_file(&path) {
+                matched = Some(path);
+            }
+        }
+    }
+    matched
+}
+
+fn best_working_toolchain(toolchains: &Path, skip: &[String]) -> Option<PathBuf> {
+    let mut best: Option<(u8, String, PathBuf)> = None;
+    for entry in fs::read_dir(toolchains).ok()?.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if skip.iter().any(|channel| toolchain_matches(name, channel)) {
+            continue;
+        }
+        let path = entry.path().join("bin").join(SERVER_NAME);
+        if !responds_to_version(&path) {
+            continue;
+        }
+        let rank = toolchain_scan_rank(name);
+        let take = best.as_ref().is_none_or(|(best_rank, best_name, _)| {
+            (rank, name) > (*best_rank, best_name.as_str())
+        });
+        if take {
+            best = Some((rank, name.to_string(), path));
+        }
+    }
+    best.map(|(_, _, path)| path)
+}
+
+fn toolchain_matches(dir_name: &str, channel: &str) -> bool {
+    dir_name == channel || dir_name.starts_with(&format!("{channel}-"))
+}
+
+fn toolchain_scan_rank(name: &str) -> u8 {
+    if name.starts_with(|character: char| character.is_ascii_digit()) {
+        2
+    } else {
+        u8::from(name.starts_with("stable"))
+    }
 }
 
 /// Reports whether the path is a regular file with an execute bit set.
 fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
+    fs::metadata(path)
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
@@ -3059,7 +3198,8 @@ fn workspace_edit_wire(value: ResponseValue<'_>) -> Result<WorkspaceEditWire, Wo
 #[cfg(test)]
 mod discovery_tests {
     use super::{
-        SERVER_NAME, discover_server_with, is_executable_file, resolve_server, responds_to_version,
+        SERVER_NAME, discover_server_with, is_executable_file, resolve_server_from,
+        responds_to_version,
     };
     use std::ffi::OsString;
     use std::fs;
@@ -3147,7 +3287,7 @@ mod discovery_tests {
         let _ = fs::write(&binary, b"#!/bin/sh\nsleep 600\n");
         let _ = fs::set_permissions(&binary, fs::Permissions::from_mode(0o755));
         let started = std::time::Instant::now();
-        assert_eq!(resolve_server(&binary), None);
+        assert_eq!(resolve_server_from(&binary, None, None), None);
         assert!(
             started.elapsed() < std::time::Duration::from_secs(30),
             "discovery waited {:?} on a candidate that never exits",
@@ -3167,8 +3307,99 @@ mod discovery_tests {
         search.push(":");
         search.push(working.as_os_str());
         assert_eq!(
-            discover_server_with(None, Some(search), None, resolve_server),
+            discover_server_with(None, Some(search), None, |path| {
+                resolve_server_from(path, None, None)
+            }),
             Some(working.join(SERVER_NAME))
+        );
+    }
+
+    struct ShimFixture {
+        root: PathBuf,
+        rustup_home: PathBuf,
+        shim: PathBuf,
+        stable: PathBuf,
+        current: PathBuf,
+    }
+
+    fn write_stub(path: &Path, exit: u8) {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(path, format!("#!/bin/sh\nexit {exit}\n"));
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o755));
+    }
+
+    fn shim_fixture(label: &str, stable_exit: u8, current_exit: u8) -> ShimFixture {
+        let root = std::env::temp_dir().join(format!(
+            "alpine-discovery-shim-{}-{label}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let cargo_bin = root.join("cargo-bin");
+        let rustup_home = root.join("rustup");
+        let _ = fs::create_dir_all(&cargo_bin);
+        let _ = fs::create_dir_all(&rustup_home);
+        let rustup = cargo_bin.join("rustup");
+        write_stub(&rustup, 42);
+        let shim = cargo_bin.join(SERVER_NAME);
+        let _ = std::os::unix::fs::symlink("rustup", &shim);
+        let _ = fs::write(
+            rustup_home.join("settings.toml"),
+            "default_toolchain = \"stable-aarch64-apple-darwin\"\n",
+        );
+        let stable = rustup_home
+            .join("toolchains")
+            .join("stable-aarch64-apple-darwin")
+            .join("bin")
+            .join(SERVER_NAME);
+        let current = rustup_home
+            .join("toolchains")
+            .join("1.97.1-aarch64-apple-darwin")
+            .join("bin")
+            .join(SERVER_NAME);
+        write_stub(&stable, stable_exit);
+        write_stub(&current, current_exit);
+        ShimFixture {
+            root,
+            rustup_home,
+            shim,
+            stable,
+            current,
+        }
+    }
+
+    #[test]
+    fn a_rustup_shim_resolves_without_asking_rustup_which() {
+        let fixture = shim_fixture("scan", 1, 0);
+        assert_eq!(
+            super::resolve_server_from(&fixture.shim, Some(&fixture.rustup_home), None),
+            Some(fixture.current)
+        );
+    }
+
+    #[test]
+    fn a_rustup_shim_without_a_rustup_home_is_not_spawned() {
+        let fixture = shim_fixture("no-home", 0, 0);
+        assert_eq!(super::resolve_server_from(&fixture.shim, None, None), None);
+    }
+
+    #[test]
+    fn a_project_toolchain_file_beats_the_default_toolchain() {
+        let fixture = shim_fixture("overlay", 0, 0);
+        let overlay = fixture.root.join("project");
+        let _ = fs::create_dir_all(&overlay);
+        let _ = fs::write(
+            overlay.join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"1.97.1\"\n",
+        );
+        assert_eq!(
+            super::resolve_server_from(&fixture.shim, Some(&fixture.rustup_home), Some(&overlay),),
+            Some(fixture.current)
+        );
+        assert_eq!(
+            super::resolve_server_from(&fixture.shim, Some(&fixture.rustup_home), None),
+            Some(fixture.stable)
         );
     }
 }
