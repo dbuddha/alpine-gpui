@@ -76,7 +76,7 @@ workspace tests nor hosted CI prove physical presentation.
 
 Development is PR-first: problem and outcome, change, then verification and
 remaining risks. See [CONTRIBUTING.md](CONTRIBUTING.md) and
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[docs/architecture](docs/architecture/README.md).
 
 ## Ownership and license
 

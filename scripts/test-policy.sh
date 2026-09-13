@@ -20,7 +20,7 @@ run_policy() {
     ALPINE_PR_BODY= ALPINE_PR_TITLE= ALPINE_PR_LABELS= \
     scripts/check-policy.sh
 }
-for source in crates/alpine-core/src/lib.rs apps/alpine-editor/src/lib.rs ARCHITECTURE.md; do
+for source in crates/alpine-core/src/lib.rs apps/alpine-editor/src/lib.rs README.md; do
     ALPINE_CHANGED_FILES="$source" run_policy >/dev/null
 done
 ( LC_ALL=en_US.UTF-8 run_policy >/dev/null )

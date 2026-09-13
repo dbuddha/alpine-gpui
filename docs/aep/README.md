@@ -12,7 +12,7 @@ bootstrap exceptions authorized directly by the owner's approved plan.
 
 An accepted AEP is historical. Later design creates a superseding AEP and links
 the old one instead of rewriting the original rationale. Current implemented
-truth always moves into `ARCHITECTURE.md` and rustdoc.
+truth always moves into `docs/architecture` and rustdoc.
 
 Accepted AEPs:
 
