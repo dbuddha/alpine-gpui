@@ -866,6 +866,9 @@ fn default_toolchain_name(rustup_home: &Path) -> Option<String> {
 fn quoted_assignment_value(text: &str, key: &str) -> Option<String> {
     for line in text.lines() {
         let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
         let Some(rest) = line.strip_prefix(key) else {
             continue;
         };
@@ -873,12 +876,24 @@ fn quoted_assignment_value(text: &str, key: &str) -> Option<String> {
         let Some(rest) = rest.strip_prefix('=') else {
             continue;
         };
-        let value = rest.trim().trim_matches(['"', '\'']);
+        let value = assignment_value(rest.trim())?;
         if !value.is_empty() {
-            return Some(value.to_string());
+            return Some(value);
         }
     }
     None
+}
+
+fn assignment_value(rest: &str) -> Option<String> {
+    let bytes = rest.as_bytes();
+    let first = *bytes.first()?;
+    if first == b'"' || first == b'\'' {
+        let inner = rest.get(1..)?;
+        let end = inner.as_bytes().iter().position(|&byte| byte == first)?;
+        return inner.get(..end).map(str::to_string);
+    }
+    let unquoted = rest.split('#').next()?.trim();
+    (!unquoted.is_empty()).then(|| unquoted.to_string())
 }
 
 fn toolchain_server(toolchains: &Path, channel: &str) -> Option<PathBuf> {
@@ -918,9 +933,14 @@ fn best_working_toolchain(toolchains: &Path, skip: &[String]) -> Option<PathBuf>
             continue;
         }
         let rank = toolchain_scan_rank(name);
-        let take = best.as_ref().is_none_or(|(best_rank, best_name, _)| {
-            (rank, name) > (*best_rank, best_name.as_str())
-        });
+        let take =
+            best.as_ref()
+                .is_none_or(|(best_rank, best_name, _)| match rank.cmp(best_rank) {
+                    std::cmp::Ordering::Equal => {
+                        compare_toolchain_names(name, best_name) == std::cmp::Ordering::Greater
+                    }
+                    ordering => ordering == std::cmp::Ordering::Greater,
+                });
         if take {
             best = Some((rank, name.to_string(), path));
         }
@@ -938,6 +958,18 @@ fn toolchain_scan_rank(name: &str) -> u8 {
     } else {
         u8::from(name.starts_with("stable"))
     }
+}
+
+fn compare_toolchain_names(left: &str, right: &str) -> std::cmp::Ordering {
+    toolchain_version_segments(left)
+        .cmp(&toolchain_version_segments(right))
+        .then_with(|| left.cmp(right))
+}
+
+fn toolchain_version_segments(name: &str) -> Vec<u32> {
+    name.split(|character: char| !character.is_ascii_digit())
+        .filter_map(|segment| segment.parse().ok())
+        .collect()
 }
 
 /// Reports whether the path is a regular file with an execute bit set.
@@ -3395,11 +3427,59 @@ mod discovery_tests {
         );
         assert_eq!(
             super::resolve_server_from(&fixture.shim, Some(&fixture.rustup_home), Some(&overlay),),
-            Some(fixture.current)
+            Some(fixture.current.clone())
         );
         assert_eq!(
             super::resolve_server_from(&fixture.shim, Some(&fixture.rustup_home), None),
             Some(fixture.stable)
+        );
+        let nested = overlay
+            .join("crates")
+            .join("foo")
+            .join("src")
+            .join("lib.rs");
+        if let Some(parent) = nested.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(&nested, "fn main() {}\n");
+        assert_eq!(
+            super::resolve_server_from(&fixture.shim, Some(&fixture.rustup_home), Some(&nested),),
+            Some(fixture.current.clone())
+        );
+    }
+
+    #[test]
+    fn assignment_values_ignore_trailing_comments() {
+        assert_eq!(
+            super::quoted_assignment_value(
+                "default_toolchain = \"stable-aarch64-apple-darwin\" # comment\n",
+                "default_toolchain",
+            ),
+            Some(String::from("stable-aarch64-apple-darwin"))
+        );
+        assert_eq!(
+            super::quoted_assignment_value("[toolchain]\nchannel = '1.97.1' # pinned\n", "channel",),
+            Some(String::from("1.97.1"))
+        );
+        assert_eq!(
+            super::quoted_assignment_value("channel = 1.97.1 # unquoted\n", "channel"),
+            Some(String::from("1.97.1"))
+        );
+    }
+
+    #[test]
+    fn a_newer_numeric_toolchain_beats_lexicographic_order() {
+        let fixture = shim_fixture("semver", 1, 0);
+        let newer = fixture
+            .rustup_home
+            .join("toolchains")
+            .join("1.100.0-aarch64-apple-darwin")
+            .join("bin")
+            .join(SERVER_NAME);
+        write_stub(&newer, 0);
+        assert_eq!(
+            super::resolve_server_from(&fixture.shim, Some(&fixture.rustup_home), None),
+            Some(newer)
         );
     }
 }

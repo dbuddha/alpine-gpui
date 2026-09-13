@@ -2136,10 +2136,9 @@ impl EditorApp {
     }
 
     fn language_overlay_path(&self) -> Option<&Path> {
-        self.workspace
-            .as_ref()
-            .map(Workspace::root)
-            .or_else(|| self.tabs.path_at(self.tabs.active_index()))
+        self.tabs
+            .path_at(self.tabs.active_index())
+            .or_else(|| self.workspace.as_ref().map(Workspace::root))
     }
 
     fn prime_workspace_launch(&mut self) -> Result<(), EditorError> {
