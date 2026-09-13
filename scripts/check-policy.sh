@@ -343,6 +343,7 @@ unsafe_source_files=$(find crates apps tools -type f -name '*.rs' -print0 \
     | xargs -0 grep -lE 'unsafe[[:space:]]+(extern|fn|impl|trait)|unsafe[[:space:]]*\{' 2>/dev/null \
     | sort || true)
 expected_unsafe_source_files='crates/alpine-metal/src/native.rs
+crates/alpine-platform-macos/src/menu.rs
 crates/alpine-platform-macos/src/native.rs
 crates/alpine-platform-macos/src/native_accessibility.rs
 crates/alpine-platform-macos/src/native_text_input.rs
