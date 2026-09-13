@@ -725,50 +725,72 @@ pub(crate) struct RustDiagnostics {
 /// inheriting the developer's installation.
 pub(crate) fn discovered() -> RustDiagnostics {
     RustDiagnostics {
-        server_path: discover_server_from(
+        server_path: discover_server_with(
             env::var_os("ALPINE_RUST_ANALYZER"),
             env::var_os("PATH"),
             env::var_os("HOME"),
+            responds_to_version,
         ),
         ..RustDiagnostics::default()
     }
 }
 
 /// The discovery order, separated from the environment so it can be tested.
-fn discover_server_from(
+///
+/// `accept` decides whether a candidate is a usable server. A pinned path is
+/// taken as given: qualification chooses it deliberately and must fail loudly
+/// rather than silently fall back to whatever else is installed.
+fn discover_server_with(
     pinned: Option<OsString>,
     path: Option<OsString>,
     home: Option<OsString>,
+    accept: impl Fn(&Path) -> bool,
 ) -> Option<PathBuf> {
     if let Some(pinned) = pinned {
         return Some(PathBuf::from(pinned));
     }
-    if let Some(path) = path
-        && let Some(found) = env::split_paths(&path)
-            .map(|directory| directory.join(SERVER_NAME))
-            .find(|candidate| is_executable_file(candidate))
-    {
-        return Some(found);
-    }
-    let rustup = home
+    let searched = path
+        .map(|path| env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let fallbacks = home
         .map(PathBuf::from)
-        .map(|home| home.join(".cargo").join("bin").join(SERVER_NAME));
-    [
-        rustup,
-        Some(PathBuf::from("/opt/homebrew/bin").join(SERVER_NAME)),
-        Some(PathBuf::from("/usr/local/bin").join(SERVER_NAME)),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|candidate| is_executable_file(candidate))
+        .map(|home| home.join(".cargo").join("bin"))
+        .into_iter()
+        .chain([
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+        ]);
+    searched
+        .into_iter()
+        .chain(fallbacks)
+        .map(|directory| directory.join(SERVER_NAME))
+        .find(|candidate| accept(candidate))
 }
 
 /// Reports whether the path is a regular file with an execute bit set.
 fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|metadata| {
-        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-    })
+    std::fs::metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+/// Reports whether the candidate is a server that actually runs.
+///
+/// Existence is not enough. `~/.cargo/bin/rust-analyzer` is usually a rustup
+/// proxy, and when the component is not installed it exits with "Unknown
+/// binary" instead of a version. Launching that as a language server produces
+/// a confusing failure far from its cause, so it is rejected here.
+fn responds_to_version(path: &Path) -> bool {
+    if !is_executable_file(path) {
+        return false;
+    }
+    std::process::Command::new(path)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 const SERVER_NAME: &str = "rust-analyzer";
@@ -2973,38 +2995,46 @@ fn workspace_edit_wire(value: ResponseValue<'_>) -> Result<WorkspaceEditWire, Wo
 
 #[cfg(test)]
 mod discovery_tests {
-    use super::{SERVER_NAME, discover_server_from};
+    use super::{SERVER_NAME, discover_server_with, is_executable_file, responds_to_version};
     use std::ffi::OsString;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    /// Writes an executable stub named like the server and returns its
-    /// directory, so discovery has something real to find.
-    fn server_directory(label: &str) -> PathBuf {
+    /// Writes a server stub and returns its directory.
+    ///
+    /// `exit` lets a test build the rustup-proxy case: present, executable and
+    /// failing.
+    fn server_directory(label: &str, exit: u8) -> PathBuf {
         let directory = std::env::temp_dir().join(format!("alpine-discovery-{label}"));
         let _ = fs::create_dir_all(&directory);
         let binary = directory.join(SERVER_NAME);
-        let _ = fs::write(&binary, b"#!/bin/sh\n");
+        let _ = fs::write(&binary, format!("#!/bin/sh\nexit {exit}\n"));
         let _ = fs::set_permissions(&binary, fs::Permissions::from_mode(0o755));
         directory
     }
 
+    fn present(path: &Path) -> bool {
+        is_executable_file(path)
+    }
+
     #[test]
     fn the_pinned_binary_wins_over_every_discovered_one() {
-        let directory = server_directory("pinned");
-        let found = discover_server_from(
+        let directory = server_directory("pinned", 0);
+        let found = discover_server_with(
             Some(OsString::from("/pinned/rust-analyzer")),
-            Some(directory.clone().into_os_string()),
+            Some(directory.into_os_string()),
             None,
+            present,
         );
         assert_eq!(found, Some(PathBuf::from("/pinned/rust-analyzer")));
     }
 
     #[test]
     fn an_unset_environment_still_finds_the_server_on_path() {
-        let directory = server_directory("path");
-        let found = discover_server_from(None, Some(directory.clone().into_os_string()), None);
+        let directory = server_directory("path", 0);
+        let found =
+            discover_server_with(None, Some(directory.clone().into_os_string()), None, present);
         assert_eq!(found, Some(directory.join(SERVER_NAME)));
     }
 
@@ -3016,7 +3046,7 @@ mod discovery_tests {
         let binary = bin.join(SERVER_NAME);
         let _ = fs::write(&binary, b"#!/bin/sh\n");
         let _ = fs::set_permissions(&binary, fs::Permissions::from_mode(0o755));
-        let found = discover_server_from(None, None, Some(home.clone().into_os_string()));
+        let found = discover_server_with(None, None, Some(home.into_os_string()), present);
         assert_eq!(found, Some(binary));
     }
 
@@ -3026,7 +3056,7 @@ mod discovery_tests {
         // A directory named exactly like the binary must not be accepted.
         let _ = fs::create_dir_all(directory.join(SERVER_NAME));
         assert_eq!(
-            discover_server_from(None, Some(directory.clone().into_os_string()), None),
+            discover_server_with(None, Some(directory.into_os_string()), None, present),
             None
         );
         let plain = std::env::temp_dir().join("alpine-discovery-plain");
@@ -3035,8 +3065,25 @@ mod discovery_tests {
         let _ = fs::write(&binary, b"not executable");
         let _ = fs::set_permissions(&binary, fs::Permissions::from_mode(0o644));
         assert_eq!(
-            discover_server_from(None, Some(plain.into_os_string()), None),
+            discover_server_with(None, Some(plain.into_os_string()), None, present),
             None
+        );
+    }
+
+    #[test]
+    fn a_proxy_that_cannot_report_a_version_is_skipped_for_a_working_one() {
+        // Exactly the rustup case: ~/.cargo/bin/rust-analyzer exists and runs,
+        // but exits non-zero because the component was never installed.
+        let broken = server_directory("broken-proxy", 1);
+        let working = server_directory("working", 0);
+        assert!(!responds_to_version(&broken.join(SERVER_NAME)));
+        assert!(responds_to_version(&working.join(SERVER_NAME)));
+        let mut search = OsString::from(broken.as_os_str());
+        search.push(":");
+        search.push(working.as_os_str());
+        assert_eq!(
+            discover_server_with(None, Some(search), None, responds_to_version),
+            Some(working.join(SERVER_NAME))
         );
     }
 }
